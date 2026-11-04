@@ -209,6 +209,554 @@ def main(stdout: Stdout):
 
 /// `units[at].tags.append(x)` with the list in a local: the inner list goes on growing in place,
 /// and what's shared with it, at any level, doesn't change.
+/// What a program printed, how it ended and its first error line, built with LLVM and in dev
+/// and `--release` both, is what the interpreter does. What the backend remembers about a local
+/// has to end when something changes it, and only optimizing shows some of that.
+fn same_as_the_interpreter_in_both_builds(name: &str, source: &str) -> std::io::Result<()> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
+    let output = executable.to_string_lossy().into_owned();
+    let (wanted_out, wanted_err, wanted_code) = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let (out, err, code) = outcome(&Command::new(&executable).output()?);
+        assert_eq!((&out, code), (&wanted_out, wanted_code), "{how:?}");
+        assert_eq!(err.lines().next(), wanted_err.lines().next(), "{how:?}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// Each kind of local passed by `mut` and used again, with what could be remembered about it
+/// before the call: where an index points, a length, a read held across the change, a dict's
+/// entry, how far a string's been read, what a loop or a closure holds, a number known to fit.
+const GIVEN_MUT: &str = r#"struct Box:
+    items: list[int]
+    at: int
+    name: str
+
+    def next(mut self):
+        self.at += 1
+
+    def more(mut self, value: int):
+        self.items.append(value)
+
+    def fewer(mut self):
+        self.items.pop()
+
+    def renamed(mut self, name: str):
+        self.name = name
+
+    def swapped(mut self):
+        self.items = [100, 200]
+
+struct Pair:
+    left: Box
+    right: Box
+
+enum Shape:
+    Dot
+    Line(size: int, tags: list[int])
+
+def bump(mut at: int):
+    at += 1
+
+def grown(mut xs: list[int]):
+    xs.append(99)
+
+def shrunk(mut xs: list[int]):
+    xs.pop()
+
+def replaced(mut xs: list[int]):
+    xs = [7]
+
+def emptied(mut xs: list[int]):
+    while xs.len() > 0:
+        xs.pop()
+
+def retext(mut text: str, by: str):
+    text = by
+
+def longer(mut text: str):
+    text += "é"
+
+def added(mut d: dict[str, int], key: str):
+    d[key] = 1
+
+def removed(mut d: dict[str, int], key: str):
+    d.pop(key)
+
+def rekeyed(mut key: str):
+    key = key + "x"
+
+def cleared(mut value: int?):
+    value = None
+
+def some(value: int) -> int?:
+    value
+
+def cleared_text(mut value: str?):
+    value = None
+
+def reshaped(mut shape: Shape):
+    shape = Shape.Dot
+
+def newbox(mut box: Box):
+    box = Box([5], 0, "new")
+
+def param_index(mut at: int, mut xs: list[int]) -> int:
+    xs[at] = 10
+    bump(mut at)
+    xs[at] = 20
+    bump(mut at)
+    xs[at]
+
+def main(stdout: Stdout):
+    # An index, as a position and as a length.
+    mut i = 0
+    mut xs = [1, 2, 3, 4]
+    stdout.print(xs[i])
+    bump(mut i)
+    stdout.print(xs[i])
+    mut n = xs.len()
+    bump(mut n)
+    stdout.print(n, xs[n - 2])
+
+    mut p = 0
+    mut qs = [1, 2, 3]
+    stdout.print(param_index(mut p, mut qs), p, qs)
+
+    # A list's length, kept across a change.
+    mut ys = [1, 2, 3]
+    size = ys.len()
+    grown(mut ys)
+    stdout.print(size, ys.len(), ys[size])
+    shrunk(mut ys)
+    shrunk(mut ys)
+    stdout.print(ys.len(), ys[-1])
+    replaced(mut ys)
+    stdout.print(ys.len(), ys)
+
+    # A loop's list changing in its body, by index up to a length read once.
+    mut zs = [1, 2, 3, 4]
+    for at in range(zs.len()):
+        if at < zs.len():
+            zs[at] += 1
+        shrunk(mut zs)
+    stdout.print(zs)
+
+    # A read held across a change.
+    mut lists = [[1], [2]]
+    first = lists[0]
+    grown(mut lists[0])
+    stdout.print(first, lists[0])
+    inner = lists[1]
+    emptied(mut lists[1])
+    stdout.print(inner, inner.len(), lists[1].len())
+
+    # A struct's list and index, through `mut self` and a `mut` argument.
+    mut box = Box([1, 2, 3], 0, "old")
+    held = box.items
+    box.more(4)
+    stdout.print(held.len(), box.items.len(), box.items[box.at])
+    box.next()
+    stdout.print(box.items[box.at], box.at)
+    box.fewer()
+    box.fewer()
+    stdout.print(box.items.len(), box.items[-1])
+    box.swapped()
+    stdout.print(box.items, held)
+    name = box.name
+    box.renamed("newer")
+    stdout.print(name, box.name, box.name.len())
+    newbox(mut box)
+    stdout.print(box.items, box.at, box.name)
+
+    # In places: through a list's item, and a field of a field.
+    mut boxes = [Box([1], 0, "a"), Box([2], 0, "b")]
+    other = boxes[0]
+    boxes[0].more(5)
+    boxes[0].next()
+    stdout.print(boxes[0].items[boxes[0].at], other.items, other.at)
+    newbox(mut boxes[1])
+    stdout.print(boxes[1].items, boxes[1].name, boxes.len())
+    mut pair = Pair(Box([1], 0, "l"), Box([2], 0, "r"))
+    pair.left.more(6)
+    pair.left.next()
+    newbox(mut pair.right)
+    stdout.print(pair.left.items[pair.left.at], pair.right.items, pair.right.name)
+
+    # A string: its length, its characters, and where reading it had got to.
+    mut text = "héllo wörld, with some more words"
+    before = text.len()
+    c = text[6]
+    stdout.print(before, c, text[7])
+    retext(mut text, "日本語のテキストです")
+    stdout.print(text.len(), text[1], text[7])
+    longer(mut text)
+    stdout.print(text.len(), text[-1], text[3])
+    retext(mut text, "ascii now")
+    stdout.print(text.len(), text[2], text)
+    mut chars = 0
+    for at in range(text.len()):
+        chars += 1 if text[at] == "a" else 0
+        if at == 2:
+            retext(mut text, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    stdout.print(chars)
+
+    # A dict and its key, between a lookup and a write.
+    mut d = {"a": 1, "b": 2}
+    mut key = "a"
+    if key in d:
+        rekeyed(mut key)
+        d[key] = 50
+    stdout.print(key, d)
+    if "b" in d:
+        for extra in range(50):
+            added(mut d, f"k{extra}")
+        d["b"] = 60
+    stdout.print(d["b"], d.len())
+    if "b" in d:
+        removed(mut d, "b")
+        d["b"] = 70
+    stdout.print(d["b"], d.len())
+
+    # An optional and a case, known and then changed.
+    # An optional known to hold something, given to what can make it `None`.
+    mut maybe: int? = 3
+    if maybe is not None:
+        before_clear = maybe + 1
+        cleared(mut maybe)
+        stdout.print(before_clear, maybe is None)
+    mut text_maybe: str? = "held"
+    if text_maybe is not None:
+        size_before = text_maybe.len()
+        cleared_text(mut text_maybe)
+        stdout.print(size_before, text_maybe is None)
+    mut places: list[int?] = []
+    places.append(some(1))
+    places.append(some(2))
+    if places[0] is not None:
+        cleared(mut places[0])
+        stdout.print(places)
+    mut shape = Shape.Line(2, [1, 2])
+    match shape:
+        case Line(size, tags):
+            reshaped(mut shape)
+            stdout.print(size, tags, tags.len())
+        case Dot:
+            stdout.print("dot")
+    match shape:
+        case Line(size, tags):
+            stdout.print(size)
+        case Dot:
+            stdout.print("dot")
+
+    # An arithmetic result, known to fit, from something changed.
+    mut small = 1
+    bump(mut small)
+    doubled = small * 2
+    bump(mut small)
+    stdout.print(doubled, small, 100 // small)
+    mut count = 0
+    while count < 3:
+        bump(mut count)
+    stdout.print(count)
+    mut zero = 0
+    bump(mut zero)
+    stdout.print(10 // zero)
+    more_facts(stdout)
+
+struct Store:
+    lists: list[list[int]]
+    texts: list[str]
+
+    def keep(mut self, xs: list[int]):
+        self.lists.append(xs)
+
+def stash(mut xs: list[int], mut store: Store):
+    store.lists.append(xs)
+    xs.append(-1)
+
+def via(mut xs: list[int]):
+    grown(mut xs)
+    grown(mut xs)
+
+def zeroed(mut value: float):
+    value = 0.0
+
+def huge(mut value: int):
+    value = 9223372036854775806
+
+def appended_twice(mut text: str):
+    longer(mut text)
+    longer(mut text)
+
+def more_facts(stdout: Stdout):
+    # A local's value kept by what it's given to, then changed here.
+    mut store = Store([], [])
+    mut mine = [1, 2]
+    stash(mut mine, mut store)
+    mine[0] = 9
+    mine.append(3)
+    stdout.print(mine, store.lists)
+    store.keep(mine)
+    mine[1] = 8
+    stdout.print(mine, store.lists)
+    mut grid = [[1], [2]]
+    stash(mut grid[0], mut store)
+    grid[0][0] = 7
+    stdout.print(grid, store.lists)
+
+    # Through a `mut` parameter passed on.
+    mut chain = [1]
+    chain[0] = 2
+    via(mut chain)
+    chain[2] = 5
+    stdout.print(chain, chain.len(), chain[-1])
+
+    # A list being filled, given away part of the way.
+    mut filled = []
+    for at in range(4):
+        filled.append(0)
+        if at == 1:
+            grown(mut filled)
+    stdout.print(filled)
+    mut none_yet = [0 for _ in range(3)]
+    grown(mut none_yet)
+    stdout.print(none_yet)
+
+    # A loop's item and count given to a call.
+    mut items = [1, 2, 3]
+    for mut item in items:
+        bump(mut item)
+        item *= 2
+    stdout.print(items)
+    mut lists = [[1], [2]]
+    for mut one in lists:
+        grown(mut one)
+        one[0] = one.len()
+    stdout.print(lists)
+    mut limit = 3
+    mut ran = 0
+    for at in range(limit):
+        bump(mut limit)
+        ran += at
+    stdout.print(limit, ran)
+    for at, item in enumerate(items):
+        mut here = copy(at)
+        bump(mut here)
+        stdout.print(at, here, item)
+
+    # What a closure copied, and a copy made first.
+    mut caught = 1
+    read = () => caught
+    bump(mut caught)
+    stdout.print(read(), caught)
+    mut base = [1, 2]
+    copied = base
+    gen = sum(x for x in copied)
+    grown(mut base)
+    stdout.print(gen, copied, base)
+
+    # A string growing where it is: its length, its characters, where reading got to.
+    mut long = "é" * 40
+    stdout.print(long.len(), long[35], long[20])
+    longer(mut long)
+    stdout.print(long.len(), long[40], long[39])
+    appended_twice(mut long)
+    stdout.print(long.len(), long[42], long[41], long[0])
+    mut plain = "a" * 40
+    stdout.print(plain.len(), plain[39])
+    longer(mut plain)
+    stdout.print(plain.len(), plain[40], plain[39], plain[20])
+    mut short = "ab"
+    stdout.print(short.len(), short[1])
+    longer(mut short)
+    stdout.print(short.len(), short[2], short)
+    for round in range(30):
+        longer(mut short)
+    stdout.print(short.len(), short[31], short[1])
+
+    # In places, read before and after.
+    mut names = ["é" * 30, "b"]
+    stdout.print(names[0].len(), names[0][29])
+    longer(mut names[0])
+    stdout.print(names[0].len(), names[0][30], names[1])
+    mut held = Box([1], 0, "é" * 30)
+    stdout.print(held.name.len(), held.name[25])
+    longer(mut held.name)
+    held.renamed(held.name + "z")
+    stdout.print(held.name.len(), held.name[31], held.name[25])
+
+    # Numbers known to fit or not to be zero, until they're changed.
+    mut one_half = 2.0
+    half = 1.0 / one_half
+    zeroed(mut one_half)
+    stdout.print(half, one_half, 1.0 / one_half)
+"#;
+
+#[test]
+fn what_a_mut_argument_changes_is_read_again() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("given_mut", GIVEN_MUT)
+}
+
+#[test]
+fn what_a_mut_argument_changes_fails_as_it_should() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, source) in [
+        (
+            "given_mut_fails_1",
+            r"def shrunk(mut xs: list[int]):
+    xs.pop()
+
+def main(stdout: Stdout):
+    mut xs = [1, 2, 3]
+    for at in range(xs.len()):
+        stdout.print(xs[at])
+        shrunk(mut xs)
+",
+        ),
+        (
+            "given_mut_fails_2",
+            r"struct Box:
+    items: list[int]
+
+    def fewer(mut self):
+        self.items.pop()
+
+def main(stdout: Stdout):
+    mut box = Box([1, 2, 3])
+    for at in range(box.items.len()):
+        stdout.print(box.items[at])
+        box.fewer()
+",
+        ),
+        (
+            "given_mut_fails_3",
+            r"def huge(mut value: int):
+    value = 9223372036854775807
+
+def main(stdout: Stdout):
+    mut big = 1
+    small = big + 1
+    huge(mut big)
+    stdout.print(small)
+    stdout.print(big + 1)
+",
+        ),
+        (
+            "given_mut_fails_4",
+            r"def zero(mut value: int):
+    value = 0
+
+def main(stdout: Stdout):
+    mut n = 5
+    stdout.print(10 // n)
+    zero(mut n)
+    stdout.print(10 // n)
+",
+        ),
+        (
+            "given_mut_fails_5",
+            r"def bumped(mut at: int):
+    at += 100
+
+def main(stdout: Stdout):
+    mut xs = [1, 2, 3]
+    for at in range(xs.len()):
+        mut i = at
+        stdout.print(xs[i])
+        bumped(mut i)
+        stdout.print(xs[i])
+",
+        ),
+    ] {
+        same_as_the_interpreter_in_both_builds(name, source)?;
+    }
+    Ok(())
+}
+
+/// What's read as an argument keeps the value it had, in order, while a later `mut` argument
+/// changes it and what's known of it ends: both the order arguments run in and an index that
+/// changes have to hold at once.
+const READ_THEN_CHANGED: &str = r#"def bump(mut at: int) -> int:
+    at += 1
+    at
+
+def pair(a: int, b: int) -> str:
+    f"{a}/{b}"
+
+def three(a: int, b: int, c: int) -> str:
+    f"{a}/{b}/{c}"
+
+def listed(a: list[int], b: int) -> str:
+    f"{a}/{b}"
+
+def put(a: int, mut item: int, mut at: int) -> str:
+    at += 1
+    item += 100
+    f"{a}"
+
+def maybe_cleared(a: int, mut value: int?) -> int:
+    value = None
+    a
+
+def main(stdout: Stdout):
+    # An index read as an argument, then changed by a later one.
+    mut i = 0
+    stdout.print(pair(i, bump(mut i)), i)
+    mut xs = [10, 20, 30, 40]
+    stdout.print(pair(xs[i], bump(mut i)), i, xs[i])
+    stdout.print(three(i, xs[i], bump(mut i)), i)
+    i = 0
+    stdout.print(i, xs[i], bump(mut i), xs[i], i)
+
+    # What it remembered about the index ends, in order, with the old read kept.
+    mut j = 0
+    xs[j] = 11
+    held = pair(xs[j], bump(mut j))
+    xs[j] = 22
+    stdout.print(held, j, xs)
+
+    # A place and its index both given, with what's read first keeping its value.
+    mut k = 0
+    mut ys = [1, 2, 3]
+    stdout.print(put(k, mut ys[k], mut k), k, ys)
+    stdout.print(put(k, mut ys[k], mut k), k, ys)
+
+    # A list read as an argument, then changed by a later one, and its length.
+    mut zs = [1, 2, 3]
+    stdout.print(listed(zs, zs.pop()), zs)
+    stdout.print(zs, zs.pop(), zs.len())
+
+    # An optional given to what can clear it, after being read.
+    mut maybe: int? = 3
+    if maybe is not None:
+        stdout.print(maybe_cleared(maybe, mut maybe), maybe is None)
+"#;
+
+#[test]
+fn what_an_argument_read_keeps_its_value_when_a_later_one_changes_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("read_then_changed", READ_THEN_CHANGED)
+}
+
 #[test]
 fn an_index_a_call_changes_is_read_again() -> std::io::Result<()> {
     if !ready() {

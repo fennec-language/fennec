@@ -80,6 +80,9 @@ struct FakeStream {
     peer_closed: bool,
 }
 
+/// A packet in a test's network: its data and its sender's address.
+type FakePacket = (Vec<u8>, String);
+
 /// A test's network, in memory. Handles count up from 1, so a test runs the same every time.
 #[derive(Default)]
 pub(crate) struct Fake {
@@ -88,7 +91,7 @@ pub(crate) struct Fake {
     servers: BTreeMap<i64, (i64, VecDeque<(i64, String)>)>,
     streams: BTreeMap<i64, FakeStream>,
     /// Each UDP socket's port, and what's been sent to it and by whom.
-    udp: BTreeMap<i64, (i64, VecDeque<(Vec<u8>, String)>)>,
+    udp: BTreeMap<i64, (i64, VecDeque<FakePacket>)>,
     /// What each request a test scripted answers, by its method and URL.
     answers: BTreeMap<String, Value>,
     /// Each request sent, as its method and URL.
@@ -160,6 +163,7 @@ fn connection_method(
     interp.connection_method(connection, method, args, span)
 }
 
+#[expect(clippy::needless_pass_by_value, reason = "every method in `MODULE` takes these")]
 fn response_method(
     _interp: &mut Interp<'_>,
     response: &Instance,
@@ -340,13 +344,11 @@ impl Interp<'_> {
         let sent = format!("{} {}", request.method, http::written(request));
         fake.requests.push(sent.clone());
         let answer = fake.answers.get(&sent).cloned();
-        match answer {
-            Some(answer) => Ok(Value::Ok(Rc::new(answer))),
-            None => {
-                let reason = format!("the test's fake `Net` has no answer for `{sent}`: give it one with `net.script`");
-                self.net_error(&Failure::Other(reason), span)
-            }
+        if let Some(answer) = answer {
+            return Ok(Value::Ok(Rc::new(answer)));
         }
+        let reason = format!("the test's fake `Net` has no answer for `{sent}`: give it one with `net.script`");
+        self.net_error(&Failure::Other(reason), span)
     }
 
     fn connection_method(
@@ -465,14 +467,6 @@ impl Interp<'_> {
             ("accept" | "close", _) => Err(wrong(method, span)),
             _ => Err(no_method(&Value::Instance(Rc::new(server.clone())), method, span)),
         }
-    }
-
-    /// Takes a real server's listener out of the program's open sockets, for `parallel(server)`
-    /// to serve from. A server in a test's fake network, or one already closed, has none.
-    #[cfg(any(test, feature = "threads"))]
-    pub(crate) fn take_listener(&mut self, server: &Value) -> Option<TcpListener> {
-        let Value::Instance(server) = server else { return None };
-        take_listener(handle_of(server))
     }
 
     /// The case of `NetError` a failure is.
@@ -649,9 +643,12 @@ impl Fake {
     }
 }
 
-/// Takes a real server's listener out of the table, for `parallel(server)` to serve from.
+/// Takes a real server's listener out of the table, for `parallel(server)` to serve from. A server
+/// in a test's fake network, or one already closed, has none.
 #[cfg(any(test, feature = "threads"))]
-fn take_listener(handle: i64) -> Option<TcpListener> {
+pub(crate) fn take_listener(server: &Value) -> Option<TcpListener> {
+    let Value::Instance(server) = server else { return None };
+    let handle = handle_of(server);
     let mut open = sockets();
     if !matches!(open.get(&handle).map(AsRef::as_ref), Some(Socket::Listener(_))) {
         return None;

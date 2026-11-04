@@ -32,6 +32,16 @@ use crate::emit::{Emit, HEADER_ACCESS, ITEM_ACCESS};
 use crate::kinds::{Kind, element_symbol};
 use crate::lists::list_item;
 
+/// Whether a program makes HTTP requests, the one thing that needs TLS.
+pub fn uses_tls(program: &Program) -> bool {
+    program.functions.iter().chain(&program.constants).flat_map(|function| &function.blocks).any(|block| {
+        block.insts.iter().any(|inst| {
+            matches!(&inst.kind, InstKind::Builtin { name, .. }
+                if name.starts_with("Net.get") || name.starts_with("Net.post") || name.starts_with("Net.request"))
+        })
+    })
+}
+
 /// Whether a program hands work to the runtime's `parallel` calls, and so keeps a stack limit
 /// and failure flag for each thread.
 pub fn uses_parallel(program: &Program) -> bool {

@@ -635,7 +635,7 @@ fn a_worker_forgets_where_it_got_to_in_a_string_when_its_range_ends() -> std::io
 /// the whole program's, not one thread's.
 #[test]
 fn a_connection_made_on_one_thread_is_used_on_another() -> std::io::Result<()> {
-    if !crate::executables::threads_runtime_built() {
+    if !threads_runtime_built() {
         return Ok(());
     }
     let source = r#"from std.net import Connection
@@ -659,7 +659,7 @@ def main(net: Net, stdout: Stdout):
     let dir = std::env::temp_dir().join(format!("fennec-across-threads-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let executable = build_on_threads(&dir, source, "across")?;
-    let ran = std::process::Command::new(&executable).env("FENNEC_PARALLEL_STRESS", "1").output()?;
+    let ran = Command::new(&executable).env("FENNEC_PARALLEL_STRESS", "1").output()?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),

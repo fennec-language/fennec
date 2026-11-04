@@ -2,8 +2,10 @@
 //! for `https`, which always checks certificates. Redirects are followed, up to 10. A 404 is an
 //! answer, not a failure, since what it means is the caller's to say.
 
+use std::fmt::Write as _;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use super::net::Failure;
@@ -85,7 +87,7 @@ fn percent_encoded(text: &str) -> String {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
             out.push(char::from(byte));
         } else {
-            out.push_str(&format!("%{byte:02X}"));
+            let _ = write!(out, "%{byte:02X}");
         }
     }
     out
@@ -171,7 +173,7 @@ fn once<'h>(
 ) -> Result<Answer, Failure> {
     let tcp = connect(url, deadline, timeout)?;
     let mut stream =
-        if url.secure { tls::wrap(tcp, &url.host, deadline, timeout)? } else { Stream::Plain(tcp) };
+        if url.secure { secured(tcp, &url.host, deadline, timeout)? } else { Stream::Plain(tcp) };
     let host = if matches!((url.secure, url.port), (false, 80) | (true, 443)) {
         url.host.clone()
     } else {
@@ -185,7 +187,7 @@ fn once<'h>(
         }
         agent |= name.eq_ignore_ascii_case("user-agent");
         accept |= name.eq_ignore_ascii_case("accept");
-        head.push_str(&format!("{name}: {value}\r\n"));
+        let _ = write!(head, "{name}: {value}\r\n");
     }
     if !agent {
         head.push_str("User-Agent: fennec\r\n");
@@ -194,7 +196,7 @@ fn once<'h>(
         head.push_str("Accept: */*\r\n");
     }
     if !body.is_empty() || matches!(method, "POST" | "PUT" | "PATCH") {
-        head.push_str(&format!("Content-Length: {}\r\n", body.len()));
+        let _ = write!(head, "Content-Length: {}\r\n", body.len());
     }
     head.push_str("Connection: close\r\n\r\n");
     stream.write_all_by(head.as_bytes(), deadline, timeout)?;
@@ -227,19 +229,44 @@ fn connect(url: &Url, deadline: Instant, timeout: Duration) -> Result<TcpStream,
     Err(failure)
 }
 
+/// A connection with TLS over it.
+trait Secure: Read + Write {
+    fn tcp(&self) -> &TcpStream;
+}
+
+/// Puts TLS over a connection, once something has said it's wanted. A program that makes no
+/// requests links nothing of TLS, or of what the system checks certificates with: a pointer here
+/// is all that reaches them, and only `use_tls` sets it.
+type WithTls = fn(TcpStream, &str, Instant, Duration) -> Result<Box<dyn Secure>, Failure>;
+
+static WITH_TLS: OnceLock<WithTls> = OnceLock::new();
+
+/// Says TLS is wanted: compiled code that makes a request calls this first, and so does the
+/// `fennec` command, for the interpreter.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn use_tls() {
+    WITH_TLS.get_or_init(|| tls::wrap);
+}
+
+/// Puts TLS over a connection, or says why it can't be.
+fn secured(tcp: TcpStream, host: &str, deadline: Instant, timeout: Duration) -> Result<Stream, Failure> {
+    let Some(wrap) = WITH_TLS.get() else {
+        return Err(Failure::Tls("this program was built without TLS: build it with LLVM".to_owned()));
+    };
+    Ok(Stream::Secure(wrap(tcp, host, deadline, timeout)?))
+}
+
 /// A connection a request goes over.
 enum Stream {
     Plain(TcpStream),
-    #[cfg(not(target_arch = "wasm32"))]
-    Secure(Box<tls::Stream>),
+    Secure(Box<dyn Secure>),
 }
 
 impl Stream {
     fn tcp(&self) -> &TcpStream {
         match self {
             Stream::Plain(tcp) => tcp,
-            #[cfg(not(target_arch = "wasm32"))]
-            Stream::Secure(stream) => &stream.sock,
+            Stream::Secure(stream) => stream.tcp(),
         }
     }
 
@@ -252,14 +279,13 @@ impl Stream {
         self.tcp().set_read_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
         let read = match self {
             Stream::Plain(tcp) => tcp.read(into),
-            #[cfg(not(target_arch = "wasm32"))]
             Stream::Secure(stream) => stream.read(into),
         };
         match read {
             Ok(count) => Ok(count),
             // A server that hangs up without saying goodbye first has still said what it had.
             Err(error) if error.kind() == ErrorKind::UnexpectedEof => Ok(0),
-            Err(error) => Err(tls::failure_of(&error, timeout)),
+            Err(error) => Err(failure_of(&error, timeout)),
         }
     }
 
@@ -271,10 +297,9 @@ impl Stream {
         self.tcp().set_write_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
         let wrote = match self {
             Stream::Plain(tcp) => tcp.write_all(data).and_then(|()| tcp.flush()),
-            #[cfg(not(target_arch = "wasm32"))]
             Stream::Secure(stream) => stream.write_all(data).and_then(|()| stream.flush()),
         };
-        wrote.map_err(|error| tls::failure_of(&error, timeout))
+        wrote.map_err(|error| failure_of(&error, timeout))
     }
 }
 
@@ -408,10 +433,19 @@ fn read_head(reader: &mut Reader<'_>) -> Result<(i64, Vec<(String, String)>), Fa
     }
 }
 
-/// TLS, which always checks certificates, with what the operating system trusts.
+/// The failure an I/O error means, for a connection that may have TLS over it.
+fn failure_of(error: &std::io::Error, timeout: Duration) -> Failure {
+    match error.kind() {
+        ErrorKind::InvalidData | ErrorKind::InvalidInput => Failure::Tls(error.to_string()),
+        ErrorKind::UnexpectedEof => Failure::Tls("the other side hung up during the handshake".to_owned()),
+        _ => Failure::of(error, Some(timeout)),
+    }
+}
+
+/// TLS, which always checks certificates, with what the operating system trusts. The playground
+/// has no network, so it has no TLS either.
 #[cfg(not(target_arch = "wasm32"))]
 mod tls {
-    use std::io::ErrorKind;
     use std::net::TcpStream;
     use std::sync::{Arc, OnceLock};
     use std::time::{Duration, Instant};
@@ -420,8 +454,13 @@ mod tls {
     use rustls::{ClientConfig, ClientConnection, StreamOwned};
 
     use super::super::net::Failure;
+    use super::{Secure, failure_of};
 
-    pub(super) type Stream = StreamOwned<ClientConnection, TcpStream>;
+    impl Secure for StreamOwned<ClientConnection, TcpStream> {
+        fn tcp(&self) -> &TcpStream {
+            &self.sock
+        }
+    }
 
     /// How connections are made, worked out once: loading what's trusted takes a while.
     fn config() -> Result<Arc<ClientConfig>, Failure> {
@@ -449,7 +488,7 @@ mod tls {
         host: &str,
         deadline: Instant,
         timeout: Duration,
-    ) -> Result<super::Stream, Failure> {
+    ) -> Result<Box<dyn Secure>, Failure> {
         let name = ServerName::try_from(host.to_owned())
             .map_err(|_| Failure::Tls(format!("`{host}` can't be checked against a certificate")))?;
         let mut connection =
@@ -461,40 +500,7 @@ mod tls {
         while connection.is_handshaking() {
             connection.complete_io(&mut tcp).map_err(|error| failure_of(&error, timeout))?;
         }
-        Ok(super::Stream::Secure(Box::new(StreamOwned::new(connection, tcp))))
-    }
-
-    /// The failure an I/O error means, for a connection that may have TLS over it.
-    pub(super) fn failure_of(error: &std::io::Error, timeout: Duration) -> Failure {
-        match error.kind() {
-            ErrorKind::InvalidData | ErrorKind::InvalidInput => Failure::Tls(error.to_string()),
-            ErrorKind::UnexpectedEof => {
-                Failure::Tls("the other side hung up during the handshake".to_owned())
-            }
-            _ => Failure::of(error, Some(timeout)),
-        }
-    }
-}
-
-/// The playground has no network, so it has no TLS either.
-#[cfg(target_arch = "wasm32")]
-mod tls {
-    use std::net::TcpStream;
-    use std::time::{Duration, Instant};
-
-    use super::super::net::Failure;
-
-    pub(super) fn wrap(
-        _tcp: TcpStream,
-        _host: &str,
-        _deadline: Instant,
-        _timeout: Duration,
-    ) -> Result<super::Stream, Failure> {
-        Err(Failure::Other("the playground has no network".to_owned()))
-    }
-
-    pub(super) fn failure_of(error: &std::io::Error, timeout: Duration) -> Failure {
-        Failure::of(error, Some(timeout))
+        Ok(Box::new(StreamOwned::new(connection, tcp)))
     }
 }
 
@@ -716,6 +722,7 @@ mod tests {
     /// TLS can't reach a server that doesn't speak it, and says so rather than sending anything.
     #[test]
     fn tls_with_a_server_that_doesnt_speak_it_fails_as_tls() {
+        super::use_tls();
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let done = std::thread::spawn(move || {
@@ -725,5 +732,47 @@ mod tests {
         let answer = get(format!("https://localhost:{port}/"));
         done.join().unwrap();
         assert!(matches!(answer, Err(Failure::Tls(_))));
+    }
+
+    fn url(text: &str) -> Url {
+        parse_url(text).ok().unwrap()
+    }
+
+    #[test]
+    fn a_url_gives_its_parts() {
+        let plain = Url { secure: false, host: "a.com".to_owned(), port: 80, target: "/".to_owned() };
+        assert_eq!(url("http://a.com"), plain);
+        assert_eq!(url("HTTP://a.com/"), plain);
+        assert_eq!(url("http://a.com#top"), plain);
+        assert_eq!(url("https://a.com/x/y?z=1#top").target, "/x/y?z=1");
+        assert_eq!(url("https://a.com?z=1").target, "/?z=1");
+        assert_eq!(url("https://a.com").port, 443);
+        assert_eq!(url("http://a.com:8080/").port, 8080);
+        assert_eq!(url("http://[::1]:8080/").host, "::1");
+        assert_eq!(url("http://[::1]/").port, 80);
+        for bad in
+            ["a.com", "ftp://a.com", "http://", "http://a.com:port/", "http://u:p@a.com/", "http://[::1/"]
+        {
+            assert!(parse_url(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn params_go_on_the_end_written_as_a_url_holds_them() {
+        assert_eq!(percent_encoded("a-b_c.d~e"), "a-b_c.d~e");
+        assert_eq!(percent_encoded("a b/é"), "a%20b%2F%C3%A9");
+        let params = [("q".to_owned(), "a b".to_owned()), ("n".to_owned(), "1".to_owned())];
+        assert_eq!(with_params("http://a.com/x", &params), "http://a.com/x?q=a%20b&n=1");
+        assert_eq!(with_params("http://a.com/x?y=2", &params), "http://a.com/x?y=2&q=a%20b&n=1");
+        assert_eq!(with_params("http://a.com/x", &[]), "http://a.com/x");
+    }
+
+    #[test]
+    fn a_redirect_goes_from_where_the_request_was() {
+        let from = url("https://a.com/x/y?z=1");
+        assert_eq!(redirected(&from, "http://b.com/w"), "http://b.com/w");
+        assert_eq!(redirected(&from, "/w"), "https://a.com:443/w");
+        assert_eq!(redirected(&from, "w"), "https://a.com:443/x/w");
+        assert_eq!(redirected(&url("http://[::1]:81/"), "/w"), "http://[::1]:81/w");
     }
 }

@@ -39,4 +39,6 @@ pub use constants::{Baked, bake_constants};
 pub use format::float as format_float;
 pub use inputs::Inputs;
 pub use interp::{Interp, run};
+#[cfg(not(target_arch = "wasm32"))]
+pub use stdlib::http::use_tls;
 pub use testing::TestOutcome;

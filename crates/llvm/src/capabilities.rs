@@ -109,6 +109,11 @@ impl Emit<'_, '_, '_> {
             return Ok(());
         }
         let method = name.split_once('.').map_or(name, |(_, method)| method);
+        if name.starts_with("Net.get") || name.starts_with("Net.post") || name.starts_with("Net.request") {
+            // This call is the only thing that links TLS into a program.
+            self.declare("declare void @fennec_use_tls() nounwind");
+            self.line("call void @fennec_use_tls()");
+        }
         let (from, to) = (i64::from(span.start), i64::from(span.end));
         let (mark, crossed) = self.cross_arguments(rest)?;
         let (word, _) = self.operand(receiver)?;

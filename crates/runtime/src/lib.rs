@@ -329,6 +329,7 @@ export! {
     fennec_capability_block(a0: i64) -> i64 => capabilities::block(a0);
     fennec_native_capability(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::native_call(a0, a1, a2, a3, a4);
     fennec_clock_now() -> i64 => capabilities::clock_now();
+    fennec_use_tls() => capabilities::use_tls();
     fennec_clock_sleep(a0: i64) => capabilities::clock_sleep(a0);
     fennec_args_len() -> i64 => capabilities::args_len();
     fennec_args_program() -> i64 => capabilities::args_program();

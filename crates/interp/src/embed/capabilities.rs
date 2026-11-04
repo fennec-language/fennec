@@ -402,6 +402,13 @@ fn native_method(
     }
 }
 
+/// Says TLS is wanted: compiled code that makes a request calls this first. Nothing else does, so
+/// a program that makes none links nothing of TLS.
+#[cfg(not(target_arch = "wasm32"))]
+pub extern "C" fn use_tls() {
+    crate::stdlib::http::use_tls();
+}
+
 /// `clock.now()`, as the nanoseconds of an `Instant`.
 pub extern "C" fn clock_now() -> i64 {
     crate::collections::monotonic_nanos()

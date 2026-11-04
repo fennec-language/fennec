@@ -54,7 +54,7 @@ fn fail(message: String) -> i64 {
 pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     let listener = with(|state| {
         let server = state.take(server);
-        state.interp.take_listener(&server)
+        crate::stdlib::net::take_listener(&server)
     });
     let Some(listener) = listener else { return fail("this server isn't open to serve".to_owned()) };
     if let Err(error) = listener.set_nonblocking(true) {

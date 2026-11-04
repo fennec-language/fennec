@@ -19,7 +19,6 @@ mod image;
 mod lint;
 mod llvm_tests;
 mod lsp;
-mod repl;
 mod report;
 mod run;
 mod test;
@@ -41,7 +40,7 @@ const USAGE: &str = "usage:
   fennec test --all [path]  run every test
   fennec test --real [path]  run every test with real capabilities rather than fakes
   fennec test --verbose [path]  list the tests that pass too, not only failures and the summary
-  fennec test --llvm [path]  run what LLVM can build through LLVM, and the rest as usual
+  fennec test --jit [path]  run them on the JIT instead of LLVM
   fennec bench [path]       run its `bench` blocks: instructions and times, against the last run
   fennec new <name>         start a kit in a new folder
   fennec init               set up this folder: a kit if it's new, and Fennec's guidance in AGENTS.md
@@ -53,7 +52,6 @@ const USAGE: &str = "usage:
   fennec fix [path]         make the fixes the type checker and linter suggest, in a kit or a .fen file
   fennec lsp                the language server, for editors, over standard input and output
   fennec daemon <action>    the build daemon: `status` or `stop`; commands start it
-  fennec repl               try Fennec interactively
   fennec --version          show the version
 
   path is a .fen file, or a kit's folder; it defaults to the current folder";
@@ -98,7 +96,6 @@ fn main() -> ExitCode {
         ["bench", path] => bench::bench(path),
         ["new", path] => new(path),
         ["init"] => init(),
-        ["repl"] => on_big_stack(|_| repl::repl(), ""),
         ["fmt", rest @ ..] => fmt::fmt(rest),
         ["lint"] => on_big_stack(lint::lint, "."),
         ["lint", "--json"] => on_big_stack(lint::lint_json, "."),
@@ -160,7 +157,7 @@ fn on_big_stack(command: fn(&str) -> ExitCode, path: &str) -> ExitCode {
     big_stack(move || command(&path))
 }
 
-/// `fennec test [--all] [--real] [--verbose] [--llvm] [path]`, on a big stack for the interpreter.
+/// `fennec test [--all] [--real] [--verbose] [--jit] [path]`, on a big stack for the interpreter.
 fn test(args: &[&str]) -> ExitCode {
     let Some((path, options)) = test::Options::of(args) else {
         eprintln!("{USAGE}");

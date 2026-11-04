@@ -4,4 +4,4 @@ error: `Self` isn't a type
 1 | def same(x: Self) -> int:
   |             ^^^^
   |
-  = help: `Self` means the type that fits an interface, so it goes in an interface's methods
+  = help: `Self` means the type a method belongs to, so it goes in a method of a type or an interface

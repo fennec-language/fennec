@@ -690,7 +690,19 @@ impl Emit<'_, '_, '_> {
         let inline_end = self.current.clone();
         self.line(&format!("br label %{done}"));
         self.start_block(&slow);
-        self.on_blocks([text], |emit, [block]| emit.string_index(dest, &block, index, span))?;
+        self.on_blocks([text], |emit, [block]| {
+            emit.declare(&format!(
+                "declare void @fennec_str_index_text(ptr sret({HEADER}) align 8, ptr, i64, i64, i64) nounwind"
+            ));
+            let (place, from, to) = (emit.place_for_text(), i64::from(span.start), i64::from(span.end));
+            emit.line(&format!(
+                "call void @fennec_str_index_text(ptr sret({HEADER}) align 8 {place}, ptr {block}, i64 {at}, i64 {from}, i64 {to})"
+            ));
+            emit.leave_if_failed();
+            let one = emit.temp();
+            emit.line(&format!("{one} = load {HEADER}, ptr {place}"));
+            emit.assign(dest, &one)
+        })?;
         let after = self.label("index_after");
         self.line(&format!("br label %{after}"));
         self.start_block(&done);

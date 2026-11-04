@@ -24,24 +24,46 @@ pub fn rename_types(module: &mut Module, names: &BTreeMap<String, String>) {
     if names.is_empty() {
         return;
     }
-    let renamer = Renamer { names };
+    let renamer = Renamer { names, self_args: &[] };
     for item in &mut module.items {
         renamer.item(item);
     }
-    crate::visit::exprs_mut(module, &mut |expr| match &mut expr.kind {
-        ExprKind::Name(name) => renamer.name(name),
-        ExprKind::Match { arms, .. } => {
-            for arm in arms {
-                renamer.pattern(&mut arm.pattern);
-                renamer.stmts(&mut arm.body);
+    crate::visit::exprs_mut(module, &mut |expr| renamer.in_expr(expr));
+}
+
+/// Writes `Self`, in a type's own methods, as that type. An interface's methods keep it, since it
+/// means each type that fits.
+pub fn self_as_its_type(module: &mut Module) {
+    for item in &mut module.items {
+        let (owner, generics, methods) = match item {
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+                (&def.name, &def.generics, &mut def.methods)
             }
+            Item::Extend(extension) => (&extension.name, &extension.generics, &mut extension.methods),
+            _ => continue,
+        };
+        let names = BTreeMap::from([("Self".to_owned(), owner.clone())]);
+        let self_args: Vec<TypeExpr> = generics
+            .iter()
+            .map(|generic| TypeExpr {
+                name: generic.name.clone(),
+                args: Vec::new(),
+                optional: false,
+                span: generic.span,
+            })
+            .collect();
+        let renamer = Renamer { names: &names, self_args: &self_args };
+        for method in methods {
+            renamer.function(method);
+            crate::visit::in_function(method, &mut |expr| renamer.in_expr(expr));
         }
-        _ => {}
-    });
+    }
 }
 
 struct Renamer<'a> {
     names: &'a BTreeMap<String, String>,
+    /// What `Self` takes in brackets, when it's what's being renamed.
+    self_args: &'a [TypeExpr],
 }
 
 impl Renamer<'_> {
@@ -55,7 +77,23 @@ impl Renamer<'_> {
         }
     }
 
+    fn in_expr(&self, expr: &mut crate::ast::Expr) {
+        match &mut expr.kind {
+            ExprKind::Name(name) => self.name(name),
+            ExprKind::Match { arms, .. } => {
+                for arm in arms {
+                    self.pattern(&mut arm.pattern);
+                    self.stmts(&mut arm.body);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn type_expr(&self, ty: &mut TypeExpr) {
+        if ty.name == "Self" && ty.args.is_empty() {
+            ty.args = self.self_args.to_vec();
+        }
         self.name(&mut ty.name);
         for arg in &mut ty.args {
             self.type_expr(arg);
@@ -98,7 +136,12 @@ impl Renamer<'_> {
     }
 
     fn function(&self, def: &mut FnDef) {
-        let types = def.params.iter_mut().filter_map(|param| param.ty.as_mut()).chain(def.ret.as_mut());
+        let types = def
+            .params
+            .iter_mut()
+            .filter_map(|param| param.ty.as_mut())
+            .chain(def.ret.as_mut())
+            .chain(def.fails.as_mut());
         for ty in types {
             self.type_expr(ty);
         }

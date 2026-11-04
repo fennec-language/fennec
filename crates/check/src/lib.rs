@@ -135,6 +135,7 @@ fn without_hidden(text: &str) -> String {
 /// Gives each parameter typed by an interface a hidden type parameter bound by it, the
 /// program's own interfaces and the standard library's alike.
 fn hide_interface_params(module: &mut Module) {
+    fennec_syntax::rename::self_as_its_type(module);
     let library = fennec_syntax::prelude_modules().unwrap_or_default();
     let mut interfaces = fennec_syntax::visit::interface_names(library.iter().chain([&*module]));
     // A program's own type with an interface's name is that type.

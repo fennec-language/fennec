@@ -85,17 +85,6 @@ impl Interp<'_> {
         Ok(Flow::Normal(last))
     }
 
-    /// Runs one REPL statement in the session's scope, returning how to echo it.
-    pub(crate) fn exec_top(&mut self, stmt: &Stmt) -> Result<Option<String>, Diagnostic> {
-        let flow = self.exec_stmts(std::slice::from_ref(stmt))?;
-        match flow {
-            Flow::Normal(Value::Unit) => Ok(None),
-            Flow::Normal(value) if matches!(stmt.kind, StmtKind::Expr(_)) => Ok(Some(format::repr(&value))),
-            Flow::Normal(_) => Ok(None),
-            _ => Err(Diagnostic::new("there's no function or loop here to leave", stmt.span)),
-        }
-    }
-
     pub(crate) fn exec(&mut self, stmt: &Stmt) -> Result<Flow, Diagnostic> {
         self.step(stmt.span)?;
         self.clean_up_abandoned()?;

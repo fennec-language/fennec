@@ -1,0 +1,19 @@
+# In a type's own methods, `Self` is that type, with its type parameters when it has them.
+struct Point:
+    x = 1
+
+    def make() -> Self:
+        Self(x=7)
+
+    def further(self, other: Self) -> Self:
+        Self(x=self.x + other.x)
+
+struct Box[T]:
+    item: T
+
+    def again(self) -> Self:
+        Box(item=self.item)
+
+def main(stdout: Stdout):
+    stdout.print(Point.make().further(Point()).x)
+    stdout.print(Box(item="kept").again().item)

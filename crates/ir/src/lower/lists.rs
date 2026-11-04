@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use fennec_check::Type;
-use fennec_syntax::{BinOp, Expr, ExprKind, FStrPart, Span, Stmt, UnaryOp};
+use fennec_syntax::{BinOp, CompKind, Expr, ExprKind, FStrPart, Span, Stmt, UnaryOp};
 
 use super::calls::owner_name;
 use super::places::{Leaving, Place};
@@ -244,6 +244,47 @@ impl Lowering<'_> {
             if changes_items { Some(Back { place: self.held_place(iter, span)?, by_id }) } else { None };
         let over = Over { names, iter, back };
         self.looping(over, span, |lowering| lowering.stmts(body, Tail::Drop))
+    }
+
+    /// `xs = [f(x) for x in xs]`, as `for mut x in xs: x = f(x)`: each item is replaced where it
+    /// is, so no second list is made unless something else holds this one. Nothing can see the
+    /// difference if what's worked out doesn't read `xs`, and can't leave part of the way along.
+    pub(super) fn replaces_its_source(&mut self, name: &str, value: &Expr, span: Span) -> Lowered<bool> {
+        let ExprKind::Comprehension { kind: CompKind::List, elem, value: None, names, iter, cond: None } =
+            &value.kind
+        else {
+            return Ok(false);
+        };
+        let ([item], ExprKind::Name(source)) = (names.as_slice(), &iter.kind) else { return Ok(false) };
+        let Some(Type::List(held)) = self.type_at(iter.span) else { return Ok(false) };
+        if source != name
+            || item == name
+            || self.type_at(value.span) != Some(Type::List(held.clone()))
+            || !self.lookup(name).is_some_and(|local| self.local_type(local) == Type::List(held.clone()))
+        {
+            return Ok(false);
+        }
+        let mut apart = true;
+        fennec_syntax::visit::in_expr(&mut (**elem).clone(), &mut |seen| match &seen.kind {
+            ExprKind::Name(seen) if seen == name => apart = false,
+            ExprKind::Try { .. } => apart = false,
+            _ => {}
+        });
+        if !apart {
+            return Ok(false);
+        }
+        let back = Some(Back { place: self.held_place(iter, span)?, by_id: false });
+        let over = Over { names, iter, back };
+        self.looping(over, span, |lowering| {
+            let made = lowering.expr(elem)?;
+            let made = lowering.coerce(made, &held, span)?;
+            let dest = lowering.lookup(item).ok_or("a loop's item has no name")?;
+            if made != Operand::Local(dest) {
+                lowering.emit(InstKind::Copy { dest, value: made }, span);
+            }
+            Ok(())
+        })?;
+        Ok(true)
     }
 
     /// Runs `body` for each item of what `iter` gives. A `range` going one step at a time is

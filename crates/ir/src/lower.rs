@@ -621,6 +621,9 @@ impl<'a> Lowering<'a> {
         let ExprKind::Name(name) = &target.kind else {
             return self.assign_place(target, op, value, span);
         };
+        if op.is_none() && !declares && self.replaces_its_source(name, value, span)? {
+            return Ok(());
+        }
         // A name made while fusing a stage is new, and holds what it's first given.
         let binds_item = declares && target.span == value.span && op.is_none();
         if binds_item || (name.starts_with('\0') && self.lookup(name).is_none()) {

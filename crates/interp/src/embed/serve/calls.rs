@@ -35,6 +35,7 @@ thread_local! {
 static STOPPERS: Mutex<Vec<Stopper>> = Mutex::new(Vec::new());
 
 /// Stops every server running: each cancels its connections' tasks and returns.
+#[cfg(not(feature = "lean"))]
 pub fn stop_servers() {
     for stopper in std::mem::take(&mut *STOPPERS.lock().unwrap_or_else(PoisonError::into_inner)) {
         stopper.stop();
@@ -51,6 +52,7 @@ fn fail(message: String) -> i64 {
 /// temporary holding the `Server`. Each connection runs `body` as a parked task on one of the
 /// I/O workers, one per core, this thread among them. It returns once the server is stopped,
 /// giving back 0, or 1 when the server couldn't be served.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     let listener = with(|state| {
         let server = state.take(server);
@@ -97,6 +99,7 @@ fn on_conn<T>(conn: i64, call: impl FnOnce(&mut Conn) -> Result<T, Failure>) -> 
 }
 
 /// What a connection's method gives back, as a temporary: `Ok(value)`, or `Err(NetError)`.
+#[cfg(not(feature = "lean"))]
 fn answer(found: Result<Value, Failure>) -> i64 {
     with(|state| {
         let value = match found {
@@ -117,6 +120,7 @@ fn answer(found: Result<Value, Failure>) -> i64 {
 
 /// `fennec_conn_read(conn, count) -> temp`: `conn.read(count)`, up to `count` bytes, empty at
 /// the end.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn conn_read(conn: i64, count: i64) -> i64 {
     let count = usize::try_from(count).unwrap_or(0);
     answer(on_conn(conn, |conn| conn.read(count, None)).map(|data| Value::Bytes(Rc::from(data))))
@@ -124,6 +128,7 @@ pub extern "C" fn conn_read(conn: i64, count: i64) -> i64 {
 
 /// `fennec_conn_read_line(conn) -> temp`: `conn.read_line()`, the next line, or `None` at the
 /// end.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn conn_read_line(conn: i64) -> i64 {
     let line = on_conn(conn, |conn| conn.read_line(None));
     answer(line.map(|line| line.map_or(Value::None, |line| Value::str(&String::from_utf8_lossy(&line)))))
@@ -131,6 +136,7 @@ pub extern "C" fn conn_read_line(conn: i64) -> i64 {
 
 /// `fennec_conn_write(conn, data) -> temp`: `conn.write(data)`, `data` a temporary holding a
 /// `str` or `bytes`.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn conn_write(conn: i64, data: i64) -> i64 {
     let data = with(|state| match state.take(data) {
         Value::Str(text) => text.as_bytes().to_vec(),
@@ -141,12 +147,14 @@ pub extern "C" fn conn_write(conn: i64, data: i64) -> i64 {
 }
 
 /// `fennec_conn_peer(conn) -> temp`: `conn.peer`, the other side's address.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn conn_peer(conn: i64) -> i64 {
     let peer = CONNS.with_borrow(|conns| conns.get(&conn).map(Conn::peer)).unwrap_or_default();
     with(|state| state.push(Value::str(&peer)))
 }
 
 /// `fennec_conn_close(conn)`: closes a served connection early. Its task ending closes it too.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn conn_close(conn: i64) {
     CONNS.with_borrow_mut(|conns| conns.remove(&conn));
 }

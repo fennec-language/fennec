@@ -510,6 +510,7 @@ impl Stopper {
 /// `handler` on each connection as a parked task. Each other worker runs `setup` first, to
 /// start a runtime of its own. `started` is given a `Stopper` once the server is running,
 /// and the server runs until it's stopped.
+#[cfg(not(feature = "lean"))]
 pub fn serve(
     listener: TcpListener,
     workers: usize,
@@ -552,9 +553,9 @@ pub fn serve(
 
 mod calls;
 
-pub use calls::{
-    ConnBody, conn_close, conn_peer, conn_read, conn_read_line, conn_write, net_serve, stop_servers,
-};
+pub use calls::{ConnBody, conn_close, conn_peer, stop_servers};
+#[cfg(not(feature = "lean"))]
+pub use calls::{conn_read, conn_read_line, conn_write, net_serve};
 
 #[cfg(test)]
 mod tests;

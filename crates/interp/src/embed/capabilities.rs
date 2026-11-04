@@ -140,8 +140,8 @@ pub extern "C" fn call(word: i64, method: i64, count: i64, start: i64, end: i64)
 }
 
 /// `fennec_native_capability(word, method, count, start, end)`: a method of a capability for
-/// compiled code, as `call` is for the JIT. Only what's still written for the interpreter alone,
-/// the network's methods, goes to it.
+/// compiled code, needing nothing of the interpreter, as `call` does. What's still only written
+/// for the interpreter, the network's methods, compiled code calls `call` for.
 pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let at = span(start, end);
@@ -155,27 +155,13 @@ pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, en
         let count = usize::try_from(count).unwrap_or(0).min(state.inputs.len());
         let given = state.inputs.split_off(state.inputs.len() - count);
         let given: Vec<Value> = given.into_iter().map(Value::unpacked).collect();
-        let native = match &receiver {
-            Value::Capability(Capability::Net | Capability::Stdout) => None,
-            Value::Capability(capability) => Some(native_method(*capability, &name, &given, at)),
-            Value::Limited(limited) if limited.capability != Capability::Net => {
-                Some(narrowed(limited, &name, &given, &mut |capability, method, args| {
-                    native_method(capability, method, args, at)
-                }))
-            }
-            _ => None,
+        let result = match &receiver {
+            Value::Capability(capability) => native_method(*capability, &name, &given, at)?,
+            Value::Limited(limited) => narrowed(limited, &name, &given, &mut |capability, method, args| {
+                native_method(capability, method, args, at)
+            })?,
+            other => return Err(crate::methods::no_method(other, &name, at)),
         };
-        #[cfg(not(feature = "lean"))]
-        let result = if let Some(result) = native {
-            result?
-        } else {
-            let args = given.into_iter().map(|value| crate::call::CallArg::plain(value, at)).collect();
-            state.interp.read_method(&receiver, &name, args, at)?
-        };
-        #[cfg(feature = "lean")]
-        let result = native.ok_or_else(|| {
-            Diagnostic::new(format!("`{name}` isn't in a program built without the interpreter yet"), at)
-        })??;
         Ok(state.push(result))
     })
 }

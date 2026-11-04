@@ -229,11 +229,25 @@ impl Emit<'_, '_, '_> {
                 }
                 self.line(&format!("{word} = ptrtoint ptr {block} to i64"));
             }
-            Kind::Str | Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) => {
+            Kind::Str | Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) | Kind::Bytes => {
                 if retain {
                     self.retain(value);
                 }
                 self.line(&format!("{word} = ptrtoint ptr {value} to i64"));
+            }
+            Kind::Maybe(_) => {
+                if retain {
+                    self.retain_value(value, kind);
+                }
+                self.line(&format!("{word} = ptrtoint ptr {value} to i64"));
+            }
+            // A plain struct or enum as a value: a block of its own, with owners of what it holds.
+            Kind::Struct(id) | Kind::Enum(id) => {
+                if let Ok(block) = self.key_block(*id, value) {
+                    let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+                    self.retain_inline(kind, &fields);
+                    self.line(&format!("{word} = ptrtoint ptr {block} to i64"));
+                }
             }
             Kind::Unit => return "0".to_owned(),
             _ => return value.to_owned(),
@@ -392,11 +406,18 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
-        if value_kind.counted() {
+        if value_kind.in_memory() {
+            let word = self.dict_word(&value_kind, &held, true);
+            let (old, block) = (self.temp(), self.temp());
+            self.line(&format!("{old} = load ptr, ptr {value_at}"));
+            self.line(&format!("{block} = inttoptr i64 {word} to ptr"));
+            self.line(&format!("store ptr {block}, ptr {value_at}"));
+            self.release(&old);
+        } else if value_kind.counted() {
             let held = if value_kind == Kind::TextBlock {
                 self.owned_text_block(&held)
             } else {
-                self.retain(&held);
+                self.retain_value(&held, &value_kind);
                 held.clone()
             };
             let old = self.temp();
@@ -469,7 +490,18 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
+        let value_at = self.value_place(&value_kind, &value_at);
         self.read_into(dest, &value_kind, &value_at, "")
+    }
+
+    /// Where a value is, from where a dict keeps it: a plain struct or enum is in a block.
+    fn value_place(&mut self, kind: &Kind, at: &str) -> String {
+        if !kind.in_memory() {
+            return at.to_owned();
+        }
+        let block = self.temp();
+        self.line(&format!("{block} = load ptr, ptr {at}"));
+        self.offset(&block, crate::lists::FIELDS_OFFSET)
     }
 
     /// Notes where a lookup found a key's entry, or null, for a store to the same key right
@@ -506,6 +538,8 @@ impl Emit<'_, '_, '_> {
                 "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
                 entry_value(key_word)
             ));
+            let value_at = self.value_place(&value_kind, &value_at);
+            let value_at = self.value_place(&value_kind, &value_at);
             self.read_into(dest, &value_kind, &value_at, "")?;
             self.line(&format!("br label %{done}"));
             self.start_block(&done);
@@ -536,13 +570,16 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
-        let value = self.load_field(&value_kind, &value_at, "");
+        let value = self.dict_part(&value_kind, &value_at);
         let (value_kind, value, owned) = self.as_header(&value_kind, &value);
         if value_kind.counted() && !owned {
             self.retain_value(&value, &value_kind);
         }
         let at = self.offset(&slot, offset);
         self.store_field(&value_kind, &value, &at, "");
+        if value_kind.in_memory() {
+            self.retain_inline(&value_kind, &at);
+        }
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
         Ok(())
@@ -702,6 +739,8 @@ impl Emit<'_, '_, '_> {
         self.start_block(&found);
         let optional = self.kind_of(dest)?.clone();
         if matches!(optional, Kind::Maybe(_) | Kind::MaybeText) {
+            let value_at = self.value_place(&value_kind, &value_at);
+            let value_at = self.value_place(&value_kind, &value_at);
             self.read_into(dest, &value_kind, &value_at, "")?;
         } else {
             let (number, fields) = self.case_of(&optional, "Some")?;
@@ -717,6 +756,9 @@ impl Emit<'_, '_, '_> {
             }
             let at = self.offset(&slot, offset);
             self.store_field(&value_kind, &value, &at, "");
+            if value_kind.in_memory() {
+                self.retain_inline(&value_kind, &at);
+            }
         }
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
@@ -749,7 +791,14 @@ impl Emit<'_, '_, '_> {
         let (change, add, done) = (self.label("change"), self.label("add"), self.label("stored"));
         self.line(&format!("br i1 {quick}, label %{change}, label %{add}"));
         self.start_block(&change);
-        if value_kind.counted() {
+        if value_kind.in_memory() {
+            let word = self.dict_word(&value_kind, &held, true);
+            let (old, block) = (self.temp(), self.temp());
+            self.line(&format!("{old} = load ptr, ptr {value_at}"));
+            self.line(&format!("{block} = inttoptr i64 {word} to ptr"));
+            self.line(&format!("store ptr {block}, ptr {value_at}"));
+            self.release(&old);
+        } else if value_kind.counted() {
             if !fresh {
                 self.retain_value(&held, &value_kind);
             }
@@ -862,6 +911,16 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store ptr {changed}, ptr {place}"));
         self.leave_if_failed();
         self.line(&format!("{word} = call i64 @fennec_dict_popped()"));
+        if value_kind.in_memory() {
+            let block = self.temp();
+            self.line(&format!("{block} = inttoptr i64 {word} to ptr"));
+            if let Some(dest) = dest {
+                let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+                self.read_into(dest, &value_kind, &fields, "")?;
+            }
+            self.release(&block);
+            return Ok(());
+        }
         // The value's word, read back as what it holds, already with its owner.
         let at = self.place_for(&Kind::Int);
         self.line(&format!("store i64 {word}, ptr {at}"));
@@ -941,6 +1000,7 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
+        let value_at = self.value_place(&value_kind, &value_at);
         self.read_into(dest, &value_kind, &value_at, "")?;
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
@@ -1070,5 +1130,6 @@ fn word_ty(word: Word) -> Ty {
         Word::Str | Word::Text => Ty::Str,
         Word::Nothing => Ty::Unit,
         Word::Plain(id) => Ty::Struct(id),
+        Word::Block(number) => Ty::Block(number),
     }
 }

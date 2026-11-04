@@ -83,6 +83,10 @@ pub(crate) struct Heap {
     spare_cells: Vec<usize>,
     /// What native code's run has cost so far.
     pub(super) counts: Counts,
+    /// In a program built to trace what it costs, the same for each place in its source, and the
+    /// place native code said it's at last. Empty otherwise.
+    pub(super) sites: HashMap<u32, Counts>,
+    site: Option<u32>,
     /// Where each shape's blocks hold addresses, by the shape's number.
     plans: Vec<super::plans::Plan>,
     /// The number of the thread this heap is, in a shape word's owner bits: 0 on the main
@@ -115,6 +119,11 @@ pub struct Counts {
 }
 
 impl Counts {
+    fn allocated(&mut self, bytes: u64) {
+        self.allocations += 1;
+        self.allocated_bytes += bytes;
+    }
+
     /// Notes that a shared value of `words` words was copied.
     pub(super) fn copied(&mut self, words: usize) {
         let bytes = u64::try_from(words).unwrap_or(0) * 8;
@@ -276,9 +285,29 @@ impl Heap {
         self.blocks.len().saturating_sub(self.statics)
     }
 
+    /// Native code is about to do what's at this place in the source.
+    pub(super) fn trace_at(&mut self, site: u32) {
+        self.site = Some(site);
+    }
+
+    /// Notes that `bytes` bytes were allocated.
+    pub(super) fn allocated(&mut self, bytes: u64) {
+        self.counts.allocated(bytes);
+        if let Some(site) = self.site {
+            self.sites.entry(site).or_default().allocated(bytes);
+        }
+    }
+
+    /// Notes that a shared value of `words` words was copied.
+    pub(super) fn copied(&mut self, words: usize) {
+        self.counts.copied(words);
+        if let Some(site) = self.site {
+            self.sites.entry(site).or_default().copied(words);
+        }
+    }
+
     pub(crate) fn insert(&mut self, mut block: Box<[u64]>) -> i64 {
-        self.counts.allocations += 1;
-        self.counts.allocated_bytes += u64::try_from(block.len()).unwrap_or(0) * 8;
+        self.allocated(u64::try_from(block.len()).unwrap_or(0) * 8);
         let address = block.as_ptr().addr();
         if super::threads::ON && self.owner_bits != 0 {
             mark_owner(&mut block, self.owner_bits);
@@ -702,7 +731,7 @@ pub extern "C" fn unshare(address: i64) -> i64 {
         }
         // The copy is this thread's, whoever made what it was copied from.
         mark_owner(&mut copy, state.heap.owner_bits);
-        state.heap.counts.copied(copy.len());
+        state.heap.copied(copy.len());
         for child in children(state, &copy) {
             retain(state, child);
         }

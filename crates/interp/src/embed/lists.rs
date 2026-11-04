@@ -163,7 +163,7 @@ fn grow_to(state: &mut State, list: i64, more: usize, least: usize) -> Option<i6
     let address = if shared || wanted > room {
         let kept = items(block, stride).to_vec();
         if shared {
-            state.heap.counts.copied(kept.len());
+            state.heap.copied(kept.len());
             retain_items(state, &element, &kept);
         }
         let grown = build(state, at, stride, &kept, wanted);

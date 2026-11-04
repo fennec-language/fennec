@@ -842,9 +842,15 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// Whether this function can run on one of `parallel`'s threads, so a block it's handed may
+    /// be another thread's.
+    pub(crate) fn on_workers(&self) -> bool {
+        self.module.threads && self.module.whole.on_workers.contains(self.function.name.as_str())
+    }
+
     /// One more owner for a block.
     pub(crate) fn retain(&mut self, block: &str) {
-        if self.module.threads {
+        if self.on_workers() {
             self.retain_helper();
             self.line(&format!("call void @fen_retain(ptr {block})"));
             return;
@@ -858,7 +864,7 @@ impl Emit<'_, '_, '_> {
     /// Whether a block has one owner, so changing it in place changes nobody else's. Every
     /// such question native code asks of a block comes here.
     pub(crate) fn alone(&mut self, block: &str) -> String {
-        if self.module.threads {
+        if self.on_workers() {
             self.alone_helper();
             let alone = self.temp();
             self.line(&format!("{alone} = call i1 @fen_alone(ptr {block})"));
@@ -873,7 +879,7 @@ impl Emit<'_, '_, '_> {
     /// Takes one owner off a block that has one, giving back whether that was the last. With
     /// [`Self::retain`] and [`Self::alone`], everything native code does to a block's count.
     pub(crate) fn owner_gone(&mut self, block: &str) -> String {
-        if self.module.threads {
+        if self.on_workers() {
             self.owner_gone_helper();
             let gone = self.temp();
             self.line(&format!("{gone} = call i1 @fen_owner_gone(ptr {block})"));
@@ -936,10 +942,15 @@ impl Emit<'_, '_, '_> {
     /// running and the frame stays put, so LLVM drops all but the first check on a path.
     pub(crate) fn check_stack(&mut self, span: Span) {
         self.declare("declare ptr @llvm.frameaddress.p0(i32)");
-        self.declare(crate::parallel::stack_limit_global(self.module.threads));
+        let (declared, symbol) = if self.module.threads && !self.on_workers() {
+            ("@fennec_stack_limit_main = external dso_local global i64", "@fennec_stack_limit_main")
+        } else {
+            (crate::parallel::stack_limit_global(self.module.threads), "@fennec_stack_limit")
+        };
+        self.declare(declared);
         let (here, limit, number, low) = (self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{here} = call ptr @llvm.frameaddress.p0(i32 0)"));
-        self.line(&format!("{limit} = load i64, ptr @fennec_stack_limit, !invariant.load !1"));
+        self.line(&format!("{limit} = load i64, ptr {symbol}, !invariant.load !1"));
         self.line(&format!("{number} = ptrtoint ptr {here} to i64"));
         self.line(&format!("{low} = icmp ult i64 {number}, {limit}"));
         self.fail_if(&low, TOO_DEEP, span);

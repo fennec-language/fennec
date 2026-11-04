@@ -2,14 +2,14 @@
 from std.game import IdMap
 
 struct Unit:
-    hp = 1
+    health = 1
 
 def main(stdout: Stdout):
     mut units = IdMap[Unit]()
     first = units.insert(Unit())
-    second = units.insert(Unit(hp=2))
+    second = units.insert(Unit(health=2))
     stdout.print(first in units, second not in units)
     gone = units.remove(first)
     stdout.print(first in units, second in units, first not in units, gone is None)
-    third = units.insert(Unit(hp=3))
+    third = units.insert(Unit(health=3))
     stdout.print(first in units, third in units)

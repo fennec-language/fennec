@@ -23,6 +23,8 @@ struct _Table:
     header = False
     ## Made by a dotted key like `a.b = 1`.
     dotted = False
+    ## Written whole on one line, so it's a value: nothing can add to it.
+    inline = False
 
     def place_of(self, key: str) -> int:
         mut at = 0
@@ -388,6 +390,7 @@ struct _Parser:
         self.skip_blank_lines()
         if self.byte() == 125:
             self.at += 1
+            table.inline = True
             return _Toml.Table(table=table)
         while True:
             self.skip_blank_lines()
@@ -400,6 +403,7 @@ struct _Parser:
             self.skip_blank_lines()
             if self.byte() == 125:
                 self.at += 1
+                table.inline = True
                 return _Toml.Table(table=table)
             if self.byte() != 44:
                 fail self.bad(f"expected `,` or `}}` after the value, but found {self.found()}")
@@ -643,6 +647,8 @@ def _insert_dotted(mut table: _Table, keys: list[str], step: int, value: _Toml, 
         place = table.values.len() - 1
     match table.values[place]:
         case .Table(inner):
+            if inner.inline:
+                fail _no_table(parser, key, at, False, False)
             if not inner.dotted:
                 fail _no_table(parser, key, at, True, False)
             mut child = inner
@@ -665,6 +671,8 @@ def _define(mut table: _Table, keys: list[str], step: int, array: bool, where: (
             held = table.values.len() - 1
         match table.values[held]:
             case .Table(inner):
+                if inner.inline:
+                    fail _no_table(parser, key, at, False, False)
                 mut child = inner
                 _define(mut child, keys, step + 1, array, where)?
                 table.values[held] = _Toml.Table(table=child)
@@ -693,7 +701,7 @@ def _define(mut table: _Table, keys: list[str], step: int, array: bool, where: (
             children.append(_Table(header=True))
             table.values[place] = _Toml.Tables(tables=children)
         case .Table(inner):
-            if array:
+            if array or inner.inline:
                 fail parser.bad_at(f"`{name}` is already defined as something else, so it can't be `{shown}`", at)
             if inner.header or inner.dotted:
                 fail parser.bad_at(f"the table `[{name}]` is defined twice", at)

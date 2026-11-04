@@ -119,7 +119,10 @@ impl Loops<'_> {
                             "loop over `copy({shown})`, or collect the changes and make them after the loop"
                         )
                     };
-                    for (_, span) in changes.iter().filter(|(changed, _)| changed.overlaps(&looped)) {
+                    let size_or_all = |changed: &Place| *is_mut || changed.steps.len() <= looped.steps.len();
+                    for (_, span) in
+                        changes.iter().filter(|(changed, _)| changed.overlaps(&looped) && size_or_all(changed))
+                    {
                         let message = format!("`{shown}` changes while a loop goes over it");
                         self.problems.push(
                             Diagnostic::new(message, *span)

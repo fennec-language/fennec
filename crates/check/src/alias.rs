@@ -313,7 +313,7 @@ pub(crate) fn check_function(
     (check.problems, check.places)
 }
 
-fn collect_changeable<'a>(stmts: &'a [Stmt], names: &mut HashSet<&'a str>) {
+pub(crate) fn collect_changeable<'a>(stmts: &'a [Stmt], names: &mut HashSet<&'a str>) {
     for_each_block(stmts, &mut |block| {
         for stmt in block {
             match &stmt.kind {
@@ -422,6 +422,7 @@ impl<'a> Check<'a> {
         // A name that's only replaced is a value of its own, and one nothing changes needs
         // nothing from the place.
         let Some(edit) = uses.edits.first().copied() else { return };
+        self.problems.push(Diagnostic::new(format!("ref-rule link `mut {name}` edits a place"), at));
         // `copy(...)` changes what the program does, so it's only suggested, never a fix that
         // `fennec fix` would make.
         if let Some(replaced) = uses.replaces.first() {

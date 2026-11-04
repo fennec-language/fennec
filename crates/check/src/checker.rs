@@ -332,10 +332,13 @@ impl Checker {
             problems.extend(found);
             problems.extend(crate::loops::check_function(self, key, &entry.def));
             problems.extend(crate::loops::check_arguments(&entry.def.body));
+            problems.extend(crate::ref_rules::check_function(self, &entry.def, self.typed.get(key)));
             places.extend(named.into_iter().map(|span| (span.start, span.end)));
         }
         for test in &self.program.tests {
             problems.extend(crate::loops::check_arguments(&test.body));
+            let key = format!("test \"{}\"", test.name);
+            problems.extend(crate::ref_rules::check_test(self, &test.body, self.typed.get(&key)));
         }
         self.diagnostics.extend(problems);
         places

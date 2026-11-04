@@ -186,7 +186,8 @@ pub extern "C" fn std_method(name: i64, count: i64, start: i64, end: i64) -> i64
                 at,
             ));
         };
-        if matches!(&*instance.type_name, "Connection" | "Server") && !state.interp.faked_net() {
+        if matches!(&*instance.type_name, "Connection" | "Server" | "UdpSocket") && !state.interp.faked_net()
+        {
             let values: Vec<Value> = args.into_iter().map(|arg| arg.value.unpacked()).collect();
             let plain: Vec<&str> = written.split('.').skip(2).collect();
             let result = crate::stdlib::net::native_method(instance, &method, &values, &plain, at)?;

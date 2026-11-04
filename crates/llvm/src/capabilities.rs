@@ -108,7 +108,7 @@ impl Emit<'_, '_, '_> {
         if self.native_capability(dest, name, rest)? {
             return Ok(());
         }
-        let method = name.rsplit('.').next().unwrap_or(name);
+        let method = name.split_once('.').map_or(name, |(_, method)| method);
         let (from, to) = (i64::from(span.start), i64::from(span.end));
         let (mark, crossed) = self.cross_arguments(rest)?;
         let (word, _) = self.operand(receiver)?;

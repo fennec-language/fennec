@@ -1613,7 +1613,10 @@ impl Emit<'_, '_, '_> {
                 self.std_call(dest, name, args, span)
             }
             crypto if crypto.starts_with("crypto.") => self.std_call(dest, name, args, span),
-            net if net.starts_with("Connection.") || net.starts_with("Server.") => {
+            net if net.starts_with("Connection.")
+                || net.starts_with("Server.")
+                || net.starts_with("UdpSocket.") =>
+            {
                 self.std_method(dest, name, args, span)
             }
             "error.with_cause" => {

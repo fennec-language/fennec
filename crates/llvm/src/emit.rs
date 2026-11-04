@@ -2007,6 +2007,21 @@ mod tests {
     }
 
     #[test]
+    fn looking_for_a_part_of_a_text_makes_no_block_for_either() -> Result<(), String> {
+        let source = "\
+def has_x(text: str) -> bool:
+    \"x\" in text
+
+def main(stdout: Stdout):
+    stdout.print(has_x(\"a\"))
+";
+        let text = text_of(source, "has_x")?;
+        assert!(text.contains("@fennec_text_contains("), "{text}");
+        assert!(!text.contains("fennec_text_block"), "{text}");
+        Ok(())
+    }
+
+    #[test]
     fn a_change_elsewhere_in_a_file_leaves_a_functions_text_alone() -> Result<(), String> {
         let later = |gap: &str| {
             let source = format!(

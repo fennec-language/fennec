@@ -418,14 +418,13 @@ fn a_doc_example_in_a_kit_sees_what_its_file_sees_and_a_run_does_not_need_it() {
 }
 
 /// Whether `fennec test --llvm` can build through LLVM here: it needs the tools and the runtime
-/// library, and a run under coverage has `fennec` somewhere without one. CI's Linux jobs set
-/// `FENNEC_EXPECT_LLVM`, so these tests can't quietly stop running there.
+/// library, and a run under coverage has `fennec` somewhere without one. CI's Linux and Windows jobs
+/// set `FENNEC_EXPECT_LLVM`, so these tests can't quietly stop running there.
 fn llvm_here() -> bool {
-    let ready = !cfg!(windows)
-        && std::env::var_os("FENNEC_UNDER_MUTANTS").is_none()
+    let ready = std::env::var_os("FENNEC_UNDER_MUTANTS").is_none()
         && fennec_llvm::Tools::find().is_ok()
         && crate::executables::runtime_built()
-        && Path::new(env!("CARGO_BIN_EXE_fennec")).with_file_name("libfennec_runtime.a").is_file();
+        && crate::executables::runtime_beside_fennec();
     let expected = std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty());
     assert!(ready || !expected, "LLVM's tools or the runtime library aren't here");
     ready

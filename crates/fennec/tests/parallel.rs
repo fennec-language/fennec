@@ -12,12 +12,11 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
 }
 
 fn ready() -> bool {
-    !cfg!(windows)
-        && std::env::var_os("FENNEC_UNDER_MUTANTS").is_none()
+    std::env::var_os("FENNEC_UNDER_MUTANTS").is_none()
         && fennec_llvm::Tools::find().is_ok()
         && runtime_built()
         // Coverage builds `fennec` in a folder of its own, where no runtime library is built.
-        && Path::new(env!("CARGO_BIN_EXE_fennec")).with_file_name("libfennec_runtime.a").is_file()
+        && crate::executables::runtime_beside_fennec()
 }
 
 /// A tick over units, as an entity system steps them, each changed in place by a `for mut` over

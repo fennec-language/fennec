@@ -66,8 +66,11 @@ impl Tools {
             }
             folder
         };
-        let tools =
-            Tools { opt: folder.join("opt"), llc: folder.join("llc"), link: folder.join("llvm-link") };
+        let tools = Tools {
+            opt: folder.join(tool("opt")),
+            llc: folder.join(tool("llc")),
+            link: folder.join(tool("llvm-link")),
+        };
         if tools.opt.is_file() && tools.llc.is_file() {
             Ok(tools)
         } else {
@@ -107,7 +110,12 @@ impl Tools {
 /// The folder remembered for the toolchain's tools, if they're still there.
 fn remembered_folder(at: &Path) -> Option<PathBuf> {
     let folder = PathBuf::from(std::fs::read_to_string(at).ok()?.trim());
-    (folder.join("opt").is_file() && folder.join("llc").is_file()).then_some(folder)
+    (folder.join(tool("opt")).is_file() && folder.join(tool("llc")).is_file()).then_some(folder)
+}
+
+/// A tool's file name on this machine.
+fn tool(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
 fn toolchain_tools() -> Result<PathBuf, String> {

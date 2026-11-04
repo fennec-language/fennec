@@ -433,12 +433,79 @@ pub extern "C" fn compare(a: i64, b: i64) -> i64 {
     })
 }
 
+/// A string's bytes where they are: the words holding them, packed eight to a word, and how many
+/// there are. Nothing, for an address that isn't a string's block.
+pub(super) fn bytes_in_block(state: &State, address: i64) -> (&[u64], usize) {
+    u64::try_from(address)
+        .ok()
+        .and_then(|address| state.heap.block(address))
+        .filter(|block| super::heap::is_text(state, block))
+        .map_or((&[], 0), |block| {
+            let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+            (block.get(TEXT_HEADER_WORDS..).unwrap_or_default(), length)
+        })
+}
+
+/// The longest `part` looked for in place: it fits one word.
+const WORD_BYTES: usize = 8;
+
+/// A one in each byte, and each byte's top bit, for finding a byte a word at a time.
+const LOW_BITS: u64 = u64::from_ne_bytes([1; 8]);
+const HIGH_BITS: u64 = LOW_BITS << 7;
+
+/// Whether `part`, of at most a word's bytes, is in `whole`, with nothing copied: a word at a
+/// time to where `part`'s first byte is, then whether the rest follows. It takes one look per
+/// place, so it's linear whatever the strings hold.
+fn word_in_place((whole, length): (&[u64], usize), part: u64, size: usize) -> bool {
+    let mask = if size >= WORD_BYTES { u64::MAX } else { (1 << (size * 8)) - 1 };
+    let (part, first) = (part & mask, part & 0xff);
+    for (at, word) in whole.iter().enumerate() {
+        let word = u64::from_le(*word);
+        let others = word ^ (first * LOW_BITS);
+        // Each byte that's `first` has its top bit set here, along with perhaps some byte above
+        // one that is, which the look below turns down.
+        let mut places = others.wrapping_sub(LOW_BITS) & !others & HIGH_BITS;
+        while places != 0 {
+            let byte = usize::try_from(places.trailing_zeros() / 8).unwrap_or(0);
+            if at * 8 + byte + size > length {
+                return false;
+            }
+            let next = whole.get(at + 1).map_or(0, |next| u64::from_le(*next));
+            let shift = byte * 8;
+            let found = if shift == 0 { word } else { (word >> shift) | (next << (64 - shift)) };
+            if found & mask == part {
+                return true;
+            }
+            places &= places - 1;
+        }
+    }
+    false
+}
+
+/// Whether `part`'s bytes are in `whole`'s, each given where it is. Bytes are the same question as
+/// characters, in UTF-8, where no character's bytes start partway through another's.
+pub(super) fn bytes_contain(whole: (&[u64], usize), (part, size): (&[u64], usize)) -> bool {
+    if size == 0 {
+        return true;
+    }
+    if size > whole.1 {
+        return false;
+    }
+    if size <= WORD_BYTES {
+        let first = part.first().map_or(0, |word| u64::from_le(*word));
+        return word_in_place(whole, first, size);
+    }
+    // Longer ones are rare, and `str`'s search stays linear however the two repeat themselves.
+    let text_of = |(words, length): (&[u64], usize)| {
+        let bytes = words.iter().flat_map(|word| word.to_le_bytes()).take(length).collect();
+        String::from_utf8(bytes).unwrap_or_default()
+    };
+    text_of(whole).contains(text_of((part, size)).as_str())
+}
+
 /// `part in text`.
 pub extern "C" fn contains(whole: i64, part: i64) -> i8 {
-    with(|state| {
-        let whole = text(state, whole).unwrap_or_default();
-        i8::from(whole.contains(text(state, part).unwrap_or_default().as_str()))
-    })
+    with(|state| i8::from(bytes_contain(bytes_in_block(state, whole), bytes_in_block(state, part))))
 }
 
 /// Prints a string as `stdout.print` shows it.

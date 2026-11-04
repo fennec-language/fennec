@@ -3,7 +3,7 @@
 //! Every generator's block starts the same way, so a loop reads one without knowing which it is.
 
 use fennec_check::Type;
-use fennec_interp::embed::layout::{FIELDS, GEN_ITEM, GEN_PC, GEN_RESUME, GEN_STARTED};
+use fennec_interp::embed::layout::{FIELDS, GEN_FAILURE, GEN_ITEM, GEN_PC, GEN_RESUME, GEN_STARTED};
 use fennec_ir::{GeneratorDef, LocalId, Operand, slot};
 use fennec_syntax::Span;
 
@@ -38,11 +38,8 @@ impl<'p> Emit<'_, '_, 'p> {
         match number {
             slot::PC => return Ok((Kind::Int, header(GEN_PC))),
             slot::STARTED => return Ok((Kind::Bool, header(GEN_STARTED))),
-            slot::FAILURE => {
-                return Err(
-                    "it uses a generator that can fail, which this backend doesn't take yet".to_owned()
-                );
-            }
+            // What it failed with is a block of its own, as a slot is one word in every generator.
+            slot::FAILURE => return Ok((Kind::Int, header(GEN_FAILURE))),
             slot::ITEM => {
                 let item = if let Some(def) = def {
                     def.item.clone()
@@ -76,9 +73,6 @@ impl<'p> Emit<'_, '_, 'p> {
         args: &[(usize, Operand)],
     ) -> Result<(), String> {
         let def = self.module.generator(generator).ok_or("no such generator")?;
-        if def.fails {
-            return Err("it makes a generator that can fail, which this backend doesn't take yet".to_owned());
-        }
         if def.slots.iter().any(|ty| matches!(ty, Type::Arrow(..))) {
             return Err("it keeps a closure in a generator, which this backend doesn't take yet".to_owned());
         }
@@ -105,7 +99,49 @@ impl<'p> Emit<'_, '_, 'p> {
         let (kind, offset) = self.slot_place(self.own_generator(generator), generator, number)?;
         let (block, _) = self.operand(generator)?;
         let at = self.offset(&block, offset);
+        if number == slot::FAILURE {
+            return self.read_failure(dest, &at);
+        }
         self.read_into(dest, &kind, &at, "")
+    }
+
+    /// What a generator failed with, from the block its slot holds the address of.
+    fn read_failure(&mut self, dest: LocalId, at: &str) -> Result<(), String> {
+        let kind = self.kind_of(dest)?.clone();
+        let block = self.temp();
+        self.line(&format!("{block} = load ptr, ptr {at}"));
+        if kind.in_memory() {
+            let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+            return self.read_into(dest, &kind, &fields, "");
+        }
+        self.retain_value(&block, &kind);
+        self.assign(dest, &block)
+    }
+
+    /// Puts what a generator failed with in a block its slot holds the address of. It stays there
+    /// for whatever asks, however many times, so the block is only let go of with the program.
+    fn write_failure(&mut self, value: &Operand, at: &str) -> Result<(), String> {
+        let (value, kind) = self.operand(value)?;
+        let block = match kind {
+            Kind::Struct(id) | Kind::Enum(id) => {
+                let block = self.new_block(id)?;
+                let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+                self.store_field(&kind, &value, &fields, "");
+                self.retain_inline(&kind, &fields);
+                block
+            }
+            _ if kind.counted() => {
+                self.retain_value(&value, &kind);
+                value
+            }
+            other => {
+                return Err(format!(
+                    "a generator fails with a {other:?}, which this backend doesn't take yet"
+                ));
+            }
+        };
+        self.line(&format!("store ptr {block}, ptr {at}"));
+        Ok(())
     }
 
     /// The slot gets an owner of the value, and lets go of what it held.
@@ -116,6 +152,11 @@ impl<'p> Emit<'_, '_, 'p> {
         value: &Operand,
     ) -> Result<(), String> {
         let (kind, offset) = self.slot_place(self.own_generator(generator), generator, number)?;
+        if number == slot::FAILURE {
+            let (block, _) = self.operand(generator)?;
+            let at = self.offset(&block, offset);
+            return self.write_failure(value, &at);
+        }
         let (value, fresh) = self.value_for(value, &kind)?;
         let (block, _) = self.operand(generator)?;
         let at = self.offset(&block, offset);

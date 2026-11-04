@@ -47,7 +47,7 @@ impl Emit<'_, '_, '_> {
         self.start_block(&end.done);
     }
 
-    fn list_operand(&mut self, operand: &Operand) -> Result<(String, ListItem, Kind), String> {
+    pub(crate) fn list_operand(&mut self, operand: &Operand) -> Result<(String, ListItem, Kind), String> {
         let (list, kind) = self.operand(operand)?;
         let Kind::List(item) = kind else { return Err(format!("it goes through a {kind:?} as if a list")) };
         let held = Kind::from_ty(self.module.layouts, item.ty())
@@ -56,7 +56,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// An item, as a number or address, or the place it is if it's kept in memory.
-    fn item_value(&mut self, list: &str, held: &Kind, at: &str) -> String {
+    pub(crate) fn item_value(&mut self, list: &str, held: &Kind, at: &str) -> String {
         let memory = held.memory(self.module.layouts);
         let place = self.item_address(list, &memory, at);
         if held.in_memory() { place } else { self.load_field(held, &place, ITEM_ACCESS) }
@@ -314,30 +314,43 @@ impl Emit<'_, '_, '_> {
     /// `sorted(list, key=f)`: the keys go in a list of their own, which the runtime goes by.
     fn sorted_by(&mut self, dest: LocalId, list: &Operand, key: &Operand, span: Span) -> Result<(), String> {
         let (list, _, held) = self.list_operand(list)?;
+        let (keys, kind) = self.keys_of(&list, &held, key, span)?;
+        let how = Self::sort_kind(&kind)?;
+        self.declare("declare ptr @fennec_list_sorted_by(ptr, ptr, i64) nounwind");
+        let result = self.temp();
+        self.line(&format!("{result} = call ptr @fennec_list_sorted_by(ptr {list}, ptr {keys}, i64 {how})"));
+        self.release(&keys);
+        self.assign(dest, &result)
+    }
+
+    /// A new list of what a key function gives for each of a list's items, and what those are.
+    pub(crate) fn keys_of(
+        &mut self,
+        list: &str,
+        held: &Kind,
+        key: &Operand,
+        span: Span,
+    ) -> Result<(String, Kind), String> {
         let (closure, kind) = self.operand(key)?;
         let Kind::Closure(_, returns) = kind else { return Err("a key that isn't a closure".to_owned()) };
-        let how = Self::sort_kind(&returns)?;
+        Self::sort_kind(&returns)?;
         let key_item = match *returns {
             Kind::Int => ListItem::Int,
             Kind::Bool => ListItem::Bool,
             Kind::Float => ListItem::Float,
             _ => ListItem::Str,
         };
-        let length = self.list_length(&list);
+        let length = self.list_length(list);
         let keys = self.new_list(key_item, &length);
         let key_text = returns.memory(self.module.layouts);
         let (at, end) = self.loop_begin(&length);
-        let value = self.item_value(&list, &held, &at);
-        let text = if held.in_memory() { "ptr".to_owned() } else { self.text_of(&held) };
+        let value = self.item_value(list, held, &at);
+        let text = if held.in_memory() { "ptr".to_owned() } else { self.text_of(held) };
         let got = self.call_closure_with(&closure, &returns, &[format!("{text} {value}")], span);
         let place = self.item_address(&keys, &key_text, &at);
         self.store_field(&returns, &got, &place, ITEM_ACCESS);
         self.loop_end(&end);
-        self.declare("declare ptr @fennec_list_sorted_by(ptr, ptr, i64) nounwind");
-        let result = self.temp();
-        self.line(&format!("{result} = call ptr @fennec_list_sorted_by(ptr {list}, ptr {keys}, i64 {how})"));
-        self.release(&keys);
-        self.assign(dest, &result)
+        Ok((keys, *returns))
     }
 
     /// `list.pop()`: the last item's owner goes with it.
@@ -551,13 +564,19 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `text.chars()`: each character's block lasts the whole run, and comes from its byte place.
-    fn chars(&mut self, dest: LocalId, text: &Operand) -> Result<(), String> {
+    pub(crate) fn chars(&mut self, dest: LocalId, text: &Operand) -> Result<(), String> {
         let (text, _) = self.operand(text)?;
         self.on_blocks([&text], |emit, [block]| emit.chars_of(dest, &block))
     }
 
     /// [`Self::chars`] of a string's block.
     fn chars_of(&mut self, dest: LocalId, text: &str) -> Result<(), String> {
+        let list = self.chars_list(text);
+        self.assign(dest, &list)
+    }
+
+    /// A new list of the characters of a string's block.
+    pub(crate) fn chars_list(&mut self, text: &str) -> String {
         let text = text.to_owned();
         let (chars_at, count) = (self.offset(&text, 24), self.temp());
         self.line(&format!("{count} = load i64, ptr {chars_at}"));
@@ -588,7 +607,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{next} = add i64 {byte}, {size}"));
         self.line(&format!("store i64 {next}, ptr {byte_place}"));
         self.loop_end(&end);
-        self.assign(dest, &list)
+        list
     }
 
     /// The builtins here; gives back `None` for any other.

@@ -45,7 +45,7 @@ impl Emit<'_, '_, '_> {
         at
     }
 
-    fn layout_of(&self, id: u32) -> Result<&'_ fennec_layout::Layout, String> {
+    pub(crate) fn layout_of(&self, id: u32) -> Result<&'_ fennec_layout::Layout, String> {
         self.module.layouts.get(id).ok_or_else(|| "no such layout".to_owned())
     }
 

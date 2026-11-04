@@ -27,6 +27,7 @@ jobs:
   changes:
     name: What changed
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
@@ -46,6 +47,7 @@ jobs:
     name: Format, lints and docs
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       CODE: ${{ needs.changes.outputs.docs_only != 'true' }}
     steps:
@@ -106,6 +108,7 @@ jobs:
       matrix:
         os: ${{ fromJSON(github.event_name == 'merge_group' && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     # LLVM is the main backend, so on Linux and Windows its tests have to run: with LLVM's tools
     # from the toolchain's own `llvm-tools`, the LLVM rustc uses, a missing tool or runtime
     # library fails them instead of skipping them.
@@ -155,14 +158,28 @@ jobs:
             all=(--all)
           fi
           cargo build --locked --quiet -p fennec
+          # Each takes a second or so. The limit names a program that hangs, with the job's own as
+          # the backstop, and what it prints goes to a file so nothing left running can hold a pipe.
+          fennec() { .github/scripts/within.sh 120 ./target/debug/fennec "$@"; }
+          printed="$RUNNER_TEMP/printed.txt"
+
+          # The limit has to work to be any use, on each platform, and stop what it started too:
+          # `cat` only ends once nothing is left that could write to it.
+          printf 'def main():\n    while True:\n        pass\n' > "$RUNNER_TEMP/forever.fen"
+          status=0
+          .github/scripts/within.sh 5 ./target/debug/fennec run "$RUNNER_TEMP/forever.fen" | cat || status=$?
+          [ "$status" = 124 ] || { echo "::error::the time limit gave $status for a program that never ends"; exit 1; }
+
           for program in examples/*.fen; do
-            ./target/debug/fennec run "$program" | diff --strip-trailing-cr "${program%.fen}.out" -
-            ./target/debug/fennec test "${all[@]}" "$program" > /dev/null
+            fennec run "$program" > "$printed"
+            diff --strip-trailing-cr "${program%.fen}.out" "$printed"
+            fennec test "${all[@]}" "$program" > /dev/null
           done
           for kit in examples/projects/*/; do
             [ -f "$kit/kit.toml" ] || continue
-            ./target/debug/fennec run "$kit" | diff --strip-trailing-cr "${kit%/}.out" -
-            ./target/debug/fennec test "${all[@]}" "$kit" > /dev/null
+            fennec run "$kit" > "$printed"
+            diff --strip-trailing-cr "${kit%/}.out" "$printed"
+            fennec test "${all[@]}" "$kit" > /dev/null
           done
       - name: Save test results
         if: github.event_name != 'merge_group'
@@ -178,6 +195,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true' && github.event_name != 'merge_group'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -207,6 +225,7 @@ jobs:
     name: Licenses, advisories and sources
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -220,6 +239,7 @@ jobs:
     name: Website builds
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -240,6 +260,7 @@ jobs:
     name: Workflow lints and security audit
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -257,6 +278,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -304,6 +326,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -328,6 +351,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       NIGHTLY: nightly-2026-10-15
       FENNEC_SANITIZE: address
@@ -355,17 +379,20 @@ jobs:
           for program in examples/*.fen; do
             for how in --llvm "--llvm --release"; do
               # shellcheck disable=SC2086 # `$how` is two words for a release
-              if ! ./target/release/fennec build $how "$program" -o checked > /dev/null 2> built.txt; then
+              if ! .github/scripts/within.sh 300 ./target/release/fennec build $how "$program" -o checked > /dev/null 2> built.txt; then
                 # Anything but a failed tool or link is the backend saying what it doesn't take yet.
-                grep -qE "linking failed|failed on|couldn't run|once trimmed|panicked" built.txt || continue
+                grep -qE "linking failed|failed on|couldn't run|once trimmed|panicked|didn't finish" built.txt || continue
                 echo "::error::$program didn't build with $how"; cat built.txt; failed=1; continue
               fi
               if ! nm checked | grep -q __asan_report_load; then
                 echo "::error::$program built with $how without AddressSanitizer"; failed=1; continue
               fi
               built=$((built + 1))
-              ./checked > printed.txt 2> said.txt || true
-              if grep -q AddressSanitizer said.txt; then
+              ran=0
+              .github/scripts/within.sh 120 ./checked > printed.txt 2> said.txt || ran=$?
+              if [ "$ran" = 124 ]; then
+                echo "::error::$program built with $how didn't finish"; cat said.txt; failed=1
+              elif grep -q AddressSanitizer said.txt; then
                 echo "::error::$program built with $how touched memory it doesn't own"; cat said.txt; failed=1
               elif ! cmp -s printed.txt "${program%.fen}.out"; then
                 echo "::error::$program built with $how printed something different"; cat said.txt; failed=1
@@ -477,6 +504,7 @@ jobs:
       needs.changes.outputs.docs_only != 'true'
       && (github.event_name != 'merge_group' || needs.changes.outputs.parked_changed == 'true')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -533,6 +561,7 @@ jobs:
     if: always()
     needs: [changes, lint, test, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, asan, parked-sanitizers]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       actions: read
     steps:

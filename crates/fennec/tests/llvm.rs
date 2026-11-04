@@ -841,6 +841,145 @@ fn a_place_stays_where_it_was_when_a_call_changes_its_index() -> std::io::Result
     Ok(())
 }
 
+/// A comprehension replacing the list it goes through, which is done in place when it can be:
+/// the same answers whatever else holds the list, and whatever its items hold.
+const REPLACING_ITS_SOURCE: &str = r#"struct Unit:
+    name: str
+    hp: int
+    tags: list[int]
+
+def hurt(unit: Unit, by: int) -> Unit:
+    Unit(unit.name, unit.hp - by, unit.tags)
+
+def renamed(unit: Unit) -> Unit:
+    Unit(unit.name + "!", unit.hp, [unit.hp, unit.tags.len()])
+
+struct Crowd:
+    numbers: list[int]
+    by: int
+    units: list[Unit]
+
+    def size(self) -> int:
+        self.numbers.len()
+
+    def step(mut self):
+        self.numbers = [number - self.by for number in self.numbers]
+
+struct Outer:
+    crowd: Crowd
+
+struct Ruled:
+    numbers: list[int] where numbers.len() > 0
+
+def doubled(mut numbers: list[int]):
+    numbers = [number * 2 for number in numbers]
+
+def main(stdout: Stdout):
+    mut numbers = [1, 2, 3]
+    numbers = [number * 2 for number in numbers]
+    stdout.print(numbers)
+    other = numbers
+    numbers = [number + 1 for number in numbers]
+    stdout.print(numbers, other)
+    doubled(mut numbers)
+    stdout.print(numbers, other)
+
+    mut words = ["a", "é", "a much longer word than fits in a header"]
+    held = words
+    first = words[0]
+    words = [word + "!" for word in words]
+    stdout.print(words, held, first)
+    words = [word for word in words]
+    words = ["same" for word in words]
+    stdout.print(words, held)
+
+    mut units = [Unit("a", 1, [1]), Unit("b", 2, [2, 3])]
+    kept = units
+    tags = units[1].tags
+    units = [hurt(unit, 1) for unit in units]
+    stdout.print(units[0].hp, units[1].hp, kept[0].hp, kept[1].hp, tags)
+    units = [renamed(unit) for unit in units]
+    stdout.print(units[0].name, units[1].tags, kept[1].tags, tags)
+
+    mut grids = [[1, 2], [3]]
+    row = grids[0]
+    grids = [[cell * 2 for cell in cells] for cells in grids]
+    stdout.print(grids, row)
+
+    # What's worked out reads the list, so it sees it as it was before.
+    mut seen = [1, 2, 3]
+    seen = [number + seen[0] + seen.len() for number in seen]
+    stdout.print(seen)
+    mut first_last = [1, 2, 3]
+    first_last = [first_last[-1] for number in first_last]
+    stdout.print(first_last)
+    reader = [10, 20]
+    mut reading = [1, 2]
+    reading = [number + reader[0] for number in reading]
+    stdout.print(reading)
+
+    # A field's list, reading the struct's other fields, and not this one.
+    mut crowd = Crowd([1, 2, 3], 10, [Unit("a", 1, [1])])
+    before = crowd.numbers
+    crowd.numbers = [number * crowd.by for number in crowd.numbers]
+    stdout.print(crowd.numbers, before)
+    crowd.numbers = [number + crowd.numbers[0] for number in crowd.numbers]
+    stdout.print(crowd.numbers)
+    crowd.numbers = [number + crowd.size() for number in crowd.numbers]
+    stdout.print(crowd.numbers)
+    crowd.step()
+    stdout.print(crowd.numbers)
+    crowd.units = [hurt(unit, crowd.by) for unit in crowd.units]
+    stdout.print(crowd.units[0].hp)
+    mut outer = Outer(crowd)
+    outer.crowd.numbers = [number + 1 for number in outer.crowd.numbers]
+    stdout.print(outer.crowd.numbers, crowd.numbers)
+    mut ruled = Ruled([3, 1, 2]).expect("a list with something in it")
+    ruled.numbers = [number + 10 for number in ruled.numbers]
+    stdout.print(ruled.numbers)
+
+    # Not the same size, or another type: a new list.
+    mut some = [1, 2, 3, 4]
+    some = [number for number in some if number % 2 == 0]
+    stdout.print(some)
+    mut pairs = [1, 2]
+    mut texts = [str(number) for number in pairs]
+    texts = [text + "x" for text in texts]
+    stdout.print(texts, pairs)
+
+    # None to go through, and one that fails part of the way along.
+    mut empty: list[int] = []
+    empty = [number + 1 for number in empty]
+    stdout.print(empty)
+    mut failing = [1, 0, 3]
+    stdout.print("before")
+    failing = [10 // number for number in failing]
+    stdout.print(failing)
+"#;
+
+#[test]
+fn a_comprehension_replacing_its_source_says_what_a_new_list_would() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    // The JIT reads the same lowering, so only the interpreter can say this is right.
+    same_as_the_interpreter_in_both_builds("replacing_its_source", REPLACING_ITS_SOURCE)
+}
+
+#[test]
+fn a_comprehension_replacing_its_source_makes_no_second_list() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def main(stdout: Stdout):\n    mut numbers = [n for n in range(1000)]\n    for _ in range(100):\n        numbers = [(number * 3 + 1) % 1000 for number in numbers]\n    stdout.print(numbers[10])\n";
+    let counts = counts_of("replacing_alone", source)?;
+    assert_eq!(count(&counts, "allocations"), Some(1), "{counts}");
+    let shared = "def main(stdout: Stdout):\n    mut numbers = [n for n in range(1000)]\n    other = numbers\n    numbers = [number + 1 for number in numbers]\n    stdout.print(numbers[10], other[10])\n";
+    let counts = counts_of("replacing_shared", shared)?;
+    assert!(count(&counts, "allocations") <= Some(2), "{counts}");
+    Ok(())
+}
+
 #[test]
 fn appending_to_a_field_of_a_local_lists_item_copies_only_what_is_shared() -> std::io::Result<()> {
     if !ready() {

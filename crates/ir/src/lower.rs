@@ -627,6 +627,9 @@ impl<'a> Lowering<'a> {
         if let ExprKind::Tuple(targets) = &target.kind {
             return self.assign_unpacking(targets, value, span);
         }
+        if op.is_none() && !declares && self.replaces_its_source(target, value, span)? {
+            return Ok(());
+        }
         let ExprKind::Name(name) = &target.kind else {
             return self.assign_place(target, op, value, span);
         };

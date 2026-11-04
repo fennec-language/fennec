@@ -82,16 +82,27 @@ fn live_inputs() -> crate::Inputs {
     let mut arguments = std::env::args();
     crate::Inputs {
         live: true,
-        program: arguments.next().unwrap_or_default(),
+        program: program_name(arguments.next().unwrap_or_default()),
         arguments: arguments.collect(),
         stdin: Box::new(StdinLines::default()),
+    }
+}
+
+/// What `args.program` says. `fennec run` starts a program it built for the run, and where it can't
+/// set the name a process sees, it says it this way, for that one executable: what the program
+/// starts in turn gets the variable too, and goes by its own name.
+fn program_name(own: String) -> String {
+    let told = std::env::var("FENNEC_RUN_AS").ok();
+    match told.as_deref().and_then(|told| told.split_once('|')) {
+        Some((executable, program)) if executable == own => program.to_owned(),
+        _ => own,
     }
 }
 
 /// The process's standard input for one thread. It takes a line at a time, so a thread never holds
 /// more than the line it's reading, and no line is lost to the threads reading after it.
 #[derive(Default)]
-struct StdinLines {
+pub(super) struct StdinLines {
     line: Vec<u8>,
     read: usize,
 }

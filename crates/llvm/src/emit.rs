@@ -136,6 +136,17 @@ fn emit_with(
     if !refused.is_empty() {
         return Err(refused.join("\n"));
     }
+    for own in &program.own_texts {
+        let (id, boxed) = match Kind::of(&layouts, &own.ty)? {
+            Kind::Struct(id) | Kind::Enum(id) => (id, false),
+            Kind::Boxed(id) => (id, true),
+            other => return Err(format!("`{}` writes its own text, as a {other:?}", own.ty)),
+        };
+        let name = layouts.get(id).ok_or("no such layout")?.name.clone();
+        let symbol = format!("l_{}", fennec_blake3::hash(name.as_bytes()).to_hex());
+        shared.literals.insert(symbol.clone(), name);
+        shared.own_texts.push((symbol, own.function.clone(), boxed));
+    }
     Ok((units, shared, layouts))
 }
 
@@ -2112,6 +2123,24 @@ mod tests {
             .into_iter()
             .find(|unit| unit.function == function)
             .map_or_else(String::new, |unit| unit.text))
+    }
+
+    #[test]
+    fn arguments_and_the_clock_need_no_interpreter() -> Result<(), String> {
+        let source = "\
+from std.time import Clock, Duration
+
+def main(stdout: Stdout, args: Args, clock: Clock):
+    started = clock.now()
+    clock.sleep(Duration.millis(1))
+    stdout.print(args.len(), args.program, started.nanos)
+    for arg in args:
+        stdout.print(arg, args[0])
+";
+        let text = text_of(source, "main")?;
+        assert!(text.contains("@fennec_args_list("), "{text}");
+        assert!(!text.contains("fennec_capability_call"), "{text}");
+        Ok(())
     }
 
     #[test]

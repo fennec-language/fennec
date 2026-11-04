@@ -1030,6 +1030,9 @@ impl Emit<'_, '_, '_> {
             return self.id_map_index(dest, object, index, span);
         }
         let (list, kind) = self.operand(object)?;
+        if kind == Kind::Cap {
+            return self.args_item(dest, index, span);
+        }
         if let Kind::Dict(key, value) = kind {
             return self.dict_read(dest, &list, (key, value), index, span);
         }

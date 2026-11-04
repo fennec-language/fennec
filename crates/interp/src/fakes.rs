@@ -200,8 +200,8 @@ impl Interp<'_> {
             ("remove", [Value::Str(path)]) => world.remove(path).map(|()| Value::Unit),
             ("list_dir", [Value::Str(path)]) => {
                 return Some(match world.list(path) {
-                    Ok(names) => self.paths_in(path, names, span),
-                    Err(reason) => self.io_error(&std::io::Error::other(reason), span),
+                    Ok(names) => Ok(crate::stdlib::fs::paths_in(path, names)),
+                    Err(reason) => Ok(crate::stdlib::fs::io_error(&reason)),
                 });
             }
             ("metadata", [Value::Str(path)]) => {
@@ -209,14 +209,14 @@ impl Interp<'_> {
                     Ok(fields) => {
                         self.make_value("Metadata", fields, span).map(|found| Value::Ok(Rc::new(found)))
                     }
-                    Err(reason) => self.io_error(&std::io::Error::other(reason), span),
+                    Err(reason) => Ok(crate::stdlib::fs::io_error(&reason)),
                 });
             }
             _ => return None,
         };
         Some(match done {
             Ok(value) => Ok(Value::Ok(Rc::new(value))),
-            Err(reason) => self.io_error(&std::io::Error::other(reason), span),
+            Err(reason) => Ok(crate::stdlib::fs::io_error(&reason)),
         })
     }
 }

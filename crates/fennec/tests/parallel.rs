@@ -405,6 +405,9 @@ fn every_worker_sees_the_arguments_and_reads_the_one_standard_input() -> std::io
 /// A body on workers over text that isn't ASCII, in the ways a program reads text.
 const NON_ASCII: &str = include_str!("fixtures/workers/non_ascii.fen");
 
+/// A worker printing and making the text of values whose types write their own.
+const OWN_TEXT: &str = include_str!("fixtures/workers/own_text.fen");
+
 /// What a program printed, its lines sorted: bodies run and print in any order.
 fn sorted_lines(text: &[u8]) -> Vec<String> {
     let mut lines: Vec<String> = String::from_utf8_lossy(text).lines().map(str::to_owned).collect();
@@ -476,8 +479,13 @@ fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::
     }
     let dir = std::env::temp_dir().join(format!("fennec-parallel-stress-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
-    let programs =
-        [("non_ascii", NON_ASCII), ("lent", LENT_BLOCKS), ("prints", PRINTS), ("places", CHANGED_PLACES)];
+    let programs = [
+        ("non_ascii", NON_ASCII),
+        ("lent", LENT_BLOCKS),
+        ("prints", PRINTS),
+        ("own_text", OWN_TEXT),
+        ("places", CHANGED_PLACES),
+    ];
     for (name, source) in programs {
         matches_the_interpreter_on_workers(&dir, name, source)?;
     }

@@ -17,7 +17,8 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let (receiver, rest) = args.split_first().ok_or("a method with nothing to call it on")?;
-        let method = name.rsplit('.').next().unwrap_or(name);
+        // Any named arguments stay on the end, as a call writes them: `connect.timeout`.
+        let method = name.split_once('.').map_or(name, |(_, method)| method);
         let (from, to) = (i64::from(span.start), i64::from(span.end));
         let (mark, crossed) = self.cross_arguments(rest)?;
         let (word, _) = self.operand(receiver)?;

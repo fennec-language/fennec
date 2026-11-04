@@ -123,15 +123,23 @@ pub extern "C" fn call(word: i64, method: i64, count: i64, start: i64, end: i64)
     attempt(|state: &mut State| {
         let at = span(start, end);
         let receiver = value_of(state, word);
-        let name = u64::try_from(method)
+        let written = u64::try_from(method)
             .ok()
             .and_then(|address| state.heap.block(address))
             .filter(|block| super::heap::is_text(state, block))
             .map(super::heap::block_text)
             .ok_or_else(|| Diagnostic::new("the native code lost a method's name", at))?;
+        let mut parts = written.split('.');
+        let name = parts.next().unwrap_or_default().to_owned();
+        let named: Vec<&str> = parts.collect();
         let count = usize::try_from(count).unwrap_or(0).min(state.inputs.len());
         let given = state.inputs.split_off(state.inputs.len() - count);
-        let args = given.into_iter().map(|value| crate::call::CallArg::plain(value, at)).collect();
+        let mut args: Vec<_> =
+            given.into_iter().map(|value| crate::call::CallArg::plain(value, at)).collect();
+        let first_named = args.len().saturating_sub(named.len());
+        for (arg, name) in args.iter_mut().skip(first_named).zip(named) {
+            arg.name = Some(name.to_owned());
+        }
         let result = state.interp.read_method(&receiver, &name, args, at)?;
         Ok(state.push(result))
     })

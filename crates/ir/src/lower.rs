@@ -346,6 +346,8 @@ struct Lowering<'a> {
     generating: Option<generators::Generating>,
     /// The `for` loops that count.
     counts: Vec<crate::Count>,
+    /// The places calls change.
+    places: Vec<crate::ChangedPlace>,
     /// What's making the collections of comprehensions over stages, innermost last.
     fills: Vec<collections::Fill>,
     /// The types of the yield functions whose copies are being lowered, innermost last.
@@ -376,6 +378,7 @@ impl<'a> Lowering<'a> {
             lifted: Vec::new(),
             generating: None,
             counts: Vec::new(),
+            places: Vec::new(),
             fills: Vec::new(),
             copied: Vec::new(),
         }

@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 
 use fennec_interp::embed::layout::{FIELDS, LIST_ITEMS, LIST_LENGTH, LIST_ROOM};
-use fennec_ir::{LocalId, Operand};
+use fennec_ir::{InstKind, LocalId, Operand, PlaceStep};
 use fennec_layout::ListItem;
 use fennec_syntax::{BinOp, Span};
 
@@ -359,6 +359,99 @@ impl Emit<'_, '_, '_> {
         let place = self.offset(&fields, offset);
         let value = self.load_field(&inner, &place, FIELD_ACCESS);
         self.assign(dest, &value)
+    }
+
+    /// What's done for an instruction reading a place out for a call or writing it back, if it
+    /// is one: the place is taken out when it's reached, from the root down, each block on the
+    /// way made alone before anything inside it is. So its one owner is the place, and a block's
+    /// count is only given up where this thread holds it. Everything else on the way isn't read.
+    pub(crate) fn place_inst(&mut self, inst: &InstKind, span: Span) -> Option<Result<(), String>> {
+        match inst {
+            InstKind::GetField { dest, .. } | InstKind::GetIndex { dest, .. } => {
+                if self.known.is_place_part(*dest) {
+                    return Some(Ok(()));
+                }
+                self.known.place_taken(self.function, *dest)?;
+                Some(self.take_place(*dest, span))
+            }
+            InstKind::SetField { object, value: Operand::Local(put), .. }
+            | InstKind::SetIndex { object, value: Operand::Local(put), .. } => {
+                if self.known.is_place_part(*object) {
+                    return Some(Ok(()));
+                }
+                let holder = self.known.place_holder(*put)?;
+                Some(self.put_place_back(holder))
+            }
+            _ => None,
+        }
+    }
+
+    fn take_place(&mut self, value: LocalId, span: Span) -> Result<(), String> {
+        let function = self.function;
+        let place = self.known.place_taken(function, value).ok_or("a place that isn't taken")?;
+        let root = place.root;
+        let mut kind = self.kind_of(root)?.clone();
+        let mut at = self.slot(root);
+        let mut along: Vec<String> = Vec::new();
+        let mut access = "";
+        for step in &place.steps {
+            match step {
+                PlaceStep::Field(name) => {
+                    let boxed = matches!(kind, Kind::Boxed(_));
+                    let inside = if boxed {
+                        let block = self.alone_along((root, &along), &at, "fennec_unshare");
+                        self.offset(&block, FIELDS_OFFSET)
+                    } else {
+                        at
+                    };
+                    let (offset, field) = self.field(&kind, name)?;
+                    at = self.offset(&inside, offset);
+                    kind = field;
+                    if boxed {
+                        access = FIELD_ACCESS;
+                    }
+                    along.push(name.clone());
+                }
+                PlaceStep::Item(index_operand) => {
+                    let list = if along.is_empty() {
+                        self.unshared(root)
+                    } else {
+                        self.alone_along((root, &along), &at, "fennec_list_unshare")
+                    };
+                    let held = self.item_kind(list_item(&kind)?)?;
+                    let (index, _) = self.operand(index_operand)?;
+                    let position = if along.is_empty() && self.known.inside(root, index_operand) {
+                        index
+                    } else {
+                        let known_as = self.list_key(root, &along);
+                        self.position_once(known_as, (&list, index_operand, &index), span)
+                    };
+                    let memory = held.memory(self.module.layouts);
+                    at = self.item_address(&list, &memory, &position);
+                    kind = held;
+                    access = ITEM_ACCESS;
+                    along.push(item_step(index_operand).ok_or("an index a path can't name")?);
+                }
+            }
+        }
+        // What's known of it is known of the place, however long the local lasts.
+        if let Some((step, list)) = along.split_last() {
+            self.taken_items.insert(value.0, (root, list.to_vec(), step.clone()));
+        }
+        self.place_homes.insert(value.0, (at.clone(), kind.clone(), access));
+        self.read_into(value, &kind, &at, access)
+    }
+
+    fn put_place_back(&mut self, value: LocalId) -> Result<(), String> {
+        let (at, kind, access) = self.place_homes.get(&value.0).cloned().ok_or("a place never taken out")?;
+        let (held, _) = self.value_for(&Operand::Local(value), &kind)?;
+        if kind.counted() {
+            let text = self.text_of(&kind);
+            self.line(&format!("store {text} {held}, ptr {at}{access}"));
+        } else {
+            self.store_field(&kind, &held, &at, access);
+        }
+        Ok(())
     }
 
     /// A block at `place` with no other owner, so it can change.

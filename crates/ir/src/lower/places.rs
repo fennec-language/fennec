@@ -117,7 +117,7 @@ impl Lowering<'_> {
         }
     }
 
-    fn step_type(&self, ty: &Type, step: &Step) -> Lowered<Type> {
+    pub(super) fn step_type(&self, ty: &Type, step: &Step) -> Lowered<Type> {
         match step {
             Step::Field(field) => {
                 let Type::Named(owner) = ty else {
@@ -195,6 +195,11 @@ impl Lowering<'_> {
         span: Span,
     ) -> Lowered<()> {
         self.write_place(local, steps, value, span)?;
+        self.check_rules(local, steps, span)
+    }
+
+    /// Runs the `where` rule of every field a write to a place went through.
+    pub(super) fn check_rules(&mut self, local: LocalId, steps: &[Step], span: Span) -> Lowered<()> {
         let mut ty = self.local_type(local);
         for (at, step) in steps.iter().enumerate() {
             let held = self.step_type(&ty, step)?;
@@ -244,7 +249,7 @@ impl Lowering<'_> {
     }
 
     /// Changes a place, however deeply it's nested.
-    fn write_place(&mut self, local: LocalId, steps: &[Step], value: Operand, span: Span) -> Lowered<()> {
+    pub(super) fn write_place(&mut self, local: LocalId, steps: &[Step], value: Operand, span: Span) -> Lowered<()> {
         let first_index = steps.iter().position(|step| matches!(step, Step::Index(_)));
         let Some(at) = first_index else {
             if steps.is_empty() {

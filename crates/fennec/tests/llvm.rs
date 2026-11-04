@@ -481,6 +481,223 @@ fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
 }
 
 #[test]
+fn changing_through_a_place_changes_only_the_place() -> std::io::Result<()> {
+    same_as_the_jit(
+        "changed_places",
+        r#"error Bad:
+    why: str
+
+struct Inner:
+    tags: list[int]
+
+    def grow(mut self, value: int):
+        self.tags.append(value)
+
+struct Unit:
+    hp: int
+    tags: list[int]
+    inner: Inner
+    name: str
+
+    def grow(mut self, value: int):
+        self.tags.append(value)
+        self.hp += 1
+
+    def grown_by(mut self, values: list[int]):
+        self.tags.append(values.len())
+        for value in values:
+            self.tags.append(value)
+
+    def absorb(mut self, other: Unit):
+        self.hp += other.hp
+        for tag in other.tags:
+            self.tags.append(tag)
+
+    def renamed(mut self, name: str):
+        self.name = self.name + name
+        self.inner.grow(name.len())
+
+    def replaced(mut self):
+        self = unit(self.hp * 2)
+
+    def kept_in(mut self, mut into: list[list[int]]):
+        into.append(self.tags)
+        self.tags.append(-1)
+
+    def checked(mut self, value: int) -> int fails Bad:
+        if value < 0:
+            fail Bad("negative")
+        self.tags.append(value)
+        value
+
+    def tried(mut self, value: int) -> int fails Bad:
+        self.hp += 100
+        self.checked(value)?
+
+struct Band:
+    units: list[Unit]
+    leader: Unit
+    rows: list[list[Unit]]
+
+    def grow_at(mut self, at: int, value: int):
+        self.units[at].grow(value)
+        self.units[at].inner.grow(value)
+        self.leader.grow(value)
+        self.rows[at][at].grow(value)
+
+struct Ruled:
+    size: int where size >= 0
+    tags: list[int]
+
+    def shrink(mut self):
+        self.size -= 1
+        self.tags.append(self.size)
+
+struct Holder:
+    ruled: list[Ruled]
+
+def unit(hp: int) -> Unit:
+    Unit(hp, [hp], Inner([hp]), f"u{hp}")
+
+def band() -> Band:
+    Band([unit(1), unit(2)], unit(3), [[unit(4), unit(5)], [unit(6), unit(7)]])
+
+def show(stdout: Stdout, units: list[Unit]):
+    for one in units:
+        stdout.print(one.hp, one.tags, one.inner.tags, one.name)
+
+def ruled_at(size: int) -> Ruled:
+    Ruled(size, []).expect("a size that's allowed")
+
+def swap_ends(mut a: list[int], mut b: list[int]):
+    a.append(b.len())
+    b.append(a.len())
+
+def try_all(mut units: list[Unit]) -> int fails Bad:
+    units[0].tried(1)?
+    units[1].tried(-1)?
+    units[0].tried(2)?
+
+def main(stdout: Stdout):
+    # One owner, and each shape of place.
+    mut units = [unit(1), unit(2)]
+    units[0].grow(10)
+    units[-1].grow(20)
+    units[1].inner.grow(30)
+    units[0].renamed("abc")
+    units[1].replaced()
+    show(stdout, units)
+    mut grid = [[unit(8), unit(9)], [unit(10), unit(11)]]
+    grid[1][0].grow(40)
+    grid[1][0].inner.grow(50)
+    grid[-1][-1].inner.grow(60)
+    show(stdout, grid[1])
+    show(stdout, grid[0])
+    mut held = band()
+    held.grow_at(1, 70)
+    held.rows[0][1].inner.grow(80)
+    show(stdout, held.units)
+    show(stdout, held.rows[1])
+    show(stdout, held.rows[0])
+    show(stdout, [held.leader])
+
+    # Everything that shared what's changed keeps what it had, at every level.
+    mut shared = [unit(1), unit(2)]
+    other = shared
+    item = shared[0]
+    tags = shared[0].tags
+    inner = shared[0].inner
+    inner_tags = shared[0].inner.tags
+    shared[0].grow(1)
+    shared[0].inner.grow(2)
+    show(stdout, shared)
+    show(stdout, other)
+    show(stdout, [item])
+    stdout.print(tags, inner.tags, inner_tags)
+
+    mut nested = band()
+    copied = nested
+    row = nested.rows[1]
+    nested.grow_at(1, 5)
+    nested.rows[1][1].inner.grow(6)
+    show(stdout, nested.rows[1])
+    show(stdout, copied.rows[1])
+    show(stdout, row)
+    show(stdout, copied.units)
+
+    # What's given to the call comes from what's changed.
+    mut own = [unit(1), unit(2), unit(3)]
+    own[0].grow(own[1].hp)
+    own[0].grown_by(own[0].tags)
+    own[1].grown_by(own[0].tags)
+    own[2].absorb(own[2])
+    own[2].absorb(own[0])
+    first = own[1]
+    own[1].grown_by(first.tags)
+    show(stdout, own)
+    show(stdout, [first])
+
+    # What a call keeps stays what it was, and the place goes on from there.
+    mut keeps = [unit(1)]
+    mut kept: list[list[int]] = []
+    keeps[0].kept_in(mut kept)
+    keeps[0].grow(2)
+    keeps[0].kept_in(mut kept)
+    show(stdout, keeps)
+    stdout.print(kept)
+
+    # Two places at once, apart and in one root.
+    mut left = [[1], [2]]
+    mut right = [[3], [4]]
+    swap_ends(mut left[0], mut right[1])
+    swap_ends(mut left[1], mut left[0])
+    stdout.print(left, right)
+
+    # In a loop, through a loop's item, and with the rule checked after.
+    mut looped = [unit(1), unit(2)]
+    for round in range(3):
+        for at_now in range(looped.len()):
+            looped[at_now].grow(round)
+    for mut one in looped:
+        one.inner.grow(9)
+        one.grow(8)
+    show(stdout, looped)
+    mut ruled = Holder([ruled_at(2)])
+    ruled.ruled[0].shrink()
+    ruled.ruled[0].shrink()
+    stdout.print(ruled.ruled[0].size, ruled.ruled[0].tags)
+
+    # A failure leaves what was done before it.
+    mut failing = [unit(1), unit(2)]
+    match try_all(mut failing):
+        case Ok(got):
+            stdout.print(got)
+        case Err(bad):
+            stdout.print(bad.why)
+    show(stdout, failing)
+"#,
+    )
+}
+
+#[test]
+fn changing_through_a_place_copies_nothing_when_nothing_else_holds_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let types = "struct Inner:\n    tags: list[int]\n\n    def grow(mut self, value: int):\n        self.tags.append(value)\n\nstruct Unit:\n    hp: int\n    tags: list[int]\n    inner: Inner\n\n    def grow(mut self, value: int):\n        self.tags.append(value)\n\nstruct Band:\n    units: list[Unit]\n\n    def grow(mut self, at: int, value: int):\n        self.units[at].grow(value)\n        self.units[at].inner.grow(value)\n\ndef unit() -> Unit:\n    Unit(0, [], Inner([]))\n\ndef main(stdout: Stdout):\n";
+    for (name, body) in [
+        ("item", "    mut xs = [unit(), unit()]\n    for n in range(2000):\n        xs[n % 2].grow(n)\n    stdout.print(xs[0].tags.len())\n"),
+        ("deep", "    mut xs = [unit(), unit()]\n    for n in range(2000):\n        xs[n % 2].inner.grow(n)\n    stdout.print(xs[0].inner.tags.len())\n"),
+        ("grid", "    mut grid = [[unit()], [unit()]]\n    for n in range(2000):\n        grid[n % 2][0].grow(n)\n        grid[n % 2][-1].inner.grow(n)\n    stdout.print(grid[0][0].tags.len())\n"),
+        ("method", "    mut band = Band([unit(), unit()])\n    for n in range(2000):\n        band.grow(n % 2, n)\n    stdout.print(band.units[0].tags.len())\n"),
+    ] {
+        let counts = counts_of(&format!("place_{name}"), &format!("{types}{body}"))?;
+        assert!(counts.starts_with("copies 0 "), "{name}: {counts}");
+    }
+    Ok(())
+}
+
+#[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {
         return Ok(());

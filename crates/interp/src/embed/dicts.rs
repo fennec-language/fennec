@@ -1028,7 +1028,9 @@ pub(super) fn equal(state: &State, left: &[u64], right: &[u64]) -> bool {
                 Probe::Found(at) => value_place(right, layout, at)
                     .and_then(|place| right.get(place))
                     .is_some_and(|other| match layout.value {
-                        Word::Float => f64::from_bits(value).total_cmp(&f64::from_bits(*other)).is_eq(),
+                        Word::Float => {
+                            crate::value::floats_same(f64::from_bits(value), f64::from_bits(*other))
+                        }
                         Word::Str => same(state, value, *other),
                         Word::Int | Word::Bool | Word::Nothing | Word::Plain(_) | Word::Text => {
                             value == *other

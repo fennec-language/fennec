@@ -242,6 +242,23 @@ impl IdMap {
     }
 }
 
+/// Whether two floats are the same: equal as numbers, with `0.0` the same as `-0.0`, or both NaN.
+#[expect(clippy::float_cmp, reason = "this is what equal means for a float in Fennec")]
+pub(crate) fn floats_same(a: f64, b: f64) -> bool {
+    a == b || (a.is_nan() && b.is_nan())
+}
+
+/// A float's bits as they hash: the one form of each float that's equal to others.
+pub(crate) fn float_key(x: f64) -> u64 {
+    if x == 0.0 {
+        0
+    } else if x.is_nan() {
+        f64::NAN.to_bits()
+    } else {
+        x.to_bits()
+    }
+}
+
 impl Value {
     pub(crate) fn str(text: &str) -> Value {
         Value::Str(Rc::from(text))
@@ -312,7 +329,7 @@ impl PartialEq for Value {
             (Value::Generator(a), Value::Generator(b)) => Rc::ptr_eq(a, b),
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
-            (Value::Float(a), Value::Float(b)) => a.total_cmp(b).is_eq(),
+            (Value::Float(a), Value::Float(b)) => floats_same(*a, *b),
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::List(a), Value::List(b)) | (Value::Tuple(a), Value::Tuple(b)) => a == b,

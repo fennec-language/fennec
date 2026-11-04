@@ -96,6 +96,17 @@ impl Lowering<'_> {
 
     /// `value is None` and `value is not None`.
     pub(super) fn is_none(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr, span: Span) -> Lowered<Operand> {
+        self.is_none_of(op, lhs, rhs, span).map(|(test, _)| test)
+    }
+
+    /// The same, with the value it looked at.
+    pub(super) fn is_none_of(
+        &mut self,
+        op: BinOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        span: Span,
+    ) -> Lowered<(Operand, Operand)> {
         if !matches!(rhs.kind, ExprKind::None) {
             return Err("it uses `is` with something other than `None`".to_owned());
         }
@@ -104,17 +115,17 @@ impl Lowering<'_> {
             Some(Type::None) => Operand::Bool(true),
             Some(Type::Optional(_)) => {
                 let dest = self.temporary(Type::Bool);
-                self.emit(InstKind::IsNone { dest, value }, span);
+                self.emit(InstKind::IsNone { dest, value: value.clone() }, span);
                 Operand::Local(dest)
             }
             _ => Operand::Bool(false),
         };
         if op == BinOp::Is {
-            return Ok(test);
+            return Ok((test, value));
         }
         let dest = self.temporary(Type::Bool);
         self.emit(InstKind::Unary { dest, op: UnaryOp::Not, value: test }, span);
-        Ok(Operand::Local(dest))
+        Ok((Operand::Local(dest), value))
     }
 
     /// `value else default`: the default only runs when the value is `None` or an error.

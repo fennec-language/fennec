@@ -46,12 +46,14 @@ const METADATA: &str = "!0 = !{!\"branch_weights\", i32 1, i32 100000}\n\
 !2 = !{!\"fennec\"}\n\
 !3 = !{!\"header\", !2, i64 0}\n\
 !4 = !{!3, !3, i64 0}\n\
-!5 = !{!\"item\", !2, i64 0}\n\
+!5 = !{!\"item\", !11, i64 0}\n\
 !6 = !{!5, !5, i64 0}\n\
 !7 = !{i64 0, i64 281474976710657}\n\
 !8 = !{!\"branch_weights\", i32 100000, i32 1}\n\
-!9 = !{!\"field\", !2, i64 0}\n\
-!10 = !{!9, !9, i64 0}\n";
+!9 = !{!\"field\", !11, i64 0}\n\
+!10 = !{!9, !9, i64 0}\n\
+!11 = !{!\"values\", !2, i64 0}\n\
+!12 = !{!11, !11, i64 0}\n";
 
 /// Where a string block's bytes start.
 pub(crate) const TEXT_START: u32 = fennec_interp::embed::layout::TEXT.unsigned_abs();
@@ -62,6 +64,10 @@ pub(crate) const ITEM_ACCESS: &str = ", !tbaa !6";
 /// A boxed struct's or enum's fields never overlap a block's header or a list's items.
 pub(crate) const FIELD_ACCESS: &str = ", !tbaa !10";
 pub(crate) const LENGTH_ACCESS: &str = ", !tbaa !4, !range !7";
+/// A struct's field wherever the struct is, which could be an item or a boxed field, but is
+/// never a block's header. So changing one, like a parser's place in its text, doesn't make a
+/// string's lengths read again.
+pub(crate) const VALUE_ACCESS: &str = ", !tbaa !12";
 
 /// Below this many instructions, a function that calls nothing is always inlined.
 const ALWAYS_INLINE: usize = 16;
@@ -1351,6 +1357,36 @@ impl Emit<'_, '_, '_> {
         result
     }
 
+    /// Whether two floats are the same, or not, as floats have one equality everywhere: `0.0` is
+    /// the same as `-0.0`, and NaN as any other NaN. LLVM's own comparison does this with a literal
+    /// on one side, which is never NaN.
+    pub(crate) fn float_equal(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
+        let plain = |value: &str| {
+            value
+                .strip_prefix("0x")
+                .and_then(|bits| u64::from_str_radix(bits, 16).ok())
+                .is_some_and(|bits| !f64::from_bits(bits).is_nan())
+        };
+        if plain(a) || plain(b) {
+            let (temp, cc) = (self.temp(), if op == BinOp::Eq { "oeq" } else { "une" });
+            self.line(&format!("{temp} = fcmp {cc} double {a}, {b}"));
+            return temp;
+        }
+        let (equal, a_nan, b_nan, both, same) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{equal} = fcmp oeq double {a}, {b}"));
+        self.line(&format!("{a_nan} = fcmp uno double {a}, {a}"));
+        self.line(&format!("{b_nan} = fcmp uno double {b}, {b}"));
+        self.line(&format!("{both} = and i1 {a_nan}, {b_nan}"));
+        self.line(&format!("{same} = or i1 {equal}, {both}"));
+        if op == BinOp::Eq {
+            return same;
+        }
+        let differ = self.temp();
+        self.line(&format!("{differ} = xor i1 {same}, true"));
+        differ
+    }
+
     fn float_binary(
         &mut self,
         op: BinOp,
@@ -1358,9 +1394,10 @@ impl Emit<'_, '_, '_> {
         rhs: &Operand,
         span: Span,
     ) -> Result<String, String> {
+        if matches!(op, BinOp::Eq | BinOp::NotEq) {
+            return Ok(self.float_equal(op, (a, b)));
+        }
         let compare = match op {
-            BinOp::Eq => Some("oeq"),
-            BinOp::NotEq => Some("une"),
             BinOp::Lt => Some("olt"),
             BinOp::LtEq => Some("ole"),
             BinOp::Gt => Some("ogt"),

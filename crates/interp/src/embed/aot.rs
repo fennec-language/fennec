@@ -9,8 +9,8 @@ use std::io::Write;
 use fennec_syntax::Sources;
 
 use super::codec::Image;
-use crate::fakes::{TestCapabilities, TestWorld};
 use super::{State, heap, with};
+use crate::fakes::{TestCapabilities, TestWorld};
 
 /// The stack an executable's program runs on. It's only reserved, not used, until calls
 /// nest deeply.

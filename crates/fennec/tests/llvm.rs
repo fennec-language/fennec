@@ -2503,3 +2503,66 @@ def main(stdout: Stdout):
 "#,
     )
 }
+
+/// A test that names capabilities gets fakes through LLVM, in a world of its own, whether its body
+/// passes failures up or not. A failure of `net`, which is an error with cases, comes back as its
+/// case.
+#[test]
+fn tests_that_take_capabilities_run_through_llvm() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("test_capabilities")?;
+    let program = dir.join("fakes.fen");
+    std::fs::write(
+        &program,
+        "\
+test \"files are its own\"(fs: Fs):
+    assert not fs.exists(\"a\")
+    fs.write_text(\"a\", \"one\")?
+    assert fs.read_text(\"a\")? == \"one\"
+
+test \"files are its own, again\"(fs: Fs):
+    assert not fs.exists(\"a\")
+    fs.write_text(\"a\", \"two\")?
+
+test \"what it prints is kept\"(stdout: Stdout, clock: Clock):
+    stdout.print(\"at\", clock.now().nanos)
+    assert stdout.captured() == \"at 0\\n\"
+
+test \"a failure comes back as its case\"(net: Net):
+    match net.connect(\"localhost\", 9001):
+        case Err(Refused(host, port)):
+            assert host == \"localhost\" and port == 9001
+        case _:
+            assert False
+",
+    )?;
+    let path = program.to_string_lossy().into_owned();
+    let ran = fennec(&["test", "--all", "--verbose", &path], &dir)?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert!(ran.status.success(), "{said}");
+    assert!(said.contains("4 of 4 tests passed through LLVM"), "{said}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A failure a test's body passes up with `?` fails the test through LLVM, and running it again
+/// says what the failure was.
+#[test]
+fn a_failure_passed_up_fails_a_test_through_llvm() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("test_passed_up")?;
+    let program = dir.join("up.fen");
+    std::fs::write(&program, "test \"gone\"(fs: Fs):\n    fs.read_text(\"gone\")?\n")?;
+    let path = program.to_string_lossy().into_owned();
+    let ran = fennec(&["test", "--all", &path], &dir)?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert!(!ran.status.success(), "{said}");
+    assert!(said.contains("the test failed with"), "{said}");
+    assert!(!said.contains("through LLVM"), "{said}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}

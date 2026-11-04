@@ -187,15 +187,8 @@ fn run_plan(
     // Tests with real capabilities take what they're given, which only the interpreter does.
     if !options.jit && options.run != Run::Real && crate::aot::llvm_ready() {
         let through_llvm = crate::llvm_tests::run(&program.module, &wanted, &|name| graph.defines(name));
-        // Most of a program's tests still reach something LLVM doesn't take, and every run saying
-        // so would cost whoever reads it for nothing they can act on.
-        if options.verbose
-            && let Some(why) = through_llvm.refused.as_deref().and_then(|why| why.lines().next())
-        {
-            eprintln!("note: some tests run another way, since LLVM can't build what they reach: {why}");
-        }
         if options.verbose {
-            eprintln!("note: {} of {} tests passed through LLVM", through_llvm.outcomes.len(), wanted.len());
+            say_how_llvm_went(&through_llvm, wanted.len());
         }
         outcomes = through_llvm.outcomes;
         wanted = through_llvm.left;
@@ -292,6 +285,15 @@ fn say_totals(options: Options, (passed, failed): (usize, usize), (ran, unchange
         eprintln!("{totals}");
         eprintln!("the program didn't run; `fennec run --no-test` runs it anyway");
     }
+}
+
+/// What LLVM took. Most of a program's tests still reach something it doesn't, and every run saying
+/// so would cost whoever reads it for nothing they can act on, so only `--verbose` says.
+fn say_how_llvm_went(through_llvm: &crate::llvm_tests::LlvmTests, wanted: usize) {
+    if let Some(why) = through_llvm.refused.as_deref().and_then(|why| why.lines().next()) {
+        eprintln!("note: some tests run another way, since LLVM can't build what they reach: {why}");
+    }
+    eprintln!("note: {} of {wanted} tests passed through LLVM", through_llvm.outcomes.len());
 }
 
 /// Runs the tests in `names` in the interpreter.

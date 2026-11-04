@@ -174,7 +174,7 @@ fn test_functions(number: usize, test: &TestDef) -> Vec<FnDef> {
         return vec![as_function(name, test)];
     };
     fennec_syntax::visit::in_stmts(&mut caller.body, &mut |inner| {
-        if matches!(&inner.kind, ExprKind::Name(called) if called == PLACEHOLDER) {
+        if matches!(&inner.kind, ExprKind::Name(named) if named == PLACEHOLDER) {
             inner.kind = ExprKind::Name(body_name.clone());
         }
     });

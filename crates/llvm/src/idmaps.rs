@@ -179,6 +179,13 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{live} = load i64, ptr {at}"));
                 self.assign(dest.ok_or("no result")?, &live)
             }
+            "IdMap.contains" => {
+                let id = self.id_parts(args.get(1).ok_or("no argument")?)?;
+                let (block, _) = self.operand(&Operand::Local(*map))?;
+                let (_, generations) = self.part(&block, parts.generations, false);
+                let found = self.finds(&generations, (&id.0, &id.1));
+                self.assign(dest.ok_or("no result")?, &found)
+            }
             "IdMap.get" => {
                 let dest = dest.ok_or("no result")?;
                 let id = self.id_parts(args.get(1).ok_or("no argument")?)?;

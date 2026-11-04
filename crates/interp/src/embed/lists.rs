@@ -56,8 +56,10 @@ fn element(state: &State, element: i64) -> Option<(usize, Rc<Element>)> {
 
 /// Whether a list of this kind of item owns a block for each.
 pub(super) fn owns_items(element: &Element) -> bool {
-    matches!(element, Element::Str | Element::Boxed(_) | Element::Maybe(_) | Element::List(_))
-        && !element.is_optional_text()
+    matches!(
+        element,
+        Element::Str | Element::Boxed(_) | Element::Maybe(_) | Element::List(_) | Element::ListOf(_)
+    ) && !element.is_optional_text()
 }
 
 /// The blocks items of a kind hold, laid out as `words`: an item of a word that's a block's
@@ -602,7 +604,7 @@ fn insert_into(kind: &str, list: i64, at: i64, (start, end): (i64, i64)) -> i64 
 fn same_item(state: &State, element: &Element, item: u64, word: u64) -> bool {
     match element {
         Element::Float => crate::value::floats_same(f64::from_bits(item), f64::from_bits(word)),
-        Element::Str | Element::Boxed(_) | Element::Maybe(_) | Element::List(_) => {
+        Element::Str | Element::Boxed(_) | Element::Maybe(_) | Element::List(_) | Element::ListOf(_) => {
             super::heap::same(state, item, word)
         }
         _ => item == word,

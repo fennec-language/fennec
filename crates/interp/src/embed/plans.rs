@@ -69,7 +69,12 @@ fn fixed_words(
             texts.push(*at);
             *at += 3;
         }
-        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => {
+        Element::Boxed(_)
+        | Element::Str
+        | Element::List(_)
+        | Element::ListOf(_)
+        | Element::Object
+        | Element::Maybe(_) => {
             blocks.push(*at);
             *at += 1;
         }
@@ -238,6 +243,18 @@ mod tests {
         found.clear();
         addresses(&plan, &fields, &mut found).unwrap();
         assert_eq!(found, Vec::<u64>::new());
+    }
+
+    /// A list that names its items by number is one word holding a block, as any list is.
+    #[test]
+    fn a_list_named_by_number_is_found_as_a_block() {
+        let holder = Element::Struct {
+            name: Rc::from("Holder"),
+            fields: vec![(Rc::from("n"), Element::Int), (Rc::from("items"), Element::ListOf(3))],
+        };
+        let mut found = Vec::new();
+        addresses(&plan(&holder), &[7, 88], &mut found).unwrap();
+        assert_eq!(found, [88]);
     }
 
     /// An enum with no data inside a value takes its words and holds nothing, and one with data

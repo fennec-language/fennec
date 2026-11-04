@@ -322,6 +322,7 @@ impl<'l> Registry<'l> {
         let tables = Tables {
             shapes: shapes(layouts),
             blocks,
+            shared_shapes: layouts.shared_layouts().iter().map(|id| u64::from(*id)).collect(),
             str_shape: u64::try_from(layouts.len()).unwrap_or(0),
             text_headers: layouts.text_headers(),
             ..Tables::default()

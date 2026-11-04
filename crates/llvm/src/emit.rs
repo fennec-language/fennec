@@ -1800,6 +1800,15 @@ impl Emit<'_, '_, '_> {
                 };
                 self.assign(*dest, &result)
             }
+            // With one thread, nothing else can be holding a lock.
+            InstKind::Lock { .. }
+            | InstKind::Unlock { .. }
+            | InstKind::LockAll { .. }
+            | InstKind::UnlockAll { .. }
+                if !self.module.threads =>
+            {
+                Ok(())
+            }
             InstKind::Binary { dest, op, lhs, rhs } => self.binary(*dest, *op, lhs, rhs, span),
             InstKind::Make { dest, fields, .. } => self.make(*dest, fields),
             InstKind::MakeDict { dest, pairs } => self.make_dict(*dest, pairs),

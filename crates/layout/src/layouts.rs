@@ -62,6 +62,8 @@ pub struct Layouts {
     in_place: InPlace,
     /// The types `Ty::Block` names, by number.
     blocks: std::cell::RefCell<Vec<Ty>>,
+    /// The layouts of `shared` types.
+    shared: Vec<u32>,
 }
 
 /// What a backend holds in place, where others hold the address of a block.
@@ -145,6 +147,11 @@ impl Layouts {
             layouts.add(&sources, name, &mut Vec::new());
         }
         layouts.add_boxed(&sources, &names);
+        layouts.shared = definitions
+            .iter()
+            .filter(|(_, written)| matches!(written, Written::Shared(_)))
+            .filter_map(|(name, _)| layouts.id(name))
+            .collect();
         layouts
     }
 
@@ -164,7 +171,7 @@ impl Layouts {
             self.place_fields(typed, start)
         };
         match def {
-            Written::Generator(_) => None,
+            Written::Generator(_) | Written::Shared(_) => None,
             Written::Struct(fields) => {
                 // An `IdMap` is a block of its own, shared until it changes, like a list.
                 let (fields, size) = place(fields, 0, !name.starts_with("IdMap["))?;
@@ -214,7 +221,7 @@ impl Layouts {
                 layouts.place_fields(typed, start)
             };
             let layout = match written {
-                Written::Struct(fields) | Written::Generator(fields) => {
+                Written::Struct(fields) | Written::Generator(fields) | Written::Shared(fields) => {
                     place(self, fields, 0).map(|(fields, size)| Layout {
                         name: name.clone(),
                         fields,
@@ -454,6 +461,12 @@ impl Layouts {
         }
     }
 
+    /// The layouts of `shared` types, which are also their blocks' shapes.
+    #[must_use]
+    pub fn shared_layouts(&self) -> &[u32] {
+        &self.shared
+    }
+
     /// How many kinds of block have numbers.
     #[must_use]
     pub fn block_count(&self) -> u32 {
@@ -625,6 +638,8 @@ pub type WrittenField = (String, Type, Option<Expr>);
 #[derive(Clone)]
 pub enum Written {
     Struct(Vec<WrittenField>),
+    /// A `shared` struct: always boxed, and one block every name for it reaches.
+    Shared(Vec<WrittenField>),
     /// A generator's block: always boxed, with the fields every generator has first.
     Generator(Vec<WrittenField>),
     Enum(Vec<(String, Vec<WrittenField>)>),

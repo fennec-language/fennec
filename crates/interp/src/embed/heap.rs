@@ -711,6 +711,15 @@ pub extern "C" fn alloc(shape: i64) -> i64 {
 pub extern "C" fn unshare(address: i64) -> i64 {
     with(|state| {
         let address = u64::try_from(address).unwrap_or(0);
+        // A `shared` value is one block however many names it has.
+        if state
+            .heap
+            .block(address)
+            .and_then(shape_word)
+            .is_some_and(|shape| state.tables.shared_shapes.contains(&shape))
+        {
+            return i64::try_from(address).unwrap_or(0);
+        }
         let Some(block) = state.heap.block(address) else { return 0 };
         let mut copy: Box<[u64]> = block.into();
         // The block copied loses an owner, in its count, or for its lender to take off.

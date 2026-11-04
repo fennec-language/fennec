@@ -2211,34 +2211,56 @@ def main(stdout: Stdout):
     )
 }
 
-/// Keys are hashed and compared by their words, so one holding a string can't be: two equal
-/// strings can be two blocks. Native code turns those dicts down, and the JIT takes them.
+/// Keys holding strings are hashed and compared by what they hold, since two equal strings can be
+/// two blocks.
 #[test]
-fn keys_holding_strings_go_to_the_jit() -> std::io::Result<()> {
+fn keys_holding_strings_are_native() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = r#"struct Person:
+    same_as_the_interpreter(
+        "keys_holding_strings",
+        r#"struct Person:
     name: str
     age: int
+
+def joined(a: str, b: str) -> str:
+    a + b
 
 def main(stdout: Stdout):
     mut by_person: dict[Person, int] = {}
     by_person[Person("a string long enough that it can't be held inline", 1)] = 1
-    stdout.print(by_person.len())
-"#;
-    let dir = folder("keys_holding_strings")?;
-    let program = dir.join("keys_holding_strings.fen");
+    same = Person(joined("a string long enough that it ", "can't be held inline"), 1)
+    stdout.print(by_person.len(), by_person[same], same in by_person)
+"#,
+    )
+}
+
+/// A program LLVM can't build yet says so, and runs on the JIT.
+#[test]
+fn what_llvm_cannot_build_runs_on_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"def keep(change: (int) -> int) -> Iterator[int]:
+    yield change(1)
+
+def main(stdout: Stdout):
+    for n in keep((n) => n + 1):
+        stdout.print(n)
+";
+    let dir = folder("cannot_build")?;
+    let program = dir.join("cannot_build.fen");
     std::fs::write(&program, source)?;
     let (program, output) = (program.to_string_lossy().into_owned(), dir.join("out"));
     let built = fennec(&["build", "--llvm", &program, "-o", &output.to_string_lossy()], &dir)?;
     assert!(!built.status.success());
-    assert!(String::from_utf8_lossy(&built.stderr).contains("Dict(Named(\"Person\"), Int)"));
+    assert!(String::from_utf8_lossy(&built.stderr).contains("it keeps a closure in a generator"));
     let ran = fennec(&["run", &program], &dir)?;
     assert!(ran.status.success());
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "1\n");
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "2\n");
     let said = String::from_utf8_lossy(&ran.stderr).into_owned();
-    assert!(said.starts_with("note: running this with the JIT, since LLVM can't build it: `main`"), "{said}");
+    assert!(said.starts_with("note: running this with the JIT, since LLVM can't build it: "), "{said}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -3949,6 +3971,66 @@ def main(stdout: Stdout):
     for at in range(200):
         grown[(at % 20, f"key {at % 20}")] = at
     stdout.print(grown.len(), grown[(7, "key 7")], grown[(19, "key 19")])
+"#,
+    )
+}
+
+/// A `shared` value is one cell every name for it reaches, wherever the names are.
+#[test]
+fn shared_values_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter(
+        "shared_cells",
+        r#"shared Account:
+    total = 0
+    log = list[str]()
+
+    def add(mut self, amount: int):
+        self.total += amount
+        self.log.append(f"added {amount}")
+
+    def balance(self) -> int:
+        self.total
+
+struct Holder:
+    account: Account
+    label: str
+
+def deposit(account: Account, amount: int):
+    account.add(amount)
+
+def transfer(source: Account, target: Account, amount: int) -> bool:
+    with source, target as mut x, mut y:
+        if x.total < amount: return False
+        x.total -= amount
+        y.add(amount)
+    True
+
+def main(stdout: Stdout):
+    first = Account(total=100)
+    second = Account()
+    same = second
+    stdout.print(transfer(first, target=second, amount=30), transfer(second, target=first, amount=50))
+    same.add(5)
+    deposit(second, 1)
+    stdout.print(first.balance(), second.balance(), same.balance(), same.log.len())
+    holder = Holder(account=second, label="held")
+    copied = holder
+    holder.account.add(7)
+    stdout.print(copied.account.total, second.total, second.log)
+    all = [first, second, same]
+    all[2].add(11)
+    stdout.print(second.total, all[1].total)
+    mut named = {"a": first}
+    named["a"].add(13)
+    stdout.print(first.total)
+    mut summary = ""
+    with first, second as seen, other:
+        summary = f"{seen.total} and {other.balance()}"
+    stdout.print(summary)
+    stdout.print(first)
 "#,
     )
 }

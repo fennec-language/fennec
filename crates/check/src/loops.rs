@@ -3,10 +3,12 @@
 //! or pass it as `mut`, and neither may a function the body calls: each function's summary says
 //! which places under its `mut` parameters it changes. The loop goes over `copy(xs)` instead, or
 //! collects the changes and makes them after.
+//!
+//! A `mut` argument has its place to itself the same way: nothing else in the call can reach it.
 
 use std::collections::{HashMap, HashSet};
 
-use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Span, Stmt, StmtKind};
+use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, FnDef, Span, Stmt, StmtKind};
 
 use crate::Body;
 use crate::builtins;
@@ -266,6 +268,91 @@ impl Loops<'_> {
         self.working.remove(key);
         self.done.insert(key.to_owned());
         self.summaries.get(key).cloned().unwrap_or_default()
+    }
+}
+
+/// Reports each `mut` argument whose place another argument of the same call can reach, in a
+/// function's body or a nested function's. What a method is called on counts as an argument.
+pub(crate) fn check_arguments(stmts: &[Stmt]) -> Vec<Diagnostic> {
+    let mut problems = Vec::new();
+    arguments_in_block(stmts, &mut problems);
+    problems
+}
+
+fn arguments_in_block(stmts: &[Stmt], problems: &mut Vec<Diagnostic>) {
+    for stmt in stmts {
+        for expr in exprs(stmt) {
+            arguments_in(expr, problems);
+        }
+        for block in blocks(stmt) {
+            arguments_in_block(block, problems);
+        }
+        if let StmtKind::Def(def) = &stmt.kind {
+            arguments_in_block(&def.body, problems);
+        }
+    }
+}
+
+fn arguments_in(expr: &Expr, problems: &mut Vec<Diagnostic>) {
+    if let ExprKind::Call { callee, args } = &expr.kind {
+        overlapping_arguments(callee, args, problems);
+    }
+    if let ExprKind::Match { arms, .. } = &expr.kind {
+        for arm in arms {
+            arguments_in_block(&arm.body, problems);
+        }
+    }
+    for inner in crate::effects::children(expr) {
+        arguments_in(inner, problems);
+    }
+}
+
+fn overlapping_arguments(callee: &Expr, args: &[Arg], problems: &mut Vec<Diagnostic>) {
+    let receiver = match &callee.kind {
+        ExprKind::Attr { object, .. } => place(object).map(|found| (found, object.as_ref())),
+        _ => None,
+    };
+    let mut earlier: Vec<(Place, &Expr, bool)> = Vec::new();
+    for arg in args {
+        let Some(given) = place(&arg.value) else { continue };
+        let clash =
+            earlier.iter().find(|(other, _, is_mut)| (arg.is_mut || *is_mut) && given.overlaps(other));
+        let held = receiver.as_ref().filter(|(called_on, _)| arg.is_mut && given.overlaps(called_on));
+        if let Some((_, other, is_mut)) = clash {
+            let (first, second) = (written(other, *is_mut), written(&arg.value, arg.is_mut));
+            let message = format!("{first} and {second} overlap");
+            problems.push(Diagnostic::new(message, arg.value.span).with_help(OVERLAP_FIX));
+        } else if let Some((_, called_on)) = held {
+            let (first, second) = (written(&arg.value, true), written(called_on, false));
+            let message = format!("{first} overlaps {second}, which this method is called on");
+            problems.push(Diagnostic::new(message, arg.value.span).with_help(OVERLAP_FIX));
+        }
+        earlier.push((given, &arg.value, arg.is_mut));
+    }
+}
+
+const OVERLAP_FIX: &str = "a `mut` argument needs its place to itself: give the other `copy(...)` of what \
+it reads, or make the changes one at a time";
+
+/// An argument that names a place, in backticks as it's written.
+fn written(expr: &Expr, is_mut: bool) -> String {
+    let word = if is_mut { "mut " } else { "" };
+    format!("`{word}{}`", place_text(expr))
+}
+
+fn place_text(expr: &Expr) -> String {
+    match &expr.kind {
+        ExprKind::Name(name) => name.clone(),
+        ExprKind::Attr { object, name, .. } => format!("{}.{name}", place_text(object)),
+        ExprKind::Index { object, index } => {
+            let at = match &index.kind {
+                ExprKind::Name(name) => name.clone(),
+                ExprKind::Int(value) => value.to_string(),
+                _ => "...".to_owned(),
+            };
+            format!("{}[{at}]", place_text(object))
+        }
+        _ => "...".to_owned(),
     }
 }
 

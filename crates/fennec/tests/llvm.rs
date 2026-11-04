@@ -2503,3 +2503,45 @@ def main(stdout: Stdout):
 "#,
     )
 }
+
+/// Two `mut` arguments that go to different fields are two places, and a built program changes
+/// both. The same place given twice doesn't build.
+#[test]
+fn mut_arguments_to_different_fields_both_change_and_overlapping_ones_dont_build() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let parts = "struct Spot:\n    x = 0\n\nstruct Unit:\n    position = Spot()\n    home = Spot()\n\n\
+                 def bump(mut first: Spot, mut second: Spot):\n    first.x += 1\n    second.x += 10\n\n";
+    let dir = folder("overlapping_mut")?;
+    let (apart, together) = (dir.join("apart.fen"), dir.join("together.fen"));
+    std::fs::write(
+        &apart,
+        format!(
+            "{parts}def main(stdout: Stdout):\n    mut unit = Unit()\n    bump(mut unit.position, mut unit.home)\n    \
+             stdout.print(unit.position.x, unit.home.x)\n"
+        ),
+    )?;
+    std::fs::write(
+        &together,
+        format!(
+            "{parts}def main(stdout: Stdout):\n    mut unit = Unit()\n    bump(mut unit.position, mut unit.position)\n    \
+             stdout.print(unit.position.x)\n"
+        ),
+    )?;
+    let executable = dir.join("apart");
+    let built =
+        fennec(&["build", "--llvm", &apart.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    let refused = fennec(
+        &["build", "--llvm", &together.to_string_lossy(), "-o", &dir.join("together").to_string_lossy()],
+        &dir,
+    )?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours.0, "1 10\n");
+    assert!(!refused.status.success());
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("`mut unit.position` and `mut unit.position` overlap"), "{said}");
+    Ok(())
+}

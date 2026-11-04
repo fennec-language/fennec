@@ -58,7 +58,7 @@ fn a_name_or_the_other_side_of_equals_chooses_the_enum() {
             tok = .Name('x')
             mut expr = Expr(.Int(1))
             expr.kind = .Name('y')
-            stdout.print(tok == .Name('x'), .Int(1) != tok, tok == .Eof)
+            stdout.print(tok == .Name('x'), .Int(1) != tok, tok == .Eof, expr)
     ";
     assert_eq!(with_enums(program), Vec::<String>::new());
 }

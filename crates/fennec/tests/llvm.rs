@@ -1150,6 +1150,7 @@ def main(stdout: Stdout):
     stdout.print(boxes, other)
     # Outside the list's length, it fails as it should.
     units[9].tags.append(1)
+    stdout.print(units)
 ",
     )?;
     let counts = counts_of(
@@ -2055,6 +2056,75 @@ fn count(counts: &str, name: &str) -> Option<u64> {
     counts.split_whitespace().skip_while(|word| *word != name).nth(1).and_then(|number| number.parse().ok())
 }
 
+/// `fennec dev trace` says each place that allocated or copied in a run, with how often and why,
+/// and agrees with what the run counted altogether.
+#[test]
+fn a_trace_names_each_line_that_cost_something_and_why() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "\
+def main(stdout: Stdout):
+    mut total = 0
+    for i in range(50):
+        pair = [i, i + 1]
+        total += pair[0]
+    mut first = [1, 2, 3]
+    second = first
+    first.append(4)
+    stdout.print(total, first.len(), second.len())
+";
+    let dir = folder("trace")?;
+    let program = dir.join("trace.fen");
+    std::fs::write(&program, source)?;
+    let path = program.to_string_lossy().into_owned();
+    let traced = fennec(&["dev", "trace", &path], &dir)?;
+    let (said, errors) = (String::from_utf8_lossy(&traced.stdout), String::from_utf8_lossy(&traced.stderr));
+    assert!(traced.status.success(), "{errors}");
+    let list_line = said.lines().find(|line| line.contains(".fen:4:")).unwrap_or_default();
+    assert!(list_line.contains("50 allocations") && list_line.contains("allocated"), "{said}");
+    assert!(list_line.contains("(in a loop)"), "{said}");
+    let copy_line = said.lines().find(|line| line.contains(".fen:8:")).unwrap_or_default();
+    assert!(copy_line.contains("1 copy") && copy_line.contains("`first` is copied here"), "{said}");
+    assert!(!said.contains(".fen:2:") && !said.contains(".fen:5:"), "{said}");
+
+    // The hottest place comes first, and what it printed is left out.
+    assert!(said.lines().next().is_some_and(|line| line.contains(".fen:4:")), "{said}");
+    assert!(!said.lines().any(|line| line.starts_with("1225 ")), "{said}");
+
+    let json = fennec(&["dev", "trace", "--json", &path], &dir)?;
+    let json = String::from_utf8_lossy(&json.stdout);
+    assert!(json.contains("\"allocations\":50"), "{json}");
+    assert!(json.contains("\"failed\":false"), "{json}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// What a trace found matches what the same program counts without it: tracing changes nothing
+/// about what a run costs.
+#[test]
+fn a_trace_counts_what_a_plain_build_counts() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def main(stdout: Stdout):\n    mut items = [1]\n    for i in range(200):\n        items.append(i)\n    other = items\n    items.append(1)\n    stdout.print(other.len(), f\"{items.len()} long\")\n";
+    let plain = counts_of("trace_plain", source)?;
+    let dir = folder("trace_counts")?;
+    let program = dir.join("counts.fen");
+    std::fs::write(&program, source)?;
+    let path = program.to_string_lossy().into_owned();
+    let traced = fennec(&["dev", "trace", &path], &dir)?;
+    let said = String::from_utf8_lossy(&traced.stdout);
+    std::fs::remove_dir_all(&dir)?;
+    assert!(traced.status.success());
+    let allocations = count(&plain, "allocations").unwrap_or(0);
+    let copies = count(&plain, "copies").unwrap_or(0);
+    let last = said.lines().last().unwrap_or_default();
+    assert!(last.contains(&format!("{allocations} allocation")), "{plain} / {said}");
+    assert!(last.contains(&format!("{copies} cop")), "{plain} / {said}");
+    Ok(())
+}
+
 #[test]
 fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Result<()> {
     if !ready() {
@@ -2366,7 +2436,7 @@ fn an_empty_buffer_fails_to_pop_like_the_jit() -> std::io::Result<()> {
     )?;
     same_message_as_the_jit(
         "buffer_insert",
-        "def main(stdout: Stdout):\n    mut kept = Buffer[str]()\n    kept.insert(0, \"fox\")\n    kept.insert(1, \"kit\")\n    stdout.print(kept[0], kept[1])\n    kept.insert(5, \"den\")\n",
+        "def main(stdout: Stdout):\n    mut kept = Buffer[str]()\n    kept.insert(0, \"fox\")\n    kept.insert(1, \"kit\")\n    stdout.print(kept[0], kept[1])\n    kept.insert(5, \"den\")\n    stdout.print(kept[0])\n",
     )
 }
 

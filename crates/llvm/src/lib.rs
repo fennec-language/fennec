@@ -58,7 +58,7 @@ use fennec_ir::{EnumDef, Program};
 use fennec_layout::{ListItem, Written, generator_definition};
 
 pub use build::{Built, Tools, compile, compile_whole, sanitize_flag};
-pub use emit::{Cpu, Unit, emit, emit_for, emit_traced};
+pub use emit::{Cpu, Unit, emit, emit_for, emit_traced, emit_tracing_costs};
 pub use entry::{Image, entry, tests_entry};
 pub use fennec_layout::Layouts;
 pub use parallel::uses_parallel;
@@ -83,6 +83,11 @@ pub struct Shared {
     pub traced: bool,
     /// The functions that have a flag.
     pub ran: BTreeSet<String>,
+    /// Whether code says where it is before anything there can allocate or copy, for a run to say
+    /// what each place cost.
+    pub tracing_costs: bool,
+    /// What's at each place that says so, by where it starts in its file.
+    pub sites: BTreeMap<u32, String>,
 }
 
 /// The layouts of everything a program defines, generic types' copies included, and of the

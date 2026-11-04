@@ -327,11 +327,29 @@ impl Checker {
     fn names_for_places(&mut self) -> BTreeSet<(u32, u32)> {
         let mut places = BTreeSet::new();
         let mut problems = Vec::new();
+        let mut wanted = Vec::new();
         for (key, entry) in self.program.functions.iter().filter(|(_, entry)| !entry.prelude) {
             let (found, named) = crate::alias::check_function(self, &entry.def, self.typed.get(key));
             problems.extend(found);
             problems.extend(crate::loops::check_function(self, key, &entry.def));
+            wanted.push((key.clone(), named.clone()));
             places.extend(named.into_iter().map(|span| (span.start, span.end)));
+        }
+        // A change that's lost matters only once what's written is otherwise right.
+        let clean = problems.is_empty();
+        for (key, named) in wanted.into_iter().filter(|_| clean) {
+            let Some(def) = self.program.functions.get(&key).map(|entry| entry.def.clone()) else { continue };
+            problems.extend(crate::lost::check_body(self, &key, &def.body, &named));
+        }
+        if clean {
+            for test in self.program.tests.clone() {
+                problems.extend(crate::lost::check_body(
+                    self,
+                    &format!("test \"{}\"", test.name),
+                    &test.body,
+                    &[],
+                ));
+            }
         }
         self.diagnostics.extend(problems);
         places

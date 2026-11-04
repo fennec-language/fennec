@@ -711,7 +711,8 @@ fn reads_apart(elem: &Expr, root: &str, first_field: Option<&str>) -> bool {
     fennec_syntax::visit::in_expr(&mut elem.clone(), &mut |seen| match &seen.kind {
         ExprKind::Name(name) if name == root => named += 1,
         ExprKind::Attr { object, name, .. }
-            if matches!(&object.kind, ExprKind::Name(held) if held == root) && Some(name.as_str()) != first_field =>
+            if matches!(&object.kind, ExprKind::Name(held) if held == root)
+                && Some(name.as_str()) != first_field =>
         {
             other_fields += 1;
         }

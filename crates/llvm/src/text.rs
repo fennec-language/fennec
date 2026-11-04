@@ -775,6 +775,19 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn text_of_value(&mut self, dest: LocalId, value: &Operand, span: Span) -> Result<(), String> {
         let (held, kind) = self.operand(value)?;
         let temp = self.temp();
+        if self.headers() && matches!(kind, Kind::Int | Kind::Float) {
+            let (call, ty) = if kind == Kind::Int { ("int", "i64") } else { ("float", "double") };
+            let header = crate::headers::HEADER;
+            self.declare(&format!(
+                "declare void @fennec_{call}_header(ptr sret({header}) align 8, {ty}) nounwind"
+            ));
+            let place = self.place_for_text();
+            self.line(&format!(
+                "call void @fennec_{call}_header(ptr sret({header}) align 8 {place}, {ty} {held})"
+            ));
+            self.line(&format!("{temp} = load {header}, ptr {place}"));
+            return self.assign(dest, &temp);
+        }
         match kind {
             Kind::Int => {
                 self.declare("declare ptr @fennec_int_text(i64) nounwind");

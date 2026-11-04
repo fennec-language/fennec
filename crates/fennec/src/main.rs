@@ -22,6 +22,7 @@ mod lsp;
 mod report;
 mod run;
 mod test;
+mod test_inputs;
 mod trace;
 mod verdict;
 

@@ -99,7 +99,7 @@ impl Lowering<'_> {
             let mut values = Vec::with_capacity(args.len() + 1);
             if let Some(object) = object {
                 values.push(if changes {
-                    self.place(object, false, &mut write_backs, span)?
+                    self.place(object, (false, false), &mut write_backs, span)?
                 } else {
                     self.expr(object)?
                 });
@@ -350,7 +350,7 @@ impl Lowering<'_> {
             let handle = self.object_type(object).is_some_and(|ty| self.context.is_handle(&ty));
             let changed = signature.params.first().is_some_and(|param| param.is_mut);
             let value = if changed && !handle {
-                self.place(object, index_changes, write_backs, span)?
+                self.place(object, (index_changes, false), write_backs, span)?
             } else {
                 self.expr(object)?
             };
@@ -370,7 +370,8 @@ impl Lowering<'_> {
             let param = at.and_then(|at| signature.params.get(at));
             let param = param.ok_or_else(|| format!("an argument to `{key}` matches no parameter"))?;
             let value = if param.is_mut && !self.context.is_handle(&param.ty) {
-                self.place(&arg.value, index_changes, write_backs, span)?
+                let takes_optional = matches!(param.ty, Type::Optional(_));
+                self.place(&arg.value, (index_changes, takes_optional), write_backs, span)?
             } else {
                 let lowered = self.expr(&arg.value)?;
                 if own { self.coerce(lowered, &param.ty, arg.value.span)? } else { lowered }
@@ -385,18 +386,20 @@ impl Lowering<'_> {
 
     /// Something a call changes: a local itself, or a temporary holding a field or item
     /// that's written back after the call. So is a name known not to be `None`, which goes
-    /// back as an optional. `index_changes` keeps its indexes apart from the names they came from.
+    /// back as an optional, unless what it's given to takes an optional and can make it `None`.
+    /// When an index may change, the place's indexes are held apart from the names they came from.
     fn place(
         &mut self,
         expr: &Expr,
-        index_changes: bool,
+        (index_changes, takes_optional): (bool, bool),
         write_backs: &mut Vec<WriteBack>,
         span: Span,
     ) -> Lowered<Operand> {
         let place = if index_changes { self.held_place(expr, span)? } else { self.place_of(expr)? };
         let held = self.steps_type(&place)?;
-        let narrowed =
-            matches!(held, Type::Optional(_)) && self.type_at(expr.span).is_some_and(|read| read != held);
+        let narrowed = !takes_optional
+            && matches!(held, Type::Optional(_))
+            && self.type_at(expr.span).is_some_and(|read| read != held);
         if place.steps.is_empty() && !narrowed {
             return Ok(Operand::Local(place.local));
         }

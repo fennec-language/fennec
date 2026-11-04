@@ -568,18 +568,49 @@ fn an_interface_is_only_a_parameters_type_by_itself() {
     }
 }
 
-#[test]
-fn a_programs_own_type_can_be_named_like_a_library_interface() {
+/// The interfaces the standard library declares, which a program is free to name things after.
+fn library_interfaces() -> Vec<String> {
     let library = fennec_syntax::prelude_modules().unwrap_or_default();
     let interfaces = fennec_syntax::visit::interface_names(library.iter());
-    let name =
-        interfaces.iter().find(|name| !fennec_syntax::visit::BUILT_IN_INTERFACES.contains(&name.as_str()));
-    let Some(name) = name else { return };
-    let text = format!(
-        "struct {name}:\n    width = 3\n\ndef wide(given: {name}) -> int:\n    given.width\n\n\
-         def main(stdout: Stdout):\n    stdout.print(wide({name}()))\n"
-    );
-    assert_eq!(problems(&text), Vec::<String>::new());
+    let found: Vec<String> = interfaces
+        .into_iter()
+        .filter(|name| !fennec_syntax::visit::BUILT_IN_INTERFACES.contains(&name.as_str()))
+        .collect();
+    assert_ne!(found, Vec::<String>::new());
+    found
+}
+
+#[test]
+fn a_programs_own_type_can_be_named_like_a_library_interface() {
+    for name in library_interfaces() {
+        let text = format!(
+            "struct {name}:\n    width = 3\n\ndef wide(given: {name}) -> int:\n    given.width\n\n\
+             def main(stdout: Stdout):\n    stdout.print(wide({name}()))\n"
+        );
+        assert_eq!(problems(&text), Vec::<String>::new());
+    }
+}
+
+#[test]
+fn a_programs_own_alias_can_be_named_like_a_library_interface() {
+    for name in library_interfaces() {
+        let text = format!("type {name} = int\n\ndef twice(given: {name}) -> int:\n    given * 2\n");
+        assert_eq!(problems(&text), Vec::<String>::new());
+    }
+}
+
+#[test]
+fn a_programs_own_interface_can_be_named_like_a_library_interface() {
+    for name in library_interfaces() {
+        let text = format!(
+            "interface {name}:\n    def width(self) -> int\n\nstruct Box:\n    size = 3\n\n    \
+             def width(self) -> int:\n        self.size\n\n\
+             struct Holder[T: {name}]:\n    item: T\n\n\
+             def wide(given: {name}) -> int:\n    given.width()\n\n\
+             def main(stdout: Stdout):\n    stdout.print(wide(Box()))\n    stdout.print(Holder(item=Box()).item.width())\n"
+        );
+        assert_eq!(problems(&text), Vec::<String>::new());
+    }
 }
 
 const READS: &str =

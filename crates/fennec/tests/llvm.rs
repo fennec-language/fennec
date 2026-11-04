@@ -52,6 +52,16 @@ fn same_message_as_the_jit(name: &str, source: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// What the program printed, its errors and its exit code on the interpreter.
+fn interpreted(name: &str, source: &str) -> std::io::Result<Outcome> {
+    let dir = folder(&format!("{name}_interpreted"))?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let done = outcome(&fennec(&["run", "--interp", &program.to_string_lossy()], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(done)
+}
+
 /// What the program printed, its errors and its exit code, built with LLVM and run by the JIT.
 fn both(name: &str, source: &str) -> std::io::Result<(Outcome, Outcome)> {
     both_built(name, source, &["--llvm"])
@@ -768,6 +778,112 @@ def main(stdout: Stdout):
     flags = [True, False]
     stdout.print(flags[0], flags[-1])
     stdout.print(f"{half:.3f} and {n} at {a.x}")
+"#,
+    )
+}
+
+/// What a program prints through LLVM is what the interpreter prints.
+fn same_as_the_interpreter(name: &str, source: &str) -> std::io::Result<()> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    let interpreted = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours, interpreted);
+    Ok(())
+}
+
+/// Evaluation runs left to right: an operand keeps the value it had when it was read, even if one
+/// after it changes what it names. The JIT doesn't on a plain call, so this is held to what the
+/// interpreter prints.
+#[test]
+fn an_earlier_operand_keeps_its_value_when_a_later_one_changes_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter(
+        "left_to_right",
+        r#"struct Box:
+    items: list[int]
+    count: int
+
+    def grow(mut self) -> int:
+        self.items.append(9)
+        self.count = self.count + 1
+        self.count
+
+struct Pair:
+    first: list[int]
+    second: int
+
+def show(a: list[int], b: int) -> str:
+    f"{a} {b}"
+
+def take(mut a: list[int]) -> int:
+    a.pop()
+
+def pair(a: int, b: int) -> str:
+    f"{a} {b}"
+
+def bump(mut a: int) -> int:
+    a = a + 1
+    a
+
+def through(called: (list[int], int) -> str, mut items: list[int]) -> str:
+    called(items, items.pop())
+
+def main(stdout: Stdout):
+    mut xs = [1, 2, 3]
+    stdout.print(xs, xs.pop())
+    stdout.print(xs)
+    mut ys = [1, 2, 3]
+    stdout.print(show(ys, ys.pop()), ys)
+    mut zs = [1, 2, 3]
+    stdout.print(show(zs, take(mut zs)), zs)
+    mut d = {1: 2, 3: 4}
+    stdout.print(d, d.pop(1), d)
+    mut e = {1: 2, 3: 4}
+    stdout.print(e.len(), e.pop(1), e.len())
+    mut n = 1
+    stdout.print(pair(n, bump(mut n)), n)
+    stdout.print(n, bump(mut n), n)
+    mut b = Box(items=[1], count=0)
+    stdout.print(b.count, b.grow(), b.count)
+    stdout.print(b.items, b.grow(), b.items)
+    stdout.print(b, b.grow(), b)
+    mut q = [1]
+    stdout.print([q, [q.pop()]], q)
+    mut r = [1, 2]
+    stdout.print((r, r.pop()), r)
+    mut s = [1, 2]
+    stdout.print(f"{s} {s.pop()} {s}")
+    mut u = [1, 2]
+    stdout.print(show(u, show(u, u.pop()).len()), u)
+    mut v = [1, 2]
+    stdout.print(v[0], v.pop(0), v[0])
+    mut w = [1, 2, 3]
+    stdout.print(w[w.pop() - 3], w)
+    mut x = [1, 2, 3]
+    stdout.print(x[:x.pop()], x)
+    mut f = 2
+    stdout.print(f + bump(mut f), f)
+    mut i = [1]
+    stdout.print(Pair(first=i, second=i.pop()), i)
+    mut j = [1]
+    stdout.print(Pair(second=j.pop(), first=j), j)
+    mut m = [1, 2]
+    stdout.print([m.pop(), m.len(), m.pop(), m.len()], m)
+    mut o = [1, 2]
+    stdout.print(through((a, b) => show(a, b), mut o), o)
+    mut t = {1: 1, 2: 2}
+    stdout.print(t.get(t.pop(2) - 1), t.get(t.pop(1)), t)
+    mut aa = "a"
+    mut ab = [aa]
+    stdout.print(ab, ab.pop(), aa)
 "#,
     )
 }
@@ -2484,6 +2600,199 @@ fn a_float_too_big_for_an_int_fails_like_the_jit() -> std::io::Result<()> {
 }
 
 /// Optional strings going into a list, whose items hold an optional as an enum.
+/// A loop sees what its body gave a name, on every engine: the checker used to say what the name
+/// held before the loop, and LLVM folded `is None` on that.
+#[test]
+fn a_loop_tests_what_its_body_gave_a_name() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"struct Box:
+    v: int
+
+def main(stdout: Stdout):
+    mut x: int? = None
+    for n in range(3):
+        if x is None:
+            stdout.print("none", n)
+            x = n
+        else:
+            stdout.print("some", n)
+    stdout.print(x)
+    mut inferred = None
+    for n in range(3):
+        if inferred is None:
+            stdout.print("no box", n)
+            inferred = Box(v=n)
+        else:
+            stdout.print("box", n)
+    stdout.print(inferred)
+    mut text = None
+    mut i = 0
+    while text is None:
+        stdout.print("no text", i)
+        i += 1
+        if i == 3:
+            text = "a"
+    stdout.print(text)
+    mut nested: int? = None
+    for a in range(2):
+        for b in range(2):
+            stdout.print(nested is None, a, b)
+        nested = a
+    stdout.print(nested)
+"#;
+    let (ours, jit) = both("a_loop_tests_what_its_body_gave_a_name", source)?;
+    let held = interpreted("a_loop_tests_what_its_body_gave_a_name", source)?;
+    assert_eq!(ours, held);
+    assert_eq!(jit, held);
+    Ok(())
+}
+
+/// The same when the body gives it a value only some of the time, or leaves early.
+#[test]
+fn a_loop_tests_what_a_path_through_its_body_gave_a_name() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"def fill(mut slot: int?):
+    slot = 7
+
+def main(stdout: Stdout):
+    mut inner: int? = None
+    for a in range(2):
+        stdout.print(inner is None, a)
+        for b in range(2):
+            inner = b
+    mut branch: int? = None
+    for at in range(3):
+        if branch is not None:
+            stdout.print(branch + 1, at)
+        if at == 0:
+            branch = 5
+    mut left: int? = None
+    for at in range(4):
+        if left is not None:
+            stdout.print("left", left, at)
+            break
+        if at == 1:
+            left = at
+    mut skipped: int? = None
+    for at in range(4):
+        if skipped is None:
+            if at == 1:
+                skipped = at
+            continue
+        stdout.print("skipped", skipped, at)
+    mut matched: int? = None
+    for at in range(3):
+        match at:
+            case 0:
+                stdout.print(matched is None)
+            case _:
+                stdout.print(matched is None)
+                matched = at
+    mut passed: int? = None
+    for at in range(2):
+        stdout.print(passed is None, at)
+        fill(mut passed)
+    mut shown: int? = None
+    for at in range(2):
+        def show(stdout: Stdout):
+            stdout.print("in", at)
+        show(stdout)
+        stdout.print(shown is None)
+        shown = at
+"#;
+    let (ours, jit) = both("a_loop_tests_what_a_path_through_its_body_gave_a_name", source)?;
+    let held = interpreted("a_loop_tests_what_a_path_through_its_body_gave_a_name", source)?;
+    assert_eq!(ours, held);
+    assert_eq!(jit, held);
+    Ok(())
+}
+
+/// The other way round, a name that starts with a value and is given None. Not against the JIT,
+/// which stops when it's given None: #572.
+#[test]
+fn a_loop_tests_a_name_its_body_gave_none() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"struct Held:
+    x: int?
+
+    def clear(mut self):
+        self.x = None
+
+def clear(mut slot: int?):
+    slot = None
+
+def main(stdout: Stdout):
+    mut direct: int? = 1
+    for at in range(3):
+        stdout.print(direct is None, at)
+        direct = None
+    stdout.print(direct)
+    mut changed: int? = 1
+    mut count = 0
+    while count < 3:
+        if changed is None:
+            stdout.print("none", count)
+        else:
+            stdout.print("some", count)
+        changed = None
+        count += 1
+    mut outer: int? = 1
+    for a in range(2):
+        for b in range(2):
+            stdout.print(outer is None, a, b)
+        outer = None
+    mut branch: int? = 1
+    for at in range(3):
+        stdout.print(branch is None, at)
+        if at == 1:
+            branch = None
+    mut left: int? = 1
+    for at in range(3):
+        stdout.print(left is None, at)
+        left = None
+        if at == 1:
+            break
+        left = 2
+    stdout.print(left)
+    mut skipped: int? = 1
+    for at in range(3):
+        stdout.print(skipped is None, at)
+        skipped = None
+        if at == 0:
+            continue
+        skipped = 2
+    mut matched: int? = 1
+    for at in range(3):
+        match at:
+            case 0:
+                stdout.print(matched is None)
+            case _:
+                stdout.print(matched is None)
+                matched = None
+    mut passed: int? = 1
+    for at in range(2):
+        stdout.print(passed is None, at)
+        clear(mut passed)
+    mut field = Held(x=1)
+    for at in range(2):
+        stdout.print(field.x is None, at)
+        field.x = None
+    mut method = Held(x=1)
+    for at in range(2):
+        stdout.print(method.x is None, at)
+        method.clear()
+"#;
+    let (ours, _) = both("a_loop_tests_a_name_its_body_gave_none", source)?;
+    assert_eq!(ours, interpreted("a_loop_tests_a_name_its_body_gave_none", source)?);
+    Ok(())
+}
+
 #[test]
 fn optional_strings_in_lists_match_the_jit() -> std::io::Result<()> {
     if !ready() {

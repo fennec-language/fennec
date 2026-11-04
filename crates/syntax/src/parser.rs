@@ -16,24 +16,19 @@ use crate::token::{Kw, Punct, Tok, Token};
 
 /// Parses a whole `.fen` file, where only declarations may sit at the top level.
 pub fn parse(source: &str) -> Result<Module, Diagnostic> {
-    Parser::new(lex(source, 0)?).module(false)
+    Parser::new(lex(source, 0)?).module()
 }
 
 /// Parses a standard library source. Its spans start at `Span::PRELUDE`, so a mistake found
 /// in it is never shown against the program's own lines.
 pub fn parse_prelude(source: &str) -> Result<Module, Diagnostic> {
-    Parser::new(lex(source, Span::PRELUDE)?).module(false)
+    Parser::new(lex(source, Span::PRELUDE)?).module()
 }
 
 /// Parses one file of a program with several, its spans starting at byte `base` so they
 /// don't overlap another file's. `Sources` turns them back into a file and line.
 pub fn parse_at(source: &str, base: u32) -> Result<Module, Diagnostic> {
-    Parser::new(lex(source, base)?).module(false)
-}
-
-/// Parses a chunk typed into the REPL, where statements may sit at the top level too.
-pub fn parse_repl(source: &str) -> Result<Module, Diagnostic> {
-    Parser::new(lex(source, 0)?).module(true)
+    Parser::new(lex(source, base)?).module()
 }
 
 /// Parses statements standing alone, like the code in a doc example. They're indented as they
@@ -185,7 +180,7 @@ impl Parser {
         }
     }
 
-    fn module(&mut self, allow_statements: bool) -> Result<Module, Diagnostic> {
+    fn module(&mut self) -> Result<Module, Diagnostic> {
         let mut items = Vec::new();
         loop {
             while self.eat(&Tok::Newline) {}
@@ -194,7 +189,7 @@ impl Parser {
             }
             let item = self.item()?;
             let item = match item {
-                Item::Stmt(stmt) if !allow_statements => constant(stmt)?,
+                Item::Stmt(stmt) => constant(stmt)?,
                 item => item,
             };
             items.push(item);

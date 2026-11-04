@@ -3,11 +3,11 @@
 use std::fmt::Write as _;
 
 use fennec_interp::embed::layout::{FIELDS, LIST_ITEMS, LIST_LENGTH, LIST_ROOM};
-use fennec_ir::{LocalId, Operand};
+use fennec_ir::{InstKind, LocalId, Operand, PlaceStep};
 use fennec_layout::ListItem;
 use fennec_syntax::{BinOp, Span};
 
-use crate::emit::{Emit, FIELD_ACCESS, HEADER_ACCESS, ITEM_ACCESS, LENGTH_ACCESS};
+use crate::emit::{Emit, FIELD_ACCESS, HEADER_ACCESS, ITEM_ACCESS, LENGTH_ACCESS, VALUE_ACCESS};
 use crate::kinds::{Kind, element_symbol};
 use crate::uniqueness::{FieldPath, item_step, list_place};
 
@@ -361,6 +361,138 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &value)
     }
 
+    /// What's done for an instruction reading a place out for a call or writing it back, if it
+    /// is one: the place is taken out when it's reached, from the root down, each block on the
+    /// way made alone before anything inside it is. So its one owner is the place, and a block's
+    /// count is only given up where this thread holds it. Everything else on the way isn't read.
+    pub(crate) fn place_inst(&mut self, inst: &InstKind, span: Span) -> Option<Result<(), String>> {
+        match inst {
+            InstKind::GetField { dest, .. } | InstKind::GetIndex { dest, .. } => {
+                if self.known.is_place_part(*dest) {
+                    return Some(Ok(()));
+                }
+                self.known.place_taken(self.function, *dest)?;
+                // Failing to reach it comes first, as it's written, and the rest can wait.
+                if self.known.place_waits(*dest) {
+                    return Some(self.walk_place(*dest, false, span).map(|_| ()));
+                }
+                Some(self.take_place(*dest, span))
+            }
+            InstKind::SetField { object, value: Operand::Local(put), .. }
+            | InstKind::SetIndex { object, value: Operand::Local(put), .. } => {
+                if self.known.is_place_part(*object) {
+                    return Some(Ok(()));
+                }
+                let holder = self.known.place_holder(*put)?;
+                Some(self.put_place_back(holder))
+            }
+            _ => None,
+        }
+    }
+
+    /// Takes out each place this instruction changes that was waiting for it.
+    pub(crate) fn take_waiting_places(&mut self, inst: &InstKind, span: Span) -> Result<(), String> {
+        let (InstKind::Call { args, .. } | InstKind::Builtin { args, .. }) = inst else { return Ok(()) };
+        for arg in args {
+            if let Operand::Local(local) = arg
+                && self.known.place_waits(*local)
+            {
+                self.take_place(*local, span)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn take_place(&mut self, value: LocalId, span: Span) -> Result<(), String> {
+        let (at, kind, access) = self.walk_place(value, true, span)?;
+        self.place_homes.insert(value.0, (at.clone(), kind.clone(), access));
+        self.read_into(value, &kind, &at, access)
+    }
+
+    /// Where a place is, from its root. Taking it, each block on the way is made alone first;
+    /// otherwise this only fails if an index is outside its list.
+    fn walk_place(
+        &mut self,
+        value: LocalId,
+        taking: bool,
+        span: Span,
+    ) -> Result<(String, Kind, &'static str), String> {
+        let function = self.function;
+        let place = self.known.place_taken(function, value).ok_or("a place that isn't taken")?;
+        let root = place.root;
+        let mut kind = self.kind_of(root)?.clone();
+        let mut at = self.slot(root);
+        let mut along: Vec<String> = Vec::new();
+        let mut access = "";
+        for step in &place.steps {
+            match step {
+                PlaceStep::Field(name) => {
+                    let boxed = matches!(kind, Kind::Boxed(_));
+                    let inside = if boxed {
+                        let block = if taking {
+                            self.alone_along((root, &along), &at, "fennec_unshare")
+                        } else {
+                            self.load_block(&at)
+                        };
+                        self.offset(&block, FIELDS_OFFSET)
+                    } else {
+                        at
+                    };
+                    let (offset, field) = self.field(&kind, name)?;
+                    at = self.offset(&inside, offset);
+                    kind = field;
+                    if boxed {
+                        access = FIELD_ACCESS;
+                    }
+                    along.push(name.clone());
+                }
+                PlaceStep::Item(index_operand) => {
+                    let list = match (taking, along.is_empty()) {
+                        (true, true) => self.unshared(root),
+                        (true, false) => self.alone_along((root, &along), &at, "fennec_list_unshare"),
+                        (false, _) => self.load_block(&at),
+                    };
+                    let held = self.item_kind(list_item(&kind)?)?;
+                    let (index, _) = self.operand(index_operand)?;
+                    let position = if along.is_empty() && self.known.inside(root, index_operand) {
+                        index
+                    } else {
+                        let known_as = self.list_key(root, &along);
+                        self.position_once(known_as, (&list, index_operand, &index), span)
+                    };
+                    let memory = held.memory(self.module.layouts);
+                    at = self.item_address(&list, &memory, &position);
+                    kind = held;
+                    access = ITEM_ACCESS;
+                    along.push(item_step(index_operand).ok_or("an index a path can't name")?);
+                }
+            }
+        }
+        // What's known of it is known of the place, however long the local lasts.
+        if let Some((step, list)) = along.split_last() {
+            self.taken_items.insert(value.0, (root, list.to_vec(), step.clone()));
+        }
+        Ok((at, kind, access))
+    }
+
+    fn load_block(&mut self, place: &str) -> String {
+        let block = self.temp();
+        self.line(&format!("{block} = load ptr, ptr {place}"));
+        block
+    }
+
+    fn put_place_back(&mut self, value: LocalId) -> Result<(), String> {
+        let (at, kind, access) = self.place_homes.get(&value.0).cloned().ok_or("a place never taken out")?;
+        let (held, _) = self.value_for(&Operand::Local(value), &kind)?;
+        if kind.counted() {
+            let text = self.text_of(&kind);
+            self.line(&format!("store {text} {held}, ptr {at}{access}"));
+        } else {
+            self.store_field(&kind, &held, &at, access);
+        }
+        Ok(())
+    }
+
     /// A block at `place` with no other owner, so it can change.
     pub(crate) fn alone_at(&mut self, place: &str, helper: &str) -> String {
         if self.alone_slots_contains(place) {
@@ -413,7 +545,7 @@ impl Emit<'_, '_, '_> {
             place = self.offset(&inside, offset);
             kind = inner;
         }
-        let access = if in_block { FIELD_ACCESS } else { "" };
+        let access = if in_block { FIELD_ACCESS } else { VALUE_ACCESS };
         if put_back && kind.counted() {
             // The field's old value was taken out, and this is what became of it.
             let text = self.text_of(&kind);
@@ -597,11 +729,7 @@ impl Emit<'_, '_, '_> {
                             self.line(&format!("{equal} = icmp eq {text} {x}, {y}"));
                             equal
                         }
-                        Kind::Float => {
-                            let equal = self.temp();
-                            self.line(&format!("{equal} = fcmp oeq double {x}, {y}"));
-                            equal
-                        }
+                        Kind::Float => self.float_equal(BinOp::Eq, (&x, &y)),
                         Kind::Str if self.headers() => self.same_headers(&x, &y),
                         Kind::Str => self.string_binary(BinOp::Eq, (&x, &y))?,
                         Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) => {
@@ -692,7 +820,9 @@ impl Emit<'_, '_, '_> {
     /// `==` on two enums in place: their words, one by one, or their cases' fields if they hold
     /// blocks, whose words can differ when what they hold doesn't.
     pub(crate) fn same_enums(&mut self, op: BinOp, id: u32, (a, b): (&str, &str)) -> Result<String, String> {
-        let same = if self.case_parts(id).is_empty() {
+        // A float doesn't compare by its bits, as `0.0` is the same as `-0.0`.
+        let plain = self.case_parts(id).is_empty() && !self.holds_a_float(id);
+        let same = if plain {
             let words = self.module.layouts.get(id).map_or(0, |layout| layout.size / 8);
             let mut same = "true".to_owned();
             for word in 0..words {
@@ -714,6 +844,17 @@ impl Emit<'_, '_, '_> {
             return Ok(flipped);
         }
         Ok(same)
+    }
+
+    /// Whether a value of this layout has a float anywhere in it, in place.
+    fn holds_a_float(&self, id: u32) -> bool {
+        let Some(layout) = self.module.layouts.get(id) else { return false };
+        let fields = layout.fields.iter().chain(layout.cases.iter().flatten().flat_map(|case| &case.fields));
+        fields.into_iter().any(|field| match Kind::from_ty(self.module.layouts, field.ty) {
+            Some(Kind::Float) => true,
+            Some(Kind::Struct(inner) | Kind::Enum(inner)) => self.holds_a_float(inner),
+            _ => false,
+        })
     }
 
     /// Whether two enums at these addresses are in the same case with the same fields.
@@ -889,6 +1030,9 @@ impl Emit<'_, '_, '_> {
             return self.id_map_index(dest, object, index, span);
         }
         let (list, kind) = self.operand(object)?;
+        if kind == Kind::Cap {
+            return self.args_item(dest, index, span);
+        }
         if let Kind::Dict(key, value) = kind {
             return self.dict_read(dest, &list, (key, value), index, span);
         }

@@ -37,7 +37,7 @@ fn tag(words: &[u64; 3]) -> u8 {
 }
 
 /// The block a header points at, when it's in one.
-pub(super) fn block_of(words: &[u64; 3]) -> Option<u64> {
+pub(in crate::embed) fn block_of(words: &[u64; 3]) -> Option<u64> {
     let [first, ..] = *words;
     (tag(words) & INLINE == 0).then_some(first)
 }
@@ -165,6 +165,44 @@ pub extern "C" fn of(address: i64) -> Text {
     })
 }
 
+/// `fennec_int_header(n)`: an int's text as a header, which its digits always fit inline, with
+/// no block.
+pub extern "C" fn int_header(n: i64) -> Text {
+    let mut digits = [0_u8; 20];
+    let mut at = digits.len();
+    let mut rest = n.unsigned_abs();
+    loop {
+        at -= 1;
+        if let (Some(digit), Ok(low)) = (digits.get_mut(at), u8::try_from(rest % 10)) {
+            *digit = b'0' + low;
+        }
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    if n < 0 {
+        at -= 1;
+        if let Some(sign) = digits.get_mut(at) {
+            *sign = b'-';
+        }
+    }
+    Text { words: inline(digits.get(at..).unwrap_or_default()) }
+}
+
+/// `fennec_float_header(x)`: a float's text as it prints, as a header, inline unless it's the
+/// longest there is.
+pub extern "C" fn float_header(x: f64) -> Text {
+    let text = crate::format::display(&crate::value::Value::Float(x));
+    if text.len() <= INLINE_BYTES {
+        return Text { words: inline(text.as_bytes()) };
+    }
+    with(|state| {
+        let address = text_from_bytes(state, text.as_bytes(), text.len()).cast_unsigned();
+        Text { words: [address, u64::try_from(text.len()).unwrap_or(0), 0] }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;
@@ -198,6 +236,33 @@ mod tests {
         with(|state| state.heap.live())
     }
 
+    /// Numbers come back as headers. All of them but the longest floats make no block.
+    #[test]
+    fn a_numbers_text_needs_no_block_unless_its_too_long_for_a_header() {
+        begin();
+        let before = live();
+        for (n, shown) in [
+            (0, "0"),
+            (7, "7"),
+            (-7, "-7"),
+            (1200, "1200"),
+            (i64::MAX, "9223372036854775807"),
+            (i64::MIN, "-9223372036854775808"),
+        ] {
+            assert_eq!(super::int_header(n).words, super::inline(shown.as_bytes()));
+        }
+        assert_eq!(super::float_header(1.5).words, super::inline(b"1.5"));
+        assert_eq!(super::float_header(3.0).words, super::inline(b"3.0"));
+        assert_eq!(live(), before);
+        let longest = "-1.7976931348623157e+308";
+        let words = super::float_header(f64::MIN).words;
+        assert_eq!(text_of(words), longest);
+        assert_eq!(words[1], 24);
+        heap::free(i64::try_from(words[0]).unwrap());
+        assert_eq!(live(), before);
+        finish();
+    }
+
     #[test]
     fn a_string_of_23_bytes_or_fewer_is_held_in_its_header() {
         begin();
@@ -218,6 +283,66 @@ mod tests {
         let again = super::of(super::block(long[0], long[1], long[2]));
         assert_eq!(again.words, long);
         heap::free(i64::try_from(long[0]).unwrap());
+        assert_eq!(live(), before);
+        finish();
+    }
+
+    /// Freeing a struct or an enum lets go of the strings in its headers by its plan, with an
+    /// inline one and a `None` holding nothing.
+    #[test]
+    fn freeing_a_block_lets_go_of_the_strings_in_its_headers() {
+        let text = Element::Text;
+        let shapes = vec![
+            Rc::new(Element::Struct {
+                name: Rc::from("Unit"),
+                fields: vec![
+                    (Rc::from("name"), text.clone()),
+                    (Rc::from("hp"), Element::Int),
+                    (Rc::from("pet"), Element::Maybe(Rc::new(text.clone()))),
+                ],
+            }),
+            Rc::new(Element::Enum {
+                name: Rc::from("Order"),
+                cases: vec![
+                    (Rc::from("Hold"), Vec::new()),
+                    (Rc::from("Say"), vec![(Rc::from("what"), text)]),
+                ],
+                words: 4,
+            }),
+            Rc::new(Element::Str),
+        ];
+        let tables = Tables { shapes, str_shape: 2, text_headers: true, ..Tables::default() };
+        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let before = live();
+        let long = "a name too long for any header";
+        let fill = |block: i64, words: &[u64]| {
+            with(|state| {
+                let fields = state.heap.block_mut(block.cast_unsigned())?.get_mut(heap::HEADER_WORDS..)?;
+                fields.get_mut(..words.len())?.copy_from_slice(words);
+                Some(())
+            })
+            .unwrap();
+        };
+        let (name, pet) = (header(long), header(long));
+        let unit = heap::alloc(0);
+        fill(unit, &[name[0], name[1], name[2], 7, pet[0], pet[1], pet[2]]);
+        assert_eq!(live(), before + 3);
+        heap::free(unit);
+        assert_eq!(live(), before);
+        let (short, none) = (header("ash"), [0_u64; 3]);
+        let unit = heap::alloc(0);
+        fill(unit, &[short[0], short[1], short[2], 7, none[0], none[1], none[2]]);
+        heap::free(unit);
+        assert_eq!(live(), before);
+        let what = header(long);
+        let order = heap::alloc(1);
+        fill(order, &[1, what[0], what[1], what[2]]);
+        assert_eq!(live(), before + 2);
+        heap::free(order);
+        assert_eq!(live(), before);
+        let order = heap::alloc(1);
+        fill(order, &[0, 0, 0, 0]);
+        heap::free(order);
         assert_eq!(live(), before);
         finish();
     }

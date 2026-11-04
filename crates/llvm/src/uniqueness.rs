@@ -20,7 +20,7 @@ use crate::analysis::{Analysis, gives_back, visit};
 pub(crate) type FieldPath = (LocalId, Vec<String>);
 
 /// Any item of a list, in a path.
-const ANY_ITEM: &str = "#*";
+pub(crate) const ANY_ITEM: &str = "#*";
 
 /// The step to a list's item at this index, if it's one a path can name.
 pub(crate) fn item_step(index: &Operand) -> Option<String> {
@@ -128,6 +128,11 @@ fn reaches(known: &Analysis, local: LocalId, depth: usize) -> Option<FieldPath> 
         return Some((local, Vec::new()));
     }
     let deeper = depth.checked_sub(1)?;
+    if let Some((home, along)) = known.place_path(local) {
+        let (root, mut path) = reaches(known, *home, deeper)?;
+        path.extend(along.iter().cloned());
+        return Some((root, path));
+    }
     if let Some((from, field)) = known.field_of(local) {
         let (root, mut path) = reaches(known, *from, deeper)?;
         path.push(field.clone());
@@ -211,7 +216,8 @@ pub(crate) fn unsettled(
         // An item put back where it was taken from is what was there. Another in its place
         // leaves the list as long as it was.
         InstKind::SetIndex { object, path, value, .. } => {
-            let item_back = matches!(value, Operand::Local(local) if known.item_home(*local).is_some());
+            let item_back = matches!(value, Operand::Local(local)
+                if known.item_home(*local).is_some() || known.place_holder(*local).is_some());
             if counted_operand(function, value) && !item_back && facts == Tracked::Owners {
                 owned(function, known, value, &mut out);
                 match reaches(known, *object, 8) {
@@ -268,6 +274,14 @@ pub(crate) fn unsettled(
         }
         InstKind::Call { function: callee, args, .. } => {
             let theirs = summaries.get(callee.as_str());
+            // An index it's given to change is a different index from here.
+            for arg in args {
+                if let Operand::Local(local) = arg
+                    && known.is_given_mut(*local)
+                {
+                    out.push(Unsettled::Index(*local));
+                }
+            }
             for (position, arg) in args.iter().enumerate() {
                 match (theirs.and_then(|params| params.get(position)), arg) {
                     (Some(hits), Operand::Local(local)) => {

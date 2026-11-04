@@ -20,35 +20,101 @@ interface Serializer:
     ## as an object's.
     def map[K: Serializable, V: Serializable](mut self, pairs: list[(K, V)])
 
-    ## Starts a struct. `fields` has each field's saved name and whether that name is exact, so
-    ## a format doesn't spell it another way. Each field's value follows, through `field`.
-    def record(mut self, name: str, fields: list[(str, bool)])
+    ## Starts a struct of `count` fields. Each follows through `field` or `renamed`, and `end`
+    ## closes it.
+    def record(mut self, name: str, count: int)
 
-    ## The next field's value, in the order `record` named them.
-    def field[T: Serializable](mut self, x: T)
+    ## The next field, under the name it has in the program, which a format may spell another
+    ## way.
+    def field[T: Serializable](mut self, name: str, x: T)
 
-    ## An enum's case by name. One with data follows it with `record` and `field`.
+    ## The next field, under the name `@serialize(name=...)` gave it, spelled just so.
+    def renamed[T: Serializable](mut self, name: str, x: T)
+
+    ## Closes the struct or case started last.
+    def end(mut self)
+
+    ## An enum's case with no data, by name.
     def case(mut self, name: str, case: str)
+
+    ## Starts an enum's case with `count` fields of data, which follow as a struct's do.
+    def case_record(mut self, name: str, case: str, count: int)
 
 ## What can be saved.
 interface Serializable:
     def serialize(self, mut out: Serializer)
 
+## Where a type's `def deserialize(mut src: Deserializer) -> Self fails ParseError` reads what was saved. Each
+## format has its own, and one `def deserialize` serves them all. Each read fails with a
+## `ParseError` saying where.
+interface Deserializer:
+    def int(mut self) -> int fails ParseError
+    def float(mut self) -> float fails ParseError
+    def bool(mut self) -> bool fails ParseError
+    def text(mut self) -> str fails ParseError
+
+    ## Takes a missing value, if that's what comes next, and says whether it did.
+    def none(mut self) -> bool fails ParseError
+
+    ## Any value, through its own `def deserialize`.
+    def value[T: Deserializable](mut self) -> T fails ParseError
+
+    ## The items of an array.
+    def sequence[T: Deserializable](mut self) -> list[T] fails ParseError
+
+    ## The pairs of an object, or of an array of `[key, value]` pairs.
+    def map[K: Deserializable, V: Deserializable](mut self) -> list[(K, V)] fails ParseError
+
+    ## Starts a struct, or a case's data. Then `next_field` says whether another of its fields
+    ## comes next, and `field_at` says which, as a place in `fields`: each its name in the text
+    ## and its name in the program, with "" for the first of a field that isn't saved, which come
+    ## last. A key that's none of them is handled inside, by failing or by skipping its value.
+    def record(mut self, name: str) fails ParseError
+    def next_field(mut self, fields: list[(str, str)]) -> bool fails ParseError
+    def field_at(self) -> int
+
+    ## The error for a field the text left out, by its name in the text.
+    def missing(self, name: str) -> ParseError
+
+    ## The error for a `where` rule that what was read breaks.
+    def rule(self, message: str) -> ParseError
+
+    ## Which of `cases` comes next, as a place in it: each its name and whether it has data. One
+    ## with data then reads its fields as a struct's, and `end_case` finishes it.
+    def case(mut self, name: str, cases: list[(str, bool)]) -> int fails ParseError
+    def end_case(mut self) fails ParseError
+
+## What can be loaded.
+interface Deserializable:
+    def deserialize(mut src: Deserializer) -> Self fails ParseError
+
 extend int:
     def serialize(self, mut out: Serializer):
         out.int(self)
+
+    def deserialize(mut src: Deserializer) -> int fails ParseError:
+        src.int()?
 
 extend float:
     def serialize(self, mut out: Serializer):
         out.float(self)
 
+    def deserialize(mut src: Deserializer) -> float fails ParseError:
+        src.float()?
+
 extend bool:
     def serialize(self, mut out: Serializer):
         out.bool(self)
 
+    def deserialize(mut src: Deserializer) -> bool fails ParseError:
+        src.bool()?
+
 extend str:
     def serialize(self, mut out: Serializer):
         out.text(self)
+
+    def deserialize(mut src: Deserializer) -> str fails ParseError:
+        src.text()?
 
 extend bytes:
     def serialize(self, mut out: Serializer):
@@ -58,10 +124,28 @@ extend list[T: Serializable]:
     def serialize(self, mut out: Serializer):
         out.sequence(self)
 
+extend list[T: Deserializable]:
+    def deserialize(mut src: Deserializer) -> list[T] fails ParseError:
+        src.sequence[T]()?
+
 extend dict[K: Hashable & Serializable, V: Serializable]:
     def serialize(self, mut out: Serializer):
         out.map(self.items())
 
+extend dict[K: Hashable & Deserializable, V: Deserializable]:
+    def deserialize(mut src: Deserializer) -> dict[K, V] fails ParseError:
+        mut found = dict[K, V]()
+        for key, value in src.map[K, V]()?:
+            found[key] = value
+        found
+
 extend set[T: Hashable & Serializable]:
     def serialize(self, mut out: Serializer):
         out.sequence([item for item in self])
+
+extend set[T: Hashable & Deserializable]:
+    def deserialize(mut src: Deserializer) -> set[T] fails ParseError:
+        mut found = set[T]()
+        for item in src.sequence[T]()?:
+            found.add(item)
+        found

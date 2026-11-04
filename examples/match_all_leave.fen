@@ -1,0 +1,28 @@
+# A `match` can be the last thing a function does when each of its cases leaves.
+
+error Unknown:
+    name: str
+
+enum Order:
+    Hold
+    Move(steps: int)
+
+def named(name: str) -> Order fails Unknown:
+    match name:
+        case "hold":
+            return .Hold
+        case "move":
+            return .Move(steps=1)
+        case _:
+            fail Unknown(name=name)
+
+def steps_of(order: Order) -> int:
+    match order:
+        case .Hold:
+            return 0
+        case .Move(steps):
+            return steps
+
+def main(stdout: Stdout):
+    stdout.print(steps_of(named("hold") else .Hold), steps_of(named("move") else .Hold))
+    stdout.print(steps_of(named("fly") else .Move(steps=9)))

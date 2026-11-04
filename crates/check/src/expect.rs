@@ -20,8 +20,9 @@ impl FnCx<'_> {
         self.expr(expr)
     }
 
-    /// An expression's type, given what's expected of it. Only leading-dot cases and
-    /// `match`es use what's expected.
+    /// An expression's type, given what's expected of it. Only leading-dot cases, `match`es and
+    /// lists use what's expected. A list written where a list of optionals goes is one of those,
+    /// since it can come to hold `None`.
     pub(crate) fn expected_kind(&mut self, expr: &Expr, expected: &Type) -> Type {
         match &expr.kind {
             ExprKind::Variant(case) => {
@@ -34,6 +35,13 @@ impl FnCx<'_> {
             }
             ExprKind::Match { subject, arms } => {
                 self.match_expr(subject, arms, expr.span, Some(expected.clone()))
+            }
+            ExprKind::List(_) => {
+                let ty = self.expr_kind(expr);
+                let wanted = self.checker.settled(expected);
+                let of_optionals = matches!(&wanted, Type::List(item) if matches!(&**item, Type::Optional(held)
+                    if matches!(**held, Type::Int | Type::Float | Type::Bool | Type::Str | Type::Named(_))));
+                if of_optionals && self.checker.fits(&wanted, &ty) { wanted } else { ty }
             }
             _ => self.expr_kind(expr),
         }

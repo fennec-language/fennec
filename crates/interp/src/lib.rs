@@ -2,6 +2,10 @@
 //! It exists to run real programs while the typed bytecode interpreter and native
 //! compilers are built.
 
+#![cfg_attr(
+    feature = "lean",
+    expect(dead_code, unused_imports, reason = "what only the interpreter uses is left unused")
+)]
 mod access;
 mod buffer;
 mod builtins;
@@ -39,4 +43,4 @@ pub use constants::{Baked, bake_constants};
 pub use format::float as format_float;
 pub use inputs::Inputs;
 pub use interp::{Interp, run};
-pub use testing::TestOutcome;
+pub use testing::{PROPERTY_CASES, TestOutcome, property_seed};

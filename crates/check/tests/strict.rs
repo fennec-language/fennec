@@ -75,7 +75,10 @@ fn a_name_keeps_one_type() {
         in_main("mut ratio = 1\nratio = 0.5"),
         ["`ratio` holds an int, so it can't be given a float @ ratio"]
     );
-    assert_eq!(in_main("mut best = None\nbest = 1\nbest = None"), Vec::<String>::new());
+    assert_eq!(
+        in_main("mut best = None\nbest = 1\nstdout.print(best)\nbest = None\nstdout.print(best)"),
+        Vec::<String>::new()
+    );
     assert_eq!(
         in_main("mut items = [1]\nitems[0] = 'a'"),
         ["this should be an int, but this is a str @ \"a\""]

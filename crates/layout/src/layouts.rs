@@ -62,6 +62,9 @@ pub struct Layouts {
     in_place: InPlace,
     /// The types `Ty::Block` names, by number.
     blocks: std::cell::RefCell<Vec<Ty>>,
+    /// The types laid out by `add_through_lists`, whose items a list's description names by
+    /// their place here.
+    through_lists: Vec<u32>,
 }
 
 /// What a backend holds in place, where others hold the address of a block.
@@ -144,6 +147,7 @@ impl Layouts {
         for name in &names {
             layouts.add(&sources, name, &mut Vec::new());
         }
+        layouts.add_through_lists(&sources, &names);
         layouts.add_boxed(&sources, &names);
         layouts
     }
@@ -187,6 +191,127 @@ impl Layouts {
                 Some(enum_of(name, placed, size, false))
             }
         }
+    }
+
+    /// Lays out what's left that can be in place because its lists are one word each, whatever
+    /// their items are: `Items(values: list[Json])`, with `Json` in place. A type directly inside
+    /// itself has no size, however far round, so it's left to be boxed, as is anything holding
+    /// one. Types go in the order that what's directly inside each comes before it. A regex's
+    /// `Match` stays boxed, as native code builds that block itself.
+    fn add_through_lists(&mut self, sources: &Sources<'_>, names: &[String]) {
+        if !self.in_place.counted_fields {
+            return;
+        }
+        let mut candidates: BTreeMap<String, Written> = names
+            .iter()
+            .filter(|name| {
+                !self.by_name.contains_key(*name) && !name.starts_with("IdMap[") && *name != "Match"
+            })
+            .filter_map(|name| Some((name.clone(), written(sources, name)?)))
+            .filter(|(_, def)| !matches!(def, Written::Generator(_)))
+            .collect();
+        let order = loop {
+            let unfit: Vec<String> = candidates
+                .iter()
+                .filter(|(_, def)| !written_fields(def).all(|(_, ty, _)| self.fits_in_place(&candidates, ty)))
+                .map(|(name, _)| name.clone())
+                .collect();
+            if !unfit.is_empty() {
+                candidates.retain(|name, _| !unfit.contains(name));
+                continue;
+            }
+            match inside_first(&candidates) {
+                Ok(order) => break order,
+                Err(stuck) => candidates.retain(|name, _| !stuck.contains(name)),
+            }
+        };
+        let first = self.all.len();
+        let reserved: HashMap<String, u32> = order
+            .iter()
+            .enumerate()
+            .filter_map(|(at, name)| Some((name.clone(), u32::try_from(first + at).ok()?)))
+            .collect();
+        for name in &order {
+            let (Some(def), Some(id)) = (candidates.get(name), reserved.get(name)) else { continue };
+            // Everything that fits has a layout, and a gap would shift the numbers.
+            let Some(layout) = self.layout_in_place(name, def, &reserved) else { return };
+            self.all.push(layout);
+            self.by_name.insert(name.clone(), *id);
+            self.through_lists.push(*id);
+        }
+    }
+
+    /// Whether a field can be held in place, given the types being laid out with it.
+    fn fits_in_place(&self, candidates: &BTreeMap<String, Written>, ty: &Type) -> bool {
+        let plain = |ty: &Type| match ty {
+            Type::Int | Type::Float | Type::Bool | Type::Str => true,
+            Type::Named(name) => {
+                candidates.contains_key(name)
+                    || self.id(name).and_then(|id| self.get(id)).is_some_and(|layout| !layout.boxed)
+            }
+            _ => false,
+        };
+        match ty {
+            Type::List(item) => plain(item),
+            other => plain(other),
+        }
+    }
+
+    fn layout_in_place(&self, name: &str, def: &Written, reserved: &HashMap<String, u32>) -> Option<Layout> {
+        let held = |ty: &Type| match ty {
+            Type::Int => Some(Ty::Int),
+            Type::Float => Some(Ty::Float),
+            Type::Bool => Some(Ty::Bool),
+            Type::Str => Some(Ty::Str),
+            Type::Named(name) => reserved.get(name).copied().or_else(|| self.id(name)).map(Ty::Struct),
+            _ => None,
+        };
+        let place = |fields: &[WrittenField], start: u32| {
+            let mut typed = Vec::with_capacity(fields.len());
+            for (field, ty, default) in fields {
+                let ty = match ty {
+                    Type::List(item) => Ty::List(self.list_item(held(item)?)?),
+                    other => held(other)?,
+                };
+                typed.push((field.clone(), ty, default.clone()));
+            }
+            self.place_fields(typed, start)
+        };
+        match def {
+            Written::Struct(fields) => {
+                let (fields, size) = place(fields, 0)?;
+                Some(Layout {
+                    name: name.to_owned(),
+                    fields,
+                    size: size.max(WORD),
+                    cases: None,
+                    boxed: false,
+                })
+            }
+            Written::Enum(cases) => {
+                let mut placed = Vec::with_capacity(cases.len());
+                let mut size = WORD;
+                for (case, fields) in cases {
+                    let (fields, end) = place(fields, WORD)?;
+                    size = size.max(end);
+                    placed.push(Case { name: case.clone(), fields });
+                }
+                Some(enum_of(name, placed, size, false))
+            }
+            Written::Generator(_) => None,
+        }
+    }
+
+    /// Where a type laid out by `add_through_lists` is among them.
+    #[must_use]
+    pub fn through_lists(&self, id: u32) -> Option<usize> {
+        self.through_lists.iter().position(|known| *known == id)
+    }
+
+    /// The types laid out by `add_through_lists`.
+    #[must_use]
+    pub fn all_through_lists(&self) -> &[u32] {
+        &self.through_lists
     }
 
     /// Lays out the boxed types: every struct and enum that isn't plain and has no `where`
@@ -466,6 +591,38 @@ impl Layouts {
             _ => Ty::Obj,
         }
     }
+}
+
+/// Every field of a type, in every case of an enum.
+fn written_fields(def: &Written) -> Box<dyn Iterator<Item = &WrittenField> + '_> {
+    match def {
+        Written::Struct(fields) | Written::Generator(fields) => Box::new(fields.iter()),
+        Written::Enum(cases) => Box::new(cases.iter().flat_map(|(_, fields)| fields)),
+    }
+}
+
+/// These types with what's directly inside each before it, or those that can't be: a type
+/// directly inside itself, and what holds one.
+fn inside_first(candidates: &BTreeMap<String, Written>) -> Result<Vec<String>, Vec<String>> {
+    let mut order: Vec<String> = Vec::with_capacity(candidates.len());
+    while order.len() < candidates.len() {
+        let next: Vec<String> = candidates
+            .iter()
+            .filter(|(name, def)| {
+                !order.contains(name)
+                    && written_fields(def).all(|(_, ty, _)| match ty {
+                        Type::Named(inner) => !candidates.contains_key(inner) || order.contains(inner),
+                        _ => true,
+                    })
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        if next.is_empty() {
+            return Err(candidates.keys().filter(|name| !order.contains(name)).cloned().collect());
+        }
+        order.extend(next);
+    }
+    Ok(order)
 }
 
 /// Whether a type mentions a type parameter.
@@ -748,6 +905,33 @@ mod tests {
         assert_eq!(types, [Ty::Maybe(Block::Str), Ty::Maybe(Block::Boxed(id)), Ty::Obj]);
         assert_eq!(layouts.ty(&maybe(Type::Str)), Ty::Maybe(Block::Str));
         assert_eq!(layouts.ty(&maybe(Type::Int)), Ty::Obj);
+    }
+
+    #[test]
+    fn a_type_holding_itself_through_a_list_is_in_place_and_one_directly_inside_itself_is_boxed() {
+        let held = |item: &str| Type::List(Box::new(Type::Named(item.to_owned())));
+        let field = |name: &str, ty: Type| (name.to_owned(), ty, None);
+        let definitions = vec![
+            (
+                "Json".to_owned(),
+                Written::Enum(vec![("Items".to_owned(), vec![field("values", held("Json"))])]),
+            ),
+            ("Tree".to_owned(), Written::Struct(vec![field("left", Type::Named("Tree".to_owned()))])),
+            ("Outer".to_owned(), Written::Struct(vec![field("tree", Type::Named("Tree".to_owned()))])),
+            ("Folder".to_owned(), Written::Struct(vec![field("file", Type::Named("File".to_owned()))])),
+            ("File".to_owned(), Written::Struct(vec![field("inside", held("Folder"))])),
+        ];
+        let layouts = Layouts::from_definitions(&definitions);
+        let boxed = |name: &str| layouts.id(name).and_then(|id| layouts.get(id)).map(|layout| layout.boxed);
+        for (name, wanted) in
+            [("Json", false), ("Tree", true), ("Outer", true), ("Folder", false), ("File", false)]
+        {
+            assert_eq!(boxed(name), Some(wanted), "{name}");
+        }
+        // What's directly inside comes first, so its size is known.
+        assert!(layouts.id("File") < layouts.id("Folder"));
+        let json = layouts.id("Json").and_then(|id| layouts.through_lists(id));
+        assert!(json.is_some());
     }
 
     #[test]

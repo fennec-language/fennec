@@ -1,3 +1,3 @@
-Squad/4 ( Spot/2 1 'a' Spot/2 2 'b' ) 'ash' = 3 yes 0.5
-7
+Squad/5 spots: ( Spot/2 x: 1 label: 'a' . Spot/2 x: 2 label: 'b' . ) as points: 'ash' = 3 ready: yes pace: 0.5 order: Order.Move/1 x: 4 . . .
+9
 bytes

@@ -151,6 +151,7 @@ pub fn test_ran(flag: i64) {
 
 /// Starts a test: one that takes capabilities gets fakes in a world of its own, with nothing left
 /// by the one before, as `run_case` gives the interpreter's.
+#[cfg(not(feature = "lean"))]
 pub fn test_world(fakes: i64) {
     with(|state: &mut State| {
         state.interp.world = (fakes != 0).then(|| TestWorld::new(TestCapabilities::Fakes));

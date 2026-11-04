@@ -5,6 +5,10 @@
 //!
 //! The functions are `fennec_interp::embed`'s; this crate only gives them names a linker
 //! can find, which is the one thing here Rust calls unsafe.
+#![cfg_attr(
+    feature = "lean",
+    expect(unused_imports, reason = "some modules only have what the interpreter needs")
+)]
 #![expect(
     unsafe_code,
     reason = "exporting the runtime's functions under fixed names, for linked executables"
@@ -358,6 +362,7 @@ export! {
     fennec_aot_test_ran(a0: i64) => aot::test_ran(a0);
     #[cfg(not(feature = "lean"))]
     fennec_aot_test_done(a0: i64) => aot::test_done(a0);
+    #[cfg(not(feature = "lean"))]
     fennec_aot_test_world(a0: i64) => aot::test_world(a0);
 }
 

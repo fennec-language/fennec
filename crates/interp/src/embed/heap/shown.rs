@@ -86,6 +86,10 @@ impl std::fmt::Write for Written {
 
 /// A value's text as printing shows it: a string as it is, and anything else as `quoted` writes
 /// it. Runs what native code has to write, so nothing of the runtime can be in use.
+#[cfg_attr(
+    feature = "lean",
+    expect(clippy::unnecessary_wraps, reason = "only the interpreter's text can fail")
+)]
 pub(in crate::embed) fn shown(address: u64) -> Result<String, Diagnostic> {
     let mut out = with(|state| {
         let mut out = Written::default();

@@ -335,7 +335,7 @@ pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Resu
         interp
     };
     #[cfg(feature = "lean")]
-    let _ = module;
+    let _ = (module, inputs);
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
     FAILED.set(0);
     STATE.set(Some(State {

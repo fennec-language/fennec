@@ -919,6 +919,10 @@ impl Emit<'_, '_, '_> {
         if kind == Kind::Bytes {
             return self.bytes_index(dest, &list, index, span);
         }
+        if kind == Kind::Cap {
+            let (at, _) = self.operand(index)?;
+            return self.capability_item(dest, &list, &at, span);
+        }
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;
         // An item taken out to change: its count only means something once the list is alone,

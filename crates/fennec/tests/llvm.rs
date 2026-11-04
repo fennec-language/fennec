@@ -3004,3 +3004,75 @@ fn a_missing_key_in_a_dict_of_lists_fails_like_the_jit() -> std::io::Result<()> 
 ",
     )
 }
+
+/// `args[at]`, `reversed` of text and tuples, and `remove_where` on an `IdMap`.
+#[test]
+fn indexing_args_reversing_and_removing_from_id_maps_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "args_reversed_removed",
+        r#"from std.game import IdMap
+from std.math import sqrt
+
+struct Unit:
+    name: str
+    hp: int
+
+def main(args: Args, stdout: Stdout):
+    stdout.print(args.len() >= 0)
+    four = 16
+    stdout.print(sqrt(16), sqrt(four), sqrt(2.25))
+    stdout.print(reversed("fennec"), reversed("héllo"), reversed(""), reversed([1, 2, 3]))
+    stdout.print(reversed((1, 2)), reversed((1, 2, 3, 4)), reversed(("a", "a long string in a block")))
+    mut names = IdMap[str]()
+    first = names.insert("ash")
+    names.insert("kit")
+    third = names.insert("a long name that sits in its own block")
+    copied = names
+    names.remove_where(name => name.startswith("k"))
+    stdout.print(names.values(), names.len(), copied.values(), copied.len(), names[first], names[third])
+    fourth = names.insert("vex")
+    stdout.print(names.values(), names.len(), names[fourth])
+    names.remove_where(name => False)
+    stdout.print(names.len())
+    names.remove_where(name => True)
+    stdout.print(names.values(), names.len(), names.get(first))
+    mut units = IdMap[Unit]()
+    weak = units.insert(Unit(name="weak", hp=1))
+    strong = units.insert(Unit(name="strong", hp=9))
+    units.remove_where(unit => unit.hp < 5)
+    stdout.print(units.values(), units.get(weak), units[strong].name)
+    mut numbers = IdMap[int]()
+    numbers.insert(1)
+    numbers.insert(2)
+    numbers.remove_where(n => n % 2 == 0)
+    stdout.print(numbers.values(), numbers.len())
+    numbers.clear()
+    stdout.print(numbers.values(), numbers.len())
+    gone = numbers.insert(5)
+    stdout.print(numbers.values(), numbers.len(), numbers[gone])
+    mut cleared = copy(names)
+    cleared.insert("again")
+    cleared.clear()
+    stdout.print(cleared.len(), names.len(), cleared.values())
+    ignore(numbers.remove(gone), "it's fine if it's gone")
+    stdout.print(numbers.len())
+"#,
+    )
+}
+
+/// An `args` index that isn't there fails as the JIT's does.
+#[test]
+fn indexing_past_the_end_of_args_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "args_past_end",
+        "def main(args: Args, stdout: Stdout):
+    stdout.print(args[1000])
+",
+    )
+}

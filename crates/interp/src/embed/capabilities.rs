@@ -146,6 +146,15 @@ pub extern "C" fn items(word: i64, start: i64, end: i64) -> i64 {
     })
 }
 
+/// `capability[at]`, as a temporary holding the item.
+pub extern "C" fn item(word: i64, at: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let receiver = value_of(state, word);
+        let item = state.interp.index(receiver, Value::Int(at), span(start, end))?;
+        Ok(state.push(item))
+    })
+}
+
 /// Runs one of std's functions written in the runtime, with the last `count` temporaries handed
 /// in as its arguments. `name` is a string block with its full name, with any named arguments
 /// on the end as a call writes them, like `json.dumps.names`, which come last. `ty` is a string

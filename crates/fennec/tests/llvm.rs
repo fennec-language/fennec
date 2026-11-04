@@ -20,9 +20,6 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
 /// jobs set it, LLVM is the backend that has to work, so what's missing fails the test rather
 /// than skipping it.
 fn ready() -> bool {
-    if std::env::var_os("FENNEC_UNDER_MUTANTS").is_some() {
-        return false;
-    }
     let tools = fennec_llvm::Tools::find();
     let runtime = runtime_built();
     if std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty()) {

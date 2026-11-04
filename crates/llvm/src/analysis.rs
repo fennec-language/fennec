@@ -102,6 +102,8 @@ pub(crate) struct Whole<'p> {
     pub(crate) needs: HashMap<&'p str, Vec<FieldPath>>,
     /// The functions that give a constant's value, which keep it after the first time.
     pub(crate) constants: HashSet<&'p str>,
+    /// The functions that can run on a thread `parallel` uses, which everything else can't.
+    pub(crate) on_workers: HashSet<&'p str>,
 }
 
 /// What a function calls by name, a constant being a call of a function of no arguments, and a
@@ -1892,7 +1894,19 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
             _ => None,
         })
         .collect();
-    Whole { functions, analyses, can_fail, generators, settles, lengths, builders, needs, constants }
+    let on_workers = crate::parallel::run_on_workers(program);
+    Whole {
+        functions,
+        analyses,
+        can_fail,
+        generators,
+        settles,
+        lengths,
+        builders,
+        needs,
+        constants,
+        on_workers,
+    }
 }
 
 #[cfg(all(test, not(windows)))]

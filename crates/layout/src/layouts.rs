@@ -280,7 +280,13 @@ impl Layouts {
         match def {
             Written::Struct(fields) => {
                 let (fields, size) = place(fields, 0)?;
-                Some(Layout { name: name.to_owned(), fields, size: size.max(WORD), cases: None, boxed: false })
+                Some(Layout {
+                    name: name.to_owned(),
+                    fields,
+                    size: size.max(WORD),
+                    cases: None,
+                    boxed: false,
+                })
             }
             Written::Enum(cases) => {
                 let mut placed = Vec::with_capacity(cases.len());
@@ -899,6 +905,33 @@ mod tests {
         assert_eq!(types, [Ty::Maybe(Block::Str), Ty::Maybe(Block::Boxed(id)), Ty::Obj]);
         assert_eq!(layouts.ty(&maybe(Type::Str)), Ty::Maybe(Block::Str));
         assert_eq!(layouts.ty(&maybe(Type::Int)), Ty::Obj);
+    }
+
+    #[test]
+    fn a_type_holding_itself_through_a_list_is_in_place_and_one_directly_inside_itself_is_boxed() {
+        let held = |item: &str| Type::List(Box::new(Type::Named(item.to_owned())));
+        let field = |name: &str, ty: Type| (name.to_owned(), ty, None);
+        let definitions = vec![
+            (
+                "Json".to_owned(),
+                Written::Enum(vec![("Items".to_owned(), vec![field("values", held("Json"))])]),
+            ),
+            ("Tree".to_owned(), Written::Struct(vec![field("left", Type::Named("Tree".to_owned()))])),
+            ("Outer".to_owned(), Written::Struct(vec![field("tree", Type::Named("Tree".to_owned()))])),
+            ("Folder".to_owned(), Written::Struct(vec![field("file", Type::Named("File".to_owned()))])),
+            ("File".to_owned(), Written::Struct(vec![field("inside", held("Folder"))])),
+        ];
+        let layouts = Layouts::from_definitions(&definitions);
+        let boxed = |name: &str| layouts.id(name).and_then(|id| layouts.get(id)).map(|layout| layout.boxed);
+        for (name, wanted) in
+            [("Json", false), ("Tree", true), ("Outer", true), ("Folder", false), ("File", false)]
+        {
+            assert_eq!(boxed(name), Some(wanted), "{name}");
+        }
+        // What's directly inside comes first, so its size is known.
+        assert!(layouts.id("File") < layouts.id("Folder"));
+        let json = layouts.id("Json").and_then(|id| layouts.through_lists(id));
+        assert!(json.is_some());
     }
 
     #[test]

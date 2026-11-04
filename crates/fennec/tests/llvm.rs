@@ -5187,6 +5187,32 @@ def main(stdout: Stdout):
     )
 }
 
+/// An f-string of an optional string, and a name known to hold None.
+#[test]
+fn f_strings_of_optional_text_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"def named(n: int) -> str?:
+    if n == 0:
+        return None
+    "a long enough name to live in a block of its own {n}"
+
+def main(stdout: Stdout):
+    for n in range(2):
+        held = named(n)
+        stdout.print(f"[{held}] and [{held}]")
+    short: str? = "ab"
+    missing: str? = None
+    stdout.print(f"{short}/{missing}", missing)
+    mut kept = []
+    for n in range(3):
+        kept.append(f"{named(n)}")
+    stdout.print(kept)
+"#;
+    same_as_the_jit("f_strings_of_optional_text", source)
+}
+
 #[test]
 fn optional_strings_in_lists_match_the_jit() -> std::io::Result<()> {
     if !ready() {

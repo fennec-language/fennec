@@ -75,6 +75,20 @@ test "failures are NetError values"(net: Net):
     with net.listen(9000)? as _:
         assert reason(net.listen(9000)) == "port 9000 is already in use"
 
+test "a packet goes to a port, and an answer goes to who sent it"(net: Net):
+    with net.udp(port=9001)? as first:
+        with net.udp()? as second:
+            second.send_to("ping", "localhost:9001")?
+            packet = first.receive()?
+            assert packet.data == "ping".encode()
+            assert packet.sender == f"localhost:{second.port}"
+            first.send_to("pong".encode(), packet.sender)?
+            assert second.receive()?.data == "pong".encode()
+
+test "a packet sent where nothing listens is lost"(net: Net):
+    with net.udp()? as socket:
+        socket.send_to("gone", "localhost:9")?
+
 def main(stdout: Stdout, net: Net):
     # Port 0 lets the system pick a free port. One task can play both sides, since a small
     # write waits only until the system has it.

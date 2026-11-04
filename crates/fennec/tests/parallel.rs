@@ -630,3 +630,42 @@ fn a_worker_forgets_where_it_got_to_in_a_string_when_its_range_ends() -> std::io
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "373332\n");
     Ok(())
 }
+
+/// A connection made on the main thread reads on a worker: the sockets a program has open are
+/// the whole program's, not one thread's.
+#[test]
+fn a_connection_made_on_one_thread_is_used_on_another() -> std::io::Result<()> {
+    if !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let source = r#"from std.net import Connection
+
+def one_line(conn: Connection) -> str:
+    match conn.read_line():
+        case Ok(line):
+            text = line else "nothing"
+            f"got {text}"
+        case Err(error):
+            f"failed: {error.message()}"
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        with net.connect("127.0.0.1", server.port)? as client:
+            with server.accept()? as conn:
+                client.write("a\nb\nc\nd\n")?
+                lines = [one_line(each) for each in parallel([conn, conn, conn, conn])]
+                stdout.print(sorted(lines))
+"#;
+    let dir = std::env::temp_dir().join(format!("fennec-across-threads-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let executable = build_on_threads(&dir, source, "across")?;
+    let ran = std::process::Command::new(&executable).env("FENNEC_PARALLEL_STRESS", "1").output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "[\"got a\", \"got b\", \"got c\", \"got d\"]\n",
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    Ok(())
+}

@@ -1709,6 +1709,75 @@ fn net_reaches_native_code_as_its_own_kind() -> std::io::Result<()> {
     same_as_the_jit("net_kind", source)
 }
 
+/// TCP natively, with no interpreter on the path: a line and bytes each way, a read that gives up,
+/// a port nothing listens on, a host with no name, and `timeout=` on what waits.
+#[test]
+fn tcp_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "tcp",
+        r#"def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        with net.connect("127.0.0.1", server.port, timeout=2s)? as client:
+            with server.accept(timeout=2s)? as conn:
+                client.write("first\nsecond\r\nlast")?
+                client.write("x".encode())?
+                stdout.print(conn.read_line()?, conn.read_line()?)
+                stdout.print(conn.read(4)?.len())
+                conn.write("back\n")?
+                stdout.print(client.read_line(timeout=2s)?)
+                match client.read_line(timeout=20ms):
+                    case Err(error):
+                        stdout.print(error.message())
+                    case Ok(_):
+                        stdout.print("a line from nowhere")
+    match net.connect("127.0.0.1", 1):
+        case Err(error):
+            stdout.print(error.message())
+        case Ok(_):
+            stdout.print("connected to nothing")
+    match net.connect("no-such-host.invalid", 80):
+        case Err(error):
+            stdout.print(error.message())
+        case Ok(_):
+            stdout.print("connected to nothing")
+"#,
+    )
+}
+
+/// UDP natively: a packet each way, a receive that gives up, and a host with no name.
+#[test]
+fn udp_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "udp",
+        r#"def main(net: Net, stdout: Stdout):
+    with net.udp(port=0)? as first:
+        with net.udp()? as second:
+            first.send_to("ping", f"127.0.0.1:{second.port}")?
+            packet = second.receive()?
+            stdout.print(packet.data.decode() else "", packet.sender.endswith(str(first.port)))
+            second.send_to("pong".encode(), packet.sender)?
+            answer = first.receive(timeout=2s)?
+            stdout.print(answer.data.len(), answer.data[0])
+            match first.receive(timeout=20ms):
+                case Err(error):
+                    stdout.print(error.message())
+                case Ok(_):
+                    stdout.print("a packet from nowhere")
+            match first.send_to("x", "no-such-host.invalid:9"):
+                case Err(error):
+                    stdout.print(error.message())
+                case Ok(_):
+                    stdout.print("sent to nothing")
+"#,
+    )
+}
+
 /// Reads of a field or item kept without an owner while nothing can change what they came
 /// from: across calls, in loops, through a `match`'s fields. One returned, stored, kept past a
 /// change, or copied out still takes an owner. `FENNEC_COUNTS` shows no copies.

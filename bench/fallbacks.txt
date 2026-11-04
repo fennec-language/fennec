@@ -12,6 +12,7 @@ fannkuch 1
 fib 0
 generators 0
 generics 0
+id_maps 12
 json 0
 json_unicode 0
 k_nucleotide 3

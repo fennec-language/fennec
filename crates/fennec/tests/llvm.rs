@@ -1647,6 +1647,51 @@ def main(stdout: Stdout):
     )
 }
 
+/// An `IdMap` uses its first free slot first, whatever order slots came free in, and where it
+/// looks from never changes which that is: the `Id`s it gives are the interpreter's.
+#[test]
+fn an_id_maps_new_items_go_in_its_first_free_slot() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "id_map_free_slots",
+        r#"from std.game import Id, IdMap
+
+struct Named:
+    name: str
+
+def main(stdout: Stdout):
+    mut names = IdMap[Named]()
+    mut ids: list[Id[Named]] = []
+    for at in range(8):
+        ids.append(names.insert(Named(f"name {at} long enough not to be held inline")))
+    stdout.print(ids)
+    # Free from high to low, low to high, and in between.
+    names.remove(ids[6])
+    names.remove(ids[2])
+    names.remove(ids[4])
+    first = names.insert(Named("a"))
+    second = names.insert(Named("b"))
+    names.remove(ids[0])
+    third = names.insert(Named("c"))
+    fourth = names.insert(Named("d"))
+    fifth = names.insert(Named("e"))
+    stdout.print(first, second, third, fourth, fifth, names.len())
+    stdout.print(names.get(ids[2]) is None, names[first], names[fifth])
+    # A stale `Id` frees nothing, so it can't move where to look.
+    names.remove(ids[2])
+    sixth = names.insert(Named("f"))
+    stdout.print(sixth, names.values())
+    # A copy keeps looking from where it was, apart from the original.
+    mut copied = copy(names)
+    copied.remove(ids[1])
+    names.remove(ids[3])
+    stdout.print(copied.insert(Named("g")), names.insert(Named("h")), copied.values(), names.values())
+"#,
+    )
+}
+
 #[test]
 fn id_maps_match_the_jit() -> std::io::Result<()> {
     if !ready() {

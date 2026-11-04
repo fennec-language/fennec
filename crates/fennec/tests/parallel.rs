@@ -444,6 +444,12 @@ const CHANGED_PLACES: &str = include_str!("fixtures/workers/places.fen");
 /// through methods, `append` reading the root, `extend`, `pop`, `insert`, and given what came from them.
 const LENT_PLACES: &str = include_str!("fixtures/workers/places_lent.fen");
 
+/// Enums and structs in place holding lists, read by workers from what the caller holds, which
+/// retains those lists through the checks for who owns them: a tree holding itself through a list
+/// with a long string inside, a copy of its list appended to, a struct in a list holding a tree,
+/// and a struct's list changed by a `for mut` body.
+const THROUGH_LISTS: &str = include_str!("fixtures/workers/through_lists.fen");
+
 #[test]
 fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
@@ -458,6 +464,7 @@ fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::
         ("own_text", OWN_TEXT),
         ("places", CHANGED_PLACES),
         ("places_lent", LENT_PLACES),
+        ("through_lists", THROUGH_LISTS),
     ];
     for (name, source) in programs {
         matches_the_interpreter_on_workers(&dir, name, source)?;

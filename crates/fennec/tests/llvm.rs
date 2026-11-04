@@ -3689,6 +3689,165 @@ def main(stdout: Stdout):
 "#;
 
 /// Everything that holds, copies, compares or shows an enum in place, in every case.
+/// Types holding themselves through a list, which live in place: an enum and a struct, on their
+/// own and with others between. Moved, copied, changed, compared and printed.
+const THROUGH_LISTS: &str = r#"enum Json:
+    Null
+    Flag(value: bool)
+    Number(value: int)
+    Text(value: str)
+    Items(values: list[Json])
+    Fields(names: list[str], values: list[Json])
+
+struct Tree:
+    label: str
+    children: list[Tree]
+
+    def add(mut self, label: str):
+        self.children.append(Tree(label, []))
+
+struct Folder:
+    name: str
+    files: list[File]
+
+struct File:
+    name: str
+    inside: Holder
+
+struct Holder:
+    size: int
+    folders: list[Folder]
+
+enum Expr:
+    Number(value: int)
+    Add(parts: list[Expr])
+    Named(name: str, value: Wrapped)
+
+struct Wrapped:
+    parts: list[Expr]
+
+def printed(value: Json) -> str:
+    match value:
+        case Null:
+            "null"
+        case Flag(flag):
+            "true" if flag else "false"
+        case Number(number):
+            str(number)
+        case Text(text):
+            f"'{text}'"
+        case Items(values):
+            ",".join([printed(item) for item in values])
+        case Fields(names, values):
+            mut parts = []
+            for at, name in enumerate(names):
+                parts.append(f"{name}={printed(values[at])}")
+            ";".join(parts)
+
+def document(depth: int) -> Json:
+    if depth == 0:
+        return Json.Number(7)
+    Json.Fields(
+        ["a much longer name than fits in a header", "b"],
+        [Json.Items([document(depth - 1), Json.Null, Json.Flag(True)]), Json.Text("é")],
+    )
+
+def count(tree: Tree) -> int:
+    mut total = 1
+    for child in tree.children:
+        total += count(child)
+    total
+
+def deep(depth: int) -> Tree:
+    mut tree = Tree("leaf", [])
+    for at in range(depth):
+        tree = Tree("node", [tree])
+    tree
+
+def depth_of(tree: Tree) -> int:
+    mut held = tree
+    mut seen = 0
+    while held.children.len() > 0:
+        held = held.children[0]
+        seen += 1
+    seen
+
+def total(expr: Expr) -> int:
+    match expr:
+        case Number(value):
+            value
+        case Add(parts):
+            sum(total(part) for part in parts)
+        case Named(name, value):
+            name.len() + sum(total(part) for part in value.parts)
+
+def changed(value: Json) -> Json:
+    match value:
+        case Items(values):
+            mut more = copy(values)
+            more.append(Json.Null)
+            Json.Items(more)
+        case _:
+            value
+
+def main(stdout: Stdout):
+    made = document(3)
+    stdout.print(printed(made))
+    held = made
+    other = changed(made)
+    stdout.print(printed(held) == printed(made), printed(other).len())
+    stdout.print(printed(changed(Json.Items([made, made]))).len())
+    stdout.print(made == held, made == Json.Null, Json.Number(1) == Json.Number(1))
+    stdout.print(Json.Text("a") == Json.Text("a"), Json.Items([Json.Null]) == Json.Items([Json.Null]))
+
+    mut items = [Json.Null, Json.Text("in a list"), Json.Items([Json.Number(1)])]
+    copied = items
+    items.append(document(1))
+    items[0] = Json.Text("replaced")
+    last = items.pop()
+    stdout.print(items.len(), copied.len(), printed(items[0]), printed(copied[0]), printed(last))
+    stdout.print(items)
+
+    mut tree = Tree("root", [])
+    tree.add("left")
+    tree.add("right")
+    tree.children[0].add("under")
+    kept = tree
+    tree.children[1].add("more")
+    tree.children[1].children[0].add("deeper")
+    stdout.print(count(tree), count(kept), tree.children[1].children[0].children[0].label)
+    stdout.print(tree == kept, kept.children[1].children.len())
+    stdout.print(depth_of(deep(20000)))
+
+    root = Folder("root", [File("f", Holder(1, [Folder("sub", [File("g", Holder(2, []))])]))])
+    stdout.print(root.files[0].inside.folders[0].files[0].inside.size, root.files[0].name)
+
+    expr = Expr.Add([Expr.Number(1), Expr.Named("two", Wrapped([Expr.Number(2)])), Expr.Add([])])
+    stdout.print(total(expr))
+"#;
+
+#[test]
+fn types_holding_themselves_through_a_list_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit("through_lists", THROUGH_LISTS)
+}
+
+/// What's in place goes with the block holding it, so freeing a deep one needs no stack of its
+/// own and leaves nothing behind.
+#[test]
+fn a_type_holding_itself_through_a_list_allocates_no_block_of_its_own() -> std::io::Result<()> {
+    // Told to box what holds blocks, it does.
+    if !ready() || std::env::var_os("FENNEC_INLINE_STRUCTS").is_some_and(|set| set == "0") {
+        return Ok(());
+    }
+    let source = "enum Json:\n    Number(value: int)\n    Items(values: list[Json])\n\ndef main(stdout: Stdout):\n    mut items = []\n    for n in range(1000):\n        items.append(Json.Number(n))\n    stdout.print(Json.Items(items) == Json.Number(0))\n";
+    let counts = counts_of("through_lists_blocks", source)?;
+    assert!(count(&counts, "allocations") < Some(30), "{counts}");
+    Ok(())
+}
+
 #[test]
 fn enums_holding_blocks_match_the_jit() -> std::io::Result<()> {
     if !ready() {

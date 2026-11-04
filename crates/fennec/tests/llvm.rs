@@ -2867,39 +2867,17 @@ fn removing_what_a_set_lacks_fails_like_the_jit() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Dicts whose values are blocks or plain structs and enums, with what's done to them.
+/// Dicts whose values are blocks, with what's done to them.
 #[test]
-fn dicts_of_any_value_match_the_jit() -> std::io::Result<()> {
+fn dicts_of_blocks_match_the_jit() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
     same_as_the_jit(
         "dict_values",
-        r#"from std.game import IdMap
-
-struct Point:
-    x: int
-    y: float
-
-struct Named:
-    name: str
-    tags: list[str]
-
-enum Light:
-    Red
-    Green
-    Amber(seconds: int)
-
-enum Note:
-    Empty
-    Said(text: str)
-
-struct Book:
+        r#"struct Book:
     title: str
     pages: dict[str, list[int]]
-
-struct Home:
-    id: int
 
 def main(stdout: Stdout):
     mut lists = {"a": [1, 2], "b": []}
@@ -2927,6 +2905,50 @@ def main(stdout: Stdout):
     mut raw = {"b": bytes([1, 2])}
     raw["c"] = "hi".encode()
     stdout.print(raw, raw["c"].len())
+    book = Book(title="t", pages={"one": [1], "two": [2, 2]})
+    stdout.print(book, book.pages["two"], book.pages.keys())
+    mut empty: dict[str, list[int]] = {}
+    empty.clear()
+    stdout.print(empty, empty.get("a"), empty.len())
+    mut grown: dict[int, list[int]] = {}
+    for at in range(100):
+        grown[at] = [at, at + 1]
+    stdout.print(grown[99], grown.len(), sum(sum(items) for items in grown.values()))
+"#,
+    )
+}
+
+/// Dicts whose values are plain structs and enums, or `Id`s, with what's done to them.
+#[test]
+fn dicts_of_plain_values_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "dict_plain_values",
+        r#"from std.game import IdMap
+
+struct Point:
+    x: int
+    y: float
+
+struct Named:
+    name: str
+    tags: list[str]
+
+enum Light:
+    Red
+    Green
+    Amber(seconds: int)
+
+enum Note:
+    Empty
+    Said(text: str)
+
+struct Home:
+    id: int
+
+def main(stdout: Stdout):
     mut points = {"p": Point(x=1, y=2.0)}
     points["q"] = Point(x=3, y=4.0)
     points["p"] = Point(x=5, y=6.0)
@@ -2955,8 +2977,6 @@ def main(stdout: Stdout):
     kept = people["you"]
     people["you"] = Named(name="other", tags=["b", "c"])
     stdout.print(people, kept, people["you"].tags[1], people == people)
-    book = Book(title="t", pages={"one": [1], "two": [2, 2]})
-    stdout.print(book, book.pages["two"], book.pages.keys())
     mut ids = IdMap[Home]()
     first = ids.insert(Home(id=1))
     second = ids.insert(Home(id=2))
@@ -2966,13 +2986,6 @@ def main(stdout: Stdout):
     mut homes = {"first": first}
     homes["second"] = second
     stdout.print(homes["second"] == second, homes.get("nope") is None, homes.len())
-    mut empty: dict[str, list[int]] = {}
-    empty.clear()
-    stdout.print(empty, empty.get("a"), empty.len())
-    mut grown: dict[int, list[int]] = {}
-    for at in range(100):
-        grown[at] = [at, at + 1]
-    stdout.print(grown[99], grown.len(), sum(sum(items) for items in grown.values()))
 "#,
     )
 }

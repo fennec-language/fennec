@@ -132,7 +132,7 @@ impl Interp<'_> {
             };
             slots.push(Slot { generation, value });
         }
-        Ok(Value::IdMap(Rc::new(IdMap { slots })))
+        Ok(Value::IdMap(Rc::new(IdMap::new(slots))))
     }
 
     fn is_struct(&self, name: &str) -> bool {

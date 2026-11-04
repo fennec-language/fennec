@@ -83,6 +83,10 @@ pub(crate) struct Heap {
     spare_cells: Vec<usize>,
     /// What native code's run has cost so far.
     pub(super) counts: Counts,
+    /// In a program built to trace what it costs, the same for each place in its source, and the
+    /// place native code said it's at last. Empty otherwise.
+    pub(super) sites: HashMap<u32, Counts>,
+    site: Option<u32>,
     /// Where each shape's blocks hold addresses, by the shape's number.
     plans: Vec<super::plans::Plan>,
     /// Where each kind of list item laid out in place holds addresses, by the kind's number. A
@@ -118,6 +122,11 @@ pub struct Counts {
 }
 
 impl Counts {
+    fn allocated(&mut self, bytes: u64) {
+        self.allocations += 1;
+        self.allocated_bytes += bytes;
+    }
+
     /// Notes that a shared value of `words` words was copied.
     pub(super) fn copied(&mut self, words: usize) {
         let bytes = u64::try_from(words).unwrap_or(0) * 8;
@@ -280,9 +289,29 @@ impl Heap {
         self.blocks.len().saturating_sub(self.statics)
     }
 
+    /// Native code is about to do what's at this place in the source.
+    pub(super) fn trace_at(&mut self, site: u32) {
+        self.site = Some(site);
+    }
+
+    /// Notes that `bytes` bytes were allocated.
+    pub(super) fn allocated(&mut self, bytes: u64) {
+        self.counts.allocated(bytes);
+        if let Some(site) = self.site {
+            self.sites.entry(site).or_default().allocated(bytes);
+        }
+    }
+
+    /// Notes that a shared value of `words` words was copied.
+    pub(super) fn copied(&mut self, words: usize) {
+        self.counts.copied(words);
+        if let Some(site) = self.site {
+            self.sites.entry(site).or_default().copied(words);
+        }
+    }
+
     pub(crate) fn insert(&mut self, mut block: Box<[u64]>) -> i64 {
-        self.counts.allocations += 1;
-        self.counts.allocated_bytes += u64::try_from(block.len()).unwrap_or(0) * 8;
+        self.allocated(u64::try_from(block.len()).unwrap_or(0) * 8);
         let address = block.as_ptr().addr();
         if super::threads::ON && self.owner_bits != 0 {
             mark_owner(&mut block, self.owner_bits);
@@ -603,6 +632,17 @@ fn boxed_addresses(element: &Element, words: &[u64], at: &mut usize, found: &mut
 }
 
 /// Whether values of a kind, laid out in place, hold blocks.
+pub(super) fn holds_floats(element: &Element) -> bool {
+    match element {
+        Element::Float => true,
+        Element::Struct { fields, .. } => fields.iter().any(|(_, field)| holds_floats(field)),
+        Element::Enum { cases, .. } => {
+            cases.iter().any(|(_, fields)| fields.iter().any(|(_, field)| holds_floats(field)))
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn holds_blocks(element: &Element) -> bool {
     match element {
         Element::Boxed(_)
@@ -716,7 +756,7 @@ pub extern "C" fn unshare(address: i64) -> i64 {
         }
         // The copy is this thread's, whoever made what it was copied from.
         mark_owner(&mut copy, state.heap.owner_bits);
-        state.heap.counts.copied(copy.len());
+        state.heap.copied(copy.len());
         for child in children(state, &copy) {
             retain(state, child);
         }
@@ -989,7 +1029,7 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
             }
         }
         (Element::Enum { name, cases, words: size }, Value::Instance(instance))
-            if *instance.type_name == *type_name(name) && !instance.is_error =>
+            if *instance.type_name == *type_name(name) =>
         {
             let case = instance.case.as_ref()?;
             let at = cases.iter().position(|(written, _)| written == case)?;
@@ -1032,13 +1072,13 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
         return super::dicts::equal(state, left, right);
     }
     if let Some(element) = super::lists::element_of(state, left) {
-        // Items compare bit by bit, as the interpreter compares numbers and plain structs.
+        // Items compare bit by bit, unless they hold floats or blocks.
         let stride = element.words();
         let (mine, theirs) = (super::lists::items(left, stride), super::lists::items(right, stride));
         if super::lists::owns_items(&element) {
             return mine.len() == theirs.len() && mine.iter().zip(theirs).all(|(x, y)| same(state, *x, *y));
         }
-        if holds_blocks(&element) {
+        if holds_blocks(&element) || holds_floats(&element) {
             let stride = stride.max(1);
             return mine.len() == theirs.len()
                 && mine
@@ -1060,6 +1100,10 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
 /// Whether two values of a kind, laid out as words, are equal: the same plain words, and
 /// equal blocks where they hold blocks.
 pub(super) fn same_words(state: &State, element: &Element, left: &[u64], right: &[u64]) -> bool {
+    // A float's bits don't say what's equal, so one with floats in it compares by its values.
+    if holds_floats(element) {
+        return read(state, element, &mut left.iter()) == read(state, element, &mut right.iter());
+    }
     let mut boxed = Vec::new();
     boxed_words(element, left, &mut 0, &mut boxed);
     // The case decides where the boxed fields are, so compare the plain words first.

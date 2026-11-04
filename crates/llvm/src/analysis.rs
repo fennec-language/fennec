@@ -40,6 +40,8 @@ pub(crate) struct Analysis {
     shared: HashSet<usize>,
     /// Lists changed here, by an index or an append.
     changed: HashSet<usize>,
+    /// Locals given to a call's `mut` parameter, which writes them with no write here to see.
+    given_mut: HashSet<usize>,
     /// Locals whose one read can run again without their one write running first: in a loop
     /// that the write is outside of.
     read_again: HashSet<usize>,
@@ -100,6 +102,8 @@ pub(crate) struct Whole<'p> {
     pub(crate) needs: HashMap<&'p str, Vec<FieldPath>>,
     /// The functions that give a constant's value, which keep it after the first time.
     pub(crate) constants: HashSet<&'p str>,
+    /// The functions that can run on a thread `parallel` uses, which everything else can't.
+    pub(crate) on_workers: HashSet<&'p str>,
 }
 
 /// What a function calls by name, a constant being a call of a function of no arguments, and a
@@ -357,6 +361,7 @@ fn count_uses(
                     for at in changes(callee) {
                         if let Some(Operand::Local(list)) = args.get(at) {
                             grown.insert(list.0);
+                            known.given_mut.insert(list.0);
                         }
                     }
                     // Only what the callee might keep comes to have another owner.
@@ -396,6 +401,7 @@ fn analyze(
         writes: vec![0; count],
         shared: HashSet::new(),
         changed: HashSet::new(),
+        given_mut: HashSet::new(),
         read_again: HashSet::new(),
         borrowed: HashSet::new(),
         borrowed_from: HashMap::new(),
@@ -1448,6 +1454,11 @@ impl Analysis {
         self.shared.contains(&local.0)
     }
 
+    /// Whether a call here may change a local, through a `mut` parameter.
+    pub(crate) fn is_given_mut(&self, local: LocalId) -> bool {
+        self.given_mut.contains(&local.0)
+    }
+
     pub(crate) fn is_taken(&self, local: LocalId) -> bool {
         self.taken.contains(&local.0)
     }
@@ -1907,7 +1918,19 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
             _ => None,
         })
         .collect();
-    Whole { functions, analyses, can_fail, generators, settles, lengths, builders, needs, constants }
+    let on_workers = crate::parallel::run_on_workers(program);
+    Whole {
+        functions,
+        analyses,
+        can_fail,
+        generators,
+        settles,
+        lengths,
+        builders,
+        needs,
+        constants,
+        on_workers,
+    }
 }
 
 #[cfg(all(test, not(windows)))]

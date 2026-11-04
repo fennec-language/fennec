@@ -26,6 +26,7 @@ def main(stdout: Stdout):
     mut later = []
     stdout.print(sum(later))
     later.append(1.5)
+    stdout.print(later)
 
     wallet = [Money(cents=150), Money(cents=250)]
     stdout.print(sum(wallet, start=Money(cents=0)))

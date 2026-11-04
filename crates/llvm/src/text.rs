@@ -286,6 +286,123 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// A failed comparison in an `assert`, saying what each side was, as the interpreter shows
+    /// them. Nothing made for this is let go of, since the program is ending. A value it has no
+    /// text for leaves the failure to say only that it failed.
+    pub(crate) fn assert_sides(&mut self, left: &Operand, right: &Operand, span: Span) -> Result<(), String> {
+        let (Some(left), Some(right)) = (self.side_text(left)?, self.side_text(right)?) else {
+            return Ok(());
+        };
+        self.declare("declare void @fennec_assert_sides(ptr, ptr, i64, i64) #1");
+        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        self.line(&format!("call void @fennec_assert_sides(ptr {left}, ptr {right}, i64 {from}, i64 {to})"));
+        self.leave_if_failed();
+        Ok(())
+    }
+
+    /// A new string with a side of a comparison, if it has text.
+    fn side_text(&mut self, side: &Operand) -> Result<Option<String>, String> {
+        if *side == Operand::None {
+            return Ok(Some(self.literal("None")));
+        }
+        let (value, kind) = self.operand(side)?;
+        if !self.has_shown_text(&kind) {
+            return Ok(None);
+        }
+        self.shown_text(&value, &kind).map(Some)
+    }
+
+    fn has_shown_text(&self, kind: &Kind) -> bool {
+        match kind {
+            Kind::Maybe(inner) => self.has_shown_text(inner),
+            _ if self.is_optional(kind) => self.case_of(kind, "Some").is_ok_and(|(_, fields)| {
+                fields
+                    .first()
+                    .is_some_and(|(_, _, held)| held.as_ref().is_some_and(|held| self.has_shown_text(held)))
+            }),
+            Kind::Int
+            | Kind::Float
+            | Kind::Bool
+            | Kind::Str
+            | Kind::TextBlock
+            | Kind::MaybeText
+            | Kind::Struct(_)
+            | Kind::Enum(_)
+            | Kind::List(_)
+            | Kind::Boxed(_)
+            | Kind::Dict(..) => true,
+            _ => false,
+        }
+    }
+
+    /// A new string with a value's text as the interpreter shows it, with a string in quotes.
+    fn shown_text(&mut self, value: &str, kind: &Kind) -> Result<String, String> {
+        let none = self.literal("None");
+        if let Kind::Maybe(inner) = kind {
+            let (missing, shown) = (self.temp(), self.temp_slot(&none));
+            self.line(&format!("{missing} = icmp eq ptr {value}, null"));
+            let (holds, joined) = (self.label("holds"), self.label("shown"));
+            self.line(&format!("br i1 {missing}, label %{joined}, label %{holds}"));
+            self.start_block(&holds);
+            let text = self.shown_text(value, inner)?;
+            self.line(&format!("store ptr {text}, ptr {shown}"));
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&joined);
+            let text = self.temp();
+            self.line(&format!("{text} = load ptr, ptr {shown}"));
+            return Ok(text);
+        }
+        if *kind == Kind::MaybeText {
+            let (missing, shown) = (self.header_is_none(value), self.temp_slot(&none));
+            let (holds, joined) = (self.label("holds"), self.label("shown"));
+            self.line(&format!("br i1 {missing}, label %{joined}, label %{holds}"));
+            self.start_block(&holds);
+            let text = self.shown_text(value, &Kind::Str)?;
+            self.line(&format!("store ptr {text}, ptr {shown}"));
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&joined);
+            let text = self.temp();
+            self.line(&format!("{text} = load ptr, ptr {shown}"));
+            return Ok(text);
+        }
+        if self.is_optional(kind) {
+            let (number, fields) = self.case_of(kind, "Some")?;
+            let (_, offset, held) = fields.first().cloned().ok_or("an optional with nothing in it")?;
+            let held = held.ok_or("an optional of something this backend doesn't take yet")?;
+            let base = self.fields_at(value, kind);
+            let (tag, some, shown) = (self.temp(), self.temp(), self.temp_slot(&none));
+            self.line(&format!("{tag} = load i64, ptr {base}"));
+            self.line(&format!("{some} = icmp eq i64 {tag}, {number}"));
+            let (holds, joined) = (self.label("holds"), self.label("shown"));
+            self.line(&format!("br i1 {some}, label %{holds}, label %{joined}"));
+            self.start_block(&holds);
+            let at = self.offset(&base, offset);
+            let inner = if held.in_memory() { at } else { self.load_field(&held, &at, "") };
+            let text = self.shown_text(&inner, &held)?;
+            self.line(&format!("store ptr {text}, ptr {shown}"));
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&joined);
+            let text = self.temp();
+            self.line(&format!("{text} = load ptr, ptr {shown}"));
+            return Ok(text);
+        }
+        match kind {
+            Kind::Str | Kind::TextBlock => {
+                let block = if *kind == Kind::Str && self.headers() {
+                    self.owned_text_block(value)
+                } else {
+                    value.to_owned()
+                };
+                self.declare("declare ptr @fennec_str_repr(ptr) nounwind");
+                let text = self.temp();
+                self.line(&format!("{text} = call ptr @fennec_str_repr(ptr {block})"));
+                Ok(text)
+            }
+            Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => Ok(self.text_of_block(value)),
+            _ => self.plain_text(value, kind),
+        }
+    }
+
     /// Two strings joined into a new one, letting go of the first and, if it's owned, the second.
     fn joined(&mut self, first: &str, second: &str, second_owned: bool) -> String {
         let text = self.temp();
@@ -294,6 +411,21 @@ impl Emit<'_, '_, '_> {
         if second_owned {
             self.release(second);
         }
+        text
+    }
+
+    /// A new string with the text of a list, a dict or a block of a struct, which the runtime
+    /// writes from an interpreter value.
+    fn text_of_block(&mut self, value: &str) -> String {
+        self.declare("declare i64 @fennec_mark() nounwind");
+        self.declare("declare void @fennec_truncate(i64) nounwind");
+        self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
+        self.declare("declare ptr @fennec_value_text(i64) nounwind");
+        let (mark, handle, text) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{mark} = call i64 @fennec_mark()"));
+        self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {value})"));
+        self.line(&format!("{text} = call ptr @fennec_value_text(i64 {handle})"));
+        self.line(&format!("call void @fennec_truncate(i64 {mark})"));
         text
     }
 
@@ -317,17 +449,7 @@ impl Emit<'_, '_, '_> {
                     return Ok(value);
                 }
                 Kind::Bool | Kind::Struct(_) | Kind::Enum(_) => return self.plain_text(&value, &kind),
-                Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => {
-                    self.declare("declare i64 @fennec_mark() nounwind");
-                    self.declare("declare void @fennec_truncate(i64) nounwind");
-                    self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
-                    self.declare("declare ptr @fennec_value_text(i64) nounwind");
-                    let (mark, handle) = (self.temp(), self.temp());
-                    self.line(&format!("{mark} = call i64 @fennec_mark()"));
-                    self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {value})"));
-                    self.line(&format!("{temp} = call ptr @fennec_value_text(i64 {handle})"));
-                    self.line(&format!("call void @fennec_truncate(i64 {mark})"));
-                }
+                Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => return Ok(self.text_of_block(&value)),
                 other => return Err(format!("it formats a {other:?}, which this backend doesn't take yet")),
             }
             return Ok(temp);
@@ -758,9 +880,14 @@ impl Emit<'_, '_, '_> {
 
     /// Leaves the function if the runtime has recorded a failure.
     pub(crate) fn leave_if_failed(&mut self) {
-        self.declare(crate::parallel::failed_global(self.module.threads));
+        let (declared, symbol) = if self.module.threads && !self.on_workers() {
+            ("@fennec_failed_main = external dso_local global ptr", "@fennec_failed_main")
+        } else {
+            (crate::parallel::failed_global(self.module.threads), "@fennec_failed")
+        };
+        self.declare(declared);
         let (flag_at, flag, failed) = (self.temp(), self.temp(), self.temp());
-        self.line(&format!("{flag_at} = load ptr, ptr @fennec_failed, !invariant.load !1"));
+        self.line(&format!("{flag_at} = load ptr, ptr {symbol}, !invariant.load !1"));
         self.line(&format!("{flag} = load i8, ptr {flag_at}"));
         self.line(&format!("{failed} = icmp ne i8 {flag}, 0"));
         self.leave_if(&failed);

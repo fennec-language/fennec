@@ -369,6 +369,9 @@ fn chain_test(size: usize) -> i64 {
         total += planner.var(last).value;
     }
     planner.destroy(edit);
+    if planner.constraints.is_empty() {
+        return 0;
+    }
     total
 }
 

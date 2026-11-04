@@ -687,7 +687,7 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
     if shared || used >= capacity(slots) {
         let (shape, live) = (shape_word(block)?, entries(block, layout.width));
         if shared {
-            state.heap.counts.copied(live.len());
+            state.heap.copied(live.len());
             for entry in live.chunks_exact(layout.width) {
                 retain_entry(state, layout, entry);
             }
@@ -746,7 +746,7 @@ fn unshared(state: &mut State, at: u64) -> Option<u64> {
     }
     let layout = layout(state, block)?;
     let (shape, live) = (shape_word(block)?, entries(block, layout.width));
-    state.heap.counts.copied(live.len());
+    state.heap.copied(live.len());
     for entry in live.chunks_exact(layout.width) {
         retain_entry(state, layout, entry);
     }
@@ -1028,7 +1028,9 @@ pub(super) fn equal(state: &State, left: &[u64], right: &[u64]) -> bool {
                 Probe::Found(at) => value_place(right, layout, at)
                     .and_then(|place| right.get(place))
                     .is_some_and(|other| match layout.value {
-                        Word::Float => f64::from_bits(value).total_cmp(&f64::from_bits(*other)).is_eq(),
+                        Word::Float => {
+                            crate::value::floats_same(f64::from_bits(value), f64::from_bits(*other))
+                        }
                         Word::Str => same(state, value, *other),
                         Word::Int | Word::Bool | Word::Nothing | Word::Plain(_) | Word::Text => {
                             value == *other

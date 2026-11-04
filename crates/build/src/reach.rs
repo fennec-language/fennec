@@ -267,6 +267,9 @@ impl Uses {
             }
         }
         def.params.iter().filter_map(|param| param.ty.as_ref()).for_each(|ty| self.type_expr(ty));
+        if let Some(ty) = &def.fails {
+            self.type_expr(ty);
+        }
         if let Some(ty) = &def.ret {
             self.type_expr(ty);
         }

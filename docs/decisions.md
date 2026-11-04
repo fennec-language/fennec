@@ -1432,7 +1432,7 @@ tools = { path = "../tools" }
 **Fennec has no REPL.** Running a small file is already quick, and one can come back as a pure addition if people ask.
 *Why:* This is a compiled language written mostly by AI, and it needs to be readable, fast to build and fast to run.
 
-**The tree-walking interpreter is kept for now, simple and correct, not fast.** It runs the playground, compile-time evaluation and the sandbox, and it's the test reference. The goal is to drop it as soon as we can, and what replaces each of its jobs, a test reference included, gets decided at that point.
+**Getting the tree-walking interpreter out of everything is the top goal, and it leaves one job at a time.** For now it keeps compile-time constants, fuzzing and the playground.
 
 **Every example that builds natively must give the same output as the interpreter.** An example that's refused goes on a tracked list, which must reach zero.
 
@@ -1668,6 +1668,7 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 - What replaces `xs.pair(i, j)`, and whether `f(ref xs[i], ref xs[j])` is always refused.
 - Whether a generator written right inside `sum` and the like can still change the names around it, now that comprehensions make new things.
 - How `fennec fix` handles the changes it can't make for you, since every breaking change is meant to ship with its own fix.
+- What takes over the sandbox and the test reference from the interpreter. Entries under Engines, Sandboxing, For AI and Kits on the Den still give them to it.
 - The exact API of event channels.
 - The API of `Graph`.
 - How replay records the order tasks reach a `shared` value or a channel.

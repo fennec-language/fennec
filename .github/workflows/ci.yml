@@ -415,8 +415,10 @@ jobs:
           cargo build --release --locked -p fennec
           RUSTFLAGS="-Zsanitizer=$SANITIZE" cargo "+$NIGHTLY" build --release --locked -p fennec-runtime \
             --features threads,sanitize -Zbuild-std --target x86_64-unknown-linux-gnu --target-dir target/threads
+          # A `parallel` loop that stays on one thread links the plain runtime, which this also serves as.
           cp target/threads/x86_64-unknown-linux-gnu/release/libfennec_runtime.a \
             target/release/libfennec_runtime_threads.a
+          cp target/threads/x86_64-unknown-linux-gnu/release/libfennec_runtime.a target/release/libfennec_runtime.a
       - name: Run every program that uses parallel
         env:
           FENNEC_SANITIZE: ${{ matrix.sanitize }}

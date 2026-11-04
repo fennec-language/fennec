@@ -557,6 +557,9 @@ impl Emit<'_, '_, '_> {
         if self.keeps_its_value() {
             self.give_back_what_it_kept();
         }
+        if function.name == "main" && self.module.threads {
+            self.work_out_constants()?;
+        }
         let kinds = self.kinds.clone();
         for (at, kind) in kinds.iter().enumerate() {
             let local = LocalId(at);
@@ -1853,14 +1856,27 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    /// Whether this function gives a constant's value, which is worked out once and then kept. On
-    /// a program's other threads a block's count can't be changed like this, so a program that
-    /// uses `parallel` still works it out at each read.
+    /// Whether this function gives a constant's value, which is worked out once and then kept. In
+    /// a program that uses `parallel`, one that can fail is worked out at each read instead, since
+    /// `main` works out the kept ones before any worker starts, whether or not they're ever read.
     fn keeps_its_value(&mut self) -> bool {
         let returns = self.returns.clone();
-        !self.module.threads
-            && self.module.whole.constants.contains(self.function.name.as_str())
+        let name = self.function.name.as_str();
+        self.module.whole.constants.contains(name)
+            && (!self.module.threads || !self.module.flagged(name))
             && self.text_of(&returns) != "void"
+    }
+
+    /// Starts `main` in a program that uses `parallel`: every constant that's kept gets kept here,
+    /// so a worker only ever reads it, and two can't race to be the first.
+    fn work_out_constants(&mut self) -> Result<(), String> {
+        let mut constants: Vec<&str> =
+            self.module.whole.constants.iter().copied().filter(|name| !self.module.flagged(name)).collect();
+        constants.sort_unstable();
+        for name in constants {
+            self.call(None, name, &[], Span::default())?;
+        }
+        Ok(())
     }
 
     /// Where a constant's value is kept, and whether it's there yet.
@@ -2046,16 +2062,28 @@ def main(stdout: Stdout):
     }
 
     #[test]
-    fn a_program_using_parallel_works_a_constant_out_at_each_read() -> Result<(), String> {
-        let source = "WORDS = [\"a\", \"b\"]\n\ndef main(stdout: Stdout):\n    mut counts = [1, 2]\n    \
-                      for mut count in parallel(counts):\n        count += WORDS.len()\n    stdout.print(counts)\n";
+    fn a_program_using_parallel_works_out_its_constants_before_any_worker_starts() -> Result<(), String> {
+        let source = "WORDS = [\"a\", \"b\"]\nFIRST = WORDS[5]\n\ndef main(stdout: Stdout):\n    mut counts = [1, 2]\n    \
+                      for mut count in parallel(counts):\n        count += WORDS.len() + FIRST.len()\n    \
+                      stdout.print(counts)\n";
         let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower_with(&module, &checked, fennec_ir::Options { outline_parallel: true });
         assert!(crate::parallel::uses_parallel(&program), "{:?}", program.not_lowered);
         let (units, _, _) = emit(&program)?;
-        let constant = units.iter().find(|unit| unit.function == "WORDS").ok_or("it isn't lowered")?;
-        assert!(!constant.text.contains(".kept"), "{}", constant.text);
+        let text =
+            |name: &str| units.iter().find(|unit| unit.function == name).map(|unit| unit.text.as_str());
+        let kept = text("WORDS").ok_or("`WORDS` isn't lowered")?;
+        assert!(kept.contains("@\"f_WORDS.kept\""), "{kept}");
+        // One that can fail would fail a program that never read it, so it's left until a read.
+        let failing = text("FIRST").ok_or("`FIRST` isn't lowered")?;
+        assert!(!failing.contains(".kept"), "{failing}");
+        let main = text("main").ok_or("`main` isn't lowered")?;
+        let worked_out =
+            main.find("call swiftcc ptr @\"f_WORDS\"").ok_or("`main` doesn't work out `WORDS`")?;
+        let workers = main.rfind("@fennec_parallel_for(").ok_or("`main` starts no workers")?;
+        assert!(worked_out < workers, "{main}");
+        assert!(!main.contains("@\"f_FIRST\""), "{main}");
         Ok(())
     }
 

@@ -498,6 +498,10 @@ def main(stdout: Stdout):
     stdout.print(trees)
 "#;
 
+/// A map walked with no list made: captured by a body, where every thread reads the caller's, and
+/// changed and walked by a `for mut` body, which has a copy of its own.
+const WALKS: &str = include_str!("fixtures/workers/walks.fen");
+
 #[test]
 fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
@@ -511,6 +515,7 @@ fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::
         ("prints", PRINTS),
         ("own_text", OWN_TEXT),
         ("through_lists", THROUGH_LISTS),
+        ("walks", WALKS),
     ];
     for (name, source) in programs {
         matches_the_interpreter_on_workers(&dir, name, source)?;

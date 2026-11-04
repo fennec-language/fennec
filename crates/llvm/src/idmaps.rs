@@ -381,13 +381,15 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Goes on to the next slot with an item in it. The loop counts the items, and nothing here
-    /// changes the map, so there's always one. A count of 0 starts again, in case what was never
-    /// made is gone through more than once.
+    /// changes the map, so there should always be one, and running off the end fails rather than
+    /// trusting that. A count of 0 starts again, in case what was never made is gone through more
+    /// than once.
     pub(crate) fn walk_to_next(
         &mut self,
         dest: LocalId,
         map: LocalId,
         index: &Operand,
+        span: Span,
     ) -> Result<(), String> {
         let kind = self.kind_of(map)?.clone();
         let parts = self.parts(&kind)?;
@@ -401,17 +403,20 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{first} = icmp eq i64 {count}, 0"));
         self.line(&format!("{start} = select i1 {first}, i64 0, i64 {saved}"));
         let before = self.current.clone();
-        let (head, found) = (self.label("walk"), self.label("walked"));
-        let (at, step) = (self.temp(), self.temp());
+        let (head, again, found) = (self.label("walk"), self.label("walk_on"), self.label("walked"));
+        let (going, step) = (self.temp(), self.temp());
         self.line(&format!("br label %{head}"));
         self.start_block(&head);
-        self.line(&format!("{at} = phi i64 [ {start}, %{before} ], [ {step}, %{head} ]"));
+        self.line(&format!("{going} = phi i64 [ {start}, %{before} ], [ {step}, %{again} ]"));
+        let at = self.position(&generations, &going, span);
         let generation_at = self.item_address(&generations, "i64", &at);
         let (generation, alive) = (self.temp(), self.temp());
         self.line(&format!("{generation} = load i64, ptr {generation_at}{ITEM_ACCESS}"));
         self.line(&format!("{alive} = icmp sge i64 {generation}, 0"));
         self.line(&format!("{step} = add i64 {at}, 1"));
-        self.line(&format!("br i1 {alive}, label %{found}, label %{head}"));
+        self.line(&format!("br i1 {alive}, label %{found}, label %{again}"));
+        self.start_block(&again);
+        self.line(&format!("br label %{head}"));
         self.start_block(&found);
         self.line(&format!("store i64 {step}, ptr {next_place}"));
         self.line(&format!("store i64 {at}, ptr {slot_place}"));

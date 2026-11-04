@@ -1664,8 +1664,11 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
         }
         let walks = matches!(name.as_str(), "IdMap.items" | "IdMap.values");
         // A loop over a map can't change it, as the checker sees to, so a walk only needs nothing
-        // to change it from when this was asked for until its loop's done.
-        let steady = steady || walks;
+        // to change it from when this was asked for until its loop's done. Something else can
+        // reach a map through a `shared` handle, so unless it's known steady, the local holds an
+        // owner of its own for the walk, which makes such a change copy it.
+        let holds_it = !known.is_borrowed(*list) && !known.is_taken(*list) && known.alias(*list).is_none();
+        let steady = steady || (walks && holds_it);
         if !(name == "enumerate" || walks) || !steady || known.writes.get(made.0) != Some(&1) {
             continue;
         }

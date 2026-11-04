@@ -51,16 +51,28 @@ world.selected = copy(world.units[i])    # a separate copy, on purpose
 Immutable local snapshots stay allowed, and so does sharing that never changes.
 *Why:* This is the mistake people and AI trained on references will make. It compiles and looks right, then one side silently stops updating. The error asks which was meant.
 
+**A write that goes nowhere is a compile error.** That's a local that's changed and then never read, returned or passed on:
+```fennec
+def heal(hero: Hero):
+    mut healed = copy(hero)
+    healed.health += 10          # error: `healed` is changed, then never read, returned or passed on
+```
+- Writing through a name for a place isn't this case. `mut unit = world.units[id]` edits the table, so the write has gone somewhere.
+- It doesn't catch a copy that's read afterwards. Print `healed.health` at the end of `heal` and it compiles, while the caller's `hero` stays as it was.
+
+*Why:* A change that goes nowhere is a bug.
+
 **Cut from the first version, and each can be added later without breaking anything:**
 - `yield mut` helpers that lend a place. `world.units[id].health -= 10` covers most cases.
 - Inferring which fields a helper touches, so the rest of a struct stays usable across the call. Passing `mut world.units` works today.
-- `Graph` in `std`. `Tree` comes first.
 - Compile-time checks for channel deadlocks. Detection starts at run time.
 
 *Why:* It's less to build and less to get wrong. If something turns out to be missing, it's added with evidence.
 
-**Named fallbacks, used only on evidence.** There's no `class`, no `Frozen[T]` and no `with pool()`.
-- `class` with `link` fields, if the AI evaluation shows `Id` code doing badly on combat and UI tasks.
+**There are no classes, and that's final.** Graphs and trees are solved in the standard library instead, with `IdMap`, `Tree` and `Graph`. Anything that hides the table, like `Id`s carrying their map or `with units:` blocks, is ruled out too. This removes the fallback of a `class` with `link` fields.
+*Why:* A class wouldn't slow code that avoids it, but it would spread through habit and libraries, bringing pointer-chasing, cycles and harder `parallel` safety.
+
+**Named fallbacks, used only on evidence.** There's no `Frozen[T]` and no `with pool()`.
 - A limited `View[T]`, if having no stored views costs more than about 10–15% on parser, zero-copy server and B-tree benchmarks.
 - Tighter lock patterns, if a B-tree benchmark fails.
 
@@ -726,7 +738,7 @@ def play(mut conn: Connection, mut world: World) fails NetError:
 
 **`std.sql` is one standard database interface,** modeled on the ideas of Python's DB-API. Drivers are first-party kits, with Postgres and MySQL in pure Fennec.
 
-**`Tree` is in `std`.** It's built on `IdMap` and keeps parents and children in sync.
+**`Tree` and `Graph` are in `std`,** both built on `IdMap`. `Tree` keeps parents and children in sync. `Graph` isn't built yet, and its API isn't decided. This moves `Graph` up from the list of things cut from the first version.
 *Why:* Hierarchies are where `Id` bookkeeping is most tedious and easiest to get wrong, so it's written once.
 
 **`std.process`, `std.crypto`, `std.log`, `std.cli` and `std.csv` are in `std` too.**
@@ -1588,6 +1600,7 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 - How a type marks that its finishing method must be called.
 - The syntax of the `mut` form of `def []`, which returns a place.
 - The exact API of event channels.
+- The API of `Graph`.
 - How replay records the order tasks reach a `shared` value or a channel.
 - How the interpreter runs a `parallel` loop over a server's connections. It runs `parallel` loops in order, which would serve one client at a time. Until it can switch tasks at a blocking call, such a program runs only in the native engines.
 - Whether kits can define their own annotations, like `@get("/todos/{id}")` on a plain function, so a router can build its table at compile time.

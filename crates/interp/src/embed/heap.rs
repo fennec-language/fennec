@@ -51,15 +51,28 @@ impl Hasher for AddressHasher {
     }
 }
 
+/// A place in a string's text: its `chars`th character starts `bytes` bytes in. Reading a
+/// string in order goes on from the last place rather than counting from its start.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Cursor {
+    pub(super) address: usize,
+    pub(super) chars: usize,
+    pub(super) bytes: usize,
+}
+
 /// Every live block, by its address, and freed blocks kept for reuse, by size.
 #[derive(Default)]
 pub(crate) struct Heap {
     pub(super) blocks: super::table::Table,
     spare: Vec<Vec<Box<[u64]>>>,
+    /// How many words `spare`'s blocks hold.
+    spare_words: usize,
     /// How many of the blocks live for the whole run.
     statics: usize,
     /// Strings' text as the interpreter holds it, made once per block.
     pub(super) texts: RefCell<HashMap<usize, Rc<str>, BuildHasherDefault<AddressHasher>>>,
+    /// Where a string that isn't ASCII was last read.
+    cursor: Cursor,
     /// Generators let go partway, waiting for what closes what they hold.
     abandoning: Vec<u64>,
     /// Blocks waiting to be freed and a freed block's children, kept to save making them anew.
@@ -151,8 +164,11 @@ const FINISHED: u64 = u64::MAX;
 /// near zero.
 pub const IMMORTAL: u64 = 1 << 48;
 
-/// How many freed blocks of each size are kept for reuse.
-const SPARE_BLOCKS: usize = 1 << 16;
+/// How many words of freed blocks a heap keeps for reuse, across all sizes: 8 MB. Reuse is only
+/// a little cheaper than the allocator, which needs this much to match on programs that free a
+/// lot at once. More just keeps memory from the rest of the program, with blocks scattered
+/// through allocator and table pages that then can't be given back.
+const SPARE_TOTAL_WORDS: usize = 1 << 20;
 
 /// The biggest block, in words, kept for reuse.
 const SPARE_WORDS: usize = 256;
@@ -214,6 +230,7 @@ impl Heap {
     pub(super) fn fresh(&mut self, words: usize) -> Box<[u64]> {
         match self.spare.get_mut(words).and_then(Vec::pop) {
             Some(mut block) => {
+                self.spare_words -= block.len();
                 zero(&mut block);
                 block
             }
@@ -228,9 +245,15 @@ impl Heap {
         if cfg!(feature = "sanitize") {
             return;
         }
-        match self.spare.get_mut(block.len()) {
-            Some(spare) if spare.len() < SPARE_BLOCKS => spare.push(block),
-            Some(_) => {}
+        if self.spare_words + block.len() > SPARE_TOTAL_WORDS {
+            return;
+        }
+        let words = block.len();
+        match self.spare.get_mut(words) {
+            Some(spare) => {
+                spare.push(block);
+                self.spare_words += words;
+            }
             None => self.recycle_first(block),
         }
     }
@@ -248,6 +271,7 @@ impl Heap {
         }
         if let Some(spare) = self.spare.get_mut(words) {
             spare.push(block);
+            self.spare_words += words;
         }
     }
 
@@ -278,6 +302,7 @@ impl Heap {
     pub(crate) fn hand_over(&mut self, since: usize) -> Vec<Box<[u64]>> {
         let mut handed = Vec::new();
         for address in self.made.split_off(since.min(self.made.len())) {
+            self.forget_place(address);
             let lives = self.block(address).and_then(<[u64]>::first).is_some_and(|count| *count < IMMORTAL);
             if lives && let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(at))
             {
@@ -298,9 +323,28 @@ impl Heap {
     /// Takes a block out of the heap for reuse, leaving the blocks it refers to as they are:
     /// for a block whose contents moved to a new one.
     pub(super) fn discard(&mut self, address: u64) {
+        self.forget_place(address);
         if let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(at)) {
             self.recycle(block);
         }
+    }
+
+    /// Where a string that isn't ASCII was last read.
+    pub(super) fn cursor(&self) -> Cursor {
+        self.cursor
+    }
+
+    /// Forgets where a string was last read, when that block goes: its address can come back
+    /// as another string. Only what may be a string comes here, so other blocks don't pay.
+    pub(super) fn forget_place(&mut self, address: u64) {
+        if usize::try_from(address).is_ok_and(|at| self.cursor.address == at) {
+            self.set_cursor(Cursor::default());
+        }
+    }
+
+    pub(super) fn set_cursor(&mut self, cursor: Cursor) {
+        self.cursor = cursor;
+        self.blocks.note_place(cursor.address);
     }
 
     pub(crate) fn block(&self, address: u64) -> Option<&[u64]> {

@@ -30,7 +30,7 @@ pub(crate) fn load(path: &str, cache: &Cache) -> Option<Program> {
     }
     let bytes = cache.read("run-image", &image_name(path))?;
     let module = Module::decode(&mut Reader::new(&bytes))?;
-    Some(Program { module, sources: Sources::new(), manifest: None, embedded: Vec::new() })
+    Some(Program { module, sources: Sources::new(), manifest: None, embedded: Vec::new(), kit_src: None })
 }
 
 /// Keeps a kit's program as it was cut down, before anything was checked. `state` is what the kit

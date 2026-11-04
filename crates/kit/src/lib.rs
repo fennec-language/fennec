@@ -32,6 +32,8 @@ pub struct Program {
     pub manifest: Option<Manifest>,
     /// The files `embed` read, since a change to one changes the program.
     pub embedded: Vec<Embedded>,
+    /// Where a kit's modules are, and how messages show that, for looking in the ones not loaded.
+    pub kit_src: Option<(PathBuf, String)>,
 }
 
 /// A file `embed` read, and what it held then.
@@ -42,6 +44,34 @@ pub struct Embedded {
 }
 
 impl Program {
+    /// The file of the kit that gives a type this method with `extend`, which this program didn't
+    /// load, as messages show it, with its module's name. `who` is how a message names the type.
+    #[must_use]
+    pub fn extension_elsewhere(&self, who: &str, method: &str) -> Option<(String, String)> {
+        let (src, shown_src) = self.kit_src.as_ref()?;
+        let names_it =
+            |name: &str| who.split(|c: char| !c.is_alphanumeric() && c != '_').any(|word| word == name);
+        let mut modules = Vec::new();
+        load::find_modules(src, &mut Vec::new(), &mut modules);
+        modules.sort();
+        modules.into_iter().find_map(|module| {
+            let mut path = src.clone();
+            path.extend(&module);
+            path.set_extension("fen");
+            let text = std::fs::read_to_string(path).ok()?;
+            if !text.contains("extend ") {
+                return None;
+            }
+            let extends = fennec_syntax::parse(&text).ok()?.items.iter().any(|item| match item {
+                fennec_syntax::Item::Extend(extension) => {
+                    names_it(&extension.name) && extension.methods.iter().any(|def| def.name == method)
+                }
+                _ => false,
+            });
+            extends.then(|| (format!("{shown_src}{}.fen", module.join("/")), module.join(".")))
+        })
+    }
+
     /// The files `embed` read, by a name no module has, with a hash for their text.
     #[must_use]
     pub fn embedded_texts(&self) -> Vec<(String, String)> {

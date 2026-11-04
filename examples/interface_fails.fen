@@ -1,0 +1,28 @@
+# A method of an interface can say how it fails, and a call through the interface handles that
+# as any other call does.
+error Empty:
+    what: str
+
+interface Source:
+    def next(mut self) -> int fails Empty
+
+struct Countdown:
+    left = 2
+
+    def next(mut self) -> int fails Empty:
+        if self.left == 0: fail Empty("nothing left")
+        self.left -= 1
+        self.left
+
+def two(mut source: Source) -> int fails Empty:
+    source.next()? + source.next()?
+
+def main(stdout: Stdout):
+    mut enough = Countdown()
+    stdout.print(two(mut enough) else -1)
+    mut short = Countdown(left=1)
+    match two(mut short):
+        case Ok(total):
+            stdout.print(total)
+        case Err(problem):
+            stdout.print(problem.what)

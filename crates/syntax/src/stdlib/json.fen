@@ -47,6 +47,8 @@ def _capital(word: str) -> str:
 ## A float as JSON writes it: an exponent has no `+` and no leading zeros.
 def _float_text(value: float) -> str:
     text = str(value)
+    if value != value or value - value != 0.0:
+        return text
     if value != 0.0 and not (value >= 0.0001 and value < 10000000000000000.0) and not (value <= -0.0001 and value > -10000000000000000.0):
         mut at = 0
         while text_byte(text, at) != 101:

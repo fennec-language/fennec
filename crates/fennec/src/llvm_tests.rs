@@ -1,16 +1,18 @@
 //! Running a program's tests through LLVM. Each test becomes a function, and those LLVM can build
 //! go into one executable with what they reach, compiled a function at a time from the cache.
 //! Worker processes run it, each with its share of the tests, so a crash ends only the tests that
-//! worker hadn't run yet. Tests that take inputs, tests LLVM can't build yet and tests a crash left
-//! come back for the caller to run another way. So does a test that failed,
+//! worker hadn't run yet. Tests LLVM can't build yet and tests a crash left come back for the caller to run another way. So does a test that failed,
 //! since the other way says more about why, like what each side of an `assert` was. If it passes
 //! there, the two disagree, which is reported as a failure rather than hidden.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::process::Command;
 
-use fennec_interp::TestOutcome;
+use fennec_interp::{PROPERTY_CASES, TestOutcome, property_seed};
 use fennec_syntax::{Diagnostic, ExprKind, FnDef, Item, Module, Span, Stmt, StmtKind, TestDef};
+
+use crate::test_inputs::{Inputs, PREFIX};
 
 /// What running tests through LLVM did.
 #[derive(Default)]
@@ -114,15 +116,13 @@ fn prelude_functions() -> HashSet<String> {
 /// How each test's function is named, which no program can write.
 const TEST_FUNCTION: &str = "test:";
 
-/// What a test's function calls its body before it has its real name.
-const PLACEHOLDER: &str = "test_body";
-
 /// What each test's function is named, by its number.
 fn function_name(number: usize) -> String {
     format!("{TEST_FUNCTION}{number}")
 }
 
-/// A test's body as a function that takes the capabilities it names and gives back nothing.
+/// A test's body as a function that takes the capabilities and inputs it names, and gives back
+/// nothing.
 fn as_function(name: String, test: &TestDef) -> FnDef {
     let end = Span { start: test.span.end, end: test.span.end };
     let mut body: Vec<Stmt> = test.body.clone();
@@ -131,7 +131,7 @@ fn as_function(name: String, test: &TestDef) -> FnDef {
     FnDef {
         name,
         generics: Vec::new(),
-        params: test.capabilities.clone(),
+        params: test.capabilities.iter().chain(&test.inputs).cloned().collect(),
         ret: None,
         arrow: None,
         fails: None,
@@ -152,46 +152,93 @@ fn passes_failures_up(test: &TestDef) -> bool {
     found
 }
 
-/// The function for test `number`, which takes the capabilities the test names and gives back
-/// nothing, as the executable calls it. A body that passes failures up goes in a function of its
-/// own, and this one fails if that gives back a failure: `fennec test` runs a failed test again
-/// another way, which says what the failure was.
-fn test_functions(number: usize, test: &TestDef) -> Vec<FnDef> {
-    let name = function_name(number);
-    if !passes_failures_up(test) {
-        return vec![as_function(name, test)];
-    }
-    let body_name = format!("{name}:body");
-    let args: Vec<&str> = test.capabilities.iter().map(|param| param.name.as_str()).collect();
-    let source = format!(
-        "def caller():\n    match {PLACEHOLDER}({}):\n        case Err(_):\n            assert False\n        case _:\n            pass\n",
-        args.join(", ")
-    );
-    let Ok(parsed) = fennec_syntax::parse_at(&source, test.span.start) else {
-        return vec![as_function(name, test)];
-    };
-    let Some(Item::Function(mut caller)) = parsed.items.into_iter().next() else {
-        return vec![as_function(name, test)];
-    };
-    fennec_syntax::visit::in_stmts(&mut caller.body, &mut |inner| {
-        if matches!(&inner.kind, ExprKind::Name(named) if named == PLACEHOLDER) {
-            inner.kind = ExprKind::Name(body_name.clone());
-        }
-    });
-    caller.name = name;
-    caller.params.clone_from(&test.capabilities);
-    caller.span = test.span;
-    vec![as_function(body_name, test), caller]
+/// The function named `test:` and the rest of the name, for a name written with `PREFIX`.
+fn given_real_name(name: &str) -> Option<String> {
+    name.strip_prefix(PREFIX).map(|rest| format!("{TEST_FUNCTION}{rest}"))
 }
 
-/// `module` with only the functions of `tests` and what they reach.
-fn trimmed_for(module: &Module, tests: &[&TestDef]) -> Module {
-    let mut trimmed = module.clone();
-    for (number, test) in tests.iter().enumerate() {
-        trimmed.items.extend(test_functions(number, test).into_iter().map(Item::Function));
+/// The functions in some source, with the names no program can write.
+fn functions_in(source: &str, start: u32) -> Option<Vec<FnDef>> {
+    let parsed = fennec_syntax::parse_at(source, start).ok()?;
+    let mut functions = Vec::with_capacity(parsed.items.len());
+    for item in parsed.items {
+        let Item::Function(mut function) = item else { return None };
+        function.name = given_real_name(&function.name)?;
+        fennec_syntax::visit::in_stmts(&mut function.body, &mut |inner| {
+            if let ExprKind::Name(named) = &inner.kind
+                && let Some(real) = given_real_name(named)
+            {
+                inner.kind = ExprKind::Name(real);
+            }
+        });
+        functions.push(function);
     }
+    Some(functions)
+}
+
+/// The function for test `number`, which takes the capabilities the test names and gives back
+/// nothing, as the executable calls it, and the test's body in a function of its own. A property
+/// test's calls its body with each input in turn. A failure the body gives back fails the test:
+/// `fennec test` runs a failed test again another way, which says what the failure was.
+fn test_functions(number: usize, test: &TestDef, inputs: &mut Inputs<'_>) -> Option<Vec<FnDef>> {
+    let name = function_name(number);
+    if test.inputs.is_empty() && !passes_failures_up(test) {
+        return Some(vec![as_function(name, test)]);
+    }
+    let capabilities: Vec<&str> = test.capabilities.iter().map(|param| param.name.as_str()).collect();
+    let mut args: Vec<String> = capabilities.iter().map(ToString::to_string).collect();
+    let mut made = String::new();
+    let looped = !test.inputs.is_empty();
+    let indent = if looped { "        " } else { "    " };
+    for (at, input) in test.inputs.iter().enumerate() {
+        let function = inputs.function_for(input.ty.as_ref()?)?;
+        let _ = writeln!(made, "{indent}input{at} = {function}(mut state, 0)");
+        args.push(format!("input{at}"));
+    }
+    let called = format!("{PREFIX}{number}_body({})", args.join(", "));
+    let call = if passes_failures_up(test) {
+        format!(
+            "{indent}match {called}:\n{indent}    case Err(_):\n{indent}        assert False\n{indent}    case _:\n{indent}        pass\n"
+        )
+    } else {
+        format!("{indent}{called}\n")
+    };
+    let start = if looped {
+        format!("    mut state = {}\n    for _ in range({}):\n", property_seed(&test.name), PROPERTY_CASES)
+    } else {
+        String::new()
+    };
+    let source = format!("def {PREFIX}{number}():\n{start}{made}{call}");
+    let mut caller = functions_in(&source, test.span.start)?;
+    if let Some(caller) = caller.first_mut() {
+        caller.params.clone_from(&test.capabilities);
+        caller.span = test.span;
+    }
+    caller.push(as_function(format!("{name}_body"), test));
+    Some(caller)
+}
+
+/// `module` with only the functions of `tests` and what they reach, or None if there's a test here
+/// LLVM can't be given.
+fn trimmed_for(module: &Module, tests: &[&TestDef]) -> Option<Module> {
+    let mut trimmed = module.clone();
+    let mut inputs = Inputs::new(module);
+    let mut made = Vec::new();
+    for (number, test) in tests.iter().enumerate() {
+        made.extend(test_functions(number, test, &mut inputs)?);
+    }
+    if tests.iter().any(|test| !test.inputs.is_empty()) {
+        made.extend(functions_in(inputs.source(), 0)?);
+    }
+    trimmed.items.extend(made.into_iter().map(Item::Function));
     fennec_build::keep_what_functions_reach(&mut trimmed, &|name| name.starts_with(TEST_FUNCTION));
-    trimmed
+    Some(trimmed)
+}
+
+/// Whether the tests' functions can be written: a property test takes only inputs this can make.
+fn inputs_can_be_made(module: &Module, test: &TestDef) -> bool {
+    let mut inputs = Inputs::new(module);
+    test.inputs.iter().all(|input| input.ty.as_ref().is_some_and(|ty| inputs.function_for(ty).is_some()))
 }
 
 /// The tests LLVM has text for, from `tests`, which may mean splitting them to find the ones it
@@ -202,7 +249,11 @@ fn takeable<'t>(
     tests: &[&'t TestDef],
     refused: &mut Vec<(&'t TestDef, String)>,
 ) -> Vec<&'t TestDef> {
-    match crate::aot::takes(&trimmed_for(module, tests)) {
+    let takes = trimmed_for(module, tests).map_or_else(
+        || Err("a test's inputs aren't ready".to_owned()),
+        |trimmed| crate::aot::takes(&trimmed),
+    );
+    match takes {
         Ok(()) => tests.to_vec(),
         Err(why) => match tests {
             [] => Vec::new(),
@@ -307,7 +358,10 @@ pub(crate) fn run(module: &Module, wanted: &[String], defines: &dyn Fn(&str) -> 
     let tests: Vec<&TestDef> = tests.collect();
     for test in &tests {
         let unique = tests.iter().filter(|other| other.name == test.name).count() == 1;
-        if test.inputs.is_empty() && unique {
+        // A property test with capabilities takes a new world for each input, which only the
+        // interpreter gives yet.
+        let takes_both = !test.inputs.is_empty() && !test.capabilities.is_empty();
+        if unique && !takes_both && inputs_can_be_made(module, test) {
             plain.push(*test);
         } else {
             result.left.push(test.name.clone());
@@ -328,7 +382,11 @@ pub(crate) fn run(module: &Module, wanted: &[String], defines: &dyn Fn(&str) -> 
         std::process::id(),
         std::env::consts::EXE_SUFFIX
     ));
-    let flags = match crate::aot::tests_executable(&trimmed_for(module, &taken), &names, &work) {
+    let Some(trimmed) = trimmed_for(module, &taken) else {
+        result.left.extend(taken.iter().map(|test| test.name.clone()));
+        return result;
+    };
+    let flags = match crate::aot::tests_executable(&trimmed, &names, &work) {
         Ok(flags) => flags,
         Err(why) => {
             result.left.extend(taken.iter().map(|test| test.name.clone()));
@@ -348,10 +406,14 @@ pub(crate) fn run(module: &Module, wanted: &[String], defines: &dyn Fn(&str) -> 
             None => {
                 let flagged: Vec<&str> =
                     set.iter().filter_map(|at| flags.get(*at)).map(String::as_str).collect();
-                if let Some(ran) = traced(&flagged, &fused, defines, &prelude) {
+                // Another input could reach more, so a property test depends on all it can reach.
+                if test.inputs.is_empty()
+                    && let Some(ran) = traced(&flagged, &fused, defines, &prelude)
+                {
                     result.ran.insert(test.name.clone(), ran);
                 }
-                result.outcomes.push(TestOutcome { name: test.name.clone(), failure: None, cases: 1 });
+                let cases = if test.inputs.is_empty() { 1 } else { PROPERTY_CASES };
+                result.outcomes.push(TestOutcome { name: test.name.clone(), failure: None, cases });
             }
             Some(failure) => {
                 result.left.push(test.name.clone());

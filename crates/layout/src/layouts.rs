@@ -44,6 +44,9 @@ pub struct Layout {
     /// Whether values of this type are boxed: held by the address of a block the runtime
     /// owns, because the type contains itself or holds a type that does.
     pub boxed: bool,
+    /// Whether it's a `shared` type: every copy of a value is a name for one block, which changes
+    /// in place however many names it has.
+    pub cell: bool,
 }
 
 #[derive(Default)]
@@ -168,7 +171,7 @@ impl Layouts {
             self.place_fields(typed, start)
         };
         match def {
-            Written::Generator(_) => None,
+            Written::Generator(_) | Written::Cell(_) => None,
             Written::Struct(fields) => {
                 // An `IdMap` is a block of its own, shared until it changes, like a list.
                 let (fields, size) = place(fields, 0, !name.starts_with("IdMap["))?;
@@ -178,6 +181,7 @@ impl Layouts {
                     size: size.max(WORD),
                     cases: None,
                     boxed: false,
+                    cell: false,
                 })
             }
             Written::Enum(cases) => {
@@ -208,7 +212,8 @@ impl Layouts {
                 !self.by_name.contains_key(*name) && !name.starts_with("IdMap[") && *name != "Match"
             })
             .filter_map(|name| Some((name.clone(), written(sources, name)?)))
-            .filter(|(_, def)| !matches!(def, Written::Generator(_)))
+            // A `shared` type's whole point is to be one block, however it's held.
+            .filter(|(_, def)| !matches!(def, Written::Generator(_) | Written::Cell(_)))
             .collect();
         let order = loop {
             let unfit: Vec<String> = candidates
@@ -286,6 +291,7 @@ impl Layouts {
                     size: size.max(WORD),
                     cases: None,
                     boxed: false,
+                    cell: false,
                 })
             }
             Written::Enum(cases) => {
@@ -298,7 +304,7 @@ impl Layouts {
                 }
                 Some(enum_of(name, placed, size, false))
             }
-            Written::Generator(_) => None,
+            Written::Generator(_) | Written::Cell(_) => None,
         }
     }
 
@@ -339,13 +345,14 @@ impl Layouts {
                 layouts.place_fields(typed, start)
             };
             let layout = match written {
-                Written::Struct(fields) | Written::Generator(fields) => {
+                Written::Struct(fields) | Written::Generator(fields) | Written::Cell(fields) => {
                     place(self, fields, 0).map(|(fields, size)| Layout {
                         name: name.clone(),
                         fields,
                         size: size.max(WORD),
                         cases: None,
                         boxed: true,
+                        cell: matches!(written, Written::Cell(_)),
                     })
                 }
                 Written::Enum(cases) => {
@@ -393,7 +400,14 @@ impl Layouts {
                     fields.push((field.clone(), self.field_ty(sources, ty, visiting, true)?, None));
                 }
                 let (fields, size) = self.place_fields(fields, 0)?;
-                Layout { name: name.to_owned(), fields, size: size.max(WORD), cases: None, boxed: false }
+                Layout {
+                    name: name.to_owned(),
+                    fields,
+                    size: size.max(WORD),
+                    cases: None,
+                    boxed: false,
+                    cell: false,
+                }
             }
             Some(_) => return None,
             None => self.enum_layout(sources, name, visiting)?,
@@ -596,7 +610,9 @@ impl Layouts {
 /// Every field of a type, in every case of an enum.
 fn written_fields(def: &Written) -> Box<dyn Iterator<Item = &WrittenField> + '_> {
     match def {
-        Written::Struct(fields) | Written::Generator(fields) => Box::new(fields.iter()),
+        Written::Struct(fields) | Written::Generator(fields) | Written::Cell(fields) => {
+            Box::new(fields.iter())
+        }
         Written::Enum(cases) => Box::new(cases.iter().flat_map(|(_, fields)| fields)),
     }
 }
@@ -733,7 +749,7 @@ fn enum_of(name: &str, cases: Vec<Case>, size: u32, boxed: bool) -> Layout {
     let fields = (0..words)
         .map(|word| Field { name: format!("\0{word}"), ty: Ty::Int, offset: word * WORD, default: None })
         .collect();
-    Layout { name: name.to_owned(), fields, size, cases: Some(cases), boxed }
+    Layout { name: name.to_owned(), fields, size, cases: Some(cases), boxed, cell: false }
 }
 
 /// A field as written: its name, type and default.
@@ -742,6 +758,8 @@ pub type WrittenField = (String, Type, Option<Expr>);
 /// A type's fields as written: a struct's, or each case's.
 #[derive(Clone)]
 pub enum Written {
+    /// A `shared` type's fields: a block however it could be held, one for all its copies.
+    Cell(Vec<WrittenField>),
     Struct(Vec<WrittenField>),
     /// A generator's block: always boxed, with the fields every generator has first.
     Generator(Vec<WrittenField>),

@@ -677,6 +677,7 @@ impl Emit<'_, '_, '_> {
                 .count();
             if self.is_mut_param(local)
                 && matches!(kinds.get(at), Some(Kind::Boxed(_)))
+                && !kinds.get(at).is_some_and(|kind| self.is_cell(kind))
                 && !self.known.is_shared(local)
                 && !self.known.written(local)
                 && changes > 1
@@ -1872,6 +1873,15 @@ impl Emit<'_, '_, '_> {
             InstKind::SetSlot { generator, slot, value } => self.set_slot(generator, *slot, value),
             InstKind::Resume { dest, generator, known } => {
                 self.resume(*dest, generator, known.as_deref(), span)
+            }
+            InstKind::Lock { .. }
+            | InstKind::Unlock { .. }
+            | InstKind::LockAll { .. }
+            | InstKind::UnlockAll { .. }
+                if !self.module.threads =>
+            {
+                // With only one thread, nothing else could be holding a lock.
+                Ok(())
             }
             other => Err(format!("it uses `{other}`, which this backend doesn't take yet")),
         }

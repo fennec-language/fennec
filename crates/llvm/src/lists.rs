@@ -301,7 +301,7 @@ impl Emit<'_, '_, '_> {
         let base = match object {
             Operand::Local(local) if self.known.is_taken(dest) && matches!(kind, Kind::Boxed(_)) => {
                 let place = self.slot(*local);
-                self.alone_along((*local, &[]), &place, "fennec_unshare")
+                self.block_to_change((*local, &[]), &place, &kind)
             }
             _ => base,
         };
@@ -350,7 +350,12 @@ impl Emit<'_, '_, '_> {
         let block = match item_step(index_operand) {
             Some(step) => {
                 let along: Vec<String> = list_path.iter().cloned().chain([step]).collect();
-                self.alone_along((root, &along), &at, "fennec_unshare")
+                self.block_to_change((root, &along), &at, &held)
+            }
+            None if self.is_cell(&held) => {
+                let block = self.temp();
+                self.line(&format!("{block} = load ptr, ptr {at}"));
+                block
             }
             None => self.alone_at(&at, "fennec_unshare"),
         };
@@ -532,11 +537,8 @@ impl Emit<'_, '_, '_> {
         for (step, name) in path.iter().enumerate() {
             let inside = if matches!(kind, Kind::Boxed(_)) {
                 in_block = true;
-                let block = self.alone_along(
-                    (object, path.get(..step).unwrap_or_default()),
-                    &place,
-                    "fennec_unshare",
-                );
+                let block =
+                    self.block_to_change((object, path.get(..step).unwrap_or_default()), &place, &kind);
                 self.offset(&block, FIELDS_OFFSET)
             } else {
                 place
@@ -1139,11 +1141,8 @@ impl Emit<'_, '_, '_> {
         let mut place = self.slot(object);
         for (step, name) in path.iter().enumerate() {
             let inner = if matches!(kind, Kind::Boxed(_)) {
-                let block = self.alone_along(
-                    (object, path.get(..step).unwrap_or_default()),
-                    &place,
-                    "fennec_unshare",
-                );
+                let block =
+                    self.block_to_change((object, path.get(..step).unwrap_or_default()), &place, &kind);
                 self.offset(&block, FIELDS_OFFSET)
             } else {
                 place
@@ -1164,11 +1163,8 @@ impl Emit<'_, '_, '_> {
         let mut place = self.slot(object);
         for (step, name) in path.iter().enumerate() {
             let inner = if matches!(kind, Kind::Boxed(_)) {
-                let block = self.alone_along(
-                    (object, path.get(..step).unwrap_or_default()),
-                    &place,
-                    "fennec_unshare",
-                );
+                let block =
+                    self.block_to_change((object, path.get(..step).unwrap_or_default()), &place, &kind);
                 self.offset(&block, FIELDS_OFFSET)
             } else {
                 place
@@ -1182,6 +1178,22 @@ impl Emit<'_, '_, '_> {
 
     /// The block at a field path from a local, made alone unless that's known already, and
     /// known from here.
+    /// Whether a value of this kind is a `shared` type's handle.
+    pub(crate) fn is_cell(&self, kind: &Kind) -> bool {
+        matches!(kind, Kind::Boxed(id) if self.module.layouts.get(*id).is_some_and(|layout| layout.cell))
+    }
+
+    /// The block at `place` for changing what's in it: a handle's own, which every name for it
+    /// sees change, and otherwise one with no other owner.
+    fn block_to_change(&mut self, (root, path): (LocalId, &[String]), place: &str, kind: &Kind) -> String {
+        if self.is_cell(kind) {
+            let block = self.temp();
+            self.line(&format!("{block} = load ptr, ptr {place}"));
+            return block;
+        }
+        self.alone_along((root, path), place, "fennec_unshare")
+    }
+
     pub(crate) fn alone_along(
         &mut self,
         (root, path): (LocalId, &[String]),
@@ -1221,7 +1233,7 @@ impl Emit<'_, '_, '_> {
         for step in 0..=path.len() {
             let along = path.get(..step).unwrap_or_default();
             let block = match kind {
-                Kind::Boxed(_) => Some(self.alone_along((root, along), &place, "fennec_unshare")),
+                Kind::Boxed(_) => Some(self.block_to_change((root, along), &place, &kind)),
                 Kind::List(_) if step > 0 => {
                     self.alone_along((root, along), &place, "fennec_list_unshare");
                     None

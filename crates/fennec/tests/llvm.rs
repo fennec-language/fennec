@@ -1719,6 +1719,150 @@ def main(stdout: Stdout):
     )
 }
 
+/// Every name for a `shared` value sees it change, however it was reached, and what's plain
+/// around it stays a copy.
+const SHARED_NAMES: &str = "\
+shared Log:
+    lines = list[str]()
+    count = 0
+    note = \"\"
+
+    def add(mut self, line: str):
+        self.lines.append(line)
+        self.count += 1
+        self.note = line + \" was last\"
+
+    def seen(self) -> int:
+        self.lines.len()
+
+struct Holder:
+    log: Log
+    tag = 0
+
+def add_through(log: Log, line: str):
+    log.add(line)
+
+def changed(holder: Holder) -> Holder:
+    mut mine = holder
+    mine.tag += 1
+    mine.log.add(\"from a copy\")
+    mine
+
+def main(stdout: Stdout):
+    first = Log()
+    second = first
+    first.add(\"one\")
+    second.add(\"two\")
+    add_through(second, \"three\")
+    stdout.print(first.seen(), second.seen(), first.count, first.note)
+    holder = Holder(log=first)
+    after = changed(holder)
+    stdout.print(holder.tag, after.tag, holder.log.seen(), after.log.seen(), first.seen())
+    logs = [first, Log(), first]
+    logs[0].add(\"through a list\")
+    copied = logs
+    copied[2].add(\"through a copied list\")
+    stdout.print(first.seen(), logs[1].seen(), copied[0].seen())
+    for log in logs:
+        log.add(\"in a loop\")
+    stdout.print(first.seen(), logs[1].seen())
+    mut inside = 0
+    with first, second as mut a, b:
+        a.count = 100
+        a.lines.append(\"inside with\")
+        inside = b.count
+    stdout.print(inside, first.count, first.lines)
+    stdout.print([first.count], f\"{holder.tag}\")
+    stdout.print(logs[1])
+";
+
+/// One cell under two names in a `with`: each sees what the other wrote, so nothing can be assumed
+/// apart. Whether this shape stops at run time is still open, and this pins what it does today.
+const ONE_CELL_TWO_NAMES: &str = r"shared Account:
+    total = 0
+
+    def add(mut self, amount: int):
+        self.total += amount
+
+    def balance(self) -> int:
+        self.total
+
+def transfer(source: Account, target: Account, amount: int) -> bool:
+    with source, target as mut x, mut y:
+        if x.total < amount: return False
+        x.total -= amount
+        y.add(amount)
+    True
+
+def both(a: Account, b: Account, rounds: int) -> list[int]:
+    mut seen = list[int]()
+    with a, b as mut x, mut y:
+        for n in range(rounds):
+            before = x.total
+            y.total = before + n
+            x.add(1)
+            y.add(x.total)
+            seen.append(x.total)
+            seen.append(y.total)
+            seen.append(before)
+    seen
+
+def read_write(a: Account, b: Account) -> list[int]:
+    mut seen = list[int]()
+    with a, b as x, mut y:
+        first = x.total
+        y.total = first + 7
+        seen.append(x.total)
+        seen.append(first)
+    seen
+
+def main(stdout: Stdout):
+    one = Account(total=10)
+    mut seen = 0
+    with one, one as mut x, mut y:
+        x.total = 1
+        y.total = 2
+        seen = x.total
+    stdout.print(seen, one.total)
+    stdout.print(transfer(one, one, 1), one.total)
+    stdout.print(transfer(one, one, 2), one.total)
+    stdout.print(transfer(one, one, 5), one.total)
+    stdout.print(both(one, one, 4), one.total)
+    stdout.print(read_write(one, one), one.total)
+    two = Account(total=10)
+    three = Account(total=20)
+    stdout.print(transfer(two, three, 4), two.total, three.total)
+    stdout.print(both(two, three, 3), two.total, three.total)
+    stdout.print(read_write(two, three), two.total, three.total)
+";
+
+#[test]
+fn one_shared_value_under_two_names_in_a_with_stays_one_value() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("one_cell_two_names", ONE_CELL_TWO_NAMES)
+}
+
+#[test]
+fn every_name_for_a_shared_value_sees_it_change() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("shared-names")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, SHARED_NAMES)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output()?;
+    let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
 /// Changing an item in place is only safe once the list is alone: another copy of the list
 /// mustn't see it, however the item's own count reads.
 #[test]

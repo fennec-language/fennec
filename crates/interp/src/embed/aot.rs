@@ -140,6 +140,7 @@ pub fn test_ran(flag: i64) {
 /// Says what the test just run did, on standard output as soon as it's done, in a line `fennec
 /// test` reads, so a crash loses only the tests not yet run. Tests here take nothing, so nothing
 /// else writes there.
+#[cfg(not(feature = "lean"))]
 pub fn test_done(number: i64) {
     let ran: Vec<String> = RAN.take().iter().map(ToString::to_string).collect();
     let line = test_line(number, super::next_test().as_ref(), &ran);

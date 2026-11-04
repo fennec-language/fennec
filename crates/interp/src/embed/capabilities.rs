@@ -120,6 +120,7 @@ pub extern "C" fn from_value(value: i64, start: i64, end: i64) -> i64 {
 /// arguments. `word` is a capability's block or kind, and `method` a string block naming the
 /// method. Gives back a temporary holding what the method gave: a result where the method can
 /// fail, and a capability where it gives one, as `only` does.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn call(word: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let at = span(start, end);
@@ -164,12 +165,17 @@ pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, en
             }
             _ => None,
         };
+        #[cfg(not(feature = "lean"))]
         let result = if let Some(result) = native {
             result?
         } else {
             let args = given.into_iter().map(|value| crate::call::CallArg::plain(value, at)).collect();
             state.interp.read_method(&receiver, &name, args, at)?
         };
+        #[cfg(feature = "lean")]
+        let result = native.ok_or_else(|| {
+            Diagnostic::new(format!("`{name}` isn't in a program built without the interpreter yet"), at)
+        })??;
         Ok(state.push(result))
     })
 }

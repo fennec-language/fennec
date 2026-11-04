@@ -34,6 +34,7 @@ pub extern "C" fn is_valid(pattern: i64) -> i8 {
 }
 
 /// A new string saying what's wrong with a pattern, as making a `Regex` of it says.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn problem(pattern: i64) -> i64 {
     with(|state| {
         let pattern = text(state, pattern);

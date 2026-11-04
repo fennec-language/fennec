@@ -40,6 +40,8 @@ pub(crate) struct Analysis {
     shared: HashSet<usize>,
     /// Lists changed here, by an index or an append.
     changed: HashSet<usize>,
+    /// Locals given to a call's `mut` parameter, which writes them with no write here to see.
+    given_mut: HashSet<usize>,
     /// Locals whose one read can run again without their one write running first: in a loop
     /// that the write is outside of.
     read_again: HashSet<usize>,
@@ -357,6 +359,7 @@ fn count_uses(
                     for at in changes(callee) {
                         if let Some(Operand::Local(list)) = args.get(at) {
                             grown.insert(list.0);
+                            known.given_mut.insert(list.0);
                         }
                     }
                     // Only what the callee might keep comes to have another owner.
@@ -396,6 +399,7 @@ fn analyze(
         writes: vec![0; count],
         shared: HashSet::new(),
         changed: HashSet::new(),
+        given_mut: HashSet::new(),
         read_again: HashSet::new(),
         borrowed: HashSet::new(),
         borrowed_from: HashMap::new(),
@@ -1422,6 +1426,11 @@ impl Analysis {
     /// Whether anything here could give a local's value another owner.
     pub(crate) fn is_shared(&self, local: LocalId) -> bool {
         self.shared.contains(&local.0)
+    }
+
+    /// Whether a call here may change a local, through a `mut` parameter.
+    pub(crate) fn is_given_mut(&self, local: LocalId) -> bool {
+        self.given_mut.contains(&local.0)
     }
 
     pub(crate) fn is_taken(&self, local: LocalId) -> bool {

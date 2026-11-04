@@ -1,5 +1,4 @@
-//! The interpreter's state, and its entry points: running a program's `main`, evaluating
-//! REPL input, and running tests.
+//! The interpreter's state, and its entry points: running a program's `main` and running tests.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -86,7 +85,7 @@ impl<'m> Keep<'m> for Copied {
 }
 
 /// The built-in types the standard library's code gives methods to with `extend`.
-const BUILT_IN_OWNERS: [&str; 4] = ["str", "list", "dict", "set"];
+const BUILT_IN_OWNERS: [&str; 8] = ["int", "float", "bool", "bytes", "str", "list", "dict", "set"];
 
 /// A running Fennec program: its declarations, the current call's names, and its output.
 pub struct Interp<'out> {
@@ -116,7 +115,7 @@ pub struct Interp<'out> {
     pub(crate) resuming: Vec<crate::generators::Position>,
     pub(crate) suspending: Vec<crate::generators::Position>,
     /// Each regex pattern used so far, compiled.
-    pub(crate) regexes: HashMap<String, Rc<fennec_re::Regex>>,
+    pub(crate) regexes: crate::stdlib::re::Regexes,
     /// How many more steps the program may take, if it's limited.
     pub(crate) steps_left: Option<u64>,
     step_limit: Option<u64>,
@@ -174,7 +173,7 @@ impl<'out> Interp<'out> {
             passing_up: None,
             resuming: Vec::new(),
             suspending: Vec::new(),
-            regexes: HashMap::new(),
+            regexes: crate::stdlib::re::Regexes::default(),
             steps_left: None,
             step_limit: None,
             own_equality: std::collections::HashSet::new(),
@@ -198,7 +197,7 @@ impl<'out> Interp<'out> {
         Ok(interp)
     }
 
-    /// Stops `main`, each test, and each REPL chunk once it has taken `steps` steps, so a
+    /// Stops `main` and each test once it has taken `steps` steps, so a
     /// loop that never ends can't hang the host. A step is one statement or expression.
     pub fn limit_steps(&mut self, steps: u64) {
         self.step_limit = Some(steps);
@@ -243,8 +242,8 @@ impl<'out> Interp<'out> {
         }
     }
 
-    /// Registers a module's declarations and returns its top-level statements, which only
-    /// the REPL runs.
+    /// Registers a module's declarations and returns its top-level statements, which a program
+    /// can't run.
     pub fn load(&mut self, module: &Module) -> Result<Vec<Stmt>, Diagnostic> {
         self.load_with(module, &Copied)
     }
@@ -348,6 +347,10 @@ impl<'out> Interp<'out> {
     /// A method the standard library gives a built-in value's type, like `str`'s `def *`.
     pub(crate) fn built_in_method(&self, value: &Value, method: &str) -> Option<Rc<Callable>> {
         let owner = match value {
+            Value::Int(_) => "int",
+            Value::Float(_) => "float",
+            Value::Bool(_) => "bool",
+            Value::Bytes(_) => "bytes",
             Value::Str(_) => "str",
             Value::List(_) | Value::Packed(_) => "list",
             Value::Dict(_) => "dict",
@@ -430,25 +433,6 @@ impl<'out> Interp<'out> {
             }
             _ => Ok(()),
         }
-    }
-
-    /// Starts a REPL session, where `stdout`, `fs` and `clock` are already defined.
-    pub fn start_repl(&mut self) {
-        self.frame.declare("stdout", Value::Capability(Capability::Stdout), false);
-        self.frame.declare("fs", Value::Capability(Capability::Fs), false);
-        self.frame.declare("clock", Value::Capability(Capability::Clock), false);
-    }
-
-    /// Runs a chunk typed into the REPL. Returns how to echo its last expression, if anything.
-    pub fn eval_repl(&mut self, module: &Module) -> Result<Option<String>, Diagnostic> {
-        let statements = self.load(module)?;
-        self.refill_steps();
-        let mut echo = None;
-        for stmt in &statements {
-            echo = self.exec_top(stmt)?;
-        }
-        self.flush()?;
-        Ok(echo)
     }
 
     pub(crate) fn flush(&mut self) -> Result<(), Diagnostic> {

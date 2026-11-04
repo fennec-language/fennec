@@ -1,4 +1,4 @@
-//! The `fennec` command itself: `run`, `test`, `new`, `repl`, `dev`, `--version`, and what it does
+//! The `fennec` command itself: `run`, `test`, `new`, `dev`, `--version`, and what it does
 //! with bad input. These run the real binary.
 
 use std::io::Write;
@@ -300,86 +300,6 @@ fn the_clock_is_fixed_unless_asked_for_the_real_one() {
     let real = fennec(&["test", "--real", path], "").unwrap();
     assert!(real.status.success(), "{}", text(&real.stderr));
     std::fs::remove_dir_all(&dir).unwrap();
-}
-
-#[test]
-fn repl_echoes_values_and_keeps_definitions() {
-    let input = "1 + 2\ndef double(x: int):\n    x * 2\n\ndouble(21)\nprint(1)\nexit\n";
-    let output = fennec(&["repl"], input).unwrap();
-    assert!(output.status.success());
-    let stdout = text(&output.stdout);
-    assert!(stdout.contains(">>> 3\n"));
-    assert!(stdout.contains("42\n"));
-    assert!(text(&output.stderr).contains("`print` doesn't exist"));
-}
-
-#[test]
-fn repl_sums_floats_without_the_checker() {
-    let output = fennec(&["repl"], "sum([1.5, 2.5])\nsum([1, 2])\nsum([1], 10)\nexit\n").unwrap();
-    let stdout = text(&output.stdout);
-    assert!(stdout.contains(">>> 4.0\n>>> 3\n>>> 11\n"), "{stdout}");
-}
-
-#[test]
-fn repl_says_which_module_to_import_from() {
-    let output = fennec(&["repl"], "sqrt(2.0)\nloads(\"1\")\nexit\n").unwrap();
-    let errors = text(&output.stderr);
-    assert!(errors.contains("import it from std.math, like `from std.math import sqrt`"), "{errors}");
-    assert!(
-        errors.contains("import it from std.json or std.toml, like `from std.json import loads`"),
-        "{errors}"
-    );
-}
-
-#[test]
-fn repl_says_how_to_write_ord_and_chr() {
-    let input = "ord(\"A\")\nchr(65)\n\"A\".code()\nstr.lower(\"A\")\nlen([1])\nabs(1)\nexit\n";
-    let output = fennec(&["repl"], input).unwrap();
-    let errors = text(&output.stderr);
-    // Only `from_code` is called on `str` itself.
-    assert!(errors.contains("a function has no method `lower`"), "{errors}");
-    assert!(errors.contains("a length is a method: write `x.len()`"), "{errors}");
-    assert!(errors.contains("a size is a method: write `x.abs()`"), "{errors}");
-    assert!(errors.contains("a character's code is a method: write `c.code()`"), "{errors}");
-    assert!(errors.contains("make a character from its code with `str.from_code(n)`"), "{errors}");
-    assert!(text(&output.stdout).contains("65\n"));
-}
-
-#[test]
-fn repl_continues_open_brackets_past_blank_lines() {
-    let output = fennec(&["repl"], "[1,\n\n2]\n\nexit\n").unwrap();
-    assert!(output.status.success());
-    assert!(text(&output.stdout).contains(">>> ... ... ... [1, 2]\n"));
-}
-
-#[test]
-fn repl_keeps_going_after_errors() {
-    let input = "mut xs = [1]\ndef add(mut items: list[int], item: int):\n    items.append(item)\n\n\
-                 add(mut xs)\nxs\nsorted(mut xs)\nxs\nstdout.print(\"hello\")\nif True:\n    5\n\nbreak\n";
-    let output = fennec(&["repl"], input).unwrap();
-    assert!(output.status.success());
-    // A failed call puts back what was passed with `mut`, and only expressions are echoed.
-    let stdout = text(&output.stdout);
-    let after_banner = stdout.split_once('\n').unwrap().1;
-    assert_eq!(after_banner, ">>> >>> ... ... >>> >>> [1]\n>>> >>> [1]\n>>> hello\n>>> ... ... >>> >>> \n");
-    let stderr = text(&output.stderr);
-    let errors: Vec<&str> = stderr.lines().filter(|line| line.starts_with("error")).collect();
-    assert_eq!(
-        errors,
-        [
-            "error: `add` is missing its `item` argument",
-            "error: `sorted` doesn't change its arguments, so don't pass `mut`",
-            "error: there's no function or loop here to leave",
-        ]
-    );
-}
-
-#[test]
-fn repl_leaves_on_quit() {
-    let output = fennec(&["repl"], "quit\n1 + 41\n").unwrap();
-    assert!(output.status.success());
-    assert!(!text(&output.stdout).contains("42"));
-    assert_eq!(text(&output.stderr), "");
 }
 
 #[test]
@@ -1042,6 +962,16 @@ fn kit_with_an_extension(name: &str, imports: &str) -> std::io::Result<PathBuf> 
         kit.join("src/parser/step.fen"),
         "from parser.core import Parser\n\nextend Parser:\n    def step(self) -> int:\n        self.at + 1\n",
     )?;
+    // Files it mustn't name: one extends `Parser` with something else, and one gives another type
+    // a `step`. They sort before the file it should name.
+    std::fs::write(
+        kit.join("src/parser/also.fen"),
+        "from parser.core import Parser\n\nextend Parser:\n    def other(self) -> int:\n        self.at\n",
+    )?;
+    std::fs::write(
+        kit.join("src/parser/rival.fen"),
+        "struct Rival:\n    at = 0\n\nextend Rival:\n    def step(self) -> int:\n        self.at\n",
+    )?;
     std::fs::write(
         kit.join("src/main.fen"),
         format!(
@@ -1104,6 +1034,24 @@ fn a_run_says_which_file_has_a_missing_methods_extension() {
     std::fs::remove_file(kit.join("src/main.fen")).unwrap();
     let checked = fennec(&["check", &kit.to_string_lossy()], "").unwrap();
     assert!(checked.status.success(), "{}", text(&checked.stderr));
+}
+
+#[test]
+fn the_interpreter_says_a_type_parameters_function_needs_native_code() {
+    let dir = scratch("type_param_interp").unwrap();
+    let program = dir.join("made.fen");
+    std::fs::write(
+        &program,
+        "interface Made:\n    def make() -> Self\n\nstruct Part:\n    x = 1\n\n    def make() -> Part:\n        Part(x=7)\n\n\
+         def build[T: Made]() -> T:\n    T.make()\n\ndef main(stdout: Stdout):\n    stdout.print(build[Part]().x)\n",
+    )
+    .unwrap();
+    let output = fennec(&["run", "--interp", &program.to_string_lossy()], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let shown = text(&output.stderr);
+    assert!(shown.contains("`T.make()` needs native code"), "{shown}");
+    assert!(shown.contains("run this without `--interp`"), "{shown}");
 }
 
 #[test]

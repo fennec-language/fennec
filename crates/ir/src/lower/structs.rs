@@ -211,6 +211,8 @@ impl Lowering<'_> {
         args: &[Arg],
     ) -> Lowered<Vec<Operand>> {
         let mut values: Vec<Option<Operand>> = vec![None; fields.len()];
+        let mut reads = super::order::Reads::default();
+        let mut slots = Vec::with_capacity(args.len());
         for (position, arg) in args.iter().enumerate() {
             let at = match &arg.name {
                 Some(name) => fields.iter().position(|(field, _)| field == name),
@@ -219,6 +221,11 @@ impl Lowering<'_> {
             let value = self.expr(&arg.value)?;
             let field = at.and_then(|at| fields.get(at)).ok_or("an argument matches no field")?;
             let value = self.coerce(value, &field.1, arg.value.span)?;
+            reads.add(self, value);
+            slots.push(at);
+        }
+        let span = args.first().map_or_else(Span::default, |arg| arg.value.span);
+        for (at, value) in slots.into_iter().zip(reads.finish(self, span)) {
             if let Some(slot) = at.and_then(|at| values.get_mut(at)) {
                 *slot = Some(value);
             }

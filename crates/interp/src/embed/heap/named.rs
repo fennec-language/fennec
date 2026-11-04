@@ -9,18 +9,18 @@ use crate::packed::Element;
 use crate::value::{Id, IdMap, Instance, Slot, Value};
 
 /// An optional held as an enum, with cases `None` and `Some(value)`.
-fn is_option(name: &str) -> bool {
+pub(super) fn is_option(name: &str) -> bool {
     name.starts_with("Option[")
 }
 
 /// A result held as an enum, with cases `Ok(value)` and `Err(error)`.
-fn is_result(name: &str) -> bool {
+pub(super) fn is_result(name: &str) -> bool {
     name.starts_with("Result[")
 }
 
 /// An `IdMap` laid out as its items, each slot's generation, and how many are live. A
 /// removed slot's generation is held as `-1 - generation`, and its item is zero.
-fn is_id_map(name: &str) -> bool {
+pub(super) fn is_id_map(name: &str) -> bool {
     name.starts_with("IdMap[")
 }
 
@@ -90,7 +90,7 @@ fn id_map(instance: &Instance) -> Option<IdMap> {
             Slot { generation: u32::try_from(*generation).ok()?, value: Some(item.clone()) }
         })
     });
-    Some(IdMap { slots: slots.collect::<Option<_>>()? })
+    Some(IdMap::new(slots.collect::<Option<_>>()?))
 }
 
 /// What `write_named` did.
@@ -186,5 +186,7 @@ fn write_id_map(
     let ints = Rc::new(Element::Int);
     words.push(u64::try_from(super::super::lists::list_of_items(state, &ints, &generations)).ok()?);
     words.push(u64::try_from(live).ok()?);
+    // Where to start looking for a free slot: from the first is always right.
+    words.push(0);
     Some(())
 }

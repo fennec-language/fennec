@@ -521,6 +521,15 @@ pub extern "C" fn int_text(n: i64) -> i64 {
     with(|state| text_address(state, &n.to_string()))
 }
 
+/// A new string with a string's text as it shows inside a collection, in quotes.
+pub extern "C" fn str_repr(text: i64) -> i64 {
+    with(|state| {
+        let held =
+            u64::try_from(text).ok().and_then(|at| state.heap.block(at)).map_or_else(String::new, block_text);
+        text_address(state, &crate::format::repr(&Value::Str(held.into())))
+    })
+}
+
 /// A new string with a float's text, as it prints.
 pub extern "C" fn float_text(x: f64) -> i64 {
     with(|state| text_address(state, &crate::format::display(&Value::Float(x))))
@@ -533,6 +542,12 @@ pub extern "C" fn value_text(value: i64) -> i64 {
         let text = state.interp.shown(&value, Span::default())?;
         Ok(text_address(state, &text))
     })
+}
+
+/// A new string with the text of the value in a block, read from the block.
+pub extern "C" fn shown_text(address: i64) -> i64 {
+    let shown = super::heap::shown::shown(u64::try_from(address).unwrap_or(0));
+    attempt(|state: &mut State| Ok(text_address(state, &shown?)))
 }
 
 /// A new string with a temporary's text, formatted by a spec, failing like the interpreter

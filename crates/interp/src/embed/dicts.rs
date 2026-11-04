@@ -12,10 +12,12 @@
 
 use fennec_syntax::Diagnostic;
 
+use super::heap::shown::Written;
 use super::heap::{
     HEADER_WORDS, TEXT_HEADER_WORDS, release, same, shape_word, text_address, text_from_bytes,
 };
 use super::{State, attempt, span, with};
+use crate::packed::Element;
 use crate::value::Value;
 
 /// Words a dict's block starts with: owner count, shape, keys, entries used, slots less one.
@@ -687,7 +689,7 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
     if shared || used >= capacity(slots) {
         let (shape, live) = (shape_word(block)?, entries(block, layout.width));
         if shared {
-            state.heap.counts.copied(live.len());
+            state.heap.copied(live.len());
             for entry in live.chunks_exact(layout.width) {
                 retain_entry(state, layout, entry);
             }
@@ -746,7 +748,7 @@ fn unshared(state: &mut State, at: u64) -> Option<u64> {
     }
     let layout = layout(state, block)?;
     let (shape, live) = (shape_word(block)?, entries(block, layout.width));
-    state.heap.counts.copied(live.len());
+    state.heap.copied(live.len());
     for entry in live.chunks_exact(layout.width) {
         retain_entry(state, layout, entry);
     }
@@ -930,6 +932,43 @@ pub(super) fn read(state: &State, block: &[u64]) -> Value {
     Value::Dict(std::rc::Rc::new(pairs.into()))
 }
 
+/// Writes a dict or a set as it shows, in the order its entries were added.
+pub(super) fn shown(state: &State, block: &[u64], out: &mut Written) {
+    let Some(layout) = layout(state, block) else {
+        out.push_str("None");
+        return;
+    };
+    let is_set = layout.value == Word::Nothing;
+    let held = entries(block, layout.width);
+    if is_set && held.is_empty() {
+        out.push_str("set()");
+        return;
+    }
+    out.push('{');
+    for (at, entry) in held.chunks_exact(layout.width).enumerate() {
+        if at > 0 {
+            out.push_str(", ");
+        }
+        word_shown(state, layout.key, key_of(entry), out);
+        if !is_set {
+            out.push_str(": ");
+            word_shown(state, layout.value, &[value_of(entry)], out);
+        }
+    }
+    out.push('}');
+}
+
+fn word_shown(state: &State, word: Word, words: &[u64], out: &mut Written) {
+    let element = match word {
+        Word::Int => Element::Int,
+        Word::Float => Element::Float,
+        Word::Bool => Element::Bool,
+        Word::Text => Element::Text,
+        Word::Str | Word::Plain(_) | Word::Nothing => Element::Str,
+    };
+    super::heap::shown::item(state, &element, &mut words.iter(), out);
+}
+
 /// A set's block as the interpreter holds a set.
 fn read_set(state: &State, layout: Layout, block: &[u64]) -> Value {
     let items = entries(block, layout.width)
@@ -1028,7 +1067,9 @@ pub(super) fn equal(state: &State, left: &[u64], right: &[u64]) -> bool {
                 Probe::Found(at) => value_place(right, layout, at)
                     .and_then(|place| right.get(place))
                     .is_some_and(|other| match layout.value {
-                        Word::Float => f64::from_bits(value).total_cmp(&f64::from_bits(*other)).is_eq(),
+                        Word::Float => {
+                            crate::value::floats_same(f64::from_bits(value), f64::from_bits(*other))
+                        }
                         Word::Str => same(state, value, *other),
                         Word::Int | Word::Bool | Word::Nothing | Word::Plain(_) | Word::Text => {
                             value == *other

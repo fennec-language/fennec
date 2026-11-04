@@ -1,0 +1,26 @@
+struct City:
+    name: str
+    size: int
+
+def first(text: str) -> str:
+    text[0]
+
+def main(stdout: Stdout):
+    names = ["Zürich", "São Paulo", "東京", "Kraków", "Århus", "plain"]
+    cities = [City(names[n % 6] + f" {n}", n) for n in range(600)]
+    firsts = [first(city.name) for city in parallel(cities)]
+    stdout.print(firsts[0], firsts[1], firsts[2], firsts[3], firsts[4], firsts[5])
+    stdout.print(sum(city.name.len() for city in parallel(cities)))
+    stdout.print(sum(1 if "ü" in city.name else 0 for city in parallel(cities)))
+    upper = [city.name.upper() + "!" for city in parallel(cities)]
+    stdout.print(upper[0], upper[1], upper[2], upper[599])
+    pieces = [city.name[1:3] for city in parallel(cities)]
+    stdout.print(pieces[0], pieces[1], pieces[2], pieces[3])
+    counts = {name: 0 for name in names}
+    stdout.print(sum(1 if names[city.size % 6] in counts else 0 for city in parallel(cities)))
+    mut changing = [City(city.name, city.size) for city in cities]
+    for mut city in parallel(changing):
+        city.name = city.name + "é"
+    stdout.print(changing[0].name, changing[2].name, changing[599].name)
+    for city in parallel(cities):
+        stdout.print(city.name)

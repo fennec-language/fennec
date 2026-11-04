@@ -187,3 +187,17 @@ fn extending_a_buffer_holds_what_the_other_one_holds_too() {
     let (_, failure, _) = finish();
     assert!(failure.is_some_and(|failure| failure.message == "can't insert at 9 in a Buffer of length 3"));
 }
+
+#[test]
+fn a_list_of_items_with_no_fields_reads_back_with_every_item() {
+    let empty = Rc::new(Element::Struct { name: Rc::from("Empty"), fields: Vec::new() });
+    let tables = Tables { shapes: vec![Rc::new(Element::Str)], elements: vec![empty], ..Tables::default() };
+    start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+    let list = u64::try_from(super::new(0, 2)).unwrap();
+    let read = with(|state| Some(heap::read_block(state, list))).unwrap();
+    let shown = heap::shown::shown(list);
+    finish();
+    let Value::List(items) = read.unpacked() else { panic!("a list") };
+    assert_eq!(items.len(), 2);
+    assert_eq!(shown.unwrap(), "[Empty(), Empty()]");
+}

@@ -42,6 +42,7 @@ jobs:
             target: ""
             only: llvm
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     permissions:
       contents: read
       issues: write

@@ -14,6 +14,7 @@ mod imports;
 mod lists;
 mod matching;
 mod operators;
+mod order;
 mod parallel;
 mod places;
 mod positions;
@@ -97,6 +98,7 @@ fn lower_from(
         generic_types: generic_types(&modules),
         instances: generics::Instances::default(),
         generator_defs: std::cell::RefCell::default(),
+        own_texts: std::cell::RefCell::default(),
         // A library's yield methods too, which a loop over one can copy in.
         generators: those_where(&every, |def| fuse::has_yield(&def.body)),
         mut_forms: those_where(&every, |def| def.name == "[]mut"),
@@ -134,6 +136,7 @@ fn lower_from(
     let (mut defs, mut enums) = (defs.clone(), enums.iter().map(|def| (*def).clone()).collect::<Vec<_>>());
     structs::add_copies(&context, &mut defs, &mut enums);
     program.generators = context.generator_defs.take();
+    program.own_texts = context.own_texts.take();
     program.structs = defs;
     program.enums = enums;
     program.errors = errors;
@@ -267,6 +270,8 @@ struct Context<'a> {
     mut_forms: HashMap<String, &'a FnDef>,
     /// The generators lowered so far.
     generator_defs: std::cell::RefCell<Vec<crate::GeneratorDef>>,
+    /// The types whose own text is asked for by printing something that holds them.
+    own_texts: std::cell::RefCell<Vec<crate::OwnText>>,
     /// The standard library's `@intrinsic` functions, which have no body: a call to one is an
     /// [`InstKind::Builtin`] of its key, which each engine provides.
     intrinsics: HashSet<String>,
@@ -340,6 +345,8 @@ struct Lowering<'a> {
     leaving: Vec<places::Leaving>,
     /// The `shared` handles the `with` blocks being lowered hold the locks of.
     locked: Vec<LocalId>,
+    /// The locals changed so far, for operands read before one of those changes (see `order`).
+    changed: Vec<LocalId>,
     /// The closures' functions lifted out of this one.
     lifted: Vec<Function>,
     /// What a generator being lowered knows.
@@ -373,6 +380,7 @@ impl<'a> Lowering<'a> {
             loops: Vec::new(),
             leaving: Vec::new(),
             locked: Vec::new(),
+            changed: Vec::new(),
             lifted: Vec::new(),
             generating: None,
             counts: Vec::new(),
@@ -473,6 +481,7 @@ impl<'a> Lowering<'a> {
     /// Adds an instruction to the block being built. One that reads what a `shared` handle
     /// holds takes the handle's lock to read, around just that instruction.
     fn emit(&mut self, kind: InstKind, span: Span) {
+        self.note_change(&kind);
         let handles = self.read_through(&kind);
         let Some(block) = self.blocks.get_mut(self.current.0) else { return };
         for handle in &handles {
@@ -579,7 +588,7 @@ impl<'a> Lowering<'a> {
             }
             StmtKind::Fail(error) => self.fail(error, stmt.span)?,
             StmtKind::Yield(value) => self.yield_value(value, stmt.span)?,
-            StmtKind::Assert(cond) => self.assert(cond, stmt.span)?,
+            StmtKind::Assert(cond) => self.assert(cond)?,
             StmtKind::With { value, names, body } => self.with_block(value, names, body, tail, stmt.span)?,
             StmtKind::Def(def) => self.nested(def, stmt.span)?,
         }
@@ -783,8 +792,8 @@ impl<'a> Lowering<'a> {
             ExprKind::Binary { op, lhs, rhs } => {
                 let ty = self.ty(expr)?;
                 let lhs = self.expr(lhs)?;
-                let rhs = self.expr(rhs)?;
-                self.operate(*op, (lhs, rhs), &ty, span)
+                let sides = self.both(lhs, |lowering| lowering.expr(rhs), span)?;
+                self.operate(*op, sides, &ty, span)
             }
             ExprKind::Cond { then, cond, otherwise } => self.conditional(expr, (then, cond, otherwise)),
             ExprKind::Attr { object, name, optional: false } => self.get_field(expr, object, name),

@@ -4,12 +4,13 @@
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
-use std::io::Write;
+use std::io::{BufRead, Read, Write};
 
 use fennec_syntax::Sources;
 
 use super::codec::Image;
 use super::{State, heap, with};
+use crate::fakes::{TestCapabilities, TestWorld};
 
 /// The stack an executable's program runs on. It's only reserved, not used, until calls
 /// nest deeply.
@@ -69,10 +70,64 @@ fn program_handed_over(length: i64, stop: fn(i32)) -> Vec<u8> {
     super::parallel::set_worker_setup(Box::new(move || {
         if let Some(Image { module, tables, .. }) = Image::from_bytes(&program) {
             // What it prints goes straight out: `parallel`'s output follows real call order.
-            let _ = super::start(&module, tables, crate::Inputs { live: true, ..crate::Inputs::default() });
+            let _ = super::start(&module, tables, live_inputs());
         }
     }));
     bytes
+}
+
+/// What the process was handed from outside, for a thread of it to run with: every thread sees
+/// the same arguments and reads the same standard input.
+fn live_inputs() -> crate::Inputs {
+    let mut arguments = std::env::args();
+    crate::Inputs {
+        live: true,
+        program: program_name(arguments.next().unwrap_or_default()),
+        arguments: arguments.collect(),
+        stdin: Box::new(StdinLines::default()),
+    }
+}
+
+/// What `args.program` says. `fennec run` starts a program it built for the run, and where it can't
+/// set the name a process sees, it says it this way, for that one executable: what the program
+/// starts in turn gets the variable too, and goes by its own name.
+fn program_name(own: String) -> String {
+    let told = std::env::var("FENNEC_RUN_AS").ok();
+    match told.as_deref().and_then(|told| told.split_once('|')) {
+        Some((executable, program)) if executable == own => program.to_owned(),
+        _ => own,
+    }
+}
+
+/// The process's standard input for one thread. It takes a line at a time, so a thread never holds
+/// more than the line it's reading, and no line is lost to the threads reading after it.
+#[derive(Default)]
+pub(super) struct StdinLines {
+    line: Vec<u8>,
+    read: usize,
+}
+
+impl Read for StdinLines {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.fill_buf()?.read(bytes)?;
+        self.consume(count);
+        Ok(count)
+    }
+}
+
+impl BufRead for StdinLines {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self.read >= self.line.len() {
+            self.line.clear();
+            self.read = 0;
+            std::io::stdin().lock().read_until(b'\n', &mut self.line)?;
+        }
+        Ok(self.line.get(self.read..).unwrap_or_default())
+    }
+
+    fn consume(&mut self, count: usize) {
+        self.read += count;
+    }
 }
 
 /// Starts running a test executable's tests: those whose numbers are its arguments, in turn. A
@@ -94,9 +149,17 @@ pub fn test_ran(flag: i64) {
     RAN.with_borrow_mut(|ran| ran.push(flag));
 }
 
+/// Starts a test: one that takes capabilities gets fakes in a world of its own, with nothing left
+/// by the one before, as `run_case` gives the interpreter's.
+pub fn test_world(fakes: i64) {
+    with(|state: &mut State| {
+        state.interp.world = (fakes != 0).then(|| TestWorld::new(TestCapabilities::Fakes));
+    });
+}
+
 /// Says what the test just run did, on standard output as soon as it's done, in a line `fennec
-/// test` reads, so a crash loses only the tests not yet run. Tests here take nothing, so nothing
-/// else writes there.
+/// test` reads, so a crash loses only the tests not yet run. A test's `Stdout` is a fake, so
+/// nothing else writes there.
 pub fn test_done(number: i64) {
     let ran: Vec<String> = RAN.take().iter().map(ToString::to_string).collect();
     let line = test_line(number, super::next_test().as_ref(), &ran);
@@ -133,14 +196,7 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     let Some(Image { module, sources, tables, literals }) = Image::from_bytes(bytes) else {
         return (Vec::new(), "error: this executable's program is damaged\n".to_owned());
     };
-    let mut arguments = std::env::args();
-    let inputs = crate::Inputs {
-        live: true,
-        program: arguments.next().unwrap_or_default(),
-        arguments: arguments.collect(),
-        stdin: Box::new(std::io::BufReader::new(std::io::stdin())),
-    };
-    if let Err(failure) = super::start(&module, tables, inputs) {
+    if let Err(failure) = super::start(&module, tables, live_inputs()) {
         return (Vec::new(), sources.render(&failure));
     }
     LITERALS.set(literals);
@@ -151,6 +207,35 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     let (output, failure, leftovers) = super::finish();
     report_counts(&leftovers.counts);
     (output, failure.map(|failure| sources.render(&failure)).unwrap_or_default())
+}
+
+/// Native code built to trace what it costs is about to do what's at this place in the source.
+pub fn trace_at(site: i64) {
+    with(|state: &mut State| state.heap.trace_at(u32::try_from(site).unwrap_or(0)));
+}
+
+/// Native code built to trace what it costs made a block of its own, of this many bytes.
+pub fn trace_allocated(bytes: i64) {
+    with(|state: &mut State| state.heap.allocated(u64::try_from(bytes).unwrap_or(0)));
+}
+
+/// With `FENNEC_TRACE_FILE` set, writes what each place in the source cost there, for
+/// `fennec dev trace` to read: a line of numbers for each place.
+pub(super) fn report_sites(sites: &std::collections::HashMap<u32, heap::Counts>) {
+    let Some(file) = std::env::var_os("FENNEC_TRACE_FILE") else { return };
+    let mut lines = String::new();
+    for (site, counts) in sites {
+        let _ = writeln!(
+            lines,
+            "{site} {} {} {} {} {}",
+            counts.allocations,
+            counts.allocated_bytes,
+            counts.copies,
+            counts.copied_bytes,
+            counts.largest_copy
+        );
+    }
+    let _ = std::fs::write(file, lines);
 }
 
 /// With `FENNEC_COUNTS` set, says on stderr what the run allocated and copied, so a test can

@@ -1,3 +1,4 @@
 def main(stdout: Stdout):
     mut hp = {"ash": 70}
     hp["vex"] += 5
+    stdout.print(hp)

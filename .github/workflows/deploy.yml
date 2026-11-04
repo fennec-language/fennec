@@ -34,6 +34,7 @@ jobs:
     name: Deploy to Cloudflare
     if: vars.CLOUDFLARE_ACCOUNT_ID != ''
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment:
       name: production
       url: https://fennec-lang.dev

@@ -270,7 +270,7 @@ fn codes(diagnostics: &[Json]) -> Vec<&str> {
 fn lints_and_copies_show_with_their_rules_and_fixes() {
     let mut editor = Editor::new("lints").unwrap();
     let text = "def one() -> int:\n    return 1\n\ndef main(stdout: Stdout):\n    mut items = [1]\n    \
-                held = items\n    items.append(2)\n    stdout.print(held.len(), one())\n";
+                held = items\n    items.append(2)\n    stdout.print(held.len(), items.len(), one())\n";
     let published = editor.open("src/main.fen", text);
     let in_main = for_file(&published, "main.fen").unwrap();
     assert_eq!(codes(in_main), ["needless-return", "copies"], "{:?}", messages(in_main));

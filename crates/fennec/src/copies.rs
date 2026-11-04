@@ -32,7 +32,7 @@ pub(crate) fn copies_in_a_run(path: &str) -> ExitCode {
 }
 
 /// What a run did, in a line.
-fn ran(counts: &fennec_interp::embed::Counts) -> String {
+pub(crate) fn ran(counts: &fennec_interp::embed::Counts) -> String {
     let copies = match counts.copies {
         0 => "no copies".to_owned(),
         1 => format!("1 copy of {}", bytes(counts.copied_bytes)),
@@ -51,7 +51,7 @@ fn ran(counts: &fennec_interp::embed::Counts) -> String {
 
 /// A number of bytes, in the unit that reads best.
 #[expect(clippy::cast_precision_loss, reason = "a size in a report doesn't need every digit")]
-fn bytes(count: u64) -> String {
+pub(crate) fn bytes(count: u64) -> String {
     match count {
         0..1_024 => format!("{count} B"),
         1_024..1_048_576 => format!("{:.1} KB", count as f64 / 1_024.0),

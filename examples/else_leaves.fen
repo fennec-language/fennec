@@ -1,0 +1,63 @@
+# `else` can leave as well as give a value: `else continue`, `else return` and `else fail`.
+
+error NotFound:
+    name: str
+
+def total_health(names: list[str], health: dict[str, int]) -> int:
+    mut total = 0
+    for name in names:
+        points = health.get(name) else continue
+        total += points
+    total
+
+def health_of(health: dict[str, int], name: str) -> int:
+    points = health.get(name) else return -1
+    points + 1
+
+def heal(mut health: dict[str, int], name: str):
+    points = health.get(name) else return
+    health[name] = points + 5
+
+def must_find(health: dict[str, int], name: str) -> int fails NotFound:
+    health.get(name) else fail NotFound(name=name)
+
+def parse_all(texts: list[str]) -> list[int]:
+    mut found = []
+    for text in texts:
+        # A failure counts as missing too.
+        found.append(int(text) else continue)
+    found
+
+def first_small(rows: list[list[str]]) -> str:
+    for row in rows:
+        for word in row:
+            size = int(word) else continue
+            if size < 3: return word
+    "none"
+
+# A loop writing its items back still does, however it's left.
+def double_until_missing(mut values: list[int], known: dict[int, int]):
+    for mut value in values:
+        value *= 2
+        seen = known.get(value) else return
+        value += seen
+
+def main(stdout: Stdout):
+    health = {"ash": 10, "kit": 4}
+    stdout.print(total_health(["ash", "nobody", "kit"], health))
+    stdout.print(health_of(health, "kit"), health_of(health, "nobody"))
+    mut held = copy(health)
+    heal(mut held, "nobody")
+    heal(mut held, "kit")
+    stdout.print(held["kit"], held.len())
+    stdout.print(must_find(health, "ash") else 0)
+    match must_find(health, "nobody"):
+        case Ok(points):
+            stdout.print(points)
+        case NotFound(name):
+            stdout.print("no", name)
+    stdout.print(parse_all(["1", "x", "3"]))
+    stdout.print(first_small([["a", "9"], ["1"]]))
+    mut values = [1, 2, 3]
+    double_until_missing(mut values, {2: 100})
+    stdout.print(values)

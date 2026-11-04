@@ -7,6 +7,7 @@ use fennec_check::Type;
 use fennec_syntax::{BinOp, CompKind, Expr, ExprKind, FStrPart, Span, Stmt, UnaryOp};
 
 use super::calls::owner_name;
+use super::generics::FunctionInstance;
 use super::places::{Leaving, Place};
 use super::{Loop, Lowered, Lowering, Tail};
 use crate::{FormatPart, InstKind, LocalId, Operand, Terminator};
@@ -41,11 +42,7 @@ impl Lowering<'_> {
     pub(super) fn list(&mut self, expr: &Expr, items: &[Expr]) -> Lowered<Operand> {
         let ty = self.ty(expr)?;
         let Type::List(item) = &ty else { return Err("a list has another type".to_owned()) };
-        let mut values = Vec::with_capacity(items.len());
-        for written in items {
-            let value = self.expr(written)?;
-            values.push(self.coerce(value, item, written.span)?);
-        }
+        let values = self.items_as(items, item, expr.span)?;
         let dest = self.temporary(ty);
         self.emit(InstKind::MakeList { dest, items: values }, expr.span);
         Ok(Operand::Local(dest))
@@ -86,37 +83,61 @@ impl Lowering<'_> {
             _ => return Err("it uses indexing on something the IR doesn't index".to_owned()),
         };
         let object = self.expr(object)?;
-        let lowered = self.expr(index)?;
-        let index = self.coerce(lowered, &key, index.span)?;
+        let (object, index) = self.both(
+            object,
+            |lowering| {
+                let lowered = lowering.expr(index)?;
+                lowering.coerce(lowered, &key, index.span)
+            },
+            expr.span,
+        )?;
         Ok(Operand::Local(self.read_item(held.as_ref().unwrap_or(&ty), object, index, &ty, expr.span)))
     }
 
     /// `item in value` when `value`'s type has its own `def in`: a call to it, with the value
     /// first, and `not in` its opposite. The item is worked out first, as it's written first.
-    fn own_in(&mut self, op: BinOp, item: &Expr, items: &Expr, span: Span) -> Lowered<Option<Operand>> {
+    fn own_in(
+        &mut self,
+        op: BinOp,
+        item: &Expr,
+        items: &Expr,
+        span: Span,
+    ) -> Lowered<Option<(Operand, Operand, Operand)>> {
         let Some(held) = self.type_at(items.span) else { return Ok(None) };
         let Some(key) = owner_name(&held).map(|owner| format!("{owner}.in")) else { return Ok(None) };
         let given = [Some(held.clone()), self.type_at(item.span)];
         let Some((function, signature)) = self.resolve(&key, &given, None) else { return Ok(None) };
         let item = self.expr(item)?;
-        let items = self.expr(items)?;
+        let (item, items) = self.both(item, |lowering| lowering.expr(items), span)?;
         let own = self.context.functions.contains(self.context.base_key(&key).as_str());
         let item = match signature.params.get(1) {
             Some(param) if own => self.coerce(item, &param.ty, span)?,
             _ => item,
         };
         let dest = self.temporary(Type::Bool);
-        self.emit(InstKind::Call { dest: Some(dest), function, args: vec![items, item] }, span);
+        let args = vec![items.clone(), item.clone()];
+        self.emit(InstKind::Call { dest: Some(dest), function, args }, span);
         if op == BinOp::In {
-            return Ok(Some(Operand::Local(dest)));
+            return Ok(Some((Operand::Local(dest), item, items)));
         }
         let flipped = self.temporary(Type::Bool);
         self.emit(InstKind::Unary { dest: flipped, op: UnaryOp::Not, value: Operand::Local(dest) }, span);
-        Ok(Some(Operand::Local(flipped)))
+        Ok(Some((Operand::Local(flipped), item, items)))
     }
 
     /// `item in items`, and `not in`, on a collection.
     pub(super) fn contains(&mut self, op: BinOp, item: &Expr, items: &Expr, span: Span) -> Lowered<Operand> {
+        self.contains_of(op, item, items, span).map(|(test, _, _)| test)
+    }
+
+    /// The same, with both sides.
+    pub(super) fn contains_of(
+        &mut self,
+        op: BinOp,
+        item: &Expr,
+        items: &Expr,
+        span: Span,
+    ) -> Lowered<(Operand, Operand, Operand)> {
         if let Some(found) = self.own_in(op, item, items, span)? {
             return Ok(found);
         }
@@ -137,20 +158,18 @@ impl Lowering<'_> {
             return Err(super::operators::OWN_EQUALITY.to_owned());
         }
         let item = self.expr(item)?;
-        let items = self.expr(items)?;
+        let (item, items) = self.both(item, |lowering| lowering.expr(items), span)?;
         let dest = self.temporary(Type::Bool);
         let name = format!("{owner}.contains");
-        self.emit(
-            InstKind::Builtin { dest: Some(dest), name, args: vec![items, item], changes: false },
-            span,
-        );
+        let args = vec![items.clone(), item.clone()];
+        self.emit(InstKind::Builtin { dest: Some(dest), name, args, changes: false }, span);
         if op == BinOp::In {
-            return Ok(Operand::Local(dest));
+            return Ok((Operand::Local(dest), item, items));
         }
         let flipped = self.temporary(Type::Bool);
         let value = Operand::Local(dest);
         self.emit(InstKind::Unary { dest: flipped, op: UnaryOp::Not, value }, span);
-        Ok(Operand::Local(flipped))
+        Ok((Operand::Local(flipped), item, items))
     }
 
     /// A value as printing shows it: when its type writes its own text with `def str`, that
@@ -164,17 +183,82 @@ impl Lowering<'_> {
             if self.holds_own_str(&held, &mut Vec::new()) {
                 return Err(format!("it prints a {held}, which holds a value with its own `def str`"));
             }
+            self.own_texts_within(&held, &mut Vec::new(), expr.span)?;
             return self.expr(expr);
         };
         let value = self.expr(expr)?;
-        let out = self.make("StrWriter", &[], expr.span)?;
-        self.emit(InstKind::Call { dest: None, function, args: vec![value, out.clone()] }, expr.span);
+        self.own_text_of(value, function, (writer, expr.span))
+    }
+
+    /// The text a value's own `def str` writes.
+    fn own_text_of(
+        &mut self,
+        value: Operand,
+        function: String,
+        (writer, span): (Type, Span),
+    ) -> Lowered<Operand> {
+        let out = self.make("StrWriter", &[], span)?;
+        self.emit(InstKind::Call { dest: None, function, args: vec![value, out.clone()] }, span);
         let (text, _) = self
             .resolve("StrWriter.text", &[Some(writer)], None)
             .ok_or("it prints a value with its own `def str`, but `StrWriter.text` isn't there")?;
         let dest = self.temporary(Type::Str);
-        self.emit(InstKind::Call { dest: Some(dest), function: text, args: vec![out] }, expr.span);
+        self.emit(InstKind::Call { dest: Some(dest), function: text, args: vec![out] }, span);
         Ok(Operand::Local(dest))
+    }
+
+    /// Has a function made for each type that writes its own text within a value of type `held`,
+    /// for the runtime to call as it writes the value. `seen` are the types looked at already.
+    fn own_texts_within(&mut self, held: &Type, seen: &mut Vec<Type>, span: Span) -> Lowered<()> {
+        match held {
+            Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::IdMap(item) => {
+                return self.own_texts_within(item, seen, span);
+            }
+            Type::Dict(first, second) | Type::Result(first, second) => {
+                self.own_texts_within(first, seen, span)?;
+                return self.own_texts_within(second, seen, span);
+            }
+            Type::Tuple(items) => {
+                return items.iter().try_for_each(|item| self.own_texts_within(item, seen, span));
+            }
+            Type::Named(_) | Type::Generic(..) => {}
+            _ => return Ok(()),
+        }
+        if seen.contains(held) {
+            return Ok(());
+        }
+        seen.push(held.clone());
+        if let Some(function) = self.own_str(held) {
+            return self.own_text_function(held, function, span);
+        }
+        let name = held.to_string();
+        let mut within: Vec<Type> = self
+            .struct_fields(&name)
+            .map(|fields| fields.into_iter().map(|(_, ty)| ty).collect())
+            .unwrap_or_default();
+        if let Some(found) = self.context.enums.get(name.as_str()) {
+            within.extend(found.cases.iter().flat_map(|case| case.fields.iter().map(|(_, ty)| ty.clone())));
+        }
+        within.iter().try_for_each(|ty| self.own_texts_within(ty, seen, span))
+    }
+
+    /// Makes the function giving the text a value of type `held` writes, if it isn't made yet.
+    fn own_text_function(&mut self, held: &Type, function: String, span: Span) -> Lowered<()> {
+        let key = format!("{held}.own_text");
+        if self.context.own_texts.borrow().iter().any(|made| made.function == key) {
+            return Ok(());
+        }
+        let instance =
+            FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
+        let mut made = Lowering::new(&instance, self.context, self.body, Type::Str);
+        let value = made.declare("value", held.clone());
+        made.scopes.push(HashMap::new());
+        let writer = Type::Named("StrWriter".to_owned());
+        let text = made.own_text_of(Operand::Local(value), function, (writer, span))?;
+        made.finish(Terminator::Return(Some(text)));
+        self.lifted.extend(made.finished(1, Vec::new()));
+        self.context.own_texts.borrow_mut().push(crate::OwnText { ty: held.clone(), function: key });
+        Ok(())
     }
 
     /// The `def str` a type writes its own text with, if it has one.
@@ -202,12 +286,20 @@ impl Lowering<'_> {
     }
 
     pub(super) fn format(&mut self, parts: &[FStrPart], span: Span) -> Lowered<Operand> {
+        let mut reads = super::order::Reads::default();
+        for part in parts {
+            if let FStrPart::Expr { expr, spec } = part {
+                let value = if spec.is_none() { self.shown(expr)? } else { self.expr(expr)? };
+                reads.add(self, value);
+            }
+        }
+        let mut values = reads.finish(self, span).into_iter();
         let mut lowered = Vec::with_capacity(parts.len());
         for part in parts {
             lowered.push(match part {
                 FStrPart::Text(text) => FormatPart::Text(text.clone()),
-                FStrPart::Expr { expr, spec } => {
-                    let value = if spec.is_none() { self.shown(expr)? } else { self.expr(expr)? };
+                FStrPart::Expr { spec, .. } => {
+                    let value = values.next().ok_or("a part of a string went missing")?;
                     FormatPart::Value { value, spec: spec.clone() }
                 }
             });

@@ -651,6 +651,90 @@ fn values_read_from_their_blocks_show_as_they_do_in_the_interpreter() -> std::io
     Ok(())
 }
 
+/// What compiled code does through capabilities without the interpreter, failing as well as not.
+const NATIVE_CAPABILITIES: &str = "\
+from std.path import Path
+
+def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entropy):
+    folder = \"native-capabilities\"
+    stdout.print(fs.exists(folder))
+    fs.make_dir(folder).expect(\"it works\")
+    file = folder + \"/a.txt\"
+    fs.write_text(file, \"one\\ntwo\\n\").expect(\"it works\")
+    stdout.print(fs.read_text(file).expect(\"it works\"), fs.exists(Path(text=file)))
+    stdout.print(fs.metadata(file).expect(\"it works\").size, fs.metadata(file).expect(\"it works\").is_file)
+    stdout.print(fs.list_dir(folder).expect(\"it works\"))
+    only = fs.only(folder)
+    stdout.print(only.read_text(file).expect(\"it works\"))
+    stdout.print(only.exists(\"/\"))
+    match only.read_text(\"/etc/hosts\"):
+        case Ok(_):
+            stdout.print(\"read it\")
+        case Err(error):
+            stdout.print(error.reason.endswith(\"native-capabilities\"))
+    match fs.read_text(\"no such file\"):
+        case Ok(_):
+            stdout.print(\"read it\")
+        case Err(error):
+            stdout.print(error.reason != \"\")
+    fs.remove(file).expect(\"it works\")
+    fs.remove(folder).expect(\"it works\")
+    done = process.run(\"echo\", [\"hello\"]).expect(\"it works\")
+    stdout.print(done.status, done.stdout, done.stderr == \"\")
+    match process.run(\"no-such-program-at-all\", []):
+        case Ok(_):
+            stdout.print(\"ran it\")
+        case Err(error):
+            stdout.print(error.program)
+    echo = process.only(\"echo\")
+    stdout.print(echo.run(\"echo\", [\"again\"]).expect(\"it works\").stdout)
+    match echo.run(\"ls\", []):
+        case Ok(_):
+            stdout.print(\"ran it\")
+        case Err(error):
+            stdout.print(error.message)
+    stdout.print(stdin.lines())
+    stdout.print(entropy.seed() != entropy.seed())
+";
+
+#[test]
+fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("native-capabilities")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, NATIVE_CAPABILITIES)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let with_lines = |command: &mut Command| -> std::io::Result<Output> {
+        use std::io::Write as _;
+        let mut running = command
+            .current_dir(&dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        running
+            .stdin
+            .take()
+            .ok_or_else(|| std::io::Error::other("no input"))?
+            .write_all(b"first\r\nsecond\n")?;
+        running.wait_with_output()
+    };
+    let ran = with_lines(&mut Command::new(&executable))?;
+    let interpreted = with_lines(
+        crate::executables::fennec_command()
+            .args(["run", "--interp", &path(&program)])
+            .env("FENNEC_HOME", &dir),
+    )?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {

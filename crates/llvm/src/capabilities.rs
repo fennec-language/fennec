@@ -124,10 +124,10 @@ impl Emit<'_, '_, '_> {
         }
         let (word, _) = self.operand(receiver)?;
         let named = self.literal(method);
-        self.declare("declare i64 @fennec_capability_call(ptr, ptr, i64, i64, i64) nounwind");
+        self.declare("declare i64 @fennec_native_capability(ptr, ptr, i64, i64, i64) nounwind");
         let handle = self.temp();
         self.line(&format!(
-            "{handle} = call i64 @fennec_capability_call(ptr {word}, ptr {named}, i64 {}, i64 {from}, i64 {to})",
+            "{handle} = call i64 @fennec_native_capability(ptr {word}, ptr {named}, i64 {}, i64 {from}, i64 {to})",
             rest.len()
         ));
         self.leave_if_failed();

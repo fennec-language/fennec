@@ -9,12 +9,13 @@
 
 use std::rc::Rc;
 
-use fennec_syntax::Diagnostic;
+use fennec_syntax::{Diagnostic, Span};
 
 use super::heap::{CAPABILITY_SHAPE, IMMORTAL, read_block, text_address};
 use super::{State, attempt, span, with};
-use crate::limits::Limited;
+use crate::limits::{Limited, narrowed};
 use crate::packed::Element;
+use crate::stdlib::fs::path_text;
 use crate::value::{Capability, Value};
 
 /// A capability's block: its owner count, its shape, its kind, and its list of what it
@@ -135,6 +136,95 @@ pub extern "C" fn call(word: i64, method: i64, count: i64, start: i64, end: i64)
         let result = state.interp.read_method(&receiver, &name, args, at)?;
         Ok(state.push(result))
     })
+}
+
+/// `fennec_native_capability(word, method, count, start, end)`: a method of a capability for
+/// compiled code, as `call` is for the JIT. Only what's still written for the interpreter alone,
+/// the network's methods, goes to it.
+pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let at = span(start, end);
+        let receiver = value_of(state, word);
+        let name = u64::try_from(method)
+            .ok()
+            .and_then(|address| state.heap.block(address))
+            .filter(|block| super::heap::is_text(state, block))
+            .map(super::heap::block_text)
+            .ok_or_else(|| Diagnostic::new("the native code lost a method's name", at))?;
+        let count = usize::try_from(count).unwrap_or(0).min(state.inputs.len());
+        let given = state.inputs.split_off(state.inputs.len() - count);
+        let given: Vec<Value> = given.into_iter().map(Value::unpacked).collect();
+        let native = match &receiver {
+            Value::Capability(Capability::Net | Capability::Stdout) => None,
+            Value::Capability(capability) => Some(native_method(*capability, &name, &given, at)),
+            Value::Limited(limited) if limited.capability != Capability::Net => {
+                Some(narrowed(limited, &name, &given, &mut |capability, method, args| {
+                    native_method(capability, method, args, at)
+                }))
+            }
+            _ => None,
+        };
+        let result = if let Some(result) = native {
+            result?
+        } else {
+            let args = given.into_iter().map(|value| crate::call::CallArg::plain(value, at)).collect();
+            state.interp.read_method(&receiver, &name, args, at)?
+        };
+        Ok(state.push(result))
+    })
+}
+
+/// A method of a whole capability.
+fn native_method(
+    capability: Capability,
+    method: &str,
+    args: &[Value],
+    at: Span,
+) -> Result<Value, Diagnostic> {
+    let wrong = || Diagnostic::new(format!("`{method}` was called with the wrong arguments"), at);
+    match (capability, method, args) {
+        (Capability::Fs, "only", [path, ..]) => {
+            let Value::Str(folder) = path_text(path) else { return Err(wrong()) };
+            Ok(Limited::to(Capability::Fs, vec![Rc::from(crate::limits::absolute(&folder))]))
+        }
+        (Capability::Fs, _, _) => {
+            let paths: Vec<Value> = args.iter().map(path_text).collect();
+            crate::stdlib::fs::real_fs(method, &paths, at)
+        }
+        (Capability::Process, "run", [Value::Str(program), Value::List(items)]) => {
+            let mut arguments = Vec::with_capacity(items.len());
+            for item in items.iter() {
+                let Value::Str(text) = item else { return Err(wrong()) };
+                arguments.push(text.to_string());
+            }
+            // A prompt this program printed shows before the other program starts.
+            super::write_kept_output();
+            Ok(crate::stdlib::process::run_program(program, &arguments))
+        }
+        (Capability::Process, "only", [Value::Str(program)]) => {
+            Ok(Limited::to(Capability::Process, vec![Rc::clone(program)]))
+        }
+        (Capability::Stdin, "lines", []) => {
+            // A prompt shows before the program waits for an answer.
+            super::write_kept_output();
+            crate::inputs::lines_of(&mut super::aot::StdinLines::default(), at)
+        }
+        (Capability::Entropy, "bytes", [Value::Int(count)]) => {
+            let Ok(count) = usize::try_from(*count) else {
+                return Err(Diagnostic::new(format!("`bytes` can't give {count} bytes"), at)
+                    .with_help("give it how many bytes you want, 0 or more"));
+            };
+            Ok(Value::Bytes(Rc::from(crate::entropy::os_random(count, at)?)))
+        }
+        (Capability::Entropy, "seed", []) => {
+            let drawn = crate::entropy::os_random(8, at)?;
+            let word: [u8; 8] = drawn
+                .try_into()
+                .map_err(|_| Diagnostic::new("the operating system gave too few bytes", at))?;
+            Ok(Value::Int(i64::from_le_bytes(word)))
+        }
+        _ => Err(crate::methods::no_method(&Value::Capability(capability), method, at)),
+    }
 }
 
 /// `clock.now()`, as the nanoseconds of an `Instant`.

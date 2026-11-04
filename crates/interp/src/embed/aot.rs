@@ -90,7 +90,7 @@ fn live_inputs() -> crate::Inputs {
 /// The process's standard input for one thread. It takes a line at a time, so a thread never holds
 /// more than the line it's reading, and no line is lost to the threads reading after it.
 #[derive(Default)]
-struct StdinLines {
+pub(super) struct StdinLines {
     line: Vec<u8>,
     read: usize,
 }

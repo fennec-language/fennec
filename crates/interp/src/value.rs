@@ -96,6 +96,18 @@ pub(crate) struct Instance {
 }
 
 impl Instance {
+    fn of(type_name: &str, fields: Vec<(&str, Value)>, is_error: bool) -> Instance {
+        Instance {
+            type_name: Rc::from(type_name),
+            case: None,
+            fields: fields.into_iter().map(|(name, value)| (Rc::from(name), value)).collect(),
+            is_error,
+            cause: None,
+        }
+    }
+}
+
+impl Instance {
     pub(crate) fn field(&self, name: &str) -> Option<&Value> {
         self.fields.iter().find(|(field, _)| field.as_ref() == name).map(|(_, value)| value)
     }
@@ -221,6 +233,16 @@ impl IdMap {
 }
 
 impl Value {
+    /// A struct of the standard library, with its fields in the order they're declared.
+    pub(crate) fn made(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
+        Value::Instance(Rc::new(Instance::of(type_name, fields, false)))
+    }
+
+    /// An error of the standard library, with its fields in the order they're declared.
+    pub(crate) fn made_error(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
+        Value::Instance(Rc::new(Instance::of(type_name, fields, true)))
+    }
+
     pub(crate) fn str(text: &str) -> Value {
         Value::Str(Rc::from(text))
     }

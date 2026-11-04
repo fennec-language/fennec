@@ -1382,6 +1382,74 @@ def main(stdout: Stdout):
     stdout.print(logs[1])
 ";
 
+/// One cell under two names in a `with`: each sees what the other wrote, so nothing can be assumed
+/// apart. Whether this shape stops at run time is still open, and this pins what it does today.
+const ONE_CELL_TWO_NAMES: &str = r"shared Account:
+    total = 0
+
+    def add(mut self, amount: int):
+        self.total += amount
+
+    def balance(self) -> int:
+        self.total
+
+def transfer(source: Account, target: Account, amount: int) -> bool:
+    with source, target as mut x, mut y:
+        if x.total < amount: return False
+        x.total -= amount
+        y.add(amount)
+    True
+
+def both(a: Account, b: Account, rounds: int) -> list[int]:
+    mut seen = list[int]()
+    with a, b as mut x, mut y:
+        for n in range(rounds):
+            before = x.total
+            y.total = before + n
+            x.add(1)
+            y.add(x.total)
+            seen.append(x.total)
+            seen.append(y.total)
+            seen.append(before)
+    seen
+
+def read_write(a: Account, b: Account) -> list[int]:
+    mut seen = list[int]()
+    with a, b as x, mut y:
+        first = x.total
+        y.total = first + 7
+        seen.append(x.total)
+        seen.append(first)
+    seen
+
+def main(stdout: Stdout):
+    one = Account(total=10)
+    mut seen = 0
+    with one, one as mut x, mut y:
+        x.total = 1
+        y.total = 2
+        seen = x.total
+    stdout.print(seen, one.total)
+    stdout.print(transfer(one, one, 1), one.total)
+    stdout.print(transfer(one, one, 2), one.total)
+    stdout.print(transfer(one, one, 5), one.total)
+    stdout.print(both(one, one, 4), one.total)
+    stdout.print(read_write(one, one), one.total)
+    two = Account(total=10)
+    three = Account(total=20)
+    stdout.print(transfer(two, three, 4), two.total, three.total)
+    stdout.print(both(two, three, 3), two.total, three.total)
+    stdout.print(read_write(two, three), two.total, three.total)
+";
+
+#[test]
+fn one_shared_value_under_two_names_in_a_with_stays_one_value() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("one_cell_two_names", ONE_CELL_TWO_NAMES)
+}
+
 #[test]
 fn every_name_for_a_shared_value_sees_it_change() -> std::io::Result<()> {
     if !ready() {

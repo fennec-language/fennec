@@ -962,6 +962,16 @@ fn kit_with_an_extension(name: &str, imports: &str) -> std::io::Result<PathBuf> 
         kit.join("src/parser/step.fen"),
         "from parser.core import Parser\n\nextend Parser:\n    def step(self) -> int:\n        self.at + 1\n",
     )?;
+    // Files it mustn't name: one extends `Parser` with something else, and one gives another type
+    // a `step`. They sort before the file it should name.
+    std::fs::write(
+        kit.join("src/parser/also.fen"),
+        "from parser.core import Parser\n\nextend Parser:\n    def other(self) -> int:\n        self.at\n",
+    )?;
+    std::fs::write(
+        kit.join("src/parser/rival.fen"),
+        "struct Rival:\n    at = 0\n\nextend Rival:\n    def step(self) -> int:\n        self.at\n",
+    )?;
     std::fs::write(
         kit.join("src/main.fen"),
         format!(
@@ -1024,6 +1034,24 @@ fn a_run_says_which_file_has_a_missing_methods_extension() {
     std::fs::remove_file(kit.join("src/main.fen")).unwrap();
     let checked = fennec(&["check", &kit.to_string_lossy()], "").unwrap();
     assert!(checked.status.success(), "{}", text(&checked.stderr));
+}
+
+#[test]
+fn the_interpreter_says_a_type_parameters_function_needs_native_code() {
+    let dir = scratch("type_param_interp").unwrap();
+    let program = dir.join("made.fen");
+    std::fs::write(
+        &program,
+        "interface Made:\n    def make() -> Self\n\nstruct Part:\n    x = 1\n\n    def make() -> Part:\n        Part(x=7)\n\n\
+         def build[T: Made]() -> T:\n    T.make()\n\ndef main(stdout: Stdout):\n    stdout.print(build[Part]().x)\n",
+    )
+    .unwrap();
+    let output = fennec(&["run", "--interp", &program.to_string_lossy()], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let shown = text(&output.stderr);
+    assert!(shown.contains("`T.make()` needs native code"), "{shown}");
+    assert!(shown.contains("run this without `--interp`"), "{shown}");
 }
 
 #[test]

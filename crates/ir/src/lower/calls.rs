@@ -74,7 +74,7 @@ impl Lowering<'_> {
         let mut reads = super::order::Reads::default();
         if let Some(object) = object {
             if changes {
-                let place = self.place(object, write_backs, span)?;
+                let place = self.place(object, false, write_backs, span)?;
                 reads.add_place(place);
             } else {
                 let value = self.expr(object)?;
@@ -177,11 +177,18 @@ impl Lowering<'_> {
     }
 
     /// The name of the type an expression names, as in `Point.origin()` or `Deque[int].of(xs)`.
-    fn type_named<'e>(&self, object: &'e Expr) -> Option<&'e str> {
+    fn type_named<'e>(&'e self, object: &'e Expr) -> Option<&'e str> {
         let named = match &object.kind {
             ExprKind::Index { object, .. } => object,
             _ => object,
         };
+        // `T.make()`: the type this copy of a generic has for `T`.
+        if let ExprKind::Name(param) = &named.kind
+            && self.lookup(param).is_none()
+            && let Some(ty) = self.subst.get(param)
+        {
+            return owner_name(ty);
+        }
         match &named.kind {
             ExprKind::Name(owner) if self.names_a_type(owner) => Some(owner),
             _ => None,
@@ -348,11 +355,16 @@ impl Lowering<'_> {
         }
         let mut values: Vec<Option<Operand>> = vec![None; given];
         let mut lock = None;
+        // An index may be one of the arguments changed, and the place stays where it was.
+        let index_changes = args.iter().any(|arg| arg.is_mut);
         if let Some(object) = object {
             let handle = self.object_type(object).is_some_and(|ty| self.context.is_handle(&ty));
             let changed = signature.params.first().is_some_and(|param| param.is_mut);
-            let value =
-                if changed && !handle { self.place(object, write_backs, span)? } else { self.expr(object)? };
+            let value = if changed && !handle {
+                self.place(object, index_changes, write_backs, span)?
+            } else {
+                self.expr(object)?
+            };
             if handle && !self.locked_already(&value) {
                 lock = Some((value.clone(), changed));
             }
@@ -374,6 +386,8 @@ impl Lowering<'_> {
         (values, write_backs): (&mut [Option<Operand>], &mut Vec<WriteBack>),
         span: Span,
     ) -> Lowered<()> {
+        // An index may be one of the arguments changed, and the place stays where it was.
+        let index_changes = args.iter().any(|arg| arg.is_mut);
         // Arguments run in the order they're written, and each lands in its parameter.
         let mut reads = super::order::Reads::default();
         let mut slots = Vec::with_capacity(args.len());
@@ -385,7 +399,7 @@ impl Lowering<'_> {
             let param = at.and_then(|at| params.get(at));
             let param = param.ok_or_else(|| format!("an argument to `{key}` matches no parameter"))?;
             if param.is_mut && !self.context.is_handle(&param.ty) {
-                let place = self.place(&arg.value, write_backs, span)?;
+                let place = self.place(&arg.value, index_changes, write_backs, span)?;
                 reads.add_place(place);
             } else {
                 let lowered = self.expr(&arg.value)?;
@@ -404,9 +418,15 @@ impl Lowering<'_> {
 
     /// Something a call changes: a local itself, or a temporary holding a field or item
     /// that's written back after the call. So is a name known not to be `None`, which goes
-    /// back as an optional.
-    fn place(&mut self, expr: &Expr, write_backs: &mut Vec<WriteBack>, span: Span) -> Lowered<Operand> {
-        let place = self.place_of(expr)?;
+    /// back as an optional. `index_changes` keeps its indexes apart from the names they came from.
+    fn place(
+        &mut self,
+        expr: &Expr,
+        index_changes: bool,
+        write_backs: &mut Vec<WriteBack>,
+        span: Span,
+    ) -> Lowered<Operand> {
+        let place = if index_changes { self.held_place(expr, span)? } else { self.place_of(expr)? };
         self.note_changed_place(place.local);
         let held = self.steps_type(&place)?;
         let narrowed =

@@ -1398,6 +1398,9 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
+        if let ("str.isdigit", Some(dest), [text], true) = (name, dest, args, self.headers()) {
+            return self.header_isdigit(dest, text);
+        }
         let callee = *self
             .module
             .whole
@@ -1517,7 +1520,8 @@ impl Emit<'_, '_, '_> {
         }
         let first = args.first();
         match name {
-            "Stdout.print" => self.print(args.get(1..).unwrap_or_default()),
+            // A test's `Stdout` is a fake that keeps what's printed, which the runtime holds.
+            "Stdout.print" if !self.module.shared.traced => self.print(args.get(1..).unwrap_or_default()),
             "list.len" => {
                 // An `enumerate` never made is as long as its list.
                 let counted = match first {

@@ -306,6 +306,7 @@ export! {
     fennec_aot_next_test() -> i64 => aot::next_test_number();
     fennec_aot_test_ran(a0: i64) => aot::test_ran(a0);
     fennec_aot_test_done(a0: i64) => aot::test_done(a0);
+    fennec_aot_test_world(a0: i64) => aot::test_world(a0);
 }
 
 /// Runs a compiled executable's program: its `main` calls this.

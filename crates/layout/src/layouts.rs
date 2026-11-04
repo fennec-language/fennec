@@ -212,7 +212,8 @@ impl Layouts {
                 !self.by_name.contains_key(*name) && !name.starts_with("IdMap[") && *name != "Match"
             })
             .filter_map(|name| Some((name.clone(), written(sources, name)?)))
-            .filter(|(_, def)| !matches!(def, Written::Generator(_)))
+            // A `shared` type's whole point is to be one block, however it's held.
+            .filter(|(_, def)| !matches!(def, Written::Generator(_) | Written::Cell(_)))
             .collect();
         let order = loop {
             let unfit: Vec<String> = candidates
@@ -290,6 +291,7 @@ impl Layouts {
                     size: size.max(WORD),
                     cases: None,
                     boxed: false,
+                    cell: false,
                 })
             }
             Written::Enum(cases) => {
@@ -302,7 +304,7 @@ impl Layouts {
                 }
                 Some(enum_of(name, placed, size, false))
             }
-            Written::Generator(_) => None,
+            Written::Generator(_) | Written::Cell(_) => None,
         }
     }
 
@@ -608,7 +610,9 @@ impl Layouts {
 /// Every field of a type, in every case of an enum.
 fn written_fields(def: &Written) -> Box<dyn Iterator<Item = &WrittenField> + '_> {
     match def {
-        Written::Struct(fields) | Written::Generator(fields) => Box::new(fields.iter()),
+        Written::Struct(fields) | Written::Generator(fields) | Written::Cell(fields) => {
+            Box::new(fields.iter())
+        }
         Written::Enum(cases) => Box::new(cases.iter().flat_map(|(_, fields)| fields)),
     }
 }

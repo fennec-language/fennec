@@ -268,6 +268,14 @@ pub(crate) fn unsettled(
         }
         InstKind::Call { function: callee, args, .. } => {
             let theirs = summaries.get(callee.as_str());
+            // An index it's given to change is a different index from here.
+            for arg in args {
+                if let Operand::Local(local) = arg
+                    && known.is_given_mut(*local)
+                {
+                    out.push(Unsettled::Index(*local));
+                }
+            }
             for (position, arg) in args.iter().enumerate() {
                 match (theirs.and_then(|params| params.get(position)), arg) {
                     (Some(hits), Operand::Local(local)) => {

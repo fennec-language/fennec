@@ -8,6 +8,10 @@ use crate::types::{Type, a, article};
 
 /// An unknown name, with a pointer to the Fennec spelling when it's a habit from elsewhere.
 pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
+    if name.starts_with(&format!("_{}", fennec_syntax::visit::HIDDEN)) {
+        return Diagnostic::new("`_` throws away what it's given, so it can't be read", span)
+            .with_help("give what you want to read a name of its own");
+    }
     let diagnostic = Diagnostic::new(format!("`{name}` doesn't exist"), span);
     match name {
         "print" | "console" => diagnostic.with_help(

@@ -39,8 +39,13 @@ pub(super) fn element_of(state: &State, block: &[u64]) -> Option<Rc<Element>> {
 
 /// `element_of`, borrowed.
 pub(super) fn element_in<'a>(state: &'a State, block: &[u64]) -> Option<&'a Element> {
+    state.tables.elements.get(element_number(state, block)?).map(AsRef::as_ref)
+}
+
+/// The number of the kind of item a list's block holds.
+pub(super) fn element_number(state: &State, block: &[u64]) -> Option<usize> {
     let at = shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?;
-    state.tables.elements.get(usize::try_from(at).ok()?).map(AsRef::as_ref)
+    usize::try_from(at).ok()
 }
 
 fn element(state: &State, element: i64) -> Option<(usize, Rc<Element>)> {

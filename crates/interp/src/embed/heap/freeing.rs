@@ -2,6 +2,9 @@
 //! owner, all the way down. Most blocks are small and are freed one at a time, so the paths
 //! for those are kept lean and everything else is out of their way.
 
+use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
+
 use super::{CELL_SHAPE, FINISHED, GENERATOR_PC, HEADER_WORDS, Heap, children_into, is_text, shape_word};
 use crate::embed::{State, with};
 use crate::value::Value;
@@ -201,34 +204,39 @@ fn release_planned(heap: &mut Heap, block: &[u64], pending: &mut Vec<u64>) -> bo
     let Heap { plans, blocks, lent, lent_owners, .. } = heap;
     let shape = shape_word(block).and_then(|shape| usize::try_from(shape).ok());
     let fields = block.get(HEADER_WORDS..).unwrap_or_default();
-    let words = match shape.and_then(|shape| plans.get(shape)) {
-        Some(crate::embed::plans::Plan::Fixed(words)) => words,
-        Some(crate::embed::plans::Plan::Cases(cases)) => {
-            let case = fields.first().and_then(|case| usize::try_from(*case).ok());
-            match case.and_then(|case| cases.get(case)) {
-                Some(words) => words,
-                None => return false,
-            }
-        }
-        _ => return false,
+    let Some(holds) = shape.and_then(|shape| plans.get(shape)).and_then(|plan| plan.holds(fields)) else {
+        return false;
     };
-    for child in words.iter().filter_map(|at| fields.get(*at)).filter(|child| **child != 0) {
-        let count =
-            usize::try_from(*child).ok().and_then(|at| blocks.get_mut(at)).and_then(<[u64]>::first_mut);
-        if let Some(count) = count {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                pending.push(*child);
-            }
-        } else if crate::embed::threads::ON
-            && lent
-                .as_ref()
-                .is_some_and(|lent| usize::try_from(*child).is_ok_and(|at| lent.get(at).is_some()))
-        {
-            *lent_owners.entry(*child).or_default() -= 1;
-        }
+    for child in holds.blocks_in(fields).filter(|child| *child != 0) {
+        release_planned_child(blocks, lent.as_ref(), lent_owners, pending, child);
+    }
+    for child in holds.texts_in(fields).filter(|child| *child != 0) {
+        release_planned_child(blocks, lent.as_ref(), lent_owners, pending, child);
     }
     true
+}
+
+/// Gives up one owner of a block a struct or enum held, adding it to `pending` if that was the
+/// last.
+#[inline]
+fn release_planned_child(
+    blocks: &mut crate::embed::table::Table,
+    lent: Option<&std::sync::Arc<crate::embed::table::Table>>,
+    lent_owners: &mut HashMap<u64, i64, BuildHasherDefault<super::AddressHasher>>,
+    pending: &mut Vec<u64>,
+    child: u64,
+) {
+    let count = usize::try_from(child).ok().and_then(|at| blocks.get_mut(at)).and_then(<[u64]>::first_mut);
+    if let Some(count) = count {
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            pending.push(child);
+        }
+    } else if crate::embed::threads::ON
+        && lent.is_some_and(|lent| usize::try_from(child).is_ok_and(|at| lent.get(at).is_some()))
+    {
+        *lent_owners.entry(child).or_default() -= 1;
+    }
 }
 
 /// For measuring parts of making and freeing a block.

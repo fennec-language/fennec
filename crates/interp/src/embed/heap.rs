@@ -85,6 +85,9 @@ pub(crate) struct Heap {
     pub(super) counts: Counts,
     /// Where each shape's blocks hold addresses, by the shape's number.
     plans: Vec<super::plans::Plan>,
+    /// Where each kind of list item laid out in place holds addresses, by the kind's number. A
+    /// worker's heap has none, and walks them.
+    item_plans: Vec<super::plans::ItemPlan>,
     /// The number of the thread this heap is, in a shape word's owner bits: 0 on the main
     /// thread, so its blocks' shape words are just their shapes.
     owner_bits: u64,
@@ -194,8 +197,9 @@ fn zero_words<const N: usize>(block: &mut [u64]) -> bool {
 impl Heap {
     /// A heap holding the blocks that live for the whole run.
     /// The heap, knowing where blocks of each shape hold addresses, for freeing them.
-    pub(crate) fn planned(mut self, shapes: &[Rc<Element>]) -> Heap {
+    pub(crate) fn planned(mut self, shapes: &[Rc<Element>], elements: &[Rc<Element>]) -> Heap {
         self.plans = shapes.iter().map(|shape| super::plans::plan(shape)).collect();
+        self.item_plans = elements.iter().map(|element| super::plans::item_plan(element)).collect();
         self.sizes = shapes.iter().map(|shape| HEADER_WORDS + shape.words()).collect();
         self
     }
@@ -636,8 +640,18 @@ fn children_into(state: &State, block: &[u64], found: &mut Vec<u64>) {
             return;
         }
         if let Some(element) = super::lists::element_in(state, block) {
+            let planned =
+                super::lists::element_number(state, block).and_then(|at| state.heap.item_plans.get(at));
             if super::lists::owns_items(element) {
                 found.extend(super::lists::items(block, 1).iter().copied().filter(|address| *address != 0));
+            } else if let Some(planned) = planned {
+                if !planned.plan.holds_nothing() {
+                    for item in super::lists::items(block, planned.stride).chunks(planned.stride) {
+                        if super::plans::addresses(&planned.plan, item, found).is_none() {
+                            held_addresses(element, item, found);
+                        }
+                    }
+                }
             } else if holds_blocks(element) {
                 // Items laid out in place that hold blocks, like structs with a string field.
                 let stride = element.words().max(1);

@@ -385,6 +385,86 @@ jobs:
           path: found
           if-no-files-found: ignore
 
+  # What `parallel` runs on real threads, built with the threads runtime, under AddressSanitizer
+  # and ThreadSanitizer, at several thread counts and with every call forced onto the pool. Each
+  # has to print what the interpreter prints, sorted, as output from bodies comes in call order.
+  worker-sanitizers:
+    name: Workers under ${{ matrix.name }}
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: AddressSanitizer
+            sanitize: address
+            report: AddressSanitizer
+            symbol: __asan_report_load
+            options: ASAN_OPTIONS=detect_leaks=0:exitcode=86:detect_stack_use_after_return=0
+          - name: ThreadSanitizer
+            sanitize: thread
+            report: ThreadSanitizer
+            symbol: __tsan_read
+            options: TSAN_OPTIONS=halt_on_error=0:exitcode=86:report_signal_unsafe=0
+    env:
+      NIGHTLY: nightly-2026-10-15
+      FENNEC_THREADS_RUNTIME: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install LLVM's tools, and the nightly compiler the sanitizers need
+        run: |
+          rustup component add llvm-tools-preview
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build fennec, and its threads runtime with the sanitizer
+        env:
+          SANITIZE: ${{ matrix.sanitize }}
+        run: |
+          cargo build --release --locked -p fennec
+          RUSTFLAGS="-Zsanitizer=$SANITIZE" cargo "+$NIGHTLY" build --release --locked -p fennec-runtime \
+            --features threads,sanitize -Zbuild-std --target x86_64-unknown-linux-gnu --target-dir target/threads
+          # A `parallel` loop that stays on one thread links the plain runtime, which this also serves as.
+          cp target/threads/x86_64-unknown-linux-gnu/release/libfennec_runtime.a \
+            target/release/libfennec_runtime_threads.a
+          cp target/threads/x86_64-unknown-linux-gnu/release/libfennec_runtime.a target/release/libfennec_runtime.a
+      - name: Run every program that uses parallel
+        env:
+          FENNEC_SANITIZE: ${{ matrix.sanitize }}
+          REPORT: ${{ matrix.report }}
+          SYMBOL: ${{ matrix.symbol }}
+          OPTIONS: ${{ matrix.options }}
+        run: |
+          failed=0
+          runs=0
+          export "${OPTIONS?}"
+          programs=$(grep -lE 'parallel\(' examples/*.fen | xargs grep -L Net)
+          for program in $programs crates/fennec/tests/fixtures/workers/*.fen; do
+            FENNEC_SANITIZE='' ./target/release/fennec run --interp "$program" 2> /dev/null | sort > wanted.txt
+            if ! ./target/release/fennec build --llvm "$program" -o checked > /dev/null 2> built.txt; then
+              echo "::error::$program didn't build"; cat built.txt; failed=1; continue
+            fi
+            nm checked | grep -q "$SYMBOL" || { echo "::error::$program built without the sanitizer"; failed=1; }
+            for threads in 1 4 8 stress; do
+              if [ "$threads" = stress ]; then
+                got=$(FENNEC_PARALLEL_STRESS=1 FENNEC_THREADS=4 timeout 120 ./checked 2> said.txt | sort)
+              else
+                got=$(FENNEC_THREADS=$threads timeout 120 ./checked 2> said.txt | sort)
+              fi
+              runs=$((runs + 1))
+              if grep -q "$REPORT" said.txt; then
+                echo "::error::$program at $threads threads: $REPORT reported"; cat said.txt; failed=1
+              elif [ "$got" != "$(cat wanted.txt)" ]; then
+                echo "::error::$program at $threads threads printed something different"; cat said.txt; failed=1
+              fi
+            done
+          done
+          echo "$runs runs under $REPORT"
+          [ "$runs" -ge 40 ] || { echo "::error::only $runs runs"; failed=1; }
+          exit "$failed"
+
   # Parked tasks switch stacks, the one place our own code follows a pointer `unsafe`ly, so
   # their stress tests run under AddressSanitizer, told of each switch, with leaks checked,
   # and under ThreadSanitizer.
@@ -451,7 +531,7 @@ jobs:
   ok:
     name: CI passed
     if: always()
-    needs: [changes, lint, test, coverage, deny, site, workflows, budgets, bench, asan, parked-sanitizers]
+    needs: [changes, lint, test, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, asan, parked-sanitizers]
     runs-on: ubuntu-latest
     permissions:
       actions: read

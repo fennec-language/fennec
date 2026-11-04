@@ -3243,6 +3243,42 @@ test \"a failure comes back as its case\"(net: Net):
     Ok(())
 }
 
+/// What a compiled program does without the interpreter, a compiled test does with its fakes: a
+/// sleep passes no time, and nothing runs.
+#[test]
+fn a_tests_clock_and_process_stay_fakes_through_llvm() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("test_fakes_stay")?;
+    let program = dir.join("fakes.fen");
+    std::fs::write(
+        &program,
+        "\
+from std.time import Duration
+
+test \"an hour goes by at once\"(clock: Clock):
+    clock.sleep(Duration.millis(3600000))
+    assert clock.now().nanos == 3600000000000
+
+test \"nothing runs\"(process: Process):
+    match process.run(\"echo\", [\"hello\"]):
+        case Ok(_):
+            assert False
+        case Err(error):
+            assert error.program == \"echo\"
+    assert process.ran().len() == 1
+",
+    )?;
+    let path = program.to_string_lossy().into_owned();
+    let ran = fennec(&["test", "--all", "--verbose", &path], &dir)?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert!(ran.status.success(), "{said}");
+    assert!(said.contains("2 of 2 tests passed through LLVM"), "{said}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A failure a test's body passes up with `?` fails the test through LLVM, and running it again
 /// says what the failure was.
 #[test]

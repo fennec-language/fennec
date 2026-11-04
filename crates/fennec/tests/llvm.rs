@@ -2564,6 +2564,10 @@ fn floats_are_equal_as_decided() -> std::io::Result<()> {
     x: float
     y: float
 
+enum Light:
+    Red
+    Green(seconds: float)
+
 def same(a: float, b: float) -> bool:
     a == b
 
@@ -2583,6 +2587,7 @@ def main(stdout: Stdout):
     stdout.print(Pair(x=zero, y=nan) != Pair(x=minus, y=other))
     stdout.print((zero, nan) == (minus, other), (nan, 1.0) == (1.0, 1.0))
     stdout.print(zero in [minus], other in [nan], 1.0 in [nan])
+    stdout.print(Light.Green(zero) == Light.Green(minus), Light.Green(nan) == Light.Green(other))
 ";
     let dir = folder("floats_as_decided")?;
     let program = dir.join("floats.fen");
@@ -2603,6 +2608,7 @@ True False
 False
 True False
 True True False
+True True
 "
     );
     Ok(())

@@ -688,7 +688,9 @@ impl Emit<'_, '_, '_> {
     /// `==` on two enums in place: their words, one by one, or their cases' fields if they hold
     /// blocks, whose words can differ when what they hold doesn't.
     pub(crate) fn same_enums(&mut self, op: BinOp, id: u32, (a, b): (&str, &str)) -> Result<String, String> {
-        let same = if self.case_parts(id).is_empty() {
+        // A float doesn't compare by its bits, as `0.0` is the same as `-0.0`.
+        let plain = self.case_parts(id).is_empty() && !self.holds_a_float(id);
+        let same = if plain {
             let words = self.module.layouts.get(id).map_or(0, |layout| layout.size / 8);
             let mut same = "true".to_owned();
             for word in 0..words {
@@ -710,6 +712,17 @@ impl Emit<'_, '_, '_> {
             return Ok(flipped);
         }
         Ok(same)
+    }
+
+    /// Whether a value of this layout has a float anywhere in it, in place.
+    fn holds_a_float(&self, id: u32) -> bool {
+        let Some(layout) = self.module.layouts.get(id) else { return false };
+        let fields = layout.fields.iter().chain(layout.cases.iter().flatten().flat_map(|case| &case.fields));
+        fields.into_iter().any(|field| match Kind::from_ty(self.module.layouts, field.ty) {
+            Some(Kind::Float) => true,
+            Some(Kind::Struct(inner) | Kind::Enum(inner)) => self.holds_a_float(inner),
+            _ => false,
+        })
     }
 
     /// Whether two enums at these addresses are in the same case with the same fields.

@@ -127,7 +127,14 @@ fn laid_out(program: &Program, blocks: Option<&Layouts>) -> Layouts {
         (def.name.clone(), generator_definition(&kinds::canon_in(blocks, &def.item), None, &slots))
     });
     let definitions: Vec<(String, Written)> = structs
-        .map(|def| (def.name.clone(), Written::Struct(fields(&def.fields))))
+        .map(|def| {
+            let written = if def.shared {
+                Written::Cell(fields(&def.fields))
+            } else {
+                Written::Struct(fields(&def.fields))
+            };
+            (def.name.clone(), written)
+        })
         .chain(program.enums.iter().map(enums))
         .chain(named)
         .chain(generators)

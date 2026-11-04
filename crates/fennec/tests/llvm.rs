@@ -735,6 +735,82 @@ fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Every name for a `shared` value sees it change, however it was reached, and what's plain
+/// around it stays a copy.
+const SHARED_NAMES: &str = "\
+shared Log:
+    lines = list[str]()
+    count = 0
+    note = \"\"
+
+    def add(mut self, line: str):
+        self.lines.append(line)
+        self.count += 1
+        self.note = line + \" was last\"
+
+    def seen(self) -> int:
+        self.lines.len()
+
+struct Holder:
+    log: Log
+    tag = 0
+
+def add_through(log: Log, line: str):
+    log.add(line)
+
+def changed(holder: Holder) -> Holder:
+    mut mine = holder
+    mine.tag += 1
+    mine.log.add(\"from a copy\")
+    mine
+
+def main(stdout: Stdout):
+    first = Log()
+    second = first
+    first.add(\"one\")
+    second.add(\"two\")
+    add_through(second, \"three\")
+    stdout.print(first.seen(), second.seen(), first.count, first.note)
+    holder = Holder(log=first)
+    after = changed(holder)
+    stdout.print(holder.tag, after.tag, holder.log.seen(), after.log.seen(), first.seen())
+    logs = [first, Log(), first]
+    logs[0].add(\"through a list\")
+    copied = logs
+    copied[2].add(\"through a copied list\")
+    stdout.print(first.seen(), logs[1].seen(), copied[0].seen())
+    for log in logs:
+        log.add(\"in a loop\")
+    stdout.print(first.seen(), logs[1].seen())
+    mut inside = 0
+    with first, second as mut a, b:
+        a.count = 100
+        a.lines.append(\"inside with\")
+        inside = b.count
+    stdout.print(inside, first.count, first.lines)
+    stdout.print([first.count], f\"{holder.tag}\")
+    stdout.print(logs[1])
+";
+
+#[test]
+fn every_name_for_a_shared_value_sees_it_change() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("shared-names")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, SHARED_NAMES)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output()?;
+    let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {

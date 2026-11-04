@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Module, no_constants, no_functions};
+use super::{Module, http, no_constants, no_functions};
 use crate::call::CallArg;
 use crate::interp::Interp;
 use crate::methods::no_method;
@@ -25,7 +25,12 @@ pub(crate) const MODULE: Module = Module {
     functions: &[],
     call: no_functions,
     constant: no_constants,
-    methods: &[("Connection", connection_method), ("Server", server_method), ("UdpSocket", udp_method)],
+    methods: &[
+        ("Connection", connection_method),
+        ("Server", server_method),
+        ("UdpSocket", udp_method),
+        ("Response", response_method),
+    ],
 };
 
 /// How long connecting waits unless told otherwise.
@@ -84,6 +89,10 @@ pub(crate) struct Fake {
     streams: BTreeMap<i64, FakeStream>,
     /// Each UDP socket's port, and what's been sent to it and by whom.
     udp: BTreeMap<i64, (i64, VecDeque<(Vec<u8>, String)>)>,
+    /// What each request a test scripted answers, by its method and URL.
+    answers: BTreeMap<String, Value>,
+    /// Each request sent, as its method and URL.
+    requests: Vec<String>,
 }
 
 impl Fake {
@@ -102,12 +111,13 @@ pub(crate) enum Failure {
     Refused(String, i64),
     TimedOut(Duration),
     Closed,
+    Tls(String),
     Other(String),
 }
 
 impl Failure {
     /// The failure an I/O error on an open connection means.
-    fn of(error: &std::io::Error, waited: Option<Duration>) -> Failure {
+    pub(crate) fn of(error: &std::io::Error, waited: Option<Duration>) -> Failure {
         match error.kind() {
             ErrorKind::WouldBlock | ErrorKind::TimedOut => Failure::TimedOut(waited.unwrap_or_default()),
             ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted => Failure::Closed,
@@ -148,6 +158,26 @@ fn connection_method(
     span: Span,
 ) -> Result<Value, Diagnostic> {
     interp.connection_method(connection, method, args, span)
+}
+
+fn response_method(
+    _interp: &mut Interp<'_>,
+    response: &Instance,
+    method: &str,
+    args: Vec<CallArg>,
+    span: Span,
+) -> Result<Value, Diagnostic> {
+    match (method, args.as_slice()) {
+        ("text", []) => Ok(response_text(response)),
+        _ => Err(no_method(&Value::Instance(Rc::new(response.clone())), method, span)),
+    }
+}
+
+fn response_text(response: &Instance) -> Value {
+    match response.field("body") {
+        Some(Value::Bytes(body)) => Value::str(&String::from_utf8_lossy(body)),
+        _ => Value::str(""),
+    }
 }
 
 fn udp_method(
@@ -226,6 +256,11 @@ impl Interp<'_> {
 
     /// `net.connect(host, port)` and `net.listen(port)`.
     pub(crate) fn net_method(&mut self, method: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
+        match method {
+            "get" | "post" | "request" => return self.http_method(method, &args, span),
+            "script" | "requests" => return self.fake_answers(method, &args, span),
+            _ => {}
+        }
         let (args, timeout) = with_timeout(args, method, span)?;
         let found = match (method, args.as_slice()) {
             ("connect", [Value::Str(host), Value::Int(port)]) => {
@@ -262,6 +297,55 @@ impl Interp<'_> {
                 Ok(Value::Ok(Rc::new(made)))
             }
             Err(failure) => self.net_error(&failure, span),
+        }
+    }
+
+    /// `net.get(url)`, `net.post(url)` and `net.request(method, url)`.
+    fn http_method(&mut self, method: &str, args: &[CallArg], span: Span) -> Result<Value, Diagnostic> {
+        let plain: Vec<Value> = args.iter().filter(|arg| arg.name.is_none()).map(|arg| arg.value.clone()).collect();
+        let named: Vec<(&str, &Value)> =
+            args.iter().filter_map(|arg| arg.name.as_deref().map(|name| (name, &arg.value))).collect();
+        let request = request_of(method, &plain, &named, span)?;
+        if self.faked_net() {
+            return self.fake_request(&request, span);
+        }
+        match http::send(&request) {
+            Ok(answer) => Ok(Value::Ok(Rc::new(answer_value(answer)))),
+            Err(failure) => self.net_error(&failure, span),
+        }
+    }
+
+    /// `net.script(request, response)` and `net.requests()`, for a test.
+    fn fake_answers(&mut self, method: &str, args: &[CallArg], span: Span) -> Result<Value, Diagnostic> {
+        let Some(fake) = self.fake() else {
+            return Err(no_method(&Value::Capability(Capability::Net), method, span));
+        };
+        match (method, args) {
+            ("script", [request, response]) => {
+                let Value::Str(request) = &request.value else { return Err(wrong(method, span)) };
+                fake.answers.insert(request.to_string(), response.value.clone());
+                Ok(Value::Unit)
+            }
+            ("requests", []) => Ok(Value::list(fake.requests.iter().map(|sent| Value::str(sent)).collect())),
+            _ => Err(wrong(method, span)),
+        }
+    }
+
+    /// What a test scripted for a request. A request it didn't script fails: nothing else could
+    /// answer it.
+    fn fake_request(&mut self, request: &http::Request, span: Span) -> Result<Value, Diagnostic> {
+        let Some(fake) = self.fake() else {
+            return self.net_error(&Failure::Closed, span);
+        };
+        let sent = format!("{} {}", request.method, http::written(request));
+        fake.requests.push(sent.clone());
+        let answer = fake.answers.get(&sent).cloned();
+        match answer {
+            Some(answer) => Ok(Value::Ok(Rc::new(answer))),
+            None => {
+                let reason = format!("the test's fake `Net` has no answer for `{sent}`: give it one with `net.script`");
+                self.net_error(&Failure::Other(reason), span)
+            }
         }
     }
 
@@ -401,6 +485,7 @@ impl Interp<'_> {
                 ("TimedOut", vec![self.make_value("Duration", vec![("nanos", Value::Int(nanos))], span)?])
             }
             Failure::Closed => ("Closed", Vec::new()),
+            Failure::Tls(reason) => ("Tls", vec![Value::str(reason)]),
             Failure::Other(reason) => ("Other", vec![Value::str(reason)]),
         };
         let args = fields.into_iter().map(|value| CallArg::plain(value, span)).collect();
@@ -742,6 +827,7 @@ fn net_error_value(failure: &Failure) -> Value {
             ("TimedOut", vec![("after", Value::made("Duration", vec![("nanos", Value::Int(nanos))]))])
         }
         Failure::Closed => ("Closed", Vec::new()),
+        Failure::Tls(reason) => ("Tls", vec![("reason", Value::str(reason))]),
         Failure::Other(reason) => ("Other", vec![("reason", Value::str(reason))]),
     };
     Value::Err(Rc::new(Value::made_error_case("NetError", case, fields)))
@@ -776,12 +862,75 @@ fn native_timeout<'a>(args: &'a [Value], named: &[&str], span: Span) -> Result<(
     Ok((args, timeout))
 }
 
-/// `net.connect(host, port)` and `net.listen(port)` for compiled code. `method` has any named
-/// arguments on the end as a call writes them, like `connect.timeout`.
+/// A request from what a call gave: its URL, with the method first for `net.request`, and its
+/// named arguments.
+fn request_of(method: &str, plain: &[Value], named: &[(&str, &Value)], span: Span) -> Result<http::Request, Diagnostic> {
+    let (method, url) = match (method, plain) {
+        ("get", [Value::Str(url)]) => ("GET".to_owned(), url),
+        ("post", [Value::Str(url)]) => ("POST".to_owned(), url),
+        ("request", [Value::Str(method), Value::Str(url)]) => (method.to_ascii_uppercase(), url),
+        _ => return Err(wrong(method, span)),
+    };
+    let mut request = http::Request {
+        method,
+        url: url.to_string(),
+        params: Vec::new(),
+        headers: Vec::new(),
+        body: Vec::new(),
+        timeout: CONNECT_TIMEOUT,
+    };
+    for (name, value) in named {
+        match (*name, value) {
+            ("timeout", value) => request.timeout = duration_of(value, span)?,
+            ("body", Value::Str(text)) => request.body = text.as_bytes().to_vec(),
+            ("body", Value::Bytes(data)) => request.body = data.to_vec(),
+            ("params", Value::Dict(pairs)) => request.params = text_pairs(pairs, span)?,
+            ("headers", Value::Dict(pairs)) => request.headers = text_pairs(pairs, span)?,
+            (other, _) => {
+                return Err(Diagnostic::new(format!("this has no parameter called `{other}`"), span));
+            }
+        }
+    }
+    Ok(request)
+}
+
+fn text_pairs(pairs: &crate::pairs::Pairs, span: Span) -> Result<Vec<(String, String)>, Diagnostic> {
+    pairs
+        .iter()
+        .map(|(key, value)| match (key, value) {
+            (Value::Str(key), Value::Str(value)) => Ok((key.to_string(), value.to_string())),
+            _ => Err(Diagnostic::new("a request's headers and params are text", span)),
+        })
+        .collect()
+}
+
+/// An answer as a `Response`.
+fn answer_value(answer: http::Answer) -> Value {
+    let headers: Vec<(Value, Value)> =
+        answer.headers.iter().map(|(name, value)| (Value::str(name), Value::str(value))).collect();
+    Value::made(
+        "Response",
+        vec![
+            ("status", Value::Int(answer.status)),
+            ("headers", Value::Dict(Rc::new(headers.into()))),
+            ("body", Value::Bytes(Rc::from(answer.body))),
+        ],
+    )
+}
+
+/// What `Net` does for compiled code. `method` has any named arguments on the end as a call writes
+/// them, like `connect.timeout`.
 pub(crate) fn native_net(method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
     let mut parts = method.split('.');
     let method = parts.next().unwrap_or_default();
     let named: Vec<&str> = parts.collect();
+    if matches!(method, "get" | "post" | "request") {
+        let (plain, last) = args.split_at(args.len().saturating_sub(named.len()));
+        let given: Vec<(&str, &Value)> = named.iter().copied().zip(last).collect();
+        let request = request_of(method, plain, &given, span)?;
+        crate::embed::write_kept_output();
+        return Ok(outcome(http::send(&request).map(answer_value)));
+    }
     let (args, timeout) = native_timeout(args, &named, span)?;
     crate::embed::write_kept_output();
     match (method, args) {
@@ -810,6 +959,12 @@ pub(crate) fn native_method(
     named: &[&str],
     span: Span,
 ) -> Result<Value, Diagnostic> {
+    if &*instance.type_name == "Response" {
+        return match method {
+            "text" => Ok(response_text(instance)),
+            _ => Err(wrong(method, span)),
+        };
+    }
     let handle = handle_of(instance);
     let (args, timeout) = native_timeout(args, named, span)?;
     if method == "close" {

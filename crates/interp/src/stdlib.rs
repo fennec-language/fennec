@@ -24,6 +24,8 @@ pub(crate) struct Module {
 }
 
 /// Declares each module's file and lists them, one line per module.
+pub(crate) mod http;
+
 macro_rules! modules {
     ($($module:ident,)*) => {
         $(pub(crate) mod $module;)*

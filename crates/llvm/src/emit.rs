@@ -1615,7 +1615,8 @@ impl Emit<'_, '_, '_> {
             crypto if crypto.starts_with("crypto.") => self.std_call(dest, name, args, span),
             net if net.starts_with("Connection.")
                 || net.starts_with("Server.")
-                || net.starts_with("UdpSocket.") =>
+                || net.starts_with("UdpSocket.")
+                || net == "Response.text" =>
             {
                 self.std_method(dest, name, args, span)
             }

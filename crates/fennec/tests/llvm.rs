@@ -1730,6 +1730,37 @@ fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// Sorting by a key that's a tuple, in place or into a new list, keeping equal keys in order.
+#[test]
+fn sorting_by_tuple_keys_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "tuple_keys",
+        r#"struct Unit:
+    name: str
+    hp: int
+
+def main(stdout: Stdout):
+    words = ["bramble", "kit", "ash", "a long word that sits in a block", "kit"]
+    stdout.print(sorted(words, key=(word) => (word.len(), word)))
+    stdout.print(sorted([3, 1, 2], key=(n) => (n % 2, -n)))
+    stdout.print(sorted([1.5, -2.5], key=(x) => (x, 1)))
+    units = [Unit(name="b", hp=2), Unit(name="a", hp=2), Unit(name="c", hp=1), Unit(name="d", hp=2)]
+    stdout.print(sorted(units, key=(unit) => (unit.hp, unit.name)))
+    stdout.print(sorted(units, key=(unit) => (unit.hp, 0)))
+    mut changing = [5, 3, 9, 1]
+    kept = changing
+    changing.sort(key=(n) => (n % 3, n))
+    stdout.print(changing, kept)
+    empty: list[int] = []
+    stdout.print(sorted(empty, key=(n) => (n, n)))
+    stdout.print(words)
+"#,
+    )
+}
+
 /// Shifts, `~`, sorting a list where it is, a `match` on a bool and `random_choice`.
 #[test]
 fn bits_sorts_and_choices_match_the_jit() -> std::io::Result<()> {

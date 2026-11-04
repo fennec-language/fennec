@@ -1073,7 +1073,9 @@ fn place_stays_apart(
         let reads_local = |local: LocalId| read.contains(&Operand::Local(local));
         let reads_part = parts.iter().any(|part| *part != place.value && reads_local(*part));
         if reads_part
-            || written.iter().any(|local| *local == place.root || parts.contains(local) || indexes.contains(local))
+            || written
+                .iter()
+                .any(|local| *local == place.root || parts.contains(local) || indexes.contains(local))
             || may_change(&inst.kind, &indexes, changes)
             || may_change(&inst.kind, std::slice::from_ref(&place.root), changes)
             || (changed && (reads_local(place.root) || read.contains(&held)))

@@ -9,18 +9,18 @@ use crate::packed::Element;
 use crate::value::{Id, IdMap, Instance, Slot, Value};
 
 /// An optional held as an enum, with cases `None` and `Some(value)`.
-fn is_option(name: &str) -> bool {
+pub(super) fn is_option(name: &str) -> bool {
     name.starts_with("Option[")
 }
 
 /// A result held as an enum, with cases `Ok(value)` and `Err(error)`.
-fn is_result(name: &str) -> bool {
+pub(super) fn is_result(name: &str) -> bool {
     name.starts_with("Result[")
 }
 
 /// An `IdMap` laid out as its items, each slot's generation, and how many are live. A
 /// removed slot's generation is held as `-1 - generation`, and its item is zero.
-fn is_id_map(name: &str) -> bool {
+pub(super) fn is_id_map(name: &str) -> bool {
     name.starts_with("IdMap[")
 }
 

@@ -65,6 +65,8 @@ pub struct Program {
     pub constants: Vec<Function>,
     pub functions: Vec<Function>,
     pub not_lowered: Vec<NotLowered>,
+    /// The types printed inside other values that write their own text with `def str`.
+    pub own_texts: Vec<OwnText>,
     /// What the program calls that isn't here or in `not_lowered`. Lowering a whole program
     /// leaves this empty.
     pub external: Vec<String>,
@@ -115,6 +117,13 @@ pub struct GeneratorDef {
 pub struct EnumDef {
     pub name: String,
     pub cases: Vec<CaseDef>,
+}
+
+/// A type that writes its own text, and the function giving that text for a value of the type.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OwnText {
+    pub ty: Type,
+    pub function: String,
 }
 
 /// One case of an enum, with its fields' types in the order they're written.

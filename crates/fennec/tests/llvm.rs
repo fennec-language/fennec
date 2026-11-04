@@ -1445,6 +1445,142 @@ def main(stdout: Stdout):
     )
 }
 
+/// Values whose types write their own text, printed inside others, in every place they can be.
+const OWN_TEXT_INSIDE: &str = "\
+struct Tag:
+    name: str
+
+    def str(self, mut out: StrWriter):
+        out.write(\"<\" + self.name + \">\")
+
+struct Pair:
+    x = 0
+    y = 0
+
+    def str(self, mut out: StrWriter):
+        out.write(f\"{self.x}/{self.y}\")
+
+enum Light:
+    Red
+    Green(level: int)
+
+    def str(self, mut out: StrWriter):
+        out.write(\"light\")
+
+struct Holder:
+    tag: Tag
+    pair: Pair
+    count = 1
+
+def main(stdout: Stdout):
+    stdout.print([Tag(name=\"a\"), Tag(name=\"b\" * 40)])
+    stdout.print([Pair(x=1), Pair(y=2)])
+    stdout.print([Light.Red, Light.Green(level=2)])
+    stdout.print([(Tag(name=\"t\"), 1)])
+    maybe: list[Pair?] = [Pair(), None]
+    stdout.print(maybe)
+    stdout.print([Holder(tag=Tag(name=\"h\"), pair=Pair(x=9))])
+    stdout.print(f\"before {[Pair(x=5)]} after\")
+    stdout.print(Tag(name=\"top\"), Pair(y=3))
+    stdout.print([[Pair(x=7)], []])
+";
+
+#[test]
+fn own_text_inside_other_values_is_written_by_native_code() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("own-text-inside")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, OWN_TEXT_INSIDE)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output()?;
+    let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
+/// Every shape of value printing reads from its block, nested, with text that needs quoting.
+const SHOWN_VALUES: &str = "\
+from std.game import IdMap
+
+struct Point:
+    x = 0
+    y = 0.5
+
+struct Named:
+    name: str
+    tags: list[str]
+    near: Point
+    next: str?
+
+struct Empty:
+    pass
+
+enum Shape:
+    Dot
+    Circle(radius: float, label: str)
+    Box(corner: Point)
+
+def main(stdout: Stdout):
+    stdout.print([1, -2, 3])
+    stdout.print([1.5, 2.0, 1e30, 0.1])
+    stdout.print([True, False])
+    stdout.print([\"plain\", \"with \\\"quotes\\\"\", \"line\\nbreak\", \"été\", \"\"])
+    stdout.print([[1], [], [2, 3]])
+    stdout.print([(1, \"a\"), (2, \"b\")])
+    stdout.print([(1,)])
+    stdout.print([Point(x=1), Point()])
+    named = Named(name=\"n\", tags=[\"a\", \"b\"], near=Point(x=3), next=None)
+    stdout.print([named, Named(name=\"m\" * 40, tags=[], near=Point(), next=\"s\" * 40)])
+    stdout.print(f\"{[named]}\")
+    stdout.print([Empty()])
+    stdout.print([Shape.Dot, Shape.Circle(radius=1.5, label=\"c\"), Shape.Box(corner=Point())])
+    stdout.print({\"a\": 1, \"long key that isn't inline, at all, in any way\": 2})
+    empty: dict[str, int] = {}
+    stdout.print(empty)
+    stdout.print({1, 2})
+    stdout.print({\"a\", \"b\"})
+    none: set[int] = set()
+    stdout.print(none)
+    maybe: list[int?] = [1, None]
+    stdout.print(maybe)
+    words: list[str?] = [\"a\", None]
+    stdout.print(words)
+    points: list[Point?] = [Point(), None]
+    stdout.print(points)
+    mut map = IdMap[str]()
+    first = map.insert(\"a\")
+    second = map.insert(\"b\")
+    map.insert(\"c\")
+    map.remove(second)
+    stdout.print(map)
+    stdout.print([first])
+";
+
+#[test]
+fn values_read_from_their_blocks_show_as_they_do_in_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("shown-values")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, SHOWN_VALUES)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output()?;
+    let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
 /// What a program prints through LLVM is what the interpreter prints.
 fn same_as_the_interpreter(name: &str, source: &str) -> std::io::Result<()> {
     let dir = folder(name)?;
@@ -1801,6 +1937,75 @@ fn count(counts: &str, name: &str) -> Option<u64> {
     counts.split_whitespace().skip_while(|word| *word != name).nth(1).and_then(|number| number.parse().ok())
 }
 
+/// `fennec dev trace` says each place that allocated or copied in a run, with how often and why,
+/// and agrees with what the run counted altogether.
+#[test]
+fn a_trace_names_each_line_that_cost_something_and_why() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "\
+def main(stdout: Stdout):
+    mut total = 0
+    for i in range(50):
+        pair = [i, i + 1]
+        total += pair[0]
+    mut first = [1, 2, 3]
+    second = first
+    first.append(4)
+    stdout.print(total, first.len(), second.len())
+";
+    let dir = folder("trace")?;
+    let program = dir.join("trace.fen");
+    std::fs::write(&program, source)?;
+    let path = program.to_string_lossy().into_owned();
+    let traced = fennec(&["dev", "trace", &path], &dir)?;
+    let (said, errors) = (String::from_utf8_lossy(&traced.stdout), String::from_utf8_lossy(&traced.stderr));
+    assert!(traced.status.success(), "{errors}");
+    let list_line = said.lines().find(|line| line.contains(".fen:4:")).unwrap_or_default();
+    assert!(list_line.contains("50 allocations") && list_line.contains("allocated"), "{said}");
+    assert!(list_line.contains("(in a loop)"), "{said}");
+    let copy_line = said.lines().find(|line| line.contains(".fen:8:")).unwrap_or_default();
+    assert!(copy_line.contains("1 copy") && copy_line.contains("`first` is copied here"), "{said}");
+    assert!(!said.contains(".fen:2:") && !said.contains(".fen:5:"), "{said}");
+
+    // The hottest place comes first, and what it printed is left out.
+    assert!(said.lines().next().is_some_and(|line| line.contains(".fen:4:")), "{said}");
+    assert!(!said.lines().any(|line| line.starts_with("1225 ")), "{said}");
+
+    let json = fennec(&["dev", "trace", "--json", &path], &dir)?;
+    let json = String::from_utf8_lossy(&json.stdout);
+    assert!(json.contains("\"allocations\":50"), "{json}");
+    assert!(json.contains("\"failed\":false"), "{json}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// What a trace found matches what the same program counts without it: tracing changes nothing
+/// about what a run costs.
+#[test]
+fn a_trace_counts_what_a_plain_build_counts() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def main(stdout: Stdout):\n    mut items = [1]\n    for i in range(200):\n        items.append(i)\n    other = items\n    items.append(1)\n    stdout.print(other.len(), f\"{items.len()} long\")\n";
+    let plain = counts_of("trace_plain", source)?;
+    let dir = folder("trace_counts")?;
+    let program = dir.join("counts.fen");
+    std::fs::write(&program, source)?;
+    let path = program.to_string_lossy().into_owned();
+    let traced = fennec(&["dev", "trace", &path], &dir)?;
+    let said = String::from_utf8_lossy(&traced.stdout);
+    std::fs::remove_dir_all(&dir)?;
+    assert!(traced.status.success());
+    let allocations = count(&plain, "allocations").unwrap_or(0);
+    let copies = count(&plain, "copies").unwrap_or(0);
+    let last = said.lines().last().unwrap_or_default();
+    assert!(last.contains(&format!("{allocations} allocation")), "{plain} / {said}");
+    assert!(last.contains(&format!("{copies} cop")), "{plain} / {said}");
+    Ok(())
+}
+
 #[test]
 fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Result<()> {
     if !ready() {
@@ -2096,6 +2301,125 @@ def main(stdout: Stdout, process: Process):
         let (ours, jit) = both_built(name, source, how)?;
         assert_eq!(ours, jit);
     }
+    Ok(())
+}
+
+#[test]
+fn arguments_and_the_clock_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("args-and-clock")?;
+    let program = dir.join("program.fen");
+    std::fs::write(
+        &program,
+        "\
+from std.time import Clock, Duration
+
+def main(stdout: Stdout, args: Args, clock: Clock):
+    stdout.print(args.len(), args.program != \"\")
+    for arg in args:
+        stdout.print(arg)
+    stdout.print(args[0], args[-1])
+    started = clock.now()
+    clock.sleep(Duration.millis(2))
+    stdout.print((clock.now() - started).nanos >= 2000000)
+    stdout.print(args[5])
+",
+    )?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).args(["one", "two"]).output()?;
+    let interpreted = fennec(&["run", "--interp", &path(&program), "one", "two"], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "2 True\none\ntwo\none two\nTrue\n");
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
+/// What compiled code does through capabilities without the interpreter, failing as well as not.
+const NATIVE_CAPABILITIES: &str = "\
+from std.path import Path
+
+def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entropy):
+    folder = \"native-capabilities\"
+    stdout.print(fs.exists(folder))
+    fs.make_dir(folder).expect(\"it works\")
+    file = folder + \"/a.txt\"
+    fs.write_text(file, \"one\\ntwo\\n\").expect(\"it works\")
+    stdout.print(fs.read_text(file).expect(\"it works\"), fs.exists(Path(text=file)))
+    stdout.print(fs.metadata(file).expect(\"it works\").size, fs.metadata(file).expect(\"it works\").is_file)
+    stdout.print(fs.list_dir(folder).expect(\"it works\"))
+    only = fs.only(folder)
+    stdout.print(only.read_text(file).expect(\"it works\"))
+    stdout.print(only.exists(\"/\"))
+    match only.read_text(\"/etc/hosts\"):
+        case Ok(_):
+            stdout.print(\"read it\")
+        case Err(error):
+            stdout.print(error.reason.endswith(\"native-capabilities\"))
+    match fs.read_text(\"no such file\"):
+        case Ok(_):
+            stdout.print(\"read it\")
+        case Err(error):
+            stdout.print(error.reason != \"\")
+    fs.remove(file).expect(\"it works\")
+    fs.remove(folder).expect(\"it works\")
+    done = process.run(\"echo\", [\"hello\"]).expect(\"it works\")
+    stdout.print(done.status, done.stdout, done.stderr == \"\")
+    match process.run(\"no-such-program-at-all\", []):
+        case Ok(_):
+            stdout.print(\"ran it\")
+        case Err(error):
+            stdout.print(error.program)
+    echo = process.only(\"echo\")
+    stdout.print(echo.run(\"echo\", [\"again\"]).expect(\"it works\").stdout)
+    match echo.run(\"ls\", []):
+        case Ok(_):
+            stdout.print(\"ran it\")
+        case Err(error):
+            stdout.print(error.message)
+    stdout.print(stdin.lines())
+    stdout.print(entropy.seed() != entropy.seed())
+";
+
+#[test]
+fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("native-capabilities")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, NATIVE_CAPABILITIES)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let with_lines = |command: &mut Command| -> std::io::Result<Output> {
+        use std::io::Write as _;
+        let mut running = command
+            .current_dir(&dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        running
+            .stdin
+            .take()
+            .ok_or_else(|| std::io::Error::other("no input"))?
+            .write_all(b"first\r\nsecond\n")?;
+        running.wait_with_output()
+    };
+    let ran = with_lines(&mut Command::new(&executable))?;
+    let interpreted = with_lines(
+        crate::executables::fennec_command()
+            .args(["run", "--interp", &path(&program)])
+            .env("FENNEC_HOME", &dir),
+    )?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(outcome(&ran), outcome(&interpreted));
     Ok(())
 }
 
@@ -4245,6 +4569,42 @@ test \"a failure comes back as its case\"(net: Net):
     let said = String::from_utf8_lossy(&ran.stderr);
     assert!(ran.status.success(), "{said}");
     assert!(said.contains("4 of 4 tests passed through LLVM"), "{said}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// What a compiled program does without the interpreter, a compiled test does with its fakes: a
+/// sleep passes no time, and nothing runs.
+#[test]
+fn a_tests_clock_and_process_stay_fakes_through_llvm() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("test_fakes_stay")?;
+    let program = dir.join("fakes.fen");
+    std::fs::write(
+        &program,
+        "\
+from std.time import Duration
+
+test \"an hour goes by at once\"(clock: Clock):
+    clock.sleep(Duration.millis(3600000))
+    assert clock.now().nanos == 3600000000000
+
+test \"nothing runs\"(process: Process):
+    match process.run(\"echo\", [\"hello\"]):
+        case Ok(_):
+            assert False
+        case Err(error):
+            assert error.program == \"echo\"
+    assert process.ran().len() == 1
+",
+    )?;
+    let path = program.to_string_lossy().into_owned();
+    let ran = fennec(&["test", "--all", "--verbose", &path], &dir)?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert!(ran.status.success(), "{said}");
+    assert!(said.contains("2 of 2 tests passed through LLVM"), "{said}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

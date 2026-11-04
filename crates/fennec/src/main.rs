@@ -23,6 +23,7 @@ mod report;
 mod run;
 mod test;
 mod test_inputs;
+mod trace;
 mod verdict;
 
 use std::process::ExitCode;
@@ -127,6 +128,7 @@ fn main() -> ExitCode {
         ["dev", "copies", "--run"] => on_big_stack(copies::copies_in_a_run, "."),
         ["dev", "copies", "--run", path] => on_big_stack(copies::copies_in_a_run, path),
         ["dev", "copies", path] => on_big_stack(copies::copies, path),
+        ["dev", "trace", rest @ ..] => trace::command(rest),
         ["dev", "reference"] => reference(false),
         ["dev", "reference", "--check"] => reference(true),
         ["dev", "changes"] => changes::changes("."),

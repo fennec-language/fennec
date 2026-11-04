@@ -273,6 +273,10 @@ struct State {
     heap: heap::Heap,
     /// The block of each plain capability, by its kind, once it's been asked for.
     capabilities: Vec<i64>,
+    /// The program's name, as `args.program`.
+    program: String,
+    /// What it was given on its command line, as `args`.
+    arguments: Vec<String>,
     failure: Option<Diagnostic>,
 }
 
@@ -315,6 +319,7 @@ pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Resu
     let output = Output(Rc::default(), inputs.live);
     OUTPUT.set(Some(output.clone()));
     let mut interp = Interp::with_output(Box::new(output.clone()))?;
+    let (program, arguments) = (inputs.program.clone(), inputs.arguments.clone());
     interp.give(inputs);
     interp.load(module)?;
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
@@ -334,6 +339,8 @@ pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Resu
         shared_names: Vec::new(),
         heap: heap::Heap::new(std::mem::take(&mut tables.statics)).planned(&tables.shapes),
         capabilities: Vec::new(),
+        program,
+        arguments,
         tables,
         failure: None,
     }));
@@ -361,6 +368,7 @@ pub fn finish() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
         Some(mut state) => {
             state.temps.clear();
             state.let_go();
+            aot::report_sites(&state.heap.sites);
             let leftovers = Leftovers {
                 temps: state.temps.len(),
                 frames: state.callers.len(),
@@ -1023,6 +1031,12 @@ pub mod io {
             let text = state.interp.shown(&value, Span::default())?;
             write(state, &text)
         });
+    }
+
+    /// Prints the value in a block, read from the block.
+    pub extern "C" fn print_block(address: i64) {
+        let shown = super::heap::shown::shown(u64::try_from(address).unwrap_or(0));
+        attempt(|state: &mut State| write(state, &shown?));
     }
 
     /// Prints a value with an f-string format spec, like `.1f` or `,`.

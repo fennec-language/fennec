@@ -82,16 +82,27 @@ fn live_inputs() -> crate::Inputs {
     let mut arguments = std::env::args();
     crate::Inputs {
         live: true,
-        program: arguments.next().unwrap_or_default(),
+        program: program_name(arguments.next().unwrap_or_default()),
         arguments: arguments.collect(),
         stdin: Box::new(StdinLines::default()),
+    }
+}
+
+/// What `args.program` says. `fennec run` starts a program it built for the run, and where it can't
+/// set the name a process sees, it says it this way, for that one executable: what the program
+/// starts in turn gets the variable too, and goes by its own name.
+fn program_name(own: String) -> String {
+    let told = std::env::var("FENNEC_RUN_AS").ok();
+    match told.as_deref().and_then(|told| told.split_once('|')) {
+        Some((executable, program)) if executable == own => program.to_owned(),
+        _ => own,
     }
 }
 
 /// The process's standard input for one thread. It takes a line at a time, so a thread never holds
 /// more than the line it's reading, and no line is lost to the threads reading after it.
 #[derive(Default)]
-struct StdinLines {
+pub(super) struct StdinLines {
     line: Vec<u8>,
     read: usize,
 }
@@ -196,6 +207,35 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     let (output, failure, leftovers) = super::finish();
     report_counts(&leftovers.counts);
     (output, failure.map(|failure| sources.render(&failure)).unwrap_or_default())
+}
+
+/// Native code built to trace what it costs is about to do what's at this place in the source.
+pub fn trace_at(site: i64) {
+    with(|state: &mut State| state.heap.trace_at(u32::try_from(site).unwrap_or(0)));
+}
+
+/// Native code built to trace what it costs made a block of its own, of this many bytes.
+pub fn trace_allocated(bytes: i64) {
+    with(|state: &mut State| state.heap.allocated(u64::try_from(bytes).unwrap_or(0)));
+}
+
+/// With `FENNEC_TRACE_FILE` set, writes what each place in the source cost there, for
+/// `fennec dev trace` to read: a line of numbers for each place.
+pub(super) fn report_sites(sites: &std::collections::HashMap<u32, heap::Counts>) {
+    let Some(file) = std::env::var_os("FENNEC_TRACE_FILE") else { return };
+    let mut lines = String::new();
+    for (site, counts) in sites {
+        let _ = writeln!(
+            lines,
+            "{site} {} {} {} {} {}",
+            counts.allocations,
+            counts.allocated_bytes,
+            counts.copies,
+            counts.copied_bytes,
+            counts.largest_copy
+        );
+    }
+    let _ = std::fs::write(file, lines);
 }
 
 /// With `FENNEC_COUNTS` set, says on stderr what the run allocated and copied, so a test can

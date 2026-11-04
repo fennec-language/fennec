@@ -1064,11 +1064,9 @@ def main(stdout: Stdout):
     Ok(())
 }
 
-#[test]
-fn changing_through_a_place_changes_only_the_place() -> std::io::Result<()> {
-    same_as_the_jit(
-        "changed_places",
-        r#"error Bad:
+/// Each shape of place a call changes: one owner, shared at each level, given what came from
+/// the place, kept by the call, in a loop, under a rule and through a failure.
+const CHANGED_PLACES: &str = r#"error Bad:
     why: str
 
 struct Inner:
@@ -1259,8 +1257,14 @@ def main(stdout: Stdout):
         case Err(bad):
             stdout.print(bad.why)
     show(stdout, failing)
-"#,
-    )
+"#;
+
+#[test]
+fn changing_through_a_place_changes_only_the_place() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit("changed_places", CHANGED_PLACES)
 }
 
 #[test]

@@ -18,7 +18,7 @@ pub(crate) fn display(value: &Value) -> String {
     }
 }
 
-/// The text a value shows inside a collection, or when the REPL echoes it: strings are quoted.
+/// The text a value shows inside a collection: strings are quoted.
 pub(crate) fn repr(value: &Value) -> String {
     repr_with(value, &mut |_| None)
 }

@@ -28,7 +28,7 @@ pub use modules::{
     Imported, dotted, importable_type, member as std_member, module_as_value, package_member, short_module,
     std_import,
 };
-pub use parser::{parse, parse_at, parse_prelude, parse_repl};
+pub use parser::{parse, parse_at, parse_prelude};
 pub use sources::Sources;
 pub use span::Span;
 pub use stdlib::{

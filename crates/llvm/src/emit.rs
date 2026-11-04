@@ -1327,6 +1327,36 @@ impl Emit<'_, '_, '_> {
         result
     }
 
+    /// Whether two floats are the same, or not, as floats have one equality everywhere: `0.0` is
+    /// the same as `-0.0`, and NaN as any other NaN. LLVM's own comparison does this with a literal
+    /// on one side, which is never NaN.
+    pub(crate) fn float_equal(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
+        let plain = |value: &str| {
+            value
+                .strip_prefix("0x")
+                .and_then(|bits| u64::from_str_radix(bits, 16).ok())
+                .is_some_and(|bits| !f64::from_bits(bits).is_nan())
+        };
+        if plain(a) || plain(b) {
+            let (temp, cc) = (self.temp(), if op == BinOp::Eq { "oeq" } else { "une" });
+            self.line(&format!("{temp} = fcmp {cc} double {a}, {b}"));
+            return temp;
+        }
+        let (equal, a_nan, b_nan, both, same) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{equal} = fcmp oeq double {a}, {b}"));
+        self.line(&format!("{a_nan} = fcmp uno double {a}, {a}"));
+        self.line(&format!("{b_nan} = fcmp uno double {b}, {b}"));
+        self.line(&format!("{both} = and i1 {a_nan}, {b_nan}"));
+        self.line(&format!("{same} = or i1 {equal}, {both}"));
+        if op == BinOp::Eq {
+            return same;
+        }
+        let differ = self.temp();
+        self.line(&format!("{differ} = xor i1 {same}, true"));
+        differ
+    }
+
     fn float_binary(
         &mut self,
         op: BinOp,
@@ -1334,9 +1364,10 @@ impl Emit<'_, '_, '_> {
         rhs: &Operand,
         span: Span,
     ) -> Result<String, String> {
+        if matches!(op, BinOp::Eq | BinOp::NotEq) {
+            return Ok(self.float_equal(op, (a, b)));
+        }
         let compare = match op {
-            BinOp::Eq => Some("oeq"),
-            BinOp::NotEq => Some("une"),
             BinOp::Lt => Some("olt"),
             BinOp::LtEq => Some("ole"),
             BinOp::Gt => Some("ogt"),

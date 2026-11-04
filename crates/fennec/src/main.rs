@@ -19,7 +19,6 @@ mod image;
 mod lint;
 mod llvm_tests;
 mod lsp;
-mod repl;
 mod report;
 mod run;
 mod test;
@@ -53,7 +52,6 @@ const USAGE: &str = "usage:
   fennec fix [path]         make the fixes the type checker and linter suggest, in a kit or a .fen file
   fennec lsp                the language server, for editors, over standard input and output
   fennec daemon <action>    the build daemon: `status` or `stop`; commands start it
-  fennec repl               try Fennec interactively
   fennec --version          show the version
 
   path is a .fen file, or a kit's folder; it defaults to the current folder";
@@ -98,7 +96,6 @@ fn main() -> ExitCode {
         ["bench", path] => bench::bench(path),
         ["new", path] => new(path),
         ["init"] => init(),
-        ["repl"] => on_big_stack(|_| repl::repl(), ""),
         ["fmt", rest @ ..] => fmt::fmt(rest),
         ["lint"] => on_big_stack(lint::lint, "."),
         ["lint", "--json"] => on_big_stack(lint::lint_json, "."),

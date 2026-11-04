@@ -2,7 +2,7 @@
 
 use crate::span::Span;
 
-/// A parsed `.fen` file, or a chunk typed into the REPL.
+/// A parsed `.fen` file.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Module {
     pub items: Vec<Item>,
@@ -32,7 +32,7 @@ pub enum Item {
     },
     Import(Import),
     Test(TestDef),
-    /// A statement at the top level, which only the REPL accepts.
+    /// A statement at the top level, while parsing: only a constant is allowed to stay.
     Stmt(Stmt),
 }
 

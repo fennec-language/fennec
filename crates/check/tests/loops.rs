@@ -191,6 +191,36 @@ fn one_place_cant_be_given_as_mut_with_anything_that_reaches_it() {
 }
 
 #[test]
+fn a_mut_argument_cant_change_what_picks_another_arguments_place() {
+    let spot = "def step(mut at: int, spot: Spot):\n    at += spot.x\n\ndef walk(mut spot: Spot, mut at: int):\n    at += spot.x\n\n";
+    let types = format!("{PLACES}\n{spot}");
+    let cases: [(&str, &str); 3] = [
+        ("step(mut i, spots[i])", "`mut i` changes what picks `spots[i]`"),
+        ("walk(mut spots[i], mut i)", "`mut i` changes what picks `spots[i]`"),
+        ("walk(mut spots[i + 1], mut i)", "`mut i` changes what picks `spots[...]`"),
+    ];
+    for (call, said) in cases {
+        let body = format!(
+            "mut unit = Unit()\nmut units = [Unit()]\nmut spots = [Spot()]\nmut i = 0\nmut j = 0\n{call}\nstdout.print(unit.position.x, spots.len(), units.len(), i, j)\n"
+        );
+        let found = in_main_after(&types, &body);
+        let messages: Vec<&str> = found.iter().filter_map(|one| one.split(" @ ").next()).collect();
+        assert_eq!(messages, [said], "{call}");
+    }
+    let moved = "struct Mover:\n    x = 0\n\n    def shift(mut self, mut at: int):\n        at += self.x\n";
+    let found = in_main_after(
+        moved,
+        "mut movers = [Mover()]\nmut at = 0\nmovers[at].shift(mut at)\nstdout.print(movers.len(), at)\n",
+    );
+    let messages: Vec<&str> = found.iter().filter_map(|one| one.split(" @ ").next()).collect();
+    assert_eq!(messages, ["`mut at` changes what picks `movers[at]`"]);
+    // An index that isn't changed is fine, and so is a name changed that picks nothing here.
+    let empty: [&str; 0] = [];
+    let fine = "mut movers = [Mover()]\nmut at = 0\nmut other = 0\nmovers[at].shift(mut other)\nstdout.print(movers.len(), at, other)\n";
+    assert_eq!(in_main_after(moved, fine), empty);
+}
+
+#[test]
 fn different_places_can_be_given_as_mut_together() {
     let empty: [&str; 0] = [];
     for call in [

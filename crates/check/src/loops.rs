@@ -329,6 +329,45 @@ fn overlapping_arguments(callee: &Expr, args: &[Arg], problems: &mut Vec<Diagnos
         }
         earlier.push((given, &arg.value, arg.is_mut));
     }
+    picked_by_a_mut_argument(callee, args, problems);
+}
+
+/// `units[at].step(mut at)` and `f(mut xs[i], mut i)`: a `mut` argument changes what picks the
+/// place another argument names, so which place that is would depend on when it's read.
+fn picked_by_a_mut_argument(callee: &Expr, args: &[Arg], problems: &mut Vec<Diagnostic>) {
+    let receiver = match &callee.kind {
+        ExprKind::Attr { object, .. } => Some(object.as_ref()),
+        _ => None,
+    };
+    let others = || receiver.into_iter().chain(args.iter().map(|arg| &arg.value));
+    for arg in args.iter().filter(|arg| arg.is_mut) {
+        let Some(changed) = place(&arg.value) else { continue };
+        let picked = others().find(|other| {
+            other.span != arg.value.span && place(other).is_some() && picks_with(other, &changed)
+        });
+        if let Some(other) = picked {
+            let (first, second) = (written(&arg.value, true), written(other, false));
+            let message = format!("{first} changes what picks {second}");
+            problems.push(
+                Diagnostic::new(message, arg.value.span)
+                    .with_help("hold the index in another name, and give that name as `mut`"),
+            );
+        }
+    }
+}
+
+/// Whether an index along a place reads `changed`.
+fn picks_with(expr: &Expr, changed: &Place) -> bool {
+    match &expr.kind {
+        ExprKind::Attr { object, .. } => picks_with(object, changed),
+        ExprKind::Index { object, index } => reads(index, changed) || picks_with(object, changed),
+        _ => false,
+    }
+}
+
+fn reads(expr: &Expr, changed: &Place) -> bool {
+    place(expr).is_some_and(|found| found.overlaps(changed))
+        || crate::effects::children(expr).into_iter().any(|inner| reads(inner, changed))
 }
 
 const OVERLAP_FIX: &str = "a `mut` argument needs its place to itself: give the other `copy(...)` of what \

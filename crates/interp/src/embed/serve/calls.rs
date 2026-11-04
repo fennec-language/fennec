@@ -23,6 +23,7 @@ use crate::value::Value;
 
 /// What runs each served connection: `body(env, conn, thread)`, giving back 0, or anything else
 /// when it failed, with the failure in its thread's runtime, which ends only that connection.
+#[cfg(not(feature = "lean"))]
 pub type ConnBody = extern "C" fn(env: i64, conn: i64, thread: i64) -> i64;
 
 thread_local! {

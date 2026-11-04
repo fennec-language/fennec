@@ -553,6 +553,7 @@ pub fn serve(
 
 mod calls;
 
+#[cfg(not(feature = "lean"))]
 pub use calls::{ConnBody, conn_close, conn_peer, stop_servers};
 #[cfg(not(feature = "lean"))]
 pub use calls::{conn_read, conn_read_line, conn_write, net_serve};

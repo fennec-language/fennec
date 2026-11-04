@@ -285,6 +285,7 @@ export! {
     fennec_parallel_stream(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_stream(a0, a1, a2, a3);
     fennec_stream_next(a0: i64, a1: &mut i64) -> i64 => parallel::stream_next(a0, a1);
     fennec_stream_end(a0: i64) => parallel::stream_end(a0);
+    #[cfg(not(feature = "lean"))]
     fennec_net_serve(a0: i64, a1: serve::ConnBody, a2: i64) -> i64 => serve::net_serve(a0, a1, a2);
     #[cfg(not(feature = "lean"))]
     fennec_conn_read(a0: i64, a1: i64) -> i64 => serve::conn_read(a0, a1);
@@ -292,6 +293,7 @@ export! {
     fennec_conn_read_line(a0: i64) -> i64 => serve::conn_read_line(a0);
     #[cfg(not(feature = "lean"))]
     fennec_conn_write(a0: i64, a1: i64) -> i64 => serve::conn_write(a0, a1);
+    #[cfg(not(feature = "lean"))]
     fennec_conn_peer(a0: i64) -> i64 => serve::conn_peer(a0);
     #[cfg(not(feature = "lean"))]
     fennec_conn_close(a0: i64) => serve::conn_close(a0);

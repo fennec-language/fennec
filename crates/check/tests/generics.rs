@@ -644,6 +644,19 @@ fn a_type_has_to_fail_as_its_interfaces_method_says() {
 }
 
 #[test]
+fn self_reaches_an_extension_and_a_matchs_arms() {
+    let text = "struct Point:\n    x = 1\n\nextend Point:\n    def again(self) -> Self:\n        Self(x=self.x)\n\n\
+                enum Shape:\n    Dot\n    Line(length: int)\n\n    def same(self) -> Self:\n        match self:\n            \
+                case .Line(length):\n                made: Self = Self.Line(length=length)\n                made\n            \
+                case .Dot:\n                Self.Dot\n\n\
+                def main(stdout: Stdout):\n    stdout.print(Point().again().x, Shape.Dot.same())\n";
+    assert_eq!(problems(text), Vec::<String>::new());
+    // An extension's `Self` is its type, so it doesn't fit what's another.
+    let text = "struct Point:\n    x = 1\n\nextend Point:\n    def again(self) -> Self:\n        1\n";
+    assert_eq!(problems(text).len(), 1, "{:?}", problems(text));
+}
+
+#[test]
 fn self_in_a_types_own_method_is_that_type() {
     let text = "struct Point:\n    x = 1\n\n    def make() -> Self:\n        Self(x=7)\n\n    def same(self, other: Self) -> list[Self]:\n        \
                 held: Self = other\n        [held, self]\n\n\

@@ -371,9 +371,10 @@ impl<'c> FnCx<'c> {
         self.error(diagnostic);
     }
 
-    /// Whether this is the check of a `test` block.
+    /// Whether this is the check of a `test` block, or of the function LLVM's tests make of one,
+    /// whose name no program can write.
     pub(crate) fn in_a_test(&self) -> bool {
-        self.key.starts_with("test \"")
+        self.key.starts_with("test \"") || self.key.starts_with("test:")
     }
 
     /// A default's type comes from its literal, so writing that type too is a mistake, and a

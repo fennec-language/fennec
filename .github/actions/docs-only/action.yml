@@ -8,6 +8,9 @@ outputs:
   docs-only:
     description: "`true` when every changed file is documentation"
     value: ${{ steps.files.outputs.docs-only }}
+  parked-changed:
+    description: "`false` when no changed file can change what the parked tasks' crate does"
+    value: ${{ steps.files.outputs.parked-changed }}
 
 runs:
   using: composite
@@ -53,3 +56,14 @@ runs:
         fi
         echo "Docs only: $docs_only"
         echo "docs-only=$docs_only" >> "$GITHUB_OUTPUT"
+        # `fennec-parked` uses nothing else in the workspace. Not knowing what changed counts as
+        # a change.
+        parked_changed=false
+        [ -n "$files" ] || parked_changed=true
+        while IFS= read -r file; do
+          case "$file" in
+            crates/parked/* | Cargo.toml | Cargo.lock | rust-toolchain.toml | .github/*) parked_changed=true ;;
+          esac
+        done <<< "$files"
+        echo "Parked tasks' crate changed: $parked_changed"
+        echo "parked-changed=$parked_changed" >> "$GITHUB_OUTPUT"

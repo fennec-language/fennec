@@ -139,6 +139,21 @@ fn c_main(count: usize, run: &str) -> String {
 
 /// The module for an executable that runs the functions `tests`, which take nothing and give
 /// back nothing, by their numbers there. `bytes` is the program as the runtime reads it.
+/// The number the runtime knows a capability's type by.
+fn capability_kind(ty: &fennec_check::Type) -> Option<i64> {
+    let fennec_check::Type::Named(name) = ty else { return None };
+    fennec_layout::Cap::named(name).map(|cap| match cap {
+        fennec_layout::Cap::Stdout => 0,
+        fennec_layout::Cap::Fs => 1,
+        fennec_layout::Cap::Clock => 2,
+        fennec_layout::Cap::Args => 3,
+        fennec_layout::Cap::Stdin => 4,
+        fennec_layout::Cap::Process => 5,
+        fennec_layout::Cap::Entropy => 6,
+        fennec_layout::Cap::Net => 7,
+    })
+}
+
 pub fn tests_entry(
     program: &Program,
     shared: &Shared,
@@ -147,7 +162,7 @@ pub fn tests_entry(
     tests: &[String],
 ) -> Result<String, String> {
     let (mut out, count) = start_of(program, shared, image, bytes)?;
-    out += "declare i32 @fennec_aot_run(ptr, i64)\ndeclare void @fennec_aot_tests_start()\ndeclare i64 @fennec_aot_next_test()\ndeclare void @fennec_aot_test_ran(i64)\ndeclare void @fennec_aot_test_done(i64)\n\n";
+    out += "declare i32 @fennec_aot_run(ptr, i64)\ndeclare void @fennec_aot_tests_start()\ndeclare i64 @fennec_aot_next_test()\ndeclare void @fennec_aot_test_ran(i64)\ndeclare void @fennec_aot_test_done(i64)\ndeclare void @fennec_aot_test_world(i64)\ndeclare i64 @fennec_capability_block(i64)\n\n";
     // The flag each function sets when it runs, in the order `Shared::ran` lists them.
     let flags: Vec<String> = shared.ran.iter().map(|name| format!("@\"ran_{name}\"")).collect();
     for flag in &flags {
@@ -170,11 +185,42 @@ pub fn tests_entry(
     let mut blocks = String::new();
     for (number, test) in tests.iter().enumerate() {
         let code = crate::emit::symbol(test);
-        let flagged = can_fail.contains(test.as_str());
-        let (types, args) = if flagged { ("ptr swifterror", "ptr swifterror %failed") } else { ("", "") };
-        let _ = writeln!(out, "declare swiftcc void {code}({types})");
+        let function = program.functions.iter().find(|function| function.name == *test);
+        let function = function.ok_or_else(|| format!("there's no test function `{test}`"))?;
+        // What it gave back would go through a pointer nothing here passes it, which can pass a
+        // test that failed.
+        if function.returns != fennec_check::Type::Unit {
+            return Err(format!("`{test}` gives back a value, which a test's function can't"));
+        }
+        // A test that names capabilities gets fakes, in a world of its own.
+        let takes = function.params;
         let _ = write!(cases, " i64 {number}, label %test{number}");
-        let _ = writeln!(blocks, "test{number}:\n  call swiftcc void {code}({args})\n  br label %done");
+        let _ = writeln!(
+            blocks,
+            "test{number}:\n  call void @fennec_aot_test_world(i64 {})",
+            i64::from(takes > 0)
+        );
+        let mut types = vec!["ptr".to_owned(); takes];
+        let mut args = Vec::with_capacity(takes + 1);
+        for (at, local) in function.locals.iter().take(takes).enumerate() {
+            let name = format!("%test{number}cap{at}");
+            match capability_kind(&local.ty) {
+                Some(kind) => {
+                    let _ = writeln!(
+                        blocks,
+                        "  {name}.word = call i64 @fennec_capability_block(i64 {kind})\n  {name} = inttoptr i64 {name}.word to ptr"
+                    );
+                    args.push(format!("ptr {name}"));
+                }
+                None => args.push("ptr null".to_owned()),
+            }
+        }
+        if can_fail.contains(test.as_str()) {
+            types.push("ptr swifterror".to_owned());
+            args.push("ptr swifterror %failed".to_owned());
+        }
+        let _ = writeln!(out, "declare swiftcc void {code}({})", types.join(", "));
+        let _ = writeln!(blocks, "  call swiftcc void {code}({})\n  br label %done", args.join(", "));
     }
     let _ = writeln!(
         out,
@@ -198,20 +244,7 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
     let mut args = Vec::with_capacity(main.params + 1);
     let mut capabilities = String::new();
     for (at, local) in main.locals.iter().take(main.params).enumerate() {
-        let kind = match &local.ty {
-            fennec_check::Type::Named(name) => fennec_layout::Cap::named(name).map(|cap| match cap {
-                fennec_layout::Cap::Stdout => 0,
-                fennec_layout::Cap::Fs => 1,
-                fennec_layout::Cap::Clock => 2,
-                fennec_layout::Cap::Args => 3,
-                fennec_layout::Cap::Stdin => 4,
-                fennec_layout::Cap::Process => 5,
-                fennec_layout::Cap::Entropy => 6,
-                fennec_layout::Cap::Net => 7,
-            }),
-            _ => None,
-        };
-        match kind {
+        match capability_kind(&local.ty) {
             Some(kind) => {
                 let _ = writeln!(
                     capabilities,

@@ -1728,6 +1728,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "Buffer.insert"
                     | "Buffer.remove"
                     | "json.dumps"
+                    | "intrinsics.text_part"
                     | "json.loads"
                     | "str.code"
                     | "str.split"

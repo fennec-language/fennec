@@ -85,7 +85,7 @@ impl<'m> Keep<'m> for Copied {
 }
 
 /// The built-in types the standard library's code gives methods to with `extend`.
-const BUILT_IN_OWNERS: [&str; 4] = ["str", "list", "dict", "set"];
+const BUILT_IN_OWNERS: [&str; 8] = ["int", "float", "bool", "bytes", "str", "list", "dict", "set"];
 
 /// A running Fennec program: its declarations, the current call's names, and its output.
 pub struct Interp<'out> {
@@ -115,7 +115,7 @@ pub struct Interp<'out> {
     pub(crate) resuming: Vec<crate::generators::Position>,
     pub(crate) suspending: Vec<crate::generators::Position>,
     /// Each regex pattern used so far, compiled.
-    pub(crate) regexes: HashMap<String, Rc<fennec_re::Regex>>,
+    pub(crate) regexes: crate::stdlib::re::Regexes,
     /// How many more steps the program may take, if it's limited.
     pub(crate) steps_left: Option<u64>,
     step_limit: Option<u64>,
@@ -173,7 +173,7 @@ impl<'out> Interp<'out> {
             passing_up: None,
             resuming: Vec::new(),
             suspending: Vec::new(),
-            regexes: HashMap::new(),
+            regexes: crate::stdlib::re::Regexes::default(),
             steps_left: None,
             step_limit: None,
             own_equality: std::collections::HashSet::new(),
@@ -347,6 +347,10 @@ impl<'out> Interp<'out> {
     /// A method the standard library gives a built-in value's type, like `str`'s `def *`.
     pub(crate) fn built_in_method(&self, value: &Value, method: &str) -> Option<Rc<Callable>> {
         let owner = match value {
+            Value::Int(_) => "int",
+            Value::Float(_) => "float",
+            Value::Bool(_) => "bool",
+            Value::Bytes(_) => "bytes",
             Value::Str(_) => "str",
             Value::List(_) | Value::Packed(_) => "list",
             Value::Dict(_) => "dict",

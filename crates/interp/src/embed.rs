@@ -250,6 +250,7 @@ fn write_kept_output_on_panic() {
 struct State {
     interp: Interp<'static>,
     output: Output,
+    regexes: crate::stdlib::re::Regexes,
     tables: Tables,
     temps: Vec<Value>,
     /// The inputs of the next expression or statement native code hands over.
@@ -326,6 +327,7 @@ pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Resu
     STATE.set(Some(State {
         interp,
         output,
+        regexes: crate::stdlib::re::Regexes::default(),
         temps: Vec::new(),
         inputs: Vec::new(),
         bindings: Vec::new(),
@@ -983,8 +985,7 @@ fn print_handed_over(printed: &[u8]) {
     }
     attempt(|state: &mut State| {
         state
-            .interp
-            .out
+            .output
             .write_all(printed)
             .map_err(|err| Diagnostic::new(format!("couldn't write output: {err}"), Span::default()))
     });
@@ -994,11 +995,11 @@ fn print_handed_over(printed: &[u8]) {
 pub mod io {
     use super::{Span, State, Value, attempt, format, with};
     use fennec_syntax::Diagnostic;
+    use std::io::Write;
 
     pub(super) fn write(state: &mut State, text: &str) -> Result<(), Diagnostic> {
         state
-            .interp
-            .out
+            .output
             .write_all(text.as_bytes())
             .map_err(|err| Diagnostic::new(format!("couldn't write output: {err}"), Span::default()))
     }

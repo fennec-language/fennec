@@ -344,6 +344,12 @@ impl FnCx<'_> {
         if let Some(type_name) = self.as_type_name(object) {
             return self.static_call(type_name, method, args, span);
         }
+        if let ExprKind::Name(param) = &object.kind
+            && self.lookup(param).is_none()
+            && self.generics.iter().any(|generic| generic.name == *param)
+        {
+            return self.static_on_param(param, method, (types, args), span);
+        }
         let ty = self.expr(object);
         let optional = optional || self.chained_step(&ty, step);
         self.method_on(&MethodCall { object, method, types, args, span }, &ty, optional)
@@ -392,6 +398,34 @@ impl FnCx<'_> {
     fn std_method(&self, ty: &Type, method: &str) -> Option<(String, bool)> {
         let owner = ty.method_owner()?;
         self.checker.program.method(owner, method).map(|(key, entry)| (key, entry.def.takes_self()))
+    }
+
+    /// `T.make()`: a function with no `self` that an interface among a type parameter's bounds
+    /// gives it. Each copy of the generic calls the one its type has.
+    fn static_on_param(
+        &mut self,
+        param: &str,
+        method: &str,
+        (types, args): (&[Type], &[Arg]),
+        span: Span,
+    ) -> Type {
+        let owner = Type::Param(param.to_owned());
+        let Some((_, def)) = self.bound_method(param, method) else {
+            let message = format!("`{param}` has nothing called `{method}`");
+            let help = format!("bind `{param}` to an interface that has it, like `{param}: Made`");
+            return self.unusable(Diagnostic::new(message, span).with_help(help), args);
+        };
+        if def.takes_self() {
+            let message = format!("`{method}` needs a `{param}` to call it on");
+            return self.unusable(Diagnostic::new(message, span), args);
+        }
+        if !self.takes_types(method, written_generics(&def.generics), types, span) {
+            self.ignore_args(args);
+            return Type::Unknown;
+        }
+        let signature = self.interface_method_with(&def, &owner, types, span);
+        self.bind_args(method, &signature.params, args, span);
+        signature.returns
     }
 
     /// A method called on a value of a type parameter, which has the methods of its

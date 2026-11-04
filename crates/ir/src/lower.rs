@@ -14,6 +14,7 @@ mod imports;
 mod lists;
 mod matching;
 mod operators;
+mod order;
 mod parallel;
 mod places;
 mod positions;
@@ -344,6 +345,8 @@ struct Lowering<'a> {
     leaving: Vec<places::Leaving>,
     /// The `shared` handles the `with` blocks being lowered hold the locks of.
     locked: Vec<LocalId>,
+    /// The locals changed so far, for operands read before one of those changes (see `order`).
+    changed: Vec<LocalId>,
     /// The closures' functions lifted out of this one.
     lifted: Vec<Function>,
     /// What a generator being lowered knows.
@@ -377,6 +380,7 @@ impl<'a> Lowering<'a> {
             loops: Vec::new(),
             leaving: Vec::new(),
             locked: Vec::new(),
+            changed: Vec::new(),
             lifted: Vec::new(),
             generating: None,
             counts: Vec::new(),
@@ -477,6 +481,7 @@ impl<'a> Lowering<'a> {
     /// Adds an instruction to the block being built. One that reads what a `shared` handle
     /// holds takes the handle's lock to read, around just that instruction.
     fn emit(&mut self, kind: InstKind, span: Span) {
+        self.note_change(&kind);
         let handles = self.read_through(&kind);
         let Some(block) = self.blocks.get_mut(self.current.0) else { return };
         for handle in &handles {
@@ -784,8 +789,8 @@ impl<'a> Lowering<'a> {
             ExprKind::Binary { op, lhs, rhs } => {
                 let ty = self.ty(expr)?;
                 let lhs = self.expr(lhs)?;
-                let rhs = self.expr(rhs)?;
-                self.operate(*op, (lhs, rhs), &ty, span)
+                let sides = self.both(lhs, |lowering| lowering.expr(rhs), span)?;
+                self.operate(*op, sides, &ty, span)
             }
             ExprKind::Cond { then, cond, otherwise } => self.conditional(expr, (then, cond, otherwise)),
             ExprKind::Attr { object, name, optional: false } => self.get_field(expr, object, name),

@@ -6,17 +6,17 @@ error NotFound:
 def total_health(names: list[str], health: dict[str, int]) -> int:
     mut total = 0
     for name in names:
-        hp = health.get(name) else continue
-        total += hp
+        points = health.get(name) else continue
+        total += points
     total
 
 def health_of(health: dict[str, int], name: str) -> int:
-    hp = health.get(name) else return -1
-    hp + 1
+    points = health.get(name) else return -1
+    points + 1
 
 def heal(mut health: dict[str, int], name: str):
-    hp = health.get(name) else return
-    health[name] = hp + 5
+    points = health.get(name) else return
+    health[name] = points + 5
 
 def must_find(health: dict[str, int], name: str) -> int fails NotFound:
     health.get(name) else fail NotFound(name=name)
@@ -52,8 +52,8 @@ def main(stdout: Stdout):
     stdout.print(held["kit"], held.len())
     stdout.print(must_find(health, "ash") else 0)
     match must_find(health, "nobody"):
-        case Ok(hp):
-            stdout.print(hp)
+        case Ok(points):
+            stdout.print(points)
         case NotFound(name):
             stdout.print("no", name)
     stdout.print(parse_all(["1", "x", "3"]))

@@ -156,6 +156,10 @@ pub(super) fn settle(changes: HashMap<u64, i64>) {
 /// didn't make it. `owner` is the number in the block's shape word, which native code has
 /// just read to see the block isn't its own.
 pub extern "C" fn retain_shared(address: i64, owner: i64) {
+    if owner.cast_unsigned() == super::guarded::HANDLE_OWNER {
+        super::guarded::count_handle(address.cast_unsigned());
+        return;
+    }
     if super::with(|state| state.heap.change_lent_owners(address.cast_unsigned(), 1)) {
         return;
     }
@@ -171,8 +175,12 @@ pub extern "C" fn retain_shared(address: i64, owner: i64) {
 /// `fennec_release_shared(address, owner)`: one count fewer of a block, from a thread that
 /// didn't make it. When that was the last count anyone held, the block goes on its owner's
 /// queue.
-pub extern "C" fn release_shared(address: i64, _owner: i64) {
+pub extern "C" fn release_shared(address: i64, owner: i64) {
     let address = address.cast_unsigned();
+    if owner.cast_unsigned() == super::guarded::HANDLE_OWNER {
+        super::with(|state| super::guarded::release_handle(state, address));
+        return;
+    }
     if super::with(|state| state.heap.change_lent_owners(address, -1)) {
         return;
     }

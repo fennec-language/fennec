@@ -985,6 +985,53 @@ fn changing_through_a_place_changes_only_the_place() -> std::io::Result<()> {
     same_as_the_jit("changed_places", CHANGED_PLACES)
 }
 
+/// A list in a `shared` value, changed in place under its lock: a queue would otherwise copy the whole
+/// list on every call that changes it, and take time in proportion to its length squared.
+#[test]
+fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let types = "struct Row:\n    tags: list[int]\n\nshared Queue:\n    items = list[int]()\n    \
+                 rows = [Row(tags=[1])]\n\n    def push(mut self, item: int):\n        self.items.append(item)\n\n    \
+                 def pop(mut self) -> int:\n        self.items.pop()\n\n    \
+                 def first(mut self, item: int):\n        self.items.insert(0, item)\n\n    \
+                 def more(mut self, others: list[int]):\n        self.items.extend(others)\n\n    \
+                 def nested(mut self, item: int):\n        self.rows[0].tags.append(item)\n        self.rows[0].tags.pop()\n\n    \
+                 def called(mut self, item: int):\n        grow(mut self.items, item)\n\n\
+                 def grow(mut numbers: list[int], item: int):\n    numbers.append(item)\n\n\
+                 def main(stdout: Stdout):\n    queue = Queue()\n    mut seen = 0\n";
+    for (name, body) in [
+        (
+            "push_pop",
+            "    for n in range(2000):\n        queue.push(n)\n    for n in range(2000):\n        seen += queue.pop()\n",
+        ),
+        ("insert", "    for n in range(500):\n        queue.first(n)\n"),
+        ("extend", "    for n in range(2000):\n        queue.more([n])\n"),
+        ("nested", "    for n in range(2000):\n        queue.nested(n)\n"),
+        ("called", "    for n in range(2000):\n        queue.called(n)\n"),
+        (
+            "with",
+            "    with queue as mut held:\n        for n in range(2000):\n            held.items.append(n)\n        for n in range(2000):\n            seen += held.items.pop()\n",
+        ),
+    ] {
+        let counts =
+            counts_of(&format!("shared_place_{name}"), &format!("{types}{body}    stdout.print(seen)\n"))?;
+        assert!(counts.starts_with("copies 0 "), "{name}: {counts}");
+    }
+    Ok(())
+}
+
+/// What's changed in place stays right when it's read while changing, and when something still holds
+/// the list as it was.
+#[test]
+fn a_list_changed_in_a_shared_value_is_what_the_interpreter_says() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("shared_places", include_str!("fixtures/shared_places.fen"))
+}
+
 #[test]
 fn changing_through_a_place_copies_nothing_when_nothing_else_holds_it() -> std::io::Result<()> {
     if !ready() {

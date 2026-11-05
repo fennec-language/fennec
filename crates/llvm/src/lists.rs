@@ -441,7 +441,8 @@ impl Emit<'_, '_, '_> {
                 PlaceStep::Field(name) => {
                     let boxed = matches!(kind, Kind::Boxed(_));
                     let inside = if boxed {
-                        let block = if taking {
+                        // A `shared` value's block is the same one for every name.
+                        let block = if taking && !self.is_cell(&kind) {
                             self.alone_along((root, &along), &at, "fennec_unshare")
                         } else {
                             self.load_block(&at)

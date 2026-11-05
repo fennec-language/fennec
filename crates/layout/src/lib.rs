@@ -36,6 +36,9 @@ pub enum Ty {
     /// `bytes`: the address of a block the runtime owns, shared by every copy. Only layouts made
     /// by `Layouts::from_definitions` use it.
     Bytes,
+    /// A generator: the address of its block. Only layouts made by `Layouts::from_definitions`
+    /// use it.
+    Gen,
     /// A dict with these keys and values: the address of a block the runtime owns, shared
     /// by every copy until one changes it.
     Dict(Word, Word),
@@ -143,7 +146,14 @@ impl Ty {
     pub fn counted(self) -> bool {
         matches!(
             self,
-            Ty::Boxed(_) | Ty::Str | Ty::Bytes | Ty::Dict(..) | Ty::List(_) | Ty::Maybe(_) | Ty::Block(_)
+            Ty::Boxed(_)
+                | Ty::Str
+                | Ty::Bytes
+                | Ty::Gen
+                | Ty::Dict(..)
+                | Ty::List(_)
+                | Ty::Maybe(_)
+                | Ty::Block(_)
         )
     }
 
@@ -159,6 +169,7 @@ impl Ty {
             Ty::Boxed(_) => "boxed value",
             Ty::Str => "str",
             Ty::Bytes => "bytes",
+            Ty::Gen => "iterator",
             Ty::Dict(..) => "dict",
             Ty::List(_) => "list",
             Ty::Known(_) => "function",
@@ -251,6 +262,8 @@ pub fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
         Ty::Bool => Element::Bool,
         Ty::Boxed(id) => Element::Boxed(usize::try_from(id).ok()?),
         Ty::Bytes => Element::Boxed(usize::try_from(fennec_interp::embed::heap::BYTES_SHAPE).ok()?),
+        // By its block's address, whose own shape says what it keeps.
+        Ty::Gen => Element::Boxed(0),
         Ty::Str if layouts.text_headers() => Element::Text,
         Ty::Str => Element::Str,
         Ty::Obj => Element::Object,

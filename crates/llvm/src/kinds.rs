@@ -156,6 +156,7 @@ impl Kind {
             Ty::List(item) => Kind::List(item),
             Ty::Str => Kind::Str,
             Ty::Bytes => Kind::Bytes,
+            Ty::Gen => Kind::Gen,
             Ty::Dict(key, value) => Kind::Dict(key, value),
             Ty::Maybe(Block::Str) if layouts.text_headers() => Kind::MaybeText,
             Ty::Maybe(block) => Kind::Maybe(Box::new(Kind::from_ty(layouts, block.ty())?)),

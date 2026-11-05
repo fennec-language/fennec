@@ -49,6 +49,11 @@ impl Emit<'_, '_, '_> {
         for arg in args {
             values.push(match arg {
                 Operand::Str(text) => (text.clone(), None),
+                // A generator shows the type it's of.
+                Operand::Local(local) if *self.kind_of(*local)? == Kind::Gen => {
+                    let ty = self.function.locals.get(local.0).map(|held| held.ty.to_string());
+                    (format!("<{}>", ty.unwrap_or_default()), None)
+                }
                 other => {
                     let (value, kind) = self.operand(other)?;
                     (value, Some(kind))

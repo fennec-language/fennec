@@ -121,7 +121,11 @@ impl Checker {
         let Some(signature) = self.signature(key) else { return false };
         signature.generics.is_empty()
             && signature.params.len() == params.len()
-            && signature.params.iter().zip(params).all(|(param, ty)| !param.is_mut && self.fits(&param.ty, ty))
+            && signature
+                .params
+                .iter()
+                .zip(params)
+                .all(|(param, ty)| !param.is_mut && self.fits(&param.ty, ty))
             && self.fits(returns, &signature.returns)
     }
 

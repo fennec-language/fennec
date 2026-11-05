@@ -346,6 +346,14 @@ fn an_arrow_function_cant_pass_a_failure_up() {
         assert_eq!(found.iter().filter(|one| one.starts_with(said)).count(), 1, "{body}: {found:?}");
         assert_eq!(found.len(), 1, "{body}: {found:?}");
     }
+    // The failure is the arrow's mistake, not one more way the function around it fails.
+    let around = "error Bad:\n    why: str\n\ndef around() -> list[str] fails Bad:\n    fail Bad(why=\"no\")\n    sorted(['1'], key=text => int(text)?)\n";
+    let found = problems(around);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found.iter().all(|one| one.starts_with(said)), "{found:?}");
+    // After an arrow, `?` is as it was.
+    let after = "def after(text: str) -> int fails InvalidValue:\n    kept = sorted(['1'], key=one => one)\n    int(text)? + kept.len()\n\ndef main(stdout: Stdout):\n    stdout.print(after(\"1\") else 0)\n";
+    assert_eq!(problems(after), Vec::<String>::new());
     // `?` still leaves from a comprehension, and an arrow can still give a value instead.
     let fine = "def parsed(texts: list[str]) -> list[int] fails InvalidValue:\n    [int(text)? for text in texts]\n\ndef main(stdout: Stdout):\n    stdout.print(sorted(['1'], key=text => int(text) else 0))\n";
     assert_eq!(problems(fine), Vec::<String>::new());

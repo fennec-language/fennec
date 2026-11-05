@@ -15,8 +15,8 @@
 )]
 
 use fennec_interp::embed::{
-    aot, capabilities, checks, dicts, eval, heap, io, json, lists, names, numbers, objects, parallel, regex,
-    serve, strings, temps, text, threads,
+    aot, bytes, capabilities, checks, dicts, eval, heap, io, json, lists, names, numbers, objects, parallel,
+    regex, serve, strings, temps, text, threads,
 };
 
 /// The exported functions that can fail, setting the flag `fennec_aot_failed_flag` gives the
@@ -28,6 +28,7 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_dict_pop",
     "fennec_dict_pop_header",
     "fennec_stop",
+    "fennec_bytes_of_list",
     "fennec_assert_sides",
     "fennec_list_sorted_with",
     "fennec_regex_split",
@@ -39,7 +40,11 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_buffer_insert",
     "fennec_buffer_pop_empty",
     "fennec_capability_call",
+    "fennec_std_call",
+    "fennec_toml_dumps",
+    "fennec_toml_loads",
     "fennec_native_capability",
+    "fennec_net_call",
     "fennec_capability_from_value",
     "fennec_case_of",
     "fennec_dict_missing",
@@ -237,6 +242,10 @@ export! {
     fennec_not_a_number(a0: i64, a1: i64) -> i64 => numbers::not_a_number(a0, a1);
     fennec_int_text(a0: i64) -> i64 => strings::int_text(a0);
     fennec_str_repr(a0: i64) -> i64 => strings::str_repr(a0);
+    fennec_str_codes(a0: i64, a1: i64) -> i64 => strings::codes(a0, a1);
+    fennec_str_from_code(a0: i64) -> i64 => strings::from_code(a0);
+    fennec_str_from_code_problem(a0: i64) -> i64 => strings::from_code_problem(a0);
+    fennec_round_places(a0: f64, a1: i64) -> f64 => checks::round_places(a0, a1);
     fennec_float_text(a0: f64) -> i64 => strings::float_text(a0);
     #[cfg(not(feature = "lean"))]
     fennec_value_text(a0: i64) -> i64 => strings::value_text(a0);
@@ -255,6 +264,18 @@ export! {
     fennec_dict_set_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i64) -> i64 => dicts::set_header(a0, a1, a2, a3, a4);
     fennec_dict_pop_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i64, a5: i64) -> i64 => dicts::pop_header(a0, a1, a2, a3, a4, a5);
     fennec_stop(a0: i64, a1: i64, a2: i64) => checks::stop(a0, a1, a2);
+    fennec_bytes_new(a0: i64) -> i64 => bytes::new(a0);
+    fennec_bytes_of_list(a0: i64, a1: i64, a2: i64) -> i64 => bytes::of_list(a0, a1, a2);
+    fennec_bytes_join(a0: i64, a1: i64) -> i64 => bytes::join(a0, a1);
+    fennec_bytes_slice(a0: i64, a1: i64, a2: i64) -> i64 => bytes::slice(a0, a1, a2);
+    fennec_bytes_order(a0: i64, a1: i64) -> i64 => bytes::order(a0, a1);
+    fennec_bytes_contains(a0: i64, a1: i64) -> i8 => bytes::contains(a0, a1);
+    fennec_bytes_hex(a0: i64, a1: i64) -> i64 => bytes::hex_text(a0, a1);
+    fennec_bytes_decode(a0: i64) -> i64 => bytes::decode(a0);
+    fennec_bytes_decode_problem(a0: i64) -> i64 => bytes::decode_problem(a0);
+    fennec_bytes_from_hex(a0: i64) -> i64 => bytes::from_hex_text(a0);
+    fennec_bytes_from_hex_problem(a0: i64) -> i64 => bytes::from_hex_problem(a0);
+    fennec_str_encode(a0: i64) -> i64 => bytes::encode(a0);
     fennec_assert_sides(a0: i64, a1: i64, a2: i64, a3: i64) => checks::assert_sides(a0, a1, a2, a3);
     fennec_list_sorted_with(a0: i64, a1: extern "C" fn(i64, i64) -> i64) -> i64 => lists::sorted_with(a0, a1);
     fennec_regex_problem(a0: i64) -> i64 => regex::problem(a0);
@@ -342,6 +363,7 @@ export! {
     fennec_str_print(a0: i64) => strings::print(a0);
     fennec_capability(a0: i64) -> i64 => temps::capability(a0);
     fennec_capability_block(a0: i64) -> i64 => capabilities::block(a0);
+    fennec_net_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::net_call(a0, a1, a2, a3, a4);
     fennec_native_capability(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::native_call(a0, a1, a2, a3, a4);
     fennec_clock_now() -> i64 => capabilities::clock_now();
     fennec_clock_sleep(a0: i64) => capabilities::clock_sleep(a0);
@@ -352,6 +374,12 @@ export! {
     fennec_capability_from_value(a0: i64, a1: i64, a2: i64) -> i64 => capabilities::from_value(a0, a1, a2);
     #[cfg(not(feature = "lean"))]
     fennec_capability_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::call(a0, a1, a2, a3, a4);
+    #[cfg(not(feature = "lean"))]
+    fennec_std_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::std_call(a0, a1, a2, a3, a4);
+    #[cfg(not(feature = "lean"))]
+    fennec_toml_dumps(a0: i64, a1: i64, a2: i64) -> i64 => json::toml_dumps(a0, a1, a2);
+    #[cfg(not(feature = "lean"))]
+    fennec_toml_loads(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => json::toml_loads(a0, a1, a2, a3);
     fennec_aot_image(a0: i64) => aot::image(a0);
     fennec_aot_failed_flag() -> i64 => aot::failed_flag();
     fennec_aot_stack_limit() -> i64 => aot::stack_limit();

@@ -57,6 +57,7 @@ pub(super) fn owner_name(ty: &Type) -> Option<&str> {
         Type::Int => Some("int"),
         Type::Float => Some("float"),
         Type::Bool => Some("bool"),
+        Type::Optional(_) => Some("Optional"),
         Type::Named(name) => Some(name),
         _ => None,
     }
@@ -326,7 +327,8 @@ impl Lowering<'_> {
                 if let Some(owner) = self.type_named(object) {
                     // A function on a built-in type, like `str.from_code`.
                     let key = format!("{owner}.{name}");
-                    return signatures.get(&key).is_none().then_some((key, None, false));
+                    let written = signatures.get(&self.context.base_key(&key)).is_some();
+                    return (!written).then_some((key, None, false));
                 }
                 let held = self.object_type(object)?;
                 let ty = &held;

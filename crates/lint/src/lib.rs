@@ -4,6 +4,7 @@
 
 mod asserts;
 mod calls;
+mod cases;
 mod chains;
 mod compares;
 mod conversions;
@@ -109,6 +110,14 @@ pub fn needless_conversions(module: &Module, sources: &Sources) -> Vec<Lint> {
 #[must_use]
 pub fn double_lookups(module: &Module, sources: &Sources) -> Vec<Lint> {
     lookups::of(module, sources)
+}
+
+/// Every case written with more than it needs where the type is known, in a module that checks,
+/// each with its fix. `fennec fix` asks for these, and `lint` doesn't report them: the examples
+/// have to pass it, and these move to `.Case` when it's made a rule.
+#[must_use]
+pub fn short_cases(module: &Module, sources: &Sources) -> Vec<Lint> {
+    cases::of(module, sources)
 }
 
 /// Every `x == x` and `x != x` on a name or field of a plain type, in a module that checks. It

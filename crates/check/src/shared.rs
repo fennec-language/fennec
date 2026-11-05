@@ -123,6 +123,10 @@ impl Checker {
     }
 }
 
+/// Why a lock body can't hand on what holds a handle, and what to do instead.
+const RETAKES: &str =
+    "the call could lock the handle again: do that work here, through the locked name, or after the block";
+
 impl FnCx<'_> {
     /// `with value as name:`, or `with a, b as mut x, mut y:`. Several values are `shared`
     /// handles locked together, and a handle is always named: the block changes it through that
@@ -216,16 +220,74 @@ impl FnCx<'_> {
         ));
     }
 
-    /// Reports a `shared` handle passed to a call inside a lock body, which could lock it again.
+    /// Reports a `shared` handle passed to a call inside a lock body, which could lock it again:
+    /// on its own, inside a value or a list, or captured by a function.
     pub(crate) fn handle_passed(&mut self, arg: &Expr, ty: &Type) {
         let Some(held) = self.lock.clone() else { return };
+        if self.is_handle_closure(arg) {
+            let name = fennec_syntax::dotted(arg).unwrap_or_default();
+            self.error(
+                Diagnostic::new(
+                    format!("`{name}` holds a `shared` handle, so it can't be passed to a call {held}"),
+                    arg.span,
+                )
+                .with_help(RETAKES),
+            );
+            return;
+        }
         if !self.checker.program.is_shared(ty) {
+            if let Some(inner) = self.checker.shared_inside(ty, &mut Vec::new()) {
+                let message =
+                    format!("{} holds a `shared` `{inner}`, so it can't be passed to a call {held}", a(ty));
+                self.error(Diagnostic::new(message, arg.span).with_help(RETAKES));
+            }
             return;
         }
         self.error(
             Diagnostic::new(format!("a `shared` handle can't be passed to a call {held}"), arg.span)
                 .with_help("the call could lock it again: do that work here, through the locked name, or after the block"),
         );
+    }
+
+    /// Reports a method called on a value that holds a `shared` handle inside a lock body, since
+    /// the method could lock it. `object` itself being a handle is `locks_again`'s.
+    pub(crate) fn method_on_holder(&mut self, object: &Expr, ty: &Type, method: &str) {
+        let Some(held) = self.lock.clone() else { return };
+        if self.checker.program.is_shared(ty) {
+            return;
+        }
+        if let Some(inner) = self.checker.shared_inside(ty, &mut Vec::new()) {
+            let message = format!("calling `{method}` on {} that holds a `shared` `{inner}` {held}", a(ty));
+            self.error(Diagnostic::new(message, object.span).with_help(RETAKES));
+        }
+    }
+
+    /// Remembers a function that captures a `shared` handle, by its name: an arrow function given
+    /// to a name, or a nested function. `reads` is what its body reads.
+    pub(crate) fn note_closure(&mut self, name: &str, reads: &[String], own: &[String]) {
+        let holds = reads.iter().filter(|read| !own.contains(read)).any(|read| {
+            self.handle_closures.contains(read)
+                || self
+                    .lookup(read)
+                    .is_some_and(|(ty, _)| self.checker.shared_inside(&ty, &mut Vec::new()).is_some())
+        });
+        if holds {
+            self.handle_closures.insert(name.to_owned());
+        }
+    }
+
+    fn is_handle_closure(&self, expr: &Expr) -> bool {
+        matches!(&expr.kind, ExprKind::Name(name) if self.handle_closures.contains(name))
+    }
+
+    /// Reports a call inside a lock body to a function that captures a `shared` handle.
+    pub(crate) fn closure_locks_again(&mut self, callee: &Expr) {
+        let Some(held) = self.lock.clone() else { return };
+        if self.is_handle_closure(callee) {
+            let name = fennec_syntax::dotted(callee).unwrap_or_default();
+            let message = format!("calling `{name}`, which captures a `shared` handle, could lock it {held}");
+            self.error(Diagnostic::new(message, callee.span).with_help(RETAKES));
+        }
     }
 
     /// Reports what a lock body can't do: I/O, `?`, `fail` and `yield`. Each could leave the lock

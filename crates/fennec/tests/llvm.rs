@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 79;
+const BUILDING_EXAMPLES: usize = 116;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -92,6 +92,147 @@ fn outcome(output: &Output) -> Outcome {
         String::from_utf8_lossy(&output.stderr).into_owned(),
         output.status.code(),
     )
+}
+
+/// `stdout.write` shows what `print` shows, with no newline, in compiled code.
+#[test]
+fn writing_to_stdout_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "stdout_write",
+        r#"struct Point:
+    x: int
+    label: str
+
+def maybe(present: bool) -> str?:
+    if present:
+        return "here"
+    None
+
+def main(stdout: Stdout):
+    stdout.write("no newline, ")
+    stdout.write("then one\n")
+    stdout.write(1, 2.5, True, "words", [1, 2], Point(x=1, label="p"), maybe(True), maybe(False))
+    stdout.write()
+    stdout.write("")
+    stdout.print(" and print after")
+    stdout.write(f"{1 + 1}\n")
+"#,
+    )
+}
+
+/// `bytes`, wherever it's held and whatever's done with it.
+#[test]
+fn bytes_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "bytes_all",
+        r#"struct Packet:
+    id: int
+    data: bytes
+
+enum Held:
+    Empty
+    Full(data: bytes)
+
+def first(data: bytes) -> int:
+    data[0]
+
+def maybe(present: bool) -> bytes?:
+    if present:
+        return bytes([9, 8])
+    None
+
+def main(stdout: Stdout):
+    empty = bytes()
+    data = bytes([0, 1, 127, 128, 255])
+    stdout.print(empty, empty.len(), data, data.len())
+    stdout.print(data[0], data[-1], data[3], first(data))
+    stdout.print(data[1:3], data[:2], data[3:], data[-2:], data[:-2], data[10:], data[3:1])
+    stdout.print(data + bytes([7]), empty + empty, data == bytes([0, 1, 127, 128, 255]), data != data)
+    stdout.print(data < bytes([1]), data <= data, data > bytes([0]), data >= bytes([255]))
+    stdout.print(1 in data, 2 in data, 2 not in data, 300 in data, -1 in data)
+    stdout.print(data.hex(), data.hex(" "), data.hex("--"), empty.hex())
+    mut total = 0
+    for byte in data:
+        total = total + byte
+    stdout.print(total, list(data), sum(list(data)))
+    text = "héllo wörld"
+    encoded = text.encode()
+    stdout.print(encoded, encoded.len(), text.len())
+    match encoded.decode():
+        case Ok(back):
+            stdout.print(back, back == text)
+        case Err(error):
+            stdout.print(error.message)
+    match bytes([255, 254]).decode():
+        case Ok(back):
+            stdout.print(back)
+        case Err(error):
+            stdout.print(error.message)
+    for hex in ["00ff", "00 FF", "", "abc", "zz", "a é"]:
+        match bytes.fromhex(hex):
+            case Ok(made):
+                stdout.print(made)
+            case Err(error):
+                stdout.print(error.message)
+    packet = Packet(id=1, data=data[:2])
+    copied = packet
+    stdout.print(packet, copied.data, packet.data == copied.data, packet == copied)
+    packets = [packet, Packet(id=2, data=bytes())]
+    stdout.print(packets[0].data, packets[1].data, packets)
+    mut many = [data, empty, encoded]
+    many.append(bytes([3]))
+    stdout.print(many[0], many[-1], many.len(), many)
+    for held in [Held.Empty, Held.Full(data=bytes([1]))]:
+        match held:
+            case Empty:
+                stdout.print("empty")
+            case Full(inner):
+                stdout.print(inner, inner[0], held)
+    stdout.print(maybe(True), maybe(False), maybe(True) is None, maybe(False) is None)
+    got = maybe(True) else bytes()
+    stdout.print(got, got.len())
+    pair = (data[:1], 3)
+    stdout.print(pair)
+    stdout.print(f"{data[:1]} and {empty}", str(data[:2]))
+    mut grown = bytes()
+    for at in range(300):
+        grown = grown + bytes([at % 256])
+    stdout.print(grown.len(), grown[299], grown[255], grown[:3])
+    named = {"a": 1}
+    stdout.print(named["a"], grown[:9].hex())
+"#,
+    )
+}
+
+/// What fails with `bytes` says what the JIT says.
+#[test]
+fn bytes_fail_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, call) in [
+        ("bytes_past_end", "bytes([1, 2])[2]"),
+        ("bytes_before_start", "bytes([1, 2])[-3]"),
+        ("bytes_too_big", "bytes([1, 256])"),
+        ("bytes_negative", "bytes([-1])"),
+    ] {
+        same_message_as_the_jit(
+            name,
+            &format!(
+                "def main(stdout: Stdout):
+    stdout.print(1)
+    stdout.print({call})
+"
+            ),
+        )?;
+    }
+    Ok(())
 }
 
 /// `str` of what's text already. The linter takes these out of the examples, since they change
@@ -1730,6 +1871,134 @@ fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// `list` of a capability, `round` to places, the codes of text, and clearing and taking keys out
+/// of dicts and sets.
+#[test]
+fn more_small_calls_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "more_small_calls",
+        r#"struct Key:
+    x: int
+    y: int
+
+def main(args: Args, stdout: Stdout):
+    stdout.print(list(args).len())
+    for arg in args:
+        stdout.print(arg.len() > 0)
+    stdout.print(round(3.14159, 2), round(2.5, 0), round(1234.5, -2), round(0.125, 2))
+    stdout.print("héllo".codes(), "".codes(), "€".code())
+    for code in [65, 233, 8364, -1, 55296, 1114112]:
+        match str.from_code(code):
+            case Ok(text):
+                stdout.print(text, text.len())
+            case Err(error):
+                stdout.print(error.message)
+    mut numbers = {1: 2, 3: 4}
+    shared = numbers
+    numbers.clear()
+    stdout.print(numbers, shared, numbers.len())
+    numbers[5] = 6
+    stdout.print(numbers)
+    mut names = {"a": "b", "a long string that is held in a block": "c"}
+    names.clear()
+    names["d"] = "e"
+    stdout.print(names)
+    mut ints = {1, 2, 3}
+    kept = ints
+    ints.discard(2)
+    ints.discard(9)
+    ints.remove(3)
+    stdout.print(ints, kept)
+    ints.clear()
+    ints.add(7)
+    stdout.print(ints, ints.len())
+    mut words = {"a", "b", "a long string that is held in a block"}
+    words.discard("a")
+    words.discard("nope")
+    words.remove("a long string that is held in a block")
+    stdout.print(words)
+    mut keys = {Key(x=1, y=2), Key(x=3, y=4)}
+    keys.discard(Key(x=1, y=2))
+    keys.discard(Key(x=9, y=9))
+    keys.remove(Key(x=3, y=4))
+    stdout.print(keys, keys.len())
+"#,
+    )
+}
+
+/// `set.remove` of a key that isn't there fails as the JIT does.
+#[test]
+fn removing_what_a_set_lacks_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, set, key) in [
+        ("remove_int", "{1, 2}", "3"),
+        ("remove_str", "{\"a\"}", "\"b\""),
+        ("remove_long", "{\"a\"}", "\"a long string that is held in a block\""),
+    ] {
+        same_message_as_the_jit(
+            name,
+            &format!(
+                "def main(stdout: Stdout):
+    mut held = {set}
+    held.remove({key})
+    stdout.print(held)
+"
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+/// Shifts, `~`, sorting a list where it is, a `match` on a bool and `random_choice`.
+#[test]
+fn bits_sorts_and_choices_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "bits_sorts_and_choices",
+        r#"from std.random import Random
+
+def name(flag: bool) -> str:
+    match flag:
+        case True:
+            "yes"
+        case False:
+            "no"
+
+struct Bag:
+    numbers: list[int]
+
+def main(stdout: Stdout):
+    for count in [0, 1, 63]:
+        stdout.print(1 << count, -8 >> count, 255 >> count, ~count)
+    mut items = [3, 1, 2]
+    shared = items
+    items.sort()
+    stdout.print(items, shared)
+    items.sort(key=n => -n)
+    stdout.print(items, shared)
+    mut words = ["pear", "fig", "a word long enough to be held in a block"]
+    words.sort(key=word => word.len())
+    stdout.print(words)
+    words.sort()
+    stdout.print(words)
+    mut bag = Bag(numbers=[2, 1])
+    bag.numbers.sort()
+    stdout.print(bag)
+    stdout.print(name(True), name(False))
+    mut random = Random(7)
+    stdout.print(random.choice([1, 2, 3, 4]), random.choice(["a", "b", "a string long enough to be a block"]), random.choice([1.5, 2.5]))
+    stdout.print(random.choice([(1, "one"), (2, "two")]))
+"#,
+    )
+}
+
 #[test]
 fn lists_keep_value_semantics_like_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -1833,7 +2102,7 @@ def main(stdout: Stdout):
         log.add(\"in a loop\")
     stdout.print(first.seen(), logs[1].seen())
     mut inside = 0
-    with first, second as mut a, b:
+    with first, logs[1] as mut a, b:
         a.count = 100
         a.lines.append(\"inside with\")
         inside = b.count
@@ -1842,16 +2111,12 @@ def main(stdout: Stdout):
     stdout.print(logs[1])
 ";
 
-/// One cell under two names in a `with`: each sees what the other wrote, so nothing can be assumed
-/// apart. Whether this shape stops at run time is still open, and this pins what it does today.
-const ONE_CELL_TWO_NAMES: &str = r"shared Account:
+/// Two cells in a `with`, each changed through its own name.
+const TWO_CELLS: &str = r"shared Account:
     total = 0
 
     def add(mut self, amount: int):
         self.total += amount
-
-    def balance(self) -> int:
-        self.total
 
 def transfer(source: Account, target: Account, amount: int) -> bool:
     with source, target as mut x, mut y:
@@ -1860,78 +2125,54 @@ def transfer(source: Account, target: Account, amount: int) -> bool:
         y.add(amount)
     True
 
-def both(a: Account, b: Account, rounds: int) -> list[int]:
-    mut seen = list[int]()
-    with a, b as mut x, mut y:
-        for n in range(rounds):
-            before = x.total
-            y.total = before + n
-            x.add(1)
-            y.add(x.total)
-            seen.append(x.total)
-            seen.append(y.total)
-            seen.append(before)
-    seen
-
-def read_write(a: Account, b: Account) -> list[int]:
-    mut seen = list[int]()
-    with a, b as x, mut y:
-        first = x.total
-        y.total = first + 7
-        seen.append(x.total)
-        seen.append(first)
-    seen
-
 def main(stdout: Stdout):
-    one = Account(total=10)
-    mut seen = 0
-    with one, one as mut x, mut y:
-        x.total = 1
-        y.total = 2
-        seen = x.total
-    stdout.print(seen, one.total)
-    stdout.print(transfer(one, one, 1), one.total)
-    stdout.print(transfer(one, one, 2), one.total)
-    stdout.print(transfer(one, one, 5), one.total)
-    stdout.print(both(one, one, 4), one.total)
-    stdout.print(read_write(one, one), one.total)
     two = Account(total=10)
     three = Account(total=20)
     stdout.print(transfer(two, three, 4), two.total, three.total)
-    stdout.print(both(two, three, 3), two.total, three.total)
-    stdout.print(read_write(two, three), two.total, three.total)
+    stdout.print(transfer(three, two, 40), two.total, three.total)
 ";
 
-/// A comprehension replacing a list in a cell can't change the items where they are: another name
-/// for the cell reads the list as it was until the new one is stored.
-const CELL_LIST_REPLACED: &str = r#"struct Point:
-    x: int
-    y: int
+/// Each way a `with` can come to take one cell twice, all after printing something.
+const TAKEN_TWICE: [(&str, &str); 5] = [
+    ("spelled", "    with one, one as mut x, mut y:\n        x.total = y.total + 1\n"),
+    (
+        "reading",
+        "    mut seen = 0\n    with one, one as x, y:\n        seen = x.total + y.total\n    stdout.print(seen)\n",
+    ),
+    ("named", "    other = one\n    with one, other as mut x, y:\n        x.total = y.total + 1\n"),
+    ("passed", "    both(one, one)\n"),
+    ("held", "    with Holder(box=one).box, one as mut x, y:\n        x.total = y.total + 1\n"),
+];
 
-shared Box:
-    items = [1, 2, 3]
-    names = ["a", "b"]
-    points = [Point(x=1, y=2), Point(x=3, y=4)]
+const TAKING: &str = r#"shared Account:
+    total = 0
 
 struct Holder:
-    box: Box
+    box: Account
+
+def both(a: Account, b: Account):
+    with a, b as mut x, mut y:
+        x.total = y.total + 1
+
+def main(stdout: Stdout):
+    one = Account(total=10)
+    two = Account(total=20)
+    with one, two as mut x, y:
+        x.total = y.total + 1
+    stdout.print("before", one.total)
+"#;
+
+/// A comprehension replacing a list in a cell can't change the items where they are: a call in it
+/// can reach the cell another way, and reads the list as it was until the new one is stored.
+const CELL_LIST_REPLACED: &str = r"shared Box:
+    items = [1, 2, 3]
 
 def main(stdout: Stdout):
     one = Box()
-    with one, one as mut x, y:
-        x.items = [n + y.items[0] for n in x.items]
+    with one as mut x:
+        x.items = [n + x.items[0] for n in x.items]
     stdout.print(one.items)
-    with one, one as mut x, y:
-        x.points = [Point(x=p.y, y=y.points[0].x) for p in x.points]
-    stdout.print(one.points[0].x, one.points[0].y, one.points[1].x, one.points[1].y)
-    with one, one as mut x, mut y:
-        x.names = [s + y.names[0] for s in x.names]
-    stdout.print(one.names)
-    holder = Holder(box=one)
-    with holder.box, one as mut x, y:
-        x.items = [n + y.items[0] for n in x.items]
-    stdout.print(one.items)
-"#;
+";
 
 #[test]
 fn a_comprehension_replacing_a_list_in_a_cell_keeps_it_whole_for_other_names() -> std::io::Result<()> {
@@ -1942,19 +2183,88 @@ fn a_comprehension_replacing_a_list_in_a_cell_keeps_it_whole_for_other_names() -
 }
 
 #[test]
-fn one_shared_value_under_two_names_in_a_with_stays_one_value() -> std::io::Result<()> {
+fn two_cells_in_a_with_each_change_through_their_own_name() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("one_cell_two_names", ONE_CELL_TWO_NAMES)
+    same_as_the_interpreter_in_both_builds("two_cells", TWO_CELLS)
 }
 
+/// `==` on `shared` values, alone and inside other values: the same only if they're one value, as
+/// comparing what two hold would take a second lock while one is held.
+const SHARED_SAME: &str = "shared Account:
+    total = 0
+
+struct Holder:
+    account: Account
+    n: int
+
+enum Either:
+    One(account: Account)
+    Nothing
+
+def main(stdout: Stdout):
+    a = Account(total=1)
+    b = a
+    c = Account(total=1)
+    stdout.print(a == a, a == b, a == c, a != a, a != c)
+    stdout.print(Holder(a, 1) == Holder(b, 1), Holder(a, 1) == Holder(c, 1))
+    stdout.print([a] == [b], [a] == [c], a in [c], a in [b], [a, c].index(c))
+    stdout.print(Either.One(a) == Either.One(b), Either.One(a) == Either.One(c))
+    maybe: Account? = a
+    stdout.print(maybe == b, maybe == c)
+    with b as mut held:
+        held.total = 2
+    stdout.print(a == b, a == c)
+";
+
 #[test]
-fn what_changes_where_it_is_stays_right_with_one_cell_under_two_names() -> std::io::Result<()> {
+fn shared_values_are_the_same_only_if_they_are_one_value() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("shared_two_names", include_str!("fixtures/shared_two_names.fen"))
+    let (printed, ..) = interpreted("shared_same_said", SHARED_SAME)?;
+    let wanted = "True True False False True\nTrue False\nTrue False False True 1\nTrue False\nTrue False\nTrue False\n";
+    assert_eq!(printed, wanted);
+    same_as_the_interpreter_in_both_builds("shared_same", SHARED_SAME)?;
+    // A type's own `def ==` still decides, wherever it's written.
+    let own = "\
+shared Account:
+    total = 0
+
+    def ==(self, other: Account) -> bool:
+        self.total > 100
+
+def main(stdout: Stdout):
+    a = Account(total=1)
+    c = Account(total=200)
+    stdout.print(a == a, a == c, c == a, c == c, a != c, c != a)
+";
+    same_as_the_interpreter_in_both_builds("shared_own_same", own)
+}
+
+/// One cell taken twice ends the program, after what it printed, however it came about.
+#[test]
+fn a_with_taking_one_cell_twice_ends_the_program() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("taken-twice")?;
+    let path = |file: &Path| file.display().to_string();
+    for (name, shape) in TAKEN_TWICE {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("{TAKING}{shape}    stdout.print(\"not here\")\n"))?;
+        let executable = dir.join(name);
+        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = outcome(&Command::new(&executable).output()?);
+        assert_eq!(ran, outcome(&fennec(&["run", "--interp", &path(&program)], &dir)?), "{name}");
+        assert_eq!(ran.2, Some(1), "{name}");
+        assert_eq!(ran.0, "before 21\n", "{name}");
+        assert!(ran.1.contains("takes the same `shared` value twice"), "{name}: {}", ran.1);
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }
 
 #[test]
@@ -3085,6 +3395,69 @@ fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
     Ok(())
 }
 
+/// The real network, with no interpreter behind it: a server and a client on this machine, each
+/// way a call can come out, and looping over each.
+const REAL_NETWORK: &str = "from std.net import NetError, Connection
+
+def reason[T](found: Result[T, NetError]) -> str:
+    match found:
+        case Err(error):
+            error.message()
+        case _:
+            \"it worked\"
+
+def lines_of(connection: Connection) -> int fails NetError:
+    mut count = 0
+    for line in connection.lines():
+        count += line.len()
+    count
+
+def talk(net: Net, stdout: Stdout) -> int fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port > 0)
+        with net.connect(\"localhost\", server.port)? as client:
+            stdout.print(client.peer.endswith(f\":{server.port}\"))
+            client.write(\"hello\\nfrom a client\\r\\nand more\")?
+            with server.accept()? as conn:
+                stdout.print(conn.read_line()?)
+                stdout.print(conn.read_line()?)
+                stdout.print(reason(conn.read_line(timeout=20ms)))
+                stdout.print(reason(server.accept(timeout=20ms)))
+                client.write(\"\\n\")?
+                stdout.print(conn.read_line()?)
+                client.write(\"one\\ntwo\\n\")?
+                client.close()
+                stdout.print(lines_of(conn)?)
+                stdout.print(conn.read_line()?)
+                conn.close()
+                stdout.print(reason(conn.read_line()))
+                stdout.print(reason(conn.write(\"gone\")))
+    7
+
+def main(net: Net, stdout: Stdout):
+    stdout.print(reason(talk(net, stdout)))
+    server = net.listen(0).expect(\"it listens\")
+    client = net.connect(\"127.0.0.1\", server.port).expect(\"it connects\")
+    client.write(\"looped\\n\").expect(\"it writes\")
+    client.close()
+    for conn in server:
+        for line in conn.lines():
+            stdout.print(line)
+        break
+    port = server.port
+    server.close()
+    stdout.print(reason(server.accept()))
+    stdout.print(reason(net.connect(\"127.0.0.1\", port)) == f\"`127.0.0.1` refused a connection on port {port}\")
+";
+
+#[test]
+fn the_real_network_works_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("real_network", REAL_NETWORK)
+}
+
 /// A program built with no interpreter in its runtime prints what it should and has none of the
 /// interpreter in it, and one still needing the interpreter fails to link rather than to run.
 #[test]
@@ -3384,6 +3757,41 @@ fn float_keys_hash_as_decided_on_the_interpreter() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `==`, `+` and ordering on lists of each kind of item, and `==` on dicts and sets.
+#[test]
+fn operators_on_collections_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "operators_on_collections",
+        r#"struct Spot:
+    x: int
+    y: str
+
+def maybe(on: bool) -> Spot?:
+    if on:
+        return Spot(x=1, y="a")
+    None
+
+def main(stdout: Stdout):
+    a = [1, 2]
+    stdout.print(a == [1, 2], a != [1, 2], a == [1], a + [3], a, [] + a, [1.5] == [1.5], [True] != [False])
+    words = ["a", "a string long enough to be held in a block"]
+    stdout.print(words == ["a", "a string long enough to be held in a block"], words + ["c"], words != words)
+    spots = [Spot(x=1, y="a")]
+    stdout.print(spots == [Spot(x=1, y="a")], spots == [Spot(x=2, y="a")], spots + spots)
+    stdout.print([[1], [2, 3]] == [[1], [2, 3]], [[1]] + [[2]], [(1, "a")] == [(1, "a")])
+    stdout.print([1] < [1, 0], [2] < [1, 0], [1, 2] <= [1, 2], [1, 2] > [1], [1.5] >= [2.5], ["a"] < ["b"], ["b", "a"] > ["b"])
+    stdout.print({1, 2} == {2, 1}, {1, 2} != {1, 3}, {"a": 1} == {"a": 1}, {"a": 1} != {"a": 1}, {1: 2} == {1: 3})
+    stdout.print(maybe(True) == maybe(True), maybe(True) == maybe(False), maybe(False) == None)
+    mut grown = a + [3]
+    grown.append(4)
+    stdout.print(grown, a)
+"#,
+    )
+}
+
 #[test]
 fn tuples_and_structs_compare_like_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -3648,6 +4056,57 @@ fn slices_as_dict_keys_match_the_jit() -> std::io::Result<()> {
         counts[chunk] = (counts.get(chunk) else 0) + 1
     for key, value in sorted(counts.items()):
         stdout.print(key, value)
+"#,
+    )
+}
+
+/// What std's runtime calls give back: hashes, TOML and JSON with its names respelled.
+#[test]
+fn std_calls_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "std_calls",
+        r#"import std.crypto as crypto
+import std.json as json
+import std.toml as toml
+
+struct Tool:
+    main_weapon: str
+    uses: int
+
+error Wrapped:
+    why: str
+
+error Inner:
+    what: str
+
+def inner(n: int) -> int:
+    if n > 1: fail Inner(what="too many")
+    n
+
+def outer(n: int) -> int:
+    inner(n)? from Wrapped(why="inner failed")
+
+def main(stdout: Stdout):
+    stdout.print(crypto.sha256("abc"), crypto.blake3("abc"))
+    stdout.print(crypto.keyed_blake3("0000000000000000000000000000000000000000000000000000000000000000", "abc") else "no")
+    stdout.print(crypto.equal("a", "a"), crypto.equal("a", "b"))
+    tool = Tool(main_weapon="bow", uses=3)
+    stdout.print(json.dumps(tool, names=.camel_case), json.dumps(tool, names=.kebab_case))
+    stdout.print(toml.dumps(tool) else "no")
+    match toml.loads[Tool]("main_weapon = \"axe\"\nuses = 2\n"):
+        case Ok(read):
+            stdout.print(read)
+        case Err(error):
+            stdout.print(error.message)
+    match toml.loads[Tool]("not toml"):
+        case Ok(read):
+            stdout.print(read)
+        case Err(error):
+            stdout.print(error.message)
+    stdout.print(outer(1) else -1, outer(2) else -1)
 "#,
     )
 }
@@ -4485,6 +4944,41 @@ def main(stdout: Stdout):
     )
 }
 
+/// A value passed `mut`, with a copy or another name for it passed without: that one keeps what it held.
+#[test]
+fn a_value_passed_both_ways_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "passed_both_ways",
+        r#"struct Bag:
+    label: str
+    count: int
+
+def both(items: list[int], mut others: list[int]) -> int:
+    others.append(9)
+    others[0] = 7
+    items.len() * 10 + items[0]
+
+def bags(bag: Bag, mut other: Bag) -> str:
+    other.count = 5
+    other.label = "a label long enough to be held in a block"
+    f"{bag.label} {bag.count}"
+
+def main(stdout: Stdout):
+    mut twice = [1, 2]
+    stdout.print(both(copy(twice), mut twice), twice)
+    mut bag = Bag(label="short", count=1)
+    stdout.print(bags(copy(bag), mut bag), bag)
+    kept = twice
+    stdout.print(both(kept, mut twice), twice, kept)
+    held = bag
+    stdout.print(bags(held, mut bag), bag, held)
+"#,
+    )
+}
+
 /// What's written whole through a `mut` parameter belongs to the caller's local, and what `pop`
 /// and `remove_where` take out of a list keeps or loses the owners the list had. A string made
 /// for the call has no other owner, so an owner too few frees it while it's still in use.
@@ -4675,6 +5169,89 @@ def main(stdout: Stdout):
     )
 }
 
+/// Programs whose `main` fails, each with what comes first in it, in every way it can: an error
+/// of one type, one of several, one held in a block of its own, and only after printing.
+const FAILING_MAINS: [(&str, &str); 4] = [
+    (
+        "declared",
+        "def main(stdout: Stdout) fails Short:\n    stdout.print(short(1)?)\n    stdout.print(short(2)?)\n    stdout.print(\"not here\")\n",
+    ),
+    (
+        "undeclared",
+        "def main(stdout: Stdout):\n    stdout.print(short(1)?)\n    check(4)?\n    stdout.print(\"not here\")\n",
+    ),
+    (
+        "several",
+        "def main(stdout: Stdout):\n    stdout.print(short(1)?)\n    stdout.print(coded(2)?)\n    stdout.print(short(2)?)\n",
+    ),
+    (
+        "held",
+        "def main(stdout: Stdout):\n    stdout.print(coded(1)?)\n    stdout.print(held(2)?)\n    stdout.print(coded(3)?)\n",
+    ),
+];
+
+const WHAT_MAINS_CALL: &str = r#"error Short:
+    why: str
+
+error Coded:
+    code: int
+
+error Held:
+    items: list[int]
+    table: dict[str, int]
+
+def short(n: int) -> int fails Short:
+    if n > 1: fail Short(why="too big")
+    n
+
+def coded(n: int) -> int fails Coded:
+    if n > 1: fail Coded(code=n)
+    n
+
+def held(n: int) -> int fails Held:
+    if n > 1: fail Held(items=[n, n], table={"k": n})
+    n
+
+def check(n: int) fails Short:
+    if n > 3: fail Short(why="the end")
+
+"#;
+
+/// A failing `main` says what the interpreter does, at the same place, after what it printed, and
+/// the program ends with the same code.
+#[test]
+fn a_failing_main_ends_as_on_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("failing-main")?;
+    let path = |file: &Path| file.display().to_string();
+    for (name, main) in FAILING_MAINS {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("{WHAT_MAINS_CALL}{main}"))?;
+        let executable = dir.join(name);
+        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output()?;
+        let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+        assert_eq!(outcome(&ran), outcome(&interpreted), "{name}");
+        assert_eq!(ran.status.code(), Some(1), "{name}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+#[test]
+fn errors_of_several_types_go_up_and_show_as_on_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "errors_of_several_types",
+        include_str!("fixtures/errors_of_several_types.fen"),
+    )
+}
+
 /// A failed `assert` says all the JIT does, each side as the interpreter shows it.
 #[test]
 fn a_failed_assert_says_what_the_jit_does() -> std::io::Result<()> {
@@ -4726,6 +5303,9 @@ def named(present: bool) -> str?:
         "named(True) is None",
         "named(False) is not None",
         "seen(True) == seen(False)",
+        "[1, 2] == [1, 3]",
+        "[\"a\"] == [\"b\"]",
+        "{\"a\": 1} == {\"a\": 2}",
         "3 in [1, 2]",
         "1 not in [1, 2]",
         "\"z\" in {\"a\": 1}",
@@ -4745,6 +5325,21 @@ def named(present: bool) -> str?:
         assert_eq!(ours_err, jit_err, "{condition}");
     }
     Ok(())
+}
+
+/// A shift by a count that isn't one fails as the JIT says.
+#[test]
+fn a_bad_shift_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "bad_shift",
+        "def main(stdout: Stdout):
+    for count in [1, 64]:
+        stdout.print(1 << count)
+",
+    )
 }
 
 /// A float outside an int's range doesn't become one.
@@ -5041,6 +5636,7 @@ fn failing_calls_alone_in_a_function_fail_like_the_jit() -> std::io::Result<()> 
         ("alone_range", "range(0, 1, 0)"),
         ("alone_max", "max(empty)"),
         ("alone_min", "min(empty)"),
+        ("alone_shift", "1 << 64"),
     ] {
         same_message_as_the_jit(
             name,
@@ -5156,21 +5752,6 @@ enum Order:
     Hold
     Move(x: int)
 
-    def deserialize(mut src: Deserializer) -> Self fails ParseError:
-        match src.case("Order", [("Hold", False), ("Move", True)])?:
-            case 0:
-                Order.Hold
-            case _:
-                fields = [("x", "x")]
-                src.record("Move")?
-                mut x: int? = None
-                while src.next_field(fields)?:
-                    x = src.value[int]()?
-                src.end_case()?
-                if x is None:
-                    fail src.missing("x")
-                Order.Move(x=x)
-
     def str(self, mut out: StrWriter):
         match self:
             case .Hold:
@@ -5178,53 +5759,23 @@ enum Order:
             case .Move(x):
                 out.write(f"Move({x})")
 
+struct Pair[T]:
+    left: T
+    right: T
+
 struct Unit:
     name: str
-    health = 10
+    @serialize(name="hp")
+    health = 10 where health >= 0
     pet: str?
-    pace: float
-    ready: bool
-    tags: list[str]
-    seen: set[int]
-    scores: dict[str, int]
-    orders: list[Order]
-
-    def deserialize(mut src: Deserializer) -> Self fails ParseError:
-        fields = [("name", "name"), ("hp", "health"), ("pet", "pet"), ("pace", "pace"), ("ready", "ready"), ("tags", "tags"), ("seen", "seen"), ("scores", "scores"), ("orders", "orders")]
-        src.record("Unit")?
-        mut name: str? = None
-        mut health: int? = None
-        mut pet: str? = None
-        mut pace = 0.0
-        mut ready = False
-        mut tags = list[str]()
-        mut seen = set[int]()
-        mut scores = dict[str, int]()
-        mut orders = list[Order]()
-        while src.next_field(fields)?:
-            match src.field_at():
-                case 0:
-                    name = src.value[str]()?
-                case 1:
-                    health = src.value[int]()?
-                case 2:
-                    if not src.none()?:
-                        pet = src.value[str]()?
-                case 3:
-                    pace = src.value[float]()?
-                case 4:
-                    ready = src.value[bool]()?
-                case 5:
-                    tags = src.value[list[str]]()?
-                case 6:
-                    seen = src.value[set[int]]()?
-                case 7:
-                    scores = src.value[dict[str, int]]()?
-                case _:
-                    orders = src.value[list[Order]]()?
-        if name is None:
-            fail src.missing("name")
-        Unit(name=name, health=health else 10, pet=pet, pace=pace, ready=ready, tags=tags, seen=seen, scores=scores, orders=orders)
+    pace = 0.0
+    ready = False
+    tags = list[str]()
+    seen = set[int]()
+    scores = dict[str, int]()
+    orders = list[Order]()
+    @skip
+    visits = 7
 
 def read(text: str) -> Unit fails ParseError:
     mut src = Words(parts=text.split(" "))
@@ -5248,11 +5799,16 @@ def main(stdout: Stdout):
     stdout.print(shown("Spot end"))
     stdout.print(shown("Unit orders 1 Wander end"))
     stdout.print(shown("Unit tags 2 a"))
+    stdout.print(shown("Unit name ash hp -1 end"))
+    mut src = Words(parts="Pair left 1 right 2 end".split(" "))
+    pair = src.value[Pair[int]]() else Pair(left=0, right=0)
+    skipped = read("Unit name ash end") else Unit(name="none", pet=None)
+    stdout.print(pair.left, pair.right, skipped.visits)
 "#;
 
-/// A format and a type written by hand on `Deserializer` and `Deserializable`, as generated code
-/// will be: every kind of value reads through one `T.deserialize`, a field left out takes its
-/// default or says it's missing, and each failure stops the read and says why.
+/// A format written by hand on `Deserializer`, reading types whose `deserialize` is generated: every
+/// kind of value reads through one `T.deserialize`, a field left out takes its default or says
+/// it's missing, and each failure stops the read and says why.
 #[test]
 fn a_format_reads_a_type_through_its_deserialize() -> std::io::Result<()> {
     if !ready() {
@@ -5275,7 +5831,9 @@ fn a_format_reads_a_type_through_its_deserialize() -> std::io::Result<()> {
          failed: no field `size` at 2\n\
          failed: `Spot` should be a Unit at 1\n\
          failed: no case `Wander` in Order at 4\n\
-         failed: out of words at 4\n"
+         failed: out of words at 4\n\
+         failed: in the text, Unit.health breaks its `where` rule at 6\n\
+         1 2 7\n"
     );
     Ok(())
 }

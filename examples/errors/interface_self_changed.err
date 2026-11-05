@@ -1,0 +1,7 @@
+error: `Count` isn't a `Source`: it has no `next(self) -> int`. Its `next` changes `self`
+  --> examples/errors/interface_self_changed.fen:16:18
+   |
+16 |     stdout.print(two(counter), counter.left)
+   |                  ^^^^^^^^^^^^
+   |
+   = help: write `mut self` in the interface's `next`, or don't change `self` here

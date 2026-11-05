@@ -3,3 +3,5 @@ error: `nmae` doesn't exist
   |
 3 |     stdout.print(f"hello, {  nmae }")
   |                              ^^^^
+  |
+  = help: did you mean `name`?

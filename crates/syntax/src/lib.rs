@@ -8,6 +8,7 @@ pub mod dump;
 pub mod fuse;
 mod lexer;
 mod modules;
+mod mut_to_ref;
 mod parser;
 pub mod rename;
 mod sources;
@@ -28,6 +29,7 @@ pub use modules::{
     Imported, dotted, importable_type, member as std_member, module_as_value, package_member, short_module,
     std_import,
 };
+pub use mut_to_ref::{Renamed, mut_to_ref};
 pub use parser::{parse, parse_at, parse_prelude};
 pub use sources::Sources;
 pub use span::Span;

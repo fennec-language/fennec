@@ -62,6 +62,9 @@ impl FnCx<'_> {
             }
             ExprKind::Binary { op: op @ (BinOp::Eq | BinOp::NotEq), lhs, rhs } => {
                 let (left, right) = self.compared(lhs, rhs);
+                if *op == BinOp::NotEq && left == Type::Float {
+                    self.not_a_nan_test(lhs, rhs, span);
+                }
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
             ExprKind::Binary { op, lhs, rhs } => {
@@ -124,7 +127,11 @@ impl FnCx<'_> {
             }
             ExprKind::Comprehension { kind, elem, value, names, iter, cond } => {
                 let parts = (elem.as_ref(), value.as_deref(), cond.as_deref());
-                let (elem, value) = self.comprehension(parts, names, iter, span);
+                let kept =
+                    *kind == CompKind::Generator && !self.worked_out_here.contains(&(span.start, span.end));
+                self.kept_generators += usize::from(kept);
+                let (elem, value) = self.comprehension(parts, names, iter, span, kept);
+                self.kept_generators -= usize::from(kept);
                 match kind {
                     CompKind::List => Type::list(elem),
                     CompKind::Generator => {
@@ -172,6 +179,38 @@ impl FnCx<'_> {
         Type::Unknown
     }
 
+    /// A name that doesn't exist, and what was probably meant if there's nothing else to say.
+    pub(crate) fn unknown(&self, name: &str, span: Span) -> Diagnostic {
+        let problem = unknown_name(name, span);
+        match self.similar_name(name).filter(|_| problem.help.is_none()) {
+            Some(similar) => problem.with_help(format!("did you mean `{similar}`?")),
+            None => problem,
+        }
+    }
+
+    /// `print` or `console`, which a newcomer writes first: what to write instead, in the function
+    /// it's written in. With a `Stdout` already in the signature, it's only a matter of using it.
+    fn no_global_output(&self, name: &str, span: Span) -> Diagnostic {
+        const WHY: &str = "a function reaches outside itself only through what's in its signature";
+        let diagnostic = Diagnostic::new(format!("there's no global `{name}`"), span);
+        if let Some(held) = self.name_holding(&Type::named("Stdout")) {
+            let diagnostic = diagnostic.with_help(format!("{WHY}: write `{held}.print(...)`"));
+            return if name == "print" {
+                diagnostic.with_fix(span, format!("{held}.print"))
+            } else {
+                diagnostic
+            };
+        }
+        let to_add = if self.key == "main" {
+            "so write `def main(stdout: Stdout):`".to_owned()
+        } else if self.in_a_test() {
+            "so give this test a `(stdout: Stdout)` after its name".to_owned()
+        } else {
+            format!("so give `{}` a `stdout: Stdout` parameter and pass it from `main`", self.key)
+        };
+        diagnostic.with_help(format!("{WHY}, {to_add}, then `stdout.print(...)`"))
+    }
+
     fn name(&mut self, name: &str, span: Span) -> Type {
         if let Some((ty, _)) = self.lookup(name) {
             return ty;
@@ -203,8 +242,10 @@ impl FnCx<'_> {
         } else if builtins::is_builtin(name) || self.checker.program.imported(name, span).is_some() {
             Diagnostic::new(format!("`{name}` can only be called"), span)
                 .with_help(format!("call it, like `{name}(...)`, or pass an arrow function that calls it"))
+        } else if matches!(name, "print" | "console") {
+            self.no_global_output(name, span)
         } else {
-            unknown_name(name, span)
+            self.unknown(name, span)
         };
         self.error(problem);
         Type::Unknown
@@ -266,6 +307,20 @@ impl FnCx<'_> {
             _ => return None,
         };
         (self.lookup(name).is_none() && self.checker.program.is_type_name(name)).then_some(name.as_str())
+    }
+
+    /// `x != x` on a float: how other languages ask about NaN, but here NaN equals NaN, so it's
+    /// always False, and a program relying on it would go on as if nothing were wrong.
+    fn not_a_nan_test(&mut self, lhs: &Expr, rhs: &Expr, span: Span) {
+        let Some(name) =
+            fennec_syntax::dotted(lhs).filter(|name| Some(name) == fennec_syntax::dotted(rhs).as_ref())
+        else {
+            return;
+        };
+        let message = format!("`{name} != {name}` is always False, since NaN equals NaN here");
+        self.error(
+            Diagnostic::new(message, span).with_help(format!("write `{name}.is_nan()` to ask about NaN")),
+        );
     }
 
     /// An operator on two values. `spans` are the two sides', for pointing at one of them.
@@ -742,12 +797,14 @@ impl FnCx<'_> {
         names: &[String],
         iter: &Expr,
         span: Span,
+        kept: bool,
     ) -> (Type, Type) {
         let (elem, value, cond) = parts;
         let iter_ty = self.expr(iter);
         let item = self.item_type(&iter_ty, iter.span);
         let before = self.snapshot();
-        self.push(false);
+        // One kept for later runs after this line, so it can't change what's around it.
+        self.push(kept);
         self.value_functions += 1;
         self.bind_names(names, &item, false, (iter.span, span));
         if let Some(cond) = cond {
@@ -819,7 +876,9 @@ impl FnCx<'_> {
             known.push(ty);
         }
         self.value_functions += 1;
+        self.arrows += 1;
         let returns = self.expr(body);
+        self.arrows -= 1;
         self.value_functions -= 1;
         self.pop();
         let ty = Type::Arrow(known, Box::new(returns));
@@ -834,8 +893,17 @@ impl FnCx<'_> {
             span,
             "handle the failure here with `match` or `else`, so what the lock guards isn't left half changed",
         );
+        // A function used as a value says nothing of failing, so nothing is told to expect it.
+        let in_arrow = self.arrows > 0;
+        if in_arrow {
+            self.error(
+                Diagnostic::new("an arrow function can't pass a failure up with `?`", span)
+                    .with_help("give a value with `else` here, or write a loop, which can use `?`"),
+            );
+        }
         let ty = self.expr(value);
         let inner = match &ty {
+            Type::Result(inner, _) if in_arrow => inner.as_ref().clone(),
             Type::Result(inner, error) => {
                 if context.is_none() {
                     self.errors.push(error.as_ref().clone());
@@ -860,7 +928,9 @@ impl FnCx<'_> {
                 let message = format!("`from` needs an error, but this is {}", a(&error));
                 self.error(Diagnostic::new(message, context.span));
             }
-            self.errors.push(error);
+            if !in_arrow {
+                self.errors.push(error);
+            }
         }
         inner
     }

@@ -74,7 +74,7 @@ impl Interp<'_> {
                     .map(Value::Int)
                     .ok_or_else(|| Diagnostic::new("this overflows an int", span));
             }
-            (Value::Float(x), "abs", []) => return Ok(Value::Float(x.abs())),
+            (Value::Float(x), "abs" | "is_nan", []) => return Ok(float_method(*x, method)),
             _ => {}
         }
         if method == "len" && args.is_empty() {
@@ -166,14 +166,7 @@ impl Interp<'_> {
         let [Value::Str(text)] = args else { return Err(wrong_args("fromhex", span)) };
         let message = match from_hex(text) {
             Ok(bytes) => return Ok(Value::Ok(Rc::new(Value::Bytes(Rc::from(bytes))))),
-            Err(at) => match text.chars().nth(at) {
-                Some(c) => format!(
-                    "`fromhex` needs two hex digits for each byte, but found {} at {at}",
-                    format::repr(&Value::str(c.encode_utf8(&mut [0; 4])))
-                ),
-                None => "`fromhex` needs two hex digits for each byte, but the text ends halfway through one"
-                    .to_owned(),
-            },
+            Err(at) => hex_problem(text, at),
         };
         let error = self.make_value("InvalidValue", vec![("message", Value::str(&message))], span)?;
         Ok(Value::Err(Rc::new(error)))
@@ -480,7 +473,7 @@ fn bytes_hex(data: &[u8], args: &[Value], span: Span) -> Result<Value, Diagnosti
 }
 
 /// Each byte as two lowercase hex digits, with `sep` between bytes.
-fn hex(data: &[u8], sep: &str) -> String {
+pub(crate) fn hex(data: &[u8], sep: &str) -> String {
     let mut out = String::with_capacity(data.len() * (2 + sep.len()));
     for (at, byte) in data.iter().enumerate() {
         if at > 0 {
@@ -491,9 +484,22 @@ fn hex(data: &[u8], sep: &str) -> String {
     out
 }
 
+/// What's wrong with text that `from_hex` stopped reading at `at`.
+pub(crate) fn hex_problem(text: &str, at: usize) -> String {
+    match text.chars().nth(at) {
+        Some(c) => format!(
+            "`fromhex` needs two hex digits for each byte, but found {} at {at}",
+            format::repr(&Value::str(c.encode_utf8(&mut [0; 4])))
+        ),
+        None => {
+            "`fromhex` needs two hex digits for each byte, but the text ends halfway through one".to_owned()
+        }
+    }
+}
+
 /// The bytes that pairs of hex digits spell, with ASCII whitespace allowed between pairs. A
 /// failure gives the position, in characters, of what doesn't fit.
-fn from_hex(text: &str) -> Result<Vec<u8>, usize> {
+pub(crate) fn from_hex(text: &str) -> Result<Vec<u8>, usize> {
     let mut bytes = Vec::new();
     let mut chars = text.chars().enumerate();
     while let Some((at, c)) = chars.next() {
@@ -506,4 +512,9 @@ fn from_hex(text: &str) -> Result<Vec<u8>, usize> {
         bytes.push(u8::try_from(high * 16 + low).map_err(|_| at)?);
     }
     Ok(bytes)
+}
+
+/// `x.abs()` or `x.is_nan()`.
+fn float_method(x: f64, method: &str) -> Value {
+    if method == "abs" { Value::Float(x.abs()) } else { Value::Bool(x.is_nan()) }
 }

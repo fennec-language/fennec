@@ -1,6 +1,7 @@
 //! `self-compare`: `x == x` or `x != x`, which always gives the same answer, so one side is
 //! almost always a mistake. That holds for a float too, since `==` treats NaN as equal to NaN:
-//! `x.is_nan()` asks about NaN. There's no fix, since only the author knows what was meant. A
+//! `x.is_nan()` asks about NaN, and `x != x` on a float is the checker's error. There's no fix,
+//! since only the author knows what was meant. A
 //! name or field of a plain type is all this looks at: a call may give something else the second
 //! time, and a type of its own may mean anything by `==`. So this looks at a program that checks.
 

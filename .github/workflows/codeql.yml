@@ -1,10 +1,13 @@
 name: CodeQL
 
+# Changes land on main as soon as they're merged, after the gate on the machine they're written on
+# (see `docs/landing.md`), so this runs after the merge rather than before it. A red run gets a fix
+# or a revert.
 on:
   push:
     branches: [main]
-  pull_request:
-  merge_group:
+  # `staging.yml` runs this on the commit it may move main to.
+  workflow_call:
   schedule:
     - cron: "23 4 * * 1"
 
@@ -14,9 +17,11 @@ permissions:
 # A newer push to the same pull request cancels its older run. Pushes to main share a group, which
 # keeps one running and only the newest waiting: each run covers every commit before it, and the
 # one running finishes, as it's what saves the caches pull requests start from. Anything else,
-# like a merge group, gets a group of its own, since sharing one would drop some that are needed.
+# like a merge group or a run for `staging.yml`, gets a group of its own, since sharing one would
+# drop some that are needed.
+# The name is written out, since `staging.yml` runs this and CI together, under its own name.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.event_name == 'push' && 'main' || github.run_id }}
+  group: CodeQL-${{ github.event_name == 'pull_request' && github.ref || github.ref == 'refs/heads/main' && github.event_name == 'push' && 'main' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

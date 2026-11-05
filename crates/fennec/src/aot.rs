@@ -325,8 +325,24 @@ fn emitted_with(
     reached: &fennec_syntax::Module,
     emit: fn(&fennec_ir::Program, fennec_llvm::Cpu) -> Emits,
 ) -> Result<Emitted, String> {
-    let checked =
-        fennec_check::check(reached).map_err(|_| "the program didn't check once trimmed".to_owned())?;
+    // Reading and writing JSON and TOML go through std's code in Fennec where they can, here alone,
+    // so other engines keep the interpreter's. Where LLVM can't take that code yet, they don't.
+    let mut routed = reached.clone();
+    if fennec_check::route_formats_natively(&mut routed)
+        && let Ok(emitted) = emitted_as_written(&routed, emit)
+    {
+        return Ok(emitted);
+    }
+    emitted_as_written(reached, emit)
+}
+
+/// What LLVM emits for a trimmed program, with its calls as they are.
+fn emitted_as_written(
+    reached: &fennec_syntax::Module,
+    emit: fn(&fennec_ir::Program, fennec_llvm::Cpu) -> Emits,
+) -> Result<Emitted, String> {
+    let checked = fennec_check::check(reached)
+        .map_err(|problems| format!("the program didn't check once trimmed: {problems:?}"))?;
     // `parallel` runs on the runtime's threads, its work lifted for each range of positions.
     let mut lowered = fennec_ir::lower_with(
         reached,

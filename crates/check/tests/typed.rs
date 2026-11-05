@@ -257,7 +257,13 @@ fn the_standard_library_writes_every_return_type() {
             };
             for def in defs.iter().filter(|def| def.ret.is_none()) {
                 let key = owner.map_or_else(|| def.name.clone(), |owner| format!("{owner}.{}", def.name));
-                let returns = &checked.signatures.get(&key).unwrap().returns;
+                // A function of a module other than the core is known by its module's name too.
+                let found = checked.signatures.get(&key).or_else(|| {
+                    let suffix = format!(".{key}");
+                    let mut named = checked.signatures.iter().filter(|(name, _)| name.ends_with(&suffix));
+                    named.next().map(|(_, signature)| signature)
+                });
+                let returns = &found.unwrap_or_else(|| panic!("`{key}` isn't checked")).returns;
                 let nothing = match returns {
                     Type::Result(value, _) => **value == Type::Unit,
                     other => *other == Type::Unit,

@@ -38,7 +38,7 @@ def built_in_interfaces() -> list[str]:
 
 def built_in_types() -> list[str]:
     [
-        "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "SoaList", "Iterator",
+        "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "array", "SoaList", "Iterator",
         "set", "dict", "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process",
         "Entropy", "Net", "Result", "->",
     ]
@@ -251,7 +251,9 @@ struct Program:
         wanted = self.type_arg_count(name, written.args.len())
         if written.args.len() != wanted: fail wrong_type_args(written, wanted)
         mut args = []
-        for arg in written.args:
+        # An array's size is a number, not a type.
+        types = written.args[:1] if name == "array" else written.args
+        for arg in types:
             args.append(self.resolve_within(arg, generics, depth)?)
         mut ty = Type.Unknown
         if builtin:
@@ -285,7 +287,7 @@ struct Program:
     def type_arg_count(self, name: str, given: int) -> int:
         if name == "->": return max(given, 1)
         if name in ["list", "set", "SoaList", "Iterator", "Id", "Table"]: return 1
-        if name in ["dict", "Result"]: return 2
+        if name in ["dict", "Result", "array"]: return 2
         if name == "tuple": return given
         self.type_params(name).len()
 
@@ -308,6 +310,9 @@ def builtin_type(name: str, args: list[Type]) -> Type:
         case "list":
             Type.List(args[0])
         case "SoaList":
+            Type.List(args[0])
+        # The self-hosted checker has no fixed-size arrays of its own yet, so it reads one as a list.
+        case "array":
             Type.List(args[0])
         # The self-hosted checker has no generators of its own yet, so it reads one as a list.
         case "Iterator":

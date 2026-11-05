@@ -8,11 +8,11 @@
 //!         case .Int(value): .Int(value)   # the return type makes it ExprKind.Int
 //! ```
 
-use fennec_syntax::{Expr, ExprKind, Span};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, Span};
 
 use crate::function::FnCx;
 use crate::program::TypeKind;
-use crate::types::Type;
+use crate::types::{Type, a};
 
 impl FnCx<'_> {
     /// An expression's type, where a value of type `expected` goes.
@@ -37,6 +37,9 @@ impl FnCx<'_> {
             }
             ExprKind::Match { subject, arms } => {
                 self.match_expr(subject, arms, expr.span, Some(expected.clone()))
+            }
+            ExprKind::List(items) if let Type::Array(item, size) = self.checker.settled(expected) => {
+                self.array_literal(items, &item, size, expr.span)
             }
             ExprKind::List(_) => {
                 let ty = self.expr_kind(expr);
@@ -111,6 +114,33 @@ impl FnCx<'_> {
             self.checker.cases.insert((span.start, span.end), owner.clone());
             owner
         })
+    }
+
+    /// `[1.0, 0.0, 0.0, 1.0]` where an `array[float, 4]` goes: every item fits, and there are
+    /// exactly as many as the array holds.
+    fn array_literal(&mut self, items: &[Expr], item: &Type, size: u64, span: Span) -> Type {
+        for each in items {
+            let got = self.expr_as(each, item);
+            if !self.checker.fits(item, &got) {
+                let message = format!("this array holds {}, not {}", a(item), a(&got));
+                self.error(Diagnostic::new(message, each.span));
+            }
+        }
+        let written = u64::try_from(items.len()).unwrap_or(u64::MAX);
+        if written != size {
+            let plural = if written == 1 { "item" } else { "items" };
+            self.error(
+                Diagnostic::new(
+                    format!("this array holds {size} items, but this list has {written} {plural}"),
+                    span,
+                )
+                .with_help(format!(
+                    "write all {size}, or make it with `{}()` and set the ones you need",
+                    Type::Array(Box::new(item.clone()), size)
+                )),
+            );
+        }
+        Type::Array(Box::new(item.clone()), size)
     }
 }
 

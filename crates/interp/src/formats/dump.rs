@@ -119,6 +119,7 @@ fn write_json(out: &mut String, value: &Value, indent: Option<usize>, depth: usi
         Value::Float(x) if x.is_finite() => out.push_str(&float(*x)),
         Value::Float(_) => return Err("JSON can't hold inf or nan".to_owned()),
         Value::Str(text) => out.push_str(&quoted(text)),
+        Value::Bytes(data) => out.push_str(&quoted(&super::base64::encode(data))),
         Value::List(items) | Value::Tuple(items) => {
             let entries = items.iter().map(|item| (None, item.clone())).collect();
             json_container(out, ('[', ']'), entries, indent, depth)?;
@@ -270,6 +271,7 @@ fn toml_value(value: &Value) -> Result<String, String> {
         Value::Int(n) => n.to_string(),
         Value::Float(x) => float(*x),
         Value::Str(text) => quoted(text),
+        Value::Bytes(data) => quoted(&super::base64::encode(data)),
         Value::List(items) | Value::Tuple(items) => {
             let items: Result<Vec<String>, String> = items.iter().map(toml_value).collect();
             format!("[{}]", items?.join(", "))

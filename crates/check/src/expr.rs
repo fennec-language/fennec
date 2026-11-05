@@ -491,9 +491,11 @@ impl FnCx<'_> {
             return;
         }
         let held = match collection {
-            Type::List(held) | Type::Buffer(held) | Type::Set(held) | Type::Dict(held, _) => {
-                held.as_ref().clone()
-            }
+            Type::List(held)
+            | Type::Array(held, _)
+            | Type::Buffer(held)
+            | Type::Set(held)
+            | Type::Dict(held, _) => held.as_ref().clone(),
             Type::Table(held) => Type::Id(held.clone()),
             Type::Str => Type::Str,
             Type::Bytes => Type::Int,
@@ -739,6 +741,7 @@ impl FnCx<'_> {
     pub(crate) fn item_type(&mut self, ty: &Type, span: Span) -> Type {
         match self.checker.settled(ty) {
             Type::List(item)
+            | Type::Array(item, _)
             | Type::Buffer(item)
             | Type::Set(item)
             | Type::Iterator(item)

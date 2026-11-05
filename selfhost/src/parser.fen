@@ -536,8 +536,13 @@ struct Parser:
         start = self.span()
         mut args = []
         mut name = ""
+        size = array_size(self.peek())
         if self.eat_keyword("None"):
             name = "None"
+        elif size is not None:
+            # An array's size: `16` in `array[float, 16]`.
+            self.advance()
+            name = f"{size}"
         elif self.eat_punct("("):
             while not self.at_punct(")"):
                 args.append(self.type_expr()?)
@@ -561,6 +566,12 @@ struct Parser:
             self.expect_punct("]")?
         optional = self.eat_punct("?")
         TypeExpr(name=name, args=args, optional=optional, span=start.to(self.prev_span()))
+
+## The number a token is, when it can be an array's size in a type.
+def array_size(tok: Tok) -> int?:
+    match tok:
+        case .Int(value): value
+        case _: None
 
 ## Whether a token is a keyword that can name a field, like `type`.
 def is_field_word(tok: Tok) -> bool:

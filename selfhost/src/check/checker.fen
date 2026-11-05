@@ -179,7 +179,7 @@ def as_type(expr: Expr) -> TypeExpr?:
                         # `dict[str, int]` has two types; `list[(int, int)]` has one, a tuple,
                         # whose span starts at its `(` rather than at its first item.
                         case .Tuple(items) if items.len() > 0 and items[0].span.start == index.span.start:
-                            found = as_types(items)
+                            found = as_types(items, True)
                             if found is None:
                                 return None
                             args = found
@@ -191,17 +191,24 @@ def as_type(expr: Expr) -> TypeExpr?:
                     TypeExpr(name=name, args=args, optional=False, span=expr.span)
                 case _: None
         case .Tuple(items):
-            found = as_types(items)
+            found = as_types(items, False)
             if found is None:
                 return None
             TypeExpr(name="tuple", args=found, optional=False, span=expr.span)
         case _: None
 
 
-def as_types(items: list[Expr]) -> list[TypeExpr]?:
+## A type in brackets with others, or a number there: an array's size, `16` in
+## `array[float, 16]`.
+def as_type_or_size(item: Expr) -> TypeExpr?:
+    match item.kind:
+        case .Int(size): TypeExpr(name=f"{size}", args=[], optional=False, span=item.span)
+        case _: as_type(item)
+
+def as_types(items: list[Expr], sizes: bool) -> list[TypeExpr]?:
     mut types = []
     for item in items:
-        found = as_type(item)
+        found = as_type_or_size(item) if sizes else as_type(item)
         if found is None:
             return None
         types.append(found)

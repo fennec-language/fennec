@@ -673,6 +673,10 @@ impl Parser {
         let mut args = Vec::new();
         let name = if self.eat_kw(Kw::None) {
             "None".to_owned()
+        } else if let Tok::Int(size) = self.peek().clone() {
+            // An array's size: `16` in `array[float, 16]`.
+            self.advance();
+            size.to_string()
         } else if self.eat_p(Punct::LParen) {
             while !self.at_p(Punct::RParen) {
                 args.push(self.type_expr()?);

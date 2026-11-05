@@ -70,6 +70,17 @@ impl Interp<'_> {
                 {
                     return self.method_call(receiver, name, *optional, args, span);
                 }
+                // `array.new[float, 16](0.0)`, what `array[float, 16]()` is written in as: here an
+                // array is a list that never changes size.
+                if matches!(&object.kind, ExprKind::Name(name) if name == "array.new")
+                    && let ExprKind::Tuple(parts) = &index.kind
+                    && let Some(ExprKind::Int(size)) = parts.get(1).map(|size| &size.kind)
+                    && let [zero] = args
+                {
+                    let zero = self.eval(&zero.value)?;
+                    let size = usize::try_from(*size).unwrap_or(0);
+                    return Ok(Value::list(vec![zero; size]));
+                }
                 let function = self.eval(object)?;
                 match (&function, index.as_type()) {
                     (Value::Builtin(name), Some(ty)) if matches!(*name, "json.loads" | "toml.loads") => {

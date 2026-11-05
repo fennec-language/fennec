@@ -1,6 +1,7 @@
 //! `std.json` and `std.toml`: reading text into Fennec values and writing values back out.
 //! Bad text fails with a `ParseError` that says the line and column of the problem.
 
+mod base64;
 mod decode;
 mod dump;
 mod ids;

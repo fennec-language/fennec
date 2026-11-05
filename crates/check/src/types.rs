@@ -26,6 +26,8 @@ pub enum Type {
     /// `Buffer[T]`: the growable, counted run of slots `list` is built on, with public
     /// methods. Its block is a list's.
     Buffer(Box<Type>),
+    /// `array[T, N]`: exactly `N` items, held where the array is, with no block of their own.
+    Array(Box<Type>, u64),
     Set(Box<Type>),
     Dict(Box<Type>, Box<Type>),
     /// A generator: items one at a time, as they're asked for, once.
@@ -104,6 +106,7 @@ impl Type {
             Type::Bytes => "bytes".to_owned(),
             Type::List(_) => "list".to_owned(),
             Type::Buffer(_) => "Buffer".to_owned(),
+            Type::Array(..) => "array".to_owned(),
             Type::Set(_) => "set".to_owned(),
             Type::Iterator(_) => "Iterator".to_owned(),
             Type::Dict(..) => "dict".to_owned(),
@@ -122,7 +125,13 @@ impl Type {
     pub(crate) fn is_collection(&self) -> bool {
         matches!(
             self,
-            Type::List(_) | Type::Buffer(_) | Type::Str | Type::Bytes | Type::Dict(..) | Type::Set(_)
+            Type::List(_)
+                | Type::Buffer(_)
+                | Type::Array(..)
+                | Type::Str
+                | Type::Bytes
+                | Type::Dict(..)
+                | Type::Set(_)
         )
     }
 
@@ -139,6 +148,7 @@ impl Type {
         match self {
             Type::List(inner)
             | Type::Buffer(inner)
+            | Type::Array(inner, _)
             | Type::Set(inner)
             | Type::Iterator(inner)
             | Type::Optional(inner)
@@ -160,6 +170,7 @@ impl Type {
         let mapped = match self {
             Type::List(item) => Type::List(inner(item)),
             Type::Buffer(item) => Type::Buffer(inner(item)),
+            Type::Array(item, size) => Type::Array(inner(item), *size),
             Type::Set(item) => Type::Set(inner(item)),
             Type::Iterator(item) => Type::Iterator(inner(item)),
             Type::Optional(item) => Type::optional(*inner(item)),
@@ -192,6 +203,7 @@ impl Type {
             Type::Str => Some("str"),
             Type::List(_) => Some("list"),
             Type::Buffer(_) => Some("Buffer"),
+            Type::Array(..) => Some("array"),
             Type::Dict(..) => Some("dict"),
             Type::Set(_) => Some("set"),
             Type::Optional(_) => Some("Optional"),
@@ -253,7 +265,7 @@ impl Type {
 
     /// The type as it's written in source, like `list[int]` or `Enemy?`. `None` for a type
     /// that has no written form, like one of several errors, or nothing at all.
-    pub(crate) fn source(&self) -> Option<String> {
+    pub fn source(&self) -> Option<String> {
         let all = |items: &[Type]| {
             items.iter().map(Type::source).collect::<Option<Vec<_>>>().map(|items| items.join(", "))
         };
@@ -262,6 +274,7 @@ impl Type {
             Type::None => "None".to_owned(),
             Type::List(item) => format!("list[{}]", item.source()?),
             Type::Buffer(item) => format!("Buffer[{}]", item.source()?),
+            Type::Array(item, size) => format!("array[{}, {size}]", item.source()?),
             Type::Set(item) => format!("set[{}]", item.source()?),
             Type::Iterator(item) => format!("Iterator[{}]", item.source()?),
             Type::Dict(key, value) => format!("dict[{}, {}]", key.source()?, value.source()?),
@@ -288,6 +301,7 @@ impl fmt::Display for Type {
         match self {
             Type::List(item) => write!(f, "list[{item}]"),
             Type::Buffer(item) => write!(f, "Buffer[{item}]"),
+            Type::Array(item, size) => write!(f, "array[{item}, {size}]"),
             Type::Set(item) => write!(f, "set[{item}]"),
             Type::Iterator(item) => write!(f, "Iterator[{item}]"),
             Type::Dict(key, value) => write!(f, "dict[{key}, {value}]"),

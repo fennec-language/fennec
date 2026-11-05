@@ -50,6 +50,8 @@ pub(crate) struct Checker {
     pub(crate) not_equals: BTreeSet<(u32, u32)>,
     /// The `list[T]()`, `dict[K, V]()` and `set[T]()` calls, written in as `[]`, `{}` and `set()`.
     pub(crate) empty_collections: BTreeSet<(u32, u32)>,
+    /// Each `array[T, N]()` and the zero it's filled with, written in as `array.new(zero)`.
+    pub(crate) array_zeros: BTreeMap<(u32, u32), Expr>,
     /// The fields and method calls on a value that might be missing, in a chain an `else`
     /// ends, which are written in as optional.
     pub(crate) optional_steps: BTreeSet<(u32, u32)>,
@@ -57,6 +59,9 @@ pub(crate) struct Checker {
     pub(crate) failing_steps: BTreeSet<(u32, u32)>,
     /// What each name for a standard library function written in Fennec means.
     pub(crate) std_names: BTreeMap<(u32, u32), String>,
+    /// The calls to `json` and `toml`'s `dumps` and `loads` whose type has its own `def serialize`
+    /// or `def deserialize`, each with the function in std that does the same in Fennec.
+    pub(crate) native_formats: BTreeMap<(u32, u32), String>,
     /// Each constant's type, once worked out. `None` while its value is being checked.
     pub(crate) const_types: BTreeMap<String, Option<Type>>,
     /// The functions being checked, innermost last.
@@ -113,9 +118,11 @@ impl Checker {
             generator_types: BTreeMap::new(),
             not_equals: BTreeSet::new(),
             empty_collections: BTreeSet::new(),
+            array_zeros: BTreeMap::new(),
             optional_steps: BTreeSet::new(),
             failing_steps: BTreeSet::new(),
             std_names: BTreeMap::new(),
+            native_formats: BTreeMap::new(),
             const_types: BTreeMap::new(),
             checking: Vec::new(),
             revisit: BTreeSet::new(),
@@ -197,9 +204,11 @@ impl Checker {
                 generator_types: self.generator_types,
                 not_equals: self.not_equals,
                 empty_collections: self.empty_collections,
+                array_zeros: self.array_zeros,
                 optional_steps: self.optional_steps,
                 failing_steps: self.failing_steps,
                 std_names: self.std_names,
+                native_formats: self.native_formats,
             });
         }
         let mut diagnostics = self.diagnostics;

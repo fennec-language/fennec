@@ -98,7 +98,7 @@ impl Run {
     fn failed(&self, from: usize) {
         // Its locks stay held, with what they guard half changed, and other bodies may be waiting
         // for them, so the program ends now rather than wait for every body to finish.
-        if super::threads::holds_locks() {
+        if with(|state| state.heap.holds_locks()) {
             super::aot::stop_for_failure();
         }
         self.stop.fetch_min(from, Ordering::Relaxed);

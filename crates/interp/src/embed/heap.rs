@@ -432,6 +432,11 @@ impl Heap {
         self.owner_bits = owner_bits;
     }
 
+    /// Whether this thread holds any `shared` value's lock.
+    pub(super) fn holds_locks(&self) -> bool {
+        !self.behind.is_empty() || !self.reading.is_empty()
+    }
+
     /// Takes the current table back out, leaving the one behind it current.
     pub(super) fn leave_table(&mut self) -> super::table::Table {
         self.set_cursor(Cursor::default());

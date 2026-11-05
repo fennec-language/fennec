@@ -121,6 +121,11 @@ pub(crate) fn failed_global(threads: bool) -> &'static str {
 /// this thread made it. It's 0 on the program's thread, and a worker's first shim sets it.
 const THREAD_GLOBAL: &str = "@fennec_thread = external dso_local thread_local(initialexec) global i64";
 
+/// How a function declares `@fennec_lock_held`, the one lock word a thread remembers itself. Only a
+/// second lock held at once needs the runtime to remember it.
+pub(crate) const LOCK_HELD_GLOBAL: &str =
+    "@fennec_lock_held = external dso_local thread_local(initialexec) global ptr";
+
 /// How a function declares `@fennec_thread`, to change it.
 pub(crate) fn thread_global() -> &'static str {
     THREAD_GLOBAL

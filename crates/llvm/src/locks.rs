@@ -72,12 +72,8 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("store i64 1, ptr {word}"));
             return;
         }
-        self.declare("declare i64 @fennec_lock_note(ptr) nounwind");
         self.declare("declare void @fennec_shared_wait() nounwind");
-        let (noted, again) = (self.temp(), self.temp());
-        self.line(&format!("{noted} = call i64 @fennec_lock_note(ptr {word})"));
-        self.line(&format!("{again} = icmp ne i64 {noted}, 0"));
-        self.stop_if(&again, TAKEN_AGAIN, span);
+        self.note_taking(word, span);
         let (look, wait, try_it, done) =
             (self.label("lock_look"), self.label("lock_wait"), self.label("lock_try"), self.label("locked"));
         self.line(&format!("br label %{look}"));
@@ -98,6 +94,50 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{swapped} = cmpxchg ptr {word}, i64 {old}, i64 {want} acquire monotonic"));
         self.line(&format!("{took} = extractvalue {{ i64, i1 }} {swapped}, 1"));
         self.line(&format!("br i1 {took}, label %{done}, label %{look}"));
+        self.start_block(&done);
+    }
+
+    /// Stops if this thread holds the lock already. A thread remembers one lock itself, so one at a
+    /// time costs no call, and the runtime remembers any held beside it.
+    fn note_taking(&mut self, word: &str, span: Span) {
+        self.declare(crate::parallel::LOCK_HELD_GLOBAL);
+        let (first, same, empty) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{first} = load ptr, ptr @fennec_lock_held"));
+        self.line(&format!("{same} = icmp eq ptr {first}, {word}"));
+        self.stop_if(&same, TAKEN_AGAIN, span);
+        self.line(&format!("{empty} = icmp eq ptr {first}, null"));
+        let (claim, another, noted) =
+            (self.label("lock_first"), self.label("lock_another"), self.label("lock_noted"));
+        self.line(&format!("br i1 {empty}, label %{claim}, label %{another}, !prof !8"));
+        self.start_block(&claim);
+        self.line(&format!("store ptr {word}, ptr @fennec_lock_held"));
+        self.line(&format!("br label %{noted}"));
+        self.start_block(&another);
+        self.declare("declare i64 @fennec_lock_note(ptr) nounwind");
+        let (asked, again) = (self.temp(), self.temp());
+        self.line(&format!("{asked} = call i64 @fennec_lock_note(ptr {word})"));
+        self.line(&format!("{again} = icmp ne i64 {asked}, 0"));
+        self.stop_if(&again, TAKEN_AGAIN, span);
+        self.line(&format!("br label %{noted}"));
+        self.start_block(&noted);
+    }
+
+    /// Forgets that this thread holds a lock.
+    fn note_given_back(&mut self, word: &str) {
+        self.declare(crate::parallel::LOCK_HELD_GLOBAL);
+        let (first, same) = (self.temp(), self.temp());
+        self.line(&format!("{first} = load ptr, ptr @fennec_lock_held"));
+        self.line(&format!("{same} = icmp eq ptr {first}, {word}"));
+        let (mine, other, done) =
+            (self.label("unlock_first"), self.label("unlock_other"), self.label("unlock_noted"));
+        self.line(&format!("br i1 {same}, label %{mine}, label %{other}, !prof !8"));
+        self.start_block(&mine);
+        self.line("store ptr null, ptr @fennec_lock_held");
+        self.line(&format!("br label %{done}"));
+        self.start_block(&other);
+        self.declare("declare void @fennec_lock_forget(ptr) nounwind");
+        self.line(&format!("call void @fennec_lock_forget(ptr {word})"));
+        self.line(&format!("br label %{done}"));
         self.start_block(&done);
     }
 
@@ -126,7 +166,6 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("store i64 0, ptr {word}"));
             return;
         }
-        self.declare("declare void @fennec_lock_forget(ptr) nounwind");
         self.declare("declare i64 @fennec_shared_leave(ptr, i64) nounwind");
         self.declare(crate::parallel::thread_global());
         let (old, writer, wide, me) = (self.temp(), self.temp(), self.temp(), self.temp());
@@ -148,7 +187,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{gone} = atomicrmw sub ptr {word}, i64 1 release"));
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
-        self.line(&format!("call void @fennec_lock_forget(ptr {word})"));
+        self.note_given_back(word);
     }
 
     /// Taking several `shared` values at once: the same one twice ends the program, and otherwise

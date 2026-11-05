@@ -70,7 +70,7 @@ for ref unit in units:
 **Everything is a value unless the code says otherwise.** Structs nest freely and are stored in place. Nothing is shared unless the code says `ref`, `Id` or `shared`.
 *Why:* A reader can see every place two names reach the same thing, and the compiler keeps flat memory and every optimization everywhere else.
 
-**Fennec has no object graphs. Data lives in tables.** A thing that others point at lives in an `IdMap` or a list, and they hold its `Id`.
+**Fennec has no object graphs. Data lives in tables.** A thing that others point at lives in a `Table` or a list, and they hold its `Id`.
 *Why:* Flat tables are what keep memory contiguous, copies cheap and cycles impossible, and they're what game engines and databases already use.
 
 **A copy that can go stale is a compile error.** Copying a struct into a longer-lived place, when the copy can diverge from a source still in use, needs `copy(x)`:
@@ -99,7 +99,7 @@ def heal(hero: Hero):
 
 *Why:* It's less to build and less to get wrong. If something turns out to be missing, it's added with evidence.
 
-**There are no classes, and that's final.** Graphs and trees are solved in the standard library instead, with `IdMap`, `Tree` and `Graph`. Anything that hides the table, like `Id`s carrying their map or `with units:` blocks, is ruled out too. This removes the fallback of a `class` with `link` fields.
+**There are no classes, and that's final.** Graphs and trees are solved in the standard library instead, with `Table`, `Tree` and `Graph`. Anything that hides the table, like `Id`s carrying their map or `with units:` blocks, is ruled out too. This removes the fallback of a `class` with `link` fields.
 *Why:* A class wouldn't slow code that avoids it, but it would spread through habit and libraries, bringing pointer-chasing, cycles and harder `parallel` safety.
 
 **Named fallbacks, used only on evidence.** There's no `Frozen[T]` and no `with pool()`.
@@ -136,7 +136,7 @@ def step(ref units: Units, dt: float):
 - `for ref unit in units:` means `for i in range(units.len()):`, skipping positions that aren't live, with `unit` as a `ref` to `units[i]` inside.
 - `units` stays locked for the whole loop, as any path behind a `ref` is, so the body can't add or remove items or reach other elements. Nothing is copied or counted, and `unit` can't escape.
 - Positions are `int`s. A grid maps an `int` position to its own cell.
-- `IdMap`'s positions are its storage slots, and dead ones are skipped. A plain `for` still reads through `def iter(self)` with `yield`.
+- `Table`'s positions are its storage slots, and dead ones are skipped. A plain `for` still reads through `def iter(self)` with `yield`.
 
 *Why:* A get-and-set pair, like Python's `__getitem__` and `__setitem__`, copies each element out and back, and with copy-on-write an element that holds a collection would then copy on every iteration. A `yield` that lends a place stays cut: a lent place would have to stay locked across each suspension of a generator, and it can't be split for `parallel`. Positions add no new concept, never copy, and are what `parallel` splits by. Swift's `MutableCollection` works the same way, through an index and a subscript that writes in place.
 
@@ -175,7 +175,7 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 
 *Why:* In a values language every implicit copy happens at a known line, at most once per sharing. So a loop that copies on every iteration is either a bug or should say `copy` on purpose, and a frame loop can never quietly copy.
 
-**`IdMap` and `Id[T]` are the way to point at things.** An `Id[Enemy]` is an index, a generation and a tag for its map, made by an `IdMap[Enemy]`. It can't index a map of another type, and the tag means an ID from another map can't find the wrong item.
+**`Table` and `Id[T]` are the way to point at things.** `Table` was called `IdMap`, in `std.game`, until 2026-11-05; both are in `std.collections` now. An `Id[Enemy]` is an index, a generation and a tag for its map, made by a `Table[Enemy]`. It can't index a map of another type, and the tag means an ID from another map can't find the wrong item.
 - `map[id]` stops the program on a dead ID, like an index out of range. `map.get(id)` returns an optional, for when the item may be gone.
 - A map reports how many items are live, which makes a forgotten item visible.
 - Its storage is in chunks, so one write after a snapshot copies a chunk rather than the whole map.
@@ -792,7 +792,7 @@ def play(ref conn: Connection, ref world: World) fails NetError:
 
 **`std.sql` is one standard database interface,** modeled on the ideas of Python's DB-API. Drivers are first-party kits, with Postgres and MySQL in pure Fennec.
 
-**`Tree` and `Graph` are in `std`,** both built on `IdMap`. `Tree` keeps parents and children in sync. `Graph` isn't built yet, and its API isn't decided. This moves `Graph` up from the list of things cut from the first version.
+**`Tree` and `Graph` are in `std`,** both built on `Table`. `Tree` keeps parents and children in sync. `Graph` isn't built yet, and its API isn't decided. This moves `Graph` up from the list of things cut from the first version.
 *Why:* Hierarchies are where `Id` bookkeeping is most tedious and easiest to get wrong, so it's written once.
 
 **`std.process`, `std.crypto`, `std.log`, `std.cli` and `std.csv` are in `std` too.**
@@ -1043,14 +1043,14 @@ with net.listen(8080) as server:
 
 **`parallel` splits a collection by position.** Anything with `def len` and an `int` `def []`, plus `def is_live` if it has one, splits with nothing more to write. These are the same positions `for ref` writes back through.
 ```fennec
-def step(ref units: IdMap[Unit], dt: float):
+def step(ref units: Table[Unit], dt: float):
     for ref unit in parallel(units):
         unit.pos += unit.vel * dt
     alive = sum(1 for unit in parallel(units) if unit.health > 0)
 ```
 - A reduction combines in a tree whose leaves are ranges of at most 1,024 positions, set by the length alone, as under Determinism. How work is scheduled for a `for` loop or a comprehension may still use the element size, since their order doesn't show in results: the work-stealing pool halves a range when a thread runs out of work, down to a smallest chunk the runtime picks.
 - `for ref x in parallel(xs)` gives each task a disjoint range. That's safe only if writing position `i` touches nothing but element `i`, so the compiler checks that the `ref` form of `def []` returns a place rooted in one field of `self` and indexed by `i` itself, like `return self._items[i]`. If it doesn't, `for ref` over `parallel(...)` is a compile error naming that method, and a plain `for ref` still works.
-- `list` and `Buffer` split into contiguous ranges, which also vectorize. `IdMap` is cut at its chunk boundaries, so a task's writes touch only its own chunks. `Grid` is cut at rows. `Packed` gives each task whole lists to read. `dict`, `set`, `SortedMap` and `SortedSet` are read-only in parallel, split by their own internal ranges.
+- `list` and `Buffer` split into contiguous ranges, which also vectorize. `Table` is cut at its chunk boundaries, so a task's writes touch only its own chunks. `Grid` is cut at rows. `Packed` gives each task whole lists to read. `dict`, `set`, `SortedMap` and `SortedSet` are read-only in parallel, split by their own internal ranges.
 - A type with only `def iter(self)` and `yield` can't be split, since each item depends on the last. It works as a source, as below, and `for ref` over it in parallel is a compile error that says to add positions.
 
 *Why:* The positions a type already has for `def []` and `for ref` are exactly what splitting needs, and a fixed combine order falls out of splitting by length. Work-stealing libraries elsewhere have each type implement a splittable producer instead: a second interface every collection writes, whose writes the compiler can't check without lifetimes. Here a user type gets real parallelism for free, and one that can't prove separate writes still runs, in order.
@@ -1171,7 +1171,7 @@ struct Ring:
         for at in range(self.slots.len()):
             yield self.slots[(self.start + at) % self.slots.len()]
 ```
-- `for ref` over a type with only `iter` is a compile error that says to add positions, since the items it makes are copies and a change to one would be lost. `list`, `Buffer` and `IdMap` keep `for ref`.
+- `for ref` over a type with only `iter` is a compile error that says to add positions, since the items it makes are copies and a change to one would be lost. `list`, `Buffer` and `Table` keep `for ref`.
 - A loop over `iter` fuses into a plain loop where it can, as any stage does.
 
 *Why:* A loop shouldn't copy a collection before it starts, and a `break` should stop the work. A `for` that quietly lost its changes was the bug this replaces.

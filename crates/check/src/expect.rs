@@ -66,6 +66,10 @@ impl FnCx<'_> {
     /// a leading dot would mean the same as: `expected_kind` gives it this same expected type.
     fn note_named_case(&mut self, expr: &Expr, expected: &Type) {
         let Some((object, case)) = named_case(expr) else { return };
+        // An enum a kit has written in for a leading dot covers no source, so there it is one.
+        if object.span.start == object.span.end {
+            return;
+        }
         let Some(written) = self.type_named_by(object) else { return };
         let wanted = match self.checker.settled(expected) {
             Type::Optional(inner) => *inner,

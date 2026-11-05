@@ -1433,6 +1433,28 @@ fn fix_writes_leading_dots_where_the_type_is_known() {
     }
 }
 
+/// In a kit, the leading dot of a case its own file declares comes to the checker with its enum
+/// written in, as another file may have a case by that name. That's nothing to fix, so `fennec fix`
+/// has to settle.
+#[test]
+fn fix_leaves_leading_dots_alone_in_a_kit() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-short-cases-kit", std::process::id()));
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"cases\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    let main = "from lights import Light, on\n\nenum Color:\n    Red\n    Blue\n\ndef warm() -> Color:\n    .Red\n\ndef shown(color: Color) -> str:\n    match color:\n        case .Red: \"red\"\n        case .Blue: \"blue\"\n\ndef main(stdout: Stdout):\n    light: Light = .Red\n    stdout.print(shown(warm()), on() == light)\n";
+    let lights = "enum Light:\n    Red\n    Off\n\ndef on() -> Light:\n    .Red\n";
+    std::fs::write(dir.join("src/lights.fen"), lights).unwrap();
+    std::fs::write(dir.join("src/main.fen"), main).unwrap();
+    let folder = dir.to_string_lossy().into_owned();
+    let fixed = fennec(&["fix", &folder], "").unwrap();
+    let written = std::fs::read_to_string(dir.join("src/main.fen")).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}{}", text(&fixed.stdout), text(&fixed.stderr));
+    assert!(fixed.stdout.is_empty(), "{}", text(&fixed.stdout));
+    assert_eq!(written, main);
+}
+
 #[test]
 fn fix_reports_what_it_cant_fix() {
     let output =

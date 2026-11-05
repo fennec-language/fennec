@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 120;
+const BUILDING_EXAMPLES: usize = 126;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -3014,7 +3014,7 @@ fn dicts_of_plain_values_match_the_jit() -> std::io::Result<()> {
     }
     same_as_the_jit(
         "dict_plain_values",
-        r#"from std.game import IdMap
+        r#"from std.collections import Table
 
 struct Point:
     x: int
@@ -3065,9 +3065,9 @@ def main(stdout: Stdout):
     kept = people["you"]
     people["you"] = Named(name="other", tags=["b", "c"])
     stdout.print(people, kept, people["you"].tags[1], people == people)
-    mut ids = IdMap[Home]()
-    first = ids.insert(Home(id=1))
-    second = ids.insert(Home(id=2))
+    mut ids = Table[Home]()
+    first = ids.add(Home(id=1))
+    second = ids.add(Home(id=2))
     mut links = {first: second}
     links[second] = first
     stdout.print(links[first] == second, links[second] == first, first in links, links.len())

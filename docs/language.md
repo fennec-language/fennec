@@ -114,6 +114,7 @@ game.add("Chris")           # takes the lock for the call
 
 - A `shared` value can always change, through its `ref self` methods, so its names don't need `mut`. `self` methods only read.
 - Writing a field needs a `ref self` method or `with game as ref current:`, so the code shows how long it holds the lock.
+- A value leaving a `shared` is your own copy, and one going in is the `shared` value's own. So `names = game.names` costs a copy, and using `current.names` inside `with` doesn't.
 - It can hold another `shared` type, but never in a cycle. That's a compile error. Locks are taken outer type first, so nesting can't deadlock.
 - `def del` is allowed here and refused on a `struct`. It runs when the last owner goes away.
 - To use two together, take both at once: `with savings as ref source, checking as ref destination:`. Taking the same value twice stops the program, like an index out of range.

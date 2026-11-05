@@ -220,7 +220,7 @@ pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, en
     })
 }
 
-/// `fennec_net_call(handle, method, count, start, end)`: a method of a connection or server by its
+/// `fennec_net_call(handle, method, count, start, end)`: a method of a socket by its
 /// handle, with the last `count` inputs native code handed over as its arguments. `method` is a
 /// string block like `Connection.read_line`. Nothing's borrowed while it waits.
 pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
@@ -242,6 +242,7 @@ pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end
         .split_once('.')
     {
         Some(("Server", method)) => crate::stdlib::net::real_server(handle, method, args, timeout, at),
+        Some(("UdpSocket", method)) => crate::stdlib::net::real_udp(handle, method, args, timeout, at),
         Some((_, method)) => crate::stdlib::net::real_connection(handle, method, args, timeout, at),
         None => Err(Diagnostic::new("the native code lost a method's name", at)),
     });

@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
+use std::rc::Rc;
 use std::sync::Mutex;
 
 use fennec_syntax::rename::shown_type_name;
@@ -15,6 +16,7 @@ use super::{
 };
 use crate::embed::STATE;
 use crate::packed::{Element, Fields};
+use crate::value::Value;
 
 /// How native code writes a value of a type that writes its own text: given where the value's
 /// fields are, it hands the text to `own_text_written`.
@@ -159,6 +161,9 @@ pub(in crate::embed) fn quoted(state: &State, address: u64, out: &mut Written) {
         out.push_str(&crate::format::repr(&state.expanded(value)));
     } else if shape_word(block) == Some(CAPABILITY_SHAPE) {
         out.push_str(&crate::format::repr(&crate::embed::capabilities::read(state, block)));
+    } else if shape_word(block) == Some(super::BYTES_SHAPE) {
+        let data = crate::embed::bytes::data_of(block);
+        out.push_str(&crate::format::repr(&Value::Bytes(Rc::from(data))));
     } else if is_text(state, block) {
         let _ = write!(out, "{:?}", block_text(block));
     } else if crate::embed::dicts::is_dict(state, block) {

@@ -24,7 +24,9 @@ impl Interp<'_> {
         let receiver = self.eval(object)?;
         match &receiver {
             Value::None if optional => return Ok(Value::None),
-            Value::None => return Err(might_be_none(object.span)),
+            Value::None if self.built_in_method(&Value::None, method).is_none() => {
+                return Err(might_be_none(object.span));
+            }
             Value::Type(type_name) => return self.static_call(type_name, method, args, span),
             Value::Builtin("str") if method == "from_code" => {
                 let args = crate::collections::plain(self.eval_args(args)?, method, span)?;

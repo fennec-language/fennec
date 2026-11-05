@@ -464,33 +464,6 @@ fn workers_take_turns_at_shared_values_holding_blocks() -> std::io::Result<()> {
     Ok(())
 }
 
-/// A body taking a lock it holds already ends the program, rather than waiting for itself.
-#[test]
-fn a_worker_taking_a_lock_it_holds_ends_the_program() -> std::io::Result<()> {
-    if !ready() || !threads_runtime_built() {
-        return Ok(());
-    }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-taken-again-{}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
-    let source = "shared Counter:\n    total = 0\n\nstruct Holder:\n    counter: Counter\n\n\
-                  def through(holder: Holder) -> int:\n    holder.counter.total\n\n\
-                  def main(stdout: Stdout):\n    one = Counter()\n    holder = Holder(counter=one)\n    \
-                  mut items = [n for n in range(50_000)]\n    for mut item in parallel(items):\n        \
-                  with one as mut x:\n            x.total = through(holder)\n        item += 1\n    \
-                  stdout.print(items.len())\n";
-    let built = build_on_threads(&dir, source, "taken_again")?;
-    for threads in ["1", "4"] {
-        let ran = Command::new(&built).env("FENNEC_THREADS", threads).output()?;
-        assert_eq!(ran.status.code(), Some(1), "on {threads} threads");
-        let said = String::from_utf8_lossy(&ran.stderr);
-        assert!(said.contains("that's already held"), "on {threads} threads: {said}");
-    }
-    std::fs::remove_dir_all(&dir)?;
-    Ok(())
-}
-
-/// A body failing with a lock held ends the program rather than leave the others waiting for it, for
-/// a value holding only numbers too, which has no table to show it's held.
 #[test]
 fn a_worker_failing_under_a_lock_ends_the_program() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {

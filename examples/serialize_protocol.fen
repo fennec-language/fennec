@@ -115,41 +115,18 @@ struct Spot:
     x: int
     label: str
 
-    def serialize(self, mut out: Serializer):
-        out.record("Spot", 2)
-        out.field("x", self.x)
-        out.field("label", self.label)
-        out.end()
-
 enum Order:
     Hold
     Move(x: int)
 
-    def serialize(self, mut out: Serializer):
-        match self:
-            case .Hold:
-                out.case("Order", "Hold")
-            case .Move(x):
-                out.case_record("Order", "Move", 1)
-                out.field("x", x)
-                out.end()
-                out.end()
-
+# `def serialize` and `def deserialize` are generated from the fields.
 struct Squad:
     spots: list[Spot]
+    @serialize(name="points")
     scores: dict[str, int]
     ready: bool
     pace: float
     order: Order
-
-    def serialize(self, mut out: Serializer):
-        out.record("Squad", 5)
-        out.field("spots", self.spots)
-        out.renamed("points", self.scores)
-        out.field("ready", self.ready)
-        out.field("pace", self.pace)
-        out.field("order", self.order)
-        out.end()
 
 def shown[T: Serializable](x: T) -> str:
     mut out = Shown()
@@ -188,3 +165,7 @@ def main(stdout: Stdout):
     squad.serialize(mut counted)
     stdout.print(counted.total)
     stdout.print(shown(bytes([1, 2])))
+
+    # What might be missing is saved as what it holds, or as nothing.
+    maybes: list[int?] = [1, None]
+    stdout.print(shown(maybes))

@@ -37,10 +37,28 @@ impl FnCx<'_> {
                     return;
                 }
                 if let Some((_, false)) = self.lookup(name) {
-                    self.error(self.cannot_change(name, expr.span));
+                    let mut problem = self.cannot_change(name, expr.span);
+                    if let Some(fix) = self.write_it_there(name, expr) {
+                        problem = problem.with_help(fix);
+                    }
+                    self.error(problem);
                 }
             }
         }
+    }
+
+    /// How to change what `target = units[at]` read from, when `target.health` can't change.
+    fn write_it_there(&self, name: &str, expr: &Expr) -> Option<String> {
+        if self.origin(name) != Some(Origin::Local) {
+            return None;
+        }
+        let source = self.read_from.get(name)?;
+        let rest = crate::loops::place_text(expr);
+        let holder = source.split(['[', '.']).next().unwrap_or(source);
+        Some(format!(
+            "to change `{holder}`: write to `{source}{}`",
+            rest.strip_prefix(name).unwrap_or_default()
+        ))
     }
 
     pub(crate) fn assign(
@@ -53,6 +71,13 @@ impl FnCx<'_> {
     ) {
         match &target.kind {
             ExprKind::Name(name) => {
+                if !declare_mut
+                    && matches!(value.kind, ExprKind::Index { .. } | ExprKind::Attr { .. })
+                    && self.lookup(name).is_none()
+                    && root(value).is_some_and(|from| self.lookup(from).is_some())
+                {
+                    self.read_from.insert(name.clone(), crate::loops::place_text(value));
+                }
                 let expected = match written {
                     Some(written) => self.written_type(written),
                     None if op.is_none() => self.declared_type(name),

@@ -282,6 +282,13 @@ impl Value {
         Value::Instance(Rc::new(Instance::of(type_name, fields, true)))
     }
 
+    /// A case of an error of the standard library, with its fields in the order they're declared.
+    pub(crate) fn made_case(type_name: &str, case: &str, fields: Vec<(&str, Value)>) -> Value {
+        let mut made = Instance::of(type_name, fields, true);
+        made.case = Some(Rc::from(case));
+        Value::Instance(Rc::new(made))
+    }
+
     pub(crate) fn str(text: &str) -> Value {
         Value::Str(Rc::from(text))
     }
@@ -349,6 +356,7 @@ impl PartialEq for Value {
             (Value::Unit, Value::Unit) | (Value::None, Value::None) => true,
             (Value::Lent(a), Value::Lent(b)) => a.address == b.address,
             (Value::Generator(a), Value::Generator(b)) => Rc::ptr_eq(a, b),
+            (Value::Shared(a), Value::Shared(b)) => Rc::ptr_eq(a, b),
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => floats_same(*a, *b),

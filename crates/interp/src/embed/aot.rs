@@ -248,27 +248,29 @@ fn report_counts(counts: &heap::Counts) {
     if std::env::var_os("FENNEC_COUNTS").is_none() {
         return;
     }
-    let _ = writeln!(std::io::stderr(), "{}", counts_line(counts));
+    #[cfg(any(test, feature = "threads"))]
+    let blocked = super::serve::blocked_waits();
+    #[cfg(not(any(test, feature = "threads")))]
+    let blocked = 0;
+    let _ = writeln!(std::io::stderr(), "{}", counts_line(counts, super::parallel::calls(), blocked));
 }
 
-/// The line `report_counts` writes.
-pub(super) fn counts_line(counts: &heap::Counts) -> String {
+/// The line `report_counts` writes, given how many `parallel` calls native code made and how many
+/// network waits blocked a thread rather than parking a task. Those are kept for the whole process,
+/// so they're passed in, for a test to say what they are.
+pub(super) fn counts_line(counts: &heap::Counts, parallel_calls: u64, blocked_waits: u64) -> String {
     let line = format!(
         "copies {} copied_bytes {} largest_copy {} allocations {} allocated_bytes {}",
         counts.copies, counts.copied_bytes, counts.largest_copy, counts.allocations, counts.allocated_bytes
     );
-    // `parallel` calls native code made, when there were any.
-    let line = match super::parallel::calls() {
+    let line = match parallel_calls {
         0 => line,
         calls => format!("{line} parallel_calls {calls}"),
     };
-    // Network waits that blocked a thread rather than parking a task, when there were any.
-    #[cfg(any(test, feature = "threads"))]
-    let line = match super::serve::blocked_waits() {
+    match blocked_waits {
         0 => line,
         blocked => format!("{line} blocked_waits {blocked}"),
-    };
-    line
+    }
 }
 
 /// Ends the program for a failure where nothing can pass it on, printing what it printed and

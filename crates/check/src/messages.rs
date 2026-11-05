@@ -8,10 +8,14 @@ use crate::types::{Type, a, article};
 
 /// An unknown name, with a pointer to the Fennec spelling when it's a habit from elsewhere.
 pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
+    if name.starts_with(&format!("_{}", fennec_syntax::visit::HIDDEN)) {
+        return Diagnostic::new("`_` throws away what it's given, so it can't be read", span)
+            .with_help("give what you want to read a name of its own");
+    }
     let diagnostic = Diagnostic::new(format!("`{name}` doesn't exist"), span);
     match name {
         "print" | "console" => diagnostic.with_help(
-            "there's no global output: write with the `stdout` that `main` receives, like `stdout.print(x)`",
+            "there's no global output: a function reaches outside itself only through what's in its signature, like `stdout: Stdout`",
         ),
         "true" | "false" => diagnostic.with_help("write `True` or `False`"),
         "null" | "nil" | "none" | "undefined" => diagnostic.with_help("write `None`"),
@@ -32,6 +36,41 @@ pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
             )),
         },
     }
+}
+
+/// Which of `names` was probably meant by a name that doesn't exist: the closest, if it's a slip
+/// of a letter or two and not another word. A name of one or two letters is too short to tell.
+pub(crate) fn spelled_most_like<'n>(name: &str, names: impl Iterator<Item = &'n str>) -> Option<&'n str> {
+    let wanted: Vec<char> = name.chars().collect();
+    let allowed = (wanted.len() / 3).min(2);
+    let mut distances: Vec<(usize, &str)> = names
+        .filter_map(|other| {
+            let distance = edits(&wanted, &other.chars().collect::<Vec<char>>());
+            (distance <= allowed && distance > 0).then_some((distance, other))
+        })
+        .collect();
+    distances.sort_unstable();
+    distances.first().map(|(_, closest)| *closest)
+}
+
+/// How many letters to add, remove, change or swap with the next one, to get from `a` to `b`.
+fn edits(a: &[char], b: &[char]) -> usize {
+    let at = |row: &[usize], column: usize| row.get(column).copied().unwrap_or(usize::MAX - 1);
+    let mut two_back: Vec<usize> = Vec::new();
+    let mut last: Vec<usize> = (0..=b.len()).collect();
+    for (i, letter) in a.iter().enumerate() {
+        let mut row = vec![i + 1];
+        for (j, other) in b.iter().enumerate() {
+            let changed = at(&last, j) + usize::from(letter != other);
+            let mut best = changed.min(at(&last, j + 1) + 1).min(at(&row, j) + 1);
+            if i > 0 && j > 0 && a.get(i - 1) == Some(other) && b.get(j - 1) == Some(letter) {
+                best = best.min(at(&two_back, j - 1) + 1);
+            }
+            row.push(best);
+        }
+        two_back = std::mem::replace(&mut last, row);
+    }
+    at(&last, b.len())
 }
 
 pub(crate) fn not_mut(name: &str, span: Span) -> Diagnostic {

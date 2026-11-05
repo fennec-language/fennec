@@ -1,0 +1,8 @@
+struct Unit:
+    health = 50
+
+def main(stdout: Stdout):
+    mut units = [Unit()]
+    target = units[0]
+    target.health -= 10
+    stdout.print(units)

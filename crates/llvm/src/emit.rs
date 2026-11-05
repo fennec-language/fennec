@@ -14,9 +14,6 @@ use crate::analysis::{Analysis, Whole, callees, visit, whole};
 use crate::kinds::{Kind, struct_definitions};
 use crate::uniqueness::{FieldPath, Tracked, coming_in, unsettled, written_order};
 
-/// Why a program with bytes written into it, as `embed("path")` gives, isn't taken yet.
-pub(crate) const BYTES: &str = "it uses a Bytes, which this backend doesn't take yet";
-
 /// The level of processor code is built for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Cpu {
@@ -1077,7 +1074,7 @@ impl Emit<'_, '_, '_> {
             Operand::Float(value) => (float_text(*value), Kind::Float),
             Operand::Bool(value) => (value.to_string(), Kind::Bool),
             Operand::Str(text) => (self.literal_value(text), Kind::Str),
-            Operand::Bytes(_) => return Err(BYTES.to_owned()),
+            Operand::Bytes(data) => (self.bytes_literal(&data.0), Kind::Bytes),
             Operand::None => ("null".to_owned(), Kind::Unit),
         })
     }
@@ -1269,13 +1266,20 @@ impl Emit<'_, '_, '_> {
                 _ => self.string_binary(op, (&a, &b))?,
             },
             Kind::Str => self.string_binary(op, (&a, &b))?,
-            Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) | Kind::Maybe(_)
+            // Two `shared` values are the same only if they're one value.
+            Kind::Boxed(_) if self.is_cell(&kind) && matches!(op, BinOp::Eq | BinOp::NotEq) => {
+                let (same, cc) = (self.temp(), if op == BinOp::Eq { "eq" } else { "ne" });
+                self.line(&format!("{same} = icmp {cc} ptr {a}, {b}"));
+                same
+            }
+            Kind::Boxed(_) | Kind::Bytes | Kind::List(_) | Kind::Dict(..) | Kind::Maybe(_)
                 if matches!(op, BinOp::Eq | BinOp::NotEq) =>
             {
                 self.same_blocks(op, (&a, &b))
             }
             Kind::Closure(..) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_code(op, (&a, &b)),
             Kind::List(_) if op == BinOp::Add => self.joined_lists(&a, &b),
+            Kind::Bytes => self.bytes_binary(op, (&a, &b))?,
             Kind::List(item) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
                 self.lists_in_order(op, item, (&a, &b), span)?
             }
@@ -1614,6 +1618,7 @@ impl Emit<'_, '_, '_> {
         match name {
             // A test's `Stdout` is a fake that keeps what's printed, which the runtime holds.
             "Stdout.print" if !self.module.shared.traced => self.print(args.get(1..).unwrap_or_default()),
+            "Stdout.write" if !self.module.shared.traced => self.write(args.get(1..).unwrap_or_default()),
             "list.len" => {
                 if let Some(Operand::Local(local)) = first
                     && let Some(map) = self.known.map_walks.get(&local.0).copied()
@@ -1710,6 +1715,10 @@ impl Emit<'_, '_, '_> {
             {
                 self.capability_call(dest, other, args, span)
             }
+            // A test's network is a fake, which only the interpreter holds.
+            other if crate::analysis::is_socket_method(other) && !self.module.shared.traced => {
+                self.socket_call(dest, other, args, span)
+            }
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }
     }
@@ -1739,7 +1748,7 @@ impl Emit<'_, '_, '_> {
             Operand::Float(_) => Kind::Float,
             Operand::Bool(_) => Kind::Bool,
             Operand::Str(_) => Kind::Str,
-            Operand::Bytes(_) => return Err(BYTES.to_owned()),
+            Operand::Bytes(_) => Kind::Bytes,
             Operand::None => wanted.clone(),
         };
         if from != wanted && self.headers() {
@@ -2219,6 +2228,7 @@ def main(stdout: Stdout, args: Args, clock: Clock):
     stdout.print(args.len(), args.program, started.nanos)
     for arg in args:
         stdout.print(arg, args[0])
+    stdout.write(args.len())
 ";
         let text = text_of(source, "main")?;
         assert!(text.contains("@fennec_args_list("), "{text}");

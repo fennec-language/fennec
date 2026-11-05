@@ -1187,6 +1187,9 @@ impl Emit<'_, '_, '_> {
             }
             return self.on_blocks([&list], |emit, [block]| emit.string_index(dest, &block, index, span));
         }
+        if kind == Kind::Bytes {
+            return self.bytes_index(dest, &list, index, span);
+        }
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;
         // An item taken out to change: its count only means something once the list is alone,
@@ -1502,6 +1505,13 @@ impl Emit<'_, '_, '_> {
         let end = end.map(|end| self.operand(end)).transpose()?.map_or(lowest, |held| held.0);
         let part = self.temp();
         match kind {
+            Kind::Bytes => {
+                self.declare("declare ptr @fennec_bytes_slice(ptr, i64, i64) nounwind");
+                self.line(&format!(
+                    "{part} = call ptr @fennec_bytes_slice(ptr {object}, i64 {start}, i64 {end})"
+                ));
+                return self.assign(dest, &part);
+            }
             Kind::Str if self.headers() => {
                 let part = self.header_slice(&object, (&start, &end), span);
                 return self.assign(dest, &part);

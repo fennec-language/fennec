@@ -36,6 +36,10 @@ pub(crate) struct Checker {
     /// The enum chosen for each leading-dot case that more than one enum has, by the span
     /// of the case, as the type expected where it's written decided.
     pub(crate) cases: BTreeMap<(u32, u32), String>,
+    /// Where a case's enum is written though the type expected there says it already.
+    pub(crate) named_cases: BTreeSet<(u32, u32)>,
+    /// The `case`s that name a case of what's matched without its dot, by the span of the `case`.
+    pub(crate) undotted_cases: BTreeSet<(u32, u32)>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.
     pub(crate) float_sums: BTreeSet<(u32, u32)>,
     /// The defaults each call leaves out.
@@ -102,6 +106,8 @@ impl Checker {
             vars: Vec::new(),
             typed: BTreeMap::new(),
             cases: BTreeMap::new(),
+            named_cases: BTreeSet::new(),
+            undotted_cases: BTreeSet::new(),
             float_sums: BTreeSet::new(),
             defaults: BTreeMap::new(),
             generator_types: BTreeMap::new(),
@@ -156,13 +162,16 @@ impl Checker {
         let structs = self.structs(TypeKind::Struct);
         let errors = self.structs(TypeKind::Error);
         self.check_annotations();
+        self.check_saving_pairs();
         self.check_function_annotations();
         self.check_shared_types();
         self.settle_typed();
         if self.diagnostics.is_empty() {
             self.unknowns_left();
         }
-        let places = if self.diagnostics.is_empty() { self.names_for_places() } else { BTreeSet::new() };
+        if self.diagnostics.is_empty() {
+            self.body_rules();
+        }
         if self.diagnostics.is_empty() {
             let enums = self.enums();
             let locals = std::mem::take(&mut self.locals);
@@ -181,8 +190,9 @@ impl Checker {
                 signatures,
                 types,
                 cases: self.cases,
+                named_cases: self.named_cases,
+                undotted_cases: self.undotted_cases,
                 float_sums: self.float_sums,
-                places,
                 defaults: self.defaults,
                 generator_types: self.generator_types,
                 not_equals: self.not_equals,
@@ -327,40 +337,41 @@ impl Checker {
         self.program.generics_of(entry).into_iter().map(|generic| generic.name).collect()
     }
 
-    /// Works out every `mut x = place` in the program's own functions.
-    fn names_for_places(&mut self) -> BTreeSet<(u32, u32)> {
-        let mut places = BTreeSet::new();
+    /// The rules over whole bodies, once their types are known: what a loop goes over and a call
+    /// is given can't change another way, and a change has to be read.
+    fn body_rules(&mut self) {
         let mut problems = Vec::new();
-        let mut wanted = Vec::new();
+        let keys: Vec<String> = self
+            .program
+            .functions
+            .iter()
+            .filter(|(_, entry)| !entry.prelude)
+            .map(|(key, _)| key.clone())
+            .collect();
         for (key, entry) in self.program.functions.iter().filter(|(_, entry)| !entry.prelude) {
-            let (found, named) = crate::alias::check_function(self, &entry.def, self.typed.get(key));
-            problems.extend(found);
             problems.extend(crate::loops::check_function(self, key, &entry.def));
             problems.extend(crate::loops::check_arguments(&entry.def.body));
-            wanted.push((key.clone(), named.clone()));
-            places.extend(named.into_iter().map(|span| (span.start, span.end)));
         }
         for test in &self.program.tests {
             problems.extend(crate::loops::check_arguments(&test.body));
         }
         // A change that's lost matters only once what's written is otherwise right.
-        let clean = problems.is_empty();
-        for (key, named) in wanted.into_iter().filter(|_| clean) {
-            let Some(def) = self.program.functions.get(&key).map(|entry| entry.def.clone()) else { continue };
-            problems.extend(crate::lost::check_body(self, &key, &def.body, &named));
-        }
-        if clean {
+        if problems.is_empty() {
+            for key in keys {
+                let Some(def) = self.program.functions.get(&key).map(|entry| entry.def.clone()) else {
+                    continue;
+                };
+                problems.extend(crate::lost::check_body(self, &key, &def.body));
+            }
             for test in self.program.tests.clone() {
                 problems.extend(crate::lost::check_body(
                     self,
                     &format!("test \"{}\"", test.name),
                     &test.body,
-                    &[],
                 ));
             }
         }
         self.diagnostics.extend(problems);
-        places
     }
 
     fn params(&self, entry: &FnEntry) -> Vec<ParamType> {

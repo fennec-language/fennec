@@ -149,3 +149,96 @@ fn locks_never_nest() {
         ]
     );
 }
+
+const HOLDERS: &str = "shared Cell:
+    count = 0
+
+    def add(mut self, by: int):
+        self.count += by
+
+struct Holder:
+    cell: Cell
+
+    def poke(self):
+        self.cell.add(1)
+
+def through(holder: Holder):
+    holder.poke()
+
+def through_all(cells: list[Cell]):
+    cells[0].add(1)
+
+def apply(work: (int) -> int) -> int:
+    work(1)
+
+def run(work: () -> int) -> int:
+    work()
+";
+
+fn in_a_lock(body: &str) -> Vec<String> {
+    let body = body.replace('\n', "\n    ");
+    let found = crate::in_main_after(
+        HOLDERS,
+        &format!("one = Cell()\nwith one as mut locked:\n    locked.count += 1\n    {body}\n"),
+    );
+    found.iter().filter_map(|said| said.split(" @ ").next().map(str::to_owned)).collect()
+}
+
+#[test]
+fn what_holds_a_handle_cant_be_handed_on_under_a_lock() {
+    let found = in_a_lock("through(Holder(cell=one))");
+    assert_eq!(
+        found,
+        ["a Holder holds a `shared` `Cell`, so it can't be passed to a call while `locked` is locked"]
+    );
+    let found = in_a_lock("through_all([one])");
+    assert_eq!(
+        found,
+        ["a list[Cell] holds a `shared` `Cell`, so it can't be passed to a call while `locked` is locked"]
+    );
+    let found = in_a_lock("holder = Holder(cell=one)\nholder.poke()");
+    assert_eq!(found, ["calling `poke` on a Holder that holds a `shared` `Cell` while `locked` is locked"]);
+}
+
+#[test]
+fn a_function_that_captures_a_handle_cant_run_under_a_lock() {
+    let before = |lines: &str, body: &str| {
+        let source =
+            format!("one = Cell()\n{lines}\nwith one as mut locked:\n    locked.count += 1\n    {body}\n");
+        let found = crate::in_main_after(HOLDERS, &source);
+        found.iter().filter_map(|said| said.split(" @ ").next().map(str::to_owned)).collect::<Vec<_>>()
+    };
+    let calling = "calling `poke`, which captures a `shared` handle, could lock it while `locked` is locked";
+    let nested = "def poke():\n    one.add(1)";
+    assert_eq!(before(nested, "poke()"), [calling]);
+    let through = "def poke():\n    one.add(1)\ndef again():\n    poke()";
+    assert_eq!(
+        before(through, "again()"),
+        ["calling `again`, which captures a `shared` handle, could lock it while `locked` is locked"]
+    );
+    let stored = "work = () => one.count";
+    assert_eq!(
+        before(stored, "locked.count += work()"),
+        ["calling `work`, which captures a `shared` handle, could lock it while `locked` is locked"]
+    );
+    assert_eq!(
+        before(stored, "locked.count += run(work)"),
+        ["`work` holds a `shared` handle, so it can't be passed to a call while `locked` is locked"]
+    );
+}
+
+#[test]
+fn what_holds_no_handle_goes_on_as_before_under_a_lock() {
+    let empty: [&str; 0] = [];
+    for body in [
+        "locked.count += apply(n => n + 1)",
+        "numbers = [1]\nlocked.count += numbers.len()",
+        "def plain(n: int) -> int:\n    n + 1\nlocked.count += plain(1)",
+        // Making a value that holds it hands it to no call.
+        "holder = Holder(cell=one)\nlocked.count += 1",
+    ] {
+        assert_eq!(in_a_lock(body), empty, "{body}");
+    }
+    let outside = "one = Cell()\nholder = Holder(cell=one)\nthrough(holder)\nholder.poke()\n";
+    assert_eq!(crate::in_main_after(HOLDERS, outside), empty);
+}

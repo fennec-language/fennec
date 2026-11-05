@@ -38,6 +38,32 @@ impl Checker {
     }
 
     /// Checks the annotations on every field of the program's own types.
+    /// A type that writes one of `def serialize` and `def deserialize` writes the other, since with
+    /// neither they're generated together and they have to agree.
+    pub(crate) fn check_saving_pairs(&mut self) {
+        let names: Vec<(String, fennec_syntax::Span)> = self
+            .program
+            .types
+            .values()
+            .filter(|info| !info.prelude)
+            .map(|info| (info.def.name.clone(), info.def.span))
+            .collect();
+        for (name, span) in names {
+            let has = |checker: &Self, method: &str| checker.program.method(&name, method).is_some();
+            let (saves, loads) = (has(self, "serialize"), has(self, "deserialize"));
+            if saves != loads {
+                let (written, missing) =
+                    if saves { ("serialize", "deserialize") } else { ("deserialize", "serialize") };
+                self.diagnostics.push(
+                    Diagnostic::new(format!("`{name}` writes `def {written}` but not `def {missing}`"), span)
+                        .with_help(
+                            "a type writes both or neither: with neither, both are generated from its fields",
+                        ),
+                );
+            }
+        }
+    }
+
     pub(crate) fn check_annotations(&mut self) {
         let defs: Vec<_> =
             self.program.types.values().filter(|info| !info.prelude).map(|info| info.def.clone()).collect();

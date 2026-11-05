@@ -90,6 +90,8 @@ pub(crate) struct FnCx<'c> {
     /// The type expected of the value of the block being checked: the return type for a
     /// function's body, or what's expected of a `match` for its cases.
     pub(crate) tail: Option<Type>,
+    /// The functions in sight, by name, that capture a `shared` handle.
+    pub(crate) handle_closures: std::collections::HashSet<String>,
     /// The generators right inside what uses all of their items, by span.
     pub(crate) worked_out_here: std::collections::HashSet<(u32, u32)>,
     /// How many generators kept for later this is inside.
@@ -132,6 +134,7 @@ impl<'c> FnCx<'c> {
             first_var,
             expecting: None,
             tail: None,
+            handle_closures: std::collections::HashSet::new(),
             worked_out_here: std::collections::HashSet::new(),
             kept_generators: 0,
             value_functions: 0,
@@ -648,6 +651,22 @@ impl<'c> FnCx<'c> {
             crossed |= scope.barrier;
         }
         None
+    }
+
+    /// The innermost name in sight that holds this type.
+    pub(crate) fn name_holding(&self, ty: &Type) -> Option<String> {
+        let mut bindings = self.scopes.iter().rev().flat_map(|scope| scope.bindings.iter().rev());
+        bindings.find(|binding| binding.ty == *ty).map(|binding| binding.name.clone())
+    }
+
+    /// The name in sight, or function of the program's own, spelled most like `name`.
+    pub(crate) fn similar_name(&self, name: &str) -> Option<String> {
+        let names =
+            self.scopes.iter().flat_map(|scope| scope.bindings.iter().map(|binding| binding.name.as_str()));
+        let functions = self.checker.program.functions.iter();
+        let functions = functions.filter(|(_, entry)| !entry.prelude && entry.owner.is_none());
+        crate::messages::spelled_most_like(name, names.chain(functions.map(|(key, _)| key.as_str())))
+            .map(str::to_owned)
     }
 
     /// Where the name in sight came from.

@@ -2094,6 +2094,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "min.key"
                     | "list.remove"
                     | "main.result"
+                    | "bytes"
                     | "set.remove"
                     | "Regex.replace"
                     | "Regex.split"
@@ -2115,6 +2116,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
         | InstKind::Slice { .. }
         | InstKind::CallClosure { .. }
         | InstKind::Resume { .. }
+        | InstKind::LockAll { .. }
         | InstKind::Constant { .. } => true,
         _ => false,
     };

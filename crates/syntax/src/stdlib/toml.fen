@@ -942,6 +942,9 @@ struct TomlReader:
     def rule(self, message: str) -> ParseError:
         ParseError(message=f"in {self._where()}, {message}", line=0, column=0)
 
+    def at_item(self, at: int, message: str) -> ParseError:
+        ParseError(message=f"`{self._dotted()}[{at}]` {message}", line=0, column=0)
+
     def case(mut self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         match self._here:
             case .Text(key):

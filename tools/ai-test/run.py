@@ -10,6 +10,16 @@ apart from the writes that were lost to a copy.
     uv run tools/ai-test/run.py --tasks 5            # the first five tasks
     uv run tools/ai-test/run.py                      # every task
 
+To use answers written some other way, like by agents, with no API calls:
+
+    uv run tools/ai-test/run.py --write-prompts DIR  # what to give whoever answers
+    uv run tools/ai-test/run.py --answers DIR        # score what they wrote
+
+`--write-prompts` writes `system.md`, the instructions and the language page, and `<task>.md` for
+each task. `--answers` reads `<task>.fen` for each task, or `<task>.1.fen`, `<task>.2.fen` and so on
+for each answer in turn, when errors from `fennec check` went back between them. Then the rounds
+are counted as they are here: the first that compiles is the one that's run.
+
 The key is `ANTHROPIC_API_KEY`, or else the file `~/.anthropic-token`; nothing here holds one or
 prints it. Requests go to the Claude API itself, or to `FENNEC_AI_TEST_BASE_URL` if that's set,
 never to an `ANTHROPIC_BASE_URL` a shell happens to have. It isn't run in CI. Results go to
@@ -219,8 +229,53 @@ def check_tasks(fennec: Path, tasks: list[dict]) -> int:
     return 1 if failed else 0
 
 
+def write_prompts(tasks: list[dict], folder: Path) -> int:
+    """Writes what a model is given, so that answers written some other way start from the same."""
+    folder.mkdir(parents=True, exist_ok=True)
+    page = (REPO / "docs" / "language.md").read_text()
+    (folder / "system.md").write_text(f"{INSTRUCTIONS}\n\n{page}")
+    for task in tasks:
+        (folder / f"{task['id']}.md").write_text(task["prompt"].strip() + "\n")
+    print(f"wrote system.md and {len(tasks)} task prompts to {folder}")
+    return 0
+
+
+def answers_for(folder: Path, task: dict) -> list[Path]:
+    """A task's answers in a folder, in the order they were written."""
+    numbered = []
+    for path in folder.glob(f"{task['id']}.*.fen"):
+        turn = path.name.removeprefix(f"{task['id']}.").removesuffix(".fen")
+        if turn.isdigit():
+            numbered.append((int(turn), path))
+    if numbered:
+        return [path for _, path in sorted(numbered)]
+    single = folder / f"{task['id']}.fen"
+    return [single] if single.exists() else []
+
+
+def score_answers(fennec: Path, tasks: list[dict], folder: Path) -> list[Result]:
+    """Scores answers already written to a folder, with no API calls."""
+    results = []
+    for task in tasks:
+        answers = answers_for(folder, task)
+        result = Result(task["id"], task["topic"], "no_code", 0)
+        for round_number, path in enumerate(answers, start=1):
+            text = path.read_text()
+            code = code_in(text) or text
+            program = check_and_run(fennec, code, task.get("stdin", ""))
+            result.rounds, result.code = round_number, code
+            if program.compiled:
+                result.outcome = judge(task, program)
+                result.printed = program.stdout + program.stderr + program.stopped
+                break
+            result.outcome, result.printed = "never_compiled", program.errors
+        print(f"{result.task}: {result.outcome} after {result.rounds} round(s)", flush=True)
+        results.append(result)
+    return results
+
+
 def summary(results: list[Result], model: str) -> str:
-    lines = [f"model {model}, {len(results)} tasks"]
+    lines = [f"{model}, {len(results)} tasks"]
     outcomes: dict[str, int] = {}
     for result in results:
         outcomes[result.outcome] = outcomes.get(result.outcome, 0) + 1
@@ -238,7 +293,8 @@ def summary(results: list[Result], model: str) -> str:
         lost = sum(1 for result in found if result.outcome == "lost_write")
         lines.append(f"  {topic}: {passed} of {len(found)} passed, {lost} lost writes")
     total = sum(result.cost for result in results)
-    lines.append(f"cost ${total:.2f}, ${total / max(len(results), 1):.3f} a task")
+    if total > 0:
+        lines.append(f"cost ${total:.2f}, ${total / max(len(results), 1):.3f} a task")
     return "\n".join(lines)
 
 
@@ -265,6 +321,8 @@ def main() -> int:
     parser.add_argument("--effort", default="medium", choices=["low", "medium", "high", "xhigh", "max"])
     parser.add_argument("--rounds", type=int, default=4, help="answers a task gets to compile")
     parser.add_argument("--fennec", type=Path, default=REPO / "target" / "debug" / "fennec")
+    parser.add_argument("--write-prompts", type=Path, metavar="DIR", help="write what a model is given")
+    parser.add_argument("--answers", type=Path, metavar="DIR", help="score answers in a folder, with no model")
     args = parser.parse_args()
 
     tasks = tomllib.loads((HERE / "tasks.toml").read_text())["task"]
@@ -279,6 +337,11 @@ def main() -> int:
         return 2
     if args.check_tasks:
         return check_tasks(args.fennec, tasks)
+    if args.write_prompts:
+        return write_prompts(tasks, args.write_prompts)
+    if args.answers:
+        results = score_answers(args.fennec, tasks, args.answers)
+        return keep(results, summary(results, f"answers in {args.answers}"))
 
     import anthropic
 
@@ -298,7 +361,11 @@ def main() -> int:
         result = attempt(client, args, args.fennec, system, task)
         print(f"{result.task}: {result.outcome} after {result.rounds} round(s), ${result.cost:.3f}", flush=True)
         results.append(result)
-    text = summary(results, args.model)
+    return keep(results, summary(results, f"model {args.model}"))
+
+
+def keep(results: list[Result], text: str) -> int:
+    """Prints the summary and keeps it, with every answer, in `results/`."""
     print(text)
     out = HERE / "results"
     out.mkdir(exist_ok=True)

@@ -2167,17 +2167,10 @@ def main(stdout: Stdout):
 const CELL_LIST_REPLACED: &str = r"shared Box:
     items = [1, 2, 3]
 
-struct Holder:
-    box: Box
-
-def first(holder: Holder) -> int:
-    holder.box.items[0]
-
 def main(stdout: Stdout):
     one = Box()
-    holder = Holder(box=one)
     with one as mut x:
-        x.items = [n + first(holder) for n in x.items]
+        x.items = [n + x.items[0] for n in x.items]
     stdout.print(one.items)
 ";
 

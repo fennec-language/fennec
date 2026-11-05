@@ -3147,6 +3147,8 @@ fn the_real_network_works_natively() -> std::io::Result<()> {
         return Ok(());
     }
     same_as_the_interpreter_in_both_builds("real_network", REAL_NETWORK)
+}
+
 /// A `main` that can fail stops the program with what it failed with, after what it printed, and
 /// one that doesn't fail runs to its end.
 #[test]

@@ -999,6 +999,12 @@ impl Emit<'_, '_, '_> {
                 self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
                 self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {held})"));
             }
+            Kind::Bool => {
+                self.declare("declare i64 @fennec_bool(i8) nounwind");
+                let byte = self.temp();
+                self.line(&format!("{byte} = zext i1 {held} to i8"));
+                self.line(&format!("{handle} = call i64 @fennec_bool(i8 {byte})"));
+            }
             // The checker has shown a `match` on an enum takes every case, so nothing's shown.
             Kind::Enum(_) => {
                 self.declare("declare i64 @fennec_unit() nounwind");

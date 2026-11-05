@@ -2035,7 +2035,9 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
             (Some(Type::Int), BinOp::Add | BinOp::Sub | BinOp::Mul) => !known.is_safe(*dest),
             (Some(Type::Int), BinOp::FloorDiv | BinOp::Mod | BinOp::Div) => !matches!(rhs, Operand::Int(1..)),
             (Some(Type::Float), BinOp::Div | BinOp::FloorDiv | BinOp::Mod) => !known.is_nonzero(rhs),
-            (Some(Type::Int), BinOp::Pow) => true,
+            // Items of a list may order by a type's own `<`, which can fail.
+            (Some(Type::Int), BinOp::Pow | BinOp::ShiftLeft | BinOp::ShiftRight)
+            | (Some(Type::List(_)), BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => true,
             _ => false,
         },
         InstKind::Unary { dest, op: UnaryOp::Neg, value } => {
@@ -2049,6 +2051,8 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
         {
             true
         }
+        InstKind::Builtin { name, .. } if name.starts_with("crypto.") => true,
+        InstKind::Builtin { name, .. } if name.starts_with("json.") || name.starts_with("toml.") => true,
         InstKind::Builtin { name, .. } => {
             matches!(
                 name.as_str(),
@@ -2070,6 +2074,8 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "result.expect"
                     | "dict.pop"
                     | "random.random_int"
+                    | "random_choice"
+                    | "random.random_choice"
                     | "int"
                     | "math.floor"
                     | "math.ceil"

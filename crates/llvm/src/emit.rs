@@ -848,7 +848,9 @@ impl Emit<'_, '_, '_> {
         let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
         self.retain_value(value, held);
         // A local holds an optional string as a header, all zero for `None`.
-        let missing = if *held == Kind::MaybeText {
+        let missing = if *held == Kind::Str {
+            "false".to_owned()
+        } else if *held == Kind::MaybeText {
             self.header_is_none(value)
         } else {
             let missing = self.temp();
@@ -879,7 +881,7 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn value_for(&mut self, operand: &Operand, kind: &Kind) -> Result<(String, bool), String> {
         if *operand != Operand::None {
             let (value, held) = self.operand(operand)?;
-            if matches!(held, Kind::Maybe(_) | Kind::MaybeText) && self.is_optional(kind) {
+            if matches!(held, Kind::Maybe(_) | Kind::MaybeText | Kind::Str) && self.is_optional(kind) {
                 return self.optional_as_enum(&value, &held, kind);
             }
             if self.widens(&held, kind) {
@@ -1237,6 +1239,10 @@ impl Emit<'_, '_, '_> {
                 let cc = match op {
                     BinOp::Eq => "eq",
                     BinOp::NotEq => "ne",
+                    BinOp::Lt => "ult",
+                    BinOp::LtEq => "ule",
+                    BinOp::Gt => "ugt",
+                    BinOp::GtEq => "uge",
                     other => return Err(format!("it uses {other:?} on bools")),
                 };
                 let temp = self.temp();
@@ -1260,7 +1266,16 @@ impl Emit<'_, '_, '_> {
                 _ => self.string_binary(op, (&a, &b))?,
             },
             Kind::Str => self.string_binary(op, (&a, &b))?,
-            Kind::Boxed(_) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_blocks(op, (&a, &b)),
+            Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) | Kind::Maybe(_)
+                if matches!(op, BinOp::Eq | BinOp::NotEq) =>
+            {
+                self.same_blocks(op, (&a, &b))
+            }
+            Kind::Closure(..) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_code(op, (&a, &b)),
+            Kind::List(_) if op == BinOp::Add => self.joined_lists(&a, &b),
+            Kind::List(item) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
+                self.lists_in_order(op, item, (&a, &b), span)?
+            }
             Kind::Enum(id) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_enums(op, id, (&a, &b))?,
             Kind::Struct(id) => self.compare_structs(op, id, (&a, &b))?,
             Kind::Boxed(id) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
@@ -1329,6 +1344,15 @@ impl Emit<'_, '_, '_> {
                     BinOp::BitOr => "or",
                     _ => "xor",
                 };
+                let temp = self.temp();
+                self.line(&format!("{temp} = {word} i64 {a}, {b}"));
+                temp
+            }
+            BinOp::ShiftLeft | BinOp::ShiftRight => {
+                let outside = self.temp();
+                self.line(&format!("{outside} = icmp uge i64 {b}, 64"));
+                self.fail_if(&outside, fennec_interp::embed::checks::BAD_SHIFT, span);
+                let word = if op == BinOp::ShiftLeft { "shl" } else { "ashr" };
                 let temp = self.temp();
                 self.line(&format!("{temp} = {word} i64 {a}, {b}"));
                 temp
@@ -1577,10 +1601,10 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
-        if let Some(done) = self.loop_builtin(dest, name, args, span) {
+        if let Some(done) = self.conversion(dest, name, args, span) {
             return done;
         }
-        if let Some(done) = self.conversion(dest, name, args, span) {
+        if let Some(done) = self.loop_builtin(dest, name, args, span) {
             return done;
         }
         let first = args.first();
@@ -1608,7 +1632,9 @@ impl Emit<'_, '_, '_> {
             "list.append" => self.append(args),
             "result.expect" => self.expect(dest, args, span),
             "str.byte_len" | "str.char_at_byte" => self.text_by_bytes(dest, name, args),
-            "random.random_int" | "random.random_float" => self.random_builtin(dest, name, args, span),
+            "random.random_int" | "random.random_float" | "random_choice" | "random.random_choice" => {
+                self.random_builtin(dest, name, args, span)
+            }
             parallel if parallel.starts_with("parallel.") => self.parallel_builtin(dest, name, args, span),
             // A list of a list's items is the list, shared until one changes.
             "parallel" | "list"
@@ -1624,7 +1650,22 @@ impl Emit<'_, '_, '_> {
             | "Regex.find_all" | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
                 self.regex_builtin(dest, name, args, span)
             }
-            "json.dumps" | "json.loads" => self.json_builtin(dest, name, args, span),
+            "json.dumps" | "json.loads" | "toml.dumps" | "toml.loads" => {
+                self.json_builtin(dest, name, args, span)
+            }
+            named
+                if ["json.dumps.", "json.loads.", "toml.dumps.", "toml.loads."]
+                    .iter()
+                    .any(|format| named.starts_with(format)) =>
+            {
+                self.std_call(dest, name, args, span)
+            }
+            crypto if crypto.starts_with("crypto.") => self.std_call(dest, name, args, span),
+            "error.with_cause" => {
+                // Nothing reads what caused an error yet, so the wrapper is all there is.
+                let wrapper = first.ok_or("no argument")?;
+                self.copy(dest.ok_or("no result")?, wrapper)
+            }
             buffer if buffer.starts_with("Buffer.") => self.buffer_builtin(dest, name, args, span),
             "str.len" | "str" | "str.code" | "str.join" | "str.contains" | "str.upper" | "str.lower"
             | "str.replace" | "str.find" | "str.split" => self.text_builtin(dest, name, args, span),
@@ -1807,6 +1848,11 @@ impl Emit<'_, '_, '_> {
                     (UnaryOp::Neg, Kind::Float) => {
                         let temp = self.temp();
                         self.line(&format!("{temp} = fneg double {value}"));
+                        temp
+                    }
+                    (UnaryOp::BitNot, Kind::Int) => {
+                        let temp = self.temp();
+                        self.line(&format!("{temp} = xor i64 {value}, -1"));
                         temp
                     }
                     (UnaryOp::Not, Kind::Bool) => {
@@ -2354,7 +2400,7 @@ def main(stdout: Stdout):
 
     #[test]
     fn what_it_cant_take_says_which_function() -> Result<(), String> {
-        let source = "def f(mut items: list[int]):\n    items.sort()\n\ndef main(stdout: Stdout):\n    mut items = [2]\n    f(mut items)\n    stdout.print(items.len())\n";
+        let source = "def f(step: (int) -> int) -> Iterator[int]:\n    yield step(1)\n\ndef main(stdout: Stdout):\n    for n in f((a) => a + 1):\n        stdout.print(n)\n";
         let error = emit(&lowered(source)?).err().unwrap_or_default();
         assert!(error.contains("`f`"), "{error}");
         Ok(())

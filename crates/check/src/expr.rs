@@ -819,7 +819,9 @@ impl FnCx<'_> {
             known.push(ty);
         }
         self.value_functions += 1;
+        self.arrows += 1;
         let returns = self.expr(body);
+        self.arrows -= 1;
         self.value_functions -= 1;
         self.pop();
         let ty = Type::Arrow(known, Box::new(returns));
@@ -834,8 +836,17 @@ impl FnCx<'_> {
             span,
             "handle the failure here with `match` or `else`, so what the lock guards isn't left half changed",
         );
+        // A function used as a value says nothing of failing, so nothing is told to expect it.
+        let in_arrow = self.arrows > 0;
+        if in_arrow {
+            self.error(
+                Diagnostic::new("an arrow function can't pass a failure up with `?`", span)
+                    .with_help("give a value with `else` here, or write a loop, which can use `?`"),
+            );
+        }
         let ty = self.expr(value);
         let inner = match &ty {
+            Type::Result(inner, _) if in_arrow => inner.as_ref().clone(),
             Type::Result(inner, error) => {
                 if context.is_none() {
                     self.errors.push(error.as_ref().clone());
@@ -860,7 +871,9 @@ impl FnCx<'_> {
                 let message = format!("`from` needs an error, but this is {}", a(&error));
                 self.error(Diagnostic::new(message, context.span));
             }
-            self.errors.push(error);
+            if !in_arrow {
+                self.errors.push(error);
+            }
         }
         inner
     }

@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 106;
+const BUILDING_EXAMPLES: usize = 110;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -92,6 +92,118 @@ fn outcome(output: &Output) -> Outcome {
         String::from_utf8_lossy(&output.stderr).into_owned(),
         output.status.code(),
     )
+}
+
+/// `bytes`, wherever it's held and whatever's done with it.
+#[test]
+fn bytes_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "bytes_all",
+        r#"struct Packet:
+    id: int
+    data: bytes
+
+enum Held:
+    Empty
+    Full(data: bytes)
+
+def first(data: bytes) -> int:
+    data[0]
+
+def maybe(present: bool) -> bytes?:
+    if present:
+        return bytes([9, 8])
+    None
+
+def main(stdout: Stdout):
+    empty = bytes()
+    data = bytes([0, 1, 127, 128, 255])
+    stdout.print(empty, empty.len(), data, data.len())
+    stdout.print(data[0], data[-1], data[3], first(data))
+    stdout.print(data[1:3], data[:2], data[3:], data[-2:], data[:-2], data[10:], data[3:1])
+    stdout.print(data + bytes([7]), empty + empty, data == bytes([0, 1, 127, 128, 255]), data != data)
+    stdout.print(data < bytes([1]), data <= data, data > bytes([0]), data >= bytes([255]))
+    stdout.print(1 in data, 2 in data, 2 not in data, 300 in data, -1 in data)
+    stdout.print(data.hex(), data.hex(" "), data.hex("--"), empty.hex())
+    mut total = 0
+    for byte in data:
+        total = total + byte
+    stdout.print(total, list(data), sum(list(data)))
+    text = "héllo wörld"
+    encoded = text.encode()
+    stdout.print(encoded, encoded.len(), text.len())
+    match encoded.decode():
+        case Ok(back):
+            stdout.print(back, back == text)
+        case Err(error):
+            stdout.print(error.message)
+    match bytes([255, 254]).decode():
+        case Ok(back):
+            stdout.print(back)
+        case Err(error):
+            stdout.print(error.message)
+    for hex in ["00ff", "00 FF", "", "abc", "zz", "a é"]:
+        match bytes.fromhex(hex):
+            case Ok(made):
+                stdout.print(made)
+            case Err(error):
+                stdout.print(error.message)
+    packet = Packet(id=1, data=data[:2])
+    copied = packet
+    stdout.print(packet, copied.data, packet.data == copied.data, packet == copied)
+    packets = [packet, Packet(id=2, data=bytes())]
+    stdout.print(packets[0].data, packets[1].data, packets)
+    mut many = [data, empty, encoded]
+    many.append(bytes([3]))
+    stdout.print(many[0], many[-1], many.len(), many)
+    for held in [Held.Empty, Held.Full(data=bytes([1]))]:
+        match held:
+            case Empty:
+                stdout.print("empty")
+            case Full(inner):
+                stdout.print(inner, inner[0], held)
+    stdout.print(maybe(True), maybe(False), maybe(True) is None, maybe(False) is None)
+    got = maybe(True) else bytes()
+    stdout.print(got, got.len())
+    pair = (data[:1], 3)
+    stdout.print(pair)
+    stdout.print(f"{data[:1]} and {empty}", str(data[:2]))
+    mut grown = bytes()
+    for at in range(300):
+        grown = grown + bytes([at % 256])
+    stdout.print(grown.len(), grown[299], grown[255], grown[:3])
+    named = {"a": 1}
+    stdout.print(named["a"], grown[:9].hex())
+"#,
+    )
+}
+
+/// What fails with `bytes` says what the JIT says.
+#[test]
+fn bytes_fail_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, call) in [
+        ("bytes_past_end", "bytes([1, 2])[2]"),
+        ("bytes_before_start", "bytes([1, 2])[-3]"),
+        ("bytes_too_big", "bytes([1, 256])"),
+        ("bytes_negative", "bytes([-1])"),
+    ] {
+        same_message_as_the_jit(
+            name,
+            &format!(
+                "def main(stdout: Stdout):
+    stdout.print(1)
+    stdout.print({call})
+"
+            ),
+        )?;
+    }
+    Ok(())
 }
 
 /// `str` of what's text already. The linter takes these out of the examples, since they change
@@ -3860,7 +3972,7 @@ fn std_pieces_the_proof_program_uses_match_the_jit() -> std::io::Result<()> {
     grid.append([7, 8, 9])
     copy_of = grid
     grid[1][0] = 42
-    total = 0
+    mut total = 0
     mut sum_of = 0
     for row in grid:
         for n in row:

@@ -17,6 +17,7 @@ use std::rc::Rc;
 use fennec_syntax::{Diagnostic, Expr, Module, Pattern, Span, Stmt};
 
 pub mod aot;
+pub mod bytes;
 pub mod capabilities;
 pub mod checks;
 pub mod codec;

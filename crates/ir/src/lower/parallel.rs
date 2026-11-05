@@ -265,11 +265,18 @@ impl Lowering<'_> {
             let (failed, cause) = (task.temporary(Type::Bool), task.temporary((**error).clone()));
             task.emit(InstKind::IsErr { dest: failed, value: Operand::Local(result) }, span);
             let (stops, goes_on) = (task.new_block(), task.new_block());
-            task.finish(crate::Terminator::Branch { cond: Operand::Local(failed), then: stops, otherwise: goes_on });
+            task.finish(crate::Terminator::Branch {
+                cond: Operand::Local(failed),
+                then: stops,
+                otherwise: goes_on,
+            });
             task.current = stops;
             task.emit(InstKind::GetErr { dest: cause, value: Operand::Local(result) }, span);
             let args = vec![Operand::Local(cause)];
-            task.emit(InstKind::Builtin { dest: None, name: "task.failed".to_owned(), args, changes: false }, span);
+            task.emit(
+                InstKind::Builtin { dest: None, name: "task.failed".to_owned(), args, changes: false },
+                span,
+            );
             let message = "this connection's task failed".to_owned();
             task.finish(crate::Terminator::Stop { message, span });
             task.current = goes_on;

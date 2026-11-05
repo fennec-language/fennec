@@ -476,14 +476,10 @@ struct SortedMap[K: Ordered, V]:
         if node < 0: return None
         self._nodes[node].values[i]
 
-    ## Whether `key` has a value.
-    def has(self, key: K) -> bool:
-        node, _ = self._slot(key)
-        node >= 0
-
     ## `key in map`: whether `key` has a value.
     def in(self, key: K) -> bool:
-        self.has(key)
+        node, _ = self._slot(key)
+        node >= 0
 
     ## The value of `key`. A key with no value stops the program, like a dict.
     def [](self, key: K) -> V:
@@ -529,7 +525,7 @@ struct SortedMap[K: Ordered, V]:
 
     ## Removes `key` and gives back its value, or None when it had none.
     def remove(mut self, key: K) -> V?:
-        if not self.has(key): return None
+        if key not in self: return None
         mut taken: list[V] = []
         mut wanted = key
         mut at = self._root
@@ -853,19 +849,16 @@ struct SortedSet[T: Ordered]:
 
     ## Removes `item` if it's there.
     def discard(mut self, item: T):
-        if self._items.has(item):
+        if item in self._items:
             self._items.remove(item)
 
     ## Removes `item`. One that isn't there stops the program, like a set.
     def remove(mut self, item: T):
         assert self._items.remove(item) is not None
 
-    def has(self, item: T) -> bool:
-        self._items.has(item)
-
     ## `item in set`.
     def in(self, item: T) -> bool:
-        self._items.has(item)
+        item in self._items
 
     ## The smallest item, or None when the set is empty.
     def first(self) -> T?:
@@ -919,15 +912,15 @@ struct SortedSet[T: Ordered]:
 
     ## The items in both sets.
     def intersection(self, other: SortedSet[T]) -> SortedSet[T]:
-        SortedSet.of([item for item in self.items() if other.has(item)])
+        SortedSet.of([item for item in self.items() if item in other])
 
     ## The items of this set that aren't in `other`.
     def difference(self, other: SortedSet[T]) -> SortedSet[T]:
-        SortedSet.of([item for item in self.items() if not other.has(item)])
+        SortedSet.of([item for item in self.items() if item not in other])
 
     ## Whether every item is in `other`.
     def is_subset(self, other: SortedSet[T]) -> bool:
-        all(other.has(item) for item in self.items())
+        all(item in other for item in self.items())
 
 ## A fixed-size table of cells, `width` across and `height` down, for boards, tile maps and
 ## images. A cell is reached by its column and row, `grid[(x, y)]`, from `(0, 0)` at the top

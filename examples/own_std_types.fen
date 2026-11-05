@@ -11,6 +11,13 @@ struct Path:
 struct Match:
     found: bool
 
+# `Table` is built in, not written in the library, and a program can name its own too.
+struct Table:
+    rows: list[str]
+
+    def add(mut self, row: str):
+        self.rows.append(row)
+
 struct Counter:
     count = 0
 
@@ -27,3 +34,6 @@ def main(stdout: Stdout, clock: Clock):
     mut counter = Counter()
     counter.bump()
     stdout.print(counter)
+    mut table = Table(rows=[])
+    table.add("fox")
+    stdout.print(table)

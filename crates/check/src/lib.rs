@@ -85,7 +85,9 @@ fn own_type_names(module: &Module) -> BTreeMap<String, String> {
         .items
         .iter()
         .filter_map(declared_name)
-        .filter(|name| library.contains(name))
+        // `Table` and `Id` are built in rather than written in the library, but a program can name
+        // its own types that too.
+        .filter(|name| library.contains(name) || fennec_syntax::importable_type(name).is_some())
         .map(|name| (name.to_owned(), format!("{name}{}", fennec_syntax::rename::RENAMED)))
         .collect()
 }

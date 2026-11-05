@@ -9,6 +9,9 @@ use std::process::ExitCode;
 const ROUNDS: usize = 8;
 
 pub(crate) fn fix(path: &str) -> ExitCode {
+    if let Err(code) = moved_imports(path) {
+        return code;
+    }
     for _ in 0..ROUNDS {
         let Some(program) = crate::load(path, fennec_kit::Entry::Everything) else {
             return ExitCode::FAILURE;
@@ -91,6 +94,48 @@ pub(crate) fn mut_to_ref(paths: &[&str]) -> ExitCode {
         }
     }
     if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
+/// Rewrites each `from std.game import ...` under `path`, which can't load, to the module those
+/// names moved to, with `IdMap` as `Table`. It comes first, since a module that's gone stops the
+/// program loading before any other fix can be made. The checker's own fixes do the rest.
+fn moved_imports(path: &str) -> Result<(), ExitCode> {
+    let mut files = Vec::new();
+    if crate::fmt::collect(Path::new(path), true, &mut files).is_err() {
+        // Loading says what's wrong with the path.
+        return Ok(());
+    }
+    let mut changed = Vec::new();
+    for file in files {
+        let Ok(source) = std::fs::read_to_string(&file) else { continue };
+        let Ok(module) = fennec_syntax::parse(&source) else { continue };
+        let mut text = source.clone();
+        // From the end, so each import's place is still where it was.
+        for item in module.items.iter().rev() {
+            let fennec_syntax::Item::Import(import) = item else { continue };
+            if import.module != ["std", "game"] || import.names.is_empty() {
+                continue;
+            }
+            let names: Vec<String> = import
+                .names
+                .iter()
+                .zip(&import.aliases)
+                .map(|(name, alias)| {
+                    let name = if name == "IdMap" { "Table" } else { name.as_str() };
+                    alias.as_ref().map_or_else(|| name.to_owned(), |alias| format!("{name} as {alias}"))
+                })
+                .collect();
+            let (start, end) = (import.span.start as usize, import.span.end as usize);
+            let written = format!("from std.collections import {}", names.join(", "));
+            if text.get(start..end).is_some_and(|old| old.starts_with("from")) {
+                text.replace_range(start..end, &written);
+            }
+        }
+        if text != source {
+            changed.push((file.to_string_lossy().into_owned(), text));
+        }
+    }
+    write_all(changed)
 }
 
 /// Writes each changed file, saying so.

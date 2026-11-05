@@ -435,6 +435,10 @@ pub(crate) fn unknown_type(name: &str, span: Span) -> Diagnostic {
         "boolean" | "Bool" => diagnostic.with_help("write `bool`"),
         "List" | "Dict" | "Set" => diagnostic.with_help(format!("write `{}`", name.to_lowercase())),
         "Optional" => diagnostic.with_help("write `?` after the type, like `Enemy?`"),
+        // The type's name comes first in what's written, before any brackets.
+        "IdMap" => diagnostic
+            .with_help(crate::messages::TABLE)
+            .with_fix(Span { start: span.start, end: span.start + 5 }, "Table"),
         "Self" => diagnostic.with_help(
             "`Self` means the type a method belongs to, so it goes in a method of a type or an interface",
         ),

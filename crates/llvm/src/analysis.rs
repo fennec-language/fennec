@@ -2034,7 +2034,7 @@ fn find_last_copies(function: &Function, known: &mut Analysis) {
 /// Whether anything a function does itself can fail. Calling something counts, since a call is
 /// where the stack is checked.
 pub(crate) fn is_socket_method(name: &str) -> bool {
-    name.starts_with("Connection.") || name.starts_with("Server.")
+    name.starts_with("Connection.") || name.starts_with("Server.") || name.starts_with("UdpSocket.")
 }
 
 fn fails_itself(function: &Function, known: &Analysis) -> bool {
@@ -2106,6 +2106,8 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "Regex.fullmatch"
                     // A range's body can fail on any thread, and the call passes it up.
                     | "parallel.for"
+                    | "parallel.serve"
+                    | "parallel.peer"
                     | "parallel.map"
                     | "parallel.sum"
             )

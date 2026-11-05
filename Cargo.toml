@@ -51,6 +51,12 @@ mimalloc = { version = "=0.1.52", default-features = false }
 # Secure random bytes from the operating system, for `Entropy`, on every platform Fennec runs on.
 # Reading them on Windows takes FFI, which Fennec's own crates forbid. Under MIT or Apache-2.0.
 getrandom = { version = "=0.4.3", default-features = false }
+# `std.net`'s HTTP client needs TLS, which isn't something to write by hand. rustls is memory-safe
+# and pinned exactly, as every dependency here is. `ring` is its crypto provider, since the other
+# needs CMake to build. The platform verifier checks certificates against what the operating
+# system trusts, so there's no list of roots to ship and keep up to date.
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "=0.7.1"
 # The work-stealing pool `parallel` runs on, for programs with tasks: well-tested Chase-Lev
 # deques, which would be a lot of subtle code to write again. Under MIT or Apache-2.0.
 rayon-core = { version = "=1.13.0", default-features = false }

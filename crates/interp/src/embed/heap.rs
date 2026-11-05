@@ -105,6 +105,8 @@ pub(crate) struct Heap {
     owner_bits: u64,
     /// On a worker, the blocks it made since it last handed what it made over.
     made: Vec<u64>,
+    /// Whether this heap serves connections, whose tasks hand nothing over.
+    pub(super) serving: bool,
     /// The tables behind the current one while this thread holds write locks, each with the owner
     /// number it makes blocks with: its own first (see `guarded`).
     behind: Vec<(Box<super::table::Table>, u64)>,
@@ -348,8 +350,12 @@ impl Heap {
         let address = block.as_ptr().addr();
         if self.owner_bits != 0 {
             mark_owner(&mut block, self.owner_bits);
-            // What's made under a lock stays with what the lock guards.
-            if super::threads::ON && self.owner_bits >> OWNER_SHIFT != super::guarded::GUARDED_OWNER {
+            // What's made under a lock stays with what the lock guards, and a server's tasks hand
+            // nothing over.
+            if super::threads::ON
+                && !self.serving
+                && self.owner_bits >> OWNER_SHIFT != super::guarded::GUARDED_OWNER
+            {
                 self.made.push(u64::try_from(address).unwrap_or(0));
             }
         }

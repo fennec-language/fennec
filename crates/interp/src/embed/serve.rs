@@ -2,11 +2,12 @@
 //! on the network, so a few threads serve thousands of connections (decisions.md: "A task
 //! waiting on the network is parked, not its thread").
 //!
-//! A server runs on I/O workers, one per core, the calling thread among them. Each has its own
-//! runtime, its own `mio::Poll` and its own scheduler of parked tasks (`fennec_parked`). The
-//! calling thread accepts connections and hands each to the next worker in turn, through the
-//! worker's inbox and waker. A connection's task stays on the worker that took it, so what it
-//! makes stays that worker's, as in `threads`.
+//! A server runs on I/O workers, one per core, while the calling thread waits, lending them what
+//! it holds, as it does for a `parallel` call's ranges (see `threads`). Each has its own runtime,
+//! its own `mio::Poll` and its own scheduler of parked tasks (`fennec_parked`). The first accepts
+//! connections and hands each to the next worker in turn, through the worker's inbox and waker. A
+//! connection's task stays on the worker that took it, so what it makes stays that worker's. A task
+//! ends with its connection, and what it made goes with it, so nothing's handed back.
 //!
 //! A connection is registered with its worker's poll once, for reading and writing, under a
 //! token of its own. Its calls read and write until the socket says it would block, then park
@@ -31,7 +32,7 @@ use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Registry, Token, Waker};
 
 /// A connection task's stack. Only the pages a task touches take memory.
-const STACK: usize = 256 * 1024;
+const STACK: usize = 1024 * 1024;
 
 /// What a parked wait is woken with.
 const READY: u64 = 0;
@@ -329,6 +330,8 @@ pub struct Served {
     pub connections: u64,
     /// Connections whose handler gave back a failure.
     pub failed: u64,
+    /// How tasks changed the owners of the blocks lent to them, for the lender to apply.
+    pub owners: HashMap<u64, i64>,
 }
 
 /// One I/O worker: its poll, its tasks, and which task waits on which connection.
@@ -391,8 +394,14 @@ impl Worker {
                 Step::Done(0) | Step::Unknown => {}
                 Step::Done(_) => {
                     self.served.failed += 1;
-                    // A failure ends only its connection: the runtime's record of it goes.
-                    super::clear_failure();
+                    // A failure ends only its connection, which says why, and the runtime's record
+                    // of it goes.
+                    // A task that failed holding a lock leaves what it guards half changed, and others waiting
+                    // for it, so the program ends rather than only this task.
+                    if super::threads::holds_locks() {
+                        super::aot::stop_for_failure();
+                    }
+                    super::report_failure();
                 }
             }
         }
@@ -506,57 +515,68 @@ impl Stopper {
     }
 }
 
-/// Serves `listener` on `workers` I/O workers, the calling thread among them, running
-/// `handler` on each connection as a parked task. Each other worker runs `setup` first, to
-/// start a runtime of its own. `started` is given a `Stopper` once the server is running,
-/// and the server runs until it's stopped.
-#[cfg(not(feature = "lean"))]
-pub fn serve(
+/// Serves `listener` on `workers` I/O workers of their own, running `handler` on each connection as
+/// a parked task, while this thread waits. Each worker runs `setup` first, to start a runtime of its
+/// own, and can read what's `lent`. `started` is given a `Stopper` once the server is running, and
+/// the server runs until it's stopped.
+pub(super) fn serve(
     listener: TcpListener,
     workers: usize,
     setup: &Arc<dyn Fn() + Send + Sync>,
+    lent: Option<&Arc<super::table::Table>>,
     handler: &Handler,
     started: impl FnOnce(Stopper),
 ) -> std::io::Result<Served> {
     let stop = Arc::new(AtomicBool::new(false));
-    let here = Waiting::new()?;
+    let first = Waiting::new()?;
     let mut others = Vec::new();
     for _ in 1..workers.max(1) {
         others.push(Waiting::new()?);
     }
     let inboxes: Vec<Arc<Inbox>> = others.iter().map(|worker| Arc::clone(&worker.inbox)).collect();
     let mut wakers = inboxes.clone();
-    wakers.push(Arc::clone(&here.inbox));
+    wakers.push(Arc::clone(&first.inbox));
     started(Stopper { stop: Arc::clone(&stop), wakers });
-    let threads: Vec<_> = others
+    let mut starting = vec![(first, Some(listener))];
+    starting.extend(others.into_iter().map(|waiting| (waiting, None)));
+    let threads: Vec<_> = starting
         .into_iter()
-        .map(|waiting| {
+        .map(|(waiting, listener)| {
             let (setup, handler, stop) = (Arc::clone(setup), Arc::clone(handler), Arc::clone(&stop));
+            let (inboxes, lent) = (inboxes.clone(), lent.cloned());
             std::thread::spawn(move || {
                 super::threads::take_index();
                 setup();
-                let served = Worker::new(waiting).run(None, &[], &handler, &stop);
+                super::threads::serving_starts(lent);
+                let served = Worker::new(waiting).run(listener, &inboxes, &handler, &stop);
+                let (owners, _) = super::threads::range_ends();
                 super::finish();
-                served
+                served.map(|served| Served { owners: owners.into_iter().collect(), ..served })
             })
         })
         .collect();
-    let mut served = Worker::new(here).run(Some(listener), &inboxes, handler, &stop)?;
+    let mut served = Served::default();
+    let mut failed = None;
     for thread in threads {
-        if let Ok(Ok(theirs)) = thread.join() {
-            served.connections += theirs.connections;
-            served.failed += theirs.failed;
+        match thread.join() {
+            Ok(Ok(theirs)) => {
+                served.connections += theirs.connections;
+                served.failed += theirs.failed;
+                for (address, by) in theirs.owners {
+                    *served.owners.entry(address).or_default() += by;
+                }
+            }
+            Ok(Err(error)) => failed = Some(error),
+            Err(_) => failed = Some(std::io::Error::other("a server's worker stopped")),
         }
     }
-    Ok(served)
+    failed.map_or(Ok(served), Err)
 }
 
 mod calls;
 
-#[cfg(not(feature = "lean"))]
-pub use calls::{ConnBody, conn_close, conn_peer, stop_servers};
-#[cfg(not(feature = "lean"))]
-pub use calls::{conn_read, conn_read_line, conn_write, net_serve};
+pub(super) use calls::served_call;
+pub use calls::{ConnBody, net_serve, stop_servers};
 
 #[cfg(test)]
 mod tests;

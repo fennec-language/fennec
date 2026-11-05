@@ -1,5 +1,15 @@
 [graph]
 all-features = true
+# What Fennec ships on. The TLS verifier's Android parts, and what only they pull in, aren't.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-pc-windows-gnu",
+    "wasm32-unknown-unknown",
+]
 
 [advisories]
 # No ignored advisories. Each entry added here says why it's safe and when it goes.
@@ -7,8 +17,19 @@ ignore = []
 
 [licenses]
 # Cranelift is Apache-2.0 with the LLVM exception, which only loosens Apache-2.0's terms.
-# Zlib is as permissive as MIT.
-allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "Unicode-3.0", "Zlib"]
+# Zlib is as permissive as MIT, and so are ISC, which `ring` and `rustls-webpki` use, BSD-3-Clause,
+# which `subtle` uses, and CDLA-Permissive-2.0, which `webpki-root-certs` uses. That one's only a
+# dependency of the TLS verifier on wasm, where Fennec doesn't build the verifier.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "Unicode-3.0",
+    "Zlib",
+    "ISC",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+]
 confidence-threshold = 0.9
 unused-allowed-license = "allow"
 
@@ -23,6 +44,8 @@ allow-wildcard-paths = true
 # Cranelift's and corosensei's own dependencies pull in older copies of these. Remove each once
 # they catch up.
 skip = [
+    { crate = "bitflags@1.3.2", reason = "region, through cranelift-jit" },
+    { crate = "getrandom@0.2.17", reason = "ring, through rustls" },
     { crate = "hashbrown@0.16.1", reason = "gimli, through cranelift-codegen" },
     { crate = "mach2@0.4.3", reason = "region, through cranelift-jit" },
     { crate = "windows-sys@0.52.0", reason = "region, through cranelift-jit" },

@@ -509,6 +509,127 @@ const THROUGH_LISTS: &str = include_str!("fixtures/workers/through_lists.fen");
 /// changed and walked by a `for mut` body, which has a copy of its own.
 const WALKS: &str = include_str!("fixtures/workers/walks.fen");
 
+/// A server: what's captured is read from the thread that's waiting, each connection answers until
+/// the other side is done, and how a task fails ends only that task.
+const SERVER: &str = "\
+from std.net import Connection, NetError
+
+def deep(n: int) -> int:
+    if n == 0:
+        return 0
+    # Held across the call, so the call stays a call.
+    kept = [n]
+    deep(n - 1) + 1 + kept[0] - n
+
+def waited(connection: Connection) -> str:
+    match connection.read_line(timeout=20ms):
+        case Err(error):
+            error.message()
+        case Ok(_):
+            \"heard something\"
+
+def answer(connection: Connection, greeting: str, marks: list[str]) -> int fails NetError:
+    connection.write(greeting + \"\\n\")?
+    mut count = 0
+    for line in connection.lines():
+        if line == \"divide\":
+            connection.write(\"dividing\\n\")?
+            count += 1 // (count - count)
+        elif line == \"deep\":
+            connection.write(f\"{deep(2000)}\\n\")?
+        elif line == \"too deep\":
+            connection.write(\"going deep\\n\")?
+            connection.write(f\"{deep(100000000)}\\n\")?
+        elif line == \"wait\":
+            connection.write(waited(connection) + \"\\n\")?
+        else:
+            connection.write(line + marks[0] + \"\\n\")?
+        count += 1
+    count
+
+def main(net: Net, stdout: Stdout):
+    greeting = \"hello from \" + str(1 + 1)
+    marks = [\"!\"]
+    server = net.listen(0).expect(\"it listens\")
+    stdout.print(server.port)
+    for connection in parallel(server):
+        match answer(connection, greeting, marks):
+            case Ok(count):
+                stdout.print(\"answered\", count, connection.peer != \"\")
+            case Err(error):
+                stdout.print(\"failed\", error.message())
+";
+
+/// One client's whole talk with a server: each line sent, what came back, and the end.
+fn talk(port: u16, lines: &[&str]) -> std::io::Result<Vec<String>> {
+    use std::io::{BufRead, BufReader, Write};
+    let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(20)))?;
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut read = || -> std::io::Result<String> {
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        Ok(line.trim_end().to_owned())
+    };
+    let mut heard = vec![read()?];
+    for line in lines {
+        writeln!(&stream, "{line}")?;
+        heard.push(read()?);
+    }
+    Ok(heard)
+}
+
+#[test]
+fn a_native_server_runs_each_connection_as_its_own_task() -> std::io::Result<()> {
+    use std::io::{BufRead, BufReader};
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-server-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let executable = build_on_threads(&dir, SERVER, "server")?;
+    let mut server = Command::new(&executable)
+        .env("FENNEC_THREADS", "4")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let mut printed = BufReader::new(server.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
+    let mut first = String::new();
+    printed.read_line(&mut first)?;
+    let port: u16 = first.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let greeting = "hello from 2";
+    let clients: Vec<_> = (0..50)
+        .map(|at| {
+            std::thread::spawn(move || {
+                talk(port, &[&format!("line {at}"), "deep", "wait", &format!("again {at}")])
+            })
+        })
+        .collect();
+    for (at, client) in clients.into_iter().enumerate() {
+        let heard = client.join().map_err(|_| std::io::ErrorKind::Other)??;
+        let line = format!("line {at}!");
+        let again = format!("again {at}!");
+        assert_eq!(heard, [greeting, &line, "2000", "gave up after 0.02s", &again]);
+    }
+    // A failure ends only its own task, running out of stack too, and the server goes on.
+    assert_eq!(talk(port, &["divide"])?, [greeting, "dividing"]);
+    assert_eq!(talk(port, &["too deep"])?, [greeting, "going deep"]);
+    assert_eq!(talk(port, &["after"])?, [greeting, "after!"]);
+    // Each says why, once it gets there.
+    let (says, said) = std::sync::mpsc::channel();
+    let errors = BufReader::new(server.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
+    std::thread::spawn(move || errors.lines().map_while(Result::ok).try_for_each(|line| says.send(line)));
+    let wait = std::time::Duration::from_secs(20);
+    let mut lines = vec![said.recv_timeout(wait), said.recv_timeout(wait)];
+    server.kill()?;
+    server.wait()?;
+    std::fs::remove_dir_all(&dir)?;
+    lines.sort_by_key(|line| line.as_ref().is_ok_and(|line| line.contains("nested")));
+    let wanted = ["error: division by zero".to_owned(), "error: calls nested too deeply".to_owned()];
+    assert_eq!(lines, wanted.map(Ok), "{lines:?}");
+    Ok(())
+}
+
 #[test]
 fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {

@@ -280,6 +280,7 @@ export! {
     fennec_bytes_contains(a0: i64, a1: i64) -> i8 => bytes::contains(a0, a1);
     fennec_bytes_hex(a0: i64, a1: i64) -> i64 => bytes::hex_text(a0, a1);
     fennec_bytes_decode(a0: i64) -> i64 => bytes::decode(a0);
+    fennec_bytes_text(a0: i64) -> i64 => bytes::text(a0);
     fennec_bytes_decode_problem(a0: i64) -> i64 => bytes::decode_problem(a0);
     fennec_bytes_from_hex(a0: i64) -> i64 => bytes::from_hex_text(a0);
     fennec_bytes_from_hex_problem(a0: i64) -> i64 => bytes::from_hex_problem(a0);
@@ -329,18 +330,7 @@ export! {
     fennec_parallel_stream(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_stream(a0, a1, a2, a3);
     fennec_stream_next(a0: i64, a1: &mut i64) -> i64 => parallel::stream_next(a0, a1);
     fennec_stream_end(a0: i64) => parallel::stream_end(a0);
-    #[cfg(not(feature = "lean"))]
     fennec_net_serve(a0: i64, a1: serve::ConnBody, a2: i64) -> i64 => serve::net_serve(a0, a1, a2);
-    #[cfg(not(feature = "lean"))]
-    fennec_conn_read(a0: i64, a1: i64) -> i64 => serve::conn_read(a0, a1);
-    #[cfg(not(feature = "lean"))]
-    fennec_conn_read_line(a0: i64) -> i64 => serve::conn_read_line(a0);
-    #[cfg(not(feature = "lean"))]
-    fennec_conn_write(a0: i64, a1: i64) -> i64 => serve::conn_write(a0, a1);
-    #[cfg(not(feature = "lean"))]
-    fennec_conn_peer(a0: i64) -> i64 => serve::conn_peer(a0);
-    #[cfg(not(feature = "lean"))]
-    fennec_conn_close(a0: i64) => serve::conn_close(a0);
     fennec_free_text(a0: i64) => heap::free_text(a0);
     fennec_set_abandon(a0: i64, a1: extern "C" fn(i64)) => heap::set_abandon(a0, a1);
     fennec_unshare(a0: i64) -> i64 => heap::unshare(a0);
@@ -380,6 +370,7 @@ export! {
     fennec_capability_block(a0: i64) -> i64 => capabilities::block(a0);
     fennec_net_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::net_call(a0, a1, a2, a3, a4);
     fennec_native_capability(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::native_call(a0, a1, a2, a3, a4);
+    fennec_use_tls() => capabilities::use_tls();
     fennec_clock_now() -> i64 => capabilities::clock_now();
     fennec_clock_sleep(a0: i64) => capabilities::clock_sleep(a0);
     fennec_args_len() -> i64 => capabilities::args_len();

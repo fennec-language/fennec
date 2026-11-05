@@ -38,6 +38,44 @@ thread_local! {
     static INDEX: std::cell::Cell<u16> = const { std::cell::Cell::new(0) };
 }
 
+thread_local! {
+    /// The `shared` values' lock words this thread holds.
+    static LOCKS: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Notes that this thread is taking the lock at `word`: 1 if it holds it already, which would
+/// wait forever, and 0 otherwise.
+pub extern "C" fn lock_note(word: u64) -> i64 {
+    LOCKS.with_borrow_mut(|held| {
+        if held.contains(&word) {
+            return 1;
+        }
+        held.push(word);
+        0
+    })
+}
+
+/// Whether this thread holds any `shared` value's lock.
+pub(super) fn holds_locks() -> bool {
+    LOCKS.with_borrow(|held| !held.is_empty())
+}
+
+/// Notes that this thread has given back the lock at `word`.
+pub extern "C" fn lock_forget(word: u64) {
+    LOCKS.with_borrow_mut(|held| {
+        if let Some(at) = held.iter().rposition(|taken| *taken == word) {
+            held.swap_remove(at);
+        }
+    });
+}
+
+/// Waiting for a lock another thread holds: what's been printed comes out first, and the thread
+/// lets others run.
+pub extern "C" fn lock_wait() {
+    super::write_kept_output();
+    std::thread::yield_now();
+}
+
 /// This thread's number: 0 for the main thread, until it takes another.
 pub fn index() -> u16 {
     INDEX.get()

@@ -436,6 +436,71 @@ fn matches_the_interpreter_on_workers(dir: &Path, name: &str, source: &str) -> s
     Ok(())
 }
 
+/// `shared` values changed from every worker come out as if the bodies ran one after another.
+#[test]
+fn workers_take_turns_at_a_shared_value() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-counters-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/shared_counters.fen");
+    matches_the_interpreter_on_workers(&dir, "shared_counters", source)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A body taking a lock it holds already ends the program, rather than waiting for itself.
+#[test]
+fn a_worker_taking_a_lock_it_holds_ends_the_program() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-taken-again-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = "shared Counter:\n    total = 0\n\nstruct Holder:\n    counter: Counter\n\n\
+                  def through(holder: Holder) -> int:\n    holder.counter.total\n\n\
+                  def main(stdout: Stdout):\n    one = Counter()\n    holder = Holder(counter=one)\n    \
+                  mut items = [n for n in range(50_000)]\n    for mut item in parallel(items):\n        \
+                  with one as mut x:\n            x.total = through(holder)\n        item += 1\n    \
+                  stdout.print(items.len())\n";
+    let built = build_on_threads(&dir, source, "taken_again")?;
+    for threads in ["1", "4"] {
+        let ran = Command::new(&built).env("FENNEC_THREADS", threads).output()?;
+        assert_eq!(ran.status.code(), Some(1), "on {threads} threads");
+        let said = String::from_utf8_lossy(&ran.stderr);
+        assert!(said.contains("that's already held"), "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A cell holding a block stays refused on threads until the runtime publishes what cells hold,
+/// since another worker's runtime calls couldn't find it.
+#[test]
+fn a_shared_value_holding_a_block_is_refused_on_threads() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-holding-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("program.fen");
+    std::fs::write(
+        &program,
+        "shared Log:\n    lines = list[str]()\n\n    def add(mut self, line: str):\n        \
+         self.lines.append(line)\n\ndef main(stdout: Stdout):\n    log = Log()\n    \
+         mut items = [n for n in range(100)]\n    for mut item in parallel(items):\n        \
+         log.add(\"x\")\n        item += 1\n    stdout.print(items.len())\n",
+    )?;
+    let path = program.to_string_lossy().into_owned();
+    let built = fennec(&["build", "--llvm", &path, "-o", &dir.join("program").to_string_lossy()], &dir)?;
+    assert!(!built.status.success());
+    let said = String::from_utf8_lossy(&built.stderr);
+    assert!(said.contains("`Log` holds something other than numbers"), "{said}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A body changing, through places, its own copy of what the caller holds: each block on the way
 /// is the caller's until it's copied, from the root down, and the caller's stays as it was.
 const CHANGED_PLACES: &str = include_str!("fixtures/workers/places.fen");

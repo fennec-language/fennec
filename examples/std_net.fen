@@ -3,7 +3,7 @@
 # `std.net` reaches the network through the `Net` capability. Every call waits until it's
 # done. In a test, `Net` is a fake: the test's own servers are at `localhost`, and its
 # clients reach them in memory, so a test can play both sides.
-from std.net import NetError
+from std.net import NetError, Response
 from std.time import Duration
 
 def reason[T](found: Result[T, NetError]) -> str:
@@ -74,6 +74,42 @@ test "failures are NetError values"(net: Net):
     assert reason(net.connect("example.com", 80)).startswith("the test's fake `Net` reaches only")
     with net.listen(9000)? as _:
         assert reason(net.listen(9000)) == "port 9000 is already in use"
+
+test "a packet goes to a port, and an answer goes to who sent it"(net: Net):
+    with net.udp(port=9001)? as first:
+        with net.udp()? as second:
+            second.send_to("ping", "localhost:9001")?
+            packet = first.receive()?
+            assert packet.data == "ping".encode()
+            assert packet.sender == f"localhost:{second.port}"
+            first.send_to("pong".encode(), packet.sender)?
+            assert second.receive()?.data == "pong".encode()
+
+test "a packet sent where nothing listens is lost"(net: Net):
+    with net.udp()? as socket:
+        socket.send_to("gone", "localhost:9")?
+
+test "a request gets what the test scripted, and says what was sent"(net: Net):
+    net.script(
+        "GET https://api.example.com/weather?city=Oslo",
+        Response(status=200, body="sunny".encode()),
+    )
+    answer = net.get("https://api.example.com/weather", params={"city": "Oslo"})?
+    assert answer.ok()
+    assert answer.text() == "sunny"
+    assert net.requests() == ["GET https://api.example.com/weather?city=Oslo"]
+
+test "a status that isn't a 200 is still an answer"(net: Net):
+    net.script("POST https://example.com/a", Response(status=404))
+    answer = net.post("https://example.com/a", body="data")?
+    assert answer.status == 404
+    assert not answer.ok()
+
+test "a request nothing scripted fails and says so"(net: Net):
+    assert (
+        "no answer for `DELETE https://example.com/`"
+        in reason(net.request("delete", "https://example.com/"))
+    )
 
 def main(stdout: Stdout, net: Net):
     # Port 0 lets the system pick a free port. One task can play both sides, since a small

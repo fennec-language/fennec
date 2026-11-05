@@ -137,6 +137,15 @@ pub extern "C" fn hex_text(bytes: i64, sep: i64) -> i64 {
     })
 }
 
+/// `response.text()`: a new string, with what isn't text replaced.
+pub extern "C" fn text(bytes: i64) -> i64 {
+    with(|state| {
+        let data = data_at(state, bytes);
+        let made = String::from_utf8_lossy(&data).into_owned();
+        text_address(state, &made)
+    })
+}
+
 /// `data.decode()`: a new string, or 0 when the bytes aren't UTF-8 text.
 pub extern "C" fn decode(bytes: i64) -> i64 {
     with(|state| match String::from_utf8(data_at(state, bytes)) {

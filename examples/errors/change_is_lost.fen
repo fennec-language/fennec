@@ -1,0 +1,12 @@
+# `find` gives back a copy, so changing it changes nothing in `units`.
+struct Unit:
+    health = 10
+
+def find(units: list[Unit], at: int) -> Unit:
+    units[at]
+
+def main(stdout: Stdout):
+    units = [Unit()]
+    mut unit = find(units, 0)
+    unit.health = 1
+    stdout.print(units[0].health)

@@ -765,6 +765,8 @@ def fill(mut slot: Slot, value: int?) -> int:
     slot.held = None
     mut kept: int? = 2
     kept = None
+    if kept is None:
+        return 3
     value else 3
 ";
     let printed = printed(source, "fill").unwrap();
@@ -797,6 +799,7 @@ fn function(locals: Vec<Type>, end: Terminator) -> Function {
         locals: locals.into_iter().map(|ty| Local { name: None, ty, copied: false }).collect(),
         blocks: vec![Block { insts: Vec::new(), end }],
         counts: Vec::new(),
+        places: Vec::new(),
     }
 }
 

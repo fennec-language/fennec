@@ -38,6 +38,10 @@ pub enum Element {
     /// A list inside a boxed value, by the address of its block, with the kind of its items.
     /// Packed lists never hold these either.
     List(Rc<Element>),
+    /// A list the same way, with the number in `Tables::elements` of the kind of its items, for
+    /// a type that holds itself through a list: the number is where the description stops
+    /// going round. Packed lists never hold these either.
+    ListOf(usize),
     /// An optional of something held by the address of a block: the address, or 0 for
     /// `None`. There's no block for `Some`. Packed lists never hold these.
     Maybe(Rc<Element>),
@@ -142,7 +146,12 @@ fn unpack_item<'w>(element: &Element, words: &mut dyn Iterator<Item = &'w u64>) 
             words.take(3).for_each(drop);
             Value::None
         }
-        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => {
+        Element::Boxed(_)
+        | Element::Str
+        | Element::List(_)
+        | Element::ListOf(_)
+        | Element::Object
+        | Element::Maybe(_) => {
             word(words);
             Value::None
         }

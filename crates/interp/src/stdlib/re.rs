@@ -1,6 +1,7 @@
 //! `std.re`: the methods of a `Regex`, which run the `fennec-re` engine. Matches report
 //! where they are in characters, the way Fennec indexes strings.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use fennec_re::{Anchor, Captures, Regex};
@@ -33,7 +34,7 @@ fn method(
 /// `re.is_regex(pattern)`: whether a pattern is valid.
 fn call(interp: &mut Interp<'_>, name: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
     match plain(args, name, span)?.as_slice() {
-        [Value::Str(pattern)] => Ok(Value::Bool(interp.regex(pattern).is_ok())),
+        [Value::Str(pattern)] => Ok(Value::Bool(interp.regexes.compiled(pattern).is_ok())),
         _ => Err(Diagnostic::new(format!("`{name}` was called with the wrong arguments"), span)),
     }
 }
@@ -44,17 +45,23 @@ enum Part {
     Group(usize),
 }
 
-impl Interp<'_> {
+/// Patterns compiled so far, each kept for the next time it's used.
+#[derive(Default)]
+pub(crate) struct Regexes(HashMap<String, Rc<Regex>>);
+
+impl Regexes {
     /// A pattern, compiled once and kept.
-    pub(crate) fn regex(&mut self, pattern: &str) -> Result<Rc<Regex>, fennec_re::Error> {
-        if let Some(regex) = self.regexes.get(pattern) {
+    pub(crate) fn compiled(&mut self, pattern: &str) -> Result<Rc<Regex>, fennec_re::Error> {
+        if let Some(regex) = self.0.get(pattern) {
             return Ok(Rc::clone(regex));
         }
         let regex = Rc::new(Regex::new(pattern)?);
-        self.regexes.insert(pattern.to_owned(), Rc::clone(&regex));
+        self.0.insert(pattern.to_owned(), Rc::clone(&regex));
         Ok(regex)
     }
+}
 
+impl Interp<'_> {
     /// Why a `Regex` being made has a pattern that isn't valid, if it does.
     pub(crate) fn pattern_problem(
         &mut self,
@@ -64,7 +71,7 @@ impl Interp<'_> {
     ) -> Option<Diagnostic> {
         match (type_name, fields) {
             ("Regex", [(_, Value::Str(pattern))]) => {
-                self.regex(pattern).err().map(|error| invalid(&error, span))
+                self.regexes.compiled(pattern).err().map(|error| invalid(&error, span))
             }
             _ => None,
         }
@@ -85,7 +92,7 @@ impl Interp<'_> {
             Some(Value::Str(pattern)) => Rc::clone(pattern),
             _ => return Err(Diagnostic::new("this `Regex` has no pattern", span)),
         };
-        let regex = self.regex(&pattern).map_err(|error| invalid(&error, span))?;
+        let regex = self.regexes.compiled(&pattern).map_err(|error| invalid(&error, span))?;
         match (method, args.as_slice()) {
             ("match" | "fullmatch" | "search", [Value::Str(text)]) => {
                 let anchor = match method {

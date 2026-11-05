@@ -13,6 +13,7 @@ mod keys;
 mod leading_dot;
 mod library;
 mod loops;
+mod lost;
 mod mutation;
 mod names;
 mod narrowing;

@@ -20,7 +20,9 @@ def grow(mut names: list[str]):
 fn changes(body: &str) -> Vec<String> {
     in_main_after(
         TEAM,
-        &format!("mut names = [\"ash\", \"kit\"]\nmut team = Team()\nmut scores = {{\"a\": 1}}\n{body}"),
+        &format!(
+            "mut names = [\"ash\", \"kit\"]\nmut team = Team()\nmut scores = {{\"a\": 1}}\n{body}stdout.print(names, team, scores)\n"
+        ),
     )
 }
 

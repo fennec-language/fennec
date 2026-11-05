@@ -329,6 +329,10 @@ impl Encode for Element {
                 to.tag(7);
                 item.encode(to);
             }
+            Element::ListOf(number) => {
+                to.tag(11);
+                number.encode(to);
+            }
             Element::Enum { name, cases, words } => {
                 to.tag(6);
                 name.encode(to);
@@ -352,6 +356,7 @@ impl Decode for Element {
             8 => Element::Object,
             9 => Element::Maybe(Decode::decode(from)?),
             7 => Element::List(Decode::decode(from)?),
+            11 => Element::ListOf(Decode::decode(from)?),
             6 => Element::Enum {
                 name: Decode::decode(from)?,
                 cases: Decode::decode(from)?,

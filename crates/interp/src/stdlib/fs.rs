@@ -21,77 +21,82 @@ impl Interp<'_> {
         if let Some(faked) = self.fake_fs(method, &paths, span) {
             return faked;
         }
-        let done = match (method, paths.as_slice()) {
-            ("exists", [Value::Str(path)]) => return Ok(Value::Bool(std::path::Path::new(path.as_ref()).exists())),
-            ("read_text", [Value::Str(path)]) => std::fs::read_to_string(path.as_ref()).map(|text| Value::str(&text)),
-            ("write_text", [Value::Str(path), Value::Str(text)]) => {
-                std::fs::write(path.as_ref(), text.as_bytes()).map(|()| Value::Unit)
-            }
-            ("read_bytes", [Value::Str(path)]) => std::fs::read(path.as_ref()).map(|data| Value::Bytes(Rc::from(data))),
-            ("write_bytes", [Value::Str(path), Value::Bytes(data)]) => {
-                std::fs::write(path.as_ref(), data).map(|()| Value::Unit)
-            }
-            ("list_dir", [Value::Str(path)]) => return self.list_dir(path, span),
-            ("make_dir", [Value::Str(path)]) => std::fs::create_dir_all(path.as_ref()).map(|()| Value::Unit),
-            ("remove", [Value::Str(path)]) => remove(path).map(|()| Value::Unit),
-            ("metadata", [Value::Str(path)]) => match std::fs::metadata(path.as_ref()) {
-                Ok(found) => {
-                    let size = i64::try_from(found.len()).unwrap_or(i64::MAX);
-                    let fields = vec![
-                        ("size", Value::Int(size)),
-                        ("is_file", Value::Bool(found.is_file())),
-                        ("is_dir", Value::Bool(found.is_dir())),
-                    ];
-                    Ok(self.make_value("Metadata", fields, span)?)
-                }
-                Err(err) => Err(err),
-            },
-            ("exists" | "read_text" | "write_text" | "read_bytes" | "write_bytes" | "list_dir" | "make_dir" | "remove" | "metadata", _) => {
-                return Err(Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span));
-            }
-            _ => return Err(no_method(&Value::Capability(Capability::Fs), method, span)),
+        real_fs(method, &paths, span)
+    }
+}
+
+/// A method of the real `Fs`, which needs nothing of a program's, on paths as `path_text` gives
+/// them.
+pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    let done = match (method, paths) {
+        ("exists", [Value::Str(path)]) => return Ok(Value::Bool(std::path::Path::new(path.as_ref()).exists())),
+        ("read_text", [Value::Str(path)]) => std::fs::read_to_string(path.as_ref()).map(|text| Value::str(&text)),
+        ("write_text", [Value::Str(path), Value::Str(text)]) => {
+            std::fs::write(path.as_ref(), text.as_bytes()).map(|()| Value::Unit)
+        }
+        ("read_bytes", [Value::Str(path)]) => std::fs::read(path.as_ref()).map(|data| Value::Bytes(Rc::from(data))),
+        ("write_bytes", [Value::Str(path), Value::Bytes(data)]) => {
+            std::fs::write(path.as_ref(), data).map(|()| Value::Unit)
+        }
+        ("list_dir", [Value::Str(path)]) => return Ok(list_dir(path)),
+        ("make_dir", [Value::Str(path)]) => std::fs::create_dir_all(path.as_ref()).map(|()| Value::Unit),
+        ("remove", [Value::Str(path)]) => remove(path).map(|()| Value::Unit),
+        ("metadata", [Value::Str(path)]) => std::fs::metadata(path.as_ref()).map(|found| {
+            let size = i64::try_from(found.len()).unwrap_or(i64::MAX);
+            Value::made(
+                "Metadata",
+                vec![
+                    ("size", Value::Int(size)),
+                    ("is_file", Value::Bool(found.is_file())),
+                    ("is_dir", Value::Bool(found.is_dir())),
+                ],
+            )
+        }),
+        ("exists" | "read_text" | "write_text" | "read_bytes" | "write_bytes" | "list_dir" | "make_dir" | "remove"
+        | "metadata", _) => {
+            return Err(Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span));
+        }
+        _ => return Err(no_method(&Value::Capability(Capability::Fs), method, span)),
+    };
+    Ok(match done {
+        Ok(value) => Value::Ok(Rc::new(value)),
+        Err(err) => io_error(&err.to_string()),
+    })
+}
+
+/// The paths in a folder, sorted by name so every system lists them in the same order.
+fn list_dir(folder: &str) -> Value {
+    let entries = match std::fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(err) => return io_error(&err.to_string()),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => names.push(entry.file_name().to_string_lossy().into_owned()),
+            Err(err) => return io_error(&err.to_string()),
+        }
+    }
+    names.sort();
+    paths_in(folder, names)
+}
+
+/// The paths of the things called `names` in a folder.
+pub(crate) fn paths_in(folder: &str, names: Vec<String>) -> Value {
+    let paths = names.into_iter().map(|name| {
+        let text = if folder.is_empty() || folder.ends_with('/') {
+            format!("{folder}{name}")
+        } else {
+            format!("{folder}/{name}")
         };
-        match done {
-            Ok(value) => Ok(Value::Ok(Rc::new(value))),
-            Err(err) => self.io_error(&err, span),
-        }
-    }
+        Value::made("Path", vec![("text", Value::str(&text))])
+    });
+    Value::Ok(Rc::new(Value::list(paths.collect())))
+}
 
-    /// The paths in a folder, sorted by name so every system lists them in the same order.
-    fn list_dir(&mut self, folder: &str, span: Span) -> Result<Value, Diagnostic> {
-        let entries = match std::fs::read_dir(folder) {
-            Ok(entries) => entries,
-            Err(err) => return self.io_error(&err, span),
-        };
-        let mut names = Vec::new();
-        for entry in entries {
-            match entry {
-                Ok(entry) => names.push(entry.file_name().to_string_lossy().into_owned()),
-                Err(err) => return self.io_error(&err, span),
-            }
-        }
-        names.sort();
-        self.paths_in(folder, names, span)
-    }
-
-    /// The paths of the things called `names` in a folder.
-    pub(crate) fn paths_in(&mut self, folder: &str, names: Vec<String>, span: Span) -> Result<Value, Diagnostic> {
-        let mut paths = Vec::with_capacity(names.len());
-        for name in names {
-            let text = if folder.is_empty() || folder.ends_with('/') {
-                format!("{folder}{name}")
-            } else {
-                format!("{folder}/{name}")
-            };
-            paths.push(self.make_value("Path", vec![("text", Value::str(&text))], span)?);
-        }
-        Ok(Value::Ok(Rc::new(Value::list(paths))))
-    }
-
-    pub(crate) fn io_error(&mut self, err: &std::io::Error, span: Span) -> Result<Value, Diagnostic> {
-        let error = self.make_value("IoError", vec![("reason", Value::str(&err.to_string()))], span)?;
-        Ok(Value::Err(Rc::new(error)))
-    }
+/// A failed result holding an `IoError`.
+pub(crate) fn io_error(reason: &str) -> Value {
+    Value::Err(Rc::new(Value::made_error("IoError", vec![("reason", Value::str(reason))])))
 }
 
 /// Removes a file, or a folder if it's empty.

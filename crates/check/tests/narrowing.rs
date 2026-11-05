@@ -410,3 +410,142 @@ fn match_cases_bind_typed_values() {
         ]
     );
 }
+
+#[test]
+fn a_list_written_where_a_list_of_optionals_goes_is_one() {
+    let program = "
+        def f() -> int:
+            mut numbers: list[int?] = [1, 2]
+            numbers.append(None)
+            numbers[0] + 1
+    ";
+    assert_eq!(problems(program).len(), 1, "{:?}", problems(program));
+    assert!(problems(program)[0].contains("numbers[0]"), "{:?}", problems(program));
+}
+
+#[test]
+fn what_a_mut_parameter_can_make_none_is_checked_again() {
+    let program = "
+        def cleared(mut value: int?):
+            value = None
+
+        def f(n: int?) -> int:
+            mut held = n
+            if held is not None:
+                cleared(mut held)
+                return held + 1
+            0
+    ";
+    assert_eq!(problems(program), ["this might be None @ held"]);
+    let keeps_what_it_knows = "
+        def bumped(mut value: int):
+            value += 1
+
+        def f(n: int?) -> int:
+            mut held = n
+            if held is not None:
+                bumped(mut held)
+                return held + 1
+            0
+    ";
+    assert_eq!(problems(keeps_what_it_knows), Vec::<String>::new());
+}
+
+#[test]
+fn a_loop_sees_what_its_body_changes() {
+    let cases = [
+        ("mut x: int? = 5\nfor n in names:\n    use(x + 1)\n    x = None\n", "x"),
+        ("mut x: int? = 5\nmut more = True\nwhile x + 1 > 0 and more:\n    x = None\n", "x"),
+        ("mut x: int? = 5\nfor n in names:\n    for m in names:\n        use(x + 1)\n    x = None\n", "x"),
+        ("mut x: int? = 5\nfor n in names:\n    for m in names:\n        x = None\n    use(x + 1)\n", "x"),
+        ("mut x: int? = 5\nfor n in names:\n    use(x + 1)\n    if n == 'a':\n        x = None\n", "x"),
+        ("mut x: int? = 5\nfor n in names:\n    use(x + 1)\n    x = None\n    continue\n", "x"),
+        ("mut x: int? = 5\nfor n in names:\n    use(x + 1)\n    x = None\n    break\n", "x"),
+        (
+            "mut x: int? = 5\nfor n in names:\n    x = None\n    if n == 'a':\n        break\n    x = 1\nuse(x + 1)\n",
+            "x",
+        ),
+        (
+            "mut x: int? = 5\nfor n in names:\n    match n:\n        case 'a':\n            use(x + 1)\n        case _:\n            x = None\n",
+            "x",
+        ),
+        ("mut x: int? = 5\nfor n in names:\n    use(x + 1)\n    clear(mut x)\n", "x"),
+        // It never holds None, but the loop's first look at it doesn't know that.
+        ("mut x: int? = 5\nfor n in names:\n    x = x + 1\n", "x"),
+        (
+            "mut h = Held(x=1)\nif h.x is not None:\n    for n in names:\n        use(h.x + 1)\n        h.x = None\n",
+            "h.x",
+        ),
+        (
+            "mut h = Held(x=1)\nif h.x is not None:\n    for n in names:\n        use(h.x + 1)\n        h.clear()\n",
+            "h.x",
+        ),
+    ];
+    for (body, read) in cases {
+        let found = problems(&in_a_loop_function(body));
+        assert_eq!(found, [format!("this might be None @ {read}")], "{body}");
+    }
+}
+
+#[test]
+fn a_loop_keeps_what_its_body_leaves_alone() {
+    let cases = [
+        "x: int? = 5\nif x is None:\n    return\nfor n in names:\n    use(x + 1)\n",
+        "mut x: int? = 5\nif x is None:\n    return\nfor n in names:\n    use(x + 1)\nx = None\nuse(x else 0)\n",
+        "mut x: int? = None\nfor n in names:\n    x = 1\n    use(x + 1)\n",
+        "mut x: int? = None\nfor n in names:\n    if x is not None:\n        use(x + 1)\n    x = 1\n",
+        "h = Held(x=1)\nif h.x is not None:\n    for n in names:\n        use(h.x + 1)\n        h.show()\n",
+    ];
+    for body in cases {
+        assert_eq!(problems(&in_a_loop_function(body)), Vec::<String>::new(), "{body}");
+    }
+}
+
+fn in_a_loop_function(body: &str) -> String {
+    let body = format!("    {}", body.trim_end().replace('\n', "\n    "));
+    format!(
+        "struct Held:
+    x: int?
+
+    def clear(mut self):
+        self.x = None
+
+    def show(self) -> int:
+        1
+
+def use(n: int):
+    pass
+
+def clear(mut slot: int?):
+    slot = None
+
+def run(names: list[str]):
+{body}
+"
+    )
+}
+
+#[test]
+fn an_else_chain_stops_at_a_failing_step_too() {
+    let empty: [&str; 0] = [];
+    let types = "error Lost:\n    why: str\n\nstruct Part:\n    name = \"\"\n\n    def again(self) -> Part fails Lost:\n        self\n\ndef find(n: int) -> Part fails Lost:\n    if n > 1: fail Lost(why=\"big\")\n    Part()\n";
+    let kept = |body: &str| crate::in_main_after(types, &format!("{body}\nstdout.print(1)\n"));
+    for body in [
+        "name: str = find(1).name else \"?\"\nstdout.print(name)",
+        "size: int = find(1).name.len() else 0\nstdout.print(size)",
+        "kept: str = find(1).expect(\"there\").name\nstdout.print(kept)",
+    ] {
+        assert_eq!(kept(body), empty, "{body}");
+    }
+    let second = kept("name: str = find(1).again().name else \"?\"\nstdout.print(name)");
+    assert_eq!(second, ["this is the result of something that can fail @ find(1).again().name"]);
+    let twice = kept("part: Part = find(1).again() else Part()\nstdout.print(part.name)");
+    assert_eq!(
+        twice,
+        ["two steps of this chain can fail, and `else` stops at one @ find(1).again() else Part()"]
+    );
+    let said = kept("stdout.print(find(1).name)");
+    assert_eq!(said, ["this is the result of something that can fail @ find(1).name"]);
+    let bracketed = kept("stdout.print((find(1).name else \"?\") + find(2).name)");
+    assert_eq!(bracketed, ["this is the result of something that can fail @ find(2).name"]);
+}

@@ -536,6 +536,7 @@ pub extern "C" fn float_text(x: f64) -> i64 {
 }
 
 /// A new string with a temporary's text, as `str` gives it.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn value_text(value: i64) -> i64 {
     attempt(|state: &mut State| {
         let value = state.temp(value);
@@ -544,8 +545,15 @@ pub extern "C" fn value_text(value: i64) -> i64 {
     })
 }
 
+/// A new string with the text of the value in a block, read from the block.
+pub extern "C" fn shown_text(address: i64) -> i64 {
+    let shown = super::heap::shown::shown(u64::try_from(address).unwrap_or(0));
+    attempt(|state: &mut State| Ok(text_address(state, &shown?)))
+}
+
 /// A new string with a temporary's text, formatted by a spec, failing like the interpreter
 /// for a spec that doesn't fit.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn spec_text(value: i64, spec: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let value = state.temp(value);

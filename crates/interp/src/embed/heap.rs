@@ -94,6 +94,8 @@ pub(crate) struct Heap {
     /// Where each kind of list item laid out in place holds addresses, by the kind's number. A
     /// worker's heap has none, and walks them.
     item_plans: Vec<super::plans::ItemPlan>,
+    /// Which of those hold no blocks at all, as most lists' items don't, to free them at once.
+    empty_items: Vec<bool>,
     /// The number of the thread this heap is, in a shape word's owner bits: 0 on the main
     /// thread, so its blocks' shape words are just their shapes.
     owner_bits: u64,
@@ -206,11 +208,18 @@ fn zero_words<const N: usize>(block: &mut [u64]) -> bool {
 }
 
 impl Heap {
+    /// Whether a list of this kind of item is known to hold no blocks. A worker's heap has no
+    /// plans, so it doesn't know, and looks.
+    fn items_hold_nothing(&self, number: usize) -> bool {
+        self.empty_items.get(number).copied().unwrap_or(false)
+    }
+
     /// A heap holding the blocks that live for the whole run.
     /// The heap, knowing where blocks of each shape hold addresses, for freeing them.
     pub(crate) fn planned(mut self, shapes: &[Rc<Element>], elements: &[Rc<Element>]) -> Heap {
         self.plans = shapes.iter().map(|shape| super::plans::plan(shape)).collect();
         self.item_plans = elements.iter().map(|element| super::plans::item_plan(element)).collect();
+        self.empty_items = self.item_plans.iter().map(|items| items.plan.holds_nothing()).collect();
         self.sizes = shapes.iter().map(|shape| HEADER_WORDS + shape.words()).collect();
         self
     }

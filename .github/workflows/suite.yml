@@ -82,6 +82,10 @@ jobs:
         env:
           OS: ${{ matrix.os }}
         run: ./target/release/fennec-bench realworld --runs 10 --markdown "suite-realworld-$OS.md"
+      - name: Measure a server under load against Rust and Go
+        env:
+          OS: ${{ matrix.os }}
+        run: ./target/release/fennec-bench server --runs 5 --markdown "suite-server-$OS.md"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -90,6 +94,7 @@ jobs:
             suite-*.json
             suite-parallel-*.md
             suite-realworld-*.md
+            suite-server-*.md
           if-no-files-found: ignore
 
   report:
@@ -185,7 +190,7 @@ jobs:
       - name: Parallel against rayon and real programs against Rust with crates, for each machine
         run: |
           shopt -s nullglob
-          for section in runs/suite-parallel-*.md runs/suite-realworld-*.md; do
+          for section in runs/suite-parallel-*.md runs/suite-realworld-*.md runs/suite-server-*.md; do
             cat "$section" >> "$GITHUB_STEP_SUMMARY"
             echo >> "$GITHUB_STEP_SUMMARY"
           done

@@ -5688,6 +5688,9 @@ struct Words:
     def text(mut self) -> str fails ParseError:
         self.next()?
 
+    def bytes(mut self) -> bytes fails ParseError:
+        self.next()?.encode()
+
     def none(mut self) -> bool fails ParseError:
         if self.at < self.parts.len() and self.parts[self.at] == "-":
             self.at += 1

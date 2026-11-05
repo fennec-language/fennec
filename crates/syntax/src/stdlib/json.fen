@@ -85,6 +85,65 @@ def _escaped(b: int) -> str:
             digits = "0123456789abcdef"
             f"\\u00{digits[b // 16]}{digits[b % 16]}"
 
+## `data` in standard base64, with `=` at the end to fill its last four, which is how JSON and TOML
+## write `bytes`.
+def _base64(data: bytes) -> str:
+    size = data.len()
+    mut out = ""
+    mut at = 0
+    while at < size:
+        first = data[at]
+        second = data[at + 1] if at + 1 < size else 0
+        third = data[at + 2] if at + 2 < size else 0
+        out += _base64_digit(first // 4)
+        out += _base64_digit(first % 4 * 16 + second // 16)
+        out += _base64_digit(second % 16 * 4 + third // 64) if at + 1 < size else "="
+        out += _base64_digit(third % 64) if at + 2 < size else "="
+        at += 3
+    out
+
+def _base64_digit(n: int) -> str:
+    text_part("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", n, n + 1)
+
+## What a base64 digit stands for, or -1 for anything else.
+def _base64_value(b: int) -> int:
+    if b >= 65 and b <= 90:
+        return b - 65
+    if b >= 97 and b <= 122:
+        return b - 71
+    if b >= 48 and b <= 57:
+        return b + 4
+    if b == 43:
+        return 62
+    if b == 47:
+        return 63
+    -1
+
+## The bytes standard base64 text stands for, or None if it isn't base64.
+def _from_base64(text: str) -> bytes?:
+    size = text_size(text)
+    if size % 4 != 0:
+        return None
+    mut out = list[int]()
+    mut at = 0
+    while at < size:
+        a = _base64_value(text_byte(text, at))
+        b = _base64_value(text_byte(text, at + 1))
+        last = at + 4 == size
+        c_byte = text_byte(text, at + 2)
+        d_byte = text_byte(text, at + 3)
+        c = -2 if last and c_byte == 61 and d_byte == 61 else _base64_value(c_byte)
+        d = -2 if last and d_byte == 61 else _base64_value(d_byte)
+        if a < 0 or b < 0 or c == -1 or d == -1:
+            return None
+        out.append(a * 4 + b // 16)
+        if c >= 0:
+            out.append(b % 16 * 16 + c // 4)
+            if d >= 0:
+                out.append(c % 4 * 64 + d)
+        at += 4
+    bytes(out)
+
 ## What a dict's key is, for deciding how to write it: JSON's object keys are text, and an int
 ## is written as its digits. Anything else makes the dict an array of `[key, value]` pairs.
 struct _Key:
@@ -104,6 +163,9 @@ struct _Key:
     def text(mut self, value: str):
         self.text = value
         self.fits = True
+
+    def bytes(mut self, value: bytes):
+        pass
 
     def none(mut self):
         pass
@@ -182,6 +244,9 @@ struct JsonWriter:
         else:
             self._text += text_part(value, start, size)
         self._text += "\""
+
+    def bytes(mut self, value: bytes):
+        self.text(_base64(value))
 
     def none(mut self):
         self._text += "null"
@@ -285,8 +350,10 @@ struct JsonWriter:
         self._open("{")
 
 ## `value` as JSON text, through its own `def serialize`.
-def native_dumps[T: Serializable](value: T, names: JsonNames = JsonNames.snake_case, indent: int = -1) -> str:
-    mut out = JsonWriter(_names=names, _indent=indent)
+## Native code runs `json.dumps` through this. Its options' defaults are `None` and `-1`, since the
+## default a call leaves out is written into the program calling it, which may not import `JsonNames`.
+def native_dumps[T: Serializable](value: T, names: JsonNames? = None, indent: int = -1) -> str:
+    mut out = JsonWriter(_names=names else JsonNames.snake_case, _indent=indent)
     value.serialize(mut out)
     out.written()
 
@@ -533,6 +600,17 @@ struct JsonReader:
             self._at = start
             return self._unescaped()?
         fail _no_reason()
+
+    def bytes(mut self) -> bytes fails ParseError:
+        if self._space() != 34:
+            fail self._misfit("bytes")
+        text = self.text()?
+        _from_base64(text) else fail self._not_base64()
+
+    def _not_base64(self) -> ParseError:
+        if not self._explain:
+            return _no_reason()
+        ParseError(message=f"{self._where()} should be bytes, written in base64", line=0, column=0)
 
     ## The rest of a string with an escape in it, from just inside its opening quote.
     def _unescaped(mut self) -> str fails ParseError:
@@ -1114,13 +1192,16 @@ struct JsonReader:
             fail self._bad(f"expected the end of the text after the value, but found {self._next_char()}")
 
 ## `text` read as a `T`, through its own `def deserialize`.
-def native_loads[T: Deserializable](text: str, names: JsonNames = JsonNames.snake_case, extra: JsonExtra = JsonExtra.error) -> T fails ParseError:
-    mut src = JsonReader(_source=text, _names=names, _extra=extra)
+## Native code runs `json.loads` through this, with `None` for the options' defaults, as `native_dumps`.
+def native_loads[T: Deserializable](text: str, names: JsonNames? = None, extra: JsonExtra? = None) -> T fails ParseError:
+    spelled = names else JsonNames.snake_case
+    keys = extra else JsonExtra.error
+    mut src = JsonReader(_source=text, _names=spelled, _extra=keys)
     match _read[T](mut src):
         case Ok(value):
             value
         case Err(_):
-            _explained[T](text, names, extra)?
+            _explained[T](text, spelled, keys)?
 
 def _read[T: Deserializable](mut src: JsonReader) -> T fails ParseError:
     value = T.deserialize(mut src)?

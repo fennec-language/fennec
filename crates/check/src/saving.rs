@@ -66,10 +66,12 @@ fn uses_saving(module: &Module) -> bool {
         return false;
     }
     let imported = module.items.iter().any(|item| match item {
-        Item::Import(import) => {
-            import.module.first().is_some_and(|first| first == "std")
-                && import.module.get(1).is_some_and(|name| SAVING_MODULES.contains(&name.as_str()))
-        }
+        // `import std.json`, `from std.json import loads`, or `from std import json`.
+        Item::Import(import) => match import.module.as_slice() {
+            [std, name, ..] if std == "std" => SAVING_MODULES.contains(&name.as_str()),
+            [std] if std == "std" => import.bound().any(|(name, _)| SAVING_MODULES.contains(&name)),
+            _ => false,
+        },
         _ => false,
     });
     if imported {
@@ -145,7 +147,7 @@ fn all_saved(checker: &mut Checker, def: &TypeDef, generated: &BTreeSet<String>)
 /// ask of what it stands for.
 fn saved(checker: &Checker, ty: &Type, generated: &BTreeSet<String>) -> bool {
     match ty {
-        Type::Int | Type::Float | Type::Bool | Type::Str | Type::Param(_) => true,
+        Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::Param(_) => true,
         Type::List(inner) | Type::Set(inner) | Type::Optional(inner) => saved(checker, inner, generated),
         Type::Dict(key, value) => saved(checker, key, generated) && saved(checker, value, generated),
         Type::Named(name) | Type::Generic(name, _) => {
@@ -435,7 +437,7 @@ fn field_stops(
 ) -> Option<(String, String, String, String)> {
     let stop = |what: String| Some((place.to_owned(), what, field.to_owned(), owner.to_owned()));
     match ty {
-        Type::Int | Type::Float | Type::Bool | Type::Str | Type::Param(_) | Type::Unknown => None,
+        Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::Param(_) | Type::Unknown => None,
         Type::List(inner) | Type::Set(inner) | Type::Optional(inner) => {
             field_stops(checker, inner, place, (field, owner), open)
         }

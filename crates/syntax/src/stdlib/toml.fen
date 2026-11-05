@@ -1,5 +1,5 @@
 from std.intrinsics import text_byte, text_of_code, text_part, text_size, type_name
-from std.json import _article, _escaped, _float_text
+from std.json import _article, _escaped, _float_text, _from_base64, _base64
 
 ## How deeply arrays and inline tables may nest, so bad input can't overflow the stack.
 _MOST_DEEP = 500
@@ -797,6 +797,13 @@ struct TomlReader:
             case _:
                 fail self._misfit("str")
 
+    def bytes(mut self) -> bytes fails ParseError:
+        match self._here:
+            case .Text(text):
+                _from_base64(text) else fail ParseError(message=f"{self._where()} should be bytes, written in base64", line=0, column=0)
+            case _:
+                fail self._misfit("bytes")
+
     def none(mut self) -> bool fails ParseError:
         False
 
@@ -956,6 +963,9 @@ struct TomlWriter:
 
     def text(mut self, value: str):
         self._done = _Toml.Text(text=value)
+
+    def bytes(mut self, value: bytes):
+        self._done = _Toml.Text(text=_base64(value))
 
     def none(mut self):
         assert False

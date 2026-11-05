@@ -287,6 +287,24 @@ fn tests_get_fakes_unless_asked_for_the_real_thing() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A standard library type's default, like `Response`'s `headers = dict[str, str]()`, works in a
+/// test that doesn't run through LLVM: here the file's other test reaches what LLVM can't build
+/// yet, so both go another way, and with `--jit` and `--real` too.
+#[test]
+fn a_standard_library_default_works_in_a_test_off_llvm() {
+    let dir = std::env::temp_dir().join(format!("fennec-std-default-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("response.fen");
+    let source = "from std.net import Response\n\ndef handle(path: str) -> Response:\n    match path:\n        case \"/hello\":\n            Response(status=200, body=\"hi\".encode())\n        case _:\n            Response(status=404)\n\ntest \"plain\":\n    assert handle(\"/hello\").status == 200\n    assert handle(\"/\").headers.len() == 0\n\ntest \"net only\"(net: Net):\n    with net.listen(0)? as server:\n        assert server.port >= 0\n";
+    std::fs::write(&path, source).unwrap();
+    let path = path.to_str().unwrap();
+    for how in ["--all", "--jit"] {
+        let ran = fennec(&["test", how, path], "").unwrap();
+        assert!(ran.status.success(), "{how}: {}{}", text(&ran.stdout), text(&ran.stderr));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn the_clock_is_fixed_unless_asked_for_the_real_one() {
     let dir = std::env::temp_dir().join(format!("fennec-clock-{}", std::process::id()));

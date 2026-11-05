@@ -223,7 +223,9 @@ fn report(options: &Options, mut found: Found) -> ExitCode {
         if on_github {
             println!("::warning title=Not native::{kernel} has {count} functions LLVM doesn't take yet");
         }
-        eprintln!("warning: {kernel} has {count} functions LLVM doesn't take yet: see `fennec dev fallbacks --llvm`");
+        eprintln!(
+            "warning: {kernel} has {count} functions LLVM doesn't take yet: see `fennec dev fallbacks --llvm`"
+        );
     }
     for error in &found.errors {
         eprintln!("error: {error}");

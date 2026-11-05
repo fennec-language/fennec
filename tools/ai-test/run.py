@@ -10,8 +10,10 @@ apart from the writes that were lost to a copy.
     uv run tools/ai-test/run.py --tasks 5            # the first five tasks
     uv run tools/ai-test/run.py                      # every task
 
-The model is reached through the usual environment variables, like `ANTHROPIC_API_KEY`; nothing
-here holds a key. It isn't run in CI. Results go to `tools/ai-test/results/`, which isn't kept.
+The key is `ANTHROPIC_API_KEY`, or else the file `~/.anthropic-token`; nothing here holds one or
+prints it. Requests go to the Claude API itself, or to `FENNEC_AI_TEST_BASE_URL` if that's set,
+never to an `ANTHROPIC_BASE_URL` a shell happens to have. It isn't run in CI. Results go to
+`tools/ai-test/results/`, which isn't kept.
 """
 
 import argparse
@@ -240,6 +242,21 @@ def summary(results: list[Result], model: str) -> str:
     return "\n".join(lines)
 
 
+# Where the requests go unless `FENNEC_AI_TEST_BASE_URL` says otherwise.
+API = "https://api.anthropic.com"
+
+
+def api_key() -> str | None:
+    """The key: `ANTHROPIC_API_KEY`, or the first line of `~/.anthropic-token`."""
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        return (Path.home() / ".anthropic-token").read_text().strip().splitlines()[0] or None
+    except (OSError, IndexError):
+        return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--check-tasks", action="store_true", help="run the reference answers, with no model")
@@ -265,7 +282,11 @@ def main() -> int:
 
     import anthropic
 
-    client = anthropic.Anthropic()
+    key = api_key()
+    if key is None:
+        print("error: set ANTHROPIC_API_KEY, or put the key in ~/.anthropic-token", file=sys.stderr)
+        return 2
+    client = anthropic.Anthropic(api_key=key, base_url=os.environ.get("FENNEC_AI_TEST_BASE_URL", API))
     page = (REPO / "docs" / "language.md").read_text()
     # The instructions and the language page are the same for every task, so they're cached.
     system = [

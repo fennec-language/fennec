@@ -1,4 +1,4 @@
-from std.game import IdMap
+from std.collections import Table
 from std.layout import SoaList
 
 enum Light:
@@ -100,10 +100,10 @@ def main(stdout: Stdout):
     stdout.print(True or 1 // 0 == 0, False and 1 // 0 == 0, True and False, False or True)
 
     # An Id stops working once its item is removed, even after its slot is reused.
-    mut enemies = IdMap[str]()
-    ash = enemies.insert("ash")
+    mut enemies = Table[str]()
+    ash = enemies.add("ash")
     enemies.remove(ash)
-    kit = enemies.insert("kit")
+    kit = enemies.add("kit")
     stdout.print(enemies.get(ash), enemies[kit])
 
     stdout.print(SoaList[int](), SoaList[int]().len())

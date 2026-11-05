@@ -1,8 +1,8 @@
-## Who's on the battlefield: units in an `IdMap`, and the squads that group them. Units and
+## Who's on the battlefield: units in a `Table`, and the squads that group them. Units and
 ## squads point at each other by `Id`, never by reference, so a unit that dies leaves only
 ## stale `Id`s behind, which `get` reports as gone.
 
-from std.game import Id, IdMap
+from std.collections import Id, Table
 
 import map
 
@@ -107,15 +107,15 @@ struct Squad:
 
 struct World:
     field: map.Map
-    units = IdMap[Unit]()
-    squads = IdMap[Squad]()
+    units = Table[Unit]()
+    squads = Table[Squad]()
     tick = 0
 
     ## Adds a unit, and gives back its `Id`.
     def spawn(mut self, name: str, team: Team, kind: Kind, at: (int, int)) -> Id[Unit]:
         assert self.field.walkable(at)
         unit = Unit(name=name, team=team, kind=kind, at=at, health=kind.most_health())
-        self.units.insert(unit)
+        self.units.add(unit)
 
     ## Puts `members` in a squad led by the first of them, heading for `rally`.
     def form_squad(mut self, name: str, members: list[Id[Unit]], rally: (int, int)) -> Id[Squad]:

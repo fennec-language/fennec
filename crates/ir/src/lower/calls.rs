@@ -52,7 +52,7 @@ pub(super) fn owner_name(ty: &Type) -> Option<&str> {
         Type::Dict(..) => Some("dict"),
         Type::Tuple(_) => Some("tuple"),
         Type::Bytes => Some("bytes"),
-        Type::IdMap(_) => Some("IdMap"),
+        Type::Table(_) => Some("Table"),
         Type::Str => Some("str"),
         Type::Int => Some("int"),
         Type::Float => Some("float"),
@@ -89,7 +89,7 @@ impl Lowering<'_> {
                 return Err(format!("its call to `{name}` has a `mut` argument"));
             }
             let value = match &arg.value.kind {
-                ExprKind::Lambda { params, body } if name == "IdMap.modify" => {
+                ExprKind::Lambda { params, body } if name == "Table.modify" => {
                     self.arrow(&arg.value, params, body, true)?
                 }
                 // What's printed, or made text, through a type's own `def str`.

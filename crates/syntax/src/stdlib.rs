@@ -35,7 +35,6 @@ modules! {
     crypto,
     csv,
     fs,
-    game,
     intrinsics,
     json,
     layout,

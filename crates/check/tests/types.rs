@@ -274,11 +274,11 @@ fn builtins_give_back_the_right_types() {
         ("{'a': 1}.items()[0][1] + 1.0", "can't mix int and float in `+` @ {\"a\": 1}.items()[0][1] + 1.0"),
         ("'a'.split()[0] + 1", "can't use `+` on a str and an int @ \"a\".split()[0] + 1"),
         ("'a'.isdigit() + 1", "can't use `+` on a bool and an int @ \"a\".isdigit() + 1"),
-        ("IdMap[str]().values()[0] + 1", "can't use `+` on a str and an int @ IdMap[str]().values()[0] + 1"),
+        ("Table[str]().values()[0] + 1", "can't use `+` on a str and an int @ Table[str]().values()[0] + 1"),
     ];
     for (expression, expected) in cases {
         let program = format!(
-            "from std.math import PI, sqrt, floor\nfrom std.game import IdMap\n\ndef main(stdout: Stdout):\n    mut xs = [1]\n    stdout.print({expression})\n"
+            "from std.math import PI, sqrt, floor\nfrom std.collections import Table\n\ndef main(stdout: Stdout):\n    mut xs = [1]\n    stdout.print({expression})\n"
         );
         assert_eq!(problems(&program), [expected.to_owned()], "{expression}");
     }
@@ -287,10 +287,10 @@ fn builtins_give_back_the_right_types() {
 #[test]
 fn optional_results_of_builtins_might_be_none() {
     let cases =
-        ["[1].index(1) + 1", "'abc'.find('b') + 1", "{'a': 1}.get('a') + 1", "pool.get(pool.insert(1)) + 1"];
+        ["[1].index(1) + 1", "'abc'.find('b') + 1", "{'a': 1}.get('a') + 1", "pool.get(pool.add(1)) + 1"];
     for expression in cases {
         let program = format!(
-            "from std.game import IdMap\n\ndef main(stdout: Stdout):\n    mut pool = IdMap[int]()\n    stdout.print({expression})\n"
+            "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut pool = Table[int]()\n    stdout.print({expression})\n"
         );
         let expression = expression.replace('\'', "\"");
         let operand = expression.rsplit_once(" + ").map_or("", |(left, _)| left);

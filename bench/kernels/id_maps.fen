@@ -1,16 +1,16 @@
-## Filling an `IdMap`, then freeing a slot in five and filling those again, as units come and go.
+## Filling a `Table`, then freeing a slot in five and filling those again, as units come and go.
 
-from std.game import Id, IdMap
+from std.collections import Id, Table
 
 struct Unit:
     x: int
     hp: int
 
 def main(stdout: Stdout):
-    mut units = IdMap[Unit]()
+    mut units = Table[Unit]()
     mut ids: list[Id[Unit]] = []
     for i in range(200_000):
-        ids.append(units.insert(Unit(x=i, hp=1)))
+        ids.append(units.add(Unit(x=i, hp=1)))
     for round in range(4):
         mut at = round
         while at < ids.len():
@@ -18,7 +18,7 @@ def main(stdout: Stdout):
             at += 5
         at = round
         while at < ids.len():
-            ids[at] = units.insert(Unit(x=at, hp=round))
+            ids[at] = units.add(Unit(x=at, hp=round))
             at += 5
     mut total = 0
     for unit in units.values():

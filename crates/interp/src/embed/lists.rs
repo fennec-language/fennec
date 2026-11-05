@@ -457,7 +457,7 @@ pub(super) fn shown(state: &State, block: &[u64], out: &mut Written) {
     out.push(']');
 }
 
-/// Writes the items of an `IdMap` whose slots are still in use: those whose generation in the
+/// Writes the items of a `Table` whose slots are still in use: those whose generation in the
 /// list `generations` isn't negative.
 pub(super) fn shown_where_used(state: &State, held: u64, generations: u64, out: &mut Written) {
     let (Some(block), Some(numbers)) = (state.heap.block(held), state.heap.block(generations)) else {

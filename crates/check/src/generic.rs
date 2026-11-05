@@ -159,7 +159,7 @@ impl FnCx<'_> {
             | Type::Buffer(_)
             | Type::Set(_)
             | Type::Dict(..)
-            | Type::IdMap(_)
+            | Type::Table(_)
             | Type::Function(_)
             | Type::Arrow(..) => false,
             Type::Param(name) => self.bounds_of(name).iter().any(|bound| bound == "Hashable"),

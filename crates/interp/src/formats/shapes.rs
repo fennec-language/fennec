@@ -121,14 +121,14 @@ impl Interp<'_> {
                 }
                 Value::Dict(Rc::new(read.into()))
             }
-            Value::IdMap(map) => {
+            Value::Table(map) => {
                 let mut map = map.as_ref().clone();
                 for slot in &mut map.slots {
                     if let Some(held) = &slot.value {
                         slot.value = Some(self.natural(held, names, span)?);
                     }
                 }
-                Value::IdMap(Rc::new(map))
+                Value::Table(Rc::new(map))
             }
             other => other.clone(),
         })

@@ -127,6 +127,11 @@ fn module(name: &str) -> Option<&'static str> {
 }
 
 fn no_module(name: &str, span: Span) -> Diagnostic {
+    if name == "std.game" {
+        return Diagnostic::new("there's no module called `std.game` any more", span).with_help(
+            "`Table` and `Id` are in `std.collections`, like `from std.collections import Id, Table`",
+        );
+    }
     let modules: Vec<String> = MODULES.iter().map(|module| format!("std.{}", module.name)).collect();
     Diagnostic::new(format!("there's no module called `{name}`"), span)
         .with_help(format!("the standard library so far has {}", modules.join(", ")))

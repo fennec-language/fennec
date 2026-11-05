@@ -60,7 +60,7 @@ impl Interp<'_> {
             (Value::Capability(Capability::Args), _) => ops::index(&Value::list(self.arguments()), &at, span),
             (Value::Ok(_) | Value::Err(_), _) => Err(unhandled_result(span)),
             (Value::None, _) => Err(might_be_none(span)),
-            (Value::IdMap(map), Value::Id(id)) => map.get(*id).cloned().ok_or_else(|| {
+            (Value::Table(map), Value::Id(id)) => map.get(*id).cloned().ok_or_else(|| {
                 Diagnostic::new("this Id refers to something that's been removed", span)
                     .with_help("use `.get(id)`, which gives None instead")
             }),
@@ -126,7 +126,7 @@ impl Interp<'_> {
                 text.chars().map(|c| (None, Value::str(c.encode_utf8(&mut [0; 4])))).collect()
             }
             Value::Bytes(data) => data.iter().map(|byte| (None, Value::Int(i64::from(*byte)))).collect(),
-            Value::IdMap(map) => {
+            Value::Table(map) => {
                 map.entries().map(|(id, item)| (Some(Value::Id(id)), item.clone())).collect()
             }
             Value::Instance(instance) => {

@@ -306,7 +306,7 @@ impl Context<'_> {
             | Type::Iterator(item)
             | Type::Set(item)
             | Type::Optional(item)
-            | Type::IdMap(item)
+            | Type::Table(item)
             | Type::Id(item) => self.holds(item),
             Type::Dict(key, value) => self.holds(key) && self.holds(value),
             Type::Tuple(items) => items.iter().all(|item| self.holds(item)),

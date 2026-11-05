@@ -316,7 +316,7 @@ fn id(fields: &Fields, words: &mut dyn Iterator<Item = &u64>, out: &mut Written)
     let _ = write!(out, "Id({slot})");
 }
 
-/// `IdMap([a, b])`: what's in the slots still in use.
+/// `Table([a, b])`: what's in the slots still in use.
 fn id_map(state: &State, fields: &Fields, words: &mut dyn Iterator<Item = &u64>, out: &mut Written) {
     let (mut held, mut generations) = (0, 0);
     for (field, element) in fields {
@@ -329,7 +329,7 @@ fn id_map(state: &State, fields: &Fields, words: &mut dyn Iterator<Item = &u64>,
             _ => {}
         }
     }
-    out.push_str("IdMap([");
+    out.push_str("Table([");
     crate::embed::lists::shown_where_used(state, held, generations, out);
     out.push_str("])");
 }

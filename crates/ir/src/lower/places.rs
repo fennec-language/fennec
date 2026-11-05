@@ -87,7 +87,7 @@ impl Lowering<'_> {
         match ty {
             Type::List(_) | Type::Buffer(_) => Some(Type::Int),
             Type::Dict(key, _) => Some(*key.clone()),
-            Type::IdMap(item) => Some(Type::Id(item.clone())),
+            Type::Table(item) => Some(Type::Id(item.clone())),
             Type::Named(owner) => {
                 let given = [Some(ty.clone())];
                 let found = self
@@ -102,7 +102,7 @@ impl Lowering<'_> {
     /// What indexing a value of this type gives.
     fn item_type(&self, ty: &Type) -> Option<Type> {
         match ty {
-            Type::List(item) | Type::Buffer(item) | Type::Dict(_, item) | Type::IdMap(item) => {
+            Type::List(item) | Type::Buffer(item) | Type::Dict(_, item) | Type::Table(item) => {
                 Some(*item.clone())
             }
             Type::Named(owner) => {

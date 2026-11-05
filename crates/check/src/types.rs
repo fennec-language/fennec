@@ -41,9 +41,9 @@ pub enum Type {
     Named(String),
     /// A struct with type parameters, and the type given for each: `Deque[int]`.
     Generic(String, Vec<Type>),
-    /// An `Id` from an `IdMap` of the given type.
+    /// An `Id` from a `Table` of the given type.
     Id(Box<Type>),
-    IdMap(Box<Type>),
+    Table(Box<Type>),
     /// A function, by its name in the signature table.
     Function(String),
     /// An arrow function: the types of its parameters, and what it gives back.
@@ -115,7 +115,7 @@ impl Type {
             Type::Result(..) => "result".to_owned(),
             Type::Named(name) | Type::Param(name) | Type::Generic(name, _) => name.clone(),
             Type::Id(_) => "Id".to_owned(),
-            Type::IdMap(_) => "IdMap".to_owned(),
+            Type::Table(_) => "Table".to_owned(),
             Type::Function(_) | Type::Arrow(..) => "function".to_owned(),
             Type::Errors(_) => "error".to_owned(),
         }
@@ -153,7 +153,7 @@ impl Type {
             | Type::Iterator(inner)
             | Type::Optional(inner)
             | Type::Id(inner)
-            | Type::IdMap(inner) => {
+            | Type::Table(inner) => {
                 vec![inner]
             }
             Type::Dict(a, b) | Type::Result(a, b) => vec![a, b],
@@ -175,7 +175,7 @@ impl Type {
             Type::Iterator(item) => Type::Iterator(inner(item)),
             Type::Optional(item) => Type::optional(*inner(item)),
             Type::Id(item) => Type::Id(inner(item)),
-            Type::IdMap(item) => Type::IdMap(inner(item)),
+            Type::Table(item) => Type::Table(inner(item)),
             Type::Dict(a, b) => Type::Dict(inner(a), inner(b)),
             Type::Result(a, b) => Type::Result(inner(a), inner(b)),
             Type::Tuple(items) => Type::Tuple(items.iter().map(|item| *inner(item)).collect()),
@@ -284,7 +284,7 @@ impl Type {
             Type::Named(name) | Type::Param(name) => name.clone(),
             Type::Generic(name, args) => format!("{name}[{}]", all(args)?),
             Type::Id(item) => format!("Id[{}]", item.source()?),
-            Type::IdMap(item) => format!("IdMap[{}]", item.source()?),
+            Type::Table(item) => format!("Table[{}]", item.source()?),
             Type::Arrow(params, ret) => format!("({}) -> {}", all(params)?, ret.source()?),
             Type::Unknown | Type::Unit | Type::Function(_) | Type::Errors(_) | Type::Var(_) => return None,
         })
@@ -321,7 +321,7 @@ impl fmt::Display for Type {
                 let items: Vec<String> = items.iter().map(ToString::to_string).collect();
                 write!(f, "{name}[{}]", items.join(", "))
             }
-            Type::IdMap(item) => write!(f, "IdMap[{item}]"),
+            Type::Table(item) => write!(f, "Table[{item}]"),
             // A type parameter the program didn't write shows as the interface it stands for.
             Type::Param(name) => f.write_str(name.split(fennec_syntax::visit::HIDDEN).next().unwrap_or(name)),
             other => f.write_str(&other.kind()),

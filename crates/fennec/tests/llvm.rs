@@ -1126,6 +1126,53 @@ fn changing_through_a_place_changes_only_the_place() -> std::io::Result<()> {
     same_as_the_jit("changed_places", CHANGED_PLACES)
 }
 
+/// A list in a `shared` value, changed in place under its lock: a queue would otherwise copy the whole
+/// list on every call that changes it, and take time in proportion to its length squared.
+#[test]
+fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let types = "struct Row:\n    tags: list[int]\n\nshared Queue:\n    items = list[int]()\n    \
+                 rows = [Row(tags=[1])]\n\n    def push(mut self, item: int):\n        self.items.append(item)\n\n    \
+                 def pop(mut self) -> int:\n        self.items.pop()\n\n    \
+                 def first(mut self, item: int):\n        self.items.insert(0, item)\n\n    \
+                 def more(mut self, others: list[int]):\n        self.items.extend(others)\n\n    \
+                 def nested(mut self, item: int):\n        self.rows[0].tags.append(item)\n        self.rows[0].tags.pop()\n\n    \
+                 def called(mut self, item: int):\n        grow(mut self.items, item)\n\n\
+                 def grow(mut numbers: list[int], item: int):\n    numbers.append(item)\n\n\
+                 def main(stdout: Stdout):\n    queue = Queue()\n    mut seen = 0\n";
+    for (name, body) in [
+        (
+            "push_pop",
+            "    for n in range(2000):\n        queue.push(n)\n    for n in range(2000):\n        seen += queue.pop()\n",
+        ),
+        ("insert", "    for n in range(500):\n        queue.first(n)\n"),
+        ("extend", "    for n in range(2000):\n        queue.more([n])\n"),
+        ("nested", "    for n in range(2000):\n        queue.nested(n)\n"),
+        ("called", "    for n in range(2000):\n        queue.called(n)\n"),
+        (
+            "with",
+            "    with queue as mut held:\n        for n in range(2000):\n            held.items.append(n)\n        for n in range(2000):\n            seen += held.items.pop()\n",
+        ),
+    ] {
+        let counts =
+            counts_of(&format!("shared_place_{name}"), &format!("{types}{body}    stdout.print(seen)\n"))?;
+        assert!(counts.starts_with("copies 0 "), "{name}: {counts}");
+    }
+    Ok(())
+}
+
+/// What's changed in place stays right when it's read while changing, and when something still holds
+/// the list as it was.
+#[test]
+fn a_list_changed_in_a_shared_value_is_what_the_interpreter_says() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("shared_places", include_str!("fixtures/shared_places.fen"))
+}
+
 #[test]
 fn changing_through_a_place_copies_nothing_when_nothing_else_holds_it() -> std::io::Result<()> {
     if !ready() {
@@ -2162,24 +2209,72 @@ def main(stdout: Stdout):
     stdout.print("before", one.total)
 "#;
 
-/// A comprehension replacing a list in a cell can't change the items where they are: a call in it
-/// can reach the cell another way, and reads the list as it was until the new one is stored.
-const CELL_LIST_REPLACED: &str = r"shared Box:
+/// A way a function can still reach a cell its caller holds the lock of, past what the checker sees:
+/// a closure capturing the handle, called out of a list. The checker refuses the rest.
+const TAKEN_AGAIN: [(&str, &str); 1] = [(
+    "closure_in_list",
+    "    def inner() -> int:\n        one.total\n    readers = [inner]\n    with one as mut x:\n        x.total = readers[0]()\n",
+)];
+
+const LOCK_HELD: &str = r#"shared Box:
+    total = 1
     items = [1, 2, 3]
+
+struct Holder:
+    box: Box
+
+def through_holder(holder: Holder) -> int:
+    holder.box.total
 
 def main(stdout: Stdout):
     one = Box()
-    with one as mut x:
-        x.items = [n + x.items[0] for n in x.items]
-    stdout.print(one.items)
-";
+    holder = Holder(box=one)
+    stdout.print("before", through_holder(holder))
+"#;
 
+/// A lock this thread holds, taken again, ends the program, as it would wait forever otherwise.
 #[test]
-fn a_comprehension_replacing_a_list_in_a_cell_keeps_it_whole_for_other_names() -> std::io::Result<()> {
+fn taking_a_lock_already_held_ends_the_program() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("cell_list_replaced", CELL_LIST_REPLACED)
+    let dir = folder("taken-again")?;
+    let path = |file: &Path| file.display().to_string();
+    for (name, shape) in TAKEN_AGAIN {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("{LOCK_HELD}{shape}    stdout.print(\"not here\")\n"))?;
+        let executable = dir.join(name);
+        let interpreted = outcome(&fennec(&["run", "--interp", &path(&program)], &dir)?);
+        assert_eq!((interpreted.0.as_str(), interpreted.2), ("before 1\n", Some(1)), "{name}");
+        assert!(interpreted.1.contains("that's already held"), "{name}: {}", interpreted.1);
+        // Native code doesn't take a nested function kept in a list yet. Once it does, it has to
+        // stop the same way.
+        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+        if !built.status.success() {
+            continue;
+        }
+        let ran = outcome(&Command::new(&executable).output()?);
+        assert_eq!((&ran.0, ran.2), (&interpreted.0, interpreted.2), "{name}");
+        assert_eq!(ran.1.lines().next(), interpreted.1.lines().next(), "{name}");
+        assert_eq!(ran.2, Some(1), "{name}");
+        assert_eq!(ran.0, "before 1\n", "{name}");
+        assert!(ran.1.contains("that's already held"), "{name}: {}", ran.1);
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A comprehension replacing a list in a cell changes it where it is, as nothing else can read
+/// the list while the lock's held.
+#[test]
+fn a_comprehension_replacing_a_list_in_a_cell_makes_no_second_list() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "cell_list_replaced",
+        "shared Box:\n    items = [1, 2, 3]\n\n    def doubled(mut self):\n        self.items = [n * 2 for n in self.items]\n\ndef main(stdout: Stdout):\n    one = Box()\n    one.doubled()\n    with one as mut x:\n        x.items = [n + 1 for n in x.items]\n    stdout.print(one.items)\n",
+    )
 }
 
 #[test]
@@ -2188,6 +2283,41 @@ fn two_cells_in_a_with_each_change_through_their_own_name() -> std::io::Result<(
         return Ok(());
     }
     same_as_the_interpreter_in_both_builds("two_cells", TWO_CELLS)
+}
+
+/// One cell taken twice ends the program, after what it printed, however it came about.
+#[test]
+fn a_with_taking_one_cell_twice_ends_the_program() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("taken-twice")?;
+    let path = |file: &Path| file.display().to_string();
+    for (name, shape) in TAKEN_TWICE {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("{TAKING}{shape}    stdout.print(\"not here\")\n"))?;
+        let executable = dir.join(name);
+        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = outcome(&Command::new(&executable).output()?);
+        assert_eq!(ran, outcome(&fennec(&["run", "--interp", &path(&program)], &dir)?), "{name}");
+        assert_eq!(ran.2, Some(1), "{name}");
+        assert_eq!(ran.0, "before 21\n", "{name}");
+        assert!(ran.1.contains("takes the same `shared` value twice"), "{name}: {}", ran.1);
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+#[test]
+fn walking_a_map_in_a_cell_while_another_name_changes_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "shared_map_walked",
+        include_str!("fixtures/shared_map_walked.fen"),
+    )
 }
 
 /// `==` on `shared` values, alone and inside other values: the same only if they're one value, as
@@ -2241,41 +2371,6 @@ def main(stdout: Stdout):
     stdout.print(a == a, a == c, c == a, c == c, a != c, c != a)
 ";
     same_as_the_interpreter_in_both_builds("shared_own_same", own)
-}
-
-/// One cell taken twice ends the program, after what it printed, however it came about.
-#[test]
-fn a_with_taking_one_cell_twice_ends_the_program() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let dir = folder("taken-twice")?;
-    let path = |file: &Path| file.display().to_string();
-    for (name, shape) in TAKEN_TWICE {
-        let program = dir.join(format!("{name}.fen"));
-        std::fs::write(&program, format!("{TAKING}{shape}    stdout.print(\"not here\")\n"))?;
-        let executable = dir.join(name);
-        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
-        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
-        let ran = outcome(&Command::new(&executable).output()?);
-        assert_eq!(ran, outcome(&fennec(&["run", "--interp", &path(&program)], &dir)?), "{name}");
-        assert_eq!(ran.2, Some(1), "{name}");
-        assert_eq!(ran.0, "before 21\n", "{name}");
-        assert!(ran.1.contains("takes the same `shared` value twice"), "{name}: {}", ran.1);
-    }
-    std::fs::remove_dir_all(&dir)?;
-    Ok(())
-}
-
-#[test]
-fn walking_a_map_in_a_cell_while_another_name_changes_it() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    same_as_the_interpreter_in_both_builds(
-        "shared_map_walked",
-        include_str!("fixtures/shared_map_walked.fen"),
-    )
 }
 
 #[test]
@@ -2478,7 +2573,7 @@ fn own_text_inside_other_values_is_written_by_native_code() -> std::io::Result<(
 
 /// Every shape of value printing reads from its block, nested, with text that needs quoting.
 const SHOWN_VALUES: &str = "\
-from std.game import IdMap
+from std.collections import Table
 
 struct Point:
     x = 0
@@ -2525,10 +2620,10 @@ def main(stdout: Stdout):
     stdout.print(words)
     points: list[Point?] = [Point(), None]
     stdout.print(points)
-    mut map = IdMap[str]()
-    first = map.insert(\"a\")
-    second = map.insert(\"b\")
-    map.insert(\"c\")
+    mut map = Table[str]()
+    first = map.add(\"a\")
+    second = map.add(\"b\")
+    map.add(\"c\")
     map.remove(second)
     stdout.print(map)
     stdout.print([first])
@@ -3981,7 +4076,7 @@ def main(stdout: Stdout):
     )
 }
 
-/// An `IdMap` uses its first free slot first, whatever order slots came free in, and where it
+/// A `Table` uses its first free slot first, whatever order slots came free in, and where it
 /// looks from never changes which that is: the `Id`s it gives are the interpreter's.
 #[test]
 fn an_id_maps_new_items_go_in_its_first_free_slot() -> std::io::Result<()> {
@@ -3990,45 +4085,45 @@ fn an_id_maps_new_items_go_in_its_first_free_slot() -> std::io::Result<()> {
     }
     same_as_the_jit(
         "id_map_free_slots",
-        r#"from std.game import Id, IdMap
+        r#"from std.collections import Id, Table
 
 struct Named:
     name: str
 
 def main(stdout: Stdout):
-    mut names = IdMap[Named]()
+    mut names = Table[Named]()
     mut ids: list[Id[Named]] = []
     for at in range(8):
-        ids.append(names.insert(Named(f"name {at} long enough not to be held inline")))
+        ids.append(names.add(Named(f"name {at} long enough not to be held inline")))
     stdout.print(ids)
     # Free from high to low, low to high, and in between.
     names.remove(ids[6])
     names.remove(ids[2])
     names.remove(ids[4])
-    first = names.insert(Named("a"))
-    second = names.insert(Named("b"))
+    first = names.add(Named("a"))
+    second = names.add(Named("b"))
     names.remove(ids[0])
-    third = names.insert(Named("c"))
-    fourth = names.insert(Named("d"))
-    fifth = names.insert(Named("e"))
+    third = names.add(Named("c"))
+    fourth = names.add(Named("d"))
+    fifth = names.add(Named("e"))
     stdout.print(first, second, third, fourth, fifth, names.len())
     stdout.print(names.get(ids[2]) is None, names[first], names[fifth])
     # A stale `Id` frees nothing, so it can't move where to look.
     names.remove(ids[2])
-    sixth = names.insert(Named("f"))
+    sixth = names.add(Named("f"))
     stdout.print(sixth, names.values())
     # A copy keeps looking from where it was, apart from the original.
     mut copied = copy(names)
     copied.remove(ids[1])
     names.remove(ids[3])
-    stdout.print(copied.insert(Named("g")), names.insert(Named("h")), copied.values(), names.values())
+    stdout.print(copied.add(Named("g")), names.add(Named("h")), copied.values(), names.values())
 "#,
     )
 }
 
 /// `items()` and `values()` gone through in order, with slots empty, at the start and the end,
 /// and everything an item can be, which the loop walks with no list made.
-const WALKING_A_MAP: &str = r#"from std.game import IdMap
+const WALKING_A_MAP: &str = r#"from std.collections import Table
 
 struct Unit:
     name: str
@@ -4038,7 +4133,7 @@ struct Point:
     x: int
     y: float
 
-def total(numbers: IdMap[int]) -> int:
+def total(numbers: Table[int]) -> int:
     mut sum_of = 0
     for id, number in numbers.items():
         sum_of += number + numbers[id]
@@ -4046,7 +4141,7 @@ def total(numbers: IdMap[int]) -> int:
         sum_of += number
     sum_of
 
-def named(units: IdMap[Unit]) -> str:
+def named(units: Table[Unit]) -> str:
     mut parts = []
     for id, unit in units.items():
         parts.append(f"{unit.name}:{unit.tags.len()}:{units[id].name}")
@@ -4055,45 +4150,45 @@ def named(units: IdMap[Unit]) -> str:
     ",".join(parts)
 
 def main(stdout: Stdout):
-    mut numbers = IdMap[int]()
-    ids = [numbers.insert(n) for n in range(8)]
+    mut numbers = Table[int]()
+    ids = [numbers.add(n) for n in range(8)]
     stdout.print(total(numbers))
     numbers.remove(ids[0])
     numbers.remove(ids[3])
     numbers.remove(ids[4])
     numbers.remove(ids[7])
     stdout.print(total(numbers), numbers.len())
-    numbers.insert(100)
+    numbers.add(100)
     stdout.print(total(numbers), numbers.len())
 
-    mut units = IdMap[Unit]()
-    first = units.insert(Unit("first", [1]))
-    units.insert(Unit("second is a much longer name than fits", [2, 3]))
-    last = units.insert(Unit("é", []))
+    mut units = Table[Unit]()
+    first = units.add(Unit("first", [1]))
+    units.add(Unit("second is a much longer name than fits", [2, 3]))
+    last = units.add(Unit("é", []))
     stdout.print(named(units))
     units.remove(first)
     units.remove(last)
     stdout.print(named(units))
 
-    mut points = IdMap[Point]()
-    gone = points.insert(Point(0, 0.5))
-    points.insert(Point(1, 1.5))
-    points.insert(Point(2, 2.5))
+    mut points = Table[Point]()
+    gone = points.add(Point(0, 0.5))
+    points.add(Point(1, 1.5))
+    points.add(Point(2, 2.5))
     points.remove(gone)
     for id, point in points.items():
         stdout.print(point.x, point.y, points[id].x)
 
-    mut words = IdMap[str]()
-    words.insert("a")
-    words.insert("a word too long to fit in a header")
+    mut words = Table[str]()
+    words.add("a")
+    words.add("a word too long to fit in a header")
     for word in words.values():
         stdout.print(word)
 
     # Nothing in it, then nothing left in it.
-    mut empty = IdMap[int]()
+    mut empty = Table[int]()
     for id, number in empty.items():
         stdout.print(number)
-    only = empty.insert(1)
+    only = empty.add(1)
     empty.remove(only)
     for number in empty.values():
         stdout.print(number)
@@ -4113,8 +4208,8 @@ def main(stdout: Stdout):
     stdout.print(pairs.len())
 
     # Changed after it's asked for and before it's gone through, which sees it as it was.
-    mut changing = IdMap[int]()
-    kept = [changing.insert(n) for n in range(3)]
+    mut changing = Table[int]()
+    kept = [changing.add(n) for n in range(3)]
     before = changing.items()
     changing.remove(kept[1])
     for id, number in before:
@@ -4123,7 +4218,7 @@ def main(stdout: Stdout):
     for round in range(3):
         for number in changing.values():
             stdout.print(round, number)
-        changing.insert(round * 100)
+        changing.add(round * 100)
 "#;
 
 #[test]
@@ -4139,7 +4234,7 @@ fn walking_a_map_makes_no_list() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = "from std.game import IdMap\n\ndef main(stdout: Stdout):\n    mut numbers = IdMap[int]()\n    for n in range(1000):\n        numbers.insert(n)\n    mut found = 0\n    for round in range(100):\n        for id, number in numbers.items():\n            found += number\n        for number in numbers.values():\n            found += number\n    stdout.print(found)\n";
+    let source = "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut numbers = Table[int]()\n    for n in range(1000):\n        numbers.add(n)\n    mut found = 0\n    for round in range(100):\n        for id, number in numbers.items():\n            found += number\n        for number in numbers.values():\n            found += number\n    stdout.print(found)\n";
     let counts = counts_of("walking_no_list", source)?;
     assert!(count(&counts, "allocations") < Some(40), "{counts}");
     Ok(())
@@ -4152,22 +4247,22 @@ fn id_maps_match_the_jit() -> std::io::Result<()> {
     }
     same_as_the_jit(
         "idmap",
-        r#"from std.game import Id, IdMap
+        r#"from std.collections import Id, Table
 
 struct Unit:
     name: str
     health: int
 
 def main(stdout: Stdout):
-    mut units = IdMap[Unit]()
-    a = units.insert(Unit(name="fox", health=10))
-    b = units.insert(Unit(name="kit", health=5))
+    mut units = Table[Unit]()
+    a = units.add(Unit(name="fox", health=10))
+    b = units.add(Unit(name="kit", health=5))
     units[a].health -= 3
     stdout.print(units[a].health, units.len(), units.get(b) is None)
     gone = units.remove(b)
     stdout.print(units.get(b) is None, units.len(), a == a, a == b)
     stdout.print(a in units, b in units, a not in units, b not in units)
-    c = units.insert(Unit(name="den", health=7))
+    c = units.add(Unit(name="den", health=7))
     stdout.print(b in units, c in units)
     ids: list[Id[Unit]] = units.ids()
     for id, unit in units.items():
@@ -4179,7 +4274,7 @@ def main(stdout: Stdout):
     )?;
     same_message_as_the_jit(
         "stale",
-        "from std.game import IdMap\n\ndef main(stdout: Stdout):\n    mut names = IdMap[str]()\n    fox = names.insert(\"fox\")\n    names.remove(fox)\n    stdout.print(names[fox])\n",
+        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut names = Table[str]()\n    fox = names.add(\"fox\")\n    names.remove(fox)\n    stdout.print(names[fox])\n",
     )
 }
 

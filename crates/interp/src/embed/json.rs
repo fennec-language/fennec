@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn an_id_map_of_optional_ids_crosses_as_the_interpreter_holds_it() {
-        use crate::value::{Id, IdMap, Instance, Slot};
+        use crate::value::{Id, Instance, Slot, Table};
         let named = |name: &str, fields: Vec<(&str, Element)>| {
             let fields = fields.into_iter().map(|(field, element)| (Rc::from(field), element)).collect();
             Element::Struct { name: Rc::from(name), fields }
@@ -168,7 +168,7 @@ mod tests {
         let items = Element::List(Rc::new(unit));
         let generations = Element::List(Rc::new(Element::Int));
         let map = named(
-            "IdMap[Unit]",
+            "Table[Unit]",
             vec![
                 ("items", items),
                 ("generations", generations),
@@ -194,7 +194,7 @@ mod tests {
             Slot { generation: 3, value: None },
             Slot { generation: 1, value: Some(unit("b", Value::Id(Id { slot: 0, generation: 0 }))) },
         ];
-        let original = Value::IdMap(Rc::new(IdMap::new(slots)));
+        let original = Value::Table(Rc::new(Table::new(slots)));
         let value = with(|state| Some(state.push(original.clone()))).unwrap();
         let block = heap::from_value(value, 0, 0, 0);
         assert_ne!(block, 0);

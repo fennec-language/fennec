@@ -206,6 +206,8 @@ pub(crate) struct Module<'w, 'p> {
     /// Whether the program runs `parallel`'s ranges on other threads, which keep their own stack
     /// limit and failure flag.
     pub(crate) threads: bool,
+    /// Whether it also has `shared` values, whose blocks that needs more from counting.
+    pub(crate) cells: bool,
     declares: BTreeSet<String>,
     pub(crate) defined: HashSet<&'p str>,
     bodies: String,
@@ -225,6 +227,7 @@ fn unit<'p>(
         layouts,
         shared,
         threads,
+        cells: threads && whole.cells,
         declares: BTreeSet::new(),
         defined: HashSet::new(),
         bodies: String::new(),
@@ -293,9 +296,6 @@ fn unit<'p>(
     out += attributes;
     Ok(out)
 }
-
-/// What a `with` that takes one `shared` value under two names says, in every engine.
-const TAKEN_TWICE: &str = "this `with` takes the same `shared` value twice";
 
 impl<'p> Module<'_, 'p> {
     pub(crate) fn add_helper(&mut self, name: &str, text: String) {
@@ -597,7 +597,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Whether this local's slot holds an owner, for it to release.
-    fn owns(&self, local: LocalId) -> bool {
+    pub(crate) fn owns(&self, local: LocalId) -> bool {
         self.kinds.get(local.0).is_some_and(Kind::counted)
             && !self.is_mut_param(local)
             && !self.is_lent(local)
@@ -1004,25 +1004,6 @@ impl Emit<'_, '_, '_> {
 
     /// Fails if a call here would go too deep. The limit never changes once the program's
     /// running and the frame stays put, so LLVM drops all but the first check on a path.
-    /// Taking several `shared` values at once: the same one twice ends the program. With only one
-    /// thread, nothing else could be holding a lock, so that's all there is to do.
-    fn lock_all(&mut self, handles: &[(Operand, bool)], span: Span) -> Result<(), String> {
-        let mut seen: Vec<(String, Kind)> = Vec::with_capacity(handles.len());
-        for (handle, _) in handles {
-            let (value, kind) = self.operand(handle)?;
-            for (earlier, _) in seen.iter().filter(|(_, other)| *other == kind).cloned().collect::<Vec<_>>() {
-                let (same, twice, apart) = (self.temp(), self.label("twice"), self.label("apart"));
-                self.line(&format!("{same} = icmp eq ptr {earlier}, {value}"));
-                self.line(&format!("br i1 {same}, label %{twice}, label %{apart}"));
-                self.start_block(&twice);
-                self.stop(TAKEN_TWICE, span);
-                self.start_block(&apart);
-            }
-            seen.push((value, kind));
-        }
-        Ok(())
-    }
-
     pub(crate) fn check_stack(&mut self, span: Span) {
         self.declare("declare ptr @llvm.frameaddress.p0(i32)");
         let (declared, symbol) = if self.module.threads && !self.on_workers() {
@@ -1671,8 +1652,8 @@ impl Emit<'_, '_, '_> {
                 let from = args.first().ok_or("no argument")?;
                 self.copy(dest.ok_or("no result")?, from)
             }
-            "IdMap" | "IdMap.len" | "IdMap.contains" | "IdMap.get" | "IdMap.insert" | "IdMap.remove"
-            | "IdMap.values" | "IdMap.ids" | "IdMap.items" => self.id_map_builtin(dest, name, args, span),
+            "Table" | "Table.len" | "Table.contains" | "Table.get" | "Table.add" | "Table.remove"
+            | "Table.values" | "Table.ids" | "Table.items" => self.id_map_builtin(dest, name, args, span),
             "is_regex" | "re.is_regex" | "re.pattern_problem" | "Regex.replace" | "Regex.split"
             | "Regex.find_all" | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
                 self.regex_builtin(dest, name, args, span)
@@ -1968,14 +1949,10 @@ impl Emit<'_, '_, '_> {
             InstKind::Resume { dest, generator, known } => {
                 self.resume(*dest, generator, known.as_deref(), span)
             }
-            InstKind::LockAll { handles } if !self.module.threads => self.lock_all(handles, span),
-            InstKind::Lock { .. } | InstKind::Unlock { .. } | InstKind::UnlockAll { .. }
-                if !self.module.threads =>
-            {
-                // With only one thread, nothing else could be holding a lock.
-                Ok(())
-            }
-            other => Err(format!("it uses `{other}`, which this backend doesn't take yet")),
+            InstKind::Lock { handle, write } => self.lock(handle, *write, span),
+            InstKind::Unlock { handle } => self.unlock(handle),
+            InstKind::LockAll { handles } => self.lock_all(handles, span),
+            InstKind::UnlockAll { handles } => self.unlock_all(handles),
         }
     }
 

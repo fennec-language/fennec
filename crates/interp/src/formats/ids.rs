@@ -1,4 +1,4 @@
-//! Checking the `Id`s read from text against the `IdMap` they belong to. A program can write
+//! Checking the `Id`s read from text against the `Table` they belong to. A program can write
 //! an `Id` the map never handed out, by editing a save or by mistake; it's reported as the
 //! text not fitting, rather than becoming a link that looks real. An `Id` of an item that's
 //! since been removed is fine, as it is in a running program, since `get` finds nothing for it.
@@ -7,17 +7,17 @@ use fennec_syntax::TypeExpr;
 
 use super::decode::{given_types, substituted, written};
 use crate::interp::Interp;
-use crate::value::{Id, IdMap, Value};
+use crate::value::{Id, Table, Value};
 
-/// The `Id`s and `IdMap`s found, each with where it is and the type of item it's for.
+/// The `Id`s and `Table`s found, each with where it is and the type of item it's for.
 #[derive(Default)]
 struct Found {
     ids: Vec<(String, String, Id)>,
-    maps: Vec<(String, String, IdMap)>,
+    maps: Vec<(String, String, Table)>,
 }
 
 impl Interp<'_> {
-    /// Checks every `Id[T]` in `value` against the one `IdMap[T]` it holds. With no map of
+    /// Checks every `Id[T]` in `value` against the one `Table[T]` it holds. With no map of
     /// that kind, or more than one, there's nothing to say which an `Id` belongs to.
     pub(crate) fn check_ids(&self, value: &Value, ty: &TypeExpr) -> Result<(), String> {
         let mut found = Found::default();
@@ -27,7 +27,7 @@ impl Interp<'_> {
             let (Some((map_at, _, map)), None) = (maps.next(), maps.next()) else { continue };
             let issued = map.slots.get(id.slot).is_some_and(|slot| id.generation <= slot.generation);
             if !issued {
-                let map = if map_at.is_empty() { "the IdMap".to_owned() } else { format!("`{map_at}`") };
+                let map = if map_at.is_empty() { "the Table".to_owned() } else { format!("`{map_at}`") };
                 return Err(format!(
                     "`{at}` is an Id that {map} never handed out: slot {}, generation {}",
                     id.slot, id.generation
@@ -37,7 +37,7 @@ impl Interp<'_> {
         Ok(())
     }
 
-    /// Collects the `Id`s and `IdMap`s inside `value`, which was read as a `ty`. `open` holds the
+    /// Collects the `Id`s and `Table`s inside `value`, which was read as a `ty`. `open` holds the
     /// structs being looked inside, so one that holds itself is looked at once at a time.
     fn find(&self, value: &Value, ty: &TypeExpr, at: &str, found: &mut Found, open: &mut Vec<String>) {
         let arg = |n: usize| ty.args.get(n);
@@ -46,7 +46,7 @@ impl Interp<'_> {
                 let item = arg(0).map(written).unwrap_or_default();
                 found.ids.push((name(at), item, *id));
             }
-            ("IdMap", Value::IdMap(map)) => {
+            ("Table", Value::Table(map)) => {
                 let Some(item) = arg(0) else { return };
                 for (n, slot) in map.slots.iter().enumerate() {
                     if let Some(held) = &slot.value {

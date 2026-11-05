@@ -1,8 +1,8 @@
 ## Carrying out a tick's decisions: moving, attacking and healing, and taking the dead off the
-## field. A unit that dies is removed from the `IdMap`; anyone still holding its `Id` finds
+## field. A unit that dies is removed from the `Table`; anyone still holding its `Id` finds
 ## nothing there next time they look, and squads choose a new leader.
 
-from std.game import Id
+from std.collections import Id
 
 import map
 from orders import Action, Decision, decide_all

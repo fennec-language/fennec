@@ -71,7 +71,7 @@ pub(crate) fn repr_with(value: &Value, own: &mut dyn FnMut(&Instance) -> Option<
         },
         Value::Ok(inner) => format!("Ok({})", repr_with(inner, own)),
         Value::Err(inner) => format!("Err({})", repr_with(inner, own)),
-        Value::IdMap(map) => format!("IdMap([{}])", join(&mut map.entries().map(|(_, value)| value))),
+        Value::Table(map) => format!("Table([{}])", join(&mut map.entries().map(|(_, value)| value))),
         Value::Id(id) => format!("Id({})", id.slot),
         Value::Type(name) => format!("<type {name}>"),
         Value::Function(function) => format!("<function {}>", function.def.name),

@@ -161,7 +161,7 @@ fn signatures_cover_methods_nested_functions_and_the_standard_library() {
 #[test]
 fn written_types_resolve() {
     let program = "
-        from std.game import Id, IdMap
+        from std.collections import Id, Table
         from std.layout import SoaList
         from std.path import Path
 
@@ -171,7 +171,7 @@ fn written_types_resolve() {
         type Things = list[Thing]
         type Loop = Loop
 
-        def f(a: int?, b: list[str], c: set[int], d: dict[str, int], e: (int, str), g: Id[Thing], h: IdMap[Thing], i: Path, j: Things, m: SoaList[Thing], n: None, o: bool, p: float, q: Fs):
+        def f(a: int?, b: list[str], c: set[int], d: dict[str, int], e: (int, str), g: Id[Thing], h: Table[Thing], i: Path, j: Things, m: SoaList[Thing], n: None, o: bool, p: float, q: Fs):
             pass
     ";
     let signatures = check(program).map_err(|problems| problems.join("; ")).unwrap();
@@ -185,7 +185,7 @@ fn written_types_resolve() {
             Type::Dict(Box::new(Type::Str), Box::new(Type::Int)),
             Type::Tuple(vec![Type::Int, Type::Str]),
             Type::Id(Box::new(named("Thing"))),
-            Type::IdMap(Box::new(named("Thing"))),
+            Type::Table(Box::new(named("Thing"))),
             named("Path"),
             list(named("Thing")),
             list(named("Thing")),

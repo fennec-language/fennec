@@ -126,7 +126,7 @@ pub(crate) fn method(ty: &Type, name: &str) -> Option<Method> {
             | Type::Buffer(_)
             | Type::Set(_)
             | Type::Dict(..)
-            | Type::IdMap(_)
+            | Type::Table(_)
             | Type::Str
             | Type::Bytes
             | Type::Tuple(_)
@@ -145,7 +145,7 @@ pub(crate) fn method(ty: &Type, name: &str) -> Option<Method> {
         Type::Buffer(item) => buffer_method(item, name),
         Type::Set(item) => set_method(item, name),
         Type::Dict(key, value) => dict_method(key, value, name),
-        Type::IdMap(item) => id_map_method(item, name),
+        Type::Table(item) => id_map_method(item, name),
         Type::Str => str_method(name),
         Type::Bytes => bytes_method(name),
         Type::Named(type_name) => named_method(type_name, name),
@@ -207,7 +207,7 @@ fn id_map_method(item: &Type, name: &str) -> Option<Method> {
     let id = Type::Id(Box::new(item.clone()));
     let item = item.clone();
     Some(match name {
-        "insert" => changes(&[item], id),
+        "add" => changes(&[item], id),
         "remove" => changes(&[id], Type::optional(item)),
         "get" => reads(&[id], Type::optional(item)),
         "modify" => changes(&[id], Type::Bool).receiving(&item).any_args(),
@@ -699,7 +699,7 @@ fn peek_item(ty: &Type) -> Type {
         | Type::Buffer(item)
         | Type::Set(item)
         | Type::Iterator(item)
-        | Type::IdMap(item)
+        | Type::Table(item)
         | Type::Dict(item, _) => item.as_ref().clone(),
         Type::Tuple(items) if items.windows(2).all(|pair| pair.first() == pair.last()) => {
             items.first().cloned().unwrap_or(Type::Unknown)

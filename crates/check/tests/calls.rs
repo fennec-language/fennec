@@ -317,18 +317,19 @@ fn replace_changes_fields_that_exist() {
 #[test]
 fn builtin_types_are_built_the_right_way() {
     let program = "
-        a = IdMap[Enemy]()
+        a = Table[Enemy]()
         b = SoaList[Enemy]()
         c = Path('/tmp')
-        d = IdMap(1)
+        d = Table(1)
         e = Path(1)
         f = Id()
     ";
-    let imports = "from std.game import Id, IdMap\nfrom std.layout import SoaList\nfrom std.path import Path";
+    let imports =
+        "from std.collections import Id, Table\nfrom std.layout import SoaList\nfrom std.path import Path";
     assert_eq!(
         crate::in_main_after(&format!("{imports}\n{TYPES}"), program),
         [
-            "`IdMap` was called with the wrong arguments @ IdMap(1)",
+            "`Table` was called with the wrong arguments @ Table(1)",
             "`text` should be a str, but this is an int @ 1",
             "`Id` was called with the wrong arguments @ Id()",
         ]

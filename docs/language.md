@@ -109,7 +109,7 @@ target = units.get(enemy.target_id) else return    # may be gone
 units[unit_id].health -= 1                         # sure: stops loudly if wrong
 ```
 
-Tables are for large, flat data. An `Id` is an index, a generation and a tag for its table, so it finds the right thing or nothing. `Table` is called `IdMap`, in `std.game`, until it's renamed and moved to `std.collections`.
+Tables are for large, flat data. An `Id` is an index, a generation and a tag for its table, so it finds the right thing or nothing.
 
 ## `shared`: the class-like option
 

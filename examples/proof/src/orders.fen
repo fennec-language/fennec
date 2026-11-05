@@ -1,7 +1,7 @@
 ## What each unit decides to do in a tick. Deciding only reads the world, so every unit can
 ## decide at once; `combat` then carries the decisions out one at a time.
 
-from std.game import Id
+from std.collections import Id
 
 import map
 from units import Kind, Unit, World

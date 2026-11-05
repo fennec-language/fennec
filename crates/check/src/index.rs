@@ -1,4 +1,4 @@
-//! Indexing and slicing: lists and strings by position, dicts by key, `IdMap`s by `Id`,
+//! Indexing and slicing: lists and strings by position, dicts by key, `Table`s by `Id`,
 //! tuples by a position written as a number, and types with their own `def []`.
 
 use fennec_syntax::{Diagnostic, Expr, ExprKind, Span, UnaryOp};
@@ -50,7 +50,7 @@ impl FnCx<'_> {
                 self.key_fits(key, &at, index.span);
                 item.as_ref().clone()
             }
-            Type::IdMap(item) => {
+            Type::Table(item) => {
                 self.key_fits(&Type::Id(item.clone()), &at, index.span);
                 item.as_ref().clone()
             }

@@ -534,7 +534,7 @@ impl Checker {
             let name = match part {
                 Type::Named(name) | Type::Generic(name, _) => Some(name.as_str()),
                 Type::Id(_) => Some("Id"),
-                Type::IdMap(_) => Some("IdMap"),
+                Type::Table(_) => Some("Table"),
                 _ => None,
             };
             writable &= name.is_none_or(|name| self.program.can_name(name));

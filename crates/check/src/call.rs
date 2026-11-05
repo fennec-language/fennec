@@ -762,7 +762,7 @@ impl FnCx<'_> {
         built
     }
 
-    /// `IdMap[Enemy]()` and `SoaList[Particle]()`.
+    /// `Table[Enemy]()` and `SoaList[Particle]()`.
     /// Whether an expression is `list`, `dict` or `set`, the built-in collections.
     /// `list[str]()` and the like, or `array[float, 16]()`, when the name is the builtin's.
     fn made_collection(
@@ -915,7 +915,7 @@ impl FnCx<'_> {
         };
         let types: Vec<Type> = args.iter().map(|arg| self.arg_value(arg, &[])).collect();
         match (type_name, types.as_slice()) {
-            ("IdMap", []) if has_item => Type::IdMap(Box::new(item)),
+            ("Table", []) if has_item => Type::Table(Box::new(item)),
             ("SoaList", []) if has_item => Type::list(item),
             ("Buffer", []) if has_item => Type::Buffer(Box::new(item)),
             ("Buffer", [Type::Int])

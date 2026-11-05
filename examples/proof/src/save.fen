@@ -1,5 +1,5 @@
 ## Saving a battle to JSON and loading it back. JSON holds the whole world as it is: the
-## `IdMap`s with their slots, every `Id`, the enums, and the map's grid. So every `Id` that
+## `Table`s with their slots, every `Id`, the enums, and the map's grid. So every `Id` that
 ## was saved finds the same unit once it's loaded. The map's links come from its grid, so
 ## they're left out with `@skip` and loading works them out again.
 

@@ -1671,7 +1671,7 @@ def f(text: str) -> list[int]:
 
 #[test]
 fn an_id_map_is_read_and_changed_by_id() {
-    let source = "from std.game import IdMap
+    let source = "from std.collections import Table
 
 struct Enemy:
     health: int
@@ -1680,8 +1680,8 @@ struct Enemy:
         self.health -= 1
 
 def f() -> int:
-    mut map = IdMap[Enemy]()
-    one = map.insert(Enemy(2))
+    mut map = Table[Enemy]()
+    one = map.add(Enemy(2))
     map[one] = Enemy(3)
     map.modify(one, e => e.hit())
     for mut enemy in map:
@@ -1691,8 +1691,8 @@ def f() -> int:
     assert_eq!(
         printed(source, "f").unwrap(),
         "fn f() -> int
-  local _0: IdMap[Enemy]
-  local _1 map: IdMap[Enemy]
+  local _0: Table[Enemy]
+  local _1 map: Table[Enemy]
   local _2: Enemy
   local _3: Id[Enemy]
   local _4 one: Id[Enemy]
@@ -1709,16 +1709,16 @@ def f() -> int:
   local _15: Enemy
   local _16: int
   bb0:
-    _0 = builtin IdMap()
+    _0 = builtin Table()
     _1 = _0
     _2 = make Enemy(2)
-    _3 = builtin IdMap.insert(mut _1, _2)
+    _3 = builtin Table.add(mut _1, _2)
     _4 = _3
     _5 = make Enemy(3)
     _1[_4] = _5
-    _6 = closure f.arrow@228[]
-    builtin IdMap.modify(mut _1, _4, _6)
-    _7 = builtin IdMap.items(_1)
+    _6 = closure f.arrow@232[]
+    builtin Table.modify(mut _1, _4, _6)
+    _7 = builtin Table.items(_1)
     _8 = builtin list.len(_7)
     _9 = 0
     _10 = _8

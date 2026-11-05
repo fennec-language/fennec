@@ -336,7 +336,7 @@ struct TreeNode[T]:
 ## back, so a tree holds no references, and copying one gives an independent tree. An ID of
 ## a removed node stops the program, like an index out of range.
 struct Tree[T]:
-    _nodes: IdMap[TreeNode[T]] = IdMap[TreeNode[T]]()
+    _nodes: Table[TreeNode[T]] = Table[TreeNode[T]]()
     _roots: list[Id[TreeNode[T]]] = []
 
     ## How many nodes the tree has.
@@ -345,7 +345,7 @@ struct Tree[T]:
 
     ## Adds a node as the last child of `parent`, or as a root when it has none.
     def add(mut self, value: T, parent: Id[TreeNode[T]]? = None) -> Id[TreeNode[T]]:
-        id = self._nodes.insert(TreeNode(value=value, parent=parent))
+        id = self._nodes.add(TreeNode(value=value, parent=parent))
         if parent is None:
             self._roots.append(id)
         else:

@@ -163,11 +163,11 @@ fn functions_cannot_change_the_names_around_them() {
 #[test]
 fn arrow_function_parameters_can_change() {
     let program = "
-        mut enemies = IdMap[Enemy]()
-        id = enemies.insert(Enemy())
+        mut enemies = Table[Enemy]()
+        id = enemies.add(Enemy())
         enemies.modify(id, enemy => enemy.take_damage(5))
     ";
-    let declarations = format!("from std.game import IdMap\n{ENEMY}");
+    let declarations = format!("from std.collections import Table\n{ENEMY}");
     assert_eq!(crate::in_main_after(&declarations, program), Vec::<String>::new());
 }
 
@@ -237,13 +237,13 @@ fn builtin_methods_that_change_a_value_need_a_mut_place() {
         "bag.discard(1)",
         "bag.remove(1)",
         "bag.clear()",
-        "pool.insert(1)",
+        "pool.add(1)",
         "pool.clear()",
     ];
     for call in changing {
-        let program = format!("items = [1]\ntable = {{1: 2}}\nbag = {{1}}\npool = IdMap[int]()\n{call}");
+        let program = format!("items = [1]\ntable = {{1: 2}}\nbag = {{1}}\npool = Table[int]()\n{call}");
         let name = call.split('.').next().unwrap_or_default();
-        let problems = crate::in_main_after("from std.game import IdMap", &program);
+        let problems = crate::in_main_after("from std.collections import Table", &program);
         assert_eq!(problems, [format!("`{name}` isn't mut @ {name}")], "{call}");
     }
     let reading = "items = [1]\nstdout.print(items.index(1), items.count(1), 'a'.upper())";
@@ -430,4 +430,13 @@ fn a_generator_kept_for_later_cant_change_whats_around_it() {
     assert_eq!(crate::in_main_after(bump, asked), empty);
     let read = "k = 1\ng = (k + x for x in range(3))\nstdout.print(list(g))\n";
     assert_eq!(crate::in_main_after(bump, read), empty);
+}
+
+#[test]
+fn a_parallel_loop_can_change_a_shared_value_outside_it() {
+    let source = "shared Counter:\n    total = 0\n\n    def add(mut self, amount: int):\n        self.total += amount\n\n\
+                  def main(stdout: Stdout):\n    counter = Counter()\n    mut hps = [1, 2]\n    \
+                  for mut hp in parallel(hps):\n        counter.add(hp)\n        with counter as mut held:\n            \
+                  held.total += hp\n        hp += 1\n    stdout.print(counter.total, hps)\n";
+    assert_eq!(problems(source), Vec::<String>::new());
 }

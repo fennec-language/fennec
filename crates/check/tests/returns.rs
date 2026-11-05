@@ -184,11 +184,11 @@ fn a_type_the_program_cant_name_gets_no_fix() {
     let fixes: Vec<usize> = diagnostics.iter().map(|diagnostic| diagnostic.fixes.len()).collect();
     assert_eq!(fixes, [1, 1]);
     let program = "
-        from std.game import IdMap
+        from std.collections import Table
 
         def pool():
-            mut ids = IdMap[int]()
-            id = ids.insert(1)
+            mut ids = Table[int]()
+            id = ids.add(1)
             id
     ";
     let source = dedent(program);

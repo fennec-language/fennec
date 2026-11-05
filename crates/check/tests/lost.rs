@@ -34,21 +34,17 @@ fn after_units(body: &str) -> Vec<String> {
 fn a_change_to_a_copy_nothing_reads_is_lost() {
     assert_eq!(
         after_units("mut unit = find(units, 0)\nunit.health = 1\n"),
-        [
-            "this change to `unit` is lost: `unit` is a copy of what `find` gave back, so nothing else changes @ unit.health = 1"
-        ]
+        ["this changes your own copy of what `find` gave back, and nothing reads it @ unit.health = 1"]
     );
     assert_eq!(
         after_units("mut unit = find(units, 0)\nunit.tags.append(\"x\")\n"),
         [
-            "this change to `unit` is lost: `unit` is a copy of what `find` gave back, so nothing else changes @ unit.tags.append(\"x\")"
+            "this changes your own copy of what `find` gave back, and nothing reads it @ unit.tags.append(\"x\")"
         ]
     );
     assert_eq!(
         after_units("mut unit = find(units, 0)\nunit.heal()\n"),
-        [
-            "this change to `unit` is lost: `unit` is a copy of what `find` gave back, so nothing else changes @ unit.heal()"
-        ]
+        ["this changes your own copy of what `find` gave back, and nothing reads it @ unit.heal()"]
     );
     assert_eq!(
         in_main("mut total = 0\ntotal += 1\n"),
@@ -71,11 +67,9 @@ fn a_copy_of_a_table_slot_says_so() {
     );
     assert_eq!(
         problems(&text),
-        [
-            "this change to `unit` is lost: `unit` is a copy of what's in `by_name`, so `by_name` doesn't change @ unit.health = 1"
-        ]
+        ["this changes your own copy of what's in `by_name`, and nothing reads it @ unit.health = 1"]
     );
-    assert_eq!(helps(&text), ["write `unit` back into `by_name`, or take out the change"]);
+    assert_eq!(helps(&text), ["to change `by_name`, write to it there, or take out the change"]);
     // What a type makes isn't a copy of anything.
     assert_eq!(
         problems(&format!("{UNIT}def run():\n    mut unit = Unit()\n    unit.health = 1\n")),
@@ -169,8 +163,6 @@ fn a_loop_keeps_a_change_a_later_time_round_reads() {
 fn what_a_change_reaches_outside_isnt_lost() {
     // A `mut` parameter is the caller's to read.
     assert_eq!(problems(&format!("{UNIT}def run(mut unit: Unit):\n    unit.health = 1\n")), NONE);
-    // A name for a place is the place.
-    assert_eq!(after_units("mut unit = units[0]\nunit.health = 1\n"), NONE);
     // A `for mut` writes its item back.
     assert_eq!(after_units("for mut unit in units:\n    unit.health = 1\n"), NONE);
     // A nested function can read it whenever it's called.
@@ -202,4 +194,25 @@ fn a_local_that_does_more_than_hold_isnt_lost() {
     let handle = "shared Account:\n    total = 0\n\n    def add(mut self, amount: int):\n        self.total += amount\n\n\
                   def main(stdout: Stdout):\n    mut held = Account()\n    held.add(1)\n";
     assert_eq!(problems(handle), NONE);
+}
+
+#[test]
+fn a_mut_name_read_from_a_place_is_your_own_copy() {
+    assert_eq!(
+        after_units("mut target = units[0]\ntarget.health -= 10\n"),
+        ["this changes your own copy of what's in `units`, and nothing reads it @ target.health -= 10"]
+    );
+    // Read, it's what the language page calls the one silent mistake left: yours, and allowed.
+    assert_eq!(
+        after_units("mut target = units[0]\ntarget.health -= 10\nstdout.print(target.health)\n"),
+        NONE
+    );
+    // What it came from can be used beside it, since they're apart.
+    assert_eq!(
+        after_units(
+            "mut target = units[0]\ntarget.health -= 10\nunits[0].health += 1\nstdout.print(target.health, units)\n"
+        ),
+        NONE
+    );
+    assert_eq!(after_units("mut first = units\nfirst.append(Unit())\nstdout.print(first, units)\n"), NONE);
 }

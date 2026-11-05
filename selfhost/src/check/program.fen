@@ -134,7 +134,7 @@ struct Program:
         elif name in built_in_types() and not prelude:
             self.problems.append(not_own(name, "is built in", extension))
             return
-        elif name in ["int", "float", "bool", "bytes", "str", "list", "dict", "set"]:
+        elif name in ["int", "float", "bool", "bytes", "str", "list", "dict", "set", "Optional"]:
             # The standard library gives built-in types methods, like `str`'s `def *`.
             pass
         elif self.is_interface(name):
@@ -175,7 +175,7 @@ struct Program:
         name = extension.name
         written = [generic.name for generic in extension.generics]
         mut declared = self.type_params(name)
-        if name == "list" or name == "set":
+        if name == "list" or name == "set" or name == "Optional":
             if written.len() == 1:
                 return None
             declared = ["T"]

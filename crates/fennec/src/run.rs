@@ -278,6 +278,18 @@ pub(crate) fn check(program: &mut fennec_kit::Program) -> bool {
     }
 }
 
+/// Checks a program to build, refusing what `fennec check` and a run refuse. Returns whether it
+/// passed. Tools that report on a program use `check`, since what they report may be why.
+pub(crate) fn check_to_build(program: &mut fennec_kit::Program) -> bool {
+    match crate::copy_rule::check_all_rules(&mut program.module) {
+        Ok(_) => true,
+        Err(diagnostics) => {
+            reject(program, &diagnostics);
+            false
+        }
+    }
+}
+
 /// Prints the problems a check found.
 pub(crate) fn reject(program: &fennec_kit::Program, diagnostics: &[fennec_syntax::Diagnostic]) -> ExitCode {
     let told: Vec<_> = diagnostics.iter().map(|diagnostic| with_extension(program, diagnostic)).collect();

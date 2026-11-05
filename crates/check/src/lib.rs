@@ -13,7 +13,6 @@
 //! besides the signatures, a check gives the type of every expression and every name: the
 //! typed tree a compiler builds on. See [`Types`].
 
-mod alias;
 mod annotations;
 mod builtins;
 mod call;
@@ -39,6 +38,7 @@ mod privacy;
 mod program;
 mod protocols;
 mod rules;
+mod saving;
 mod shared;
 mod stdlib;
 mod stmt;
@@ -145,6 +145,7 @@ fn without_hidden(text: &str) -> String {
 /// Gives each parameter typed by an interface a hidden type parameter bound by it, the
 /// program's own interfaces and the standard library's alike.
 fn hide_interface_params(module: &mut Module) {
+    saving::generate(module);
     fennec_syntax::rename::self_as_its_type(module);
     let library = fennec_syntax::prelude_modules().unwrap_or_default();
     let mut interfaces = fennec_syntax::visit::interface_names(library.iter().chain([&*module]));
@@ -222,11 +223,6 @@ pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> 
 
 fn resolved(module: &mut Module, checked: Checked) -> Signatures {
     fennec_syntax::visit::type_fields_from_defaults(module);
-    if !checked.places.is_empty() {
-        fennec_syntax::visit::functions_mut(module, &mut |def| {
-            alias::write_in(&mut def.body, &checked.places);
-        });
-    }
     if !checked.cases.is_empty()
         || !checked.float_sums.is_empty()
         || !checked.generator_types.is_empty()
@@ -312,8 +308,6 @@ pub struct Checked {
     undotted_cases: BTreeSet<(u32, u32)>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.
     float_sums: BTreeSet<(u32, u32)>,
-    /// The statements that name a place, by `mut x = place`.
-    places: BTreeSet<(u32, u32)>,
     /// The defaults each call leaves out, to write into it.
     defaults: BTreeMap<(u32, u32), Vec<(String, Expr)>>,
     /// The type of each generator expression, which printing one shows.

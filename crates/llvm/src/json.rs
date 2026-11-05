@@ -138,7 +138,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {block})"));
                 return Ok((handle, Some(block)));
             }
-            Kind::Str | Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => {
+            Kind::Str | Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => {
                 self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
                 self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {value})"));
             }
@@ -224,6 +224,13 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{element} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
                 self.line(&format!(
                     "{value} = call ptr @fennec_list_from_value(i64 {handle}, i64 {element}, i64 {from}, i64 {to})"
+                ));
+            }
+            Kind::Bytes => {
+                let shape = fennec_interp::embed::heap::BYTES_SHAPE;
+                self.declare("declare ptr @fennec_box_from_value(i64, i64, i64, i64) nounwind");
+                self.line(&format!(
+                    "{value} = call ptr @fennec_box_from_value(i64 {handle}, i64 {shape}, i64 {from}, i64 {to})"
                 ));
             }
             Kind::Boxed(id) => {

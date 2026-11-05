@@ -47,20 +47,15 @@ struct Lost<'a> {
 }
 
 /// Reports each local in a function's or test's body whose change nothing can see.
-pub(crate) fn check_body(
-    checker: &mut Checker,
-    key: &str,
-    stmts: &[Stmt],
-    places: &[Span],
-) -> Vec<Diagnostic> {
+pub(crate) fn check_body(checker: &mut Checker, key: &str, stmts: &[Stmt]) -> Vec<Diagnostic> {
     let mut problems = Vec::new();
     let mut locals = Vec::new();
     declared(stmts, &mut locals);
     let body = checker.typed.get(key).cloned();
     let mut counted = HashMap::new();
-    for (name, value, at) in locals {
+    for (name, value) in locals {
         let ty = body.as_ref().and_then(|body| body.expr(value.span)).cloned().unwrap_or(Type::Unknown);
-        if !places.contains(&at) && !does_more_than_hold(checker, &ty) {
+        if !does_more_than_hold(checker, &ty) {
             counted.insert(name, value);
         }
     }
@@ -83,12 +78,12 @@ pub(crate) fn check_body(
 }
 
 /// Every `mut x = ...` in a block and what's inside it, but not a nested function's.
-fn declared<'a>(stmts: &'a [Stmt], found: &mut Vec<(&'a str, &'a Expr, Span)>) {
+fn declared<'a>(stmts: &'a [Stmt], found: &mut Vec<(&'a str, &'a Expr)>) {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Assign { target, value, declare_mut: true, .. } => {
                 if let ExprKind::Name(name) = &target.kind {
-                    found.push((name, value, stmt.span));
+                    found.push((name, value));
                 }
             }
             StmtKind::If { branches, otherwise } => {
@@ -122,7 +117,7 @@ enum Started {
 fn started_as(value: &Expr) -> Started {
     match &value.kind {
         ExprKind::Else { value, .. } | ExprKind::Try { value, .. } => started_as(value),
-        ExprKind::Index { object, .. } => {
+        ExprKind::Index { object, .. } | ExprKind::Attr { object, optional: false, .. } => {
             fennec_syntax::dotted(object).map_or(Started::Other, Started::Table)
         }
         ExprKind::Call { callee, .. } => match &callee.kind {
@@ -214,21 +209,21 @@ fn reads_in_place(target: &Expr, live: &mut Live) {
 
 impl<'a> Lost<'a> {
     fn problem(&self, name: &str, span: Span) -> Diagnostic {
-        let (why, help) = match self.locals.get(name).map(|value| started_as(value)) {
+        let (message, help) = match self.locals.get(name).map(|value| started_as(value)) {
             Some(Started::Table(table)) => (
-                format!("`{name}` is a copy of what's in `{table}`, so `{table}` doesn't change"),
-                format!("write `{name}` back into `{table}`, or take out the change"),
+                format!("this changes your own copy of what's in `{table}`, and nothing reads it"),
+                format!("to change `{table}`, write to it there, or take out the change"),
             ),
             Some(Started::Called(called)) if !self.checker.program.is_type_name(&called) => (
-                format!("`{name}` is a copy of what `{called}` gave back, so nothing else changes"),
+                format!("this changes your own copy of what `{called}` gave back, and nothing reads it"),
                 format!("use `{name}` after this, write it back where it came from, or take out the change"),
             ),
             _ => (
-                format!("nothing reads `{name}` after this"),
+                format!("this change to `{name}` is lost: nothing reads `{name}` after this"),
                 format!("use `{name}` after this, or take out the change"),
             ),
         };
-        Diagnostic::new(format!("this change to `{name}` is lost: {why}"), span).with_help(help)
+        Diagnostic::new(message, span).with_help(help)
     }
 
     /// Notes a change to `name`, when what's after it doesn't read it.

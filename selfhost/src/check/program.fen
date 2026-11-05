@@ -247,11 +247,11 @@ struct Program:
                 match self.resolve_within(error, generics, depth)?:
                     case .Named(error_name): names.append(error_name)
                     case _: pass
-            return Type.Errors(sorted(names))
+            return .Errors(sorted(names))
         # `(str) -> int fails ParseError`: a function that gives back a result.
         if name == "fails" and written.args.len() == 2:
             returns = self.resolve_within(written.args[0], generics, depth)?
-            return Type.Result(returns, self.resolve_within(written.args[1], generics, depth)?)
+            return .Result(returns, self.resolve_within(written.args[1], generics, depth)?)
         builtin = name in built_in_types()
         if (
             not builtin

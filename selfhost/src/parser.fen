@@ -534,7 +534,7 @@ struct Parser:
     ## Whether `fails` comes next. It's a word only after a function's parameters and any
     ## return type.
     def at_fails(self) -> bool:
-        self.peek() == Tok.Name("fails")
+        self.peek() == .Name("fails")
 
     ## `fails LoadError`, or `fails ParseError | RangeError`: the errors after `fails`. Several
     ## are one written type named `|`.

@@ -728,6 +728,9 @@ mod tests {
         let done = std::thread::spawn(move || {
             let (mut conn, _) = listener.accept().unwrap();
             conn.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n").unwrap();
+            // Held open until the client gives up, so it reads the answer rather than a reset,
+            // which Windows reports first when a socket closes with the client's hello unread.
+            let _ = conn.read_to_end(&mut Vec::new());
         });
         let answer = get(format!("https://localhost:{port}/"));
         done.join().unwrap();

@@ -127,10 +127,10 @@ fn copy_of(
         return Ok(address);
     }
     let block = state.heap.block(address).ok_or_else(|| lost(address))?;
-    if block.first().is_some_and(|count| *count >= IMMORTAL) {
+    if block.first().is_some_and(|count| *count >= IMMORTAL) && everyone_finds(state, address) {
         return Ok(address);
     }
-    let mut copy: Box<[u64]> = block.into();
+    let mut copy: Box<[u64]> = state.heap.block(address).ok_or_else(|| lost(address))?.into();
     if let Some(count) = copy.first_mut() {
         *count = 1;
     }
@@ -140,6 +140,12 @@ fn copy_of(
     copies.insert(address, new);
     left.push(new);
     Ok(new)
+}
+
+/// Whether a block that's never freed can be found from any thread while it could be read: the
+/// program's own thread's are, as it lends them to any other that runs. String literals are its.
+fn everyone_finds(state: &State, address: u64) -> bool {
+    super::threads::index() == 0 || state.heap.lent_has(address)
 }
 
 fn bump(state: &mut State, address: u64) {
@@ -244,15 +250,68 @@ pub extern "C" fn shared_in(block: i64) -> i64 {
     })
 }
 
-/// `fennec_shared_out(block)`: a copy of a value in this thread's own table, holding one count.
-pub extern "C" fn shared_out(block: i64) -> i64 {
+/// `fennec_shared_out(block, held)`: a copy of a value in the table behind the `held` write locks a
+/// `with` is about to leave, holding one count: this thread's own, or that of a lock around it. With
+/// only read locks, that's the current table.
+pub extern "C" fn shared_out(block: i64, held: i64) -> i64 {
     attempt(|state: &mut State| {
         let address = u64::try_from(block).unwrap_or(0);
-        state.heap.swap_own();
+        let held = usize::try_from(held).unwrap_or(0);
+        state.heap.swap_behind(held);
         let new = copied(state, address);
-        state.heap.swap_own();
+        state.heap.swap_behind(held);
         Ok(i64::try_from(new?).unwrap_or(0))
     })
+}
+
+/// `fennec_shared_settle(cell)`, for each of the `shared` values a `with` holds two or more of to
+/// write, before it leaves any: what's made under such a lock goes in whichever table is on top, and
+/// one value can be given what's in another's. So each is walked, and given its own copy of anything
+/// it reaches that's in a table that isn't its own. It costs the size of each, for this rare shape.
+pub extern "C" fn shared_settle(cell: i64) {
+    attempt(|state: &mut State| {
+        let address = u64::try_from(cell).unwrap_or(0);
+        let at = usize::try_from(address).unwrap_or(0);
+        if state.heap.blocks.get(at).is_some() {
+            return settle(state, address);
+        }
+        let number = state.heap.behind_holding(at).ok_or_else(|| lost(address))?;
+        state.heap.swap_table(number);
+        let settled = settle(state, address);
+        state.heap.swap_table(number);
+        settled
+    });
+}
+
+/// Walks what's in the current table from `cell`, giving it a copy of what isn't.
+fn settle(state: &mut State, cell: u64) -> Result<(), Diagnostic> {
+    let mut seen = std::collections::HashSet::from([cell]);
+    let mut left = vec![cell];
+    while let Some(address) = left.pop() {
+        for place in places_in(state, address)? {
+            let block = state.heap.block(address).ok_or_else(|| lost(address))?;
+            let held = block.get(place).copied().unwrap_or(0);
+            if held == 0 || is_handle(held) {
+                continue;
+            }
+            if usize::try_from(held).is_ok_and(|at| state.heap.blocks.get(at).is_some()) {
+                if seen.insert(held) {
+                    left.push(held);
+                }
+                continue;
+            }
+            let found = state.heap.block(held).ok_or_else(|| lost(held))?;
+            if found.first().is_some_and(|count| *count >= IMMORTAL) && everyone_finds(state, held) {
+                continue;
+            }
+            let new = copied(state, held)?;
+            if let Some(word) = state.heap.block_mut(address).and_then(|block| block.get_mut(place)) {
+                *word = new;
+            }
+            super::heap::release(state, held);
+        }
+    }
+    Ok(())
 }
 
 /// `fennec_shared_wait()`: a lock's word is taken, and native code has tried for a while. What this

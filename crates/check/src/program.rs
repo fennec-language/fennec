@@ -194,7 +194,7 @@ impl Program {
 
     /// Whether a name, used as a value, means a type: `Enemy` in `Enemy.at(...)`.
     pub(crate) fn is_type_name(&self, name: &str) -> bool {
-        self.types.contains_key(name) || matches!(name, "Id" | "IdMap" | "SoaList" | "Buffer")
+        self.types.contains_key(name) || matches!(name, "Id" | "Table" | "SoaList" | "Buffer")
     }
 
     /// The enums that have a case with this name, in name order.
@@ -243,7 +243,7 @@ impl Program {
         }
         let wanted = match name {
             "->" => written.args.len().max(1),
-            "list" | "set" | "SoaList" | "Buffer" | "Id" | "IdMap" | "Iterator" => 1,
+            "list" | "set" | "SoaList" | "Buffer" | "Id" | "Table" | "Iterator" => 1,
             "dict" | "Result" => 2,
             "tuple" => written.args.len(),
             name => self.type_params(name).len(),
@@ -280,7 +280,7 @@ impl Program {
                 Type::Arrow(params, Box::new(ret))
             }
             "Id" => Type::Id(arg()),
-            "IdMap" => Type::IdMap(arg()),
+            "Table" => Type::Table(arg()),
             "Stdout" | "Fs" | "Clock" | "Args" | "Stdin" | "Process" | "Entropy" | "Net" => Type::named(name),
             name if generics.iter().any(|generic| generic == name) => Type::Param(name.to_owned()),
             name if self.types.contains_key(name) && !args.is_empty() => Type::Generic(name.to_owned(), args),
@@ -387,7 +387,7 @@ pub(crate) use fennec_syntax::visit::BUILT_IN_INTERFACES;
 
 pub(crate) const BUILT_IN_TYPES: [&str; 26] = [
     "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "SoaList", "Buffer", "set", "dict",
-    "tuple", "Id", "IdMap", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Net", "Result",
+    "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Net", "Result",
     "Iterator", "->",
 ];
 
@@ -404,7 +404,7 @@ fn wrong_type_args(written: &TypeExpr, wanted: usize) -> Diagnostic {
         "dict" => "dict[str, int]".to_owned(),
         "Result" => "Result[int, IoError]".to_owned(),
         "list" | "set" | "SoaList" | "Buffer" => format!("{name}[int]"),
-        "Id" | "IdMap" => format!("{name}[Enemy]"),
+        "Id" | "Table" => format!("{name}[Enemy]"),
         _ => name.clone(),
     };
     let message = if wanted == 0 {

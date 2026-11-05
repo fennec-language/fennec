@@ -111,7 +111,7 @@ pub fn in_stmts(body: &mut [Stmt], change: &mut dyn FnMut(&mut Expr)) {
 }
 
 /// Writes out the type of each field whose default makes a type with its type arguments, like
-/// `IdMap[Unit]()` or `list[str]()`, for what reads a field's type from what's written.
+/// `Table[Unit]()` or `list[str]()`, for what reads a field's type from what's written.
 pub fn type_fields_from_defaults(module: &mut Module) {
     for item in &mut module.items {
         let (Item::Struct(def) | Item::Error(def)) = item else { continue };

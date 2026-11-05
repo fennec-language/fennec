@@ -15,14 +15,14 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | Area | Modules |
 | --- | --- |
 | Basics | `math`, `random`, `time`, `datetime`, `string`, `re`, `unicode` |
-| Collections | `collections`: `Deque`, `Counter`, `Heap`, `PriorityQueue`, `Tree`, `SortedMap`, `SortedSet`, `Grid`, `Packed`; later `Graph` |
+| Collections | `collections`: `Deque`, `Counter`, `Heap`, `PriorityQueue`, `Tree`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Table` and its `Id`s; later `Graph` |
 | Files and the OS | `fs`, `path`, `env`, `process`, `cli` |
 | Data formats | `json`, `toml`, `pack`, `csv`, `base64`, `compress` |
 | Networking | `net`: TCP today; UDP, TLS, an HTTP client and server, and WebSocket planned; `url` |
 | Security | `crypto`: BLAKE3 and SHA-256 hashes, HMAC and comparing secrets; `uuid`. Secure random bytes come from the `Entropy` capability |
 | Storage | `sql`: one interface, with drivers as first-party kits |
 | Diagnostics | `log`, `profile`, `test` |
-| Games | `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat4`, `IdMap`, `simd`, `layout`; later `audio` and `gpu` |
+| Games | `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat4`, `simd`, `layout`; later `audio` and `gpu` |
 
 ## Importing what you use
 

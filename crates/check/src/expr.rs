@@ -298,8 +298,8 @@ impl FnCx<'_> {
         Some(function)
     }
 
-    /// A name used as a type, like `Enemy` in `Enemy.at(...)` or `game.IdMap` in
-    /// `game.IdMap[Enemy]()`, rather than as a value.
+    /// A name used as a type, like `Enemy` in `Enemy.at(...)` or `collections.Table` in
+    /// `collections.Table[Enemy]()`, rather than as a value.
     pub(crate) fn as_type_name<'e>(&self, expr: &'e Expr) -> Option<&'e str> {
         let name = match &expr.kind {
             ExprKind::Name(name) => name,
@@ -494,7 +494,7 @@ impl FnCx<'_> {
             Type::List(held) | Type::Buffer(held) | Type::Set(held) | Type::Dict(held, _) => {
                 held.as_ref().clone()
             }
-            Type::IdMap(held) => Type::Id(held.clone()),
+            Type::Table(held) => Type::Id(held.clone()),
             Type::Str => Type::Str,
             Type::Bytes => Type::Int,
             Type::Unknown | Type::Var(_) => return,
@@ -742,7 +742,7 @@ impl FnCx<'_> {
             | Type::Buffer(item)
             | Type::Set(item)
             | Type::Iterator(item)
-            | Type::IdMap(item)
+            | Type::Table(item)
             | Type::Dict(item, _) => *item,
             Type::Tuple(items) => {
                 if let Some(joined) = self.checker.join_all(&items) {

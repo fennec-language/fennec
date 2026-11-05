@@ -151,7 +151,7 @@ impl FnCx<'_> {
             Type::Unknown | Type::Unit | Type::None | Type::Bool | Type::Int | Type::Float | Type::Str => {
                 Ok(())
             }
-            Type::List(item) | Type::Optional(item) | Type::IdMap(item) => {
+            Type::List(item) | Type::Optional(item) | Type::Table(item) => {
                 self.holds(format, item, (span, field), seen)
             }
             // An `Id` is written as its slot and generation, whatever it's for.

@@ -19,7 +19,7 @@ struct Shape<'a> {
 }
 
 impl Interp<'_> {
-    /// Calls a type as a constructor: `Enemy(position=p)`, `NotFound(path)`, `IdMap[Enemy]()`.
+    /// Calls a type as a constructor: `Enemy(position=p)`, `NotFound(path)`, `Table[Enemy]()`.
     pub(crate) fn construct(
         &mut self,
         type_name: &str,
@@ -28,10 +28,10 @@ impl Interp<'_> {
     ) -> Result<Value, Diagnostic> {
         self.load_std_providing(type_name)?;
         match (type_name, args.as_slice()) {
-            ("IdMap", []) => return Ok(Value::IdMap(Rc::default())),
+            ("Table", []) => return Ok(Value::Table(Rc::default())),
             ("SoaList", []) => return Ok(Value::list(Vec::new())),
             ("Buffer", _) => return crate::buffer::make(&args, span),
-            ("IdMap" | "SoaList" | "Id", _) => {
+            ("Table" | "SoaList" | "Id", _) => {
                 return Err(Diagnostic::new(
                     format!("`{type_name}` was called with the wrong arguments"),
                     span,

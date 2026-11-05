@@ -762,7 +762,7 @@ impl FnCx<'_> {
         built
     }
 
-    /// `IdMap[Enemy]()` and `SoaList[Particle]()`.
+    /// `Table[Enemy]()` and `SoaList[Particle]()`.
     /// Whether an expression is `list`, `dict` or `set`, the built-in collections.
     fn names_a_collection(&self, object: &Expr) -> bool {
         matches!(&object.kind, ExprKind::Name(name) if matches!(name.as_str(), "list" | "dict" | "set") && self.lookup(name).is_none())
@@ -807,7 +807,7 @@ impl FnCx<'_> {
         };
         let types: Vec<Type> = args.iter().map(|arg| self.arg_value(arg, &[])).collect();
         match (type_name, types.as_slice()) {
-            ("IdMap", []) if has_item => Type::IdMap(Box::new(item)),
+            ("Table", []) if has_item => Type::Table(Box::new(item)),
             ("SoaList", []) if has_item => Type::list(item),
             ("Buffer", []) if has_item => Type::Buffer(Box::new(item)),
             ("Buffer", [Type::Int])

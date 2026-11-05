@@ -1,7 +1,7 @@
-# JSON holds `Id`s and `IdMap`s. An `Id` is written as its slot and generation, and an `IdMap`
+# JSON holds `Id`s and `Table`s. An `Id` is written as its slot and generation, and a `Table`
 # as all its slots, so after loading, every `Id` that was saved finds the same item.
 from std import json
-from std.game import Id, IdMap
+from std.collections import Id, Table
 
 struct Unit:
     name: str
@@ -9,7 +9,7 @@ struct Unit:
     target: Id[Unit]? = None
 
 struct World:
-    units = IdMap[Unit]()
+    units = Table[Unit]()
     selected = list[Id[Unit]]()
 
 def failure[T](found: Result[T, ParseError]) -> str:
@@ -21,11 +21,11 @@ def failure[T](found: Result[T, ParseError]) -> str:
 
 test "a world with Ids loads back the same":
     mut world = World()
-    ash = world.units.insert(Unit(name="ash", health=10))
-    gone = world.units.insert(Unit(name="gone", health=1))
-    vex = world.units.insert(Unit(name="vex", health=8, target=ash))
+    ash = world.units.add(Unit(name="ash", health=10))
+    gone = world.units.add(Unit(name="gone", health=1))
+    vex = world.units.add(Unit(name="vex", health=8, target=ash))
     world.units.remove(gone)
-    kit = world.units.insert(Unit(name="kit", health=5, target=vex))
+    kit = world.units.add(Unit(name="kit", health=5, target=vex))
     world.selected = [ash, kit]
     text = json.dumps(world)
     loaded = json.loads[World](text)?
@@ -40,8 +40,7 @@ test "a world with Ids loads back the same":
     # New items go where they would have before saving.
     mut more = loaded
     assert (
-        more.units.insert(Unit(name="owl", health=1))
-        == world.units.insert(Unit(name="owl", health=1))
+        more.units.add(Unit(name="owl", health=1)) == world.units.add(Unit(name="owl", health=1))
     )
 
 test "an Id the map never handed out isn't loaded":
@@ -63,7 +62,7 @@ test "an Id the map never handed out isn't loaded":
 
 test "an Id of a removed item still loads, and finds nothing":
     mut world = World()
-    gone = world.units.insert(Unit(name="gone", health=1))
+    gone = world.units.add(Unit(name="gone", health=1))
     world.units.remove(gone)
     world.selected = [gone]
     loaded = json.loads[World](json.dumps(world))?
@@ -79,16 +78,16 @@ test "an Id or a slot written wrong says where":
         failure(json.loads[Id[Unit]]("{\"slot\": 1, \"generation\": 0, \"tag\": 2}"))
         == "an Id has only `slot` and `generation`, but the text has \"tag\""
     )
-    assert failure(json.loads[IdMap[Unit]]("{}")) == "the text should be an IdMap, with its `slots`"
+    assert failure(json.loads[Table[Unit]]("{}")) == "the text should be a Table, with its `slots`"
     assert (
-        failure(json.loads[IdMap[Unit]]("{\"slots\": [1]}"))
+        failure(json.loads[Table[Unit]]("{\"slots\": [1]}"))
         == "`slots[0]` should be a slot, with its `generation`"
     )
 
 def main(stdout: Stdout):
     mut world = World()
-    ash = world.units.insert(Unit(name="ash", health=10))
-    world.units.insert(Unit(name="vex", health=8, target=ash))
+    ash = world.units.add(Unit(name="ash", health=10))
+    world.units.add(Unit(name="vex", health=8, target=ash))
     world.selected = [ash]
     text = json.dumps(world)
     stdout.print(text)

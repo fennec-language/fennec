@@ -94,6 +94,35 @@ fn outcome(output: &Output) -> Outcome {
     )
 }
 
+/// `stdout.write` shows what `print` shows, with no newline, in compiled code.
+#[test]
+fn writing_to_stdout_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "stdout_write",
+        r#"struct Point:
+    x: int
+    label: str
+
+def maybe(present: bool) -> str?:
+    if present:
+        return "here"
+    None
+
+def main(stdout: Stdout):
+    stdout.write("no newline, ")
+    stdout.write("then one\n")
+    stdout.write(1, 2.5, True, "words", [1, 2], Point(x=1, label="p"), maybe(True), maybe(False))
+    stdout.write()
+    stdout.write("")
+    stdout.print(" and print after")
+    stdout.write(f"{1 + 1}\n")
+"#,
+    )
+}
+
 /// `str` of what's text already. The linter takes these out of the examples, since they change
 /// nothing, so it's here they're run. This backend doesn't take `int`, or `float` of a float,
 /// yet, so `cli.rs` runs those on the other engines.

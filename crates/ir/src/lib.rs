@@ -38,6 +38,7 @@
 //! can't be lowered is listed in [`Program::not_lowered`], with why, and no example has one.
 //! Tests aren't lowered yet.
 
+pub mod arrays;
 mod costs;
 pub mod facts;
 mod guard;

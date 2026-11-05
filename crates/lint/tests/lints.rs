@@ -402,8 +402,8 @@ fn comparing_a_value_with_itself_is_a_mistake() {
         ("int", "==", "True"),
         ("str", "!=", "False"),
         ("bool", "==", "True"),
-        // `==` treats NaN as equal to NaN, so this doesn't find one.
-        ("float", "!=", "False"),
+        // `==` treats NaN as equal to NaN, so this doesn't rule one out. `!=` is the checker's.
+        ("float", "==", "True"),
     ] {
         let source = format!("def f(amount: {ty}) -> bool:\n    amount {op} amount\n");
         assert_eq!(self_compares(&source), [format!("`amount {op} amount` is always {always}")], "{source}");

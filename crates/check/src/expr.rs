@@ -62,6 +62,9 @@ impl FnCx<'_> {
             }
             ExprKind::Binary { op: op @ (BinOp::Eq | BinOp::NotEq), lhs, rhs } => {
                 let (left, right) = self.compared(lhs, rhs);
+                if *op == BinOp::NotEq && left == Type::Float {
+                    self.not_a_nan_test(lhs, rhs, span);
+                }
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
             ExprKind::Binary { op, lhs, rhs } => {
@@ -266,6 +269,20 @@ impl FnCx<'_> {
             _ => return None,
         };
         (self.lookup(name).is_none() && self.checker.program.is_type_name(name)).then_some(name.as_str())
+    }
+
+    /// `x != x` on a float: how other languages ask about NaN, but here NaN equals NaN, so it's
+    /// always False, and a program relying on it would go on as if nothing were wrong.
+    fn not_a_nan_test(&mut self, lhs: &Expr, rhs: &Expr, span: Span) {
+        let Some(name) =
+            fennec_syntax::dotted(lhs).filter(|name| Some(name) == fennec_syntax::dotted(rhs).as_ref())
+        else {
+            return;
+        };
+        let message = format!("`{name} != {name}` is always False, since NaN equals NaN here");
+        self.error(
+            Diagnostic::new(message, span).with_help(format!("write `{name}.is_nan()` to ask about NaN")),
+        );
     }
 
     /// An operator on two values. `spans` are the two sides', for pointing at one of them.

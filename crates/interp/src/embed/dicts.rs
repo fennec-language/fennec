@@ -191,8 +191,7 @@ fn finish(hash: u64) -> u64 {
 }
 
 /// Whether a plain key is hashed by what it holds rather than by its words.
-fn by_what_it_holds(element: &crate::packed::Element) -> bool {
-    use crate::packed::Element;
+fn by_what_it_holds(element: &Element) -> bool {
     match element {
         Element::Float => true,
         Element::Struct { fields, .. } => fields.iter().any(|(_, field)| by_what_it_holds(field)),

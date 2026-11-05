@@ -173,7 +173,7 @@ fn one_place_cant_be_given_as_mut_with_anything_that_reaches_it() {
     let cases: [(&str, &str); 8] = [
         ("bump(mut unit.position, mut unit.position)", "`mut unit.position` and `mut unit.position` overlap"),
         ("bump(mut spots[i], mut spots[j])", "`mut spots[i]` and `mut spots[j]` overlap"),
-        ("bump(mut spots[0], mut spots[1])", "`mut spots[0]` and `mut spots[1]` overlap"),
+        ("bump(mut spots[0], mut spots[0])", "`mut spots[0]` and `mut spots[0]` overlap"),
         ("read(mut unit.position, unit.position)", "`mut unit.position` and `unit.position` overlap"),
         ("fill(mut spots, spots[i])", "`mut spots` and `spots[i]` overlap"),
         ("fill(mut unit.spots, unit.spots[i + 1])", "`mut unit.spots` and `unit.spots[...]` overlap"),
@@ -221,11 +221,29 @@ fn a_mut_argument_cant_change_what_picks_another_arguments_place() {
 }
 
 #[test]
+fn an_index_that_isnt_known_as_written_could_be_the_other_one() {
+    for (call, said) in [
+        ("bump(mut spots[0], mut spots[-1])", "`mut spots[0]` and `mut spots[...]` overlap"),
+        ("bump(mut spots[0], mut spots[i])", "`mut spots[0]` and `mut spots[i]` overlap"),
+        ("bump(mut spots[i], mut spots[i + 1])", "`mut spots[i]` and `mut spots[...]` overlap"),
+    ] {
+        let found = given(&format!("{call}\nstdout.print(unit.position.x, spots.len())\n"));
+        let messages: Vec<&str> = found.iter().filter_map(|one| one.split(" @ ").next()).collect();
+        assert_eq!(messages, [said], "{call}");
+    }
+}
+
+#[test]
 fn different_places_can_be_given_as_mut_together() {
     let empty: [&str; 0] = [];
     for call in [
         "bump(mut unit.position, mut unit.home)",
         "bump(mut units[i].position, mut units[j].home)",
+        // Different items, as written, can't be one.
+        "bump(mut spots[0], mut spots[1])",
+        "read(mut spots[0], spots[1])",
+        "bump(mut units[0].spots[1], mut units[0].spots[2])",
+        "bump(mut units[0].position, mut units[1].position)",
         "read(mut unit.position, unit.home)",
         "unit.absorb(mut units[0])",
         "units[i].look(mut unit.home)",

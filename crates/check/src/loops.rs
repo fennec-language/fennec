@@ -315,9 +315,12 @@ fn overlapping_arguments(callee: &Expr, args: &[Arg], problems: &mut Vec<Diagnos
     let mut earlier: Vec<(Place, &Expr, bool)> = Vec::new();
     for arg in args {
         let Some(given) = place(&arg.value) else { continue };
-        let clash =
-            earlier.iter().find(|(other, _, is_mut)| (arg.is_mut || *is_mut) && given.overlaps(other));
-        let held = receiver.as_ref().filter(|(called_on, _)| arg.is_mut && given.overlaps(called_on));
+        let clash = earlier.iter().find(|(other, written, is_mut)| {
+            (arg.is_mut || *is_mut) && given.overlaps(other) && !written_apart(&arg.value, written)
+        });
+        let held = receiver.as_ref().filter(|(called_on, written)| {
+            arg.is_mut && given.overlaps(called_on) && !written_apart(&arg.value, written)
+        });
         if let Some((_, other, is_mut)) = clash {
             let (first, second) = (written(other, *is_mut), written(&arg.value, arg.is_mut));
             let message = format!("{first} and {second} overlap");
@@ -330,6 +333,30 @@ fn overlapping_arguments(callee: &Expr, args: &[Arg], problems: &mut Vec<Diagnos
         earlier.push((given, &arg.value, arg.is_mut));
     }
     picked_by_a_mut_argument(callee, args, problems);
+}
+
+/// Whether two places are written with different indexes that are known as written, like `xs[0]`
+/// and `xs[1]`, so they can't be one item. `xs[-1]` could be `xs[0]`, so an index counted from the
+/// end isn't known.
+fn written_apart(first: &Expr, second: &Expr) -> bool {
+    steps_of(first).iter().zip(&steps_of(second)).any(|(one, other)| match (&one.kind, &other.kind) {
+        (ExprKind::Int(one), ExprKind::Int(other)) => one != other,
+        (ExprKind::Str(one), ExprKind::Str(other)) => one != other,
+        _ => false,
+    })
+}
+
+/// What each step along a place goes by, from its root: an index, or for a field the field's own
+/// expression, which is never told apart here, since `Place::overlaps` compares fields.
+fn steps_of(expr: &Expr) -> Vec<&Expr> {
+    let (object, step) = match &expr.kind {
+        ExprKind::Attr { object, .. } => (object, expr),
+        ExprKind::Index { object, index } => (object, index.as_ref()),
+        _ => return Vec::new(),
+    };
+    let mut steps = steps_of(object);
+    steps.push(step);
+    steps
 }
 
 /// `units[at].step(mut at)` and `f(mut xs[i], mut i)`: a `mut` argument changes what picks the

@@ -38,8 +38,31 @@ impl FnCx<'_> {
             ExprKind::Match { subject, arms } => {
                 self.match_expr(subject, arms, expr.span, Some(expected.clone()))
             }
-            ExprKind::List(items) if let Type::Array(item, size) = self.checker.settled(expected) => {
+            ExprKind::List(items)
+                if let Type::Array(item, size) = self.checker.settled(expected).without_none() =>
+            {
                 self.array_literal(items, &item, size, expr.span)
+            }
+            // `[array[int, 3](), [1, 2, 3]]` where a list of arrays goes: each item is written
+            // where an array goes, so a list literal among them is one.
+            ExprKind::List(items)
+                if let Type::List(item) = self.checker.settled(expected).without_none()
+                    && self.checker.settled(&item).without_none().kind() == "array" =>
+            {
+                for each in items {
+                    self.item_as(each, &item);
+                }
+                Type::List(item)
+            }
+            ExprKind::Dict(pairs)
+                if let Type::Dict(key, value) = self.checker.settled(expected).without_none()
+                    && self.checker.settled(&value).without_none().kind() == "array" =>
+            {
+                for (each_key, each_value) in pairs {
+                    self.item_as(each_key, &key);
+                    self.item_as(each_value, &value);
+                }
+                Type::Dict(key, value)
             }
             ExprKind::List(_) => {
                 let ty = self.expr_kind(expr);
@@ -114,6 +137,15 @@ impl FnCx<'_> {
             self.checker.cases.insert((span.start, span.end), owner.clone());
             owner
         })
+    }
+
+    /// One item of a literal where `item` is expected, reporting one that doesn't fit.
+    fn item_as(&mut self, each: &Expr, item: &Type) {
+        let got = self.expr_as(each, item);
+        if !self.checker.fits(item, &got) {
+            let message = format!("this holds {}, not {}", a(item), a(&got));
+            self.error(Diagnostic::new(message, each.span));
+        }
     }
 
     /// `[1.0, 0.0, 0.0, 1.0]` where an `array[float, 4]` goes: every item fits, and there are

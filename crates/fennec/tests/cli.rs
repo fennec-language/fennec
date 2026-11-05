@@ -1637,3 +1637,30 @@ fn constants_are_worked_out_while_compiling() {
         text(&output.stderr)
     );
 }
+
+/// A build refuses what `check` and a run refuse, including a copy each time round a loop.
+#[test]
+fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
+    let dir = std::env::temp_dir().join(format!("fennec_build_refuses_{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("copies.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    mut xs = [1]\n    mut history = [[0]]\n    for frame in range(3):\n        \
+         history.append(xs)\n        xs.append(frame)\n    stdout.print(history, xs)\n",
+    )?;
+    let program = program.to_string_lossy().into_owned();
+    let executable = dir.join("copies").to_string_lossy().into_owned();
+    let checked = fennec(&["check", &program], "")?;
+    assert!(!checked.status.success());
+    assert!(text(&checked.stderr).contains("is copied each time"), "{}", text(&checked.stderr));
+    for build in
+        [vec!["build", &program, "-o", &executable], vec!["build", "--llvm", &program, "-o", &executable]]
+    {
+        let built = fennec(&build, "")?;
+        assert!(!built.status.success(), "{build:?}");
+        assert!(text(&built.stderr).contains("is copied each time"), "{build:?}: {}", text(&built.stderr));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}

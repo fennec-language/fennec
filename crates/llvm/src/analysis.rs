@@ -1893,6 +1893,7 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
                 break;
             }
         }
+        let of_text = function.locals.get(list.0).is_some_and(|local| local.ty == Type::Str);
         let walks = matches!(name.as_str(), "IdMap.items" | "IdMap.values");
         // A loop over a map can't change it, as the checker sees to, so a walk only needs nothing
         // to change it from when this was asked for until its loop's done. Something else can
@@ -1900,7 +1901,7 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
         // owner of its own for the walk, which makes such a change copy it.
         let holds_it = !known.is_borrowed(*list) && !known.is_taken(*list) && known.alias(*list).is_none();
         let steady = steady || (walks && holds_it);
-        if !(name == "enumerate" || walks) || !steady || known.writes.get(made.0) != Some(&1) {
+        if !(name == "enumerate" || walks) || of_text || !steady || known.writes.get(made.0) != Some(&1) {
             continue;
         }
         // The result and the copies of it, each written once.
@@ -2096,6 +2097,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "max.key"
                     | "min.key"
                     | "list.remove"
+                    | "main.result"
                     | "bytes"
                     | "set.remove"
                     | "Regex.replace"

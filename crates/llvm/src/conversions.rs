@@ -162,6 +162,25 @@ impl Emit<'_, '_, '_> {
                 Ok(())
             }
             ("sorted", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.sorted_chars(dest, text)),
+            ("SoaList", [], []) => dest.and_then(|dest| {
+                let Kind::List(item) = self.kind_of(dest)?.clone() else {
+                    return Err("a `SoaList` that isn't a list".to_owned());
+                };
+                let list = self.new_list(item, "0");
+                self.assign(dest, &list)
+            }),
+            ("main.result", [result], [Some(Kind::Boxed(_) | Kind::Enum(_))]) => {
+                self.main_result(result, span)
+            }
+            ("enumerate", [text], [Some(Kind::Str)]) => dest.and_then(|dest| {
+                let (text, _) = self.operand(text)?;
+                self.on_blocks([&text], |emit, [block]| {
+                    let list = emit.chars_list(&block);
+                    emit.enumerated_list(dest, &list, &Kind::Str)?;
+                    emit.release(&list);
+                    Ok(())
+                })
+            }),
             ("main.failed", [error], _) => self.main_failed(error, span),
             ("shared.in", [value], _) => {
                 dest.and_then(|dest| self.across_lock(dest, value, crate::locks::Way::In))
@@ -197,6 +216,7 @@ impl Emit<'_, '_, '_> {
         let base = if let Some(boxed) = &boxed {
             self.offset(boxed, crate::lists::FIELDS_OFFSET)
         } else {
+            self.release_held(dest)?;
             let (slot, text) = (self.slot(dest), self.text_of(&kind));
             self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
             slot
@@ -325,6 +345,86 @@ impl Emit<'_, '_, '_> {
             let place = self.offset(at, offset);
             self.store_field(&field, message, &place, "");
         }
+        Ok(())
+    }
+
+    /// `tuple[start:end]` with its bounds written out: a tuple of the items they take, each with
+    /// an owner of its own. A tuple's length is known, so this is only ever copying.
+    pub(crate) fn tuple_slice(
+        &mut self,
+        dest: LocalId,
+        (object, kind): (&str, &Kind),
+        start: Option<&Operand>,
+    ) -> Result<(), String> {
+        let (Kind::Struct(whole) | Kind::Boxed(whole)) = *kind else {
+            return Err(format!("it slices a {kind:?}, which this backend doesn't take yet"));
+        };
+        let wanted = self.kind_of(dest)?.clone();
+        let (Kind::Struct(part) | Kind::Boxed(part)) = wanted else {
+            return Err("a slice of a tuple that isn't a tuple".to_owned());
+        };
+        let count = i64::try_from(self.layout_of(whole)?.fields.len()).unwrap_or(0);
+        let first = match start {
+            None => 0,
+            Some(Operand::Int(at)) if *at < 0 => count + at,
+            Some(Operand::Int(at)) => *at,
+            Some(_) => return Err("it slices a tuple from a place it can't know".to_owned()),
+        };
+        let items = self.layout_of(part)?.fields.len();
+        let from = self.fields_at(object, kind);
+        let block = if matches!(wanted, Kind::Boxed(_)) { Some(self.new_block(part)?) } else { None };
+        let to = match &block {
+            Some(block) => self.offset(block, crate::lists::FIELDS_OFFSET),
+            None => self.place_for(&wanted),
+        };
+        for at in 0..items {
+            let source = first + i64::try_from(at).unwrap_or(0);
+            let (source_at, held) = self.field(kind, &format!("_{source}"))?;
+            let (dest_at, _) = self.field(&wanted, &format!("_{at}"))?;
+            let (source_at, dest_at) = (self.offset(&from, source_at), self.offset(&to, dest_at));
+            let value = if held.in_memory() { source_at } else { self.load_field(&held, &source_at, "") };
+            if held.counted() {
+                self.retain_value(&value, &held);
+            }
+            self.store_field(&held, &value, &dest_at, "");
+            self.retain_inline(&held, &dest_at);
+        }
+        if let Some(block) = block {
+            return self.assign(dest, &block);
+        }
+        self.assign_memory_owned(dest, &to)
+    }
+
+    /// Fails the program if what `main` gave back is an error, as the runtime says it. Only then
+    /// does the result cross to the runtime.
+    fn main_result(&mut self, result: &Operand, span: Span) -> Result<(), String> {
+        let (value, kind) = self.operand(result)?;
+        let (err_case, _) = self.case_of(&kind, "Err")?;
+        let fields = self.fields_at(&value, &kind);
+        let (case, failed) = (self.temp(), self.temp());
+        self.line(&format!("{case} = load i64, ptr {fields}"));
+        self.line(&format!("{failed} = icmp eq i64 {case}, {err_case}"));
+        let (bad, fine) = (self.label("main_failed"), self.label("main_done"));
+        self.line(&format!("br i1 {failed}, label %{bad}, label %{fine}"));
+        self.start_block(&bad);
+        let block = if let Kind::Enum(id) = kind {
+            let block = self.new_block(id)?;
+            let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+            self.store_field(&kind, &value, &fields, "");
+            self.retain_inline(&kind, &fields);
+            block
+        } else {
+            value
+        };
+        self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
+        self.declare("declare void @fennec_main_result(i64, i64, i64) nounwind");
+        let handle = self.temp();
+        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {block})"));
+        self.line(&format!("call void @fennec_main_result(i64 {handle}, i64 {from}, i64 {to})"));
+        self.leave_if_failed();
+        self.line(&format!("br label %{fine}"));
+        self.start_block(&fine);
         Ok(())
     }
 

@@ -598,6 +598,18 @@ impl Emit<'_, '_, '_> {
 
     pub(crate) fn make_case(&mut self, dest: LocalId, case: &str, fields: &[Operand]) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();
+        // An optional string is a header, all zero for `None`.
+        if kind == Kind::MaybeText {
+            return match (case, fields) {
+                ("None", _) => self.assign(dest, "zeroinitializer"),
+                (_, [value]) => {
+                    let (value, _) = self.operand(value)?;
+                    self.retain_text(&value);
+                    self.assign(dest, &value)
+                }
+                _ => Err("an optional string with no string".to_owned()),
+            };
+        }
         let (number, written) = self.case_of(&kind, case)?;
         let block = if let Kind::Boxed(id) = kind { Some(self.new_block(id)?) } else { None };
         // Holding blocks, it's made beside what the local holds, which may be read for it.
@@ -790,6 +802,12 @@ impl Emit<'_, '_, '_> {
         case: &str,
         field: &str,
     ) -> Result<(), String> {
+        // What's in an optional string that isn't `None` is its header.
+        if matches!(value, Operand::Local(local) if *self.kind_of(*local)? == Kind::MaybeText) {
+            let (held, _) = self.operand(value)?;
+            self.retain_text(&held);
+            return self.assign(dest, &held);
+        }
         let (base, kind) = self.operand(value)?;
         let (_, written) = self.case_of(&kind, case)?;
         let (_, offset, held) =
@@ -1499,6 +1517,9 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let (object, kind) = self.operand(object)?;
+        if matches!(kind, Kind::Struct(_) | Kind::Boxed(_)) {
+            return self.tuple_slice(dest, (&object, &kind), start);
+        }
         let lowest = i64::MIN.to_string();
         let start =
             start.map(|start| self.operand(start)).transpose()?.map_or_else(|| lowest.clone(), |held| held.0);

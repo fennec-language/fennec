@@ -295,6 +295,9 @@ impl Program {
                 }
             },
         };
+        if let Some(problem) = optional_inside(&ty, written.span) {
+            return Err(problem);
+        }
         Ok(if written.optional { Type::optional(ty) } else { ty })
     }
 
@@ -521,4 +524,24 @@ pub(crate) fn default_problem(
             .with_help(format!("remove the type, so it reads `{name} = ` and its default"))
             .with_fix(between, " = "),
     )
+}
+
+/// What's wrong with a dict or set that holds optionals: not being in one already means missing,
+/// so a `None` in it would be a second way to say so.
+pub(crate) fn optional_inside(ty: &Type, span: Span) -> Option<Diagnostic> {
+    let (message, help) = match ty {
+        Type::Dict(_, value) if matches!(**value, Type::Optional(_) | Type::None) => (
+            "a dict can't hold optional values",
+            "leave the key out instead, since not being in the dict already means missing",
+        ),
+        Type::Dict(key, _) if matches!(**key, Type::Optional(_) | Type::None) => {
+            ("a dict's keys can't be optional", "keep a key that's missing out of the dict")
+        }
+        Type::Set(item) if matches!(**item, Type::Optional(_) | Type::None) => (
+            "a set can't hold optional items",
+            "leave a missing item out, since not being in the set already says so",
+        ),
+        _ => return None,
+    };
+    Some(Diagnostic::new(message, span).with_help(help))
 }

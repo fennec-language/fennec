@@ -585,6 +585,16 @@ impl<'c> FnCx<'c> {
             crossed |= scope.barrier;
         }
         let Some(binding) = found else { return not_mut(name, span) };
+        // A new name, from a `for` or a `case`, over one that can change.
+        let same_name = self.scopes.iter().rev().flat_map(|scope| scope.bindings.iter().rev());
+        let hides = same_name.filter(|binding| binding.name == name).skip(1).any(|binding| binding.is_mut);
+        if hides && !crossed && !binding.is_mut {
+            return Diagnostic::new(
+                format!("this `{name}` is a new name, which hides the `mut {name}` around it"),
+                span,
+            )
+            .with_help(format!("give this one another name, to change the `{name}` around it"));
+        }
         if crossed || binding.origin == Origin::Captured {
             let function = if crossed { "an arrow function" } else { "a nested function" };
             return Diagnostic::new(format!("{function} can't change `{name}`, which is defined outside it"), span)

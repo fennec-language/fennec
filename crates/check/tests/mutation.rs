@@ -372,3 +372,16 @@ fn a_parallel_loop_cant_change_names_outside_it() {
         ]
     );
 }
+
+#[test]
+fn a_name_that_hides_a_mut_one_says_so() {
+    let said = "this `k` is a new name, which hides the `mut k` around it @ k";
+    let types = "enum Sized:\n    Small(size: int)\n";
+    for body in [
+        "mut k = 0\nmatch Sized.Small(size=1):\n    case .Small(k):\n        k += 1\nstdout.print(k)\n",
+        "mut k = 0\nfor k in range(3):\n    k += 1\nstdout.print(k)\n",
+    ] {
+        assert_eq!(crate::in_main_after(types, body), [said], "{body}");
+    }
+    assert_eq!(crate::in_main_after(types, "k = 0\nk += 1\nstdout.print(k)\n"), ["`k` isn't mut @ k"]);
+}

@@ -2542,6 +2542,144 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Dicts whose values are blocks, with what's done to them.
+#[test]
+fn dicts_of_blocks_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "dict_values",
+        r#"struct Book:
+    title: str
+    pages: dict[str, list[int]]
+
+def main(stdout: Stdout):
+    mut lists = {"a": [1, 2], "b": []}
+    lists["c"] = [3]
+    copied = lists
+    lists["a"] = [9]
+    stdout.print(lists, copied, lists["a"], copied["a"][1], lists.len())
+    lists["c"].append(4)
+    stdout.print(lists["c"], copied["c"])
+    stdout.print(lists.get("c"), lists.get("nope"), "a" in lists, "z" in lists)
+    stdout.print(lists.keys(), lists.values(), lists.items())
+    for key, value in lists.items():
+        stdout.print(key, value, value.len())
+    stdout.print(lists.pop("a"), lists)
+    mut by_int = {1: ["one"], 2: ["two", "too"]}
+    by_int[3] = ["three"]
+    stdout.print(by_int, by_int[2][1], by_int == {1: ["one"]}, by_int == by_int)
+    mut nested = {"x": {"y": [1]}}
+    nested["z"] = {}
+    nested["z"]["w"] = [2]
+    stdout.print(nested, nested["x"]["y"], nested["z"]["w"][0])
+    mut sets = {"s": {1, 2}}
+    sets["t"] = {3}
+    stdout.print(sets, 1 in sets["s"])
+    mut raw = {"b": bytes([1, 2])}
+    raw["c"] = "hi".encode()
+    stdout.print(raw, raw["c"].len())
+    book = Book(title="t", pages={"one": [1], "two": [2, 2]})
+    stdout.print(book, book.pages["two"], book.pages.keys())
+    mut empty: dict[str, list[int]] = {}
+    empty.clear()
+    stdout.print(empty, empty.get("a"), empty.len())
+    mut grown: dict[int, list[int]] = {}
+    for at in range(100):
+        grown[at] = [at, at + 1]
+    stdout.print(grown[99], grown.len(), sum(sum(items) for items in grown.values()))
+"#,
+    )
+}
+
+/// Dicts whose values are plain structs and enums, or `Id`s, with what's done to them.
+#[test]
+fn dicts_of_plain_values_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "dict_plain_values",
+        r#"from std.game import IdMap
+
+struct Point:
+    x: int
+    y: float
+
+struct Named:
+    name: str
+    tags: list[str]
+
+enum Light:
+    Red
+    Green
+    Amber(seconds: int)
+
+enum Note:
+    Empty
+    Said(text: str)
+
+struct Home:
+    id: int
+
+def main(stdout: Stdout):
+    mut points = {"p": Point(x=1, y=2.0)}
+    points["q"] = Point(x=3, y=4.0)
+    points["p"] = Point(x=5, y=6.0)
+    other = points
+    points["q"] = Point(x=7, y=8.0)
+    stdout.print(points, other, points["p"].x, points == other, points.get("q"), points.get("r"))
+    stdout.print(points.values(), points.items(), points.pop("q"), points)
+    mut lights = {"go": Light.Green, "wait": Light.Amber(seconds=3)}
+    lights["stop"] = Light.Red
+    stdout.print(lights, lights["wait"], lights["go"] == Light.Green)
+    for name, light in lights.items():
+        match light:
+            case Red:
+                stdout.print(name, "red")
+            case Green:
+                stdout.print(name, "green")
+            case Amber(seconds):
+                stdout.print(name, seconds)
+    mut notes = {1: Note.Said(text="a long note that sits in its own block"), 2: Note.Empty}
+    notes[3] = Note.Said(text="short")
+    notes[1] = Note.Said(text="replaced")
+    stdout.print(notes, notes[3])
+    stdout.print(notes.pop(1), notes.get(3), notes.values())
+    mut people = {"me": Named(name="me", tags=["a"])}
+    people["you"] = Named(name="a long name that sits in its own block", tags=[])
+    kept = people["you"]
+    people["you"] = Named(name="other", tags=["b", "c"])
+    stdout.print(people, kept, people["you"].tags[1], people == people)
+    mut ids = IdMap[Home]()
+    first = ids.insert(Home(id=1))
+    second = ids.insert(Home(id=2))
+    mut links = {first: second}
+    links[second] = first
+    stdout.print(links[first] == second, links[second] == first, first in links, links.len())
+    mut homes = {"first": first}
+    homes["second"] = second
+    stdout.print(homes["second"] == second, homes.get("nope") is None, homes.len())
+"#,
+    )
+}
+
+/// A key a dict of blocks doesn't have fails as the JIT's does.
+#[test]
+fn a_missing_key_in_a_dict_of_lists_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "missing_list",
+        "def main(stdout: Stdout):
+    held = {\"a\": [1]}
+    stdout.print(held[\"b\"])
+",
+    )
+}
+
 #[test]
 fn dicts_sets_closures_and_tuples_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -5901,142 +6039,4 @@ fn a_failure_passed_up_fails_a_test_through_llvm() -> std::io::Result<()> {
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
-}
-
-/// Dicts whose values are blocks, with what's done to them.
-#[test]
-fn dicts_of_blocks_match_the_jit() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    same_as_the_jit(
-        "dict_values",
-        r#"struct Book:
-    title: str
-    pages: dict[str, list[int]]
-
-def main(stdout: Stdout):
-    mut lists = {"a": [1, 2], "b": []}
-    lists["c"] = [3]
-    copied = lists
-    lists["a"] = [9]
-    stdout.print(lists, copied, lists["a"], copied["a"][1], lists.len())
-    lists["c"].append(4)
-    stdout.print(lists["c"], copied["c"])
-    stdout.print(lists.get("c"), lists.get("nope"), "a" in lists, "z" in lists)
-    stdout.print(lists.keys(), lists.values(), lists.items())
-    for key, value in lists.items():
-        stdout.print(key, value, value.len())
-    stdout.print(lists.pop("a"), lists)
-    mut by_int = {1: ["one"], 2: ["two", "too"]}
-    by_int[3] = ["three"]
-    stdout.print(by_int, by_int[2][1], by_int == {1: ["one"]}, by_int == by_int)
-    mut nested = {"x": {"y": [1]}}
-    nested["z"] = {}
-    nested["z"]["w"] = [2]
-    stdout.print(nested, nested["x"]["y"], nested["z"]["w"][0])
-    mut sets = {"s": {1, 2}}
-    sets["t"] = {3}
-    stdout.print(sets, 1 in sets["s"])
-    mut raw = {"b": bytes([1, 2])}
-    raw["c"] = "hi".encode()
-    stdout.print(raw, raw["c"].len())
-    book = Book(title="t", pages={"one": [1], "two": [2, 2]})
-    stdout.print(book, book.pages["two"], book.pages.keys())
-    mut empty: dict[str, list[int]] = {}
-    empty.clear()
-    stdout.print(empty, empty.get("a"), empty.len())
-    mut grown: dict[int, list[int]] = {}
-    for at in range(100):
-        grown[at] = [at, at + 1]
-    stdout.print(grown[99], grown.len(), sum(sum(items) for items in grown.values()))
-"#,
-    )
-}
-
-/// Dicts whose values are plain structs and enums, or `Id`s, with what's done to them.
-#[test]
-fn dicts_of_plain_values_match_the_jit() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    same_as_the_jit(
-        "dict_plain_values",
-        r#"from std.game import IdMap
-
-struct Point:
-    x: int
-    y: float
-
-struct Named:
-    name: str
-    tags: list[str]
-
-enum Light:
-    Red
-    Green
-    Amber(seconds: int)
-
-enum Note:
-    Empty
-    Said(text: str)
-
-struct Home:
-    id: int
-
-def main(stdout: Stdout):
-    mut points = {"p": Point(x=1, y=2.0)}
-    points["q"] = Point(x=3, y=4.0)
-    points["p"] = Point(x=5, y=6.0)
-    other = points
-    points["q"] = Point(x=7, y=8.0)
-    stdout.print(points, other, points["p"].x, points == other, points.get("q"), points.get("r"))
-    stdout.print(points.values(), points.items(), points.pop("q"), points)
-    mut lights = {"go": Light.Green, "wait": Light.Amber(seconds=3)}
-    lights["stop"] = Light.Red
-    stdout.print(lights, lights["wait"], lights["go"] == Light.Green)
-    for name, light in lights.items():
-        match light:
-            case Red:
-                stdout.print(name, "red")
-            case Green:
-                stdout.print(name, "green")
-            case Amber(seconds):
-                stdout.print(name, seconds)
-    mut notes = {1: Note.Said(text="a long note that sits in its own block"), 2: Note.Empty}
-    notes[3] = Note.Said(text="short")
-    notes[1] = Note.Said(text="replaced")
-    stdout.print(notes, notes[3])
-    stdout.print(notes.pop(1), notes.get(3), notes.values())
-    mut people = {"me": Named(name="me", tags=["a"])}
-    people["you"] = Named(name="a long name that sits in its own block", tags=[])
-    kept = people["you"]
-    people["you"] = Named(name="other", tags=["b", "c"])
-    stdout.print(people, kept, people["you"].tags[1], people == people)
-    mut ids = IdMap[Home]()
-    first = ids.insert(Home(id=1))
-    second = ids.insert(Home(id=2))
-    mut links = {first: second}
-    links[second] = first
-    stdout.print(links[first] == second, links[second] == first, first in links, links.len())
-    mut homes = {"first": first}
-    homes["second"] = second
-    stdout.print(homes["second"] == second, homes.get("nope") is None, homes.len())
-"#,
-    )
-}
-
-/// A key a dict of blocks doesn't have fails as the JIT's does.
-#[test]
-fn a_missing_key_in_a_dict_of_lists_fails_like_the_jit() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    same_message_as_the_jit(
-        "missing_list",
-        "def main(stdout: Stdout):
-    held = {\"a\": [1]}
-    stdout.print(held[\"b\"])
-",
-    )
 }

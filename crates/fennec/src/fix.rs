@@ -2,6 +2,7 @@
 //! return type a `def` gives back, in a file or across a kit. It checks again after each round of changes,
 //! since one fix can show the next, and then reports whatever it couldn't fix.
 
+use std::path::Path;
 use std::process::ExitCode;
 
 /// How many rounds of fixes to make before giving up on reaching a program with none left.
@@ -42,6 +43,53 @@ pub(crate) fn fix(path: &str) -> ExitCode {
     }
     eprintln!("error: fixes kept showing more fixes; run `fennec fix` again to go on");
     ExitCode::FAILURE
+}
+
+/// `fennec fix --mut-to-ref`: writes `ref` where the language has moved from `mut`, in each file or
+/// folder named, or the current folder. It reads each file on its own and doesn't check it, so it
+/// runs on anything that can be read as tokens. It asks for by name, so `fennec fix` never renames
+/// on its own, and what it can't decide, a person reads.
+pub(crate) fn mut_to_ref(paths: &[&str]) -> ExitCode {
+    let mut files = Vec::new();
+    for path in if paths.is_empty() { &["."] } else { paths } {
+        if let Err(err) = crate::fmt::collect(Path::new(path), true, &mut files) {
+            eprintln!("error: couldn't read {path}: {err}");
+            return ExitCode::FAILURE;
+        }
+    }
+    let mut failed = false;
+    for file in &files {
+        let shown = file.strip_prefix(".").unwrap_or(file).display();
+        let source = match std::fs::read_to_string(file) {
+            Ok(source) => source,
+            Err(err) => {
+                eprintln!("error: couldn't read {shown}: {err}");
+                failed = true;
+                continue;
+            }
+        };
+        let renamed = match fennec_syntax::mut_to_ref(&source) {
+            Ok(renamed) => renamed,
+            Err(diagnostic) => {
+                let (line, column) = crate::fmt::position(&source, diagnostic.span.start);
+                eprintln!("skipped {shown}: it can't be read ({line}:{column}: {})", diagnostic.message);
+                continue;
+            }
+        };
+        if renamed.text != source {
+            if let Err(err) = std::fs::write(file, &renamed.text) {
+                eprintln!("error: couldn't write {shown}: {err}");
+                failed = true;
+                continue;
+            }
+            println!("fixed {shown}");
+        }
+        for span in renamed.left {
+            let (line, _) = crate::fmt::position(&source, span.start);
+            eprintln!("{shown}:{line}: this still says `mut`, so read it");
+        }
+    }
+    if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
 
 /// Writes each changed file, saying so.

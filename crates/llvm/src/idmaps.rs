@@ -380,7 +380,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{live} = load i64, ptr {live_at}"));
                 self.line(&format!("{one_fewer} = add i64 {live}, -1"));
                 self.line(&format!("store i64 {one_fewer}, ptr {live_at}"));
-                self.free_slot(&fields, parts, &id.0);
+                self.free_slot(&fields, &parts, &id.0);
                 self.line(&format!("br label %{done}"));
                 self.start_block(&no);
                 if let Some(dest) = dest {

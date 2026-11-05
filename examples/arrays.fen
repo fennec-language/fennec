@@ -2,14 +2,15 @@
 # the stack. It's for math types, fixed buffers and slots.
 
 struct Mat2:
-    m: array[float, 4] = [1.0, 0.0, 0.0, 1.0]
+    cells: array[float, 4] = [1.0, 0.0, 0.0, 1.0]
 
     def times(self, other: Mat2) -> Mat2:
         mut out = Mat2()
         for row in range(2):
             for col in range(2):
-                out.m[row * 2 + col] = (
-                    self.m[row * 2] * other.m[col] + self.m[row * 2 + 1] * other.m[2 + col]
+                out.cells[row * 2 + col] = (
+                    self.cells[row * 2] * other.cells[col]
+                    + self.cells[row * 2 + 1] * other.cells[2 + col]
                 )
         out
 
@@ -33,8 +34,8 @@ def doubled(ref values: array[int, 3]):
         value *= 2
 
 def main(stdout: Stdout):
-    shear = Mat2(m=[2.0, 1.0, 0.0, 3.0])
-    stdout.print(shear.times(shear).m, Mat2().times(shear) == shear)
+    shear = Mat2(cells=[2.0, 1.0, 0.0, 3.0])
+    stdout.print(shear.times(shear).cells, Mat2().times(shear) == shear)
 
     mut bag = Bag()
     bag.slots[0] = Item(name="rope", weight=2)

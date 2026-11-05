@@ -1,59 +1,46 @@
 # Landing a change
 
-Changes reach `main` through `staging`, not the merge queue. A commit lands on `staging` once it
-passes the gate on this machine, and `main` moves forward to exactly that commit once the cloud
-checks pass on it. Nobody waits on the cloud to keep working.
+A change merges into `main` as soon as it's ready, without waiting for CI. The checks that matter
+most run first on your own machine, and CI runs everything on `main` after the merge. A red run on
+`main` gets a fix or a revert straight away.
 
 ```
-your branch -> the gate here -> staging -> the cloud checks the newest commit -> main moves to it
+your branch -> the gate on your machine -> a pull request to main -> merged -> CI on main
 ```
 
 ## Landing
 
-From your own branch, with everything committed:
+1. Merge the latest `main` into your branch, so that the gate tests what will be on `main`:
 
-```sh
-.github/scripts/fennec-land
-```
+   ```sh
+   git fetch origin
+   git merge origin/main
+   ```
 
-It merges the latest `staging` into your branch and pushes to `staging`, which runs the gate:
-formatting, clippy, every test, every example and kit, and the JIT as x86-64 under Rosetta. It takes
-four to five minutes, and gates run one at a time, so another lane's waits its turn. If someone
-landed while yours was in the gate, it merges again and goes round once more by itself.
+2. Run the gate, with everything committed:
 
-A pull request is optional: open one when a change needs a write-up for people to read, and land
-the branch with `fennec-land` all the same. It shows as merged once `main` reaches it.
+   ```sh
+   .github/scripts/gate.sh
+   ```
 
-Don't push to `main`, and don't force `staging`: GitHub refuses both.
+   It checks formatting, runs clippy, every test and every example and kit, and runs the JIT as
+   x86-64 under Rosetta. It stops at the first failure and prints that step's output. A test program
+   that runs more than a minute or holds more than 4 GB is stopped, and the gate says which. It takes
+   four to five minutes when the build is warm.
 
-## When the push is refused
+3. Open a pull request to `main`, and say that the gate passed. The coordinator merges it.
 
-`fennec-land` says why, and pushes nothing:
+## When CI on `main` fails
 
-- **"this conflicts with staging"**: resolve the conflict, commit, and run it again.
-- **"commit or put away what's changed first"**: the gate tests the commit, so the tree has to match
-  it.
-- **"the gate failed"**: the failed step and its output are above. Fix it on your branch and run it
-  again. A test program that ran more than a minute or held more than 4 GB was stopped, and it says
-  which.
-- **"staging kept moving"**: others landed five times in a row while yours was in the gate. Run it
-  again.
-
-## When a cloud run on `staging` fails
-
-`main` only moves to a commit that passed everything, so a failed run leaves it where it was. Every
-commit after a failed one holds the same failure, though, so `main` stays stuck until a fix lands.
-
-1. Find the failed job in the Actions tab, under the workflow "Staging".
-2. If your change caused it, land the fix straight away, or a revert of your change if the fix will
+1. Find the failed job in the Actions tab, under the workflow "CI" or "CodeQL".
+2. If your change caused it, open a fix straight away, or a revert of your change if the fix will
    take a while.
-3. If a check fails only now and then, say so to whoever runs the lanes, and fix the check that day.
-   Don't land something only to retry a run.
+3. If a check fails only now and then, say so to the coordinator, and fix the check that day.
 
-A newer commit never cancels a run that's going. It takes the place of one that's still waiting,
-and since each commit holds the ones before it, nothing goes unchecked.
+A run that's going is never cancelled by a newer push. The newest push takes the place of one that's
+still waiting, and since each commit holds the ones before it, nothing goes unchecked.
 
 ## Outside contributions
 
-Pull requests from outside are still welcome, and CI still runs on them. To take one, a maintainer
-checks out its branch and lands it with `fennec-land`.
+Pull requests from outside are still welcome. CI doesn't run on pull requests any more, so a
+maintainer runs the gate on the branch before merging it.

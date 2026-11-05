@@ -1,10 +1,11 @@
 name: CI
 
+# Changes land on main as soon as they're merged, after the gate on the machine they're written on
+# (see `docs/landing.md`), so this runs after the merge rather than before it. A red run gets a fix
+# or a revert.
 on:
   push:
     branches: [main]
-  pull_request:
-  merge_group:
   # `staging.yml` runs this on the commit it may move main to.
   workflow_call:
 

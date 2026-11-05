@@ -1,0 +1,5 @@
+def main(stdout: Stdout):
+    prices = {"apple": 3}
+    cost = prices.get("fig") else:
+        stdout.print("no price for the fig")
+    stdout.print(cost)

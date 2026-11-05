@@ -1,0 +1,7 @@
+error: `continue` is only for leaving a loop, and this isn't in one
+ --> examples/errors/continue_outside_a_loop.fen:3:35
+  |
+3 |     cost = prices.get("fig") else continue
+  |                                   ^^^^^^^^
+  |
+  = help: to leave the function, use `return`

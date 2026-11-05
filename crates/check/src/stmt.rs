@@ -72,9 +72,16 @@ impl FnCx<'_> {
             StmtKind::If { branches, otherwise } => {
                 self.if_stmt(branches, otherwise.as_deref(), used, stmt.span)
             }
-            StmtKind::While { cond, body } => self.while_stmt(cond, body),
+            StmtKind::While { cond, body } => {
+                self.loops += 1;
+                let flow = self.while_stmt(cond, body);
+                self.loops -= 1;
+                flow
+            }
             StmtKind::For { names, is_mut, iter, body } => {
+                self.loops += 1;
                 self.for_stmt(names, *is_mut, iter, body, stmt.span);
+                self.loops -= 1;
                 Flow::unit()
             }
             StmtKind::Return(value) => {
@@ -139,7 +146,19 @@ impl FnCx<'_> {
                 self.nested(def);
                 Flow::unit()
             }
-            StmtKind::Break | StmtKind::Continue => Flow::exit(),
+            StmtKind::Break | StmtKind::Continue => {
+                if self.loops == 0 {
+                    let word = if matches!(stmt.kind, StmtKind::Break) { "break" } else { "continue" };
+                    self.error(
+                        Diagnostic::new(
+                            format!("`{word}` is only for leaving a loop, and this isn't in one"),
+                            stmt.span,
+                        )
+                        .with_help("to leave the function, use `return`"),
+                    );
+                }
+                Flow::exit()
+            }
             StmtKind::Pass => Flow::unit(),
         }
     }

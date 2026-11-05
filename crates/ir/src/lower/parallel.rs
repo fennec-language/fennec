@@ -261,9 +261,8 @@ impl Lowering<'_> {
         let dest = passes_up.then(|| task.temporary(returns.clone()));
         task.emit(InstKind::Call { dest, function: inner, args }, span);
         if let Some(result) = dest {
-            let args = vec![Operand::Local(result), Operand::Str("this connection's task failed".to_owned())];
-            let stop =
-                InstKind::Builtin { dest: None, name: "result.expect".to_owned(), args, changes: false };
+            let args = vec![Operand::Local(result)];
+            let stop = InstKind::Builtin { dest: None, name: "task.failed".to_owned(), args, changes: false };
             task.emit(stop, span);
         }
         task.end_function(span)?;

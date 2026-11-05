@@ -2072,6 +2072,8 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "sorted.key"
                     | "list.remove_where"
                     | "result.expect"
+                    | "main.failed"
+                    | "task.failed"
                     | "dict.pop"
                     | "random.random_int"
                     | "int"

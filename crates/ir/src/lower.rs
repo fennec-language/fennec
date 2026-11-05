@@ -132,6 +132,9 @@ fn lower_from(
             program.not_lowered.push(NotLowered { function: next.name, why });
         }
     }
+    if context.options.outline_parallel {
+        failure::main_stops_when_it_fails(&mut program, &functions);
+    }
     program.external = calls::external(&program);
     let (mut defs, mut enums) = (defs.clone(), enums.iter().map(|def| (*def).clone()).collect::<Vec<_>>());
     structs::add_copies(&context, &mut defs, &mut enums);

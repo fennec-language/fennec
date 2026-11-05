@@ -630,6 +630,83 @@ fn a_native_server_runs_each_connection_as_its_own_task() -> std::io::Result<()>
     Ok(())
 }
 
+/// A server whose connections share a counter: one fails inside a `with` on it.
+const SERVER_HOLDING: &str = "\
+from std.net import Connection, NetError
+
+shared Counter:
+    total = 0
+
+def answer(connection: Connection, counter: Counter) -> int fails NetError:
+    connection.write(\"ready\\n\")?
+    for line in connection.lines():
+        if line == \"fail\":
+            with counter as mut held:
+                held.total = 1 // (held.total - held.total)
+        else:
+            with counter as mut held:
+                held.total += 1
+            connection.write(f\"{counter.total}\\n\")?
+    0
+
+def main(net: Net, stdout: Stdout):
+    counter = Counter()
+    server = net.listen(0).expect(\"it listens\")
+    stdout.print(server.port)
+    for connection in parallel(server):
+        match answer(connection, counter):
+            case Ok(_):
+                stdout.print(\"answered\")
+            case Err(error):
+                stdout.print(\"failed\", error.message())
+";
+
+/// A connection's task that fails while it holds a lock ends the whole program, rather than only
+/// itself: what the lock guards may be half changed, and other tasks may be waiting for it.
+#[test]
+fn a_server_task_failing_under_a_lock_ends_the_program() -> std::io::Result<()> {
+    use std::io::{BufRead, BufReader};
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-server-holding-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let executable = build_on_threads(&dir, SERVER_HOLDING, "server")?;
+    let mut server = Command::new(&executable)
+        .env("FENNEC_THREADS", "4")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let mut printed = BufReader::new(server.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
+    let mut first = String::new();
+    printed.read_line(&mut first)?;
+    let port: u16 = first.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    assert_eq!(talk(port, &["count"])?, ["ready", "1"]);
+    let failing = std::thread::spawn(move || talk(port, &["fail"]));
+    let _ = failing.join();
+    // It ends by itself: nothing here kills it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = server.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            server.kill()?;
+            panic!("the server kept going after a task failed holding a lock");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut said = String::new();
+    std::io::Read::read_to_string(
+        &mut server.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?,
+        &mut said,
+    )?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(status.code(), Some(1));
+    assert!(said.contains("division by zero"), "{said}");
+    Ok(())
+}
+
 #[test]
 fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {

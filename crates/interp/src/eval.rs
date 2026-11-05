@@ -429,7 +429,7 @@ pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
     let diagnostic = Diagnostic::new(format!("`{name}` doesn't exist"), span);
     match name {
         "print" | "console" => diagnostic.with_help(
-            "there's no global output: write with the `stdout` that `main` receives, like `stdout.print(x)`",
+            "there's no global output: a function reaches outside itself only through what's in its signature, like `stdout: Stdout`",
         ),
         "true" | "false" => diagnostic.with_help("write `True` or `False`"),
         "null" | "nil" | "none" | "undefined" => diagnostic.with_help("write `None`"),

@@ -102,3 +102,59 @@ fn running_the_module_names_the_chosen_enum() {
     assert!(!tree.contains("Variant(\"Int\")") && !tree.contains("Variant(\"Name\")"), "{tree}");
     assert_eq!(tree.matches("Name(\"ExprKind\")").count(), 2, "{tree}");
 }
+
+const FAILURES: &str = "
+    error DialError:
+        NotFound(host: str)
+        Closed
+
+    error SaveError:
+        Closed
+        Full(left: int)
+";
+
+fn with_failures(code: &str) -> Vec<String> {
+    problems(&format!("{}\n{}", crate::dedent(FAILURES), crate::dedent(code)))
+}
+
+/// `fail .Case` is a case of the error the function says it fails with, even if another error has
+/// a case by that name too.
+#[test]
+fn a_failure_takes_its_error_from_what_the_function_says() {
+    assert_eq!(
+        with_failures(
+            "
+            def dial(host: str) -> int fails DialError:
+                if host == \"\":
+                    fail .Closed
+                fail .NotFound(host)
+
+            def save() fails SaveError:
+                fail .Closed
+
+            def held() -> DialError:
+                .Closed
+            "
+        ),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn a_failure_needs_to_be_able_to_tell_which_error() {
+    let problems = with_failures(
+        "
+        def unsaid():
+            fail .Closed
+        ",
+    );
+    assert!(problems.iter().any(|problem| problem.contains("Closed")), "{problems:?}");
+
+    let problems = with_failures(
+        "
+        def other() fails DialError:
+            fail .Full(1)
+        ",
+    );
+    assert!(problems.iter().any(|problem| problem.contains("Full")), "{problems:?}");
+}

@@ -396,6 +396,11 @@ impl Worker {
                     self.served.failed += 1;
                     // A failure ends only its connection, which says why, and the runtime's record
                     // of it goes.
+                    // A task that failed holding a lock leaves what it guards half changed, and others waiting
+                    // for it, so the program ends rather than only this task.
+                    if super::threads::holds_locks() {
+                        super::aot::stop_for_failure();
+                    }
                     super::report_failure();
                 }
             }

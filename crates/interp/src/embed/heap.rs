@@ -1115,8 +1115,10 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
             Value::tuple(fields.iter().map(|(_, element)| read(state, element, words)).collect())
         }
         Element::Struct { name, fields } => {
-            let fields =
-                fields.iter().map(|(field, element)| (Rc::clone(field), read(state, element, words)));
+            let fields = fields
+                .iter()
+                .filter(|(field, _)| field.as_ref() != crate::packed::LOCK)
+                .map(|(field, element)| (Rc::clone(field), read(state, element, words)));
             let value = instance(name, None, fields.collect());
             // An error's block is laid out like a struct's, so its type says which it is.
             #[cfg(not(feature = "lean"))]
@@ -1243,7 +1245,11 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
         {
             // An error is written like a struct: native code holds it as a block of its layout.
             for (field, element) in fields {
-                write(state, element, instance.field(field)?, words)?;
+                if field.as_ref() == crate::packed::LOCK {
+                    words.push(0);
+                } else {
+                    write(state, element, instance.field(field)?, words)?;
+                }
             }
         }
         (Element::Enum { name, cases, words: size }, Value::Instance(instance))

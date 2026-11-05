@@ -121,6 +121,8 @@ pub(crate) struct Whole<'p> {
     pub(crate) constants: HashSet<&'p str>,
     /// The functions that can run on a thread `parallel` uses, which everything else can't.
     pub(crate) on_workers: HashSet<&'p str>,
+    /// Whether the program has any `shared` type.
+    pub(crate) cells: bool,
 }
 
 /// What a function calls by name, a constant being a call of a function of no arguments, and a
@@ -163,6 +165,10 @@ fn exact(op: BinOp, a: Range, b: Range) -> Option<(i128, i128)> {
 pub(crate) fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: impl FnMut(LocalId)) {
     let mut local = |id: LocalId| read(&Operand::Local(id));
     match inst {
+        // A lock's word is in the cell, so a handle has to last until it's given back.
+        InstKind::Lock { handle, .. } | InstKind::Unlock { handle } => read(handle),
+        InstKind::LockAll { handles } => handles.iter().for_each(|(handle, _)| read(handle)),
+        InstKind::UnlockAll { handles } => handles.iter().for_each(&mut read),
         InstKind::SetField { object, value, .. } => {
             local(*object);
             read(value);
@@ -262,8 +268,6 @@ pub(crate) fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: 
                 write(*dest);
             }
         }
-        // What this backend doesn't take yet stops it when it's emitted.
-        _ => {}
     }
 }
 
@@ -2118,6 +2122,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
         | InstKind::Slice { .. }
         | InstKind::CallClosure { .. }
         | InstKind::Resume { .. }
+        | InstKind::Lock { .. }
         | InstKind::LockAll { .. }
         | InstKind::Constant { .. } => true,
         _ => false,
@@ -2270,6 +2275,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         needs,
         constants,
         on_workers,
+        cells: crate::parallel::has_cells(program),
     }
 }
 

@@ -292,7 +292,8 @@ fn enum_case(
 /// `(x=1, y=2)`.
 fn named_fields(state: &State, fields: &Fields, words: &mut dyn Iterator<Item = &u64>, out: &mut Written) {
     out.push('(');
-    for (at, (field, element)) in fields.iter().enumerate() {
+    let shown = fields.iter().filter(|(field, _)| field.as_ref() != crate::packed::LOCK);
+    for (at, (field, element)) in shown.enumerate() {
         if at > 0 {
             out.push_str(", ");
         }

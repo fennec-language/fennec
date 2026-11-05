@@ -68,9 +68,11 @@ fn program_handed_over(length: i64, stop: fn(i32)) -> Vec<u8> {
     // Each worker `parallel` runs on starts a runtime of its own, holding the program.
     let program = std::sync::Arc::new(bytes.clone());
     super::parallel::set_worker_setup(Box::new(move || {
-        if let Some(Image { module, tables, .. }) = Image::from_bytes(&program) {
+        if let Some(Image { module, sources, tables, .. }) = Image::from_bytes(&program) {
             // What it prints goes straight out: `parallel`'s output follows real call order.
             let _ = super::start(&module, tables, live_inputs());
+            // A worker can end the program itself, and has to say where.
+            SOURCES.set(Some(sources));
         }
     }));
     bytes

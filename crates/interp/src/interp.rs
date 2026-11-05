@@ -108,6 +108,8 @@ pub struct Interp<'out> {
     pub(crate) tests: Vec<TestDef>,
     pub(crate) frame: Frame,
     pub(crate) depth: usize,
+    /// The `shared` values whose locks are held, each with the call depth that holds it.
+    pub(crate) locks: Vec<(Rc<std::cell::RefCell<Value>>, usize)>,
     pub(crate) max_depth: usize,
     pub(crate) out: Box<dyn Write + 'out>,
     /// The value a `?` or `fail` is carrying up to the enclosing function.
@@ -167,6 +169,7 @@ impl<'out> Interp<'out> {
             tests: Vec::new(),
             frame: Frame::new(),
             depth: 0,
+            locks: Vec::new(),
             max_depth: MAX_DEPTH,
             out,
             passing_up: None,

@@ -333,6 +333,10 @@ fn emitted_with(
         &checked,
         fennec_ir::Options { outline_parallel: true, stop_on_failed_main: true },
     );
+    // On threads, a value crossing the edge of a `shared` value's lock is copied.
+    if fennec_llvm::uses_parallel(&lowered) {
+        fennec_ir::guard_shared(&mut lowered);
+    }
     if !lowered.not_lowered.is_empty() {
         let skipped: Vec<String> = lowered
             .not_lowered

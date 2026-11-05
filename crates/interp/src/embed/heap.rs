@@ -156,6 +156,11 @@ pub const OWNER_SHIFT: u32 = 48;
 /// The bits of a shape word that say the shape.
 pub const SHAPE_BITS: u64 = (1 << OWNER_SHIFT) - 1;
 
+/// Whether a block is a `shared` value's own, by the number in its shape word.
+pub(super) fn is_handle_block(block: &[u64]) -> bool {
+    block.get(1).is_some_and(|word| word >> OWNER_SHIFT == super::guarded::HANDLE_OWNER)
+}
+
 /// A block's shape, without the thread that made it.
 pub(crate) fn shape_word(block: &[u64]) -> Option<u64> {
     block.get(1).map(|word| word & SHAPE_BITS)
@@ -951,7 +956,7 @@ pub(super) fn retain(state: &mut State, address: u64) {
     if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
         *count += 1;
     } else if !state.heap.change_lent_owners(address, 1) && super::guarded::is_handle(address) {
-        super::threads::count_handle(address);
+        super::guarded::count_handle(address);
     }
 }
 

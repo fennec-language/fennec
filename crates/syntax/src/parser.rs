@@ -128,6 +128,12 @@ impl Parser {
         self.eat(&Tok::Kw(kw))
     }
 
+    /// `ref` on a loop, a parameter, an argument or a `with` name, where `mut` still means the
+    /// same until `fennec fix --mut-to-ref` has been run everywhere.
+    fn eat_ref(&mut self) -> bool {
+        self.eat_kw(Kw::Ref) || self.eat_kw(Kw::Mut)
+    }
+
     fn expect_p(&mut self, punct: Punct) -> Result<Span, Diagnostic> {
         if self.at_p(punct) {
             Ok(self.advance().span)
@@ -611,7 +617,7 @@ impl Parser {
 
     fn param(&mut self) -> Result<Param, Diagnostic> {
         let start = self.span();
-        let is_mut = self.eat_kw(Kw::Mut);
+        let is_mut = self.eat_ref();
         let name = self.name("a parameter name")?;
         if name == "self" {
             return Ok(Param {

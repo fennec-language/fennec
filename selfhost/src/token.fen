@@ -35,7 +35,7 @@ struct Token:
 def is_keyword(word: str) -> bool:
     word in {
         "def", "if", "elif", "else", "while", "for", "in", "return", "break", "continue",
-        "pass", "mut", "and", "or", "not", "is", "True", "False", "None", "fail", "yield",
+        "pass", "mut", "ref", "and", "or", "not", "is", "True", "False", "None", "fail", "yield",
         "with", "as", "import", "from", "export", "noalloc", "assert", "extern", "unsafe",
     }
 

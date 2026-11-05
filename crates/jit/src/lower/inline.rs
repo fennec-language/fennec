@@ -32,6 +32,7 @@ pub(super) fn inline_body(function: &Function<'_>) -> Option<Rc<FnDef>> {
         | Ty::Obj
         | Ty::Boxed(_)
         | Ty::Str
+        | Ty::Bytes
         | Ty::Dict(..)
         | Ty::List(_)
         | Ty::Known(_)

@@ -112,6 +112,28 @@ impl Emit<'_, '_, '_> {
             }),
             ("set", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.set_of_chars(dest, text)),
             ("assert.sides", [left, right], _) => self.assert_sides(left, right, span),
+            ("bytes", [], []) => dest.and_then(|dest| self.empty_bytes(dest)),
+            ("bytes", [list], [Some(Kind::List(_))]) => {
+                dest.and_then(|dest| self.bytes_of_list(dest, list, span))
+            }
+            ("bytes.len", [bytes], _) => dest.and_then(|dest| {
+                let (bytes, _) = self.operand(bytes)?;
+                let length = self.list_length(&bytes);
+                self.assign(dest, &length)
+            }),
+            ("list", [bytes], [Some(Kind::Bytes)]) => dest.and_then(|dest| self.list_of_bytes(dest, bytes)),
+            ("bytes.contains", [bytes, byte], _) => {
+                dest.and_then(|dest| self.bytes_contains(dest, bytes, byte))
+            }
+            ("bytes.hex", [bytes, rest @ ..], _) if rest.len() <= 1 => {
+                dest.and_then(|dest| self.bytes_hex(dest, bytes, rest.first()))
+            }
+            ("bytes.decode", [bytes], _) => dest.and_then(|dest| {
+                let (bytes, _) = self.operand(bytes)?;
+                self.bytes_decode(dest, &bytes)
+            }),
+            ("bytes.fromhex", [text], _) => dest.and_then(|dest| self.bytes_from_hex(dest, text)),
+            ("str.encode", [text], _) => dest.and_then(|dest| self.text_encoded(dest, text)),
             ("round", [value, places], [Some(Kind::Float), Some(Kind::Int)]) => dest.and_then(|dest| {
                 let ((value, _), (places, _)) = (self.operand(value)?, self.operand(places)?);
                 self.declare("declare double @fennec_round_places(double, i64) nounwind");

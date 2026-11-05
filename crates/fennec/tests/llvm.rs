@@ -3213,7 +3213,7 @@ def main(stdout: Stdout):
     stdout.print(max([1.0, nan, 2.0]) == nan, min([other, 1.0, nan]), max(other, 1.0) == nan, min(zero, 1.0))
     stdout.print(sorted([nan, 2.0, other, 1.0])[:2], sorted([(nan, 1), (1.0, 2)])[0])
 ";
-    let dir = folder("floats_as_decided")?;
+    let dir = folder("floats_ordered_as_decided")?;
     let program = dir.join("floats.fen");
     std::fs::write(&program, source)?;
     let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("floats"));

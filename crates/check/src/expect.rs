@@ -41,14 +41,11 @@ impl FnCx<'_> {
             ExprKind::List(items) if let Type::Array(item, size) = self.checker.settled(expected) => {
                 self.array_literal(items, &item, size, expr.span)
             }
-            ExprKind::List(_) | ExprKind::Dict(_) => {
+            ExprKind::List(_) => {
                 let ty = self.expr_kind(expr);
                 let wanted = self.checker.settled(expected);
-                let of_optionals = match &wanted {
-                    Type::List(item) | Type::Dict(_, item) => matches!(&**item, Type::Optional(held)
-                        if matches!(**held, Type::Int | Type::Float | Type::Bool | Type::Str | Type::Named(_))),
-                    _ => false,
-                };
+                let of_optionals = matches!(&wanted, Type::List(item) if matches!(&**item, Type::Optional(held)
+                    if matches!(**held, Type::Int | Type::Float | Type::Bool | Type::Str | Type::Named(_))));
                 if of_optionals && self.checker.fits(&wanted, &ty) { wanted } else { ty }
             }
             _ => self.expr_kind(expr),

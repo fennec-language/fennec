@@ -98,6 +98,14 @@ impl FnCx<'_> {
 
     /// An f-string, or a collection written out or built by a comprehension.
     fn written_out(&mut self, expr: &Expr) -> Type {
+        let ty = self.written_out_kind(expr);
+        if let Some(problem) = crate::program::optional_inside(&self.checker.settled(&ty), expr.span) {
+            self.error(problem);
+        }
+        ty
+    }
+
+    fn written_out_kind(&mut self, expr: &Expr) -> Type {
         let span = expr.span;
         match &expr.kind {
             ExprKind::FStr(parts) => {

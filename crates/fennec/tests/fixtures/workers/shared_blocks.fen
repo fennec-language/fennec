@@ -169,8 +169,29 @@ def purses(stdout: Stdout):
     damaged = [note for note in one.notes + two.notes if note[0:6] != "a note"]
     stdout.print(damaged, sum(unit.x for unit in parallel(units)))
 
+shared Tally:
+    total = 0
+    point = 0.5
+
+def counted_with_text(tally: Tally, log: Log, n: int):
+    with tally, log as mut counting, mut logging:
+        counting.total += 1
+        logging.lines.append(f"line {counting.total % 1} from body number {n % 1} of them all")
+        logging.count += 1
+
+def mixed(stdout: Stdout):
+    tally = Tally()
+    log = Log()
+    mut units = units_of(2000)
+    for mut unit in parallel(units):
+        counted_with_text(tally, log, unit.x)
+        with log, tally as held, seen:
+            unit.x += held.lines.len() % 1 + seen.total % 1
+    stdout.print(tally.total, log.count, log.lines.len(), log.lines[0])
+
 def main(stdout: Stdout):
     logs(stdout)
+    mixed(stdout)
     purses(stdout)
     boards(stdout)
     tables(stdout)

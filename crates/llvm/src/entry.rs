@@ -81,7 +81,6 @@ fn start_of(
     let _ = writeln!(out, "@fennec_failed = dso_local {local}global ptr null");
     if crate::parallel::uses_parallel(program) {
         out += "@fennec_thread = dso_local thread_local(initialexec) global i64 0\n";
-        out += "@fennec_lock_held = dso_local thread_local(initialexec) global ptr null\n";
         out += crate::parallel::MAIN_THREAD_GLOBALS;
     }
     out += "@fennec_ascii = dso_local global ptr null\n";

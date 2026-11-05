@@ -37,16 +37,23 @@ fn gives_back(kind: &InstKind, handles: &[Operand]) -> bool {
     }
 }
 
-fn region_at(function: &Function, block: usize, at: usize) -> Option<Region> {
+fn region_at(function: &Function, (block, at): (usize, usize), plain: &HashSet<String>) -> Option<Region> {
     let kind = &function.blocks.get(block)?.insts.get(at)?.kind;
-    let (handles, writing) = match kind {
-        InstKind::Lock { handle, write } => (vec![handle.clone()], i64::from(*write)),
-        InstKind::LockAll { handles } => (
-            handles.iter().map(|(handle, _)| handle.clone()).collect(),
-            handles.iter().map(|(_, write)| i64::from(*write)).sum(),
-        ),
+    let (handles, writes): (Vec<Operand>, Vec<bool>) = match kind {
+        InstKind::Lock { handle, write } => (vec![handle.clone()], vec![*write]),
+        InstKind::LockAll { handles } => handles.iter().cloned().unzip(),
         _ => return None,
     };
+    // A value holding only numbers has no table: nothing crosses the edge of its lock.
+    let has_table = |handle: &Operand| match function.type_of(handle) {
+        Some(Type::Named(name)) => !plain.contains(name.as_str()),
+        _ => true,
+    };
+    if !handles.iter().any(has_table) {
+        return None;
+    }
+    let writing =
+        handles.iter().zip(&writes).map(|(handle, write)| i64::from(has_table(handle) && *write)).sum();
     let mut region =
         Region { block, at, write: writing > 0, writing, handles, ranges: HashMap::new(), exits: Vec::new() };
     let mut left = vec![(block, at + 1)];
@@ -253,8 +260,27 @@ fn keep_lock_for_len(function: &mut Function) {
     }
 }
 
+/// Whether a type, in place, holds only numbers and bools.
+fn only_numbers(ty: &Type, program: &Program) -> bool {
+    match ty {
+        Type::Int | Type::Float | Type::Bool => true,
+        Type::Named(name) => program.structs.iter().any(|def| {
+            def.name == *name
+                && !def.shared
+                && def.fields.iter().all(|(_, field)| only_numbers(field, program))
+        }),
+        _ => false,
+    }
+}
+
 /// Writes in what crosses the edge of every lock in a program whose `shared` values run on threads.
 pub fn guard_shared(program: &mut Program) {
+    let plain: HashSet<String> = program
+        .structs
+        .iter()
+        .filter(|def| def.shared && def.fields.iter().all(|(_, field)| only_numbers(field, program)))
+        .map(|def| def.name.clone())
+        .collect();
     let handles: HashSet<String> =
         program.structs.iter().filter(|def| def.shared).map(|def| def.name.clone()).collect();
     let handles: HashSet<&str> = handles.iter().map(String::as_str).collect();
@@ -270,7 +296,7 @@ pub fn guard_shared(program: &mut Program) {
         let mut regions = Vec::new();
         for (block, held) in function.blocks.iter().enumerate() {
             for at in 0..held.insts.len() {
-                regions.extend(region_at(function, block, at));
+                regions.extend(region_at(function, (block, at), &plain));
             }
         }
         // The latest place first, so earlier regions' places stay right.

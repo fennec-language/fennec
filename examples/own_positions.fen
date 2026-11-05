@@ -53,8 +53,7 @@ def main(stdout: Stdout):
 
     # A `mut` name's item is a place too.
     units[1].health = 7
-    mut first = units[0]
-    first.health = 50
+    units[0].health = 50
     stdout.print(units[0].health, units[1].health)
 
     # `continue` and `break` both keep what the item has so far.

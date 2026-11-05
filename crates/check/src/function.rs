@@ -93,6 +93,8 @@ pub(crate) struct FnCx<'c> {
     /// Where each name that isn't `mut` was read from, as it's written: `units[at]` for
     /// `target = units[at]`.
     pub(crate) read_from: std::collections::HashMap<String, String>,
+    /// The functions in sight, by name, that capture a `shared` handle.
+    pub(crate) handle_closures: std::collections::HashSet<String>,
     /// The generators right inside what uses all of their items, by span.
     pub(crate) worked_out_here: std::collections::HashSet<(u32, u32)>,
     /// How many generators kept for later this is inside.
@@ -136,6 +138,7 @@ impl<'c> FnCx<'c> {
             expecting: None,
             tail: None,
             read_from: std::collections::HashMap::new(),
+            handle_closures: std::collections::HashSet::new(),
             worked_out_here: std::collections::HashSet::new(),
             kept_generators: 0,
             value_functions: 0,

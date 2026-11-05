@@ -205,6 +205,27 @@ impl FnCx<'_> {
     /// The field types of what a `case` names: a case of the enum being matched, an error or
     /// struct type, or a case of whichever enum has it.
     fn variant_fields(&mut self, name: &str, dotted: bool, subject: &Type, span: Span) -> Option<Vec<Type>> {
+        // `case Err(.Bad(text))` on a result that fails with `ParseError | RangeError`.
+        if let Type::Errors(owners) = subject {
+            let having: Vec<String> = owners
+                .iter()
+                .filter(|owner| {
+                    self.checker
+                        .program
+                        .type_info(owner)
+                        .is_some_and(|info| info.def.cases.iter().any(|case| case.name == name))
+                })
+                .cloned()
+                .collect();
+            if let [owner] = having.as_slice() {
+                return Some(self.case_fields(owner, Some(name)));
+            }
+            if dotted {
+                let message = format!("none of `{}` has a case called `{name}`", owners.join(" | "));
+                self.error(Diagnostic::new(message, span));
+                return None;
+            }
+        }
         if let Type::Named(owner) = subject
             && self.checker.program.type_info(owner).is_some_and(|info| !info.def.cases.is_empty())
         {

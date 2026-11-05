@@ -1,0 +1,35 @@
+# A function that can fail more than one way names each error after `fails`, and `?` passes
+# any of them up as it is.
+
+error ParseError:
+    NotANumber(text: str)
+
+error RangeError:
+    TooBig(value: int, limit: int)
+
+def parse(text: str) -> int fails ParseError:
+    int(text) else fail .NotANumber(text)
+
+def in_range(value: int, limit: int) -> int fails RangeError:
+    if value > limit: fail .TooBig(value, limit)
+    value
+
+def level(text: str) -> int fails ParseError | RangeError:
+    in_range(parse(text)?, limit=9)?
+
+def apply(
+    read: (str) -> int fails ParseError | RangeError,
+    text: str,
+) -> int fails ParseError | RangeError:
+    read(text)?
+
+def main(stdout: Stdout):
+    for text in ["7", "x7", "42"]:
+        match level(text):
+            case Ok(value):
+                stdout.print(f"level {value}")
+            case Err(.NotANumber(text)):
+                stdout.print(f"{text} isn't a number")
+            case Err(.TooBig(value, limit)):
+                stdout.print(f"{value} is over {limit}")
+    stdout.print(apply(text => level(text), "3") else -1, apply(text => level(text), "") else -1)

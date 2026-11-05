@@ -216,6 +216,35 @@ impl Program {
         self.resolve_within(written, generics, ALIAS_DEPTH)
     }
 
+    /// `ParseError | RangeError` after `fails`: one of several errors. Each has to be one.
+    fn errors_named(&self, union: &TypeExpr, generics: &[String], depth: usize) -> Result<Type, Diagnostic> {
+        let mut names = Vec::new();
+        for error in &union.args {
+            match self.resolve_within(error, generics, depth)? {
+                Type::Named(name)
+                    if self.types.get(&name).is_some_and(|info| info.kind == TypeKind::Error) =>
+                {
+                    names.push(name);
+                }
+                Type::Unknown => {}
+                other => {
+                    return Err(Diagnostic::new(
+                        format!(
+                            "`fails` names errors, but `{}` is {}",
+                            written(error),
+                            crate::types::a(&other)
+                        ),
+                        error.span,
+                    )
+                    .with_help("declare the ways it can fail with `error`, like `error LoadError:`"));
+                }
+            }
+        }
+        names.sort();
+        names.dedup();
+        Ok(Type::Errors(names))
+    }
+
     fn resolve_within(
         &self,
         written: &TypeExpr,
@@ -233,6 +262,16 @@ impl Program {
         };
         if self.is_interface(name) {
             return Err(interface_as_type(name, written.span));
+        }
+        match name {
+            "|" => return self.errors_named(written, generics, depth),
+            // `(str) -> int fails ParseError`: a function that gives back a result.
+            "fails" => {
+                let [returns, errors] = written.args.as_slice() else { return Ok(Type::Unknown) };
+                let returns = self.resolve_within(returns, generics, depth)?;
+                return Ok(Type::result(returns, self.resolve_within(errors, generics, depth)?));
+            }
+            _ => {}
         }
         let builtin = BUILT_IN_TYPES.contains(&name);
         let declared = generics.iter().any(|generic| generic == name)
@@ -457,6 +496,11 @@ pub(crate) fn written_ret(def: &FnDef) -> Option<&TypeExpr> {
 /// A written type as source text, for suggesting a fix.
 pub(crate) fn written(ty: &TypeExpr) -> String {
     let args: Vec<String> = ty.args.iter().map(written).collect();
+    match ty.name.as_str() {
+        "|" => return args.join(" | "),
+        "fails" => return args.join(" fails "),
+        _ => {}
+    }
     if ty.name == "->" {
         let (ret, params) = args.split_last().map_or(("", &[][..]), |(ret, params)| (ret.as_str(), params));
         return format!("({}) -> {ret}", params.join(", "));

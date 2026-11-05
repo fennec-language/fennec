@@ -596,12 +596,7 @@ impl Parser {
         let arrow = self.eat_p(Punct::Arrow).then(|| self.prev_span());
         let ret = if arrow.is_some() { Some(self.type_expr()?) } else { None };
         // `fails` is a word only here, after the parameters and any return type.
-        let fails = if matches!(self.peek(), Tok::Name(word) if word == "fails") {
-            self.advance();
-            Some(self.type_expr()?)
-        } else {
-            None
-        };
+        let fails = if self.at_fails() { Some(self.fails_type()?) } else { None };
         Ok(FnDef {
             name,
             generics,
@@ -668,6 +663,28 @@ impl Parser {
         Ok(value)
     }
 
+    /// Whether `fails` comes next. It's a word only after a function's parameters and any
+    /// return type.
+    fn at_fails(&self) -> bool {
+        matches!(self.peek(), Tok::Name(word) if word == "fails")
+    }
+
+    /// `fails LoadError`, or `fails ParseError | RangeError`: the errors after `fails`. Several
+    /// are one written type named `|`.
+    fn fails_type(&mut self) -> Result<TypeExpr, Diagnostic> {
+        self.advance();
+        let first = self.type_expr()?;
+        if !self.at_p(Punct::Pipe) {
+            return Ok(first);
+        }
+        let start = first.span;
+        let mut errors = vec![first];
+        while self.eat_p(Punct::Pipe) {
+            errors.push(self.type_expr()?);
+        }
+        Ok(TypeExpr { name: "|".to_owned(), args: errors, optional: false, span: start.to(self.prev_span()) })
+    }
+
     pub(crate) fn type_expr(&mut self) -> Result<TypeExpr, Diagnostic> {
         let start = self.span();
         let mut args = Vec::new();
@@ -685,9 +702,19 @@ impl Parser {
                 }
             }
             self.expect_p(Punct::RParen)?;
-            // `(int, str) -> bool`: a function type, its return type last.
+            // `(int, str) -> bool`: a function type, its return type last. One that can fail
+            // says so, as in `(str) -> int fails ParseError`, which is written in as its own
+            // `fails` type holding the return type and the errors.
             if self.eat_p(Punct::Arrow) {
-                args.push(self.type_expr()?);
+                let returns = self.type_expr()?;
+                let returns = if self.at_fails() {
+                    let errors = self.fails_type()?;
+                    let span = returns.span.to(errors.span);
+                    TypeExpr { name: "fails".to_owned(), args: vec![returns, errors], optional: false, span }
+                } else {
+                    returns
+                };
+                args.push(returns);
                 return Ok(TypeExpr {
                     name: "->".to_owned(),
                     args,

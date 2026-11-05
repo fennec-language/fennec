@@ -90,6 +90,9 @@ pub(crate) struct FnCx<'c> {
     /// The type expected of the value of the block being checked: the return type for a
     /// function's body, or what's expected of a `match` for its cases.
     pub(crate) tail: Option<Type>,
+    /// Where each name that isn't `mut` was read from, as it's written: `units[at]` for
+    /// `target = units[at]`.
+    pub(crate) read_from: std::collections::HashMap<String, String>,
     /// The functions in sight, by name, that capture a `shared` handle.
     pub(crate) handle_closures: std::collections::HashSet<String>,
     /// The generators right inside what uses all of their items, by span.
@@ -134,6 +137,7 @@ impl<'c> FnCx<'c> {
             first_var,
             expecting: None,
             tail: None,
+            read_from: std::collections::HashMap::new(),
             handle_closures: std::collections::HashSet::new(),
             worked_out_here: std::collections::HashSet::new(),
             kept_generators: 0,

@@ -34,6 +34,21 @@ for tool in "$work/bin/cargo" "$work/bin/rustc" "$work/bin/ld" "$work/deps/fenne
   fi
 done
 
+# A program that has exited, whose parent hasn't collected it: `ps` shows it as `(program)`.
+bash -c "\"$work/bin/program\" 0 & exec \"$work/bin/cargo\" 6" &
+parent=$!
+: > "$work/log"
+"$here/gate-watch.sh" "$parent" "$work/log" 2 &
+watcher=$!
+wait "$parent"
+wait "$watcher"
+if [ -s "$work/log" ]; then
+  echo "FAILED: a program that had exited was stopped: $(cat "$work/log")"
+  failures=$((failures + 1))
+else
+  echo "ok: a program that has exited is left alone"
+fi
+
 watched "$work/bin/program" 2> /dev/null
 if grep -q "over its time limit" "$work/log"; then
   echo "ok: a test program over the limit is stopped"

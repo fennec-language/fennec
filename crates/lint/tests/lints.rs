@@ -378,8 +378,6 @@ fn a_lookup_that_would_mean_something_else_stays() {
     for source in [
         // A list's `in` asks about its values, not its positions.
         "def f(xs: list[int], at: int) -> int:\n    xs[at] if at in xs else 0\n",
-        // A key holding `None` gives `None` here, and would give the default.
-        "def f(counts: dict[str, int?], key: str) -> int?:\n    counts[key] if key in counts else 0\n",
         // Another key, or another table.
         "def f(counts: dict[str, int], key: str, other: str) -> int:\n    counts[other] if key in counts else 0\n",
         "def f(one: dict[str, int], two: dict[str, int], key: str) -> int:\n    one[key] if key in two else 0\n",

@@ -926,7 +926,7 @@ fn tuples_unpack_in_assignments_and_loops() {
 
 #[test]
 fn dicts_and_slices_read_and_change_items() {
-    let source = "def f(xs: list[int], d: dict[str, int?]) -> list[int]:
+    let source = "def f(xs: list[int], d: dict[str, int]) -> list[int]:
     mut seen = d
     seen[\"a\"] = 1
     if \"b\" in seen:

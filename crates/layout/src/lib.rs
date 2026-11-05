@@ -318,9 +318,14 @@ pub struct Registry<'l> {
 impl<'l> Registry<'l> {
     #[must_use]
     pub fn new(layouts: &'l Layouts) -> Self {
+        let blocks = (0..layouts.block_count())
+            .filter_map(|number| describe(layouts, layouts.block(number)?))
+            .map(Rc::new)
+            .collect();
         let mut tables = Tables {
             shapes: shapes(layouts),
             cells: cells(layouts),
+            blocks,
             str_shape: u64::try_from(layouts.len()).unwrap_or(0),
             text_headers: layouts.text_headers(),
             ..Tables::default()

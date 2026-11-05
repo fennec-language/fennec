@@ -245,32 +245,55 @@ impl Program {
         Ok(Type::Errors(names))
     }
 
-    fn resolve_within(
-        &self,
-        written: &TypeExpr,
-        generics: &[String],
-        depth: usize,
-    ) -> Result<Type, Diagnostic> {
-        // `std.collections.Deque` or `collections.Deque`, through an imported module.
-        let name = match written.name.rsplit_once('.') {
+    /// The name a written type gives, through an imported module: `Deque` for
+    /// `std.collections.Deque` or `collections.Deque`.
+    fn written_name<'w>(&self, written: &'w TypeExpr) -> &'w str {
+        match written.name.rsplit_once('.') {
             Some((path, member))
                 if self.modules_at(written.span).contains_key(path) && self.types.contains_key(member) =>
             {
                 member
             }
             _ => written.name.as_str(),
-        };
+        }
+    }
+
+    /// `(str) -> int fails ParseError`'s return type: a result of what it gives back and its errors.
+    fn fallible_returns(
+        &self,
+        written: &TypeExpr,
+        generics: &[String],
+        depth: usize,
+    ) -> Result<Type, Diagnostic> {
+        let [returns, errors] = written.args.as_slice() else { return Ok(Type::Unknown) };
+        let returns = self.resolve_within(returns, generics, depth)?;
+        Ok(Type::result(returns, self.resolve_within(errors, generics, depth)?))
+    }
+
+    /// How many types in brackets a type takes, when `given` are written.
+    fn wanted_args(&self, name: &str, given: usize) -> usize {
+        match name {
+            "->" => given.max(1),
+            "list" | "set" | "SoaList" | "Buffer" | "Id" | "Table" | "Iterator" => 1,
+            "dict" | "Result" | "array" => 2,
+            "tuple" => given,
+            name => self.type_params(name).len(),
+        }
+    }
+
+    fn resolve_within(
+        &self,
+        written: &TypeExpr,
+        generics: &[String],
+        depth: usize,
+    ) -> Result<Type, Diagnostic> {
+        let name = self.written_name(written);
         if self.is_interface(name) {
             return Err(interface_as_type(name, written.span));
         }
         match name {
             "|" => return self.errors_named(written, generics, depth),
-            // `(str) -> int fails ParseError`: a function that gives back a result.
-            "fails" => {
-                let [returns, errors] = written.args.as_slice() else { return Ok(Type::Unknown) };
-                let returns = self.resolve_within(returns, generics, depth)?;
-                return Ok(Type::result(returns, self.resolve_within(errors, generics, depth)?));
-            }
+            "fails" => return self.fallible_returns(written, generics, depth),
             _ => {}
         }
         let builtin = BUILT_IN_TYPES.contains(&name);
@@ -280,13 +303,7 @@ impl Program {
         if !builtin && !declared {
             return Err(unknown_type(name, written.span));
         }
-        let wanted = match name {
-            "->" => written.args.len().max(1),
-            "list" | "set" | "SoaList" | "Buffer" | "Id" | "Table" | "Iterator" => 1,
-            "dict" | "Result" | "array" => 2,
-            "tuple" => written.args.len(),
-            name => self.type_params(name).len(),
-        };
+        let wanted = self.wanted_args(name, written.args.len());
         if written.args.len() != wanted {
             return Err(wrong_type_args(written, wanted));
         }

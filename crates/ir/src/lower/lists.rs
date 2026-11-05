@@ -342,7 +342,8 @@ impl Lowering<'_> {
     /// is, so no second list is made unless something else holds this one. The same for a field,
     /// `self.xs = [f(x) for x in self.xs]`. Nothing can see the difference if what's worked out
     /// doesn't read the list, can't leave part of the way along, and no `where` rule looks at
-    /// the list before it's finished.
+    /// the list before it's finished. A list in a `shared` value isn't taken this way, since a
+    /// second name for the cell can read it under another spelling.
     pub(super) fn replaces_its_source(&mut self, target: &Expr, value: &Expr, span: Span) -> Lowered<bool> {
         let ExprKind::Comprehension { kind: CompKind::List, elem, value: None, names, iter, cond: None } =
             &value.kind
@@ -356,7 +357,7 @@ impl Lowering<'_> {
             || item == root
             || self.type_at(value.span) != Some(Type::List(held.clone()))
             || !reads_apart(elem, root, path.first().copied())
-            || self.rules_along(root, &path)
+            || self.seen_along(root, &path)
         {
             return Ok(false);
         }
@@ -378,11 +379,15 @@ impl Lowering<'_> {
         Ok(true)
     }
 
-    /// Whether a `where` rule looks at anything along these fields from a name.
-    fn rules_along(&self, root: &str, path: &[&str]) -> bool {
+    /// Whether a `where` rule looks at anything along these fields from a name, or they go through
+    /// a `shared` handle, which other names can reach the same cell by.
+    fn seen_along(&self, root: &str, path: &[&str]) -> bool {
         let Some(local) = self.lookup(root) else { return true };
         let mut ty = self.local_type(local);
         for field in path {
+            if self.context.is_handle(&ty) {
+                return true;
+            }
             let Type::Named(owner) = &ty else { return true };
             let copy = self.context.type_instance(owner);
             let base = copy.as_ref().map_or(owner.as_str(), |copy| copy.base.as_str());

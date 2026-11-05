@@ -1,5 +1,7 @@
 # Design decisions
 
+**[`language.md`](language.md) is the source of truth for the language. If this file disagrees with it, `language.md` wins.** This file stays for the reasoning and for details that page doesn't cover.
+
 Decisions made while designing Fennec, with the reason for each. The [roadmap](../site/src/pages/roadmap.md) says when each one gets built. Newest decisions go at the top of each section.
 
 ## Principles

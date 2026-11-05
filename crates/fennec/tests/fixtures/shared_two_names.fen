@@ -1,0 +1,154 @@
+# One cell under two names in a `with`, in every shape that changes something where it is. Each
+# name reads what the other wrote, so none of these can assume the two are apart: a `mut` argument
+# is `noalias` in the backend, and a place can be taken out of what holds it.
+
+struct Point:
+    x: int
+    y: int
+
+struct Pair:
+    left: list[int]
+    name = ""
+
+shared Box:
+    total = 0
+    pos = Point(x=1, y=2)
+    items = [1, 2, 3]
+    names = ["a", "b"]
+    name = "n"
+    points = [Point(x=1, y=2), Point(x=3, y=4)]
+    pair = Pair(left=[1, 2])
+    pairs = [Pair(left=[1])]
+
+def ints(mut a: int, mut b: int) -> int:
+    a += 1
+    b += 10
+    a += b
+    a
+
+def points(mut a: Point, mut b: Point) -> int:
+    a.x = 5
+    b.x = 6
+    a.y = a.x + b.x
+    b.y = a.y + a.x
+    a.x + b.x + a.y + b.y
+
+def lists(mut a: list[int], mut b: list[int]) -> int:
+    a.append(5)
+    b.append(6)
+    a[0] = b.len()
+    b[0] += a.len()
+    a[0] + b[0] + a.len() + b.len()
+
+def int_and_read(mut a: int, b: int) -> int:
+    a += b
+    a += b
+    a
+
+def point_and_read(mut a: Point, b: Point) -> int:
+    a.x = 100
+    a.y = b.x
+    a.y
+
+def list_and_read(mut xs: list[int], y: list[int]) -> int:
+    xs.append(y.len())
+    xs.append(y.len())
+    y.len()
+
+def passed_by_address(stdout: Stdout):
+    one = Box()
+    mut seen = 0
+    with one, one as mut x, mut y:
+        seen = ints(mut x.total, mut y.total)
+    stdout.print(seen, one.total)
+    with one, one as mut x, mut y:
+        seen = points(mut x.pos, mut y.pos)
+    stdout.print(seen, one.pos.x, one.pos.y)
+    with one, one as mut x, mut y:
+        seen = lists(mut x.items, mut y.items)
+    stdout.print(seen, one.items)
+    with one, one as mut x, y:
+        seen = int_and_read(mut x.total, y.total)
+    stdout.print(seen, one.total)
+    with one, one as mut x, y:
+        seen = point_and_read(mut x.pos, y.pos)
+    stdout.print(seen, one.pos.x, one.pos.y)
+    with one, one as mut x, y:
+        seen = list_and_read(mut x.items, y.items)
+    stdout.print(seen, one.items)
+    with one, one as mut x, y:
+        seen = list_and_read(mut x.pair.left, y.pair.left)
+    stdout.print(seen, one.pair.left)
+    with one, one as mut x, y:
+        seen = list_and_read(mut x.pairs[0].left, y.pairs[0].left)
+    stdout.print(seen, one.pairs[0].left)
+
+def changed_where_it_is(stdout: Stdout):
+    one = Box()
+    with one, one as mut x, y:
+        x.items[0] += y.items.len()
+        x.items.append(y.items[0])
+        x.items.insert(0, y.items.len())
+        x.names[0] = x.names[0] + y.names[0]
+        x.points[0].x = y.points[0].x + y.points[1].x
+        x.points[1] = y.points[0]
+    stdout.print(one.items, one.names, one.points[0].x, one.points[1].x)
+    with one, one as mut a, mut b:
+        a.items[0] = b.items[1]
+        b.items[1] = a.items[0] + 1
+        a.pos.x = b.pos.y
+        b.pos.y = a.pos.x + 1
+        a.pos = Point(x=b.pos.y, y=b.pos.x)
+        b.points[0] = a.points[1]
+        a.points[1].x = 99
+    stdout.print(one.items, one.pos.x, one.pos.y, one.points[0].x, one.points[1].x)
+    with one, one as mut x, y:
+        x.name += y.name
+        x.names[0] += y.names[0]
+        x.pair.name += y.name
+        x.items.extend(y.items)
+    stdout.print(one.name, one.names, one.pair.name, one.items)
+    with one, one as mut x, y:
+        keep = y.items
+        p = y.pos
+        q = y.points[0]
+        x.items.append(9)
+        x.pos.x = 77
+        x.points[0].x = 78
+        x.total = keep.len() + p.x + q.x
+    stdout.print(one.total, one.pos.x, one.points[0].x)
+
+def in_loops(stdout: Stdout):
+    one = Box()
+    mut said = list[int]()
+    with one, one as mut x, y:
+        for mut n in x.items:
+            n += y.items[0]
+            said.append(y.items[0])
+    stdout.print(said, one.items)
+    with one, one as mut x, y:
+        for mut p in x.points:
+            p.x += y.points[0].x
+            said.append(y.points[0].x)
+    stdout.print(said, one.points[0].x, one.points[1].x)
+    with one, one as mut x, mut y:
+        for mut p in x.points:
+            y.points[0].y = p.y + 1
+            p.y += 5
+            said.append(y.points[0].y)
+    stdout.print(said, one.points[0].y, one.points[1].y)
+    with one, one as mut x, y:
+        for n in y.items:
+            x.items.append(n * 2)
+            said.append(y.items.len())
+    stdout.print(said, one.items)
+    with one, one as mut x, y:
+        for at in range(y.items.len()):
+            x.items.pop()
+            if y.items.len() < 2: break
+    stdout.print(one.items)
+
+def main(stdout: Stdout):
+    passed_by_address(stdout)
+    changed_where_it_is(stdout)
+    in_loops(stdout)

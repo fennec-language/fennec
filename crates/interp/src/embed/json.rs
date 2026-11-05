@@ -26,12 +26,23 @@ fn text_of(state: &State, address: i64, at: Span) -> Result<String, Diagnostic> 
 /// `json.dumps(value)`, of a temporary: its text, as a string block owned once.
 #[cfg(not(feature = "lean"))]
 pub extern "C" fn dumps(value: i64, start: i64, end: i64) -> i64 {
+    dumps_as("json.dumps", value, start, end)
+}
+
+/// `toml.dumps(value)`, as [`dumps`] writes JSON.
+#[cfg(not(feature = "lean"))]
+pub extern "C" fn toml_dumps(value: i64, start: i64, end: i64) -> i64 {
+    dumps_as("toml.dumps", value, start, end)
+}
+
+#[cfg(not(feature = "lean"))]
+fn dumps_as(name: &'static str, value: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let at = span(start, end);
         let value = state.temp(value);
-        match state.interp.format_builtin("json.dumps", argument(value, at), at)? {
+        match state.interp.format_builtin(name, argument(value, at), at)? {
             Value::Str(text) => Ok(text_address(state, &text)),
-            other => Err(Diagnostic::new(format!("`json.dumps` gave a {}", other.type_name()), at)),
+            other => Err(Diagnostic::new(format!("`{name}` gave a {}", other.type_name()), at)),
         }
     })
 }
@@ -41,17 +52,34 @@ pub extern "C" fn dumps(value: i64, start: i64, end: i64) -> i64 {
 /// or `Err` with a `ParseError`.
 #[cfg(not(feature = "lean"))]
 pub extern "C" fn loads(text: i64, ty: i64, start: i64, end: i64) -> i64 {
+    loads_as("json.loads", text, ty, start, end)
+}
+
+/// `toml.loads[T](text)`, as [`loads`] reads JSON.
+#[cfg(not(feature = "lean"))]
+pub extern "C" fn toml_loads(text: i64, ty: i64, start: i64, end: i64) -> i64 {
+    loads_as("toml.loads", text, ty, start, end)
+}
+
+#[cfg(not(feature = "lean"))]
+fn loads_as(name: &'static str, text: i64, ty: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let at = span(start, end);
         let read = Value::str(&text_of(state, text, at)?);
         let result = if ty == 0 {
-            state.interp.format_builtin("json.loads", argument(read, at), at)?
+            state.interp.format_builtin(name, argument(read, at), at)?
         } else {
             let ty = type_named(&text_of(state, ty, at)?, at)?;
-            state.interp.typed_loads("json.loads", &ty, argument(read, at), at)?
+            state.interp.typed_loads(name, &ty, argument(read, at), at)?
         };
         Ok(state.push(result))
     })
+}
+
+/// The type written out in a string block.
+#[cfg(not(feature = "lean"))]
+pub(super) fn type_written(state: &State, ty: i64, at: Span) -> Result<fennec_syntax::TypeExpr, Diagnostic> {
+    type_named(&text_of(state, ty, at)?, at)
 }
 
 /// A type written out as in a program, like `list[Save]`.

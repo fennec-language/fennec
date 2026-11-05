@@ -149,10 +149,12 @@ fn a_moved_value_is_never_copied() {
 }
 
 #[test]
-fn a_name_for_a_place_changes_the_place_without_copying() {
+fn a_mut_name_read_from_a_place_is_a_copy_when_the_place_is_read_after() {
     let source = "struct Box:\n    items: list[int]\n\n\
-                  def f(mut box: Box) -> int:\n    mut items = box.items\n    items.append(1)\n    box.items.len()\n";
-    assert_eq!(copies(source).unwrap(), Vec::<String>::new());
+                  def f(mut box: Box) -> int:\n    mut items = box.items\n    items.append(1)\n    box.items.len() + items.len()\n";
+    let found = copies(source).unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("`items` is copied"), "{found:?}");
 }
 
 #[test]

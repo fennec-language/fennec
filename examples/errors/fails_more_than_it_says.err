@@ -1,0 +1,7 @@
+error: `load` says it fails with `ParseError | RangeError`, but it can fail with `DiskError` too
+  --> examples/errors/fails_more_than_it_says.fen:13:34
+   |
+13 | def load(path: str) -> int fails ParseError | RangeError:
+   |                                  ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: handle `DiskError` where it happens, or add it after `fails`

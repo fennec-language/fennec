@@ -25,6 +25,9 @@ type Page = Box<[Option<Box<[u64]>>]>;
 pub(super) struct Table {
     /// Each region's pages, by the region's number. A run uses one or two regions.
     regions: Vec<(usize, Box<[Option<Page>]>)>,
+    /// Whether every block goes in `short`, for a table that's usually small: pages cost a lot more
+    /// than a few blocks do.
+    hashed: bool,
     /// Blocks too short to have a place of their own.
     short: HashMap<usize, Box<[u64]>, BuildHasherDefault<AddressHasher>>,
     len: usize,
@@ -53,6 +56,18 @@ fn slot_mut(regions: &mut [(usize, Box<[Option<Page>]>)], address: usize) -> Opt
 }
 
 impl Table {
+    /// A table for a `shared` value's blocks.
+    pub(super) fn hashed() -> Table {
+        Table { hashed: true, ..Table::default() }
+    }
+
+    /// All its blocks, emptying it.
+    pub(super) fn into_blocks(self) -> impl Iterator<Item = Box<[u64]>> {
+        let pages = self.regions.into_iter().flat_map(|(_, pages)| pages.into_vec());
+        let places = pages.flatten().flat_map(<[_]>::into_vec).flatten();
+        places.chain(self.short.into_values())
+    }
+
     pub(super) fn len(&self) -> usize {
         self.len
     }
@@ -82,7 +97,7 @@ impl Table {
     /// Adds a block at its own address, replacing one already there.
     pub(super) fn insert(&mut self, block: Box<[u64]>) {
         let address = at(&block);
-        if block.len() < PLACED_WORDS {
+        if block.len() < PLACED_WORDS || self.hashed {
             self.insert_short(address, block);
             return;
         }

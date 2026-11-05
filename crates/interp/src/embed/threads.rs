@@ -212,9 +212,43 @@ pub extern "C" fn release_shared(address: i64, _owner: i64) {
         }
         table.remove(&address).map(|entry| entry.owner)
     });
-    if let Some(owner) = freed {
-        remote(|queues| queues.entry(owner).or_default().push(address));
-        ANY_REMOTE.store(true, Ordering::Release);
+    match freed {
+        Some(super::guarded::HANDLE_OWNER) => super::with(|state| super::guarded::free_table(state, address)),
+        Some(owner) => {
+            remote(|queues| queues.entry(owner).or_default().push(address));
+            ANY_REMOTE.store(true, Ordering::Release);
+        }
+        None => {}
+    }
+}
+
+/// One more count of a `shared` value's handle, whose counts are all here.
+pub(super) fn count_handle(address: u64) {
+    shared(|table| {
+        if let Some(entry) = table.get_mut(&address) {
+            entry.count += 1;
+        }
+    });
+}
+
+/// Says that a `shared` value's handle is held `count` times, with every count kept here.
+pub(super) fn held_by_handles(address: u64, count: u64, owner: u16) {
+    ANY_SHARED.store(true, Ordering::Relaxed);
+    shared(|table| table.insert(address, Shared { count, owner_done: true, owner }));
+}
+
+/// One count fewer of a `shared` value's handle: the last takes what it held with it.
+pub(super) fn release_handle(state: &mut super::State, address: u64) {
+    let last = shared(|table| {
+        let entry = table.get_mut(&address)?;
+        entry.count = entry.count.saturating_sub(1);
+        if entry.count > 0 {
+            return None;
+        }
+        table.remove(&address)
+    });
+    if last.is_some() {
+        super::guarded::free_table(state, address);
     }
 }
 

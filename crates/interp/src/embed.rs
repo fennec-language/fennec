@@ -21,6 +21,7 @@ pub mod capabilities;
 pub mod checks;
 pub mod codec;
 pub mod dicts;
+pub mod guarded;
 pub mod heap;
 pub mod json;
 pub mod layout;

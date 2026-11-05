@@ -111,12 +111,16 @@ fn free_block(state: &mut State, address: u64) {
     let mut pending = std::mem::take(&mut state.heap.pending);
     pending.push(address);
     while let Some(address) = pending.pop() {
+        // A `shared` value's handle: its count is the runtime's, wherever its block is.
+        if crate::embed::guarded::is_handle(address) {
+            crate::embed::threads::release_handle(state, address);
+            continue;
+        }
         if crate::embed::threads::held_elsewhere(address) {
             continue;
         }
         // Only a string has a place kept in it, and that's forgotten below, once it's known to be one.
-        let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove_any(at))
-        else {
+        let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.take_block(at)) else {
             continue;
         };
         let shape = shape_word(&block).unwrap_or(u64::MAX);
@@ -134,7 +138,13 @@ fn free_block(state: &mut State, address: u64) {
             if !state.heap.texts.get_mut().is_empty() {
                 forget_text(state, address);
             }
-        } else if shape >= state.tables.str_shape || !release_planned(&mut state.heap, &block, &mut pending) {
+        } else if shape >= state.tables.str_shape {
+            // A list of numbers, the most usual kind, has nothing to look through.
+            let number = crate::embed::lists::element_number(state, &block);
+            if !number.is_some_and(|number| state.heap.items_hold_nothing(number)) {
+                free_unplanned(state, &block, &mut pending);
+            }
+        } else if !release_planned(&mut state.heap, &block, &mut pending) {
             free_unplanned(state, &block, &mut pending);
         }
         state.heap.recycle(block);
@@ -191,8 +201,8 @@ fn release_children(state: &mut State, block: &[u64], pending: &mut Vec<u64>) {
             if *count == 0 {
                 pending.push(child);
             }
-        } else {
-            state.heap.change_lent_owners(child, -1);
+        } else if !state.heap.change_lent_owners(child, -1) && crate::embed::guarded::is_handle(child) {
+            pending.push(child);
         }
     }
     state.heap.found = found;
@@ -271,6 +281,8 @@ fn release_planned_child(
         && lent.is_some_and(|lent| usize::try_from(child).is_ok_and(|at| lent.get(at).is_some()))
     {
         *lent_owners.entry(child).or_default() -= 1;
+    } else if crate::embed::guarded::is_handle(child) {
+        pending.push(child);
     }
 }
 
@@ -320,7 +332,9 @@ pub(in crate::embed) fn release(state: &mut State, address: u64) {
         }
         Some(_) => true,
         None => {
-            state.heap.change_lent_owners(address, -1);
+            if !state.heap.change_lent_owners(address, -1) && crate::embed::guarded::is_handle(address) {
+                crate::embed::threads::release_handle(state, address);
+            }
             false
         }
     };
@@ -331,7 +345,11 @@ pub(in crate::embed) fn release(state: &mut State, address: u64) {
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
+    use super::Heap;
     use crate::embed::{Tables, finish, start, with};
+    use crate::packed::Element;
 
     /// Frees `count` blocks of `words` words at once, as a program dropping a big structure does.
     fn free_many(count: usize, words: usize) {
@@ -341,6 +359,16 @@ mod tests {
                 state.heap.recycle(block);
             }
         });
+    }
+
+    #[test]
+    fn a_heap_knows_which_lists_hold_no_blocks_only_from_its_plans() {
+        let elements = [Rc::new(Element::Int), Rc::new(Element::Str)];
+        let heap = Heap::default().planned(&[], &elements);
+        assert!(heap.items_hold_nothing(0));
+        assert!(!heap.items_hold_nothing(1));
+        assert!(!heap.items_hold_nothing(2), "a kind it hasn't a plan for");
+        assert!(!Heap::default().items_hold_nothing(0), "a worker's heap, which has none");
     }
 
     #[test]

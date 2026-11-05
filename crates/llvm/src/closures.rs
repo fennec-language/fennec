@@ -35,6 +35,17 @@ impl Emit<'_, '_, '_> {
         self.start_block(&done);
     }
 
+    /// `==` on functions: each is equal only to itself, however many times it's been named.
+    pub(crate) fn same_code(&mut self, op: fennec_syntax::BinOp, (a, b): (&str, &str)) -> String {
+        let (a_at, b_at) = (self.offset(a, CODE), self.offset(b, CODE));
+        let (x, y, same) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{x} = load ptr, ptr {a_at}"));
+        self.line(&format!("{y} = load ptr, ptr {b_at}"));
+        let cc = if op == fennec_syntax::BinOp::Eq { "eq" } else { "ne" };
+        self.line(&format!("{same} = icmp {cc} ptr {x}, {y}"));
+        same
+    }
+
     pub(crate) fn make_closure(
         &mut self,
         dest: LocalId,

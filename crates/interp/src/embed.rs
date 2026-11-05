@@ -358,6 +358,17 @@ pub fn finish() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
         Some(mut state) => {
             state.temps.clear();
             state.let_go();
+            if std::env::var_os("FENNEC_HEAP").is_some() {
+                let (spare, words, pages, regions) = state.heap.retained();
+                let (peak_words, peak_blocks) = state.heap.peaks();
+                #[expect(clippy::print_stderr, reason = "measuring")]
+                {
+                    eprintln!(
+                        "heap peak_live_mb {} peak_blocks {} live {} allocated {} spare_blocks {} spare_mb {} table_pages {} table_mb {} regions {}",
+                        peak_words * 8 / 1_000_000, peak_blocks, state.heap.live(), state.heap.counts.allocations, spare, words * 8 / 1_000_000, pages, pages * 65_536 / 1_000_000, regions
+                    );
+                }
+            }
             let leftovers = Leftovers {
                 temps: state.temps.len(),
                 frames: state.callers.len(),

@@ -56,6 +56,7 @@ impl Hasher for AddressHasher {
 pub(crate) struct Heap {
     pub(super) blocks: super::table::Table,
     spare: Vec<Vec<Box<[u64]>>>,
+    spare_words: usize,
     /// How many of the blocks live for the whole run.
     statics: usize,
     /// Strings' text as the interpreter holds it, made once per block.
@@ -209,6 +210,7 @@ impl Heap {
     pub(super) fn fresh(&mut self, words: usize) -> Box<[u64]> {
         match self.spare.get_mut(words).and_then(Vec::pop) {
             Some(mut block) => {
+                self.spare_words = self.spare_words.saturating_sub(block.len());
                 zero(&mut block);
                 block
             }
@@ -219,6 +221,12 @@ impl Heap {
     /// Keeps a freed block for reuse, when it's small: big ones, like a long list's, are
     /// rare enough to give back.
     fn recycle(&mut self, block: Box<[u64]>) {
+        static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let cap = *CAP.get_or_init(|| std::env::var("FENNEC_SPARE_WORDS").ok().and_then(|cap| cap.parse().ok()).unwrap_or(usize::MAX));
+        if self.spare_words + block.len() > cap {
+            return;
+        }
+        self.spare_words += block.len();
         // Under AddressSanitizer every freed block is given back, for it to watch.
         if cfg!(feature = "sanitize") {
             return;
@@ -244,6 +252,19 @@ impl Heap {
         if let Some(spare) = self.spare.get_mut(words) {
             spare.push(block);
         }
+    }
+
+    /// Measuring only: blocks and words kept for reuse, and table pages.
+    pub(crate) fn retained(&self) -> (usize, usize, usize, usize) {
+        let blocks: usize = self.spare.iter().map(Vec::len).sum();
+        let words: usize = self.spare.iter().enumerate().map(|(size, spare)| size * spare.len()).sum();
+        let (pages, regions) = self.blocks.pages();
+        (blocks, words, pages, regions)
+    }
+
+    /// Measuring only: the most words and blocks live at once.
+    pub(crate) fn peaks(&self) -> (usize, usize) {
+        (self.blocks.peak_words, self.blocks.peak_len)
     }
 
     pub(crate) fn live(&self) -> usize {

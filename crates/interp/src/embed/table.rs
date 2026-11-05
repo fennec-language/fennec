@@ -28,6 +28,9 @@ pub(super) struct Table {
     /// Blocks too short to have a place of their own.
     short: HashMap<usize, Box<[u64]>, BuildHasherDefault<AddressHasher>>,
     len: usize,
+    pub(super) words: usize,
+    pub(super) peak_words: usize,
+    pub(super) peak_len: usize,
 }
 
 /// An address's region, page in it, and place in the page. A 32-bit address space is one
@@ -54,6 +57,12 @@ impl Table {
         self.len
     }
 
+    /// Measuring only: how many pages and regions there are.
+    pub(super) fn pages(&self) -> (usize, usize) {
+        let pages = self.regions.iter().map(|(_, pages)| pages.iter().filter(|page| page.is_some()).count()).sum();
+        (pages, self.regions.len())
+    }
+
     fn slot(&self, address: usize) -> Option<&[u64]> {
         let (region, page, place) = split(address);
         let (_, pages) = self.regions.iter().find(|(number, _)| *number == region)?;
@@ -78,6 +87,9 @@ impl Table {
 
     /// Adds a block at its own address, replacing one already there.
     pub(super) fn insert(&mut self, block: Box<[u64]>) {
+        self.words += block.len();
+        self.peak_words = self.peak_words.max(self.words);
+        self.peak_len = self.peak_len.max(self.len + 1);
         let address = at(&block);
         if block.len() < PLACED_WORDS {
             self.insert_short(address, block);
@@ -132,7 +144,8 @@ impl Table {
             Some(slot) => slot.take(),
             None => self.short.remove(&address),
         };
-        if removed.is_some() {
+        if let Some(block) = &removed {
+            self.words -= block.len();
             self.len -= 1;
         }
         removed

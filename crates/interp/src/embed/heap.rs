@@ -166,6 +166,9 @@ fn mark_owner(block: &mut [u64], owner_bits: u64) {
 /// The shape of a capability's block (see `super::capabilities`).
 pub const CAPABILITY_SHAPE: u64 = SHAPE_BITS - 2;
 
+/// The shape of a block of `bytes` (see `super::bytes`).
+pub const BYTES_SHAPE: u64 = SHAPE_BITS - 3;
+
 /// Words a cell takes: owner count, shape and the number of its value.
 const CELL_WORDS: usize = 3;
 
@@ -693,6 +696,9 @@ fn children_into(state: &State, block: &[u64], found: &mut Vec<u64>) {
         found.extend(block.get(3).copied().filter(|list| *list != 0));
         return;
     }
+    if shape == BYTES_SHAPE {
+        return;
+    }
     if shape >= state.tables.str_shape {
         if is_text(state, block) {
             return;
@@ -876,6 +882,9 @@ pub(super) fn read_block(state: &State, address: u64) -> Value {
     if shape_word(&block) == Some(CAPABILITY_SHAPE) {
         return super::capabilities::read(state, &block);
     }
+    if shape_word(&block) == Some(BYTES_SHAPE) {
+        return Value::Bytes(Rc::from(super::bytes::data_of(&block)));
+    }
     if is_text(state, &block) {
         let text: Rc<str> = Rc::from(block_text(&block));
         state.heap.texts.borrow_mut().insert(at, Rc::clone(&text));
@@ -1007,6 +1016,9 @@ pub(super) fn shape_named(state: &State, name: &str) -> Option<usize> {
 }
 
 pub(super) fn write_block(state: &mut State, shape: usize, value: &Value) -> Option<i64> {
+    if u64::try_from(shape).ok()? == BYTES_SHAPE {
+        return super::bytes::write(state, value);
+    }
     if u64::try_from(shape).ok()? > state.tables.str_shape {
         return super::dicts::write(state, u64::try_from(shape).ok()?, value);
     }
@@ -1087,6 +1099,9 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
     let (Some(left), Some(right)) = (state.heap.block(a), state.heap.block(b)) else { return false };
     if shape_word(left) != shape_word(right) {
         return false;
+    }
+    if shape_word(left) == Some(BYTES_SHAPE) {
+        return left.get(2..) == right.get(2..);
     }
     if let (Some(mine), Some(theirs)) = (cell_value(state, left), cell_value(state, right)) {
         return mine == theirs;

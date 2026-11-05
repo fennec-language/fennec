@@ -32,6 +32,8 @@ macro_rules! modules {
     };
 }
 
+pub(crate) mod http;
+
 modules! {
     crypto,
     fs,

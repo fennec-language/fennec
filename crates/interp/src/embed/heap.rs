@@ -51,6 +51,10 @@ impl Hasher for AddressHasher {
     fn write_usize(&mut self, n: usize) {
         self.0 = u64::try_from(n).unwrap_or(0).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(29);
     }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(29);
+    }
 }
 
 /// A place in a string's text: its `chars`th character starts `bytes` bytes in. Reading a
@@ -101,6 +105,11 @@ pub(crate) struct Heap {
     owner_bits: u64,
     /// On a worker, the blocks it made since it last handed what it made over.
     made: Vec<u64>,
+    /// The tables behind the current one while this thread holds write locks, each with the owner
+    /// number it makes blocks with: its own first (see `guarded`).
+    behind: Vec<(Box<super::table::Table>, u64)>,
+    /// The tables this thread holds read locks on.
+    pub(super) reading: Vec<std::sync::Arc<super::table::Table>>,
     /// How many words each shape's blocks take, by the shape's number.
     sizes: Vec<usize>,
     /// On a worker running a range, the blocks of the thread that made the `parallel` call,
@@ -151,13 +160,18 @@ pub const OWNER_SHIFT: u32 = 48;
 /// The bits of a shape word that say the shape.
 pub const SHAPE_BITS: u64 = (1 << OWNER_SHIFT) - 1;
 
+/// Whether a block is a `shared` value's own, by the number in its shape word.
+pub(super) fn is_handle_block(block: &[u64]) -> bool {
+    block.get(1).is_some_and(|word| word >> OWNER_SHIFT == super::guarded::HANDLE_OWNER)
+}
+
 /// A block's shape, without the thread that made it.
 pub(crate) fn shape_word(block: &[u64]) -> Option<u64> {
     block.get(1).map(|word| word & SHAPE_BITS)
 }
 
 /// Sets the thread a block was made by, in its shape word.
-fn mark_owner(block: &mut [u64], owner_bits: u64) {
+pub(super) fn mark_owner(block: &mut [u64], owner_bits: u64) {
     if let Some(word) = block.get_mut(1) {
         *word = (*word & SHAPE_BITS) | owner_bits;
     }
@@ -267,7 +281,7 @@ impl Heap {
 
     /// Keeps a freed block for reuse, when it's small: big ones, like a long list's, are
     /// rare enough to give back.
-    fn recycle(&mut self, block: Box<[u64]>) {
+    pub(super) fn recycle(&mut self, block: Box<[u64]>) {
         // Under AddressSanitizer every freed block is given back, for it to watch.
         if cfg!(feature = "sanitize") {
             return;
@@ -332,9 +346,12 @@ impl Heap {
     pub(crate) fn insert(&mut self, mut block: Box<[u64]>) -> i64 {
         self.allocated(u64::try_from(block.len()).unwrap_or(0) * 8);
         let address = block.as_ptr().addr();
-        if super::threads::ON && self.owner_bits != 0 {
+        if self.owner_bits != 0 {
             mark_owner(&mut block, self.owner_bits);
-            self.made.push(u64::try_from(address).unwrap_or(0));
+            // What's made under a lock stays with what the lock guards.
+            if super::threads::ON && self.owner_bits >> OWNER_SHIFT != super::guarded::GUARDED_OWNER {
+                self.made.push(u64::try_from(address).unwrap_or(0));
+            }
         }
         self.blocks.insert(block);
         i64::try_from(address).unwrap_or(0)
@@ -399,25 +416,104 @@ impl Heap {
     pub(crate) fn block(&self, address: u64) -> Option<&[u64]> {
         let at = usize::try_from(address).ok()?;
         let own = self.blocks.get(at);
-        if super::threads::ON && own.is_none() {
-            return self.lent_block(at);
+        if own.is_none() {
+            return self.elsewhere(at);
         }
         own
     }
 
-    /// A block lent for the `parallel` call this thread is running a range of, if it's one.
+    /// A block in a table behind the current one, one this thread holds to read, or one lent for the
+    /// `parallel` call this thread is running a range of, if it's any of those.
     #[cold]
     #[inline(never)]
-    fn lent_block(&self, at: usize) -> Option<&[u64]> {
-        self.lent.as_ref()?.get(at)
+    fn elsewhere(&self, at: usize) -> Option<&[u64]> {
+        self.behind
+            .iter()
+            .rev()
+            .find_map(|(table, _)| table.get(at))
+            .or_else(|| self.reading.iter().rev().find_map(|table| table.get(at)))
+            .or_else(|| self.lent.as_ref()?.get(at))
+    }
+
+    /// Makes a `shared` value's table the current one, with what's made in it owned as `owner_bits`
+    /// say. Its box goes on holding the table that was current.
+    pub(super) fn enter_table(&mut self, mut table: Box<super::table::Table>, owner_bits: u64) {
+        self.forget_cursor();
+        std::mem::swap(&mut self.blocks, &mut table);
+        self.behind.push((table, self.owner_bits));
+        self.owner_bits = owner_bits;
+    }
+
+    /// Takes the current table back out, leaving the one behind it current.
+    #[expect(
+        clippy::unnecessary_box_returns,
+        reason = "the box goes back to be reused, so a lock doesn't move a table"
+    )]
+    pub(super) fn leave_table(&mut self) -> Box<super::table::Table> {
+        self.forget_cursor();
+        let Some((mut table, owner_bits)) = self.behind.pop() else { return Box::default() };
+        self.owner_bits = owner_bits;
+        std::mem::swap(&mut self.blocks, &mut table);
+        table
+    }
+
+    fn forget_cursor(&mut self) {
+        if self.cursor.address != 0 {
+            self.set_cursor(Cursor::default());
+        }
+    }
+
+    /// Swaps the current table with the one behind the top `held`, for a copy to go there, and back
+    /// again.
+    pub(super) fn swap_behind(&mut self, held: usize) {
+        let Heap { blocks, owner_bits, behind, .. } = self;
+        if let Some((table, bits)) = behind.len().checked_sub(held).and_then(|at| behind.get_mut(at)) {
+            std::mem::swap(blocks, &mut **table);
+            std::mem::swap(owner_bits, bits);
+        }
+    }
+
+    /// Which of the tables behind the current one holds this block.
+    pub(super) fn behind_holding(&self, at: usize) -> Option<usize> {
+        self.behind.iter().position(|(table, _)| table.get(at).is_some())
+    }
+
+    /// Swaps the current table with one behind it, which holds a lock's too: for each of several held
+    /// to write to be current in turn, and back again.
+    pub(super) fn swap_table(&mut self, number: usize) {
+        let Heap { blocks, behind, .. } = self;
+        if let Some((table, _)) = behind.get_mut(number) {
+            std::mem::swap(blocks, &mut **table);
+        }
+    }
+
+    pub(super) fn lent_has(&self, address: u64) -> bool {
+        usize::try_from(address).is_ok_and(|at| self.lent.as_ref().is_some_and(|lent| lent.get(at).is_some()))
+    }
+
+    /// Takes a block out of the current table or one behind it.
+    pub(super) fn take_block(&mut self, at: usize) -> Option<Box<[u64]>> {
+        let found = self.blocks.remove_any(at);
+        if found.is_some() || self.behind.is_empty() {
+            return found;
+        }
+        self.behind.iter_mut().rev().find_map(|(table, _)| table.remove_any(at))
+    }
+
+    pub(super) fn owner_bits(&self) -> u64 {
+        self.owner_bits
+    }
+
+    /// The number native code knows this thread by now.
+    pub(super) fn owner_number(&self) -> i64 {
+        i64::try_from(self.owner_bits >> OWNER_SHIFT).unwrap_or(0)
     }
 
     /// Whether `block`, the block at `address`, has one owner and is this thread's to change: a
     /// lent block never is, however many owners it has.
     pub(super) fn is_alone(&self, address: u64, block: &[u64]) -> bool {
         block.first() == Some(&1)
-            && (!super::threads::ON
-                || self.lent.is_none()
+            && ((self.lent.is_none() && self.reading.is_empty() && self.behind.is_empty())
                 || usize::try_from(address).is_ok_and(|at| self.blocks.get(at).is_some()))
     }
 
@@ -426,6 +522,11 @@ impl Heap {
     pub(super) fn change_lent_owners(&mut self, address: u64, by: i64) -> bool {
         if !super::threads::ON {
             return false;
+        }
+        // What's kept past a read lock is copied out, so what it does here comes to nothing.
+        let at = usize::try_from(address).unwrap_or(0);
+        if self.reading.iter().any(|table| table.get(at).is_some()) {
+            return true;
         }
         let lent = self
             .lent
@@ -438,7 +539,16 @@ impl Heap {
     }
 
     pub(super) fn block_mut(&mut self, address: u64) -> Option<&mut [u64]> {
-        self.blocks.get_mut(usize::try_from(address).ok()?)
+        let at = usize::try_from(address).ok()?;
+        if self.behind.is_empty() {
+            return self.blocks.get_mut(at);
+        }
+        // What's behind a lock is this thread's too, like a closure's capture read under it.
+        let Heap { blocks, behind, .. } = self;
+        match blocks.get_mut(at) {
+            Some(block) => Some(block),
+            None => behind.iter_mut().rev().find_map(|(table, _)| table.get_mut(at)),
+        }
     }
 }
 
@@ -694,6 +804,62 @@ pub(super) fn held_addresses(element: &Element, words: &[u64], found: &mut Vec<u
     boxed_addresses(element, words, &mut 0, found);
 }
 
+/// Where among its words a block holds the addresses of others, as `children_into` finds them, for
+/// a copy of it to hold its own. An interpreter's value or a generator can't be copied like that.
+pub(super) fn child_places(state: &State, block: &[u64], found: &mut Vec<usize>) -> Result<(), Diagnostic> {
+    let Some(shape) = shape_word(block) else { return Ok(()) };
+    if shape == CAPABILITY_SHAPE {
+        found.extend((block.get(3).copied().unwrap_or(0) != 0).then_some(3));
+        return Ok(());
+    }
+    if shape == CELL_SHAPE {
+        return Err(not_copied());
+    }
+    if shape >= state.tables.str_shape {
+        if is_text(state, block) {
+            return Ok(());
+        }
+        if super::dicts::is_dict(state, block) {
+            super::dicts::child_places(state, block, found);
+            return Ok(());
+        }
+        if let Some(element) = super::lists::element_in(state, block) {
+            let start = super::lists::LIST_HEADER_WORDS;
+            if super::lists::owns_items(element) {
+                let items = super::lists::items(block, 1);
+                found.extend(
+                    items.iter().enumerate().filter(|(_, item)| **item != 0).map(|(at, _)| start + at),
+                );
+            } else if holds_blocks(element) {
+                let stride = element.words().max(1);
+                let count = super::lists::items(block, stride).len() / stride;
+                let mut at = start;
+                for _ in 0..count {
+                    let mut from = at;
+                    boxed_words(element, block, &mut from, found);
+                    at += stride;
+                }
+            }
+        }
+        return Ok(());
+    }
+    let Some(element) = shape_of(state, block) else { return Ok(()) };
+    if matches!(element.as_ref(), Element::Struct { fields, .. } if fields.iter().any(|(name, _)| name.starts_with('\0')))
+    {
+        return Err(not_copied());
+    }
+    let mut from = HEADER_WORDS;
+    boxed_words(&element, block, &mut from, found);
+    Ok(())
+}
+
+fn not_copied() -> Diagnostic {
+    Diagnostic::new(
+        "this value can't be kept in or taken from a `shared` value yet",
+        fennec_syntax::Span::default(),
+    )
+}
+
 /// Adds the addresses of a block's boxed fields to `found`.
 fn children_into(state: &State, block: &[u64], found: &mut Vec<u64>) {
     let Some(shape) = shape_word(block) else { return };
@@ -815,8 +981,8 @@ pub extern "C" fn to_value(address: i64) -> i64 {
 pub(super) fn retain(state: &mut State, address: u64) {
     if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
         *count += 1;
-    } else {
-        state.heap.change_lent_owners(address, 1);
+    } else if !state.heap.change_lent_owners(address, 1) && super::guarded::is_handle(address) {
+        super::guarded::count_handle(address);
     }
 }
 

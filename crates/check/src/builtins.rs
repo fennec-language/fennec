@@ -83,7 +83,7 @@ impl Method {
     }
 
     /// The last `optional` arguments can be left out.
-    fn optional(self, optional: usize) -> Method {
+    pub(crate) fn optional(self, optional: usize) -> Method {
         Method { arity: (self.arity.0.saturating_sub(optional), self.arity.1), ..self }
     }
 
@@ -114,7 +114,7 @@ pub(crate) fn engine_signature(ty: &Type, name: &str) -> Option<Signature> {
     };
     let mut params = vec![param("self", ty, is_mut)];
     params.extend(others.iter().map(|other| param("other", other, false)));
-    Some(Signature { params, returns, can_fail: false, generator: false })
+    Some(Signature { params, returns, can_fail: false, generator: false, generics: Vec::new() })
 }
 
 pub(crate) fn method(ty: &Type, name: &str) -> Option<Method> {
@@ -248,7 +248,10 @@ fn bytes_method(name: &str) -> Option<Method> {
 fn waits_on_network(type_name: &str, name: &str) -> bool {
     matches!(
         (type_name, name),
-        ("Net", "connect") | ("Connection", "read" | "read_line") | ("Server", "accept")
+        ("Net", "connect")
+            | ("Connection", "read" | "read_line")
+            | ("Server", "accept")
+            | ("UdpSocket", "receive")
     )
 }
 
@@ -282,6 +285,10 @@ impl FnCx<'_> {
             let help = "only a test's own body can read what it printed, from the `Stdout` it received";
             return self.unusable(no_method(ty, name, span).with_help(help), args);
         }
+        if matches!(name, "script" | "requests") && *ty == Type::named("Net") && !self.in_a_test() {
+            let help = "only a test's own body can script or read the fake `Net` it received";
+            return self.unusable(no_method(ty, name, span).with_help(help), args);
+        }
         // Only a test's fake `Process` is scripted, and says what ran.
         if matches!(name, "script" | "ran") && *ty == Type::named("Process") && !self.in_a_test() {
             let help = "only a test's own body can script or read the fake `Process` it received";
@@ -296,12 +303,16 @@ impl FnCx<'_> {
         let named: &[&str] = match ty.type_name() {
             _ if name == "sort" => &["key"],
             Some(owner) if waits_on_network(owner, name) => &["timeout"],
+            Some("Net") if name == "udp" => &["port"],
+            Some("Net") if matches!(name, "get" | "post" | "request") => {
+                &["body", "headers", "params", "timeout"]
+            }
             _ => &[],
         };
         let plain = self.builtin_args(name, args, named, &method.receives, span);
-        if name == "write"
-            && *ty == Type::named("Connection")
-            && let [(data, at)] = plain.as_slice()
+        if (name == "write" && *ty == Type::named("Connection")
+            || name == "send_to" && *ty == Type::named("UdpSocket"))
+            && let [(data, at), ..] = plain.as_slice()
             && !matches!(data, Type::Str | Type::Bytes | Type::Unknown | Type::Var(_))
         {
             self.error(
@@ -370,6 +381,25 @@ impl FnCx<'_> {
                 Some("timeout") if named.contains(&"timeout") => {
                     if !self.checker.fits(&Type::named("Duration"), &ty) {
                         self.error(mismatch("`timeout`", &Type::named("Duration"), &ty, arg.value.span));
+                    }
+                }
+                Some("body") if named.contains(&"body") => {
+                    if !matches!(self.checker.settled(&ty), Type::Str | Type::Bytes) {
+                        self.error(
+                            mismatch("what's sent", &Type::Bytes, &ty, arg.value.span)
+                                .with_help("a request sends `bytes`, or a `str` as its UTF-8 bytes"),
+                        );
+                    }
+                }
+                Some(option @ ("headers" | "params")) if named.contains(&option) => {
+                    let wanted = Type::Dict(Box::new(Type::Str), Box::new(Type::Str));
+                    if !self.checker.fits(&wanted, &ty) {
+                        self.error(mismatch(&format!("`{option}`"), &wanted, &ty, arg.value.span));
+                    }
+                }
+                Some("port") if named.contains(&"port") => {
+                    if !self.checker.fits(&Type::Int, &ty) {
+                        self.error(mismatch("`port`", &Type::Int, &ty, arg.value.span));
                     }
                 }
                 Some("indent") if named.contains(&"indent") => {

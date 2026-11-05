@@ -1,5 +1,5 @@
-//! `std.net`: TCP through the `Net` capability. A `Connection` or `Server` holds a private
-//! handle into the program's table of open sockets, so code that was never given `Net` can't
+//! `std.net`: TCP and UDP through the `Net` capability. A `Connection`, `Server` or `UdpSocket` holds
+//! a private handle into the program's table of open sockets, so code that was never given `Net` can't
 //! make one up to reach a socket. What's real here needs nothing of the interpreter, as native
 //! code runs it too. In a test, the network is in memory, in `Fake`.
 //! Nothing else runs while a test waits, so a read that would wait forever stops the test and
@@ -7,14 +7,14 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Module, no_constants, no_functions};
+use super::{Module, http, no_constants, no_functions};
 use crate::call::CallArg;
 use crate::interp::Interp;
 use crate::methods::no_method;
@@ -24,7 +24,12 @@ pub(crate) const MODULE: Module = Module {
     functions: &[],
     call: no_functions,
     constant: no_constants,
-    methods: &[("Connection", connection_method), ("Server", server_method)],
+    methods: &[
+        ("Connection", connection_method),
+        ("Server", server_method),
+        ("UdpSocket", udp_method),
+        ("Response", response_method),
+    ],
 };
 
 /// How long connecting waits unless told otherwise.
@@ -32,6 +37,13 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The hosts a test's fake network has: its own, where its servers are.
 const FAKE_HOSTS: [&str; 2] = ["localhost", "127.0.0.1"];
+
+/// The most a UDP packet can hold.
+const MOST_IN_A_PACKET: usize = 65_507;
+
+/// How long a UDP read waits before it looks again at whether its socket was closed. `close` can't
+/// wake one by itself, as UDP has no `shutdown` to ask for.
+const UDP_LOOKS_EVERY: Duration = Duration::from_millis(100);
 
 /// A real connection, which any thread holding its handle can use: one thread reading and another
 /// writing don't wait for each other, and nothing's interleaved within either.
@@ -41,10 +53,17 @@ struct Stream {
     writing: Mutex<()>,
 }
 
+/// A real UDP socket. Only one thread reads at a time, as how long a read waits is the socket's.
+struct Udp {
+    socket: UdpSocket,
+    receiving: Mutex<()>,
+}
+
 #[derive(Clone)]
 enum Socket {
     Stream(Arc<Stream>),
     Listener(Arc<TcpListener>),
+    Udp(Arc<Udp>),
 }
 
 /// The real sockets this process has open, by handle. Held only to find one, never while it waits.
@@ -62,6 +81,9 @@ struct FakeStream {
     peer_closed: bool,
 }
 
+/// A packet in a test's network: its data and its sender's address.
+type FakePacket = (Vec<u8>, String);
+
 /// A test's network, in memory. Handles count up from 1, so a test runs the same every time.
 #[derive(Default)]
 pub(crate) struct Fake {
@@ -69,6 +91,12 @@ pub(crate) struct Fake {
     /// Each server's port, and the connections waiting for it to accept them.
     servers: BTreeMap<i64, (i64, VecDeque<(i64, String)>)>,
     streams: BTreeMap<i64, FakeStream>,
+    /// Each UDP socket's port, and the data and sender of what's been sent to it.
+    udp: BTreeMap<i64, (i64, VecDeque<FakePacket>)>,
+    /// What each request a test scripted answers, by its method and URL.
+    answers: BTreeMap<String, Value>,
+    /// Each request sent, as its method and URL.
+    requests: Vec<String>,
 }
 
 impl Fake {
@@ -78,7 +106,7 @@ impl Fake {
     }
 }
 
-/// What a call made: a `Connection` or `Server`, by its type's name and fields.
+/// What a call made: a `Connection`, `Server` or `UdpSocket`, by its type's name and fields.
 type Made = (&'static str, Vec<(&'static str, Value)>);
 
 /// How a network call failed, which `NetError` says.
@@ -87,12 +115,13 @@ pub(crate) enum Failure {
     Refused(String, i64),
     TimedOut(Duration),
     Closed,
+    Tls(String),
     Other(String),
 }
 
 impl Failure {
     /// The failure an I/O error on an open connection means.
-    fn of(error: &std::io::Error, waited: Option<Duration>) -> Failure {
+    pub(crate) fn of(error: &std::io::Error, waited: Option<Duration>) -> Failure {
         match error.kind() {
             ErrorKind::WouldBlock | ErrorKind::TimedOut => Failure::TimedOut(waited.unwrap_or_default()),
             ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted => Failure::Closed,
@@ -145,13 +174,40 @@ fn server_method(
     interp.server_method(server, method, args, span)
 }
 
-/// The arguments, and the `Duration` given as `timeout=`, if it was.
+#[expect(clippy::needless_pass_by_value, reason = "every method in `MODULE` takes these")]
+fn response_method(
+    _interp: &mut Interp<'_>,
+    response: &Instance,
+    method: &str,
+    args: Vec<CallArg>,
+    span: Span,
+) -> Result<Value, Diagnostic> {
+    match (method, args.as_slice(), response.field("body")) {
+        ("text", [], Some(Value::Bytes(body))) => Ok(Value::str(&String::from_utf8_lossy(body))),
+        ("text", _, _) => Err(wrong(method, span)),
+        _ => Err(no_method(&Value::Instance(Rc::new(response.clone())), method, span)),
+    }
+}
+
+fn udp_method(
+    interp: &mut Interp<'_>,
+    socket: &Instance,
+    method: &str,
+    args: Vec<CallArg>,
+    span: Span,
+) -> Result<Value, Diagnostic> {
+    interp.udp_method(socket, method, args, span)
+}
+
+/// The arguments, and the `Duration` given as `timeout=`, if it was. `net.udp(port=…)` is the port
+/// as the last argument.
 fn with_timeout(args: Vec<CallArg>, method: &str, span: Span) -> Result<(Vec<Value>, Option<Duration>), Diagnostic> {
     let mut plain = Vec::new();
     let mut timeout = None;
     for arg in args {
         match arg.name.as_deref() {
             None => plain.push(arg.value),
+            Some("port") if method == "udp" => plain.push(arg.value),
             Some("timeout") => timeout = Some(duration_of(&arg.value, span)?),
             Some(other) => {
                 return Err(Diagnostic::new(format!("`{method}` has no parameter called `{other}`"), arg.span));
@@ -201,16 +257,21 @@ impl Interp<'_> {
 
     /// The types what's real gives back: a program using `Net` needn't have named them.
     fn load_net_types(&mut self) -> Result<(), Diagnostic> {
-        for name in ["Connection", "NetError", "Duration"] {
+        for name in ["Connection", "UdpSocket", "Packet", "Response", "NetError", "Duration"] {
             self.load_std_providing(name)?;
         }
         Ok(())
     }
 
-    /// `net.connect(host, port)` and `net.listen(port)`.
+    /// `net.connect(host, port)`, `net.listen(port)`, `net.udp()` and requests.
     pub(crate) fn net_method(&mut self, method: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
-        let (args, timeout) = with_timeout(args, method, span)?;
         self.load_net_types()?;
+        match method {
+            "get" | "post" | "request" => return self.http_method(method, &args, span),
+            "script" | "requests" => return self.fake_answers(method, &args, span),
+            _ => {}
+        }
+        let (args, timeout) = with_timeout(args, method, span)?;
         if !self.faked_net() {
             return real_net(method, &args, timeout, span);
         }
@@ -223,10 +284,60 @@ impl Interp<'_> {
                 let port = port_of(*port, span)?;
                 self.fake_listen(port)
             }
-            ("connect" | "listen", _) => return Err(wrong(method, span)),
+            ("udp", []) => self.fake_udp(0),
+            ("udp", [Value::Int(port)]) => {
+                let port = port_of(*port, span)?;
+                self.fake_udp(port)
+            }
+            ("connect" | "listen" | "udp", _) => return Err(wrong(method, span)),
             _ => return Err(no_method(&Value::Capability(Capability::Net), method, span)),
         };
         Ok(made_or_failed(found))
+    }
+
+    /// `net.get(url)`, `net.post(url)` and `net.request(method, url)`.
+    fn http_method(&mut self, method: &str, args: &[CallArg], span: Span) -> Result<Value, Diagnostic> {
+        let plain: Vec<Value> = args.iter().filter(|arg| arg.name.is_none()).map(|arg| arg.value.clone()).collect();
+        let named: Vec<(&str, &Value)> =
+            args.iter().filter_map(|arg| arg.name.as_deref().map(|name| (name, &arg.value))).collect();
+        let request = request_of(method, &plain, &named, span)?;
+        if self.faked_net() {
+            return Ok(self.fake_request(&request));
+        }
+        Ok(done_or_failed(http::send(&request).map(answer_value)))
+    }
+
+    /// `net.script(request, response)` and `net.requests()`, for a test.
+    fn fake_answers(&mut self, method: &str, args: &[CallArg], span: Span) -> Result<Value, Diagnostic> {
+        if !self.faked_net() {
+            return Err(no_method(&Value::Capability(Capability::Net), method, span));
+        }
+        let Some(fake) = self.fake() else {
+            return Err(no_method(&Value::Capability(Capability::Net), method, span));
+        };
+        match (method, args) {
+            ("script", [request, response]) => {
+                let Value::Str(request) = &request.value else { return Err(wrong(method, span)) };
+                fake.answers.insert(request.to_string(), response.value.clone());
+                Ok(Value::Unit)
+            }
+            ("requests", []) => Ok(Value::list(fake.requests.iter().map(|sent| Value::str(sent)).collect())),
+            _ => Err(wrong(method, span)),
+        }
+    }
+
+    /// What a test scripted for a request. A request it didn't script fails: nothing else could
+    /// answer it.
+    fn fake_request(&mut self, request: &http::Request) -> Value {
+        let Some(fake) = self.fake() else { return failed(&Failure::Closed) };
+        let sent = format!("{} {}", request.method, http::written(request));
+        fake.requests.push(sent.clone());
+        match fake.answers.get(&sent) {
+            Some(answer) => Value::Ok(Rc::new(answer.clone())),
+            None => failed(&Failure::Other(format!(
+                "the test's fake `Net` has no answer for `{sent}`: give it one with `net.script`"
+            ))),
+        }
     }
 
     fn connection_method(
@@ -253,6 +364,30 @@ impl Interp<'_> {
             ("read_line", []) => self.fake_read(handle, None, span)?.map(|line| line_value(line.as_deref())),
             ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
                 self.fake_write(handle, data_of(data)).map(|()| Value::Unit)
+            }
+            ("close", []) => {
+                self.fake_close(handle);
+                return Ok(Value::Unit);
+            }
+            _ => return Err(wrong(method, span)),
+        };
+        Ok(done_or_failed(done))
+    }
+
+    fn udp_method(&mut self, socket: &Instance, method: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
+        if !matches!(method, "receive" | "send_to" | "close") {
+            return Err(no_method(&Value::Instance(Rc::new(socket.clone())), method, span));
+        }
+        let handle = handle_of(socket);
+        let (args, timeout) = with_timeout(args, method, span)?;
+        self.load_net_types()?;
+        if !self.faked_net() {
+            return real_udp(handle, method, &args, timeout, span);
+        }
+        let done = match (method, args.as_slice()) {
+            ("receive", []) => self.fake_receive(handle, span)?.map(packet_value),
+            ("send_to", [data @ (Value::Str(_) | Value::Bytes(_)), Value::Str(address)]) => {
+                self.fake_send_to(handle, data_of(data), address).map(|()| Value::Unit)
             }
             ("close", []) => {
                 self.fake_close(handle);
@@ -318,6 +453,52 @@ impl Interp<'_> {
         Ok(("Connection", vec![("_handle", Value::Int(client)), ("peer", Value::str(&format!("localhost:{port}")))]))
     }
 
+    fn fake_udp(&mut self, port: u16) -> Result<Made, Failure> {
+        let Some(fake) = self.fake() else { return Err(Failure::Closed) };
+        let port = i64::from(port);
+        if fake.udp.values().any(|(taken, _)| *taken == port) {
+            return Err(Failure::Other(format!("port {port} is already in use")));
+        }
+        // Port 0 asks for any free port, which the fake picks in order.
+        let port = if port == 0 { 49152 + i64::try_from(fake.udp.len()).unwrap_or(0) } else { port };
+        let handle = fake.handle();
+        fake.udp.insert(handle, (port, VecDeque::new()));
+        Ok(("UdpSocket", vec![("_handle", Value::Int(handle)), ("port", Value::Int(port))]))
+    }
+
+    /// The next packet for a socket in a test. With none waiting, none can come, since nothing
+    /// else runs while a test waits.
+    fn fake_receive(&mut self, handle: i64, span: Span) -> Result<Result<(Vec<u8>, String), Failure>, Diagnostic> {
+        let Some(fake) = self.fake() else { return Ok(Err(Failure::Closed)) };
+        let Some((port, waiting)) = fake.udp.get_mut(&handle) else { return Ok(Err(Failure::Closed)) };
+        match waiting.pop_front() {
+            Some(packet) => Ok(Ok(packet)),
+            None => Err(waits_forever(
+                &format!("this socket on port {port} in the test's fake network would wait forever for a packet"),
+                span,
+            )),
+        }
+    }
+
+    /// Sends a packet in a test. Sent to a port nothing has, it's lost, as UDP's are.
+    fn fake_send_to(&mut self, handle: i64, data: &[u8], address: &str) -> Result<(), Failure> {
+        let Some(fake) = self.fake() else { return Err(Failure::Closed) };
+        let Some((from, _)) = fake.udp.get(&handle) else { return Err(Failure::Closed) };
+        let sender = format!("localhost:{from}");
+        let Some((host, port)) = address.rsplit_once(':') else {
+            return Err(Failure::Other(format!("`{address}` isn't an address like `host:port`")));
+        };
+        if !FAKE_HOSTS.contains(&host) {
+            return Err(Failure::Other(format!(
+                "the test's fake `Net` reaches only the test's own sockets, at `localhost`, not `{host}`"
+            )));
+        }
+        if let Some((_, waiting)) = fake.udp.values_mut().find(|(taken, _)| port.parse() == Ok(*taken)) {
+            waiting.push_back((data.to_vec(), sender));
+        }
+        Ok(())
+    }
+
     /// The next connection waiting for a server in a test. With none waiting, none can come,
     /// since nothing else runs while a test waits, so the server is done and its loop ends.
     fn fake_accept(&mut self, handle: i64) -> Result<(i64, String), Failure> {
@@ -373,6 +554,7 @@ impl Interp<'_> {
     /// left and then the end.
     fn fake_close(&mut self, handle: i64) {
         let Some(fake) = self.fake() else { return };
+        fake.udp.remove(&handle);
         if let Some((_, waiting)) = fake.servers.remove(&handle) {
             for (served, _) in waiting {
                 fake.close_stream(served);
@@ -382,7 +564,7 @@ impl Interp<'_> {
     }
 }
 
-/// `net.connect(host, port)` and `net.listen(port)` on the real network: needing nothing of the
+/// `net.connect(host, port)`, `net.listen(port)` and `net.udp()` on the real network: needing nothing of the
 /// interpreter, for native code too.
 pub(crate) fn real_net(method: &str, args: &[Value], timeout: Option<Duration>, span: Span) -> Result<Value, Diagnostic> {
     let found = match (method, args) {
@@ -390,7 +572,10 @@ pub(crate) fn real_net(method: &str, args: &[Value], timeout: Option<Duration>, 
             connect(host, port_of(*port, span)?, timeout.unwrap_or(CONNECT_TIMEOUT))
         }
         ("listen", [Value::Int(port)]) => listen(port_of(*port, span)?),
-        ("connect" | "listen", _) => return Err(wrong(method, span)),
+        ("udp", []) => udp(0),
+        // Native code keeps a named argument on the method's name.
+        ("udp" | "udp.port", [Value::Int(port)]) => udp(port_of(*port, span)?),
+        ("connect" | "listen" | "udp" | "udp.port", _) => return Err(wrong(method, span)),
         _ => return Err(no_method(&Value::Capability(Capability::Net), method, span)),
     };
     Ok(made_or_failed(found))
@@ -439,6 +624,100 @@ pub(crate) fn real_server(
     }
 }
 
+/// A method of a real UDP socket, by its handle.
+pub(crate) fn real_udp(
+    handle: i64,
+    method: &str,
+    args: &[Value],
+    timeout: Option<Duration>,
+    span: Span,
+) -> Result<Value, Diagnostic> {
+    let done = match (method, args) {
+        ("receive", []) => receive(handle, timeout).map(packet_value),
+        ("send_to", [data @ (Value::Str(_) | Value::Bytes(_)), Value::Str(address)]) => {
+            send_to(handle, data_of(data), address).map(|()| Value::Unit)
+        }
+        ("close", []) => {
+            close(handle);
+            return Ok(Value::Unit);
+        }
+        _ => return Err(wrong(method, span)),
+    };
+    Ok(done_or_failed(done))
+}
+
+/// A request from what a call gave: its URL, with the method first for `net.request`, and its
+/// named arguments.
+fn request_of(method: &str, plain: &[Value], named: &[(&str, &Value)], span: Span) -> Result<http::Request, Diagnostic> {
+    let (method, url) = match (method, plain) {
+        ("get", [Value::Str(url)]) => ("GET".to_owned(), url),
+        ("post", [Value::Str(url)]) => ("POST".to_owned(), url),
+        ("request", [Value::Str(method), Value::Str(url)]) => (method.to_ascii_uppercase(), url),
+        _ => return Err(wrong(method, span)),
+    };
+    let mut request = http::Request {
+        method,
+        url: url.to_string(),
+        params: Vec::new(),
+        headers: Vec::new(),
+        body: Vec::new(),
+        timeout: CONNECT_TIMEOUT,
+    };
+    for (name, value) in named {
+        match (*name, value) {
+            ("timeout", value) => request.timeout = duration_of(value, span)?,
+            ("body", Value::Str(text)) => request.body = text.as_bytes().to_vec(),
+            ("body", Value::Bytes(data)) => request.body = data.to_vec(),
+            ("params", Value::Dict(pairs)) => request.params = text_pairs(pairs, span)?,
+            ("headers", Value::Dict(pairs)) => request.headers = text_pairs(pairs, span)?,
+            (other, _) => {
+                return Err(Diagnostic::new(format!("this has no parameter called `{other}`"), span));
+            }
+        }
+    }
+    Ok(request)
+}
+
+fn text_pairs(pairs: &crate::pairs::Pairs, span: Span) -> Result<Vec<(String, String)>, Diagnostic> {
+    pairs
+        .iter()
+        .map(|(key, value)| match (key, value) {
+            (Value::Str(key), Value::Str(value)) => Ok((key.to_string(), value.to_string())),
+            _ => Err(Diagnostic::new("a request's headers and params are text", span)),
+        })
+        .collect()
+}
+
+/// An answer as a `Response`.
+fn answer_value(answer: http::Answer) -> Value {
+    let headers: Vec<(Value, Value)> =
+        answer.headers.iter().map(|(name, value)| (Value::str(name), Value::str(value))).collect();
+    Value::made(
+        "Response",
+        vec![
+            ("status", Value::Int(answer.status)),
+            ("headers", Value::Dict(Rc::new(headers.into()))),
+            ("body", Value::Bytes(Rc::from(answer.body))),
+        ],
+    )
+}
+
+/// What `Net` does for native code, which keeps a call's named arguments on the method's name, in
+/// the order they're written: `get.params.timeout`.
+pub(crate) fn native_net(name: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    let mut parts = name.split('.');
+    let method = parts.next().unwrap_or_default();
+    if matches!(method, "get" | "post" | "request") {
+        let named: Vec<&str> = parts.collect();
+        let (plain, last) = args.split_at(args.len().saturating_sub(named.len()));
+        let given: Vec<(&str, &Value)> = named.iter().copied().zip(last).collect();
+        let request = request_of(method, plain, &given, span)?;
+        return Ok(done_or_failed(http::send(&request).map(answer_value)));
+    }
+    let (method, args, timeout) = timed(name, args, span)?;
+    real_net(method, args, timeout, span)
+}
+
 /// A method native code names, its arguments and how long it may wait: `read_line.timeout` is
 /// `read_line` with `timeout=` given last.
 pub(crate) fn timed<'a>(
@@ -472,6 +751,10 @@ fn connection_made((connection, peer): (i64, String)) -> Made {
     ("Connection", vec![("_handle", Value::Int(connection)), ("peer", Value::str(&peer))])
 }
 
+fn packet_value((data, sender): (Vec<u8>, String)) -> Value {
+    Value::made("Packet", vec![("data", Value::Bytes(Rc::from(data))), ("sender", Value::str(&sender))])
+}
+
 fn made_or_failed(found: Result<Made, Failure>) -> Value {
     done_or_failed(found.map(|(type_name, fields)| Value::made(type_name, fields)))
 }
@@ -495,6 +778,7 @@ pub(crate) fn failed(failure: &Failure) -> Value {
             ("TimedOut", vec![("after", Value::made("Duration", vec![("nanos", Value::Int(nanos))]))])
         }
         Failure::Closed => ("Closed", Vec::new()),
+        Failure::Tls(reason) => ("Tls", vec![("reason", Value::str(reason))]),
         Failure::Other(reason) => ("Other", vec![("reason", Value::str(reason))]),
     };
     Value::Err(Rc::new(Value::made_case("NetError", case, fields)))
@@ -567,6 +851,10 @@ fn wait_at_most(socket: &TcpStream, timeout: Option<Duration>) -> Result<(), Fai
 
 fn read(handle: i64, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>, Failure> {
     let stream = stream(handle)?;
+    // With nothing to give, it mustn't wait for something to come.
+    if count == 0 {
+        return Ok(Vec::new());
+    }
     let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
     wait_at_most(reader.get_ref(), timeout)?;
     let mut data = vec![0; count];
@@ -620,6 +908,65 @@ fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failu
     Ok((keep_stream(stream)?, peer.to_string()))
 }
 
+fn udp(port: u16) -> Result<Made, Failure> {
+    let socket = UdpSocket::bind(("0.0.0.0", port)).map_err(|error| match error.kind() {
+        ErrorKind::AddrInUse => Failure::Other(format!("port {port} is already in use")),
+        _ => Failure::Other(error.to_string()),
+    })?;
+    let port = socket.local_addr().map_or(port, |address| address.port());
+    let handle = open(|open| {
+        let handle = fresh_handle(open);
+        open.insert(handle, Socket::Udp(Arc::new(Udp { socket, receiving: Mutex::new(()) })));
+        handle
+    });
+    Ok(("UdpSocket", vec![("_handle", Value::Int(handle)), ("port", Value::Int(i64::from(port)))]))
+}
+
+fn udp_socket(handle: i64) -> Result<Arc<Udp>, Failure> {
+    match open(|open| open.get(&handle).cloned()) {
+        Some(Socket::Udp(udp)) => Ok(udp),
+        _ => Err(Failure::Closed),
+    }
+}
+
+/// The next packet and who sent it. It looks up its socket each time it looks for a packet, so
+/// closing the socket on another thread ends the wait.
+fn receive(handle: i64, timeout: Option<Duration>) -> Result<(Vec<u8>, String), Failure> {
+    let started = Instant::now();
+    let mut data = vec![0; MOST_IN_A_PACKET];
+    loop {
+        let udp = udp_socket(handle)?;
+        let _receiving = udp.receiving.lock().unwrap_or_else(PoisonError::into_inner);
+        let left = timeout.map_or(UDP_LOOKS_EVERY, |limit| limit.saturating_sub(started.elapsed()));
+        if left.is_zero() {
+            return Err(Failure::TimedOut(timeout.unwrap_or_default()));
+        }
+        udp.socket.set_read_timeout(Some(left.min(UDP_LOOKS_EVERY))).map_err(|error| Failure::of(&error, timeout))?;
+        match udp.socket.recv_from(&mut data) {
+            Ok((size, sender)) => {
+                data.truncate(size);
+                return Ok((data, sender.to_string()));
+            }
+            // Windows says this of a packet this socket sent earlier that nothing took. Nothing's
+            // wrong with the socket, and UDP doesn't say what's lost.
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::ConnectionReset) => {}
+            Err(error) => return Err(Failure::of(&error, timeout)),
+        }
+    }
+}
+
+/// Sends one packet to an address like `"127.0.0.1:9001"`.
+fn send_to(handle: i64, data: &[u8], address: &str) -> Result<(), Failure> {
+    let udp = udp_socket(handle)?;
+    let host = address.rsplit_once(':').map_or(address, |(host, _)| host);
+    let target = address
+        .to_socket_addrs()
+        .map_err(|_| Failure::NotFound(host.to_owned()))?
+        .next()
+        .ok_or_else(|| Failure::NotFound(host.to_owned()))?;
+    udp.socket.send_to(data, target).map(|_| ()).map_err(|error| Failure::of(&error, None))
+}
+
 /// Closes a socket. Whoever else was using it finds out: a read waiting on another thread ends.
 fn close(handle: i64) {
     if let Some(Socket::Stream(stream)) = open(|open| open.remove(&handle)) {
@@ -660,4 +1007,37 @@ impl Fake {
 fn trim_line(line: &[u8]) -> &[u8] {
     let line = line.strip_suffix(b"\n").unwrap_or(line);
     line.strip_suffix(b"\r").unwrap_or(line)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Failure, Made, close, receive, udp};
+    use crate::value::Value;
+
+    fn handle_of_made((_, fields): &Made) -> i64 {
+        match fields.first() {
+            Some((_, Value::Int(handle))) => *handle,
+            _ => -1,
+        }
+    }
+
+    /// UDP has no `shutdown`, so a read on another thread has to find out for itself.
+    #[test]
+    fn closing_a_udp_socket_ends_a_read_waiting_on_another_thread() {
+        let Ok(made) = udp(0) else { panic!("no UDP socket") };
+        let handle = handle_of_made(&made);
+        let waiting = std::thread::spawn(move || receive(handle, None));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        close(handle);
+        assert!(matches!(waiting.join().ok(), Some(Err(Failure::Closed))));
+    }
+
+    #[test]
+    fn a_udp_read_gives_up_when_told_to() {
+        let Ok(made) = udp(0) else { panic!("no UDP socket") };
+        let handle = handle_of_made(&made);
+        let limit = std::time::Duration::from_millis(5);
+        assert!(matches!(receive(handle, Some(limit)), Err(Failure::TimedOut(after)) if after == limit));
+        close(handle);
+    }
 }

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Watches everything a process started, and stops a test program that runs too long or holds too
 # much memory, so that one hanging or swelling program fails the gate instead of taking the Mac
-# with it. The build tools and the test binaries themselves can take as long as they need.
+# with it. The compiler, cargo, the linker and the test binaries themselves can take as long as
+# they need, though nothing can hold more than the memory limit.
 #
 #   gate-watch.sh ROOT_PID LOG [SECONDS] [KILOBYTES]
 set -u
@@ -11,7 +12,9 @@ limit_seconds=${3:-60}
 limit_kb=${4:-4194304}
 
 while kill -0 "$root" 2> /dev/null; do
-  ps -axo pid=,ppid=,rss=,etime=,command= | awk -v root="$root" -v seconds="$limit_seconds" -v kb="$limit_kb" '
+  # A tool is known by its name, `ucomm`, which stays when a process that's exiting has lost its
+  # arguments and shows only as `(cargo)`.
+  ps -axo pid=,ppid=,rss=,etime=,ucomm=,command= | awk -v root="$root" -v seconds="$limit_seconds" -v kb="$limit_kb" '
     function age(text, parts, count, days) {
       days = 0
       if (index(text, "-")) { split(text, parts, "-"); days = parts[1]; text = parts[2] }
@@ -20,8 +23,8 @@ while kill -0 "$root" 2> /dev/null; do
       return days * 86400 + parts[1] * 60 + parts[2]
     }
     {
-      pid = $1; parent[pid] = $2; rss[pid] = $3; elapsed[pid] = $4
-      line = $0; sub(/^ *[0-9]+ +[0-9]+ +[0-9]+ +[0-9:-]+ +/, "", line); command[pid] = line
+      pid = $1; parent[pid] = $2; rss[pid] = $3; elapsed[pid] = $4; name[pid] = $5
+      line = $0; sub(/^ *[0-9]+ +[0-9]+ +[0-9]+ +[0-9:-]+ +[^ ]+ +/, "", line); command[pid] = line
     }
     END {
       for (pid in parent) {
@@ -29,9 +32,9 @@ while kill -0 "$root" 2> /dev/null; do
         while (at != root && at in parent && at > 1) at = parent[at]
         if (at != root || pid == root) continue
         text = command[pid]
-        tool = text ~ /(^|\/)(cargo|rustc|rustup|rustdoc|cc|ld|clang|ar|as|bash|sh|zsh|awk|ps|sleep|tee|nice|git)( |$)/ \
+        tool = name[pid] ~ /^(cargo|cargo-clippy|clippy-driver|rustc|rustup|rustdoc|cc|c\+\+|clang|ld|ld64|ld64\.lld|lld|rust-lld|ar|as|xcrun|bash|sh|zsh|awk|ps|sleep|tee|nice|git)$/ \
           || text ~ /\/deps\/[^ ]+-[0-9a-f]+( |$)/ || text ~ /build-script-build/ || text ~ / daemon( |$)/
-        if (rss[pid] > kb && text !~ /(^|\/)rustc( |$)/) print pid, "memory", rss[pid], text
+        if (rss[pid] > kb) print pid, "memory", rss[pid], text
         else if (!tool && age(elapsed[pid]) > seconds) print pid, "time", elapsed[pid], text
       }
     }' | while read -r pid why amount text; do

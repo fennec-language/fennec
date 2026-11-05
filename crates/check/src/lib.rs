@@ -147,6 +147,7 @@ fn without_hidden(text: &str) -> String {
 fn hide_interface_params(module: &mut Module) {
     saving::generate(module);
     fennec_syntax::rename::self_as_its_type(module);
+    fennec_syntax::rename::discards_apart(module);
     let library = fennec_syntax::prelude_modules().unwrap_or_default();
     let mut interfaces = fennec_syntax::visit::interface_names(library.iter().chain([&*module]));
     // A program's own type with an interface's name is that type.
@@ -575,6 +576,9 @@ pub struct Signature {
     pub can_fail: bool,
     /// Whether it's a generator: it contains `yield`.
     pub generator: bool,
+    /// Its own type parameters, in order, which its parameters and what it gives back may not
+    /// mention: only what's in brackets at a call can say what those stand for.
+    pub generics: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

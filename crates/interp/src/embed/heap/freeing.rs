@@ -115,10 +115,18 @@ fn free_block(state: &mut State, address: u64) {
             continue;
         }
         // Only a string has a place kept in it, and that's forgotten below, once it's known to be one.
-        let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove_any(at))
-        else {
+        let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.take_block(at)) else {
+            // A `shared` value's handle: its count is the runtime's, wherever its block is.
+            if crate::embed::guarded::is_handle(address) {
+                crate::embed::guarded::release_handle(state, address);
+            }
             continue;
         };
+        if super::is_handle_block(&block) {
+            state.heap.blocks.insert(block);
+            crate::embed::guarded::release_handle(state, address);
+            continue;
+        }
         let shape = shape_word(&block).unwrap_or(u64::MAX);
         debug_assert!(
             shape == state.tables.str_shape
@@ -197,8 +205,8 @@ fn release_children(state: &mut State, block: &[u64], pending: &mut Vec<u64>) {
             if *count == 0 {
                 pending.push(child);
             }
-        } else {
-            state.heap.change_lent_owners(child, -1);
+        } else if !state.heap.change_lent_owners(child, -1) && crate::embed::guarded::is_handle(child) {
+            pending.push(child);
         }
     }
     state.heap.found = found;
@@ -277,6 +285,8 @@ fn release_planned_child(
         && lent.is_some_and(|lent| usize::try_from(child).is_ok_and(|at| lent.get(at).is_some()))
     {
         *lent_owners.entry(child).or_default() -= 1;
+    } else if crate::embed::guarded::is_handle(child) {
+        pending.push(child);
     }
 }
 
@@ -326,7 +336,9 @@ pub(in crate::embed) fn release(state: &mut State, address: u64) {
         }
         Some(_) => true,
         None => {
-            state.heap.change_lent_owners(address, -1);
+            if !state.heap.change_lent_owners(address, -1) && crate::embed::guarded::is_handle(address) {
+                crate::embed::guarded::release_handle(state, address);
+            }
             false
         }
     };

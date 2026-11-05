@@ -3458,6 +3458,164 @@ fn the_real_network_works_natively() -> std::io::Result<()> {
     same_as_the_interpreter_in_both_builds("real_network", REAL_NETWORK)
 }
 
+/// `bytes` over TCP and UDP natively, against the interpreter: what isn't text, reads of none and
+/// at the end, a packet's sender, timing out, a bad address and port, and looping over a socket.
+const NETWORK_BYTES: &str = "\
+from std.net import NetError
+
+def talk(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        with net.connect(\"127.0.0.1\", server.port, timeout=2s)? as client:
+            with server.accept(timeout=2s)? as conn:
+                client.write(bytes([0, 255, 10, 65]))?
+                client.write(\"x\".encode())?
+                data = conn.read(4, timeout=2s)?
+                stdout.print(data, data.len(), data[1])
+                stdout.print(conn.read(1, timeout=2s)?.decode() else \"\")
+                stdout.print(conn.read(0)?.len())
+                client.close()
+                stdout.print(conn.read(4, timeout=2s)?.len())
+    with net.udp(port=0)? as first:
+        with net.udp()? as second:
+            first.send_to(\"ping\", f\"127.0.0.1:{second.port}\")?
+            packet = second.receive(timeout=2s)?
+            stdout.print(packet.data.decode() else \"\", packet.sender.endswith(str(first.port)))
+            second.send_to(bytes([1, 2, 3]), packet.sender)?
+            answer = first.receive(timeout=2s)?
+            stdout.print(answer.data, answer.data[0])
+            match first.receive(timeout=20ms):
+                case Err(error):
+                    stdout.print(error.message())
+                case Ok(_):
+                    stdout.print(\"a packet from nowhere\")
+            match first.send_to(\"x\", \"no-such-host.invalid:9\"):
+                case Err(error):
+                    stdout.print(error.message())
+                case Ok(_):
+                    stdout.print(\"sent to nothing\")
+            first.send_to(\"last\", f\"127.0.0.1:{second.port}\")?
+            for packet in second:
+                stdout.print(packet.data.decode() else \"\")
+                second.close()
+
+def main(net: Net, stdout: Stdout):
+    match talk(net, stdout):
+        case Err(error):
+            stdout.print(error.message())
+        case Ok(_):
+            stdout.print(\"done\")
+    _ = net.udp(port=99999)
+";
+
+#[test]
+fn bytes_and_packets_cross_the_real_network_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("network_bytes", NETWORK_BYTES)
+}
+
+/// HTTP natively against a server of the test's own: params, headers and a body go out, a status
+/// that isn't a 200 is an answer, and what can't be reached fails as a `NetError`.
+#[test]
+fn http_requests_go_through_native_code() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    let server = std::thread::spawn(move || -> std::io::Result<()> {
+        for _ in 0..3 {
+            let (mut conn, _) = listener.accept()?;
+            let mut asked = Vec::new();
+            let mut chunk = [0; 4096];
+            while !String::from_utf8_lossy(&asked).contains("\r\n\r\n") {
+                let read = std::io::Read::read(&mut conn, &mut chunk)?;
+                asked.extend_from_slice(chunk.get(..read).unwrap_or_default());
+            }
+            let asked = String::from_utf8_lossy(&asked).into_owned();
+            let first = asked.lines().next().unwrap_or_default();
+            let status = if first.contains("/a") { "200 OK" } else { "500 Oops" };
+            let why = if asked.contains("X-Mine: yes") { "mine" } else { "plain" };
+            let answer = format!(
+                "HTTP/1.1 {status}\r\nX-Why: {why}\r\nContent-Length: {}\r\n\r\n{first}",
+                first.len()
+            );
+            std::io::Write::write_all(&mut conn, answer.as_bytes())?;
+        }
+        Ok(())
+    });
+    let source = format!(
+        r#"from std.net import NetError
+
+def ask(net: Net, stdout: Stdout) fails NetError:
+    mut answer = net.get("http://127.0.0.1:{port}/a", params={{"q": "x y"}}, headers={{"X-Mine": "yes"}}, timeout=5s)?
+    stdout.print(answer.status, answer.ok(), answer.text(), answer.headers["x-why"], answer.body.len())
+    answer = net.post("http://127.0.0.1:{port}/b", body="data")?
+    stdout.print(answer.status, answer.ok(), answer.text(), answer.headers["x-why"])
+    answer = net.request("put", "http://127.0.0.1:{port}/c", body="bytes".encode())?
+    stdout.print(answer.status, answer.text())
+
+def main(net: Net, stdout: Stdout):
+    match ask(net, stdout):
+        case Err(error):
+            stdout.print(error.message())
+        case Ok(_):
+            pass
+    match net.get("http://127.0.0.1:1/"):
+        case Err(error):
+            stdout.print(error.message())
+        case Ok(_):
+            stdout.print("an answer from nothing")
+    match net.get("not a url"):
+        case Err(error):
+            stdout.print(error.message())
+        case Ok(_):
+            stdout.print("an answer from nothing")
+"#
+    );
+    let dir = folder("http_native")?;
+    let program = dir.join("http.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("http"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    std::fs::remove_dir_all(&dir)?;
+    server.join().map_err(|_| std::io::Error::other("the test's server panicked"))??;
+    assert_eq!(
+        ours.0,
+        "200 True GET /a?q=x%20y HTTP/1.1 mine 23\n\
+         500 False POST /b HTTP/1.1 plain\n\
+         500 PUT /c HTTP/1.1\n\
+         `127.0.0.1` refused a connection on port 1\n\
+         `not a url` isn't a URL like `https://example.com/path`\n"
+    );
+    Ok(())
+}
+
+/// TLS costs a program that uses it: its size, and loading what checks certificates on every
+/// run. One that makes no requests has none of it.
+#[test]
+fn a_program_that_makes_no_requests_links_no_tls() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("no_tls")?;
+    let program = dir.join("plain.fen");
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(\"hi\")\n")?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("plain"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let linked = std::fs::read(&executable)?;
+    std::fs::remove_dir_all(&dir)?;
+    let has = |word: &[u8]| linked.windows(word.len()).any(|at| at == word);
+    // Not `rustls` itself, which a debug build's shared generics can name with no TLS linked.
+    assert!(!has(b"ClientConnection"));
+    assert!(!has(b"Security.framework"));
+    Ok(())
+}
+
 /// A program built with no interpreter in its runtime prints what it should and has none of the
 /// interpreter in it, and one still needing the interpreter fails to link rather than to run.
 #[test]
@@ -6018,6 +6176,33 @@ fn a_format_reads_a_type_through_its_deserialize() -> std::io::Result<()> {
          failed: in the text, Unit.health breaks its `where` rule at 6\n\
          1 2 7\n"
     );
+    Ok(())
+}
+
+/// A generic function's type parameter can be used only in its body, when a call writes it in
+/// brackets: each copy is made from that, not only from the function's signature.
+#[test]
+fn a_type_parameter_used_only_in_a_body_is_given_by_the_call() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "interface Made:\n    def make() -> Self\n\n    def measure(self) -> int\n\n\
+                  struct Part:\n    size = 3\n\n    def make() -> Self:\n        Self(size=4)\n\n    \
+                  def measure(self) -> int:\n        self.size\n\n\
+                  struct Other:\n    size = 8\n\n    def make() -> Self:\n        Self(size=9)\n\n    \
+                  def measure(self) -> int:\n        self.size\n\n\
+                  def build[T: Made]() -> T:\n    T.make()\n\n\
+                  def named[T: Made](text: str) -> str:\n    made = build[T]()\n    f\"{text} {made.measure()}\"\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(named[Part](\"part\"), named[Other](\"other\"))\n";
+    let dir = folder("body_only_type_param")?;
+    let program = dir.join("told.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("told"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours.0, "part 4 other 9\n");
     Ok(())
 }
 

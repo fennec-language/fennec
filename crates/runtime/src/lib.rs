@@ -15,8 +15,8 @@
 )]
 
 use fennec_interp::embed::{
-    aot, bytes, capabilities, checks, dicts, eval, heap, io, json, lists, names, numbers, objects, parallel,
-    regex, serve, strings, temps, text, threads,
+    aot, bytes, capabilities, checks, dicts, eval, guarded, heap, io, json, lists, names, numbers, objects,
+    parallel, regex, serve, strings, temps, text, threads,
 };
 
 /// The exported functions that can fail, setting the flag `fennec_aot_failed_flag` gives the
@@ -82,6 +82,12 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_put",
     "fennec_put_item",
     "fennec_set_remove",
+    "fennec_shared_enter",
+    "fennec_shared_in",
+    "fennec_shared_leave",
+    "fennec_shared_new",
+    "fennec_shared_out",
+    "fennec_shared_settle",
     "fennec_set_remove_header",
     "fennec_spec_text",
     "fennec_stmt",
@@ -274,6 +280,7 @@ export! {
     fennec_bytes_contains(a0: i64, a1: i64) -> i8 => bytes::contains(a0, a1);
     fennec_bytes_hex(a0: i64, a1: i64) -> i64 => bytes::hex_text(a0, a1);
     fennec_bytes_decode(a0: i64) -> i64 => bytes::decode(a0);
+    fennec_bytes_text(a0: i64) -> i64 => bytes::text(a0);
     fennec_bytes_decode_problem(a0: i64) -> i64 => bytes::decode_problem(a0);
     fennec_bytes_from_hex(a0: i64) -> i64 => bytes::from_hex_text(a0);
     fennec_bytes_from_hex_problem(a0: i64) -> i64 => bytes::from_hex_problem(a0);
@@ -296,6 +303,13 @@ export! {
     fennec_set_remove(a0: i64, a1: i64, a2: i8, a3: i64, a4: i64) -> i64 => dicts::set_remove(a0, a1, a2, a3, a4);
     fennec_set_remove_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i8, a5: i64, a6: i64) -> i64 => dicts::set_remove_header(a0, a1, a2, a3, a4, a5, a6);
     fennec_set_clear(a0: i64) -> i64 => dicts::set_clear(a0);
+    fennec_shared_new(a0: i64) -> i64 => guarded::shared_new(a0);
+    fennec_shared_enter(a0: i64, a1: i64) -> i64 => guarded::shared_enter(a0, a1);
+    fennec_shared_leave(a0: i64, a1: i64) -> i64 => guarded::shared_leave(a0, a1);
+    fennec_shared_in(a0: i64) -> i64 => guarded::shared_in(a0);
+    fennec_shared_out(a0: i64, a1: i64) -> i64 => guarded::shared_out(a0, a1);
+    fennec_shared_settle(a0: i64) => guarded::shared_settle(a0);
+    fennec_shared_wait() => guarded::shared_wait();
     fennec_cell_new(a0: i64) -> i64 => heap::cell_new(a0);
     fennec_cell_read(a0: i64) -> i64 => heap::cell_read(a0);
     fennec_list_sorted(a0: i64, a1: i64) -> i64 => lists::sorted(a0, a1);
@@ -369,6 +383,7 @@ export! {
     fennec_capability_block(a0: i64) -> i64 => capabilities::block(a0);
     fennec_net_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::net_call(a0, a1, a2, a3, a4);
     fennec_native_capability(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::native_call(a0, a1, a2, a3, a4);
+    fennec_use_tls() => capabilities::use_tls();
     fennec_clock_now() -> i64 => capabilities::clock_now();
     fennec_clock_sleep(a0: i64) => capabilities::clock_sleep(a0);
     fennec_args_len() -> i64 => capabilities::args_len();

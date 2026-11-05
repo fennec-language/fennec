@@ -112,6 +112,11 @@ impl Emit<'_, '_, '_> {
         }
         // A named `timeout=` stays on the method's name: the runtime takes it off.
         let method = name.split_once('.').map_or(name, |(_, method)| method);
+        if crate::parallel::is_request(name) {
+            // This call is all that links TLS into a program.
+            self.declare("declare void @fennec_use_tls() nounwind");
+            self.line("call void @fennec_use_tls()");
+        }
         let (word, _) = self.operand(receiver)?;
         // What's still only written for the interpreter is a symbol of its own, so a program that
         // needs it can't link without the interpreter.
@@ -120,7 +125,7 @@ impl Emit<'_, '_, '_> {
         self.crossing(dest, (runtime, "ptr", &word), method, rest, span)
     }
 
-    /// A method of a `Connection` or `Server`, which the runtime does by the handle it holds.
+    /// A method of a `Connection`, `Server` or `UdpSocket`, which the runtime does by the handle it holds.
     pub(crate) fn socket_call(
         &mut self,
         dest: Option<LocalId>,
@@ -154,6 +159,21 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         self.crossing(dest, ("fennec_net_call", "i64", handle), name, rest, span)
+    }
+
+    /// `response.text()`: its body as text, with what isn't text replaced.
+    pub(crate) fn response_text(&mut self, dest: LocalId, response: &Operand) -> Result<(), String> {
+        let (held, kind) = self.operand(response)?;
+        let boxed = matches!(kind, Kind::Boxed(_));
+        let inside = if boxed { self.offset(&held, FIELDS_OFFSET) } else { held };
+        let (offset, field) = self.field(&kind, "body")?;
+        let at = self.offset(&inside, offset);
+        let body = self.load_field(&field, &at, if boxed { FIELD_ACCESS } else { "" });
+        self.declare("declare ptr @fennec_bytes_text(ptr) nounwind");
+        let block = self.temp();
+        self.line(&format!("{block} = call ptr @fennec_bytes_text(ptr {body})"));
+        let text = self.text_value(&block);
+        self.assign(dest, &text)
     }
 
     /// Hands arguments over to a method in the runtime, and makes what it gives back native.

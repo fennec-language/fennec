@@ -220,7 +220,7 @@ pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, en
     })
 }
 
-/// `fennec_net_call(handle, method, count, start, end)`: a method of a connection or server by its
+/// `fennec_net_call(handle, method, count, start, end)`: a method of a socket by its
 /// handle, with the last `count` inputs native code handed over as its arguments. `method` is a
 /// string block like `Connection.read_line`. Nothing's borrowed while it waits.
 pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
@@ -242,6 +242,7 @@ pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end
         .split_once('.')
     {
         Some(("Server", method)) => crate::stdlib::net::real_server(handle, method, args, timeout, at),
+        Some(("UdpSocket", method)) => crate::stdlib::net::real_udp(handle, method, args, timeout, at),
         Some((_, method)) => super::serve::served_call(handle, method, args, timeout, at)
             .unwrap_or_else(|| crate::stdlib::net::real_connection(handle, method, args, timeout, at)),
         None => Err(Diagnostic::new("the native code lost a method's name", at)),
@@ -287,8 +288,7 @@ fn native_method(
         (Capability::Net, _, _) => {
             // What's been printed comes out first, as it does before anything else that waits.
             super::write_kept_output();
-            let (method, args, timeout) = crate::stdlib::net::timed(method, args, at)?;
-            crate::stdlib::net::real_net(method, args, timeout, at)
+            crate::stdlib::net::native_net(method, args, at)
         }
         (Capability::Entropy, "bytes", [Value::Int(count)]) => {
             let Ok(count) = usize::try_from(*count) else {
@@ -306,6 +306,13 @@ fn native_method(
         }
         _ => Err(crate::methods::no_method(&Value::Capability(capability), method, at)),
     }
+}
+
+/// `fennec_use_tls()`: compiled code that makes a request calls this, which is all that brings TLS
+/// into a program.
+#[cfg(not(target_arch = "wasm32"))]
+pub extern "C" fn use_tls() {
+    crate::stdlib::http::use_tls();
 }
 
 /// `clock.now()`, as the nanoseconds of an `Instant`.

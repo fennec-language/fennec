@@ -34,6 +34,21 @@ use crate::emit::{Emit, HEADER_ACCESS, ITEM_ACCESS};
 use crate::kinds::{Kind, element_symbol};
 use crate::lists::list_item;
 
+/// Whether a builtin makes an HTTP request, the one thing that needs TLS.
+pub(crate) fn is_request(name: &str) -> bool {
+    ["Net.get", "Net.post", "Net.request"].iter().any(|request| name.starts_with(request))
+}
+
+/// Whether a program makes HTTP requests.
+pub fn uses_tls(program: &Program) -> bool {
+    program.functions.iter().chain(&program.constants).flat_map(|function| &function.blocks).any(|block| {
+        block
+            .insts
+            .iter()
+            .any(|inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if is_request(name)))
+    })
+}
+
 /// Whether a program hands work to the runtime's `parallel` calls, and so keeps a stack limit
 /// and failure flag for each thread.
 pub fn uses_parallel(program: &Program) -> bool {

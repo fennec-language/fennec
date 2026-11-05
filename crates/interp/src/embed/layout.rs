@@ -453,8 +453,12 @@ mod tests {
             allocated_bytes: 640,
         };
         assert_eq!(
-            super::super::aot::counts_line(&counts),
+            super::super::aot::counts_line(&counts, 0, 0),
             "copies 2 copied_bytes 48 largest_copy 32 allocations 5 allocated_bytes 640"
+        );
+        assert_eq!(
+            super::super::aot::counts_line(&counts, 4, 1),
+            "copies 2 copied_bytes 48 largest_copy 32 allocations 5 allocated_bytes 640 parallel_calls 4 blocked_waits 1"
         );
     }
 

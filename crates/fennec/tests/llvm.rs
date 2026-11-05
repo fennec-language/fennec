@@ -3144,8 +3144,7 @@ def reason[T](found: Result[T, NetError]) -> str:
 def lines_of(connection: Connection) -> int fails NetError:
     mut count = 0
     for line in connection.lines():
-        connection.write(line + \"!\\n\")?
-        count += 1
+        count += line.len()
     count
 
 def talk(net: Net, stdout: Stdout) -> int fails NetError:
@@ -3163,7 +3162,7 @@ def talk(net: Net, stdout: Stdout) -> int fails NetError:
                 stdout.print(conn.read_line()?)
                 client.write(\"one\\ntwo\\n\")?
                 client.close()
-                stdout.print(lines_of(conn))
+                stdout.print(lines_of(conn)?)
                 stdout.print(conn.read_line()?)
                 conn.close()
                 stdout.print(reason(conn.read_line()))

@@ -556,10 +556,19 @@ fn stream(handle: i64) -> Result<Arc<Stream>, Failure> {
     }
 }
 
+/// How long a read on this socket may wait. A socket the other side has reset refuses to be told on
+/// macOS, and reading it says so at once, so that says nothing here.
+fn wait_at_most(socket: &TcpStream, timeout: Option<Duration>) -> Result<(), Failure> {
+    match socket.set_read_timeout(timeout) {
+        Err(error) if error.kind() != ErrorKind::InvalidInput => Err(Failure::of(&error, timeout)),
+        _ => Ok(()),
+    }
+}
+
 fn read(handle: i64, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>, Failure> {
     let stream = stream(handle)?;
     let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
-    reader.get_ref().set_read_timeout(timeout).map_err(|error| Failure::of(&error, timeout))?;
+    wait_at_most(reader.get_ref(), timeout)?;
     let mut data = vec![0; count];
     let read = reader.read(&mut data).map_err(|error| Failure::of(&error, timeout))?;
     data.truncate(read);
@@ -569,7 +578,7 @@ fn read(handle: i64, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>,
 fn read_line(handle: i64, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, Failure> {
     let stream = stream(handle)?;
     let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
-    reader.get_ref().set_read_timeout(timeout).map_err(|error| Failure::of(&error, timeout))?;
+    wait_at_most(reader.get_ref(), timeout)?;
     let mut line = Vec::new();
     let read = reader.read_until(b'\n', &mut line).map_err(|error| Failure::of(&error, timeout))?;
     Ok((read > 0).then_some(line))

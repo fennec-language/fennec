@@ -435,14 +435,32 @@ impl Heap {
         std::mem::replace(&mut self.blocks, own)
     }
 
-    /// Swaps the current table with this thread's own, behind all it holds: for a copy to go there,
-    /// and back again.
-    pub(super) fn swap_own(&mut self) {
+    /// Swaps the current table with the one behind the top `held`, for a copy to go there, and back
+    /// again.
+    pub(super) fn swap_behind(&mut self, held: usize) {
         let Heap { blocks, owner_bits, behind, .. } = self;
-        if let Some((own, own_bits)) = behind.first_mut() {
-            std::mem::swap(blocks, own);
-            std::mem::swap(owner_bits, own_bits);
+        if let Some((table, bits)) = behind.len().checked_sub(held).and_then(|at| behind.get_mut(at)) {
+            std::mem::swap(blocks, table);
+            std::mem::swap(owner_bits, bits);
         }
+    }
+
+    /// Which of the tables behind the current one holds this block.
+    pub(super) fn behind_holding(&self, at: usize) -> Option<usize> {
+        self.behind.iter().position(|(table, _)| table.get(at).is_some())
+    }
+
+    /// Swaps the current table with one behind it, which holds a lock's too: for each of several held
+    /// to write to be current in turn, and back again.
+    pub(super) fn swap_table(&mut self, number: usize) {
+        let Heap { blocks, behind, .. } = self;
+        if let Some((table, _)) = behind.get_mut(number) {
+            std::mem::swap(blocks, table);
+        }
+    }
+
+    pub(super) fn lent_has(&self, address: u64) -> bool {
+        usize::try_from(address).is_ok_and(|at| self.lent.as_ref().is_some_and(|lent| lent.get(at).is_some()))
     }
 
     /// Takes a block out of the current table or one behind it.

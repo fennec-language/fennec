@@ -1712,11 +1712,11 @@ def f() -> int:
     _0 = builtin Table()
     _1 = _0
     _2 = make Enemy(2)
-    _3 = builtin Table.insert(mut _1, _2)
+    _3 = builtin Table.add(mut _1, _2)
     _4 = _3
     _5 = make Enemy(3)
     _1[_4] = _5
-    _6 = closure f.arrow@228[]
+    _6 = closure f.arrow@232[]
     builtin Table.modify(mut _1, _4, _6)
     _7 = builtin Table.items(_1)
     _8 = builtin list.len(_7)

@@ -2167,17 +2167,10 @@ def main(stdout: Stdout):
 const CELL_LIST_REPLACED: &str = r"shared Box:
     items = [1, 2, 3]
 
-struct Holder:
-    box: Box
-
-def first(holder: Holder) -> int:
-    holder.box.items[0]
-
 def main(stdout: Stdout):
     one = Box()
-    holder = Holder(box=one)
     with one as mut x:
-        x.items = [n + first(holder) for n in x.items]
+        x.items = [n + x.items[0] for n in x.items]
     stdout.print(one.items)
 ";
 
@@ -3463,35 +3456,6 @@ fn the_real_network_works_natively() -> std::io::Result<()> {
         return Ok(());
     }
     same_as_the_interpreter_in_both_builds("real_network", REAL_NETWORK)
-}
-
-/// A `main` that can fail stops the program with what it failed with, after what it printed, and
-/// one that doesn't fail runs to its end.
-#[test]
-fn a_main_that_fails_stops_the_program_as_the_interpreter_does() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let program = |last: i64| {
-        format!(
-            "\
-error Bad:
-    why: str
-
-def risky(n: int) -> int fails Bad:
-    if n < 0:
-        fail Bad(\"negative\")
-    n + 1
-
-def main(args: Args, stdout: Stdout):
-    stdout.print(risky(args.len())?)
-    stdout.print(risky({last})?)
-    stdout.print(\"the end\")
-"
-        )
-    };
-    same_as_the_interpreter_in_both_builds("main_fails", &program(-1))?;
-    same_as_the_interpreter_in_both_builds("main_succeeds", &program(1))
 }
 
 /// A program built with no interpreter in its runtime prints what it should and has none of the

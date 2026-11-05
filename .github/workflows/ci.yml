@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
   merge_group:
+  # `staging.yml` runs this on the commit it may move main to.
+  workflow_call:
 
 permissions:
   contents: read
@@ -12,9 +14,10 @@ permissions:
 # A newer push to the same pull request cancels its older run. Pushes to main share a group, which
 # keeps one running and only the newest waiting: each run covers every commit before it, and the
 # one running finishes, as it's what saves the caches pull requests start from. Anything else,
-# like a merge group, gets a group of its own, since sharing one would drop some that are needed.
+# like a merge group or a run for `staging.yml`, gets a group of its own, since sharing one would
+# drop some that are needed.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.event_name == 'push' && 'main' || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.ref == 'refs/heads/main' && github.event_name == 'push' && 'main' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -272,6 +275,8 @@ jobs:
           tool: zizmor@1.31.1
       - name: zizmor
         run: zizmor --offline --min-severity low .github/workflows
+      - name: The landing hook and helper, on a throwaway repository
+        run: .github/scripts/test-landing.sh
 
   bench:
     name: Benchmarks
@@ -657,6 +662,7 @@ jobs:
               [ "$job" = parked-sanitizers ] && [ "$PARKED_CHANGED" != true ] && continue
             fi
             if [ "$job" = test ] && [ "$result" != skipped ]; then
+              looked_at=0
               # `test` has one result for its whole matrix, so each OS's job is looked at.
               # The one exception, on pull requests only: GitHub's macOS runners are short, and
               # a macOS job no runner ever took (cancelled, with no runner and no steps) is a
@@ -664,6 +670,7 @@ jobs:
               # so does every other OS and every push to main. The fields are split on `|`,
               # since tabs would run together where the runner is empty.
               while IFS='|' read -r name conclusion runner steps; do
+                looked_at=1
                 [ "$conclusion" = success ] && continue
                 if [ "$EVENT" = pull_request ] && [ "$name" = "Test (macos-latest)" ] \
                   && [ "$conclusion" = cancelled ] && [ -z "$runner" ] && [ "$steps" = 0 ]; then
@@ -673,7 +680,10 @@ jobs:
                 echo "$name finished with: $conclusion"
                 failed=1
               done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" \
-                --jq '.jobs[] | select(.name | startswith("Test (")) | [.name, (.conclusion // "unfinished"), (.runner_name // ""), (.steps | length | tostring)] | join("|")')
+                --jq '.jobs[] | select(.name | test("(^|/ )Test \\(")) | [.name, (.conclusion // "unfinished"), (.runner_name // ""), (.steps | length | tostring)] | join("|")')
+              # Run through `staging.yml`, a job's name has that job's in front. If this ever found
+              # no jobs at all, it can't say they passed.
+              [ "$looked_at" = 1 ] || { echo "found no Test jobs to look at"; failed=1; }
               continue
             fi
             echo "$job finished with: $result"

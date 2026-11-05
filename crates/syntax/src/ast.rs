@@ -518,16 +518,16 @@ pub enum BinOp {
 }
 
 impl Expr {
-    /// Whether this is what `else continue`, `else return` or `else fail` parse to: it never gives
-    /// a value, because it always leaves.
+    /// Whether this is what `else continue`, `else return`, `else fail` or an `else:` block parse
+    /// to: it never gives a value, because it always leaves.
     pub fn leaves(&self) -> bool {
         let ExprKind::Match { subject, arms } = &self.kind else { return false };
         let [MatchArm { pattern: Pattern::Wildcard, guard: None, body, .. }] = arms.as_slice() else {
             return false;
         };
-        let [Stmt { kind, .. }] = body.as_slice() else { return false };
+        let Some(Stmt { kind, .. }) = body.last() else { return false };
         matches!(subject.kind, ExprKind::Bool(false))
-            && matches!(kind, StmtKind::Continue | StmtKind::Return(_) | StmtKind::Fail(_))
+            && matches!(kind, StmtKind::Continue | StmtKind::Break | StmtKind::Return(_) | StmtKind::Fail(_))
     }
 
     /// Whether this is a plain value written out: a number, string, bool or `None`.

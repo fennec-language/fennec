@@ -247,8 +247,8 @@ fn a_run_checking_only_what_it_reaches_finds_the_same_mistakes() {
     }
 }
 
-/// How many places each benchmark kernel isn't native can only go down: a change that adds
-/// one fails here, and one that removes some lowers the count in `bench/fallbacks.txt`.
+/// How many functions in each benchmark kernel LLVM doesn't take can only go down: a change that
+/// adds one fails here, and one that removes some lowers the count in `bench/fallbacks.txt`.
 #[test]
 fn benchmark_kernels_only_lose_fallbacks() {
     let bench = examples_dir().join("../bench");
@@ -261,32 +261,37 @@ fn benchmark_kernels_only_lose_fallbacks() {
             (kernel.to_owned(), count.parse().unwrap())
         })
         .collect();
-    let on_a_big_stack = std::thread::Builder::new().stack_size(1 << 28).spawn(move || {
-        let mut wrong = Vec::new();
-        let paths = programs(&bench.join("kernels")).unwrap();
-        for path in &paths {
-            let kernel = path.file_stem().unwrap().to_string_lossy().into_owned();
-            let module = fennec_syntax::parse(&fs::read_to_string(path).unwrap()).unwrap();
-            let count = fennec_jit::fallbacks(&module).unwrap().len();
-            match allowed.iter().find(|(name, _)| *name == kernel) {
-                Some((_, limit)) if count == *limit => {}
-                Some((_, limit)) => wrong.push(format!("{kernel}: {count} fallbacks, the list says {limit}")),
-                None => wrong.push(format!("{kernel}: {count} fallbacks, and it isn't on the list")),
+    let mut wrong = Vec::new();
+    let paths = programs(&bench.join("kernels")).unwrap();
+    for path in &paths {
+        let kernel = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let output = crate::executables::fennec_command()
+            .args(["dev", "fallbacks", "--llvm", &path.to_string_lossy()])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{kernel}: {}", String::from_utf8_lossy(&output.stderr));
+        let said = String::from_utf8_lossy(&output.stdout);
+        let last = said.lines().last().unwrap_or("");
+        let count = last.strip_suffix(" places aren't native").map_or(0, |count| count.parse().unwrap());
+        match allowed.iter().find(|(name, _)| *name == kernel) {
+            Some((_, limit)) if count == *limit => {}
+            Some((_, limit)) => {
+                wrong.push(format!("{kernel}: {count} fallbacks, the list says {limit}\n{said}"));
             }
+            None => wrong.push(format!("{kernel}: {count} fallbacks, and it isn't on the list")),
         }
-        for (name, _) in &allowed {
-            if !paths.iter().any(|path| path.file_stem().is_some_and(|stem| stem == name.as_str())) {
-                wrong.push(format!("{name} is on the list, but isn't a kernel"));
-            }
+    }
+    for (name, _) in &allowed {
+        if !paths.iter().any(|path| path.file_stem().is_some_and(|stem| stem == name.as_str())) {
+            wrong.push(format!("{name} is on the list, but isn't a kernel"));
         }
-        assert!(
-            wrong.is_empty(),
-            "bench/fallbacks.txt is out of date. A count that went up means a kernel lost native code; \
-             see `fennec dev fallbacks`. One that went down should be lowered there:\n{}",
-            wrong.join("\n")
-        );
-    });
-    on_a_big_stack.unwrap().join().unwrap();
+    }
+    assert!(
+        wrong.is_empty(),
+        "bench/fallbacks.txt is out of date. A count that went up means LLVM stopped taking part of a \
+         kernel; see `fennec dev fallbacks --llvm`. One that went down should be lowered there:\n{}",
+        wrong.join("\n")
+    );
 }
 
 #[test]

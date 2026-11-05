@@ -101,6 +101,8 @@ pub(crate) struct FnCx<'c> {
     pub(crate) kept_generators: usize,
     /// How many arrow functions and comprehensions this is inside, which `else` can't leave.
     pub(crate) value_functions: usize,
+    /// How many loops this is inside, which `break` and `continue` need.
+    pub(crate) loops: usize,
     /// How many arrow functions the code being checked is inside.
     pub(crate) arrows: usize,
     /// The fields and method calls in the chain before an `else`, which may be on a value
@@ -142,6 +144,7 @@ impl<'c> FnCx<'c> {
             worked_out_here: std::collections::HashSet::new(),
             kept_generators: 0,
             value_functions: 0,
+            loops: 0,
             arrows: 0,
             else_chain: std::collections::HashSet::new(),
             fails: None,

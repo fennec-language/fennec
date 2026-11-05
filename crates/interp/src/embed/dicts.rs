@@ -105,7 +105,12 @@ fn layout(state: &State, block: &[u64]) -> Option<Layout> {
 
 /// How a dict of this shape lays out its entries, when the shape is a dict's.
 fn shape_layout(state: &State, shape: u64) -> Option<Layout> {
-    let at = usize::try_from(shape.checked_sub(state.tables.str_shape + 1)?).ok()?;
+    shape_layout_of(state.tables.str_shape, shape)
+}
+
+/// `shape_layout`, knowing only the string shape.
+fn shape_layout_of(str_shape: u64, shape: u64) -> Option<Layout> {
+    let at = usize::try_from(shape.checked_sub(str_shape + 1)?).ok()?;
     let (key, value) = (*KEYS.get(at / VALUES.len())?, *VALUES.get(at % VALUES.len())?);
     let width = if key == Word::Text { HEADER_ENTRY_WORDS } else { ENTRY_WORDS };
     Some(Layout { key, value, width })
@@ -526,7 +531,8 @@ pub extern "C" fn add_new_slice(dict: i64, text: i64, from: i64, to: i64, value:
             .is_some_and(|(key, _)| key == Word::Text);
         if held_as_headers {
             if let Some(key) = ascii_slice_header(state, text, from, to) {
-                return set_words(state, dict, &key, value.cast_unsigned());
+                let value = value.cast_unsigned();
+                return set_inline(state, dict, key, value).or_else(|| set_words(state, dict, &key, value));
             }
             let (bytes, chars) = slice_of(state, text, from, to)?;
             let key = new_key(state, Word::Text, (&bytes, chars));
@@ -638,7 +644,8 @@ pub extern "C" fn set_header(dict: i64, a: u64, b: u64, c: u64, value: i64) -> i
         let block = state.heap.block(at)?;
         let (key_word, value_word) = kind(state, block)?;
         if key_word == Word::Text {
-            return set_words(state, dict, &header, value.cast_unsigned());
+            let value = value.cast_unsigned();
+            return set_inline(state, dict, header, value).or_else(|| set_words(state, dict, &header, value));
         }
         let (bytes, chars) = header_text(state, &header)?;
         if key_word != Word::Str {
@@ -762,6 +769,55 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
         }
     }
     i64::try_from(at).ok()
+}
+
+/// `set_words` for a key held inline in its header, in the usual case: a dict of string headers
+/// that nothing else holds, with room for another key, and values that hold no block, so
+/// nothing is let go. The dict's block is found once and the entry written whole. `None`,
+/// having done nothing, for anything else, which `set_words` does.
+fn set_inline(state: &mut State, dict: i64, key: [u64; 3], value: u64) -> Option<i64> {
+    if super::text::block_of(&key).is_some() {
+        return None;
+    }
+    let hash = hash_header(state, &key);
+    let State { heap, tables, .. } = state;
+    if !heap.holds_all() {
+        return None;
+    }
+    let block = heap.block_mut(u64::try_from(dict).ok()?)?;
+    let layout = shape_layout_of(tables.str_shape, shape_word(block)?)?;
+    if layout.key != Word::Text || layout.value.owned() || block.first() != Some(&1) {
+        return None;
+    }
+    let mask = usize::try_from(*block.get(4)?).ok()?;
+    let used = usize::try_from(*block.get(3)?).ok()?;
+    if used >= capacity(mask + 1) {
+        return None;
+    }
+    let start = DICT_HEADER_WORDS + mask + 1;
+    let mut slot = usize::try_from(hash).unwrap_or(0) & mask;
+    // Inline headers are equal exactly when their words are, and never equal a block's.
+    while let Some(entry) = usize::try_from(*block.get(DICT_HEADER_WORDS + slot)?).ok()?.checked_sub(1) {
+        let at = start + entry * HEADER_ENTRY_WORDS;
+        let words =
+            <&mut [u64; HEADER_ENTRY_WORDS]>::try_from(block.get_mut(at..at + HEADER_ENTRY_WORDS)?).ok()?;
+        if let [found, a, b, c, old] = words
+            && *found == hash
+            && [*a, *b, *c] == key
+        {
+            *old = value;
+            return Some(dict);
+        }
+        slot = (slot + 1) & mask;
+    }
+    *block.get_mut(DICT_HEADER_WORDS + slot)? = u64::try_from(used + 1).ok()?;
+    let at = start + used * HEADER_ENTRY_WORDS;
+    let [a, b, c] = key;
+    *<&mut [u64; HEADER_ENTRY_WORDS]>::try_from(block.get_mut(at..at + HEADER_ENTRY_WORDS)?).ok()? =
+        [hash, a, b, c, value];
+    *block.get_mut(2)? += 1;
+    *block.get_mut(3)? += 1;
+    Some(dict)
 }
 
 fn retain_entry(state: &mut State, layout: Layout, entry: &[u64]) {

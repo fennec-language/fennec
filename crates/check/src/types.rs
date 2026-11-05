@@ -194,6 +194,7 @@ impl Type {
             Type::Buffer(_) => Some("Buffer"),
             Type::Dict(..) => Some("dict"),
             Type::Set(_) => Some("set"),
+            Type::Optional(_) => Some("Optional"),
             other => other.type_name(),
         }
     }
@@ -206,6 +207,7 @@ impl Type {
             ("Buffer", [item]) => Some(Type::Buffer(Box::new(item.clone()))),
             ("dict", [key, value]) => Some(Type::Dict(Box::new(key.clone()), Box::new(value.clone()))),
             ("set", [item]) => Some(Type::Set(Box::new(item.clone()))),
+            ("Optional", [item]) => Some(Type::optional(item.clone())),
             _ => None,
         }
     }
@@ -214,7 +216,9 @@ impl Type {
     pub(crate) fn type_args(&self) -> Vec<Type> {
         match self {
             Type::Generic(_, args) => args.clone(),
-            Type::List(item) | Type::Buffer(item) | Type::Set(item) => vec![item.as_ref().clone()],
+            Type::List(item) | Type::Buffer(item) | Type::Set(item) | Type::Optional(item) => {
+                vec![item.as_ref().clone()]
+            }
             Type::Dict(key, value) => vec![key.as_ref().clone(), value.as_ref().clone()],
             _ => Vec::new(),
         }

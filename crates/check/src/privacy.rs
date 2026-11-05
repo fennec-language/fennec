@@ -16,10 +16,19 @@ impl FnCx<'_> {
             return false;
         };
         let method = rest.split('.').next().unwrap_or(rest);
-        self.checker
+        // The methods generated to save a type save all of it, and no program can write them.
+        let generated = self
+            .checker
             .program
-            .type_info(owner)
-            .is_some_and(|info| info.def.methods.iter().any(|def| def.name == method))
+            .functions
+            .get(&format!("{owner}.{method}"))
+            .is_some_and(|entry| !entry.prelude && entry.def.span.in_prelude());
+        generated
+            || self
+                .checker
+                .program
+                .type_info(owner)
+                .is_some_and(|info| info.def.methods.iter().any(|def| def.name == method))
     }
 
     /// Reports a use of `owner`'s `_` field or method from outside it.

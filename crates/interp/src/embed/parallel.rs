@@ -98,12 +98,12 @@ impl Run {
     fn failed(&self, from: usize) {
         // Its locks stay held, with what they guard half changed, and other bodies may be waiting
         // for them, so the program ends now rather than wait for every body to finish.
-        if with(|state| state.heap.holds_locks()) {
+        if super::threads::holds_locks() {
             super::aot::stop_for_failure();
         }
         self.stop.fetch_min(from, Ordering::Relaxed);
         let found = with(|state| state.failure.take().map(|failure| (from, failure)));
-        super::FAILED.set(0);
+        super::set_failed(0);
         let mut kept = self.failure.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(found) = found
             && kept.as_ref().is_none_or(|(at, _)| found.0 < *at)

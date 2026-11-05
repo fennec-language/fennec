@@ -375,7 +375,7 @@ pub extern "C" fn sorted_with(list: i64, compare: extern "C" fn(i64, i64) -> i64
     let address = |place: usize| i64::try_from(base + place * stride * 8).unwrap_or(0);
     let mut order: Vec<usize> = (0..count).collect();
     order.sort_by(|a, b| {
-        if super::FAILED.get() != 0 {
+        if super::failed() {
             return std::cmp::Ordering::Equal;
         }
         compare(address(*a), address(*b)).cmp(&0)

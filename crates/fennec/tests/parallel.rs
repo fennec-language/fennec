@@ -489,6 +489,35 @@ fn a_worker_taking_a_lock_it_holds_ends_the_program() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A body failing with a lock held ends the program rather than leave the others waiting for it, for
+/// a value holding only numbers too, which has no table to show it's held.
+#[test]
+fn a_worker_failing_under_a_lock_ends_the_program() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-failing-under-lock-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    for (name, fields) in [("numbers", ""), ("blocks", "    names = [\"x\"]\n")] {
+        let source = format!(
+            "shared Counter:\n    total = 0\n{fields}\n\
+             def main(stdout: Stdout):\n    one = Counter()\n    \
+             mut items = [n for n in range(50_000)]\n    for mut item in parallel(items):\n        \
+             with one as mut x:\n            x.total = 100 // (item - 25_000)\n        item += 1\n    \
+             stdout.print(items.len())\n"
+        );
+        let built = build_on_threads(&dir, &source, name)?;
+        for threads in ["1", "4"] {
+            let ran = Command::new(&built).env("FENNEC_THREADS", threads).output()?;
+            assert_eq!(ran.status.code(), Some(1), "{name} on {threads} threads");
+            let said = String::from_utf8_lossy(&ran.stderr);
+            assert!(said.contains("error:"), "{name} on {threads} threads: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A body changing, through places, its own copy of what the caller holds: each block on the way
 /// is the caller's until it's copied, from the root down, and the caller's stays as it was.
 const CHANGED_PLACES: &str = include_str!("fixtures/workers/places.fen");

@@ -2,7 +2,7 @@
 
 use fennec_syntax::Diagnostic;
 
-use super::{FAILED, STATE};
+use super::{STATE, set_failed};
 use crate::scope::Frame;
 
 /// Whether a function of the program ran in the interpreter since this was last asked.
@@ -17,7 +17,7 @@ pub fn ran_in_interpreter() -> bool {
 /// clearing what a failure left behind so the next one starts clean.
 #[cfg(not(feature = "lean"))]
 pub fn next_test() -> Option<Diagnostic> {
-    FAILED.set(0);
+    set_failed(0);
     STATE.with_borrow_mut(|state| {
         let state = state.as_mut()?;
         let failure = state.failure.take();

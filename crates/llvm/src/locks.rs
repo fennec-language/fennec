@@ -10,6 +10,7 @@
 use std::fmt::Write as _;
 
 use fennec_ir::{LocalId, Operand};
+use fennec_layout::{Layout, Layouts, Ty};
 use fennec_syntax::Span;
 
 use crate::emit::Emit;
@@ -33,16 +34,34 @@ pub(crate) enum Way {
     Out(i64),
 }
 
-/// A lock to take or give back: its word, its cell, and an `i1` saying whether it's to write.
-type Held = (String, String, String);
+/// A lock to take or give back: its word, its cell, an `i1` saying whether it's to write, and one
+/// saying whether its value has no table, holding only numbers.
+type Held = (String, String, String, String);
 
 impl Emit<'_, '_, '_> {
-    /// Where a cell's lock is, the word after its fields, and the cell.
-    fn lock_word(&mut self, handle: &Operand) -> Result<(String, String), String> {
+    /// Where a cell's lock is, the word after its fields, the cell, and whether it holds only numbers.
+    fn lock_word(&mut self, handle: &Operand) -> Result<(String, String, bool), String> {
         let (value, kind) = self.operand(handle)?;
         let Kind::Boxed(id) = kind else { return Err(format!("it locks a {kind:?}")) };
-        let size = self.layout_of(id)?.size;
-        Ok((self.offset(&value, FIELDS_OFFSET + size - 8), value))
+        let layout = self.layout_of(id)?;
+        let (size, plain) = (layout.size, plain_on_threads(self.module.layouts, layout));
+        Ok((self.offset(&value, FIELDS_OFFSET + size - 8), value, plain))
+    }
+
+    /// Runs `body` unless `plain`, an `i1`, says a value holds only numbers.
+    fn unless_plain(&mut self, plain: &str, body: impl FnOnce(&mut Self)) {
+        match plain {
+            "true" => {}
+            "false" => body(self),
+            _ => {
+                let (has_table, done) = (self.label("has_table"), self.label("table_done"));
+                self.line(&format!("br i1 {plain}, label %{done}, label %{has_table}"));
+                self.start_block(&has_table);
+                body(self);
+                self.line(&format!("br label %{done}"));
+                self.start_block(&done);
+            }
+        }
     }
 
     /// Ends the program if `taken`, an `i1`, is true, and carries on otherwise.
@@ -55,10 +74,10 @@ impl Emit<'_, '_, '_> {
     }
 
     pub(crate) fn lock(&mut self, handle: &Operand, write: bool, span: Span) -> Result<(), String> {
-        let (word, cell) = self.lock_word(handle)?;
+        let (word, cell, plain) = self.lock_word(handle)?;
         let write = if write { "true" } else { "false" };
         self.take_word(&word, write, span);
-        self.entered(&cell, write);
+        self.entered(&cell, write, &plain.to_string());
         Ok(())
     }
 
@@ -97,12 +116,19 @@ impl Emit<'_, '_, '_> {
         self.start_block(&done);
     }
 
+    /// Where a thread remembers the one lock it holds: beside its failure flag, so the runtime can
+    /// tell when a body that failed leaves it held.
+    fn lock_held_place(&mut self) -> String {
+        let flag = self.failure_flag();
+        self.offset(&flag, 8)
+    }
+
     /// Stops if this thread holds the lock already. A thread remembers one lock itself, so one at a
     /// time costs no call, and the runtime remembers any held beside it.
     fn note_taking(&mut self, word: &str, span: Span) {
-        self.declare(crate::parallel::LOCK_HELD_GLOBAL);
+        let held_at = self.lock_held_place();
         let (first, same, empty) = (self.temp(), self.temp(), self.temp());
-        self.line(&format!("{first} = load ptr, ptr @fennec_lock_held"));
+        self.line(&format!("{first} = load ptr, ptr {held_at}"));
         self.line(&format!("{same} = icmp eq ptr {first}, {word}"));
         self.stop_if(&same, TAKEN_AGAIN, span);
         self.line(&format!("{empty} = icmp eq ptr {first}, null"));
@@ -110,7 +136,7 @@ impl Emit<'_, '_, '_> {
             (self.label("lock_first"), self.label("lock_another"), self.label("lock_noted"));
         self.line(&format!("br i1 {empty}, label %{claim}, label %{another}, !prof !8"));
         self.start_block(&claim);
-        self.line(&format!("store ptr {word}, ptr @fennec_lock_held"));
+        self.line(&format!("store ptr {word}, ptr {held_at}"));
         self.line(&format!("br label %{noted}"));
         self.start_block(&another);
         self.declare("declare i64 @fennec_lock_note(ptr) nounwind");
@@ -124,15 +150,15 @@ impl Emit<'_, '_, '_> {
 
     /// Forgets that this thread holds a lock.
     fn note_given_back(&mut self, word: &str) {
-        self.declare(crate::parallel::LOCK_HELD_GLOBAL);
+        let held_at = self.lock_held_place();
         let (first, same) = (self.temp(), self.temp());
-        self.line(&format!("{first} = load ptr, ptr @fennec_lock_held"));
+        self.line(&format!("{first} = load ptr, ptr {held_at}"));
         self.line(&format!("{same} = icmp eq ptr {first}, {word}"));
         let (mine, other, done) =
             (self.label("unlock_first"), self.label("unlock_other"), self.label("unlock_noted"));
         self.line(&format!("br i1 {same}, label %{mine}, label %{other}, !prof !8"));
         self.start_block(&mine);
-        self.line("store ptr null, ptr @fennec_lock_held");
+        self.line(&format!("store ptr null, ptr {held_at}"));
         self.line(&format!("br label %{done}"));
         self.start_block(&other);
         self.declare("declare void @fennec_lock_forget(ptr) nounwind");
@@ -141,41 +167,48 @@ impl Emit<'_, '_, '_> {
         self.start_block(&done);
     }
 
-    /// With the word held, the thread takes the cell's table and goes by what the runtime says.
-    fn entered(&mut self, cell: &str, write: &str) {
+    /// With the word held, the thread takes the cell's table and goes by what the runtime says. A
+    /// value holding only numbers has nothing in its table that anything could reach, so that's all
+    /// its lock is: what a body makes stays the thread's own.
+    fn entered(&mut self, cell: &str, write: &str, plain: &str) {
         if !self.module.threads {
             return;
         }
-        self.declare("declare i64 @fennec_shared_enter(ptr, i64) nounwind");
-        self.declare(crate::parallel::thread_global());
-        let (wide, me) = (self.temp(), self.temp());
-        self.line(&format!("{wide} = zext i1 {write} to i64"));
-        self.line(&format!("{me} = call i64 @fennec_shared_enter(ptr {cell}, i64 {wide})"));
-        self.leave_if_failed();
-        self.line(&format!("store i64 {me}, ptr @fennec_thread"));
+        self.unless_plain(plain, |emit| {
+            emit.declare("declare i64 @fennec_shared_enter(ptr, i64) nounwind");
+            emit.declare(crate::parallel::thread_global());
+            let (wide, me) = (emit.temp(), emit.temp());
+            emit.line(&format!("{wide} = zext i1 {write} to i64"));
+            emit.line(&format!("{me} = call i64 @fennec_shared_enter(ptr {cell}, i64 {wide})"));
+            emit.leave_if_failed();
+            emit.line(&format!("store i64 {me}, ptr @fennec_thread"));
+        });
     }
 
     pub(crate) fn unlock(&mut self, handle: &Operand) -> Result<(), String> {
-        let (word, cell) = self.lock_word(handle)?;
-        self.give_back_word(&word, &cell);
+        let (word, cell, plain) = self.lock_word(handle)?;
+        self.give_back_word(&word, &cell, &plain.to_string());
         Ok(())
     }
 
-    fn give_back_word(&mut self, word: &str, cell: &str) {
+    fn give_back_word(&mut self, word: &str, cell: &str, plain: &str) {
         if !self.module.threads {
             self.line(&format!("store i64 0, ptr {word}"));
             return;
         }
-        self.declare("declare i64 @fennec_shared_leave(ptr, i64) nounwind");
-        self.declare(crate::parallel::thread_global());
-        let (old, writer, wide, me) = (self.temp(), self.temp(), self.temp(), self.temp());
+        let (old, writer) = (self.temp(), self.temp());
         // Only this thread can have set the top bit, if it's set, so it's safe to look first.
         self.line(&format!("{old} = load atomic i64, ptr {word} monotonic, align 8"));
         self.line(&format!("{writer} = icmp slt i64 {old}, 0"));
-        self.line(&format!("{wide} = zext i1 {writer} to i64"));
-        self.line(&format!("{me} = call i64 @fennec_shared_leave(ptr {cell}, i64 {wide})"));
-        self.leave_if_failed();
-        self.line(&format!("store i64 {me}, ptr @fennec_thread"));
+        self.unless_plain(plain, |emit| {
+            emit.declare("declare i64 @fennec_shared_leave(ptr, i64) nounwind");
+            emit.declare(crate::parallel::thread_global());
+            let (wide, me) = (emit.temp(), emit.temp());
+            emit.line(&format!("{wide} = zext i1 {writer} to i64"));
+            emit.line(&format!("{me} = call i64 @fennec_shared_leave(ptr {cell}, i64 {wide})"));
+            emit.leave_if_failed();
+            emit.line(&format!("store i64 {me}, ptr @fennec_thread"));
+        });
         let (free, read, done) =
             (self.label("unlock_free"), self.label("unlock_read"), self.label("unlocked"));
         self.line(&format!("br i1 {writer}, label %{free}, label %{read}"));
@@ -195,11 +228,11 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn lock_all(&mut self, handles: &[(Operand, bool)], span: Span) -> Result<(), String> {
         let mut held = Vec::with_capacity(handles.len());
         for (handle, write) in handles {
-            let (word, cell) = self.lock_word(handle)?;
-            held.push((word, cell, write.to_string()));
+            let (word, cell, plain) = self.lock_word(handle)?;
+            held.push((word, cell, write.to_string(), plain.to_string()));
         }
-        for (at, (word, _, _)) in held.iter().enumerate() {
-            for (earlier, _, _) in held.iter().take(at) {
+        for (at, (word, ..)) in held.iter().enumerate() {
+            for (earlier, ..) in held.iter().take(at) {
                 let same = self.temp();
                 self.line(&format!("{same} = icmp eq ptr {earlier}, {word}"));
                 self.stop_if(&same, TAKEN_TWICE, span);
@@ -208,9 +241,9 @@ impl Emit<'_, '_, '_> {
         if self.module.threads {
             self.sort_by_address(&mut held);
         }
-        for (word, cell, write) in &held {
+        for (word, cell, write, plain) in &held {
             self.take_word(word, write, span);
-            self.entered(cell, write);
+            self.entered(cell, write, plain);
         }
         Ok(())
     }
@@ -220,17 +253,17 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn unlock_all(&mut self, handles: &[Operand]) -> Result<(), String> {
         let mut held = Vec::with_capacity(handles.len());
         for handle in handles {
-            let (word, cell) = self.lock_word(handle)?;
-            held.push((word, cell, "false".to_owned()));
+            let (word, cell, plain) = self.lock_word(handle)?;
+            held.push((word, cell, "false".to_owned(), plain.to_string()));
         }
         if self.module.threads {
             self.sort_by_address(&mut held);
-            for (word, cell, _) in &held {
-                self.settle(word, cell);
+            for (word, cell, _, plain) in &held {
+                self.unless_plain(plain, |emit| emit.settle(word, cell));
             }
         }
-        for (word, cell, _) in held.iter().rev() {
-            self.give_back_word(word, cell);
+        for (word, cell, _, plain) in held.iter().rev() {
+            self.give_back_word(word, cell, plain);
         }
         Ok(())
     }
@@ -264,11 +297,13 @@ impl Emit<'_, '_, '_> {
                     self.pick(&swap, "ptr", &b.0, &a.0),
                     self.pick(&swap, "ptr", &b.1, &a.1),
                     self.pick(&swap, "i1", &b.2, &a.2),
+                    self.pick(&swap, "i1", &b.3, &a.3),
                 );
                 let high = (
                     self.pick(&swap, "ptr", &a.0, &b.0),
                     self.pick(&swap, "ptr", &a.1, &b.1),
                     self.pick(&swap, "i1", &a.2, &b.2),
+                    self.pick(&swap, "i1", &a.3, &b.3),
                 );
                 if let Some(slot) = held.get_mut(first) {
                     *slot = low;
@@ -468,4 +503,15 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
         Ok(())
     }
+}
+
+/// Whether a `shared` value, or a struct in place in one, holds only numbers and bools.
+fn plain_on_threads(layouts: &Layouts, layout: &Layout) -> bool {
+    layout.fields.iter().all(|field| match field.ty {
+        Ty::Int | Ty::Float | Ty::Bool => true,
+        Ty::Struct(id) => layouts
+            .get(id)
+            .is_some_and(|inner| !inner.boxed && inner.cases.is_none() && plain_on_threads(layouts, inner)),
+        _ => false,
+    })
 }

@@ -17,7 +17,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use fennec_syntax::Diagnostic;
 
-use super::super::{FAILED, State, attempt, heap, lists, threads, with};
+use super::super::{State, attempt, heap, lists, set_failed, threads, with};
 use super::{MapBody, chunk, extent, number, pool};
 
 /// Where a chunk is.
@@ -111,7 +111,7 @@ impl Stream {
             heap::free(items);
             items = 0;
             failure = with(|state| state.failure.take());
-            FAILED.set(0);
+            set_failed(0);
         }
         let made = if threads::index() == self.reader { Vec::new() } else { threads::hand_over(since) };
         Slot::Done { items, made, failure }

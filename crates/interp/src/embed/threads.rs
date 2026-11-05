@@ -55,6 +55,11 @@ pub extern "C" fn lock_note(word: u64) -> i64 {
     })
 }
 
+/// Whether this thread holds any `shared` value's lock.
+pub(super) fn holds_locks() -> bool {
+    super::lock_word_held() || LOCKS.with_borrow(|held| !held.is_empty())
+}
+
 /// Notes that this thread has given back the lock at `word`.
 pub extern "C" fn lock_forget(word: u64) {
     LOCKS.with_borrow_mut(|held| {

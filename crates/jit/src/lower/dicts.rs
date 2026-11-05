@@ -36,6 +36,7 @@ pub(super) fn word_ty(word: Word) -> Ty {
         Word::Str | Word::Text => Ty::Str,
         Word::Nothing => Ty::Unit,
         Word::Plain(id) => Ty::Struct(id),
+        Word::Block(number) => Ty::Block(number),
     }
 }
 
@@ -741,7 +742,7 @@ impl Lowerer<'_, '_> {
         match word {
             Word::Float => self.b.ins().bitcast(types::I64, MemFlagsData::new(), value),
             Word::Bool => self.b.ins().uextend(types::I64, value),
-            Word::Int | Word::Str | Word::Text | Word::Nothing | Word::Plain(_) => value,
+            Word::Int | Word::Str | Word::Text | Word::Nothing | Word::Plain(_) | Word::Block(_) => value,
         }
     }
 
@@ -750,7 +751,7 @@ impl Lowerer<'_, '_> {
         match word {
             Word::Float => self.b.ins().bitcast(types::F64, MemFlagsData::new(), bits),
             Word::Bool => self.b.ins().ireduce(types::I8, bits),
-            Word::Int | Word::Str | Word::Text | Word::Nothing | Word::Plain(_) => bits,
+            Word::Int | Word::Str | Word::Text | Word::Nothing | Word::Plain(_) | Word::Block(_) => bits,
         }
     }
 }

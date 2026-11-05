@@ -1,6 +1,6 @@
 # Benchmarks
 
-Each kernel in `kernels/` is a Fennec program that stands for one way a language has to be fast. Every kernel has a target pinned in `targets/`, and the suite reports how fast Fennec runs it as a percentage of that target.
+Each kernel in `kernels/` is a Fennec program that stands for one way a language has to be fast. Every kernel has a target pinned in `targets/`, and the suite reports how fast Fennec runs it as a percentage of that target. Each kernel is built by `fennec build --llvm --release` and run as an executable, the way a program ships.
 
 ```bash
 cargo build --release -p fennec -p fennec-bench
@@ -29,7 +29,7 @@ These are what languages have historically been judged on: most of the Computer 
 
 Startup and work are told apart:
 
-- **Startup** is everything before `main`: loading, checking, compiling or reusing cached code. `fennec dev startup` stops there.
+- **Startup** is what any built program takes before its `main`: the whole run of `startup/empty.fen`, built the same way. Building isn't counted.
 - **Work** is the whole run minus startup. It's what's compared with the target, so a slow start can't hide a fast loop, or the other way around.
 
 A kernel's speed is its target's instructions divided by the instructions its work takes. Instructions are the measure because they barely move when a machine is busy, and they don't depend on how fast it is. Times are shown too.
@@ -40,7 +40,7 @@ A kernel's speed is its target's instructions divided by the instructions its wo
 
 Instructions aren't time, though. They can disagree by a lot, in either direction: on an Apple M3 under load, `sieve` was 57% by instructions and 93% by time. So the table shows both. The percentage by time compares with how long the twin took when it was pinned, so it's only as good as how alike the two machines are. The floor and the ratchet go by instructions, because they're stable.
 
-The table also counts the places in each kernel's compiled code that aren't native, from `fennec dev fallbacks`, and the run warns about them, since code that falls off the fast path prints nothing when it runs.
+The table also counts the functions in each kernel that LLVM doesn't take yet, from `fennec dev fallbacks --llvm`, and the run warns about them. A kernel with any doesn't build, so the run fails on it too. `fallbacks.txt` holds those counts, which are all zero, and a test keeps them so. CI's "Programs with no interpreter" job also builds every kernel against the runtime with no interpreter in it, so a kernel can't quietly call into the interpreter either.
 
 Each kernel also has to print exactly what its target expects, which the target file holds as a hash.
 
@@ -48,7 +48,7 @@ Targets come from twins built with overflow checks on, because Fennec always che
 
 ## The floor and the ratchet
 
-**The JIT's floor is 80% of target**, on every kernel, rising to 85% later. Past that is nice but not the goal. The 80% is a floor on work, not on startup.
+**The floor is 80% of target**, on every kernel, rising to 85% later. Past that is nice but not the goal. The 80% is a floor on work, not on startup. It was set for the JIT, and LLVM's release builds clear it by far, so it stays as a floor while the JIT goes.
 
 Once a kernel reaches the floor, the run says so. Mark it `yes` in the last column of `x86_64.txt`, the only architecture CI measures, and from then on CI fails if it drops below. Reaching the floor on x86-64 says nothing about 64-bit Arm, so that file's marks wait until Arm is measured the same way. A `.std` row is never marked. A failure is fixed in the compiler, never by changing the benchmark.
 
@@ -56,13 +56,13 @@ The target itself is 100%. Each engine aims for its own share of it:
 
 | Engine | Aim |
 |---|---|
-| Release builds | 110% of target, when they exist |
-| The JIT | 80% now, 85% later |
+| LLVM's release builds, which the suite measures | 110% of target |
+| The JIT, on its way out | 80% now, 85% later |
 | The interpreter | 10–30% |
 
 The goal across the suite is 95% of target. Reports show it against both twins: unchecked, which is what's pinned today, and built with overflow checks, as Fennec is. Those checks cost Rust itself about 5% by cycles and 9% by instructions. The checked twins come when the tool adds them.
 
-To compare against another build of `fennec`, like the previous commit's, pass `--previous path/to/fennec`. CI does that on every pull request, merge and push to `main`. A kernel counts as slower when its median time is more than 10% slower than before and it also runs more than 1% more instructions. For now that's a warning, until the counts have proven stable on pull requests that change nothing on the run path.
+To compare against another build of `fennec`, like the previous commit's, pass `--previous path/to/fennec`, with its runtime library beside it so it can build the kernels too. CI does that on every pull request, merge and push to `main`. A kernel counts as slower when its median time is more than 10% slower than before and it also runs more than 1% more instructions. For now that's a warning, until the counts have proven stable on pull requests that change nothing on the run path.
 
 ## Keeping it honest
 

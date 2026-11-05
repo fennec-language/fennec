@@ -500,6 +500,11 @@ impl Checker {
     /// other than `E`.
     fn only_what_it_says(&mut self, def: &FnDef, fails: &fennec_syntax::TypeExpr, errors: &Type) {
         let Ok(declared) = self.program.resolve(fails) else { return };
+        // `fails ParseError | RangeError` was checked when it was resolved.
+        if let Type::Errors(owns) = &declared {
+            self.only_these(def, fails, owns, errors);
+            return;
+        }
         if !self.is_error_type(&declared) {
             if declared.is_known() {
                 self.diagnostics.push(
@@ -529,6 +534,30 @@ impl Checker {
                 fails.span,
             )
             .with_help(format!("handle {others} where it happens, or fail with a `{own}` in its place")),
+        );
+    }
+
+    /// Reports a body of a function that says `fails A | B` that can fail some other way.
+    fn only_these(&mut self, def: &FnDef, fails: &fennec_syntax::TypeExpr, owns: &[String], errors: &Type) {
+        let others: Vec<String> = match self.settled(errors) {
+            Type::Named(name) => vec![name],
+            Type::Errors(names) => names,
+            _ => Vec::new(),
+        }
+        .into_iter()
+        .filter(|name| !owns.contains(name))
+        .map(|name| format!("`{name}`"))
+        .collect();
+        if others.is_empty() {
+            return;
+        }
+        let (others, owns) = (others.join(" or "), written(fails));
+        self.diagnostics.push(
+            Diagnostic::new(
+                format!("`{}` says it fails with `{owns}`, but it can fail with {others} too", def.name),
+                fails.span,
+            )
+            .with_help(format!("handle {others} where it happens, or add it after `fails`")),
         );
     }
 

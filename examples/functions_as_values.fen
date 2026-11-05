@@ -1,0 +1,20 @@
+# A function's name is a value: it goes wherever a function type is written, with no arrow
+# around it.
+
+struct Request:
+    path: str
+
+def handle(request: Request) -> str:
+    f"served {request.path}"
+
+def respond_all(requests: list[Request], respond: (Request) -> str) -> list[str]:
+    [respond(request) for request in requests]
+
+def twice(n: int) -> int:
+    n * 2
+
+def main(stdout: Stdout):
+    requests = [Request(path="/"), Request(path="/about")]
+    stdout.print(respond_all(requests, handle))
+    step: (int) -> int = twice
+    stdout.print(step(step(3)), sorted([3, -5, 1], key=twice))

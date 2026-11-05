@@ -2,7 +2,7 @@
 //! each kernel's work should take. `fennec-bench pin` measures them from the kernels' twins, so
 //! everyday runs need only Fennec.
 //!
-//! A kernel's `enforced` mark is its ratchet. The change that first brings a kernel to the JIT's
+//! A kernel's `enforced` mark is its ratchet. The change that first brings a kernel to the
 //! floor sets it, and from then on a run fails if that kernel drops below.
 
 use std::collections::BTreeMap;
@@ -26,7 +26,7 @@ pub(crate) struct Target {
 pub(crate) type Targets = BTreeMap<String, Target>;
 
 const HEADER: &str = "# Written by `fennec-bench pin`. Only the last column is edited by hand: `yes` once a kernel\n\
-                      # reaches the JIT's floor, so it can't drop below it again.\n\
+                      # reaches the floor, so it can't drop below it again.\n\
                       # kernel instructions micros output source enforced\n";
 
 /// This machine's targets file under `dir`.

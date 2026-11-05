@@ -291,8 +291,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Build fennec and the benchmark suite
-        run: cargo build --release --locked -p fennec -p fennec-bench
+      # Each kernel is built through LLVM, with LLVM's tools and the runtime library.
+      - name: Install LLVM's tools
+        run: rustup component add llvm-tools-preview
+      - name: Build fennec, its runtime and the benchmark suite
+        run: cargo build --release --locked -p fennec -p fennec-runtime -p fennec-bench
       # The previous commit is the base of a pull request or merge group, or the commit before
       # a push to main. Both versions run on this machine, so their times compare fairly.
       # A merge group leaves it out: slowdowns against it are only warnings, which the pull request
@@ -304,11 +307,11 @@ jobs:
         run: |
           if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
             git worktree add --detach ../previous "$BASE"
-            cargo build --release --locked -p fennec --manifest-path ../previous/Cargo.toml --target-dir target/previous
+            cargo build --release --locked -p fennec -p fennec-runtime --manifest-path ../previous/Cargo.toml --target-dir target/previous
           fi
-      # Each kernel's work is counted in instructions and compared with its pinned target. The
-      # runner's virtual CPU usually hides the counters perf reads, so Valgrind counts by
-      # simulating instead.
+      # Each kernel's LLVM release build has its work counted in instructions and compared with
+      # its pinned target. The runner's virtual CPU usually hides the counters perf reads, so
+      # Valgrind counts by simulating instead.
       - name: Install tools that count instructions
         run: |
           sudo apt-get update -qq
@@ -445,7 +448,7 @@ jobs:
           cp target/lean-threads/release/libfennec_runtime.a target/release/libfennec_runtime_lean_threads.a
       - name: Build and run every example and kernel
         run: |
-          still_needs=" json_ids std_log "
+          still_needs=" json_ids "
           built=0
           failed=0
           for program in examples/*.fen bench/kernels/*.fen; do

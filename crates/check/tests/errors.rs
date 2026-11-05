@@ -249,6 +249,35 @@ fn fails_names_the_one_error_a_function_can_fail_with() {
 }
 
 #[test]
+fn fails_can_name_several_errors_and_question_mark_passes_any_up() {
+    let text = format!(
+        "{LOAD_ERROR}error ParseError:\n    Bad(text: str)\n\n\
+         def parse(text: str) -> int fails ParseError:\n    if text == \"\":\n        fail .Bad(text)\n    1\n\n\
+         def load(path: str) -> int fails LoadError | ParseError:\n    if path == \"\":\n        \
+         fail .NotFound(path)\n    parse(path)?\n\n\
+         def apply(read: (str) -> int fails LoadError | ParseError, path: str) -> int fails LoadError | ParseError:\n    \
+         read(path)?\n\n\
+         def main(stdout: Stdout):\n    match load(\"a\"):\n        case Ok(n): stdout.print(n)\n        \
+         case Err(.NotFound(path)): stdout.print(path)\n        case Err(.Bad(text)): stdout.print(text)\n        \
+         case Err(_): pass\n    stdout.print(apply(path => load(path), \"b\") else 0)\n"
+    );
+    assert_eq!(problems(&text), Vec::<String>::new());
+    assert_eq!(
+        problems(&format!(
+            "{LOAD_ERROR}def load(path: str) -> int fails LoadError | int:\n    1\n\n\
+             def read(path: str) -> int fails LoadError | Other:\n    if path == \"\":\n        fail .Gone(path)\n    1\n\n\
+             def other() -> int fails Other:\n    fail Other(why=\"no\")\n\n\
+             def check(path: str) -> int fails LoadError:\n    other()?\n"
+        )),
+        [
+            "`fails` names errors, but `int` is an int @ int",
+            "no enum has a case called `Gone` @ .Gone(path)",
+            "`check` says it fails with `LoadError`, but it can fail with `Other` too @ LoadError",
+        ]
+    );
+}
+
+#[test]
 fn only_the_error_fails_names_can_escape() {
     assert_eq!(
         problems(&format!(

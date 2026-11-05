@@ -724,3 +724,42 @@ def build[T: Made]() -> T:
     let found = problems(&misfits);
     assert!(found.iter().any(|problem| problem.contains("isn't a `Made`")), "{found:?}");
 }
+
+#[test]
+fn a_method_that_changes_its_value_doesnt_fit_an_interfaces_self() {
+    let source = "interface Source:\n    def next(self) -> int\n\n\
+                  struct Count:\n    left = 2\n\n    def next(mut self) -> int:\n        self.left -= 1\n        self.left\n\n\
+                  def two(source: Source) -> int:\n    source.next() + source.next()\n\n\
+                  def main(stdout: Stdout):\n    counter = Count()\n    stdout.print(two(counter))\n";
+    let found = problems(source);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("it has no `next(self) -> int`. Its `next` changes `self`"), "{found:?}");
+    let helped = helps(source);
+    assert!(
+        helped.iter().any(|help| help.contains("write `mut self` in the interface's `next`")),
+        "{helped:?}"
+    );
+}
+
+#[test]
+fn an_interfaces_mut_self_fits_a_method_that_changes_it_or_one_that_doesnt() {
+    let empty: [&str; 0] = [];
+    let source = "interface Source:\n    def next(mut self) -> int\n\n\
+                  struct Count:\n    left = 2\n\n    def next(mut self) -> int:\n        self.left -= 1\n        self.left\n\n\
+                  struct Fixed:\n    held = 7\n\n    def next(self) -> int:\n        self.held\n\n\
+                  def two(mut source: Source) -> int:\n    source.next() + source.next()\n\n\
+                  def main(stdout: Stdout):\n    mut counter = Count()\n    mut fixed = Fixed()\n    \
+                  stdout.print(two(mut counter), counter.left, two(mut fixed))\n";
+    assert_eq!(problems(source), empty);
+}
+
+#[test]
+fn a_function_with_no_self_has_its_first_parameter_compared_too() {
+    let source = "interface Made:\n    def make(size: int) -> Self\n\n\
+                  struct Part:\n    size = 1\n\n    def make(size: str) -> Self:\n        Self(size=size.len())\n\n\
+                  def build[T: Made]() -> T:\n    T.make(1)\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(build[Part]().size)\n";
+    let found = problems(source);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("takes other arguments"), "{found:?}");
+}

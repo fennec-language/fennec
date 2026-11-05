@@ -129,13 +129,31 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let (receiver, rest) = args.split_first().ok_or("a method with nothing to call it on")?;
-        let (held, kind) = self.operand(receiver)?;
+        let handle = self.socket_handle(receiver)?;
+        self.socket_method(dest, &handle, name, rest, span)
+    }
+
+    /// The handle a `Connection` or `Server` holds.
+    pub(crate) fn socket_handle(&mut self, socket: &Operand) -> Result<String, String> {
+        let (held, kind) = self.operand(socket)?;
         let inside = if matches!(kind, Kind::Boxed(_)) { self.offset(&held, FIELDS_OFFSET) } else { held };
         let (offset, _) = self.field(&kind, "_handle")?;
         let at = self.offset(&inside, offset);
         let handle = self.temp();
         self.line(&format!("{handle} = load i64, ptr {at}"));
-        self.crossing(dest, ("fennec_net_call", "i64", &handle), name, rest, span)
+        Ok(handle)
+    }
+
+    /// A method by a handle, which can park its task.
+    pub(crate) fn socket_method(
+        &mut self,
+        dest: Option<LocalId>,
+        handle: &str,
+        name: &str,
+        rest: &[Operand],
+        span: Span,
+    ) -> Result<(), String> {
+        self.crossing(dest, ("fennec_net_call", "i64", handle), name, rest, span)
     }
 
     /// Hands arguments over to a method in the runtime, and makes what it gives back native.
@@ -156,6 +174,9 @@ impl Emit<'_, '_, '_> {
             "{handle} = call i64 @{runtime}({word_type} {word}, ptr {named}, i64 {}, i64 {from}, i64 {to})",
             rest.len()
         ));
+        if runtime == "fennec_net_call" {
+            self.stack_limit_again();
+        }
         self.leave_if_failed();
         self.take_what_crossed(dest, &handle, (&mark, crossed), span)
     }

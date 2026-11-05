@@ -70,6 +70,37 @@ fn liftable(body: &[Stmt]) -> bool {
     }) && !tries(body)
 }
 
+/// Whether a server's task can be lifted from a body: it can end by failing, which ends only the
+/// task, but not by leaving the loop or the function.
+fn leaves_only_by_failing(body: &[Stmt]) -> bool {
+    body.iter().all(|stmt| match &stmt.kind {
+        StmtKind::Break | StmtKind::Continue | StmtKind::Return(_) | StmtKind::Yield(_) => false,
+        StmtKind::If { branches, otherwise } => {
+            branches.iter().all(|(_, block)| leaves_only_by_failing(block))
+                && otherwise.as_deref().is_none_or(leaves_only_by_failing)
+        }
+        StmtKind::With { body, .. } => leaves_only_by_failing(body),
+        // A loop's own `break` and `continue` stay in it.
+        StmtKind::While { body, .. } | StmtKind::For { body, .. } => no_returning(body),
+        _ => true,
+    })
+}
+
+/// Whether nothing in a body leaves the function it's in, other than by failing.
+fn no_returning(body: &[Stmt]) -> bool {
+    body.iter().all(|stmt| match &stmt.kind {
+        StmtKind::Return(_) | StmtKind::Yield(_) => false,
+        StmtKind::If { branches, otherwise } => {
+            branches.iter().all(|(_, block)| no_returning(block))
+                && otherwise.as_deref().is_none_or(no_returning)
+        }
+        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+            no_returning(body)
+        }
+        _ => true,
+    })
+}
+
 /// Whether a body uses `?` outside a nested function's own body.
 fn tries(body: &[Stmt]) -> bool {
     let mut found = false;
@@ -144,6 +175,106 @@ impl Lowering<'_> {
                 InstKind::Builtin { dest: None, name: "parallel.for".to_owned(), args, changes: is_mut };
             self.emit(call, span);
         }))
+    }
+
+    /// `for conn in parallel(server)`, each connection a task the runtime runs, when the backend
+    /// asks for it and the body can be lifted. `?` in the body ends only its task. `None` when it's
+    /// lowered as an ordinary loop.
+    pub(super) fn parallel_serve(
+        &mut self,
+        names: &[String],
+        iter: &Expr,
+        body: &[Stmt],
+        span: Span,
+    ) -> Option<Lowered<()>> {
+        let (true, [name], Some(server)) =
+            (self.context.options.outline_parallel, names, parallel_items(iter))
+        else {
+            return None;
+        };
+        if self.type_at(server.span)? != Type::Named("Server".to_owned()) || !leaves_only_by_failing(body) {
+            return None;
+        }
+        if self.writes_outside(body, name) {
+            return None;
+        }
+        Some(self.lift_task(name, server, body, span))
+    }
+
+    /// Lifts a server's loop body into a function of a connection, and that into the closure the
+    /// runtime runs for each, which takes the connection's handle, makes its `Connection`, and
+    /// stops its task with any failure the body passes up.
+    fn lift_task(&mut self, name: &str, server: &Expr, body: &[Stmt], span: Span) -> Lowered<()> {
+        let server = self.expr(server)?;
+        let mut names = Vec::new();
+        visit::in_stmts(&mut body.to_vec(), &mut |seen: &mut Expr| {
+            if let ExprKind::Name(found) = &seen.kind {
+                names.push(found.clone());
+            }
+        });
+        let captures = self.captures(names, &[name]);
+        let connection = Type::Named("Connection".to_owned());
+        // A body with `?` makes its enclosing function fail with what it can fail with.
+        let returns = match &self.returns {
+            Type::Result(_, error) => Type::Result(Box::new(Type::Unit), error.clone()),
+            _ => Type::Unit,
+        };
+        let inner = format!("{}.task@{}", self.name, span.start);
+        let instance =
+            FunctionInstance { base: self.base.clone(), name: inner.clone(), subst: self.subst.clone() };
+        let mut lifted = Lowering::new(&instance, self.context, self.body, returns.clone());
+        for (captured, local) in &captures {
+            lifted.declare(captured, self.local_type(*local));
+        }
+        lifted.declare(name, connection.clone());
+        lifted.scopes.push(HashMap::new());
+        lifted.stmts(body, Tail::Drop)?;
+        lifted.end_function(span)?;
+        self.lifted.extend(lifted.finished(captures.len() + 1, Vec::new()));
+
+        let key = format!("{}.serve@{}", self.name, span.start);
+        let instance =
+            FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
+        let mut task = Lowering::new(&instance, self.context, self.body, Type::Unit);
+        let mut args = Vec::with_capacity(captures.len() + 1);
+        for (captured, local) in &captures {
+            args.push(Operand::Local(task.declare(captured, self.local_type(*local))));
+        }
+        let handle = task.declare("\0parallel.conn", Type::Int);
+        task.scopes.push(HashMap::new());
+        let peer = task.temporary(Type::Str);
+        let asked = vec![Operand::Local(handle)];
+        task.emit(
+            InstKind::Builtin {
+                dest: Some(peer),
+                name: "parallel.peer".to_owned(),
+                args: asked,
+                changes: false,
+            },
+            span,
+        );
+        let made = task.temporary(connection);
+        let fields = vec![Operand::Local(handle), Operand::Local(peer)];
+        task.emit(InstKind::Make { dest: made, type_name: "Connection".to_owned(), fields }, span);
+        args.push(Operand::Local(made));
+        let passes_up = returns != Type::Unit;
+        let dest = passes_up.then(|| task.temporary(returns.clone()));
+        task.emit(InstKind::Call { dest, function: inner, args }, span);
+        if let Some(result) = dest {
+            let args = vec![Operand::Local(result), Operand::Str("this connection's task failed".to_owned())];
+            let stop =
+                InstKind::Builtin { dest: None, name: "result.expect".to_owned(), args, changes: false };
+            task.emit(stop, span);
+        }
+        task.end_function(span)?;
+        self.lifted.extend(task.finished(captures.len() + 1, Vec::new()));
+
+        let arrow = Type::Arrow(vec![Type::Int], Box::new(Type::Unit));
+        let closure = self.make_closure(key, &captures, arrow, span);
+        let args = vec![server, Operand::Local(closure)];
+        let call = InstKind::Builtin { dest: None, name: "parallel.serve".to_owned(), args, changes: false };
+        self.emit(call, span);
+        Ok(())
     }
 
     /// `[f(x) for x in parallel(xs)]` or `sum(f(x) for x in parallel(xs))`, lifted, when the

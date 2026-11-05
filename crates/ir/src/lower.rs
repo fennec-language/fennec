@@ -588,7 +588,10 @@ impl<'a> Lowering<'a> {
             }
             StmtKind::Pass => {}
             StmtKind::For { names, is_mut, iter, body } => {
-                match self.parallel_for((names, *is_mut), iter, body, stmt.span) {
+                let lifted = self
+                    .parallel_for((names, *is_mut), iter, body, stmt.span)
+                    .or_else(|| self.parallel_serve(names, iter, body, stmt.span));
+                match lifted {
                     Some(outlined) => outlined?,
                     None => self.for_stmt((names, *is_mut), iter, body, stmt.span)?,
                 }

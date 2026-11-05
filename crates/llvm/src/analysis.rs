@@ -2101,6 +2101,8 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "Regex.fullmatch"
                     // A range's body can fail on any thread, and the call passes it up.
                     | "parallel.for"
+                    | "parallel.serve"
+                    | "parallel.peer"
                     | "parallel.map"
                     | "parallel.sum"
             )

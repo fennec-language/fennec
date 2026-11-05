@@ -101,6 +101,8 @@ pub(crate) struct Heap {
     owner_bits: u64,
     /// On a worker, the blocks it made since it last handed what it made over.
     made: Vec<u64>,
+    /// Whether this heap serves connections, whose tasks hand nothing over.
+    pub(super) serving: bool,
     /// How many words each shape's blocks take, by the shape's number.
     sizes: Vec<usize>,
     /// On a worker running a range, the blocks of the thread that made the `parallel` call,
@@ -326,7 +328,9 @@ impl Heap {
         let address = block.as_ptr().addr();
         if super::threads::ON && self.owner_bits != 0 {
             mark_owner(&mut block, self.owner_bits);
-            self.made.push(u64::try_from(address).unwrap_or(0));
+            if !self.serving {
+                self.made.push(u64::try_from(address).unwrap_or(0));
+            }
         }
         self.blocks.insert(block);
         i64::try_from(address).unwrap_or(0)

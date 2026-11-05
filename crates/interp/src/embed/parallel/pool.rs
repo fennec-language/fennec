@@ -18,6 +18,9 @@ const WORKER_STACK_BYTES: usize = 64 << 20;
 /// stack is room for the runtime it calls.
 const WORKER_NATIVE_BYTES: usize = 48 << 20;
 
+/// What native code leaves free of a parked task's stack, for the runtime it calls.
+const TASK_RUNTIME_BYTES: usize = 256 << 10;
+
 /// What a worker does before its first range: start a runtime of its own, holding the
 /// program. An executable gives it when it starts; with none, every loop runs on the calling
 /// thread.
@@ -68,7 +71,8 @@ pub fn run_worker_setup() {
 /// The lowest address native code on this thread may grow its stack to, when it's one of the
 /// pool's workers, and 0 otherwise.
 pub fn stack_limit() -> usize {
-    LIMIT.get()
+    // A task on a server's I/O worker has a stack of its own, and the runtime needs room below it.
+    fennec_parked::stack_low().map_or_else(|| LIMIT.get(), |low| low + TASK_RUNTIME_BYTES)
 }
 
 /// How many workers `FENNEC_THREADS` asks for, or 0 for as many as there are cores (or as

@@ -36,6 +36,7 @@ const FAKE_HOSTS: [&str; 2] = ["localhost", "127.0.0.1"];
 /// A real connection, which any thread holding its handle can use: one thread reading and another
 /// writing don't wait for each other, and nothing's interleaved within either.
 struct Stream {
+    peer: String,
     socket: TcpStream,
     reader: Mutex<BufReader<TcpStream>>,
     writing: Mutex<()>,
@@ -416,6 +417,8 @@ pub(crate) fn real_connection(
             close(handle);
             return Ok(Value::Unit);
         }
+        // What a task serving a connection makes its `Connection` from.
+        ("peer", []) => return Ok(stream(handle).map_or_else(|_| Value::str(""), |it| Value::str(&it.peer))),
         _ => return Err(wrong(method, span)),
     };
     Ok(done_or_failed(done))
@@ -452,11 +455,11 @@ pub(crate) fn timed<'a>(
     Ok((method, args, Some(duration_of(timeout, span)?)))
 }
 
-fn bytes_asked(count: i64, span: Span) -> Result<usize, Diagnostic> {
+pub(crate) fn bytes_asked(count: i64, span: Span) -> Result<usize, Diagnostic> {
     usize::try_from(count).map_err(|_| Diagnostic::new(format!("`read` can't give {count} bytes"), span))
 }
 
-fn data_of(data: &Value) -> &[u8] {
+pub(crate) fn data_of(data: &Value) -> &[u8] {
     match data {
         Value::Str(text) => text.as_bytes(),
         Value::Bytes(data) => data,
@@ -464,7 +467,7 @@ fn data_of(data: &Value) -> &[u8] {
     }
 }
 
-fn line_value(line: Option<&[u8]>) -> Value {
+pub(crate) fn line_value(line: Option<&[u8]>) -> Value {
     line.map_or(Value::None, |line| Value::str(String::from_utf8_lossy(trim_line(line)).as_ref()))
 }
 
@@ -476,7 +479,7 @@ fn made_or_failed(found: Result<Made, Failure>) -> Value {
     done_or_failed(found.map(|(type_name, fields)| Value::made(type_name, fields)))
 }
 
-fn done_or_failed(done: Result<Value, Failure>) -> Value {
+pub(crate) fn done_or_failed(done: Result<Value, Failure>) -> Value {
     match done {
         Ok(value) => Value::Ok(Rc::new(value)),
         Err(failure) => failed(&failure),
@@ -510,7 +513,7 @@ fn connect(host: &str, port: u16, timeout: Duration) -> Result<Made, Failure> {
         match TcpStream::connect_timeout(&address, timeout) {
             Ok(stream) => {
                 let peer = stream.peer_addr().map_or_else(|_| format!("{host}:{port}"), |peer| peer.to_string());
-                let handle = keep_stream(stream)?;
+                let handle = keep_stream(stream, peer.clone())?;
                 return Ok(connection_made((handle, peer)));
             }
             Err(error) => {
@@ -525,9 +528,9 @@ fn connect(host: &str, port: u16, timeout: Duration) -> Result<Made, Failure> {
     Err(failure)
 }
 
-fn keep_stream(socket: TcpStream) -> Result<i64, Failure> {
+fn keep_stream(socket: TcpStream, peer: String) -> Result<i64, Failure> {
     let reader = socket.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
-    let stream = Stream { socket, reader: Mutex::new(BufReader::new(reader)), writing: Mutex::new(()) };
+    let stream = Stream { peer, socket, reader: Mutex::new(BufReader::new(reader)), writing: Mutex::new(()) };
     Ok(open(|open| {
         let handle = fresh_handle(open);
         open.insert(handle, Socket::Stream(Arc::new(stream)));
@@ -617,7 +620,20 @@ fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failu
     };
     let (stream, peer) = accepted;
     stream.set_nonblocking(false).map_err(|error| Failure::Other(error.to_string()))?;
-    Ok((keep_stream(stream)?, peer.to_string()))
+    let peer = peer.to_string();
+    Ok((keep_stream(stream, peer.clone())?, peer))
+}
+
+/// The next connection a server takes, by its handle, for a server taking them one at a time.
+#[cfg(not(any(test, feature = "threads")))]
+pub(crate) fn accepted(server: i64) -> Result<i64, Failure> {
+    accept(server, None).map(|(connection, _)| connection)
+}
+
+/// Closes a connection a server took one at a time.
+#[cfg(not(any(test, feature = "threads")))]
+pub(crate) fn closed(connection: i64) {
+    close(connection);
 }
 
 /// Closes a socket. Whoever else was using it finds out: a read waiting on another thread ends.
@@ -629,11 +645,9 @@ fn close(handle: i64) {
 }
 
 /// Takes a real server's listener out of the open sockets, for `parallel(server)` to serve from.
-/// A server in a test's fake network, or one already closed, has none.
+/// One already closed has none.
 #[cfg(any(test, feature = "threads"))]
-pub(crate) fn take_listener(server: &Value) -> Option<TcpListener> {
-    let Value::Instance(server) = server else { return None };
-    let handle = handle_of(server);
+pub(crate) fn take_listener(handle: i64) -> Option<TcpListener> {
     open(|open| match open.remove(&handle) {
         Some(Socket::Listener(listener)) => {
             Arc::try_unwrap(listener).or_else(|listener| listener.try_clone()).ok()

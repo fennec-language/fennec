@@ -81,6 +81,12 @@ impl FnCx<'_> {
                 if self.names_a_collection(object) {
                     return self.empty_collection(callee, args, span);
                 }
+                if let ExprKind::Name(name) = &object.kind
+                    && matches!(name.as_str(), "array" | "array.new")
+                    && self.lookup(name).is_none()
+                {
+                    return self.filled_array(callee, index, args, span);
+                }
                 if let Some(type_name) = self.as_type_name(object) {
                     if self.checker.program.type_info(type_name).is_some() {
                         let types = self.types_in(index);
@@ -791,6 +797,84 @@ impl FnCx<'_> {
         }
         self.checker.empty_collections.insert((span.start, span.end));
         ty
+    }
+
+    /// `array[float, 16]()`: an array filled with its element's zero. It's written in as
+    /// `array.new[float, 16](0.0)`, with the zero checked here like any other expression, and
+    /// checked again in that form.
+    fn filled_array(&mut self, callee: &Expr, index: &Expr, args: &[Arg], span: Span) -> Type {
+        if let ExprKind::Index { object, .. } = &callee.kind
+            && let ExprKind::Name(name) = &object.kind
+            && name == "array.new"
+        {
+            let renamed = Expr { kind: ExprKind::Name("array".to_owned()), span: object.span };
+            let written = Expr { kind: ExprKind::Index { object: Box::new(renamed), index: Box::new(index.clone()) }, span: callee.span };
+            let ty = written.as_type().map_or(Type::Unknown, |written| self.resolve(&written));
+            if let (Type::Array(item, _), [zero]) = (&ty, args) {
+                let got = self.expr_as(&zero.value, item);
+                if !self.checker.fits(item, &got) {
+                    self.error(mismatch("this array's zero", item, &got, zero.value.span));
+                }
+            }
+            return ty;
+        }
+        let Some(written) = callee.as_type() else {
+            self.error(Diagnostic::new("write an array's type like `array[float, 16]()`", callee.span));
+            self.ignore_args(args);
+            return Type::Unknown;
+        };
+        if !args.is_empty() {
+            let message = format!("`{}()` fills it with zeros, so it takes nothing", crate::program::written(&written));
+            self.error(
+                Diagnostic::new(message, span)
+                    .with_help("set the items afterwards, or write them in `[...]` where an array goes"),
+            );
+            self.ignore_args(args);
+            return Type::Unknown;
+        }
+        let ty = self.resolve(&written);
+        let Type::Array(item, _) = &ty else { return ty };
+        let item_written = match &index.kind {
+            ExprKind::Tuple(parts) => parts.first().unwrap_or(index),
+            _ => index,
+        };
+        let Some(zero) = self.zero_of(item, item_written, callee.span) else {
+            let message = format!("{} has no zero to fill an array with", a(item));
+            self.error(
+                Diagnostic::new(message, span)
+                    .with_help("write the items out where the array goes: `[first, second, ...]`"),
+            );
+            return Type::Unknown;
+        };
+        self.expr(&zero);
+        self.checker.array_zeros.insert((span.start, span.end), zero);
+        ty
+    }
+
+    /// What an array of `item` starts out holding: 0, 0.0, False, "", None, an array of zeros,
+    /// or a struct made with all its defaults. It takes the span of the array's type, which is
+    /// never checked as an expression, so its type has a place of its own.
+    fn zero_of(&mut self, item: &Type, written: &Expr, at: Span) -> Option<Expr> {
+        let kind = match item {
+            Type::Int => ExprKind::Int(0),
+            Type::Float => ExprKind::Float(0.0),
+            Type::Bool => ExprKind::Bool(false),
+            Type::Str => ExprKind::Str(String::new()),
+            Type::Optional(_) => ExprKind::None,
+            Type::Array(..) => ExprKind::Call { callee: Box::new(written.clone()), args: Vec::new() },
+            Type::Named(name) => {
+                let info = self.checker.program.type_info(name)?;
+                let all_defaults = info.kind == TypeKind::Struct
+                    && !info.def.shared
+                    && info.def.fields.iter().all(|field| field.default.is_some());
+                if !all_defaults {
+                    return None;
+                }
+                ExprKind::Call { callee: Box::new(written.clone()), args: Vec::new() }
+            }
+            _ => return None,
+        };
+        Some(Expr { kind, span: at })
     }
 
     fn construct_builtin(&mut self, type_name: &str, item: Option<&Expr>, args: &[Arg], span: Span) -> Type {

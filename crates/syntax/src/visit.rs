@@ -142,6 +142,15 @@ pub fn empty_collection(made: &mut Expr) {
     };
 }
 
+/// Makes `array[float, 16]()` into `array.new[float, 16](0.0)`: the builtin that fills an
+/// array with copies of its element's zero. Nothing written can name it.
+pub fn filled_array(made: &mut Expr, zero: &Expr) {
+    let ExprKind::Call { callee, args } = &mut made.kind else { return };
+    let ExprKind::Index { object, .. } = &mut callee.kind else { return };
+    object.kind = ExprKind::Name("array.new".to_owned());
+    args.push(crate::ast::Arg { name: None, is_mut: false, value: zero.clone() });
+}
+
 /// Makes `a != b` into `not (a == b)`, for a type whose `def ==` decides both.
 pub fn not_of_equals(compare: &mut Expr) {
     let ExprKind::Binary { op: op @ BinOp::NotEq, .. } = &mut compare.kind else { return };

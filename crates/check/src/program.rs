@@ -244,6 +244,7 @@ impl Program {
         let wanted = match name {
             "->" => written.args.len().max(1),
             "list" | "set" | "SoaList" | "Buffer" | "Id" | "IdMap" | "Iterator" => 1,
+            "array" => 2,
             "dict" | "Result" => 2,
             "tuple" => written.args.len(),
             name => self.type_params(name).len(),
@@ -252,7 +253,9 @@ impl Program {
             return Err(wrong_type_args(written, wanted));
         }
         let mut args = Vec::new();
-        for arg in &written.args {
+        // An array's size is a number, not a type.
+        let types = if name == "array" { &written.args[..1] } else { &written.args[..] };
+        for arg in types {
             args.push(self.resolve_within(arg, generics, depth)?);
         }
         let mut items = args.clone().into_iter();
@@ -269,6 +272,14 @@ impl Program {
             "nothing" => Type::Unit,
             "list" | "SoaList" => Type::List(arg()),
             "Buffer" => Type::Buffer(arg()),
+            "array" => {
+                let size = written.args.get(1).and_then(|size| size.name.parse::<u64>().ok()).filter(|size| *size > 0);
+                let Some(size) = size else {
+                    return Err(Diagnostic::new("an array's size is a whole number of at least 1, written out", written.span)
+                        .with_help("write it like `array[float, 16]`"));
+                };
+                Type::Array(arg(), size)
+            }
             "Iterator" => Type::Iterator(arg()),
             "set" => Type::Set(arg()),
             "dict" => Type::Dict(arg(), arg()),
@@ -382,8 +393,8 @@ impl Program {
 
 pub(crate) use fennec_syntax::visit::BUILT_IN_INTERFACES;
 
-pub(crate) const BUILT_IN_TYPES: [&str; 26] = [
-    "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "SoaList", "Buffer", "set", "dict",
+pub(crate) const BUILT_IN_TYPES: [&str; 27] = [
+    "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "array", "SoaList", "Buffer", "set", "dict",
     "tuple", "Id", "IdMap", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Net", "Result",
     "Iterator", "->",
 ];

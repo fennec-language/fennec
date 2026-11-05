@@ -122,6 +122,7 @@ pub(crate) fn method(ty: &Type, name: &str) -> Option<Method> {
     let sized = matches!(
         ty,
         Type::List(_)
+            | Type::Array(..)
             | Type::Buffer(_)
             | Type::Set(_)
             | Type::Dict(..)

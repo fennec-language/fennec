@@ -97,6 +97,7 @@ impl Checker {
             (Type::Dict(k1, v1), Type::Dict(k2, v2)) | (Type::Result(k1, v1), Type::Result(k2, v2)) => {
                 self.fits(k1, k2) && self.fits(v1, v2)
             }
+            (Type::Array(a, n), Type::Array(b, m)) if n == m => self.fits(a, b),
             (Type::Tuple(a), Type::Tuple(b)) if a.len() == b.len() => {
                 a.iter().zip(b).all(|(a, b)| self.fits(a, b))
             }
@@ -130,6 +131,7 @@ impl Checker {
                 Type::optional(self.join(inner, &other)?)
             }
             (Type::List(a), Type::List(b)) => Type::list(self.join(a, b)?),
+            (Type::Array(a, n), Type::Array(b, m)) if n == m => Type::Array(Box::new(self.join(a, b)?), *n),
             (Type::Set(a), Type::Set(b)) => Type::Set(Box::new(self.join(a, b)?)),
             (Type::Iterator(a), Type::Iterator(b)) => Type::Iterator(Box::new(self.join(a, b)?)),
             (Type::Id(a), Type::Id(b)) => Type::Id(Box::new(self.join(a, b)?)),

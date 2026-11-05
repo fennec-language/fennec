@@ -397,6 +397,7 @@ impl Expr {
         match &self.kind {
             ExprKind::Name(name) => Some(plain(name, Vec::new())),
             ExprKind::None => Some(plain("None", Vec::new())),
+            ExprKind::Int(size) => Some(plain(&size.to_string(), Vec::new())),
             ExprKind::Index { object, index } => {
                 let ExprKind::Name(name) = &object.kind else { return None };
                 // `dict[str, int]` has two types; `list[(int, int)]` has one, a tuple, whose

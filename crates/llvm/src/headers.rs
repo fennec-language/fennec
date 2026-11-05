@@ -462,8 +462,16 @@ impl Emit<'_, '_, '_> {
         }
         let (byte, _) = self.operand(args.get(1).ok_or("no argument")?)?;
         let start = self.header_bytes(text);
-        let (lead_at, lead) = (self.temp(), self.temp());
+        let lead_at = self.temp();
         self.line(&format!("{lead_at} = getelementptr inbounds i8, ptr {start}, i64 {byte}"));
+        let header = self.char_header_at(&lead_at);
+        self.assign(dest, &header)
+    }
+
+    /// The character whose first byte is at `lead_at`, as an inline header: one byte for ASCII,
+    /// up to four otherwise. What follows the last character is never read.
+    fn char_header_at(&mut self, lead_at: &str) -> String {
+        let lead = self.temp();
         self.line(&format!("{lead} = load i8, ptr {lead_at}"));
         // 1 byte below 0xC0, 2 below 0xE0, 3 below 0xF0, else 4.
         let (two, three, four, size_four, size_three, size) =
@@ -485,7 +493,7 @@ impl Emit<'_, '_, '_> {
         self.start_block(&other);
         let out = self.place_for_text();
         self.line(&format!("store {HEADER} zeroinitializer, ptr {out}"));
-        self.small_copy(&out, &lead_at, &size);
+        self.small_copy(&out, lead_at, &size);
         let (tag, byte_tag, tag_at) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{tag} = or i64 {size}, 128"));
         self.line(&format!("{byte_tag} = trunc i64 {tag} to i8"));
@@ -500,7 +508,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!(
             "{header} = phi {HEADER} [ {ascii_header}, %{ascii_end} ], [ {wider}, %{other_end} ]"
         ));
-        self.assign(dest, &header)
+        header
     }
 
     /// Whether an inline header's text is all ASCII, so its length counts its characters.
@@ -627,6 +635,106 @@ impl Emit<'_, '_, '_> {
         header
     }
 
+    /// Defines `@fen_char_place(text, at)`: where character `at` of a string's block starts, in
+    /// bytes, counting from the end if `at` is negative, or -1 if there's no such character. It
+    /// walks from whichever is nearest of the start, the end and the block's cursor, and leaves
+    /// the cursor there, so reading a string in order takes a step for each character.
+    pub(crate) fn char_place_helper(&mut self) {
+        use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS, TEXT_CURSOR};
+        self.module.add_helper(
+            "fen_char_place",
+            format!(
+                "define internal i64 @fen_char_place(ptr %text, i64 %at) #0 {{
+entry:
+  %bytes_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_BYTES}
+  %bytes = load i64, ptr %bytes_at
+  %chars_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_CHARS}
+  %chars = load i64, ptr %chars_at
+  %negative = icmp slt i64 %at, 0
+  %from_end = add i64 %at, %chars
+  %want = select i1 %negative, i64 %from_end, i64 %at
+  %inside = icmp ult i64 %want, %chars
+  br i1 %inside, label %find, label %outside
+outside:
+  ret i64 -1
+find:
+  %cursor_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_CURSOR}
+  %cursor = load atomic i64, ptr %cursor_at monotonic, align 8
+  %kept_char = and i64 %cursor, 4294967295
+  %kept_byte = lshr i64 %cursor, 32
+  %kept_ahead = icmp ugt i64 %kept_char, %want
+  %kept_up = sub i64 %kept_char, %want
+  %kept_down = sub i64 %want, %kept_char
+  %kept_far = select i1 %kept_ahead, i64 %kept_up, i64 %kept_down
+  %use_kept = icmp ult i64 %kept_far, %want
+  %near_char = select i1 %use_kept, i64 %kept_char, i64 0
+  %near_byte = select i1 %use_kept, i64 %kept_byte, i64 0
+  %near_far = select i1 %use_kept, i64 %kept_far, i64 %want
+  %end_far = sub i64 %chars, %want
+  %use_end = icmp ult i64 %end_far, %near_far
+  %start_char = select i1 %use_end, i64 %chars, i64 %near_char
+  %start_byte = select i1 %use_end, i64 %bytes, i64 %near_byte
+  %body = getelementptr inbounds i8, ptr %text, i64 {TEXT}
+  br label %forward
+forward:
+  %c = phi i64 [ %start_char, %find ], [ %c_next, %forward_skipped ]
+  %p = phi i64 [ %start_byte, %find ], [ %q, %forward_skipped ]
+  %short = icmp ult i64 %c, %want
+  br i1 %short, label %forward_step, label %backward
+forward_step:
+  %p_next = add i64 %p, 1
+  br label %forward_skip
+forward_skip:
+  %q = phi i64 [ %p_next, %forward_step ], [ %q_next, %forward_more ]
+  %q_at = getelementptr inbounds i8, ptr %body, i64 %q
+  %q_byte = load i8, ptr %q_at
+  %q_top = and i8 %q_byte, -64
+  %q_continues = icmp eq i8 %q_top, -128
+  br i1 %q_continues, label %forward_more, label %forward_skipped
+forward_more:
+  %q_next = add i64 %q, 1
+  br label %forward_skip
+forward_skipped:
+  %c_next = add i64 %c, 1
+  br label %forward
+backward:
+  %b = phi i64 [ %c, %forward ], [ %b_next, %backward_skipped ]
+  %r = phi i64 [ %p, %forward ], [ %s, %backward_skipped ]
+  %over = icmp ugt i64 %b, %want
+  br i1 %over, label %backward_step, label %found
+backward_step:
+  %r_back = sub i64 %r, 1
+  br label %backward_skip
+backward_skip:
+  %s = phi i64 [ %r_back, %backward_step ], [ %s_back, %backward_more ]
+  %s_at = getelementptr inbounds i8, ptr %body, i64 %s
+  %s_byte = load i8, ptr %s_at
+  %s_top = and i8 %s_byte, -64
+  %s_continues = icmp eq i8 %s_top, -128
+  br i1 %s_continues, label %backward_more, label %backward_skipped
+backward_more:
+  %s_back = sub i64 %s, 1
+  br label %backward_skip
+backward_skipped:
+  %b_next = sub i64 %b, 1
+  br label %backward
+found:
+  %small = icmp ult i64 %bytes, 4294967296
+  br i1 %small, label %keep, label %done
+keep:
+  %high = shl i64 %r, 32
+  %packed = or i64 %high, %want
+  store atomic i64 %packed, ptr %cursor_at monotonic, align 8
+  br label %done
+done:
+  ret i64 %r
+}}
+
+"
+            ),
+        );
+    }
+
     /// `text[index]` on a header: in ASCII text inside it, the byte's character made inline;
     /// anything else as the runtime does it. A block's counts are read as without headers.
     pub(crate) fn header_index(
@@ -660,8 +768,24 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{ascii} = icmp eq i64 {bytes}, {chars}"));
         self.line(&format!("{inside} = icmp ult i64 {at}, {bytes}"));
         self.line(&format!("{quick} = and i1 {ascii}, {inside}"));
-        let block_byte = self.label("index_block_byte");
-        self.line(&format!("br i1 {quick}, label %{block_byte}, label %{slow}, !prof !8"));
+        let (block_byte, block_wide) = (self.label("index_block_byte"), self.label("index_block_wide"));
+        self.line(&format!("br i1 {quick}, label %{block_byte}, label %{block_wide}, !prof !8"));
+        // Text that isn't ASCII, or an index from the end: where the character starts is found
+        // from the block's cursor, and the runtime only says what's wrong with one outside.
+        self.start_block(&block_wide);
+        self.char_place_helper();
+        let (place, found) = (self.temp(), self.temp());
+        self.line(&format!("{place} = call i64 @fen_char_place(ptr {block}, i64 {at})"));
+        self.line(&format!("{found} = icmp sge i64 {place}, 0"));
+        let block_char = self.label("index_block_char");
+        self.line(&format!("br i1 {found}, label %{block_char}, label %{slow}"));
+        self.start_block(&block_char);
+        let wide_start = self.offset(&block, crate::emit::TEXT_START);
+        let lead_at = self.temp();
+        self.line(&format!("{lead_at} = getelementptr inbounds i8, ptr {wide_start}, i64 {place}"));
+        let from_wide = self.char_header_at(&lead_at);
+        let wide_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
         self.start_block(&block_byte);
         let start = self.offset(&block, crate::emit::TEXT_START);
         let (byte_at, byte, wide) = (self.temp(), self.temp(), self.temp());
@@ -708,7 +832,7 @@ impl Emit<'_, '_, '_> {
         self.start_block(&done);
         let one = self.temp();
         self.line(&format!(
-            "{one} = phi {HEADER} [ {from_block}, %{block_end} ], [ {from_inline}, %{inline_end} ]"
+            "{one} = phi {HEADER} [ {from_block}, %{block_end} ], [ {from_inline}, %{inline_end} ], [ {from_wide}, %{wide_end} ]"
         ));
         self.assign(dest, &one)?;
         self.line(&format!("br label %{after}"));
@@ -832,9 +956,13 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{both} = and i1 {quick}, {test}"));
             quick = both;
         }
-        let (fast, slow, done) =
-            (self.label("slice_inline"), self.label("slice_runtime"), self.label("slice_done"));
-        self.line(&format!("br i1 {quick}, label %{fast}, label %{slow}, !prof !8"));
+        let (fast, other, slow, done) = (
+            self.label("slice_inline"),
+            self.label("slice_other"),
+            self.label("slice_runtime"),
+            self.label("slice_done"),
+        );
+        self.line(&format!("br i1 {quick}, label %{fast}, label %{other}, !prof !8"));
         self.start_block(&fast);
         let bytes = self.header_bytes(text);
         let piece_at = self.temp();
@@ -842,6 +970,8 @@ impl Emit<'_, '_, '_> {
         let piece = self.inline_from(&piece_at, &size);
         let fast_end = self.current.clone();
         self.line(&format!("br label %{done}"));
+        self.start_block(&other);
+        let (wide_piece, wide_end) = self.wide_slice(text, (start, end), (&no_end, &slow, &done));
         self.start_block(&slow);
         self.declare("declare ptr @fennec_str_slice(ptr, i64, i64, i64, i64) nounwind");
         let (span_from, span_to) = (i64::from(span.start), i64::from(span.end));
@@ -858,8 +988,73 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
         let result = self.temp();
-        self.line(&format!("{result} = phi {HEADER} [ {piece}, %{fast_end} ], [ {other}, %{slow_end} ]"));
+        self.line(&format!(
+            "{result} = phi {HEADER} [ {piece}, %{fast_end} ], [ {other}, %{slow_end} ], [ {wide_piece}, %{wide_end} ]"
+        ));
         result
+    }
+
+    /// The part of a block's text that isn't ASCII from character `start` to `end`, both inside
+    /// it and in order, when it's short enough to be inline: where each starts is found from the
+    /// block's cursor, as for an index. Anything else goes to `slow`. Gives back the part and the
+    /// block it's made in, which goes on to `done`.
+    fn wide_slice(
+        &mut self,
+        text: &str,
+        (start, end): (&str, &str),
+        (no_end, slow, done): (&str, &str, &str),
+    ) -> (String, String) {
+        use fennec_interp::embed::layout::{TEXT_BYTES, TEXT_CHARS};
+        let in_block = self.header_in_block(text);
+        let wide = self.label("slice_wide");
+        self.line(&format!("br i1 {in_block}, label %{wide}, label %{slow}"));
+        self.start_block(&wide);
+        let first = self.header_word(text, 0);
+        let block = self.temp();
+        self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
+        let (bytes, chars) = (self.temp(), self.temp());
+        let (bytes_at, chars_at) =
+            (self.offset(&block, TEXT_BYTES.unsigned_abs()), self.offset(&block, TEXT_CHARS.unsigned_abs()));
+        self.line(&format!("{bytes} = load i64, ptr {bytes_at}"));
+        self.line(&format!("{chars} = load i64, ptr {chars_at}"));
+        let lowest = i64::MIN;
+        let (no_start, from, to) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{no_start} = icmp eq i64 {start}, {lowest}"));
+        self.line(&format!("{from} = select i1 {no_start}, i64 0, i64 {start}"));
+        self.line(&format!("{to} = select i1 {no_end}, i64 {chars}, i64 {end}"));
+        let (low_ok, ordered, high_ok, inside) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{low_ok} = icmp sge i64 {from}, 0"));
+        self.line(&format!("{ordered} = icmp sle i64 {from}, {to}"));
+        self.line(&format!("{high_ok} = icmp sle i64 {to}, {chars}"));
+        let both = self.temp();
+        self.line(&format!("{both} = and i1 {low_ok}, {ordered}"));
+        self.line(&format!("{inside} = and i1 {both}, {high_ok}"));
+        let find = self.label("slice_find");
+        self.line(&format!("br i1 {inside}, label %{find}, label %{slow}"));
+        self.start_block(&find);
+        self.char_place_helper();
+        // The end of the text has no character to find: it's where the bytes end.
+        let place = |emit: &mut Self, at: &str| {
+            let (found, at_end, place) = (emit.temp(), emit.temp(), emit.temp());
+            emit.line(&format!("{found} = call i64 @fen_char_place(ptr {block}, i64 {at})"));
+            emit.line(&format!("{at_end} = icmp eq i64 {at}, {chars}"));
+            emit.line(&format!("{place} = select i1 {at_end}, i64 {bytes}, i64 {found}"));
+            place
+        };
+        let (from_place, to_place) = (place(self, &from), place(self, &to));
+        let (size, short) = (self.temp(), self.temp());
+        self.line(&format!("{size} = sub i64 {to_place}, {from_place}"));
+        self.line(&format!("{short} = icmp ule i64 {size}, 23"));
+        let inline = self.label("slice_wide_inline");
+        self.line(&format!("br i1 {short}, label %{inline}, label %{slow}"));
+        self.start_block(&inline);
+        let body = self.offset(&block, crate::emit::TEXT_START);
+        let piece_at = self.temp();
+        self.line(&format!("{piece_at} = getelementptr inbounds i8, ptr {body}, i64 {from_place}"));
+        let piece = self.inline_from(&piece_at, &size);
+        let end_block = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        (piece, end_block)
     }
 
     /// A header's length in characters: a block's count, or an inline string's bytes that

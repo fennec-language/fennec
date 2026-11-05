@@ -360,6 +360,36 @@ fn values_held_in_names_can_be_called() {
 }
 
 #[test]
+fn a_named_function_goes_where_its_function_type_is_written() {
+    let program = "
+        def twice(n: int) -> int:
+            n * 2
+
+        def add(a: int, b: int) -> int:
+            a + b
+
+        def bump(mut n: int):
+            n += 1
+
+        def apply(f: (int) -> int, n: int) -> int:
+            f(n)
+
+        def main(stdout: Stdout):
+            step: (int) -> int = twice
+            stdout.print(apply(twice, 3), step(1))
+            stdout.print(apply(add, 1))
+            touch: (int) -> nothing = bump
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "`f` should be a (int) -> int, but this is a function @ add",
+            "`touch` should be a (int) -> nothing, but this is a function @ bump",
+        ]
+    );
+}
+
+#[test]
 fn result_expect_needs_a_reason() {
     let program = "
         error Oops:

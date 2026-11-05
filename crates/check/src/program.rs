@@ -216,23 +216,85 @@ impl Program {
         self.resolve_within(written, generics, ALIAS_DEPTH)
     }
 
-    fn resolve_within(
-        &self,
-        written: &TypeExpr,
-        generics: &[String],
-        depth: usize,
-    ) -> Result<Type, Diagnostic> {
-        // `std.collections.Deque` or `collections.Deque`, through an imported module.
-        let name = match written.name.rsplit_once('.') {
+    /// `ParseError | RangeError` after `fails`: one of several errors. Each has to be one.
+    fn errors_named(&self, union: &TypeExpr, generics: &[String], depth: usize) -> Result<Type, Diagnostic> {
+        let mut names = Vec::new();
+        for error in &union.args {
+            match self.resolve_within(error, generics, depth)? {
+                Type::Named(name)
+                    if self.types.get(&name).is_some_and(|info| info.kind == TypeKind::Error) =>
+                {
+                    names.push(name);
+                }
+                Type::Unknown => {}
+                other => {
+                    return Err(Diagnostic::new(
+                        format!(
+                            "`fails` names errors, but `{}` is {}",
+                            written(error),
+                            crate::types::a(&other)
+                        ),
+                        error.span,
+                    )
+                    .with_help("declare the ways it can fail with `error`, like `error LoadError:`"));
+                }
+            }
+        }
+        names.sort();
+        names.dedup();
+        Ok(Type::Errors(names))
+    }
+
+    /// The name a written type gives, through an imported module: `Deque` for
+    /// `std.collections.Deque` or `collections.Deque`.
+    fn written_name<'w>(&self, written: &'w TypeExpr) -> &'w str {
+        match written.name.rsplit_once('.') {
             Some((path, member))
                 if self.modules_at(written.span).contains_key(path) && self.types.contains_key(member) =>
             {
                 member
             }
             _ => written.name.as_str(),
-        };
+        }
+    }
+
+    /// `(str) -> int fails ParseError`'s return type: a result of what it gives back and its errors.
+    fn fallible_returns(
+        &self,
+        written: &TypeExpr,
+        generics: &[String],
+        depth: usize,
+    ) -> Result<Type, Diagnostic> {
+        let [returns, errors] = written.args.as_slice() else { return Ok(Type::Unknown) };
+        let returns = self.resolve_within(returns, generics, depth)?;
+        Ok(Type::result(returns, self.resolve_within(errors, generics, depth)?))
+    }
+
+    /// How many types in brackets a type takes, when `given` are written.
+    fn wanted_args(&self, name: &str, given: usize) -> usize {
+        match name {
+            "->" => given.max(1),
+            "list" | "set" | "SoaList" | "Buffer" | "Id" | "Table" | "Iterator" => 1,
+            "dict" | "Result" | "array" => 2,
+            "tuple" => given,
+            name => self.type_params(name).len(),
+        }
+    }
+
+    fn resolve_within(
+        &self,
+        written: &TypeExpr,
+        generics: &[String],
+        depth: usize,
+    ) -> Result<Type, Diagnostic> {
+        let name = self.written_name(written);
         if self.is_interface(name) {
             return Err(interface_as_type(name, written.span));
+        }
+        match name {
+            "|" => return self.errors_named(written, generics, depth),
+            "fails" => return self.fallible_returns(written, generics, depth),
+            _ => {}
         }
         let builtin = BUILT_IN_TYPES.contains(&name);
         let declared = generics.iter().any(|generic| generic == name)
@@ -241,13 +303,7 @@ impl Program {
         if !builtin && !declared {
             return Err(unknown_type(name, written.span));
         }
-        let wanted = match name {
-            "->" => written.args.len().max(1),
-            "list" | "set" | "SoaList" | "Buffer" | "Id" | "Table" | "Iterator" => 1,
-            "dict" | "Result" | "array" => 2,
-            "tuple" => written.args.len(),
-            name => self.type_params(name).len(),
-        };
+        let wanted = self.wanted_args(name, written.args.len());
         if written.args.len() != wanted {
             return Err(wrong_type_args(written, wanted));
         }
@@ -457,6 +513,11 @@ pub(crate) fn written_ret(def: &FnDef) -> Option<&TypeExpr> {
 /// A written type as source text, for suggesting a fix.
 pub(crate) fn written(ty: &TypeExpr) -> String {
     let args: Vec<String> = ty.args.iter().map(written).collect();
+    match ty.name.as_str() {
+        "|" => return args.join(" | "),
+        "fails" => return args.join(" fails "),
+        _ => {}
+    }
     if ty.name == "->" {
         let (ret, params) = args.split_last().map_or(("", &[][..]), |(ret, params)| (ret.as_str(), params));
         return format!("({}) -> {ret}", params.join(", "));

@@ -479,9 +479,8 @@ struct Parser:
             ret = self.type_expr()?
         # `fails` is a word only here, after the parameters and any return type.
         mut fails = None
-        if self.peek() == .Name("fails"):
-            self.advance()
-            fails = self.type_expr()?
+        if self.at_fails():
+            fails = self.fails_type()?
         FnDef(
             name=name,
             generics=generics,
@@ -532,6 +531,23 @@ struct Parser:
             )
         value
 
+    ## Whether `fails` comes next. It's a word only after a function's parameters and any
+    ## return type.
+    def at_fails(self) -> bool:
+        self.peek() == Tok.Name("fails")
+
+    ## `fails LoadError`, or `fails ParseError | RangeError`: the errors after `fails`. Several
+    ## are one written type named `|`.
+    def fails_type(mut self) -> TypeExpr:
+        self.advance()
+        first = self.type_expr()?
+        if not self.at_punct("|"):
+            return first
+        mut errors = [first]
+        while self.eat_punct("|"):
+            errors.append(self.type_expr()?)
+        TypeExpr(name="|", args=errors, optional=False, span=first.span.to(self.prev_span()))
+
     def type_expr(mut self) -> TypeExpr:
         start = self.span()
         mut args = []
@@ -549,9 +565,17 @@ struct Parser:
                 if not self.eat_punct(","):
                     break
             self.expect_punct(")")?
-            # `(int, str) -> bool`: a function type, its return type last.
+            # `(int, str) -> bool`: a function type, its return type last. One that can fail
+            # says so, as in `(str) -> int fails ParseError`, which is written in as its own
+            # `fails` type holding the return type and the errors.
             if self.eat_punct("->"):
-                args.append(self.type_expr()?)
+                returns = self.type_expr()?
+                if self.at_fails():
+                    errors = self.fails_type()?
+                    span = returns.span.to(errors.span)
+                    args.append(TypeExpr(name="fails", args=[returns, errors], optional=False, span=span))
+                else:
+                    args.append(returns)
                 return TypeExpr(name="->", args=args, optional=False, span=start.to(self.prev_span()))
             name = "tuple"
         else:

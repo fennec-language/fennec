@@ -408,6 +408,12 @@ def _case_named(key: str, cases: list[(str, bool)]) -> int:
         at += 1
     -1
 
+## `text` as a JSON string, in quotes and escaped, for std's own code that writes JSON by hand.
+def _quoted(text: str) -> str:
+    mut out = JsonWriter()
+    out.text(text)
+    out.written()
+
 ## Whether the `size` bytes of `text` from `start` are those of `word`.
 def _same_bytes(text: str, start: int, word: str, size: int) -> bool:
     mut at = 0

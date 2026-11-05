@@ -1,0 +1,48 @@
+# Errors with cases and plain ones together after `fails`, each picked out by a case or by its
+# type in a match, widened as `?` passes them up, through a function value, and failing `main`.
+
+error ParseError:
+    NotANumber(text: str)
+    Empty
+
+error RangeError:
+    TooBig(value: int, limit: int)
+
+error Missing:
+    key: str
+
+def parse(text: str) -> int fails ParseError:
+    if text == "": fail .Empty
+    int(text) else fail .NotANumber(text)
+
+def in_range(value: int, limit: int) -> int fails RangeError:
+    if value > limit: fail .TooBig(value, limit)
+    value
+
+def level(text: str) -> int fails ParseError | RangeError:
+    in_range(parse(text)?, limit=9)?
+
+def lookup(table: dict[str, str], key: str) -> int fails Missing | ParseError | RangeError:
+    found = table.get(key) else fail Missing(key=key)
+    level(found)?
+
+def said(table: dict[str, str], key: str) -> str:
+    match lookup(table, key):
+        case Ok(value): f"ok {value}"
+        case Err(Missing(key)): f"no {key}"
+        case Err(.NotANumber(text)): f"bad {text}"
+        case Err(.Empty): "empty"
+        case Err(.TooBig(value, limit)): f"{value}>{limit}"
+
+def through(read: (str) -> int fails ParseError | RangeError, text: str) -> int fails ParseError | RangeError:
+    read(text)?
+
+def main(stdout: Stdout):
+    table = {"a": "3", "b": "x", "c": "", "d": "12"}
+    for key in ["a", "b", "c", "d", "e"]:
+        stdout.print(said(table, key))
+    results = [level(text) for text in ["1", "q", "99"]]
+    kept = [level(text) for text in ["5", "", "50"]]
+    stdout.print(results.len(), kept.len(), [level(t) else -1 for t in ["8", "z", "10"]])
+    stdout.print(through(level, "6") else 0, through(level, "") else 0, through(text => level(text), "77") else 0)
+    stdout.print(lookup(table, "d")?)

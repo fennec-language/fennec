@@ -20,6 +20,8 @@ struct Region {
     block: usize,
     at: usize,
     write: bool,
+    /// How many of its locks are held to write.
+    writing: i64,
     handles: Vec<Operand>,
     /// For each block the region reaches, the range of its instructions in the region.
     ranges: HashMap<usize, (usize, usize)>,
@@ -37,17 +39,18 @@ fn gives_back(kind: &InstKind, handles: &[Operand]) -> bool {
 
 fn region_at(function: &Function, block: usize, at: usize) -> Option<Region> {
     let kind = &function.blocks.get(block)?.insts.get(at)?.kind;
-    let (handles, write) = match kind {
-        InstKind::Lock { handle, write } => (vec![handle.clone()], *write),
+    let (handles, writing) = match kind {
+        InstKind::Lock { handle, write } => (vec![handle.clone()], i64::from(*write)),
         InstKind::LockAll { handles } => (
             handles.iter().map(|(handle, _)| handle.clone()).collect(),
-            handles.iter().any(|(_, write)| *write),
+            handles.iter().map(|(_, write)| i64::from(*write)).sum(),
         ),
         _ => return None,
     };
-    let mut region = Region { block, at, write, handles, ranges: HashMap::new(), exits: Vec::new() };
-    let mut waiting = vec![(block, at + 1)];
-    while let Some((current, start)) = waiting.pop() {
+    let mut region =
+        Region { block, at, write: writing > 0, writing, handles, ranges: HashMap::new(), exits: Vec::new() };
+    let mut left = vec![(block, at + 1)];
+    while let Some((current, start)) = left.pop() {
         if region.ranges.get(&current).is_some_and(|(from, _)| *from <= start) {
             continue;
         }
@@ -62,7 +65,7 @@ fn region_at(function: &Function, block: usize, at: usize) -> Option<Region> {
         region.ranges.insert(current, (start, exit.unwrap_or(held.insts.len())));
         match exit {
             Some(place) => region.exits.push((current, place)),
-            None => waiting.extend(held.end.targets().iter().map(|target| (target.0, 0))),
+            None => left.extend(held.end.targets().iter().map(|target| (target.0, 0))),
         }
     }
     Some(region)
@@ -188,7 +191,10 @@ fn guard(function: &mut Function, region: &Region, edge: &Edge) {
         leaving.push(builtin("shared.drop", None, *local, span));
     }
     for (local, _) in &edge.changed {
-        leaving.push(builtin("shared.out", Some(*local), *local, span));
+        let args = vec![Operand::Local(*local), Operand::Int(region.writing)];
+        let kind =
+            InstKind::Builtin { dest: Some(*local), name: "shared.out".to_owned(), args, changes: false };
+        leaving.push(Inst { kind, span });
     }
     for local in &edge.inside {
         leaving.push(builtin("shared.drop", None, *local, span));
@@ -213,6 +219,40 @@ fn guard(function: &mut Function, region: &Region, edge: &Edge) {
     }
 }
 
+/// `box.items.len()`, read under a lock of its own just for the field, needs no copy of the list if
+/// the lock's held for the length too.
+fn keep_lock_for_len(function: &mut Function) {
+    let mut uses: HashMap<LocalId, usize> = HashMap::new();
+    for block in &function.blocks {
+        for inst in &block.insts {
+            for local in reads(&inst.kind) {
+                *uses.entry(local).or_default() += 1;
+            }
+        }
+    }
+    for block in &mut function.blocks {
+        for at in 1..block.insts.len().saturating_sub(1) {
+            let (Some(field), Some(lock), Some(next)) =
+                (block.insts.get(at - 1), block.insts.get(at), block.insts.get(at + 1))
+            else {
+                continue;
+            };
+            let asked = matches!(&lock.kind, InstKind::Unlock { .. })
+                && match (&field.kind, &next.kind) {
+                    (InstKind::GetField { dest, .. }, InstKind::Builtin { name, args, .. }) => {
+                        matches!(name.as_str(), "list.len" | "str.len" | "dict.len")
+                            && args.as_slice() == [Operand::Local(*dest)]
+                            && uses.get(dest) == Some(&1)
+                    }
+                    _ => false,
+                };
+            if asked {
+                block.insts.swap(at, at + 1);
+            }
+        }
+    }
+}
+
 /// Writes in what crosses the edge of every lock in a program whose `shared` values run on threads.
 pub fn guard_shared(program: &mut Program) {
     let handles: HashSet<String> =
@@ -226,6 +266,7 @@ pub fn guard_shared(program: &mut Program) {
     let mut_params: HashMap<&str, Vec<usize>> =
         mut_params.iter().map(|(name, params)| (name.as_str(), params.clone())).collect();
     for function in &mut program.functions {
+        keep_lock_for_len(function);
         let mut regions = Vec::new();
         for (block, held) in function.blocks.iter().enumerate() {
             for at in 0..held.insts.len() {

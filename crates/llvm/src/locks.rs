@@ -10,7 +10,6 @@
 use std::fmt::Write as _;
 
 use fennec_ir::{LocalId, Operand};
-use fennec_layout::{Layout, Layouts, Ty};
 use fennec_syntax::Span;
 
 use crate::emit::Emit;
@@ -27,6 +26,13 @@ const TAKEN_AGAIN: &str = "this takes the lock of a `shared` value that's alread
 /// The word's top bit: a writer holds the lock.
 const WRITER: i64 = i64::MIN;
 
+/// Which way a value crosses a lock's edge. Coming out, it goes behind the write locks being left.
+#[derive(Clone, Copy)]
+pub(crate) enum Way {
+    In,
+    Out(i64),
+}
+
 /// A lock to take or give back: its word, its cell, and an `i1` saying whether it's to write.
 type Held = (String, String, String);
 
@@ -37,21 +43,6 @@ impl Emit<'_, '_, '_> {
         let Kind::Boxed(id) = kind else { return Err(format!("it locks a {kind:?}")) };
         let size = self.layout_of(id)?.size;
         Ok((self.offset(&value, FIELDS_OFFSET + size - 8), value))
-    }
-
-    /// A `with` changing several: until the runtime can keep what's made in the body with the right
-    /// one, they all have to hold only numbers.
-    fn check_several(&mut self, handle: &Operand) -> Result<(), String> {
-        let (_, kind) = self.operand(handle)?;
-        let Kind::Boxed(id) = kind else { return Err(format!("it locks a {kind:?}")) };
-        let layout = self.layout_of(id)?;
-        if !plain_on_threads(self.module.layouts, layout) {
-            let name = layout.name.trim_end_matches('\'').to_owned();
-            return Err(format!(
-                "`{name}` holds something other than numbers, and a `with` changing several like it isn't taken on threads yet"
-            ));
-        }
-        Ok(())
     }
 
     /// Ends the program if `taken`, an `i1`, is true, and carries on otherwise.
@@ -168,11 +159,6 @@ impl Emit<'_, '_, '_> {
             let (word, cell) = self.lock_word(handle)?;
             held.push((word, cell, write.to_string()));
         }
-        if self.module.threads && handles.iter().any(|(_, write)| *write) {
-            for (handle, _) in handles {
-                self.check_several(handle)?;
-            }
-        }
         for (at, (word, _, _)) in held.iter().enumerate() {
             for (earlier, _, _) in held.iter().take(at) {
                 let same = self.temp();
@@ -200,11 +186,30 @@ impl Emit<'_, '_, '_> {
         }
         if self.module.threads {
             self.sort_by_address(&mut held);
+            for (word, cell, _) in &held {
+                self.settle(word, cell);
+            }
         }
         for (word, cell, _) in held.iter().rev() {
             self.give_back_word(word, cell);
         }
         Ok(())
+    }
+
+    /// With several held, what's made in the body is in whichever table's on top, and one value can
+    /// be given what's in another's, so each one held to write is given its own copy.
+    fn settle(&mut self, word: &str, cell: &str) {
+        self.declare("declare void @fennec_shared_settle(ptr) nounwind");
+        let (old, writer) = (self.temp(), self.temp());
+        self.line(&format!("{old} = load atomic i64, ptr {word} monotonic, align 8"));
+        self.line(&format!("{writer} = icmp slt i64 {old}, 0"));
+        let (settle, done) = (self.label("settle"), self.label("settled"));
+        self.line(&format!("br i1 {writer}, label %{settle}, label %{done}"));
+        self.start_block(&settle);
+        self.line(&format!("call void @fennec_shared_settle(ptr {cell})"));
+        self.leave_if_failed();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
     }
 
     /// Puts locks in order of address, as selects, since it's only known when they're taken.
@@ -243,7 +248,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `dest = value`, copied across a lock's edge, with owners of its own.
-    pub(crate) fn across_lock(&mut self, dest: LocalId, value: &Operand, way: &str) -> Result<(), String> {
+    pub(crate) fn across_lock(&mut self, dest: LocalId, value: &Operand, way: Way) -> Result<(), String> {
         let (held, kind) = self.operand(value)?;
         if kind.in_memory() {
             let (at, text) = (self.label("%crossed"), self.text_of(&kind));
@@ -256,7 +261,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// A value copied across a lock's edge, as it's passed around, with owners of its own.
-    fn crossed(&mut self, value: &str, kind: &Kind, way: &str) -> Result<String, String> {
+    fn crossed(&mut self, value: &str, kind: &Kind, way: Way) -> Result<String, String> {
         match kind {
             Kind::Int | Kind::Float | Kind::Bool | Kind::Unit | Kind::Cap => Ok(value.to_owned()),
             Kind::Str | Kind::MaybeText if self.headers() => Ok(self.crossed_text(value, way)),
@@ -289,7 +294,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// A string held as a header: an inline one is its own copy.
-    fn crossed_text(&mut self, value: &str, way: &str) -> String {
+    fn crossed_text(&mut self, value: &str, way: Way) -> String {
         let in_block = self.header_in_block(value);
         let (block, inline, done) =
             (self.label("cross_text"), self.label("cross_inline"), self.label("crossed_text"));
@@ -313,15 +318,23 @@ impl Emit<'_, '_, '_> {
     }
 
     /// One block's copy from the runtime, unless there's nothing there.
-    fn cross_block(&mut self, block: &str, way: &str) -> String {
-        self.declare(&format!("declare ptr @fennec_shared_{way}(ptr) nounwind"));
+    fn cross_block(&mut self, block: &str, way: Way) -> String {
         let place = self.temp_slot("null");
         let (none, some, done) = (self.temp(), self.label("cross_block"), self.label("crossed_block"));
         self.line(&format!("{none} = icmp eq ptr {block}, null"));
         self.line(&format!("br i1 {none}, label %{done}, label %{some}"));
         self.start_block(&some);
         let copy = self.temp();
-        self.line(&format!("{copy} = call ptr @fennec_shared_{way}(ptr {block})"));
+        match way {
+            Way::In => {
+                self.declare("declare ptr @fennec_shared_in(ptr) nounwind");
+                self.line(&format!("{copy} = call ptr @fennec_shared_in(ptr {block})"));
+            }
+            Way::Out(held) => {
+                self.declare("declare ptr @fennec_shared_out(ptr, i64) nounwind");
+                self.line(&format!("{copy} = call ptr @fennec_shared_out(ptr {block}, i64 {held})"));
+            }
+        }
         self.leave_if_failed();
         self.line(&format!("store ptr {copy}, ptr {place}"));
         self.line(&format!("br label %{done}"));
@@ -332,7 +345,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// A struct or enum in place, copied at `at`, each thing it holds across the edge.
-    fn cross_into(&mut self, value: &str, kind: &Kind, way: &str, at: &str) -> Result<(), String> {
+    fn cross_into(&mut self, value: &str, kind: &Kind, way: Way, at: &str) -> Result<(), String> {
         let text = self.text_of(kind);
         let whole = self.temp();
         self.line(&format!("{whole} = load {text}, ptr {value}"));
@@ -384,7 +397,7 @@ impl Emit<'_, '_, '_> {
         (value, at): (&str, &str),
         offset: u32,
         held: &Kind,
-        way: &str,
+        way: Way,
     ) -> Result<(), String> {
         let (from, to) = (self.offset(value, offset), self.offset(at, offset));
         if held.in_memory() {
@@ -416,15 +429,4 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
         Ok(())
     }
-}
-
-/// Whether a cell, or a struct in place in one, holds only numbers and bools.
-fn plain_on_threads(layouts: &Layouts, layout: &Layout) -> bool {
-    layout.fields.iter().all(|field| match field.ty {
-        Ty::Int | Ty::Float | Ty::Bool => true,
-        Ty::Struct(id) => layouts
-            .get(id)
-            .is_some_and(|inner| !inner.boxed && inner.cases.is_none() && plain_on_threads(layouts, inner)),
-        _ => false,
-    })
 }

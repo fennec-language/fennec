@@ -133,6 +133,7 @@ pub fn wrap_main(program: &mut Program, span: fennec_syntax::Span) {
             end: fennec_ir::Terminator::Return(None),
         }],
         counts: Vec::new(),
+        places: Vec::new(),
     });
 }
 

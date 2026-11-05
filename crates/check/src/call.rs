@@ -2,7 +2,7 @@
 //! errors and enum cases. Arguments are matched to parameters or fields, positionally and by
 //! name, and `mut` has to be written exactly where a parameter changes.
 
-use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Field, Generic, Span, UnaryOp};
+use fennec_syntax::{Arg, CompKind, Diagnostic, Expr, ExprKind, Field, Generic, Span, UnaryOp};
 
 use crate::ParamType;
 use crate::builtins;
@@ -47,7 +47,18 @@ impl FnCx<'_> {
         if name == "from_code" { self.char_from_code(args, span) } else { self.bytes_from_hex(args, span) }
     }
 
+    /// A generator right inside what uses it is worked out here, in order, as a loop would be.
+    fn note_generator_worked_out_here(&mut self, callee: &Expr, args: &[Arg]) {
+        if let (ExprKind::Name(name), Some(first)) = (&callee.kind, args.first())
+            && matches!(name.as_str(), "sum" | "min" | "max" | "sorted" | "list" | "set" | "any" | "all")
+            && matches!(first.value.kind, ExprKind::Comprehension { kind: CompKind::Generator, .. })
+        {
+            self.worked_out_here.insert((first.value.span.start, first.value.span.end));
+        }
+    }
+
     pub(crate) fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Type {
+        self.note_generator_worked_out_here(callee, args);
         match &callee.kind {
             ExprKind::Attr { object, name, .. } if self.is_built_in_function(object, name) => {
                 return self.built_in_function(name, args, span);
@@ -259,7 +270,7 @@ impl FnCx<'_> {
                 }
                 *slot = true;
             }
-            self.check_mut_arg(function, param, arg);
+            self.check_mut_arg(function, param, arg, params);
             self.check_arg(param, &ty, arg.value.span);
         }
         // An argument with a misspelled name is most likely the missing one.
@@ -277,7 +288,7 @@ impl FnCx<'_> {
         }
     }
 
-    fn check_mut_arg(&mut self, function: &str, param: &ParamType, arg: &Arg) {
+    fn check_mut_arg(&mut self, function: &str, param: &ParamType, arg: &Arg, params: &[ParamType]) {
         let span = arg.value.span;
         match (param.is_mut, arg.is_mut) {
             (true, false) => self.error(
@@ -287,10 +298,23 @@ impl FnCx<'_> {
                 )
                 .with_help("write `mut` before the argument, so readers can see it changes"),
             ),
-            (false, true) => self.error(Diagnostic::new(
-                format!("`{function}` doesn't change `{}`, so it shouldn't be passed with `mut`", param.name),
-                span,
-            )),
+            (false, true) => {
+                let diagnostic = Diagnostic::new(
+                    format!(
+                        "`{function}` doesn't change `{}`, so it shouldn't be passed with `mut`",
+                        param.name
+                    ),
+                    span,
+                );
+                // It's most likely meant for what the function does change.
+                self.error(match params.iter().find(|other| other.is_mut) {
+                    Some(changed) => diagnostic.with_help(format!(
+                        "did you mean to put `mut` on `{}`, which `{function}` does change?",
+                        changed.name
+                    )),
+                    None => diagnostic,
+                });
+            }
             // What it's given to can make it `None`, whatever a check for `None` said before.
             (true, true) => {
                 if let ExprKind::Name(name) = &arg.value.kind

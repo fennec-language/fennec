@@ -18,7 +18,8 @@ ignore = []
 [licenses]
 # Cranelift is Apache-2.0 with the LLVM exception, which only loosens Apache-2.0's terms.
 # Zlib is as permissive as MIT, and so are ISC, which `ring` and `rustls-webpki` use, BSD-3-Clause,
-# which `subtle` uses, and CDLA-Permissive-2.0, which `webpki-root-certs`' list of roots uses.
+# which `subtle` uses, and CDLA-Permissive-2.0, which `webpki-root-certs` uses. That one's only a
+# dependency of the TLS verifier on wasm, where Fennec doesn't build the verifier.
 allow = [
     "MIT",
     "Apache-2.0",

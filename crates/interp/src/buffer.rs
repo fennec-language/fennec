@@ -13,10 +13,9 @@ use crate::value::Value;
 pub(crate) const MIN_ROOM: usize = 4;
 
 /// The room a buffer or list grows to when `more` items don't fit after the `count` it has:
-/// twice what it held, as Rust's `Vec` grows, or what it needs if that's more. From the least
-/// room, a list one item at a time doubles through powers of two.
+/// double what it needs.
 pub(crate) fn grown_room(count: usize, more: usize) -> usize {
-    (2 * count).max(count + more)
+    2 * (count + more)
 }
 
 #[derive(Clone, Debug)]

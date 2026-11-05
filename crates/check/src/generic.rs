@@ -123,7 +123,7 @@ impl FnCx<'_> {
             "Eq" | "Format" => !matches!(ty, Type::Function(_) | Type::Arrow(..)),
             "Hashable" => self.is_hashable(ty),
             "Ordered" => self.is_ordered(ty),
-            _ => return self.fits_interface(ty, bound),
+            _ => return self.fits_interface_or_says_why(ty, bound),
         };
         if fits {
             return Ok(());
@@ -168,6 +168,24 @@ impl FnCx<'_> {
     }
 
     /// Whether a type has every method an interface asks for, or why not and what to do.
+    /// Whether a type fits an interface. For saving and loading, what's wrong is further down: what
+    /// a type holds, since its methods are generated from what it holds.
+    fn fits_interface_or_says_why(&mut self, ty: &Type, interface: &str) -> Result<(), (String, String)> {
+        let fits = self.fits_interface(ty, interface);
+        if fits.is_err()
+            && matches!(interface, "Serializable" | "Deserializable")
+            && let Some((place, what, field, owner)) = crate::saving::what_stops_saving(self.checker, ty)
+        {
+            return Err((
+                format!("`{place}` is {what}, which can't be saved"),
+                format!(
+                    "`@skip` the field `{field}`, with a default, or write `def serialize` and `def deserialize` for `{owner}`"
+                ),
+            ));
+        }
+        fits
+    }
+
     pub(crate) fn fits_interface(&mut self, ty: &Type, interface: &str) -> Result<(), (String, String)> {
         let methods = self.checker.program.interfaces.get(interface).map(|found| found.methods.clone());
         for wanted in methods.unwrap_or_default() {

@@ -156,6 +156,7 @@ impl Checker {
         let structs = self.structs(TypeKind::Struct);
         let errors = self.structs(TypeKind::Error);
         self.check_annotations();
+        self.check_saving_pairs();
         self.check_function_annotations();
         self.check_shared_types();
         self.settle_typed();

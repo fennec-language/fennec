@@ -5477,21 +5477,6 @@ enum Order:
     Hold
     Move(x: int)
 
-    def deserialize(mut src: Deserializer) -> Self fails ParseError:
-        match src.case("Order", [("Hold", False), ("Move", True)])?:
-            case 0:
-                Order.Hold
-            case _:
-                fields = [("x", "x")]
-                src.record("Move")?
-                mut x: int? = None
-                while src.next_field(fields)?:
-                    x = src.value[int]()?
-                src.end_case()?
-                if x is None:
-                    fail src.missing("x")
-                Order.Move(x=x)
-
     def str(self, mut out: StrWriter):
         match self:
             case .Hold:
@@ -5499,53 +5484,23 @@ enum Order:
             case .Move(x):
                 out.write(f"Move({x})")
 
+struct Pair[T]:
+    left: T
+    right: T
+
 struct Unit:
     name: str
-    health = 10
+    @serialize(name="hp")
+    health = 10 where health >= 0
     pet: str?
-    pace: float
-    ready: bool
-    tags: list[str]
-    seen: set[int]
-    scores: dict[str, int]
-    orders: list[Order]
-
-    def deserialize(mut src: Deserializer) -> Self fails ParseError:
-        fields = [("name", "name"), ("hp", "health"), ("pet", "pet"), ("pace", "pace"), ("ready", "ready"), ("tags", "tags"), ("seen", "seen"), ("scores", "scores"), ("orders", "orders")]
-        src.record("Unit")?
-        mut name: str? = None
-        mut health: int? = None
-        mut pet: str? = None
-        mut pace = 0.0
-        mut ready = False
-        mut tags = list[str]()
-        mut seen = set[int]()
-        mut scores = dict[str, int]()
-        mut orders = list[Order]()
-        while src.next_field(fields)?:
-            match src.field_at():
-                case 0:
-                    name = src.value[str]()?
-                case 1:
-                    health = src.value[int]()?
-                case 2:
-                    if not src.none()?:
-                        pet = src.value[str]()?
-                case 3:
-                    pace = src.value[float]()?
-                case 4:
-                    ready = src.value[bool]()?
-                case 5:
-                    tags = src.value[list[str]]()?
-                case 6:
-                    seen = src.value[set[int]]()?
-                case 7:
-                    scores = src.value[dict[str, int]]()?
-                case _:
-                    orders = src.value[list[Order]]()?
-        if name is None:
-            fail src.missing("name")
-        Unit(name=name, health=health else 10, pet=pet, pace=pace, ready=ready, tags=tags, seen=seen, scores=scores, orders=orders)
+    pace = 0.0
+    ready = False
+    tags = list[str]()
+    seen = set[int]()
+    scores = dict[str, int]()
+    orders = list[Order]()
+    @skip
+    visits = 7
 
 def read(text: str) -> Unit fails ParseError:
     mut src = Words(parts=text.split(" "))
@@ -5569,11 +5524,16 @@ def main(stdout: Stdout):
     stdout.print(shown("Spot end"))
     stdout.print(shown("Unit orders 1 Wander end"))
     stdout.print(shown("Unit tags 2 a"))
+    stdout.print(shown("Unit name ash hp -1 end"))
+    mut src = Words(parts="Pair left 1 right 2 end".split(" "))
+    pair = src.value[Pair[int]]() else Pair(left=0, right=0)
+    skipped = read("Unit name ash end") else Unit(name="none", pet=None)
+    stdout.print(pair.left, pair.right, skipped.visits)
 "#;
 
-/// A format and a type written by hand on `Deserializer` and `Deserializable`, as generated code
-/// will be: every kind of value reads through one `T.deserialize`, a field left out takes its
-/// default or says it's missing, and each failure stops the read and says why.
+/// A format written by hand on `Deserializer`, reading types whose `deserialize` is generated: every
+/// kind of value reads through one `T.deserialize`, a field left out takes its default or says
+/// it's missing, and each failure stops the read and says why.
 #[test]
 fn a_format_reads_a_type_through_its_deserialize() -> std::io::Result<()> {
     if !ready() {
@@ -5596,7 +5556,9 @@ fn a_format_reads_a_type_through_its_deserialize() -> std::io::Result<()> {
          failed: no field `size` at 2\n\
          failed: `Spot` should be a Unit at 1\n\
          failed: no case `Wander` in Order at 4\n\
-         failed: out of words at 4\n"
+         failed: out of words at 4\n\
+         failed: in the text, Unit.health breaks its `where` rule at 6\n\
+         1 2 7\n"
     );
     Ok(())
 }

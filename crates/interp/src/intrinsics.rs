@@ -9,6 +9,8 @@ use crate::value::Value;
 
 /// Runs the intrinsic named `name` on its arguments.
 pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    // Imported by name into another std module, it keeps its module's name.
+    let name = name.strip_prefix("intrinsics.").unwrap_or(name);
     let binary = |op: BinOp| match args {
         [a, b] => ops::binary(op, a.clone(), b.clone(), span),
         _ => Err(wrong(name, span)),

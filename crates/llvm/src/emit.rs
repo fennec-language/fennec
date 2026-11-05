@@ -1662,9 +1662,7 @@ impl Emit<'_, '_, '_> {
             "intrinsics.text_byte"
             | "intrinsics.text_size"
             | "intrinsics.text_part"
-            | "intrinsics.text_of_code" => {
-                self.text_by_place(dest, name, args, span)
-            }
+            | "intrinsics.text_of_code" => self.text_by_place(dest, name, args, span),
             "random.random_int" | "random.random_float" | "random_choice" | "random.random_choice" => {
                 self.random_builtin(dest, name, args, span)
             }

@@ -54,6 +54,9 @@ impl Interp<'_> {
             | ("bool", value @ Value::Bool(_))
             | ("None", value @ Value::None) => Ok(value),
             ("float", Value::Int(n)) => Ok(Value::Float(to_float(n))),
+            ("bytes", Value::Str(text)) => super::base64::decode(&text)
+                .map(|data| Value::Bytes(data.into()))
+                .ok_or_else(|| format!("{} should be bytes, written in base64", place(at))),
             ("list", Value::List(items)) => {
                 let item = arg(0)?;
                 let mut read = Vec::new();

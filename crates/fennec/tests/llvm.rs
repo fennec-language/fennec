@@ -3509,9 +3509,10 @@ def main(stdout: Stdout, args: Args, process: Process):
         &needs,
         "\
 from std import json
+from std.collections import Deque
 
 def main(stdout: Stdout):
-    stdout.print(json.dumps(1))
+    stdout.print(json.dumps(Deque[int]()))
 ",
     )?;
     let refused = lean(&needs, &dir.join("needs"))?;
@@ -3519,6 +3520,185 @@ def main(stdout: Stdout):
     let said = String::from_utf8_lossy(&refused.stderr);
     assert!(said.contains("fennec_json"), "{said}");
     std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// JSON and TOML of types that save themselves go through std's readers and writers in Fennec,
+/// so a program reading and writing them links with no interpreter in it.
+#[test]
+fn json_and_toml_of_plain_types_need_no_interpreter() -> std::io::Result<()> {
+    if !ready() || !crate::executables::lean_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("formats-lean")?;
+    let program = dir.join("formats.fen");
+    std::fs::write(
+        &program,
+        "\
+from std import json, toml
+
+struct Spot:
+    x: int
+    tags: list[str]
+
+def main(stdout: Stdout):
+    text = json.dumps([Spot(x=1, tags=[\"a\"])])
+    stdout.print(text, json.loads[list[Spot]](text) else [])
+    stdout.print(toml.loads[Spot](toml.dumps(Spot(x=2, tags=[]))) else Spot(x=0, tags=[]))
+",
+    )?;
+    let executable = dir.join("formats");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_LEAN_RUNTIME", "1")
+        .output()?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "[{\"x\": 1, \"tags\": [\"a\"]}] [Spot(x=1, tags=[\"a\"])]\nSpot(x=2, tags=[])\n"
+    );
+    Ok(())
+}
+
+/// Native JSON and TOML write and read what the JIT does, and fail with the same messages: a
+/// field left out, a value of the wrong type, a key no field has, inside and outside, and text
+/// that isn't JSON.
+#[test]
+fn native_json_and_toml_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "native_formats",
+        r#"from std import json, toml
+
+enum Kind:
+    Fox
+    Owl(wise: bool)
+
+struct Spot:
+    x: int
+    y = 2.5
+
+struct Unit:
+    name: str
+    level: int
+    kind: Kind
+    pet: str?
+    at: Spot
+    tags: list[str]
+    stats: dict[str, int]
+
+def said[T](found: Result[T, ParseError]) -> str:
+    match found:
+        case Err(error):
+            error.message
+        case _:
+            "read"
+
+def main(stdout: Stdout):
+    ash = Unit(name="Ash \"the\" fox\n", level=3, kind=Kind.Owl(wise=True), pet=None, at=Spot(x=1), tags=["a", "é"], stats={"hp": 10})
+    text = json.dumps(ash)
+    stdout.print(text)
+    stdout.print(json.dumps([ash, ash], indent=2))
+    back = json.loads[Unit](text) else ash
+    stdout.print(back == ash, json.dumps(back) == text)
+    stdout.print(said(json.loads[Unit]("{\"name\": \"a\"}")))
+    stdout.print(said(json.loads[Unit]("{\"name\": 1, \"level\": 2}")))
+    stdout.print(said(json.loads[Unit]("{\"name\": \"a\", \"at\": {\"x\": 1, \"z\": 2}, \"extra\": 1}")))
+    stdout.print(said(json.loads[Unit]("[1, 2")))
+    stdout.print(said(json.loads[list[int]]("[1, \"two\"]")))
+    stdout.print(json.loads[Spot]("{\"x\": 1, \"x\": 2}") else Spot(x=0))
+    spot_text = toml.dumps(Spot(x=4))
+    stdout.print(spot_text)
+    stdout.print(toml.loads[Spot](spot_text) else Spot(x=0))
+    stdout.print(said(toml.loads[Spot]("x = \"a\"")))
+"#,
+    )
+}
+
+/// Two known differences between native JSON and the JIT's, both only in what a failed read says:
+/// a key given twice whose first value doesn't fit fails natively, where the JIT keeps the last
+/// value; and with two fields of the wrong type, native code names the first in the text, where
+/// the JIT names the first the type declares.
+#[test]
+fn native_json_differs_from_the_jit_in_two_known_ways() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let ((ours, _, _), (jit, _, _)) = both(
+        "native_json_differences",
+        r#"from std import json
+
+struct Spot:
+    x: int
+    y = 2.5
+
+def said(found: Result[Spot, ParseError]) -> str:
+    match found:
+        case Err(error):
+            error.message
+        case _:
+            "read"
+
+def main(stdout: Stdout):
+    stdout.print(said(json.loads[Spot]("{\"x\": \"one\", \"x\": 2}")))
+    stdout.print(said(json.loads[Spot]("{\"y\": \"no\", \"x\": \"one\"}")))
+"#,
+    )?;
+    assert_eq!(ours, "`x` should be an int, but it's a str\n`y` should be a float, but it's a str\n");
+    assert_eq!(jit, "read\n`x` should be an int, but it's a str\n");
+    Ok(())
+}
+
+/// `bytes` are written as standard base64 natively, padded with `=`, and read back; text that
+/// isn't base64 says so.
+#[test]
+fn native_json_and_toml_write_bytes_as_base64() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("bytes_base64")?;
+    let program = dir.join("blob.fen");
+    std::fs::write(
+        &program,
+        r#"from std import json, toml
+
+struct Blob:
+    data: bytes
+
+def main(stdout: Stdout):
+    for size in range(5):
+        mut items = list[int]()
+        for at in range(size):
+            items.append(250 + at)
+        blob = Blob(data=bytes(items))
+        text = json.dumps(blob)
+        back = json.loads[Blob](text) else Blob(data=bytes([]))
+        stdout.print(text, back.data == blob.data)
+    stdout.print(toml.dumps(Blob(data="hello".encode())))
+    match json.loads[Blob]("{\"data\": \"ab=c\"}"):
+        case Err(error):
+            stdout.print(error.message)
+        case Ok(_):
+            stdout.print("read")
+"#,
+    )?;
+    let executable = dir.join("blob");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "{\"data\": \"\"} True\n{\"data\": \"+g==\"} True\n{\"data\": \"+vs=\"} True\n\
+         {\"data\": \"+vv8\"} True\n{\"data\": \"+vv8/Q==\"} True\ndata = \"aGVsbG8=\"\n\n\
+         `data` should be bytes, written in base64\n"
+    );
     Ok(())
 }
 

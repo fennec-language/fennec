@@ -732,9 +732,13 @@ impl Emit<'_, '_, '_> {
         }
         let (text, _) = self.operand(args.first().ok_or("no argument")?)?;
         if name == "intrinsics.text_of_code" {
-            self.declare(&format!("declare void @fennec_code_header(ptr sret({HEADER}) align 8, i64) nounwind"));
+            self.declare(&format!(
+                "declare void @fennec_code_header(ptr sret({HEADER}) align 8, i64) nounwind"
+            ));
             let (place, found) = (self.place_for_text(), self.temp());
-            self.line(&format!("call void @fennec_code_header(ptr sret({HEADER}) align 8 {place}, i64 {text})"));
+            self.line(&format!(
+                "call void @fennec_code_header(ptr sret({HEADER}) align 8 {place}, i64 {text})"
+            ));
             self.line(&format!("{found} = load {HEADER}, ptr {place}"));
             return self.assign(dest, &found);
         }
@@ -770,7 +774,8 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{short} = icmp ule i64 {size}, 23"));
         self.line(&format!("{ok} = and i1 {ordered}, {within}"));
         self.line(&format!("{quick} = and i1 {ok}, {short}"));
-        let (fast, slow, done) = (self.label("part_inline"), self.label("part_runtime"), self.label("part_done"));
+        let (fast, slow, done) =
+            (self.label("part_inline"), self.label("part_runtime"), self.label("part_done"));
         self.line(&format!("br i1 {quick}, label %{fast}, label %{slow}"));
         self.start_block(&fast);
         let at = self.temp();

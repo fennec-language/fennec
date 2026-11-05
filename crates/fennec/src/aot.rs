@@ -331,8 +331,8 @@ fn emitted_as_written(
     reached: &fennec_syntax::Module,
     emit: fn(&fennec_ir::Program, fennec_llvm::Cpu) -> Emits,
 ) -> Result<Emitted, String> {
-    let checked =
-        fennec_check::check(reached).map_err(|problems| format!("the program didn't check once trimmed: {problems:?}"))?;
+    let checked = fennec_check::check(reached)
+        .map_err(|problems| format!("the program didn't check once trimmed: {problems:?}"))?;
     // `parallel` runs on the runtime's threads, its work lifted for each range of positions.
     let lowered = fennec_ir::lower_with(
         reached,

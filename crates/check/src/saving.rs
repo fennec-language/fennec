@@ -437,7 +437,9 @@ fn field_stops(
 ) -> Option<(String, String, String, String)> {
     let stop = |what: String| Some((place.to_owned(), what, field.to_owned(), owner.to_owned()));
     match ty {
-        Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::Param(_) | Type::Unknown => None,
+        Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::Param(_) | Type::Unknown => {
+            None
+        }
         Type::List(inner) | Type::Set(inner) | Type::Optional(inner) => {
             field_stops(checker, inner, place, (field, owner), open)
         }

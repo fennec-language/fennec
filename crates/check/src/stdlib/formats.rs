@@ -167,7 +167,7 @@ impl FnCx<'_> {
             | Type::Str
             | Type::Bytes
             | Type::Id(_) => Ok(()),
-            Type::List(item) | Type::Optional(item) | Type::IdMap(item) => {
+            Type::List(item) | Type::Optional(item) | Type::Table(item) => {
                 self.holds(format, item, (span, field), seen)
             }
             Type::Dict(key, value) => self.holds_map(format, ty, (key, value), (span, field), seen),

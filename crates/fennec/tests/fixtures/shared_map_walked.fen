@@ -1,12 +1,12 @@
 # A map in a cell walked by one name while another changes it: the walk holds what it goes through.
 
-from std.game import Id, IdMap
+from std.collections import Id, Table
 
 shared Log:
-    map = IdMap[str]()
+    map = Table[str]()
 
     def add(mut self, name: str):
-        self.map.insert(name)
+        self.map.add(name)
 
     def drop(mut self, id: Id[str]):
         self.map.remove(id)

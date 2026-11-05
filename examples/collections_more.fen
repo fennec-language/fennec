@@ -1,4 +1,4 @@
-from std.game import IdMap
+from std.collections import Table
 
 def describe(result: Result[str, IoError]) -> str:
     match result:
@@ -45,11 +45,11 @@ def main(stdout: Stdout, fs: Fs):
     seen.clear()
     stdout.print(seen)
 
-    # IdMap.
-    mut enemies = IdMap[str]()
-    first = enemies.insert("ash")
-    enemies.insert("kit")
-    enemies.insert("vex")
+    # Table.
+    mut enemies = Table[str]()
+    first = enemies.add("ash")
+    enemies.add("kit")
+    enemies.add("vex")
     for id, name in enemies.items():
         stdout.print(name, id == first)
     stdout.print(enemies.ids().len(), enemies[first])

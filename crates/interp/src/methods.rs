@@ -197,7 +197,7 @@ fn changes_in_place(value: &Value, method: &str) -> bool {
         Value::Buffer(_) => &["push", "pop", "reserve", "truncate", "extend", "insert", "remove"],
         Value::Dict(_) => &["clear", "pop"],
         Value::Set(_) => &["add", "clear", "discard", "remove"],
-        Value::IdMap(_) => &["clear", "insert", "modify", "remove", "remove_where"],
+        Value::Table(_) => &["add", "clear", "modify", "remove", "remove_where"],
         _ => &[],
     };
     methods.contains(&method)

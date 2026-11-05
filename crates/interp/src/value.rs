@@ -36,9 +36,9 @@ pub(crate) enum Value {
     Shared(Rc<std::cell::RefCell<Value>>),
     Ok(Rc<Value>),
     Err(Rc<Value>),
-    IdMap(Rc<IdMap>),
+    Table(Rc<Table>),
     Id(Id),
-    /// A type used as a value, as in `Enemy.at(...)` or `IdMap[Enemy]()`.
+    /// A type used as a value, as in `Enemy.at(...)` or `Table[Enemy]()`.
     Type(Rc<str>),
     Function(Rc<Callable>),
     Builtin(&'static str),
@@ -176,15 +176,15 @@ pub(crate) struct Lambda {
 
 /// Slots that hand out generational IDs, so a stale ID never finds the wrong thing.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct IdMap {
+pub(crate) struct Table {
     pub(crate) slots: Vec<Slot>,
     /// No slot below this one is free, so finding the first free slot needn't look at them.
     free_from: usize,
 }
 
 /// Maps are the same when their slots are: where one's looking for a free slot is no part of it.
-impl PartialEq for IdMap {
-    fn eq(&self, other: &IdMap) -> bool {
+impl PartialEq for Table {
+    fn eq(&self, other: &Table) -> bool {
         self.slots == other.slots
     }
 }
@@ -201,9 +201,9 @@ pub(crate) struct Id {
     pub(crate) generation: u32,
 }
 
-impl IdMap {
-    pub(crate) fn new(slots: Vec<Slot>) -> IdMap {
-        IdMap { slots, free_from: 0 }
+impl Table {
+    pub(crate) fn new(slots: Vec<Slot>) -> Table {
+        Table { slots, free_from: 0 }
     }
 
     pub(crate) fn get(&self, id: Id) -> Option<&Value> {
@@ -332,7 +332,7 @@ impl Value {
             Value::Set(_) => "set".to_owned(),
             Value::Instance(instance) => instance.type_name.to_string(),
             Value::Ok(_) | Value::Err(_) => "result".to_owned(),
-            Value::IdMap(_) => "IdMap".to_owned(),
+            Value::Table(_) => "Table".to_owned(),
             Value::Id(_) => "Id".to_owned(),
             Value::Type(_) => "type".to_owned(),
             Value::Function(_) | Value::Builtin(_) | Value::Lambda(_) => "function".to_owned(),
@@ -372,7 +372,7 @@ impl PartialEq for Value {
                 a.type_name == b.type_name && a.case == b.case && a.fields == b.fields
             }
             (Value::Ok(a), Value::Ok(b)) | (Value::Err(a), Value::Err(b)) => a == b,
-            (Value::IdMap(a), Value::IdMap(b)) => a == b,
+            (Value::Table(a), Value::Table(b)) => a == b,
             (Value::Id(a), Value::Id(b)) => a == b,
             (Value::Type(a), Value::Type(b)) => a == b,
             (Value::Function(a), Value::Function(b)) => Rc::ptr_eq(a, b),

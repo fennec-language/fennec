@@ -1,5 +1,5 @@
 //! Reading a parsed value into the type a program asks for, as in `json.loads[Settings](text)`.
-//! An `Id`, an `IdMap` and an enum case read back as `dump` wrote them, and a generic struct
+//! An `Id`, a `Table` and an enum case read back as `dump` wrote them, and a generic struct
 //! reads its fields with its type arguments filled in.
 //! A struct's field takes the type written for it, or else the shape of its default, which
 //! the type checker makes sure shows the field's type. An int is read as a float where a
@@ -12,7 +12,7 @@ use fennec_syntax::{Field, Span, TypeExpr};
 use crate::call::CallArg;
 use crate::interp::{Interp, TypeKind};
 use crate::ops::to_float;
-use crate::value::{Id, IdMap, Slot, Value};
+use crate::value::{Id, Slot, Table, Value};
 
 /// Why a value read doesn't fit the type wanted.
 type Misfit = String;
@@ -100,7 +100,7 @@ impl Interp<'_> {
                 Ok(Value::Tuple(Rc::new(read)))
             }
             ("Id", Value::Dict(pairs)) => id_of(&pairs, at).map(Value::Id),
-            ("IdMap", Value::Dict(pairs)) => self.decode_id_map(&pairs, &arg(0)?, at, span),
+            ("Table", Value::Dict(pairs)) => self.decode_id_map(&pairs, &arg(0)?, at, span),
             (name, value) if self.has_shape(name) => {
                 let read = self.decode(value, &Self::shape_of(ty), at, span)?;
                 self.build_shaped(name, read, at, span)
@@ -111,7 +111,7 @@ impl Interp<'_> {
         }
     }
 
-    /// An `IdMap` from its slots: each one's generation, and its value unless it's free.
+    /// A `Table` from its slots: each one's generation, and its value unless it's free.
     fn decode_id_map(
         &mut self,
         pairs: &[(Value, Value)],
@@ -120,7 +120,7 @@ impl Interp<'_> {
         span: Span,
     ) -> Result<Value, Misfit> {
         let Some(Value::List(written)) = entry(pairs, "slots") else {
-            return Err(format!("{} should be an IdMap, with its `slots`", place(at)));
+            return Err(format!("{} should be a Table, with its `slots`", place(at)));
         };
         let mut slots = Vec::new();
         for (n, slot) in written.iter().enumerate() {
@@ -135,7 +135,7 @@ impl Interp<'_> {
             };
             slots.push(Slot { generation, value });
         }
-        Ok(Value::IdMap(Rc::new(IdMap::new(slots))))
+        Ok(Value::Table(Rc::new(Table::new(slots))))
     }
 
     fn is_struct(&self, name: &str) -> bool {

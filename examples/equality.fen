@@ -1,4 +1,4 @@
-from std.game import IdMap
+from std.collections import Table
 
 def square(n: int) -> int:
     n * n
@@ -15,12 +15,12 @@ def main(stdout: Stdout):
         {"a": 1} == {"a": 1, "b": 2},
     )
 
-    mut left = IdMap[str]()
-    mut right = IdMap[str]()
-    left.insert("ash")
-    right.insert("ash")
+    mut left = Table[str]()
+    mut right = Table[str]()
+    left.add("ash")
+    right.add("ash")
     stdout.print(left == right)
-    right.insert("kit")
+    right.add("kit")
     stdout.print(left == right)
 
     # Functions are equal only to themselves. Types and builtins aren't values, and arrow

@@ -725,7 +725,7 @@ fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, 
                 _ => continue,
             };
             let source_ty = function.locals.get(source.0).map(|local| &local.ty);
-            let id_map = matches!(source_ty, Some(Type::IdMap(_)));
+            let id_map = matches!(source_ty, Some(Type::Table(_)));
             // A string's character is a string of its own, made by the indexing, not one held
             // inside what it came from, so there's nothing to borrow.
             let text = matches!(source_ty, Some(Type::Str));
@@ -913,9 +913,9 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                     }
                 }
             }
-            // An `IdMap`'s items aren't a list's, so they're read and written as they are.
+            // A `Table`'s items aren't a list's, so they're read and written as they are.
             let id_map = |local: LocalId| {
-                matches!(function.locals.get(local.0).map(|local| &local.ty), Some(Type::IdMap(_)))
+                matches!(function.locals.get(local.0).map(|local| &local.ty), Some(Type::Table(_)))
             };
             if matches!(&inst.kind, InstKind::GetIndex { .. }) && id_map(source) {
                 continue;
@@ -960,7 +960,7 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                     InstKind::Builtin { name, args, .. }
                         if name == "list.append" && args.first() == Some(&Operand::Local(dest)) => {}
                     InstKind::Builtin { name, args, changes: true, .. }
-                        if name.starts_with("IdMap.")
+                        if name.starts_with("Table.")
                             && args.first() == Some(&Operand::Local(dest))
                             && !args.iter().skip(1).any(|arg| {
                                 *arg == Operand::Local(dest) || *arg == Operand::Local(source)
@@ -1897,7 +1897,7 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
             }
         }
         let of_text = function.locals.get(list.0).is_some_and(|local| local.ty == Type::Str);
-        let walks = matches!(name.as_str(), "IdMap.items" | "IdMap.values");
+        let walks = matches!(name.as_str(), "Table.items" | "Table.values");
         // A loop over a map can't change it, as the checker sees to, so a walk only needs nothing
         // to change it from when this was asked for until its loop's done. Something else can
         // reach a map through a `shared` handle, so unless it's known steady, the local holds an
@@ -1955,7 +1955,7 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
                 .all(|(_, _, walked_at, _)| walk_leaves_alone(function, *made, *list, *walked_at));
         }
         // Each pair is only taken apart, after it's read, in its block.
-        for (pair, _, at, index) in pairs.iter().filter(|_| name != "IdMap.values") {
+        for (pair, _, at, index) in pairs.iter().filter(|_| name != "Table.values") {
             let Some(block) = function.blocks.get(*at) else { continue };
             let later = block.insts.get(index + 1..).unwrap_or_default();
             let mut uses = 0;
@@ -1982,7 +1982,7 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
                 known.map_walks.insert(local.0, *list);
             }
             for (item, _, _, _) in pairs {
-                known.walk_items.insert(item.0, (*list, name == "IdMap.items"));
+                known.walk_items.insert(item.0, (*list, name == "Table.items"));
             }
         } else if fine {
             for local in &group {

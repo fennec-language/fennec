@@ -114,9 +114,9 @@ fn a_nested_for_mut_over_something_else_is_fine() {
 
 #[test]
 fn a_for_mut_over_an_id_map_locks_it_too() {
-    let body = "mut units = IdMap[int]()\nfor mut unit in units:\n    for mut other in units:\n        other += unit\n";
+    let body = "mut units = Table[int]()\nfor mut unit in units:\n    for mut other in units:\n        other += unit\n";
     assert_eq!(
-        in_main_after("from std.game import IdMap\n\n", body),
+        in_main_after("from std.collections import Table\n\n", body),
         ["you can't change `units` while looping over it @ units"]
     );
 }

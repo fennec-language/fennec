@@ -148,16 +148,16 @@ Equality, hashing and printing work automatically for any type whose fields supp
 Fennec has no object graphs. Data is plain values, nested inline, and the things that point at each other live in tables and hold each other's `Id`.
 
 ```fennec
-from std.game import Id, IdMap
+from std.collections import Id, Table
 
 struct Unit:
     health = 100
     target: Id[Unit]? = None
 
 def main(stdout: Stdout):
-    mut units = IdMap[Unit]()
-    ash = units.insert(Unit())
-    vex = units.insert(Unit(target=ash))
+    mut units = Table[Unit]()
+    ash = units.add(Unit())
+    vex = units.add(Unit(target=ash))
     units[ash].health -= 10
     stdout.print(units[ash].health, units[vex].target == ash)
 

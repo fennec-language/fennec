@@ -2573,7 +2573,7 @@ fn own_text_inside_other_values_is_written_by_native_code() -> std::io::Result<(
 
 /// Every shape of value printing reads from its block, nested, with text that needs quoting.
 const SHOWN_VALUES: &str = "\
-from std.game import IdMap
+from std.collections import Table
 
 struct Point:
     x = 0
@@ -2620,10 +2620,10 @@ def main(stdout: Stdout):
     stdout.print(words)
     points: list[Point?] = [Point(), None]
     stdout.print(points)
-    mut map = IdMap[str]()
-    first = map.insert(\"a\")
-    second = map.insert(\"b\")
-    map.insert(\"c\")
+    mut map = Table[str]()
+    first = map.add(\"a\")
+    second = map.add(\"b\")
+    map.add(\"c\")
     map.remove(second)
     stdout.print(map)
     stdout.print([first])
@@ -4256,7 +4256,7 @@ def main(stdout: Stdout):
     )
 }
 
-/// An `IdMap` uses its first free slot first, whatever order slots came free in, and where it
+/// A `Table` uses its first free slot first, whatever order slots came free in, and where it
 /// looks from never changes which that is: the `Id`s it gives are the interpreter's.
 #[test]
 fn an_id_maps_new_items_go_in_its_first_free_slot() -> std::io::Result<()> {
@@ -4265,45 +4265,45 @@ fn an_id_maps_new_items_go_in_its_first_free_slot() -> std::io::Result<()> {
     }
     same_as_the_jit(
         "id_map_free_slots",
-        r#"from std.game import Id, IdMap
+        r#"from std.collections import Id, Table
 
 struct Named:
     name: str
 
 def main(stdout: Stdout):
-    mut names = IdMap[Named]()
+    mut names = Table[Named]()
     mut ids: list[Id[Named]] = []
     for at in range(8):
-        ids.append(names.insert(Named(f"name {at} long enough not to be held inline")))
+        ids.append(names.add(Named(f"name {at} long enough not to be held inline")))
     stdout.print(ids)
     # Free from high to low, low to high, and in between.
     names.remove(ids[6])
     names.remove(ids[2])
     names.remove(ids[4])
-    first = names.insert(Named("a"))
-    second = names.insert(Named("b"))
+    first = names.add(Named("a"))
+    second = names.add(Named("b"))
     names.remove(ids[0])
-    third = names.insert(Named("c"))
-    fourth = names.insert(Named("d"))
-    fifth = names.insert(Named("e"))
+    third = names.add(Named("c"))
+    fourth = names.add(Named("d"))
+    fifth = names.add(Named("e"))
     stdout.print(first, second, third, fourth, fifth, names.len())
     stdout.print(names.get(ids[2]) is None, names[first], names[fifth])
     # A stale `Id` frees nothing, so it can't move where to look.
     names.remove(ids[2])
-    sixth = names.insert(Named("f"))
+    sixth = names.add(Named("f"))
     stdout.print(sixth, names.values())
     # A copy keeps looking from where it was, apart from the original.
     mut copied = copy(names)
     copied.remove(ids[1])
     names.remove(ids[3])
-    stdout.print(copied.insert(Named("g")), names.insert(Named("h")), copied.values(), names.values())
+    stdout.print(copied.add(Named("g")), names.add(Named("h")), copied.values(), names.values())
 "#,
     )
 }
 
 /// `items()` and `values()` gone through in order, with slots empty, at the start and the end,
 /// and everything an item can be, which the loop walks with no list made.
-const WALKING_A_MAP: &str = r#"from std.game import IdMap
+const WALKING_A_MAP: &str = r#"from std.collections import Table
 
 struct Unit:
     name: str
@@ -4313,7 +4313,7 @@ struct Point:
     x: int
     y: float
 
-def total(numbers: IdMap[int]) -> int:
+def total(numbers: Table[int]) -> int:
     mut sum_of = 0
     for id, number in numbers.items():
         sum_of += number + numbers[id]
@@ -4321,7 +4321,7 @@ def total(numbers: IdMap[int]) -> int:
         sum_of += number
     sum_of
 
-def named(units: IdMap[Unit]) -> str:
+def named(units: Table[Unit]) -> str:
     mut parts = []
     for id, unit in units.items():
         parts.append(f"{unit.name}:{unit.tags.len()}:{units[id].name}")
@@ -4330,45 +4330,45 @@ def named(units: IdMap[Unit]) -> str:
     ",".join(parts)
 
 def main(stdout: Stdout):
-    mut numbers = IdMap[int]()
-    ids = [numbers.insert(n) for n in range(8)]
+    mut numbers = Table[int]()
+    ids = [numbers.add(n) for n in range(8)]
     stdout.print(total(numbers))
     numbers.remove(ids[0])
     numbers.remove(ids[3])
     numbers.remove(ids[4])
     numbers.remove(ids[7])
     stdout.print(total(numbers), numbers.len())
-    numbers.insert(100)
+    numbers.add(100)
     stdout.print(total(numbers), numbers.len())
 
-    mut units = IdMap[Unit]()
-    first = units.insert(Unit("first", [1]))
-    units.insert(Unit("second is a much longer name than fits", [2, 3]))
-    last = units.insert(Unit("é", []))
+    mut units = Table[Unit]()
+    first = units.add(Unit("first", [1]))
+    units.add(Unit("second is a much longer name than fits", [2, 3]))
+    last = units.add(Unit("é", []))
     stdout.print(named(units))
     units.remove(first)
     units.remove(last)
     stdout.print(named(units))
 
-    mut points = IdMap[Point]()
-    gone = points.insert(Point(0, 0.5))
-    points.insert(Point(1, 1.5))
-    points.insert(Point(2, 2.5))
+    mut points = Table[Point]()
+    gone = points.add(Point(0, 0.5))
+    points.add(Point(1, 1.5))
+    points.add(Point(2, 2.5))
     points.remove(gone)
     for id, point in points.items():
         stdout.print(point.x, point.y, points[id].x)
 
-    mut words = IdMap[str]()
-    words.insert("a")
-    words.insert("a word too long to fit in a header")
+    mut words = Table[str]()
+    words.add("a")
+    words.add("a word too long to fit in a header")
     for word in words.values():
         stdout.print(word)
 
     # Nothing in it, then nothing left in it.
-    mut empty = IdMap[int]()
+    mut empty = Table[int]()
     for id, number in empty.items():
         stdout.print(number)
-    only = empty.insert(1)
+    only = empty.add(1)
     empty.remove(only)
     for number in empty.values():
         stdout.print(number)
@@ -4388,8 +4388,8 @@ def main(stdout: Stdout):
     stdout.print(pairs.len())
 
     # Changed after it's asked for and before it's gone through, which sees it as it was.
-    mut changing = IdMap[int]()
-    kept = [changing.insert(n) for n in range(3)]
+    mut changing = Table[int]()
+    kept = [changing.add(n) for n in range(3)]
     before = changing.items()
     changing.remove(kept[1])
     for id, number in before:
@@ -4398,7 +4398,7 @@ def main(stdout: Stdout):
     for round in range(3):
         for number in changing.values():
             stdout.print(round, number)
-        changing.insert(round * 100)
+        changing.add(round * 100)
 "#;
 
 #[test]
@@ -4414,7 +4414,7 @@ fn walking_a_map_makes_no_list() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = "from std.game import IdMap\n\ndef main(stdout: Stdout):\n    mut numbers = IdMap[int]()\n    for n in range(1000):\n        numbers.insert(n)\n    mut found = 0\n    for round in range(100):\n        for id, number in numbers.items():\n            found += number\n        for number in numbers.values():\n            found += number\n    stdout.print(found)\n";
+    let source = "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut numbers = Table[int]()\n    for n in range(1000):\n        numbers.add(n)\n    mut found = 0\n    for round in range(100):\n        for id, number in numbers.items():\n            found += number\n        for number in numbers.values():\n            found += number\n    stdout.print(found)\n";
     let counts = counts_of("walking_no_list", source)?;
     assert!(count(&counts, "allocations") < Some(40), "{counts}");
     Ok(())
@@ -4427,22 +4427,22 @@ fn id_maps_match_the_jit() -> std::io::Result<()> {
     }
     same_as_the_jit(
         "idmap",
-        r#"from std.game import Id, IdMap
+        r#"from std.collections import Id, Table
 
 struct Unit:
     name: str
     health: int
 
 def main(stdout: Stdout):
-    mut units = IdMap[Unit]()
-    a = units.insert(Unit(name="fox", health=10))
-    b = units.insert(Unit(name="kit", health=5))
+    mut units = Table[Unit]()
+    a = units.add(Unit(name="fox", health=10))
+    b = units.add(Unit(name="kit", health=5))
     units[a].health -= 3
     stdout.print(units[a].health, units.len(), units.get(b) is None)
     gone = units.remove(b)
     stdout.print(units.get(b) is None, units.len(), a == a, a == b)
     stdout.print(a in units, b in units, a not in units, b not in units)
-    c = units.insert(Unit(name="den", health=7))
+    c = units.add(Unit(name="den", health=7))
     stdout.print(b in units, c in units)
     ids: list[Id[Unit]] = units.ids()
     for id, unit in units.items():
@@ -4454,7 +4454,7 @@ def main(stdout: Stdout):
     )?;
     same_message_as_the_jit(
         "stale",
-        "from std.game import IdMap\n\ndef main(stdout: Stdout):\n    mut names = IdMap[str]()\n    fox = names.insert(\"fox\")\n    names.remove(fox)\n    stdout.print(names[fox])\n",
+        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut names = Table[str]()\n    fox = names.add(\"fox\")\n    names.remove(fox)\n    stdout.print(names[fox])\n",
     )
 }
 

@@ -18,7 +18,7 @@ pub(crate) fn canon(ty: &Type) -> Type {
         Type::Result(value, error) => Type::Named(format!("Result[{value}, {error}]")),
         // Every `Id` looks the same whatever it's of.
         Type::Id(_) => Type::Named("Id".to_owned()),
-        Type::IdMap(item) => Type::Named(format!("IdMap[{item}]")),
+        Type::Table(item) => Type::Named(format!("Table[{item}]")),
         Type::List(item) => Type::List(Box::new(canon(item))),
         Type::Set(item) => Type::Set(Box::new(canon(item))),
         Type::Dict(key, value) => Type::Dict(Box::new(canon(key)), Box::new(canon(value))),
@@ -74,7 +74,7 @@ pub(crate) fn define_named(ty: &Type, layouts: Option<&Layouts>, out: &mut BTree
                 Written::Struct(vec![field("slot", &Type::Int), field("generation", &Type::Int)]),
             );
         }
-        Type::IdMap(item) => {
+        Type::Table(item) => {
             define_named(item, layouts, out);
             let fields = vec![
                 field("items", &Type::List(item.clone())),
@@ -82,7 +82,7 @@ pub(crate) fn define_named(ty: &Type, layouts: Option<&Layouts>, out: &mut BTree
                 field("live", &Type::Int),
                 field("free_from", &Type::Int),
             ];
-            out.insert(format!("IdMap[{item}]"), Written::Struct(fields));
+            out.insert(format!("Table[{item}]"), Written::Struct(fields));
         }
         Type::List(item) | Type::Set(item) => define_named(item, layouts, out),
         Type::Dict(key, value) => {

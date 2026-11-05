@@ -27,7 +27,7 @@ pub(super) struct Counting<'a> {
 /// Where a `for mut` loop's items go back to.
 pub(super) struct Back {
     place: Place,
-    /// It goes through `IdMap` items by their `Id`s, not by position.
+    /// It goes through `Table` items by their `Id`s, not by position.
     by_id: bool,
 }
 
@@ -63,7 +63,7 @@ impl Lowering<'_> {
         let key = match &held {
             Some(Type::List(_) | Type::Buffer(_) | Type::Str | Type::Bytes | Type::Tuple(_)) => Type::Int,
             Some(Type::Dict(key, _)) => *key.clone(),
-            Some(Type::IdMap(item)) => Type::Id(item.clone()),
+            Some(Type::Table(item)) => Type::Id(item.clone()),
             Some(Type::Named(name)) if name == "Args" => {
                 let object = self.expr(object)?;
                 let index = self.expr(index)?;
@@ -146,7 +146,7 @@ impl Lowering<'_> {
                 ref ty @ (Type::List(_)
                 | Type::Set(_)
                 | Type::Dict(..)
-                | Type::IdMap(_)
+                | Type::Table(_)
                 | Type::Str
                 | Type::Bytes),
             ) => owner_name(ty).unwrap_or_default().to_owned(),
@@ -211,7 +211,7 @@ impl Lowering<'_> {
     /// for the runtime to call as it writes the value. `seen` are the types looked at already.
     fn own_texts_within(&mut self, held: &Type, seen: &mut Vec<Type>, span: Span) -> Lowered<()> {
         match held {
-            Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::IdMap(item) => {
+            Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::Table(item) => {
                 return self.own_texts_within(item, seen, span);
             }
             Type::Dict(first, second) | Type::Result(first, second) => {
@@ -328,8 +328,8 @@ impl Lowering<'_> {
         {
             return self.through_positions(name, (iter, &owner), body, span);
         }
-        // Only the items of a list or `IdMap` are written back, and only one name holds them.
-        let by_id = matches!(self.type_at(iter.span), Some(Type::IdMap(_)));
+        // Only the items of a list or `Table` are written back, and only one name holds them.
+        let by_id = matches!(self.type_at(iter.span), Some(Type::Table(_)));
         let changes_items =
             is_mut && names.len() == 1 && (by_id || matches!(self.type_at(iter.span), Some(Type::List(_))));
         let back =
@@ -433,11 +433,11 @@ impl Lowering<'_> {
             Type::Str => (Type::List(Box::new(Type::Str)), Type::Str, Some("str.chars")),
             Type::Set(item) | Type::Dict(item, _) => (Type::List(item.clone()), *item.clone(), Some("list")),
             Type::Bytes => (Type::List(Box::new(Type::Int)), Type::Int, Some("list")),
-            Type::IdMap(item) if back.is_some() => {
+            Type::Table(item) if back.is_some() => {
                 let pair = Type::Tuple(vec![Type::Id(item.clone()), *item.clone()]);
-                (Type::List(Box::new(pair.clone())), pair, Some("IdMap.items"))
+                (Type::List(Box::new(pair.clone())), pair, Some("Table.items"))
             }
-            Type::IdMap(item) => (Type::List(item.clone()), *item.clone(), Some("IdMap.values")),
+            Type::Table(item) => (Type::List(item.clone()), *item.clone(), Some("Table.values")),
             Type::Named(name) if name == "Args" => (Type::List(Box::new(Type::Str)), Type::Str, Some("list")),
             Type::Named(name) => {
                 let found = self.resolve(&format!("{name}.iter"), &[Some(ty.clone())], None);

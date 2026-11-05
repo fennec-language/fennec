@@ -1,12 +1,12 @@
 //! Values a backend lays out as ordinary structs and enums, but the interpreter holds as
-//! values of their own: an optional held as an enum, a result, an `Id` and an `IdMap`. Reading a block
+//! values of their own: an optional held as an enum, a result, an `Id` and a `Table`. Reading a block
 //! turns these into what the interpreter holds, and writing one turns them back.
 
 use std::rc::Rc;
 
 use super::{State, write};
 use crate::packed::Element;
-use crate::value::{Id, IdMap, Instance, Slot, Value};
+use crate::value::{Id, Instance, Slot, Table, Value};
 
 /// An optional held as an enum, with cases `None` and `Some(value)`.
 pub(super) fn is_option(name: &str) -> bool {
@@ -23,10 +23,10 @@ pub(super) fn is_one_of_several(name: &str) -> bool {
     name.contains(" | ") && !name.contains('[') && !name.starts_with('(')
 }
 
-/// An `IdMap` laid out as its items, each slot's generation, and how many are live. A
+/// A `Table` laid out as its items, each slot's generation, and how many are live. A
 /// removed slot's generation is held as `-1 - generation`, and its item is zero.
 pub(super) fn is_id_map(name: &str) -> bool {
-    name.starts_with("IdMap[")
+    name.starts_with("Table[")
 }
 
 /// Whether items of a kind read as the interpreter's packed items: numbers, and structs and
@@ -72,7 +72,7 @@ pub(super) fn interpreted(name: &str, value: Value) -> Value {
         return id(instance).map_or(value, Value::Id);
     }
     if is_id_map(name) {
-        return id_map(instance).map_or(value, |map| Value::IdMap(Rc::new(map)));
+        return id_map(instance).map_or(value, |map| Value::Table(Rc::new(map)));
     }
     value
 }
@@ -87,7 +87,7 @@ fn id(instance: &Instance) -> Option<Id> {
     Some(Id { slot, generation })
 }
 
-fn id_map(instance: &Instance) -> Option<IdMap> {
+fn id_map(instance: &Instance) -> Option<Table> {
     let list = |field: &str| match instance.field(field)?.clone().unpacked() {
         Value::List(items) => Some(items),
         _ => None,
@@ -101,7 +101,7 @@ fn id_map(instance: &Instance) -> Option<IdMap> {
             Slot { generation: u32::try_from(*generation).ok()?, value: Some(item.clone()) }
         })
     });
-    Some(IdMap::new(slots.collect::<Option<_>>()?))
+    Some(Table::new(slots.collect::<Option<_>>()?))
 }
 
 /// What `write_named` did.
@@ -166,7 +166,7 @@ pub(super) fn write_named(
             words.extend([slot, u64::from(id.generation)]);
             Written::Done
         }
-        (Element::Struct { name, fields }, Value::IdMap(map)) if is_id_map(name) => {
+        (Element::Struct { name, fields }, Value::Table(map)) if is_id_map(name) => {
             write_id_map(state, fields, map, words).into()
         }
         _ => Written::NotNamed,
@@ -176,7 +176,7 @@ pub(super) fn write_named(
 fn write_id_map(
     state: &mut State,
     fields: &[(Rc<str>, Element)],
-    map: &IdMap,
+    map: &Table,
     words: &mut Vec<u64>,
 ) -> Option<()> {
     let item = match fields.first() {

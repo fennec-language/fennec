@@ -1,5 +1,5 @@
-//! `IdMap`s and `Id`s, which the runtime doesn't hold natively. An `Id` is a plain struct of its
-//! slot and generation. An `IdMap` is a boxed struct of its items, each slot's generation, and
+//! `Table`s and `Id`s, which the runtime doesn't hold natively. An `Id` is a plain struct of its
+//! slot and generation. A `Table` is a boxed struct of its items, each slot's generation, and
 //! how many are live: a removed slot's generation is stored as `-1 - generation`, and its item
 //! is zero, so a stale `Id` never finds the wrong thing and a slot is used again with the next
 //! generation, as the interpreter's are. The first free slot is used first, and the map says how
@@ -15,7 +15,7 @@ use crate::lists::{FIELDS_OFFSET, list_item};
 /// What failing to find an `Id` says, as the interpreter does.
 const REMOVED: &str = "this Id refers to something that's been removed";
 
-/// Where an `IdMap`'s parts are, from its fields' start, and how its items are held.
+/// Where a `Table`'s parts are, from its fields' start, and how its items are held.
 struct Parts {
     items: u32,
     generations: u32,
@@ -25,10 +25,10 @@ struct Parts {
 }
 
 impl Emit<'_, '_, '_> {
-    /// Whether a kind is an `IdMap`'s.
+    /// Whether a kind is a `Table`'s.
     pub(crate) fn is_id_map(&self, kind: &Kind) -> bool {
         let Kind::Boxed(id) = kind else { return false };
-        self.module.layouts.get(*id).is_some_and(|layout| layout.name.starts_with("IdMap["))
+        self.module.layouts.get(*id).is_some_and(|layout| layout.name.starts_with("Table["))
     }
 
     fn parts(&self, kind: &Kind) -> Result<Parts, String> {
@@ -50,7 +50,7 @@ impl Emit<'_, '_, '_> {
         Ok((slot, generation))
     }
 
-    /// The address of the list at `offset` into an `IdMap`'s block, and the list.
+    /// The address of the list at `offset` into a `Table`'s block, and the list.
     fn part(&mut self, block: &str, offset: u32, alone: bool) -> (String, String) {
         let fields = self.offset(block, FIELDS_OFFSET);
         let place = self.offset(&fields, offset);
@@ -164,17 +164,17 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
-        if name == "IdMap" {
+        if name == "Table" {
             return self.new_id_map(dest.ok_or("no result")?);
         }
         let map = args.first().ok_or("no argument")?;
-        let Operand::Local(map) = map else { return Err("an IdMap that isn't a local".to_owned()) };
+        let Operand::Local(map) = map else { return Err("a Table that isn't a local".to_owned()) };
         let kind = self.kind_of(*map)?.clone();
         let parts = self.parts(&kind)?;
         let held = parts.held.clone();
         let memory = held.memory(self.module.layouts);
         match name {
-            "IdMap.len" => {
+            "Table.len" => {
                 let (block, _) = self.operand(&Operand::Local(*map))?;
                 let fields = self.offset(&block, FIELDS_OFFSET);
                 let at = self.offset(&fields, parts.live);
@@ -182,14 +182,14 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{live} = load i64, ptr {at}"));
                 self.assign(dest.ok_or("no result")?, &live)
             }
-            "IdMap.contains" => {
+            "Table.contains" => {
                 let id = self.id_parts(args.get(1).ok_or("no argument")?)?;
                 let (block, _) = self.operand(&Operand::Local(*map))?;
                 let (_, generations) = self.part(&block, parts.generations, false);
                 let found = self.finds(&generations, (&id.0, &id.1));
                 self.assign(dest.ok_or("no result")?, &found)
             }
-            "IdMap.get" => {
+            "Table.get" => {
                 let dest = dest.ok_or("no result")?;
                 let id = self.id_parts(args.get(1).ok_or("no argument")?)?;
                 let (block, _) = self.operand(&Operand::Local(*map))?;
@@ -208,7 +208,7 @@ impl Emit<'_, '_, '_> {
                 self.start_block(&done);
                 Ok(())
             }
-            "IdMap.insert" => {
+            "Table.add" => {
                 let value = args.get(1).ok_or("no argument")?;
                 let (value, fresh) = self.value_for(value, &held)?;
                 if held.counted() && !fresh {
@@ -288,7 +288,7 @@ impl Emit<'_, '_, '_> {
                 }
                 Ok(())
             }
-            "IdMap.remove" => {
+            "Table.remove" => {
                 let id = self.id_parts(args.get(1).ok_or("no argument")?)?;
                 let place = self.slot(*map);
                 let block = self.alone_at(&place, "fennec_unshare");
@@ -337,12 +337,12 @@ impl Emit<'_, '_, '_> {
                 Ok(())
             }
             // Only gone through in order, it's never made: the loop walks the slots.
-            "IdMap.values" | "IdMap.items"
+            "Table.values" | "Table.items"
                 if dest.is_some_and(|dest| self.known.map_walks.contains_key(&dest.0)) =>
             {
                 Ok(())
             }
-            "IdMap.values" | "IdMap.ids" | "IdMap.items" => {
+            "Table.values" | "Table.ids" | "Table.items" => {
                 self.id_map_list(dest.ok_or("no result")?, *map, &parts, name)
             }
             other => {
@@ -354,7 +354,7 @@ impl Emit<'_, '_, '_> {
 
     fn new_id_map(&mut self, dest: LocalId) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();
-        let Kind::Boxed(id) = kind else { return Err("an IdMap that isn't boxed".to_owned()) };
+        let Kind::Boxed(id) = kind else { return Err("a Table that isn't boxed".to_owned()) };
         let parts = self.parts(&kind)?;
         let item = list_item(&self.field(&kind, "items")?.1)?;
         let block = self.new_block(id)?;
@@ -509,18 +509,18 @@ impl Emit<'_, '_, '_> {
             emit.line(&format!("store i64 {generation}, ptr {generation_place}"));
         };
         match name {
-            "IdMap.values" if held.in_memory() => {
+            "Table.values" if held.in_memory() => {
                 self.store_field(&held, &from, &to, ITEM_ACCESS);
                 self.retain_inline(&held, &to);
             }
-            "IdMap.values" => {
+            "Table.values" => {
                 let value = self.load_field(&held, &from, ITEM_ACCESS);
                 if held.counted() {
                     self.retain_value(&value, &held);
                 }
                 self.store_field(&held, &value, &to, ITEM_ACCESS);
             }
-            "IdMap.ids" => write_id(self, &to),
+            "Table.ids" => write_id(self, &to),
             _ => {
                 let (id_at, _) = self.field(&out_held, "_0")?;
                 let (value_at, _) = self.field(&out_held, "_1")?;
@@ -543,7 +543,7 @@ impl Emit<'_, '_, '_> {
                     // A pair of an `Id` and the item, a block of its own when it holds a block.
                     let Kind::Boxed(pair) = out_held else {
                         return Err(format!(
-                            "`IdMap.items` gives {out_held:?}, which this backend doesn't take yet"
+                            "`Table.items` gives {out_held:?}, which this backend doesn't take yet"
                         ));
                     };
                     let made = self.new_block(pair)?;

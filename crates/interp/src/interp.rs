@@ -130,8 +130,6 @@ pub struct Interp<'out> {
     /// leaves that place in `named_place` instead of giving a value.
     pub(crate) naming_place: Option<usize>,
     pub(crate) named_place: Option<crate::place::Place>,
-    /// The sockets the program has open, by their handles.
-    pub(crate) sockets: crate::stdlib::net::Sockets,
     /// What tests get when they name a capability.
     pub(crate) test_capabilities: crate::fakes::TestCapabilities,
     /// The command-line arguments and standard input `main` can receive.
@@ -183,7 +181,6 @@ impl<'out> Interp<'out> {
             world: None,
             naming_place: None,
             named_place: None,
-            sockets: crate::stdlib::net::Sockets::default(),
             test_capabilities: crate::fakes::TestCapabilities::Fakes,
             given: crate::inputs::Inputs::default().into(),
             reading: crate::formats::Reading::default(),

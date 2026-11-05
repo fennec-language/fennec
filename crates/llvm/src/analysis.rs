@@ -2030,6 +2030,10 @@ fn find_last_copies(function: &Function, known: &mut Analysis) {
 
 /// Whether anything a function does itself can fail. Calling something counts, since a call is
 /// where the stack is checked.
+pub(crate) fn is_socket_method(name: &str) -> bool {
+    name.starts_with("Connection.") || name.starts_with("Server.")
+}
+
 fn fails_itself(function: &Function, known: &Analysis) -> bool {
     let inst_fails = |inst: &InstKind| match inst {
         InstKind::Binary { dest, op, lhs, rhs } => match (function.type_of(lhs), op) {
@@ -2052,6 +2056,8 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
         {
             true
         }
+        // A connection's or server's method runs in the runtime too.
+        InstKind::Builtin { name, .. } if is_socket_method(name) => true,
         InstKind::Builtin { name, .. } if name.starts_with("crypto.") => true,
         InstKind::Builtin { name, .. } if name.starts_with("json.") || name.starts_with("toml.") => true,
         InstKind::Builtin { name, .. } => {

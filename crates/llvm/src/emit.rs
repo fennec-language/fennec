@@ -1604,6 +1604,11 @@ impl Emit<'_, '_, '_> {
             }
             "list.append" => self.append(args),
             "result.expect" => self.expect(dest, args, span),
+            // What a `main` that can fail stops the program with.
+            "main.failed" => {
+                let [result] = args else { return Err("`main.failed` with the wrong arguments".to_owned()) };
+                self.stop_on_failure(result, "`main` failed: ", span)
+            }
             "str.byte_len" | "str.char_at_byte" => self.text_by_bytes(dest, name, args),
             "random.random_int" | "random.random_float" => self.random_builtin(dest, name, args, span),
             parallel if parallel.starts_with("parallel.") => self.parallel_builtin(dest, name, args, span),

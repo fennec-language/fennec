@@ -6,7 +6,7 @@ use fennec_syntax::{Arg, BinOp, Expr, ExprKind, Pattern, Span, UnaryOp};
 
 use super::{Lowered, Lowering, Tail};
 use crate::validate::fits;
-use crate::{BlockId, InstKind, Operand, StructDef, Terminator, type_in};
+use crate::{BlockId, InstKind, LocalId, Operand, StructDef, Terminator, type_in};
 
 /// Every error type the IR can hold: not ones with `where` rules, which are checked
 /// whenever a value is made.
@@ -339,4 +339,42 @@ impl Lowering<'_> {
         self.emit(InstKind::GetSome { dest, value: value.clone() }, span);
         self.pattern(pattern, &Operand::Local(dest), inner, fail, span)
     }
+}
+
+/// A `main` that can fail, for a backend that starts a program with nothing to hand a result to:
+/// what's written becomes `main.body`, and `main` calls it and stops the program with any failure.
+pub(super) fn main_stops_when_it_fails(
+    program: &mut crate::Program,
+    functions: &[(String, &fennec_syntax::FnDef)],
+) {
+    let span =
+        functions.iter().find(|(key, _)| key == "main").map_or_else(Span::default, |(_, def)| def.span);
+    let Some(body) = program.functions.iter_mut().find(|function| function.name == "main") else { return };
+    if !matches!(body.returns, Type::Result(..)) {
+        return;
+    }
+    "main.body".clone_into(&mut body.name);
+    let (params, returns) = (body.params, body.returns.clone());
+    let mut locals: Vec<crate::Local> = body.locals.iter().take(params).cloned().collect();
+    let result = LocalId(locals.len());
+    locals.push(crate::Local { name: None, ty: returns.clone(), copied: false });
+    let args = (0..params).map(|at| Operand::Local(LocalId(at))).collect();
+    let call = InstKind::Call { dest: Some(result), function: "main.body".to_owned(), args };
+    let stop = InstKind::Builtin {
+        dest: None,
+        name: "main.failed".to_owned(),
+        args: vec![Operand::Local(result)],
+        changes: false,
+    };
+    let insts = [call, stop].map(|kind| crate::Inst { kind, span }).to_vec();
+    program.functions.push(crate::Function {
+        name: "main".to_owned(),
+        params,
+        mut_params: Vec::new(),
+        returns: Type::Unit,
+        locals,
+        blocks: vec![crate::Block { insts, end: Terminator::Return(None) }],
+        counts: Vec::new(),
+        places: Vec::new(),
+    });
 }

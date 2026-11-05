@@ -194,6 +194,21 @@ impl<'p> Emit<'_, '_, 'p> {
         let [result, Operand::Str(reason)] = args else {
             return Err("it calls `expect` without a reason written out".to_owned());
         };
+        let prefix = format!("this was expected to succeed ({reason}), but it failed: ");
+        self.stop_on_failure(result, &prefix, span)?;
+        match dest {
+            Some(dest) => self.get_case_field(dest, result, "Ok", "value"),
+            None => Ok(()),
+        }
+    }
+
+    /// Stops with `prefix` and the error, when a result holds one.
+    pub(crate) fn stop_on_failure(
+        &mut self,
+        result: &Operand,
+        prefix: &str,
+        span: Span,
+    ) -> Result<(), String> {
         let (base, kind) = self.operand(result)?;
         let (number, fields) = self.case_of(&kind, "Err")?;
         let (_, offset, held) = fields.into_iter().find(|(name, ..)| name == "error").ok_or("no error")?;
@@ -233,13 +248,10 @@ impl<'p> Emit<'_, '_, 'p> {
             self.line(&format!("{error} = load ptr, ptr {at}"));
         }
         self.line(&format!("{text} = call ptr @fennec_block_text(ptr {error})"));
-        let prefix = self.literal(&format!("this was expected to succeed ({reason}), but it failed: "));
+        let prefix = self.literal(prefix);
         self.line(&format!("{message} = call ptr @fennec_str_concat(ptr {prefix}, ptr {text})"));
         self.stop_with(&message, span);
         self.start_block(&ok);
-        match dest {
-            Some(dest) => self.get_case_field(dest, result, "Ok", "value"),
-            None => Ok(()),
-        }
+        Ok(())
     }
 }

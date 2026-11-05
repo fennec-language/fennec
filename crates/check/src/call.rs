@@ -291,7 +291,16 @@ impl FnCx<'_> {
                 format!("`{function}` doesn't change `{}`, so it shouldn't be passed with `mut`", param.name),
                 span,
             )),
-            _ => {}
+            // What it's given to can make it `None`, whatever a check for `None` said before.
+            (true, true) => {
+                if let ExprKind::Name(name) = &arg.value.kind
+                    && self.checker.settled(&param.ty).maybe_none()
+                    && let Some(declared) = self.declared_type(name)
+                {
+                    self.set_type(name, declared);
+                }
+            }
+            (false, false) => {}
         }
     }
 
@@ -351,6 +360,7 @@ impl FnCx<'_> {
             return self.static_on_param(param, method, (types, args), span);
         }
         let ty = self.expr(object);
+        let ty = if method == "expect" { ty } else { self.failing_step(ty, object.span, step) };
         let optional = optional || self.chained_step(&ty, step);
         self.method_on(&MethodCall { object, method, types, args, span }, &ty, optional)
     }

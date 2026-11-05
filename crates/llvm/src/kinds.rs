@@ -83,6 +83,7 @@ pub(crate) fn define_named(ty: &Type, layouts: Option<&Layouts>, out: &mut BTree
                 field("items", &Type::List(item.clone())),
                 field("generations", &Type::List(Box::new(Type::Int))),
                 field("live", &Type::Int),
+                field("free_from", &Type::Int),
             ];
             out.insert(format!("IdMap[{item}]"), Written::Struct(fields));
         }

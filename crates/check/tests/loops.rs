@@ -20,7 +20,9 @@ def grow(mut names: list[str]):
 fn changes(body: &str) -> Vec<String> {
     in_main_after(
         TEAM,
-        &format!("mut names = [\"ash\", \"kit\"]\nmut team = Team()\nmut scores = {{\"a\": 1}}\n{body}"),
+        &format!(
+            "mut names = [\"ash\", \"kit\"]\nmut team = Team()\nmut scores = {{\"a\": 1}}\n{body}stdout.print(names, team, scores)\n"
+        ),
     )
 }
 
@@ -124,4 +126,147 @@ fn a_for_mut_isnt_told_to_loop_over_a_copy() {
         "def main(stdout: Stdout):\n    mut xs = [1]\n    for mut x in xs:\n        for mut y in xs:\n            y += x\n",
     );
     assert_eq!(help, ["collect the changes and make them after the loop"]);
+}
+
+const PLACES: &str = "struct Spot:
+    x = 0
+
+struct Unit:
+    position = Spot()
+    home = Spot()
+    spots = list[Spot]()
+
+    def absorb(mut self, mut other: Unit):
+        self.position.x += other.position.x
+
+    def look(self, mut at: Spot):
+        at.x = self.position.x
+
+    def keep(mut self, spot: Spot):
+        self.spots.append(spot)
+
+def bump(mut first: Spot, mut second: Spot):
+    first.x += 1
+    second.x += 1
+
+def read(mut first: Spot, second: Spot):
+    first.x = second.x
+
+def fill(mut spots: list[Spot], spot: Spot):
+    spots.append(spot)
+
+def more(mut spots: list[Spot], count: int):
+    spots.append(Spot(x=count))
+";
+
+fn given(body: &str) -> Vec<String> {
+    in_main_after(
+        PLACES,
+        &format!(
+            "mut unit = Unit()\nmut units = [Unit()]\nmut spots = [Spot()]\nmut i = 0\nmut j = 0\n{body}"
+        ),
+    )
+}
+
+#[test]
+fn one_place_cant_be_given_as_mut_with_anything_that_reaches_it() {
+    let cases: [(&str, &str); 8] = [
+        ("bump(mut unit.position, mut unit.position)", "`mut unit.position` and `mut unit.position` overlap"),
+        ("bump(mut spots[i], mut spots[j])", "`mut spots[i]` and `mut spots[j]` overlap"),
+        ("bump(mut spots[0], mut spots[0])", "`mut spots[0]` and `mut spots[0]` overlap"),
+        ("read(mut unit.position, unit.position)", "`mut unit.position` and `unit.position` overlap"),
+        ("fill(mut spots, spots[i])", "`mut spots` and `spots[i]` overlap"),
+        ("fill(mut unit.spots, unit.spots[i + 1])", "`mut unit.spots` and `unit.spots[...]` overlap"),
+        ("unit.absorb(mut unit)", "`mut unit` overlaps `unit`, which this method is called on"),
+        (
+            "unit.look(mut unit.position)",
+            "`mut unit.position` overlaps `unit`, which this method is called on",
+        ),
+    ];
+    for (call, said) in cases {
+        let found = given(&format!("{call}\nstdout.print(unit.position.x, spots.len())\n"));
+        let messages: Vec<&str> = found.iter().filter_map(|one| one.split(" @ ").next()).collect();
+        assert_eq!(messages, [said], "{call}");
+    }
+}
+
+#[test]
+fn a_mut_argument_cant_change_what_picks_another_arguments_place() {
+    let spot = "def step(mut at: int, spot: Spot):\n    at += spot.x\n\ndef walk(mut spot: Spot, mut at: int):\n    at += spot.x\n\n";
+    let types = format!("{PLACES}\n{spot}");
+    let cases: [(&str, &str); 3] = [
+        ("step(mut i, spots[i])", "`mut i` changes what picks `spots[i]`"),
+        ("walk(mut spots[i], mut i)", "`mut i` changes what picks `spots[i]`"),
+        ("walk(mut spots[i + 1], mut i)", "`mut i` changes what picks `spots[...]`"),
+    ];
+    for (call, said) in cases {
+        let body = format!(
+            "mut unit = Unit()\nmut units = [Unit()]\nmut spots = [Spot()]\nmut i = 0\nmut j = 0\n{call}\nstdout.print(unit.position.x, spots.len(), units.len(), i, j)\n"
+        );
+        let found = in_main_after(&types, &body);
+        let messages: Vec<&str> = found.iter().filter_map(|one| one.split(" @ ").next()).collect();
+        assert_eq!(messages, [said], "{call}");
+    }
+    let moved = "struct Mover:\n    x = 0\n\n    def shift(mut self, mut at: int):\n        at += self.x\n";
+    let found = in_main_after(
+        moved,
+        "mut movers = [Mover()]\nmut at = 0\nmovers[at].shift(mut at)\nstdout.print(movers.len(), at)\n",
+    );
+    let messages: Vec<&str> = found.iter().filter_map(|one| one.split(" @ ").next()).collect();
+    assert_eq!(messages, ["`mut at` changes what picks `movers[at]`"]);
+    // An index that isn't changed is fine, and so is a name changed that picks nothing here.
+    let empty: [&str; 0] = [];
+    let fine = "mut movers = [Mover()]\nmut at = 0\nmut other = 0\nmovers[at].shift(mut other)\nstdout.print(movers.len(), at, other)\n";
+    assert_eq!(in_main_after(moved, fine), empty);
+}
+
+#[test]
+fn an_index_that_isnt_known_as_written_could_be_the_other_one() {
+    for (call, said) in [
+        ("bump(mut spots[0], mut spots[-1])", "`mut spots[0]` and `mut spots[...]` overlap"),
+        ("bump(mut spots[0], mut spots[i])", "`mut spots[0]` and `mut spots[i]` overlap"),
+        ("bump(mut spots[i], mut spots[i + 1])", "`mut spots[i]` and `mut spots[...]` overlap"),
+    ] {
+        let found = given(&format!("{call}\nstdout.print(unit.position.x, spots.len())\n"));
+        let messages: Vec<&str> = found.iter().filter_map(|one| one.split(" @ ").next()).collect();
+        assert_eq!(messages, [said], "{call}");
+    }
+}
+
+#[test]
+fn different_places_can_be_given_as_mut_together() {
+    let empty: [&str; 0] = [];
+    for call in [
+        "bump(mut unit.position, mut unit.home)",
+        "bump(mut units[i].position, mut units[j].home)",
+        // Different items, as written, can't be one.
+        "bump(mut spots[0], mut spots[1])",
+        "read(mut spots[0], spots[1])",
+        "bump(mut units[0].spots[1], mut units[0].spots[2])",
+        "bump(mut units[0].position, mut units[1].position)",
+        "read(mut unit.position, unit.home)",
+        "unit.absorb(mut units[0])",
+        "units[i].look(mut unit.home)",
+        // What's worked out from a place is a value of its own.
+        "more(mut spots, spots.len())",
+        "read(mut spots[i], copy(spots[j]))",
+        // A method keeping what it reads from its own value isn't given it as `mut`.
+        "unit.keep(unit.position)",
+    ] {
+        assert_eq!(given(&format!("{call}\nstdout.print(unit.position.x, spots.len())\n")), empty, "{call}");
+    }
+}
+
+#[test]
+fn overlapping_arguments_are_found_wherever_the_call_is() {
+    for body in [
+        "if i == 0:\n    bump(mut spots[i], mut spots[j])\n",
+        "for k in range(2):\n    i = k\n    bump(mut spots[i], mut spots[j])\n",
+        "x = match i:\n    case 0:\n        bump(mut spots[i], mut spots[j])\n        1\n    case _:\n        2\nstdout.print(x)\n",
+        "def inner(mut spots: list[Spot]):\n    bump(mut spots[0], mut spots[0])\ninner(mut spots)\n",
+    ] {
+        let said = given(body);
+        assert_eq!(said.len(), 1, "{body}: {said:?}");
+        assert!(said.iter().all(|one| one.contains(" overlap @ ")), "{body}: {said:?}");
+    }
 }

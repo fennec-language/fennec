@@ -117,7 +117,7 @@ impl Lowering<'_> {
         }
     }
 
-    fn step_type(&self, ty: &Type, step: &Step) -> Lowered<Type> {
+    pub(super) fn step_type(&self, ty: &Type, step: &Step) -> Lowered<Type> {
         match step {
             Step::Field(field) => {
                 let Type::Named(owner) = ty else {
@@ -195,6 +195,11 @@ impl Lowering<'_> {
         span: Span,
     ) -> Lowered<()> {
         self.write_place(local, steps, value, span)?;
+        self.check_rules(local, steps, span)
+    }
+
+    /// Runs the `where` rule of every field a write to a place went through.
+    pub(super) fn check_rules(&mut self, local: LocalId, steps: &[Step], span: Span) -> Lowered<()> {
         let mut ty = self.local_type(local);
         for (at, step) in steps.iter().enumerate() {
             let held = self.step_type(&ty, step)?;
@@ -244,7 +249,13 @@ impl Lowering<'_> {
     }
 
     /// Changes a place, however deeply it's nested.
-    fn write_place(&mut self, local: LocalId, steps: &[Step], value: Operand, span: Span) -> Lowered<()> {
+    pub(super) fn write_place(
+        &mut self,
+        local: LocalId,
+        steps: &[Step],
+        value: Operand,
+        span: Span,
+    ) -> Lowered<()> {
         let first_index = steps.iter().position(|step| matches!(step, Step::Index(_)));
         let Some(at) = first_index else {
             if steps.is_empty() {
@@ -303,6 +314,13 @@ impl Lowering<'_> {
         let mut value = self.expr(value)?;
         if let Some(op) = op {
             let read = self.read_steps(place.local, &place.steps, span)?;
+            // A text growing in a field is one local read, added to and put back, as a local's
+            // `+=` is, so a backend can grow it where it is.
+            if let (BinOp::Add, Type::Str, Operand::Local(dest)) = (op, &held, &read) {
+                let dest = *dest;
+                self.emit(InstKind::Binary { dest, op, lhs: read, rhs: value }, span);
+                return self.store(place.local, &place.steps, Operand::Local(dest), span);
+            }
             value = self.operate(op, (read, value), &held, span)?;
         }
         let value = self.coerce(value, &held, span)?;

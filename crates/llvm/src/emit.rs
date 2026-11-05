@@ -43,12 +43,14 @@ const METADATA: &str = "!0 = !{!\"branch_weights\", i32 1, i32 100000}\n\
 !2 = !{!\"fennec\"}\n\
 !3 = !{!\"header\", !2, i64 0}\n\
 !4 = !{!3, !3, i64 0}\n\
-!5 = !{!\"item\", !2, i64 0}\n\
+!5 = !{!\"item\", !11, i64 0}\n\
 !6 = !{!5, !5, i64 0}\n\
 !7 = !{i64 0, i64 281474976710657}\n\
 !8 = !{!\"branch_weights\", i32 100000, i32 1}\n\
-!9 = !{!\"field\", !2, i64 0}\n\
-!10 = !{!9, !9, i64 0}\n";
+!9 = !{!\"field\", !11, i64 0}\n\
+!10 = !{!9, !9, i64 0}\n\
+!11 = !{!\"values\", !2, i64 0}\n\
+!12 = !{!11, !11, i64 0}\n";
 
 /// Where a string block's bytes start.
 pub(crate) const TEXT_START: u32 = fennec_interp::embed::layout::TEXT.unsigned_abs();
@@ -59,6 +61,10 @@ pub(crate) const ITEM_ACCESS: &str = ", !tbaa !6";
 /// A boxed struct's or enum's fields never overlap a block's header or a list's items.
 pub(crate) const FIELD_ACCESS: &str = ", !tbaa !10";
 pub(crate) const LENGTH_ACCESS: &str = ", !tbaa !4, !range !7";
+/// A struct's field wherever the struct is, which could be an item or a boxed field, but is
+/// never a block's header. So changing one, like a parser's place in its text, doesn't make a
+/// string's lengths read again.
+pub(crate) const VALUE_ACCESS: &str = ", !tbaa !12";
 
 /// Below this many instructions, a function that calls nothing is always inlined.
 const ALWAYS_INLINE: usize = 16;
@@ -90,20 +96,29 @@ pub fn emit(program: &Program) -> Result<(Vec<Unit>, Shared, Layouts), String> {
 
 /// `emit`, for a level of processor.
 pub fn emit_for(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Shared, Layouts), String> {
-    emit_with(program, cpu, false)
+    emit_with(program, cpu, Shared::default())
 }
 
 /// `emit_for`, with each function setting a flag that says it ran, for a test to say what it ran.
 pub fn emit_traced(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Shared, Layouts), String> {
-    emit_with(program, cpu, true)
+    emit_with(program, cpu, Shared { traced: true, ..Shared::default() })
 }
 
-fn emit_with(program: &Program, cpu: Cpu, traced: bool) -> Result<(Vec<Unit>, Shared, Layouts), String> {
+/// `emit_for`, with code saying where it is before anything there can allocate or copy, so a run
+/// can say what each place cost.
+pub fn emit_tracing_costs(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Shared, Layouts), String> {
+    emit_with(program, cpu, Shared { tracing_costs: true, ..Shared::default() })
+}
+
+fn emit_with(
+    program: &Program,
+    cpu: Cpu,
+    mut shared: Shared,
+) -> Result<(Vec<Unit>, Shared, Layouts), String> {
     let header = crate::header()?;
     let attributes = attributes(cpu);
     let everything = whole(program);
     let layouts = crate::layouts_of(program);
-    let mut shared = Shared { traced, ..Shared::default() };
     let mut units = Vec::with_capacity(program.functions.len());
     // Every module of a program agrees, since what it declares has to match what's defined.
     let threads = crate::parallel::uses_parallel(program);
@@ -117,6 +132,17 @@ fn emit_with(program: &Program, cpu: Cpu, traced: bool) -> Result<(Vec<Unit>, Sh
     }
     if !refused.is_empty() {
         return Err(refused.join("\n"));
+    }
+    for own in &program.own_texts {
+        let (id, boxed) = match Kind::of(&layouts, &own.ty)? {
+            Kind::Struct(id) | Kind::Enum(id) => (id, false),
+            Kind::Boxed(id) => (id, true),
+            other => return Err(format!("`{}` writes its own text, as a {other:?}", own.ty)),
+        };
+        let name = layouts.get(id).ok_or("no such layout")?.name.clone();
+        let symbol = format!("l_{}", fennec_blake3::hash(name.as_bytes()).to_hex());
+        shared.literals.insert(symbol.clone(), name);
+        shared.own_texts.push((symbol, own.function.clone(), boxed));
     }
     Ok((units, shared, layouts))
 }
@@ -139,6 +165,27 @@ fn copyable(whole: &Whole<'_>, function: &Function, depth: usize) -> bool {
 
 pub(crate) fn symbol(name: &str) -> String {
     format!("@\"f_{name}\"")
+}
+
+/// What an instruction does, in a few words, if it can allocate or copy. Reading what's already
+/// there can't, and a call says for itself what's in the function it calls.
+fn what_can_cost(inst: &InstKind) -> Option<String> {
+    Some(match inst {
+        InstKind::Builtin { name, .. } => format!("`{name}`"),
+        InstKind::Binary { .. } => "an operator".to_owned(),
+        InstKind::Make { .. } | InstKind::MakeCase { .. } | InstKind::MakeTuple { .. } => {
+            "making a value".to_owned()
+        }
+        InstKind::MakeList { .. } => "making a list".to_owned(),
+        InstKind::MakeSet { .. } => "making a set".to_owned(),
+        InstKind::MakeDict { .. } => "making a dict".to_owned(),
+        InstKind::Format { .. } => "making a string".to_owned(),
+        InstKind::Slice { .. } => "a slice".to_owned(),
+        InstKind::SetField { .. } => "setting a field".to_owned(),
+        InstKind::SetIndex { .. } => "setting an item".to_owned(),
+        InstKind::GetIndex { .. } => "reading an item".to_owned(),
+        _ => return None,
+    })
 }
 
 /// How a function's written into a module.
@@ -393,10 +440,12 @@ impl<'p> Module<'_, 'p> {
             alone_slots: HashSet::new(),
             alone_fields: Vec::new(),
             taken_items: HashMap::new(),
+            place_homes: HashMap::new(),
             at: (usize::MAX, usize::MAX),
             inside_items: Vec::new(),
             inside_slots: HashMap::new(),
             pair_slots: HashMap::new(),
+            walks: HashMap::new(),
         };
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
@@ -459,6 +508,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Items taken out of a list to change: the list's local and field path, and the step to
     /// the item.
     pub(crate) taken_items: HashMap<usize, (LocalId, Vec<String>, String)>,
+    /// Where a place taken out for a call goes back to: the address, what's held there, and how
+    /// it's marked for LLVM.
+    pub(crate) place_homes: HashMap<usize, (String, Kind, &'static str)>,
     /// The instruction being written: its block, and its place in it.
     at: (usize, usize),
     /// Items of lists, by field path and index, known to be inside their lists here.
@@ -467,6 +519,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) inside_slots: HashMap<FieldPath, String>,
     /// Where each pair from an `enumerate` never made points in its list, kept for its parts.
     pub(crate) pair_slots: HashMap<usize, String>,
+    /// Where each map's walk has got to, and where the slot a walk is on and its generation are.
+    pub(crate) walks: HashMap<usize, (String, String)>,
 }
 
 pub(crate) fn float_text(value: f64) -> String {
@@ -554,6 +608,9 @@ impl Emit<'_, '_, '_> {
         if self.keeps_its_value() {
             self.give_back_what_it_kept();
         }
+        if function.name == "main" && self.module.threads {
+            self.work_out_constants()?;
+        }
         let kinds = self.kinds.clone();
         for (at, kind) in kinds.iter().enumerate() {
             let local = LocalId(at);
@@ -617,6 +674,7 @@ impl Emit<'_, '_, '_> {
                 .count();
             if self.is_mut_param(local)
                 && matches!(kinds.get(at), Some(Kind::Boxed(_)))
+                && !kinds.get(at).is_some_and(|kind| self.is_cell(kind))
                 && !self.known.is_shared(local)
                 && !self.known.written(local)
                 && changes > 1
@@ -674,6 +732,7 @@ impl Emit<'_, '_, '_> {
             for (index, inst) in block.insts.iter().enumerate() {
                 self.at = (at, index);
                 self.forget_entries(&inst.kind);
+                self.take_waiting_places(&inst.kind, inst.span)?;
                 if let InstKind::Call { function: callee, args, .. } = &inst.kind {
                     for (param, path) in whole.needs.get(callee.as_str()).map_or(&[][..], Vec::as_slice) {
                         if let Some(Operand::Local(given)) = args.get(param.0) {
@@ -847,9 +906,15 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// Whether this function can run on one of `parallel`'s threads, so a block it's handed may
+    /// be another thread's.
+    pub(crate) fn on_workers(&self) -> bool {
+        self.module.threads && self.module.whole.on_workers.contains(self.function.name.as_str())
+    }
+
     /// One more owner for a block.
     pub(crate) fn retain(&mut self, block: &str) {
-        if self.module.threads {
+        if self.on_workers() {
             self.retain_helper();
             self.line(&format!("call void @fen_retain(ptr {block})"));
             return;
@@ -863,7 +928,7 @@ impl Emit<'_, '_, '_> {
     /// Whether a block has one owner, so changing it in place changes nobody else's. Every
     /// such question native code asks of a block comes here.
     pub(crate) fn alone(&mut self, block: &str) -> String {
-        if self.module.threads {
+        if self.on_workers() {
             self.alone_helper();
             let alone = self.temp();
             self.line(&format!("{alone} = call i1 @fen_alone(ptr {block})"));
@@ -878,7 +943,7 @@ impl Emit<'_, '_, '_> {
     /// Takes one owner off a block that has one, giving back whether that was the last. With
     /// [`Self::retain`] and [`Self::alone`], everything native code does to a block's count.
     pub(crate) fn owner_gone(&mut self, block: &str) -> String {
-        if self.module.threads {
+        if self.on_workers() {
             self.owner_gone_helper();
             let gone = self.temp();
             self.line(&format!("{gone} = call i1 @fen_owner_gone(ptr {block})"));
@@ -941,10 +1006,15 @@ impl Emit<'_, '_, '_> {
     /// running and the frame stays put, so LLVM drops all but the first check on a path.
     pub(crate) fn check_stack(&mut self, span: Span) {
         self.declare("declare ptr @llvm.frameaddress.p0(i32)");
-        self.declare(crate::parallel::stack_limit_global(self.module.threads));
+        let (declared, symbol) = if self.module.threads && !self.on_workers() {
+            ("@fennec_stack_limit_main = external dso_local global i64", "@fennec_stack_limit_main")
+        } else {
+            (crate::parallel::stack_limit_global(self.module.threads), "@fennec_stack_limit")
+        };
+        self.declare(declared);
         let (here, limit, number, low) = (self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{here} = call ptr @llvm.frameaddress.p0(i32 0)"));
-        self.line(&format!("{limit} = load i64, ptr @fennec_stack_limit, !invariant.load !1"));
+        self.line(&format!("{limit} = load i64, ptr {symbol}, !invariant.load !1"));
         self.line(&format!("{number} = ptrtoint ptr {here} to i64"));
         self.line(&format!("{low} = icmp ult i64 {number}, {limit}"));
         self.fail_if(&low, TOO_DEEP, span);
@@ -1084,6 +1154,12 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Whether a local holds an inline struct or enum with blocks in it, and owns them.
+    /// Whether `dest = lhs + more` is a text growing, from a local that holds its only owner or
+    /// took it from a field.
+    fn grows_in_place(&self, op: BinOp, lhs: &Operand, dest: LocalId) -> bool {
+        op == BinOp::Add && *lhs == Operand::Local(dest) && (self.owns(dest) || self.known.is_taken(dest))
+    }
+
     pub(crate) fn owns_inline(&self, local: LocalId) -> bool {
         self.kinds.get(local.0).is_some_and(|kind| self.holds_inline(kind))
             && !self.is_mut_param(local)
@@ -1173,13 +1249,11 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = icmp {cc} i1 {a}, {b}"));
                 temp
             }
-            Kind::Str
-                if self.headers() && op == BinOp::Add && *lhs == Operand::Local(dest) && self.owns(dest) =>
-            {
+            Kind::Str if self.headers() && self.grows_in_place(op, lhs, dest) => {
                 return self.header_append(dest, &a, &b);
             }
             Kind::Str if self.headers() => self.header_binary(op, (&a, &b))?,
-            Kind::Str if op == BinOp::Add && *lhs == Operand::Local(dest) && self.owns(dest) => {
+            Kind::Str if self.grows_in_place(op, lhs, dest) => {
                 // `text += more` takes over the owner the local had, and grows in place if it can.
                 let joined = self.append_text(&a, &b);
                 let slot = self.slot(dest);
@@ -1450,7 +1524,6 @@ impl Emit<'_, '_, '_> {
         let returns = self.module.kind(&callee.returns)?;
         let mut shown = Vec::with_capacity(args.len() + 2);
         let mut lent = Vec::new();
-        let mut held_copies = Vec::new();
         let returned_at = if returns.in_memory() {
             let at = self.label("%ret");
             let text = self.text_of(&returns);
@@ -1474,21 +1547,6 @@ impl Emit<'_, '_, '_> {
             if fresh {
                 lent.push(value.clone());
             }
-            // Passed `mut` as well, it's changed during the call, and this one mustn't see that.
-            let changing = callee.mut_params.iter().any(|at| args.get(*at) == Some(arg));
-            let value = if changing && !fresh && kind.in_memory() {
-                let place = self.place_for(&kind);
-                self.store_field(&kind, &value, &place, "");
-                self.retain_inline(&kind, &place);
-                held_copies.push((place.clone(), kind.clone()));
-                place
-            } else {
-                if changing && !fresh && kind.counted() && !matches!(kind, Kind::Str | Kind::MaybeText) {
-                    self.retain_value(&value, &kind);
-                    lent.push(value.clone());
-                }
-                value
-            };
             if kind.in_memory() {
                 shown.push(format!("ptr {value}"));
             } else {
@@ -1524,9 +1582,6 @@ impl Emit<'_, '_, '_> {
         for block in lent {
             self.release(&block);
         }
-        for (place, kind) in held_copies {
-            self.release_inline(&kind, &place);
-        }
         match (dest, returned_at) {
             (Some(dest), Some(at)) => self.assign_memory_owned(dest, &at)?,
             (None, Some(at)) => self.release_inline(&returns, &at),
@@ -1558,6 +1613,12 @@ impl Emit<'_, '_, '_> {
             // A test's `Stdout` is a fake that keeps what's printed, which the runtime holds.
             "Stdout.print" if !self.module.shared.traced => self.print(args.get(1..).unwrap_or_default()),
             "list.len" => {
+                if let Some(Operand::Local(local)) = first
+                    && let Some(map) = self.known.map_walks.get(&local.0).copied()
+                {
+                    let live = self.walked_live(map)?;
+                    return self.assign(dest.ok_or("no result")?, &live);
+                }
                 // An `enumerate` never made is as long as its list.
                 let counted = match first {
                     Some(Operand::Local(local)) => {
@@ -1584,10 +1645,9 @@ impl Emit<'_, '_, '_> {
                 let from = args.first().ok_or("no argument")?;
                 self.copy(dest.ok_or("no result")?, from)
             }
-            "IdMap" | "IdMap.len" | "IdMap.get" | "IdMap.insert" | "IdMap.remove" | "IdMap.values"
-            | "IdMap.ids" | "IdMap.items" | "IdMap.remove_where" | "IdMap.clear" | "IdMap.modify" => {
-                self.id_map_builtin(dest, name, args, span)
-            }
+            "IdMap" | "IdMap.len" | "IdMap.contains" | "IdMap.get" | "IdMap.insert" | "IdMap.remove"
+            | "IdMap.values" | "IdMap.ids" | "IdMap.items" | "IdMap.remove_where" | "IdMap.clear"
+            | "IdMap.modify" => self.id_map_builtin(dest, name, args, span),
             "is_regex" | "re.is_regex" | "re.pattern_problem" | "Regex.replace" | "Regex.split"
             | "Regex.find_all" | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
                 self.regex_builtin(dest, name, args, span)
@@ -1666,7 +1726,10 @@ impl Emit<'_, '_, '_> {
     /// `dest = value`: a block gets another owner, unless nothing else ever reads `value`.
     pub(crate) fn copy(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
         // The local is the list, so there's nothing to copy, or it's an `enumerate` never made.
-        if self.known.alias(dest).is_some() || self.known.enumerated.contains_key(&dest.0) {
+        if self.known.alias(dest).is_some()
+            || self.known.enumerated.contains_key(&dest.0)
+            || self.known.map_walks.contains_key(&dest.0)
+        {
             return Ok(());
         }
         if *value == Operand::None {
@@ -1762,7 +1825,22 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// Says where this is, in a build that traces what things cost, if what's here can cost.
+    fn trace_site(&mut self, inst: &InstKind, span: Span) {
+        if !self.module.shared.tracing_costs {
+            return;
+        }
+        let Some(what) = what_can_cost(inst) else { return };
+        self.module.shared.sites.entry(span.start).or_insert(what);
+        self.declare("declare void @fennec_trace_at(i64) nounwind");
+        self.line(&format!("call void @fennec_trace_at(i64 {})", span.start));
+    }
+
     fn inst(&mut self, inst: &InstKind, span: Span, block: usize) -> Result<(), String> {
+        self.trace_site(inst, span);
+        if let Some(done) = self.place_inst(inst, span) {
+            return done;
+        }
         match inst {
             // Used only as a key the runtime finds where it is.
             InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }
@@ -1836,6 +1914,11 @@ impl Emit<'_, '_, '_> {
             InstKind::GetField { dest, object, field } => self.get_field(*dest, object, field),
             InstKind::SetField { object, path, value } => self.set_field(*object, path, value),
             InstKind::MakeTuple { dest, items } => self.make(*dest, items),
+            InstKind::GetTupleItem { dest, value: Operand::Local(pair), at }
+                if self.known.walk_items.contains_key(&pair.0) =>
+            {
+                self.walked_part(*dest, *pair, *at)
+            }
             // A pair never made: its count is the index, and its item is the list's there.
             InstKind::GetTupleItem { dest, value: Operand::Local(pair), at }
                 if self.known.pairs.contains_key(&pair.0) =>
@@ -1873,6 +1956,15 @@ impl Emit<'_, '_, '_> {
             InstKind::SetSlot { generator, slot, value } => self.set_slot(generator, *slot, value),
             InstKind::Resume { dest, generator, known } => {
                 self.resume(*dest, generator, known.as_deref(), span)
+            }
+            InstKind::Lock { .. }
+            | InstKind::Unlock { .. }
+            | InstKind::LockAll { .. }
+            | InstKind::UnlockAll { .. }
+                if !self.module.threads =>
+            {
+                // With only one thread, nothing else could be holding a lock.
+                Ok(())
             }
             other => Err(format!("it uses `{other}`, which this backend doesn't take yet")),
         }
@@ -1936,7 +2028,7 @@ impl Emit<'_, '_, '_> {
         }
         // Nor does an `enumerate` never made, whose list its pairs read in its place.
         if let InstKind::Builtin { dest: Some(dest), .. } | InstKind::Copy { dest, .. } = inst
-            && self.known.enumerated.contains_key(&dest.0)
+            && (self.known.enumerated.contains_key(&dest.0) || self.known.map_walks.contains_key(&dest.0))
         {
             return;
         }
@@ -1987,14 +2079,27 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    /// Whether this function gives a constant's value, which is worked out once and then kept. On
-    /// a program's other threads a block's count can't be changed like this, so a program that
-    /// uses `parallel` still works it out at each read.
+    /// Whether this function gives a constant's value, which is worked out once and then kept. In
+    /// a program that uses `parallel`, one that can fail is worked out at each read instead, since
+    /// `main` works out the kept ones before any worker starts, whether or not they're ever read.
     fn keeps_its_value(&mut self) -> bool {
         let returns = self.returns.clone();
-        !self.module.threads
-            && self.module.whole.constants.contains(self.function.name.as_str())
+        let name = self.function.name.as_str();
+        self.module.whole.constants.contains(name)
+            && (!self.module.threads || !self.module.flagged(name))
             && self.text_of(&returns) != "void"
+    }
+
+    /// Starts `main` in a program that uses `parallel`: every constant that's kept gets kept here,
+    /// so a worker only ever reads it, and two can't race to be the first.
+    fn work_out_constants(&mut self) -> Result<(), String> {
+        let mut constants: Vec<&str> =
+            self.module.whole.constants.iter().copied().filter(|name| !self.module.flagged(name)).collect();
+        constants.sort_unstable();
+        for name in constants {
+            self.call(None, name, &[], Span::default())?;
+        }
+        Ok(())
     }
 
     /// Where a constant's value is kept, and whether it's there yet.
@@ -2131,6 +2236,24 @@ mod tests {
     }
 
     #[test]
+    fn arguments_and_the_clock_need_no_interpreter() -> Result<(), String> {
+        let source = "\
+from std.time import Clock, Duration
+
+def main(stdout: Stdout, args: Args, clock: Clock):
+    started = clock.now()
+    clock.sleep(Duration.millis(1))
+    stdout.print(args.len(), args.program, started.nanos)
+    for arg in args:
+        stdout.print(arg, args[0])
+";
+        let text = text_of(source, "main")?;
+        assert!(text.contains("@fennec_args_list("), "{text}");
+        assert!(!text.contains("fennec_capability_call"), "{text}");
+        Ok(())
+    }
+
+    #[test]
     fn looking_for_a_part_of_a_text_makes_no_block_for_either() -> Result<(), String> {
         let source = "\
 def has_x(text: str) -> bool:
@@ -2180,16 +2303,28 @@ def main(stdout: Stdout):
     }
 
     #[test]
-    fn a_program_using_parallel_works_a_constant_out_at_each_read() -> Result<(), String> {
-        let source = "WORDS = [\"a\", \"b\"]\n\ndef main(stdout: Stdout):\n    mut counts = [1, 2]\n    \
-                      for mut count in parallel(counts):\n        count += WORDS.len()\n    stdout.print(counts)\n";
+    fn a_program_using_parallel_works_out_its_constants_before_any_worker_starts() -> Result<(), String> {
+        let source = "WORDS = [\"a\", \"b\"]\nFIRST = WORDS[5]\n\ndef main(stdout: Stdout):\n    mut counts = [1, 2]\n    \
+                      for mut count in parallel(counts):\n        count += WORDS.len() + FIRST.len()\n    \
+                      stdout.print(counts)\n";
         let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower_with(&module, &checked, fennec_ir::Options { outline_parallel: true });
         assert!(crate::parallel::uses_parallel(&program), "{:?}", program.not_lowered);
         let (units, _, _) = emit(&program)?;
-        let constant = units.iter().find(|unit| unit.function == "WORDS").ok_or("it isn't lowered")?;
-        assert!(!constant.text.contains(".kept"), "{}", constant.text);
+        let text =
+            |name: &str| units.iter().find(|unit| unit.function == name).map(|unit| unit.text.as_str());
+        let kept = text("WORDS").ok_or("`WORDS` isn't lowered")?;
+        assert!(kept.contains("@\"f_WORDS.kept\""), "{kept}");
+        // One that can fail would fail a program that never read it, so it's left until a read.
+        let failing = text("FIRST").ok_or("`FIRST` isn't lowered")?;
+        assert!(!failing.contains(".kept"), "{failing}");
+        let main = text("main").ok_or("`main` isn't lowered")?;
+        let worked_out =
+            main.find("call swiftcc ptr @\"f_WORDS\"").ok_or("`main` doesn't work out `WORDS`")?;
+        let workers = main.rfind("@fennec_parallel_for(").ok_or("`main` starts no workers")?;
+        assert!(worked_out < workers, "{main}");
+        assert!(!main.contains("@\"f_FIRST\""), "{main}");
         Ok(())
     }
 
@@ -2213,6 +2348,59 @@ def main(stdout: Stdout):
         }
         // A plain read of a field reads it.
         assert!(text_of(&source, "read")?.contains("getelementptr"));
+        Ok(())
+    }
+
+    /// `+=` grows the text where it is, in a local and in a field. A plain `+` makes a new one.
+    #[test]
+    fn a_text_grows_where_it_is_when_its_added_to() -> Result<(), String> {
+        let source = "\
+struct Note:
+    text = \"\"
+
+def in_field(mut note: Note, more: str):
+    note.text += more
+
+def in_local(more: str) -> str:
+    mut text = \"\"
+    text += more
+    text
+
+def anew(note: Note, more: str) -> str:
+    note.text + more
+
+def main(stdout: Stdout):
+    mut note = Note()
+    in_field(mut note, \"a\")
+    stdout.print(in_local(\"b\"), anew(note, \"c\"))
+";
+        for function in ["in_field", "in_local"] {
+            let text = text_of(source, function)?;
+            assert!(text.contains("@fennec_str_append("), "{function}: {text}");
+        }
+        let text = text_of(source, "anew")?;
+        assert!(!text.contains("@fennec_str_append("), "{text}");
+        Ok(())
+    }
+
+    /// A number's text goes straight into a header, with no block made and let go of.
+    #[test]
+    fn a_numbers_text_makes_no_block() -> Result<(), String> {
+        let source = "\
+def of_int(n: int) -> str:
+    str(n)
+
+def of_float(x: float) -> str:
+    str(x)
+
+def main(stdout: Stdout):
+    stdout.print(of_int(1), of_float(1.5))
+";
+        for (function, call) in [("of_int", "@fennec_int_header("), ("of_float", "@fennec_float_header(")] {
+            let text = text_of(source, function)?;
+            assert!(text.contains(call), "{function}: {text}");
+            assert!(!text.contains("_text("), "{function}: {text}");
+        }
         Ok(())
     }
 

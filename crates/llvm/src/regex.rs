@@ -15,7 +15,7 @@ const FIELDS: u32 = fennec_interp::embed::layout::FIELDS.unsigned_abs();
 
 impl Emit<'_, '_, '_> {
     /// A list kind's number, for the runtime to make lists of it.
-    fn element_number(&mut self, item: ListItem) -> String {
+    pub(crate) fn element_number(&mut self, item: ListItem) -> String {
         let symbol = element_symbol(self.module.layouts, item);
         self.module.shared.elements.insert(symbol.clone(), item);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));

@@ -96,6 +96,18 @@ pub(crate) struct Instance {
 }
 
 impl Instance {
+    fn of(type_name: &str, fields: Vec<(&str, Value)>, is_error: bool) -> Instance {
+        Instance {
+            type_name: Rc::from(type_name),
+            case: None,
+            fields: fields.into_iter().map(|(name, value)| (Rc::from(name), value)).collect(),
+            is_error,
+            cause: None,
+        }
+    }
+}
+
+impl Instance {
     pub(crate) fn field(&self, name: &str) -> Option<&Value> {
         self.fields.iter().find(|(field, _)| field.as_ref() == name).map(|(_, value)| value)
     }
@@ -163,9 +175,18 @@ pub(crate) struct Lambda {
 }
 
 /// Slots that hand out generational IDs, so a stale ID never finds the wrong thing.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct IdMap {
     pub(crate) slots: Vec<Slot>,
+    /// No slot below this one is free, so finding the first free slot needn't look at them.
+    free_from: usize,
+}
+
+/// Maps are the same when their slots are: where one's looking for a free slot is no part of it.
+impl PartialEq for IdMap {
+    fn eq(&self, other: &IdMap) -> bool {
+        self.slots == other.slots
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -181,6 +202,10 @@ pub(crate) struct Id {
 }
 
 impl IdMap {
+    pub(crate) fn new(slots: Vec<Slot>) -> IdMap {
+        IdMap { slots, free_from: 0 }
+    }
+
     pub(crate) fn get(&self, id: Id) -> Option<&Value> {
         self.slots
             .get(id.slot)
@@ -195,21 +220,30 @@ impl IdMap {
             .and_then(|slot| slot.value.as_mut())
     }
 
+    /// Puts a value in the first free slot, or a new one.
     pub(crate) fn insert(&mut self, value: Value) -> Id {
-        if let Some((at, slot)) = self.slots.iter_mut().enumerate().find(|(_, slot)| slot.value.is_none()) {
+        let free = self.slots.iter().enumerate().skip(self.free_from).find(|(_, slot)| slot.value.is_none());
+        let at = free.map(|(at, _)| at);
+        self.free_from = at.unwrap_or(self.slots.len()) + 1;
+        if let Some(slot) = at.and_then(|at| self.slots.get_mut(at)) {
             slot.generation += 1;
             slot.value = Some(value);
-            return Id { slot: at, generation: slot.generation };
+            return Id { slot: self.free_from - 1, generation: slot.generation };
         }
         self.slots.push(Slot { generation: 0, value: Some(value) });
         Id { slot: self.slots.len() - 1, generation: 0 }
     }
 
     pub(crate) fn remove(&mut self, id: Id) -> Option<Value> {
-        self.slots
+        let removed = self
+            .slots
             .get_mut(id.slot)
             .filter(|slot| slot.generation == id.generation)
-            .and_then(|slot| slot.value.take())
+            .and_then(|slot| slot.value.take());
+        if removed.is_some() {
+            self.free_from = self.free_from.min(id.slot);
+        }
+        removed
     }
 
     /// Live entries, in slot order.
@@ -238,6 +272,16 @@ pub(crate) fn float_key(x: f64) -> u64 {
 }
 
 impl Value {
+    /// A struct of the standard library, with its fields in the order they're declared.
+    pub(crate) fn made(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
+        Value::Instance(Rc::new(Instance::of(type_name, fields, false)))
+    }
+
+    /// An error of the standard library, with its fields in the order they're declared.
+    pub(crate) fn made_error(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
+        Value::Instance(Rc::new(Instance::of(type_name, fields, true)))
+    }
+
     pub(crate) fn str(text: &str) -> Value {
         Value::Str(Rc::from(text))
     }

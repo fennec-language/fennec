@@ -198,23 +198,22 @@ fn test_shrinks_and_replays_property_failures() {
         reported,
         [
             "it failed for n = 10; the left side is 10 and the right side is 10",
-            "it failed for x = 0.125; the left side is 0.125 and the right side is 0.0",
-            "it failed for x = 51.0; the left side is 51.0 and the right side is 2.0",
-            "it failed for word = \"znk\"; the left side is 3 and the right side is 3",
-            "it failed for items = [-656, -806]; the left side is 2 and the right side is 2",
-            "it failed for grid = [[\"ldu\", \"tdxoqz\", \"fwvlmdz\", \"guzmwk\"], [\"qpov\", \"\", \"upomgfx\", \
-             \"hrcdawk\", \"ka\", \"xer\", \"\"], []]; the left side is 3 and the right side is 3",
-            "it failed for deep = [[[[], [], [], [], []], [[], []], [[], [], [], [], [], []]], [[[], []], [[], [], [], \
-             [], [], [], []], [[], [], [], []], [[], [], [], [], [], []], [[], [], [], [], [], []], [], [[], [], [], \
-             [], [], [], []]]]; the left side is 2 and the right side is 2",
-            "it failed for deep = ((([], 777), -171), -278); the left side is 777 and the right side is 100",
-            "it failed for outer = Outer(inner=Inner(rows=[[], [], []])); the left side is 3 and the right side is 2",
-            "it failed for pair = (False, 993)",
-            "it failed for pair = (0, -106); the left side is 0 and the right side is None",
-            "it failed for box = Box(label=\"box\", size=436); the left side is 436 and the right side is 3",
-            "it failed for coin = Coin.Tails(times=533); the left side is Coin.Tails(times=533) and the right \
+            "it failed for x = 115.375; the left side is 115.375 and the right side is 115.0",
+            "it failed for x = 9.0; the left side is 9.0 and the right side is 2.0",
+            "it failed for word = \"aik\"; the left side is 3 and the right side is 3",
+            "it failed for items = [1, 320]; the left side is 2 and the right side is 2",
+            "it failed for grid = [[\"\", \"pff\", \"rm\", \"clih\", \"\", \"feoiln\"], [\"kuys\", \"eyl\"], [\"gssnvg\", \
+             \"zevmv\", \"enshyp\"]]; the left side is 3 and the right side is 3",
+            "it failed for deep = [[[[], [], []], [[], []], [[], [], []]], [[[], [], [], [], []], [[], [], []], [[], [], \
+             [], [], []]]]; the left side is 2 and the right side is 2",
+            "it failed for deep = ((([], 373), 1), -117); the left side is 373 and the right side is 100",
+            "it failed for outer = Outer(inner=Inner(rows=[[], []])); the left side is 2 and the right side is 2",
+            "it failed for pair = (False, 740)",
+            "it failed for pair = (-936, 676); the left side is -936 and the right side is None",
+            "it failed for box = Box(label=\"box\", size=725); the left side is 725 and the right side is 3",
+            "it failed for coin = Coin.Tails(times=1); the left side is Coin.Tails(times=1) and the right \
              side is Coin.Heads",
-            "it failed for n = 160",
+            "it failed for n = 942",
             "the test failed with Oops(reason=\"broken\")",
         ]
     );
@@ -675,7 +674,7 @@ fn bench_without_blocks_says_so() {
 fn dev_copies_lists_what_may_cost_hot_code_first() {
     let source = "def unused() -> list[int]:\n    [1]\n\n\
         def main(stdout: Stdout):\n    mut xs = [1]\n    snapshot = xs\n    xs.append(2)\n    \
-        for at in range(2):\n        stdout.print(f\"{at}\")\n    stdout.print(snapshot.len())\n";
+        for at in range(2):\n        stdout.print(f\"{at}\")\n    stdout.print(snapshot.len(), xs.len())\n";
     let dir = scratch("copies").unwrap();
     let program = dir.join("game.fen");
     std::fs::write(&program, source).unwrap();
@@ -810,7 +809,7 @@ fn check_and_lint_say_the_same_in_json() {
     std::fs::write(
         &program,
         "def one() -> int:\n    return 1\n\ndef main(stdout: Stdout):\n    mut items = [1]\n    \
-         held = items\n    items.append(2)\n    stdout.print(held.len(), one())\n",
+         held = items\n    items.append(2)\n    stdout.print(held.len(), items.len(), one())\n",
     )
     .unwrap();
     let (code, report) = json(&["lint", "--json", &path]);
@@ -1060,7 +1059,7 @@ fn lint_reports_and_fix_fixes_and_hints_dont_fail() {
     let program = dir.join("game.fen");
     let path = program.to_string_lossy().into_owned();
     let hinted = "def main(stdout: Stdout):\n    mut items = [1]\n    held = items\n    items.append(2)\n    \
-                  stdout.print(held.len())\n";
+                  stdout.print(held.len(), items.len())\n";
     std::fs::write(&program, hinted).unwrap();
     let clean = fennec(&["lint", &path], "").unwrap();
     assert!(clean.status.success(), "{}", text(&clean.stderr));

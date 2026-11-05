@@ -40,6 +40,10 @@ enum Runtime {
     /// The one built with `threads`, whose pool runs `parallel`'s ranges on workers. Its
     /// counts are atomic, so only programs that use `parallel` pay for it.
     Threads,
+    /// With no interpreter in it.
+    Lean,
+    /// With no interpreter in it, for `parallel`.
+    LeanThreads,
 }
 
 impl Runtime {
@@ -49,8 +53,12 @@ impl Runtime {
             // Cargo names a static library this way on Windows.
             Self::Plain if cfg!(windows) => "fennec_runtime.lib",
             Self::Threads if cfg!(windows) => "fennec_runtime_threads.lib",
+            Self::Lean if cfg!(windows) => "fennec_runtime_lean.lib",
+            Self::LeanThreads if cfg!(windows) => "fennec_runtime_lean_threads.lib",
             Self::Plain => "libfennec_runtime.a",
             Self::Threads => "libfennec_runtime_threads.a",
+            Self::Lean => "libfennec_runtime_lean.a",
+            Self::LeanThreads => "libfennec_runtime_lean_threads.a",
         }
     }
 
@@ -60,6 +68,8 @@ impl Runtime {
         match self {
             Self::Plain => "libfennec_runtime.bc",
             Self::Threads => "libfennec_runtime_threads.bc",
+            Self::Lean => "libfennec_runtime_lean.bc",
+            Self::LeanThreads => "libfennec_runtime_lean_threads.bc",
         }
     }
 
@@ -68,7 +78,13 @@ impl Runtime {
         match self {
             Self::Plain => "`cargo build -p fennec-runtime`",
             Self::Threads => {
-                "`cargo build -p fennec-runtime --features threads --target-dir target/threads`, copying its `libfennec_runtime.a` next to `fennec` as `libfennec_runtime_threads.a`"
+                "`cargo build -p fennec-runtime --features threads --target-dir target/threads`, copying it there"
+            }
+            Self::Lean => {
+                "`cargo build -p fennec-runtime --features lean --target-dir target/lean`, copying it there"
+            }
+            Self::LeanThreads => {
+                "`cargo build -p fennec-runtime --features lean,threads --target-dir target/lean-threads`, copying it there"
             }
         }
     }
@@ -76,9 +92,17 @@ impl Runtime {
     /// The runtime a lowered program needs: the threads one when it runs `parallel` and
     /// `FENNEC_THREADS_RUNTIME=1` asks for it. Until a range's copies of what it captures are
     /// its own, workers would count shared blocks plainly, so the plain one stays the default.
+    /// `FENNEC_LEAN_RUNTIME=1` asks for one with no interpreter in it, which a program still
+    /// needing the interpreter fails to link against.
     fn for_program(lowered: &fennec_ir::Program) -> Self {
-        let asked = std::env::var_os("FENNEC_THREADS_RUNTIME").is_some_and(|on| on == "1");
-        if asked && fennec_llvm::uses_parallel(lowered) { Self::Threads } else { Self::Plain }
+        let on = |name: &str| std::env::var_os(name).is_some_and(|on| on == "1");
+        let threads = on("FENNEC_THREADS_RUNTIME") && fennec_llvm::uses_parallel(lowered);
+        match (on("FENNEC_LEAN_RUNTIME"), threads) {
+            (false, false) => Self::Plain,
+            (false, true) => Self::Threads,
+            (true, false) => Self::Lean,
+            (true, true) => Self::LeanThreads,
+        }
     }
 }
 
@@ -181,6 +205,33 @@ pub(crate) fn tests_executable(
     Ok(emitted.shared.ran.iter().cloned().collect())
 }
 
+/// Builds an executable of a program that says what each place in its source cost, for `fennec dev
+/// trace`, through LLVM's cached dev build. Gives back what's at each place, and the lowered
+/// program.
+pub(crate) fn tracing_executable(
+    program: &fennec_kit::Program,
+    output: &Path,
+) -> Result<(std::collections::BTreeMap<u32, String>, fennec_ir::Program), String> {
+    let mut reached = program.module.clone();
+    fennec_build::keep_what_main_reaches(&mut reached);
+    let emitted = emitted_with(&reached, fennec_llvm::emit_tracing_costs)?;
+    let image_of = |image: &mut fennec_llvm::Image| {
+        fennec_interp::embed::codec::Image {
+            module: program.module.clone(),
+            sources: program.sources.clone(),
+            tables: std::mem::take(&mut image.tables),
+            literals: image.literals.clone(),
+        }
+        .to_bytes()
+    };
+    let Compiled { objects, runtime, .. } =
+        compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
+            fennec_llvm::entry(lowered, shared, image, bytes)
+        })?;
+    link_objects(&objects, output, runtime, false)?;
+    Ok((emitted.shared.sites, emitted.lowered))
+}
+
 /// Whether LLVM has text for a trimmed program, or why not, without compiling any of it.
 pub(crate) fn takes(module: &fennec_syntax::Module) -> Result<(), String> {
     emitted(module, false).map(|_| ())
@@ -252,6 +303,17 @@ struct Emitted {
 
 /// Lowers a trimmed program and writes its text, or says why LLVM can't.
 fn emitted(reached: &fennec_syntax::Module, traced: bool) -> Result<Emitted, String> {
+    emitted_with(reached, if traced { fennec_llvm::emit_traced } else { fennec_llvm::emit_for })
+}
+
+/// What LLVM emits for a program: each function's text, and what they share.
+type Emits = Result<(Vec<fennec_llvm::Unit>, fennec_llvm::Shared, fennec_llvm::Layouts), String>;
+
+/// A trimmed program's text from one of LLVM's ways of emitting it.
+fn emitted_with(
+    reached: &fennec_syntax::Module,
+    emit: fn(&fennec_ir::Program, fennec_llvm::Cpu) -> Emits,
+) -> Result<Emitted, String> {
     let checked =
         fennec_check::check(reached).map_err(|_| "the program didn't check once trimmed".to_owned())?;
     // `parallel` runs on the runtime's threads, its work lifted for each range of positions.
@@ -281,8 +343,7 @@ fn emitted(reached: &fennec_syntax::Module, traced: bool) -> Result<Emitted, Str
     } else {
         fennec_llvm::Cpu::Usual
     };
-    let (units, shared, layouts) =
-        if traced { fennec_llvm::emit_traced(&lowered, cpu)? } else { fennec_llvm::emit_for(&lowered, cpu)? };
+    let (units, shared, layouts) = emit(&lowered, cpu)?;
     Ok(Emitted { lowered, units, shared, layouts })
 }
 
@@ -368,11 +429,17 @@ fn link_objects(
     })?;
     let took = started.elapsed();
     let _ = std::fs::remove_dir_all(&work);
-    if linked.status.success() {
-        Ok(took)
-    } else {
-        Err(format!("linking failed:\n{}", String::from_utf8_lossy(&linked.stderr)))
-    }
+    if linked.status.success() { Ok(took) } else { Err(link_failure(&linked)) }
+}
+
+/// What a linker said when it failed: Visual Studio's says it on standard output, others on
+/// standard error.
+fn link_failure(linked: &std::process::Output) -> String {
+    format!(
+        "linking failed:\n{}{}",
+        String::from_utf8_lossy(&linked.stderr),
+        String::from_utf8_lossy(&linked.stdout)
+    )
 }
 
 /// The system's linker, set to link objects with a runtime library into an executable.
@@ -383,8 +450,8 @@ fn linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command {
         .args(objects)
         .arg(runtime)
         .args(SYSTEM_LIBRARIES)
-        // `FENNEC_SANITIZE=address` links in AddressSanitizer's runtime.
-        .args(fennec_llvm::sanitizing().then_some("-fsanitize=address"))
+        // `FENNEC_SANITIZE` links in its sanitizer's runtime.
+        .args(fennec_llvm::sanitize_flag())
         .arg("-o")
         .arg(output);
     command
@@ -432,11 +499,7 @@ fn link(object: &[u8], output: &Path) -> Result<std::time::Duration, String> {
     })?;
     let took = started.elapsed();
     let _ = std::fs::remove_dir_all(&work);
-    if linked.status.success() {
-        Ok(took)
-    } else {
-        Err(format!("linking failed:\n{}", String::from_utf8_lossy(&linked.stderr)))
-    }
+    if linked.status.success() { Ok(took) } else { Err(link_failure(&linked)) }
 }
 
 /// The runtime's bitcode, next to the `fennec` command, if it was built: see

@@ -58,6 +58,10 @@ impl Emit<'_, '_, '_> {
         self.declare("declare noalias ptr @malloc(i64) nounwind");
         let (closure, code_at, let_go_at) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{closure} = call ptr @malloc(i64 {size})"));
+        if self.module.shared.tracing_costs {
+            self.declare("declare void @fennec_trace_allocated(i64) nounwind");
+            self.line(&format!("call void @fennec_trace_allocated(i64 {size})"));
+        }
         self.line(&format!("store i64 1, ptr {closure}"));
         self.line(&format!("{code_at} = getelementptr inbounds i8, ptr {closure}, i64 {CODE}"));
         self.line(&format!("store ptr {code}, ptr {code_at}"));

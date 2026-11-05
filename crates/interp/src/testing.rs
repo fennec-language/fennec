@@ -13,7 +13,7 @@ use crate::scope::Frame;
 use crate::value::{Capability, Value};
 
 /// How many inputs a property test tries.
-const CASES: usize = 100;
+pub const PROPERTY_CASES: usize = 100;
 
 /// How many simpler inputs shrinking tries before settling.
 const SHRINK_ATTEMPTS: usize = 200;
@@ -46,7 +46,7 @@ impl Interp<'_> {
             return TestOutcome { name, failure: self.run_case(test, Vec::new()).err(), cases: 1 };
         }
         let mut rng = Rng::seeded(&test.name);
-        for case in 1..=CASES {
+        for case in 1..=PROPERTY_CASES {
             let inputs = match self.generate_inputs(test, &mut rng) {
                 Ok(inputs) => inputs,
                 Err(failure) => return TestOutcome { name, failure: Some(failure), cases: case },
@@ -66,7 +66,22 @@ impl Interp<'_> {
                 };
             }
         }
-        TestOutcome { name, failure: None, cases: CASES }
+        TestOutcome { name, failure: None, cases: PROPERTY_CASES }
+    }
+
+    /// What a property test's inputs would be, each as `print` shows it, in the order they're made:
+    /// for checking that what `fennec test` writes for LLVM makes the same ones.
+    pub fn property_inputs(&mut self, name: &str) -> Result<Vec<String>, Diagnostic> {
+        let tests = self.tests.clone();
+        let mut shown = Vec::new();
+        let Some(test) = tests.iter().find(|test| test.name == name) else { return Ok(shown) };
+        let mut rng = Rng::seeded(name);
+        for _ in 0..PROPERTY_CASES {
+            for (_, value) in self.generate_inputs(test, &mut rng)? {
+                shown.push(self.shown(&value, test.span)?);
+            }
+        }
+        Ok(shown)
     }
 
     fn run_case(&mut self, test: &TestDef, inputs: Inputs) -> Result<(), Diagnostic> {
@@ -257,21 +272,31 @@ fn simpler(value: &Value) -> Vec<Value> {
     }
 }
 
-/// A small deterministic random number generator (xorshift), seeded from the test's name.
+/// What a test's name starts its random numbers from. It's below `RANDOM_MODULUS`, and never 0.
+#[must_use]
+pub fn property_seed(name: &str) -> i64 {
+    let hash = name.bytes().fold(0x9e37_79b9_7f4a_7c15_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    i64::try_from(hash % (RANDOM_MODULUS - 1)).unwrap_or(0) + 1
+}
+
+/// The modulus of the random numbers, a prime. Each number times `RANDOM_FACTOR` fits in an `int`,
+/// so `fennec test` can write the same numbers as Fennec, for tests that go through LLVM.
+const RANDOM_MODULUS: u64 = 2_147_483_647;
+const RANDOM_FACTOR: u64 = 48_271;
+
+/// A small deterministic random number generator, seeded from the test's name. The inputs
+/// `fennec test` writes for LLVM draw the same numbers in the same order.
 struct Rng(u64);
 
 impl Rng {
     fn seeded(name: &str) -> Self {
-        let seed = name.bytes().fold(0x9e37_79b9_7f4a_7c15_u64, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-        });
-        Rng(seed | 1)
+        Rng(property_seed(name).unsigned_abs())
     }
 
     fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
+        self.0 = self.0 * RANDOM_FACTOR % RANDOM_MODULUS;
         self.0
     }
 

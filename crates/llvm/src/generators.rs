@@ -263,11 +263,10 @@ impl<'p> Emit<'_, '_, 'p> {
         let (bad, ok) = (self.label("unexpected"), self.label("expected"));
         self.line(&format!("br i1 {failed}, label %{bad}, label %{ok}, !prof !0"));
         self.start_block(&bad);
-        self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
-        self.declare("declare ptr @fennec_value_text(i64) nounwind");
+        self.declare("declare ptr @fennec_block_text(ptr) nounwind");
         self.declare("declare ptr @fennec_str_concat(ptr, ptr) nounwind");
         let at = self.offset(&fields_at, offset);
-        let (error, handle, text, message) = (self.temp(), self.temp(), self.temp(), self.temp());
+        let (error, text, message) = (self.temp(), self.temp(), self.temp());
         // An error in place goes across as a block made of it.
         if let Kind::Struct(id) | Kind::Enum(id) = held {
             let block = self.new_block(id)?;
@@ -283,8 +282,7 @@ impl<'p> Emit<'_, '_, 'p> {
         } else {
             self.line(&format!("{error} = load ptr, ptr {at}"));
         }
-        self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {error})"));
-        self.line(&format!("{text} = call ptr @fennec_value_text(i64 {handle})"));
+        self.line(&format!("{text} = call ptr @fennec_block_text(ptr {error})"));
         let prefix = self.literal(&format!("this was expected to succeed ({reason}), but it failed: "));
         self.line(&format!("{message} = call ptr @fennec_str_concat(ptr {prefix}, ptr {text})"));
         self.stop_with(&message, span);

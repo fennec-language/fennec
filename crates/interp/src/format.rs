@@ -106,7 +106,7 @@ pub fn float(x: f64) -> String {
     } else if x != 0.0 && !(1e-4..1e16).contains(&x.abs()) {
         scientific(x)
     } else if x == x.trunc() {
-        format!("{x:.1}")
+        format!("{x}.0")
     } else {
         format!("{x}")
     }

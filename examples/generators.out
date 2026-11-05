@@ -11,6 +11,7 @@ liftoff
 1
 <Iterator[int]>
 [3, 9]
+100 []
 3
 [4, 8, 12]
 True False

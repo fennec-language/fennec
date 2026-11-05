@@ -54,6 +54,7 @@ pub mod serve {
     }
 
     /// With nothing served, every connection number is closed.
+    #[cfg(not(feature = "lean"))]
     fn closed() -> i64 {
         with(|state| {
             let error = state.interp.net_error(&Failure::Closed, Span::default()).unwrap_or(Value::None);
@@ -61,14 +62,17 @@ pub mod serve {
         })
     }
 
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn conn_read(_conn: i64, _count: i64) -> i64 {
         closed()
     }
 
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn conn_read_line(_conn: i64) -> i64 {
         closed()
     }
 
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn conn_write(_conn: i64, data: i64) -> i64 {
         with(|state| drop(state.take(data)));
         closed()
@@ -78,6 +82,7 @@ pub mod serve {
         with(|state| state.push(Value::str("")))
     }
 
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn conn_close(_conn: i64) {}
 }
 pub mod strings;
@@ -89,12 +94,14 @@ pub mod threads;
 use std::collections::HashMap;
 
 use crate::format;
+#[cfg(not(feature = "lean"))]
 use crate::interp::Interp;
 use crate::place::Place;
 use crate::scope::Frame;
 use crate::value::{Capability, Value};
 
 pub use heap::Counts;
+#[cfg(not(feature = "lean"))]
 pub use tests::{next_test, ran_in_interpreter};
 
 /// What the compiler registers before a program runs: the names, text and syntax its
@@ -112,9 +119,6 @@ pub struct Tables {
     pub shapes: Vec<Rc<crate::packed::Element>>,
     /// The kinds of block a dict's values can be, by the number `dicts::Word::Block` has.
     pub blocks: Vec<Rc<crate::packed::Element>>,
-    /// The shapes of `shared` types' blocks, which every name for one keeps reaching, so
-    /// changing one never copies it.
-    pub shared_shapes: Vec<u64>,
     /// The shape number strings' blocks have.
     pub str_shape: u64,
     /// Blocks that live for the whole run, like string literals, made while compiling so
@@ -254,8 +258,10 @@ fn write_kept_output_on_panic() {
 }
 
 struct State {
+    #[cfg(not(feature = "lean"))]
     interp: Interp<'static>,
     output: Output,
+    regexes: crate::stdlib::re::Regexes,
     tables: Tables,
     temps: Vec<Value>,
     /// The inputs of the next expression or statement native code hands over.
@@ -278,6 +284,10 @@ struct State {
     heap: heap::Heap,
     /// The block of each plain capability, by its kind, once it's been asked for.
     capabilities: Vec<i64>,
+    /// The program's name, as `args.program`.
+    program: String,
+    /// What it was given on its command line, as `args`.
+    arguments: Vec<String>,
     failure: Option<Diagnostic>,
 }
 
@@ -319,14 +329,23 @@ fn capability(kind: i64) -> Capability {
 pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Result<(), Diagnostic> {
     let output = Output(Rc::default(), inputs.live);
     OUTPUT.set(Some(output.clone()));
-    let mut interp = Interp::with_output(Box::new(output.clone()))?;
-    interp.give(inputs);
-    interp.load(module)?;
+    let (program, arguments) = (inputs.program.clone(), inputs.arguments.clone());
+    #[cfg(not(feature = "lean"))]
+    let interp = {
+        let mut interp = Interp::with_output(Box::new(output.clone()))?;
+        interp.give(inputs);
+        interp.load(module)?;
+        interp
+    };
+    #[cfg(feature = "lean")]
+    let _ = (module, inputs);
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
     FAILED.set(0);
     STATE.set(Some(State {
+        #[cfg(not(feature = "lean"))]
         interp,
         output,
+        regexes: crate::stdlib::re::Regexes::default(),
         temps: Vec::new(),
         inputs: Vec::new(),
         bindings: Vec::new(),
@@ -336,8 +355,10 @@ pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Resu
         callers: Vec::new(),
         spare_frames: Vec::new(),
         shared_names: Vec::new(),
-        heap: heap::Heap::new(std::mem::take(&mut tables.statics)).planned(&tables.shapes),
+        heap: heap::Heap::new(std::mem::take(&mut tables.statics)).planned(&tables.shapes, &tables.elements),
         capabilities: Vec::new(),
+        program,
+        arguments,
         tables,
         failure: None,
     }));
@@ -365,6 +386,7 @@ pub fn finish() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
         Some(mut state) => {
             state.temps.clear();
             state.let_go();
+            aot::report_sites(&state.heap.sites);
             let leftovers = Leftovers {
                 temps: state.temps.len(),
                 frames: state.callers.len(),
@@ -457,6 +479,7 @@ impl State {
 
     /// Lets go of the blocks whose last lent copy has been dropped.
     fn let_go(&mut self) {
+        #[cfg(not(feature = "lean"))]
         if let Err(failure) = self.interp.clean_up_abandoned() {
             self.failure.get_or_insert(failure);
             FAILED.set(1);
@@ -524,6 +547,7 @@ pub mod names {
     use super::{Frame, Value, with};
 
     /// Starts a native function's frame.
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn enter() {
         with(|state| {
             let fresh = state.spare_frames.pop().unwrap_or_else(Frame::new);
@@ -532,6 +556,7 @@ pub mod names {
         });
     }
 
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn leave() {
         with(|state| {
             if let Some(frame) = state.callers.pop() {
@@ -547,15 +572,18 @@ pub mod names {
     /// How many emptied frames are kept for reuse.
     const SPARE_FRAMES: usize = 64;
 
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn push_scope() {
         with(|state| state.interp.frame.push());
     }
 
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn pop_scope() {
         with(|state| state.interp.frame.pop());
     }
 
     /// Creates a name holding a temporary's value.
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn declare(name: i64, value: i64, is_mut: i8) {
         with(|state| {
             let value = state.take_held(value);
@@ -565,6 +593,7 @@ pub mod names {
     }
 
     /// Changes what a name holds.
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn assign(name: i64, value: i64) {
         with(|state| {
             let value = state.take_held(value);
@@ -576,6 +605,7 @@ pub mod names {
     }
 
     /// A temporary with a copy of a name's value. Copies share memory until one changes.
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn get(name: i64) -> i64 {
         with(|state| {
             let name = state.shared_name(name);
@@ -585,6 +615,7 @@ pub mod names {
     }
 
     /// Moves a name's value into a temporary, for a `mut` argument that's put back after.
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn take(name: i64) -> i64 {
         with(|state| {
             let name = state.shared_name(name);
@@ -599,6 +630,7 @@ pub mod names {
 
     /// Copies a `mut` parameter's final value back into the name the caller passed, in the
     /// caller's frame. Runs just before the function leaves.
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn put_back(caller_name: i64, param: i64) {
         with(|state| {
             let param = state.shared_name(param);
@@ -617,6 +649,7 @@ pub mod names {
     /// Declares a capability `main` was given, so interpreted code can use it: a capability's
     /// block, or a kind, 0 for `Stdout`, 1 for `Fs`, 2 for `Clock`, 3 for `Args`, 4 for
     /// `Stdin`, 5 for `Process`, 6 for `Entropy` and 7 for `Net`.
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn declare_capability(name: i64, kind: i64) {
         with(|state| {
             let name = state.name(name);
@@ -865,6 +898,7 @@ pub mod eval {
         });
     }
 
+    #[cfg(not(feature = "lean"))]
     fn bind_inputs(state: &mut State) {
         state.interp.frame.push();
         for (index, value) in std::mem::take(&mut state.inputs).into_iter().enumerate() {
@@ -873,6 +907,7 @@ pub mod eval {
     }
 
     /// Evaluates a registered expression with the inputs handed over.
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn expr(id: i64, start: i64, end: i64) -> i64 {
         attempt(|state: &mut State| {
             let expr = usize::try_from(id).ok().and_then(|id| state.tables.exprs.get(id)).cloned();
@@ -892,6 +927,7 @@ pub mod eval {
     }
 
     /// Runs a registered statement with the inputs handed over.
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn stmt(id: i64, start: i64, end: i64) {
         attempt(|state: &mut State| {
             let stmt = usize::try_from(id).ok().and_then(|id| state.tables.stmts.get(id)).cloned();
@@ -940,6 +976,7 @@ pub mod eval {
 
     /// Whether a value matches a registered pattern. When it does, its bindings wait for
     /// `bind`.
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn matches(value: i64, pattern: i64, start: i64, end: i64) -> i8 {
         attempt(|state: &mut State| {
             let pattern = usize::try_from(pattern).ok().and_then(|id| state.tables.patterns.get(id)).cloned();
@@ -957,6 +994,7 @@ pub mod eval {
     }
 
     /// Declares the names the last pattern that matched binds.
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn bind() {
         with(|state| {
             for (name, value) in std::mem::take(&mut state.bindings) {
@@ -982,8 +1020,7 @@ fn print_handed_over(printed: &[u8]) {
     }
     attempt(|state: &mut State| {
         state
-            .interp
-            .out
+            .output
             .write_all(printed)
             .map_err(|err| Diagnostic::new(format!("couldn't write output: {err}"), Span::default()))
     });
@@ -993,11 +1030,11 @@ fn print_handed_over(printed: &[u8]) {
 pub mod io {
     use super::{Span, State, Value, attempt, format, with};
     use fennec_syntax::Diagnostic;
+    use std::io::Write;
 
     pub(super) fn write(state: &mut State, text: &str) -> Result<(), Diagnostic> {
         state
-            .interp
-            .out
+            .output
             .write_all(text.as_bytes())
             .map_err(|err| Diagnostic::new(format!("couldn't write output: {err}"), Span::default()))
     }
@@ -1022,6 +1059,7 @@ pub mod io {
     }
 
     /// Prints a value as `stdout.print` shows it.
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn print_value(value: i64) {
         attempt(|state: &mut State| {
             let value = state.temp(value);
@@ -1030,7 +1068,14 @@ pub mod io {
         });
     }
 
+    /// Prints the value in a block, read from the block.
+    pub extern "C" fn print_block(address: i64) {
+        let shown = super::heap::shown::shown(u64::try_from(address).unwrap_or(0));
+        attempt(|state: &mut State| write(state, &shown?));
+    }
+
     /// Prints a value with an f-string format spec, like `.1f` or `,`.
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn print_spec(value: i64, spec: i64, start: i64, end: i64) {
         attempt(|state: &mut State| {
             let spec = usize::try_from(spec).ok().and_then(|at| state.tables.strings.get(at)).cloned();
@@ -1045,6 +1090,7 @@ pub mod io {
     }
 
     /// The items a `for` loop walks through, as a list.
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn items(value: i64, start: i64, end: i64) -> i64 {
         attempt(|state: &mut State| {
             let value = state.temp(value);
@@ -1060,6 +1106,7 @@ pub mod io {
 
     /// The next item of what `items` gave: -1 at the end, the item's temporary doubled, or
     /// doubled plus one for a generator's failure, for native code to pass up.
+    #[cfg(not(feature = "lean"))]
     pub extern "C" fn next(items: i64, at: i64, can_pass: i64, start: i64, end: i64) -> i64 {
         attempt(|state: &mut State| {
             let span = super::span(start, end);

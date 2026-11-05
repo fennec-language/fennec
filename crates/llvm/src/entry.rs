@@ -81,6 +81,7 @@ fn start_of(
     let _ = writeln!(out, "@fennec_failed = dso_local {local}global ptr null");
     if crate::parallel::uses_parallel(program) {
         out += "@fennec_thread = dso_local thread_local(initialexec) global i64 0\n";
+        out += crate::parallel::MAIN_THREAD_GLOBALS;
     }
     out += "@fennec_ascii = dso_local global ptr null\n";
     for (symbol, start) in &shared.starts {
@@ -103,7 +104,14 @@ fn start_of(
 /// `fennec_entry` up to where it runs the program, setting what functions read. Gives back what
 /// it needs defined after it: what closes a generator let go partway.
 fn setup(out: &mut String, program: &Program, shared: &Shared, image: &Image) -> String {
+    let main_thread = crate::parallel::uses_parallel(program).then_some(
+        "  store i64 %limit, ptr @fennec_stack_limit_main\n  %main_flag = call i64 @fennec_aot_failed_flag()\n  %main_flag_at = inttoptr i64 %main_flag to ptr\n  store ptr %main_flag_at, ptr @fennec_failed_main\n",
+    );
     *out += "define void @fennec_entry(i64 %limit) {\n  store i64 %limit, ptr @fennec_stack_limit\n  %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  store ptr %flag_at, ptr @fennec_failed\n  %ascii = call i64 @fennec_aot_ascii()\n  %ascii_at = inttoptr i64 %ascii to ptr\n  store ptr %ascii_at, ptr @fennec_ascii\n";
+    if let Some(main_thread) = main_thread {
+        // Filled in as soon as it's all set, before anything reads them.
+        *out += main_thread;
+    }
     for (number, symbol) in shared.literals.keys().enumerate() {
         let _ = writeln!(
             out,
@@ -127,7 +135,62 @@ fn setup(out: &mut String, program: &Program, shared: &Shared, image: &Image) ->
     if !thunks.is_empty() {
         thunks += "declare void @fennec_set_abandon(i64, ptr)\n";
     }
+    thunks += &own_texts(out, program, shared);
     thunks
+}
+
+/// Tells the runtime how to write each type that writes its own text, which it asks for as it
+/// goes through a value: a function given where the value is, which hands over the text. Gives
+/// back those functions, for after `fennec_entry`.
+fn own_texts(out: &mut String, program: &Program, shared: &Shared) -> String {
+    let can_fail = crate::analysis::whole(program).can_fail;
+    let mut thunks = String::new();
+    for (number, (literal, function, boxed)) in shared.own_texts.iter().enumerate() {
+        let at = shared.literals.keys().position(|symbol| symbol == literal).unwrap_or(0);
+        let thunk = format!("@\"o_{number}\"");
+        let _ = writeln!(out, "  call void @fennec_own_text(i64 %l{at}, ptr {thunk})");
+        let _ = writeln!(
+            thunks,
+            "{}",
+            own_text_thunk(&thunk, function, *boxed, can_fail.contains(function.as_str()))
+        );
+    }
+    if !thunks.is_empty() {
+        thunks +=
+            "declare void @fennec_own_text(i64, ptr)\ndeclare void @fennec_own_text_written(i64, i64, i64)\n";
+    }
+    thunks
+}
+
+/// A function taking where a value's fields are, which has `function` write the value's text and
+/// hands it over. If that fails, there's no text, and the failure is there for what's running.
+fn own_text_thunk(thunk: &str, function: &str, boxed: bool, flagged: bool) -> String {
+    let code = crate::emit::symbol(function);
+    // A block's fields come after its header, and it's the block that's passed.
+    let back = if boxed { crate::lists::FIELDS_OFFSET } else { 0 };
+    let (types, args) = if flagged { (", ptr swifterror", ", ptr swifterror %failed") } else { ("", "") };
+    format!(
+        "declare swiftcc [3 x i64] {code}(ptr{types})\n\
+         define internal void {thunk}(i64 %place) {{\n\
+         start:\n\
+         \x20 %failed = alloca swifterror ptr\n\
+         \x20 store ptr null, ptr %failed\n\
+         \x20 %at = inttoptr i64 %place to ptr\n\
+         \x20 %value = getelementptr i8, ptr %at, i64 -{back}\n\
+         \x20 %text = call swiftcc [3 x i64] {code}(ptr %value{args})\n\
+         \x20 %error = load ptr, ptr %failed\n\
+         \x20 %fine = icmp eq ptr %error, null\n\
+         \x20 br i1 %fine, label %written, label %done\n\
+         written:\n\
+         \x20 %t0 = extractvalue [3 x i64] %text, 0\n\
+         \x20 %t1 = extractvalue [3 x i64] %text, 1\n\
+         \x20 %t2 = extractvalue [3 x i64] %text, 2\n\
+         \x20 call void @fennec_own_text_written(i64 %t0, i64 %t1, i64 %t2)\n\
+         \x20 br label %done\n\
+         done:\n\
+         \x20 ret void\n\
+         }}"
+    )
 }
 
 /// The C `main`: hands the runtime the program's bytes, then has it run with this call.

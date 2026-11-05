@@ -36,6 +36,7 @@ pub fn binary_code(op: BinOp) -> Option<i64> {
 }
 
 /// `a op b`, using the type's own definition (like `def +`) when it has one.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn binary(op: i64, a: i64, b: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         // A native value is never None, so `is` needn't look inside one.
@@ -64,6 +65,7 @@ pub extern "C" fn unary(negate: i64, value: i64, start: i64, end: i64) -> i64 {
 }
 
 /// `object.name`, or `object?.name` when `optional`.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn field(object: i64, name: i64, optional: i8, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let raw = state.raw(object);
@@ -78,6 +80,7 @@ pub extern "C" fn field(object: i64, name: i64, optional: i8, start: i64, end: i
 }
 
 /// `object[at]`.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn index(object: i64, at: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let (object, at) = (state.take(object), state.take(at));
@@ -133,6 +136,7 @@ pub extern "C" fn path_index(at: i64) {
 
 /// The value at the end of a path of fields, like `self.position.x`, copying only that
 /// value: copying the whole name would make the next change to it copy it again.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn path_get(start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let place =
@@ -163,6 +167,7 @@ pub extern "C" fn path_get(start: i64, end: i64) -> i64 {
 }
 
 /// Puts a value at the end of the path, changing that part of the name in place.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn put(value: i64, start: i64, end: i64) {
     attempt(|state: &mut State| {
         let value = state.take(value);
@@ -175,6 +180,7 @@ pub extern "C" fn put(value: i64, start: i64, end: i64) {
 
 /// After one turn of `for mut`, puts the item back where it came from: at `key` along the
 /// path, its index or dict key. Items without a key, like a set's, aren't put back.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn put_item(key: i64, value: i64, start: i64, end: i64) {
     attempt(|state: &mut State| {
         let key = state.take(key);
@@ -192,6 +198,7 @@ pub extern "C" fn put_item(key: i64, value: i64, start: i64, end: i64) {
 
 /// The `(key, item)` pairs a `for mut` loop walks through, as a list. The key is None for
 /// items that have none, like a set's.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn entries(value: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let value = state.temp(value);
@@ -207,6 +214,7 @@ pub extern "C" fn entries(value: i64, start: i64, end: i64) -> i64 {
 /// A struct made from field values native code computed: the last `count` inputs handed
 /// over, in the order the struct's fields are written. Native code only makes structs that
 /// have no `where` rules this way, so there's nothing to check.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn make_instance(type_name: i64, count: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let type_name = State::name_ref(&state.tables, type_name).to_owned();
@@ -230,6 +238,7 @@ pub extern "C" fn make_instance(type_name: i64, count: i64, start: i64, end: i64
 
 /// An enum case made from field values native code computed: the last `count` inputs
 /// handed over, in the order the case's fields are written.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn make_variant(type_name: i64, case: i64, count: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let type_name = State::name_ref(&state.tables, type_name).to_owned();
@@ -255,6 +264,7 @@ pub extern "C" fn make_variant(type_name: i64, case: i64, count: i64, start: i64
 
 /// Which case of an enum a value is, by its position in the enum's definition, failing
 /// when it isn't a value of that enum.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn case_of(value: i64, type_name: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let type_name = State::name_ref(&state.tables, type_name);

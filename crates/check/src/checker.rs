@@ -49,6 +49,8 @@ pub(crate) struct Checker {
     /// The fields and method calls on a value that might be missing, in a chain an `else`
     /// ends, which are written in as optional.
     pub(crate) optional_steps: BTreeSet<(u32, u32)>,
+    /// Those read from something that can fail, which is written in as `value else None`.
+    pub(crate) failing_steps: BTreeSet<(u32, u32)>,
     /// What each name for a standard library function written in Fennec means.
     pub(crate) std_names: BTreeMap<(u32, u32), String>,
     /// Each constant's type, once worked out. `None` while its value is being checked.
@@ -106,6 +108,7 @@ impl Checker {
             not_equals: BTreeSet::new(),
             empty_collections: BTreeSet::new(),
             optional_steps: BTreeSet::new(),
+            failing_steps: BTreeSet::new(),
             std_names: BTreeMap::new(),
             const_types: BTreeMap::new(),
             checking: Vec::new(),
@@ -185,6 +188,7 @@ impl Checker {
                 not_equals: self.not_equals,
                 empty_collections: self.empty_collections,
                 optional_steps: self.optional_steps,
+                failing_steps: self.failing_steps,
                 std_names: self.std_names,
             });
         }
@@ -327,11 +331,33 @@ impl Checker {
     fn names_for_places(&mut self) -> BTreeSet<(u32, u32)> {
         let mut places = BTreeSet::new();
         let mut problems = Vec::new();
+        let mut wanted = Vec::new();
         for (key, entry) in self.program.functions.iter().filter(|(_, entry)| !entry.prelude) {
             let (found, named) = crate::alias::check_function(self, &entry.def, self.typed.get(key));
             problems.extend(found);
             problems.extend(crate::loops::check_function(self, key, &entry.def));
+            problems.extend(crate::loops::check_arguments(&entry.def.body));
+            wanted.push((key.clone(), named.clone()));
             places.extend(named.into_iter().map(|span| (span.start, span.end)));
+        }
+        for test in &self.program.tests {
+            problems.extend(crate::loops::check_arguments(&test.body));
+        }
+        // A change that's lost matters only once what's written is otherwise right.
+        let clean = problems.is_empty();
+        for (key, named) in wanted.into_iter().filter(|_| clean) {
+            let Some(def) = self.program.functions.get(&key).map(|entry| entry.def.clone()) else { continue };
+            problems.extend(crate::lost::check_body(self, &key, &def.body, &named));
+        }
+        if clean {
+            for test in self.program.tests.clone() {
+                problems.extend(crate::lost::check_body(
+                    self,
+                    &format!("test \"{}\"", test.name),
+                    &test.body,
+                    &[],
+                ));
+            }
         }
         self.diagnostics.extend(problems);
         places

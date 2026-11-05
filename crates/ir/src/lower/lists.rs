@@ -4,9 +4,10 @@
 use std::collections::HashMap;
 
 use fennec_check::Type;
-use fennec_syntax::{BinOp, Expr, ExprKind, FStrPart, Span, Stmt, UnaryOp};
+use fennec_syntax::{BinOp, CompKind, Expr, ExprKind, FStrPart, Span, Stmt, UnaryOp};
 
 use super::calls::owner_name;
+use super::generics::FunctionInstance;
 use super::places::{Leaving, Place};
 use super::{Loop, Lowered, Lowering, Tail};
 use crate::{FormatPart, InstKind, LocalId, Operand, Terminator};
@@ -182,17 +183,82 @@ impl Lowering<'_> {
             if self.holds_own_str(&held, &mut Vec::new()) {
                 return Err(format!("it prints a {held}, which holds a value with its own `def str`"));
             }
+            self.own_texts_within(&held, &mut Vec::new(), expr.span)?;
             return self.expr(expr);
         };
         let value = self.expr(expr)?;
-        let out = self.make("StrWriter", &[], expr.span)?;
-        self.emit(InstKind::Call { dest: None, function, args: vec![value, out.clone()] }, expr.span);
+        self.own_text_of(value, function, (writer, expr.span))
+    }
+
+    /// The text a value's own `def str` writes.
+    fn own_text_of(
+        &mut self,
+        value: Operand,
+        function: String,
+        (writer, span): (Type, Span),
+    ) -> Lowered<Operand> {
+        let out = self.make("StrWriter", &[], span)?;
+        self.emit(InstKind::Call { dest: None, function, args: vec![value, out.clone()] }, span);
         let (text, _) = self
             .resolve("StrWriter.text", &[Some(writer)], None)
             .ok_or("it prints a value with its own `def str`, but `StrWriter.text` isn't there")?;
         let dest = self.temporary(Type::Str);
-        self.emit(InstKind::Call { dest: Some(dest), function: text, args: vec![out] }, expr.span);
+        self.emit(InstKind::Call { dest: Some(dest), function: text, args: vec![out] }, span);
         Ok(Operand::Local(dest))
+    }
+
+    /// Has a function made for each type that writes its own text within a value of type `held`,
+    /// for the runtime to call as it writes the value. `seen` are the types looked at already.
+    fn own_texts_within(&mut self, held: &Type, seen: &mut Vec<Type>, span: Span) -> Lowered<()> {
+        match held {
+            Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::IdMap(item) => {
+                return self.own_texts_within(item, seen, span);
+            }
+            Type::Dict(first, second) | Type::Result(first, second) => {
+                self.own_texts_within(first, seen, span)?;
+                return self.own_texts_within(second, seen, span);
+            }
+            Type::Tuple(items) => {
+                return items.iter().try_for_each(|item| self.own_texts_within(item, seen, span));
+            }
+            Type::Named(_) | Type::Generic(..) => {}
+            _ => return Ok(()),
+        }
+        if seen.contains(held) {
+            return Ok(());
+        }
+        seen.push(held.clone());
+        if let Some(function) = self.own_str(held) {
+            return self.own_text_function(held, function, span);
+        }
+        let name = held.to_string();
+        let mut within: Vec<Type> = self
+            .struct_fields(&name)
+            .map(|fields| fields.into_iter().map(|(_, ty)| ty).collect())
+            .unwrap_or_default();
+        if let Some(found) = self.context.enums.get(name.as_str()) {
+            within.extend(found.cases.iter().flat_map(|case| case.fields.iter().map(|(_, ty)| ty.clone())));
+        }
+        within.iter().try_for_each(|ty| self.own_texts_within(ty, seen, span))
+    }
+
+    /// Makes the function giving the text a value of type `held` writes, if it isn't made yet.
+    fn own_text_function(&mut self, held: &Type, function: String, span: Span) -> Lowered<()> {
+        let key = format!("{held}.own_text");
+        if self.context.own_texts.borrow().iter().any(|made| made.function == key) {
+            return Ok(());
+        }
+        let instance =
+            FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
+        let mut made = Lowering::new(&instance, self.context, self.body, Type::Str);
+        let value = made.declare("value", held.clone());
+        made.scopes.push(HashMap::new());
+        let writer = Type::Named("StrWriter".to_owned());
+        let text = made.own_text_of(Operand::Local(value), function, (writer, span))?;
+        made.finish(Terminator::Return(Some(text)));
+        self.lifted.extend(made.finished(1, Vec::new()));
+        self.context.own_texts.borrow_mut().push(crate::OwnText { ty: held.clone(), function: key });
+        Ok(())
     }
 
     /// The `def str` a type writes its own text with, if it has one.
@@ -270,6 +336,69 @@ impl Lowering<'_> {
             if changes_items { Some(Back { place: self.held_place(iter, span)?, by_id }) } else { None };
         let over = Over { names, iter, back };
         self.looping(over, span, |lowering| lowering.stmts(body, Tail::Drop))
+    }
+
+    /// `xs = [f(x) for x in xs]`, as `for mut x in xs: x = f(x)`: each item is replaced where it
+    /// is, so no second list is made unless something else holds this one. The same for a field,
+    /// `self.xs = [f(x) for x in self.xs]`. Nothing can see the difference if what's worked out
+    /// doesn't read the list, can't leave part of the way along, and no `where` rule looks at
+    /// the list before it's finished. A list in a `shared` value isn't taken this way, since a
+    /// second name for the cell can read it under another spelling.
+    pub(super) fn replaces_its_source(&mut self, target: &Expr, value: &Expr, span: Span) -> Lowered<bool> {
+        let ExprKind::Comprehension { kind: CompKind::List, elem, value: None, names, iter, cond: None } =
+            &value.kind
+        else {
+            return Ok(false);
+        };
+        let Some((root, path)) = field_path_of(target) else { return Ok(false) };
+        let [item] = names.as_slice() else { return Ok(false) };
+        let Some(Type::List(held)) = self.type_at(iter.span) else { return Ok(false) };
+        if field_path_of(iter).as_ref() != Some(&(root, path.clone()))
+            || item == root
+            || self.type_at(value.span) != Some(Type::List(held.clone()))
+            || !reads_apart(elem, root, path.first().copied())
+            || self.seen_along(root, &path)
+        {
+            return Ok(false);
+        }
+        let place = self.held_place(iter, span)?;
+        if self.steps_type(&place)? != Type::List(held.clone()) {
+            return Ok(false);
+        }
+        let back = Some(Back { place, by_id: false });
+        let over = Over { names, iter, back };
+        self.looping(over, span, |lowering| {
+            let made = lowering.expr(elem)?;
+            let made = lowering.coerce(made, &held, span)?;
+            let dest = lowering.lookup(item).ok_or("a loop's item has no name")?;
+            if made != Operand::Local(dest) {
+                lowering.emit(InstKind::Copy { dest, value: made }, span);
+            }
+            Ok(())
+        })?;
+        Ok(true)
+    }
+
+    /// Whether a `where` rule looks at anything along these fields from a name, or they go through
+    /// a `shared` handle, which other names can reach the same cell by.
+    fn seen_along(&self, root: &str, path: &[&str]) -> bool {
+        let Some(local) = self.lookup(root) else { return true };
+        let mut ty = self.local_type(local);
+        for field in path {
+            if self.context.is_handle(&ty) {
+                return true;
+            }
+            let Type::Named(owner) = &ty else { return true };
+            let copy = self.context.type_instance(owner);
+            let base = copy.as_ref().map_or(owner.as_str(), |copy| copy.base.as_str());
+            if self.context.rules.contains_key(base) {
+                return true;
+            }
+            let Ok(fields) = self.struct_fields(owner) else { return true };
+            let Some((_, next)) = fields.iter().find(|(name, _)| name == field) else { return true };
+            ty = next.clone();
+        }
+        false
     }
 
     /// Runs `body` for each item of what `iter` gives. A `range` going one step at a time is
@@ -564,4 +693,42 @@ impl Lowering<'_> {
         self.current = exit;
         Ok(())
     }
+}
+
+/// The name an expression starts from and the fields it goes through, if that's all it is.
+fn field_path_of(expr: &Expr) -> Option<(&str, Vec<&str>)> {
+    match &expr.kind {
+        ExprKind::Name(name) => Some((name, Vec::new())),
+        ExprKind::Attr { object, name, optional: false } => {
+            let (root, mut path) = field_path_of(object)?;
+            path.push(name);
+            Some((root, path))
+        }
+        _ => None,
+    }
+}
+
+/// Whether what's worked out for an item stays away from the list it's replacing: it doesn't read
+/// the name the list is reached from, except for other fields of it, or call a method of it, and
+/// it can't leave part of the way along.
+fn reads_apart(elem: &Expr, root: &str, first_field: Option<&str>) -> bool {
+    let (mut named, mut other_fields, mut apart) = (0_u32, 0_u32, true);
+    fennec_syntax::visit::in_expr(&mut elem.clone(), &mut |seen| match &seen.kind {
+        ExprKind::Name(name) if name == root => named += 1,
+        ExprKind::Attr { object, name, .. }
+            if matches!(&object.kind, ExprKind::Name(held) if held == root)
+                && Some(name.as_str()) != first_field =>
+        {
+            other_fields += 1;
+        }
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Attr { object, .. }
+                if matches!(&object.kind, ExprKind::Name(held) if held == root)) =>
+        {
+            apart = false;
+        }
+        ExprKind::Try { .. } => apart = false,
+        _ => {}
+    });
+    apart && named == other_fields && (first_field.is_some() || named == 0)
 }

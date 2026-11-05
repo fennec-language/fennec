@@ -65,6 +65,8 @@ pub struct Program {
     pub constants: Vec<Function>,
     pub functions: Vec<Function>,
     pub not_lowered: Vec<NotLowered>,
+    /// The types printed inside other values that write their own text with `def str`.
+    pub own_texts: Vec<OwnText>,
     /// What the program calls that isn't here or in `not_lowered`. Lowering a whole program
     /// leaves this empty.
     pub external: Vec<String>,
@@ -117,6 +119,13 @@ pub struct EnumDef {
     pub cases: Vec<CaseDef>,
 }
 
+/// A type that writes its own text, and the function giving that text for a value of the type.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OwnText {
+    pub ty: Type,
+    pub function: String,
+}
+
 /// One case of an enum, with its fields' types in the order they're written.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CaseDef {
@@ -147,6 +156,29 @@ pub struct Function {
     /// The `for` loops that count one step at a time, which a backend or the optimizer can
     /// use to leave out checks.
     pub counts: Vec<Count>,
+    /// The places calls change, which a backend can take out and put back rather than copy.
+    pub places: Vec<ChangedPlace>,
+}
+
+/// A field or item a call changes, written as reading it out to a local, calling, and writing
+/// that back. The instructions say all of it, so a backend can ignore this.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChangedPlace {
+    pub root: LocalId,
+    pub steps: Vec<PlaceStep>,
+    /// What holds the field or item while the call changes it.
+    pub value: LocalId,
+    /// The locals read on the way to it, itself last.
+    pub read: Vec<LocalId>,
+    /// The locals read again on the way back.
+    pub back: Vec<LocalId>,
+}
+
+/// One step from a local towards a place a call changes: only through structs and lists.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlaceStep {
+    Field(String),
+    Item(Operand),
 }
 
 /// A `for` loop's count. It's set once before the loop, the limit is read once, and it's short

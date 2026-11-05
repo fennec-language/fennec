@@ -1,0 +1,25 @@
+from std.game import IdMap
+
+def total(map: IdMap[str], start: int) -> int:
+    mut count = start
+    for id, name in map.items():
+        count += name.len()
+    count
+
+def main(stdout: Stdout):
+    mut map = IdMap[str]()
+    for n in range(50):
+        map.insert("name " + str(n))
+    gone = map.insert("gone")
+    map.remove(gone)
+    results = sorted([total(map, n) for n in parallel(range(64))])
+    stdout.print(results[0], results[63], map.len())
+    maps = [map, map, map, map]
+    mut each = maps
+    for mut held in parallel(each):
+        held.insert("more")
+        mut sizes = 0
+        for name in held.values():
+            sizes += name.len()
+        held.insert(str(sizes))
+    stdout.print(each[0].len(), map.len())

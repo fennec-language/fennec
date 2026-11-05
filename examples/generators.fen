@@ -99,6 +99,7 @@ def main(stdout: Stdout):
     numbers = []
     stdout.print(scaled)
     stdout.print(list(scaled))
+    stdout.print(factor, numbers)
 
     # Stages can be chained, each kept in a name.
     lines = (line.strip() for line in ["  a", "   ", "bc  "])

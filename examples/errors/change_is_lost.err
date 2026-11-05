@@ -1,0 +1,7 @@
+error: this change to `unit` is lost: `unit` is a copy of what `find` gave back, so nothing else changes
+  --> examples/errors/change_is_lost.fen:11:5
+   |
+11 |     unit.health = 1
+   |     ^^^^^^^^^^^^^^^
+   |
+   = help: use `unit` after this, write it back where it came from, or take out the change

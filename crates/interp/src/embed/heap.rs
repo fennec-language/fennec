@@ -22,11 +22,13 @@ use crate::value::{Instance, Lent, Value};
 
 mod freeing;
 mod named;
+pub(super) mod shown;
 #[cfg(test)]
 pub(super) use freeing::measure_part;
 pub use freeing::{free, free_text, set_abandon};
 pub(super) use freeing::{release, run_abandons};
 pub(super) use named::packable;
+pub use shown::{own_text, own_text_written};
 
 /// Words before a block's fields: its owner count and its shape.
 pub const HEADER_WORDS: usize = 2;
@@ -83,8 +85,17 @@ pub(crate) struct Heap {
     spare_cells: Vec<usize>,
     /// What native code's run has cost so far.
     pub(super) counts: Counts,
+    /// In a program built to trace what it costs, the same for each place in its source, and the
+    /// place native code said it's at last. Empty otherwise.
+    pub(super) sites: HashMap<u32, Counts>,
+    site: Option<u32>,
     /// Where each shape's blocks hold addresses, by the shape's number.
     plans: Vec<super::plans::Plan>,
+    /// Where each kind of list item laid out in place holds addresses, by the kind's number. A
+    /// worker's heap has none, and walks them.
+    item_plans: Vec<super::plans::ItemPlan>,
+    /// Which of those hold no blocks at all, as most lists' items don't, to free them at once.
+    empty_items: Vec<bool>,
     /// The number of the thread this heap is, in a shape word's owner bits: 0 on the main
     /// thread, so its blocks' shape words are just their shapes.
     owner_bits: u64,
@@ -115,6 +126,11 @@ pub struct Counts {
 }
 
 impl Counts {
+    fn allocated(&mut self, bytes: u64) {
+        self.allocations += 1;
+        self.allocated_bytes += bytes;
+    }
+
     /// Notes that a shared value of `words` words was copied.
     pub(super) fn copied(&mut self, words: usize) {
         let bytes = u64::try_from(words).unwrap_or(0) * 8;
@@ -195,10 +211,18 @@ fn zero_words<const N: usize>(block: &mut [u64]) -> bool {
 }
 
 impl Heap {
+    /// Whether a list of this kind of item is known to hold no blocks. A worker's heap has no
+    /// plans, so it doesn't know, and looks.
+    fn items_hold_nothing(&self, number: usize) -> bool {
+        self.empty_items.get(number).copied().unwrap_or(false)
+    }
+
     /// A heap holding the blocks that live for the whole run.
     /// The heap, knowing where blocks of each shape hold addresses, for freeing them.
-    pub(crate) fn planned(mut self, shapes: &[Rc<Element>]) -> Heap {
+    pub(crate) fn planned(mut self, shapes: &[Rc<Element>], elements: &[Rc<Element>]) -> Heap {
         self.plans = shapes.iter().map(|shape| super::plans::plan(shape)).collect();
+        self.item_plans = elements.iter().map(|element| super::plans::item_plan(element)).collect();
+        self.empty_items = self.item_plans.iter().map(|items| items.plan.holds_nothing()).collect();
         self.sizes = shapes.iter().map(|shape| HEADER_WORDS + shape.words()).collect();
         self
     }
@@ -279,9 +303,29 @@ impl Heap {
         self.blocks.len().saturating_sub(self.statics)
     }
 
+    /// Native code is about to do what's at this place in the source.
+    pub(super) fn trace_at(&mut self, site: u32) {
+        self.site = Some(site);
+    }
+
+    /// Notes that `bytes` bytes were allocated.
+    pub(super) fn allocated(&mut self, bytes: u64) {
+        self.counts.allocated(bytes);
+        if let Some(site) = self.site {
+            self.sites.entry(site).or_default().allocated(bytes);
+        }
+    }
+
+    /// Notes that a shared value of `words` words was copied.
+    pub(super) fn copied(&mut self, words: usize) {
+        self.counts.copied(words);
+        if let Some(site) = self.site {
+            self.sites.entry(site).or_default().copied(words);
+        }
+    }
+
     pub(crate) fn insert(&mut self, mut block: Box<[u64]>) -> i64 {
-        self.counts.allocations += 1;
-        self.counts.allocated_bytes += u64::try_from(block.len()).unwrap_or(0) * 8;
+        self.allocated(u64::try_from(block.len()).unwrap_or(0) * 8);
         let address = block.as_ptr().addr();
         if super::threads::ON && self.owner_bits != 0 {
             mark_owner(&mut block, self.owner_bits);
@@ -504,7 +548,12 @@ fn boxed_words(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec
     match element {
         // An optional string's header: all zero, `None`, holds nothing, as an inline one doesn't.
         element if element.is_optional_text() => boxed_words(&Element::Text, words, at, found),
-        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => {
+        Element::Boxed(_)
+        | Element::Str
+        | Element::List(_)
+        | Element::ListOf(_)
+        | Element::Object
+        | Element::Maybe(_) => {
             found.push(*at);
             *at += 1;
         }
@@ -579,7 +628,12 @@ pub extern "C" fn cell_read(address: i64) -> i64 {
 fn boxed_addresses(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec<u64>) {
     match element {
         element if element.is_optional_text() => boxed_addresses(&Element::Text, words, at, found),
-        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => {
+        Element::Boxed(_)
+        | Element::Str
+        | Element::List(_)
+        | Element::ListOf(_)
+        | Element::Object
+        | Element::Maybe(_) => {
             found.extend(words.get(*at).copied().filter(|address| *address != 0));
             *at += 1;
         }
@@ -624,6 +678,7 @@ pub(super) fn holds_blocks(element: &Element) -> bool {
         | Element::Str
         | Element::Text
         | Element::List(_)
+        | Element::ListOf(_)
         | Element::Object
         | Element::Maybe(_) => true,
         Element::Struct { fields, .. } => fields.iter().any(|(_, field)| holds_blocks(field)),
@@ -658,8 +713,18 @@ fn children_into(state: &State, block: &[u64], found: &mut Vec<u64>) {
             return;
         }
         if let Some(element) = super::lists::element_in(state, block) {
+            let planned =
+                super::lists::element_number(state, block).and_then(|at| state.heap.item_plans.get(at));
             if super::lists::owns_items(element) {
                 found.extend(super::lists::items(block, 1).iter().copied().filter(|address| *address != 0));
+            } else if let Some(planned) = planned {
+                if !planned.plan.holds_nothing() {
+                    for item in super::lists::items(block, planned.stride).chunks(planned.stride) {
+                        if super::plans::addresses(&planned.plan, item, found).is_none() {
+                            held_addresses(element, item, found);
+                        }
+                    }
+                }
             } else if holds_blocks(element) {
                 // Items laid out in place that hold blocks, like structs with a string field.
                 let stride = element.words().max(1);
@@ -711,15 +776,6 @@ pub extern "C" fn alloc(shape: i64) -> i64 {
 pub extern "C" fn unshare(address: i64) -> i64 {
     with(|state| {
         let address = u64::try_from(address).unwrap_or(0);
-        // A `shared` value is one block however many names it has.
-        if state
-            .heap
-            .block(address)
-            .and_then(shape_word)
-            .is_some_and(|shape| state.tables.shared_shapes.contains(&shape))
-        {
-            return i64::try_from(address).unwrap_or(0);
-        }
         let Some(block) = state.heap.block(address) else { return 0 };
         let mut copy: Box<[u64]> = block.into();
         // The block copied loses an owner, in its count, or for its lender to take off.
@@ -733,7 +789,7 @@ pub extern "C" fn unshare(address: i64) -> i64 {
         }
         // The copy is this thread's, whoever made what it was copied from.
         mark_owner(&mut copy, state.heap.owner_bits);
-        state.heap.counts.copied(copy.len());
+        state.heap.copied(copy.len());
         for child in children(state, &copy) {
             retain(state, child);
         }
@@ -797,7 +853,7 @@ pub(super) fn lent_field(state: &mut State, value: &Value, name: i64) -> Option<
     Some(match element {
         Element::Int | Element::Float | Element::Bool | Element::Str => read_word(state, element, word),
         Element::Object => cell_value(state, state.heap.block(word)?)?,
-        Element::Boxed(_) | Element::List(_) => {
+        Element::Boxed(_) | Element::List(_) | Element::ListOf(_) => {
             retain(state, word);
             Value::Lent(Rc::new(Lent { address: word }))
         }
@@ -850,9 +906,8 @@ pub(super) fn read_block(state: &State, address: u64) -> Value {
     read(state, &shape, &mut words)
 }
 
-/// A list's items, laid out as `words`, as the interpreter holds them, one by one.
-pub(super) fn read_items(state: &State, element: &Element, words: &[u64]) -> Value {
-    let count = words.len() / element.words().max(1);
+/// A list's `count` items, laid out as `words`, as the interpreter holds them, one by one.
+pub(super) fn read_items(state: &State, element: &Element, words: &[u64], count: usize) -> Value {
     let mut words = words.iter();
     Value::list((0..count).map(|_| read(state, element, &mut words)).collect())
 }
@@ -874,7 +929,7 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
             Value::str(&super::text::text_of(state, &header))
         }
         // Only the top of a value the interpreter is handed may be a packed list.
-        Element::List(_) => read_block(state, word(words)).unpacked(),
+        Element::List(_) | Element::ListOf(_) => read_block(state, word(words)).unpacked(),
         element if element.is_optional_text() => match [word(words), word(words), word(words)] {
             [0, 0, 0] => Value::None,
             header => Value::str(&super::text::text_of(state, &header)),
@@ -892,10 +947,14 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
                 fields.iter().map(|(field, element)| (Rc::clone(field), read(state, element, words)));
             let value = instance(name, None, fields.collect());
             // An error's block is laid out like a struct's, so its type says which it is.
+            #[cfg(not(feature = "lean"))]
             let error = state
                 .interp
                 .type_info(type_name(name))
                 .is_some_and(|info| info.kind == crate::interp::TypeKind::Error);
+            // Nothing built without the interpreter looks at this on a value read back.
+            #[cfg(feature = "lean")]
+            let error = false;
             match value {
                 Value::Instance(mut made) if error => {
                     if let Some(made) = Rc::get_mut(&mut made) {
@@ -1029,6 +1088,10 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
         (Element::Maybe(inner), value) => write(state, inner, value, words)?,
         (Element::List(item), value) => {
             words.push(u64::try_from(super::lists::write_list(state, item, value)?).ok()?);
+        }
+        (Element::ListOf(number), value) => {
+            let item = Rc::clone(state.tables.elements.get(*number)?);
+            words.push(u64::try_from(super::lists::write_list(state, &item, value)?).ok()?);
         }
         (Element::Struct { name, fields }, Value::Tuple(items))
             if name.starts_with('(') && items.len() == fields.len() =>

@@ -27,6 +27,7 @@ jobs:
   changes:
     name: What changed
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
@@ -46,6 +47,7 @@ jobs:
     name: Format, lints and docs
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       CODE: ${{ needs.changes.outputs.docs_only != 'true' }}
     steps:
@@ -106,6 +108,7 @@ jobs:
       matrix:
         os: ${{ fromJSON(github.event_name == 'merge_group' && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     # LLVM is the main backend, so on Linux and Windows its tests have to run: with LLVM's tools
     # from the toolchain's own `llvm-tools`, the LLVM rustc uses, a missing tool or runtime
     # library fails them instead of skipping them.
@@ -155,14 +158,28 @@ jobs:
             all=(--all)
           fi
           cargo build --locked --quiet -p fennec
+          # Each takes a second or so. The limit names a program that hangs, with the job's own as
+          # the backstop, and what it prints goes to a file so nothing left running can hold a pipe.
+          fennec() { .github/scripts/within.sh 120 ./target/debug/fennec "$@"; }
+          printed="$RUNNER_TEMP/printed.txt"
+
+          # The limit has to work to be any use, on each platform, and stop what it started too:
+          # `cat` only ends once nothing is left that could write to it.
+          printf 'def main():\n    while True:\n        pass\n' > "$RUNNER_TEMP/forever.fen"
+          status=0
+          .github/scripts/within.sh 5 ./target/debug/fennec run "$RUNNER_TEMP/forever.fen" | cat || status=$?
+          [ "$status" = 124 ] || { echo "::error::the time limit gave $status for a program that never ends"; exit 1; }
+
           for program in examples/*.fen; do
-            ./target/debug/fennec run "$program" | diff --strip-trailing-cr "${program%.fen}.out" -
-            ./target/debug/fennec test "${all[@]}" "$program" > /dev/null
+            fennec run "$program" > "$printed"
+            diff --strip-trailing-cr "${program%.fen}.out" "$printed"
+            fennec test "${all[@]}" "$program" > /dev/null
           done
           for kit in examples/projects/*/; do
             [ -f "$kit/kit.toml" ] || continue
-            ./target/debug/fennec run "$kit" | diff --strip-trailing-cr "${kit%/}.out" -
-            ./target/debug/fennec test "${all[@]}" "$kit" > /dev/null
+            fennec run "$kit" > "$printed"
+            diff --strip-trailing-cr "${kit%/}.out" "$printed"
+            fennec test "${all[@]}" "$kit" > /dev/null
           done
       - name: Save test results
         if: github.event_name != 'merge_group'
@@ -178,6 +195,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true' && github.event_name != 'merge_group'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -207,6 +225,7 @@ jobs:
     name: Licenses, advisories and sources
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -220,6 +239,7 @@ jobs:
     name: Website builds
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -240,6 +260,7 @@ jobs:
     name: Workflow lints and security audit
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -257,6 +278,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -304,6 +326,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -328,6 +351,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       NIGHTLY: nightly-2026-10-15
       FENNEC_SANITIZE: address
@@ -355,17 +379,20 @@ jobs:
           for program in examples/*.fen; do
             for how in --llvm "--llvm --release"; do
               # shellcheck disable=SC2086 # `$how` is two words for a release
-              if ! ./target/release/fennec build $how "$program" -o checked > /dev/null 2> built.txt; then
+              if ! .github/scripts/within.sh 300 ./target/release/fennec build $how "$program" -o checked > /dev/null 2> built.txt; then
                 # Anything but a failed tool or link is the backend saying what it doesn't take yet.
-                grep -qE "linking failed|failed on|couldn't run|once trimmed|panicked" built.txt || continue
+                grep -qE "linking failed|failed on|couldn't run|once trimmed|panicked|didn't finish" built.txt || continue
                 echo "::error::$program didn't build with $how"; cat built.txt; failed=1; continue
               fi
               if ! nm checked | grep -q __asan_report_load; then
                 echo "::error::$program built with $how without AddressSanitizer"; failed=1; continue
               fi
               built=$((built + 1))
-              ./checked > printed.txt 2> said.txt || true
-              if grep -q AddressSanitizer said.txt; then
+              ran=0
+              .github/scripts/within.sh 120 ./checked > printed.txt 2> said.txt || ran=$?
+              if [ "$ran" = 124 ]; then
+                echo "::error::$program built with $how didn't finish"; cat said.txt; failed=1
+              elif grep -q AddressSanitizer said.txt; then
                 echo "::error::$program built with $how touched memory it doesn't own"; cat said.txt; failed=1
               elif ! cmp -s printed.txt "${program%.fen}.out"; then
                 echo "::error::$program built with $how printed something different"; cat said.txt; failed=1
@@ -385,6 +412,159 @@ jobs:
           path: found
           if-no-files-found: ignore
 
+  # Programs built with no interpreter in their runtime: nothing but what's listed may still need
+  # it, which fails at link, and everything else prints what it should, on one thread and on
+  # several. When JSON and the network are native, the list is empty and this is the default.
+  lean-runtime:
+    name: Programs with no interpreter
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      FENNEC_LEAN_RUNTIME: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install LLVM's tools
+        run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build fennec, and its runtimes with no interpreter
+        run: |
+          cargo build --release --locked -p fennec
+          cargo build --release --locked -p fennec-runtime --features lean --target-dir target/lean
+          cp target/lean/release/libfennec_runtime.a target/release/libfennec_runtime_lean.a
+          cargo build --release --locked -p fennec-runtime --features lean,threads --target-dir target/lean-threads
+          cp target/lean-threads/release/libfennec_runtime.a target/release/libfennec_runtime_lean_threads.a
+      - name: Build and run every example and kernel
+        run: |
+          still_needs=" import_as json_annotations json_collections json_enums json_ids json_names json_rules std_crypto std_csv "
+          built=0
+          failed=0
+          for program in examples/*.fen bench/kernels/*.fen; do
+            name=$(basename "$program" .fen)
+            if ! ./target/release/fennec build --llvm "$program" -o checked > /dev/null 2> built.txt; then
+              # Anything but a failed link is the backend saying what it doesn't take yet.
+              grep -qE "linking failed|Undefined symbols|undefined reference" built.txt || continue
+              case "$still_needs" in
+                *" $name "*) ;;
+                *) echo "::error::$name needs the interpreter"; cat built.txt; failed=1 ;;
+              esac
+              continue
+            fi
+            case "$still_needs" in
+              *" $name "*) echo "::error::$name doesn't need the interpreter any more: take it off the list"; failed=1 ;;
+            esac
+            if nm checked | grep -q 5Interp; then echo "::error::$name has the interpreter in it"; failed=1; fi
+            built=$((built + 1))
+            if [ -f "${program%.fen}.out" ]; then
+              timeout 120 ./checked < /dev/null > printed.txt 2> said.txt || true
+              if ! cmp -s printed.txt "${program%.fen}.out"; then
+                echo "::error::$name printed something different"; cat said.txt; failed=1
+              fi
+            fi
+          done
+          echo "$built programs built with no interpreter"
+          [ "$built" -ge 90 ] || { echo "::error::only $built built"; failed=1; }
+          exit "$failed"
+      - name: Run what uses parallel on real threads
+        env:
+          FENNEC_THREADS_RUNTIME: 1
+        run: |
+          failed=0
+          for program in crates/fennec/tests/fixtures/workers/*.fen examples/parallel_loops.fen examples/parallel_put_back.fen; do
+            FENNEC_LEAN_RUNTIME='' FENNEC_THREADS_RUNTIME='' ./target/release/fennec run --interp "$program" 2> /dev/null | sort > wanted.txt
+            ./target/release/fennec build --llvm "$program" -o checked > /dev/null
+            for threads in 1 4 8; do
+              if [ "$(FENNEC_THREADS=$threads timeout 120 ./checked 2> said.txt | sort)" != "$(cat wanted.txt)" ]; then
+                echo "::error::$program at $threads threads printed something different"; cat said.txt; failed=1
+              fi
+            done
+          done
+          exit "$failed"
+
+  # What `parallel` runs on real threads, built with the threads runtime, under AddressSanitizer
+  # and ThreadSanitizer, at several thread counts and with every call forced onto the pool. Each
+  # has to print what the interpreter prints, sorted, as output from bodies comes in call order.
+  worker-sanitizers:
+    name: Workers under ${{ matrix.name }}
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: AddressSanitizer
+            sanitize: address
+            report: AddressSanitizer
+            symbol: __asan_report_load
+            options: ASAN_OPTIONS=detect_leaks=0:exitcode=86:detect_stack_use_after_return=0
+          - name: ThreadSanitizer
+            sanitize: thread
+            report: ThreadSanitizer
+            symbol: __tsan_read
+            options: TSAN_OPTIONS=halt_on_error=0:exitcode=86:report_signal_unsafe=0
+    env:
+      NIGHTLY: nightly-2026-10-15
+      FENNEC_THREADS_RUNTIME: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install LLVM's tools, and the nightly compiler the sanitizers need
+        run: |
+          rustup component add llvm-tools-preview
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build fennec, and its threads runtime with the sanitizer
+        env:
+          SANITIZE: ${{ matrix.sanitize }}
+        run: |
+          cargo build --release --locked -p fennec
+          RUSTFLAGS="-Zsanitizer=$SANITIZE" cargo "+$NIGHTLY" build --release --locked -p fennec-runtime \
+            --features threads,sanitize -Zbuild-std --target x86_64-unknown-linux-gnu --target-dir target/threads
+          # A `parallel` loop that stays on one thread links the plain runtime, which this also serves as.
+          cp target/threads/x86_64-unknown-linux-gnu/release/libfennec_runtime.a \
+            target/release/libfennec_runtime_threads.a
+          cp target/threads/x86_64-unknown-linux-gnu/release/libfennec_runtime.a target/release/libfennec_runtime.a
+      - name: Run every program that uses parallel
+        env:
+          FENNEC_SANITIZE: ${{ matrix.sanitize }}
+          REPORT: ${{ matrix.report }}
+          SYMBOL: ${{ matrix.symbol }}
+          OPTIONS: ${{ matrix.options }}
+        run: |
+          failed=0
+          runs=0
+          export "${OPTIONS?}"
+          programs=$(grep -lE 'parallel\(' examples/*.fen | xargs grep -L Net)
+          for program in $programs crates/fennec/tests/fixtures/workers/*.fen; do
+            FENNEC_SANITIZE='' ./target/release/fennec run --interp "$program" 2> /dev/null | sort > wanted.txt
+            if ! ./target/release/fennec build --llvm "$program" -o checked > /dev/null 2> built.txt; then
+              echo "::error::$program didn't build"; cat built.txt; failed=1; continue
+            fi
+            nm checked | grep -q "$SYMBOL" || { echo "::error::$program built without the sanitizer"; failed=1; }
+            for threads in 1 4 8 stress; do
+              if [ "$threads" = stress ]; then
+                got=$(FENNEC_PARALLEL_STRESS=1 FENNEC_THREADS=4 timeout 120 ./checked 2> said.txt | sort)
+              else
+                got=$(FENNEC_THREADS=$threads timeout 120 ./checked 2> said.txt | sort)
+              fi
+              runs=$((runs + 1))
+              if grep -q "$REPORT" said.txt; then
+                echo "::error::$program at $threads threads: $REPORT reported"; cat said.txt; failed=1
+              elif [ "$got" != "$(cat wanted.txt)" ]; then
+                echo "::error::$program at $threads threads printed something different"; cat said.txt; failed=1
+              fi
+            done
+          done
+          echo "$runs runs under $REPORT"
+          [ "$runs" -ge 40 ] || { echo "::error::only $runs runs"; failed=1; }
+          exit "$failed"
+
   # Parked tasks switch stacks, the one place our own code follows a pointer `unsafe`ly, so
   # their stress tests run under AddressSanitizer, told of each switch, with leaks checked,
   # and under ThreadSanitizer.
@@ -397,6 +577,7 @@ jobs:
       needs.changes.outputs.docs_only != 'true'
       && (github.event_name != 'merge_group' || needs.changes.outputs.parked_changed == 'true')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -451,8 +632,9 @@ jobs:
   ok:
     name: CI passed
     if: always()
-    needs: [changes, lint, test, coverage, deny, site, workflows, budgets, bench, asan, parked-sanitizers]
+    needs: [changes, lint, test, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, lean-runtime, asan, parked-sanitizers]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       actions: read
     steps:

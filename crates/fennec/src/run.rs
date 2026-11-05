@@ -100,7 +100,13 @@ fn built_and_run(
         std::env::consts::EXE_SUFFIX
     ));
     crate::aot::executable(program, &executable, false)?;
-    let ran = std::process::Command::new(&executable).args(arguments).status();
+    let mut command = std::process::Command::new(&executable);
+    // `args.program` is the program it ran, not where it was built to for this run.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::arg0(&mut command, path);
+    #[cfg(not(unix))]
+    command.env("FENNEC_RUN_AS", format!("{}|{path}", executable.display()));
+    let ran = command.args(arguments).status();
     let _ = std::fs::remove_file(&executable);
     let status = ran.map_err(|err| format!("the program it built didn't start: {err}"))?;
     // A program stopped by a signal has no code of its own.

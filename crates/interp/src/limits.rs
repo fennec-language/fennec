@@ -67,58 +67,11 @@ impl Interp<'_> {
         args: &[Value],
         span: Span,
     ) -> Result<Value, Diagnostic> {
-        match (limited.capability, method) {
-            (Capability::Process, "only") => {
-                let Some(Value::Str(program)) = args.first() else {
-                    return self.process_method(method, args, span);
-                };
-                let allowed = limited.allowed.iter().filter(|name| ***name == **program).cloned().collect();
-                Ok(Limited::to(Capability::Process, allowed))
-            }
-            (Capability::Process, "run") => {
-                let Some(Value::Str(program)) = args.first() else {
-                    return self.process_method(method, args, span);
-                };
-                if limited.allowed.iter().any(|name| **name == **program) {
-                    return self.process_method(method, args, span);
-                }
-                let message =
-                    format!("this Process can run only {}, so it can't run `{program}`", limited.listed());
-                let fields =
-                    vec![("program", Value::Str(Rc::clone(program))), ("message", Value::str(&message))];
-                Ok(Value::Err(Rc::new(self.make_value("ProcessError", fields, span)?)))
-            }
-            (Capability::Process, _) => self.process_method(method, args, span),
-            (Capability::Fs, _) => self.limited_fs(limited, method, args, span),
-            (capability, _) => self.call_capability(capability, method, args, span),
-        }
-    }
-
-    fn limited_fs(
-        &mut self,
-        limited: &Rc<Limited>,
-        method: &str,
-        args: &[Value],
-        span: Span,
-    ) -> Result<Value, Diagnostic> {
-        let Some(Value::Str(path)) = args.first().map(path_text) else {
-            return self.fs_method(method, args, span);
-        };
-        let full = absolute(&path);
-        let reachable = limited.allowed.iter().any(|folder| inside(&full, folder));
-        if method == "only" {
-            let allowed = if reachable { vec![Rc::from(full)] } else { Vec::new() };
-            return Ok(Limited::to(Capability::Fs, allowed));
-        }
-        if reachable {
-            return self.fs_method(method, args, span);
-        }
-        if method == "exists" {
-            return Ok(Value::Bool(false));
-        }
-        let reason = format!("`{path}` is outside what this Fs can reach: {}", limited.listed());
-        let error = self.make_value("IoError", vec![("reason", Value::str(&reason))], span)?;
-        Ok(Value::Err(Rc::new(error)))
+        narrowed(limited, method, args, &mut |capability, method, args| match capability {
+            Capability::Process => self.process_method(method, args, span),
+            Capability::Fs => self.fs_method(method, args, span),
+            other => self.call_capability(other, method, args, span),
+        })
     }
 
     /// A method of a capability that `only` doesn't narrow.
@@ -132,4 +85,64 @@ impl Interp<'_> {
         let args = args.iter().map(|value| crate::call::CallArg::plain(value.clone(), span)).collect();
         self.read_method(&Value::Capability(capability), method, args, span)
     }
+}
+
+/// Runs a method of a whole capability.
+type CallWhole<'c> = dyn FnMut(Capability, &str, &[Value]) -> Result<Value, Diagnostic> + 'c;
+
+/// A method of a narrowed capability: what it may do goes to `call`, and what it may not fails.
+pub(crate) fn narrowed(
+    limited: &Rc<Limited>,
+    method: &str,
+    args: &[Value],
+    call: &mut CallWhole<'_>,
+) -> Result<Value, Diagnostic> {
+    match (limited.capability, method) {
+        (Capability::Process, "only") => {
+            let Some(Value::Str(program)) = args.first() else {
+                return call(Capability::Process, method, args);
+            };
+            let allowed = limited.allowed.iter().filter(|name| ***name == **program).cloned().collect();
+            Ok(Limited::to(Capability::Process, allowed))
+        }
+        (Capability::Process, "run") => {
+            let Some(Value::Str(program)) = args.first() else {
+                return call(Capability::Process, method, args);
+            };
+            if limited.allowed.iter().any(|name| **name == **program) {
+                return call(Capability::Process, method, args);
+            }
+            let message =
+                format!("this Process can run only {}, so it can't run `{program}`", limited.listed());
+            Ok(crate::stdlib::process::process_error(program, &message))
+        }
+        (Capability::Process, _) => call(Capability::Process, method, args),
+        (Capability::Fs, _) => narrowed_fs(limited, method, args, call),
+        (capability, _) => call(capability, method, args),
+    }
+}
+
+fn narrowed_fs(
+    limited: &Rc<Limited>,
+    method: &str,
+    args: &[Value],
+    call: &mut CallWhole<'_>,
+) -> Result<Value, Diagnostic> {
+    let Some(Value::Str(path)) = args.first().map(path_text) else {
+        return call(Capability::Fs, method, args);
+    };
+    let full = absolute(&path);
+    let reachable = limited.allowed.iter().any(|folder| inside(&full, folder));
+    if method == "only" {
+        let allowed = if reachable { vec![Rc::from(full)] } else { Vec::new() };
+        return Ok(Limited::to(Capability::Fs, allowed));
+    }
+    if reachable {
+        return call(Capability::Fs, method, args);
+    }
+    if method == "exists" {
+        return Ok(Value::Bool(false));
+    }
+    let reason = format!("`{path}` is outside what this Fs can reach: {}", limited.listed());
+    Ok(crate::stdlib::fs::io_error(&reason))
 }

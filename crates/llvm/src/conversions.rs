@@ -79,6 +79,7 @@ impl Emit<'_, '_, '_> {
             ("reversed", [tuple], [Some(Kind::Struct(_) | Kind::Boxed(_))]) => {
                 dest.and_then(|dest| self.reversed_tuple(dest, tuple))
             }
+            ("list", [_], [Some(Kind::Cap)]) => dest.and_then(|dest| self.args_list(dest)),
             // A dict's keys, or a set's items, in their order.
             ("list", [dict], [Some(Kind::Dict(..))]) => {
                 dest.and_then(|dest| self.dict_list(dest, dict, "keys"))
@@ -128,7 +129,6 @@ impl Emit<'_, '_, '_> {
             }),
             // What's ignored has been worked out already.
             ("ignore", [_, _], _) => Ok(()),
-            ("list", [capability], [Some(Kind::Cap)]) => self.capability_items(dest.ok(), capability, span),
             ("round", [value, places], [Some(Kind::Float), Some(Kind::Int)]) => dest.and_then(|dest| {
                 let ((value, _), (places, _)) = (self.operand(value)?, self.operand(places)?);
                 self.declare("declare double @fennec_round_places(double, i64) nounwind");

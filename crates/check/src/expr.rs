@@ -80,23 +80,7 @@ impl FnCx<'_> {
                 self.restore(&before);
                 self.join_or_report(&[then, otherwise], span, "the two sides of this `if` give")
             }
-            ExprKind::Else { value, default } => {
-                let mut steps = Vec::new();
-                else_steps(value, &mut steps);
-                self.else_chain.extend(steps.iter().copied());
-                let value = self.expr(value);
-                for step in &steps {
-                    self.else_chain.remove(step);
-                }
-                let default = self.expr(default);
-                match value {
-                    Type::Optional(inner) | Type::Result(inner, _) => {
-                        self.join_or_report(&[*inner, default], span, "the two sides of this `else` give")
-                    }
-                    Type::None => default,
-                    other => other,
-                }
-            }
+            ExprKind::Else { value, default } => self.else_value(value, default, span),
             ExprKind::Try { value, context } => self.try_value(value, context.as_deref(), span),
             ExprKind::Call { callee, args } => self.call(callee, args, span),
             ExprKind::Attr { object, name, optional } => self.read_attr(object, name, *optional, span),
@@ -575,8 +559,24 @@ impl FnCx<'_> {
             return ty;
         }
         let ty = self.expr(object);
+        let ty = self.failing_step(ty, object.span, span);
         let optional = optional || self.chained_step(&ty, span);
         self.field_of(&ty, name, optional, span)
+    }
+
+    /// A field or method of something that can fail, read in the chain before an `else`, which
+    /// stops at the first failing step too. It's read as what's inside it or `None`, as it's written
+    /// in: `(value else None).step`.
+    pub(crate) fn failing_step(&mut self, ty: Type, object: Span, step: Span) -> Type {
+        let Type::Result(inner, _) = &ty else { return ty };
+        if !self.else_chain.contains(&(step.start, step.end)) {
+            return ty;
+        }
+        let read_as = Type::optional(inner.as_ref().clone());
+        self.checker.failing_steps.insert((step.start, step.end));
+        // Expressions are told apart by span, and nothing's written here, so it's empty.
+        self.record(Span { start: object.end, end: object.end }, &read_as);
+        read_as
     }
 
     /// Whether a field or method of a value that might be missing is read in the chain before
@@ -748,6 +748,7 @@ impl FnCx<'_> {
         let item = self.item_type(&iter_ty, iter.span);
         let before = self.snapshot();
         self.push(false);
+        self.value_functions += 1;
         self.bind_names(names, &item, false, (iter.span, span));
         if let Some(cond) = cond {
             self.condition(cond, "if");
@@ -756,9 +757,46 @@ impl FnCx<'_> {
         }
         let elem = self.expr(elem);
         let value = value.map_or(Type::Unit, |value| self.expr(value));
+        self.value_functions -= 1;
         self.pop();
         self.restore(&before);
         (elem, value)
+    }
+
+    /// `value else default`: what's inside the value, or the default, or nothing more if the default
+    /// leaves.
+    fn else_value(&mut self, value: &Expr, default: &Expr, span: Span) -> Type {
+        let mut steps = Vec::new();
+        else_steps(value, &mut steps);
+        self.else_chain.extend(steps.iter().copied());
+        let value = self.expr(value);
+        for step in &steps {
+            self.else_chain.remove(step);
+        }
+        let leaves = default.leaves();
+        if leaves && self.value_functions > 0 {
+            let message = "an arrow function or comprehension can't leave with `else`";
+            self.error(
+                Diagnostic::new(message, default.span)
+                    .with_help("write a loop, or give a value after `else`"),
+            );
+        }
+        let default = self.expr(default);
+        match value {
+            Type::Optional(inner) if matches!(*inner, Type::Result(..)) => {
+                self.error(
+                    Diagnostic::new("two steps of this chain can fail, and `else` stops at one", span)
+                        .with_help("get the first step's value out with its own `else` or `?` first"),
+                );
+                Type::Unknown
+            }
+            Type::Optional(inner) | Type::Result(inner, _) if leaves => *inner,
+            Type::Optional(inner) | Type::Result(inner, _) => {
+                self.join_or_report(&[*inner, default], span, "the two sides of this `else` give")
+            }
+            Type::None => default,
+            other => other,
+        }
     }
 
     /// An arrow function. Its parameters' types come from where it's passed, so it has to
@@ -780,7 +818,9 @@ impl FnCx<'_> {
             self.declare(param, ty.clone(), true, span);
             known.push(ty);
         }
+        self.value_functions += 1;
         let returns = self.expr(body);
+        self.value_functions -= 1;
         self.pop();
         let ty = Type::Arrow(known, Box::new(returns));
         self.record(span, &ty);

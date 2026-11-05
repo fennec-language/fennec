@@ -329,6 +329,10 @@ impl Encode for Element {
                 to.tag(7);
                 item.encode(to);
             }
+            Element::ListOf(number) => {
+                to.tag(11);
+                number.encode(to);
+            }
             Element::Enum { name, cases, words } => {
                 to.tag(6);
                 name.encode(to);
@@ -352,6 +356,7 @@ impl Decode for Element {
             8 => Element::Object,
             9 => Element::Maybe(Decode::decode(from)?),
             7 => Element::List(Decode::decode(from)?),
+            11 => Element::ListOf(Decode::decode(from)?),
             6 => Element::Enum {
                 name: Decode::decode(from)?,
                 cases: Decode::decode(from)?,
@@ -388,7 +393,6 @@ impl Image {
         tables.elements.encode(&mut to);
         tables.shapes.encode(&mut to);
         tables.blocks.encode(&mut to);
-        tables.shared_shapes.encode(&mut to);
         tables.str_shape.encode(&mut to);
         tables.text_headers.encode(&mut to);
         self.literals.encode(&mut to);
@@ -411,7 +415,6 @@ impl Image {
             elements: Decode::decode(from)?,
             shapes: Decode::decode(from)?,
             blocks: Decode::decode(from)?,
-            shared_shapes: Decode::decode(from)?,
             str_shape: Decode::decode(from)?,
             text_headers: Decode::decode(from)?,
             ..Tables::default()

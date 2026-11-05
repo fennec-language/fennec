@@ -4,7 +4,7 @@
 use fennec_check::{Signatures, Type};
 use fennec_syntax::{Arg, BinOp, Expr, ExprKind, Pattern, Span, UnaryOp};
 
-use super::{Lowered, Lowering};
+use super::{Lowered, Lowering, Tail};
 use crate::validate::fits;
 use crate::{BlockId, InstKind, Operand, StructDef, Terminator, type_in};
 
@@ -146,9 +146,13 @@ impl Lowering<'_> {
         let cond = Operand::Local(missing);
         self.finish(Terminator::Branch { cond, then: fallback, otherwise: present });
         self.current = fallback;
-        let lowered = self.expr(default)?;
-        let lowered = self.coerce(lowered, &ty, default.span)?;
-        self.emit(InstKind::Copy { dest, value: lowered }, span);
+        if default.leaves() {
+            self.tail_expr(default, Tail::Drop)?;
+        } else {
+            let lowered = self.expr(default)?;
+            let lowered = self.coerce(lowered, &ty, default.span)?;
+            self.emit(InstKind::Copy { dest, value: lowered }, span);
+        }
         self.finish(Terminator::Jump(join));
         self.current = present;
         let inside = match held {

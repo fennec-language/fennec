@@ -1008,3 +1008,36 @@ fn trim_line(line: &[u8]) -> &[u8] {
     let line = line.strip_suffix(b"\n").unwrap_or(line);
     line.strip_suffix(b"\r").unwrap_or(line)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Failure, Made, close, receive, udp};
+    use crate::value::Value;
+
+    fn handle_of_made((_, fields): &Made) -> i64 {
+        match fields.first() {
+            Some((_, Value::Int(handle))) => *handle,
+            _ => -1,
+        }
+    }
+
+    /// UDP has no `shutdown`, so a read on another thread has to find out for itself.
+    #[test]
+    fn closing_a_udp_socket_ends_a_read_waiting_on_another_thread() {
+        let Ok(made) = udp(0) else { panic!("no UDP socket") };
+        let handle = handle_of_made(&made);
+        let waiting = std::thread::spawn(move || receive(handle, None));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        close(handle);
+        assert!(matches!(waiting.join().ok(), Some(Err(Failure::Closed))));
+    }
+
+    #[test]
+    fn a_udp_read_gives_up_when_told_to() {
+        let Ok(made) = udp(0) else { panic!("no UDP socket") };
+        let handle = handle_of_made(&made);
+        let limit = std::time::Duration::from_millis(5);
+        assert!(matches!(receive(handle, Some(limit)), Err(Failure::TimedOut(after)) if after == limit));
+        close(handle);
+    }
+}

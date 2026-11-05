@@ -1985,7 +1985,21 @@ fn shared_values_are_the_same_only_if_they_are_one_value() -> std::io::Result<()
     let (printed, ..) = interpreted("shared_same_said", SHARED_SAME)?;
     let wanted = "True True False False True\nTrue False\nFalse True 1\nTrue False\nTrue False\nTrue False\n";
     assert_eq!(printed, wanted);
-    same_as_the_interpreter_in_both_builds("shared_same", SHARED_SAME)
+    same_as_the_interpreter_in_both_builds("shared_same", SHARED_SAME)?;
+    // A type's own `def ==` still decides, wherever it's written.
+    let own = "\
+shared Account:
+    total = 0
+
+    def ==(self, other: Account) -> bool:
+        self.total > 100
+
+def main(stdout: Stdout):
+    a = Account(total=1)
+    c = Account(total=200)
+    stdout.print(a == a, a == c, c == a, c == c, a != c, c != a)
+";
+    same_as_the_interpreter_in_both_builds("shared_own_same", own)
 }
 
 #[test]

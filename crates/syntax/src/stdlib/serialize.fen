@@ -52,6 +52,7 @@ interface Deserializer:
     def float(mut self) -> float fails ParseError
     def bool(mut self) -> bool fails ParseError
     def text(mut self) -> str fails ParseError
+    def bytes(mut self) -> bytes fails ParseError
 
     ## Takes a missing value, if that's what comes next, and says whether it did.
     def none(mut self) -> bool fails ParseError
@@ -119,6 +120,9 @@ extend str:
 extend bytes:
     def serialize(self, mut out: Serializer):
         out.bytes(self)
+
+    def deserialize(mut src: Deserializer) -> bytes fails ParseError:
+        src.bytes()?
 
 extend list[T: Serializable]:
     def serialize(self, mut out: Serializer):

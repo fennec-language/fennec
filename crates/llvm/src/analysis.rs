@@ -855,6 +855,9 @@ fn only_looks(inst: &InstKind, local: LocalId) -> bool {
                         | "set.len"
                         | "set.contains"
                         | "str.len"
+                        | "intrinsics.text_byte"
+                        | "intrinsics.text_size"
+                        | "intrinsics.text_part"
                 )
         }
         _ => false,
@@ -2072,6 +2075,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "Buffer.insert"
                     | "Buffer.remove"
                     | "json.dumps"
+                    | "intrinsics.text_part"
                     | "json.loads"
                     | "str.code"
                     | "str.split"

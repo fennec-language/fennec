@@ -1,5 +1,6 @@
 //! The interpreter's bodies for `std.intrinsics`: each does what the operator it stands for
-//! does, failing the same way, through the same code.
+//! does, failing the same way, through the same code. The text ones read a text by where its
+//! bytes are.
 
 use fennec_syntax::{BinOp, Diagnostic, Span, UnaryOp};
 
@@ -8,6 +9,8 @@ use crate::value::Value;
 
 /// Runs the intrinsic named `name` on its arguments.
 pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    // Imported by name into another std module, it keeps its module's name.
+    let name = name.strip_prefix("intrinsics.").unwrap_or(name);
     let binary = |op: BinOp| match args {
         [a, b] => ops::binary(op, a.clone(), b.clone(), span),
         _ => Err(wrong(name, span)),
@@ -38,6 +41,20 @@ pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagn
         }
         ("float_to_int", [a @ Value::Float(_)]) => crate::builtins::to_int(a, span),
         ("float_bits", [Value::Float(a)]) => Ok(Value::Int(a.to_bits().cast_signed())),
+        ("text_byte", [Value::Str(text), Value::Int(at)]) => {
+            let byte = usize::try_from(*at).ok().and_then(|at| text.as_bytes().get(at).copied());
+            Ok(Value::Int(byte.map_or(-1, i64::from)))
+        }
+        ("text_of_code", [Value::Int(code)]) => {
+            let found = u32::try_from(*code).ok().and_then(char::from_u32);
+            found.map(|c| Value::str(c.encode_utf8(&mut [0; 4]))).ok_or_else(|| wrong(name, span))
+        }
+        ("text_size", [Value::Str(text)]) => Ok(Value::Int(i64::try_from(text.len()).unwrap_or(i64::MAX))),
+        ("text_part", [Value::Str(text), Value::Int(start), Value::Int(end)]) => {
+            let place = |at: &i64| usize::try_from(*at).ok();
+            let part = place(start).zip(place(end)).and_then(|(start, end)| text.get(start..end));
+            part.map(Value::str).ok_or_else(|| wrong(name, span))
+        }
         _ => Err(wrong(name, span)),
     }
 }

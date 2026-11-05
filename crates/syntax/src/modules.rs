@@ -79,7 +79,7 @@ pub fn member(module: &str, name: &str, span: Span) -> Result<(), Diagnostic> {
         return Ok(());
     }
     Err(Diagnostic::new(format!("`std.{module}` has nothing called `{name}`"), span)
-        .with_help(format!("`std.{module}` provides {}", names.join(", "))))
+        .with_help(format!("`std.{module}` provides {}", shown(names))))
 }
 
 /// The mistake of using a module itself as a value, as in `stdout.print(json)`.
@@ -87,7 +87,7 @@ pub fn module_as_value(alias: &str, module: &str, span: Span) -> Diagnostic {
     let names = names(module);
     let example = names.first().copied().unwrap_or("name");
     Diagnostic::new(format!("`{alias}` is a module, so use one of its names, like `{alias}.{example}`"), span)
-        .with_help(format!("`std.{module}` provides {}", names.join(", ")))
+        .with_help(format!("`std.{module}` provides {}", shown(names)))
 }
 
 /// `a.b.c` for a chain of names and attributes, like the module path in `std.json.loads`.
@@ -116,6 +116,13 @@ pub fn short_module(name: &str, span: Span) -> Diagnostic {
     Diagnostic::new(format!("`{name}` doesn't exist"), span).with_help(format!(
         "`import std.{name}` binds `std`, so write `std.{name}.{example}`, or import it with `from std import {name}`"
     ))
+}
+
+/// A module's names as help lists them: not those only other std modules and native code use.
+fn shown(names: &[&str]) -> String {
+    let public: Vec<&str> =
+        names.iter().copied().filter(|name| !name.starts_with('_') && !name.starts_with("native_")).collect();
+    public.join(", ")
 }
 
 fn names(module: &str) -> &'static [&'static str] {

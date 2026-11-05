@@ -265,7 +265,7 @@ impl Type {
 
     /// The type as it's written in source, like `list[int]` or `Enemy?`. `None` for a type
     /// that has no written form, like one of several errors, or nothing at all.
-    pub(crate) fn source(&self) -> Option<String> {
+    pub fn source(&self) -> Option<String> {
         let all = |items: &[Type]| {
             items.iter().map(Type::source).collect::<Option<Vec<_>>>().map(|items| items.join(", "))
         };

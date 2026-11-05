@@ -33,54 +33,40 @@ pub mod regex;
 #[cfg(any(test, feature = "threads"))]
 pub mod serve;
 
-/// Without the `threads` feature, a program has no tasks, so nothing is served: the calls are
-/// here for the runtime to export, and say so.
+/// Without the `threads` feature, a program has no tasks, so a server takes its connections one
+/// at a time, as looping over it does.
 #[cfg(not(any(test, feature = "threads")))]
 pub mod serve {
     use fennec_syntax::{Diagnostic, Span};
 
-    use super::{State, attempt, with};
-    use crate::stdlib::net::Failure;
     use crate::value::Value;
 
     /// What runs each served connection (see the `threads` version).
     pub type ConnBody = extern "C" fn(env: i64, conn: i64, thread: i64) -> i64;
 
-    pub extern "C" fn net_serve(_server: i64, _body: ConnBody, _env: i64) -> i64 {
-        let message = "serving connections needs a program built with tasks";
-        attempt(|_: &mut State| -> Result<i64, Diagnostic> { Err(Diagnostic::new(message, Span::default())) })
-            .max(1)
+    pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
+        super::write_kept_output();
+        while let Ok(conn) = crate::stdlib::net::accepted(server) {
+            if body(env, conn, 0) != 0 {
+                super::report_failure();
+            }
+            super::write_kept_output();
+            crate::stdlib::net::closed(conn);
+        }
+        0
     }
 
-    /// With nothing served, every connection number is closed.
-    #[cfg(not(feature = "lean"))]
-    fn closed() -> i64 {
-        with(|state| state.push(crate::stdlib::net::failed(&Failure::Closed)))
+    pub(super) fn served_call(
+        _handle: i64,
+        _method: &str,
+        _args: &[Value],
+        _timeout: Option<std::time::Duration>,
+        _at: Span,
+    ) -> Option<Result<Value, Diagnostic>> {
+        None
     }
-
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn conn_read(_conn: i64, _count: i64) -> i64 {
-        closed()
-    }
-
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn conn_read_line(_conn: i64) -> i64 {
-        closed()
-    }
-
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn conn_write(_conn: i64, data: i64) -> i64 {
-        with(|state| drop(state.take(data)));
-        closed()
-    }
-
-    pub extern "C" fn conn_peer(_conn: i64) -> i64 {
-        with(|state| state.push(Value::str("")))
-    }
-
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn conn_close(_conn: i64) {}
 }
+
 pub mod strings;
 mod table;
 mod tests;
@@ -411,12 +397,15 @@ fn state_is_borrowed() -> bool {
     STATE.with(|state| state.try_borrow_mut().is_err())
 }
 
-/// Forgets the failure this thread's runtime holds, once it's been dealt with, as a server
-/// does for a connection's task that failed.
-#[cfg(any(test, feature = "threads"))]
-fn clear_failure() {
-    with(|state| state.failure = None);
+/// Says what this thread's runtime holds as a failure and forgets it, as a server does for a
+/// connection's task that failed, which ends only that task.
+fn report_failure() {
+    let failure = with(|state| state.failure.take());
     FAILED.set(0);
+    if let Some(failure) = failure {
+        write_kept_output();
+        let _ = writeln!(std::io::stderr(), "error: {}", failure.message);
+    }
 }
 
 fn with<T: Default>(f: impl FnOnce(&mut State) -> T) -> T {

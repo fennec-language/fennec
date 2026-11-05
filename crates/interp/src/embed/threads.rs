@@ -105,6 +105,16 @@ pub(super) fn range_starts(lent: Option<Arc<Table>>) {
     super::with(|state| state.heap.lent = lent);
 }
 
+/// Starts a server's I/O worker: it can read what's lent, and its tasks' blocks end with them, so
+/// nothing's kept to hand over, however long it serves.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn serving_starts(lent: Option<Arc<Table>>) {
+    super::with(|state| {
+        state.heap.lent = lent;
+        state.heap.serving = true;
+    });
+}
+
 /// Ends a range on a worker: it lets go of the blocks lent for the call, and of the text it
 /// kept of them, as the same addresses may hold other strings by its next range. Writes what it
 /// printed, so it all comes before what the calling thread prints next. Gives back how it changed

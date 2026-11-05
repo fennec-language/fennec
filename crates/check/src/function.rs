@@ -90,6 +90,9 @@ pub(crate) struct FnCx<'c> {
     /// The type expected of the value of the block being checked: the return type for a
     /// function's body, or what's expected of a `match` for its cases.
     pub(crate) tail: Option<Type>,
+    /// Where each name that isn't `mut` was read from, as it's written: `units[at]` for
+    /// `target = units[at]`.
+    pub(crate) read_from: std::collections::HashMap<String, String>,
     /// How many arrow functions and comprehensions this is inside, which `else` can't leave.
     pub(crate) value_functions: usize,
     /// How many arrow functions the code being checked is inside.
@@ -128,6 +131,7 @@ impl<'c> FnCx<'c> {
             first_var,
             expecting: None,
             tail: None,
+            read_from: std::collections::HashMap::new(),
             value_functions: 0,
             arrows: 0,
             else_chain: std::collections::HashSet::new(),

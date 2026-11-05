@@ -437,6 +437,10 @@ impl Heap {
     }
 
     /// Takes the current table back out, leaving the one behind it current.
+    #[expect(
+        clippy::unnecessary_box_returns,
+        reason = "the box goes back to be reused, so a lock doesn't move a table"
+    )]
     pub(super) fn leave_table(&mut self) -> Box<super::table::Table> {
         self.forget_cursor();
         let Some((mut table, owner_bits)) = self.behind.pop() else { return Box::default() };

@@ -14,9 +14,6 @@ use crate::analysis::{Analysis, Whole, callees, visit, whole};
 use crate::kinds::{Kind, struct_definitions};
 use crate::uniqueness::{FieldPath, Tracked, coming_in, unsettled, written_order};
 
-/// Why a program with bytes written into it, as `embed("path")` gives, isn't taken yet.
-pub(crate) const BYTES: &str = "it uses a Bytes, which this backend doesn't take yet";
-
 /// The level of processor code is built for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Cpu {
@@ -296,6 +293,9 @@ fn unit<'p>(
     out += attributes;
     Ok(out)
 }
+
+/// What a `with` that takes one `shared` value under two names says, in every engine.
+const TAKEN_TWICE: &str = "this `with` takes the same `shared` value twice";
 
 impl<'p> Module<'_, 'p> {
     pub(crate) fn add_helper(&mut self, name: &str, text: String) {
@@ -1004,6 +1004,25 @@ impl Emit<'_, '_, '_> {
 
     /// Fails if a call here would go too deep. The limit never changes once the program's
     /// running and the frame stays put, so LLVM drops all but the first check on a path.
+    /// Taking several `shared` values at once: the same one twice ends the program. With only one
+    /// thread, nothing else could be holding a lock, so that's all there is to do.
+    fn lock_all(&mut self, handles: &[(Operand, bool)], span: Span) -> Result<(), String> {
+        let mut seen: Vec<(String, Kind)> = Vec::with_capacity(handles.len());
+        for (handle, _) in handles {
+            let (value, kind) = self.operand(handle)?;
+            for (earlier, _) in seen.iter().filter(|(_, other)| *other == kind).cloned().collect::<Vec<_>>() {
+                let (same, twice, apart) = (self.temp(), self.label("twice"), self.label("apart"));
+                self.line(&format!("{same} = icmp eq ptr {earlier}, {value}"));
+                self.line(&format!("br i1 {same}, label %{twice}, label %{apart}"));
+                self.start_block(&twice);
+                self.stop(TAKEN_TWICE, span);
+                self.start_block(&apart);
+            }
+            seen.push((value, kind));
+        }
+        Ok(())
+    }
+
     pub(crate) fn check_stack(&mut self, span: Span) {
         self.declare("declare ptr @llvm.frameaddress.p0(i32)");
         let (declared, symbol) = if self.module.threads && !self.on_workers() {
@@ -1074,7 +1093,7 @@ impl Emit<'_, '_, '_> {
             Operand::Float(value) => (float_text(*value), Kind::Float),
             Operand::Bool(value) => (value.to_string(), Kind::Bool),
             Operand::Str(text) => (self.literal_value(text), Kind::Str),
-            Operand::Bytes(_) => return Err(BYTES.to_owned()),
+            Operand::Bytes(data) => (self.bytes_literal(&data.0), Kind::Bytes),
             Operand::None => ("null".to_owned(), Kind::Unit),
         })
     }
@@ -1272,13 +1291,14 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{same} = icmp {cc} ptr {a}, {b}"));
                 same
             }
-            Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) | Kind::Maybe(_)
+            Kind::Boxed(_) | Kind::Bytes | Kind::List(_) | Kind::Dict(..) | Kind::Maybe(_)
                 if matches!(op, BinOp::Eq | BinOp::NotEq) =>
             {
                 self.same_blocks(op, (&a, &b))
             }
             Kind::Closure(..) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_code(op, (&a, &b)),
             Kind::List(_) if op == BinOp::Add => self.joined_lists(&a, &b),
+            Kind::Bytes => self.bytes_binary(op, (&a, &b))?,
             Kind::List(item) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
                 self.lists_in_order(op, item, (&a, &b), span)?
             }
@@ -1747,7 +1767,7 @@ impl Emit<'_, '_, '_> {
             Operand::Float(_) => Kind::Float,
             Operand::Bool(_) => Kind::Bool,
             Operand::Str(_) => Kind::Str,
-            Operand::Bytes(_) => return Err(BYTES.to_owned()),
+            Operand::Bytes(_) => Kind::Bytes,
             Operand::None => wanted.clone(),
         };
         if from != wanted && self.headers() {
@@ -1944,10 +1964,8 @@ impl Emit<'_, '_, '_> {
             InstKind::Resume { dest, generator, known } => {
                 self.resume(*dest, generator, known.as_deref(), span)
             }
-            InstKind::Lock { .. }
-            | InstKind::Unlock { .. }
-            | InstKind::LockAll { .. }
-            | InstKind::UnlockAll { .. }
+            InstKind::LockAll { handles } if !self.module.threads => self.lock_all(handles, span),
+            InstKind::Lock { .. } | InstKind::Unlock { .. } | InstKind::UnlockAll { .. }
                 if !self.module.threads =>
             {
                 // With only one thread, nothing else could be holding a lock.

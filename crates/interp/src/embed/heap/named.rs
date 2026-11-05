@@ -18,6 +18,11 @@ pub(super) fn is_result(name: &str) -> bool {
     name.starts_with("Result[")
 }
 
+/// One of several error types held as an enum, with a case for each: `A | B`.
+pub(super) fn is_one_of_several(name: &str) -> bool {
+    name.contains(" | ") && !name.contains('[') && !name.starts_with('(')
+}
+
 /// An `IdMap` laid out as its items, each slot's generation, and how many are live. A
 /// removed slot's generation is held as `-1 - generation`, and its item is zero.
 pub(super) fn is_id_map(name: &str) -> bool {
@@ -35,7 +40,10 @@ pub(in crate::embed) fn packable(element: &Element) -> bool {
             !name.starts_with('(') && name.as_ref() != "Id" && !is_id_map(name) && all(fields)
         }
         Element::Enum { name, cases, .. } => {
-            !is_option(name) && !is_result(name) && cases.iter().all(|(_, fields)| all(fields))
+            !is_option(name)
+                && !is_result(name)
+                && !is_one_of_several(name)
+                && cases.iter().all(|(_, fields)| all(fields))
         }
         _ => false,
     }
@@ -56,6 +64,9 @@ pub(super) fn interpreted(name: &str, value: Value) -> Value {
             Some("Err") => Value::Err(held),
             _ => Value::Ok(held),
         };
+    }
+    if is_one_of_several(name) {
+        return instance.fields.first().map_or(Value::Unit, |(_, held)| held.clone());
     }
     if name == "Id" {
         return id(instance).map_or(value, Value::Id);

@@ -394,3 +394,40 @@ fn a_plain_name_read_from_a_place_says_where_to_write() {
         ["declare it with `mut plain = ...` if it needs to change"]
     );
 }
+
+#[test]
+fn a_name_that_hides_a_mut_one_says_so() {
+    let said = "this `k` is a new name, which hides the `mut k` around it @ k";
+    let types = "enum Sized:\n    Small(size: int)\n";
+    for body in [
+        "mut k = 0\nmatch Sized.Small(size=1):\n    case .Small(k):\n        k += 1\nstdout.print(k)\n",
+        "mut k = 0\nfor k in range(3):\n    k += 1\nstdout.print(k)\n",
+    ] {
+        assert_eq!(crate::in_main_after(types, body), [said], "{body}");
+    }
+    assert_eq!(crate::in_main_after(types, "k = 0\nk += 1\nstdout.print(k)\n"), ["`k` isn't mut @ k"]);
+}
+
+#[test]
+fn a_generator_kept_for_later_cant_change_whats_around_it() {
+    let empty: [&str; 0] = [];
+    let bump = "def bump(mut k: int) -> int:\n    k += 1\n    k\n";
+    let told = |name: &str, at: &str| {
+        vec![format!("a generator kept for later can't change `{name}`, which is defined outside it @ {at}")]
+    };
+    let kept = "mut k = 1\ng = (bump(mut k) for x in range(3))\nstdout.print(list(g), k)\n";
+    assert_eq!(crate::in_main_after(bump, kept), told("k", "k"));
+    let method = "mut xs = [1, 2]\ng = (xs.pop() for x in range(2))\nstdout.print(list(g), xs)\n";
+    assert_eq!(crate::in_main_after(bump, method), told("xs", "xs"));
+    let looped =
+        "mut k = 1\nfor one in (bump(mut k) for x in range(3)):\n    stdout.print(one)\nstdout.print(k)\n";
+    assert_eq!(crate::in_main_after(bump, looped), told("k", "k"));
+    for used in ["sum", "min", "max", "sorted", "list", "set"] {
+        let body = format!("mut k = 1\nstdout.print({used}(bump(mut k) for x in range(3)), k)\n");
+        assert_eq!(crate::in_main_after(bump, &body), empty, "{body}");
+    }
+    let asked = "mut k = 1\nstdout.print(any(bump(mut k) > 9 for x in range(3)), k)\n";
+    assert_eq!(crate::in_main_after(bump, asked), empty);
+    let read = "k = 1\ng = (k + x for x in range(3))\nstdout.print(list(g))\n";
+    assert_eq!(crate::in_main_after(bump, read), empty);
+}

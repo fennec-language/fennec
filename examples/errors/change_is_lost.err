@@ -1,4 +1,4 @@
-error: this change to `unit` is lost: `unit` is a copy of what `find` gave back, so nothing else changes
+error: this changes your own copy of what `find` gave back, and nothing reads it
   --> examples/errors/change_is_lost.fen:11:5
    |
 11 |     unit.health = 1

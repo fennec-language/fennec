@@ -36,6 +36,9 @@ pub struct Options {
     /// Whether the body of each `parallel` loop, comprehension and sum is lifted into a function
     /// of its own, for a backend that runs them on threads (see `lower::parallel`).
     pub outline_parallel: bool,
+    /// Whether `main`, if it can fail, ends the program itself rather than give its failure back
+    /// to what started it, for a backend with nothing there to take one.
+    pub stop_on_failed_main: bool,
 }
 
 /// Lowers a module's functions and methods, and the standard library's that they reach. The
@@ -132,6 +135,7 @@ fn lower_from(
             program.not_lowered.push(NotLowered { function: next.name, why });
         }
     }
+    failure::stop_on_failed_main(&mut program, &functions, options);
     program.external = calls::external(&program);
     let (mut defs, mut enums) = (defs.clone(), enums.iter().map(|def| (*def).clone()).collect::<Vec<_>>());
     structs::add_copies(&context, &mut defs, &mut enums);

@@ -166,6 +166,9 @@ fn mark_owner(block: &mut [u64], owner_bits: u64) {
 /// The shape of a capability's block (see `super::capabilities`).
 pub const CAPABILITY_SHAPE: u64 = SHAPE_BITS - 2;
 
+/// The shape of a block of `bytes` (see `super::bytes`).
+pub const BYTES_SHAPE: u64 = SHAPE_BITS - 3;
+
 /// Words a cell takes: owner count, shape and the number of its value.
 const CELL_WORDS: usize = 3;
 
@@ -182,6 +185,9 @@ pub const IMMORTAL: u64 = 1 << 48;
 /// lot at once. More just keeps memory from the rest of the program, with blocks scattered
 /// through allocator and table pages that then can't be given back.
 const SPARE_TOTAL_WORDS: usize = 1 << 20;
+
+/// How many words of freed blocks of any one size a heap keeps: 1 MB.
+const SPARE_SIZE_WORDS: usize = 1 << 17;
 
 /// The biggest block, in words, kept for reuse.
 const SPARE_WORDS: usize = 256;
@@ -271,6 +277,8 @@ impl Heap {
         }
         let words = block.len();
         match self.spare.get_mut(words) {
+            // Each size gets a share, so one nothing reuses, like most strings', can't take all of it.
+            Some(spare) if (spare.len() + 1) * words > SPARE_SIZE_WORDS => {}
             Some(spare) => {
                 spare.push(block);
                 self.spare_words += words;
@@ -693,6 +701,9 @@ fn children_into(state: &State, block: &[u64], found: &mut Vec<u64>) {
         found.extend(block.get(3).copied().filter(|list| *list != 0));
         return;
     }
+    if shape == BYTES_SHAPE {
+        return;
+    }
     if shape >= state.tables.str_shape {
         if is_text(state, block) {
             return;
@@ -876,6 +887,9 @@ pub(super) fn read_block(state: &State, address: u64) -> Value {
     if shape_word(&block) == Some(CAPABILITY_SHAPE) {
         return super::capabilities::read(state, &block);
     }
+    if shape_word(&block) == Some(BYTES_SHAPE) {
+        return Value::Bytes(Rc::from(super::bytes::data_of(&block)));
+    }
     if is_text(state, &block) {
         let text: Rc<str> = Rc::from(block_text(&block));
         state.heap.texts.borrow_mut().insert(at, Rc::clone(&text));
@@ -1007,6 +1021,9 @@ pub(super) fn shape_named(state: &State, name: &str) -> Option<usize> {
 }
 
 pub(super) fn write_block(state: &mut State, shape: usize, value: &Value) -> Option<i64> {
+    if u64::try_from(shape).ok()? == BYTES_SHAPE {
+        return super::bytes::write(state, value);
+    }
     if u64::try_from(shape).ok()? > state.tables.str_shape {
         return super::dicts::write(state, u64::try_from(shape).ok()?, value);
     }
@@ -1085,8 +1102,16 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
         return true;
     }
     let (Some(left), Some(right)) = (state.heap.block(a), state.heap.block(b)) else { return false };
-    if shape_word(left) != shape_word(right) {
+    let shape = shape_word(left);
+    if shape != shape_word(right) {
         return false;
+    }
+    // Two `shared` values are the same only if they're one value, whatever they hold now.
+    if shape.is_some_and(|shape| state.tables.cells.contains(&shape)) {
+        return false;
+    }
+    if shape_word(left) == Some(BYTES_SHAPE) {
+        return left.get(2..) == right.get(2..);
     }
     if let (Some(mine), Some(theirs)) = (cell_value(state, left), cell_value(state, right)) {
         return mine == theirs;
@@ -1152,6 +1177,5 @@ pub(super) fn text_address(state: &mut State, text: &str) -> i64 {
     {
         return i64::try_from(*address).unwrap_or(0);
     }
-    let block = text_block(state.tables.str_shape, text, 1);
-    state.heap.insert(block)
+    text_from_bytes(state, text.as_bytes(), text.chars().count())
 }

@@ -26,6 +26,14 @@ pub(crate) fn check_rules(module: &mut Module) -> Result<fennec_check::Signature
     if copies.is_empty() { Ok(signatures) } else { Err(copies) }
 }
 
+/// Like `check_rules`, checking all of a module, as a build does, which works constants out when
+/// the program starts.
+pub(crate) fn check_all_rules(module: &mut Module) -> Result<fennec_check::Signatures, Vec<Diagnostic>> {
+    let signatures = fennec_check::check_and_resolve(module)?;
+    let copies = implicit_copies(module, &signatures);
+    if copies.is_empty() { Ok(signatures) } else { Err(copies) }
+}
+
 /// Like `check_to_run`, checking all of a module, as tests do.
 pub(crate) fn check_and_resolve(module: &mut Module) -> Result<fennec_check::Signatures, Vec<Diagnostic>> {
     let signatures = baked(module, fennec_check::check_and_resolve)?;

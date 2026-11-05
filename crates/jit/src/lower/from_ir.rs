@@ -83,6 +83,7 @@ fn takes(inst: &InstKind, function: &Function, shared: &Shared, open: &mut Vec<S
                         "float" | "int" | "sqrt" | "floor" | "ceil" | "sin" | "cos" | "abs",
                         [Some(Type::Int | Type::Float)]
                     )
+                    | ("float.is_nan", [Some(Type::Float)])
             )
         }
         InstKind::Call { function: callee, args, .. } => {
@@ -295,6 +296,7 @@ impl Lowerer<'_, '_> {
                 let name = number_builtin_name(name);
                 let result = match (name, values.first()) {
                     ("abs", Some(only)) => self.absolute_number(*only, span),
+                    ("float.is_nan", Some(only)) => self.is_nan(*only),
                     _ => self.number_builtin(name, &values, span)?,
                 };
                 let (value, _) =

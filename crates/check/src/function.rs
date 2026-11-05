@@ -90,6 +90,15 @@ pub(crate) struct FnCx<'c> {
     /// The type expected of the value of the block being checked: the return type for a
     /// function's body, or what's expected of a `match` for its cases.
     pub(crate) tail: Option<Type>,
+    /// Where each name that isn't `mut` was read from, as it's written: `units[at]` for
+    /// `target = units[at]`.
+    pub(crate) read_from: std::collections::HashMap<String, String>,
+    /// The functions in sight, by name, that capture a `shared` handle.
+    pub(crate) handle_closures: std::collections::HashSet<String>,
+    /// The generators right inside what uses all of their items, by span.
+    pub(crate) worked_out_here: std::collections::HashSet<(u32, u32)>,
+    /// How many generators kept for later this is inside.
+    pub(crate) kept_generators: usize,
     /// How many arrow functions and comprehensions this is inside, which `else` can't leave.
     pub(crate) value_functions: usize,
     /// How many arrow functions the code being checked is inside.
@@ -128,6 +137,10 @@ impl<'c> FnCx<'c> {
             first_var,
             expecting: None,
             tail: None,
+            read_from: std::collections::HashMap::new(),
+            handle_closures: std::collections::HashSet::new(),
+            worked_out_here: std::collections::HashSet::new(),
+            kept_generators: 0,
             value_functions: 0,
             arrows: 0,
             else_chain: std::collections::HashSet::new(),
@@ -588,6 +601,23 @@ impl<'c> FnCx<'c> {
             crossed |= scope.barrier;
         }
         let Some(binding) = found else { return not_mut(name, span) };
+        if crossed && self.kept_generators > 0 {
+            let message =
+                format!("a generator kept for later can't change `{name}`, which is defined outside it");
+            return Diagnostic::new(message, span).with_help(
+                "it runs after this line, when it's asked for an item: write it right inside `sum(...)` or `list(...)`, or write a loop",
+            );
+        }
+        // A new name, from a `for` or a `case`, over one that can change.
+        let same_name = self.scopes.iter().rev().flat_map(|scope| scope.bindings.iter().rev());
+        let hides = same_name.filter(|binding| binding.name == name).skip(1).any(|binding| binding.is_mut);
+        if hides && !crossed && !binding.is_mut {
+            return Diagnostic::new(
+                format!("this `{name}` is a new name, which hides the `mut {name}` around it"),
+                span,
+            )
+            .with_help(format!("give this one another name, to change the `{name}` around it"));
+        }
         if crossed || binding.origin == Origin::Captured {
             let function = if crossed { "an arrow function" } else { "a nested function" };
             return Diagnostic::new(format!("{function} can't change `{name}`, which is defined outside it"), span)
@@ -625,6 +655,22 @@ impl<'c> FnCx<'c> {
             crossed |= scope.barrier;
         }
         None
+    }
+
+    /// The innermost name in sight that holds this type.
+    pub(crate) fn name_holding(&self, ty: &Type) -> Option<String> {
+        let mut bindings = self.scopes.iter().rev().flat_map(|scope| scope.bindings.iter().rev());
+        bindings.find(|binding| binding.ty == *ty).map(|binding| binding.name.clone())
+    }
+
+    /// The name in sight, or function of the program's own, spelled most like `name`.
+    pub(crate) fn similar_name(&self, name: &str) -> Option<String> {
+        let names =
+            self.scopes.iter().flat_map(|scope| scope.bindings.iter().map(|binding| binding.name.as_str()));
+        let functions = self.checker.program.functions.iter();
+        let functions = functions.filter(|(_, entry)| !entry.prelude && entry.owner.is_none());
+        crate::messages::spelled_most_like(name, names.chain(functions.map(|(key, _)| key.as_str())))
+            .map(str::to_owned)
     }
 
     /// Where the name in sight came from.

@@ -107,12 +107,13 @@ impl Runtime {
 }
 
 pub(crate) fn build(path: &str, output: Option<&str>) -> ExitCode {
-    if cfg!(windows) {
-        eprintln!("error: `fennec build` can't link executables on Windows yet; use `fennec run`");
+    let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
+    if !crate::run::check_to_build(&mut program) {
         return ExitCode::FAILURE;
     }
-    let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
-    if !crate::run::check(&mut program) {
+    // What's wrong with the program comes first, on every platform.
+    if cfg!(windows) {
+        eprintln!("error: `fennec build` can't link executables on Windows yet; use `fennec run`");
         return ExitCode::FAILURE;
     }
     let started = Instant::now();
@@ -155,7 +156,7 @@ pub(crate) static BASELINE: std::sync::atomic::AtomicBool = std::sync::atomic::A
 /// falling back to anything.
 pub(crate) fn build_llvm(path: &str, output: Option<&str>, release: bool) -> ExitCode {
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
-    if !crate::run::check(&mut program) {
+    if !crate::run::check_to_build(&mut program) {
         return ExitCode::FAILURE;
     }
     let output = output.map_or_else(|| default_output(path, &program), PathBuf::from);
@@ -317,7 +318,11 @@ fn emitted_with(
     let checked =
         fennec_check::check(reached).map_err(|_| "the program didn't check once trimmed".to_owned())?;
     // `parallel` runs on the runtime's threads, its work lifted for each range of positions.
-    let lowered = fennec_ir::lower_with(reached, &checked, fennec_ir::Options { outline_parallel: true });
+    let lowered = fennec_ir::lower_with(
+        reached,
+        &checked,
+        fennec_ir::Options { outline_parallel: true, stop_on_failed_main: true },
+    );
     if !lowered.not_lowered.is_empty() {
         let skipped: Vec<String> = lowered
             .not_lowered

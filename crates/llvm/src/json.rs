@@ -26,14 +26,13 @@ impl Emit<'_, '_, '_> {
         let mark = self.temp();
         self.line(&format!("{mark} = call i64 @fennec_mark()"));
         match name {
-            "json.dumps" => {
+            "json.dumps" | "toml.dumps" => {
+                let function = if name == "json.dumps" { "fennec_json_dumps" } else { "fennec_toml_dumps" };
                 let (value, kind) = self.operand(first)?;
                 let (handle, crossed) = self.value_handle(&value, &kind)?;
-                self.declare("declare ptr @fennec_json_dumps(i64, i64, i64) nounwind");
+                self.declare(&format!("declare ptr @{function}(i64, i64, i64) nounwind"));
                 let text = self.temp();
-                self.line(&format!(
-                    "{text} = call ptr @fennec_json_dumps(i64 {handle}, i64 {from}, i64 {to})"
-                ));
+                self.line(&format!("{text} = call ptr @{function}(i64 {handle}, i64 {from}, i64 {to})"));
                 self.leave_if_failed();
                 if let Some(block) = crossed {
                     self.release(&block);
@@ -42,18 +41,21 @@ impl Emit<'_, '_, '_> {
                 let text = self.text_value(&text);
                 self.assign(dest, &text)
             }
-            "json.loads" => {
+            "json.loads" | "toml.loads" => {
+                let function = if name == "json.loads" { "fennec_json_loads" } else { "fennec_toml_loads" };
                 let (text, _) = self.operand(first)?;
                 // The type to read is the one the program wrote, here as a string.
                 let local = self.function.locals.get(dest.0).ok_or("no such local")?;
                 let Type::Result(wanted, _) = &local.ty else {
-                    return Err("`json.loads` giving something other than a result".to_owned());
+                    return Err(format!("`{name}` giving something other than a result"));
                 };
                 let written = self.literal(&wanted.to_string());
-                self.declare("declare i64 @fennec_json_loads(ptr, ptr, i64, i64) nounwind");
+                self.declare(&format!("declare i64 @{function}(ptr, ptr, i64, i64) nounwind"));
                 let handle = self.temp();
                 self.on_blocks([&text], |emit, [block]| {
-                    emit.line(&format!("{handle} = call i64 @fennec_json_loads(ptr {block}, ptr {written}, i64 {from}, i64 {to})"));
+                    emit.line(&format!(
+                        "{handle} = call i64 @{function}(ptr {block}, ptr {written}, i64 {from}, i64 {to})"
+                    ));
                 });
                 self.leave_if_failed();
                 let block = self.result_from(dest, &handle, span)?;
@@ -136,7 +138,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {block})"));
                 return Ok((handle, Some(block)));
             }
-            Kind::Str | Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => {
+            Kind::Str | Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => {
                 self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
                 self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {value})"));
             }
@@ -224,6 +226,13 @@ impl Emit<'_, '_, '_> {
                     "{value} = call ptr @fennec_list_from_value(i64 {handle}, i64 {element}, i64 {from}, i64 {to})"
                 ));
             }
+            Kind::Bytes => {
+                let shape = fennec_interp::embed::heap::BYTES_SHAPE;
+                self.declare("declare ptr @fennec_box_from_value(i64, i64, i64, i64) nounwind");
+                self.line(&format!(
+                    "{value} = call ptr @fennec_box_from_value(i64 {handle}, i64 {shape}, i64 {from}, i64 {to})"
+                ));
+            }
             Kind::Boxed(id) => {
                 let shape = self.shape_of(*id)?;
                 self.declare("declare ptr @fennec_box_from_value(i64, i64, i64, i64) nounwind");
@@ -243,6 +252,23 @@ impl Emit<'_, '_, '_> {
                 // What it holds outlives the block it came in.
                 self.retain_inline(kind, at);
                 self.release(&value);
+                return Ok(());
+            }
+            // An optional string: all zeros for `None`, otherwise as a string is held.
+            Kind::MaybeText => {
+                self.declare("declare i8 @fennec_is_none(i64) nounwind");
+                let (byte, none) = (self.temp(), self.temp());
+                self.line(&format!("{byte} = call i8 @fennec_is_none(i64 {handle})"));
+                self.line(&format!("{none} = icmp ne i8 {byte}, 0"));
+                let (missing, holds, joined) = (self.label("none"), self.label("holds"), self.label("read"));
+                self.line(&format!("br i1 {none}, label %{missing}, label %{holds}"));
+                self.start_block(&missing);
+                self.store_field(kind, "zeroinitializer", at, "");
+                self.line(&format!("br label %{joined}"));
+                self.start_block(&holds);
+                self.native_at(handle, &Kind::Str, at, span)?;
+                self.line(&format!("br label %{joined}"));
+                self.start_block(&joined);
                 return Ok(());
             }
             other => {

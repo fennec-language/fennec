@@ -4616,7 +4616,7 @@ def main(stdout: Stdout):
     )
 }
 
-/// The same value passed `mut` and not: the one without `mut` keeps what it held.
+/// A value passed `mut`, with a copy or another name for it passed without: that one keeps what it held.
 #[test]
 fn a_value_passed_both_ways_matches_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -4640,9 +4640,13 @@ def bags(bag: Bag, mut other: Bag) -> str:
 
 def main(stdout: Stdout):
     mut twice = [1, 2]
-    stdout.print(both(twice, mut twice), twice)
+    stdout.print(both(copy(twice), mut twice), twice)
     mut bag = Bag(label="short", count=1)
-    stdout.print(bags(bag, mut bag), bag)
+    stdout.print(bags(copy(bag), mut bag), bag)
+    kept = twice
+    stdout.print(both(kept, mut twice), twice, kept)
+    held = bag
+    stdout.print(bags(held, mut bag), bag, held)
 "#,
     )
 }

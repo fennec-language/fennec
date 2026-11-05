@@ -408,7 +408,8 @@ impl Lowering<'_> {
             }),
         };
         if let Some(kind) = kind {
-            self.emit(kind, span);
+            // A `with` can end the program here, and it says so at what it takes.
+            self.emit(kind, value.span);
             entries.push(Leaving::Unlock { handles: locks.iter().map(|(handle, _)| *handle).collect() });
         }
         let locked = self.locked.len();

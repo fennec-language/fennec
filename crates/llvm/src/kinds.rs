@@ -13,7 +13,7 @@ const WORD: u32 = 8;
 /// that where one fits in memory, and what it holds on to, works as for any other type.
 pub(crate) fn canon(ty: &Type) -> Type {
     match ty {
-        Type::Tuple(_) | Type::Generic(..) => Type::Named(ty.to_string()),
+        Type::Tuple(_) | Type::Generic(..) | Type::Errors(_) => Type::Named(ty.to_string()),
         Type::Optional(inner) => Type::Named(format!("Option[{inner}]")),
         Type::Result(value, error) => Type::Named(format!("Result[{value}, {error}]")),
         // Every `Id` looks the same whatever it's of.
@@ -63,6 +63,11 @@ pub(crate) fn define_named(ty: &Type, layouts: Option<&Layouts>, out: &mut BTree
             let cases = vec![("Ok".to_owned(), ok), ("Err".to_owned(), vec![field("error", error)])];
             out.insert(format!("Result[{value}, {error}]"), Written::Enum(cases));
         }
+        // One of several errors: a case for each, named for its type.
+        Type::Errors(names) => {
+            let held = |name: &String| (name.clone(), vec![field("error", &Type::Named(name.clone()))]);
+            out.insert(ty.to_string(), Written::Enum(names.iter().map(held).collect()));
+        }
         Type::Id(_) => {
             out.insert(
                 "Id".to_owned(),
@@ -109,6 +114,8 @@ pub(crate) enum Kind {
     /// The address of a string's block, which something owns; or its 24-byte header, when the
     /// layouts hold strings as headers.
     Str,
+    /// The address of a block of `bytes`, which something owns.
+    Bytes,
     /// A string as its block's address where strings are otherwise headers: how a dict holds one.
     TextBlock,
     /// An optional string where strings are headers: a header, all zero for `None`.
@@ -153,6 +160,7 @@ impl Kind {
             Ty::Boxed(id) => Kind::Boxed(id),
             Ty::List(item) => Kind::List(item),
             Ty::Str => Kind::Str,
+            Ty::Bytes => Kind::Bytes,
             Ty::Dict(key, value) => Kind::Dict(key, value),
             Ty::Maybe(Block::Str) if layouts.text_headers() => Kind::MaybeText,
             Ty::Maybe(block) => Kind::Maybe(Box::new(Kind::from_ty(layouts, block.ty())?)),
@@ -169,6 +177,7 @@ impl Kind {
             Kind::Cap
                 | Kind::List(_)
                 | Kind::Str
+                | Kind::Bytes
                 | Kind::TextBlock
                 | Kind::MaybeText
                 | Kind::Boxed(_)
@@ -203,6 +212,7 @@ impl Kind {
             Kind::Cap
             | Kind::List(_)
             | Kind::Str
+            | Kind::Bytes
             | Kind::TextBlock
             | Kind::Boxed(_)
             | Kind::Dict(..)

@@ -138,7 +138,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {block})"));
                 return Ok((handle, Some(block)));
             }
-            Kind::Str | Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => {
+            Kind::Str | Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => {
                 self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
                 self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {value})"));
             }
@@ -226,6 +226,13 @@ impl Emit<'_, '_, '_> {
                     "{value} = call ptr @fennec_list_from_value(i64 {handle}, i64 {element}, i64 {from}, i64 {to})"
                 ));
             }
+            Kind::Bytes => {
+                let shape = fennec_interp::embed::heap::BYTES_SHAPE;
+                self.declare("declare ptr @fennec_box_from_value(i64, i64, i64, i64) nounwind");
+                self.line(&format!(
+                    "{value} = call ptr @fennec_box_from_value(i64 {handle}, i64 {shape}, i64 {from}, i64 {to})"
+                ));
+            }
             Kind::Boxed(id) => {
                 let shape = self.shape_of(*id)?;
                 self.declare("declare ptr @fennec_box_from_value(i64, i64, i64, i64) nounwind");
@@ -245,6 +252,23 @@ impl Emit<'_, '_, '_> {
                 // What it holds outlives the block it came in.
                 self.retain_inline(kind, at);
                 self.release(&value);
+                return Ok(());
+            }
+            // An optional string: all zeros for `None`, otherwise as a string is held.
+            Kind::MaybeText => {
+                self.declare("declare i8 @fennec_is_none(i64) nounwind");
+                let (byte, none) = (self.temp(), self.temp());
+                self.line(&format!("{byte} = call i8 @fennec_is_none(i64 {handle})"));
+                self.line(&format!("{none} = icmp ne i8 {byte}, 0"));
+                let (missing, holds, joined) = (self.label("none"), self.label("holds"), self.label("read"));
+                self.line(&format!("br i1 {none}, label %{missing}, label %{holds}"));
+                self.start_block(&missing);
+                self.store_field(kind, "zeroinitializer", at, "");
+                self.line(&format!("br label %{joined}"));
+                self.start_block(&holds);
+                self.native_at(handle, &Kind::Str, at, span)?;
+                self.line(&format!("br label %{joined}"));
+                self.start_block(&joined);
                 return Ok(());
             }
             other => {

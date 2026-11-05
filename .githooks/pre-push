@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# The gate on pushes to `staging`: one at a time on this machine, only a commit that contains the
+# latest `staging`, and only once its tests pass. A push to any other branch goes straight through.
+# Two machines racing is still safe, since GitHub refuses a push that isn't a fast-forward.
+set -u
+LOCK="${FENNEC_GATE_LOCK:-$HOME/.fennec/gate-lock}"
+ZEROS=0000000000000000000000000000000000000000
+
+pushed=""
+while read -r _ local_sha remote_ref _; do
+  if [ "$remote_ref" = refs/heads/staging ]; then
+    pushed=$local_sha
+  fi
+done
+[ -n "$pushed" ] || exit 0
+
+refuse() {
+  echo "pre-push: $*" >&2
+  exit 1
+}
+
+[ "$pushed" != "$ZEROS" ] || refuse "staging can't be deleted"
+
+mkdir -p "$(dirname "$LOCK")" || refuse "couldn't make the lock's folder"
+until mkdir "$LOCK" 2> /dev/null; do
+  holder="$(cat "$LOCK/pid" 2> /dev/null || true)"
+  if [ -n "$holder" ] && ! kill -0 "$holder" 2> /dev/null; then
+    echo "pre-push: taking over a lock left by a dead process" >&2
+    /bin/rm -rf "$LOCK"
+    continue
+  fi
+  echo "pre-push: waiting for the gate that's running (pid ${holder:-unknown})" >&2
+  sleep 10
+done
+echo $$ > "$LOCK/pid"
+trap '/bin/rm -rf "$LOCK"' EXIT
+
+# Checked under the lock, since the one this waited for has probably just moved it.
+git fetch --quiet origin staging || refuse "couldn't fetch staging"
+git merge-base --is-ancestor origin/staging "$pushed" ||
+  refuse "this doesn't contain the latest staging: merge it first, or use fennec-land"
+
+# The gate tests the working tree, so that has to be the commit going out.
+[ "$(git rev-parse HEAD)" = "$pushed" ] || refuse "check out the commit you're pushing, so that it's what gets tested"
+[ -z "$(git status --porcelain)" ] || refuse "commit or put away what's changed, so that the commit is what gets tested"
+
+.github/scripts/gate.sh || refuse "the gate failed, so this wasn't pushed"

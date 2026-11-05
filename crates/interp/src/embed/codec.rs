@@ -392,6 +392,7 @@ impl Image {
         tables.patterns.encode(&mut to);
         tables.elements.encode(&mut to);
         tables.shapes.encode(&mut to);
+        tables.cells.encode(&mut to);
         tables.str_shape.encode(&mut to);
         tables.text_headers.encode(&mut to);
         self.literals.encode(&mut to);
@@ -413,6 +414,7 @@ impl Image {
             patterns: Decode::decode(from)?,
             elements: Decode::decode(from)?,
             shapes: Decode::decode(from)?,
+            cells: Decode::decode(from)?,
             str_shape: Decode::decode(from)?,
             text_headers: Decode::decode(from)?,
             ..Tables::default()

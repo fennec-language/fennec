@@ -20,6 +20,7 @@ pub(crate) fn fix(path: &str) -> ExitCode {
             lints.extend(fennec_lint::needless_conversions(&program.module, &program.sources));
             lints.extend(fennec_lint::double_lookups(&program.module, &program.sources));
             lints.extend(fennec_lint::self_compares(&program.module, &program.sources));
+            lints.extend(fennec_lint::short_cases(&program.module, &program.sources));
             let diagnostics: Vec<_> = lints.into_iter().map(|lint| lint.diagnostic).collect();
             let changed = program.sources.fixed(&diagnostics);
             if changed.is_empty() {

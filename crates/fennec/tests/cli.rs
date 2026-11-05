@@ -1286,6 +1286,153 @@ fn fix_writes_in_return_types_and_removes_arrows_to_none() {
     assert!(again.status.success() && again.stdout.is_empty());
 }
 
+/// Enums with a case in common, which only the expected type can tell apart, and an error.
+const CASES_BEFORE: &str = "enum Color:
+    Red
+    Green(shade: int)
+
+    def warm() -> Color:
+        Color.Red
+
+enum Light:
+    Red
+    Off
+
+error DialError:
+    NotFound(host: str)
+    Closed
+
+struct Car:
+    color: Color
+
+def pick(n: int) -> Color:
+    if n == 0:
+        return Color.Red
+    Color.Green(n)
+
+def maybe() -> Color?:
+    Color.Red
+
+def shown(color: Color) -> str:
+    match color:
+        case Red: \"red\"
+        case Green(shade): f\"green {shade}\"
+
+def dial(n: int) -> int fails DialError:
+    if n == 0:
+        fail DialError.Closed
+    fail DialError.NotFound(\"host\")
+
+def unsaid() -> int:
+    fail DialError.Closed
+
+def main(stdout: Stdout):
+    car = Car(color=Color.Red)
+    mut other: Color = Color.Green(1)
+    stdout.print(shown(other))
+    other = Color.Red
+    kept = Color.Red
+    many = [Color.Red]
+    light = Light.Red
+    warm: Color = Color.warm()
+    stdout.print(shown(pick(0)), shown(car.color), other == Color.Red, shown(kept), many.len(), light == Light.Off)
+    stdout.print(shown(warm), maybe() == Color.Red)
+    match dial(0):
+        case Err(Closed): stdout.print(\"closed\")
+        case Err(_): stdout.print(\"other\")
+        case Ok(_): stdout.print(\"open\")
+    match unsaid():
+        case Err(_): stdout.print(\"failed\")
+        case Ok(_): stdout.print(\"fine\")
+";
+
+/// What `fennec fix` makes of `CASES_BEFORE`: a dot wherever the type is known, and nothing where
+/// it isn't, or where a dot would mean something else.
+const CASES_AFTER: &str = "enum Color:
+    Red
+    Green(shade: int)
+
+    def warm() -> Color:
+        .Red
+
+enum Light:
+    Red
+    Off
+
+error DialError:
+    NotFound(host: str)
+    Closed
+
+struct Car:
+    color: Color
+
+def pick(n: int) -> Color:
+    if n == 0:
+        return .Red
+    .Green(n)
+
+def maybe() -> Color?:
+    .Red
+
+def shown(color: Color) -> str:
+    match color:
+        case .Red: \"red\"
+        case .Green(shade): f\"green {shade}\"
+
+def dial(n: int) -> int fails DialError:
+    if n == 0:
+        fail .Closed
+    fail .NotFound(\"host\")
+
+def unsaid() -> int:
+    fail DialError.Closed
+
+def main(stdout: Stdout):
+    car = Car(color=.Red)
+    mut other: Color = .Green(1)
+    stdout.print(shown(other))
+    other = .Red
+    kept = Color.Red
+    many = [Color.Red]
+    light = Light.Red
+    warm: Color = Color.warm()
+    stdout.print(shown(pick(0)), shown(car.color), other == .Red, shown(kept), many.len(), light == .Off)
+    stdout.print(shown(warm), maybe() == .Red)
+    match dial(0):
+        case Err(Closed): stdout.print(\"closed\")
+        case Err(_): stdout.print(\"other\")
+        case Ok(_): stdout.print(\"open\")
+    match unsaid():
+        case Err(_): stdout.print(\"failed\")
+        case Ok(_): stdout.print(\"fine\")
+";
+
+/// `fennec fix` writes `.Case` where the type is known, and the program does what it did, on every
+/// engine.
+#[test]
+fn fix_writes_leading_dots_where_the_type_is_known() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-short-cases", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("cases.fen");
+    let path = program.to_string_lossy().into_owned();
+    std::fs::write(&program, CASES_BEFORE).unwrap();
+    let before = fennec(&["run", "--interp", &path], "").unwrap();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    let again = fennec(&["fix", &path], "").unwrap();
+    let after: Vec<_> = [["run", "--interp"], ["run", "--jit"]]
+        .map(|how| fennec(&[how[0], how[1], &path], "").unwrap())
+        .into();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(before.status.success(), "{}", text(&before.stderr));
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(written, CASES_AFTER);
+    assert!(again.status.success() && again.stdout.is_empty(), "{}", text(&again.stdout));
+    for run in after {
+        assert_eq!(text(&run.stdout), text(&before.stdout), "{}", text(&run.stderr));
+    }
+}
+
 #[test]
 fn fix_reports_what_it_cant_fix() {
     let output =

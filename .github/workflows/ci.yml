@@ -445,7 +445,7 @@ jobs:
           cp target/lean-threads/release/libfennec_runtime.a target/release/libfennec_runtime_lean_threads.a
       - name: Build and run every example and kernel
         run: |
-          still_needs=" import_as json_annotations json_collections json_enums json_ids json_names json_rules std_log "
+          still_needs=" json_collections json_enums json_ids std_log "
           built=0
           failed=0
           for program in examples/*.fen bench/kernels/*.fen; do

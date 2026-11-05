@@ -289,7 +289,7 @@ pub(in crate::embed) fn measure_part(part: u8, address: usize) {
             state.heap.recycle(std::hint::black_box(block));
         }
         2 => {
-            if let Some(block) = state.heap.spare.get_mut(4).and_then(Vec::pop) {
+            if let Some(block) = state.heap.spare.get_mut(4).and_then(Option::as_mut).and_then(Vec::pop) {
                 state.heap.spare_words -= block.len();
                 state.heap.recycle(std::hint::black_box(block));
             } else {
@@ -373,8 +373,13 @@ mod tests {
         for words in [4, 5, 16, 100] {
             free_many(400_000, words);
             with(|state| {
-                let kept: usize =
-                    state.heap.spare.iter().enumerate().map(|(size, blocks)| size * blocks.len()).sum();
+                let kept: usize = state
+                    .heap
+                    .spare
+                    .iter()
+                    .enumerate()
+                    .map(|(size, blocks)| size * blocks.as_ref().map_or(0, Vec::len))
+                    .sum();
                 assert_eq!(kept, state.heap.spare_words);
                 assert!(kept <= super::super::SPARE_TOTAL_WORDS, "{kept} words kept");
                 assert!(kept > 0, "nothing's kept for reuse");

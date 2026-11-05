@@ -66,7 +66,9 @@ pub(super) struct Cursor {
 #[derive(Default)]
 pub(crate) struct Heap {
     pub(super) blocks: super::table::Table,
-    spare: Vec<Vec<Box<[u64]>>>,
+    /// By size, only for sizes `fresh` has been asked for: keeping what's only ever made another way,
+    /// as most strings are, would fill the limit and be no use to anything.
+    spare: Vec<Option<Vec<Box<[u64]>>>>,
     /// How many words `spare`'s blocks hold.
     spare_words: usize,
     /// How many of the blocks live for the whole run.
@@ -249,7 +251,8 @@ impl Heap {
 
     /// A zeroed block of `words` words, reusing a freed one when there is one.
     pub(super) fn fresh(&mut self, words: usize) -> Box<[u64]> {
-        match self.spare.get_mut(words).and_then(Vec::pop) {
+        let Some(Some(kept)) = self.spare.get_mut(words) else { return self.fresh_of_new_size(words) };
+        match kept.pop() {
             Some(mut block) => {
                 self.spare_words -= block.len();
                 zero(&mut block);
@@ -259,9 +262,24 @@ impl Heap {
         }
     }
 
-    /// Keeps a freed block for reuse, when it's small: big ones, like a long list's, are
-    /// rare enough to give back.
-    fn recycle(&mut self, block: Box<[u64]>) {
+    /// `fresh` for a size it hasn't been asked for yet, which is now worth keeping.
+    #[cold]
+    #[inline(never)]
+    fn fresh_of_new_size(&mut self, words: usize) -> Box<[u64]> {
+        if words <= SPARE_WORDS {
+            if self.spare.len() <= words {
+                self.spare.resize_with(words + 1, || None);
+            }
+            if let Some(kept) = self.spare.get_mut(words) {
+                *kept = Some(Vec::new());
+            }
+        }
+        vec![0; words].into_boxed_slice()
+    }
+
+    /// Keeps a freed block for reuse, when it's a size `fresh` is asked for: anything else, like a
+    /// long list's, is rare enough to give back.
+    pub(super) fn recycle(&mut self, block: Box<[u64]>) {
         // Under AddressSanitizer every freed block is given back, for it to watch.
         if cfg!(feature = "sanitize") {
             return;
@@ -270,27 +288,7 @@ impl Heap {
             return;
         }
         let words = block.len();
-        match self.spare.get_mut(words) {
-            Some(spare) => {
-                spare.push(block);
-                self.spare_words += words;
-            }
-            None => self.recycle_first(block),
-        }
-    }
-
-    /// `recycle`, for the first block of its size.
-    #[cold]
-    #[inline(never)]
-    fn recycle_first(&mut self, block: Box<[u64]>) {
-        let words = block.len();
-        if words > SPARE_WORDS {
-            return;
-        }
-        if self.spare.len() <= words {
-            self.spare.resize_with(words + 1, Vec::new);
-        }
-        if let Some(spare) = self.spare.get_mut(words) {
+        if let Some(Some(spare)) = self.spare.get_mut(words) {
             spare.push(block);
             self.spare_words += words;
         }

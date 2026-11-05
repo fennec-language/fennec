@@ -62,6 +62,7 @@ const USAGE: &str = "usage:
 pub(crate) const STACK_BYTES: usize = 512 * 1024 * 1024;
 
 fn main() -> ExitCode {
+    fennec_interp::use_tls();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     // `--cpu baseline` builds for the first processors of the architecture, wherever it's put.
     if let Some(at) = args.iter().position(|arg| arg == "--cpu") {

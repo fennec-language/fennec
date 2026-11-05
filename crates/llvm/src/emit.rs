@@ -1702,6 +1702,10 @@ impl Emit<'_, '_, '_> {
             {
                 self.capability_call(dest, other, args, span)
             }
+            "Response.text" => match args {
+                [response] => self.response_text(dest.ok_or("no result")?, response),
+                _ => Err("`text` takes nothing".to_owned()),
+            },
             // A test's network is a fake, which only the interpreter holds.
             other if crate::analysis::is_socket_method(other) && !self.module.shared.traced => {
                 self.socket_call(dest, other, args, span)

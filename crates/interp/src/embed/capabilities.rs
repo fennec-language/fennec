@@ -287,8 +287,7 @@ fn native_method(
         (Capability::Net, _, _) => {
             // What's been printed comes out first, as it does before anything else that waits.
             super::write_kept_output();
-            let (method, args, timeout) = crate::stdlib::net::timed(method, args, at)?;
-            crate::stdlib::net::real_net(method, args, timeout, at)
+            crate::stdlib::net::native_net(method, args, at)
         }
         (Capability::Entropy, "bytes", [Value::Int(count)]) => {
             let Ok(count) = usize::try_from(*count) else {
@@ -306,6 +305,13 @@ fn native_method(
         }
         _ => Err(crate::methods::no_method(&Value::Capability(capability), method, at)),
     }
+}
+
+/// `fennec_use_tls()`: compiled code that makes a request calls this, which is all that brings TLS
+/// into a program.
+#[cfg(not(target_arch = "wasm32"))]
+pub extern "C" fn use_tls() {
+    crate::stdlib::http::use_tls();
 }
 
 /// `clock.now()`, as the nanoseconds of an `Instant`.

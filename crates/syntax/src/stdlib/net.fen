@@ -43,6 +43,18 @@ error NetError:
             case Status(code):
                 f"the response's status was {code}"
 
+## What a server answered. A 404 is an answer like any other, so `ok()` says which it was. Its
+## `text()`, written in Rust, gives the body as text, with anything that isn't text replaced.
+struct Response:
+    status: int
+    ## By their names in lower case.
+    headers = dict[str, str]()
+    body = bytes([])
+
+    ## Whether the status is one of the 200s.
+    def ok(self) -> bool:
+        self.status >= 200 and self.status < 300
+
 ## One end of a TCP connection. Its methods, written in Rust: `read(n)` gives up to `n` bytes,
 ## or empty bytes once the other side is done; `read_line()` gives the next line without its
 ## ending, or `None` at the end; `write(data)` sends `bytes` or a `str`; and `close()`. Reads

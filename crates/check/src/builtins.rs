@@ -282,6 +282,10 @@ impl FnCx<'_> {
             let help = "only a test's own body can read what it printed, from the `Stdout` it received";
             return self.unusable(no_method(ty, name, span).with_help(help), args);
         }
+        if matches!(name, "script" | "requests") && *ty == Type::named("Net") && !self.in_a_test() {
+            let help = "only a test's own body can script or read the fake `Net` it received";
+            return self.unusable(no_method(ty, name, span).with_help(help), args);
+        }
         // Only a test's fake `Process` is scripted, and says what ran.
         if matches!(name, "script" | "ran") && *ty == Type::named("Process") && !self.in_a_test() {
             let help = "only a test's own body can script or read the fake `Process` it received";
@@ -297,6 +301,9 @@ impl FnCx<'_> {
             _ if name == "sort" => &["key"],
             Some(owner) if waits_on_network(owner, name) => &["timeout"],
             Some("Net") if name == "udp" => &["port"],
+            Some("Net") if matches!(name, "get" | "post" | "request") => {
+                &["body", "headers", "params", "timeout"]
+            }
             _ => &[],
         };
         let plain = self.builtin_args(name, args, named, &method.receives, span);
@@ -371,6 +378,20 @@ impl FnCx<'_> {
                 Some("timeout") if named.contains(&"timeout") => {
                     if !self.checker.fits(&Type::named("Duration"), &ty) {
                         self.error(mismatch("`timeout`", &Type::named("Duration"), &ty, arg.value.span));
+                    }
+                }
+                Some("body") if named.contains(&"body") => {
+                    if !matches!(self.checker.settled(&ty), Type::Str | Type::Bytes) {
+                        self.error(
+                            mismatch("what's sent", &Type::Bytes, &ty, arg.value.span)
+                                .with_help("a request sends `bytes`, or a `str` as its UTF-8 bytes"),
+                        );
+                    }
+                }
+                Some(option @ ("headers" | "params")) if named.contains(&option) => {
+                    let wanted = Type::Dict(Box::new(Type::Str), Box::new(Type::Str));
+                    if !self.checker.fits(&wanted, &ty) {
+                        self.error(mismatch(&format!("`{option}`"), &wanted, &ty, arg.value.span));
                     }
                 }
                 Some("port") if named.contains(&"port") => {

@@ -63,18 +63,26 @@ const USAGE: &str = "usage:
 /// The interpreter recurses for each nested call, so it gets a generous stack.
 pub(crate) const STACK_BYTES: usize = 512 * 1024 * 1024;
 
-fn main() -> ExitCode {
-    fennec_interp::use_tls();
+/// The command's arguments, with `--cpu baseline` taken out wherever it's put: it builds for the
+/// first processors of the architecture. Nothing when `--cpu` is given something else.
+fn arguments() -> Option<Vec<String>> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    // `--cpu baseline` builds for the first processors of the architecture, wherever it's put.
     if let Some(at) = args.iter().position(|arg| arg == "--cpu") {
         if args.get(at + 1).map(String::as_str) != Some("baseline") {
             eprintln!("error: `--cpu` takes `baseline`, for older machines");
-            return ExitCode::FAILURE;
+            return None;
         }
         args.drain(at..at + 2);
         aot::BASELINE.store(true, std::sync::atomic::Ordering::Relaxed);
     }
+    Some(args)
+}
+
+fn main() -> ExitCode {
+    fennec_interp::use_tls();
+    let Some(args) = arguments() else {
+        return ExitCode::FAILURE;
+    };
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["run"] => run(run::Engine::Native, ".", &[]),
         ["run", "--no-test"] => run(run::Engine::Untested, ".", &[]),

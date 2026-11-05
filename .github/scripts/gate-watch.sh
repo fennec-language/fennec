@@ -32,6 +32,9 @@ while kill -0 "$root" 2> /dev/null; do
         while (at != root && at in parent && at > 1) at = parent[at]
         if (at != root || pid == root) continue
         text = command[pid]
+        # A process that has exited shows as `(name)` or `<defunct>` until whatever started it
+        # collects it. It holds no time and no memory any more, and so needs no stopping.
+        if (text ~ /^\(.*\)$/ || text ~ /<defunct>/) continue
         tool = name[pid] ~ /^(cargo|cargo-clippy|clippy-driver|rustc|rustup|rustdoc|cc|c\+\+|clang|ld|ld64|ld64\.lld|lld|rust-lld|ar|as|xcrun|bash|sh|zsh|awk|ps|sleep|tee|nice|git)$/ \
           || text ~ /\/deps\/[^ ]+-[0-9a-f]+( |$)/ || text ~ /build-script-build/ || text ~ / daemon( |$)/
         if (rss[pid] > kb) print pid, "memory", rss[pid], text

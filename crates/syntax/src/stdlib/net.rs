@@ -5,7 +5,7 @@ use super::Module;
 
 pub(crate) const MODULE: Module = Module {
     name: "net",
-    names: &["Net", "Connection", "Server", "UdpSocket", "Packet", "NetError"],
+    names: &["Net", "Connection", "Server", "UdpSocket", "Packet", "Response", "NetError"],
     source: include_str!("net.fen"),
-    gives: &[("connect", "Connection"), ("listen", "Server"), ("udp", "UdpSocket"), ("receive", "Packet")],
+    gives: &[("connect", "Connection"), ("listen", "Server"), ("udp", "UdpSocket"), ("receive", "Packet"), ("get", "Response"), ("post", "Response"), ("request", "Response")],
 };

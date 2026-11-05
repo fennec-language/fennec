@@ -11,6 +11,12 @@ use std::time::Instant;
 /// library uses, and the flag that drops the parts of the runtime a program never calls.
 #[cfg(target_os = "macos")]
 const SYSTEM_LIBRARIES: &[&str] = &["-lSystem", "-lc", "-lm", "-Wl,-dead_strip"];
+/// What TLS checks certificates with, for a program that makes requests. Loading these costs
+/// every run, so nothing else links them.
+#[cfg(target_os = "macos")]
+const TLS_LIBRARIES: &[&str] = &["-framework", "Security", "-framework", "CoreFoundation"];
+#[cfg(all(not(target_os = "macos"), not(windows)))]
+const TLS_LIBRARIES: &[&str] = &[];
 #[cfg(all(not(target_os = "macos"), not(windows)))]
 const SYSTEM_LIBRARIES: &[&str] =
     &["-lgcc_s", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl", "-lc", "-Wl,--gc-sections"];
@@ -21,6 +27,8 @@ const WINDOWS_LIBRARIES: &[&str] = &[
     "kernel32.lib",
     "ntdll.lib",
     "userenv.lib",
+    "crypt32.lib",
+    "ncrypt.lib",
     "ws2_32.lib",
     "dbghelp.lib",
     "advapi32.lib",
@@ -198,11 +206,11 @@ pub(crate) fn tests_executable(
         }
         .to_bytes()
     };
-    let Compiled { objects, runtime, .. } =
+    let Compiled { objects, runtime, tls, .. } =
         compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
             fennec_llvm::tests_entry(lowered, shared, image, bytes, tests)
         })?;
-    link_objects(&objects, output, runtime, false)?;
+    link_objects(&objects, output, runtime, false, tls)?;
     Ok(emitted.shared.ran.iter().cloned().collect())
 }
 
@@ -225,11 +233,11 @@ pub(crate) fn tracing_executable(
         }
         .to_bytes()
     };
-    let Compiled { objects, runtime, .. } =
+    let Compiled { objects, runtime, tls, .. } =
         compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
             fennec_llvm::entry(lowered, shared, image, bytes)
         })?;
-    link_objects(&objects, output, runtime, false)?;
+    link_objects(&objects, output, runtime, false, tls)?;
     Ok((emitted.shared.sites, emitted.lowered))
 }
 
@@ -273,13 +281,13 @@ pub(crate) fn executable(
     release: bool,
 ) -> Result<Built, String> {
     let started = Instant::now();
-    let Compiled { objects, total, fresh, runtime } = llvm_objects(program, release)?;
+    let Compiled { objects, total, fresh, runtime, tls } = llvm_objects(program, release)?;
     let compiled = started.elapsed();
     // A release built with the runtime's bitcode has its Rust inside already.
     let runtime_in = release && runtime_bitcode(runtime).is_some();
     // A missing runtime with threads fails here, so `fennec run` says so rather than quietly
     // taking another way.
-    let linked = link_objects(&objects, output, runtime, runtime_in)?;
+    let linked = link_objects(&objects, output, runtime, runtime_in, tls)?;
     Ok(Built { total, fresh, compiled, linked })
 }
 
@@ -292,6 +300,8 @@ struct Compiled {
     fresh: usize,
     /// The runtime the objects link against.
     runtime: Runtime,
+    /// Whether the program makes requests, so it links what TLS needs.
+    tls: bool,
 }
 
 /// A trimmed program LLVM has text for.
@@ -380,6 +390,7 @@ fn compile_emitted(
 ) -> Result<Compiled, String> {
     let Emitted { lowered, units, shared, layouts } = emitted;
     let runtime = Runtime::for_program(lowered);
+    let tls = fennec_llvm::uses_tls(lowered);
     let tools = fennec_llvm::Tools::find()?;
     let mut image = fennec_llvm::Image::of(layouts, shared)?;
     let bytes = image_of(&mut image);
@@ -400,7 +411,7 @@ fn compile_emitted(
         let _ = std::fs::remove_dir_all(&work);
     }
     let built = built?;
-    Ok(Compiled { objects: built.objects, total: units.len(), fresh: built.compiled, runtime })
+    Ok(Compiled { objects: built.objects, total: units.len(), fresh: built.compiled, runtime, tls })
 }
 
 /// Links object files with the runtime library, giving back how long linking took. When the
@@ -411,6 +422,7 @@ fn link_objects(
     output: &Path,
     runtime: Runtime,
     runtime_in: bool,
+    tls: bool,
 ) -> Result<std::time::Duration, String> {
     let runtime = runtime_library(runtime)?;
     let work = std::env::temp_dir().join(format!("fennec-link-{}", std::process::id()));
@@ -423,7 +435,7 @@ fn link_objects(
     }
     let started = Instant::now();
     let runtime = if runtime_in { c_parts(&runtime, &work)? } else { runtime };
-    let linked = linker(&paths, &runtime, output).output().map_err(|err| {
+    let linked = linker(&paths, &runtime, output, tls).output().map_err(|err| {
         let help = if cfg!(windows) { "; install Visual Studio's Build Tools" } else { "" };
         format!("couldn't run the linker: {err}{help}")
     })?;
@@ -444,12 +456,13 @@ fn link_failure(linked: &std::process::Output) -> String {
 
 /// The system's linker, set to link objects with a runtime library into an executable.
 #[cfg(not(windows))]
-fn linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command {
+fn linker(objects: &[PathBuf], runtime: &Path, output: &Path, tls: bool) -> Command {
     let mut command = Command::new("cc");
     command
         .args(objects)
         .arg(runtime)
         .args(SYSTEM_LIBRARIES)
+        .args(if tls { TLS_LIBRARIES } else { &[] })
         // `FENNEC_SANITIZE` links in its sanitizer's runtime.
         .args(fennec_llvm::sanitize_flag())
         .arg("-o")
@@ -459,7 +472,7 @@ fn linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command {
 
 /// The system's linker, set to link objects with a runtime library into an executable.
 #[cfg(windows)]
-fn linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command {
+fn linker(objects: &[PathBuf], runtime: &Path, output: &Path, _tls: bool) -> Command {
     // Where Visual Studio's linker is, with what it needs to find the system's libraries, or
     // else one a developer prompt has set up.
     let found = cc::windows_registry::find_tool("x86_64-pc-windows-msvc", "link.exe");
@@ -493,7 +506,7 @@ fn link(object: &[u8], output: &Path) -> Result<std::time::Duration, String> {
     let object_path = work.join("program.o");
     std::fs::write(&object_path, object).map_err(|err| format!("couldn't write the object file: {err}"))?;
     let started = Instant::now();
-    let linked = linker(std::slice::from_ref(&object_path), &runtime, output).output().map_err(|err| {
+    let linked = linker(std::slice::from_ref(&object_path), &runtime, output, false).output().map_err(|err| {
         let help = if cfg!(windows) { "; install Visual Studio's Build Tools" } else { "" };
         format!("couldn't run the linker: {err}{help}")
     })?;

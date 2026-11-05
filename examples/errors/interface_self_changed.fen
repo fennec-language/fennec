@@ -1,0 +1,16 @@
+interface Source:
+    def next(self) -> int
+
+struct Count:
+    left = 2
+
+    def next(mut self) -> int:
+        self.left -= 1
+        self.left
+
+def two(source: Source) -> int:
+    source.next() + source.next()
+
+def main(stdout: Stdout):
+    counter = Count()
+    stdout.print(two(counter), counter.left)

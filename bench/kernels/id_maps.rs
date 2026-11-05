@@ -13,13 +13,13 @@ struct Id {
 }
 
 #[derive(Default)]
-struct Table {
+struct IdMap {
     slots: Vec<(u32, Option<Unit>)>,
     free_from: usize,
     live: usize,
 }
 
-impl Table {
+impl IdMap {
     fn insert(&mut self, unit: Unit) -> Id {
         self.live += 1;
         let free = (self.free_from..self.slots.len()).find(|at| self.slots[*at].1.is_none());
@@ -46,7 +46,7 @@ impl Table {
 
 fn main() {
     let started = std::time::Instant::now();
-    let mut units = Table::default();
+    let mut units = IdMap::default();
     let mut ids = Vec::new();
     for i in 0..std::hint::black_box(200_000) {
         ids.push(units.insert(Unit { x: i, hp: 1 }));

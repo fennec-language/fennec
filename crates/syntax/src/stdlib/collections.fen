@@ -1029,3 +1029,48 @@ struct Grid[T]:
         assert self.contains(at)
         x, y = at
         y * self.width + x
+
+## The collections save in their natural shape, so what's written doesn't change when how they're
+## stored does: a `SortedMap` as an object, or as `[key, value]` pairs when its keys aren't text
+## or ints, a `SortedSet` or a `Deque` as an array, and a `Grid` as an array of rows.
+extend SortedMap[K: Ordered & Serializable, V: Serializable]:
+    def serialize(self, mut out: Serializer):
+        out.map(self.items())
+
+extend SortedMap[K: Ordered & Deserializable, V: Deserializable]:
+    def deserialize(mut src: Deserializer) -> SortedMap[K, V] fails ParseError:
+        SortedMap.of(src.map[K, V]()?)
+
+extend SortedSet[T: Ordered & Serializable]:
+    def serialize(self, mut out: Serializer):
+        out.sequence(self.items())
+
+extend SortedSet[T: Ordered & Deserializable]:
+    def deserialize(mut src: Deserializer) -> SortedSet[T] fails ParseError:
+        SortedSet.of(src.sequence[T]()?)
+
+extend Deque[T: Serializable]:
+    def serialize(self, mut out: Serializer):
+        out.sequence(self.items())
+
+extend Deque[T: Deserializable]:
+    def deserialize(mut src: Deserializer) -> Deque[T] fails ParseError:
+        Deque.of(src.sequence[T]()?)
+
+extend Grid[T: Serializable]:
+    def serialize(self, mut out: Serializer):
+        out.sequence(self.rows())
+
+extend Grid[T: Deserializable]:
+    ## Rows that aren't all as long as the first fail, saying which.
+    def deserialize(mut src: Deserializer) -> Grid[T] fails ParseError:
+        rows = src.sequence[list[T]]()?
+        if rows.len() > 0:
+            width = rows[0].len()
+            mut at = 0
+            for row in rows:
+                if row.len() != width:
+                    cells = "cell" if row.len() == 1 else "cells"
+                    fail src.at_item(at, f"has {row.len()} {cells}, but the first row has {width}")
+                at += 1
+        Grid.of(rows)

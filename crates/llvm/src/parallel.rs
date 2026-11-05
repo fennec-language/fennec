@@ -503,7 +503,7 @@ mod tests {
     fn texts(source: &str) -> Result<String, String> {
         let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
-        let options = fennec_ir::Options { outline_parallel: true };
+        let options = fennec_ir::Options { outline_parallel: true, ..fennec_ir::Options::default() };
         let (units, _, _) = crate::emit::emit(&fennec_ir::lower_with(&module, &checked, options))?;
         Ok(units.into_iter().map(|unit| unit.text).collect())
     }
@@ -550,7 +550,7 @@ def main(stdout: Stdout):
     fn text_of(source: &str, name: &str) -> Result<String, String> {
         let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
-        let options = fennec_ir::Options { outline_parallel: true };
+        let options = fennec_ir::Options { outline_parallel: true, ..fennec_ir::Options::default() };
         let (units, _, _) = crate::emit::emit(&fennec_ir::lower_with(&module, &checked, options))?;
         units
             .into_iter()

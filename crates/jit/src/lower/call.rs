@@ -30,11 +30,11 @@ impl Lowerer<'_, '_> {
             return Ok((None, Ty::Unit));
         }
         if let (ExprKind::Attr { object, name, optional: false }, []) = (&callee.kind, args)
-            && matches!(name.as_str(), "len" | "abs")
+            && matches!(name.as_str(), "len" | "abs" | "is_nan")
             && self.std_member(callee).is_none()
             && !matches!(self.static_ty(object), Some(Ty::Struct(_) | Ty::Boxed(_)))
         {
-            return if name == "len" { self.length(expr, object) } else { self.absolute(expr, object) };
+            return self.plain_method(expr, object, name);
         }
         let made = self.sum_or_known(expr, callee, args)?;
         if let Some(made) = made.map_or_else(|| self.copy_call(callee, args), |made| Ok(Some(made)))? {
@@ -606,6 +606,32 @@ impl Lowerer<'_, '_> {
         }
         let receiver = self.handle_of(value, ty, object.span)?;
         self.interpret_method(expr, object, receiver, "abs", &[])
+    }
+
+    /// `x.len()`, `x.abs()` or `x.is_nan()`.
+    fn plain_method(&mut self, expr: &Expr, object: &Expr, name: &str) -> Result<Lowered, Diagnostic> {
+        match name {
+            "len" => self.length(expr, object),
+            "abs" => self.absolute(expr, object),
+            _ => self.nan_test(expr, object),
+        }
+    }
+
+    /// `x.is_nan()`: natively for a float, and in the interpreter for anything else.
+    fn nan_test(&mut self, expr: &Expr, object: &Expr) -> Result<Lowered, Diagnostic> {
+        let (value, ty) = self.expr(object)?;
+        if let Some(found) = self.is_nan((value, ty)) {
+            return Ok((Some(found.0), found.1));
+        }
+        let receiver = self.handle_of(value, ty, object.span)?;
+        self.interpret_method(expr, object, receiver, "is_nan", &[])
+    }
+
+    /// Whether a float isn't a number: it's the one value unordered with itself.
+    pub(super) fn is_nan(&mut self, (value, ty): Lowered) -> Option<(Value, Ty)> {
+        use cranelift_codegen::ir::condcodes::FloatCC;
+        let x = value.filter(|_| ty == Ty::Float)?;
+        Some((self.b.ins().fcmp(FloatCC::Unordered, x, x), Ty::Bool))
     }
 
     /// How far a number is from zero. The lowest int has no opposite, so it fails.

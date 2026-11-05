@@ -2023,6 +2023,59 @@ fn one_shared_value_under_two_names_in_a_with_stays_one_value() -> std::io::Resu
     same_as_the_interpreter_in_both_builds("one_cell_two_names", ONE_CELL_TWO_NAMES)
 }
 
+/// `==` on `shared` values, alone and inside other values: the same only if they're one value, as
+/// comparing what two hold would take a second lock while one is held.
+const SHARED_SAME: &str = "shared Account:
+    total = 0
+
+struct Holder:
+    account: Account
+    n: int
+
+enum Either:
+    One(account: Account)
+    Nothing
+
+def main(stdout: Stdout):
+    a = Account(total=1)
+    b = a
+    c = Account(total=1)
+    stdout.print(a == a, a == b, a == c, a != a, a != c)
+    stdout.print(Holder(a, 1) == Holder(b, 1), Holder(a, 1) == Holder(c, 1))
+    stdout.print([a] == [b], [a] == [c], a in [c], a in [b], [a, c].index(c))
+    stdout.print(Either.One(a) == Either.One(b), Either.One(a) == Either.One(c))
+    maybe: Account? = a
+    stdout.print(maybe == b, maybe == c)
+    with b as mut held:
+        held.total = 2
+    stdout.print(a == b, a == c)
+";
+
+#[test]
+fn shared_values_are_the_same_only_if_they_are_one_value() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let (printed, ..) = interpreted("shared_same_said", SHARED_SAME)?;
+    let wanted = "True True False False True\nTrue False\nTrue False False True 1\nTrue False\nTrue False\nTrue False\n";
+    assert_eq!(printed, wanted);
+    same_as_the_interpreter_in_both_builds("shared_same", SHARED_SAME)?;
+    // A type's own `def ==` still decides, wherever it's written.
+    let own = "\
+shared Account:
+    total = 0
+
+    def ==(self, other: Account) -> bool:
+        self.total > 100
+
+def main(stdout: Stdout):
+    a = Account(total=1)
+    c = Account(total=200)
+    stdout.print(a == a, a == c, c == a, c == c, a != c, c != a)
+";
+    same_as_the_interpreter_in_both_builds("shared_own_same", own)
+}
+
 #[test]
 fn what_changes_where_it_is_stays_right_with_one_cell_under_two_names() -> std::io::Result<()> {
     if !ready() {
@@ -4888,6 +4941,89 @@ def main(stdout: Stdout):
     seen.add(5)
     stdout.print(seen, copied)
 "#,
+    )
+}
+
+/// Programs whose `main` fails, each with what comes first in it, in every way it can: an error
+/// of one type, one of several, one held in a block of its own, and only after printing.
+const FAILING_MAINS: [(&str, &str); 4] = [
+    (
+        "declared",
+        "def main(stdout: Stdout) fails Short:\n    stdout.print(short(1)?)\n    stdout.print(short(2)?)\n    stdout.print(\"not here\")\n",
+    ),
+    (
+        "undeclared",
+        "def main(stdout: Stdout):\n    stdout.print(short(1)?)\n    check(4)?\n    stdout.print(\"not here\")\n",
+    ),
+    (
+        "several",
+        "def main(stdout: Stdout):\n    stdout.print(short(1)?)\n    stdout.print(coded(2)?)\n    stdout.print(short(2)?)\n",
+    ),
+    (
+        "held",
+        "def main(stdout: Stdout):\n    stdout.print(coded(1)?)\n    stdout.print(held(2)?)\n    stdout.print(coded(3)?)\n",
+    ),
+];
+
+const WHAT_MAINS_CALL: &str = r#"error Short:
+    why: str
+
+error Coded:
+    code: int
+
+error Held:
+    items: list[int]
+    table: dict[str, int]
+
+def short(n: int) -> int fails Short:
+    if n > 1: fail Short(why="too big")
+    n
+
+def coded(n: int) -> int fails Coded:
+    if n > 1: fail Coded(code=n)
+    n
+
+def held(n: int) -> int fails Held:
+    if n > 1: fail Held(items=[n, n], table={"k": n})
+    n
+
+def check(n: int) fails Short:
+    if n > 3: fail Short(why="the end")
+
+"#;
+
+/// A failing `main` says what the interpreter does, at the same place, after what it printed, and
+/// the program ends with the same code.
+#[test]
+fn a_failing_main_ends_as_on_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("failing-main")?;
+    let path = |file: &Path| file.display().to_string();
+    for (name, main) in FAILING_MAINS {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("{WHAT_MAINS_CALL}{main}"))?;
+        let executable = dir.join(name);
+        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output()?;
+        let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+        assert_eq!(outcome(&ran), outcome(&interpreted), "{name}");
+        assert_eq!(ran.status.code(), Some(1), "{name}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+#[test]
+fn errors_of_several_types_go_up_and_show_as_on_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "errors_of_several_types",
+        include_str!("fixtures/errors_of_several_types.fen"),
     )
 }
 

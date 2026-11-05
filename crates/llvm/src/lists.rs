@@ -95,8 +95,8 @@ impl Emit<'_, '_, '_> {
         self.store_field(kind, &value, at, access);
         // An inline struct in a local read only here moves its blocks over; any other gets
         // another owner for each.
-        let moved =
-            matches!(operand, Operand::Local(local) if self.owns_inline(*local) && self.known.moves(*local));
+        let moved = !fresh
+            && matches!(operand, Operand::Local(local) if self.owns_inline(*local) && self.known.moves(*local));
         if moved {
             let text = self.text_of(kind);
             self.line(&format!("store {text} zeroinitializer, ptr {value}"));
@@ -628,6 +628,138 @@ impl Emit<'_, '_, '_> {
             self.assign_memory_owned(dest, &place)?;
         }
         Ok(())
+    }
+
+    /// Whether this is one of several error types, laid out with a case for each, named for it.
+    pub(crate) fn is_one_of_several(&self, kind: &Kind) -> bool {
+        let (Kind::Enum(id) | Kind::Boxed(id)) = kind else { return false };
+        self.module.layouts.get(*id).is_some_and(|layout| {
+            layout.name.contains(" | ")
+                && layout
+                    .cases
+                    .iter()
+                    .flatten()
+                    .all(|case| matches!(case.fields.as_slice(), [field] if field.name == "error"))
+        })
+    }
+
+    /// Whether what's held has to change to go where `wanted` goes: an error, or a result, going
+    /// where more kinds of error can be.
+    pub(crate) fn widens(&self, held: &Kind, wanted: &Kind) -> bool {
+        let result = |kind: &Kind| match kind {
+            Kind::Enum(id) | Kind::Boxed(id) => {
+                self.module.layouts.get(*id).is_some_and(|layout| layout.name.starts_with("Result["))
+            }
+            _ => false,
+        };
+        held != wanted && (self.is_one_of_several(wanted) || (result(held) && result(wanted)))
+    }
+
+    /// `value` as a `wanted`, with owners of its own: a block, or an address in this frame.
+    pub(crate) fn widened(&mut self, value: &str, held: &Kind, wanted: &Kind) -> Result<String, String> {
+        let at = self.label("%widened");
+        let text = self.text_of(wanted);
+        let _ = writeln!(self.allocas, "  {at} = alloca {text}");
+        self.widen_into(value, held, wanted, &at)?;
+        if wanted.in_memory() {
+            return Ok(at);
+        }
+        let block = self.temp();
+        self.line(&format!("{block} = load ptr, ptr {at}"));
+        Ok(block)
+    }
+
+    /// Where an enum's words start, whether it's a block or in place.
+    fn enum_words(&mut self, value: &str, kind: &Kind) -> String {
+        if matches!(kind, Kind::Boxed(_)) { self.offset(value, FIELDS_OFFSET) } else { value.to_owned() }
+    }
+
+    /// The value in a field at `place`, as `kind` passes it around.
+    fn field_at(&mut self, place: String, kind: &Kind) -> String {
+        if kind.in_memory() { place } else { self.load_field(kind, &place, "") }
+    }
+
+    /// Writes `value` at `at` as a `wanted`, with owners of its own.
+    fn widen_into(&mut self, value: &str, held: &Kind, wanted: &Kind, at: &str) -> Result<(), String> {
+        if !self.widens(held, wanted) {
+            self.store_field(wanted, value, at, "");
+            if wanted.counted() {
+                self.retain_value(value, wanted);
+            } else {
+                self.retain_inline(wanted, at);
+            }
+            return Ok(());
+        }
+        let block = if let Kind::Boxed(id) = wanted { Some(self.new_block(*id)?) } else { None };
+        let base = if let Some(block) = &block {
+            self.offset(block, FIELDS_OFFSET)
+        } else {
+            let text = self.text_of(wanted);
+            self.line(&format!("store {text} zeroinitializer, ptr {at}"));
+            at.to_owned()
+        };
+        if self.is_one_of_several(wanted) && !self.is_one_of_several(held) {
+            let (Kind::Struct(id) | Kind::Enum(id) | Kind::Boxed(id)) = held else {
+                return Err(format!("it gives a {held:?} where one of several errors goes"));
+            };
+            let name = self.module.layouts.get(*id).ok_or("no such layout")?.name.clone();
+            let (number, written) = self.case_of(wanted, &name)?;
+            let (_, offset, _) = written.into_iter().next().ok_or("a case of an error holds nothing")?;
+            self.line(&format!("store i64 {number}, ptr {base}"));
+            let inside = self.offset(&base, offset);
+            self.widen_into(value, held, held, &inside)?;
+        } else {
+            self.widen_cases(value, held, wanted, &base)?;
+        }
+        if let Some(block) = block {
+            self.line(&format!("store ptr {block}, ptr {at}"));
+        }
+        Ok(())
+    }
+
+    /// Writes each case `value` might be as the case of `wanted` with the same name.
+    fn widen_cases(&mut self, value: &str, held: &Kind, wanted: &Kind, base: &str) -> Result<(), String> {
+        let (Kind::Enum(id) | Kind::Boxed(id)) = held else {
+            return Err(format!("it gives a {held:?} where a result goes"));
+        };
+        let layouts = self.module.layouts;
+        let cases =
+            layouts.get(*id).and_then(|layout| layout.cases.as_ref()).ok_or("an enum with no cases")?;
+        let from = self.enum_words(value, held);
+        let tag = self.temp();
+        self.line(&format!("{tag} = load i64, ptr {from}"));
+        let done = self.label("widened");
+        for (number, case) in cases.iter().enumerate() {
+            let (same, this, next) = (self.temp(), self.label("widen"), self.label("widen_not"));
+            self.line(&format!("{same} = icmp eq i64 {tag}, {number}"));
+            self.line(&format!("br i1 {same}, label %{this}, label %{next}"));
+            self.start_block(&this);
+            let (mine, written) = self.case_of(wanted, &case.name)?;
+            self.line(&format!("store i64 {mine}, ptr {base}"));
+            for (field, (_, offset, to)) in case.fields.iter().zip(written) {
+                let from_kind =
+                    Kind::from_ty(layouts, field.ty).ok_or("a field this backend doesn't take yet")?;
+                let to = to.ok_or("a field this backend doesn't take yet")?;
+                let place = self.offset(&from, field.offset);
+                let inside = self.field_at(place, &from_kind);
+                let target = self.offset(base, offset);
+                self.widen_into(&inside, &from_kind, &to, &target)?;
+            }
+            self.line(&format!("br label %{done}"));
+            self.start_block(&next);
+        }
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        Ok(())
+    }
+
+    /// One of several errors read as the one type a test has shown it is.
+    pub(crate) fn as_error(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
+        let (Kind::Struct(id) | Kind::Enum(id) | Kind::Boxed(id)) = *self.kind_of(dest)? else {
+            return Err("an error read as something else".to_owned());
+        };
+        let name = self.module.layouts.get(id).ok_or("no such layout")?.name.clone();
+        self.get_case_field(dest, value, &name, "error")
     }
 
     pub(crate) fn is_case(&mut self, dest: LocalId, value: &Operand, case: &str) -> Result<(), String> {

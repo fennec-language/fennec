@@ -1,0 +1,4 @@
+def main(stdout: Stdout):
+    big = 1e308 * 10.0
+    nothing = big - big
+    stdout.print(nothing != nothing)

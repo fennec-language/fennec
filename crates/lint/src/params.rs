@@ -24,13 +24,13 @@ fn public(def: &FnDef, sources: &Sources) -> bool {
     text.get(line_start..).is_none_or(|line| line.trim_start().starts_with("pub "))
 }
 
-/// Where a call's argument starts as written: before `name=` or `mut`, which its value's span
-/// leaves out.
+/// Where a call's argument starts as written: before `name=`, `ref` or `mut`, which its value's
+/// span leaves out.
 fn arg_start(text: &str, base: u32, arg: &Arg) -> Option<u32> {
     let value = usize::try_from(arg.value.span.start.checked_sub(base)?).ok()?;
     let mut before = text.get(..value)?.trim_end();
     if arg.is_mut {
-        before = before.strip_suffix("mut")?.trim_end();
+        before = before.strip_suffix("ref").or_else(|| before.strip_suffix("mut"))?;
     }
     if let Some(name) = &arg.name {
         before = before.strip_suffix('=')?.trim_end().strip_suffix(name.as_str())?;

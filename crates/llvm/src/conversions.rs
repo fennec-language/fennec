@@ -50,6 +50,12 @@ impl Emit<'_, '_, '_> {
                 let absolute = self.float_call("fabs", &value);
                 self.assign(dest, &absolute)
             }),
+            ("float.is_nan", [value], [Some(Kind::Float)]) => dest.and_then(|dest| {
+                let (value, _) = self.operand(value)?;
+                let found = self.temp();
+                self.line(&format!("{found} = fcmp uno double {value}, {value}"));
+                self.assign(dest, &found)
+            }),
             ("int", [value], [Some(Kind::Float)]) => {
                 dest.and_then(|dest| self.float_to_int(dest, value, None, span))
             }
@@ -136,6 +142,7 @@ impl Emit<'_, '_, '_> {
                     Ok(())
                 })
             }),
+            ("main.failed", [error], _) => self.main_failed(error, span),
             ("set", [], []) => dest.and_then(|dest| self.empty_set(dest)),
             // A set of a set's items is the set, shared until one changes.
             ("set", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| self.copy(dest, set)),

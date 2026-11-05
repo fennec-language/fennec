@@ -86,6 +86,11 @@ struct Parser:
     def eat_keyword(mut self, word: str) -> bool:
         self.eat(.Keyword(word))
 
+    ## `ref` on a loop, a parameter, an argument or a `with` name, where `mut` still means the same
+    ## until `fennec fix --mut-to-ref` has been run everywhere.
+    def eat_ref(mut self) -> bool:
+        self.eat_keyword("ref") or self.eat_keyword("mut")
+
     def expect_punct(mut self, text: str) -> Span:
         if not self.at_punct(text):
             fail self.unexpected(f"`{text}`")
@@ -490,7 +495,7 @@ struct Parser:
 
     def param(mut self) -> Param:
         start = self.span()
-        is_mut = self.eat_keyword("mut")
+        is_mut = self.eat_ref()
         name = self.name("a parameter name")?
         if name == "self":
             return Param(name=name, ty=None, is_mut=is_mut, is_self=True, default=None, span=start.to(self.prev_span()))

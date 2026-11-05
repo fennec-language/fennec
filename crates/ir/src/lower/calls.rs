@@ -118,6 +118,15 @@ impl Lowering<'_> {
         Ok(values)
     }
 
+    /// The types a call writes in brackets, like `Part` in `named[Part](text)`.
+    fn written_in(&self, callee: &Expr) -> Vec<Type> {
+        let ExprKind::Index { index, .. } = &callee.kind else { return Vec::new() };
+        match self.type_at(index.span) {
+            Some(Type::Tuple(types)) => types,
+            _ => Vec::new(),
+        }
+    }
+
     /// Lowers a call. When it's given the type of what the call gives back, that's kept in a
     /// new temporary.
     pub(super) fn call(
@@ -134,6 +143,7 @@ impl Lowering<'_> {
             return self.optional_method((object, name), args, keep, span);
         }
         // `json.loads[T](text)`: the type it's given is the type of what it gives back.
+        self.written_types = self.written_in(callee);
         let callee = match &callee.kind {
             ExprKind::Index { object, .. } => object,
             _ => callee,
@@ -377,8 +387,9 @@ impl Lowering<'_> {
                 *slot = self.type_at(arg.value.span);
             }
         }
+        let written = std::mem::take(&mut self.written_types);
         let (function, signature) = self
-            .resolve(&key, &types, keep)
+            .resolve_written(&key, &written, &types, keep)
             .ok_or_else(|| format!("its call to `{key}` doesn't say what its types stand for"))?;
         let given = args.len() + usize::from(object.is_some());
         if given != signature.params.len() {

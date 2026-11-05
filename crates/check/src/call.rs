@@ -707,7 +707,10 @@ impl FnCx<'_> {
             self.error(Diagnostic::new("write types in the brackets, like `[int]`", index.span));
             return Vec::new();
         };
-        written.iter().map(|ty| self.resolve(ty)).collect()
+        let types: Vec<Type> = written.iter().map(|ty| self.resolve(ty)).collect();
+        // For compilers, since a function's body may be the only thing that uses them.
+        self.record(index.span, &Type::Tuple(types.clone()));
+        types
     }
 
     /// Calls a type to build a value: `Enemy(position=p)`, `NotFound(path)`.

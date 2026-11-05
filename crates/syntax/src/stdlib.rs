@@ -228,12 +228,14 @@ fn parse_prelude() -> Result<Vec<crate::Module>, crate::Diagnostic> {
 /// Parses one file of the standard library. A mistake in one says which file and line, since it
 /// can't be shown against a program's own lines.
 fn parse_module(name: &str, source: &str) -> Result<crate::Module, crate::Diagnostic> {
-    crate::parser::parse_prelude(source).map_err(|problem| {
+    let mut module = crate::parser::parse_prelude(source).map_err(|problem| {
         let at = problem.span.start.saturating_sub(crate::Span::PRELUDE) as usize;
         let line = source.get(..at).map_or(1, |before| before.matches('\n').count() + 1);
         let message = format!("the standard library's `{name}.fen`, line {line}: {}", problem.message);
         crate::Diagnostic { message, ..problem }
-    })
+    })?;
+    crate::rename::discards_apart(&mut module);
+    Ok(module)
 }
 
 /// Gives each module's top-level functions the name `module.function`, which no one can write

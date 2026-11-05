@@ -81,6 +81,11 @@ pub(super) fn mentions_param(ty: &Type) -> bool {
 
 /// Whether a signature only makes sense once its type parameters are known.
 pub(super) fn is_generic(signature: &Signature) -> bool {
+    !signature.generics.is_empty() || leaves_open(signature)
+}
+
+/// Whether its parameters or what it gives back still mention a type parameter.
+fn leaves_open(signature: &Signature) -> bool {
     signature.params.iter().any(|param| mentions_param(&param.ty)) || mentions_param(&signature.returns)
 }
 
@@ -242,6 +247,17 @@ impl Lowering<'_> {
         given: &[Option<Type>],
         returns: Option<&Type>,
     ) -> Option<(String, Signature)> {
+        self.resolve_written(key, &[], given, returns)
+    }
+
+    /// The same, with the types written in brackets at the call, which come first.
+    pub(super) fn resolve_written(
+        &self,
+        key: &str,
+        written: &[Type],
+        given: &[Option<Type>],
+        returns: Option<&Type>,
+    ) -> Option<(String, Signature)> {
         let context = self.context;
         let base = context.base_key(key);
         let raw = context.signatures.get(&base)?;
@@ -250,6 +266,7 @@ impl Lowering<'_> {
             .and_then(|(owner, _)| context.type_instance(owner))
             .map(|instance| instance.subst)
             .unwrap_or_default();
+        subst.extend(raw.generics.iter().cloned().zip(written.iter().cloned()));
         for (param, given) in raw.params.iter().zip(given) {
             if let Some(given) = given {
                 context.unify(&param.ty, given, &mut subst);
@@ -262,7 +279,7 @@ impl Lowering<'_> {
         if !is_generic(raw) {
             return Some((base, filled));
         }
-        if is_generic(&filled) {
+        if leaves_open(&filled) || raw.generics.iter().any(|generic| !subst.contains_key(generic)) {
             return None;
         }
         Some((context.request(&base, subst)?, filled))

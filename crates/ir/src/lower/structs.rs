@@ -223,6 +223,8 @@ impl Lowering<'_> {
         args: &[Arg],
     ) -> Lowered<Vec<Operand>> {
         let mut values: Vec<Option<Operand>> = vec![None; fields.len()];
+        let mut reads = super::order::Reads::default();
+        let mut slots = Vec::with_capacity(args.len());
         for (position, arg) in args.iter().enumerate() {
             let at = match &arg.name {
                 Some(name) => fields.iter().position(|(field, _)| field == name),
@@ -231,6 +233,11 @@ impl Lowering<'_> {
             let value = self.expr(&arg.value)?;
             let field = at.and_then(|at| fields.get(at)).ok_or("an argument matches no field")?;
             let value = self.coerce(value, &field.1, arg.value.span)?;
+            reads.add(self, value);
+            slots.push(at);
+        }
+        let span = args.first().map_or_else(Span::default, |arg| arg.value.span);
+        for (at, value) in slots.into_iter().zip(reads.finish(self, span)) {
             if let Some(slot) = at.and_then(|at| values.get_mut(at)) {
                 *slot = Some(value);
             }
@@ -276,6 +283,15 @@ impl Lowering<'_> {
             let dest = self.temporary(self.ty(expr)?);
             let function = format!("{owner}.{field}");
             self.emit(InstKind::Call { dest: Some(dest), function, args: Vec::new() }, expr.span);
+            return Ok(Operand::Local(dest));
+        }
+        if field == "program"
+            && matches!(self.type_at(object.span), Some(Type::Named(owner)) if owner == "Args")
+        {
+            let args = vec![self.expr(object)?];
+            let dest = self.temporary(self.ty(expr)?);
+            let name = "Args.program".to_owned();
+            self.emit(InstKind::Builtin { dest: Some(dest), name, args, changes: false }, expr.span);
             return Ok(Operand::Local(dest));
         }
         let owner = self.struct_of(object).ok_or_else(|| format!("it reads `.{field}` of something else"))?;

@@ -1,0 +1,67 @@
+struct Inner:
+    tags: list[int]
+
+    def grow(mut self, value: int):
+        self.tags.append(value)
+
+    def reset(mut self):
+        self = Inner([100])
+
+struct Unit:
+    hp: int
+    tags: list[int]
+    inner: Inner
+    name: str
+
+    def grow(mut self, value: int):
+        self.tags.append(value)
+        self.hp += value
+
+    def grown_by(mut self, values: list[int]):
+        for value in values:
+            self.tags.append(value)
+
+def unit(hp: int) -> Unit:
+    Unit(hp, [hp, hp + 1, hp + 2], Inner([hp]), f"unit {hp} with a name too long to sit inline")
+
+def method_places(captured: list[Unit], at: int) -> int:
+    mut copy_of = captured
+    copy_of[at % 2].grow(at)
+    copy_of[at % 2].inner.grow(at)
+    copy_of[at % 2].inner.reset()
+    copy_of[at % 2].tags.len() + copy_of[at % 2].inner.tags.len() + copy_of[at % 2].hp
+
+def builtin_places(captured: list[Unit], at: int) -> int:
+    mut copy_of = captured
+    copy_of[at % 2].tags.append(copy_of[0].hp)
+    copy_of[at % 2].tags.append(copy_of[at % 2].tags.len())
+    copy_of[at % 2].inner.tags.extend(copy_of[1].tags)
+    got = copy_of[at % 2].tags.pop()
+    copy_of[at % 2].tags.insert(0, got)
+    copy_of[1 - at % 2].tags.pop()
+    copy_of[at % 2].tags.len() * 7 + copy_of[at % 2].inner.tags.len() + copy_of[1 - at % 2].tags.len() + got
+
+def given_place(captured: list[Unit], grid: list[list[Unit]], at: int) -> int:
+    theirs = captured[1 - at % 2].tags
+    first = grid[0][0].tags
+    mut copy_of = captured
+    mut rows = grid
+    copy_of[at % 2].grown_by(theirs)
+    copy_of[at % 2].grown_by(copy_of[at % 2].tags)
+    rows[at % 2][-1].grow(at)
+    rows[at % 2][0].inner.grow(at)
+    rows[at % 2][0].inner.tags.extend(first)
+    copy_of[at % 2].tags.len() + rows[at % 2][0].inner.tags.len() + rows[at % 2][-1].hp
+
+def main(stdout: Stdout):
+    captured = [unit(1), unit(2)]
+    grid = [[unit(3), unit(4)], [unit(5), unit(6)]]
+    xs = [n for n in range(3000)]
+    stdout.print(sum(method_places(captured, x) for x in parallel(xs)))
+    stdout.print(sum(builtin_places(captured, x) for x in parallel(xs)))
+    stdout.print(sum(given_place(captured, grid, x) for x in parallel(xs)))
+    for one in captured:
+        stdout.print(one.hp, one.tags, one.inner.tags, one.name)
+    for row in grid:
+        for one in row:
+            stdout.print(one.hp, one.tags, one.inner.tags, one.name)

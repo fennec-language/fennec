@@ -17,6 +17,11 @@ fn is_capability(name: &str) -> bool {
     matches!(name, "Stdout" | "Fs" | "Clock" | "Args" | "Stdin" | "Process" | "Entropy")
 }
 
+/// Whether a type is a capability, by itself.
+pub(crate) fn is_capability_type(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name) if is_capability(name) || name == "Net")
+}
+
 impl Program {
     /// Whether a type is `shared`.
     pub(crate) fn is_shared(&self, ty: &Type) -> bool {
@@ -26,6 +31,38 @@ impl Program {
 }
 
 impl Checker {
+    /// Whether a value of this type holds a capability, in it or anything inside it.
+    pub(crate) fn holds_capability(&mut self, ty: &Type, open: &mut Vec<String>) -> bool {
+        if is_capability_type(ty) {
+            return true;
+        }
+        if ty.children().iter().any(|child| self.holds_capability(&(*child).clone(), open)) {
+            return true;
+        }
+        let (Type::Named(name) | Type::Generic(name, _)) = ty else { return false };
+        if open.contains(name) {
+            return false;
+        }
+        let Some(info) = self.program.type_info(name) else { return false };
+        let def = info.def.clone();
+        open.push(name.clone());
+        let fields = def.fields.iter().map(|field| (None, field));
+        let in_cases = def
+            .cases
+            .iter()
+            .flat_map(|case| case.fields.iter().map(|field| (Some(case.name.as_str()), field)));
+        let mut found = false;
+        for (case, field) in fields.chain(in_cases) {
+            let held = self.field_type(name, case, &field.name);
+            if self.holds_capability(&held, open) {
+                found = true;
+                break;
+            }
+        }
+        open.pop();
+        found
+    }
+
     /// The `shared` type a value of this type holds, in it or anything inside it.
     pub(crate) fn shared_inside(&mut self, ty: &Type, open: &mut Vec<String>) -> Option<String> {
         if self.program.is_shared(ty) {

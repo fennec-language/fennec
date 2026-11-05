@@ -41,6 +41,19 @@ impl Interp<'_> {
                     let args = self.eval_args(args)?;
                     return self.call_value(&function, args, span);
                 }
+                // It passed the checker and is nothing here, so it's a type parameter, and types
+                // don't exist while this runs.
+                if let ExprKind::Name(param) = &object.kind
+                    && self.frame.get(param).is_none()
+                    && !self.constants.contains_key(param)
+                    && self.lookup(param, object.span).is_err()
+                {
+                    return Err(Diagnostic::new(format!("`{param}.{name}()` needs native code"), span).with_help(
+                        format!(
+                            "the interpreter has no types while it runs, so it can't tell which type `{param}` is: run this without `--interp`"
+                        ),
+                    ));
+                }
                 return self.method_call(object, name, *optional, args, span);
             }
             ExprKind::Variant(name) => {

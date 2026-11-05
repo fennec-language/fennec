@@ -176,6 +176,7 @@ impl<'a> Lowering<'a> {
         let fails = matches!(returns, Type::Result(..));
         self.returns = Type::Bool;
         self.counts.clear();
+        self.places.clear();
         let context = self.context;
         let mut functions = self.finished(1, Vec::new());
         if let Some(resume) = functions.first_mut() {
@@ -650,6 +651,7 @@ fn make_block_function(
         locals,
         blocks: vec![crate::Block { insts, end: Terminator::Return(Some(Operand::Local(result))) }],
         counts: Vec::new(),
+        places: Vec::new(),
     }
 }
 
@@ -708,5 +710,6 @@ fn abandon_function(
         locals,
         blocks,
         counts: Vec::new(),
+        places: Vec::new(),
     })
 }

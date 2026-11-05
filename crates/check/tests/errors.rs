@@ -281,3 +281,62 @@ fn a_result_passed_on_adds_its_errors_to_the_functions() {
         Ok(fennec_check::Type::Result(Box::new(fennec_check::Type::Int), Box::new(errors)))
     );
 }
+
+const LOOKUPS: &str = "
+error Missing:
+    name: str
+
+def add_up(names: list[str], ages: dict[str, int]) -> int:
+    mut total = 0
+    for name in names:
+        age: int = ages.get(name) else continue
+        total += age
+    total
+
+def age_of(ages: dict[str, int], name: str) -> int:
+    age: int = ages.get(name) else return -1
+    age
+
+def show(ages: dict[str, int], name: str, stdout: Stdout):
+    age: int = ages.get(name) else return
+    stdout.print(age)
+
+def must(ages: dict[str, int], name: str) -> int fails Missing:
+    age: int = ages.get(name) else fail Missing(name=name)
+    age
+
+def parse(text: str) -> int:
+    int(text) else return 0
+";
+
+#[test]
+fn else_can_leave_and_what_it_gives_is_whats_inside() {
+    assert_eq!(problems(LOOKUPS), Vec::<String>::new());
+}
+
+#[test]
+fn leaving_with_else_is_checked_like_the_statement() {
+    let wrong_value =
+        "def age_of(ages: dict[str, int]) -> int:\n    age = ages.get('a') else return 'old'\n    age\n";
+    assert_eq!(
+        problems(wrong_value).len(),
+        1,
+        "the value `else return` gives has to fit the function: {:?}",
+        problems(wrong_value)
+    );
+    let cant_fail = "def age_of(ages: dict[str, int]) -> int:\n    ages.get('a') else fail 'nope'\n";
+    assert_eq!(problems(cant_fail).len(), 1, "{:?}", problems(cant_fail));
+}
+
+#[test]
+fn an_arrow_function_or_comprehension_cant_leave_with_else() {
+    let said = "an arrow function or comprehension can't leave with `else`";
+    for body in [
+        "ages = {'a': 1}\nkept = [ages.get(name) else continue for name in ['a', 'b']]\nstdout.print(kept)",
+        "ages = {'a': 1}\nkept = [ages.get(name) else return 0 for name in ['a', 'b']]\nstdout.print(kept)",
+        "ages = {'a': 1}\nkept = sorted(['a'], key=name => ages.get(name) else return 0)\nstdout.print(kept)",
+    ] {
+        let found = crate::in_main(body);
+        assert!(found.iter().any(|one| one.starts_with(said)), "{body}: {found:?}");
+    }
+}

@@ -66,6 +66,7 @@ impl Emit<'_, '_, '_> {
                 dest.and_then(|dest| self.range_list(dest, args, span))
             }
             ("reversed", [list], [Some(Kind::List(_))]) => dest.and_then(|dest| self.reversed(dest, list)),
+            ("list", [_], [Some(Kind::Cap)]) => dest.and_then(|dest| self.args_list(dest)),
             // A dict's keys, or a set's items, in their order.
             ("list", [dict], [Some(Kind::Dict(..))]) => {
                 dest.and_then(|dest| self.dict_list(dest, dict, "keys"))
@@ -104,6 +105,7 @@ impl Emit<'_, '_, '_> {
                 self.set_of_list(dest, &list, &held)
             }),
             ("set", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.set_of_chars(dest, text)),
+            ("assert.sides", [left, right], _) => self.assert_sides(left, right, span),
             ("set", [], []) => dest.and_then(|dest| self.empty_set(dest)),
             // A set of a set's items is the set, shared until one changes.
             ("set", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| self.copy(dest, set)),

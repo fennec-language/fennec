@@ -30,6 +30,7 @@ mod index;
 mod infer;
 mod keys;
 mod loops;
+mod lost;
 mod messages;
 mod parallel;
 mod pattern;
@@ -78,12 +79,12 @@ fn own_type_names(module: &Module) -> BTreeMap<String, String> {
         .unwrap_or_default()
         .iter()
         .flat_map(|module| &module.items)
-        .filter_map(declared_type)
+        .filter_map(declared_name)
         .collect();
     module
         .items
         .iter()
-        .filter_map(declared_type)
+        .filter_map(declared_name)
         .filter(|name| library.contains(name))
         .map(|name| (name.to_owned(), format!("{name}{}", fennec_syntax::rename::RENAMED)))
         .collect()
@@ -95,6 +96,15 @@ fn declared_type(item: &fennec_syntax::Item) -> Option<&str> {
         | fennec_syntax::Item::Enum(def)
         | fennec_syntax::Item::Error(def) => Some(def.name.as_str()),
         _ => None,
+    }
+}
+
+/// The name an item gives a type or an interface, which share one set of names.
+fn declared_name(item: &fennec_syntax::Item) -> Option<&str> {
+    match item {
+        fennec_syntax::Item::Interface(interface) => Some(interface.name.as_str()),
+        fennec_syntax::Item::TypeAlias { name, .. } => Some(name.as_str()),
+        item => declared_type(item),
     }
 }
 
@@ -240,6 +250,9 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
             if let Some(function) = checked.std_names.get(&span) {
                 expr.kind = fennec_syntax::ExprKind::Name(function.clone());
             }
+            if checked.failing_steps.contains(&span) {
+                fennec_syntax::visit::none_on_failure(expr);
+            }
             if checked.optional_steps.contains(&span)
                 && let fennec_syntax::ExprKind::Attr { optional, .. } = &mut expr.kind
             {
@@ -297,6 +310,8 @@ pub struct Checked {
     /// The fields and method calls on a value that might be missing, in a chain an `else`
     /// ends, which are written in as optional.
     optional_steps: BTreeSet<(u32, u32)>,
+    /// Those read from something that can fail, which is written in as `value else None`.
+    failing_steps: BTreeSet<(u32, u32)>,
     /// The `list[T]()`, `dict[K, V]()` and `set[T]()` calls, written in as `[]`, `{}` and `set()`.
     empty_collections: BTreeSet<(u32, u32)>,
 }

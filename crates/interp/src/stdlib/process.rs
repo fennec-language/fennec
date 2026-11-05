@@ -26,9 +26,9 @@ impl Interp<'_> {
                     arguments.push(text.to_string());
                 }
                 if faked {
-                    return self.fake_run(program, arguments, span);
+                    return Ok(self.fake_run(program, arguments));
                 }
-                self.start_program(program, &arguments, span)
+                self.start_program(program, &arguments)
             }
             ("script", [Value::Str(program), output @ Value::Instance(_)]) if faked => {
                 if let Some(world) = &mut self.world {
@@ -48,26 +48,15 @@ impl Interp<'_> {
     }
 
     /// Runs `program` and waits for it, keeping what it writes.
-    fn start_program(&mut self, program: &str, arguments: &[String], span: Span) -> Result<Value, Diagnostic> {
+    fn start_program(&mut self, program: &str, arguments: &[String]) -> Result<Value, Diagnostic> {
         // A prompt this program printed shows before the other program starts.
         self.flush()?;
-        match std::process::Command::new(program).args(arguments).output() {
-            Ok(done) => {
-                let status = done.status.code().map_or(-1, i64::from);
-                let fields = vec![
-                    ("status", Value::Int(status)),
-                    ("stdout", Value::str(&String::from_utf8_lossy(&done.stdout))),
-                    ("stderr", Value::str(&String::from_utf8_lossy(&done.stderr))),
-                ];
-                Ok(Value::Ok(Rc::new(self.make_value("Output", fields, span)?)))
-            }
-            Err(error) => self.process_error(program, &error.to_string(), span),
-        }
+        Ok(run_program(program, arguments))
     }
 
     /// What a test's fake `Process` gives back for `program`: what the test scripted for it,
     /// or a `ProcessError` saying nothing was.
-    fn fake_run(&mut self, program: &str, arguments: Vec<String>, span: Span) -> Result<Value, Diagnostic> {
+    fn fake_run(&mut self, program: &str, arguments: Vec<String>) -> Value {
         let scripted = self.world.as_mut().and_then(|world| {
             let mut run = vec![program.to_owned()];
             run.extend(arguments);
@@ -75,18 +64,36 @@ impl Interp<'_> {
             world.scripts.get(program).cloned()
         });
         if let Some(output) = scripted {
-            return Ok(Value::Ok(Rc::new(output)));
+            return Value::Ok(Rc::new(output));
         }
         let message = format!(
             "the test's fake Process has nothing scripted for `{program}`: give it what to answer with `process.script(\"{program}\", Output(...))`"
         );
-        self.process_error(program, &message, span)
+        process_error(program, &message)
     }
 
-    fn process_error(&mut self, program: &str, message: &str, span: Span) -> Result<Value, Diagnostic> {
-        let fields = vec![("program", Value::str(program)), ("message", Value::str(message))];
-        Ok(Value::Err(Rc::new(self.make_value("ProcessError", fields, span)?)))
+}
+
+/// Runs `program` and waits for it, giving a result holding what it wrote.
+pub(crate) fn run_program(program: &str, arguments: &[String]) -> Value {
+    match std::process::Command::new(program).args(arguments).output() {
+        Ok(done) => {
+            let status = done.status.code().map_or(-1, i64::from);
+            let fields = vec![
+                ("status", Value::Int(status)),
+                ("stdout", Value::str(&String::from_utf8_lossy(&done.stdout))),
+                ("stderr", Value::str(&String::from_utf8_lossy(&done.stderr))),
+            ];
+            Value::Ok(Rc::new(Value::made("Output", fields)))
+        }
+        Err(error) => process_error(program, &error.to_string()),
     }
+}
+
+/// A failed result holding a `ProcessError`.
+pub(crate) fn process_error(program: &str, message: &str) -> Value {
+    let fields = vec![("program", Value::str(program)), ("message", Value::str(message))];
+    Value::Err(Rc::new(Value::made_error("ProcessError", fields)))
 }
 
 fn wrong(method: &str, span: Span) -> Diagnostic {

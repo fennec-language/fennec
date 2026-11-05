@@ -1,47 +1,77 @@
 # Design decisions
 
+**[`language.md`](language.md) is the source of truth for the language. If this file disagrees with it, `language.md` wins.** This file stays for the reasoning and for details that page doesn't cover.
+
 Decisions made while designing Fennec, with the reason for each. The [roadmap](../site/src/pages/roadmap.md) says when each one gets built. Newest decisions go at the top of each section.
 
 ## Principles
+
+**Pure style is encouraged, not promised, and `ref` is the guaranteed in-place form.** Comprehensions make new things. A comprehension that replaces its own source should compile to the same in-place loop as `for ref`, when the old value isn't used again, nothing else holds it and the result is no larger. That's a goal for the compiler, not a rule a program can count on.
+*Why:* Plain functions that read values and return new ones are the easiest code to read, and `for ref` is there for when in-place has to be guaranteed.
 
 **Built-in types get no powers user types can't have.** They use the same protocols a user type implements:
 
 | What a program writes | What the type defines |
 | --- | --- |
-| `print(x)`, `str(x)`, `f"{x}"` | `def str(self, mut out: StrWriter)` |
+| `print(x)`, `str(x)`, `f"{x}"` | `def str(self, ref out: StrWriter)` |
 | `a == b`, `a != b` | `def ==` |
 | `a + b`, `a < b`, `sum(xs)`, `sorted(xs)` | operators: `def +`, `def <` and the rest |
 | `x in xs` | `def in` |
 | `xs.len()` | `def len` |
 | `for x in xs`, `list(xs)` | `def iter(self) -> Iterator[T]`, with `yield` |
-| `xs[i]`, and writes through it | `def []`, and its `mut` form |
-| `for mut x in xs`, `parallel(xs)` | positions: `def len` plus the `mut` form of `def []` |
+| `xs[i]`, and writes through it | `def []`, and its `ref` form |
+| `for ref x in xs`, `parallel(xs)` | positions: `def len` plus the `ref` form of `def []` |
 
 The only exceptions are the primitives, `int`, `float`, `bool` and the raw `Buffer`; literal syntax, `[...]`, `{...}` and `"..."`; and `std.intrinsics`, which only the standard library can import. Today `list`, `dict` and `str` are still built into the compiler, and making them ordinary `std` structs (#104) is how main gets there.
 *Why:* It's the language from first principles. A reader can learn the whole language from its protocols, and anything `std` does, a user type can do.
 
 ## Values and memory
 
-**Everything is a value unless the code says otherwise.** Structs nest freely and are stored in place. Nothing is shared unless the code says `mut`, `Id` or `shared`.
+**`mut` is a local variable that can change, and `ref` is a link to something else.** `mut` is always your own value, so nothing outside the function sees its changes unless it's returned or handed to a `ref`. `ref` is a loop or a function being handed a place to change, and that includes `ref self`.
+```fennec
+mut total = 0
+mut scores_copy = scores                 # your own copy
+
+def heal(ref unit: Unit):
+    unit.health += 10
+
+heal(ref units[unit_id])
+for ref unit in units:
+    unit.health -= 1
+```
+- A `ref` needs a `mut` source or another `ref`. So the chain always starts at a `mut` local, and a plain name never changes. `heal(ref make_unit())` is an error, since the change would be lost.
+- A `ref` can't be stored, returned or captured by a closure that outlives it, so there are no lifetimes to write.
+- There's no inline `ref x = place` for now. One change is a direct write, `units[unit_id].health -= 1`, and several are a method, `units[unit_id].take_hit(damage, now)`. Adding it later would break nothing.
+- During the rename, the old `mut x = place` that made a link is a compile error, so nothing silently changes meaning.
+
+None of this is built yet, so the compiler still takes `mut` in these places. This replaces the rule that `mut x = place` edits a place, along with `mut a, b = xs.pair(i, j)`.
+*Why:* `mut` was doing two opposite jobs with one word. `mut unit = units[unit_id]` was a link and `mut unit = find(units, unit_id)` was a copy, and a write to the second was silently lost. Now a line says which it is.
+
+**A loop can change items, but not how many there are.** There are four forms, and `ids()` and `values()` go away:
+```fennec
+for unit in units: ...
+for ref unit in units: ...
+for unit_id, unit in units.items(): ...
+for unit_id, ref unit in units.items(): ...
+```
+Adding and removing happen outside the loop. In a plain loop the item is a plain value, so the body can write to other items through the collection:
+```fennec
+for attacker_id, attacker in units.items():
+    units[attacker.target_id].health -= attacker.damage
+```
+
+**Nothing can be reached two ways while it's being changed.** Overlapping `ref`s are refused, including `f(ref x, ref x)` and writing to `units` inside `for ref unit in units`.
+```fennec
+for ref unit in units:
+    units[unit.target_id].health -= 1    # error: the target may be `unit`
+```
+*Why:* The compiler can't tell whether a unit targets itself, and two names for one slot are the aliasing Fennec leaves out. The plain loop above says the same thing with no overlap.
+
+**Everything is a value unless the code says otherwise.** Structs nest freely and are stored in place. Nothing is shared unless the code says `ref`, `Id` or `shared`.
 *Why:* A reader can see every place two names reach the same thing, and the compiler keeps flat memory and every optimization everywhere else.
 
 **Fennec has no object graphs. Data lives in tables.** A thing that others point at lives in an `IdMap` or a list, and they hold its `Id`.
 *Why:* Flat tables are what keep memory contiguous, copies cheap and cycles impossible, and they're what game engines and databases already use.
-
-**`mut x = place` edits a place, however deeply it's nested.**
-```fennec
-mut unit = world.units[id]
-unit.health -= damage
-```
-Writing through the name edits the real place, in one write to memory. Most edits don't need a name at all: `world.units[id].health -= damage`.
-- Replacing the name makes a new value, as in Python: `best = x`, `i += 1`. Doing both on one name is a compile error.
-- `mut roster = hp` followed by reading `hp` is a compile error, and the fix is `mut roster = copy(hp)`.
-- The name can't be stored, returned or captured by an escaping closure, so there are no lifetimes to write.
-- The path it came from stays locked until the name's last use. Names for separate fields of one struct are fine.
-- `mut a, b = xs.pair(i, j)` gives two elements of one list, checked at run time.
-
-This replaces the earlier rule that `mut x = place` makes a copy, and the lint that called out Python's sharing. The compiler catches every case the change affects.
-*Why:* Editing nested structs is the one thing values make awkward. This is the form people already write, it does what they expect from Python, and it needs no new type.
 
 **A copy that can go stale is a compile error.** Copying a struct into a longer-lived place, when the copy can diverge from a source still in use, needs `copy(x)`:
 ```fennec
@@ -57,14 +87,14 @@ def heal(hero: Hero):
     mut healed = copy(hero)
     healed.health += 10          # error: `healed` is changed, then never read, returned or passed on
 ```
-- Writing through a name for a place isn't this case. `mut unit = world.units[id]` edits the table, so the write has gone somewhere.
+- `mut unit = world.units[id]` is your own value, so changing it and stopping there is this error. The fix writes directly: `world.units[id].health -= 1`. A write through a `ref` isn't this case, since it reaches the source.
 - It doesn't catch a copy that's read afterwards. Print `healed.health` at the end of `heal` and it compiles, while the caller's `hero` stays as it was.
 
 *Why:* A change that goes nowhere is a bug.
 
 **Cut from the first version, and each can be added later without breaking anything:**
-- `yield mut` helpers that lend a place. `world.units[id].health -= 10` covers most cases.
-- Inferring which fields a helper touches, so the rest of a struct stays usable across the call. Passing `mut world.units` works today.
+- Helpers that `yield` a place to change. `world.units[id].health -= 10` covers most cases.
+- Inferring which fields a helper touches, so the rest of a struct stays usable across the call. Passing `ref world.units` does the job.
 - Compile-time checks for channel deadlocks. Detection starts at run time.
 
 *Why:* It's less to build and less to get wrong. If something turns out to be missing, it's added with evidence.
@@ -81,10 +111,10 @@ def heal(hero: Hero):
 **Parameters are borrowed by default.** A parameter that's only read costs no reference-count change, on the way in or out. Reference counts are inserted precisely and dropped at each value's last use. A value with a single owner is reused in place to build its replacement. This is the Perceus approach from Koka, with Lean 4's borrowed parameters.
 *Why:* Reference-count traffic around calls is most of the overhead in naive implementations. These two remove nearly all of it.
 
-**Indexing gives a place, not a copy.** `enemies[i].health -= 1` writes straight into the list. A user-defined `def []` gets a `mut` form that does the same.
+**Indexing gives a place, not a copy.** `enemies[i].health -= 1` writes straight into the list. A user-defined `def []` gets a `ref` form that does the same.
 *Why:* Otherwise each change through an index copies the element out and back, or copies the whole list if it's shared.
 
-**`for mut` over a user type writes back through positions.** A type supports it by defining `def len(self) -> int` and the `mut` form of `def []` taking an `int`, which returns the element as a place. A type whose positions can be empty, like a pool with free slots, also defines `def is_live(self, i: int) -> bool`, and empty positions are skipped.
+**`for ref` over a user type writes back through positions.** A type supports it by defining `def len(self) -> int` and the `ref` form of `def []` taking an `int`, which returns the element as a place. A type whose positions can be empty, like a pool with free slots, also defines `def is_live(self, i: int) -> bool`, and empty positions are skipped.
 ```fennec
 struct Units:
     _items = Buffer[Unit]()
@@ -96,21 +126,21 @@ struct Units:
     def is_live(self, i: int) -> bool:
         return self._live[i]
 
-    def [](mut self, i: int) -> Unit:      # the `mut` form: returns a place in `_items`
+    def [](ref self, i: int) -> Unit:      # the `ref` form: returns a place in `_items`
         return self._items[i]
 
-def step(mut units: Units, dt: float):
-    for mut unit in units:
+def step(ref units: Units, dt: float):
+    for ref unit in units:
         unit.pos += unit.vel * dt
 ```
-- `for mut unit in units:` means `for i in range(units.len()):`, skipping positions that aren't live, with `mut unit = units[i]` inside. So `unit` is a place, by the rule `mut x = place` already has.
-- `units` stays locked for the whole loop, as any path behind a `mut` name is, so the body can't add or remove items or reach other elements. Nothing is copied or counted, and `unit` can't escape.
+- `for ref unit in units:` means `for i in range(units.len()):`, skipping positions that aren't live, with `unit` as a `ref` to `units[i]` inside.
+- `units` stays locked for the whole loop, as any path behind a `ref` is, so the body can't add or remove items or reach other elements. Nothing is copied or counted, and `unit` can't escape.
 - Positions are `int`s. A grid maps an `int` position to its own cell.
 - `IdMap`'s positions are its storage slots, and dead ones are skipped. A plain `for` still reads through `def iter(self)` with `yield`.
 
-*Why:* A get-and-set pair, like Python's `__getitem__` and `__setitem__`, copies each element out and back, and with copy-on-write an element that holds a collection would then copy on every iteration. `yield mut` stays cut: a lent place would have to stay locked across each suspension of a generator, and it can't be split for `parallel`. Positions add no new concept, never copy, and are what `parallel` splits by. Swift's `MutableCollection` works the same way, through an index and a subscript that writes in place.
+*Why:* A get-and-set pair, like Python's `__getitem__` and `__setitem__`, copies each element out and back, and with copy-on-write an element that holds a collection would then copy on every iteration. A `yield` that lends a place stays cut: a lent place would have to stay locked across each suspension of a generator, and it can't be split for `parallel`. Positions add no new concept, never copy, and are what `parallel` splits by. Swift's `MutableCollection` works the same way, through an index and a subscript that writes in place.
 
-**A collection can't be changed another way while it's being looped over or written through.** Inside `for x in xs:`, `for mut x in xs:` or the life of any `mut` path into `xs`, changing `xs` by any other route is a compile error naming the loop's line. This is the one exclusivity rule behind the existing errors for `for mut`, `parallel` and `mut x = place`, like Swift's law of exclusivity, and it needs no annotations.
+**A collection can't change size while it's being looped over, or be changed another way while a `ref` reaches it.** Inside `for x in xs:` or `for ref x in xs:`, adding or removing items is a compile error naming the loop's line. Inside `for ref x in xs:` or the life of any `ref` into `xs`, changing `xs` by any other route is one too. This is the one exclusivity rule behind the existing errors for `for ref` and `parallel`, like Swift's law of exclusivity, and it needs no annotations.
 ```fennec
 for enemy in enemies:
     if enemy.splits:
@@ -281,12 +311,34 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 **Math types are 32-bit.** `Vec3` and the other math types use 32-bit floats, and `float` stays 64-bit.
 *Why:* Twice the SIMD throughput for game math, while `float` stays accurate everywhere else.
 
-**The compiler tells LLVM that names don't alias.** Exclusive `mut` access proves no two names point at the same memory, so every function gets that guarantee for free. Fortran's speed comes from the same guarantee.
+**The compiler tells LLVM that names don't alias.** Exclusive `ref` access proves no two names point at the same memory, so every function gets that guarantee for free. Fortran's speed comes from the same guarantee.
 
 **Integer overflow is checked in release builds too.** Wrapping is opt-in: `x.wrapping_add(y)`.
 *Why:* A program that compiles should do what it says. The check costs about 1–2%, and the benchmark suite measures it.
 
 ## Functions and types
+
+**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose.
+```fennec
+sorted(scores)       # error: the result is ignored
+_ = sorted(scores)   # fine
+```
+*Why:* A function that returns something usually returns the point of calling it.
+
+**`copy(x, field=...)` makes a changed copy,** and re-runs any `where` rules on the fields it changes. `list(iterable)` builds a list, as in Python.
+```fennec
+healed = copy(unit, health=100)
+names = list(unit.name for unit in units)
+```
+
+**`case .Button(ref clicks):` changes a field inside an enum.**
+```fennec
+match ui[widget_id].kind:
+    case .Button(ref clicks):
+        clicks += 1
+    case _:
+        pass
+```
 
 **Parameters can have defaults, and a parameter with a default is passed by name only.**
 ```fennec
@@ -350,13 +402,16 @@ This replaces optional chaining with `?.`.
 name = units.get(id).name else "?"
 score = scores.get(team).get(player) else 0
 hp = (units.get(id).hp else 0) + 1
+target = units.get(target_id) else continue
+unit = units.get(unit_id) else return 0
+unit = units.get(unit_id) else fail ApiError.NotFound
 ```
 - Fields, calls and `[]` on an optional are allowed only in a chain that ends in `else`. The chain stops at the first missing or failing step and gives the default.
 - `else` covers only the chain right before it. A larger expression needs brackets.
-- `else` gives a value, so it doesn't cover actions. Calling a method for its effect on something that might be missing needs `if x is not None:`.
+- `else` gives a value or leaves, with `else continue`, `else return` or `else fail`. It doesn't cover actions. Calling a method for its effect on something that might be missing needs `if x is not None:`.
 - Without `else`, it's a compile error whose fix adds one or a check.
 
-*Why:* Each spelling says what the writer meant. `?` means this line can leave the function. `else` means missing or failed is fine here, so use this instead. `[]` means it must be there, so a missing value is a bug that stops with an error naming the step and the key.
+*Why:* Each spelling says what the writer meant. `?` means this line can leave the function. `else` means missing or failed is fine here, so use this instead, or leave, which the line says. `[]` means it must be there, so a missing value is a bug that stops with an error naming the step and the key.
 
 **`where` rules run on every write to a guarded field,** and on defaults at compile time: `health = 100 where health >= 0`. A rule looks only at its own field. An invariant across several fields goes in a named constructor or a method. Writes after construction aren't checked today, which is a bug.
 *Why:* A rule that only holds at construction promises something it doesn't deliver. Checking one field keeps each write's cost obvious.
@@ -402,7 +457,7 @@ This replaces the earlier rules that return types are inferred, and that recursi
 - The globals are `sum`, `min`, `max`, `any`, `all`, `sorted`, `zip`, `enumerate` and `range`. They use only iteration and a type's operators (`def +`, `def <`), so a user type joins them by defining its operators. There are no hooks and no dunders.
 - Everything type-specific is a method, including `xs.len()` and `x.abs()`. `len(xs)` and `abs(x)` are ordinary "no such function" errors, and the message points to the method.
 - `int(...)`, `str(...)` and `float(...)` are the types' constructors, not global functions.
-- `copy(x)` is the language's mark for a copy made on purpose. It works on any value and can't be defined by a type.
+- `copy(x)` is the language's mark for a copy made on purpose, and `copy(x, field=...)` changes fields as it copies. It works on any value and can't be defined by a type.
 ```fennec
 interface Signed:
     def abs(self) -> Self
@@ -437,7 +492,7 @@ Only with no expected type is a name shared by two enums ambiguous, and the erro
 ```fennec
 # parser/expr.fen
 extend Parser:
-    def parse_expr(mut self) -> Expr:
+    def parse_expr(ref self) -> Expr:
         ...
 ```
 An extension adds methods only, never fields, so a type's shape stays in its declaration. It works only on the kit's own types, never another kit's or the standard library's; the standard library extends its own types the same way.
@@ -452,7 +507,7 @@ extend list[T: Eq]:
     def index(self, x: T) -> int?: ...
 
 extend list[T: Ordered]:
-    def sort(mut self): ...
+    def sort(ref self): ...
 ```
 `count` exists only on lists whose elements can be compared with `==`, and `sort` only on lists whose elements can be ordered. Two methods with the same name on one type are an error, wherever they're written. The editor, `fennec doc` and `fennec context` list every method of a type in one place.
 *Why:* A type that many responsibilities attach to, like a parser, an interpreter or a game's `World`, is otherwise one huge file, or its methods become free functions with noisier calls. Swift, C#, Kotlin and Go all let a type's methods live in several files. Keeping it to the kit's own types means no one can change a type they don't own.
@@ -489,10 +544,10 @@ An interface inside another type, like `list[Shape]`, stays an error, as above.
 
 **A generic function can loop over a type at compile time, and that's the whole of compile-time generation.**
 ```fennec
-def write[T, W: Writer](x: T, mut out: W):
+def write[T, W: Writer](x: T, ref out: W):
     for f in fields(T):
         out.field(f.name)
-        write(f.get(x), mut out)
+        write(f.get(x), ref out)
 ```
 - `fields(T)` gives a struct's fields, each with its name, type and value. `cases(T)` gives an enum's cases. `*Cs` is a list of types, as in `world.query(Position, Velocity)`. `if T is int:` is decided at compile time.
 - Each set of types gets its own specialized copy, whatever the build.
@@ -559,21 +614,20 @@ struct Inventory:
 **Functions used as values never change anything around them.** An arrow function, or a nested `def` that's passed, stored or returned, captures the names it reads by value and can't change any of them. Capturing a `mut` name is an error, with a fix: bind it to a new name first.
 *Why:* Every closure that escapes is then a pure function of its inputs, safe to run in parallel, cache or replay. It needs no analysis of which closures escape and no marker on parameters that store one, and capturing costs a reference-count bump at most. Handlers return commands instead of changing state, and builtins and comprehensions build up values.
 
-**A nested `def` that's only called directly can change the enclosing function's `mut` names.**
+**A nested function can't change the names around it.** It takes a `ref` parameter instead.
 ```fennec
 def collect_leaves(tree: Tree) -> list[Tree]:
-    mut leaves = []
-    def visit(node: Tree):
+    def visit(node: Tree, ref leaves: list[Tree]):
         if node.children.len() == 0:
             leaves.append(node)
         for child in node.children:
-            visit(child)
-    visit(tree)
+            visit(child, ref leaves)
+    mut leaves = []
+    visit(tree, ref leaves)
     leaves
 ```
-*Why:* This is Python's most common closure pattern, and it needs no `nonlocal`. Whether a name is only ever called directly is trivial to check, and such a helper works on the enclosing function's variables in place, at no cost. `parallel` bodies still can't change outer names, including through helpers.
-
-This replaces the earlier rule that closures which don't escape may change captured `mut` names.
+This reverses the decision that a directly called nested function can change outer names, and the earlier rule that closures which don't escape may change captured `mut` names.
+*Why:* It was the one place something changed through a hidden link, with nothing at the call to show it. Now one rule covers it, and most counters are `sum(...)` anyway.
 
 ## Lifetimes
 
@@ -618,7 +672,7 @@ with db.transaction() as mut tx:
 **Each serialization format implements a `Writer` and `Reader` interface,** with one method per basic value and container. One generic function breaks any type down recursively, so structs need no code.
 *Why:* Types don't know about formats and formats don't know about types, so a new format is written once and works with every struct, and a new struct works with every format.
 
-**`def serialize(self, mut out: Serializer)` and `def deserialize(mut src: Deserializer) -> Self` are the serialization protocol,** shaped like `def str`.
+**`def serialize(self, ref out: Serializer)` and `def deserialize(ref src: Deserializer) -> Self fails ParseError` are the serialization protocol,** shaped like `def str`.
 - Both are generated from the fields by default: every field, with `@skip` and `@serialize(name=...)` honored, and loading goes through the normal constructor, so `where` rules run. Most types write neither.
 - A type overrides both or neither. Writing one alone is a compile error.
 - A collection writes them in plain Fennec: `out.sequence(self)`, which goes through `def iter`, or `out.map(pairs)`, read back with `src.sequence[T]()` or `src.map[K, V]()`. `std`'s `list`, `dict`, `Deque` and `SortedMap` do exactly this.
@@ -628,12 +682,12 @@ struct Ring[T]:
     _items = Buffer[T]()
     _start = 0
 
-    def serialize(self, mut out: Serializer):
+    def serialize(self, ref out: Serializer):
         out.sequence(self)                  # its items in order, through def iter
 
-    def deserialize(mut src: Deserializer) -> Self:
+    def deserialize(ref src: Deserializer) -> Self fails ParseError:
         mut ring = Ring[T]()
-        for item in src.sequence[T]():
+        for item in src.sequence[T]()?:
             ring.push(item)
         return ring
 ```
@@ -689,7 +743,7 @@ There's no per-format override, like a `def json` method on a type; one `def ser
 
 **Printing is one more format.** `print`, `str(x)` and f-strings all go through it.
 - By default a value prints from its fields, through the same generic breakdown as other formats.
-- A type that needs something else writes `def str(self, mut out: StrWriter)`.
+- A type that needs something else writes `def str(self, ref out: StrWriter)`.
 - `std` collections like `SortedMap` and `Deque` print their items, not their internals.
 
 *Why:* One mechanism covers printing and every data format, and it's how `std` types keep their internals hidden. The method is `str`, not `text`, because `text` would clash with common fields like `message.text`, while `str(x)` already means "make text of this".
@@ -717,7 +771,7 @@ struct Chat:
 
 type GameMsg = Move | Attack | Chat
 
-def play(mut conn: Connection, mut world: World) fails NetError:
+def play(ref conn: Connection, ref world: World) fails NetError:
     mut wire = conn.messages[GameMsg]()?
     wire.send(Chat(text="hello"))?
     for msg in wire:
@@ -761,15 +815,15 @@ from std.net import Connection, NetError
 
 def main(net: Net, stdout: Stdout):
     with net.listen(9000)? as server:
-        for conn in parallel(server):
-            match echo(mut conn):
+        for ref conn in parallel(server):
+            match echo(ref conn):
                 case Err(error):
                     stdout.print(f"{conn.peer} dropped: {error}")
                 case Ok(_):
                     stdout.print(f"{conn.peer} left")
 
 ## Sends back each line it's sent, until the client hangs up.
-def echo(mut conn: Connection) fails NetError:
+def echo(ref conn: Connection) fails NetError:
     for line in conn.lines():
         conn.write(f"{line}\n")?
 ```
@@ -878,7 +932,7 @@ A big program that wants walls between its own parts splits into local kits in o
 
 ## Files and kits
 
-**A kit is a folder with a `kit.toml` and its code under `src`.** `src/main.fen` holds `main`, and the module `enemies.ai` is the file `src/enemies/ai.fen`. `kit.toml` has `name`, `version` and `fennec`, the toolchain the kit is built with (see Toolchain). Until the launcher exists, a kit asking for a newer Fennec than the one running is an error. Its `[dependencies]` table names kits from the Den, or from git or a path (see Supply chain). `fennec run` and `fennec test` with no file run the kit around the current folder; `fennec test` runs the tests in every file under `src`.
+**A kit is a folder with a `kit.toml` and its code under `src`.** `src/main.fen` holds `main`, and the module `enemies.ai` is the file `src/enemies/ai.fen`. `kit.toml` has `name`, `version`, `edition` and `fennec`, the toolchain the kit is built with (see Toolchain). Until the launcher exists, a kit asking for a newer Fennec than the one running is an error. Its `[dependencies]` table names kits from the Den, or from git or a path (see Supply chain). `fennec run` and `fennec test` with no file run the kit around the current folder; `fennec test` runs the tests in every file under `src`.
 *Why:* One layout means no configuration, and finding a module's file needs no search.
 
 **A file uses another file's names only after importing them.** `from enemies import spawn` brings in names, and `import physics` brings in the module, used as `physics.step`. For a module in a folder, `import world.physics` is used as `world.physics.step`, and `from world import physics` as `physics.step`. A file's own names need no import.
@@ -892,7 +946,7 @@ A big program that wants walls between its own parts splits into local kits in o
 
 ## Concurrency
 
-**`shared Name:` is the only reference type.** It's a counted handle whose methods lock automatically: `mut self` writes and `self` reads.
+**`shared Name:` is the only reference type.** It's a counted handle whose methods lock automatically: `ref self` writes and `self` reads.
 ```fennec
 shared Cache:
     _pages = dict[str, Page]()
@@ -900,7 +954,7 @@ shared Cache:
     def get(self, key: str) -> Page?:
         return self._pages.get(key)
 
-    def set(mut self, key: str, page: Page):
+    def set(ref self, key: str, page: Page):
         self._pages[key] = page
 ```
 Calling `cache.set(key, page)` takes the lock for the call. To change several handles together, `with` locks them all, always in the same order:
@@ -933,8 +987,8 @@ def physics_loop(inbox: Channel[Cmd]):
     mut sim = Sim()
     while sim.running:
         for cmd in inbox.pending():
-            apply(mut sim, cmd)
-        step(mut sim)
+            apply(ref sim, cmd)
+        step(ref sim)
 
 with launch(physics_loop) as physics:
     physics.send(Cmd.Push(id, force))
@@ -968,7 +1022,7 @@ latest = Channel[Snapshot](size=1, when_full=.DropOldest)
 
 **`parallel` takes only collections and streams,** with no new keyword and an optional `limit=`:
 ```fennec
-for mut particle in parallel(particles):
+for ref particle in parallel(particles):
     particle.position += particle.velocity * dt
 
 total = sum(e.mass for e in parallel(enemies))
@@ -985,21 +1039,21 @@ with net.listen(8080) as server:
 
 *Why:* One word covers data across cores and connections from a server, and everything in it ends when its loop ends.
 
-**Tasks change only separate pieces.** `for mut e in parallel(enemies):` gives each iteration `mut` access to its own element, checked by the same rule that makes `mut` exclusive. Results combine through reductions, like `sum(... for e in parallel(xs))`.
+**Tasks change only separate pieces.** `for ref e in parallel(enemies):` gives each iteration `ref` access to its own element, checked by the same rule that makes `ref` exclusive. Results combine through reductions, like `sum(... for e in parallel(xs))`.
 
-**`parallel` splits a collection by position.** Anything with `def len` and an `int` `def []`, plus `def is_live` if it has one, splits with nothing more to write. These are the same positions `for mut` writes back through.
+**`parallel` splits a collection by position.** Anything with `def len` and an `int` `def []`, plus `def is_live` if it has one, splits with nothing more to write. These are the same positions `for ref` writes back through.
 ```fennec
-def step(mut units: IdMap[Unit], dt: float):
-    for mut unit in parallel(units):
+def step(ref units: IdMap[Unit], dt: float):
+    for ref unit in parallel(units):
         unit.pos += unit.vel * dt
     alive = sum(1 for unit in parallel(units) if unit.health > 0)
 ```
 - A reduction combines in a tree whose leaves are ranges of at most 1,024 positions, set by the length alone, as under Determinism. How work is scheduled for a `for` loop or a comprehension may still use the element size, since their order doesn't show in results: the work-stealing pool halves a range when a thread runs out of work, down to a smallest chunk the runtime picks.
-- `for mut x in parallel(xs)` gives each task a disjoint range. That's safe only if writing position `i` touches nothing but element `i`, so the compiler checks that the `mut` form of `def []` returns a place rooted in one field of `self` and indexed by `i` itself, like `return self._items[i]`. If it doesn't, `for mut` over `parallel(...)` is a compile error naming that method, and a plain `for mut` still works.
+- `for ref x in parallel(xs)` gives each task a disjoint range. That's safe only if writing position `i` touches nothing but element `i`, so the compiler checks that the `ref` form of `def []` returns a place rooted in one field of `self` and indexed by `i` itself, like `return self._items[i]`. If it doesn't, `for ref` over `parallel(...)` is a compile error naming that method, and a plain `for ref` still works.
 - `list` and `Buffer` split into contiguous ranges, which also vectorize. `IdMap` is cut at its chunk boundaries, so a task's writes touch only its own chunks. `Grid` is cut at rows. `Packed` gives each task whole lists to read. `dict`, `set`, `SortedMap` and `SortedSet` are read-only in parallel, split by their own internal ranges.
-- A type with only `def iter(self)` and `yield` can't be split, since each item depends on the last. It works as a source, as below, and `for mut` over it in parallel is a compile error that says to add positions.
+- A type with only `def iter(self)` and `yield` can't be split, since each item depends on the last. It works as a source, as below, and `for ref` over it in parallel is a compile error that says to add positions.
 
-*Why:* The positions a type already has for `def []` and `for mut` are exactly what splitting needs, and a fixed combine order falls out of splitting by length. Work-stealing libraries elsewhere have each type implement a splittable producer instead: a second interface every collection writes, whose writes the compiler can't check without lifetimes. Here a user type gets real parallelism for free, and one that can't prove separate writes still runs, in order.
+*Why:* The positions a type already has for `def []` and `for ref` are exactly what splitting needs, and a fixed combine order falls out of splitting by length. Work-stealing libraries elsewhere have each type implement a splittable producer instead: a second interface every collection writes, whose writes the compiler can't check without lifetimes. Here a user type gets real parallelism for free, and one that can't prove separate writes still runs, in order.
 
 **What `parallel` keeps in order:**
 1. `for x in parallel(xs):` runs the body in parallel, in any order.
@@ -1034,6 +1088,8 @@ Tests comparing against the interpreter sort output from parallel bodies, and he
 *Why:* Biased counts make it safe, so the restriction no longer buys anything.
 
 ## Syntax
+
+**Not added for now: `filter`, `where`, `->`, `char`, pipes or range types.** That's `units.filter(is_alive)` and `units.where(...)`, where a comprehension or generator already says it, `target_id->health` for following an `Id`, and a `char` type. `where` rules on fields stay, and so does `->` in signatures.
 
 **A module can hold constants.** `KEYWORDS = {"def", "if", "else"}` at the top level is an immutable name, computed when compiling from literals, collections and calls to functions that take no capabilities. There's still no `mut` at the top level, so there's no global state. UPPER_CASE is a convention the lint suggests, not a rule.
 *Why:* A table rebuilt inside a function on every call is what people write only when the language leaves them no choice. A constant is computed once, before the program runs.
@@ -1093,7 +1149,7 @@ rows = (parse(line) for line in lines if line != "")
 total = sum(row.amount for row in rows)
 ```
 - It's a handle: `b = a` is two names for one generator. A second use is a compile error where that can be proved. Otherwise it fails at run time with `this generator has already been used`, never quietly giving nothing.
-- A chain of stages is fused into one loop where possible. `map` and `filter` can come later.
+- A chain of stages is fused into one loop where possible. `map` can come later, and `filter` isn't added for now.
 - It isn't a list: `gen()[0]` and `gen().len()` are compile errors. `list(gen())` keeps the items.
 - What it sees is fixed when it's made, as with a nested `def`. `(x * k for x in xs)` works out `xs` at once and copies `k`.
 - Written right inside `sum`, `min`, `max`, `sorted`, `list`, `set`, `dict`, `any` or `all`, it runs in place, so it can change the names around it.
@@ -1115,10 +1171,10 @@ struct Ring:
         for at in range(self.slots.len()):
             yield self.slots[(self.start + at) % self.slots.len()]
 ```
-- `for mut` over a type with only `iter` is a compile error that says to add positions, since the items it makes are copies and a change to one would be lost. `list`, `Buffer` and `IdMap` keep `for mut`.
+- `for ref` over a type with only `iter` is a compile error that says to add positions, since the items it makes are copies and a change to one would be lost. `list`, `Buffer` and `IdMap` keep `for ref`.
 - A loop over `iter` fuses into a plain loop where it can, as any stage does.
 
-*Why:* A loop shouldn't copy a collection before it starts, and a `break` should stop the work. A `for mut` that quietly lost its changes was the bug this replaces.
+*Why:* A loop shouldn't copy a collection before it starts, and a `break` should stop the work. A `for` that quietly lost its changes was the bug this replaces.
 
 **Raw strings are `r"..."`.** Backslashes stay as written, so a pattern reads `r"\d+"`. A raw string can't contain `"`.
 *Why:* Regular expressions are unreadable with every backslash doubled. Python has the same strings, so people and AI already write them.
@@ -1134,7 +1190,7 @@ match tok:
     case .Name(word): self.expression()
 ```
 - Every alternative of an or-pattern binds the same names, with the same types.
-- A guard is read-only: it can't take `mut` arguments, so it can never change anything.
+- A guard is read-only: it can't take `ref` arguments, so it can never change anything.
 - A guarded arm never counts toward covering every case, so the exhaustiveness check stays sound: a `match` still needs an unguarded arm for each case, or it doesn't compile. Arms are tried in order.
 
 *Why:* An or-pattern says once what several arms would repeat, and a guard keeps a condition in the arm it belongs to. Neither costs anything at run time.
@@ -1159,6 +1215,10 @@ match tok:
 *Why:* A pattern from a mod, a config file or a player can't hang a game or a server.
 
 ## Toolchain
+
+**Windows ships self-contained, after a license check.** `opt`, `llc`, `llvm-link`, `lld` and MinGW's libraries ship with `fennec`, so nothing else needs installing. A person has to check the licenses first.
+
+**Editions let syntax change after 1.0.** A kit names its edition in `kit.toml`, as in `edition = "2026"`, and `fennec fix` moves it to the next one.
 
 **Each Fennec version is one self-contained compiler binary.** It holds `run`, `build`, `fmt`, `test`, and Den search and install, with LLVM linked into it. It needs no system libraries and no separate LLVM download.
 *Why:* Installing a version is copying one file, the way Zig works. Nothing on the machine can be missing or the wrong version.
@@ -1192,6 +1252,7 @@ Every tool ships in the `fennec` binary and has no configuration unless a settin
 - The language server: inlay hints for inferred types and error sets, hover docs, go to definition, rename, and lint fixes as code actions (including "make this `pub`"). It reuses the compiler's queries and cache.
 - Cost hints: the language server shows each line's copies, allocations and reference-count changes inline, the way it shows inferred types.
 - The copies lint, as above.
+- The tracer, which names the line and the reason for each copy and allocation: "`units` is copied here, because `backup` on line 9 still holds it". It's a core feature, along with `@hot`, which turns "should be free" into "must be free, or it won't compile". The tracer isn't built yet.
 
 *Why:* Inferred types and error sets need to be visible to be trusted, and a fixed style plus automatic fixes means AI and people write the same code. Cost hints show what code costs while it's written, not after a profiler finds it.
 
@@ -1227,7 +1288,7 @@ bench "collide 10k bullets":
 *Why:* Upgrading Fennec should never be a project.
 
 **`fennec fix` applies only fixes that provably can't change what a program does.** Formatting, removing a redundant type, naming arguments, writing in an inferred return type, removing a needless `else` and the like. It never prompts or asks questions, so agents and CI can run it on a whole kit.
-- A fix that would change what a program does or may do, like adding `mut`, `?`, an `else` default or `copy(...)`, is never applied by `fennec fix`. The compiler error shows it as a hint, "fix: declare it `mut people`", and the person or agent makes the edit by hand, so whoever writes it knows what they're changing. The editor may offer it as an explicit one-click action for people.
+- A fix that would change what a program does or may do, like adding `mut`, `ref`, `?`, an `else` default or `copy(...)`, is never applied by `fennec fix`. The compiler error shows it as a hint, "fix: declare it `mut people`", and the person or agent makes the edit by hand, so whoever writes it knows what they're changing. The editor may offer it as an explicit one-click action for people.
 - A check that every automatic fix leaves every example's output unchanged keeps the first group honest.
 
 *Why:* An automatic fix that changes meaning can quietly bless a bug: adding `mut` so `pop` compiles, when the real bug was calling `pop`. Interactive prompts break agents.
@@ -1373,7 +1434,7 @@ tools = { path = "../tools" }
 **Fennec has no REPL.** Running a small file is already quick, and one can come back as a pure addition if people ask.
 *Why:* This is a compiled language written mostly by AI, and it needs to be readable, fast to build and fast to run.
 
-**The tree-walking interpreter is kept for now, simple and correct, not fast.** It runs the playground, compile-time evaluation and the sandbox, and it's the test reference. The goal is to drop it as soon as we can, and what replaces each of its jobs, a test reference included, gets decided at that point.
+**Getting the tree-walking interpreter out of everything is the top goal, and it leaves one job at a time.** For now it keeps compile-time constants, fuzzing and the playground.
 
 **Every example that builds natively must give the same output as the interpreter.** An example that's refused goes on a tracked list, which must reach zero.
 
@@ -1445,11 +1506,11 @@ total = sum(d)                             # a Simd is a sequence
 **`f16` and `bf16` are number types.** Arithmetic uses the hardware where it exists, and otherwise widens to `f32` and narrows back, with the same results. 8-bit quantization already works with `i8` and `u8`.
 *Why:* ML inference is mostly limited by memory, and 16-bit weights halve it.
 
-**`.lanes[N]()` walks a buffer `N` elements at a time.** It's a method on `Buffer[T]`, `list[T]` and `GpuBuffer[T]`, giving `Simd[T, N]` values and a final partial chunk with a mask. `for mut` writes back. Bounds are checked once per chunk, and the tail mask means nothing reads past the end.
+**`.lanes[N]()` walks a buffer `N` elements at a time.** It's a method on `Buffer[T]`, `list[T]` and `GpuBuffer[T]`, giving `Simd[T, N]` values and a final partial chunk with a mask. `for ref` writes back. Bounds are checked once per chunk, and the tail mask means nothing reads past the end.
 ```fennec
-def scale(mut xs: list[f32], factor: f32):
+def scale(ref xs: list[f32], factor: f32):
     k = Simd[f32, 8].splat(factor)
-    for mut v in xs.lanes[8]():
+    for ref v in xs.lanes[8]():
         v *= k
 ```
 Plain loops and `parallel(...)` loops are still vectorized automatically where LLVM can. `Simd` is for when you want a guarantee.
@@ -1462,16 +1523,16 @@ Plain loops and `parallel(...)` loops are still vectorized automatically where L
 ```fennec
 from std import gpu
 
-def brighten(i: int, mut pixels: GpuBuffer[f32], amount: f32):
+def brighten(i: int, ref pixels: GpuBuffer[f32], amount: f32):
     pixels[i] = min(pixels[i] + amount, 1.0)
 
 def main(stdout: Stdout, gpu: Gpu):
     mut image = gpu.upload(load_pixels())
-    gpu.run(brighten, count=image.len(), mut image, 0.2)
+    gpu.run(brighten, count=image.len(), ref image, 0.2)
     pixels = gpu.download(image)            # waits for the GPU here
 ```
 - A kernel can't allocate, recurse, use capabilities, or use strings, lists or dicts. It works on numbers, `Simd` values, structs of numbers and `GpuBuffer`s.
-- Invocation `i` writes only element `i` of each `mut` buffer, and reads anything, the same rule as `for mut x in parallel(xs)`. Kernels can't race, and their results are deterministic. A write anywhere else is a compile error naming the line.
+- Invocation `i` writes only element `i` of each `ref` buffer, and reads anything, the same rule as `for ref x in parallel(xs)`. Kernels can't race, and their results are deterministic. A write anywhere else is a compile error naming the line.
 - Buffer indexing is bounds-checked, and range analysis removes the check where the index is provably the invocation's own.
 - `gpu.run` queues work and returns, and `gpu.download` waits for what was queued before it.
 
@@ -1601,7 +1662,15 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 - How an `Id`'s tag and generation behave across a restart, which decides what a saved `Id` means.
 - How `std.pack` data evolves: a lock file of past layouts with automatic migration rules, as Avro does. It comes later and adds to v1 without breaking it.
 - How a type marks that its finishing method must be called.
-- The syntax of the `mut` form of `def []`, which returns a place.
+- Whether the `ref` form of `def []` counts as returning a `ref`, which is otherwise refused.
+- How a task changes an item from a stream. `for ref conn in parallel(server):` is written here, but `for ref` needs positions, and a plain name can't be handed to a `ref`.
+- How `shared` fits: `ref self` needs a `mut` source, but a handle's name isn't `mut`, and `with a, b as mut x, mut y:` makes `mut` names that link to something else.
+- How `items()` works with `ref` on a user type, and whether `enumerate` stays beside it.
+- Whether `values()` and `keys()` also go from `dict`, where a plain `for` gives keys.
+- What replaces `xs.pair(i, j)`, and whether `f(ref xs[i], ref xs[j])` is always refused.
+- Whether a generator written right inside `sum` and the like can still change the names around it, now that comprehensions make new things.
+- How `fennec fix` handles the changes it can't make for you, since every breaking change is meant to ship with its own fix.
+- What takes over the sandbox and the test reference from the interpreter. Entries under Engines, Sandboxing, For AI and Kits on the Den still give them to it.
 - The exact API of event channels.
 - The API of `Graph`.
 - How replay records the order tasks reach a `shared` value or a channel.

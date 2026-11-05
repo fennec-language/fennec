@@ -196,8 +196,7 @@ impl Interp<'_> {
         let fixed = self.world.as_ref().filter(|world| !world.real()).map(TestWorld::now);
         match (method, args) {
             ("now", []) => {
-                let nanos = fixed
-                    .unwrap_or_else(|| i64::try_from(clock_start().elapsed().as_nanos()).unwrap_or(i64::MAX));
+                let nanos = fixed.unwrap_or_else(monotonic_nanos);
                 self.make_value("Instant", vec![("nanos", Value::Int(nanos))], span)
             }
             ("sleep", [Value::Instance(duration)]) if duration.type_name.as_ref() == "Duration" => {
@@ -402,6 +401,11 @@ impl Interp<'_> {
 fn clock_start() -> std::time::Instant {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     *START.get_or_init(std::time::Instant::now)
+}
+
+/// The monotonic clock's reading, in nanoseconds since it started.
+pub(crate) fn monotonic_nanos() -> i64 {
+    i64::try_from(clock_start().elapsed().as_nanos()).unwrap_or(i64::MAX)
 }
 
 fn lookup(pairs: &crate::pairs::Pairs, key: &Value) -> Option<Value> {

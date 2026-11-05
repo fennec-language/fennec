@@ -41,7 +41,8 @@ fn a_loop_can_change_what_it_doesnt_go_over() {
 
 #[test]
 fn a_loop_cant_change_what_it_goes_over() {
-    let changed = |shown: &str, at: &str| vec![format!("`{shown}` changes while a loop goes over it @ {at}")];
+    let changed =
+        |shown: &str, at: &str| vec![format!("you can't change `{shown}` while looping over it @ {at}")];
     assert_eq!(
         changes("for name in names:\n    names.append(name)\n"),
         changed("names", "names.append(name)")
@@ -64,21 +65,21 @@ fn a_loop_cant_change_what_it_goes_over() {
             "for name in names:\n    if name == \"ash\":\n        for other in names:\n            names.remove(other)\n"
         ),
         [
-            "`names` changes while a loop goes over it @ names.remove(other)",
-            "`names` changes while a loop goes over it @ names.remove(other)",
+            "you can't change `names` while looping over it @ names.remove(other)",
+            "you can't change `names` while looping over it @ names.remove(other)",
         ]
     );
     assert_eq!(
         helps(&format!(
             "{TEAM}\ndef main(stdout: Stdout):\n    mut names = [\"ash\"]\n    for name in names:\n        names.append(name)\n"
         )),
-        ["loop over `copy(names)`, or collect the changes and make them after the loop"]
+        ["use `for mut`, or loop over indexes"]
     );
 }
 
 #[test]
 fn writing_through_a_collection_changes_it_for_a_loop_over_it() {
-    let problem = ["`names` changes while a loop goes over it @ names"];
+    let problem = ["you can't change `names` while looping over it @ names"];
     for body in [
         "for mut name in names:\n    for mut other in names:\n        other += name\n",
         "for name in names:\n    for mut other in names:\n        other += name\n",
@@ -92,7 +93,7 @@ fn writing_through_a_collection_changes_it_for_a_loop_over_it() {
 fn a_function_that_writes_through_a_collection_changes_it() {
     let writes = "def shout(mut items: list[str]):\n    for mut item in items:\n        item = item.upper()\n\n\
                   def twice(mut items: list[str]):\n    shout(mut items)\n\n";
-    let problem = ["`names` changes while a loop goes over it @ names"];
+    let problem = ["you can't change `names` while looping over it @ names"];
     for call in ["shout", "twice"] {
         let body = format!("mut names = [\"a\"]\nfor name in names:\n    {call}(mut names)\n");
         assert_eq!(in_main_after(writes, &body), problem, "{call}");
@@ -116,7 +117,7 @@ fn a_for_mut_over_an_id_map_locks_it_too() {
     let body = "mut units = IdMap[int]()\nfor mut unit in units:\n    for mut other in units:\n        other += unit\n";
     assert_eq!(
         in_main_after("from std.game import IdMap\n\n", body),
-        ["`units` changes while a loop goes over it @ units"]
+        ["you can't change `units` while looping over it @ units"]
     );
 }
 
@@ -125,7 +126,7 @@ fn a_for_mut_isnt_told_to_loop_over_a_copy() {
     let help = helps(
         "def main(stdout: Stdout):\n    mut xs = [1]\n    for mut x in xs:\n        for mut y in xs:\n            y += x\n",
     );
-    assert_eq!(help, ["collect the changes and make them after the loop"]);
+    assert_eq!(help, ["loop over indexes, or collect the changes and make them after the loop"]);
 }
 
 const PLACES: &str = "struct Spot:

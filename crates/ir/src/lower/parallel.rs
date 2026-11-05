@@ -261,25 +261,7 @@ impl Lowering<'_> {
         let dest = passes_up.then(|| task.temporary(returns.clone()));
         task.emit(InstKind::Call { dest, function: inner, args }, span);
         if let (Some(result), Type::Result(_, error)) = (dest, &returns) {
-            // A failure passed up ends only this task, saying what it was.
-            let (failed, cause) = (task.temporary(Type::Bool), task.temporary((**error).clone()));
-            task.emit(InstKind::IsErr { dest: failed, value: Operand::Local(result) }, span);
-            let (stops, goes_on) = (task.new_block(), task.new_block());
-            task.finish(crate::Terminator::Branch {
-                cond: Operand::Local(failed),
-                then: stops,
-                otherwise: goes_on,
-            });
-            task.current = stops;
-            task.emit(InstKind::GetErr { dest: cause, value: Operand::Local(result) }, span);
-            let args = vec![Operand::Local(cause)];
-            task.emit(
-                InstKind::Builtin { dest: None, name: "task.failed".to_owned(), args, changes: false },
-                span,
-            );
-            let message = "this connection's task failed".to_owned();
-            task.finish(crate::Terminator::Stop { message, span });
-            task.current = goes_on;
+            task.stop_task_on_failure(result, error, span);
         }
         task.end_function(span)?;
         self.lifted.extend(task.finished(captures.len() + 1, Vec::new()));
@@ -290,6 +272,29 @@ impl Lowering<'_> {
         let call = InstKind::Builtin { dest: None, name: "parallel.serve".to_owned(), args, changes: false };
         self.emit(call, span);
         Ok(())
+    }
+
+    /// What a server's task does with a failure its body passed up: ends only itself, saying what
+    /// it was.
+    fn stop_task_on_failure(&mut self, result: LocalId, error: &Type, span: Span) {
+        let (failed, cause) = (self.temporary(Type::Bool), self.temporary(error.clone()));
+        self.emit(InstKind::IsErr { dest: failed, value: Operand::Local(result) }, span);
+        let (stops, goes_on) = (self.new_block(), self.new_block());
+        self.finish(crate::Terminator::Branch {
+            cond: Operand::Local(failed),
+            then: stops,
+            otherwise: goes_on,
+        });
+        self.current = stops;
+        self.emit(InstKind::GetErr { dest: cause, value: Operand::Local(result) }, span);
+        let args = vec![Operand::Local(cause)];
+        self.emit(
+            InstKind::Builtin { dest: None, name: "task.failed".to_owned(), args, changes: false },
+            span,
+        );
+        let message = "this connection's task failed".to_owned();
+        self.finish(crate::Terminator::Stop { message, span });
+        self.current = goes_on;
     }
 
     /// `[f(x) for x in parallel(xs)]` or `sum(f(x) for x in parallel(xs))`, lifted, when the

@@ -115,11 +115,12 @@ struct Server:
 
     ## Answers HTTP/1.1 with `handle`, each connection its own task, until the server is closed. A
     ## connection is kept open for more requests unless either side says to close it, and one that
-    ## sends nothing for `timeout` is closed. A request that's too big, or isn't HTTP, is answered
+    ## sends nothing for `timeout`, 30 seconds unless it says, is closed. A request that's too big, or isn't HTTP, is answered
     ## with the 4xx status that says so, without calling `handle`.
-    def serve(self, handle: (Request) -> Response, timeout: Duration = 30s):
+    def serve(self, handle: (Request) -> Response, timeout: Duration? = None):
+        waits = timeout else 30s
         for connection in parallel(self):
-            _ = _answer_all(connection, handle, timeout)
+            _ = _answer_all(connection, handle, waits)
 
     def del(self):
         self.close()

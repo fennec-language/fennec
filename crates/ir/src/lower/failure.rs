@@ -2,11 +2,13 @@
 //! to be `None`, and `is None`, `else`, `fail` and `?`.
 
 use fennec_check::{Signatures, Type};
-use fennec_syntax::{Arg, BinOp, Expr, ExprKind, Pattern, Span, UnaryOp};
+use fennec_syntax::{Arg, BinOp, Expr, ExprKind, FnDef, Pattern, Span, UnaryOp};
 
-use super::{Lowered, Lowering, Tail};
+use super::{Lowered, Lowering, Options, Tail};
 use crate::validate::fits;
-use crate::{BlockId, InstKind, Operand, StructDef, Terminator, type_in};
+use crate::{
+    Block, BlockId, Inst, InstKind, Local, LocalId, Operand, Program, StructDef, Terminator, type_in,
+};
 
 /// Every error type the IR can hold: not ones with `where` rules, which are checked
 /// whenever a value is made.
@@ -339,4 +341,45 @@ impl Lowering<'_> {
         self.emit(InstKind::GetSome { dest, value: value.clone() }, span);
         self.pattern(pattern, &Operand::Local(dest), inner, fail, span)
     }
+}
+
+/// If a backend asks, makes `main` end the program when it fails, rather than give a result back,
+/// so that it gives back nothing. Only a backend knows how to say what failed, as its text is
+/// worked out then.
+pub(super) fn stop_on_failed_main(program: &mut Program, defs: &[(String, &FnDef)], options: Options) {
+    let Some((_, def)) = defs.iter().find(|(key, _)| key == "main") else { return };
+    let Some(main) = program.functions.iter_mut().find(|function| function.name == "main") else {
+        return;
+    };
+    let Type::Result(ok, error) = main.returns.clone() else { return };
+    if !options.stop_on_failed_main || *ok != Type::Unit {
+        return;
+    }
+    main.returns = Type::Unit;
+    let span = def.span;
+    let inst = |kind| Inst { kind, span };
+    let mut added = Vec::new();
+    let first = main.blocks.len();
+    for block in &mut main.blocks {
+        let Terminator::Return(Some(value)) = block.end.clone() else { continue };
+        let (failed, cause) = (LocalId(main.locals.len()), LocalId(main.locals.len() + 1));
+        main.locals.push(Local { name: None, ty: Type::Bool, copied: false });
+        main.locals.push(Local { name: None, ty: (*error).clone(), copied: false });
+        let (then, otherwise) = (BlockId(first + added.len()), BlockId(first + added.len() + 1));
+        block.insts.push(inst(InstKind::IsErr { dest: failed, value: value.clone() }));
+        block.end = Terminator::Branch { cond: Operand::Local(failed), then, otherwise };
+        let says = InstKind::Builtin {
+            dest: None,
+            name: "main.failed".to_owned(),
+            args: vec![Operand::Local(cause)],
+            changes: false,
+        };
+        added.push(Block {
+            insts: vec![inst(InstKind::GetErr { dest: cause, value }), inst(says)],
+            // The text above is what stops it, and what a backend's checks see as stopping.
+            end: Terminator::Stop { message: "`main` failed".to_owned(), span },
+        });
+        added.push(Block { insts: Vec::new(), end: Terminator::Return(None) });
+    }
+    main.blocks.extend(added);
 }

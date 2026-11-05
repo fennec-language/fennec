@@ -190,7 +190,9 @@ pub(crate) fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: 
         | InstKind::MakeErr { dest, error: value }
         | InstKind::IsErr { dest, value }
         | InstKind::GetOk { dest, value }
-        | InstKind::GetErr { dest, value } => {
+        | InstKind::GetErr { dest, value }
+        | InstKind::IsError { dest, value, .. }
+        | InstKind::AsError { dest, value } => {
             read(value);
             write(*dest);
         }
@@ -2027,13 +2029,19 @@ fn find_last_copies(function: &Function, known: &mut Analysis) {
 
 /// Whether anything a function does itself can fail. Calling something counts, since a call is
 /// where the stack is checked.
+pub(crate) fn is_socket_method(name: &str) -> bool {
+    name.starts_with("Connection.") || name.starts_with("Server.")
+}
+
 fn fails_itself(function: &Function, known: &Analysis) -> bool {
     let inst_fails = |inst: &InstKind| match inst {
         InstKind::Binary { dest, op, lhs, rhs } => match (function.type_of(lhs), op) {
             (Some(Type::Int), BinOp::Add | BinOp::Sub | BinOp::Mul) => !known.is_safe(*dest),
             (Some(Type::Int), BinOp::FloorDiv | BinOp::Mod | BinOp::Div) => !matches!(rhs, Operand::Int(1..)),
             (Some(Type::Float), BinOp::Div | BinOp::FloorDiv | BinOp::Mod) => !known.is_nonzero(rhs),
-            (Some(Type::Int), BinOp::Pow) => true,
+            // Items of a list may order by a type's own `<`, which can fail.
+            (Some(Type::Int), BinOp::Pow | BinOp::ShiftLeft | BinOp::ShiftRight)
+            | (Some(Type::List(_)), BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => true,
             _ => false,
         },
         InstKind::Unary { dest, op: UnaryOp::Neg, value } => {
@@ -2047,6 +2055,10 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
         {
             true
         }
+        // A connection's or server's method runs in the runtime too.
+        InstKind::Builtin { name, .. } if is_socket_method(name) => true,
+        InstKind::Builtin { name, .. } if name.starts_with("crypto.") => true,
+        InstKind::Builtin { name, .. } if name.starts_with("json.") || name.starts_with("toml.") => true,
         InstKind::Builtin { name, .. } => {
             matches!(
                 name.as_str(),
@@ -2068,6 +2080,8 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "result.expect"
                     | "dict.pop"
                     | "random.random_int"
+                    | "random_choice"
+                    | "random.random_choice"
                     | "int"
                     | "math.floor"
                     | "math.ceil"
@@ -2078,6 +2092,8 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "max.key"
                     | "min.key"
                     | "list.remove"
+                    | "bytes"
+                    | "set.remove"
                     | "Regex.replace"
                     | "Regex.split"
                     | "Regex.find_all"
@@ -2098,6 +2114,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
         | InstKind::Slice { .. }
         | InstKind::CallClosure { .. }
         | InstKind::Resume { .. }
+        | InstKind::LockAll { .. }
         | InstKind::Constant { .. } => true,
         _ => false,
     };

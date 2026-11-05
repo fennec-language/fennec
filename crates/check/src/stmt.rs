@@ -65,6 +65,7 @@ impl FnCx<'_> {
                 if always_leaves(expr) { Flow::exit() } else { Flow { ty, exits: false } }
             }
             StmtKind::Assign { target, op, value, declare_mut, ty } => {
+                self.note_arrow(target, value);
                 self.assign(target, *op, value, *declare_mut, ty.as_ref());
                 Flow::unit()
             }
@@ -149,7 +150,11 @@ impl FnCx<'_> {
             error.span,
             "give back a value that says what went wrong, so what the lock guards isn't left half changed",
         );
-        let ty = self.expr(error);
+        // A leading-dot case here is a case of the error the function says it fails with.
+        let ty = match self.fails.clone() {
+            Some(fails) => self.expr_as(error, &fails),
+            None => self.expr(error),
+        };
         if self.checker.is_error_type(&ty) || matches!(ty, Type::Errors(_)) {
             self.errors.push(ty);
         } else if ty != Type::Unknown {
@@ -350,7 +355,21 @@ impl FnCx<'_> {
     }
 
     /// A function defined inside this one. It can read the names around it, but not change them.
+    /// `work = () => ...`: an arrow function given to a name, which may capture a handle.
+    fn note_arrow(&mut self, target: &Expr, value: &Expr) {
+        let (ExprKind::Name(name), ExprKind::Lambda { params, body }) = (&target.kind, &value.kind) else {
+            return;
+        };
+        let mut reads = Vec::new();
+        fennec_syntax::visit::in_expr(&mut body.as_ref().clone(), &mut |seen| names_read(seen, &mut reads));
+        self.note_closure(name, &reads, params);
+    }
+
     fn nested(&mut self, def: &FnDef) {
+        let mut reads = Vec::new();
+        fennec_syntax::visit::in_function(&mut def.clone(), &mut |seen| names_read(seen, &mut reads));
+        let own: Vec<String> = def.params.iter().map(|param| param.name.clone()).collect();
+        self.note_closure(&def.name, &reads, &own);
         let key = format!("{}.{}", self.key, def.name);
         let mut captured = self.visible();
         let function = Type::Function(key.clone());
@@ -421,5 +440,11 @@ fn block_leaves(stmts: &[Stmt]) -> bool {
         }
         Some(StmtKind::Expr(inner)) => always_leaves(inner),
         _ => false,
+    }
+}
+
+fn names_read(expr: &Expr, reads: &mut Vec<String>) {
+    if let ExprKind::Name(name) = &expr.kind {
+        reads.push(name.clone());
     }
 }

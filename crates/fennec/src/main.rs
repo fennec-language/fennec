@@ -52,6 +52,8 @@ const USAGE: &str = "usage:
   fennec lint [path]        what the checker and linter find, and hints about what may copy or allocate;
                             add --json to either for JSON on standard output
   fennec fix [path]         make the fixes the type checker and linter suggest, in a kit or a .fen file
+  fennec fix --mut-to-ref [path ...]
+                            write `ref` for `mut` on loops, parameters, arguments and `with` names
   fennec lsp                the language server, for editors, over standard input and output
   fennec daemon <action>    the build daemon: `status` or `stop`; commands start it
   fennec --version          show the version
@@ -107,6 +109,7 @@ fn main() -> ExitCode {
         ["check", "--json"] => on_big_stack(lint::check_json, "."),
         ["check", "--json", path] => on_big_stack(lint::check_json, path),
         ["check", path] => on_big_stack(lint::check, path),
+        ["fix", "--mut-to-ref", paths @ ..] => fix::mut_to_ref(paths),
         ["fix"] => fix::fix("."),
         ["fix", path] => fix::fix(path),
         ["dev", "bench", path, name, rest @ ..] if rest.is_empty() || *rest == ["--start-only"] => {

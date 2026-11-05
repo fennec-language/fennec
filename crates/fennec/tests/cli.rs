@@ -83,7 +83,7 @@ fn run_hands_main_its_arguments_and_input() {
 fn run_reports_errors_and_fails() {
     let output = fennec(&["run", "examples/errors/print.fen"], "").unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(text(&output.stderr).starts_with("error: `print` doesn't exist"));
+    assert!(text(&output.stderr).starts_with("error: there's no global `print`"));
 }
 
 #[test]
@@ -1286,6 +1286,247 @@ fn fix_writes_in_return_types_and_removes_arrows_to_none() {
     assert!(again.status.success() && again.stdout.is_empty());
 }
 
+/// Enums with a case in common, which only the expected type can tell apart, and an error.
+const CASES_BEFORE: &str = "enum Color:
+    Red
+    Green(shade: int)
+
+    def warm() -> Color:
+        Color.Red
+
+enum Light:
+    Red
+    Off
+
+error DialError:
+    NotFound(host: str)
+    Closed
+
+struct Car:
+    color: Color
+
+def pick(n: int) -> Color:
+    if n == 0:
+        return Color.Red
+    Color.Green(n)
+
+def maybe() -> Color?:
+    Color.Red
+
+def shown(color: Color) -> str:
+    match color:
+        case Red: \"red\"
+        case Green(shade): f\"green {shade}\"
+
+def dial(n: int) -> int fails DialError:
+    if n == 0:
+        fail DialError.Closed
+    fail DialError.NotFound(\"host\")
+
+def unsaid() -> int:
+    fail DialError.Closed
+
+def main(stdout: Stdout):
+    car = Car(color=Color.Red)
+    mut other: Color = Color.Green(1)
+    stdout.print(shown(other))
+    other = Color.Red
+    kept = Color.Red
+    many = [Color.Red]
+    light = Light.Red
+    warm: Color = Color.warm()
+    stdout.print(shown(pick(0)), shown(car.color), other == Color.Red, shown(kept), many.len(), light == Light.Off)
+    stdout.print(shown(warm), maybe() == Color.Red)
+    match dial(0):
+        case Err(Closed): stdout.print(\"closed\")
+        case Err(_): stdout.print(\"other\")
+        case Ok(_): stdout.print(\"open\")
+    match unsaid():
+        case Err(_): stdout.print(\"failed\")
+        case Ok(_): stdout.print(\"fine\")
+";
+
+/// What `fennec fix` makes of `CASES_BEFORE`: a dot wherever the type is known, and nothing where
+/// it isn't, or where a dot would mean something else.
+const CASES_AFTER: &str = "enum Color:
+    Red
+    Green(shade: int)
+
+    def warm() -> Color:
+        .Red
+
+enum Light:
+    Red
+    Off
+
+error DialError:
+    NotFound(host: str)
+    Closed
+
+struct Car:
+    color: Color
+
+def pick(n: int) -> Color:
+    if n == 0:
+        return .Red
+    .Green(n)
+
+def maybe() -> Color?:
+    .Red
+
+def shown(color: Color) -> str:
+    match color:
+        case .Red: \"red\"
+        case .Green(shade): f\"green {shade}\"
+
+def dial(n: int) -> int fails DialError:
+    if n == 0:
+        fail .Closed
+    fail .NotFound(\"host\")
+
+def unsaid() -> int:
+    fail DialError.Closed
+
+def main(stdout: Stdout):
+    car = Car(color=.Red)
+    mut other: Color = .Green(1)
+    stdout.print(shown(other))
+    other = .Red
+    kept = Color.Red
+    many = [Color.Red]
+    light = Light.Red
+    warm: Color = Color.warm()
+    stdout.print(shown(pick(0)), shown(car.color), other == .Red, shown(kept), many.len(), light == .Off)
+    stdout.print(shown(warm), maybe() == .Red)
+    match dial(0):
+        case Err(Closed): stdout.print(\"closed\")
+        case Err(_): stdout.print(\"other\")
+        case Ok(_): stdout.print(\"open\")
+    match unsaid():
+        case Err(_): stdout.print(\"failed\")
+        case Ok(_): stdout.print(\"fine\")
+";
+
+/// `fennec fix` writes `.Case` where the type is known, and the program does what it did, on every
+/// engine.
+#[test]
+fn fix_writes_leading_dots_where_the_type_is_known() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-short-cases", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("cases.fen");
+    let path = program.to_string_lossy().into_owned();
+    std::fs::write(&program, CASES_BEFORE).unwrap();
+    let before = fennec(&["run", "--interp", &path], "").unwrap();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    let again = fennec(&["fix", &path], "").unwrap();
+    let after: Vec<_> = [["run", "--interp"], ["run", "--jit"]]
+        .map(|how| fennec(&[how[0], how[1], &path], "").unwrap())
+        .into();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(before.status.success(), "{}", text(&before.stderr));
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(written, CASES_AFTER);
+    assert!(again.status.success() && again.stdout.is_empty(), "{}", text(&again.stdout));
+    for run in after {
+        assert_eq!(text(&run.stdout), text(&before.stdout), "{}", text(&run.stderr));
+    }
+}
+
+/// In a kit, the leading dot of a case its own file declares comes to the checker with its enum
+/// written in, as another file may have a case by that name. That's nothing to fix, so `fennec fix`
+/// has to settle.
+#[test]
+fn fix_leaves_leading_dots_alone_in_a_kit() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-short-cases-kit", std::process::id()));
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"cases\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    let main = "from lights import Light, on\n\nenum Color:\n    Red\n    Blue\n\ndef warm() -> Color:\n    .Red\n\ndef shown(color: Color) -> str:\n    match color:\n        case .Red: \"red\"\n        case .Blue: \"blue\"\n\ndef main(stdout: Stdout):\n    light: Light = .Red\n    stdout.print(shown(warm()), on() == light)\n";
+    let lights = "enum Light:\n    Red\n    Off\n\ndef on() -> Light:\n    .Red\n";
+    std::fs::write(dir.join("src/lights.fen"), lights).unwrap();
+    std::fs::write(dir.join("src/main.fen"), main).unwrap();
+    let folder = dir.to_string_lossy().into_owned();
+    let fixed = fennec(&["fix", &folder], "").unwrap();
+    let written = std::fs::read_to_string(dir.join("src/main.fen")).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}{}", text(&fixed.stdout), text(&fixed.stderr));
+    assert!(fixed.stdout.is_empty(), "{}", text(&fixed.stdout));
+    assert_eq!(written, main);
+}
+
+/// `print` where the function has a `Stdout` is fixed, and with none there's nothing to write.
+#[test]
+fn fix_writes_the_stdout_a_function_has() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-fix-print", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("print.fen");
+    let path = program.to_string_lossy().into_owned();
+    std::fs::write(&program, "def main(out: Stdout):\n    print(\"hello\")\n").unwrap();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    std::fs::write(&program, "def main():\n    print(\"hello\")\n").unwrap();
+    let unfixed = fennec(&["fix", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(written, "def main(out: Stdout):\n    out.print(\"hello\")\n");
+    assert_eq!(unfixed.status.code(), Some(1));
+    assert!(text(&unfixed.stderr).contains("def main(stdout: Stdout):"), "{}", text(&unfixed.stderr));
+}
+
+/// A program with `mut` in each place that moves to `ref`.
+const MUT_IN_EACH_PLACE: &str = "struct Counter:\n    count: int\n\n    def bump(mut self):\n        self.count += 1\n\ndef grow(mut items: list[int]):\n    items.append(3)\n\ndef main(stdout: Stdout):\n    mut items = [1, 2]\n    grow(mut items)\n    for mut item in items:\n        item += 1\n    mut counter = Counter(count=0)\n    counter.bump()\n    stdout.print(items, counter.count)\n";
+
+/// `fennec fix --mut-to-ref` writes `ref`, and the program does what it did.
+#[test]
+fn fix_writes_ref_only_when_asked() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-mut-to-ref", std::process::id()));
+    std::fs::create_dir_all(dir.join("inner")).unwrap();
+    let program = dir.join("inner/program.fen");
+    let path = program.to_string_lossy().into_owned();
+    std::fs::write(&program, MUT_IN_EACH_PLACE).unwrap();
+    let before = fennec(&["run", &path], "").unwrap();
+    assert!(before.status.success(), "{}", text(&before.stderr));
+
+    let plain = fennec(&["fix", &path], "").unwrap();
+    assert!(plain.status.success(), "{}", text(&plain.stderr));
+    assert!(std::fs::read_to_string(&program).unwrap().contains("(mut self)"));
+
+    let folder = dir.to_string_lossy().into_owned();
+    let fixed = fennec(&["fix", "--mut-to-ref", &folder], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    let again = fennec(&["fix", "--mut-to-ref", &path], "").unwrap();
+    let after = fennec(&["run", &path], "").unwrap();
+    let formatted = fennec(&["fmt", "--check", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    assert!(fixed.status.success() && text(&fixed.stdout).starts_with("fixed "), "{}", text(&fixed.stderr));
+    assert_eq!(written, MUT_IN_EACH_PLACE.replace("(mut ", "(ref ").replace("for mut", "for ref"));
+    assert!(written.contains("    mut items = [1, 2]\n"), "{written}");
+    assert!(again.status.success() && again.stdout.is_empty());
+    assert_eq!(text(&after.stdout), text(&before.stdout), "{}", text(&after.stderr));
+    assert!(formatted.status.success(), "{}", text(&formatted.stderr));
+}
+
+/// It says what a person has to read, and goes past a file it can't read.
+#[test]
+fn fix_to_ref_says_what_it_left() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-mut-left", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.fen"), "x = \"never closed\n").unwrap();
+    std::fs::write(dir.join("b.fen"), "# takes a `mut` list\ndef f(mut items: list[int]):\n    pass\n")
+        .unwrap();
+    let folder = dir.to_string_lossy().into_owned();
+    let output = fennec(&["fix", "--mut-to-ref", &folder], "").unwrap();
+    let written = std::fs::read_to_string(dir.join("b.fen")).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let said = text(&output.stderr);
+    assert!(output.status.success(), "{said}");
+    assert!(said.contains("a.fen: it can't be read"), "{said}");
+    assert!(said.contains("b.fen:1: this still says `mut`"), "{said}");
+    assert_eq!(written, "# takes a `mut` list\ndef f(ref items: list[int]):\n    pass\n");
+}
+
 #[test]
 fn fix_reports_what_it_cant_fix() {
     let output =
@@ -1636,4 +1877,55 @@ fn constants_are_worked_out_while_compiling() {
         "{}",
         text(&output.stderr)
     );
+}
+
+/// A build refuses what `check` and a run refuse, including a copy each time round a loop.
+#[test]
+fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
+    let dir = std::env::temp_dir().join(format!("fennec_build_refuses_{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("copies.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    mut xs = [1]\n    mut history = [[0]]\n    for frame in range(3):\n        \
+         history.append(xs)\n        xs.append(frame)\n    stdout.print(history, xs)\n",
+    )?;
+    let program = program.to_string_lossy().into_owned();
+    let executable = dir.join("copies").to_string_lossy().into_owned();
+    let checked = fennec(&["check", &program], "")?;
+    assert!(!checked.status.success());
+    assert!(text(&checked.stderr).contains("is copied each time"), "{}", text(&checked.stderr));
+    for build in
+        [vec!["build", &program, "-o", &executable], vec!["build", "--llvm", &program, "-o", &executable]]
+    {
+        let built = fennec(&build, "")?;
+        assert!(!built.status.success(), "{build:?}");
+        assert!(text(&built.stderr).contains("is copied each time"), "{build:?}: {}", text(&built.stderr));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// What a copy names is the item it's in, as it's written.
+#[test]
+fn a_copy_names_the_item_it_is_in() -> std::io::Result<()> {
+    let dir = std::env::temp_dir().join(format!("fennec_copy_names_{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("items.fen");
+    for (at, said) in [("0", "units[0].tags"), ("at", "units[at].tags")] {
+        std::fs::write(
+            &program,
+            format!(
+                "struct Unit:\n    tags: list[int]\n\ndef main(stdout: Stdout):\n    mut units = [Unit(tags=[1])]\n    \
+                 at = 0\n    for round in range(3):\n        held = units[{at}]\n        units[{at}].tags.append(round)\n        \
+                 stdout.print(held.tags, at)\n"
+            ),
+        )?;
+        let checked = fennec(&["check", &program.to_string_lossy()], "")?;
+        let told = text(&checked.stderr);
+        assert!(told.contains(&format!("`{said}` is copied each time round the loop")), "{told}");
+        assert!(told.contains(&format!("write `copy({said})`")), "{told}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }

@@ -337,7 +337,11 @@ pub(in crate::embed) fn release(state: &mut State, address: u64) {
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
+    use super::Heap;
     use crate::embed::{Tables, finish, start, with};
+    use crate::packed::Element;
 
     /// Frees `count` blocks of `words` words at once, as a program dropping a big structure does.
     fn free_many(count: usize, words: usize) {
@@ -350,12 +354,39 @@ mod tests {
     }
 
     #[test]
+    fn a_heap_knows_which_lists_hold_no_blocks_only_from_its_plans() {
+        let elements = [Rc::new(Element::Int), Rc::new(Element::Str)];
+        let heap = Heap::default().planned(&[], &elements);
+        assert!(heap.items_hold_nothing(0));
+        assert!(!heap.items_hold_nothing(1));
+        assert!(!heap.items_hold_nothing(2), "a kind it hasn't a plan for");
+        assert!(!Heap::default().items_hold_nothing(0), "a worker's heap, which has none");
+    }
+
+    /// One size freed over and over, which nothing asks for again, takes only its share, leaving room
+    /// for the others: a string of each length is mostly made fresh, not reused.
+    #[test]
+    fn no_one_size_takes_all_a_heap_keeps_for_reuse() {
+        let module = fennec_syntax::Module { items: Vec::new() };
+        start(&module, Tables::default(), crate::Inputs::default()).unwrap();
+        free_many(400_000, 7);
+        with(|state| {
+            let sevens = state.heap.spare.get(7).map_or(0, Vec::len) * 7;
+            assert!(sevens <= super::super::SPARE_SIZE_WORDS, "{sevens} words of one size");
+            assert!(sevens > super::super::SPARE_SIZE_WORDS - 7, "it kept less than its share");
+        });
+        free_many(1_000, 4);
+        with(|state| assert_eq!(state.heap.spare.get(4).map_or(0, Vec::len), 1_000, "room for the next"));
+        finish();
+    }
+
+    #[test]
     fn what_a_heap_keeps_for_reuse_stays_under_its_limit_however_much_is_freed() {
         let module = fennec_syntax::Module { items: Vec::new() };
         start(&module, Tables::default(), crate::Inputs::default()).unwrap();
-        // Blocks of four words fill the limit exactly, and all of it gets used.
+        // Blocks of four words fill their size's share exactly, and all of it gets used.
         free_many(400_000, 4);
-        with(|state| assert_eq!(state.heap.spare_words, super::super::SPARE_TOTAL_WORDS));
+        with(|state| assert_eq!(state.heap.spare_words, super::super::SPARE_SIZE_WORDS));
         for words in [4, 5, 16, 100] {
             free_many(400_000, words);
             with(|state| {

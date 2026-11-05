@@ -69,6 +69,17 @@ impl Interp<'_> {
                 }
                 Ok(true)
             }
+            (Value::Shared(one), Value::Shared(_)) => {
+                let name = one.borrow().type_name();
+                let own = self.own_equality.contains(&name).then(|| self.type_info(&name)).flatten();
+                match own.and_then(|info| info.methods.get("==").cloned()) {
+                    Some(own) => {
+                        let same = self.call_with_values(&own, vec![a.clone(), b.clone()], span)?;
+                        Ok(same == Value::Bool(true))
+                    }
+                    None => Ok(a == b),
+                }
+            }
             (Value::List(one), Value::List(other)) | (Value::Tuple(one), Value::Tuple(other)) => {
                 if one.len() != other.len() {
                     return Ok(false);

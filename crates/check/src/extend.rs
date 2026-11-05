@@ -128,7 +128,7 @@ fn not_own(name: &str, why: &str, extension: &Extension) -> Diagnostic {
 /// help suggests naming them.
 fn built_in_params(name: &str) -> Option<&'static [&'static str]> {
     match name {
-        "list" | "set" | "Buffer" => Some(&["T"]),
+        "list" | "set" | "Buffer" | "Optional" => Some(&["T"]),
         "dict" => Some(&["K", "V"]),
         _ => None,
     }

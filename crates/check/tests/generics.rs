@@ -724,3 +724,147 @@ def build[T: Made]() -> T:
     let found = problems(&misfits);
     assert!(found.iter().any(|problem| problem.contains("isn't a `Made`")), "{found:?}");
 }
+
+#[test]
+fn a_method_that_changes_its_value_doesnt_fit_an_interfaces_self() {
+    let source = "interface Source:\n    def next(self) -> int\n\n\
+                  struct Count:\n    left = 2\n\n    def next(mut self) -> int:\n        self.left -= 1\n        self.left\n\n\
+                  def two(source: Source) -> int:\n    source.next() + source.next()\n\n\
+                  def main(stdout: Stdout):\n    counter = Count()\n    stdout.print(two(counter))\n";
+    let found = problems(source);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("it has no `next(self) -> int`. Its `next` changes `self`"), "{found:?}");
+    let helped = helps(source);
+    assert!(
+        helped.iter().any(|help| help.contains("write `mut self` in the interface's `next`")),
+        "{helped:?}"
+    );
+}
+
+#[test]
+fn an_interfaces_mut_self_fits_a_method_that_changes_it_or_one_that_doesnt() {
+    let empty: [&str; 0] = [];
+    let source = "interface Source:\n    def next(mut self) -> int\n\n\
+                  struct Count:\n    left = 2\n\n    def next(mut self) -> int:\n        self.left -= 1\n        self.left\n\n\
+                  struct Fixed:\n    held = 7\n\n    def next(self) -> int:\n        self.held\n\n\
+                  def two(mut source: Source) -> int:\n    source.next() + source.next()\n\n\
+                  def main(stdout: Stdout):\n    mut counter = Count()\n    mut fixed = Fixed()\n    \
+                  stdout.print(two(mut counter), counter.left, two(mut fixed))\n";
+    assert_eq!(problems(source), empty);
+}
+
+#[test]
+fn a_function_with_no_self_has_its_first_parameter_compared_too() {
+    let source = "interface Made:\n    def make(size: int) -> Self\n\n\
+                  struct Part:\n    size = 1\n\n    def make(size: str) -> Self:\n        Self(size=size.len())\n\n\
+                  def build[T: Made]() -> T:\n    T.make(1)\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(build[Part]().size)\n";
+    let found = problems(source);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("takes other arguments"), "{found:?}");
+}
+
+#[test]
+fn what_might_be_missing_can_be_saved_when_what_it_holds_can() {
+    let empty: [&str; 0] = [];
+    let types = "struct Plain:\n    work: (int) -> int\n\ndef plains() -> list[Plain]:\n    []\n\ndef saved[T: Serializable](x: T) -> int:\n    1\n\ndef loaded[T: Deserializable]() -> int:\n    1\n";
+    let body =
+        "words: list[str?] = [None]\nstdout.print(saved(words), loaded[int?](), loaded[list[str?]]())\n";
+    assert_eq!(crate::in_main_after(types, body), empty);
+    let found = crate::in_main_after(types, "plains: list[Plain?] = [None]\nstdout.print(saved(plains))\n");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("isn't a `Serializable`"), "{found:?}");
+    let found = crate::in_main_after(types, "stdout.print(saved(plains()))\n");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("isn't a `Serializable`"), "{found:?}");
+}
+
+const SAVED: &str = "struct Spot:
+    x = 0
+
+struct Holder:
+    spot: Spot
+    spots = list[Spot]()
+    label: str?
+
+struct Listener:
+    on_change: (int) -> int
+    size = 1
+
+struct Inventory:
+    listener: Listener
+    items = list[int]()
+
+struct Character:
+    inventory: Inventory
+
+shared Cell:
+    count = 0
+
+struct Celled:
+    cell: Cell
+
+struct Quiet:
+    @skip
+    cell: Cell? = None
+    size = 1
+
+def saved[T: Serializable](x: T) -> int:
+    1
+
+def loaded[T: Deserializable]() -> int:
+    1
+";
+
+#[test]
+fn a_type_saves_and_loads_when_all_its_fields_can() {
+    let empty: [&str; 0] = [];
+    let body = "stdout.print(loaded[Spot](), loaded[Holder](), loaded[list[Holder]](), loaded[Quiet]())\n";
+    assert_eq!(crate::in_main_after(SAVED, body), empty);
+}
+
+#[test]
+fn what_cant_be_saved_names_where_it_is_and_the_fixes() {
+    let found = crate::in_main_after(SAVED, "stdout.print(loaded[Character]())\n");
+    assert_eq!(
+        found,
+        [
+            "`Character` isn't a `Deserializable`: `Character.inventory.listener.on_change` is a function, which can't be saved @ loaded[Character]()"
+        ]
+    );
+    let helped =
+        helps(&format!("{SAVED}\ndef main(stdout: Stdout):\n    stdout.print(loaded[Character]())\n"));
+    assert_eq!(
+        helped,
+        [
+            "`@skip` the field `on_change`, with a default, or write `def serialize` and `def deserialize` for `Listener`"
+        ]
+    );
+    let found = crate::in_main_after(SAVED, "stdout.print(loaded[Celled]())\n");
+    assert_eq!(
+        found,
+        [
+            "`Celled` isn't a `Deserializable`: `Celled.cell` is `shared`, which can't be saved @ loaded[Celled]()"
+        ]
+    );
+}
+
+#[test]
+fn a_type_writes_both_or_neither() {
+    let one =
+        "struct Spot:\n    x = 0\n\n    def serialize(self, mut out: Serializer):\n        out.int(self.x)\n";
+    assert_eq!(problems(one), ["`Spot` writes `def serialize` but not `def deserialize` @ struct Spot"]);
+    let other = "struct Spot:\n    x = 0\n\n    def deserialize(mut src: Deserializer) -> Self fails ParseError:\n        Spot(x=src.int()?)\n";
+    assert_eq!(problems(other), ["`Spot` writes `def deserialize` but not `def serialize` @ struct Spot"]);
+    let empty: [&str; 0] = [];
+    let both = "struct Spot:\n    x = 0\n\n    def serialize(self, mut out: Serializer):\n        out.int(self.x)\n\n    def deserialize(mut src: Deserializer) -> Self fails ParseError:\n        Spot(x=src.int()?)\n";
+    assert_eq!(problems(both), empty);
+}
+
+#[test]
+fn a_program_that_doesnt_save_isnt_given_the_methods() {
+    let source = "struct Spot:\n    x = 0\n\ndef main(stdout: Stdout):\n    stdout.print(Spot().x)\n";
+    let signatures = crate::check(source).unwrap();
+    assert!(signatures.get("Spot.serialize").is_none());
+    assert!(signatures.get("Spot.deserialize").is_none());
+}

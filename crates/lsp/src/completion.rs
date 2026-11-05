@@ -55,7 +55,7 @@ const BUILTINS: [&str; 23] = [
 
 /// The words the language keeps, with those that are keywords only where a statement or a
 /// declaration starts.
-const KEYWORDS: [&str; 39] = [
+const KEYWORDS: [&str; 40] = [
     "and",
     "as",
     "assert",
@@ -87,6 +87,7 @@ const KEYWORDS: [&str; 39] = [
     "not",
     "or",
     "pass",
+    "ref",
     "return",
     "shared",
     "struct",

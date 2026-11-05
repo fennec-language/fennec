@@ -13,11 +13,11 @@ fn habits_from_other_languages_get_a_hint() {
     let hints = [
         (
             "print(1)",
-            "there's no global output: write with the `stdout` that `main` receives, like `stdout.print(x)`",
+            "a function reaches outside itself only through what's in its signature: write `stdout.print(...)`",
         ),
         (
             "console",
-            "there's no global output: write with the `stdout` that `main` receives, like `stdout.print(x)`",
+            "a function reaches outside itself only through what's in its signature: write `stdout.print(...)`",
         ),
         ("x = true", "write `True` or `False`"),
         ("x = false", "write `True` or `False`"),
@@ -33,6 +33,77 @@ fn habits_from_other_languages_get_a_hint() {
         let program = format!("def main(stdout: Stdout):\n    {body}\n");
         assert_eq!(helps(&program), [help], "{body}");
     }
+}
+
+/// `print` is the first thing a newcomer writes, so what it says fits where it's written.
+#[test]
+fn print_says_what_to_do_where_it_is() {
+    const WHY: &str = "a function reaches outside itself only through what's in its signature";
+    for (program, help) in [
+        (
+            "def main():\n    print(1)\n",
+            format!("{WHY}, so write `def main(stdout: Stdout):`, then `stdout.print(...)`"),
+        ),
+        (
+            "def report(x: int):\n    print(x)\n\ndef main(stdout: Stdout):\n    report(1)\n",
+            format!(
+                "{WHY}, so give `report` a `stdout: Stdout` parameter and pass it from `main`, then `stdout.print(...)`"
+            ),
+        ),
+        (
+            "test \"it\":\n    print(1)\n",
+            format!("{WHY}, so give this test a `(stdout: Stdout)` after its name, then `stdout.print(...)`"),
+        ),
+        (
+            "def report(out: Stdout):\n    print(1)\n\ndef main(stdout: Stdout):\n    report(stdout)\n",
+            format!("{WHY}: write `out.print(...)`"),
+        ),
+    ] {
+        assert_eq!(helps(program), [help], "{program}");
+    }
+    assert_eq!(in_main("print(1)"), ["there's no global `print` @ print"]);
+}
+
+/// A name that doesn't exist, spelled nearly like one in sight, is most likely that one, including
+/// where `mut` says it's the thing to change.
+#[test]
+fn a_name_spelled_nearly_like_another_says_so() {
+    for (body, help) in [
+        ("mut units = [1]\n    grow(mut untis)", "did you mean `units`?"),
+        ("mut units = [1]\n    for mut unit in unit:\n        unit += 1", "did you mean `units`?"),
+        ("mut units = [1]\n    units.append(unts[0])", "did you mean `units`?"),
+        ("stdout.print(growe)", "did you mean `grow`?"),
+    ] {
+        let program = format!(
+            "def grow(mut items: list[int]):\n    items.append(1)\n\ndef main(stdout: Stdout):\n    {body}\n"
+        );
+        assert_eq!(helps(&program), [help], "{body}");
+    }
+}
+
+#[test]
+fn a_name_like_nothing_in_sight_says_nothing_more() {
+    for body in ["stdout.print(health)", "stdout.print(ab)", "unit = 1\n    stdout.print(unit, tin)"] {
+        let program = format!("def main(stdout: Stdout):\n    {body}\n");
+        assert_eq!(helps(&program), [""], "{body}");
+    }
+    // What's out of sight isn't suggested, and neither is the standard library.
+    let program = "def other():\n    secret = 1\n\ndef main(stdout: Stdout):\n    stdout.print(secrte)\n";
+    assert_eq!(helps(program), [""]);
+}
+
+/// `mut` on the wrong argument says which one the function does change.
+#[test]
+fn mut_on_the_wrong_argument_says_which_one() {
+    let program = "def grow(amount: int, mut items: list[int]):\n    items.append(amount)\n\ndef main():\n    mut xs = [1]\n    mut n = 1\n    n += 1\n    grow(mut n, xs)\n";
+    let helps = helps(program);
+    assert!(
+        helps.iter().any(|help| help == "did you mean to put `mut` on `items`, which `grow` does change?"),
+        "{helps:?}"
+    );
+    let nothing_changes =
+        "def grow(amount: int):\n    amount + 1\n\ndef main():\n    mut n = 1\n    n += 1\n    grow(mut n)\n";
+    assert!(!crate::helps(nothing_changes).iter().any(|help| help.contains("did you mean")));
 }
 
 #[test]

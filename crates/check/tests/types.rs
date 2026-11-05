@@ -203,6 +203,12 @@ fn a_fixed_size_array_holds_exactly_its_size() {
             mut xs = array[int, 3]()
             bump(ref xs)
             grid = array[array[int, 2], 2]()
+            mut maybe = array[str?, 3]()
+            maybe[1] = 'x'
+            lists: list[array[int, 3]] = [array[int, 3](), [1, 2, 3]]
+            by_name: dict[str, array[float, 2]] = {'a': [1.0, 2.0]}
+            picked: array[int, 2]? = [4, 5]
+            stdout.print(maybe, lists, by_name, picked)
             stdout.print(xs[2] + 1, xs.len(), 2 in xs, xs == array[int, 3](), list(xs), grid[1][0], bag.m[3] * 2.0)
     ";
     assert_eq!(problems(&program.replace('\'', "\"")), Vec::<String>::new());
@@ -226,6 +232,7 @@ fn a_fixed_size_array_refuses_a_wrong_size_or_position() {
             mut f = array[int, 3]()
             f[3] = 1
             stdout.print(f[-4], f[-3], takes(f), f[0:2])
+            lists: list[array[int, 3]] = [[1, 2]]
     ";
     assert_eq!(
         problems(&program.replace('\'', "\"")),
@@ -239,6 +246,7 @@ fn a_fixed_size_array_refuses_a_wrong_size_or_position() {
             "this array has 3 items, so there's no item -4 @ -4",
             "`xs` should be a list[int], but this is an array[int, 3] @ f",
             "an array can't be sliced @ f[0:2]",
+            "this array holds 3 items, but this list has 2 items @ [1, 2]",
         ]
     );
 }

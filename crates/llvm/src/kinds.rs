@@ -13,7 +13,8 @@ const WORD: u32 = 8;
 /// that where one fits in memory, and what it holds on to, works as for any other type.
 pub(crate) fn canon(ty: &Type) -> Type {
     match ty {
-        Type::Tuple(_) | Type::Generic(..) | Type::Errors(_) => Type::Named(ty.to_string()),
+        // An array kept in place is a struct with a field for each item, named by its position.
+        Type::Tuple(_) | Type::Generic(..) | Type::Errors(_) | Type::Array(..) => Type::Named(ty.to_string()),
         Type::Optional(inner) => Type::Named(format!("Option[{inner}]")),
         Type::Result(value, error) => Type::Named(format!("Result[{value}, {error}]")),
         // Every `Id` looks the same whatever it's of.
@@ -83,6 +84,11 @@ pub(crate) fn define_named(ty: &Type, layouts: Option<&Layouts>, out: &mut BTree
                 field("free_from", &Type::Int),
             ];
             out.insert(format!("Table[{item}]"), Written::Struct(fields));
+        }
+        Type::Array(item, size) => {
+            define_named(item, layouts, out);
+            let fields = (0..*size).map(|at| field(&at.to_string(), item)).collect();
+            out.insert(ty.to_string(), Written::Struct(fields));
         }
         Type::List(item) | Type::Set(item) => define_named(item, layouts, out),
         Type::Dict(key, value) => {
@@ -255,6 +261,20 @@ pub(crate) fn element_symbol(layouts: &Layouts, item: ListItem) -> String {
 /// The line defining a plain struct's type, and those of the structs in it.
 pub(crate) fn struct_definitions(layouts: &Layouts, id: u32, out: &mut Vec<String>) {
     let Some(layout) = layouts.get(id) else { return };
+    // An array's items, as LLVM's own array of them: one type however many there are.
+    if is_array(layout)
+        && let Some(first) = layout.fields.first()
+    {
+        if let Ty::Struct(inner) = first.ty
+            && layouts.get(inner).is_some_and(|layout| layout.cases.is_none())
+        {
+            struct_definitions(layouts, inner, out);
+        }
+        let item =
+            Kind::from_ty(layouts, first.ty).map_or_else(|| "i64".to_owned(), |kind| kind.memory(layouts));
+        out.push(format!("%\"s.{}\" = type {{ [{} x {item}] }}\n", layout.name, layout.fields.len()));
+        return;
+    }
     let mut fields = Vec::with_capacity(layout.fields.len());
     for field in &layout.fields {
         if let Ty::Struct(inner) = field.ty
@@ -267,4 +287,9 @@ pub(crate) fn struct_definitions(layouts: &Layouts, id: u32, out: &mut Vec<Strin
         );
     }
     out.push(format!("%\"s.{}\" = type {{ {} }}\n", layout.name, fields.join(", ")));
+}
+
+/// Whether a layout is an array kept in place: a field for each item, `0` first.
+pub(crate) fn is_array(layout: &fennec_layout::Layout) -> bool {
+    layout.name.starts_with("array[") && layout.cases.is_none()
 }

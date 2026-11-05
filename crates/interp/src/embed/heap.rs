@@ -1114,6 +1114,10 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
         Element::Struct { name, fields } if name.starts_with('(') => {
             Value::tuple(fields.iter().map(|(_, element)| read(state, element, words)).collect())
         }
+        // An array kept in place, which the interpreter holds as a list.
+        Element::Struct { name, fields } if named::is_array(name) => {
+            Value::list(fields.iter().map(|(_, element)| read(state, element, words)).collect())
+        }
         Element::Struct { name, fields } => {
             let fields = fields
                 .iter()
@@ -1232,6 +1236,15 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
         (Element::ListOf(number), value) => {
             let item = Rc::clone(state.tables.elements.get(*number)?);
             words.push(u64::try_from(super::lists::write_list(state, &item, value)?).ok()?);
+        }
+        (Element::Struct { name, fields }, value) if named::is_array(name) => {
+            let Value::List(items) = value.clone().unpacked() else { return None };
+            if items.len() != fields.len() {
+                return None;
+            }
+            for ((_, element), item) in fields.iter().zip(items.iter()) {
+                write(state, element, item, words)?;
+            }
         }
         (Element::Struct { name, fields }, Value::Tuple(items))
             if name.starts_with('(') && items.len() == fields.len() =>

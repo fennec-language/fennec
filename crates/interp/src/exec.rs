@@ -237,6 +237,7 @@ impl Interp<'_> {
             [] => vec!["_with"],
             names => names.iter().map(|held| held.name.as_str()).collect(),
         };
+        let mut locked = 0;
         if self.is_resuming() && matches!(self.resume_at(), Some(Position::With { .. })) {
         } else {
             let resource = self.eval(value)?;
@@ -245,12 +246,20 @@ impl Interp<'_> {
                 resource => vec![resource],
             };
             taken_twice(&resources, value.span)?;
+            for resource in &resources {
+                if let Value::Shared(cell) = resource {
+                    self.check_lock(cell, value.span)?;
+                    self.locks.push((Rc::clone(cell), self.depth));
+                    locked += 1;
+                }
+            }
             self.frame.push();
             for (at, (key, resource)) in keys.iter().zip(resources).enumerate() {
                 self.frame.declare(key, resource, names.get(at).is_some_and(|held| held.is_mut));
             }
         }
         let flow = self.exec_stmts(body);
+        self.locks.truncate(self.locks.len() - locked);
         let held: Vec<Value> =
             keys.iter().filter_map(|key| self.frame.get(key).map(|binding| binding.value.clone())).collect();
         if matches!(flow, Ok(Flow::Yield(_))) {
@@ -460,6 +469,31 @@ fn parallel_items(iter: &Expr) -> Option<&Expr> {
     let ExprKind::Name(name) = &callee.kind else { return None };
     let [first] = args.as_slice() else { return None };
     (name == "parallel" && first.name.is_none() && !first.is_mut).then_some(&first.value)
+}
+
+impl Interp<'_> {
+    /// What taking a `shared` value's lock checks. The function holding it reaches the value only
+    /// through what holds the lock, so anything further down, reaching it any other way, is
+    /// taking it again, which would wait forever with real threads and ends the program.
+    pub(crate) fn check_lock(
+        &self,
+        cell: &Rc<std::cell::RefCell<Value>>,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        let mut held = false;
+        for (locked, depth) in &self.locks {
+            if Rc::ptr_eq(locked, cell) {
+                if *depth == self.depth {
+                    return Ok(());
+                }
+                held = true;
+            }
+        }
+        if held {
+            return Err(Diagnostic::new("this takes the lock of a `shared` value that's already held", span));
+        }
+        Ok(())
+    }
 }
 
 /// A `with` that takes one `shared` value under two names ends the program.

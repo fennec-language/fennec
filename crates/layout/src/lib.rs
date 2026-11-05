@@ -287,16 +287,19 @@ pub fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
         Ty::Struct(id) => {
             let layout = layouts.get(id)?;
             let name = Rc::from(layout.name.as_str());
-            match &layout.cases {
-                Some(cases) => {
-                    let cases: Option<Vec<_>> = cases
-                        .iter()
-                        .map(|case| Some((Rc::from(case.name.as_str()), fields(&case.fields)?)))
-                        .collect();
-                    let words = usize::try_from(layout.size / WORD).ok()?;
-                    Element::Enum { name, cases: cases?, words }
+            if let Some(cases) = &layout.cases {
+                let cases: Option<Vec<_>> = cases
+                    .iter()
+                    .map(|case| Some((Rc::from(case.name.as_str()), fields(&case.fields)?)))
+                    .collect();
+                let words = usize::try_from(layout.size / WORD).ok()?;
+                Element::Enum { name, cases: cases?, words }
+            } else {
+                let mut held = fields(&layout.fields)?;
+                if layout.cell {
+                    held.push((Rc::from(fennec_interp::packed::LOCK), Element::Int));
                 }
-                None => Element::Struct { name, fields: fields(&layout.fields)? },
+                Element::Struct { name, fields: held }
             }
         }
         _ => return None,

@@ -279,20 +279,38 @@ struct State {
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+    static FLAGS: Flags = const { Flags { failed: Cell::new(0), lock_held: Cell::new(0) } };
+}
+
+/// What native code reads and writes on this thread without a call, through the one address.
+#[repr(C)]
+struct Flags {
     /// Set when the program fails. Native code reads it directly after each call that can
     /// fail, and returns early when it's set.
-    static FAILED: Cell<u8> = const { Cell::new(0) };
+    failed: Cell<u8>,
+    /// The word of the `shared` value's lock this thread holds, if any, at 8 bytes in. Others held
+    /// beside it are in `threads`.
+    lock_held: Cell<u64>,
+}
+
+fn set_failed(failed: u8) {
+    FLAGS.with(|flags| flags.failed.set(failed));
+}
+
+/// Whether native code says this thread holds a `shared` value's lock.
+fn lock_word_held() -> bool {
+    FLAGS.with(|flags| flags.lock_held.get() != 0)
 }
 
 /// Where this thread's failure flag lives, for native code to read. Code compiled for one
 /// thread must run on that thread.
 pub(crate) fn failed() -> bool {
-    FAILED.get() != 0
+    FLAGS.with(|flags| flags.failed.get() != 0)
 }
 
 /// Where the failure flag is.
 pub fn failed_flag() -> usize {
-    FAILED.with(|flag| flag.as_ptr().addr())
+    FLAGS.with(|flags| std::ptr::from_ref(flags).addr())
 }
 
 /// The capability native code means by `kind`: 0 for `Stdout`, 1 for `Fs`, 2 for `Clock`,
@@ -326,7 +344,7 @@ pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Resu
     #[cfg(feature = "lean")]
     let _ = (module, inputs);
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
-    FAILED.set(0);
+    set_failed(0);
     STATE.set(Some(State {
         #[cfg(not(feature = "lean"))]
         interp,
@@ -367,7 +385,7 @@ pub struct Leftovers {
 pub fn finish() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
     heap::run_abandons();
     let state = STATE.take();
-    FAILED.set(0);
+    set_failed(0);
     match state {
         Some(mut state) => {
             state.temps.clear();
@@ -392,7 +410,7 @@ pub fn fail_with(diagnostic: Diagnostic) {
             state.failure = Some(diagnostic);
         }
     });
-    FAILED.set(1);
+    set_failed(1);
 }
 
 /// Whether this thread's runtime state is borrowed, as it is all through a call into the
@@ -407,7 +425,7 @@ fn state_is_borrowed() -> bool {
 /// connection's task that failed, which ends only that task.
 fn report_failure() {
     let failure = with(|state| state.failure.take());
-    FAILED.set(0);
+    set_failed(0);
     if let Some(failure) = failure {
         write_kept_output();
         let _ = writeln!(std::io::stderr(), "error: {}", failure.message);
@@ -471,7 +489,7 @@ impl State {
         #[cfg(not(feature = "lean"))]
         if let Err(failure) = self.interp.clean_up_abandoned() {
             self.failure.get_or_insert(failure);
-            FAILED.set(1);
+            set_failed(1);
         }
         loop {
             let blocks = crate::value::blocks_let_go();

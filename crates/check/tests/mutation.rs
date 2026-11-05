@@ -431,3 +431,12 @@ fn a_generator_kept_for_later_cant_change_whats_around_it() {
     let read = "k = 1\ng = (k + x for x in range(3))\nstdout.print(list(g))\n";
     assert_eq!(crate::in_main_after(bump, read), empty);
 }
+
+#[test]
+fn a_parallel_loop_can_change_a_shared_value_outside_it() {
+    let source = "shared Counter:\n    total = 0\n\n    def add(mut self, amount: int):\n        self.total += amount\n\n\
+                  def main(stdout: Stdout):\n    counter = Counter()\n    mut hps = [1, 2]\n    \
+                  for mut hp in parallel(hps):\n        counter.add(hp)\n        with counter as mut held:\n            \
+                  held.total += hp\n        hp += 1\n    stdout.print(counter.total, hps)\n";
+    assert_eq!(problems(source), Vec::<String>::new());
+}

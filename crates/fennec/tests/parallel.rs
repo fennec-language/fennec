@@ -436,6 +436,61 @@ fn matches_the_interpreter_on_workers(dir: &Path, name: &str, source: &str) -> s
     Ok(())
 }
 
+/// `shared` values changed from every worker come out as if the bodies ran one after another.
+#[test]
+fn workers_take_turns_at_a_shared_value() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-counters-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/shared_counters.fen");
+    matches_the_interpreter_on_workers(&dir, "shared_counters", source)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// `shared` values holding strings, lists, dicts and structs, changed from every worker.
+#[test]
+fn workers_take_turns_at_shared_values_holding_blocks() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-shared-blocks-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/shared_blocks.fen");
+    matches_the_interpreter_on_workers(&dir, "shared_blocks", source)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+#[test]
+fn a_worker_failing_under_a_lock_ends_the_program() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-failing-under-lock-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    for (name, fields) in [("numbers", ""), ("blocks", "    names = [\"x\"]\n")] {
+        let source = format!(
+            "shared Counter:\n    total = 0\n{fields}\n\
+             def main(stdout: Stdout):\n    one = Counter()\n    \
+             mut items = [n for n in range(50_000)]\n    for mut item in parallel(items):\n        \
+             with one as mut x:\n            x.total = 100 // (item - 25_000)\n        item += 1\n    \
+             stdout.print(items.len())\n"
+        );
+        let built = build_on_threads(&dir, &source, name)?;
+        for threads in ["1", "4"] {
+            let ran = Command::new(&built).env("FENNEC_THREADS", threads).output()?;
+            assert_eq!(ran.status.code(), Some(1), "{name} on {threads} threads");
+            let said = String::from_utf8_lossy(&ran.stderr);
+            assert!(said.contains("error:"), "{name} on {threads} threads: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A body changing, through places, its own copy of what the caller holds: each block on the way
 /// is the caller's until it's copied, from the root down, and the caller's stays as it was.
 const CHANGED_PLACES: &str = include_str!("fixtures/workers/places.fen");
@@ -572,6 +627,83 @@ fn a_native_server_runs_each_connection_as_its_own_task() -> std::io::Result<()>
     lines.sort_by_key(|line| line.as_ref().is_ok_and(|line| line.contains("nested")));
     let wanted = ["error: division by zero".to_owned(), "error: calls nested too deeply".to_owned()];
     assert_eq!(lines, wanted.map(Ok), "{lines:?}");
+    Ok(())
+}
+
+/// A server whose connections share a counter: one fails inside a `with` on it.
+const SERVER_HOLDING: &str = "\
+from std.net import Connection, NetError
+
+shared Counter:
+    total = 0
+
+def answer(connection: Connection, counter: Counter) -> int fails NetError:
+    connection.write(\"ready\\n\")?
+    for line in connection.lines():
+        if line == \"fail\":
+            with counter as mut held:
+                held.total = 1 // (held.total - held.total)
+        else:
+            with counter as mut held:
+                held.total += 1
+            connection.write(f\"{counter.total}\\n\")?
+    0
+
+def main(net: Net, stdout: Stdout):
+    counter = Counter()
+    server = net.listen(0).expect(\"it listens\")
+    stdout.print(server.port)
+    for connection in parallel(server):
+        match answer(connection, counter):
+            case Ok(_):
+                stdout.print(\"answered\")
+            case Err(error):
+                stdout.print(\"failed\", error.message())
+";
+
+/// A connection's task that fails while it holds a lock ends the whole program, rather than only
+/// itself: what the lock guards may be half changed, and other tasks may be waiting for it.
+#[test]
+fn a_server_task_failing_under_a_lock_ends_the_program() -> std::io::Result<()> {
+    use std::io::{BufRead, BufReader};
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-server-holding-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let executable = build_on_threads(&dir, SERVER_HOLDING, "server")?;
+    let mut server = Command::new(&executable)
+        .env("FENNEC_THREADS", "4")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let mut printed = BufReader::new(server.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
+    let mut first = String::new();
+    printed.read_line(&mut first)?;
+    let port: u16 = first.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    assert_eq!(talk(port, &["count"])?, ["ready", "1"]);
+    let failing = std::thread::spawn(move || talk(port, &["fail"]));
+    let _ = failing.join();
+    // It ends by itself: nothing here kills it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = server.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            server.kill()?;
+            panic!("the server kept going after a task failed holding a lock");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut said = String::new();
+    std::io::Read::read_to_string(
+        &mut server.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?,
+        &mut said,
+    )?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(status.code(), Some(1));
+    assert!(said.contains("division by zero"), "{said}");
     Ok(())
 }
 

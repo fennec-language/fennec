@@ -182,6 +182,13 @@ impl Emit<'_, '_, '_> {
                 })
             }),
             ("main.failed", [error], _) => self.main_failed(error, span),
+            ("shared.in", [value], _) => {
+                dest.and_then(|dest| self.across_lock(dest, value, crate::locks::Way::In))
+            }
+            ("shared.out", [value, Operand::Int(held)], _) => {
+                dest.and_then(|dest| self.across_lock(dest, value, crate::locks::Way::Out(*held)))
+            }
+            ("shared.drop", [Operand::Local(local)], _) => self.drop_local(*local),
             ("task.failed", [error], _) => self.failed_with("this connection's task failed: ", error, span),
             ("set", [], []) => dest.and_then(|dest| self.empty_set(dest)),
             // A set of a set's items is the set, shared until one changes.

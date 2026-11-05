@@ -349,7 +349,8 @@ impl Layouts {
                     place(self, fields, 0).map(|(fields, size)| Layout {
                         name: name.clone(),
                         fields,
-                        size: size.max(WORD),
+                        // A cell's lock is one more word, after its fields.
+                        size: size.max(WORD) + if matches!(written, Written::Cell(_)) { WORD } else { 0 },
                         cases: None,
                         boxed: true,
                         cell: matches!(written, Written::Cell(_)),

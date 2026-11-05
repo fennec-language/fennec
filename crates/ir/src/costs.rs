@@ -8,7 +8,7 @@
 //! header, and a list with room doesn't grow.
 
 mod flow;
-mod insts;
+pub(crate) mod insts;
 mod loops;
 
 use std::collections::{HashMap, HashSet};

@@ -1104,7 +1104,9 @@ def _all_tables(items: list[_Toml]) -> list[_Table]?:
     tables
 
 ## A table's plain keys under its header, then its tables and arrays of tables.
-def _write_table(mut out: str, path: list[str], table: _Table, array: bool):
+## `text`, followed by a table, and the tables it holds, as TOML text under the header `path`.
+def _write_table(text: str, path: list[str], table: _Table, array: bool) -> str:
+    mut out = text
     mut plain = list[int]()
     mut nested = list[int]()
     mut at = 0
@@ -1136,15 +1138,16 @@ def _write_table(mut out: str, path: list[str], table: _Table, array: bool):
         under.append(table.keys[place])
         match table.values[place]:
             case .Table(inner):
-                _write_table(mut out, under, inner, False)
+                out = _write_table(out, under, inner, False)
             case .Tables(tables):
                 for inner in tables:
-                    _write_table(mut out, under, inner, True)
+                    out = _write_table(out, under, inner, True)
             case .List(items):
                 for inner in _all_tables(items) else list[_Table]():
-                    _write_table(mut out, under, inner, True)
+                    out = _write_table(out, under, inner, True)
             case _:
                 pass
+    out
 
 ## `value` as TOML text, through its own `def serialize`.
 def native_dumps[T: Serializable](value: T) -> str:
@@ -1153,7 +1156,7 @@ def native_dumps[T: Serializable](value: T) -> str:
     mut text = ""
     match out._done:
         case .Table(table):
-            _write_table(mut text, list[str](), table, False)
+            text = _write_table(text, list[str](), table, False)
         case _:
             assert False
     text

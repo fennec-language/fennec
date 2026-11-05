@@ -279,16 +279,33 @@ fn copy_entry(to: &mut [u64], from: &[u64]) -> bool {
 /// keys.
 fn build(state: &mut State, shape: u64, width: usize, entries: &[u64], room: usize) -> Box<[u64]> {
     let live = entries.len() / width;
+    let (mut block, slots) = with_room(state, width, live, room);
+    place_entries(&mut block, (shape, slots), width, live, entries.chunks_exact(width));
+    block
+}
+
+/// A dict's new block, not filled in yet, with room for at least `room` keys and all `live`.
+fn with_room(state: &mut State, width: usize, live: usize, room: usize) -> (Box<[u64]>, usize) {
     let mut slots = MIN_SLOTS;
     while capacity(slots) < room.max(live) {
         slots *= 2;
     }
-    let mut block = state.heap.fresh(DICT_HEADER_WORDS + slots + capacity(slots) * width);
+    (state.heap.fresh(DICT_HEADER_WORDS + slots + capacity(slots) * width), slots)
+}
+
+/// Fills in a new block with its header and `live` entries, finding each one's slot by its hash.
+fn place_entries<'e>(
+    block: &mut [u64],
+    (shape, slots): (u64, usize),
+    width: usize,
+    live: usize,
+    entries: impl Iterator<Item = &'e [u64]>,
+) {
     let count = |n: usize| u64::try_from(n).unwrap_or(0);
     if let Some(header) = block.get_mut(..DICT_HEADER_WORDS) {
         header.copy_from_slice(&[1, shape, count(live), count(live), count(slots - 1)]);
     }
-    for (at, entry) in entries.chunks_exact(width).enumerate() {
+    for (at, entry) in entries.enumerate() {
         let hash = entry.first().copied().unwrap_or(0);
         let mut slot = usize::try_from(hash).unwrap_or(0) & (slots - 1);
         while block.get(DICT_HEADER_WORDS + slot).is_some_and(|taken| *taken != 0) {
@@ -303,7 +320,22 @@ fn build(state: &mut State, shape: u64, width: usize, entries: &[u64], room: usi
             debug_assert!(copied, "an entry as wide as its dict's");
         }
     }
-    block
+}
+
+/// A bigger block for a dict nothing else holds, its entries copied once straight across, and the
+/// old block gone, as they've all moved.
+fn grown(state: &mut State, at: u64, shape: u64, width: usize) -> Option<u64> {
+    let live = usize::try_from(*state.heap.block(at)?.get(2)?).ok()?;
+    let (mut new, new_slots) = with_room(state, width, live, 2 * (live + 1));
+    let block = state.heap.block(at)?;
+    let slots = usize::try_from(*block.get(4)?).ok()? + 1;
+    let used = usize::try_from(*block.get(3)?).ok()?;
+    let start = DICT_HEADER_WORDS + slots;
+    let words = block.get(start..start + used * width)?;
+    let kept = words.chunks_exact(width).filter(|entry| entry.first() != Some(&REMOVED));
+    place_entries(&mut new, (shape, new_slots), width, live, kept);
+    state.heap.discard(at);
+    u64::try_from(state.heap.insert(new)).ok()
 }
 
 /// Where a key is: the number of its entry, or of the empty slot where it would go.
@@ -686,19 +718,18 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
     let slots = usize::try_from(*block.get(4)?).ok()? + 1;
     let used = usize::try_from(*block.get(3)?).ok()?;
     let shared = !state.heap.is_alone(at, block);
-    if shared || used >= capacity(slots) {
+    if shared {
         let (shape, live) = (shape_word(block)?, entries(block, layout.width));
-        if shared {
-            state.heap.copied(live.len());
-            for entry in live.chunks_exact(layout.width) {
-                retain_entry(state, layout, entry);
-            }
-            release(state, at);
-        } else {
-            state.heap.discard(at);
+        state.heap.copied(live.len());
+        for entry in live.chunks_exact(layout.width) {
+            retain_entry(state, layout, entry);
         }
-        let grown = build(state, shape, layout.width, &live, 2 * (live.len() / layout.width + 1));
-        at = u64::try_from(state.heap.insert(grown)).ok()?;
+        release(state, at);
+        let copy = build(state, shape, layout.width, &live, 2 * (live.len() / layout.width + 1));
+        at = u64::try_from(state.heap.insert(copy)).ok()?;
+    } else if used >= capacity(slots) {
+        let shape = shape_word(block)?;
+        at = grown(state, at, shape, layout.width)?;
     }
     let block = state.heap.block(at)?;
     let mask = usize::try_from(*block.get(4)?).ok()?;

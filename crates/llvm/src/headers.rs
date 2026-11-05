@@ -438,6 +438,17 @@ impl Emit<'_, '_, '_> {
         bytes
     }
 
+    /// Where a header's bytes are, for a header held at `place`: in its block, or in place itself.
+    pub(crate) fn header_bytes_at(&mut self, header: &str, place: &str) -> String {
+        let in_block = self.header_in_block(header);
+        let first = self.header_word(header, 0);
+        let (block, text, bytes) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
+        self.line(&format!("{text} = getelementptr i8, ptr {block}, i64 {}", crate::emit::TEXT_START));
+        self.line(&format!("{bytes} = select i1 {in_block}, ptr {text}, ptr {place}"));
+        bytes
+    }
+
     /// A header's length in bytes, from its block or from byte 23.
     pub(crate) fn header_byte_length(&mut self, header: &str) -> String {
         let in_block = self.header_in_block(header);
@@ -746,7 +757,17 @@ impl Emit<'_, '_, '_> {
         if name == "intrinsics.text_size" {
             return self.assign(dest, &length);
         }
-        let bytes = self.header_bytes(&text);
+        // A local's header is in its slot already: its bytes are read there, with no copy for each
+        // byte, which a loop would otherwise make every time round.
+        let bytes = match args.first() {
+            Some(fennec_ir::Operand::Local(local))
+                if !self.known.unmade.contains(&local.0) && self.known.alias(*local).is_none() =>
+            {
+                let place = self.slot(*local);
+                self.header_bytes_at(&text, &place)
+            }
+            _ => self.header_bytes(&text),
+        };
         let (first, _) = self.operand(args.get(1).ok_or("no argument")?)?;
         if name == "intrinsics.text_byte" {
             let inside = self.temp();

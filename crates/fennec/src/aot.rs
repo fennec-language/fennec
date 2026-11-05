@@ -506,10 +506,11 @@ fn link(object: &[u8], output: &Path) -> Result<std::time::Duration, String> {
     let object_path = work.join("program.o");
     std::fs::write(&object_path, object).map_err(|err| format!("couldn't write the object file: {err}"))?;
     let started = Instant::now();
-    let linked = linker(std::slice::from_ref(&object_path), &runtime, output, false).output().map_err(|err| {
-        let help = if cfg!(windows) { "; install Visual Studio's Build Tools" } else { "" };
-        format!("couldn't run the linker: {err}{help}")
-    })?;
+    let linked =
+        linker(std::slice::from_ref(&object_path), &runtime, output, false).output().map_err(|err| {
+            let help = if cfg!(windows) { "; install Visual Studio's Build Tools" } else { "" };
+            format!("couldn't run the linker: {err}{help}")
+        })?;
     let took = started.elapsed();
     let _ = std::fs::remove_dir_all(&work);
     if linked.status.success() { Ok(took) } else { Err(link_failure(&linked)) }

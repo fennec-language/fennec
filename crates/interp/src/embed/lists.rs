@@ -13,6 +13,7 @@ use fennec_syntax::Diagnostic;
 
 use crate::buffer::{MIN_ROOM, grown_room};
 
+use super::heap::shown::Written;
 use super::heap::{TEXT_HEADER_WORDS, read_block, release, shape_word, text_address, write};
 use super::{State, attempt, span, with};
 use crate::packed::{Element, Packed};
@@ -39,8 +40,13 @@ pub(super) fn element_of(state: &State, block: &[u64]) -> Option<Rc<Element>> {
 
 /// `element_of`, borrowed.
 pub(super) fn element_in<'a>(state: &'a State, block: &[u64]) -> Option<&'a Element> {
+    state.tables.elements.get(element_number(state, block)?).map(AsRef::as_ref)
+}
+
+/// The number of the kind of item a list's block holds.
+pub(super) fn element_number(state: &State, block: &[u64]) -> Option<usize> {
     let at = shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?;
-    state.tables.elements.get(usize::try_from(at).ok()?).map(AsRef::as_ref)
+    usize::try_from(at).ok()
 }
 
 fn element(state: &State, element: i64) -> Option<(usize, Rc<Element>)> {
@@ -50,8 +56,10 @@ fn element(state: &State, element: i64) -> Option<(usize, Rc<Element>)> {
 
 /// Whether a list of this kind of item owns a block for each.
 pub(super) fn owns_items(element: &Element) -> bool {
-    matches!(element, Element::Str | Element::Boxed(_) | Element::Maybe(_) | Element::List(_))
-        && !element.is_optional_text()
+    matches!(
+        element,
+        Element::Str | Element::Boxed(_) | Element::Maybe(_) | Element::List(_) | Element::ListOf(_)
+    ) && !element.is_optional_text()
 }
 
 /// The blocks items of a kind hold, laid out as `words`: an item of a word that's a block's
@@ -429,10 +437,47 @@ pub(super) fn read(state: &State, block: &[u64]) -> Value {
     if owns_items(&element) {
         return Value::list(words.iter().map(|word| read_block(state, *word)).collect());
     }
-    if !super::heap::packable(&element) {
-        return super::heap::read_items(state, &element, &words);
+    // An item with no fields takes no words, so it's the list's length that counts them.
+    if !super::heap::packable(&element) || element.words() == 0 {
+        let count = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+        return super::heap::read_items(state, &element, &words, count);
     }
     Value::Packed(Rc::new(Packed::new(element, words)))
+}
+
+/// Writes a list as it shows.
+pub(super) fn shown(state: &State, block: &[u64], out: &mut Written) {
+    out.push('[');
+    if let Some(element) = element_of(state, block) {
+        let words = items(block, element.words());
+        // An item with no fields takes no words, so it's the list's length that counts them.
+        let count = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+        super::heap::shown::items(state, &element, &mut words.iter(), count, out);
+    }
+    out.push(']');
+}
+
+/// Writes the items of an `IdMap` whose slots are still in use: those whose generation in the
+/// list `generations` isn't negative.
+pub(super) fn shown_where_used(state: &State, held: u64, generations: u64, out: &mut Written) {
+    let (Some(block), Some(numbers)) = (state.heap.block(held), state.heap.block(generations)) else {
+        return;
+    };
+    let Some(element) = element_of(state, block) else { return };
+    let mut words = items(block, element.words()).iter();
+    let mut first = true;
+    for generation in items(numbers, 1) {
+        let in_use = i64::from_ne_bytes(generation.to_ne_bytes()) >= 0;
+        if in_use && !first {
+            out.push_str(", ");
+        }
+        if in_use {
+            super::heap::shown::item(state, &element, &mut words, out);
+            first = false;
+        } else {
+            (&mut words).take(element.words()).for_each(drop);
+        }
+    }
 }
 
 /// A new list owned once with a temporary's items, failing like the interpreter when the
@@ -559,7 +604,7 @@ fn insert_into(kind: &str, list: i64, at: i64, (start, end): (i64, i64)) -> i64 
 fn same_item(state: &State, element: &Element, item: u64, word: u64) -> bool {
     match element {
         Element::Float => crate::value::floats_same(f64::from_bits(item), f64::from_bits(word)),
-        Element::Str | Element::Boxed(_) | Element::Maybe(_) | Element::List(_) => {
+        Element::Str | Element::Boxed(_) | Element::Maybe(_) | Element::List(_) | Element::ListOf(_) => {
             super::heap::same(state, item, word)
         }
         _ => item == word,

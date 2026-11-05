@@ -47,7 +47,7 @@ pub fn uses_parallel(program: &Program) -> bool {
 
 /// The functions that can run on a thread `parallel` uses. A range is a closure, and anything
 /// running on one can call any other closure, resume any generator, or let go of one, so all of
-/// those start this, and it takes in all they call. Every
+/// those start this, with what writes a value's own text, and it takes in all they call. Every
 /// other function only ever runs on the program's own thread, between ranges, and needs nothing
 /// a thread of its own would need. Starting from them keeps a program's plain code as fast as it
 /// would be without `parallel`.
@@ -70,7 +70,8 @@ pub(crate) fn run_on_workers(program: &Program) -> HashSet<&str> {
         .generators
         .iter()
         .flat_map(|def| std::iter::once(def.resume.as_str()).chain(def.abandon.as_deref()));
-    let mut waiting: Vec<&str> = closures.chain(generators).collect();
+    let own_texts = program.own_texts.iter().map(|own| own.function.as_str());
+    let mut waiting: Vec<&str> = closures.chain(generators).chain(own_texts).collect();
     while let Some(name) = waiting.pop() {
         if found.insert(name)
             && let Some(function) = functions.get(name)

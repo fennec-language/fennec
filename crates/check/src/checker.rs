@@ -49,6 +49,8 @@ pub(crate) struct Checker {
     /// The fields and method calls on a value that might be missing, in a chain an `else`
     /// ends, which are written in as optional.
     pub(crate) optional_steps: BTreeSet<(u32, u32)>,
+    /// Those read from something that can fail, which is written in as `value else None`.
+    pub(crate) failing_steps: BTreeSet<(u32, u32)>,
     /// What each name for a standard library function written in Fennec means.
     pub(crate) std_names: BTreeMap<(u32, u32), String>,
     /// Each constant's type, once worked out. `None` while its value is being checked.
@@ -106,6 +108,7 @@ impl Checker {
             not_equals: BTreeSet::new(),
             empty_collections: BTreeSet::new(),
             optional_steps: BTreeSet::new(),
+            failing_steps: BTreeSet::new(),
             std_names: BTreeMap::new(),
             const_types: BTreeMap::new(),
             checking: Vec::new(),
@@ -185,6 +188,7 @@ impl Checker {
                 not_equals: self.not_equals,
                 empty_collections: self.empty_collections,
                 optional_steps: self.optional_steps,
+                failing_steps: self.failing_steps,
                 std_names: self.std_names,
             });
         }

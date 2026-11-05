@@ -45,6 +45,11 @@ pub fn uses_parallel(program: &Program) -> bool {
     })
 }
 
+/// Whether a program has any `shared` type.
+pub(crate) fn has_cells(program: &Program) -> bool {
+    program.structs.iter().any(|def| def.shared)
+}
+
 /// The functions that can run on a thread `parallel` uses. A range is a closure, and anything
 /// running on one can call any other closure, resume any generator, or let go of one, so all of
 /// those start this, with what writes a value's own text, and it takes in all they call. Every
@@ -57,6 +62,11 @@ pub(crate) fn run_on_workers(program: &Program) -> HashSet<&str> {
         return found;
     }
     let every = || program.functions.iter().chain(&program.constants);
+    // A `shared` value's handle is only ever counted by the runtime, and a thread under its lock
+    // has another number, so nothing can count without asking who it is.
+    if has_cells(program) {
+        return every().map(|function| function.name.as_str()).collect();
+    }
     let functions: HashMap<&str, &Function> =
         every().map(|function| (function.name.as_str(), function)).collect();
     let closures =
@@ -111,6 +121,11 @@ pub(crate) fn failed_global(threads: bool) -> &'static str {
 /// this thread made it. It's 0 on the program's thread, and a worker's first shim sets it.
 const THREAD_GLOBAL: &str = "@fennec_thread = external dso_local thread_local(initialexec) global i64";
 
+/// How a function declares `@fennec_thread`, to change it.
+pub(crate) fn thread_global() -> &'static str {
+    THREAD_GLOBAL
+}
+
 /// Where a block's shape word is, whose top 16 bits say which thread made it.
 const SHAPE: u32 = 8;
 const OWNER_SHIFT: u32 = 48;
@@ -120,10 +135,12 @@ const IMMORTAL: u64 = 1 << 47;
 
 /// The start of a function about a block's owners: `%owner` is the thread that made `%block`, and
 /// `%mine` says whether that's this one.
-fn whose_block() -> String {
+fn whose_block(changes: bool) -> String {
+    // Under a `shared` value's write lock a thread goes by another number.
+    let invariant = if changes { "" } else { ", !invariant.load !1" };
     format!(
         "  %shape_at = getelementptr inbounds i8, ptr %block, i64 {SHAPE}\n  %shape = load i64, ptr %shape_at\n  \
-         %owner = lshr i64 %shape, {OWNER_SHIFT}\n  %me = load i64, ptr @fennec_thread, !invariant.load !1\n  \
+         %owner = lshr i64 %shape, {OWNER_SHIFT}\n  %me = load i64, ptr @fennec_thread{invariant}\n  \
          %mine = icmp eq i64 %owner, %me\n"
     )
 }
@@ -210,7 +227,7 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn counted_retain_helper(&mut self) {
         self.declare(THREAD_GLOBAL);
         self.declare("declare void @fennec_retain_shared(i64, i64) nounwind");
-        let (start, immortal) = (whose_block(), immortal());
+        let (start, immortal) = (whose_block(self.module.cells), immortal());
         self.module.add_helper(
             "fen_retain",
             format!(
@@ -227,7 +244,7 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn counted_owner_gone_helper(&mut self) {
         self.declare(THREAD_GLOBAL);
         self.declare("declare void @fennec_release_shared(i64, i64) nounwind");
-        let (start, immortal) = (whose_block(), immortal());
+        let (start, immortal) = (whose_block(self.module.cells), immortal());
         self.module.add_helper(
             "fen_owner_gone",
             format!(
@@ -243,7 +260,7 @@ impl Emit<'_, '_, '_> {
     /// with one owner.
     pub(crate) fn alone_helper(&mut self) {
         self.declare(THREAD_GLOBAL);
-        let start = whose_block();
+        let start = whose_block(self.module.cells);
         self.module.add_helper(
             "fen_alone",
             format!(

@@ -118,6 +118,9 @@ impl Emit<'_, '_, '_> {
             }
             ("sorted", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.sorted_chars(dest, text)),
             ("main.failed", [error], _) => self.main_failed(error, span),
+            ("shared.in", [value], _) => dest.and_then(|dest| self.across_lock(dest, value, "in")),
+            ("shared.out", [value], _) => dest.and_then(|dest| self.across_lock(dest, value, "out")),
+            ("shared.drop", [Operand::Local(local)], _) => self.drop_local(*local),
             ("set", [], []) => dest.and_then(|dest| self.empty_set(dest)),
             // A set of a set's items is the set, shared until one changes.
             ("set", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| self.copy(dest, set)),

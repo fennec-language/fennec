@@ -121,6 +121,8 @@ pub(crate) struct Whole<'p> {
     pub(crate) constants: HashSet<&'p str>,
     /// The functions that can run on a thread `parallel` uses, which everything else can't.
     pub(crate) on_workers: HashSet<&'p str>,
+    /// Whether the program has any `shared` type.
+    pub(crate) cells: bool,
 }
 
 /// What a function calls by name, a constant being a call of a function of no arguments, and a
@@ -2261,6 +2263,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         needs,
         constants,
         on_workers,
+        cells: crate::parallel::has_cells(program),
     }
 }
 

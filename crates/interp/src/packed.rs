@@ -55,7 +55,7 @@ pub enum Element {
 }
 
 /// The field holding a `shared` value's lock, last in its cell, which is never shown or read.
-pub const LOCK: &str = "\0lock";
+pub const LOCK: &str = "\u{1}lock";
 
 impl Element {
     /// How many words one item takes.

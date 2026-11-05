@@ -69,13 +69,6 @@ pub extern "C" fn lock_forget(word: u64) {
     });
 }
 
-/// Waiting for a lock another thread holds: what's been printed comes out first, and the thread
-/// lets others run.
-pub extern "C" fn lock_wait() {
-    super::write_kept_output();
-    std::thread::yield_now();
-}
-
 /// This thread's number: 0 for the main thread, until it takes another.
 pub fn index() -> u16 {
     INDEX.get()

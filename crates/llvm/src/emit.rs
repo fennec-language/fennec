@@ -209,6 +209,8 @@ pub(crate) struct Module<'w, 'p> {
     /// Whether the program runs `parallel`'s ranges on other threads, which keep their own stack
     /// limit and failure flag.
     pub(crate) threads: bool,
+    /// Whether it also has `shared` values, whose blocks that needs more from counting.
+    pub(crate) cells: bool,
     declares: BTreeSet<String>,
     pub(crate) defined: HashSet<&'p str>,
     bodies: String,
@@ -228,6 +230,7 @@ fn unit<'p>(
         layouts,
         shared,
         threads,
+        cells: threads && whole.cells,
         declares: BTreeSet::new(),
         defined: HashSet::new(),
         bodies: String::new(),
@@ -597,7 +600,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Whether this local's slot holds an owner, for it to release.
-    fn owns(&self, local: LocalId) -> bool {
+    pub(crate) fn owns(&self, local: LocalId) -> bool {
         self.kinds.get(local.0).is_some_and(Kind::counted)
             && !self.is_mut_param(local)
             && !self.is_lent(local)
@@ -1936,7 +1939,7 @@ impl Emit<'_, '_, '_> {
             InstKind::Lock { handle, write } => self.lock(handle, *write, span),
             InstKind::Unlock { handle } => self.unlock(handle),
             InstKind::LockAll { handles } => self.lock_all(handles, span),
-            InstKind::UnlockAll { handles } => handles.iter().try_for_each(|handle| self.unlock(handle)),
+            InstKind::UnlockAll { handles } => self.unlock_all(handles),
         }
     }
 

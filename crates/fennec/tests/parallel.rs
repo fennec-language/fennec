@@ -450,6 +450,20 @@ fn workers_take_turns_at_a_shared_value() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `shared` values holding strings, lists, dicts and structs, changed from every worker.
+#[test]
+fn workers_take_turns_at_shared_values_holding_blocks() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-shared-blocks-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/shared_blocks.fen");
+    matches_the_interpreter_on_workers(&dir, "shared_blocks", source)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A body taking a lock it holds already ends the program, rather than waiting for itself.
 #[test]
 fn a_worker_taking_a_lock_it_holds_ends_the_program() -> std::io::Result<()> {
@@ -475,28 +489,28 @@ fn a_worker_taking_a_lock_it_holds_ends_the_program() -> std::io::Result<()> {
     Ok(())
 }
 
-/// A cell holding a block stays refused on threads until the runtime publishes what cells hold,
-/// since another worker's runtime calls couldn't find it.
+/// A `with` changing several values holding blocks stays refused on threads: what's made in its body
+/// could end up in the wrong one's table.
 #[test]
-fn a_shared_value_holding_a_block_is_refused_on_threads() -> std::io::Result<()> {
+fn a_with_changing_several_values_holding_blocks_is_refused_on_threads() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-holding-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-several-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let program = dir.join("program.fen");
     std::fs::write(
         &program,
-        "shared Log:\n    lines = list[str]()\n\n    def add(mut self, line: str):\n        \
-         self.lines.append(line)\n\ndef main(stdout: Stdout):\n    log = Log()\n    \
-         mut items = [n for n in range(100)]\n    for mut item in parallel(items):\n        \
-         log.add(\"x\")\n        item += 1\n    stdout.print(items.len())\n",
+        "shared Logs:\n    lines = list[str]()\n\ndef main(stdout: Stdout):\n    a = Logs()\n    b = Logs()\n    \
+         with a, b as mut x, mut y:\n        x.lines = [\"made in the body, long enough to be a block\"]\n        \
+         y.lines = x.lines\n    mut items = [n for n in range(100)]\n    for mut item in parallel(items):\n        \
+         item += 1\n    stdout.print(items.len(), a.lines, b.lines)\n",
     )?;
     let path = program.to_string_lossy().into_owned();
     let built = fennec(&["build", "--llvm", &path, "-o", &dir.join("program").to_string_lossy()], &dir)?;
     assert!(!built.status.success());
     let said = String::from_utf8_lossy(&built.stderr);
-    assert!(said.contains("`Log` holds something other than numbers"), "{said}");
+    assert!(said.contains("`Logs` holds something other than numbers"), "{said}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

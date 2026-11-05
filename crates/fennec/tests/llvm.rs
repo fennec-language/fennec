@@ -2961,6 +2961,31 @@ fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `stdout.write` is `stdout.print` with nothing to end it, in order with what's printed.
+#[test]
+fn writing_to_stdout_leaves_the_line_open() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "\
+struct Tag:
+    name: str
+
+    def str(self, mut out: StrWriter):
+        out.write(\"<\" + self.name + \">\")
+
+def main(stdout: Stdout):
+    stdout.write(\"no newline, \")
+    stdout.write(\"then one\\n\")
+    stdout.print(\"printed\", 1)
+    stdout.write(1, 2.5, True, \"text\", [1, 2], Tag(name=\"a\"), [Tag(name=\"b\")])
+    stdout.write()
+    stdout.print()
+    stdout.write(\"the end\")
+";
+    same_as_the_interpreter_in_both_builds("stdout_write", source)
+}
+
 /// A program built with no interpreter in its runtime prints what it should and has none of the
 /// interpreter in it, and one still needing the interpreter fails to link rather than to run.
 #[test]
@@ -2990,13 +3015,14 @@ struct Tag:
 def main(stdout: Stdout, args: Args, process: Process):
     stdout.print([Tag(name=\"a\")], {\"key\": 1}, args.len())
     stdout.print(process.run(\"echo\", [\"hello\"]).expect(\"it runs\").stdout)
+    stdout.write(\"the end\")
 ",
     )?;
     let executable = dir.join("plain");
     let built = lean(&plain, &executable)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output()?;
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "[<a>] {\"key\": 1} 0\nhello\n\n");
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "[<a>] {\"key\": 1} 0\nhello\n\nthe end");
     // A Windows executable has no symbols to look through. There, what follows is the check: what
     // needs the interpreter doesn't link.
     if !cfg!(windows) {

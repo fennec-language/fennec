@@ -128,8 +128,7 @@ impl Emit<'_, '_, '_> {
         let named = self.literal(method);
         // What's still only written for the interpreter is a symbol of its own, so a program that
         // needs it can't link without the interpreter.
-        let interpreted =
-            ["Net.", "Connection.", "Server.", "Stdout."].iter().any(|owner| name.starts_with(owner));
+        let interpreted = ["Net.", "Connection.", "Server."].iter().any(|owner| name.starts_with(owner));
         let runtime = if test || interpreted { "fennec_capability_call" } else { "fennec_native_capability" };
         self.declare(&format!("declare i64 @{runtime}(ptr, ptr, i64, i64, i64) nounwind"));
         let handle = self.temp();

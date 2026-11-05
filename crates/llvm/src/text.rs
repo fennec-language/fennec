@@ -43,7 +43,8 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("call void @fennec_print_str(i64 {number})"));
     }
 
-    pub(crate) fn print(&mut self, args: &[Operand]) -> Result<(), String> {
+    /// `stdout.print`, or `stdout.write` with nothing to end it: what's given, with spaces between.
+    pub(crate) fn print(&mut self, args: &[Operand], ending: &str) -> Result<(), String> {
         // Everything is worked out before anything prints.
         let mut values = Vec::with_capacity(args.len());
         for arg in args {
@@ -64,7 +65,9 @@ impl Emit<'_, '_, '_> {
                 Some(kind) => self.print_one(value, kind)?,
             }
         }
-        self.print_text("\n");
+        if !ending.is_empty() {
+            self.print_text(ending);
+        }
         Ok(())
     }
 

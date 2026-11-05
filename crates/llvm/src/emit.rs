@@ -1583,7 +1583,10 @@ impl Emit<'_, '_, '_> {
         let first = args.first();
         match name {
             // A test's `Stdout` is a fake that keeps what's printed, which the runtime holds.
-            "Stdout.print" if !self.module.shared.traced => self.print(args.get(1..).unwrap_or_default()),
+            "Stdout.print" if !self.module.shared.traced => {
+                self.print(args.get(1..).unwrap_or_default(), "\n")
+            }
+            "Stdout.write" if !self.module.shared.traced => self.print(args.get(1..).unwrap_or_default(), ""),
             "list.len" => {
                 if let Some(Operand::Local(local)) = first
                     && let Some(map) = self.known.map_walks.get(&local.0).copied()

@@ -1527,6 +1527,33 @@ fn fix_to_ref_says_what_it_left() {
     assert_eq!(written, "# takes a `mut` list\ndef f(ref items: list[int]):\n    pass\n");
 }
 
+/// A program from before `IdMap` became `Table`, which `fennec fix` moves over.
+const OLD_TABLE_NAMES: &str = "from std.game import Id, IdMap\n\nstruct Unit:\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units: IdMap[Unit] = IdMap[Unit]()\n    first: Id[Unit] = units.insert(Unit(hp=1))\n    stdout.print(units.len(), first)\n";
+
+/// `fennec fix` moves a program from `std.game`'s `IdMap` to `std.collections`' `Table`, with
+/// `add` for its `insert`, and then it runs.
+#[test]
+fn fix_moves_idmap_to_table() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-table-names", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("table.fen");
+    let path = program.to_string_lossy().into_owned();
+    std::fs::write(&program, OLD_TABLE_NAMES).unwrap();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    let ran = fennec(&["run", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(
+        written,
+        OLD_TABLE_NAMES
+            .replace("from std.game import Id, IdMap", "from std.collections import Id, Table")
+            .replace("IdMap[", "Table[")
+            .replace("units.insert(", "units.add(")
+    );
+    assert_eq!(text(&ran.stdout), "1 Id(0)\n", "{}", text(&ran.stderr));
+}
+
 #[test]
 fn fix_reports_what_it_cant_fix() {
     let output =

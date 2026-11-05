@@ -23,7 +23,7 @@ test "items come out in order, each once":
     items.discard(100)
     items.remove(3)
     assert items.items() == [1, 4, 5, 9]
-    assert items.has(4) and not items.has(3)
+    assert 4 in items and 3 not in items
     assert [item for item in items] == [1, 4, 5, 9]
 
 test "finding the ends, and the nearest items":

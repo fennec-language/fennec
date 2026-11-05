@@ -62,7 +62,7 @@ pub use build::{Built, Tools, compile, compile_whole, sanitize_flag};
 pub use emit::{Cpu, Unit, emit, emit_for, emit_traced, emit_tracing_costs};
 pub use entry::{Image, entry, tests_entry};
 pub use fennec_layout::Layouts;
-pub use parallel::uses_parallel;
+pub use parallel::{uses_parallel, uses_tls};
 
 /// What functions' text leaves to the module made fresh each build.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

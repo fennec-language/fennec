@@ -180,13 +180,13 @@ pub fn name_enum(case: &mut Expr, owner: &str) {
     case.kind = ExprKind::Attr { object, name, optional: false };
 }
 
-/// Writes the defaults a call leaves out into it, by name.
+/// Writes the defaults a call leaves out into it, by name. Each keeps the span it has where its
+/// parameter is declared, which the checker gives its type in the calling function: two defaults
+/// can't share one span, or one's type would stand for both.
 pub fn add_defaults(call: &mut Expr, defaults: &[(String, Expr)]) {
     if let ExprKind::Call { args, .. } = &mut call.kind {
         for (name, default) in defaults {
-            let at = crate::Span { start: call.span.end, end: call.span.end };
-            let value = Expr { kind: default.kind.clone(), span: at };
-            args.push(crate::ast::Arg { name: Some(name.clone()), is_mut: false, value });
+            args.push(crate::ast::Arg { name: Some(name.clone()), is_mut: false, value: default.clone() });
         }
     }
 }

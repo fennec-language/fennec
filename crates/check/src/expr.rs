@@ -491,9 +491,11 @@ impl FnCx<'_> {
             return;
         }
         let held = match collection {
-            Type::List(held) | Type::Array(held, _) | Type::Buffer(held) | Type::Set(held) | Type::Dict(held, _) => {
-                held.as_ref().clone()
-            }
+            Type::List(held)
+            | Type::Array(held, _)
+            | Type::Buffer(held)
+            | Type::Set(held)
+            | Type::Dict(held, _) => held.as_ref().clone(),
             Type::IdMap(held) => Type::Id(held.clone()),
             Type::Str => Type::Str,
             Type::Bytes => Type::Int,

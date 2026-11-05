@@ -130,11 +130,14 @@ impl FnCx<'_> {
         if written != size {
             let plural = if written == 1 { "item" } else { "items" };
             self.error(
-                Diagnostic::new(format!("this array holds {size} items, but this list has {written} {plural}"), span)
-                    .with_help(format!(
-                        "write all {size}, or make it with `{}()` and set the ones you need",
-                        Type::Array(Box::new(item.clone()), size)
-                    )),
+                Diagnostic::new(
+                    format!("this array holds {size} items, but this list has {written} {plural}"),
+                    span,
+                )
+                .with_help(format!(
+                    "write all {size}, or make it with `{}()` and set the ones you need",
+                    Type::Array(Box::new(item.clone()), size)
+                )),
             );
         }
         Type::Array(Box::new(item.clone()), size)

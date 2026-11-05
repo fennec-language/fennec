@@ -1,0 +1,7 @@
+error: this array has 20 items, so there's no item 20
+ --> examples/errors/array_index_out_of_range.fen:3:11
+  |
+3 |     slots[20] = 1
+  |           ^^
+  |
+  = help: its items are 0 to 19

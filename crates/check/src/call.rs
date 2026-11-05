@@ -78,14 +78,8 @@ impl FnCx<'_> {
             }
             ExprKind::Variant(name) => return self.construct_variant(None, name, args, span),
             ExprKind::Index { object, index } => {
-                if self.names_a_collection(object) {
-                    return self.empty_collection(callee, args, span);
-                }
-                if let ExprKind::Name(name) = &object.kind
-                    && matches!(name.as_str(), "array" | "array.new")
-                    && self.lookup(name).is_none()
-                {
-                    return self.filled_array(callee, index, args, span);
+                if let Some(made) = self.made_collection(callee, (object, index), args, span) {
+                    return made;
                 }
                 if let Some(type_name) = self.as_type_name(object) {
                     if self.checker.program.type_info(type_name).is_some() {
@@ -770,8 +764,23 @@ impl FnCx<'_> {
 
     /// `IdMap[Enemy]()` and `SoaList[Particle]()`.
     /// Whether an expression is `list`, `dict` or `set`, the built-in collections.
-    fn names_a_collection(&self, object: &Expr) -> bool {
-        matches!(&object.kind, ExprKind::Name(name) if matches!(name.as_str(), "list" | "dict" | "set") && self.lookup(name).is_none())
+    /// `list[str]()` and the like, or `array[float, 16]()`, when the name is the builtin's.
+    fn made_collection(
+        &mut self,
+        callee: &Expr,
+        (object, index): (&Expr, &Expr),
+        args: &[Arg],
+        span: Span,
+    ) -> Option<Type> {
+        let ExprKind::Name(name) = &object.kind else { return None };
+        if self.lookup(name).is_some() {
+            return None;
+        }
+        match name.as_str() {
+            "list" | "dict" | "set" => Some(self.empty_collection(callee, args, span)),
+            "array" | "array.new" => Some(self.filled_array(callee, index, args, span)),
+            _ => None,
+        }
     }
 
     /// `list[str]()`, `dict[str, int]()` or `set[int]()`: an empty collection that says its type.
@@ -808,7 +817,10 @@ impl FnCx<'_> {
             && name == "array.new"
         {
             let renamed = Expr { kind: ExprKind::Name("array".to_owned()), span: object.span };
-            let written = Expr { kind: ExprKind::Index { object: Box::new(renamed), index: Box::new(index.clone()) }, span: callee.span };
+            let written = Expr {
+                kind: ExprKind::Index { object: Box::new(renamed), index: Box::new(index.clone()) },
+                span: callee.span,
+            };
             let ty = written.as_type().map_or(Type::Unknown, |written| self.resolve(&written));
             if let (Type::Array(item, _), [zero]) = (&ty, args) {
                 let got = self.expr_as(&zero.value, item);
@@ -824,7 +836,8 @@ impl FnCx<'_> {
             return Type::Unknown;
         };
         if !args.is_empty() {
-            let message = format!("`{}()` fills it with zeros, so it takes nothing", crate::program::written(&written));
+            let message =
+                format!("`{}()` fills it with zeros, so it takes nothing", crate::program::written(&written));
             self.error(
                 Diagnostic::new(message, span)
                     .with_help("set the items afterwards, or write them in `[...]` where an array goes"),
@@ -840,10 +853,21 @@ impl FnCx<'_> {
         };
         let Some(zero) = self.zero_of(item, item_written, callee.span) else {
             let message = format!("{} has no zero to fill an array with", a(item));
-            self.error(
-                Diagnostic::new(message, span)
-                    .with_help("write the items out where the array goes: `[first, second, ...]`"),
-            );
+            let help = match item.as_ref() {
+                Type::Named(name)
+                    if self
+                        .checker
+                        .program
+                        .type_info(name)
+                        .is_some_and(|info| info.kind == TypeKind::Struct && !info.def.shared) =>
+                {
+                    format!(
+                        "give every field of `{name}` a default, or write the items out: `[first, second, ...]`"
+                    )
+                }
+                _ => "write the items out where the array goes: `[first, second, ...]`".to_owned(),
+            };
+            self.error(Diagnostic::new(message, span).with_help(help));
             return Type::Unknown;
         };
         self.expr(&zero);

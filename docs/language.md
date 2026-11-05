@@ -81,6 +81,20 @@ uppercased = [copy(person, name=person.name.upper()) for person in people]
 
 `copy(x, field=...)` makes a changed copy and re-runs `where` rules. A plain `=` covers everything else, and the compiler skips the real copy when nobody can tell. A plain parameter can't change, so passing something huge costs nothing.
 
+## Fixed-size arrays
+
+```fennec
+struct Mat4:
+    m: array[float, 16]                # 16 floats, held inline
+
+struct Bag:
+    slots = array[Item?, 20]()         # every slot starts as None
+
+identity: array[float, 4] = [1.0, 0.0, 0.0, 1.0]
+```
+
+`array[T, N]` holds exactly `N` items where the array is, with no block of its own. Write one as a list of exactly `N` items where an array goes, or as `array[T, N]()`, which fills it with the item's zero: `0`, `0.0`, `False`, `""`, `None`, or a struct made from its defaults. It indexes, loops with `for` and `for ref`, and has `len`, `in` and `==`. A plain `=` copies it. Its size never changes, and it doesn't go where a list goes: `list(arr)` makes one. A wrong count, and a position known to be outside it, are compile errors.
+
 ## Pointing at things: tables and Ids
 
 ```fennec

@@ -219,6 +219,18 @@ fn a_parameter_nothing_reads_goes_with_its_arguments() {
         fixed_params(source),
         "def damage(power: int, bonus: int = 1) -> int:\n    power * 2 + bonus\n\ndef main(stdout: Stdout):\n    stdout.print(damage(3), damage(power=4, bonus=2))\n"
     );
+    // What comes after it starts at `ref` or `mut`, not at its value.
+    for word in ["ref", "mut"] {
+        let source = format!(
+            "def f(unused: int, {word} items: list[int]):\n    items.append(1)\n\ndef g():\n    mut xs = [1]\n    f(2, {word} xs)\n"
+        );
+        assert_eq!(
+            fixed_params(&source),
+            format!(
+                "def f({word} items: list[int]):\n    items.append(1)\n\ndef g():\n    mut xs = [1]\n    f({word} xs)\n"
+            )
+        );
+    }
     let last = "def f(n: int, unused: int) -> int:\n    n\n\ndef g() -> int:\n    f(1, 2)\n";
     assert_eq!(fixed_params(last), "def f(n: int) -> int:\n    n\n\ndef g() -> int:\n    f(1)\n");
     let held = "def f(n: int, unused: int) -> int:\n    n\n\ndef g(h: (int, int) -> int) -> int:\n    h(1, 2)\n\ndef k() -> int:\n    g(f)\n";

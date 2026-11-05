@@ -21,9 +21,8 @@ const USED: i32 = 24;
 const MASK: i32 = 32;
 const SLOTS: i64 = 40;
 
-/// Where a string's length in bytes and its text are.
-const TEXT_BYTES: i32 = 16;
-const TEXT: i32 = 40;
+/// Where a string's length in bytes and its text are, as the runtime lays out its block.
+use fennec_interp::embed::layout::{TEXT, TEXT_BYTES};
 
 const MIX: i64 = 0x9E37_79B9_7F4A_7C15_u64.cast_signed();
 

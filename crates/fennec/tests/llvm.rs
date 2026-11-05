@@ -1739,6 +1739,51 @@ fn reading_a_string_that_isnt_ascii_in_order_takes_a_step_for_each_character() -
     )
 }
 
+/// Indexing and slicing text that isn't ASCII, in and out of order, from either end, clamped
+/// and empty, as native code finds characters from a block's cursor.
+#[test]
+fn indexing_and_slicing_a_string_that_isnt_ascii_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "wide_slices",
+        r#"def main(stdout: Stdout):
+    text = "héllo wörld, ünïcode ✓ and 🦊 fox; then plain ascii after all that"
+    n = text.len()
+    mut parts = []
+    for a in [0, 1, 5, 21, 26, 27, 28, 40, 64, 65, -1, -5, -30, -70, 70]:
+        for b in [0, 2, 6, 22, 27, 28, 29, 45, 64, 65, -1, -3, -40, 100]:
+            parts.append(text[a:b])
+    stdout.print(parts)
+    stdout.print(text[:5], text[60:], text[:], text[-6:], text[:-60], text[3:3], text[27:28])
+    mut walked = []
+    for i in range(n - 2):
+        walked.append(text[i:i + 2] + text[i] + text[-1 - i])
+    stdout.print("|".join(walked))
+    mut jumps = []
+    for i in [3, 50, 7, 60, 0, 61, 28, 27, 26, -1, -64]:
+        jumps.append(text[i])
+    stdout.print(jumps, text[0:40], text[5:n])
+    stdout.print(text[n])
+"#,
+    )
+}
+
+/// Reading characters and short parts of text that isn't ASCII, in order, makes nothing.
+#[test]
+fn reading_text_that_isnt_ascii_makes_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let made =
+        "def main(stdout: Stdout):\n    text = \"é\" + \"abc日\" * 1000\n    stdout.print(text.len())\n";
+    let read = "def main(stdout: Stdout):\n    text = \"é\" + \"abc日\" * 1000\n    mut found = 0\n    mut size = 0\n    for at in range(text.len() - 2):\n        if text[at] == \"日\":\n            found += 1\n        size += text[at:at + 2].len()\n    stdout.print(found, size)\n";
+    let (made, read) = (counts_of("text_made", made)?, counts_of("text_read", read)?);
+    assert_eq!(count(&read, "allocations"), count(&made, "allocations"), "{made} / {read}");
+    Ok(())
+}
+
 /// A program changing `for mut` items in every way a body can, and leaving in every way.
 const FOR_MUT_ITEMS: &str = r#"error Bad:
     why: str

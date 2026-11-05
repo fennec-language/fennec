@@ -398,3 +398,27 @@ fn a_case_field_default_has_to_fit_its_type() {
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found.iter().all(|problem| problem.contains("`x`")), "{found:?}");
 }
+
+#[test]
+fn a_float_compared_as_not_itself_isnt_a_nan_test() {
+    let empty: [&str; 0] = [];
+    let held = "struct Unit:\n    speed = 1.5\n";
+    assert_eq!(
+        crate::in_main_after(held, "x = 1.5\nstdout.print(x != x)"),
+        ["`x != x` is always False, since NaN equals NaN here @ x != x"]
+    );
+    assert_eq!(
+        crate::in_main_after(held, "unit = Unit()\nstdout.print(unit.speed != unit.speed)"),
+        ["`unit.speed != unit.speed` is always False, since NaN equals NaN here @ unit.speed != unit.speed"]
+    );
+    for body in [
+        "x = 1.5\ny = 2.5\nstdout.print(x != y, x.is_nan())",
+        "unit = Unit()\nstdout.print(unit.speed.is_nan(), unit.speed != 1.0)",
+        // An int can't be NaN, and the lint has what it means to compare one with itself.
+        "x = 1\nstdout.print(x != x)",
+    ] {
+        assert_eq!(crate::in_main_after(held, body), empty, "{body}");
+    }
+    let found = crate::in_main_after(held, "x = 1\nstdout.print(x.is_nan())");
+    assert_eq!(found.len(), 1, "{found:?}");
+}

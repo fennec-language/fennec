@@ -112,6 +112,23 @@ impl Emit<'_, '_, '_> {
             }),
             ("set", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.set_of_chars(dest, text)),
             ("assert.sides", [left, right], _) => self.assert_sides(left, right, span),
+            ("round", [value, places], [Some(Kind::Float), Some(Kind::Int)]) => dest.and_then(|dest| {
+                let ((value, _), (places, _)) = (self.operand(value)?, self.operand(places)?);
+                self.declare("declare double @fennec_round_places(double, i64) nounwind");
+                let rounded = self.temp();
+                self.line(&format!(
+                    "{rounded} = call double @fennec_round_places(double {value}, i64 {places})"
+                ));
+                self.assign(dest, &rounded)
+            }),
+            ("str.codes", [text], _) => dest.and_then(|dest| self.codes_of_text(dest, text)),
+            ("str.from_code", [code], _) => dest.and_then(|dest| self.text_from_code(dest, code)),
+            ("dict.clear" | "set.clear", [Operand::Local(dict)], _) => {
+                self.dict_clear(*dict);
+                Ok(())
+            }
+            ("set.discard", [Operand::Local(set), key], _) => self.set_remove(*set, key, false, span),
+            ("set.remove", [Operand::Local(set), key], _) => self.set_remove(*set, key, true, span),
             ("list.sort", [Operand::Local(list)], _) => self.sorted(*list, &Operand::Local(*list)),
             ("list.sort.key", [Operand::Local(list), key], _) => {
                 self.sorted_by(*list, &Operand::Local(*list), key, span)
@@ -123,6 +140,7 @@ impl Emit<'_, '_, '_> {
                 Ok(())
             }
             ("sorted", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.sorted_chars(dest, text)),
+            ("main.failed", [error], _) => self.main_failed(error, span),
             ("set", [], []) => dest.and_then(|dest| self.empty_set(dest)),
             // A set of a set's items is the set, shared until one changes.
             ("set", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| self.copy(dest, set)),
@@ -181,6 +199,83 @@ impl Emit<'_, '_, '_> {
         if let Some(made) = made {
             self.let_go_text_block(&block, &made);
         }
+        if let Some(boxed) = boxed {
+            self.assign(dest, &boxed)?;
+        }
+        Ok(())
+    }
+
+    /// `text.codes()`.
+    fn codes_of_text(&mut self, dest: LocalId, text: &Operand) -> Result<(), String> {
+        let (text, _) = self.operand(text)?;
+        let symbol = crate::kinds::element_symbol(self.module.layouts, ListItem::Int);
+        self.module.shared.elements.insert(symbol.clone(), ListItem::Int);
+        self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
+        self.declare("declare ptr @fennec_str_codes(ptr, i64) nounwind");
+        let (element, list) = (self.temp(), self.temp());
+        self.line(&format!("{element} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
+        self.on_blocks([&text], |emit, [block]| {
+            emit.line(&format!("{list} = call ptr @fennec_str_codes(ptr {block}, i64 {element})"));
+        });
+        self.assign(dest, &list)
+    }
+
+    /// `str.from_code(code)`: `Ok` with the character, or `Err` with an `InvalidValue`.
+    fn text_from_code(&mut self, dest: LocalId, code: &Operand) -> Result<(), String> {
+        let (code, _) = self.operand(code)?;
+        self.declare("declare ptr @fennec_str_from_code(i64) nounwind");
+        self.declare("declare ptr @fennec_str_from_code_problem(i64) nounwind");
+        let made = self.temp();
+        self.line(&format!("{made} = call ptr @fennec_str_from_code(i64 {code})"));
+        self.made_or_invalid(dest, &made, &|emit| {
+            let message = emit.temp();
+            emit.line(&format!("{message} = call ptr @fennec_str_from_code_problem(i64 {code})"));
+            message
+        })
+    }
+
+    /// A `Result` of something made by a runtime call that gives back 0 when it can't, with the
+    /// message `problem` writes in an `InvalidValue`.
+    pub(crate) fn made_or_invalid(
+        &mut self,
+        dest: LocalId,
+        made: &str,
+        problem: &dyn Fn(&mut Self) -> String,
+    ) -> Result<(), String> {
+        let kind = self.kind_of(dest)?.clone();
+        let (ok_case, ok_fields) = self.case_of(&kind, "Ok")?;
+        let (err_case, err_fields) = self.case_of(&kind, "Err")?;
+        let (_, ok_offset, ok_kind) = ok_fields.first().cloned().ok_or("an `Ok` holding nothing")?;
+        let ok_kind = ok_kind.ok_or("a value this backend doesn't take yet")?;
+        let (_, err_offset, err_kind) = err_fields.first().cloned().ok_or("an `Err` holding nothing")?;
+        let err_kind = err_kind.ok_or("an error this backend doesn't take yet")?;
+        let boxed = if let Kind::Boxed(id) = kind { Some(self.new_block(id)?) } else { None };
+        let base = if let Some(boxed) = &boxed {
+            self.offset(boxed, crate::lists::FIELDS_OFFSET)
+        } else {
+            self.release_held(dest)?;
+            let (slot, text) = (self.slot(dest), self.text_of(&kind));
+            self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
+            slot
+        };
+        let is_made = self.temp();
+        self.line(&format!("{is_made} = icmp ne ptr {made}, null"));
+        let (good, bad, joined) = (self.label("made"), self.label("not_made"), self.label("done"));
+        self.line(&format!("br i1 {is_made}, label %{good}, label %{bad}"));
+        self.start_block(&good);
+        self.line(&format!("store i64 {ok_case}, ptr {base}"));
+        let value_at = self.offset(&base, ok_offset);
+        let value = if ok_kind == Kind::Str { self.text_value(made) } else { made.to_owned() };
+        self.store_field(&ok_kind, &value, &value_at, "");
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&bad);
+        self.line(&format!("store i64 {err_case}, ptr {base}"));
+        let message = problem(self);
+        let message = self.text_value(&message);
+        let error_at = self.offset(&base, err_offset);
+        self.invalid_value(&err_kind, &message, &error_at)?;
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
         if let Some(boxed) = boxed {
             self.assign(dest, &boxed)?;
         }

@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 106;
+const BUILDING_EXAMPLES: usize = 108;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -91,6 +91,35 @@ fn outcome(output: &Output) -> Outcome {
         String::from_utf8_lossy(&output.stdout).into_owned(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
         output.status.code(),
+    )
+}
+
+/// `stdout.write` shows what `print` shows, with no newline, in compiled code.
+#[test]
+fn writing_to_stdout_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "stdout_write",
+        r#"struct Point:
+    x: int
+    label: str
+
+def maybe(present: bool) -> str?:
+    if present:
+        return "here"
+    None
+
+def main(stdout: Stdout):
+    stdout.write("no newline, ")
+    stdout.write("then one\n")
+    stdout.write(1, 2.5, True, "words", [1, 2], Point(x=1, label="p"), maybe(True), maybe(False))
+    stdout.write()
+    stdout.write("")
+    stdout.print(" and print after")
+    stdout.write(f"{1 + 1}\n")
+"#,
     )
 }
 
@@ -1730,6 +1759,89 @@ fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// `list` of a capability, `round` to places, the codes of text, and clearing and taking keys out
+/// of dicts and sets.
+#[test]
+fn more_small_calls_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "more_small_calls",
+        r#"struct Key:
+    x: int
+    y: int
+
+def main(args: Args, stdout: Stdout):
+    stdout.print(list(args).len())
+    for arg in args:
+        stdout.print(arg.len() > 0)
+    stdout.print(round(3.14159, 2), round(2.5, 0), round(1234.5, -2), round(0.125, 2))
+    stdout.print("héllo".codes(), "".codes(), "€".code())
+    for code in [65, 233, 8364, -1, 55296, 1114112]:
+        match str.from_code(code):
+            case Ok(text):
+                stdout.print(text, text.len())
+            case Err(error):
+                stdout.print(error.message)
+    mut numbers = {1: 2, 3: 4}
+    shared = numbers
+    numbers.clear()
+    stdout.print(numbers, shared, numbers.len())
+    numbers[5] = 6
+    stdout.print(numbers)
+    mut names = {"a": "b", "a long string that is held in a block": "c"}
+    names.clear()
+    names["d"] = "e"
+    stdout.print(names)
+    mut ints = {1, 2, 3}
+    kept = ints
+    ints.discard(2)
+    ints.discard(9)
+    ints.remove(3)
+    stdout.print(ints, kept)
+    ints.clear()
+    ints.add(7)
+    stdout.print(ints, ints.len())
+    mut words = {"a", "b", "a long string that is held in a block"}
+    words.discard("a")
+    words.discard("nope")
+    words.remove("a long string that is held in a block")
+    stdout.print(words)
+    mut keys = {Key(x=1, y=2), Key(x=3, y=4)}
+    keys.discard(Key(x=1, y=2))
+    keys.discard(Key(x=9, y=9))
+    keys.remove(Key(x=3, y=4))
+    stdout.print(keys, keys.len())
+"#,
+    )
+}
+
+/// `set.remove` of a key that isn't there fails as the JIT does.
+#[test]
+fn removing_what_a_set_lacks_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, set, key) in [
+        ("remove_int", "{1, 2}", "3"),
+        ("remove_str", "{\"a\"}", "\"b\""),
+        ("remove_long", "{\"a\"}", "\"a long string that is held in a block\""),
+    ] {
+        same_message_as_the_jit(
+            name,
+            &format!(
+                "def main(stdout: Stdout):
+    mut held = {set}
+    held.remove({key})
+    stdout.print(held)
+"
+            ),
+        )?;
+    }
+    Ok(())
+}
+
 /// Shifts, `~`, sorting a list where it is, a `match` on a bool and `random_choice`.
 #[test]
 fn bits_sorts_and_choices_match_the_jit() -> std::io::Result<()> {
@@ -1992,6 +2104,59 @@ fn one_shared_value_under_two_names_in_a_with_stays_one_value() -> std::io::Resu
         return Ok(());
     }
     same_as_the_interpreter_in_both_builds("one_cell_two_names", ONE_CELL_TWO_NAMES)
+}
+
+/// `==` on `shared` values, alone and inside other values: the same only if they're one value, as
+/// comparing what two hold would take a second lock while one is held.
+const SHARED_SAME: &str = "shared Account:
+    total = 0
+
+struct Holder:
+    account: Account
+    n: int
+
+enum Either:
+    One(account: Account)
+    Nothing
+
+def main(stdout: Stdout):
+    a = Account(total=1)
+    b = a
+    c = Account(total=1)
+    stdout.print(a == a, a == b, a == c, a != a, a != c)
+    stdout.print(Holder(a, 1) == Holder(b, 1), Holder(a, 1) == Holder(c, 1))
+    stdout.print([a] == [b], [a] == [c], a in [c], a in [b], [a, c].index(c))
+    stdout.print(Either.One(a) == Either.One(b), Either.One(a) == Either.One(c))
+    maybe: Account? = a
+    stdout.print(maybe == b, maybe == c)
+    with b as mut held:
+        held.total = 2
+    stdout.print(a == b, a == c)
+";
+
+#[test]
+fn shared_values_are_the_same_only_if_they_are_one_value() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let (printed, ..) = interpreted("shared_same_said", SHARED_SAME)?;
+    let wanted = "True True False False True\nTrue False\nTrue False False True 1\nTrue False\nTrue False\nTrue False\n";
+    assert_eq!(printed, wanted);
+    same_as_the_interpreter_in_both_builds("shared_same", SHARED_SAME)?;
+    // A type's own `def ==` still decides, wherever it's written.
+    let own = "\
+shared Account:
+    total = 0
+
+    def ==(self, other: Account) -> bool:
+        self.total > 100
+
+def main(stdout: Stdout):
+    a = Account(total=1)
+    c = Account(total=200)
+    stdout.print(a == a, a == c, c == a, c == c, a != c, c != a)
+";
+    same_as_the_interpreter_in_both_builds("shared_own_same", own)
 }
 
 #[test]
@@ -3128,6 +3293,69 @@ fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(outcome(&ran), outcome(&interpreted));
     Ok(())
+}
+
+/// The real network, with no interpreter behind it: a server and a client on this machine, each
+/// way a call can come out, and looping over each.
+const REAL_NETWORK: &str = "from std.net import NetError, Connection
+
+def reason[T](found: Result[T, NetError]) -> str:
+    match found:
+        case Err(error):
+            error.message()
+        case _:
+            \"it worked\"
+
+def lines_of(connection: Connection) -> int fails NetError:
+    mut count = 0
+    for line in connection.lines():
+        count += line.len()
+    count
+
+def talk(net: Net, stdout: Stdout) -> int fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port > 0)
+        with net.connect(\"localhost\", server.port)? as client:
+            stdout.print(client.peer.endswith(f\":{server.port}\"))
+            client.write(\"hello\\nfrom a client\\r\\nand more\")?
+            with server.accept()? as conn:
+                stdout.print(conn.read_line()?)
+                stdout.print(conn.read_line()?)
+                stdout.print(reason(conn.read_line(timeout=20ms)))
+                stdout.print(reason(server.accept(timeout=20ms)))
+                client.write(\"\\n\")?
+                stdout.print(conn.read_line()?)
+                client.write(\"one\\ntwo\\n\")?
+                client.close()
+                stdout.print(lines_of(conn)?)
+                stdout.print(conn.read_line()?)
+                conn.close()
+                stdout.print(reason(conn.read_line()))
+                stdout.print(reason(conn.write(\"gone\")))
+    7
+
+def main(net: Net, stdout: Stdout):
+    stdout.print(reason(talk(net, stdout)))
+    server = net.listen(0).expect(\"it listens\")
+    client = net.connect(\"127.0.0.1\", server.port).expect(\"it connects\")
+    client.write(\"looped\\n\").expect(\"it writes\")
+    client.close()
+    for conn in server:
+        for line in conn.lines():
+            stdout.print(line)
+        break
+    port = server.port
+    server.close()
+    stdout.print(reason(server.accept()))
+    stdout.print(reason(net.connect(\"127.0.0.1\", port)) == f\"`127.0.0.1` refused a connection on port {port}\")
+";
+
+#[test]
+fn the_real_network_works_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("real_network", REAL_NETWORK)
 }
 
 /// A program built with no interpreter in its runtime prints what it should and has none of the
@@ -4838,6 +5066,89 @@ def main(stdout: Stdout):
     seen.add(5)
     stdout.print(seen, copied)
 "#,
+    )
+}
+
+/// Programs whose `main` fails, each with what comes first in it, in every way it can: an error
+/// of one type, one of several, one held in a block of its own, and only after printing.
+const FAILING_MAINS: [(&str, &str); 4] = [
+    (
+        "declared",
+        "def main(stdout: Stdout) fails Short:\n    stdout.print(short(1)?)\n    stdout.print(short(2)?)\n    stdout.print(\"not here\")\n",
+    ),
+    (
+        "undeclared",
+        "def main(stdout: Stdout):\n    stdout.print(short(1)?)\n    check(4)?\n    stdout.print(\"not here\")\n",
+    ),
+    (
+        "several",
+        "def main(stdout: Stdout):\n    stdout.print(short(1)?)\n    stdout.print(coded(2)?)\n    stdout.print(short(2)?)\n",
+    ),
+    (
+        "held",
+        "def main(stdout: Stdout):\n    stdout.print(coded(1)?)\n    stdout.print(held(2)?)\n    stdout.print(coded(3)?)\n",
+    ),
+];
+
+const WHAT_MAINS_CALL: &str = r#"error Short:
+    why: str
+
+error Coded:
+    code: int
+
+error Held:
+    items: list[int]
+    table: dict[str, int]
+
+def short(n: int) -> int fails Short:
+    if n > 1: fail Short(why="too big")
+    n
+
+def coded(n: int) -> int fails Coded:
+    if n > 1: fail Coded(code=n)
+    n
+
+def held(n: int) -> int fails Held:
+    if n > 1: fail Held(items=[n, n], table={"k": n})
+    n
+
+def check(n: int) fails Short:
+    if n > 3: fail Short(why="the end")
+
+"#;
+
+/// A failing `main` says what the interpreter does, at the same place, after what it printed, and
+/// the program ends with the same code.
+#[test]
+fn a_failing_main_ends_as_on_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("failing-main")?;
+    let path = |file: &Path| file.display().to_string();
+    for (name, main) in FAILING_MAINS {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("{WHAT_MAINS_CALL}{main}"))?;
+        let executable = dir.join(name);
+        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output()?;
+        let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+        assert_eq!(outcome(&ran), outcome(&interpreted), "{name}");
+        assert_eq!(ran.status.code(), Some(1), "{name}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+#[test]
+fn errors_of_several_types_go_up_and_show_as_on_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "errors_of_several_types",
+        include_str!("fixtures/errors_of_several_types.fen"),
     )
 }
 

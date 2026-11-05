@@ -34,9 +34,9 @@ pub(crate) fn runtime_built() -> bool {
     })
 }
 
-/// The runtime library's file name, as Cargo names a static library here.
-pub(crate) fn runtime_file() -> &'static str {
-    if cfg!(windows) { "fennec_runtime.lib" } else { "libfennec_runtime.a" }
+/// The runtime library's file name.
+pub(crate) const fn runtime_file() -> &'static str {
+    "libfennec_runtime.a"
 }
 
 /// Whether the runtime library is beside the `fennec` these tests run, which is where it's looked
@@ -74,8 +74,7 @@ fn runtime_variant_built(features: &str, folder: &str, name: &str) -> bool {
         .status()
         .is_ok_and(|status| status.success());
     let library = own.join(profile).join(runtime_file());
-    let file = if cfg!(windows) { format!("{name}.lib") } else { format!("lib{name}.a") };
-    built && fs::copy(library, beside.join(file)).is_ok()
+    built && fs::copy(library, beside.join(format!("lib{name}.a"))).is_ok()
 }
 
 /// Whether mutation testing is running the tests (CI's mutation jobs set

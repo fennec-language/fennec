@@ -18,8 +18,9 @@ permissions:
 # one running finishes, as it's what saves the caches pull requests start from. Anything else,
 # like a merge group or a run for `staging.yml`, gets a group of its own, since sharing one would
 # drop some that are needed.
+# The name is written out, since `staging.yml` runs this and CI together, under its own name.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.ref == 'refs/heads/main' && github.event_name == 'push' && 'main' || github.run_id }}
+  group: CodeQL-${{ github.event_name == 'pull_request' && github.ref || github.ref == 'refs/heads/main' && github.event_name == 'push' && 'main' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

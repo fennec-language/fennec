@@ -127,7 +127,11 @@ impl FnCx<'_> {
             }
             ExprKind::Comprehension { kind, elem, value, names, iter, cond } => {
                 let parts = (elem.as_ref(), value.as_deref(), cond.as_deref());
-                let (elem, value) = self.comprehension(parts, names, iter, span);
+                let kept =
+                    *kind == CompKind::Generator && !self.worked_out_here.contains(&(span.start, span.end));
+                self.kept_generators += usize::from(kept);
+                let (elem, value) = self.comprehension(parts, names, iter, span, kept);
+                self.kept_generators -= usize::from(kept);
                 match kind {
                     CompKind::List => Type::list(elem),
                     CompKind::Generator => {
@@ -175,6 +179,38 @@ impl FnCx<'_> {
         Type::Unknown
     }
 
+    /// A name that doesn't exist, and what was probably meant if there's nothing else to say.
+    pub(crate) fn unknown(&self, name: &str, span: Span) -> Diagnostic {
+        let problem = unknown_name(name, span);
+        match self.similar_name(name).filter(|_| problem.help.is_none()) {
+            Some(similar) => problem.with_help(format!("did you mean `{similar}`?")),
+            None => problem,
+        }
+    }
+
+    /// `print` or `console`, which a newcomer writes first: what to write instead, in the function
+    /// it's written in. With a `Stdout` already in the signature, it's only a matter of using it.
+    fn no_global_output(&self, name: &str, span: Span) -> Diagnostic {
+        const WHY: &str = "a function reaches outside itself only through what's in its signature";
+        let diagnostic = Diagnostic::new(format!("there's no global `{name}`"), span);
+        if let Some(held) = self.name_holding(&Type::named("Stdout")) {
+            let diagnostic = diagnostic.with_help(format!("{WHY}: write `{held}.print(...)`"));
+            return if name == "print" {
+                diagnostic.with_fix(span, format!("{held}.print"))
+            } else {
+                diagnostic
+            };
+        }
+        let to_add = if self.key == "main" {
+            "so write `def main(stdout: Stdout):`".to_owned()
+        } else if self.in_a_test() {
+            "so give this test a `(stdout: Stdout)` after its name".to_owned()
+        } else {
+            format!("so give `{}` a `stdout: Stdout` parameter and pass it from `main`", self.key)
+        };
+        diagnostic.with_help(format!("{WHY}, {to_add}, then `stdout.print(...)`"))
+    }
+
     fn name(&mut self, name: &str, span: Span) -> Type {
         if let Some((ty, _)) = self.lookup(name) {
             return ty;
@@ -206,8 +242,10 @@ impl FnCx<'_> {
         } else if builtins::is_builtin(name) || self.checker.program.imported(name, span).is_some() {
             Diagnostic::new(format!("`{name}` can only be called"), span)
                 .with_help(format!("call it, like `{name}(...)`, or pass an arrow function that calls it"))
+        } else if matches!(name, "print" | "console") {
+            self.no_global_output(name, span)
         } else {
-            unknown_name(name, span)
+            self.unknown(name, span)
         };
         self.error(problem);
         Type::Unknown
@@ -759,12 +797,14 @@ impl FnCx<'_> {
         names: &[String],
         iter: &Expr,
         span: Span,
+        kept: bool,
     ) -> (Type, Type) {
         let (elem, value, cond) = parts;
         let iter_ty = self.expr(iter);
         let item = self.item_type(&iter_ty, iter.span);
         let before = self.snapshot();
-        self.push(false);
+        // One kept for later runs after this line, so it can't change what's around it.
+        self.push(kept);
         self.value_functions += 1;
         self.bind_names(names, &item, false, (iter.span, span));
         if let Some(cond) = cond {

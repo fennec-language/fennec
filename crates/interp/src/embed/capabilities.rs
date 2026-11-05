@@ -133,7 +133,19 @@ pub extern "C" fn call(word: i64, method: i64, count: i64, start: i64, end: i64)
             .ok_or_else(|| Diagnostic::new("the native code lost a method's name", at))?;
         let count = usize::try_from(count).unwrap_or(0).min(state.inputs.len());
         let given = state.inputs.split_off(state.inputs.len() - count);
-        let args = given.into_iter().map(|value| crate::call::CallArg::plain(value, at)).collect();
+        let mut args: Vec<_> =
+            given.into_iter().map(|value| crate::call::CallArg::plain(value, at)).collect();
+        // A `timeout=` comes last, and the name says so.
+        let name = match (name.strip_suffix(".timeout"), args.pop()) {
+            (Some(method), Some(timeout)) => {
+                args.push(crate::call::CallArg::named("timeout", timeout.value, at));
+                method.to_owned()
+            }
+            (_, last) => {
+                args.extend(last);
+                name
+            }
+        };
         let result = state.interp.read_method(&receiver, &name, args, at)?;
         Ok(state.push(result))
     })
@@ -227,6 +239,34 @@ pub extern "C" fn crypto_call(name: i64, count: i64, start: i64, end: i64) -> i6
     })
 }
 
+/// `fennec_net_call(handle, method, count, start, end)`: a method of a connection or server by its
+/// handle, with the last `count` inputs native code handed over as its arguments. `method` is a
+/// string block like `Connection.read_line`. Nothing's borrowed while it waits.
+pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
+    let at = span(start, end);
+    let called = attempt(|state: &mut State| {
+        let name = u64::try_from(method)
+            .ok()
+            .and_then(|address| state.heap.block(address))
+            .filter(|block| super::heap::is_text(state, block))
+            .map(super::heap::block_text)
+            .ok_or_else(|| Diagnostic::new("the native code lost a method's name", at))?;
+        let count = usize::try_from(count).unwrap_or(0).min(state.inputs.len());
+        let given = state.inputs.split_off(state.inputs.len() - count);
+        Ok(Some((name, given.into_iter().map(Value::unpacked).collect::<Vec<Value>>())))
+    });
+    let Some((name, given)) = called else { return 0 };
+    super::write_kept_output();
+    let done = crate::stdlib::net::timed(&name, &given, at).and_then(|(method, args, timeout)| match method
+        .split_once('.')
+    {
+        Some(("Server", method)) => crate::stdlib::net::real_server(handle, method, args, timeout, at),
+        Some((_, method)) => crate::stdlib::net::real_connection(handle, method, args, timeout, at),
+        None => Err(Diagnostic::new("the native code lost a method's name", at)),
+    });
+    attempt(|state: &mut State| done.map(|value| state.push(value)))
+}
+
 /// A method of a whole capability.
 fn native_method(
     capability: Capability,
@@ -261,6 +301,12 @@ fn native_method(
             // A prompt shows before the program waits for an answer.
             super::write_kept_output();
             crate::inputs::lines_of(&mut super::aot::StdinLines::default(), at)
+        }
+        (Capability::Net, _, _) => {
+            // What's been printed comes out first, as it does before anything else that waits.
+            super::write_kept_output();
+            let (method, args, timeout) = crate::stdlib::net::timed(method, args, at)?;
+            crate::stdlib::net::real_net(method, args, timeout, at)
         }
         (Capability::Entropy, "bytes", [Value::Int(count)]) => {
             let Ok(count) = usize::try_from(*count) else {

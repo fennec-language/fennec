@@ -1617,6 +1617,7 @@ impl Emit<'_, '_, '_> {
         match name {
             // A test's `Stdout` is a fake that keeps what's printed, which the runtime holds.
             "Stdout.print" if !self.module.shared.traced => self.print(args.get(1..).unwrap_or_default()),
+            "Stdout.write" if !self.module.shared.traced => self.write(args.get(1..).unwrap_or_default()),
             "list.len" => {
                 if let Some(Operand::Local(local)) = first
                     && let Some(map) = self.known.map_walks.get(&local.0).copied()
@@ -1712,6 +1713,10 @@ impl Emit<'_, '_, '_> {
                     && matches!(first, Some(Operand::Local(local)) if self.kind_of(*local).ok() == Some(&Kind::Cap)) =>
             {
                 self.capability_call(dest, other, args, span)
+            }
+            // A test's network is a fake, which only the interpreter holds.
+            other if crate::analysis::is_socket_method(other) && !self.module.shared.traced => {
+                self.socket_call(dest, other, args, span)
             }
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }
@@ -2228,6 +2233,7 @@ def main(stdout: Stdout, args: Args, clock: Clock):
     stdout.print(args.len(), args.program, started.nanos)
     for arg in args:
         stdout.print(arg, args[0])
+    stdout.write(args.len())
 ";
         let text = text_of(source, "main")?;
         assert!(text.contains("@fennec_args_list("), "{text}");

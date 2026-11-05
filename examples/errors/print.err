@@ -1,7 +1,7 @@
-error: `print` doesn't exist
+error: there's no global `print`
  --> examples/errors/print.fen:2:5
   |
 2 |     print("hello")
   |     ^^^^^
   |
-  = help: there's no global output: write with the `stdout` that `main` receives, like `stdout.print(x)`
+  = help: a function reaches outside itself only through what's in its signature: write `stdout.print(...)`

@@ -627,6 +627,22 @@ impl<'c> FnCx<'c> {
         None
     }
 
+    /// The innermost name in sight that holds this type.
+    pub(crate) fn name_holding(&self, ty: &Type) -> Option<String> {
+        let mut bindings = self.scopes.iter().rev().flat_map(|scope| scope.bindings.iter().rev());
+        bindings.find(|binding| binding.ty == *ty).map(|binding| binding.name.clone())
+    }
+
+    /// The name in sight, or function of the program's own, spelled most like `name`.
+    pub(crate) fn similar_name(&self, name: &str) -> Option<String> {
+        let names =
+            self.scopes.iter().flat_map(|scope| scope.bindings.iter().map(|binding| binding.name.as_str()));
+        let functions = self.checker.program.functions.iter();
+        let functions = functions.filter(|(_, entry)| !entry.prelude && entry.owner.is_none());
+        crate::messages::spelled_most_like(name, names.chain(functions.map(|(key, _)| key.as_str())))
+            .map(str::to_owned)
+    }
+
     /// Where the name in sight came from.
     pub(crate) fn origin(&self, name: &str) -> Option<Origin> {
         self.scopes

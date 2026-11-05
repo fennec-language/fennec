@@ -56,10 +56,7 @@ pub mod serve {
     /// With nothing served, every connection number is closed.
     #[cfg(not(feature = "lean"))]
     fn closed() -> i64 {
-        with(|state| {
-            let error = state.interp.net_error(&Failure::Closed, Span::default()).unwrap_or(Value::None);
-            state.push(error)
-        })
+        with(|state| state.push(crate::stdlib::net::failed(&Failure::Closed)))
     }
 
     #[cfg(not(feature = "lean"))]

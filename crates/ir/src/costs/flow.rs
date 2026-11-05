@@ -64,6 +64,34 @@ fn places_of_temporaries(function: &Function) -> HashMap<usize, Place> {
     places
 }
 
+/// How each temporary with a place reads in a message: `units[0].tags`. A place ignores which item
+/// it's in, since an index could be any item, but a reader needs to see which one was meant.
+fn places_as_written(function: &Function, places: &HashMap<usize, Place>) -> HashMap<usize, String> {
+    let named = |id: usize| function.locals.get(id).and_then(|local| local.name.as_deref());
+    let mut written: HashMap<usize, String> = HashMap::new();
+    for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+        let (id, from, step) = match &inst.kind {
+            InstKind::Copy { dest, value } => (dest.0, value, String::new()),
+            InstKind::GetField { dest, object, field } => (dest.0, object, format!(".{field}")),
+            InstKind::GetIndex { dest, object, index } => {
+                let at = match index {
+                    Operand::Int(at) => at.to_string(),
+                    Operand::Str(key) => format!("{key:?}"),
+                    Operand::Local(at) => named(at.0).unwrap_or("...").to_owned(),
+                    _ => "...".to_owned(),
+                };
+                (dest.0, object, format!("[{at}]"))
+            }
+            _ => continue,
+        };
+        let Some(from) = local(from).filter(|_| places.contains_key(&id)) else { continue };
+        let start =
+            written.get(&from.0).map_or_else(|| named(from.0).unwrap_or("a value").to_owned(), Clone::clone);
+        written.insert(id, start + &step);
+    }
+    written
+}
+
 /// Which locals are read after each instruction of each block, and after the block.
 fn live_after(function: &Function) -> Vec<Vec<HashSet<usize>>> {
     let count = function.blocks.len();
@@ -103,6 +131,7 @@ fn live_after(function: &Function) -> Vec<Vec<HashSet<usize>>> {
 struct Flow<'f> {
     function: &'f Function,
     places: HashMap<usize, Place>,
+    written: HashMap<usize, String>,
     live: Vec<Vec<HashSet<usize>>>,
     /// The parameters that aren't `mut`, which the caller goes on holding.
     callers: HashSet<usize>,
@@ -196,7 +225,8 @@ impl Flow<'_> {
         for written in self.written(kind) {
             let place = self.place(written.0);
             if let Some(why) = self.still_shared(held, &place, live, at) {
-                cost = Some(Cost::Copy { value: self.shown(&place), why });
+                let value = self.written.get(&written.0).cloned().unwrap_or_else(|| self.shown(&place));
+                cost = Some(Cost::Copy { value, why });
             }
             // Whichever holder changes it, the two don't share it any more. What's held from
             // elsewhere in the same value, like another field, stays shared.
@@ -343,9 +373,11 @@ fn walk(
         let ty = function.locals.get(*at).map(|local| &local.ty);
         matches!(ty, Some(Type::Named(name)) if handles.contains(name.as_str()))
     };
+    let places = places_of_temporaries(function);
     let flow = Flow {
         function,
-        places: places_of_temporaries(function),
+        written: places_as_written(function, &places),
+        places,
         live: live_after(function),
         callers: (0..function.params).filter(|at| !function.mut_params.contains(at) && !handle(at)).collect(),
         by_name,

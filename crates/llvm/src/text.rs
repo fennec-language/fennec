@@ -44,6 +44,13 @@ impl Emit<'_, '_, '_> {
     }
 
     pub(crate) fn print(&mut self, args: &[Operand]) -> Result<(), String> {
+        self.write(args)?;
+        self.print_text("\n");
+        Ok(())
+    }
+
+    /// `stdout.write`: what `print` shows, with no newline.
+    pub(crate) fn write(&mut self, args: &[Operand]) -> Result<(), String> {
         // Everything is worked out before anything prints.
         let mut values = Vec::with_capacity(args.len());
         for arg in args {
@@ -64,7 +71,6 @@ impl Emit<'_, '_, '_> {
                 Some(kind) => self.print_one(value, kind)?,
             }
         }
-        self.print_text("\n");
         Ok(())
     }
 

@@ -134,7 +134,13 @@ fn free_block(state: &mut State, address: u64) {
             if !state.heap.texts.get_mut().is_empty() {
                 forget_text(state, address);
             }
-        } else if shape >= state.tables.str_shape || !release_planned(&mut state.heap, &block, &mut pending) {
+        } else if shape >= state.tables.str_shape {
+            // A list of numbers, the most usual kind, has nothing to look through.
+            let number = crate::embed::lists::element_number(state, &block);
+            if !number.is_some_and(|number| state.heap.items_hold_nothing(number)) {
+                free_unplanned(state, &block, &mut pending);
+            }
+        } else if !release_planned(&mut state.heap, &block, &mut pending) {
             free_unplanned(state, &block, &mut pending);
         }
         state.heap.recycle(block);

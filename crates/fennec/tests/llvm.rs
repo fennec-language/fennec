@@ -3998,10 +3998,10 @@ def main(stdout: Stdout, args: Args, process: Process):
         &needs,
         "\
 from std import json
-from std.collections import Deque
+from std.collections import Table
 
 def main(stdout: Stdout):
-    stdout.print(json.dumps(Deque[int]()))
+    stdout.print(json.dumps(Table[int]()))
 ",
     )?;
     let refused = lean(&needs, &dir.join("needs"))?;
@@ -4013,7 +4013,8 @@ def main(stdout: Stdout):
 }
 
 /// JSON and TOML of types that save themselves go through std's readers and writers in Fennec,
-/// so a program reading and writing them links with no interpreter in it.
+/// std's collections among them, so a program reading and writing them links with no interpreter
+/// in it.
 #[test]
 fn json_and_toml_of_plain_types_need_no_interpreter() -> std::io::Result<()> {
     if !ready() || !crate::executables::lean_runtime_built() {
@@ -4025,15 +4026,25 @@ fn json_and_toml_of_plain_types_need_no_interpreter() -> std::io::Result<()> {
         &program,
         "\
 from std import json, toml
+from std.collections import Deque, Grid, SortedMap, SortedSet
 
 struct Spot:
     x: int
     tags: list[str]
 
+struct Board:
+    cells: Grid[int]
+    scores: SortedMap[str, int]
+    seen: SortedSet[int]
+    queue: Deque[str]
+
 def main(stdout: Stdout):
     text = json.dumps([Spot(x=1, tags=[\"a\"])])
     stdout.print(text, json.loads[list[Spot]](text) else [])
     stdout.print(toml.loads[Spot](toml.dumps(Spot(x=2, tags=[]))) else Spot(x=0, tags=[]))
+    board = Board(cells=Grid.of([[1, 2]]), scores=SortedMap.of([(\"b\", 2), (\"a\", 1)]), seen=SortedSet.of([3, 1]), queue=Deque.of([\"go\"]))
+    saved = json.dumps(board)
+    stdout.print(saved, json.dumps(json.loads[Board](saved) else board) == saved)
 ",
     )?;
     let executable = dir.join("formats");
@@ -4047,7 +4058,8 @@ def main(stdout: Stdout):
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),
-        "[{\"x\": 1, \"tags\": [\"a\"]}] [Spot(x=1, tags=[\"a\"])]\nSpot(x=2, tags=[])\n"
+        "[{\"x\": 1, \"tags\": [\"a\"]}] [Spot(x=1, tags=[\"a\"])]\nSpot(x=2, tags=[])\n\
+         {\"cells\": [[1, 2]], \"scores\": {\"a\": 1, \"b\": 2}, \"seen\": [1, 3], \"queue\": [\"go\"]} True\n"
     );
     Ok(())
 }
@@ -6554,6 +6566,9 @@ struct Words:
 
     def bytes(mut self) -> bytes fails ParseError:
         self.next()?.encode()
+
+    def at_item(self, at: int, message: str) -> ParseError:
+        ParseError(message=f"item {at} {message}", line=0, column=0)
 
     def none(mut self) -> bool fails ParseError:
         if self.at < self.parts.len() and self.parts[self.at] == "-":

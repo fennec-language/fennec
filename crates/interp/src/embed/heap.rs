@@ -519,8 +519,13 @@ impl Heap {
     /// lent block never is, however many owners it has.
     pub(super) fn is_alone(&self, address: u64, block: &[u64]) -> bool {
         block.first() == Some(&1)
-            && ((self.lent.is_none() && self.reading.is_empty() && self.behind.is_empty())
-                || usize::try_from(address).is_ok_and(|at| self.blocks.get(at).is_some()))
+            && (self.holds_all() || usize::try_from(address).is_ok_and(|at| self.blocks.get(at).is_some()))
+    }
+
+    /// Whether every block this thread can reach is in its own table: nothing's lent to it, read
+    /// under a lock or left behind one. Then a block with one owner is always its own to change.
+    pub(super) fn holds_all(&self) -> bool {
+        self.lent.is_none() && self.reading.is_empty() && self.behind.is_empty()
     }
 
     /// Notes that this thread's range changed a lent block's owners by `by`, when it's a lent

@@ -400,6 +400,14 @@ def _powers() -> list[float]:
 
 _POWERS = _powers()
 
+## Which of `cases` is named `key`, as a place in it, or -1 for none.
+def _case_named(key: str, cases: list[(str, bool)]) -> int:
+    mut at = 0
+    for case, _ in cases:
+        if case == key: return at
+        at += 1
+    -1
+
 ## Whether the `size` bytes of `text` from `start` are those of `word`.
 def _same_bytes(text: str, start: int, word: str, size: int) -> bool:
     mut at = 0
@@ -1011,6 +1019,10 @@ struct JsonReader:
             return ParseError(message=f"`{joined}{wire}` is missing", line=0, column=0)
         ParseError(message=f"`{joined}.{wire}` is missing", line=0, column=0)
 
+    def at_item(self, at: int, message: str) -> ParseError:
+        if not self._explain: return _no_reason()
+        ParseError(message=f"`{self._joined()}[{at}]` {message}", line=0, column=0)
+
     def rule(self, message: str) -> ParseError:
         if not self._explain: return _no_reason()
         ParseError(message=f"in {self._where()}, {message}", line=0, column=0)
@@ -1024,23 +1036,24 @@ struct JsonReader:
         if self._space() != 34:
             self._at = start
             fail self._misfit(name)
-        key = self.text()?
+        mut at = -1 if self._explain else self._case_in_place(cases)
+        mut key = ""
+        if at < 0:
+            key = self.text()?
+            at = _case_named(key, cases)
         if self._space() != 58: fail _no_reason()
         self._at += 1
         if self._space() != 123:
             self._at = start
             fail self._misfit(name)
-        mut at = 0
-        for case, has_data in cases:
-            if case == key:
-                if not has_data:
-                    self._at += 1
-                    if self._space() != 125: fail self._no_field(f"{name}.{case}")
-                    self._at += 1
-                    self.end_case()?
-                return at
-            at += 1
-        fail self._no_case(name, key)
+        if at < 0: fail self._no_case(name, key)
+        case, has_data = cases[at]
+        if not has_data:
+            self._at += 1
+            if self._space() != 125: fail self._no_field(f"{name}.{case}")
+            self._at += 1
+            self.end_case()?
+        at
 
     ## The error for a case with no data that the text gives a field.
     def _no_field(mut self, owner: str) -> ParseError:
@@ -1056,20 +1069,37 @@ struct JsonReader:
                 _no_reason()
 
     def _plain_case(mut self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
-        key = self.text()?
+        mut at = -1 if self._explain else self._case_in_place(cases)
+        mut key = ""
+        if at < 0:
+            key = self.text()?
+            at = _case_named(key, cases)
+        if at < 0: fail self._no_case(name, key)
+        case, has_data = cases[at]
+        if has_data:
+            if not self._explain: fail _no_reason()
+            fail ParseError(
+                message=f"{self._where()} is `{name}.{case}`, which needs its fields",
+                line=0,
+                column=0,
+            )
+        at
+
+    ## Which of `cases` the string ahead names, read where it is with no `str` made for it, and
+    ## steps past it. -1, and nothing taken, when it isn't plainly one of them.
+    def _case_in_place(mut self, cases: list[(str, bool)]) -> int:
+        start = self._at + 1
         mut at = 0
-        for case, has_data in cases:
-            if case == key:
-                if has_data:
-                    if not self._explain: fail _no_reason()
-                    fail ParseError(
-                        message=f"{self._where()} is `{name}.{case}`, which needs its fields",
-                        line=0,
-                        column=0,
-                    )
+        for case, _ in cases:
+            size = text_size(case)
+            if (
+                text_byte(self._source, start + size) == 34
+                and _same_bytes(self._source, start, case, size)
+            ):
+                self._at = start + size + 1
                 return at
             at += 1
-        fail self._no_case(name, key)
+        -1
 
     def _no_case(self, name: str, key: str) -> ParseError:
         if not self._explain: return _no_reason()

@@ -38,6 +38,7 @@ impl Parser {
         if self.eat_kw(Kw::Else) {
             let default = match self.peek() {
                 Tok::Kw(Kw::Continue | Kw::Return | Kw::Fail) => self.leaving()?,
+                Tok::P(Punct::Colon) => self.leaving_block()?,
                 _ => self.expr()?,
             };
             let span = value.span.to(default.span);
@@ -62,14 +63,26 @@ impl Parser {
             _ => StmtKind::Return(Some(self.expr()?)),
         };
         let span = start.to(self.prev_span());
-        let body = vec![Stmt { kind, span }];
-        let arm = MatchArm { pattern: Pattern::Wildcard, guard: None, body, span };
-        // Expressions are told apart by span, and nothing's written here, so it's empty.
-        let subject = Box::new(Expr {
-            kind: ExprKind::Bool(false),
-            span: Span { start: start.start, end: start.start },
-        });
-        Ok(Expr { kind: ExprKind::Match { subject, arms: vec![arm] }, span })
+        Ok(leaving_match(start, vec![Stmt { kind, span }], span))
+    }
+
+    /// An `else:` block, which says something and then leaves, as in
+    /// `text = fs.read(path) else:` with `stdout.print(...)` and `return` under it. It's the same
+    /// `match` as `else return`, with more statements in its case.
+    fn leaving_block(&mut self) -> Result<Expr, Diagnostic> {
+        let start = self.advance().span;
+        let indented = self.at(&Tok::Newline);
+        let body = self.block()?;
+        self.block_ended = indented;
+        let span = start.to(self.prev_span());
+        let last = body.last().map(|last| (&last.kind, last.span));
+        match last {
+            Some((StmtKind::Continue | StmtKind::Break | StmtKind::Return(_) | StmtKind::Fail(_), _)) => {
+                Ok(leaving_match(start, body, span))
+            }
+            _ => Err(Diagnostic::new("an `else:` block must leave", last.map_or(start, |(_, at)| at))
+                .with_help("end it with `return`, `fail`, `continue` or `break`, or write a value after `else` instead of a block")),
+        }
     }
 
     /// `x => body` or `(a, b) => body`.
@@ -512,4 +525,14 @@ fn fstring_parts(parts: Vec<FPart>) -> Result<Vec<FStrPart>, Diagnostic> {
             }
         })
         .collect()
+}
+
+/// What a default that leaves parses to: a `match` with one case, holding the statements that
+/// leave, which every engine and analysis already follows out of the expression.
+fn leaving_match(start: Span, body: Vec<Stmt>, span: Span) -> Expr {
+    let arm = MatchArm { pattern: Pattern::Wildcard, guard: None, body, span };
+    // Expressions are told apart by span, and nothing's written here, so it's empty.
+    let subject =
+        Box::new(Expr { kind: ExprKind::Bool(false), span: Span { start: start.start, end: start.start } });
+    Expr { kind: ExprKind::Match { subject, arms: vec![arm] }, span }
 }

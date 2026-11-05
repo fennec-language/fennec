@@ -28,7 +28,13 @@ extend Parser:
             otherwise = self.expr()?
             return Expr(kind=.Cond(value, cond, otherwise), span=value.span.to(otherwise.span))
         if self.eat_keyword("else"):
-            default = self.leaving()? if self.at_leaving() else self.expr()?
+            mut default = Expr(kind=.Nothing, span=self.span())
+            if self.at_leaving():
+                default = self.leaving()?
+            elif self.at_punct(":"):
+                default = self.leaving_block()?
+            else:
+                default = self.expr()?
             return Expr(kind=.Else(value, default), span=value.span.to(default.span))
         value
 
@@ -50,10 +56,24 @@ extend Parser:
                 else:
                     .Return(self.expr()?)
         span = start.to(self.prev_span())
-        arm = MatchArm(pattern=.Wildcard, guard=None, body=[Stmt(kind=kind, span=span)], span=span)
-        # Expressions are told apart by span, and nothing's written here, so it's empty.
-        subject = Expr(kind=.Bool(False), span=Span(start=start.start, end=start.start))
-        Expr(kind=.Match(subject, [arm]), span=span)
+        leaving_match(start, [Stmt(kind=kind, span=span)], span)
+
+    ## An `else:` block, which says something and then leaves. It's the same `match` as
+    ## `else return`, with more statements in its case.
+    def leaving_block(mut self) -> Expr:
+        start = self.advance().span
+        indented = self.at(.Newline)
+        body = self.block()?
+        self.block_ended = indented
+        span = start.to(self.prev_span())
+        if body.len() > 0 and leaves_by(body[-1].kind):
+            return leaving_match(start, body, span)
+        at = body[-1].span if body.len() > 0 else start
+        fail Diagnostic(
+            message="an `else:` block must leave",
+            span=at,
+            help="end it with `return`, `fail`, `continue` or `break`, or write a value after `else` instead of a block",
+        )
 
     ## `x => body` or `(a, b) => body`.
     def lambda(mut self) -> Expr?:
@@ -405,3 +425,17 @@ def fstring_parts(parts: list[FPart]) -> list[FStrPart]:
                     fail parser.unexpected("`}`")
                 parsed.append(FStrPart.Code(expr, spec))
     parsed
+
+## Whether a statement leaves where it is: what an `else:` block has to end with.
+def leaves_by(kind: StmtKind) -> bool:
+    match kind:
+        case .Continue | .Break | .Return(_) | .Fail(_): True
+        case _: False
+
+## What a default that leaves parses to: a `match` with one case, holding the statements that
+## leave, which every engine and analysis already follows out of the expression.
+def leaving_match(start: Span, body: list[Stmt], span: Span) -> Expr:
+    arm = MatchArm(pattern=.Wildcard, guard=None, body=body, span=span)
+    # Expressions are told apart by span, and nothing's written here, so it's empty.
+    subject = Expr(kind=.Bool(False), span=Span(start=start.start, end=start.start))
+    Expr(kind=.Match(subject, [arm]), span=span)

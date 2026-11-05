@@ -33,6 +33,36 @@ impl CallArg {
 }
 
 impl Interp<'_> {
+    /// A collection made with its type written in brackets, if that's what this is.
+    fn made_collection(
+        &mut self,
+        callee: &Expr,
+        (object, index): (&Expr, &Expr),
+        args: &[Arg],
+        span: Span,
+    ) -> Option<Result<Value, Diagnostic>> {
+        // `array.new[float, 16](0.0)`, what `array[float, 16]()` is written in as: here an
+        // array is a list that never changes size.
+        if matches!(&object.kind, ExprKind::Name(name) if name == "array.new")
+            && let ExprKind::Tuple(parts) = &index.kind
+            && let Some(ExprKind::Int(size)) = parts.get(1).map(|size| &size.kind)
+            && let [zero] = args
+        {
+            let size = usize::try_from(*size).unwrap_or(0);
+            return Some(self.eval(&zero.value).map(|zero| Value::list(vec![zero; size])));
+        }
+        // `dict[str, str]()`: the checker writes it as `{}`, but a standard library default it
+        // reached only through a test, like `Response`'s `headers`, can be left as written. It's
+        // an empty one either way.
+        if args.is_empty() && is_collection(object) {
+            let callee = Box::new(callee.clone());
+            let mut empty = Expr { kind: ExprKind::Call { callee, args: Vec::new() }, span };
+            fennec_syntax::visit::empty_collection(&mut empty);
+            return Some(self.eval(&empty));
+        }
+        None
+    }
+
     pub(crate) fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Result<Value, Diagnostic> {
         match &callee.kind {
             ExprKind::Attr { object, name, optional } => {
@@ -70,16 +100,8 @@ impl Interp<'_> {
                 {
                     return self.method_call(receiver, name, *optional, args, span);
                 }
-                // `array.new[float, 16](0.0)`, what `array[float, 16]()` is written in as: here an
-                // array is a list that never changes size.
-                if matches!(&object.kind, ExprKind::Name(name) if name == "array.new")
-                    && let ExprKind::Tuple(parts) = &index.kind
-                    && let Some(ExprKind::Int(size)) = parts.get(1).map(|size| &size.kind)
-                    && let [zero] = args
-                {
-                    let zero = self.eval(&zero.value)?;
-                    let size = usize::try_from(*size).unwrap_or(0);
-                    return Ok(Value::list(vec![zero; size]));
+                if let Some(made) = self.made_collection(callee, (object, index), args, span) {
+                    return made;
                 }
                 let function = self.eval(object)?;
                 match (&function, index.as_type()) {
@@ -531,6 +553,11 @@ fn over_parallel(expr: &Expr) -> bool {
 
 fn is_generator(expr: &Expr) -> bool {
     matches!(&expr.kind, ExprKind::Comprehension { kind: CompKind::Generator, .. })
+}
+
+/// Whether this names a collection type, as in `dict[str, str]()`.
+fn is_collection(named: &Expr) -> bool {
+    matches!(&named.kind, ExprKind::Name(name) if matches!(name.as_str(), "list" | "dict" | "set"))
 }
 
 /// Whether this builtin uses every item of a generator written right inside the call.

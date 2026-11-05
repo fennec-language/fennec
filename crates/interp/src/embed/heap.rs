@@ -186,6 +186,9 @@ pub const IMMORTAL: u64 = 1 << 48;
 /// through allocator and table pages that then can't be given back.
 const SPARE_TOTAL_WORDS: usize = 1 << 20;
 
+/// How many words of freed blocks of any one size a heap keeps: 1 MB.
+const SPARE_SIZE_WORDS: usize = 1 << 17;
+
 /// The biggest block, in words, kept for reuse.
 const SPARE_WORDS: usize = 256;
 
@@ -274,6 +277,8 @@ impl Heap {
         }
         let words = block.len();
         match self.spare.get_mut(words) {
+            // Each size gets a share, so one nothing reuses, like most strings', can't take all of it.
+            Some(spare) if (spare.len() + 1) * words > SPARE_SIZE_WORDS => {}
             Some(spare) => {
                 spare.push(block);
                 self.spare_words += words;

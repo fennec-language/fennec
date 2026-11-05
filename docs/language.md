@@ -69,6 +69,8 @@ for unit in units:
 #        use `for ref`, or loop over indexes
 ```
 
+`dict[str, int?]` is an error too: leave the key out, since not being in a dict already means missing. The same goes for optional keys and set items.
+
 One silent mistake remains: changing a `mut` copy and then reading it, believing the list changed. A rule gets added for that only if testing shows real bugs.
 
 ## Copies

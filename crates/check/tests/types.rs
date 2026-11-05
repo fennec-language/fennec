@@ -422,3 +422,31 @@ fn a_float_compared_as_not_itself_isnt_a_nan_test() {
     let found = crate::in_main_after(held, "x = 1\nstdout.print(x.is_nan())");
     assert_eq!(found.len(), 1, "{found:?}");
 }
+
+#[test]
+fn a_dict_or_set_cant_hold_what_might_be_missing() {
+    let dict = "a dict can't hold optional values";
+    for body in [
+        "mut ages: dict[str, int?] = {}\nstdout.print(ages)",
+        "ages = dict[str, int?]()\nstdout.print(ages)",
+        "maybe: int? = None\nages = {\"a\": maybe}\nstdout.print(ages)",
+        "ages = {\"a\": 1, \"b\": None}\nstdout.print(ages)",
+    ] {
+        let found = in_main(body);
+        assert!(found.iter().any(|one| one.starts_with(dict)), "{body}: {found:?}");
+    }
+    let found = in_main("names: dict[str?, int] = {}\nstdout.print(names)");
+    assert!(found.iter().any(|one| one.starts_with("a dict's keys can't be optional")), "{found:?}");
+    let found = in_main("seen: set[int?] = set()\nstdout.print(seen)");
+    assert!(found.iter().any(|one| one.starts_with("a set can't hold optional items")), "{found:?}");
+    let fields = problems("struct Book:\n    pages: dict[str, int?]\n");
+    assert!(fields.iter().any(|one| one.starts_with(dict)), "{fields:?}");
+    // A list of optionals stays, and so does looking up what may be missing.
+    let empty: [&str; 0] = [];
+    assert_eq!(
+        in_main(
+            "mut numbers: list[int?] = [1]\nnumbers.append(None)\nages = {\"a\": 1}\nstdout.print(numbers, ages.get(\"b\"))"
+        ),
+        empty
+    );
+}

@@ -3,3 +3,11 @@ error: TOML has no None, so leave the key out instead
   |
 4 |     stdout.write(dumps({"name": "fox", "pet": None}))
   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: a dict can't hold optional values
+ --> examples/errors/toml_none.fen:4:24
+  |
+4 |     stdout.write(dumps({"name": "fox", "pet": None}))
+  |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: leave the key out instead, since not being in the dict already means missing

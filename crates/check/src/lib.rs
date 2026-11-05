@@ -211,6 +211,48 @@ pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnost
     Ok(resolved(module, checked))
 }
 
+/// Makes the calls to `json.dumps`, `json.loads`, `toml.dumps` and `toml.loads` in a checked and
+/// resolved module call std's readers and writers written in Fennec instead, where what's read or
+/// written has its own `def serialize` or `def deserialize`, so native code needs no interpreter
+/// for them. The rest stay as they were. Says whether anything changed. If the changed module
+/// doesn't check, which would be a mistake here, it's left as it was.
+pub fn route_formats_natively(module: &mut Module) -> bool {
+    if !imports_a_format(module) {
+        return false;
+    }
+    let Ok(checked) = check_typed(module) else { return false };
+    if checked.native_formats.is_empty() {
+        return false;
+    }
+    let mut routed = module.clone();
+    fennec_syntax::visit::exprs_mut(&mut routed, &mut |expr| {
+        let Some(native) = checked.native_formats.get(&(expr.span.start, expr.span.end)) else { return };
+        if let fennec_syntax::ExprKind::Call { callee, .. } = &mut expr.kind {
+            let named = match &mut callee.kind {
+                fennec_syntax::ExprKind::Index { object, .. } => object,
+                _ => callee,
+            };
+            named.kind = fennec_syntax::ExprKind::Name(native.clone());
+        }
+    });
+    if check_and_resolve(&mut routed).is_err() {
+        return false;
+    }
+    *module = routed;
+    true
+}
+
+fn imports_a_format(module: &Module) -> bool {
+    module.items.iter().any(|item| match item {
+        fennec_syntax::Item::Import(import) => match import.module.as_slice() {
+            [std, name, ..] if std == "std" => matches!(name.as_str(), "json" | "toml"),
+            [std] if std == "std" => import.bound().any(|(name, _)| matches!(name, "json" | "toml")),
+            _ => false,
+        },
+        _ => false,
+    })
+}
+
 /// Like `check_and_resolve`, for a module about to run: the standard library's functions are
 /// checked only when the module reaches them, so its signatures hold just those. The
 /// library's own tests check all of it.
@@ -314,6 +356,8 @@ pub struct Checked {
     generator_types: BTreeMap<(u32, u32), String>,
     /// What each name for a standard library function written in Fennec means.
     std_names: BTreeMap<(u32, u32), String>,
+    /// The format calls native code can make in Fennec, by the call's span.
+    native_formats: BTreeMap<(u32, u32), String>,
     /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
     not_equals: BTreeSet<(u32, u32)>,
     /// The fields and method calls on a value that might be missing, in a chain an `else`

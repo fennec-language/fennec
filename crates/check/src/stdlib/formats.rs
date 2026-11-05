@@ -35,6 +35,8 @@ impl FnCx<'_> {
             self.error(problem);
         } else if format == "TOML" && mentions_none(first, &self.checker.program) {
             self.error(Diagnostic::new("TOML has no None, so leave the key out instead", call));
+        } else if self.fits_interface(first, "Serializable").is_ok() {
+            self.checker.native_formats.insert((call.start, call.end), format!("{}.native_dumps", format.to_lowercase()));
         }
         Type::Str
     }
@@ -77,6 +79,8 @@ impl FnCx<'_> {
             self.error(Diagnostic::new(message, index.span));
         } else if let Err(problem) = self.holds(&format, &ty, (index.span, None), &mut Vec::new()) {
             self.error(problem);
+        } else if self.fits_interface(&ty, "Deserializable").is_ok() {
+            self.checker.native_formats.insert((span.start, span.end), format!("{}.native_loads", format.to_lowercase()));
         }
         Type::result(ty, Type::named("ParseError"))
     }

@@ -839,6 +839,8 @@ struct JsonReader:
                 self._at += 1
                 self._depth -= 1
                 return False
+            if self._explain and self._extra == JsonExtra.error:
+                self._unknown_first(fields)?
         else:
             if self._explain:
                 _ = self._path.pop()
@@ -857,26 +859,12 @@ struct JsonReader:
 
     ## Takes in a field's key: which of `fields` it is, or what's done with a key none has.
     def _named(mut self, key: str, fields: list[(str, str)]) -> bool fails ParseError:
-        mut at = 0
-        for saved, own in fields:
-            if saved == key:
-                if saved == own and self._names != JsonNames.snake_case and _spelled(own, self._names) != key:
-                    at += 1
-                    continue
-                self._place = at
-                if self._explain:
-                    self._path.append(key)
-                return True
-            at += 1
-        if self._names != JsonNames.snake_case:
-            at = 0
-            for saved, own in fields:
-                if saved == own and _spelled(own, self._names) == key:
-                    self._place = at
-                    if self._explain:
-                        self._path.append(key)
-                    return True
-                at += 1
+        at = self._place_of(key, fields)
+        if at >= 0:
+            self._place = at
+            if self._explain:
+                self._path.append(key)
+            return True
         match self._extra:
             case .ignore:
                 self._skip(self._depth)?
@@ -886,6 +874,38 @@ struct JsonReader:
                 return self.next_field(fields)?
             case .error:
                 fail self._unknown(key, fields)
+
+    ## Which of `fields` a key is, as a place in it, or -1 for none.
+    def _place_of(self, key: str, fields: list[(str, str)]) -> int:
+        mut at = 0
+        for saved, own in fields:
+            if saved == key and not (saved == own and self._names != JsonNames.snake_case and _spelled(own, self._names) != key):
+                return at
+            at += 1
+        if self._names != JsonNames.snake_case:
+            at = 0
+            for saved, own in fields:
+                if saved == own and _spelled(own, self._names) == key:
+                    return at
+                at += 1
+        -1
+
+    ## Fails on the first key in the object ahead that no field has, before any field's value is
+    ## read, as the interpreter's reader does. Only a read that's explaining a failure does this.
+    def _unknown_first(mut self, fields: list[(str, str)]) fails ParseError:
+        start = self._at
+        while True:
+            key = self.text()?
+            if self._place_of(key, fields) < 0:
+                fail self._unknown(key, fields)
+            _ = self._space()
+            self._at += 1
+            self._skip(self._depth)?
+            b = self._space()
+            self._at += 1
+            if b != 44:
+                break
+        self._at = start
 
     def _unknown(self, key: str, fields: list[(str, str)]) -> ParseError:
         if not self._explain:

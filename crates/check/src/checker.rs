@@ -57,6 +57,9 @@ pub(crate) struct Checker {
     pub(crate) failing_steps: BTreeSet<(u32, u32)>,
     /// What each name for a standard library function written in Fennec means.
     pub(crate) std_names: BTreeMap<(u32, u32), String>,
+    /// The calls to `json` and `toml`'s `dumps` and `loads` whose type has its own `def serialize`
+    /// or `def deserialize`, each with the function in std that does the same in Fennec.
+    pub(crate) native_formats: BTreeMap<(u32, u32), String>,
     /// Each constant's type, once worked out. `None` while its value is being checked.
     pub(crate) const_types: BTreeMap<String, Option<Type>>,
     /// The functions being checked, innermost last.
@@ -116,6 +119,7 @@ impl Checker {
             optional_steps: BTreeSet::new(),
             failing_steps: BTreeSet::new(),
             std_names: BTreeMap::new(),
+            native_formats: BTreeMap::new(),
             const_types: BTreeMap::new(),
             checking: Vec::new(),
             revisit: BTreeSet::new(),
@@ -200,6 +204,7 @@ impl Checker {
                 optional_steps: self.optional_steps,
                 failing_steps: self.failing_steps,
                 std_names: self.std_names,
+                native_formats: self.native_formats,
             });
         }
         let mut diagnostics = self.diagnostics;

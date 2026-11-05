@@ -1,0 +1,35 @@
+# A map in a cell walked by one name while another changes it: the walk holds what it goes through.
+
+from std.game import Id, IdMap
+
+shared Log:
+    map = IdMap[str]()
+
+    def add(mut self, name: str):
+        self.map.insert(name)
+
+    def drop(mut self, id: Id[str]):
+        self.map.remove(id)
+
+def through_names(log: Log, other: Log, mut said: list[str]):
+    for id, name in log.map.items():
+        other.drop(id)
+        said.append(f"{name} {log.map.len()} {other.map.len()}")
+    for name in log.map.values():
+        other.add(name + "!")
+        said.append(f"{name} {log.map.len()}")
+
+def main(stdout: Stdout):
+    log = Log()
+    log.add("a")
+    log.add("b")
+    log.add("c")
+    mut said = list[str]()
+    through_names(log, log, mut said)
+    stdout.print(said, log.map.len())
+    second = log
+    log.add("x")
+    log.add("y")
+    mut more = list[str]()
+    through_names(log, second, mut more)
+    stdout.print(more, log.map.len())

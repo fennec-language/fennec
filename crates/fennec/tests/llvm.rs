@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 79;
+const BUILDING_EXAMPLES: usize = 106;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -732,21 +732,24 @@ def main(stdout: Stdout):
     xs[j] = 22
     stdout.print(held, j, xs)
 
-    # A place and its index both given, with what's read first keeping its value.
+    # A place and an index the call changes, held apart, since one can't pick the other.
     mut k = 0
     mut ys = [1, 2, 3]
-    stdout.print(put(k, mut ys[k], mut k), k, ys)
-    stdout.print(put(k, mut ys[k], mut k), k, ys)
+    first = k
+    stdout.print(put(first, mut ys[first], mut k), k, ys)
+    second = k
+    stdout.print(put(second, mut ys[second], mut k), k, ys)
 
     # A list read as an argument, then changed by a later one, and its length.
     mut zs = [1, 2, 3]
     stdout.print(listed(zs, zs.pop()), zs)
     stdout.print(zs, zs.pop(), zs.len())
 
-    # An optional given to what can clear it, after being read.
+    # An optional given to what can clear it, its value held in a name first.
     mut maybe: int? = 3
     if maybe is not None:
-        stdout.print(maybe_cleared(maybe, mut maybe), maybe is None)
+        read = maybe
+        stdout.print(maybe_cleared(read, mut maybe), maybe is None)
 "#;
 
 #[test]
@@ -1073,26 +1076,89 @@ def main(stdout: Stdout):
     )
 }
 
-/// The engines before this one stop on this, reading the index after the call has it, so it's
-/// checked against what it means rather than against them.
+/// Natively, a place's index can be known from the line before, so a call that changes the index
+/// has to forget it. A call that changes the index of a place it's also given doesn't compile.
 #[test]
-fn a_place_stays_where_it_was_when_a_call_changes_its_index() -> std::io::Result<()> {
+fn a_place_is_found_again_after_a_call_changes_its_index() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
     let dir = folder("place_index_given_mut")?;
     let program = dir.join("place.fen");
+    let parts = "struct Unit:\n    hp: int\n\n    def stepped(mut self, mut at: int):\n        at += 1\n        self.hp += at\n\n\
+                 def step(mut at: int):\n    at += 1\n\n";
     std::fs::write(
         &program,
-        "struct Unit:\n    hp: int\n\n    def stepped(mut self, mut at: int):\n        at += 1\n        self.hp += at\n\ndef moved(mut item: int, mut at: int):\n    at += 1\n    item += 10\n\ndef main(stdout: Stdout):\n    mut at = 0\n    mut units = [Unit(1), Unit(2), Unit(3)]\n    units[at].stepped(mut at)\n    stdout.print(at, units[0].hp, units[1].hp, units[2].hp)\n    units[at].stepped(mut at)\n    stdout.print(at, units[0].hp, units[1].hp, units[2].hp)\n    mut other = 0\n    mut numbers = [1, 2, 3]\n    moved(mut numbers[other], mut other)\n    stdout.print(other, numbers)\n",
+        format!(
+            "{parts}def main(stdout: Stdout):\n    mut at = 0\n    mut units = [Unit(1), Unit(2), Unit(3)]\n    \
+             units[at].hp += 10\n    step(mut at)\n    units[at].hp += 10\n    held = at\n    units[held].stepped(mut at)\n    \
+             stdout.print(at, units[0].hp, units[1].hp, units[2].hp)\n"
+        ),
+    )?;
+    let refused = dir.join("refused.fen");
+    std::fs::write(
+        &refused,
+        format!(
+            "{parts}def main(stdout: Stdout):\n    mut at = 0\n    mut units = [Unit(1)]\n    units[at].stepped(mut at)\n    \
+             stdout.print(at, units[0].hp)\n"
+        ),
     )?;
     let executable = dir.join("place");
     let (program, executable_name) = (program.to_string_lossy().into_owned(), executable.to_string_lossy());
     let built = fennec(&["build", "--llvm", &program, "-o", &executable_name], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output()?;
+    let stopped = fennec(
+        &["build", "--llvm", &refused.to_string_lossy(), "-o", &dir.join("refused").to_string_lossy()],
+        &dir,
+    )?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "1 2 2 3\n2 2 4 3\n1 [11, 2, 3]\n");
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "2 11 14 3\n");
+    assert!(!stopped.status.success());
+    let said = String::from_utf8_lossy(&stopped.stderr);
+    assert!(said.contains("`mut at` changes what picks `units[at]`"), "{said}");
+    Ok(())
+}
+
+/// Two `mut` arguments that go to different fields are two places, and a built program changes
+/// both. The same place given twice doesn't build.
+#[test]
+fn mut_arguments_to_different_fields_both_change_and_overlapping_ones_dont_build() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let parts = "struct Spot:\n    x = 0\n\nstruct Unit:\n    position = Spot()\n    home = Spot()\n\n\
+                 def bump(mut first: Spot, mut second: Spot):\n    first.x += 1\n    second.x += 10\n\n";
+    let dir = folder("overlapping_mut")?;
+    let (apart, together) = (dir.join("apart.fen"), dir.join("together.fen"));
+    std::fs::write(
+        &apart,
+        format!(
+            "{parts}def main(stdout: Stdout):\n    mut unit = Unit()\n    bump(mut unit.position, mut unit.home)\n    \
+             stdout.print(unit.position.x, unit.home.x)\n"
+        ),
+    )?;
+    std::fs::write(
+        &together,
+        format!(
+            "{parts}def main(stdout: Stdout):\n    mut unit = Unit()\n    bump(mut unit.position, mut unit.position)\n    \
+             stdout.print(unit.position.x)\n"
+        ),
+    )?;
+    let executable = dir.join("apart");
+    let built =
+        fennec(&["build", "--llvm", &apart.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    let refused = fennec(
+        &["build", "--llvm", &together.to_string_lossy(), "-o", &dir.join("together").to_string_lossy()],
+        &dir,
+    )?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours.0, "1 10\n");
+    assert!(!refused.status.success());
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("`mut unit.position` and `mut unit.position` overlap"), "{said}");
     Ok(())
 }
 
@@ -1664,6 +1730,51 @@ fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// Shifts, `~`, sorting a list where it is, a `match` on a bool and `random_choice`.
+#[test]
+fn bits_sorts_and_choices_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "bits_sorts_and_choices",
+        r#"from std.random import Random
+
+def name(flag: bool) -> str:
+    match flag:
+        case True:
+            "yes"
+        case False:
+            "no"
+
+struct Bag:
+    numbers: list[int]
+
+def main(stdout: Stdout):
+    for count in [0, 1, 63]:
+        stdout.print(1 << count, -8 >> count, 255 >> count, ~count)
+    mut items = [3, 1, 2]
+    shared = items
+    items.sort()
+    stdout.print(items, shared)
+    items.sort(key=n => -n)
+    stdout.print(items, shared)
+    mut words = ["pear", "fig", "a word long enough to be held in a block"]
+    words.sort(key=word => word.len())
+    stdout.print(words)
+    words.sort()
+    stdout.print(words)
+    mut bag = Bag(numbers=[2, 1])
+    bag.numbers.sort()
+    stdout.print(bag)
+    stdout.print(name(True), name(False))
+    mut random = Random(7)
+    stdout.print(random.choice([1, 2, 3, 4]), random.choice(["a", "b", "a string long enough to be a block"]), random.choice([1.5, 2.5]))
+    stdout.print(random.choice([(1, "one"), (2, "two")]))
+"#,
+    )
+}
+
 #[test]
 fn lists_keep_value_semantics_like_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -1836,12 +1947,70 @@ def main(stdout: Stdout):
     stdout.print(read_write(two, three), two.total, three.total)
 ";
 
+/// A comprehension replacing a list in a cell can't change the items where they are: another name
+/// for the cell reads the list as it was until the new one is stored.
+const CELL_LIST_REPLACED: &str = r#"struct Point:
+    x: int
+    y: int
+
+shared Box:
+    items = [1, 2, 3]
+    names = ["a", "b"]
+    points = [Point(x=1, y=2), Point(x=3, y=4)]
+
+struct Holder:
+    box: Box
+
+def main(stdout: Stdout):
+    one = Box()
+    with one, one as mut x, y:
+        x.items = [n + y.items[0] for n in x.items]
+    stdout.print(one.items)
+    with one, one as mut x, y:
+        x.points = [Point(x=p.y, y=y.points[0].x) for p in x.points]
+    stdout.print(one.points[0].x, one.points[0].y, one.points[1].x, one.points[1].y)
+    with one, one as mut x, mut y:
+        x.names = [s + y.names[0] for s in x.names]
+    stdout.print(one.names)
+    holder = Holder(box=one)
+    with holder.box, one as mut x, y:
+        x.items = [n + y.items[0] for n in x.items]
+    stdout.print(one.items)
+"#;
+
+#[test]
+fn a_comprehension_replacing_a_list_in_a_cell_keeps_it_whole_for_other_names() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("cell_list_replaced", CELL_LIST_REPLACED)
+}
+
 #[test]
 fn one_shared_value_under_two_names_in_a_with_stays_one_value() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
     same_as_the_interpreter_in_both_builds("one_cell_two_names", ONE_CELL_TWO_NAMES)
+}
+
+#[test]
+fn what_changes_where_it_is_stays_right_with_one_cell_under_two_names() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("shared_two_names", include_str!("fixtures/shared_two_names.fen"))
+}
+
+#[test]
+fn walking_a_map_in_a_cell_while_another_name_changes_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "shared_map_walked",
+        include_str!("fixtures/shared_map_walked.fen"),
+    )
 }
 
 #[test]
@@ -3324,6 +3493,41 @@ fn float_keys_hash_as_decided_on_the_interpreter() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `==`, `+` and ordering on lists of each kind of item, and `==` on dicts and sets.
+#[test]
+fn operators_on_collections_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "operators_on_collections",
+        r#"struct Spot:
+    x: int
+    y: str
+
+def maybe(on: bool) -> Spot?:
+    if on:
+        return Spot(x=1, y="a")
+    None
+
+def main(stdout: Stdout):
+    a = [1, 2]
+    stdout.print(a == [1, 2], a != [1, 2], a == [1], a + [3], a, [] + a, [1.5] == [1.5], [True] != [False])
+    words = ["a", "a string long enough to be held in a block"]
+    stdout.print(words == ["a", "a string long enough to be held in a block"], words + ["c"], words != words)
+    spots = [Spot(x=1, y="a")]
+    stdout.print(spots == [Spot(x=1, y="a")], spots == [Spot(x=2, y="a")], spots + spots)
+    stdout.print([[1], [2, 3]] == [[1], [2, 3]], [[1]] + [[2]], [(1, "a")] == [(1, "a")])
+    stdout.print([1] < [1, 0], [2] < [1, 0], [1, 2] <= [1, 2], [1, 2] > [1], [1.5] >= [2.5], ["a"] < ["b"], ["b", "a"] > ["b"])
+    stdout.print({1, 2} == {2, 1}, {1, 2} != {1, 3}, {"a": 1} == {"a": 1}, {"a": 1} != {"a": 1}, {1: 2} == {1: 3})
+    stdout.print(maybe(True) == maybe(True), maybe(True) == maybe(False), maybe(False) == None)
+    mut grown = a + [3]
+    grown.append(4)
+    stdout.print(grown, a)
+"#,
+    )
+}
+
 #[test]
 fn tuples_and_structs_compare_like_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -3588,6 +3792,57 @@ fn slices_as_dict_keys_match_the_jit() -> std::io::Result<()> {
         counts[chunk] = (counts.get(chunk) else 0) + 1
     for key, value in sorted(counts.items()):
         stdout.print(key, value)
+"#,
+    )
+}
+
+/// What std's runtime calls give back: hashes, TOML and JSON with its names respelled.
+#[test]
+fn std_calls_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "std_calls",
+        r#"import std.crypto as crypto
+import std.json as json
+import std.toml as toml
+
+struct Tool:
+    main_weapon: str
+    uses: int
+
+error Wrapped:
+    why: str
+
+error Inner:
+    what: str
+
+def inner(n: int) -> int:
+    if n > 1: fail Inner(what="too many")
+    n
+
+def outer(n: int) -> int:
+    inner(n)? from Wrapped(why="inner failed")
+
+def main(stdout: Stdout):
+    stdout.print(crypto.sha256("abc"), crypto.blake3("abc"))
+    stdout.print(crypto.keyed_blake3("0000000000000000000000000000000000000000000000000000000000000000", "abc") else "no")
+    stdout.print(crypto.equal("a", "a"), crypto.equal("a", "b"))
+    tool = Tool(main_weapon="bow", uses=3)
+    stdout.print(json.dumps(tool, names=.camel_case), json.dumps(tool, names=.kebab_case))
+    stdout.print(toml.dumps(tool) else "no")
+    match toml.loads[Tool]("main_weapon = \"axe\"\nuses = 2\n"):
+        case Ok(read):
+            stdout.print(read)
+        case Err(error):
+            stdout.print(error.message)
+    match toml.loads[Tool]("not toml"):
+        case Ok(read):
+            stdout.print(read)
+        case Err(error):
+            stdout.print(error.message)
+    stdout.print(outer(1) else -1, outer(2) else -1)
 "#,
     )
 }
@@ -4425,6 +4680,41 @@ def main(stdout: Stdout):
     )
 }
 
+/// A value passed `mut`, with a copy or another name for it passed without: that one keeps what it held.
+#[test]
+fn a_value_passed_both_ways_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "passed_both_ways",
+        r#"struct Bag:
+    label: str
+    count: int
+
+def both(items: list[int], mut others: list[int]) -> int:
+    others.append(9)
+    others[0] = 7
+    items.len() * 10 + items[0]
+
+def bags(bag: Bag, mut other: Bag) -> str:
+    other.count = 5
+    other.label = "a label long enough to be held in a block"
+    f"{bag.label} {bag.count}"
+
+def main(stdout: Stdout):
+    mut twice = [1, 2]
+    stdout.print(both(copy(twice), mut twice), twice)
+    mut bag = Bag(label="short", count=1)
+    stdout.print(bags(copy(bag), mut bag), bag)
+    kept = twice
+    stdout.print(both(kept, mut twice), twice, kept)
+    held = bag
+    stdout.print(bags(held, mut bag), bag, held)
+"#,
+    )
+}
+
 /// What's written whole through a `mut` parameter belongs to the caller's local, and what `pop`
 /// and `remove_where` take out of a list keeps or loses the owners the list had. A string made
 /// for the call has no other owner, so an owner too few frees it while it's still in use.
@@ -4666,6 +4956,9 @@ def named(present: bool) -> str?:
         "named(True) is None",
         "named(False) is not None",
         "seen(True) == seen(False)",
+        "[1, 2] == [1, 3]",
+        "[\"a\"] == [\"b\"]",
+        "{\"a\": 1} == {\"a\": 2}",
         "3 in [1, 2]",
         "1 not in [1, 2]",
         "\"z\" in {\"a\": 1}",
@@ -4685,6 +4978,21 @@ def named(present: bool) -> str?:
         assert_eq!(ours_err, jit_err, "{condition}");
     }
     Ok(())
+}
+
+/// A shift by a count that isn't one fails as the JIT says.
+#[test]
+fn a_bad_shift_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "bad_shift",
+        "def main(stdout: Stdout):
+    for count in [1, 64]:
+        stdout.print(1 << count)
+",
+    )
 }
 
 /// A float outside an int's range doesn't become one.
@@ -4981,6 +5289,7 @@ fn failing_calls_alone_in_a_function_fail_like_the_jit() -> std::io::Result<()> 
         ("alone_range", "range(0, 1, 0)"),
         ("alone_max", "max(empty)"),
         ("alone_min", "min(empty)"),
+        ("alone_shift", "1 << 64"),
     ] {
         same_message_as_the_jit(
             name,

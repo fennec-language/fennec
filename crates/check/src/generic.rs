@@ -226,8 +226,17 @@ impl FnCx<'_> {
         } else {
             return Err(missing);
         };
+        // A method that changes its value doesn't fit one that says it won't: a plain name could
+        // change through the interface. One that doesn't change it fits either.
+        let changes = actual.params.first().is_some_and(|param| param.is_mut);
+        if wanted.takes_self() && changes && !wanted.params.first().is_some_and(|param| param.is_mut) {
+            let help =
+                format!("write `mut self` in the interface's `{}`, or don't change `self` here", wanted.name);
+            return Err((format!("it has no `{wanted_text}`. Its `{}` changes `self`", wanted.name), help));
+        }
+        let first = usize::from(wanted.takes_self());
         let takes = actual.params.len() == expected.params.len()
-            && actual.params.iter().zip(&expected.params).skip(1).all(|(actual, expected)| {
+            && actual.params.iter().zip(&expected.params).skip(first).all(|(actual, expected)| {
                 actual.is_mut == expected.is_mut && self.checker.fits(&actual.ty, &expected.ty)
             });
         if !takes {

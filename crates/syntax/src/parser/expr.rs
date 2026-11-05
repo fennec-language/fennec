@@ -324,7 +324,7 @@ impl Parser {
     pub(crate) fn call_args(&mut self) -> Result<Vec<Arg>, Diagnostic> {
         let mut args = Vec::new();
         while !self.at_p(Punct::RParen) {
-            let is_mut = self.eat_kw(Kw::Mut);
+            let is_mut = self.eat_ref();
             let name = match (self.peek().clone(), self.peek_at(1)) {
                 (Tok::Name(name), Tok::P(Punct::Assign)) if !is_mut => {
                     self.pos += 2;

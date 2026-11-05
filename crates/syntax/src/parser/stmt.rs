@@ -50,6 +50,7 @@ impl Parser {
             Tok::Kw(Kw::Continue) => self.keyword_stmt(StmtKind::Continue),
             Tok::Kw(Kw::Pass) => self.keyword_stmt(StmtKind::Pass),
             Tok::Kw(Kw::Mut) => self.mut_declaration()?,
+            Tok::Kw(Kw::Ref) => return Err(no_inline_ref(start)),
             Tok::Name(word) if self.is_python_only(&word) => return Err(python_only(&word, start)),
             _ => self.expr_or_assign()?,
         };
@@ -167,7 +168,7 @@ impl Parser {
 
     fn for_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.advance().span;
-        let is_mut = self.eat_kw(Kw::Mut);
+        let is_mut = self.eat_ref();
         let names = self.loop_names()?;
         let (iter, body) = self.condition_and_block()?;
         Ok(Stmt { kind: StmtKind::For { names, is_mut, iter, body }, span: start.to(self.prev_span()) })
@@ -203,7 +204,7 @@ impl Parser {
         if self.eat_kw(Kw::As) {
             loop {
                 let at = self.span();
-                let is_mut = self.eat_kw(Kw::Mut);
+                let is_mut = self.eat_ref();
                 let name = self.name("a name after `as`")?;
                 names.push(WithName { name, is_mut, span: at.to(self.prev_span()) });
                 if !self.eat_p(Punct::Comma) {
@@ -223,6 +224,12 @@ impl Parser {
         let body = self.block()?;
         Ok(Stmt { kind: StmtKind::With { value, names, body }, span: start.to(self.prev_span()) })
     }
+}
+
+fn no_inline_ref(span: Span) -> Diagnostic {
+    Diagnostic::new("there's no inline `ref`", span).with_help(
+        "`ref` is for loops and parameters. To change something in a list, write to it there, like `units[0].health -= 1`; to make a name that can change, write `mut`",
+    )
 }
 
 fn python_only(word: &str, span: Span) -> Diagnostic {

@@ -917,7 +917,10 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
             let id_map = |local: LocalId| {
                 matches!(function.locals.get(local.0).map(|local| &local.ty), Some(Type::Table(_)))
             };
-            if matches!(&inst.kind, InstKind::GetIndex { .. }) && id_map(source) {
+            // Nor are an array's: one in a block isn't made alone to take one out.
+            if matches!(&inst.kind, InstKind::GetIndex { .. })
+                && (id_map(source) || is_array(function, source))
+            {
                 continue;
             }
             if let InstKind::GetIndex { index, .. } = &inst.kind {
@@ -987,6 +990,11 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
             }
         }
     }
+}
+
+/// Whether a local holds a fixed-size array, which is laid out as a struct, not a list.
+fn is_array(function: &Function, local: LocalId) -> bool {
+    matches!(function.locals.get(local.0).map(|local| &local.ty), Some(Type::Array(..)))
 }
 
 /// `object.field += text`, which the IR writes as a local read from the field, added to and put
@@ -1220,6 +1228,9 @@ fn find_path_takes(function: &Function, known: &mut Analysis) {
                 continue;
             }
             let Some((None, list, Some(index))) = defined(*item, at) else { continue };
+            if is_array(function, list) {
+                continue;
+            }
             // The list is a field of the root, or the root itself.
             let (root, list_path) = match defined(list, at) {
                 Some((Some(list_field), root, None)) => (root, vec![list_field]),

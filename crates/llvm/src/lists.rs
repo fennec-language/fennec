@@ -18,6 +18,9 @@ pub(crate) enum InlinePart {
     Block(u32, Kind),
     /// An enum of this layout, whose blocks depend on its case.
     Enum(u32, u32),
+    /// An array's items, from where it starts: how many, how far apart, and what each owns,
+    /// counted in a loop rather than item by item.
+    Items(u32, u32, u32, Vec<InlinePart>),
 }
 
 impl InlinePart {
@@ -25,6 +28,9 @@ impl InlinePart {
         match self {
             InlinePart::Block(offset, held) => InlinePart::Block(offset + by, held),
             InlinePart::Enum(offset, id) => InlinePart::Enum(offset + by, id),
+            InlinePart::Items(offset, count, stride, parts) => {
+                InlinePart::Items(offset + by, count, stride, parts)
+            }
         }
     }
 }
@@ -98,8 +104,8 @@ impl Emit<'_, '_, '_> {
         let moved = !fresh
             && matches!(operand, Operand::Local(local) if self.owns_inline(*local) && self.known.moves(*local));
         if moved {
-            let text = self.text_of(kind);
-            self.line(&format!("store {text} zeroinitializer, ptr {value}"));
+            let zero = self.zero_line(kind, &value);
+            self.line(&zero);
         } else if !fresh {
             self.retain_inline(kind, at);
         }
@@ -161,6 +167,19 @@ impl Emit<'_, '_, '_> {
     /// What's owned inside an inline struct or enum, its inner structs' fields too. Nothing for
     /// anything else, or for an enum whose cases are all plain.
     pub(crate) fn inline_parts(&self, kind: &Kind) -> Vec<InlinePart> {
+        if let Some(shape) = self.array_shape(kind).filter(|shape| !shape.boxed) {
+            let each = match &shape.item {
+                Kind::Struct(_) => self.inline_parts(&shape.item),
+                Kind::Enum(id) if !self.case_parts(*id).is_empty() => vec![InlinePart::Enum(0, *id)],
+                held if held.counted() => vec![InlinePart::Block(0, held.clone())],
+                _ => Vec::new(),
+            };
+            return if each.is_empty() {
+                Vec::new()
+            } else {
+                vec![InlinePart::Items(0, shape.count, shape.stride, each)]
+            };
+        }
         match kind {
             Kind::Struct(id) => {
                 self.module.layouts.get(*id).map_or_else(Vec::new, |layout| self.parts_of(&layout.fields))
@@ -235,6 +254,20 @@ impl Emit<'_, '_, '_> {
                 }
                 self.line(&format!("br label %{done}"));
                 self.start_block(&done);
+            }
+            InlinePart::Items(offset, count, stride, parts) => {
+                let base = self.offset(at, offset);
+                self.each_position(&count.to_string(), |emit, position| {
+                    let item = emit.temp();
+                    emit.line(&format!(
+                        "{item} = getelementptr inbounds [{stride} x i8], ptr {base}, i64 {position}"
+                    ));
+                    for part in parts.clone() {
+                        emit.count_part(part, &item, more);
+                    }
+                    Ok(())
+                })
+                .unwrap_or_default();
             }
         }
     }
@@ -619,8 +652,8 @@ impl Emit<'_, '_, '_> {
         } else {
             // Words a case doesn't use are zero, so equal enums have equal words.
             let place = beside.clone().unwrap_or_else(|| self.slot(dest));
-            let text = self.text_of(&kind);
-            self.line(&format!("store {text} zeroinitializer, ptr {place}"));
+            let zero = self.zero_line(&kind, &place);
+            self.line(&zero);
             place
         };
         self.line(&format!("store i64 {number}, ptr {base}"));
@@ -702,8 +735,8 @@ impl Emit<'_, '_, '_> {
         let base = if let Some(block) = &block {
             self.offset(block, FIELDS_OFFSET)
         } else {
-            let text = self.text_of(wanted);
-            self.line(&format!("store {text} zeroinitializer, ptr {at}"));
+            let zero = self.zero_line(wanted, at);
+            self.line(&zero);
             at.to_owned()
         };
         if self.is_one_of_several(wanted) && !self.is_one_of_several(held) {
@@ -868,12 +901,19 @@ impl Emit<'_, '_, '_> {
     }
 
     fn same_structs(&mut self, id: u32, places: (&str, &str)) -> Result<String, String> {
+        if let Some(shape) = self.array_shape(&Kind::Struct(id)) {
+            return self.same_arrays(&shape, places);
+        }
         let fields = self.struct_fields(id)?;
         self.same_fields(&fields, places)
     }
 
     /// Whether these fields of what's at two addresses are all the same.
-    fn same_fields(&mut self, fields: &[(u32, Kind)], (a, b): (&str, &str)) -> Result<String, String> {
+    pub(crate) fn same_fields(
+        &mut self,
+        fields: &[(u32, Kind)],
+        (a, b): (&str, &str),
+    ) -> Result<String, String> {
         let mut same = "true".to_owned();
         for (offset, kind) in fields {
             let (x_at, y_at) = (self.offset(a, *offset), self.offset(b, *offset));
@@ -1142,6 +1182,11 @@ impl Emit<'_, '_, '_> {
     /// Where an index points: from the start, or the end if it's negative, failing outside.
     pub(crate) fn position(&mut self, list: &str, index: &str, span: Span) -> String {
         let length = self.list_length(list);
+        self.position_in(&length, index, span)
+    }
+
+    /// Where an index points in something this long, as [`Self::position`] says.
+    pub(crate) fn position_in(&mut self, length: &str, index: &str, span: Span) -> String {
         let (inside, from, ok, fail) =
             (self.temp(), self.label("from_end"), self.label("ok"), self.label("outside"));
         self.line(&format!("{inside} = icmp ult i64 {index}, {length}"));
@@ -1166,6 +1211,9 @@ impl Emit<'_, '_, '_> {
         index: &Operand,
         span: Span,
     ) -> Result<(), String> {
+        if let Some(shape) = self.array_in(object) {
+            return self.array_get(dest, (object, shape), index, span);
+        }
         if let Some((map, _)) = self.known.walk_items.get(&dest.0).copied() {
             return self.walk_to_next(dest, map, index, span);
         }
@@ -1180,9 +1228,10 @@ impl Emit<'_, '_, '_> {
             self.pair_slots.insert(dest.0, slot);
             // Holding nothing, letting go of it lets go of nothing.
             let kind = self.kind_of(dest)?.clone();
-            let (held, text) = (self.slot(dest), self.text_of(&kind));
+            let held = self.slot(dest);
             if kind.in_memory() || kind.counted() {
-                self.line(&format!("store {text} zeroinitializer, ptr {held}"));
+                let zero = self.zero_line(&kind, &held);
+                self.line(&zero);
             }
             return Ok(());
         }
@@ -1346,7 +1395,12 @@ impl Emit<'_, '_, '_> {
 
     /// The block at `place` for changing what's in it: a handle's own, which every name for it
     /// sees change, and otherwise one with no other owner.
-    fn block_to_change(&mut self, (root, path): (LocalId, &[String]), place: &str, kind: &Kind) -> String {
+    pub(crate) fn block_to_change(
+        &mut self,
+        (root, path): (LocalId, &[String]),
+        place: &str,
+        kind: &Kind,
+    ) -> String {
         if self.is_cell(kind) {
             let block = self.temp();
             self.line(&format!("{block} = load ptr, ptr {place}"));
@@ -1421,8 +1475,11 @@ impl Emit<'_, '_, '_> {
         value: &Operand,
         span: Span,
     ) -> Result<(), String> {
-        let inside = path.is_empty() && self.known.inside(object, index);
         let kind = self.place_kind(object, path)?;
+        if let Some(shape) = self.array_shape(&kind) {
+            return self.array_set((object, path), shape, index, value, span);
+        }
+        let inside = path.is_empty() && self.known.inside(object, index);
         if self.is_id_map(&kind) {
             let place = self.place_of(object, path)?;
             return self.id_map_store(&place, &kind, index, value, span);
@@ -1575,6 +1632,10 @@ impl Emit<'_, '_, '_> {
             return Ok(());
         }
         let kind = self.kind_of(dest)?.clone();
+        // An array is made as the struct it's laid out as.
+        if self.array_shape(&kind).is_some() {
+            return self.make(dest, items);
+        }
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;
         let list = self.new_list(item, &items.len().to_string());

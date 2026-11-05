@@ -2357,9 +2357,8 @@ fn every_example_kit_lowers_to_valid_ir() {
     assert!(kits >= 6, "only {kits} kits");
 }
 
-/// Examples that use what lowering doesn't take yet: fixed-size arrays wait on their inline
-/// layout, which the LLVM lane builds.
-const NOT_LOWERED_YET: &[&str] = &["arrays.fen"];
+/// Examples that use what lowering doesn't take yet.
+const NOT_LOWERED_YET: &[&str] = &[];
 
 #[test]
 fn every_example_lowers_to_valid_ir() {

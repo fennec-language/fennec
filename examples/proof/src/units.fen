@@ -121,7 +121,7 @@ struct World:
     def form_squad(mut self, name: str, members: list[Id[Unit]], rally: (int, int)) -> Id[Squad]:
         leader = members[0]
         team = self.units[leader].team
-        squad = self.squads.insert(
+        squad = self.squads.add(
             Squad(name=name, team=team, leader=leader, members=members, rally=rally),
         )
         for member in members:

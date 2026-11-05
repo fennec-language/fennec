@@ -136,6 +136,9 @@ pub(crate) fn method(ty: &Type, name: &str) -> Option<Method> {
     if matches!(ty, Type::Int | Type::Float) && name == "abs" {
         return Some(reads(&[], ty.clone()));
     }
+    if matches!(ty, Type::Float) && name == "is_nan" {
+        return Some(reads(&[], Type::Bool));
+    }
     match ty {
         Type::List(item) => list_method(item, name),
         Type::Buffer(item) => buffer_method(item, name),

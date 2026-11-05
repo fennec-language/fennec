@@ -83,7 +83,7 @@ fn run_hands_main_its_arguments_and_input() {
 fn run_reports_errors_and_fails() {
     let output = fennec(&["run", "examples/errors/print.fen"], "").unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(text(&output.stderr).starts_with("error: `print` doesn't exist"));
+    assert!(text(&output.stderr).starts_with("error: there's no global `print`"));
 }
 
 #[test]
@@ -1455,6 +1455,25 @@ fn fix_leaves_leading_dots_alone_in_a_kit() {
     assert_eq!(written, main);
 }
 
+/// `print` where the function has a `Stdout` is fixed, and with none there's nothing to write.
+#[test]
+fn fix_writes_the_stdout_a_function_has() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-fix-print", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("print.fen");
+    let path = program.to_string_lossy().into_owned();
+    std::fs::write(&program, "def main(out: Stdout):\n    print(\"hello\")\n").unwrap();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    std::fs::write(&program, "def main():\n    print(\"hello\")\n").unwrap();
+    let unfixed = fennec(&["fix", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(written, "def main(out: Stdout):\n    out.print(\"hello\")\n");
+    assert_eq!(unfixed.status.code(), Some(1));
+    assert!(text(&unfixed.stderr).contains("def main(stdout: Stdout):"), "{}", text(&unfixed.stderr));
+}
+
 /// A program with `mut` in each place that moves to `ref`.
 const MUT_IN_EACH_PLACE: &str = "struct Counter:\n    count: int\n\n    def bump(mut self):\n        self.count += 1\n\ndef grow(mut items: list[int]):\n    items.append(3)\n\ndef main(stdout: Stdout):\n    mut items = [1, 2]\n    grow(mut items)\n    for mut item in items:\n        item += 1\n    mut counter = Counter(count=0)\n    counter.bump()\n    stdout.print(items, counter.count)\n";
 
@@ -1858,4 +1877,28 @@ fn constants_are_worked_out_while_compiling() {
         "{}",
         text(&output.stderr)
     );
+}
+
+/// What a copy names is the item it's in, as it's written.
+#[test]
+fn a_copy_names_the_item_it_is_in() -> std::io::Result<()> {
+    let dir = std::env::temp_dir().join(format!("fennec_copy_names_{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("items.fen");
+    for (at, said) in [("0", "units[0].tags"), ("at", "units[at].tags")] {
+        std::fs::write(
+            &program,
+            format!(
+                "struct Unit:\n    tags: list[int]\n\ndef main(stdout: Stdout):\n    mut units = [Unit(tags=[1])]\n    \
+                 at = 0\n    for round in range(3):\n        held = units[{at}]\n        units[{at}].tags.append(round)\n        \
+                 stdout.print(held.tags, at)\n"
+            ),
+        )?;
+        let checked = fennec(&["check", &program.to_string_lossy()], "")?;
+        let told = text(&checked.stderr);
+        assert!(told.contains(&format!("`{said}` is copied each time round the loop")), "{told}");
+        assert!(told.contains(&format!("write `copy({said})`")), "{told}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }

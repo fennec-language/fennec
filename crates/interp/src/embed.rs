@@ -55,10 +55,7 @@ pub mod serve {
     /// With nothing served, every connection number is closed.
     #[cfg(not(feature = "lean"))]
     fn closed() -> i64 {
-        with(|state| {
-            let error = state.interp.net_error(&Failure::Closed, Span::default()).unwrap_or(Value::None);
-            state.push(error)
-        })
+        with(|state| state.push(crate::stdlib::net::failed(&Failure::Closed)))
     }
 
     #[cfg(not(feature = "lean"))]
@@ -116,6 +113,9 @@ pub struct Tables {
     pub elements: Vec<Rc<crate::packed::Element>>,
     /// The shapes of boxed values' blocks, by their number.
     pub shapes: Vec<Rc<crate::packed::Element>>,
+    /// The numbers of the shapes of `shared` values, which are the same only if they're one
+    /// value.
+    pub cells: Vec<u64>,
     /// The shape number strings' blocks have.
     pub str_shape: u64,
     /// Blocks that live for the whole run, like string literals, made while compiling so
@@ -145,6 +145,7 @@ impl Tables {
             patterns: self.patterns.clone(),
             elements: self.elements.clone(),
             shapes: self.shapes.clone(),
+            cells: self.cells.clone(),
             str_shape: self.str_shape,
             ..Tables::default()
         }

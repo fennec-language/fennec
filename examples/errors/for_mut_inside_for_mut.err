@@ -1,8 +1,8 @@
-error: `numbers` changes while a loop goes over it
+error: you can't change `numbers` while looping over it
  --> examples/errors/for_mut_inside_for_mut.fen:5:22
   |
 5 |         for mut y in numbers:
   |                      ^^^^^^^
   |
-  = help: collect the changes and make them after the loop
+  = help: loop over indexes, or collect the changes and make them after the loop
   = note: the loop is at examples/errors/for_mut_inside_for_mut.fen:4:18

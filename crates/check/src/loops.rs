@@ -113,17 +113,15 @@ impl Loops<'_> {
                     let shown = fennec_syntax::dotted(written).unwrap_or_else(|| "it".to_owned());
                     // A `for mut` over a copy would write to the copy.
                     let help = if *is_mut {
-                        "collect the changes and make them after the loop".to_owned()
+                        "loop over indexes, or collect the changes and make them after the loop"
                     } else {
-                        format!(
-                            "loop over `copy({shown})`, or collect the changes and make them after the loop"
-                        )
+                        "use `for mut`, or loop over indexes"
                     };
                     for (_, span) in changes.iter().filter(|(changed, _)| changed.overlaps(&looped)) {
-                        let message = format!("`{shown}` changes while a loop goes over it");
+                        let message = format!("you can't change `{shown}` while looping over it");
                         self.problems.push(
                             Diagnostic::new(message, *span)
-                                .with_help(help.clone())
+                                .with_help(help)
                                 .also_at_the(fennec_syntax::Also::Loop, written.span),
                         );
                     }
@@ -406,7 +404,7 @@ fn written(expr: &Expr, is_mut: bool) -> String {
     format!("`{word}{}`", place_text(expr))
 }
 
-fn place_text(expr: &Expr) -> String {
+pub(crate) fn place_text(expr: &Expr) -> String {
     match &expr.kind {
         ExprKind::Name(name) => name.clone(),
         ExprKind::Attr { object, name, .. } => format!("{}.{name}", place_text(object)),

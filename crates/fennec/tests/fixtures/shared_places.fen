@@ -1,0 +1,66 @@
+# A list in a `shared` value changed where it is, under the lock, with its own value read while it
+# changes, and with something else still holding the list as it was, which mustn't see the change.
+
+struct Row:
+    tags: list[int]
+    name = "a row"
+
+shared Queue:
+    items = [1, 2, 3]
+    total = 0
+    rows = [Row(tags=[1, 2, 3]), Row(tags=[4])]
+    kept = list[int]()
+
+    def reading_itself(mut self):
+        self.items.append(self.items.len())
+        self.items.insert(self.items.len(), self.total)
+        self.items.extend(self.items)
+        self.rows[0].tags.append(self.rows[0].tags.len())
+        self.rows[self.total % 2].tags.append(self.rows[1].tags[0])
+        self.total += self.items.pop()
+
+    def through_a_call(mut self):
+        grow(mut self.items, self.items.len())
+        grow(mut self.rows[1].tags, self.rows[0].tags.len())
+
+    def keeping_it(mut self) -> list[int]:
+        self.kept = self.items
+        self.items.append(100)
+        self.kept.append(200)
+        self.kept
+
+    def handing_out(self) -> list[int]:
+        self.items
+
+    def row_kept(mut self) -> Row:
+        row = self.rows[0]
+        self.rows[0].tags.append(300)
+        self.rows[0].name += " changed"
+        row
+
+def grow(mut numbers: list[int], by: int):
+    numbers.append(by)
+    numbers[0] += by
+
+def main(stdout: Stdout):
+    queue = Queue()
+    queue.reading_itself()
+    stdout.print(queue.items, queue.total, queue.rows[0].tags, queue.rows[1].tags)
+    queue.through_a_call()
+    stdout.print(queue.items, queue.rows[1].tags)
+    out = queue.keeping_it()
+    stdout.print(out, queue.items, queue.kept)
+    mine = queue.handing_out()
+    queue.reading_itself()
+    stdout.print(mine, queue.items)
+    row = queue.row_kept()
+    stdout.print(row.tags, row.name, queue.rows[0].tags, queue.rows[0].name)
+    with queue as mut held:
+        before = held.items
+        held.items.append(held.items.len())
+        held.items.extend(before)
+        held.total += before.len()
+    stdout.print(queue.items, queue.total)
+    second = queue
+    second.reading_itself()
+    stdout.print(queue.items, queue.total)

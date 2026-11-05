@@ -1,0 +1,15 @@
+## Serving: each connection a task that answers each line it's sent, until the other side is done.
+from std.net import Connection, NetError
+
+def answer(connection: Connection) -> int fails NetError:
+    mut count = 0
+    for line in connection.lines():
+        connection.write(line + "\n")?
+        count += 1
+    count
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for connection in parallel(server):
+            answer(connection)?

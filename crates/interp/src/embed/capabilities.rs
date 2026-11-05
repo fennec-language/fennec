@@ -243,7 +243,8 @@ pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end
     {
         Some(("Server", method)) => crate::stdlib::net::real_server(handle, method, args, timeout, at),
         Some(("UdpSocket", method)) => crate::stdlib::net::real_udp(handle, method, args, timeout, at),
-        Some((_, method)) => crate::stdlib::net::real_connection(handle, method, args, timeout, at),
+        Some((_, method)) => super::serve::served_call(handle, method, args, timeout, at)
+            .unwrap_or_else(|| crate::stdlib::net::real_connection(handle, method, args, timeout, at)),
         None => Err(Diagnostic::new("the native code lost a method's name", at)),
     });
     attempt(|state: &mut State| done.map(|value| state.push(value)))

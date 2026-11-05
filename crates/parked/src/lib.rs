@@ -62,6 +62,12 @@ pub fn park(request: Request) -> Option<Wake> {
     current::suspend(request)
 }
 
+/// The lowest address of the running task's stack, for what checks how far its stack has grown.
+/// With no task running on this thread, `None`.
+pub fn stack_low() -> Option<usize> {
+    current::stack_low()
+}
+
 struct Task {
     coroutine: Coroutine<Wake, Request, i64, DefaultStack>,
     stack: current::Bounds,

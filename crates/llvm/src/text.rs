@@ -154,6 +154,12 @@ impl Emit<'_, '_, '_> {
                     emit.line(&format!("call void @fennec_str_print(ptr {block})"));
                 });
             }
+            _ if self.is_one_of_several(kind) => {
+                let text = self.plain_text(value, kind)?;
+                self.declare("declare void @fennec_str_print(ptr) nounwind");
+                self.line(&format!("call void @fennec_str_print(ptr {text})"));
+                self.release(&text);
+            }
             Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => {
                 self.declare("declare void @fennec_print_block(ptr) nounwind");
                 self.line(&format!("call void @fennec_print_block(ptr {value})"));
@@ -175,6 +181,9 @@ impl Emit<'_, '_, '_> {
     /// A new string with a plain value's text, as the interpreter writes it: `True`, `(1, 2)`,
     /// `Point(x=1, y=2)` or `Kind.Stay`. `value` is a bool, or a plain struct's or enum's address.
     fn plain_text(&mut self, value: &str, kind: &Kind) -> Result<String, String> {
+        if self.is_one_of_several(kind) {
+            return self.one_of_several_text(value, kind);
+        }
         self.declare("declare ptr @fennec_str_concat(ptr, ptr) nounwind");
         self.declare("declare ptr @fennec_int_text(i64) nounwind");
         self.declare("declare ptr @fennec_float_text(double) nounwind");
@@ -287,6 +296,56 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// Ends the program, saying what `main` failed with. What the IR ends this block with is
+    /// never reached, so it goes in a block of its own.
+    pub(crate) fn main_failed(&mut self, error: &Operand, span: Span) -> Result<(), String> {
+        let (value, kind) = self.operand(error)?;
+        let shown = self.shown_text(&value, &kind)?;
+        let start = self.literal("`main` failed: ");
+        let text = self.joined(&start, &shown, true);
+        self.stop_with(&text, span);
+        let after = self.label("stopped");
+        self.start_block(&after);
+        Ok(())
+    }
+
+    /// A new string with the text of the error it is, with no sign of the others it might be.
+    fn one_of_several_text(&mut self, value: &str, kind: &Kind) -> Result<String, String> {
+        let (Kind::Enum(id) | Kind::Boxed(id)) = kind else { return Err("not one of several".to_owned()) };
+        let layouts = self.module.layouts;
+        let cases =
+            layouts.get(*id).and_then(|layout| layout.cases.as_ref()).ok_or("an enum with no cases")?;
+        let base = if matches!(kind, Kind::Boxed(_)) {
+            self.offset(value, crate::lists::FIELDS_OFFSET)
+        } else {
+            value.to_owned()
+        };
+        let tag = self.temp();
+        self.line(&format!("{tag} = load i64, ptr {base}"));
+        let empty = self.literal("");
+        let shown = self.temp_slot(&empty);
+        let joined = self.label("error_shown");
+        for (number, case) in cases.iter().enumerate() {
+            let field = case.fields.first().ok_or("a case of an error holds nothing")?;
+            let held = Kind::from_ty(layouts, field.ty).ok_or("a field this backend doesn't take yet")?;
+            let (same, this, next) = (self.temp(), self.label("error_is"), self.label("error_not"));
+            self.line(&format!("{same} = icmp eq i64 {tag}, {number}"));
+            self.line(&format!("br i1 {same}, label %{this}, label %{next}"));
+            self.start_block(&this);
+            let place = self.offset(&base, field.offset);
+            let inside = if held.in_memory() { place } else { self.load_field(&held, &place, "") };
+            let text = self.shown_text(&inside, &held)?;
+            self.line(&format!("store ptr {text}, ptr {shown}"));
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&next);
+        }
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        let text = self.temp();
+        self.line(&format!("{text} = load ptr, ptr {shown}"));
+        Ok(text)
+    }
+
     /// A new string with a side of a comparison, if it has text.
     fn side_text(&mut self, side: &Operand) -> Result<Option<String>, String> {
         if *side == Operand::None {
@@ -325,6 +384,9 @@ impl Emit<'_, '_, '_> {
 
     /// A new string with a value's text as the interpreter shows it, with a string in quotes.
     fn shown_text(&mut self, value: &str, kind: &Kind) -> Result<String, String> {
+        if self.is_one_of_several(kind) {
+            return self.one_of_several_text(value, kind);
+        }
         let none = self.literal("None");
         if let Kind::Maybe(inner) = kind {
             let (missing, shown) = (self.temp(), self.temp_slot(&none));

@@ -1,0 +1,7 @@
+error: `nothing != nothing` is always False, since NaN equals NaN here
+ --> examples/errors/float_not_itself.fen:4:18
+  |
+4 |     stdout.print(nothing != nothing)
+  |                  ^^^^^^^^^^^^^^^^^^
+  |
+  = help: write `nothing.is_nan()` to ask about NaN

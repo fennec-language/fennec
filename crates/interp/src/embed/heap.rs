@@ -1097,7 +1097,12 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
         return true;
     }
     let (Some(left), Some(right)) = (state.heap.block(a), state.heap.block(b)) else { return false };
-    if shape_word(left) != shape_word(right) {
+    let shape = shape_word(left);
+    if shape != shape_word(right) {
+        return false;
+    }
+    // Two `shared` values are the same only if they're one value, whatever they hold now.
+    if shape.is_some_and(|shape| state.tables.cells.contains(&shape)) {
         return false;
     }
     if shape_word(left) == Some(BYTES_SHAPE) {

@@ -190,7 +190,9 @@ pub(crate) fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: 
         | InstKind::MakeErr { dest, error: value }
         | InstKind::IsErr { dest, value }
         | InstKind::GetOk { dest, value }
-        | InstKind::GetErr { dest, value } => {
+        | InstKind::GetErr { dest, value }
+        | InstKind::IsError { dest, value, .. }
+        | InstKind::AsError { dest, value } => {
             read(value);
             write(*dest);
         }

@@ -74,7 +74,7 @@ impl Interp<'_> {
                     .map(Value::Int)
                     .ok_or_else(|| Diagnostic::new("this overflows an int", span));
             }
-            (Value::Float(x), "abs", []) => return Ok(Value::Float(x.abs())),
+            (Value::Float(x), "abs" | "is_nan", []) => return Ok(float_method(*x, method)),
             _ => {}
         }
         if method == "len" && args.is_empty() {
@@ -512,4 +512,9 @@ pub(crate) fn from_hex(text: &str) -> Result<Vec<u8>, usize> {
         bytes.push(u8::try_from(high * 16 + low).map_err(|_| at)?);
     }
     Ok(bytes)
+}
+
+/// `x.abs()` or `x.is_nan()`.
+fn float_method(x: f64, method: &str) -> Value {
+    if method == "abs" { Value::Float(x.abs()) } else { Value::Bool(x.is_nan()) }
 }

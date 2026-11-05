@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use fennec_syntax::rename::shown_type_name;
 use fennec_syntax::{Diagnostic, Span};
 
-use super::named::{is_id_map, is_option, is_result};
+use super::named::{is_id_map, is_one_of_several, is_option, is_result};
 use super::{
     CAPABILITY_SHAPE, HEADER_WORDS, State, block_text, cell_value, is_text, shape_of, shape_word, type_name,
     with,
@@ -241,7 +241,10 @@ pub(in crate::embed) fn item(
             named_fields(state, fields, words, out);
         }
         Element::Enum { name, words: size, .. }
-            if !is_option(name) && !is_result(name) && own_value(state, (name, *size), words, out) => {}
+            if !is_option(name)
+                && !is_result(name)
+                && !is_one_of_several(name)
+                && own_value(state, (name, *size), words, out) => {}
         Element::Enum { name, cases, words: size } => {
             let mut mine = (&mut *words).take(*size);
             let at = usize::try_from(word(&mut mine)).unwrap_or(0);
@@ -267,6 +270,10 @@ fn enum_case(
         match fields.first() {
             Some((_, element)) if case == "Some" => item(state, element, words, out),
             _ => out.push_str("None"),
+        }
+    } else if is_one_of_several(name) {
+        if let Some((_, element)) = fields.first() {
+            item(state, element, words, out);
         }
     } else if is_result(name) {
         out.push_str(if case == "Err" { "Err(" } else { "Ok(" });

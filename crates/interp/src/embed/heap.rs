@@ -395,10 +395,15 @@ impl Heap {
     /// Takes a block out of the heap for reuse, leaving the blocks it refers to as they are:
     /// for a block whose contents moved to a new one.
     pub(super) fn discard(&mut self, address: u64) {
-        self.forget_place(address);
-        if let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(at)) {
+        if let Some(block) = self.take_out(address) {
             self.recycle(block);
         }
+    }
+
+    /// Takes a block of this thread's out of the heap, for its contents to move to a new one.
+    pub(super) fn take_out(&mut self, address: u64) -> Option<Box<[u64]>> {
+        self.forget_place(address);
+        self.blocks.remove(usize::try_from(address).ok()?)
     }
 
     /// Where a string that isn't ASCII was last read.

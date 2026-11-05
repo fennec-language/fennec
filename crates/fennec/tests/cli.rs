@@ -1286,6 +1286,59 @@ fn fix_writes_in_return_types_and_removes_arrows_to_none() {
     assert!(again.status.success() && again.stdout.is_empty());
 }
 
+/// A program with `mut` in each place that moves to `ref`.
+const MUT_IN_EACH_PLACE: &str = "struct Counter:\n    count: int\n\n    def bump(mut self):\n        self.count += 1\n\ndef grow(mut items: list[int]):\n    items.append(3)\n\ndef main(stdout: Stdout):\n    mut items = [1, 2]\n    grow(mut items)\n    for mut item in items:\n        item += 1\n    mut counter = Counter(count=0)\n    counter.bump()\n    stdout.print(items, counter.count)\n";
+
+/// `fennec fix --mut-to-ref` writes `ref`, and the program does what it did.
+#[test]
+fn fix_writes_ref_only_when_asked() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-mut-to-ref", std::process::id()));
+    std::fs::create_dir_all(dir.join("inner")).unwrap();
+    let program = dir.join("inner/program.fen");
+    let path = program.to_string_lossy().into_owned();
+    std::fs::write(&program, MUT_IN_EACH_PLACE).unwrap();
+    let before = fennec(&["run", &path], "").unwrap();
+    assert!(before.status.success(), "{}", text(&before.stderr));
+
+    let plain = fennec(&["fix", &path], "").unwrap();
+    assert!(plain.status.success(), "{}", text(&plain.stderr));
+    assert!(std::fs::read_to_string(&program).unwrap().contains("(mut self)"));
+
+    let folder = dir.to_string_lossy().into_owned();
+    let fixed = fennec(&["fix", "--mut-to-ref", &folder], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    let again = fennec(&["fix", "--mut-to-ref", &path], "").unwrap();
+    let after = fennec(&["run", &path], "").unwrap();
+    let formatted = fennec(&["fmt", "--check", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    assert!(fixed.status.success() && text(&fixed.stdout).starts_with("fixed "), "{}", text(&fixed.stderr));
+    assert_eq!(written, MUT_IN_EACH_PLACE.replace("(mut ", "(ref ").replace("for mut", "for ref"));
+    assert!(written.contains("    mut items = [1, 2]\n"), "{written}");
+    assert!(again.status.success() && again.stdout.is_empty());
+    assert_eq!(text(&after.stdout), text(&before.stdout), "{}", text(&after.stderr));
+    assert!(formatted.status.success(), "{}", text(&formatted.stderr));
+}
+
+/// It says what a person has to read, and goes past a file it can't read.
+#[test]
+fn fix_to_ref_says_what_it_left() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-mut-left", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.fen"), "x = \"never closed\n").unwrap();
+    std::fs::write(dir.join("b.fen"), "# takes a `mut` list\ndef f(mut items: list[int]):\n    pass\n")
+        .unwrap();
+    let folder = dir.to_string_lossy().into_owned();
+    let output = fennec(&["fix", "--mut-to-ref", &folder], "").unwrap();
+    let written = std::fs::read_to_string(dir.join("b.fen")).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let said = text(&output.stderr);
+    assert!(output.status.success(), "{said}");
+    assert!(said.contains("a.fen: it can't be read"), "{said}");
+    assert!(said.contains("b.fen:1: this still says `mut`"), "{said}");
+    assert_eq!(written, "# takes a `mut` list\ndef f(ref items: list[int]):\n    pass\n");
+}
+
 #[test]
 fn fix_reports_what_it_cant_fix() {
     let output =

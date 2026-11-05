@@ -50,6 +50,12 @@ impl Emit<'_, '_, '_> {
                 let absolute = self.float_call("fabs", &value);
                 self.assign(dest, &absolute)
             }),
+            ("float.is_nan", [value], [Some(Kind::Float)]) => dest.and_then(|dest| {
+                let (value, _) = self.operand(value)?;
+                let found = self.temp();
+                self.line(&format!("{found} = fcmp uno double {value}, {value}"));
+                self.assign(dest, &found)
+            }),
             ("int", [value], [Some(Kind::Float)]) => {
                 dest.and_then(|dest| self.float_to_int(dest, value, None, span))
             }
@@ -106,6 +112,17 @@ impl Emit<'_, '_, '_> {
             }),
             ("set", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.set_of_chars(dest, text)),
             ("assert.sides", [left, right], _) => self.assert_sides(left, right, span),
+            ("list.sort", [Operand::Local(list)], _) => self.sorted(*list, &Operand::Local(*list)),
+            ("list.sort.key", [Operand::Local(list), key], _) => {
+                self.sorted_by(*list, &Operand::Local(*list), key, span)
+            }
+            ("list.clear", [Operand::Local(list)], _) => {
+                let owned = self.unshared(*list);
+                self.declare("declare void @fennec_list_clear(ptr) nounwind");
+                self.line(&format!("call void @fennec_list_clear(ptr {owned})"));
+                Ok(())
+            }
+            ("sorted", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.sorted_chars(dest, text)),
             ("set", [], []) => dest.and_then(|dest| self.empty_set(dest)),
             // A set of a set's items is the set, shared until one changes.
             ("set", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| self.copy(dest, set)),
@@ -184,6 +201,20 @@ impl Emit<'_, '_, '_> {
             self.store_field(&field, message, &place, "");
         }
         Ok(())
+    }
+
+    /// `sorted(text)`: a list of its characters, in order.
+    fn sorted_chars(&mut self, dest: LocalId, text: &Operand) -> Result<(), String> {
+        let (text, _) = self.operand(text)?;
+        self.on_blocks([&text], |emit, [block]| {
+            let list = emit.chars_list(&block);
+            emit.declare("declare ptr @fennec_list_sorted(ptr, i64) nounwind");
+            let sorted = emit.temp();
+            let how = fennec_interp::embed::lists::SORT_STRINGS;
+            emit.line(&format!("{sorted} = call ptr @fennec_list_sorted(ptr {list}, i64 {how})"));
+            emit.release(&list);
+            emit.assign(dest, &sorted)
+        })
     }
 
     /// `set(text)`: a set of its characters.
@@ -287,7 +318,7 @@ impl Emit<'_, '_, '_> {
 
     /// Whether `score` beats `best` for `max` or `min`, as the interpreter orders them. Values
     /// in memory come as addresses.
-    fn better(
+    pub(crate) fn better(
         &mut self,
         name: &str,
         kind: &Kind,
@@ -388,6 +419,65 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{failed} = icmp ne ptr {held}, null"));
             self.leave_if(&failed);
         }
+        Ok(result)
+    }
+
+    /// `a + b` on lists: a copy of the first, with the second's items after them.
+    pub(crate) fn joined_lists(&mut self, a: &str, b: &str) -> String {
+        self.declare("declare ptr @fennec_list_slice(ptr, i64, i64) nounwind");
+        self.declare("declare ptr @fennec_list_extend(ptr, ptr) nounwind");
+        let (copy, joined) = (self.temp(), self.temp());
+        let lowest = i64::MIN;
+        self.line(&format!("{copy} = call ptr @fennec_list_slice(ptr {a}, i64 {lowest}, i64 {lowest})"));
+        self.line(&format!("{joined} = call ptr @fennec_list_extend(ptr {copy}, ptr {b})"));
+        joined
+    }
+
+    /// `<` and the like on lists: the first items that differ decide, or else the lengths.
+    pub(crate) fn lists_in_order(
+        &mut self,
+        op: BinOp,
+        item: ListItem,
+        (a, b): (&str, &str),
+        span: Span,
+    ) -> Result<String, String> {
+        let held = self.item_kind(item)?;
+        let (a_length, b_length) = (self.list_length(a), self.list_length(b));
+        let (shorter, both) = (self.temp(), self.temp());
+        self.line(&format!("{shorter} = icmp slt i64 {a_length}, {b_length}"));
+        self.line(&format!("{both} = select i1 {shorter}, i64 {a_length}, i64 {b_length}"));
+        // Below zero if `a` comes first, above if `b` does, and zero if they've been equal so far.
+        let ordering = self.counter();
+        let (at, end) = self.loop_begin(&both);
+        let (decided, compare, next) = (self.temp(), self.label("compare"), self.label("next"));
+        let so_far = self.temp();
+        self.line(&format!("{so_far} = load i64, ptr {ordering}"));
+        self.line(&format!("{decided} = icmp ne i64 {so_far}, 0"));
+        self.line(&format!("br i1 {decided}, label %{next}, label %{compare}"));
+        self.start_block(&compare);
+        let (x, y) = (self.item_value(a, &held, &at), self.item_value(b, &held, &at));
+        let less = self.better("min", &held, (&x, &y), span)?;
+        let more = self.better("max", &held, (&x, &y), span)?;
+        let (above, order) = (self.temp(), self.temp());
+        self.line(&format!("{above} = select i1 {more}, i64 1, i64 0"));
+        self.line(&format!("{order} = select i1 {less}, i64 -1, i64 {above}"));
+        self.line(&format!("store i64 {order}, ptr {ordering}"));
+        self.line(&format!("br label %{next}"));
+        self.start_block(&next);
+        self.loop_end(&end);
+        let (so_far, by_length, equal, length_order, result) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{so_far} = load i64, ptr {ordering}"));
+        self.line(&format!("{by_length} = sub i64 {a_length}, {b_length}"));
+        self.line(&format!("{equal} = icmp eq i64 {so_far}, 0"));
+        self.line(&format!("{length_order} = select i1 {equal}, i64 {by_length}, i64 {so_far}"));
+        let cc = match op {
+            BinOp::Lt => "slt",
+            BinOp::LtEq => "sle",
+            BinOp::Gt => "sgt",
+            _ => "sge",
+        };
+        self.line(&format!("{result} = icmp {cc} i64 {length_order}, 0"));
         Ok(result)
     }
 

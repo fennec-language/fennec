@@ -134,7 +134,13 @@ fn free_block(state: &mut State, address: u64) {
             if !state.heap.texts.get_mut().is_empty() {
                 forget_text(state, address);
             }
-        } else if shape >= state.tables.str_shape || !release_planned(&mut state.heap, &block, &mut pending) {
+        } else if shape >= state.tables.str_shape {
+            // A list of numbers, the most usual kind, has nothing to look through.
+            let number = crate::embed::lists::element_number(state, &block);
+            if !number.is_some_and(|number| state.heap.items_hold_nothing(number)) {
+                free_unplanned(state, &block, &mut pending);
+            }
+        } else if !release_planned(&mut state.heap, &block, &mut pending) {
             free_unplanned(state, &block, &mut pending);
         }
         state.heap.recycle(block);
@@ -331,7 +337,11 @@ pub(in crate::embed) fn release(state: &mut State, address: u64) {
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
+    use super::Heap;
     use crate::embed::{Tables, finish, start, with};
+    use crate::packed::Element;
 
     /// Frees `count` blocks of `words` words at once, as a program dropping a big structure does.
     fn free_many(count: usize, words: usize) {
@@ -341,6 +351,16 @@ mod tests {
                 state.heap.recycle(block);
             }
         });
+    }
+
+    #[test]
+    fn a_heap_knows_which_lists_hold_no_blocks_only_from_its_plans() {
+        let elements = [Rc::new(Element::Int), Rc::new(Element::Str)];
+        let heap = Heap::default().planned(&[], &elements);
+        assert!(heap.items_hold_nothing(0));
+        assert!(!heap.items_hold_nothing(1));
+        assert!(!heap.items_hold_nothing(2), "a kind it hasn't a plan for");
+        assert!(!Heap::default().items_hold_nothing(0), "a worker's heap, which has none");
     }
 
     #[test]

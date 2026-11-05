@@ -26,14 +26,13 @@ impl Emit<'_, '_, '_> {
         let mark = self.temp();
         self.line(&format!("{mark} = call i64 @fennec_mark()"));
         match name {
-            "json.dumps" => {
+            "json.dumps" | "toml.dumps" => {
+                let function = if name == "json.dumps" { "fennec_json_dumps" } else { "fennec_toml_dumps" };
                 let (value, kind) = self.operand(first)?;
                 let (handle, crossed) = self.value_handle(&value, &kind)?;
-                self.declare("declare ptr @fennec_json_dumps(i64, i64, i64) nounwind");
+                self.declare(&format!("declare ptr @{function}(i64, i64, i64) nounwind"));
                 let text = self.temp();
-                self.line(&format!(
-                    "{text} = call ptr @fennec_json_dumps(i64 {handle}, i64 {from}, i64 {to})"
-                ));
+                self.line(&format!("{text} = call ptr @{function}(i64 {handle}, i64 {from}, i64 {to})"));
                 self.leave_if_failed();
                 if let Some(block) = crossed {
                     self.release(&block);
@@ -42,18 +41,21 @@ impl Emit<'_, '_, '_> {
                 let text = self.text_value(&text);
                 self.assign(dest, &text)
             }
-            "json.loads" => {
+            "json.loads" | "toml.loads" => {
+                let function = if name == "json.loads" { "fennec_json_loads" } else { "fennec_toml_loads" };
                 let (text, _) = self.operand(first)?;
                 // The type to read is the one the program wrote, here as a string.
                 let local = self.function.locals.get(dest.0).ok_or("no such local")?;
                 let Type::Result(wanted, _) = &local.ty else {
-                    return Err("`json.loads` giving something other than a result".to_owned());
+                    return Err(format!("`{name}` giving something other than a result"));
                 };
                 let written = self.literal(&wanted.to_string());
-                self.declare("declare i64 @fennec_json_loads(ptr, ptr, i64, i64) nounwind");
+                self.declare(&format!("declare i64 @{function}(ptr, ptr, i64, i64) nounwind"));
                 let handle = self.temp();
                 self.on_blocks([&text], |emit, [block]| {
-                    emit.line(&format!("{handle} = call i64 @fennec_json_loads(ptr {block}, ptr {written}, i64 {from}, i64 {to})"));
+                    emit.line(&format!(
+                        "{handle} = call i64 @{function}(ptr {block}, ptr {written}, i64 {from}, i64 {to})"
+                    ));
                 });
                 self.leave_if_failed();
                 let block = self.result_from(dest, &handle, span)?;

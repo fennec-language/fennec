@@ -1,4 +1,4 @@
-//! Methods on built-in values: `stdout`, `fs`, strings, lists, dicts, sets and `IdMap`.
+//! Methods on built-in values: `stdout`, `fs`, strings, lists, dicts, sets and `Table`.
 
 use std::fmt::Write;
 use std::rc::Rc;
@@ -128,7 +128,7 @@ impl Interp<'_> {
                 )),
                 _ => Err(no_method(receiver, method, span)),
             },
-            Value::IdMap(map) => match (method, args.as_slice()) {
+            Value::Table(map) => match (method, args.as_slice()) {
                 ("get", [Value::Id(id)]) => Ok(map.get(*id).cloned().unwrap_or(Value::None)),
                 ("items", []) => Ok(Value::list(
                     map.entries().map(|(id, v)| Value::tuple(vec![Value::Id(id), v.clone()])).collect(),
@@ -258,7 +258,7 @@ impl Interp<'_> {
                 }
                 Ok(Value::Unit)
             }
-            Value::IdMap(_) => self.change_id_map(value, method, &args, span),
+            Value::Table(_) => self.change_id_map(value, method, &args, span),
             other => Err(no_method(other, method, span)),
         }
     }
@@ -312,10 +312,10 @@ impl Interp<'_> {
         args: &[Value],
         span: Span,
     ) -> Result<Value, Diagnostic> {
-        let Value::IdMap(map) = value else { return Err(wrong_args(method, span)) };
+        let Value::Table(map) = value else { return Err(wrong_args(method, span)) };
         let map = Rc::make_mut(map);
         match (method, args) {
-            ("insert", [item]) => Ok(Value::Id(map.insert(item.clone()))),
+            ("add", [item]) => Ok(Value::Id(map.insert(item.clone()))),
             ("remove", [Value::Id(id)]) => Ok(map.remove(*id).unwrap_or(Value::None)),
             ("clear", []) => {
                 for slot in &mut map.slots {
@@ -355,7 +355,7 @@ impl Interp<'_> {
         }
     }
 
-    /// Calls a function that changes one value, like the change passed to `IdMap.modify`,
+    /// Calls a function that changes one value, like the change passed to `Table.modify`,
     /// and returns the changed value.
     fn call_changing(&mut self, change: &Value, value: Value, span: Span) -> Result<Value, Diagnostic> {
         match change {

@@ -185,12 +185,12 @@ fn methods_of_built_in_values_check_their_arguments() {
         mut table = {'a': 1}
         table['b'] = 'two'
         stdout.print(table.get(1), 'a,b'.split(1), ','.join([1]))
-        mut pool = IdMap[str]()
-        id = pool.insert('x')
+        mut pool = Table[str]()
+        id = pool.add('x')
         stdout.print(pool[0], pool[id].upper(), table[2])
     ";
     assert_eq!(
-        in_main_after("from std.game import IdMap", program),
+        in_main_after("from std.collections import Table", program),
         [
             "`append`'s argument should be a str, but this is an int @ 3",
             "`insert`'s argument should be an int, but this is a str @ \"first\"",
@@ -342,13 +342,13 @@ fn enum_fields_are_reached_through_match() {
 
 #[test]
 fn types_are_not_values() {
-    let declarations = "from std.game import IdMap\n\nstruct Enemy:\n    health = 100\n";
+    let declarations = "from std.collections import Table\n\nstruct Enemy:\n    health = 100\n";
     assert_eq!(in_main_after(declarations, "kind = Enemy"), ["`Enemy` is a type, not a value @ Enemy"]);
     assert_eq!(
-        in_main_after(declarations, "pool = IdMap[Enemy]\nempty = IdMap()"),
+        in_main_after(declarations, "pool = Table[Enemy]\nempty = Table()"),
         [
-            "`IdMap[...]` is a type, not a value @ IdMap[Enemy]",
-            "`IdMap` was called with the wrong arguments @ IdMap()"
+            "`Table[...]` is a type, not a value @ Table[Enemy]",
+            "`Table` was called with the wrong arguments @ Table()"
         ]
     );
     assert_eq!(in_main("optional = [1].index(1)\nstdout.print(optional)"), Vec::<String>::new());

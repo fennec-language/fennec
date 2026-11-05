@@ -1,7 +1,6 @@
-# `Tree` keeps parents and children in sync, on top of `IdMap`, with no references. A scene:
+# `Tree` keeps parents and children in sync, on top of `Table`, with no references. A scene:
 # what's attached to what, read and changed through IDs.
-from std.collections import Tree, TreeCycle, TreeNode
-from std.game import Id
+from std.collections import Id, Tree, TreeCycle, TreeNode
 
 struct Part:
     name: str

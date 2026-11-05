@@ -38,8 +38,8 @@ const NAMES: [&str; 22] = [
     "sum",
 ];
 
-/// Built-in types that can be called or indexed, like `IdMap[Enemy]()`.
-const TYPES: [&str; 4] = ["Id", "IdMap", "SoaList", "Buffer"];
+/// Built-in types that can be called or indexed, like `Table[Enemy]()`.
+const TYPES: [&str; 4] = ["Id", "Table", "SoaList", "Buffer"];
 
 /// The longest list `range` will build, until ranges become lazy.
 const MAX_RANGE: usize = 10_000_000;
@@ -281,7 +281,7 @@ pub(crate) fn length(value: &Value, span: Span) -> Result<Value, Diagnostic> {
         Value::Dict(pairs) => pairs.len(),
         Value::Str(text) => text.chars().count(),
         Value::Bytes(data) => data.len(),
-        Value::IdMap(map) => map.entries().count(),
+        Value::Table(map) => map.entries().count(),
         other => return Err(Diagnostic::new(format!("a {} has no length", other.type_name()), span)),
     };
     i64::try_from(len).map(Value::Int).map_err(|_| Diagnostic::new("this is too long to measure", span))

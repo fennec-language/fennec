@@ -1,6 +1,6 @@
-# decision: `IdMap` and `Id[T]` are the way to point at things.
+# decision: `Table` and `Id[T]` are the way to point at things.
 
-from std.game import Id, IdMap
+from std.collections import Id, Table
 from std.math import Vec3
 
 type EnemyId = Id[Enemy]
@@ -14,7 +14,7 @@ struct Enemy:
         self.health -= amount
 
 struct World:
-    enemies = IdMap[Enemy]()
+    enemies = Table[Enemy]()
     player = Vec3.zero
 
 error TargetGone:
@@ -37,8 +37,8 @@ export def attack(mut world: World, target: EnemyId):
 
 def main(stdout: Stdout):
     mut world = World()
-    near = world.enemies.insert(Enemy(position=Vec3(x=3.0, y=4.0), velocity=Vec3(x=-1.0)))
-    far = world.enemies.insert(Enemy(position=Vec3(x=10.0)))
+    near = world.enemies.add(Enemy(position=Vec3(x=3.0, y=4.0), velocity=Vec3(x=-1.0)))
+    far = world.enemies.add(Enemy(position=Vec3(x=10.0)))
 
     stdout.print(attack(mut world, near))
     stdout.print(attack(mut world, far))
@@ -59,11 +59,11 @@ def main(stdout: Stdout):
 
 test "attacking a distant enemy fails":
     mut world = World()
-    far = world.enemies.insert(Enemy(position=Vec3(x=10.0, y=0.0, z=0.0)))
+    far = world.enemies.add(Enemy(position=Vec3(x=10.0, y=0.0, z=0.0)))
     assert attack(mut world, far) == Err(OutOfRange(distance=10.0))
 
 test "attacking a removed enemy fails":
     mut world = World()
-    id = world.enemies.insert(Enemy(position=Vec3.zero))
+    id = world.enemies.add(Enemy(position=Vec3.zero))
     world.enemies.remove(id)
     assert attack(mut world, id) == Err(TargetGone(id))

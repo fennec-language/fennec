@@ -52,7 +52,7 @@ pub(super) fn owner_name(ty: &Type) -> Option<&str> {
         Type::Dict(..) => Some("dict"),
         Type::Tuple(_) => Some("tuple"),
         Type::Bytes => Some("bytes"),
-        Type::IdMap(_) => Some("IdMap"),
+        Type::Table(_) => Some("Table"),
         Type::Str => Some("str"),
         Type::Int => Some("int"),
         Type::Float => Some("float"),
@@ -89,7 +89,7 @@ impl Lowering<'_> {
                 return Err(format!("its call to `{name}` has a `mut` argument"));
             }
             let value = match &arg.value.kind {
-                ExprKind::Lambda { params, body } if name == "IdMap.modify" => {
+                ExprKind::Lambda { params, body } if name == "Table.modify" => {
                     self.arrow(&arg.value, params, body, true)?
                 }
                 // What's printed, or made text, through a type's own `def str`.
@@ -514,13 +514,18 @@ impl Lowering<'_> {
     }
 
     /// A place's steps, if each goes through a list or a plain struct. An optional isn't held
-    /// the same way in a place as in a local, so one can't be taken out as it is.
+    /// the same way in a place as in a local, so one can't be taken out as it is. A `shared` value
+    /// goes too if it's the root and its lock is held here: nothing else can read it meanwhile, as
+    /// anything reaching it another way ends the program.
     fn plain_steps(&self, place: &Place) -> Option<Vec<PlaceStep>> {
         let mut ty = self.local_type(place.local);
         let mut steps = Vec::with_capacity(place.steps.len());
-        for step in &place.steps {
+        let locked = self.locked_already(&Operand::Local(place.local));
+        for (at, step) in place.steps.iter().enumerate() {
             steps.push(match (step, &ty) {
-                (Step::Field(field), Type::Named(_)) if !self.context.is_handle(&ty) => {
+                (Step::Field(field), Type::Named(_))
+                    if !self.context.is_handle(&ty) || (at == 0 && locked) =>
+                {
                     PlaceStep::Field(field.clone())
                 }
                 (Step::Index(index), Type::List(_)) => PlaceStep::Item(index.clone()),

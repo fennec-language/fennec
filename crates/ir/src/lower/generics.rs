@@ -20,7 +20,7 @@ const DEEPEST_TYPE: usize = 32;
 fn depth(ty: &Type) -> usize {
     let deepest = |types: &[Type]| types.iter().map(depth).max().unwrap_or(0);
     1 + match ty {
-        Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::IdMap(item) | Type::Id(item) => {
+        Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::Table(item) | Type::Id(item) => {
             depth(item)
         }
         Type::Dict(first, second) | Type::Result(first, second) => depth(first).max(depth(second)),
@@ -67,7 +67,7 @@ pub(super) struct Instances {
 pub(super) fn mentions_param(ty: &Type) -> bool {
     match ty {
         Type::Param(_) | Type::Generic(..) => true,
-        Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::IdMap(item) | Type::Id(item) => {
+        Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::Table(item) | Type::Id(item) => {
             mentions_param(item)
         }
         Type::Dict(first, second) | Type::Result(first, second) => {
@@ -99,7 +99,7 @@ impl Context<'_> {
             Type::Iterator(item) => Type::Iterator(inner(item)),
             Type::Set(item) => Type::Set(inner(item)),
             Type::Optional(item) => Type::Optional(inner(item)),
-            Type::IdMap(item) => Type::IdMap(inner(item)),
+            Type::Table(item) => Type::Table(inner(item)),
             Type::Id(item) => Type::Id(inner(item)),
             Type::Dict(key, value) => Type::Dict(inner(key), inner(value)),
             Type::Result(ok, error) => Type::Result(inner(ok), inner(error)),
@@ -183,7 +183,7 @@ impl Context<'_> {
             (Type::List(first), Type::List(second))
             | (Type::Set(first), Type::Set(second))
             | (Type::Optional(first), Type::Optional(second))
-            | (Type::IdMap(first), Type::IdMap(second))
+            | (Type::Table(first), Type::Table(second))
             | (Type::Id(first), Type::Id(second)) => self.unify(first, second, subst),
             (Type::Optional(first), other) => self.unify(first, other, subst),
             (Type::Dict(key, value), Type::Dict(other_key, other_value))

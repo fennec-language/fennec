@@ -3,7 +3,7 @@
 ## The battle ends when one side is gone, or after `LONGEST` ticks. Then it's saved to JSON,
 ## loaded back, and played on, to show the save holds everything.
 
-from std.game import Id
+from std.collections import Id
 from std.random import Random
 
 import combat

@@ -109,8 +109,8 @@ fn engine_methods(ty: &Type) -> &'static [&'static str] {
         Type::List(_) => &["len", "append", "remove", "insert", "clear", "remove_where", "sort", "pop"],
         Type::Set(_) => &["len", "add", "discard", "remove", "clear"],
         Type::Dict(..) => &["len", "pop", "get", "keys", "values", "items", "clear"],
-        Type::IdMap(_) => {
-            &["len", "insert", "remove", "get", "modify", "remove_where", "values", "ids", "items", "clear"]
+        Type::Table(_) => {
+            &["len", "add", "remove", "get", "modify", "remove_where", "values", "ids", "items", "clear"]
         }
         Type::Bytes => &["len", "decode"],
         Type::Tuple(_) => &["len"],

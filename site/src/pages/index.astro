@@ -46,8 +46,8 @@ const design = [
   {
     title: 'Values and tables',
     status: 'Mostly built',
-    code: `mut units = IdMap[Unit]()
-ash = units.insert(Unit())
+    code: `mut units = Table[Unit]()
+ash = units.add(Unit())
 units[ash].health -= 10`,
     body: 'No object graphs and no references to manage. Things that point at each other live in tables and hold an Id. Planned: `mut x = place` naming the real place, and `copy(x)`.',
   },

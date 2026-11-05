@@ -109,7 +109,7 @@ const PARSE_CASES: &[(&str, &str)] = &[
     (
         "everything",
         "import std.math
-from std.game import Id, IdMap
+from std.collections import Id, Table
 export type Grid = list[list[int?]]
 type Pair = (int, str)
 

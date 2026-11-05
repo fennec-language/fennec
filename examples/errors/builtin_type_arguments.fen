@@ -1,4 +1,4 @@
-from std.game import IdMap
+from std.collections import Table
 
 def main(stdout: Stdout):
-    stdout.print(IdMap(3))
+    stdout.print(Table(3))

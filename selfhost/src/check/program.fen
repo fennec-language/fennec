@@ -2,9 +2,9 @@
 ## standard library's. Function bodies are looked at later, one function at a time.
 ## Mirrors `crates/check/src/program.rs`.
 
-from span import Span, Diagnostic
-from ast import Module, Item, FnDef, Generic, TypeDef, TypeExpr, Interface, Extension, Import, TestDef
+from ast import Extension, FnDef, Generic, Import, Interface, Item, Module, TestDef, TypeDef, TypeExpr
 from check.types import Type, optional_type
+from span import Diagnostic, Span
 
 enum TypeKind:
     StructKind
@@ -38,31 +38,9 @@ def built_in_interfaces() -> list[str]:
 
 def built_in_types() -> list[str]:
     [
-        "int",
-        "float",
-        "bool",
-        "str",
-        "bytes",
-        "None",
-        "nothing",
-        "list",
-        "SoaList",
-        "Iterator",
-        "set",
-        "dict",
-        "tuple",
-        "Id",
-        "IdMap",
-        "Stdout",
-        "Fs",
-        "Clock",
-        "Args",
-        "Stdin",
-        "Process",
-        "Entropy",
-        "Net",
-        "Result",
-        "->",
+        "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "SoaList", "Iterator",
+        "set", "dict", "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process",
+        "Entropy", "Net", "Result", "->",
     ]
 
 ## Every declaration in a program, keyed the way the signature table is: `name` for a
@@ -88,28 +66,40 @@ struct Program:
                         owner=None,
                         prelude=prelude,
                     )
-                case .Struct(type_def): self.add_type(type_def, .StructKind, prelude)
-                case .Enum(type_def): self.add_type(type_def, .EnumKind, prelude)
-                case .Error(type_def): self.add_type(type_def, .ErrorKind, prelude)
-                case .TypeAlias(name, ty, _): self.aliases[name] = ty
-                case .Const(_, _, _, _): pass
-                case .Test(test): self.tests.append(test)
-                case .Interface(interface): self.interfaces[interface.name] = interface
+                case .Struct(type_def):
+                    self.add_type(type_def, .StructKind, prelude)
+                case .Enum(type_def):
+                    self.add_type(type_def, .EnumKind, prelude)
+                case .Error(type_def):
+                    self.add_type(type_def, .ErrorKind, prelude)
+                case .TypeAlias(name, ty, _):
+                    self.aliases[name] = ty
+                case .Const(_, _, _, _):
+                    pass
+                case .Test(test):
+                    self.tests.append(test)
+                case .Interface(interface):
+                    self.interfaces[interface.name] = interface
                 case .Import(imported):
                     if not prelude:
                         self.add_import(imported)
-                case .Extend(_): pass
+                case .Extend(_):
+                    pass
         # Extensions come last, so the type they extend is known wherever it's declared.
         for item in module.items:
             match item:
-                case .Extend(extension): self.add_extension(extension, prelude)
-                case _: pass
+                case .Extend(extension):
+                    self.add_extension(extension, prelude)
+                case _:
+                    pass
 
     def add_import(mut self, imported: Import):
         if imported.module.len() == 1 and imported.module[0] == "std":
             for at in range(imported.names.len()):
                 self.modules.append(imported.aliases[at] else imported.names[at])
-        elif imported.module.len() == 2 and imported.module[0] == "std" and imported.names.len() == 0:
+        elif (
+            imported.module.len() == 2 and imported.module[0] == "std" and imported.names.len() == 0
+        ):
             self.modules.append(imported.alias else ".".join(imported.module))
 
     def add_type(mut self, type_def: TypeDef, kind: TypeKind, prelude: bool):
@@ -176,15 +166,12 @@ struct Program:
         written = [generic.name for generic in extension.generics]
         mut declared = self.type_params(name)
         if name == "list" or name == "set" or name == "Optional":
-            if written.len() == 1:
-                return None
+            if written.len() == 1: return None
             declared = ["T"]
         if name == "dict":
-            if written.len() == 2:
-                return None
+            if written.len() == 2: return None
             declared = ["K", "V"]
-        if written == declared:
-            return None
+        if written == declared: return None
         if declared.len() == 0:
             return Diagnostic(
                 message=f"`{name}` isn't generic, so its extension takes no type parameters",
@@ -199,7 +186,13 @@ struct Program:
         )
 
     ## Adds one method to a type, unless the type already has a method of that name.
-    def add_method(mut self, type_name: str, method: FnDef, prelude: bool, extension: list[Generic]):
+    def add_method(
+        mut self,
+        type_name: str,
+        method: FnDef,
+        prelude: bool,
+        extension: list[Generic],
+    ):
         key = f"{type_name}.{method.name}"
         if key in self.functions:
             self.problems.append(
@@ -210,7 +203,12 @@ struct Program:
                 ),
             )
             return
-        self.functions[key] = FnEntry(function=method, owner=type_name, prelude=prelude, extension=extension)
+        self.functions[key] = FnEntry(
+            function=method,
+            owner=type_name,
+            prelude=prelude,
+            extension=extension,
+        )
 
     ## Whether a name is an interface: one the program declares, or a built-in one.
     def is_interface(self, name: str) -> bool:
@@ -218,8 +216,7 @@ struct Program:
 
     ## A type's type parameters, in order: `T` for `Deque[T]`.
     def type_params(self, name: str) -> list[str]:
-        if name not in self.types:
-            return []
+        if name not in self.types: return []
         [generic.name for generic in self.types[name].type_def.generics]
 
     ## The type parameters in scope in a function: its type's, then the functions it's
@@ -242,14 +239,17 @@ struct Program:
 
     def resolve_within(self, written: TypeExpr, generics: list[str], depth: int) -> Type:
         name = self.through_module(written.name)
-        if self.is_interface(name):
-            fail interface_as_type(name, written.span)
+        if self.is_interface(name): fail interface_as_type(name, written.span)
         builtin = name in built_in_types()
-        if not builtin and name not in generics and name not in self.types and name not in self.aliases:
+        if (
+            not builtin
+            and name not in generics
+            and name not in self.types
+            and name not in self.aliases
+        ):
             fail unknown_type(name, written.span)
         wanted = self.type_arg_count(name, written.args.len())
-        if written.args.len() != wanted:
-            fail wrong_type_args(written, wanted)
+        if written.args.len() != wanted: fail wrong_type_args(written, wanted)
         mut args = []
         for arg in written.args:
             args.append(self.resolve_within(arg, generics, depth)?)
@@ -274,48 +274,60 @@ struct Program:
     ## `Deque` for `std.collections.Deque` or `collections.Deque`, through an imported module.
     def through_module(self, name: str) -> str:
         parts = name.split(".")
-        if parts.len() < 2:
-            return name
+        if parts.len() < 2: return name
         member = parts[-1]
         path = ".".join(parts[:-1])
-        if path in self.modules and member in self.types:
-            return member
+        if path in self.modules and member in self.types: return member
         name
 
     ## How many types a type takes in brackets. A tuple takes however many it's given, and
     ## a function type at least its return type.
     def type_arg_count(self, name: str, given: int) -> int:
-        if name == "->":
-            return max(given, 1)
-        if name in ["list", "set", "SoaList", "Iterator", "Id", "IdMap"]:
-            return 1
-        if name in ["dict", "Result"]:
-            return 2
-        if name == "tuple":
-            return given
+        if name == "->": return max(given, 1)
+        if name in ["list", "set", "SoaList", "Iterator", "Id", "Table"]: return 1
+        if name in ["dict", "Result"]: return 2
+        if name == "tuple": return given
         self.type_params(name).len()
 
 def builtin_type(name: str, args: list[Type]) -> Type:
     match name:
-        case "int": Type.Int
-        case "float": Type.Float
-        case "bool": Type.Bool
-        case "str": Type.Str
-        case "bytes": Type.Bytes
-        case "None": Type.NoneType
-        case "nothing": Type.Unit
-        case "list": Type.List(args[0])
-        case "SoaList": Type.List(args[0])
+        case "int":
+            Type.Int
+        case "float":
+            Type.Float
+        case "bool":
+            Type.Bool
+        case "str":
+            Type.Str
+        case "bytes":
+            Type.Bytes
+        case "None":
+            Type.NoneType
+        case "nothing":
+            Type.Unit
+        case "list":
+            Type.List(args[0])
+        case "SoaList":
+            Type.List(args[0])
         # The self-hosted checker has no generators of its own yet, so it reads one as a list.
-        case "Iterator": Type.List(args[0])
-        case "set": Type.Set(args[0])
-        case "dict": Type.Dict(args[0], args[1])
-        case "Result": Type.Result(args[0], args[1])
-        case "tuple": Type.Tuple(args)
-        case "->": Type.Arrow(args[:-1], args[-1])
-        case "Id": Type.Id(args[0])
-        case "IdMap": Type.IdMap(args[0])
-        case _: Type.Named(name)
+        case "Iterator":
+            Type.List(args[0])
+        case "set":
+            Type.Set(args[0])
+        case "dict":
+            Type.Dict(args[0], args[1])
+        case "Result":
+            Type.Result(args[0], args[1])
+        case "tuple":
+            Type.Tuple(args)
+        case "->":
+            Type.Arrow(args[:-1], args[-1])
+        case "Id":
+            Type.Id(args[0])
+        case "Table":
+            Type.Table(args[0])
+        case _:
+            Type.Named(name)
 
 ## An interface written where a type goes, as in `list[Shape]`.
 def interface_as_type(name: str, span: Span) -> Diagnostic:
@@ -334,7 +346,7 @@ def wrong_type_args(written: TypeExpr, wanted: int) -> Diagnostic:
         example = "Result[int, IoError]"
     elif name in ["list", "set", "SoaList"]:
         example = f"{name}[int]"
-    elif name in ["Id", "IdMap"]:
+    elif name in ["Id", "Table"]:
         example = f"{name}[Enemy]"
     mut message = f"`{name}` doesn't take types in brackets"
     if wanted == 1:

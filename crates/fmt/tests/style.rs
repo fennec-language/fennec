@@ -95,8 +95,8 @@ fn blocks_indent_four_spaces() {
 #[test]
 fn declarations_get_one_blank_line_around_them() {
     check(
-        "from std.math import Vec3\nfrom std.game import Id\ntype EnemyId = Id[Enemy]\nstruct A:\n    x: int\n    def get(self):\n        self.x\n    def set(mut self, x: int):\n        self.x = x\n\n\n\nerror Gone:\n    id: int\ndef main(stdout: Stdout):\n    pass\ntest \"it works\":\n    pass\n",
-        "from std.game import Id\nfrom std.math import Vec3\ntype EnemyId = Id[Enemy]\n\nstruct A:\n    x: int\n\n    def get(self):\n        self.x\n\n    def set(mut self, x: int):\n        self.x = x\n\nerror Gone:\n    id: int\n\ndef main(stdout: Stdout):\n    pass\n\ntest \"it works\":\n    pass\n",
+        "from std.math import Vec3\nfrom std.collections import Id\ntype EnemyId = Id[Enemy]\nstruct A:\n    x: int\n    def get(self):\n        self.x\n    def set(mut self, x: int):\n        self.x = x\n\n\n\nerror Gone:\n    id: int\ndef main(stdout: Stdout):\n    pass\ntest \"it works\":\n    pass\n",
+        "from std.collections import Id\nfrom std.math import Vec3\ntype EnemyId = Id[Enemy]\n\nstruct A:\n    x: int\n\n    def get(self):\n        self.x\n\n    def set(mut self, x: int):\n        self.x = x\n\nerror Gone:\n    id: int\n\ndef main(stdout: Stdout):\n    pass\n\ntest \"it works\":\n    pass\n",
     );
 }
 
@@ -119,8 +119,8 @@ fn interfaces_keep_their_signatures_together() {
 #[test]
 fn doc_comments_stay_with_what_they_document() {
     check(
-        "## The module.\nimport std.game\n## A point.\nstruct Point:\n    ## Across.\n    x: int\n    ## Moves it.\n    def move(mut self):\n        pass\n## Runs it.\ndef main(stdout: Stdout):\n    pass\n",
-        "## The module.\nimport std.game\n\n## A point.\nstruct Point:\n    ## Across.\n    x: int\n\n    ## Moves it.\n    def move(mut self):\n        pass\n\n## Runs it.\ndef main(stdout: Stdout):\n    pass\n",
+        "## The module.\nimport std.collections\n## A point.\nstruct Point:\n    ## Across.\n    x: int\n    ## Moves it.\n    def move(mut self):\n        pass\n## Runs it.\ndef main(stdout: Stdout):\n    pass\n",
+        "## The module.\nimport std.collections\n\n## A point.\nstruct Point:\n    ## Across.\n    x: int\n\n    ## Moves it.\n    def move(mut self):\n        pass\n\n## Runs it.\ndef main(stdout: Stdout):\n    pass\n",
     );
 }
 
@@ -266,8 +266,8 @@ fn guard_clauses_sit_on_one_line_and_other_bodies_dont() {
 #[test]
 fn imports_are_sorted_with_std_first() {
     check(
-        "## The module.\nfrom physics import Body, Air\nimport std.game\n\n# about math\nfrom std.math import Vec3, Mat4  # vectors\nfrom enemies import Orc\ndef main(stdout: Stdout):\n    pass\n",
-        "## The module.\nimport std.game\n# about math\nfrom std.math import Mat4, Vec3  # vectors\n\nfrom enemies import Orc\nfrom physics import Air, Body\n\ndef main(stdout: Stdout):\n    pass\n",
+        "## The module.\nfrom physics import Body, Air\nimport std.collections\n\n# about math\nfrom std.math import Vec3, Mat4  # vectors\nfrom enemies import Orc\ndef main(stdout: Stdout):\n    pass\n",
+        "## The module.\nimport std.collections\n# about math\nfrom std.math import Mat4, Vec3  # vectors\n\nfrom enemies import Orc\nfrom physics import Air, Body\n\ndef main(stdout: Stdout):\n    pass\n",
     );
 }
 

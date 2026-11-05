@@ -173,8 +173,8 @@ impl Layouts {
         match def {
             Written::Generator(_) | Written::Cell(_) => None,
             Written::Struct(fields) => {
-                // An `IdMap` is a block of its own, shared until it changes, like a list.
-                let (fields, size) = place(fields, 0, !name.starts_with("IdMap["))?;
+                // A `Table` is a block of its own, shared until it changes, like a list.
+                let (fields, size) = place(fields, 0, !name.starts_with("Table["))?;
                 Some(Layout {
                     name: name.to_owned(),
                     fields,
@@ -209,7 +209,7 @@ impl Layouts {
         let mut candidates: BTreeMap<String, Written> = names
             .iter()
             .filter(|name| {
-                !self.by_name.contains_key(*name) && !name.starts_with("IdMap[") && *name != "Match"
+                !self.by_name.contains_key(*name) && !name.starts_with("Table[") && *name != "Match"
             })
             .filter_map(|name| Some((name.clone(), written(sources, name)?)))
             // A `shared` type's whole point is to be one block, however it's held.
@@ -349,7 +349,8 @@ impl Layouts {
                     place(self, fields, 0).map(|(fields, size)| Layout {
                         name: name.clone(),
                         fields,
-                        size: size.max(WORD),
+                        // A cell's lock is one more word, after its fields.
+                        size: size.max(WORD) + if matches!(written, Written::Cell(_)) { WORD } else { 0 },
                         cases: None,
                         boxed: true,
                         cell: matches!(written, Written::Cell(_)),
@@ -651,7 +652,7 @@ fn has_param(ty: &Type) -> bool {
         | Type::Set(inner)
         | Type::Optional(inner)
         | Type::Id(inner)
-        | Type::IdMap(inner) => has_param(inner),
+        | Type::Table(inner) => has_param(inner),
         Type::Dict(a, b) | Type::Result(a, b) => has_param(a) || has_param(b),
         Type::Tuple(parts) | Type::Generic(_, parts) => parts.iter().any(has_param),
         Type::Arrow(parts, result) => parts.iter().any(has_param) || has_param(result),
@@ -738,7 +739,7 @@ fn written_type(written: &TypeExpr) -> Type {
         ("Buffer", [item]) => Type::Buffer(Box::new(written_type(item))),
         ("set", [item]) => Type::Set(Box::new(written_type(item))),
         ("dict", [key, value]) => Type::Dict(Box::new(written_type(key)), Box::new(written_type(value))),
-        (_, [_, ..]) | ("list" | "dict" | "set" | "tuple" | "Id" | "IdMap", _) => Type::Unknown,
+        (_, [_, ..]) | ("list" | "dict" | "set" | "tuple" | "Id" | "Table", _) => Type::Unknown,
         ("int", _) => Type::Int,
         ("float", _) => Type::Float,
         ("bool", _) => Type::Bool,

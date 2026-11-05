@@ -107,12 +107,13 @@ impl Runtime {
 }
 
 pub(crate) fn build(path: &str, output: Option<&str>) -> ExitCode {
-    if cfg!(windows) {
-        eprintln!("error: `fennec build` can't link executables on Windows yet; use `fennec run`");
-        return ExitCode::FAILURE;
-    }
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
     if !crate::run::check_to_build(&mut program) {
+        return ExitCode::FAILURE;
+    }
+    // What's wrong with the program comes first, on every platform.
+    if cfg!(windows) {
+        eprintln!("error: `fennec build` can't link executables on Windows yet; use `fennec run`");
         return ExitCode::FAILURE;
     }
     let started = Instant::now();

@@ -132,6 +132,25 @@ mod tests {
         finish();
     }
 
+    /// A loop making and freeing strings takes each from what the last one left. If it made new
+    /// ones, what's freed would pile up unused to the limit on every thread.
+    #[test]
+    #[cfg(not(feature = "sanitize"))]
+    fn a_string_a_runtime_call_makes_reuses_what_a_freed_one_left() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let long = with(|state| heap::text_address(state, "long enough to be a block of its own, twice"));
+        let first = strings::concat(long, long);
+        heap::free_text(first);
+        let second = strings::concat(long, long);
+        assert_eq!(second, first);
+        assert_eq!(
+            text_of(second),
+            "long enough to be a block of its own, twicelong enough to be a block of its own, twice"
+        );
+        finish();
+    }
+
     #[test]
     fn a_string_is_freed_as_one_and_anything_else_as_free_would() {
         let shapes =

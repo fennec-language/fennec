@@ -189,6 +189,10 @@ impl<'p> Check<'p> {
         match inst {
             InstKind::MakeList { dest, items } => match self.local(*dest) {
                 Some(Type::List(item)) => self.operands(items, &item),
+                // An array is made with all its items.
+                Some(Type::Array(item, size)) if u64::try_from(items.len()) == Ok(size) => {
+                    self.operands(items, &item);
+                }
                 _ => self.problems.push(format!("`{inst}` makes a list in another type")),
             },
             InstKind::MakeSet { dest, items } => match self.local(*dest) {
@@ -254,7 +258,7 @@ impl<'p> Check<'p> {
                     ty = ty.and_then(|ty| self.field(&ty, field));
                 }
                 let (key, item) = match ty {
-                    Some(Type::List(item) | Type::Buffer(item)) => (Type::Int, *item),
+                    Some(Type::List(item) | Type::Buffer(item) | Type::Array(item, _)) => (Type::Int, *item),
                     Some(Type::Dict(key, item)) => (*key, *item),
                     Some(Type::Table(item)) => (Type::Id(item.clone()), *item),
                     _ => {
@@ -535,7 +539,7 @@ pub(crate) fn plainly_ordered(ty: &Type) -> bool {
 /// What a value of this type is indexed by, and what that gives.
 fn indexed(ty: &Type) -> Option<(Type, Type)> {
     match ty {
-        Type::List(item) | Type::Buffer(item) => Some((Type::Int, *item.clone())),
+        Type::List(item) | Type::Buffer(item) | Type::Array(item, _) => Some((Type::Int, *item.clone())),
         Type::Str => Some((Type::Int, Type::Str)),
         Type::Bytes => Some((Type::Int, Type::Int)),
         Type::Dict(key, value) => Some((*key.clone(), *value.clone())),

@@ -625,7 +625,8 @@ impl Emit<'_, '_, '_> {
             if kind.counted() && text == "ptr" {
                 let _ = writeln!(self.allocas, "  store ptr null, ptr %l{at}");
             } else if kind.counted() || self.holds_inline(kind) {
-                let _ = writeln!(self.allocas, "  store {text} zeroinitializer, ptr %l{at}");
+                let zero = self.zero_line(kind, &format!("%l{at}"));
+                let _ = writeln!(self.allocas, "  {zero}");
             }
         }
         for (at, kind) in kinds.iter().take(function.params).enumerate() {
@@ -865,8 +866,8 @@ impl Emit<'_, '_, '_> {
             (block, fields_at)
         } else {
             let place = self.place_for(kind);
-            let text = self.text_of(kind);
-            self.line(&format!("store {text} zeroinitializer, ptr {place}"));
+            let zero = self.zero_line(kind, &place);
+            self.line(&zero);
             (place.clone(), place)
         };
         self.line(&format!("store i64 {tag}, ptr {fields_at}"));
@@ -1108,8 +1109,10 @@ impl Emit<'_, '_, '_> {
         if owner {
             self.release_inline(&kind, &slot);
         }
-        self.line(&format!("{held} = load {text}, ptr {from}{access}"));
-        self.line(&format!("store {text} {held}, ptr {slot}"));
+        if !self.copied_as_bytes(&kind, from, &slot) {
+            self.line(&format!("{held} = load {text}, ptr {from}{access}"));
+            self.line(&format!("store {text} {held}, ptr {slot}"));
+        }
         if owner {
             self.retain_inline(&kind, &slot);
         }
@@ -1126,13 +1129,17 @@ impl Emit<'_, '_, '_> {
             self.release_inline(&kind, &slot);
         } else {
             // Nothing here owns them, so they're let go of now.
-            self.line(&format!("{held} = load {text}, ptr {from}"));
-            self.line(&format!("store {text} {held}, ptr {slot}"));
+            if !self.copied_as_bytes(&kind, from, &slot) {
+                self.line(&format!("{held} = load {text}, ptr {from}"));
+                self.line(&format!("store {text} {held}, ptr {slot}"));
+            }
             self.release_inline(&kind, from);
             return Ok(());
         }
-        self.line(&format!("{held} = load {text}, ptr {from}"));
-        self.line(&format!("store {text} {held}, ptr {slot}"));
+        if !self.copied_as_bytes(&kind, from, &slot) {
+            self.line(&format!("{held} = load {text}, ptr {from}"));
+            self.line(&format!("store {text} {held}, ptr {slot}"));
+        }
         Ok(())
     }
 
@@ -1189,6 +1196,9 @@ impl Emit<'_, '_, '_> {
         self.module.define_types(kind);
         let memory = kind.memory(self.module.layouts);
         if kind.in_memory() {
+            if self.copied_as_bytes(kind, value, at) {
+                return;
+            }
             let held = self.temp();
             self.line(&format!("{held} = load {memory}, ptr {value}"));
             self.line(&format!("store {memory} {held}, ptr {at}{access}"));
@@ -1619,6 +1629,7 @@ impl Emit<'_, '_, '_> {
             // A test's `Stdout` is a fake that keeps what's printed, which the runtime holds.
             "Stdout.print" if !self.module.shared.traced => self.print(args.get(1..).unwrap_or_default()),
             "Stdout.write" if !self.module.shared.traced => self.write(args.get(1..).unwrap_or_default()),
+            "array.new" => self.new_array(dest.ok_or("an array made for nothing")?, args),
             "list.len" => {
                 if let Some(Operand::Local(local)) = first
                     && let Some(map) = self.known.map_walks.get(&local.0).copied()
@@ -1797,8 +1808,8 @@ impl Emit<'_, '_, '_> {
                 && (self.known.moves(*from) || self.known.is_last_copy(self.at.0, self.at.1))
             {
                 self.assign_memory_owned(dest, &held)?;
-                let text = self.text_of(&kind);
-                self.line(&format!("store {text} zeroinitializer, ptr {held}"));
+                let zero = self.zero_line(&kind, &held);
+                self.line(&zero);
                 return Ok(());
             }
             return self.assign_memory(dest, &held, "");

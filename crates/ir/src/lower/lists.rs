@@ -41,7 +41,9 @@ pub(super) struct Over<'a> {
 impl Lowering<'_> {
     pub(super) fn list(&mut self, expr: &Expr, items: &[Expr]) -> Lowered<Operand> {
         let ty = self.ty(expr)?;
-        let Type::List(item) = &ty else { return Err("a list has another type".to_owned()) };
+        let (Type::List(item) | Type::Array(item, _)) = &ty else {
+            return Err("a list has another type".to_owned());
+        };
         let values = self.items_as(items, item, expr.span)?;
         let dest = self.temporary(ty);
         self.emit(InstKind::MakeList { dest, items: values }, expr.span);
@@ -61,7 +63,9 @@ impl Lowering<'_> {
             return Ok(Operand::Local(dest));
         }
         let key = match &held {
-            Some(Type::List(_) | Type::Buffer(_) | Type::Str | Type::Bytes | Type::Tuple(_)) => Type::Int,
+            Some(Type::List(_) | Type::Array(..) | Type::Buffer(_) | Type::Str | Type::Bytes | Type::Tuple(_)) => {
+                Type::Int
+            }
             Some(Type::Dict(key, _)) => *key.clone(),
             Some(Type::Table(item)) => Type::Id(item.clone()),
             Some(Type::Named(name)) if name == "Args" => {
@@ -140,6 +144,9 @@ impl Lowering<'_> {
     ) -> Lowered<(Operand, Operand, Operand)> {
         if let Some(found) = self.own_in(op, item, items, span)? {
             return Ok(found);
+        }
+        if let Some(Type::Array(..)) = self.type_at(items.span) {
+            return self.array_contains(op, item, items, span);
         }
         let owner = match self.type_at(items.span) {
             Some(
@@ -331,7 +338,7 @@ impl Lowering<'_> {
         // Only the items of a list or `Table` are written back, and only one name holds them.
         let by_id = matches!(self.type_at(iter.span), Some(Type::Table(_)));
         let changes_items =
-            is_mut && names.len() == 1 && (by_id || matches!(self.type_at(iter.span), Some(Type::List(_))));
+            is_mut && names.len() == 1 && (by_id || matches!(self.type_at(iter.span), Some(Type::List(_) | Type::Array(..))));
         let back =
             if changes_items { Some(Back { place: self.held_place(iter, span)?, by_id }) } else { None };
         let over = Over { names, iter, back };
@@ -429,7 +436,7 @@ impl Lowering<'_> {
         }
         let (held, item, conversion) = match &ty {
             // A loop goes through the list as it was, whatever the body does to the name.
-            Type::List(item) | Type::Buffer(item) => (ty.clone(), *item.clone(), None),
+            Type::List(item) | Type::Buffer(item) | Type::Array(item, _) => (ty.clone(), *item.clone(), None),
             Type::Str => (Type::List(Box::new(Type::Str)), Type::Str, Some("str.chars")),
             Type::Set(item) | Type::Dict(item, _) => (Type::List(item.clone()), *item.clone(), Some("list")),
             Type::Bytes => (Type::List(Box::new(Type::Int)), Type::Int, Some("list")),
@@ -488,14 +495,21 @@ impl Lowering<'_> {
     where
         F: FnOnce(&mut Self) -> Lowered<()>,
     {
-        let limit = self.temporary(Type::Int);
-        let args = vec![Operand::Local(items)];
-        let kind = InstKind::Builtin { dest: Some(limit), name: "list.len".to_owned(), args, changes: false };
-        self.emit(kind, span);
+        // An array's length is known here.
+        let limit = if let Type::Array(_, size) = self.local_type(items) {
+            Operand::Int(i64::try_from(size).map_err(|_| "an array too long to count")?)
+        } else {
+            let limit = self.temporary(Type::Int);
+            let args = vec![Operand::Local(items)];
+            let kind =
+                InstKind::Builtin { dest: Some(limit), name: "list.len".to_owned(), args, changes: false };
+            self.emit(kind, span);
+            Operand::Local(limit)
+        };
         let counting = Counting {
             names,
             first: Operand::Int(0),
-            limit: Operand::Local(limit),
+            limit,
             down: false,
             items: Some((items, item)),
             back,

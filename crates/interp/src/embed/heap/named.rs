@@ -23,6 +23,12 @@ pub(super) fn is_one_of_several(name: &str) -> bool {
     name.contains(" | ") && !name.contains('[') && !name.starts_with('(')
 }
 
+/// A fixed-size array a backend keeps in place, laid out as a struct with a field for each item,
+/// named after its type, like `array[int, 4]`. The interpreter holds it as a list.
+pub(in crate::embed) fn is_array(name: &str) -> bool {
+    name.starts_with("array[")
+}
+
 /// A `Table` laid out as its items, each slot's generation, and how many are live. A
 /// removed slot's generation is held as `-1 - generation`, and its item is zero.
 pub(super) fn is_id_map(name: &str) -> bool {
@@ -37,7 +43,7 @@ pub(in crate::embed) fn packable(element: &Element) -> bool {
         Element::Int | Element::Float | Element::Bool => true,
         // A tuple a backend lays out as a struct, like `(int, int)`, is a tuple to the interpreter.
         Element::Struct { name, fields } => {
-            !name.starts_with('(') && name.as_ref() != "Id" && !is_id_map(name) && all(fields)
+            !name.starts_with('(') && !is_array(name) && name.as_ref() != "Id" && !is_id_map(name) && all(fields)
         }
         Element::Enum { name, cases, .. } => {
             !is_option(name)

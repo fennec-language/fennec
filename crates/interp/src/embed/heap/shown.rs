@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use fennec_syntax::rename::shown_type_name;
 use fennec_syntax::{Diagnostic, Span};
 
-use super::named::{is_id_map, is_one_of_several, is_option, is_result};
+use super::named::{is_array, is_id_map, is_one_of_several, is_option, is_result};
 use super::{
     CAPABILITY_SHAPE, HEADER_WORDS, State, block_text, cell_value, is_text, shape_of, shape_word, type_name,
     with,
@@ -223,6 +223,16 @@ pub(in crate::embed) fn item(
             0 => out.push_str("None"),
             address => item(state, inner, &mut std::iter::once(&address), out),
         },
+        Element::Struct { name, fields } if is_array(name) => {
+            out.push('[');
+            for (at, (_, element)) in fields.iter().enumerate() {
+                if at > 0 {
+                    out.push_str(", ");
+                }
+                item(state, element, words, out);
+            }
+            out.push(']');
+        }
         Element::Struct { name, fields } if name.starts_with('(') => {
             out.push('(');
             for (at, (_, element)) in fields.iter().enumerate() {

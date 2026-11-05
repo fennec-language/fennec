@@ -948,6 +948,27 @@ pub(super) fn children(state: &State, block: &[u64]) -> Vec<u64> {
     found
 }
 
+/// Where among a dict's words its live entries hold the addresses of other blocks.
+pub(super) fn child_places(state: &State, block: &[u64], found: &mut Vec<usize>) {
+    let Some(layout) = layout(state, block) else { return };
+    let slots = block.get(4).map_or(0, |mask| usize::try_from(*mask).unwrap_or(0) + 1);
+    let used = block.get(3).and_then(|used| usize::try_from(*used).ok()).unwrap_or(0);
+    let start = DICT_HEADER_WORDS + slots;
+    for at in 0..used {
+        let entry = start + at * layout.width;
+        let Some(words) = block.get(entry..entry + layout.width) else { return };
+        if words.first() == Some(&REMOVED) {
+            continue;
+        }
+        if key_block(layout.key, key_of(words)).is_some_and(|held| held != 0) {
+            found.push(entry + 1);
+        }
+        if layout.value == Word::Str && value_of(words) != 0 {
+            found.push(entry + layout.value_at());
+        }
+    }
+}
+
 /// A dict's block as the interpreter holds a dict.
 pub(super) fn read(state: &State, block: &[u64]) -> Value {
     let Some(layout) = layout(state, block) else { return Value::None };

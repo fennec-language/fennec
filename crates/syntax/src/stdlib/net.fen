@@ -43,6 +43,18 @@ error NetError:
             case Status(code):
                 f"the response's status was {code}"
 
+## What a server answered. A 404 is an answer like any other, so `ok()` says which it was. Its
+## `text()`, written in Rust, gives the body as text, with anything that isn't text replaced.
+struct Response:
+    status: int
+    ## By their names in lower case.
+    headers = dict[str, str]()
+    body = bytes([])
+
+    ## Whether the status is one of the 200s.
+    def ok(self) -> bool:
+        self.status >= 200 and self.status < 300
+
 ## One end of a TCP connection. Its methods, written in Rust: `read(n)` gives up to `n` bytes,
 ## or empty bytes once the other side is done; `read_line()` gives the next line without its
 ## ending, or `None` at the end; `write(data)` sends `bytes` or a `str`; and `close()`. Reads
@@ -59,6 +71,30 @@ struct Connection:
             line = self.read_line() else None
             if line is None: return
             yield line
+
+    def del(self):
+        self.close()
+
+## One datagram, and the address it came from, like `"127.0.0.1:52811"`, which `send_to` answers.
+struct Packet:
+    data: bytes
+    sender: str
+
+## A UDP port. Looping over it gives each packet as it arrives. Its methods, written in Rust:
+## `receive()` gives the next `Packet`, waiting as long as it takes unless given `timeout=`;
+## `send_to(data, address)` sends `bytes` or a `str` to an address like `"127.0.0.1:9001"`; and
+## `close()`.
+struct UdpSocket:
+    _handle: int
+    ## The port it listens on: the one asked for, or the one the system picked for port 0.
+    port: int
+
+    ## Each packet as it arrives, until the socket is closed or fails.
+    def iter(self) -> Iterator[Packet]:
+        while True:
+            packet = self.receive() else None
+            if packet is None: return
+            yield packet
 
     def del(self):
         self.close()

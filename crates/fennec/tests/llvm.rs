@@ -6103,6 +6103,18 @@ fn errors_of_several_types_go_up_and_show_as_on_the_interpreter() -> std::io::Re
     )
 }
 
+/// A function that says `fails A | B`, with errors that have cases among them.
+#[test]
+fn failing_several_ways_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "fails_several_ways",
+        include_str!("fixtures/fails_several_ways.fen"),
+    )
+}
+
 /// A failed `assert` says all the JIT does, each side as the interpreter shows it.
 #[test]
 fn a_failed_assert_says_what_the_jit_does() -> std::io::Result<()> {

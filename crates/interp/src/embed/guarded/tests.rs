@@ -99,7 +99,7 @@ fn a_new_shared_value_holds_copies_and_gives_up_what_it_was_given() {
     assert_eq!(shared_leave(log, 1), 0);
     assert_eq!(word(log, FIELDS), 0, "a thread not holding the lock can't see in");
     heap::free(given);
-    with(|state| threads::release_handle(state, u64::try_from(log).unwrap()));
+    with(|state| release_handle(state, u64::try_from(log).unwrap()));
     assert!(!is_handle(u64::try_from(log).unwrap()));
     assert_eq!(with(|state| state.heap.live()), before);
     finish();
@@ -211,13 +211,13 @@ fn a_handle_inside_a_value_is_the_same_handle_with_one_more_count() {
     let address = u64::try_from(log).unwrap();
     let owner = heap::alloc(OWNER);
     set_word(owner, FIELDS, log);
-    threads::count_handle(address);
+    count_handle(address);
     assert_eq!(shared_new(owner), owner);
     // Letting go of the first handle leaves the one the other holds.
-    with(|state| threads::release_handle(state, address));
+    with(|state| release_handle(state, address));
     assert!(is_handle(address));
     // And letting go of the value that holds it takes it too.
-    with(|state| threads::release_handle(state, u64::try_from(owner).unwrap()));
+    with(|state| release_handle(state, u64::try_from(owner).unwrap()));
     assert!(!is_handle(address));
     assert_eq!(with(|state| state.heap.live()), before);
     finish();

@@ -111,18 +111,22 @@ fn free_block(state: &mut State, address: u64) {
     let mut pending = std::mem::take(&mut state.heap.pending);
     pending.push(address);
     while let Some(address) = pending.pop() {
-        // A `shared` value's handle: its count is the runtime's, wherever its block is.
-        if crate::embed::guarded::is_handle(address) {
-            crate::embed::threads::release_handle(state, address);
-            continue;
-        }
         if crate::embed::threads::held_elsewhere(address) {
             continue;
         }
         // Only a string has a place kept in it, and that's forgotten below, once it's known to be one.
         let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.take_block(at)) else {
+            // A `shared` value's handle: its count is the runtime's, wherever its block is.
+            if crate::embed::guarded::is_handle(address) {
+                crate::embed::guarded::release_handle(state, address);
+            }
             continue;
         };
+        if super::is_handle_block(&block) {
+            state.heap.blocks.insert(block);
+            crate::embed::guarded::release_handle(state, address);
+            continue;
+        }
         let shape = shape_word(&block).unwrap_or(u64::MAX);
         debug_assert!(
             shape == state.tables.str_shape
@@ -333,7 +337,7 @@ pub(in crate::embed) fn release(state: &mut State, address: u64) {
         Some(_) => true,
         None => {
             if !state.heap.change_lent_owners(address, -1) && crate::embed::guarded::is_handle(address) {
-                crate::embed::threads::release_handle(state, address);
+                crate::embed::guarded::release_handle(state, address);
             }
             false
         }

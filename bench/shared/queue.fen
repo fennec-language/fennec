@@ -1,0 +1,21 @@
+# A work queue many threads push to and pop from: numbers, so nothing but the lock costs.
+shared Queue:
+    items = list[int]()
+
+    def push(mut self, item: int):
+        self.items.append(item)
+
+    def pop(mut self) -> int:
+        if self.items.len() == 0:
+            return 0
+        self.items.pop()
+
+def main(stdout: Stdout):
+    queue = Queue()
+    ops = [n for n in range(1000000)]
+    total = sum(work(queue, n) for n in parallel(ops))
+    stdout.print(total + 0 * queue.items.len())
+
+def work(queue: Queue, n: int) -> int:
+    queue.push(n)
+    queue.pop() % 2

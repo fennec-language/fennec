@@ -16,16 +16,18 @@
 //!   it makes goes in its own table, and how it changes the counts of what it reads goes nowhere, as
 //!   anything it keeps past the lock is copied out.
 //!
-//! A handle's own count is only ever the runtime's, in `threads`' table of shared counts, so any thread
-//! can hold one without touching the table it's in. When the last one goes, the table goes with it.
+//! A handle's own count is only ever the runtime's, beside its table, so any thread can hold one without
+//! touching the table it's in. When the last one goes, the table goes with it.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::hash::BuildHasherDefault;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::heap::{IMMORTAL, OWNER_SHIFT, mark_owner};
+use super::heap::{AddressHasher, IMMORTAL, OWNER_SHIFT, mark_owner};
 use super::table::Table;
 use super::{State, attempt};
 
@@ -33,7 +35,7 @@ use super::{State, attempt};
 pub const GUARDED_OWNER: u64 = 0xFFFF;
 
 /// The owner number of a `shared` value's own block, which no thread ever is.
-pub const HANDLE_OWNER: u16 = 0xFFFE;
+pub const HANDLE_OWNER: u64 = 0xFFFE;
 
 /// Where a `shared` value's table is.
 enum Held {
@@ -45,18 +47,63 @@ enum Held {
     Taken,
 }
 
+/// What the runtime keeps of a `shared` value.
+struct Slot {
+    held: Mutex<Held>,
+    /// How many handles there are to it.
+    handles: AtomicU64,
+}
+
+type Slots = HashMap<u64, Arc<Slot>, BuildHasherDefault<AddressHasher>>;
+
 /// Each `shared` value's table, by its block's address.
-static TABLES: LazyLock<Mutex<HashMap<u64, Arc<Mutex<Held>>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static TABLES: LazyLock<Mutex<Slots>> = LazyLock::new(|| Mutex::new(Slots::default()));
+
+/// How many `shared` values have gone, so what a thread remembers can't outlive one: its address can
+/// come back as another's.
+static GONE: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// The tables this thread has asked for, so each lock doesn't wait on every other thread's to find
+    /// its table, as of how many values had gone.
+    static KNOWN: RefCell<(u64, Slots)> = RefCell::new((0, Slots::default()));
+}
 
 /// Whether any `shared` value has been made, so programs with none never look.
 static ANY: AtomicBool = AtomicBool::new(false);
 
-fn tables<T>(use_them: impl FnOnce(&mut HashMap<u64, Arc<Mutex<Held>>>) -> T) -> T {
+fn tables<T>(use_them: impl FnOnce(&mut Slots) -> T) -> T {
     use_them(&mut TABLES.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
-fn table_of(cell: u64) -> Option<Arc<Mutex<Held>>> {
-    tables(|tables| tables.get(&cell).cloned())
+/// Uses what's kept of the `shared` value at this address, if it is one.
+fn with_slot<T>(cell: u64, use_it: impl FnOnce(&Slot) -> T) -> Option<T> {
+    KNOWN.with_borrow_mut(|(gone, known)| {
+        let now = GONE.load(Ordering::Acquire);
+        if *gone != now {
+            known.clear();
+            *gone = now;
+        }
+        if let Some(slot) = known.get(&cell) {
+            return Some(use_it(slot));
+        }
+        let slot = tables(|tables| tables.get(&cell).cloned())?;
+        let used = use_it(&slot);
+        known.insert(cell, slot);
+        Some(used)
+    })
+}
+
+/// One more handle to a `shared` value.
+pub(super) fn count_handle(cell: u64) {
+    with_slot(cell, |slot| slot.handles.fetch_add(1, Ordering::Relaxed));
+}
+
+/// One handle fewer to a `shared` value: the last takes what it held with it.
+pub(super) fn release_handle(state: &mut State, cell: u64) {
+    if with_slot(cell, |slot| slot.handles.fetch_sub(1, Ordering::AcqRel)) == Some(1) {
+        free_table(state, cell);
+    }
 }
 
 /// Whether this address is a `shared` value's own block.
@@ -115,7 +162,7 @@ fn copy_of(
     left: &mut Vec<u64>,
 ) -> Result<u64, Diagnostic> {
     if is_handle(address) {
-        super::threads::count_handle(address);
+        count_handle(address);
         return Ok(address);
     }
     if let Some(copy) = copies.get(&address).copied() {
@@ -175,14 +222,14 @@ pub extern "C" fn shared_new(cell: i64) -> i64 {
                 }
             }
         }
-        mark_owner(&mut block, u64::from(HANDLE_OWNER) << OWNER_SHIFT);
+        mark_owner(&mut block, HANDLE_OWNER << OWNER_SHIFT);
         if let Some(word) = block.first_mut() {
             *word = 0;
         }
         state.heap.blocks.insert(block);
         let table = state.heap.leave_table();
-        tables(|tables| tables.insert(address, Arc::new(Mutex::new(Held::Free(table)))));
-        super::threads::held_by_handles(address, count, HANDLE_OWNER);
+        let slot = Slot { held: Mutex::new(Held::Free(table)), handles: AtomicU64::new(count) };
+        tables(|tables| tables.insert(address, Arc::new(slot)));
         // The counts it held of what it was given go, with their copies in the table.
         for old in held.into_iter().filter(|old| *old != 0) {
             super::heap::release(state, old);
@@ -196,26 +243,30 @@ pub extern "C" fn shared_new(cell: i64) -> i64 {
 pub extern "C" fn shared_enter(cell: i64, write: i64) -> i64 {
     attempt(|state: &mut State| {
         let address = u64::try_from(cell).unwrap_or(0);
-        let slot = table_of(address).ok_or_else(|| lost(address))?;
-        let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
-        if write != 0 {
-            let table = match std::mem::replace(&mut *held, Held::Taken) {
-                Held::Free(table) => table,
-                Held::Read(table) => Arc::try_unwrap(table).map_err(|_| still_read())?,
-                Held::Taken => return Err(still_read()),
-            };
-            state.heap.enter_table(table, GUARDED_OWNER << OWNER_SHIFT);
-        } else {
-            let reading = match std::mem::replace(&mut *held, Held::Taken) {
-                Held::Free(table) => Arc::new(table),
-                Held::Read(table) => table,
-                Held::Taken => return Err(still_read()),
-            };
-            state.heap.reading.push(Arc::clone(&reading));
-            *held = Held::Read(reading);
-        }
+        with_slot(address, |slot| enter(state, slot, write != 0)).ok_or_else(|| lost(address))??;
         Ok(state.heap.owner_number())
     })
+}
+
+fn enter(state: &mut State, slot: &Slot, write: bool) -> Result<(), Diagnostic> {
+    let mut held = slot.held.lock().unwrap_or_else(PoisonError::into_inner);
+    if write {
+        let table = match std::mem::replace(&mut *held, Held::Taken) {
+            Held::Free(table) => table,
+            Held::Read(table) => Arc::try_unwrap(table).map_err(|_| still_read())?,
+            Held::Taken => return Err(still_read()),
+        };
+        state.heap.enter_table(table, GUARDED_OWNER << OWNER_SHIFT);
+    } else {
+        let reading = match std::mem::replace(&mut *held, Held::Taken) {
+            Held::Free(table) => Arc::new(table),
+            Held::Read(table) => table,
+            Held::Taken => return Err(still_read()),
+        };
+        state.heap.reading.push(Arc::clone(&reading));
+        *held = Held::Read(reading);
+    }
+    Ok(())
 }
 
 /// What's wrong when a lock's word lets in more than it should, which would be a bug in native code.
@@ -229,9 +280,11 @@ pub extern "C" fn shared_leave(cell: i64, write: i64) -> i64 {
     attempt(|state: &mut State| {
         let address = u64::try_from(cell).unwrap_or(0);
         if write != 0 {
-            let slot = table_of(address).ok_or_else(|| lost(address))?;
             let table = state.heap.leave_table();
-            *slot.lock().unwrap_or_else(PoisonError::into_inner) = Held::Free(table);
+            let left = with_slot(address, |slot| {
+                *slot.held.lock().unwrap_or_else(PoisonError::into_inner) = Held::Free(table);
+            });
+            left.ok_or_else(|| lost(address))?;
         } else {
             state.heap.reading.pop();
         }
@@ -325,7 +378,8 @@ pub extern "C" fn shared_wait() {
 /// count of each handle inside it.
 pub(super) fn free_table(state: &mut State, cell: u64) {
     let Some(slot) = tables(|tables| tables.remove(&cell)) else { return };
-    let held = std::mem::replace(&mut *slot.lock().unwrap_or_else(PoisonError::into_inner), Held::Taken);
+    GONE.fetch_add(1, Ordering::Release);
+    let held = std::mem::replace(&mut *slot.held.lock().unwrap_or_else(PoisonError::into_inner), Held::Taken);
     let table = match held {
         Held::Free(table) => table,
         Held::Read(table) => Arc::try_unwrap(table).unwrap_or_default(),
@@ -342,7 +396,7 @@ pub(super) fn free_table(state: &mut State, cell: u64) {
         state.heap.recycle(block);
     }
     for handle in handles {
-        super::threads::release_handle(state, handle);
+        release_handle(state, handle);
     }
 }
 

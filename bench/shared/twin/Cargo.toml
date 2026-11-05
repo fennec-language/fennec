@@ -1,0 +1,34 @@
+# The twins of the kernels in `bench/shared`. Not part of the workspace: what Fennec is measured against,
+# with rayon as `bench/parallel`'s twins have it, and the standard library's locks.
+[package]
+name = "fennec-shared-twins"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "queue"
+path = "queue.rs"
+
+[[bin]]
+name = "queue_text"
+path = "queue_text.rs"
+
+[[bin]]
+name = "cache"
+path = "cache.rs"
+
+[dependencies]
+# The version that runs on rayon-core 1.13, the one Fennec's runtime uses.
+rayon = "=1.11.0"
+
+# As the suite's Rust twins are built, overflow checks on, with nothing left to unwind.
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "fat"
+panic = "abort"
+overflow-checks = true
+debug-assertions = false

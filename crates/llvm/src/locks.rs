@@ -314,14 +314,16 @@ impl Emit<'_, '_, '_> {
 
     /// One block's copy from the runtime, unless there's nothing there.
     fn cross_block(&mut self, block: &str, way: &str) -> String {
-        self.declare(&format!("declare ptr @fennec_shared_{way}(ptr) nounwind"));
+        let levels = if way == "out" { ", i64 1" } else { "" };
+        let shape = if way == "out" { "ptr, i64" } else { "ptr" };
+        self.declare(&format!("declare ptr @fennec_shared_{way}({shape}) nounwind"));
         let place = self.temp_slot("null");
         let (none, some, done) = (self.temp(), self.label("cross_block"), self.label("crossed_block"));
         self.line(&format!("{none} = icmp eq ptr {block}, null"));
         self.line(&format!("br i1 {none}, label %{done}, label %{some}"));
         self.start_block(&some);
         let copy = self.temp();
-        self.line(&format!("{copy} = call ptr @fennec_shared_{way}(ptr {block})"));
+        self.line(&format!("{copy} = call ptr @fennec_shared_{way}(ptr {block}{levels})"));
         self.leave_if_failed();
         self.line(&format!("store ptr {copy}, ptr {place}"));
         self.line(&format!("br label %{done}"));

@@ -1,0 +1,22 @@
+# The same queue holding strings long enough to have blocks: each goes in and out across the lock's
+# edge, so this is the copies at the edge.
+shared Queue:
+    items = list[str]()
+
+    def push(mut self, item: str):
+        self.items.append(item)
+
+    def pop(mut self) -> str:
+        if self.items.len() == 0:
+            return ""
+        self.items.pop()
+
+def work(queue: Queue, n: int) -> int:
+    queue.push(f"a piece of work with a long enough name, number {n}")
+    queue.pop().len() % 2
+
+def main(stdout: Stdout):
+    queue = Queue()
+    ops = [n for n in range(300000)]
+    total = sum(work(queue, n) for n in parallel(ops))
+    stdout.print(total + 0 * queue.items.len())

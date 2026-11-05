@@ -305,9 +305,15 @@ impl Emit<'_, '_, '_> {
     /// Ends the program, saying what `main` failed with. What the IR ends this block with is
     /// never reached, so it goes in a block of its own.
     pub(crate) fn main_failed(&mut self, error: &Operand, span: Span) -> Result<(), String> {
+        self.failed_with("`main` failed: ", error, span)
+    }
+
+    /// Ends the program or a server's task, saying `start` and what it failed with. What the IR ends
+    /// this block with is never reached, so it goes in a block of its own.
+    pub(crate) fn failed_with(&mut self, start: &str, error: &Operand, span: Span) -> Result<(), String> {
         let (value, kind) = self.operand(error)?;
         let shown = self.shown_text(&value, &kind)?;
-        let start = self.literal("`main` failed: ");
+        let start = self.literal(start);
         let text = self.joined(&start, &shown, true);
         self.stop_with(&text, span);
         let after = self.label("stopped");

@@ -17,6 +17,7 @@
 //! fennec-bench llvm-suite [--fennec PATH] [--runs N] [--kernels DIR] [--json PATH]
 //! fennec-bench parallel [--fennec PATH] [--runs N] [--dir DIR] [--markdown PATH]
 //! fennec-bench realworld [--fennec PATH] [--runs N] [--dir DIR] [--markdown PATH]
+//! fennec-bench server [--fennec PATH] [--runs N] [--dir DIR] [--markdown PATH]
 //! ```
 //!
 //! `budgets` measures something else: see the `budgets` module. `llvm-suite` compares what
@@ -35,6 +36,7 @@ mod other_twins;
 mod parallel;
 mod realworld;
 mod report;
+mod server;
 mod startup;
 mod targets;
 
@@ -134,6 +136,7 @@ fn main() -> ExitCode {
     let section: Option<(&str, Section)> = match args.first().map(String::as_str) {
         Some("parallel") => Some(("bench/parallel", parallel::run)),
         Some("realworld") => Some(("bench/realworld", realworld::run)),
+        Some("server") => Some(("bench/server", server::run)),
         _ => None,
     };
     if let Some((dir, section)) = section {

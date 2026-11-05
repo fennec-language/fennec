@@ -260,11 +260,19 @@ impl Lowering<'_> {
         let passes_up = returns != Type::Unit;
         let dest = passes_up.then(|| task.temporary(returns.clone()));
         task.emit(InstKind::Call { dest, function: inner, args }, span);
-        if let Some(result) = dest {
-            let args = vec![Operand::Local(result), Operand::Str("this connection's task failed".to_owned())];
-            let stop =
-                InstKind::Builtin { dest: None, name: "result.expect".to_owned(), args, changes: false };
-            task.emit(stop, span);
+        if let (Some(result), Type::Result(_, error)) = (dest, &returns) {
+            // A failure passed up ends only this task, saying what it was.
+            let (failed, cause) = (task.temporary(Type::Bool), task.temporary((**error).clone()));
+            task.emit(InstKind::IsErr { dest: failed, value: Operand::Local(result) }, span);
+            let (stops, goes_on) = (task.new_block(), task.new_block());
+            task.finish(crate::Terminator::Branch { cond: Operand::Local(failed), then: stops, otherwise: goes_on });
+            task.current = stops;
+            task.emit(InstKind::GetErr { dest: cause, value: Operand::Local(result) }, span);
+            let args = vec![Operand::Local(cause)];
+            task.emit(InstKind::Builtin { dest: None, name: "task.failed".to_owned(), args, changes: false }, span);
+            let message = "this connection's task failed".to_owned();
+            task.finish(crate::Terminator::Stop { message, span });
+            task.current = goes_on;
         }
         task.end_function(span)?;
         self.lifted.extend(task.finished(captures.len() + 1, Vec::new()));

@@ -136,6 +136,17 @@ fn emit_with(
     if !refused.is_empty() {
         return Err(refused.join("\n"));
     }
+    for own in &program.own_texts {
+        let (id, boxed) = match Kind::of(&layouts, &own.ty)? {
+            Kind::Struct(id) | Kind::Enum(id) => (id, false),
+            Kind::Boxed(id) => (id, true),
+            other => return Err(format!("`{}` writes its own text, as a {other:?}", own.ty)),
+        };
+        let name = layouts.get(id).ok_or("no such layout")?.name.clone();
+        let symbol = format!("l_{}", fennec_blake3::hash(name.as_bytes()).to_hex());
+        shared.literals.insert(symbol.clone(), name);
+        shared.own_texts.push((symbol, own.function.clone(), boxed));
+    }
     Ok((units, shared, layouts))
 }
 
@@ -432,10 +443,12 @@ impl<'p> Module<'_, 'p> {
             alone_slots: HashSet::new(),
             alone_fields: Vec::new(),
             taken_items: HashMap::new(),
+            place_homes: HashMap::new(),
             at: (usize::MAX, usize::MAX),
             inside_items: Vec::new(),
             inside_slots: HashMap::new(),
             pair_slots: HashMap::new(),
+            walks: HashMap::new(),
         };
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
@@ -498,6 +511,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Items taken out of a list to change: the list's local and field path, and the step to
     /// the item.
     pub(crate) taken_items: HashMap<usize, (LocalId, Vec<String>, String)>,
+    /// Where a place taken out for a call goes back to: the address, what's held there, and how
+    /// it's marked for LLVM.
+    pub(crate) place_homes: HashMap<usize, (String, Kind, &'static str)>,
     /// The instruction being written: its block, and its place in it.
     at: (usize, usize),
     /// Items of lists, by field path and index, known to be inside their lists here.
@@ -506,6 +522,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) inside_slots: HashMap<FieldPath, String>,
     /// Where each pair from an `enumerate` never made points in its list, kept for its parts.
     pub(crate) pair_slots: HashMap<usize, String>,
+    /// Where each map's walk has got to, and where the slot a walk is on and its generation are.
+    pub(crate) walks: HashMap<usize, (String, String)>,
 }
 
 pub(crate) fn float_text(value: f64) -> String {
@@ -659,6 +677,7 @@ impl Emit<'_, '_, '_> {
                 .count();
             if self.is_mut_param(local)
                 && matches!(kinds.get(at), Some(Kind::Boxed(_)))
+                && !kinds.get(at).is_some_and(|kind| self.is_cell(kind))
                 && !self.known.is_shared(local)
                 && !self.known.written(local)
                 && changes > 1
@@ -716,6 +735,7 @@ impl Emit<'_, '_, '_> {
             for (index, inst) in block.insts.iter().enumerate() {
                 self.at = (at, index);
                 self.forget_entries(&inst.kind);
+                self.take_waiting_places(&inst.kind, inst.span)?;
                 if let InstKind::Call { function: callee, args, .. } = &inst.kind {
                     for (param, path) in whole.needs.get(callee.as_str()).map_or(&[][..], Vec::as_slice) {
                         if let Some(Operand::Local(given)) = args.get(param.0) {
@@ -1608,6 +1628,12 @@ impl Emit<'_, '_, '_> {
             // A test's `Stdout` is a fake that keeps what's printed, which the runtime holds.
             "Stdout.print" if !self.module.shared.traced => self.print(args.get(1..).unwrap_or_default()),
             "list.len" => {
+                if let Some(Operand::Local(local)) = first
+                    && let Some(map) = self.known.map_walks.get(&local.0).copied()
+                {
+                    let live = self.walked_live(map)?;
+                    return self.assign(dest.ok_or("no result")?, &live);
+                }
                 // An `enumerate` never made is as long as its list.
                 let counted = match first {
                     Some(Operand::Local(local)) => {
@@ -1704,7 +1730,10 @@ impl Emit<'_, '_, '_> {
     /// `dest = value`: a block gets another owner, unless nothing else ever reads `value`.
     pub(crate) fn copy(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
         // The local is the list, so there's nothing to copy, or it's an `enumerate` never made.
-        if self.known.alias(dest).is_some() || self.known.enumerated.contains_key(&dest.0) {
+        if self.known.alias(dest).is_some()
+            || self.known.enumerated.contains_key(&dest.0)
+            || self.known.map_walks.contains_key(&dest.0)
+        {
             return Ok(());
         }
         if *value == Operand::None {
@@ -1802,6 +1831,9 @@ impl Emit<'_, '_, '_> {
 
     fn inst(&mut self, inst: &InstKind, span: Span, block: usize) -> Result<(), String> {
         self.trace_site(inst, span);
+        if let Some(done) = self.place_inst(inst, span) {
+            return done;
+        }
         match inst {
             // Used only as a key the runtime finds where it is.
             InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }
@@ -1864,6 +1896,11 @@ impl Emit<'_, '_, '_> {
             InstKind::GetField { dest, object, field } => self.get_field(*dest, object, field),
             InstKind::SetField { object, path, value } => self.set_field(*object, path, value),
             InstKind::MakeTuple { dest, items } => self.make(*dest, items),
+            InstKind::GetTupleItem { dest, value: Operand::Local(pair), at }
+                if self.known.walk_items.contains_key(&pair.0) =>
+            {
+                self.walked_part(*dest, *pair, *at)
+            }
             // A pair never made: its count is the index, and its item is the list's there.
             InstKind::GetTupleItem { dest, value: Operand::Local(pair), at }
                 if self.known.pairs.contains_key(&pair.0) =>
@@ -1901,6 +1938,15 @@ impl Emit<'_, '_, '_> {
             InstKind::SetSlot { generator, slot, value } => self.set_slot(generator, *slot, value),
             InstKind::Resume { dest, generator, known } => {
                 self.resume(*dest, generator, known.as_deref(), span)
+            }
+            InstKind::Lock { .. }
+            | InstKind::Unlock { .. }
+            | InstKind::LockAll { .. }
+            | InstKind::UnlockAll { .. }
+                if !self.module.threads =>
+            {
+                // With only one thread, nothing else could be holding a lock.
+                Ok(())
             }
             other => Err(format!("it uses `{other}`, which this backend doesn't take yet")),
         }
@@ -1964,7 +2010,7 @@ impl Emit<'_, '_, '_> {
         }
         // Nor does an `enumerate` never made, whose list its pairs read in its place.
         if let InstKind::Builtin { dest: Some(dest), .. } | InstKind::Copy { dest, .. } = inst
-            && self.known.enumerated.contains_key(&dest.0)
+            && (self.known.enumerated.contains_key(&dest.0) || self.known.map_walks.contains_key(&dest.0))
         {
             return;
         }
@@ -2169,6 +2215,24 @@ mod tests {
             .into_iter()
             .find(|unit| unit.function == function)
             .map_or_else(String::new, |unit| unit.text))
+    }
+
+    #[test]
+    fn arguments_and_the_clock_need_no_interpreter() -> Result<(), String> {
+        let source = "\
+from std.time import Clock, Duration
+
+def main(stdout: Stdout, args: Args, clock: Clock):
+    started = clock.now()
+    clock.sleep(Duration.millis(1))
+    stdout.print(args.len(), args.program, started.nanos)
+    for arg in args:
+        stdout.print(arg, args[0])
+";
+        let text = text_of(source, "main")?;
+        assert!(text.contains("@fennec_args_list("), "{text}");
+        assert!(!text.contains("fennec_capability_call"), "{text}");
+        Ok(())
     }
 
     #[test]

@@ -37,7 +37,7 @@ fn tag(words: &[u64; 3]) -> u8 {
 }
 
 /// The block a header points at, when it's in one.
-pub(super) fn block_of(words: &[u64; 3]) -> Option<u64> {
+pub(in crate::embed) fn block_of(words: &[u64; 3]) -> Option<u64> {
     let [first, ..] = *words;
     (tag(words) & INLINE == 0).then_some(first)
 }
@@ -283,6 +283,66 @@ mod tests {
         let again = super::of(super::block(long[0], long[1], long[2]));
         assert_eq!(again.words, long);
         heap::free(i64::try_from(long[0]).unwrap());
+        assert_eq!(live(), before);
+        finish();
+    }
+
+    /// Freeing a struct or an enum lets go of the strings in its headers by its plan, with an
+    /// inline one and a `None` holding nothing.
+    #[test]
+    fn freeing_a_block_lets_go_of_the_strings_in_its_headers() {
+        let text = Element::Text;
+        let shapes = vec![
+            Rc::new(Element::Struct {
+                name: Rc::from("Unit"),
+                fields: vec![
+                    (Rc::from("name"), text.clone()),
+                    (Rc::from("hp"), Element::Int),
+                    (Rc::from("pet"), Element::Maybe(Rc::new(text.clone()))),
+                ],
+            }),
+            Rc::new(Element::Enum {
+                name: Rc::from("Order"),
+                cases: vec![
+                    (Rc::from("Hold"), Vec::new()),
+                    (Rc::from("Say"), vec![(Rc::from("what"), text)]),
+                ],
+                words: 4,
+            }),
+            Rc::new(Element::Str),
+        ];
+        let tables = Tables { shapes, str_shape: 2, text_headers: true, ..Tables::default() };
+        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let before = live();
+        let long = "a name too long for any header";
+        let fill = |block: i64, words: &[u64]| {
+            with(|state| {
+                let fields = state.heap.block_mut(block.cast_unsigned())?.get_mut(heap::HEADER_WORDS..)?;
+                fields.get_mut(..words.len())?.copy_from_slice(words);
+                Some(())
+            })
+            .unwrap();
+        };
+        let (name, pet) = (header(long), header(long));
+        let unit = heap::alloc(0);
+        fill(unit, &[name[0], name[1], name[2], 7, pet[0], pet[1], pet[2]]);
+        assert_eq!(live(), before + 3);
+        heap::free(unit);
+        assert_eq!(live(), before);
+        let (short, none) = (header("ash"), [0_u64; 3]);
+        let unit = heap::alloc(0);
+        fill(unit, &[short[0], short[1], short[2], 7, none[0], none[1], none[2]]);
+        heap::free(unit);
+        assert_eq!(live(), before);
+        let what = header(long);
+        let order = heap::alloc(1);
+        fill(order, &[1, what[0], what[1], what[2]]);
+        assert_eq!(live(), before + 2);
+        heap::free(order);
+        assert_eq!(live(), before);
+        let order = heap::alloc(1);
+        fill(order, &[0, 0, 0, 0]);
+        heap::free(order);
         assert_eq!(live(), before);
         finish();
     }

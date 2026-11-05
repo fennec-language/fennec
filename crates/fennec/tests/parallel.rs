@@ -405,6 +405,9 @@ fn every_worker_sees_the_arguments_and_reads_the_one_standard_input() -> std::io
 /// A body on workers over text that isn't ASCII, in the ways a program reads text.
 const NON_ASCII: &str = include_str!("fixtures/workers/non_ascii.fen");
 
+/// A worker printing and making the text of values whose types write their own.
+const OWN_TEXT: &str = include_str!("fixtures/workers/own_text.fen");
+
 /// What a program printed, its lines sorted: bodies run and print in any order.
 fn sorted_lines(text: &[u8]) -> Vec<String> {
     let mut lines: Vec<String> = String::from_utf8_lossy(text).lines().map(str::to_owned).collect();
@@ -433,6 +436,24 @@ fn matches_the_interpreter_on_workers(dir: &Path, name: &str, source: &str) -> s
     Ok(())
 }
 
+/// A body changing, through places, its own copy of what the caller holds: each block on the way
+/// is the caller's until it's copied, from the root down, and the caller's stays as it was.
+const CHANGED_PLACES: &str = include_str!("fixtures/workers/places.fen");
+
+/// The same with built-ins and waiting to take a place out: a lent item and a lent grid's, changed
+/// through methods, `append` reading the root, `extend`, `pop`, `insert`, and given what came from them.
+const LENT_PLACES: &str = include_str!("fixtures/workers/places_lent.fen");
+
+/// Enums and structs in place holding lists, read by workers from what the caller holds, which
+/// retains those lists through the checks for who owns them: a tree holding itself through a list
+/// with a long string inside, a copy of its list appended to, a struct in a list holding a tree,
+/// and a struct's list changed by a `for mut` body.
+const THROUGH_LISTS: &str = include_str!("fixtures/workers/through_lists.fen");
+
+/// A map walked with no list made: captured by a body, where every thread reads the caller's, and
+/// changed and walked by a `for mut` body, which has a copy of its own.
+const WALKS: &str = include_str!("fixtures/workers/walks.fen");
+
 #[test]
 fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
@@ -440,7 +461,17 @@ fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::
     }
     let dir = std::env::temp_dir().join(format!("fennec-parallel-stress-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
-    for (name, source) in [("non_ascii", NON_ASCII), ("lent", LENT_BLOCKS), ("prints", PRINTS)] {
+    let programs = [
+        ("non_ascii", NON_ASCII),
+        ("lent", LENT_BLOCKS),
+        ("prints", PRINTS),
+        ("own_text", OWN_TEXT),
+        ("places", CHANGED_PLACES),
+        ("places_lent", LENT_PLACES),
+        ("through_lists", THROUGH_LISTS),
+        ("walks", WALKS),
+    ];
+    for (name, source) in programs {
         matches_the_interpreter_on_workers(&dir, name, source)?;
     }
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");

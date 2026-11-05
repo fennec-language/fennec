@@ -24,15 +24,18 @@ fn text_of(state: &State, address: i64, at: Span) -> Result<String, Diagnostic> 
 }
 
 /// `json.dumps(value)`, of a temporary: its text, as a string block owned once.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn dumps(value: i64, start: i64, end: i64) -> i64 {
     dumps_as("json.dumps", value, start, end)
 }
 
 /// `toml.dumps(value)`, as [`dumps`] writes JSON.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn toml_dumps(value: i64, start: i64, end: i64) -> i64 {
     dumps_as("toml.dumps", value, start, end)
 }
 
+#[cfg(not(feature = "lean"))]
 fn dumps_as(name: &'static str, value: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let at = span(start, end);
@@ -47,15 +50,18 @@ fn dumps_as(name: &'static str, value: i64, start: i64, end: i64) -> i64 {
 /// `json.loads[T](text)`, with `T` written out as in the program in the string block `ty`, or
 /// `json.loads(text)` when `ty` is 0: a temporary holding the result, `Ok` with what was read
 /// or `Err` with a `ParseError`.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn loads(text: i64, ty: i64, start: i64, end: i64) -> i64 {
     loads_as("json.loads", text, ty, start, end)
 }
 
 /// `toml.loads[T](text)`, as [`loads`] reads JSON.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn toml_loads(text: i64, ty: i64, start: i64, end: i64) -> i64 {
     loads_as("toml.loads", text, ty, start, end)
 }
 
+#[cfg(not(feature = "lean"))]
 fn loads_as(name: &'static str, text: i64, ty: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let at = span(start, end);
@@ -71,6 +77,7 @@ fn loads_as(name: &'static str, text: i64, ty: i64, start: i64, end: i64) -> i64
 }
 
 /// The type written out in a string block.
+#[cfg(not(feature = "lean"))]
 pub(super) fn type_written(state: &State, ty: i64, at: Span) -> Result<fennec_syntax::TypeExpr, Diagnostic> {
     type_named(&text_of(state, ty, at)?, at)
 }

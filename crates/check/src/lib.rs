@@ -250,6 +250,9 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
             if let Some(function) = checked.std_names.get(&span) {
                 expr.kind = fennec_syntax::ExprKind::Name(function.clone());
             }
+            if checked.failing_steps.contains(&span) {
+                fennec_syntax::visit::none_on_failure(expr);
+            }
             if checked.optional_steps.contains(&span)
                 && let fennec_syntax::ExprKind::Attr { optional, .. } = &mut expr.kind
             {
@@ -307,6 +310,8 @@ pub struct Checked {
     /// The fields and method calls on a value that might be missing, in a chain an `else`
     /// ends, which are written in as optional.
     optional_steps: BTreeSet<(u32, u32)>,
+    /// Those read from something that can fail, which is written in as `value else None`.
+    failing_steps: BTreeSet<(u32, u32)>,
     /// The `list[T]()`, `dict[K, V]()` and `set[T]()` calls, written in as `[]`, `{}` and `set()`.
     empty_collections: BTreeSet<(u32, u32)>,
 }

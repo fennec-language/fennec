@@ -155,15 +155,8 @@ impl Emit<'_, '_, '_> {
                 });
             }
             Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => {
-                self.declare("declare i64 @fennec_mark() nounwind");
-                self.declare("declare void @fennec_truncate(i64) nounwind");
-                self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
-                self.declare("declare void @fennec_print_value(i64) nounwind");
-                let (mark, handle) = (self.temp(), self.temp());
-                self.line(&format!("{mark} = call i64 @fennec_mark()"));
-                self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {value})"));
-                self.line(&format!("call void @fennec_print_value(i64 {handle})"));
-                self.line(&format!("call void @fennec_truncate(i64 {mark})"));
+                self.declare("declare void @fennec_print_block(ptr) nounwind");
+                self.line(&format!("call void @fennec_print_block(ptr {value})"));
             }
             // A plain struct or enum, in place: its text, as an f-string writes it.
             Kind::Struct(_) | Kind::Enum(_) => {
@@ -214,15 +207,9 @@ impl Emit<'_, '_, '_> {
                 let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
                 self.store_field(kind, value, &fields, "");
                 self.retain_inline(kind, &fields);
-                self.declare("declare i64 @fennec_mark() nounwind");
-                self.declare("declare void @fennec_truncate(i64) nounwind");
-                self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
-                self.declare("declare ptr @fennec_value_text(i64) nounwind");
-                let (mark, handle, text) = (self.temp(), self.temp(), self.temp());
-                self.line(&format!("{mark} = call i64 @fennec_mark()"));
-                self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {block})"));
-                self.line(&format!("{text} = call ptr @fennec_value_text(i64 {handle})"));
-                self.line(&format!("call void @fennec_truncate(i64 {mark})"));
+                self.declare("declare ptr @fennec_block_text(ptr) nounwind");
+                let text = self.temp();
+                self.line(&format!("{text} = call ptr @fennec_block_text(ptr {block})"));
                 self.release(&block);
                 Ok(text)
             }
@@ -417,15 +404,9 @@ impl Emit<'_, '_, '_> {
     /// A new string with the text of a list, a dict or a block of a struct, which the runtime
     /// writes from an interpreter value.
     fn text_of_block(&mut self, value: &str) -> String {
-        self.declare("declare i64 @fennec_mark() nounwind");
-        self.declare("declare void @fennec_truncate(i64) nounwind");
-        self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
-        self.declare("declare ptr @fennec_value_text(i64) nounwind");
-        let (mark, handle, text) = (self.temp(), self.temp(), self.temp());
-        self.line(&format!("{mark} = call i64 @fennec_mark()"));
-        self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {value})"));
-        self.line(&format!("{text} = call ptr @fennec_value_text(i64 {handle})"));
-        self.line(&format!("call void @fennec_truncate(i64 {mark})"));
+        self.declare("declare ptr @fennec_block_text(ptr) nounwind");
+        let text = self.temp();
+        self.line(&format!("{text} = call ptr @fennec_block_text(ptr {value})"));
         text
     }
 

@@ -81,13 +81,18 @@ impl Interp<'_> {
         if method != "lines" || !args.is_empty() {
             return Err(no_method(&Value::Capability(Capability::Stdin), method, span));
         }
-        let mut lines = Vec::new();
         // A prompt shows before the program waits for an answer.
         self.flush()?;
-        for line in (&mut self.given.stdin).lines() {
-            let line = line.map_err(|err| Diagnostic::new(format!("couldn't read input: {err}"), span))?;
-            lines.push(Value::str(line.strip_suffix('\r').unwrap_or(&line)));
-        }
-        Ok(Value::list(lines))
+        lines_of(&mut self.given.stdin, span)
     }
+}
+
+/// Every line of input, without its line ending.
+pub(crate) fn lines_of(input: &mut dyn BufRead, span: Span) -> Result<Value, Diagnostic> {
+    let mut lines = Vec::new();
+    for line in input.lines() {
+        let line = line.map_err(|err| Diagnostic::new(format!("couldn't read input: {err}"), span))?;
+        lines.push(Value::str(line.strip_suffix('\r').unwrap_or(&line)));
+    }
+    Ok(Value::list(lines))
 }

@@ -238,7 +238,7 @@ extend Parser:
     def call_args(mut self) -> list[Arg]:
         mut args = []
         while not self.at_punct(")"):
-            is_mut = self.eat_keyword("mut")
+            is_mut = self.eat_ref()
             mut name = None
             if not is_mut and self.peek_at(1) == .Punct("=") and (is_name(self.peek()) or is_field_word(self.peek())):
                 name = self.field_name("an argument name")?

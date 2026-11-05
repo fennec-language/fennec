@@ -1,6 +1,7 @@
-# How many places each benchmark kernel isn't native, by `fennec dev fallbacks`. A test keeps
-# this exact, so a count can only go down: a change that adds a fallback must be undone, and
-# one that removes some lowers its count here. The goal is zero everywhere.
+# How many functions in each benchmark kernel LLVM doesn't take yet, by `fennec dev fallbacks
+# --llvm`. A test keeps this exact, so a count can only go down: a change that adds one must be
+# undone, and one that removes some lowers its count here. The goal is zero everywhere, and every
+# kernel is there.
 binary_trees 0
 closures 0
 comp_helpers 0
@@ -8,20 +9,20 @@ comprehensions 0
 deltablue 0
 dict_field 0
 dicts 0
-fannkuch 1
+fannkuch 0
 fib 0
 generators 0
 generics 0
-id_maps 12
+id_maps 0
 json 0
 json_unicode 0
-k_nucleotide 3
+k_nucleotide 0
 mandelbrot 0
 method_chain 0
 nbody 0
 particles 0
-regex 14
-richards 1
+regex 0
+richards 0
 sieve 0
 sort 0
 spectral_norm 0

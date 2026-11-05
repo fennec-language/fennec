@@ -51,6 +51,10 @@ impl Hasher for AddressHasher {
     fn write_usize(&mut self, n: usize) {
         self.0 = u64::try_from(n).unwrap_or(0).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(29);
     }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(29);
+    }
 }
 
 /// A place in a string's text: its `chars`th character starts `bytes` bytes in. Reading a
@@ -103,7 +107,7 @@ pub(crate) struct Heap {
     made: Vec<u64>,
     /// The tables behind the current one while this thread holds write locks, each with the owner
     /// number it makes blocks with: its own first (see `guarded`).
-    behind: Vec<(super::table::Table, u64)>,
+    behind: Vec<(Box<super::table::Table>, u64)>,
     /// The tables this thread holds read locks on.
     pub(super) reading: Vec<std::sync::Arc<super::table::Table>>,
     /// How many words each shape's blocks take, by the shape's number.
@@ -424,20 +428,31 @@ impl Heap {
     }
 
     /// Makes a `shared` value's table the current one, with what's made in it owned as `owner_bits`
-    /// say.
-    pub(super) fn enter_table(&mut self, table: super::table::Table, owner_bits: u64) {
-        self.set_cursor(Cursor::default());
-        let own = std::mem::replace(&mut self.blocks, table);
-        self.behind.push((own, self.owner_bits));
+    /// say. Its box goes on holding the table that was current.
+    pub(super) fn enter_table(&mut self, mut table: Box<super::table::Table>, owner_bits: u64) {
+        self.forget_cursor();
+        std::mem::swap(&mut self.blocks, &mut table);
+        self.behind.push((table, self.owner_bits));
         self.owner_bits = owner_bits;
     }
 
     /// Takes the current table back out, leaving the one behind it current.
-    pub(super) fn leave_table(&mut self) -> super::table::Table {
-        self.set_cursor(Cursor::default());
-        let Some((own, owner_bits)) = self.behind.pop() else { return super::table::Table::default() };
+    #[expect(
+        clippy::unnecessary_box_returns,
+        reason = "the box goes back to be reused, so a lock doesn't move a table"
+    )]
+    pub(super) fn leave_table(&mut self) -> Box<super::table::Table> {
+        self.forget_cursor();
+        let Some((mut table, owner_bits)) = self.behind.pop() else { return Box::default() };
         self.owner_bits = owner_bits;
-        std::mem::replace(&mut self.blocks, own)
+        std::mem::swap(&mut self.blocks, &mut table);
+        table
+    }
+
+    fn forget_cursor(&mut self) {
+        if self.cursor.address != 0 {
+            self.set_cursor(Cursor::default());
+        }
     }
 
     /// Swaps the current table with the one behind the top `held`, for a copy to go there, and back
@@ -445,7 +460,7 @@ impl Heap {
     pub(super) fn swap_behind(&mut self, held: usize) {
         let Heap { blocks, owner_bits, behind, .. } = self;
         if let Some((table, bits)) = behind.len().checked_sub(held).and_then(|at| behind.get_mut(at)) {
-            std::mem::swap(blocks, table);
+            std::mem::swap(blocks, &mut **table);
             std::mem::swap(owner_bits, bits);
         }
     }
@@ -460,7 +475,7 @@ impl Heap {
     pub(super) fn swap_table(&mut self, number: usize) {
         let Heap { blocks, behind, .. } = self;
         if let Some((table, _)) = behind.get_mut(number) {
-            std::mem::swap(blocks, table);
+            std::mem::swap(blocks, &mut **table);
         }
     }
 

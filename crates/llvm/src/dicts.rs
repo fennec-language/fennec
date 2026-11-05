@@ -830,6 +830,52 @@ impl Emit<'_, '_, '_> {
 
     /// `dict.pop(key)`: the runtime takes the key out, failing as the interpreter does if it
     /// isn't there, and hands back its value with its owner.
+    /// `dict.clear()` or `set.clear()`: the runtime takes over the owner and gives back an empty
+    /// one's.
+    pub(crate) fn dict_clear(&mut self, dict: LocalId) {
+        self.declare("declare ptr @fennec_set_clear(ptr) nounwind");
+        let place = self.slot(dict);
+        let (held, empty) = (self.temp(), self.temp());
+        self.line(&format!("{held} = load ptr, ptr {place}"));
+        self.line(&format!("{empty} = call ptr @fennec_set_clear(ptr {held})"));
+        self.line(&format!("store ptr {empty}, ptr {place}"));
+    }
+
+    /// `set.discard(key)`, or `set.remove(key)` when `must`, which fails on a key that isn't there.
+    pub(crate) fn set_remove(
+        &mut self,
+        set: LocalId,
+        key: &Operand,
+        must: bool,
+        span: Span,
+    ) -> Result<(), String> {
+        let Kind::Dict(key_word, _) = self.kind_of(set)?.clone() else {
+            return Err("a set's method on something else".to_owned());
+        };
+        let key = self.key_value(key, key_word)?;
+        let place = self.slot(set);
+        let (held, changed) = (self.temp(), self.temp());
+        let (from, to, must) = (i64::from(span.start), i64::from(span.end), i8::from(must));
+        self.line(&format!("{held} = load ptr, ptr {place}"));
+        if key_word == Word::Text {
+            // The key's owner stays here.
+            self.declare("declare ptr @fennec_set_remove_header(ptr, i64, i64, i64, i8, i64, i64) nounwind");
+            let [a, b, c] = [0, 1, 2].map(|at| self.header_word(&key, at));
+            self.line(&format!(
+                "{changed} = call ptr @fennec_set_remove_header(ptr {held}, i64 {a}, i64 {b}, i64 {c}, i8 {must}, i64 {from}, i64 {to})"
+            ));
+        } else {
+            let key_held = self.key_word(key_word, &key)?;
+            self.declare("declare ptr @fennec_set_remove(ptr, i64, i8, i64, i64) nounwind");
+            self.line(&format!(
+                "{changed} = call ptr @fennec_set_remove(ptr {held}, i64 {key_held}, i8 {must}, i64 {from}, i64 {to})"
+            ));
+        }
+        self.leave_if_failed();
+        self.line(&format!("store ptr {changed}, ptr {place}"));
+        Ok(())
+    }
+
     pub(crate) fn dict_pop(
         &mut self,
         dest: Option<LocalId>,

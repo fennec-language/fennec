@@ -48,8 +48,11 @@ impl Interp<'_> {
                 };
                 let function = self.type_info(&type_name).and_then(|info| info.methods.get(method).cloned());
                 let function = function.ok_or_else(|| no_method(&receiver, method, span))?;
-                drop(receiver);
-                return self.call_method(object, &function, args, span);
+                self.check_lock(cell, span)?;
+                self.locks.push((std::rc::Rc::clone(cell), self.depth + 1));
+                let called = self.call_method(object, &function, args, span);
+                self.locks.pop();
+                return called;
             }
             Value::Instance(instance) => {
                 let function =

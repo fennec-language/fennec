@@ -40,6 +40,7 @@
 
 mod costs;
 pub mod facts;
+mod guard;
 mod lower;
 mod print;
 mod validate;
@@ -48,6 +49,7 @@ use fennec_check::Type;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
 pub use costs::{Cost, Finding, Shared, costs};
+pub use guard::guard_shared;
 pub use lower::{Options, lower, lower_some, lower_with};
 pub use validate::validate;
 

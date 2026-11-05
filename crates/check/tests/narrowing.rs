@@ -549,16 +549,3 @@ fn an_else_chain_stops_at_a_failing_step_too() {
     let bracketed = kept("stdout.print((find(1).name else \"?\") + find(2).name)");
     assert_eq!(bracketed, ["this is the result of something that can fail @ find(2).name"]);
 }
-
-#[test]
-fn a_dict_written_where_a_dict_of_optionals_goes_is_one() {
-    let program = "
-        def f() -> int:
-            mut ages: dict[str, int?] = {'a': 1}
-            ages['a'] = None
-            ages['b'] = 2
-            ages['a'] + 1
-    ";
-    assert_eq!(problems(program).len(), 1, "{:?}", problems(program));
-    assert!(problems(program)[0].contains("ages[\"a\"]"), "{:?}", problems(program));
-}

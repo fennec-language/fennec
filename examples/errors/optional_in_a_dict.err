@@ -1,0 +1,7 @@
+error: a dict can't hold optional values
+ --> examples/errors/optional_in_a_dict.fen:2:11
+  |
+2 |     ages: dict[str, int?] = {"ash": 3}
+  |           ^^^^^^^^^^^^^^^
+  |
+  = help: leave the key out instead, since not being in the dict already means missing

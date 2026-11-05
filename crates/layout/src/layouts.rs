@@ -349,7 +349,8 @@ impl Layouts {
                     place(self, fields, 0).map(|(fields, size)| Layout {
                         name: name.clone(),
                         fields,
-                        size: size.max(WORD),
+                        // A cell's lock is one more word, after its fields.
+                        size: size.max(WORD) + if matches!(written, Written::Cell(_)) { WORD } else { 0 },
                         cases: None,
                         boxed: true,
                         cell: matches!(written, Written::Cell(_)),
@@ -666,6 +667,9 @@ fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type)
         Type::Float => Ty::Float,
         Type::Bool => Ty::Bool,
         Type::Str => Ty::Str,
+        Type::Named(name) if layouts.native_buffers && Cap::named(name).is_some() => {
+            Cap::named(name).map_or(Ty::Obj, Ty::Cap)
+        }
         Type::Bytes if layouts.native_buffers => Ty::Bytes,
         Type::Named(name) => match (reserved.get(name), layouts.id(name)) {
             (Some(id), _) => Ty::Boxed(*id),

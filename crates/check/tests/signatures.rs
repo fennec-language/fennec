@@ -344,14 +344,7 @@ fn a_clean_program_has_no_problems() {
 
 #[test]
 fn values_from_several_places_combine() {
-    let cases = [
-        ("def f(n: int):\n    [[n], [None]]\n", list(list(optional(Type::Int)))),
-        ("def f(n: int):\n    [{n}, {None}]\n", list(Type::Set(Box::new(optional(Type::Int))))),
-        (
-            "def f(n: int):\n    [{n: n}, {None: n}]\n",
-            list(Type::Dict(Box::new(optional(Type::Int)), Box::new(Type::Int))),
-        ),
-    ];
+    let cases = [("def f(n: int):\n    [[n], [None]]\n", list(list(optional(Type::Int))))];
     for (program, expected) in cases {
         assert_eq!(returns(program, "f"), Ok(expected), "{program}");
     }

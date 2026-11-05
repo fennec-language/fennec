@@ -62,6 +62,7 @@ pub enum Block {
     Boxed(u32),
     List(ListItem),
     Dict(Word, Word),
+    Cap(Cap),
     Bytes,
 }
 
@@ -74,6 +75,7 @@ impl Block {
             Ty::Boxed(id) => Block::Boxed(id),
             Ty::List(item) => Block::List(item),
             Ty::Dict(key, value) => Block::Dict(key, value),
+            Ty::Cap(cap) => Block::Cap(cap),
             Ty::Bytes => Block::Bytes,
             _ => return None,
         })
@@ -87,6 +89,7 @@ impl Block {
             Block::Boxed(id) => Ty::Boxed(id),
             Block::List(item) => Ty::List(item),
             Block::Dict(key, value) => Ty::Dict(key, value),
+            Block::Cap(cap) => Ty::Cap(cap),
             Block::Bytes => Ty::Bytes,
         }
     }
@@ -260,6 +263,8 @@ pub fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
         Ty::Float => Element::Float,
         Ty::Bool => Element::Bool,
         Ty::Boxed(id) => Element::Boxed(usize::try_from(id).ok()?),
+        // By its block's address, whose own shape says it's a capability.
+        Ty::Cap(_) => Element::Boxed(usize::try_from(fennec_interp::embed::heap::CAPABILITY_SHAPE).ok()?),
         Ty::Bytes => Element::Boxed(usize::try_from(fennec_interp::embed::heap::BYTES_SHAPE).ok()?),
         Ty::Str if layouts.text_headers() => Element::Text,
         Ty::Str => Element::Str,
@@ -282,16 +287,19 @@ pub fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
         Ty::Struct(id) => {
             let layout = layouts.get(id)?;
             let name = Rc::from(layout.name.as_str());
-            match &layout.cases {
-                Some(cases) => {
-                    let cases: Option<Vec<_>> = cases
-                        .iter()
-                        .map(|case| Some((Rc::from(case.name.as_str()), fields(&case.fields)?)))
-                        .collect();
-                    let words = usize::try_from(layout.size / WORD).ok()?;
-                    Element::Enum { name, cases: cases?, words }
+            if let Some(cases) = &layout.cases {
+                let cases: Option<Vec<_>> = cases
+                    .iter()
+                    .map(|case| Some((Rc::from(case.name.as_str()), fields(&case.fields)?)))
+                    .collect();
+                let words = usize::try_from(layout.size / WORD).ok()?;
+                Element::Enum { name, cases: cases?, words }
+            } else {
+                let mut held = fields(&layout.fields)?;
+                if layout.cell {
+                    held.push((Rc::from(fennec_interp::packed::LOCK), Element::Int));
                 }
-                None => Element::Struct { name, fields: fields(&layout.fields)? },
+                Element::Struct { name, fields: held }
             }
         }
         _ => return None,

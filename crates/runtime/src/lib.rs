@@ -191,6 +191,8 @@ export! {
     #[cfg(not(feature = "lean"))]
     fennec_bind() => eval::bind();
     fennec_no_match(a0: i64, a1: i64, a2: i64) => eval::no_match(a0, a1, a2);
+    fennec_lock_note(a0: u64) -> i64 => threads::lock_note(a0);
+    fennec_lock_forget(a0: u64) => threads::lock_forget(a0);
     fennec_print_int(a0: i64) => io::print_int(a0);
     fennec_print_float(a0: f64) => io::print_float(a0);
     fennec_print_bool(a0: i8) => io::print_bool(a0);

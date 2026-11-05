@@ -28,6 +28,7 @@ impl Interp<'_> {
             }),
             Value::Type(type_name) => self.type_attr(&type_name, name, span),
             Value::Shared(cell) => {
+                self.check_lock(&cell, span)?;
                 let inner = cell.borrow().clone();
                 self.attr(inner, name, optional, span)
             }

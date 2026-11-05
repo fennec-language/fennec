@@ -283,6 +283,13 @@ impl Emit<'_, '_, '_> {
             let at = self.offset(&base, offset);
             self.fill(&held, value, &at, access)?;
         }
+        if let (Some(block), true) = (&block, self.module.threads && self.is_cell(&kind)) {
+            // Before anything else holds it: what it was given goes in its table.
+            self.declare("declare ptr @fennec_shared_new(ptr) nounwind");
+            let made = self.temp();
+            self.line(&format!("{made} = call ptr @fennec_shared_new(ptr {block})"));
+            self.leave_if_failed();
+        }
         if let Some(block) = block {
             self.assign(dest, &block)?;
         }
@@ -434,7 +441,8 @@ impl Emit<'_, '_, '_> {
                 PlaceStep::Field(name) => {
                     let boxed = matches!(kind, Kind::Boxed(_));
                     let inside = if boxed {
-                        let block = if taking {
+                        // A `shared` value's block is the same one for every name.
+                        let block = if taking && !self.is_cell(&kind) {
                             self.alone_along((root, &along), &at, "fennec_unshare")
                         } else {
                             self.load_block(&at)
@@ -590,6 +598,18 @@ impl Emit<'_, '_, '_> {
 
     pub(crate) fn make_case(&mut self, dest: LocalId, case: &str, fields: &[Operand]) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();
+        // An optional string is a header, all zero for `None`.
+        if kind == Kind::MaybeText {
+            return match (case, fields) {
+                ("None", _) => self.assign(dest, "zeroinitializer"),
+                (_, [value]) => {
+                    let (value, _) = self.operand(value)?;
+                    self.retain_text(&value);
+                    self.assign(dest, &value)
+                }
+                _ => Err("an optional string with no string".to_owned()),
+            };
+        }
         let (number, written) = self.case_of(&kind, case)?;
         let block = if let Kind::Boxed(id) = kind { Some(self.new_block(id)?) } else { None };
         // Holding blocks, it's made beside what the local holds, which may be read for it.
@@ -782,6 +802,12 @@ impl Emit<'_, '_, '_> {
         case: &str,
         field: &str,
     ) -> Result<(), String> {
+        // What's in an optional string that isn't `None` is its header.
+        if matches!(value, Operand::Local(local) if *self.kind_of(*local)? == Kind::MaybeText) {
+            let (held, _) = self.operand(value)?;
+            self.retain_text(&held);
+            return self.assign(dest, &held);
+        }
         let (base, kind) = self.operand(value)?;
         let (_, written) = self.case_of(&kind, case)?;
         let (_, offset, held) =
@@ -1491,6 +1517,9 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let (object, kind) = self.operand(object)?;
+        if matches!(kind, Kind::Struct(_) | Kind::Boxed(_)) {
+            return self.tuple_slice(dest, (&object, &kind), start);
+        }
         let lowest = i64::MIN.to_string();
         let start =
             start.map(|start| self.operand(start)).transpose()?.map_or_else(|| lowest.clone(), |held| held.0);

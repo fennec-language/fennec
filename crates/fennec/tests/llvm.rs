@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 116;
+const BUILDING_EXAMPLES: usize = 120;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -1126,6 +1126,53 @@ fn changing_through_a_place_changes_only_the_place() -> std::io::Result<()> {
     same_as_the_jit("changed_places", CHANGED_PLACES)
 }
 
+/// A list in a `shared` value, changed in place under its lock: a queue would otherwise copy the whole
+/// list on every call that changes it, and take time in proportion to its length squared.
+#[test]
+fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let types = "struct Row:\n    tags: list[int]\n\nshared Queue:\n    items = list[int]()\n    \
+                 rows = [Row(tags=[1])]\n\n    def push(mut self, item: int):\n        self.items.append(item)\n\n    \
+                 def pop(mut self) -> int:\n        self.items.pop()\n\n    \
+                 def first(mut self, item: int):\n        self.items.insert(0, item)\n\n    \
+                 def more(mut self, others: list[int]):\n        self.items.extend(others)\n\n    \
+                 def nested(mut self, item: int):\n        self.rows[0].tags.append(item)\n        self.rows[0].tags.pop()\n\n    \
+                 def called(mut self, item: int):\n        grow(mut self.items, item)\n\n\
+                 def grow(mut numbers: list[int], item: int):\n    numbers.append(item)\n\n\
+                 def main(stdout: Stdout):\n    queue = Queue()\n    mut seen = 0\n";
+    for (name, body) in [
+        (
+            "push_pop",
+            "    for n in range(2000):\n        queue.push(n)\n    for n in range(2000):\n        seen += queue.pop()\n",
+        ),
+        ("insert", "    for n in range(500):\n        queue.first(n)\n"),
+        ("extend", "    for n in range(2000):\n        queue.more([n])\n"),
+        ("nested", "    for n in range(2000):\n        queue.nested(n)\n"),
+        ("called", "    for n in range(2000):\n        queue.called(n)\n"),
+        (
+            "with",
+            "    with queue as mut held:\n        for n in range(2000):\n            held.items.append(n)\n        for n in range(2000):\n            seen += held.items.pop()\n",
+        ),
+    ] {
+        let counts =
+            counts_of(&format!("shared_place_{name}"), &format!("{types}{body}    stdout.print(seen)\n"))?;
+        assert!(counts.starts_with("copies 0 "), "{name}: {counts}");
+    }
+    Ok(())
+}
+
+/// What's changed in place stays right when it's read while changing, and when something still holds
+/// the list as it was.
+#[test]
+fn a_list_changed_in_a_shared_value_is_what_the_interpreter_says() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("shared_places", include_str!("fixtures/shared_places.fen"))
+}
+
 #[test]
 fn changing_through_a_place_copies_nothing_when_nothing_else_holds_it() -> std::io::Result<()> {
     if !ready() {
@@ -2162,24 +2209,72 @@ def main(stdout: Stdout):
     stdout.print("before", one.total)
 "#;
 
-/// A comprehension replacing a list in a cell can't change the items where they are: a call in it
-/// can reach the cell another way, and reads the list as it was until the new one is stored.
-const CELL_LIST_REPLACED: &str = r"shared Box:
+/// A way a function can still reach a cell its caller holds the lock of, past what the checker sees:
+/// a closure capturing the handle, called out of a list. The checker refuses the rest.
+const TAKEN_AGAIN: [(&str, &str); 1] = [(
+    "closure_in_list",
+    "    def inner() -> int:\n        one.total\n    readers = [inner]\n    with one as mut x:\n        x.total = readers[0]()\n",
+)];
+
+const LOCK_HELD: &str = r#"shared Box:
+    total = 1
     items = [1, 2, 3]
+
+struct Holder:
+    box: Box
+
+def through_holder(holder: Holder) -> int:
+    holder.box.total
 
 def main(stdout: Stdout):
     one = Box()
-    with one as mut x:
-        x.items = [n + x.items[0] for n in x.items]
-    stdout.print(one.items)
-";
+    holder = Holder(box=one)
+    stdout.print("before", through_holder(holder))
+"#;
 
+/// A lock this thread holds, taken again, ends the program, as it would wait forever otherwise.
 #[test]
-fn a_comprehension_replacing_a_list_in_a_cell_keeps_it_whole_for_other_names() -> std::io::Result<()> {
+fn taking_a_lock_already_held_ends_the_program() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("cell_list_replaced", CELL_LIST_REPLACED)
+    let dir = folder("taken-again")?;
+    let path = |file: &Path| file.display().to_string();
+    for (name, shape) in TAKEN_AGAIN {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("{LOCK_HELD}{shape}    stdout.print(\"not here\")\n"))?;
+        let executable = dir.join(name);
+        let interpreted = outcome(&fennec(&["run", "--interp", &path(&program)], &dir)?);
+        assert_eq!((interpreted.0.as_str(), interpreted.2), ("before 1\n", Some(1)), "{name}");
+        assert!(interpreted.1.contains("that's already held"), "{name}: {}", interpreted.1);
+        // Native code doesn't take a nested function kept in a list yet. Once it does, it has to
+        // stop the same way.
+        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+        if !built.status.success() {
+            continue;
+        }
+        let ran = outcome(&Command::new(&executable).output()?);
+        assert_eq!((&ran.0, ran.2), (&interpreted.0, interpreted.2), "{name}");
+        assert_eq!(ran.1.lines().next(), interpreted.1.lines().next(), "{name}");
+        assert_eq!(ran.2, Some(1), "{name}");
+        assert_eq!(ran.0, "before 1\n", "{name}");
+        assert!(ran.1.contains("that's already held"), "{name}: {}", ran.1);
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A comprehension replacing a list in a cell changes it where it is, as nothing else can read
+/// the list while the lock's held.
+#[test]
+fn a_comprehension_replacing_a_list_in_a_cell_makes_no_second_list() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "cell_list_replaced",
+        "shared Box:\n    items = [1, 2, 3]\n\n    def doubled(mut self):\n        self.items = [n * 2 for n in self.items]\n\ndef main(stdout: Stdout):\n    one = Box()\n    one.doubled()\n    with one as mut x:\n        x.items = [n + 1 for n in x.items]\n    stdout.print(one.items)\n",
+    )
 }
 
 #[test]
@@ -2188,6 +2283,41 @@ fn two_cells_in_a_with_each_change_through_their_own_name() -> std::io::Result<(
         return Ok(());
     }
     same_as_the_interpreter_in_both_builds("two_cells", TWO_CELLS)
+}
+
+/// One cell taken twice ends the program, after what it printed, however it came about.
+#[test]
+fn a_with_taking_one_cell_twice_ends_the_program() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("taken-twice")?;
+    let path = |file: &Path| file.display().to_string();
+    for (name, shape) in TAKEN_TWICE {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("{TAKING}{shape}    stdout.print(\"not here\")\n"))?;
+        let executable = dir.join(name);
+        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = outcome(&Command::new(&executable).output()?);
+        assert_eq!(ran, outcome(&fennec(&["run", "--interp", &path(&program)], &dir)?), "{name}");
+        assert_eq!(ran.2, Some(1), "{name}");
+        assert_eq!(ran.0, "before 21\n", "{name}");
+        assert!(ran.1.contains("takes the same `shared` value twice"), "{name}: {}", ran.1);
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+#[test]
+fn walking_a_map_in_a_cell_while_another_name_changes_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "shared_map_walked",
+        include_str!("fixtures/shared_map_walked.fen"),
+    )
 }
 
 /// `==` on `shared` values, alone and inside other values: the same only if they're one value, as
@@ -2241,41 +2371,6 @@ def main(stdout: Stdout):
     stdout.print(a == a, a == c, c == a, c == c, a != c, c != a)
 ";
     same_as_the_interpreter_in_both_builds("shared_own_same", own)
-}
-
-/// One cell taken twice ends the program, after what it printed, however it came about.
-#[test]
-fn a_with_taking_one_cell_twice_ends_the_program() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let dir = folder("taken-twice")?;
-    let path = |file: &Path| file.display().to_string();
-    for (name, shape) in TAKEN_TWICE {
-        let program = dir.join(format!("{name}.fen"));
-        std::fs::write(&program, format!("{TAKING}{shape}    stdout.print(\"not here\")\n"))?;
-        let executable = dir.join(name);
-        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
-        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
-        let ran = outcome(&Command::new(&executable).output()?);
-        assert_eq!(ran, outcome(&fennec(&["run", "--interp", &path(&program)], &dir)?), "{name}");
-        assert_eq!(ran.2, Some(1), "{name}");
-        assert_eq!(ran.0, "before 21\n", "{name}");
-        assert!(ran.1.contains("takes the same `shared` value twice"), "{name}: {}", ran.1);
-    }
-    std::fs::remove_dir_all(&dir)?;
-    Ok(())
-}
-
-#[test]
-fn walking_a_map_in_a_cell_while_another_name_changes_it() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    same_as_the_interpreter_in_both_builds(
-        "shared_map_walked",
-        include_str!("fixtures/shared_map_walked.fen"),
-    )
 }
 
 #[test]
@@ -4363,6 +4458,27 @@ def main(stdout: Stdout):
     )
 }
 
+/// Slices of tuples, with what they hold kept by both, and `enumerate` of a string.
+#[test]
+fn tuple_slices_and_enumerated_text_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "tuple_slices",
+        r#"def main(stdout: Stdout):
+    numbers = (1, 2, 3)
+    stdout.print(numbers[1:], numbers[-2:-1], numbers[:2])
+    held = (1, "a string long enough to be held in a block", [1, 2], 2.5)
+    part = held[1:3]
+    stdout.print(part, held)
+    for at, letter in enumerate("héllo"):
+        stdout.print(at, letter)
+    stdout.print(enumerate("ab"))
+"#,
+    )
+}
+
 #[test]
 fn slices_as_dict_keys_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -5956,6 +6072,143 @@ def main(stdout: Stdout):
     stdout.print(found, found.len())
     for item in found:
         stdout.print(item else "missing")
+"#,
+    )
+}
+
+/// `?` in `main`, which then gives back a result: going on when it's `Ok`.
+#[test]
+fn a_main_giving_back_a_result_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "main_gives_back",
+        r#"def number(text: str) -> int:
+    int(text)?
+
+def main(stdout: Stdout):
+    stdout.print(number("12")?)
+    stdout.print("still here")
+"#,
+    )
+}
+
+/// A function that can fail in more than one way, however its error is then read.
+#[test]
+fn sets_of_errors_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "error_sets",
+        r#"error NotFound:
+    name: str
+
+error TooWeak:
+    level: int
+
+error Plain:
+    code: int
+
+def weak(level: int) -> int:
+    if level < 5: fail TooWeak(level)
+    level
+
+def named(name: str) -> str:
+    if name == "": fail NotFound(name)
+    name
+
+def challenge(name: str, level: int) -> str:
+    who = named(name)?
+    power = weak(level)?
+    f"{who} at {power}"
+
+def three(name: str, level: int, code: int) -> str:
+    if code > 0: fail Plain(code)
+    challenge(name, level)?
+
+def main(stdout: Stdout):
+    for name, level in [("ash", 7), ("kit", 1), ("", 9)]:
+        result = challenge(name, level)
+        stdout.print(result)
+        match result:
+            case Ok(text):
+                stdout.print(text)
+            case TooWeak(level):
+                stdout.print("weak", level)
+            case Err(error):
+                stdout.print("other", error, f"{error}")
+    for code in [0, 3]:
+        match three("", 1, code):
+            case Ok(text):
+                stdout.print(text)
+            case Plain(code):
+                stdout.print("plain", code)
+            case NotFound(name):
+                stdout.print("not found", name.len())
+            case Err(error):
+                stdout.print("other", error)
+    match three("kit", 1, 0):
+        case Err(error):
+            stdout.print(error)
+        case Ok(text):
+            stdout.print(text)
+    stdout.print(challenge("kit", 1) == Err(TooWeak(level=1)))
+    stdout.print(challenge("kit", 1) == Err(TooWeak(level=2)))
+    stdout.print(Err(TooWeak(level=1)) == challenge("kit", 1))
+    stdout.print(challenge("kit", 1) != Err(TooWeak(level=1)))
+    stdout.print(challenge("ash", 7) == Err(TooWeak(level=1)))
+    stdout.print(challenge("", 1) == Err(NotFound(name="")))
+    found = challenge("kit", 9) else "failed"
+    missing = challenge("", 9) else "failed"
+    stdout.print(found, missing)
+"#,
+    )
+}
+
+/// An error from a set that nothing handles ends the program as the JIT's does.
+#[test]
+fn an_unhandled_error_of_a_set_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "error_set_unhandled",
+        "error NotFound:
+    name: str
+
+error TooWeak:
+    level: int
+
+def pick(level: int) -> int:
+    if level < 0: fail NotFound(\"x\")
+    if level < 5: fail TooWeak(level)
+    level
+
+def main(stdout: Stdout) -> int:
+    stdout.print(pick(9)?)
+    stdout.print(pick(1)?)
+    0
+",
+    )
+}
+
+/// `?` in `main` on an error fails the program, saying so at `main`.
+#[test]
+fn a_main_giving_back_an_error_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "main_gives_back_an_error",
+        r#"def number(text: str) -> int:
+    int(text)?
+
+def main(stdout: Stdout):
+    stdout.print("first")
+    stdout.print(number("twelve")?)
+    stdout.print("never")
 "#,
     )
 }

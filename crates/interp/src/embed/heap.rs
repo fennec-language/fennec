@@ -1343,6 +1343,5 @@ pub(super) fn text_address(state: &mut State, text: &str) -> i64 {
     {
         return i64::try_from(*address).unwrap_or(0);
     }
-    let block = text_block(state.tables.str_shape, text, 1);
-    state.heap.insert(block)
+    text_from_bytes(state, text.as_bytes(), text.chars().count())
 }

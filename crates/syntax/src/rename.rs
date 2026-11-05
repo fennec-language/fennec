@@ -31,6 +31,18 @@ pub fn rename_types(module: &mut Module, names: &BTreeMap<String, String>) {
     crate::visit::exprs_mut(module, &mut |expr| renamer.in_expr(expr));
 }
 
+/// Gives each `_` a name of its own, since it throws away what it's given, whatever type that is.
+/// No one can write the name, so nothing can read it.
+pub fn discards_apart(module: &mut Module) {
+    let mut made = 0;
+    crate::visit::exprs_mut(module, &mut |expr| {
+        if matches!(&expr.kind, ExprKind::Name(name) if name == "_") {
+            expr.kind = ExprKind::Name(format!("_{}{made}", crate::visit::HIDDEN));
+            made += 1;
+        }
+    });
+}
+
 /// Writes `Self`, in a type's own methods, as that type. An interface's methods keep it, since it
 /// means each type that fits.
 pub fn self_as_its_type(module: &mut Module) {

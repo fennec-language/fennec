@@ -114,7 +114,7 @@ pub(crate) fn engine_signature(ty: &Type, name: &str) -> Option<Signature> {
     };
     let mut params = vec![param("self", ty, is_mut)];
     params.extend(others.iter().map(|other| param("other", other, false)));
-    Some(Signature { params, returns, can_fail: false, generator: false })
+    Some(Signature { params, returns, can_fail: false, generator: false, generics: Vec::new() })
 }
 
 pub(crate) fn method(ty: &Type, name: &str) -> Option<Method> {

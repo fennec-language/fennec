@@ -42,7 +42,10 @@ pub(crate) fn is_request(name: &str) -> bool {
 /// Whether a program makes HTTP requests.
 pub fn uses_tls(program: &Program) -> bool {
     program.functions.iter().chain(&program.constants).flat_map(|function| &function.blocks).any(|block| {
-        block.insts.iter().any(|inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if is_request(name)))
+        block
+            .insts
+            .iter()
+            .any(|inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if is_request(name)))
     })
 }
 

@@ -3610,6 +3610,77 @@ fn bytes_and_packets_cross_the_real_network_natively() -> std::io::Result<()> {
     same_as_the_interpreter_in_both_builds("network_bytes", NETWORK_BYTES)
 }
 
+/// An HTTP server natively: a handler answers each request, a connection stays open for more
+/// until it asks to close, and what's too big or isn't HTTP is answered without the handler.
+#[test]
+fn an_http_server_answers_natively() -> std::io::Result<()> {
+    use std::io::{BufRead, BufReader, Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"from std.net import Request, Response
+
+def handle(request: Request) -> Response:
+    match request.path:
+        case "/hello":
+            name = request.query.get("name") else "you"
+            Response(status=200, body=f"hello, {name}".encode())
+        case "/echo":
+            Response(status=201, headers={"x-method": request.method}, body=request.body)
+        case _:
+            Response(status=404)
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve((request) => handle(request), timeout=10s)
+"#;
+    let dir = folder("http_server")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?;
+    let mut printed = BufReader::new(server.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
+    let mut first = String::new();
+    printed.read_line(&mut first)?;
+    let port: u16 = first.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    // Everything the server says on one connection, once it closes it.
+    let exchange = |asked: &[u8]| -> std::io::Result<String> {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        stream.write_all(asked)?;
+        let mut heard = String::new();
+        stream.read_to_string(&mut heard)?;
+        Ok(heard)
+    };
+    let kept = exchange(
+        b"GET /hello?name=red%20fox HTTP/1.1\r\nHost: x\r\n\r\n\
+          POST /echo HTTP/1.1\r\nContent-Length: 3\r\n\r\nden\
+          GET /missing HTTP/1.1\r\nConnection: close\r\n\r\n",
+    );
+    let chunked = exchange(b"POST /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nden\r\n0\r\n\r\n");
+    let not_http = exchange(b"HELLO THERE\r\n\r\n");
+    let too_big = exchange(b"POST /echo HTTP/1.1\r\nContent-Length: 99999999\r\n\r\n");
+    let many = format!("GET / HTTP/1.1\r\n{}\r\n", "X-A: b\r\n".repeat(101));
+    let many_headers = exchange(many.as_bytes());
+    server.kill()?;
+    server.wait()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        kept?,
+        "HTTP/1.1 200 OK\r\ncontent-length: 14\r\n\r\nhello, red fox\
+         HTTP/1.1 201 Created\r\nx-method: POST\r\ncontent-length: 3\r\n\r\nden\
+         HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+    );
+    assert!(chunked?.starts_with("HTTP/1.1 501 Not Implemented\r\n"));
+    assert!(not_http?.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+    assert!(too_big?.starts_with("HTTP/1.1 413 Content Too Large\r\n"));
+    assert!(many_headers?.starts_with("HTTP/1.1 431 Request Header Fields Too Large\r\n"));
+    Ok(())
+}
+
 /// HTTP natively against a server of the test's own: params, headers and a body go out, a status
 /// that isn't a 200 is an answer, and what can't be reached fails as a `NetError`.
 #[test]

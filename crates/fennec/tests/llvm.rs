@@ -123,6 +123,118 @@ def main(stdout: Stdout):
     )
 }
 
+/// `bytes`, wherever it's held and whatever's done with it.
+#[test]
+fn bytes_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "bytes_all",
+        r#"struct Packet:
+    id: int
+    data: bytes
+
+enum Held:
+    Empty
+    Full(data: bytes)
+
+def first(data: bytes) -> int:
+    data[0]
+
+def maybe(present: bool) -> bytes?:
+    if present:
+        return bytes([9, 8])
+    None
+
+def main(stdout: Stdout):
+    empty = bytes()
+    data = bytes([0, 1, 127, 128, 255])
+    stdout.print(empty, empty.len(), data, data.len())
+    stdout.print(data[0], data[-1], data[3], first(data))
+    stdout.print(data[1:3], data[:2], data[3:], data[-2:], data[:-2], data[10:], data[3:1])
+    stdout.print(data + bytes([7]), empty + empty, data == bytes([0, 1, 127, 128, 255]), data != data)
+    stdout.print(data < bytes([1]), data <= data, data > bytes([0]), data >= bytes([255]))
+    stdout.print(1 in data, 2 in data, 2 not in data, 300 in data, -1 in data)
+    stdout.print(data.hex(), data.hex(" "), data.hex("--"), empty.hex())
+    mut total = 0
+    for byte in data:
+        total = total + byte
+    stdout.print(total, list(data), sum(list(data)))
+    text = "héllo wörld"
+    encoded = text.encode()
+    stdout.print(encoded, encoded.len(), text.len())
+    match encoded.decode():
+        case Ok(back):
+            stdout.print(back, back == text)
+        case Err(error):
+            stdout.print(error.message)
+    match bytes([255, 254]).decode():
+        case Ok(back):
+            stdout.print(back)
+        case Err(error):
+            stdout.print(error.message)
+    for hex in ["00ff", "00 FF", "", "abc", "zz", "a é"]:
+        match bytes.fromhex(hex):
+            case Ok(made):
+                stdout.print(made)
+            case Err(error):
+                stdout.print(error.message)
+    packet = Packet(id=1, data=data[:2])
+    copied = packet
+    stdout.print(packet, copied.data, packet.data == copied.data, packet == copied)
+    packets = [packet, Packet(id=2, data=bytes())]
+    stdout.print(packets[0].data, packets[1].data, packets)
+    mut many = [data, empty, encoded]
+    many.append(bytes([3]))
+    stdout.print(many[0], many[-1], many.len(), many)
+    for held in [Held.Empty, Held.Full(data=bytes([1]))]:
+        match held:
+            case Empty:
+                stdout.print("empty")
+            case Full(inner):
+                stdout.print(inner, inner[0], held)
+    stdout.print(maybe(True), maybe(False), maybe(True) is None, maybe(False) is None)
+    got = maybe(True) else bytes()
+    stdout.print(got, got.len())
+    pair = (data[:1], 3)
+    stdout.print(pair)
+    stdout.print(f"{data[:1]} and {empty}", str(data[:2]))
+    mut grown = bytes()
+    for at in range(300):
+        grown = grown + bytes([at % 256])
+    stdout.print(grown.len(), grown[299], grown[255], grown[:3])
+    named = {"a": 1}
+    stdout.print(named["a"], grown[:9].hex())
+"#,
+    )
+}
+
+/// What fails with `bytes` says what the JIT says.
+#[test]
+fn bytes_fail_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, call) in [
+        ("bytes_past_end", "bytes([1, 2])[2]"),
+        ("bytes_before_start", "bytes([1, 2])[-3]"),
+        ("bytes_too_big", "bytes([1, 256])"),
+        ("bytes_negative", "bytes([-1])"),
+    ] {
+        same_message_as_the_jit(
+            name,
+            &format!(
+                "def main(stdout: Stdout):
+    stdout.print(1)
+    stdout.print({call})
+"
+            ),
+        )?;
+    }
+    Ok(())
+}
+
 /// `str` of what's text already. The linter takes these out of the examples, since they change
 /// nothing, so it's here they're run. This backend doesn't take `int`, or `float` of a float,
 /// yet, so `cli.rs` runs those on the other engines.
@@ -1759,6 +1871,89 @@ fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// `list` of a capability, `round` to places, the codes of text, and clearing and taking keys out
+/// of dicts and sets.
+#[test]
+fn more_small_calls_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "more_small_calls",
+        r#"struct Key:
+    x: int
+    y: int
+
+def main(args: Args, stdout: Stdout):
+    stdout.print(list(args).len())
+    for arg in args:
+        stdout.print(arg.len() > 0)
+    stdout.print(round(3.14159, 2), round(2.5, 0), round(1234.5, -2), round(0.125, 2))
+    stdout.print("héllo".codes(), "".codes(), "€".code())
+    for code in [65, 233, 8364, -1, 55296, 1114112]:
+        match str.from_code(code):
+            case Ok(text):
+                stdout.print(text, text.len())
+            case Err(error):
+                stdout.print(error.message)
+    mut numbers = {1: 2, 3: 4}
+    shared = numbers
+    numbers.clear()
+    stdout.print(numbers, shared, numbers.len())
+    numbers[5] = 6
+    stdout.print(numbers)
+    mut names = {"a": "b", "a long string that is held in a block": "c"}
+    names.clear()
+    names["d"] = "e"
+    stdout.print(names)
+    mut ints = {1, 2, 3}
+    kept = ints
+    ints.discard(2)
+    ints.discard(9)
+    ints.remove(3)
+    stdout.print(ints, kept)
+    ints.clear()
+    ints.add(7)
+    stdout.print(ints, ints.len())
+    mut words = {"a", "b", "a long string that is held in a block"}
+    words.discard("a")
+    words.discard("nope")
+    words.remove("a long string that is held in a block")
+    stdout.print(words)
+    mut keys = {Key(x=1, y=2), Key(x=3, y=4)}
+    keys.discard(Key(x=1, y=2))
+    keys.discard(Key(x=9, y=9))
+    keys.remove(Key(x=3, y=4))
+    stdout.print(keys, keys.len())
+"#,
+    )
+}
+
+/// `set.remove` of a key that isn't there fails as the JIT does.
+#[test]
+fn removing_what_a_set_lacks_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, set, key) in [
+        ("remove_int", "{1, 2}", "3"),
+        ("remove_str", "{\"a\"}", "\"b\""),
+        ("remove_long", "{\"a\"}", "\"a long string that is held in a block\""),
+    ] {
+        same_message_as_the_jit(
+            name,
+            &format!(
+                "def main(stdout: Stdout):
+    mut held = {set}
+    held.remove({key})
+    stdout.print(held)
+"
+            ),
+        )?;
+    }
+    Ok(())
+}
+
 /// Shifts, `~`, sorting a list where it is, a `match` on a bool and `random_choice`.
 #[test]
 fn bits_sorts_and_choices_match_the_jit() -> std::io::Result<()> {
@@ -2512,6 +2707,144 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Dicts whose values are blocks, with what's done to them.
+#[test]
+fn dicts_of_blocks_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "dict_values",
+        r#"struct Book:
+    title: str
+    pages: dict[str, list[int]]
+
+def main(stdout: Stdout):
+    mut lists = {"a": [1, 2], "b": []}
+    lists["c"] = [3]
+    copied = lists
+    lists["a"] = [9]
+    stdout.print(lists, copied, lists["a"], copied["a"][1], lists.len())
+    lists["c"].append(4)
+    stdout.print(lists["c"], copied["c"])
+    stdout.print(lists.get("c"), lists.get("nope"), "a" in lists, "z" in lists)
+    stdout.print(lists.keys(), lists.values(), lists.items())
+    for key, value in lists.items():
+        stdout.print(key, value, value.len())
+    stdout.print(lists.pop("a"), lists)
+    mut by_int = {1: ["one"], 2: ["two", "too"]}
+    by_int[3] = ["three"]
+    stdout.print(by_int, by_int[2][1], by_int == {1: ["one"]}, by_int == by_int)
+    mut nested = {"x": {"y": [1]}}
+    nested["z"] = {}
+    nested["z"]["w"] = [2]
+    stdout.print(nested, nested["x"]["y"], nested["z"]["w"][0])
+    mut sets = {"s": {1, 2}}
+    sets["t"] = {3}
+    stdout.print(sets, 1 in sets["s"])
+    mut raw = {"b": bytes([1, 2])}
+    raw["c"] = "hi".encode()
+    stdout.print(raw, raw["c"].len())
+    book = Book(title="t", pages={"one": [1], "two": [2, 2]})
+    stdout.print(book, book.pages["two"], book.pages.keys())
+    mut empty: dict[str, list[int]] = {}
+    empty.clear()
+    stdout.print(empty, empty.get("a"), empty.len())
+    mut grown: dict[int, list[int]] = {}
+    for at in range(100):
+        grown[at] = [at, at + 1]
+    stdout.print(grown[99], grown.len(), sum(sum(items) for items in grown.values()))
+"#,
+    )
+}
+
+/// Dicts whose values are plain structs and enums, or `Id`s, with what's done to them.
+#[test]
+fn dicts_of_plain_values_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "dict_plain_values",
+        r#"from std.game import IdMap
+
+struct Point:
+    x: int
+    y: float
+
+struct Named:
+    name: str
+    tags: list[str]
+
+enum Light:
+    Red
+    Green
+    Amber(seconds: int)
+
+enum Note:
+    Empty
+    Said(text: str)
+
+struct Home:
+    id: int
+
+def main(stdout: Stdout):
+    mut points = {"p": Point(x=1, y=2.0)}
+    points["q"] = Point(x=3, y=4.0)
+    points["p"] = Point(x=5, y=6.0)
+    other = points
+    points["q"] = Point(x=7, y=8.0)
+    stdout.print(points, other, points["p"].x, points == other, points.get("q"), points.get("r"))
+    stdout.print(points.values(), points.items(), points.pop("q"), points)
+    mut lights = {"go": Light.Green, "wait": Light.Amber(seconds=3)}
+    lights["stop"] = Light.Red
+    stdout.print(lights, lights["wait"], lights["go"] == Light.Green)
+    for name, light in lights.items():
+        match light:
+            case Red:
+                stdout.print(name, "red")
+            case Green:
+                stdout.print(name, "green")
+            case Amber(seconds):
+                stdout.print(name, seconds)
+    mut notes = {1: Note.Said(text="a long note that sits in its own block"), 2: Note.Empty}
+    notes[3] = Note.Said(text="short")
+    notes[1] = Note.Said(text="replaced")
+    stdout.print(notes, notes[3])
+    stdout.print(notes.pop(1), notes.get(3), notes.values())
+    mut people = {"me": Named(name="me", tags=["a"])}
+    people["you"] = Named(name="a long name that sits in its own block", tags=[])
+    kept = people["you"]
+    people["you"] = Named(name="other", tags=["b", "c"])
+    stdout.print(people, kept, people["you"].tags[1], people == people)
+    mut ids = IdMap[Home]()
+    first = ids.insert(Home(id=1))
+    second = ids.insert(Home(id=2))
+    mut links = {first: second}
+    links[second] = first
+    stdout.print(links[first] == second, links[second] == first, first in links, links.len())
+    mut homes = {"first": first}
+    homes["second"] = second
+    stdout.print(homes["second"] == second, homes.get("nope") is None, homes.len())
+"#,
+    )
+}
+
+/// A key a dict of blocks doesn't have fails as the JIT's does.
+#[test]
+fn a_missing_key_in_a_dict_of_lists_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "missing_list",
+        "def main(stdout: Stdout):
+    held = {\"a\": [1]}
+    stdout.print(held[\"b\"])
+",
+    )
+}
+
 #[test]
 fn dicts_sets_closures_and_tuples_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -2990,6 +3323,29 @@ def main(stdout: Stdout):
         assert_eq!(ours, jit);
     }
     Ok(())
+}
+
+/// A list that's packed in native code, as it crosses to the JSON writer.
+#[test]
+fn json_of_packed_lists_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "json_packed",
+        r#"from std import json
+
+struct Scores:
+    name: str
+    points: list[int]
+    rates: list[float]
+
+def main(stdout: Stdout):
+    stdout.print(json.dumps(Scores(name="a", points=[1, 2], rates=[0.5])))
+    stdout.print(json.dumps([1, 2, 3]), json.dumps([[1], [2, 3], []]), json.dumps((1, [2])))
+    stdout.print(json.dumps({"6": [6], "7": []}), json.dumps({"a": {"b": [1.5]}}))
+"#,
+    )
 }
 
 /// `json.dumps` of plain structs, lists, strings and ints, and `json.loads` reading a struct, a
@@ -3481,6 +3837,52 @@ False False
 "
     );
     Ok(())
+}
+
+/// Floats as keys have one equality: `-0.0` is `0.0`, and every NaN is the same, with the key
+/// kept as it was first written.
+#[test]
+fn float_keys_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "float_keys",
+        r#"from std.math import sqrt
+
+def main(stdout: Stdout):
+    mut floats = {1.5, 2.5}
+    stdout.print(floats, 1.5 in floats, 3.5 in floats, floats.len(), sorted(floats), sorted({"b", "a"}))
+    floats.add(1.5)
+    floats.add(3.5)
+    floats.discard(2.5)
+    stdout.print(floats, floats.len(), list(floats), sum(x for x in floats))
+    zero = 0.0
+    mut zeros = {zero}
+    negative = -zero
+    stdout.print(negative in zeros, zero in zeros)
+    zeros.add(negative)
+    stdout.print(zeros, zeros.len())
+    mut signed = {negative}
+    signed.add(zero)
+    stdout.print(signed, signed.len(), zero in signed)
+    nan = 1e300 * 1e300 - 1e300 * 1e300
+    mut nans = {nan}
+    nans.add(nan)
+    nans.add(-nan)
+    stdout.print(nans.len(), nan in nans, -nan in nans, 1.0 in nans)
+    mut named = {1.5: "a", 2.5: "b"}
+    named[1.5] = "c"
+    named[0.0] = "z"
+    stdout.print(named, named[1.5], named[negative], named.get(9.5), named.keys(), named.values())
+    stdout.print(named.pop(2.5), named, {1.5, 2.5} == {2.5, 1.5})
+    mut counts: dict[float, int] = {}
+    for at in range(100):
+        key = float(at % 7) / 2.0
+        counts[key] = (counts.get(key) else 0) + 1
+    stdout.print(counts.len(), counts[0.0], counts[3.0])
+"#,
+    )
 }
 
 /// Floats as keys hash as they compare, on the interpreter here. LLVM's float keys are held to the
@@ -5369,6 +5771,22 @@ def main(stdout: Stdout):
     stdout.print(floats)
     holder = Holder([8, None])
     stdout.print(holder.values)
+"#,
+    )
+}
+
+/// `None` itself inside a tuple.
+#[test]
+fn none_in_a_tuple_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "none_in_tuple",
+        r#"def main(stdout: Stdout):
+    pair = (1, None)
+    stdout.print(pair, (None, "a"), (None, None))
+    stdout.print(pair == (1, None), [(1, None), (2, None)])
 "#,
     )
 }

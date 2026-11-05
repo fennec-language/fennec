@@ -108,6 +108,10 @@ pub(super) fn json(value: &Value, indent: Option<usize>) -> Result<String, Strin
 }
 
 fn write_json(out: &mut String, value: &Value, indent: Option<usize>, depth: usize) -> Result<(), String> {
+    // A list native code packed, as it crosses over.
+    if let Value::Packed(packed) = value {
+        return write_json(out, &packed.unpack(), indent, depth);
+    }
     if let Some(entries) = entries(value, "JSON")? {
         let entries = entries.into_iter().map(|(key, value)| (Some(key), value)).collect();
         return json_container(out, ('{', '}'), entries, indent, depth);

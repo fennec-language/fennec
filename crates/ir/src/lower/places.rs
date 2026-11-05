@@ -106,9 +106,7 @@ impl Lowering<'_> {
             | Type::Array(item, _)
             | Type::Buffer(item)
             | Type::Dict(_, item)
-            | Type::Table(item) => {
-                Some(*item.clone())
-            }
+            | Type::Table(item) => Some(*item.clone()),
             Type::Named(owner) => {
                 let given = [Some(ty.clone())];
                 if let Some((_, read)) = self.resolve(&format!("{owner}.[]"), &given, None) {

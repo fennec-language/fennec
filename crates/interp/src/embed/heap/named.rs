@@ -43,7 +43,11 @@ pub(in crate::embed) fn packable(element: &Element) -> bool {
         Element::Int | Element::Float | Element::Bool => true,
         // A tuple a backend lays out as a struct, like `(int, int)`, is a tuple to the interpreter.
         Element::Struct { name, fields } => {
-            !name.starts_with('(') && !is_array(name) && name.as_ref() != "Id" && !is_id_map(name) && all(fields)
+            !name.starts_with('(')
+                && !is_array(name)
+                && name.as_ref() != "Id"
+                && !is_id_map(name)
+                && all(fields)
         }
         Element::Enum { name, cases, .. } => {
             !is_option(name)

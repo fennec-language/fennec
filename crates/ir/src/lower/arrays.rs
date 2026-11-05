@@ -14,8 +14,21 @@ const ITEM: &str = "\0array item";
 
 /// The engines' functions that go through what they're given, which take an array as a list of
 /// its items.
-const TAKE_ITEMS: &[&str] =
-    &["list", "set", "dict", "tuple", "sum", "min", "max", "sorted", "reversed", "any", "all", "enumerate", "zip"];
+const TAKE_ITEMS: &[&str] = &[
+    "list",
+    "set",
+    "dict",
+    "tuple",
+    "sum",
+    "min",
+    "max",
+    "sorted",
+    "reversed",
+    "any",
+    "all",
+    "enumerate",
+    "zip",
+];
 
 impl Lowering<'_> {
     /// `len(items)` or `items.len()` on an array: its size, known here.

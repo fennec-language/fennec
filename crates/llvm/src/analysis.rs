@@ -918,7 +918,9 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                 matches!(function.locals.get(local.0).map(|local| &local.ty), Some(Type::Table(_)))
             };
             // Nor are an array's: one in a block isn't made alone to take one out.
-            if matches!(&inst.kind, InstKind::GetIndex { .. }) && (id_map(source) || is_array(function, source)) {
+            if matches!(&inst.kind, InstKind::GetIndex { .. })
+                && (id_map(source) || is_array(function, source))
+            {
                 continue;
             }
             if let InstKind::GetIndex { index, .. } = &inst.kind {

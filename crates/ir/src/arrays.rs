@@ -40,6 +40,7 @@ pub fn spill_big_arrays(program: &mut Program) {
 }
 
 /// How big the program's own types are, as written before any array is turned into a list.
+#[derive(Default)]
 struct Sizes {
     structs: HashMap<String, Vec<Type>>,
     enums: HashMap<String, Vec<Vec<Type>>>,
@@ -110,7 +111,8 @@ impl Sizes {
                 let size = if let Some(fields) = self.structs.get(name) {
                     fields.iter().map(|field| self.bytes(field, within)).sum()
                 } else if let Some(cases) = self.enums.get(name) {
-                    let largest = cases.iter().map(|fields| fields.iter().map(|field| self.bytes(field, within)).sum());
+                    let largest =
+                        cases.iter().map(|fields| fields.iter().map(|field| self.bytes(field, within)).sum());
                     WORD + largest.max().unwrap_or(0)
                 } else {
                     WORD
@@ -135,7 +137,7 @@ mod tests {
 
     #[test]
     fn an_array_over_the_limit_is_kept_as_a_list() {
-        let sizes = Sizes { structs: Default::default(), enums: Default::default(), cells: Default::default() };
+        let sizes = Sizes::default();
         let fits = IN_PLACE_BYTES / 8;
         assert_eq!(sizes.placed(&array(Type::Int, fits)), array(Type::Int, fits));
         assert_eq!(sizes.placed(&array(Type::Int, fits + 1)), Type::List(Box::new(Type::Int)));
@@ -146,8 +148,7 @@ mod tests {
 
     #[test]
     fn a_struct_counts_its_fields() {
-        let mut sizes =
-            Sizes { structs: Default::default(), enums: Default::default(), cells: Default::default() };
+        let mut sizes = Sizes::default();
         sizes.structs.insert("Pair".to_owned(), vec![Type::Int, Type::Str]);
         let pair = Type::Named("Pair".to_owned());
         // 32 bytes each: 2048 fit, 2049 don't.

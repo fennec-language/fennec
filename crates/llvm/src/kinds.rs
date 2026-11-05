@@ -270,7 +270,8 @@ pub(crate) fn struct_definitions(layouts: &Layouts, id: u32, out: &mut Vec<Strin
         {
             struct_definitions(layouts, inner, out);
         }
-        let item = Kind::from_ty(layouts, first.ty).map_or_else(|| "i64".to_owned(), |kind| kind.memory(layouts));
+        let item =
+            Kind::from_ty(layouts, first.ty).map_or_else(|| "i64".to_owned(), |kind| kind.memory(layouts));
         out.push(format!("%\"s.{}\" = type {{ [{} x {item}] }}\n", layout.name, layout.fields.len()));
         return;
     }

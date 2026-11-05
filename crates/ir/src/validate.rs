@@ -187,14 +187,7 @@ impl<'p> Check<'p> {
     /// Building collections, and reading and changing their items.
     fn collection_inst(&mut self, inst: &InstKind) {
         match inst {
-            InstKind::MakeList { dest, items } => match self.local(*dest) {
-                Some(Type::List(item)) => self.operands(items, &item),
-                // An array is made with all its items.
-                Some(Type::Array(item, size)) if u64::try_from(items.len()) == Ok(size) => {
-                    self.operands(items, &item);
-                }
-                _ => self.problems.push(format!("`{inst}` makes a list in another type")),
-            },
+            InstKind::MakeList { dest, items } => self.make_list(inst, *dest, items),
             InstKind::MakeSet { dest, items } => match self.local(*dest) {
                 Some(Type::Set(item)) => self.operands(items, &item),
                 _ => self.problems.push(format!("`{inst}` makes a set in another type")),
@@ -270,6 +263,17 @@ impl<'p> Check<'p> {
                 self.operand(value, Some(&item), "item");
             }
             _ => {}
+        }
+    }
+
+    fn make_list(&mut self, inst: &InstKind, dest: LocalId, items: &[Operand]) {
+        match self.local(dest) {
+            Some(Type::List(item)) => self.operands(items, &item),
+            // An array is made with all its items.
+            Some(Type::Array(item, size)) if u64::try_from(items.len()) == Ok(size) => {
+                self.operands(items, &item);
+            }
+            _ => self.problems.push(format!("`{inst}` makes a list in another type")),
         }
     }
 

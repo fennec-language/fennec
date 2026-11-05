@@ -28,7 +28,9 @@ impl InlinePart {
         match self {
             InlinePart::Block(offset, held) => InlinePart::Block(offset + by, held),
             InlinePart::Enum(offset, id) => InlinePart::Enum(offset + by, id),
-            InlinePart::Items(offset, count, stride, parts) => InlinePart::Items(offset + by, count, stride, parts),
+            InlinePart::Items(offset, count, stride, parts) => {
+                InlinePart::Items(offset + by, count, stride, parts)
+            }
         }
     }
 }
@@ -257,7 +259,9 @@ impl Emit<'_, '_, '_> {
                 let base = self.offset(at, offset);
                 self.each_position(&count.to_string(), |emit, position| {
                     let item = emit.temp();
-                    emit.line(&format!("{item} = getelementptr inbounds [{stride} x i8], ptr {base}, i64 {position}"));
+                    emit.line(&format!(
+                        "{item} = getelementptr inbounds [{stride} x i8], ptr {base}, i64 {position}"
+                    ));
                     for part in parts.clone() {
                         emit.count_part(part, &item, more);
                     }
@@ -905,7 +909,11 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Whether these fields of what's at two addresses are all the same.
-    pub(crate) fn same_fields(&mut self, fields: &[(u32, Kind)], (a, b): (&str, &str)) -> Result<String, String> {
+    pub(crate) fn same_fields(
+        &mut self,
+        fields: &[(u32, Kind)],
+        (a, b): (&str, &str),
+    ) -> Result<String, String> {
         let mut same = "true".to_owned();
         for (offset, kind) in fields {
             let (x_at, y_at) = (self.offset(a, *offset), self.offset(b, *offset));
@@ -1387,7 +1395,12 @@ impl Emit<'_, '_, '_> {
 
     /// The block at `place` for changing what's in it: a handle's own, which every name for it
     /// sees change, and otherwise one with no other owner.
-    pub(crate) fn block_to_change(&mut self, (root, path): (LocalId, &[String]), place: &str, kind: &Kind) -> String {
+    pub(crate) fn block_to_change(
+        &mut self,
+        (root, path): (LocalId, &[String]),
+        place: &str,
+        kind: &Kind,
+    ) -> String {
         if self.is_cell(kind) {
             let block = self.temp();
             self.line(&format!("{block} = load ptr, ptr {place}"));

@@ -1,8 +1,8 @@
 //! Lowering a checked module to the IR, one function at a time. The types come from the
 //! checker's typed tree, never from working them out again.
 
-pub(crate) mod calls;
 mod arrays;
+pub(crate) mod calls;
 mod closures;
 mod collections;
 mod constants;

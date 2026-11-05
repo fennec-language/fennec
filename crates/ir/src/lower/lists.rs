@@ -63,9 +63,9 @@ impl Lowering<'_> {
             return Ok(Operand::Local(dest));
         }
         let key = match &held {
-            Some(Type::List(_) | Type::Array(..) | Type::Buffer(_) | Type::Str | Type::Bytes | Type::Tuple(_)) => {
-                Type::Int
-            }
+            Some(
+                Type::List(_) | Type::Array(..) | Type::Buffer(_) | Type::Str | Type::Bytes | Type::Tuple(_),
+            ) => Type::Int,
             Some(Type::Dict(key, _)) => *key.clone(),
             Some(Type::Table(item)) => Type::Id(item.clone()),
             Some(Type::Named(name)) if name == "Args" => {
@@ -337,8 +337,9 @@ impl Lowering<'_> {
         }
         // Only the items of a list or `Table` are written back, and only one name holds them.
         let by_id = matches!(self.type_at(iter.span), Some(Type::Table(_)));
-        let changes_items =
-            is_mut && names.len() == 1 && (by_id || matches!(self.type_at(iter.span), Some(Type::List(_) | Type::Array(..))));
+        let changes_items = is_mut
+            && names.len() == 1
+            && (by_id || matches!(self.type_at(iter.span), Some(Type::List(_) | Type::Array(..))));
         let back =
             if changes_items { Some(Back { place: self.held_place(iter, span)?, by_id }) } else { None };
         let over = Over { names, iter, back };
@@ -506,14 +507,8 @@ impl Lowering<'_> {
             self.emit(kind, span);
             Operand::Local(limit)
         };
-        let counting = Counting {
-            names,
-            first: Operand::Int(0),
-            limit,
-            down: false,
-            items: Some((items, item)),
-            back,
-        };
+        let counting =
+            Counting { names, first: Operand::Int(0), limit, down: false, items: Some((items, item)), back };
         self.counting(counting, span, body)
     }
 

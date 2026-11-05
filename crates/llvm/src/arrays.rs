@@ -108,7 +108,9 @@ impl Emit<'_, '_, '_> {
 
     /// `array[T, N](zero)`: N items, each the zero. One too big to keep in place is a list.
     pub(crate) fn new_array(&mut self, dest: LocalId, args: &[Operand]) -> Result<(), String> {
-        let [zero, Operand::Int(count)] = args else { return Err("an array made without its size".to_owned()) };
+        let [zero, Operand::Int(count)] = args else {
+            return Err("an array made without its size".to_owned());
+        };
         let kind = self.kind_of(dest)?.clone();
         if let (Some(shape), Kind::Boxed(id)) = (self.array_shape(&kind), &kind) {
             let block = self.new_block(*id)?;
@@ -116,7 +118,9 @@ impl Emit<'_, '_, '_> {
             let stride = shape.stride;
             self.fill_items(&shape.item, zero, &shape.count.to_string(), &|emit, position| {
                 let at = emit.temp();
-                emit.line(&format!("{at} = getelementptr inbounds [{stride} x i8], ptr {base}, i64 {position}"));
+                emit.line(&format!(
+                    "{at} = getelementptr inbounds [{stride} x i8], ptr {base}, i64 {position}"
+                ));
                 at
             })?;
             return self.assign(dest, &block);
@@ -128,7 +132,9 @@ impl Emit<'_, '_, '_> {
             let stride = shape.stride;
             self.fill_items(&shape.item, zero, &shape.count.to_string(), &|emit, position| {
                 let at = emit.temp();
-                emit.line(&format!("{at} = getelementptr inbounds [{stride} x i8], ptr {base}, i64 {position}"));
+                emit.line(&format!(
+                    "{at} = getelementptr inbounds [{stride} x i8], ptr {base}, i64 {position}"
+                ));
                 at
             })?;
             if let Some(place) = beside {

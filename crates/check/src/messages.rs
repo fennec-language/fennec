@@ -6,6 +6,9 @@ use fennec_syntax::{Diagnostic, Span};
 
 use crate::types::{Type, a, article};
 
+/// What an `IdMap` is called now, and where it is.
+pub(crate) const TABLE: &str = "it's called `Table` now, from `std.collections`";
+
 /// An unknown name, with a pointer to the Fennec spelling when it's a habit from elsewhere.
 pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
     if name.starts_with(&format!("_{}", fennec_syntax::visit::HIDDEN)) {
@@ -17,6 +20,7 @@ pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
         "print" | "console" => diagnostic.with_help(
             "there's no global output: a function reaches outside itself only through what's in its signature, like `stdout: Stdout`",
         ),
+        "IdMap" => diagnostic.with_help(TABLE).with_fix(span, "Table"),
         "true" | "false" => diagnostic.with_help("write `True` or `False`"),
         "null" | "nil" | "none" | "undefined" => diagnostic.with_help("write `None`"),
         "lambda" => diagnostic.with_help("write an arrow function: `x => x * 2`"),

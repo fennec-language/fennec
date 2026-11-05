@@ -270,6 +270,19 @@ fn named_method(type_name: &str, name: &str) -> Option<Method> {
     })
 }
 
+/// A method a built-in type doesn't have, with the name it has now if it was renamed: a table's
+/// `insert` is `add`. The name comes straight after the value and its dot, as `fennec fmt` writes it.
+fn renamed_method(object: &Expr, ty: &Type, name: &str, span: Span) -> Diagnostic {
+    let diagnostic = no_method(ty, name, span);
+    if name != "insert" || !matches!(ty, Type::Table(_)) {
+        return diagnostic;
+    }
+    let at = object.span.end + 1;
+    diagnostic
+        .with_help("a table's `insert` is called `add` now")
+        .with_fix(Span { start: at, end: at + 6 }, "add")
+}
+
 impl FnCx<'_> {
     pub(crate) fn builtin_method(
         &mut self,
@@ -280,7 +293,7 @@ impl FnCx<'_> {
         span: Span,
     ) -> Type {
         let Some(method) = method(ty, name) else {
-            return self.unusable(no_method(ty, name, span), args);
+            return self.unusable(renamed_method(object, ty, name, span), args);
         };
         if name == "captured" && *ty == Type::named("Stdout") && !self.in_a_test() {
             let help = "only a test's own body can read what it printed, from the `Stdout` it received";

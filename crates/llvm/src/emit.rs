@@ -1257,6 +1257,12 @@ impl Emit<'_, '_, '_> {
                 _ => self.string_binary(op, (&a, &b))?,
             },
             Kind::Str => self.string_binary(op, (&a, &b))?,
+            // Two `shared` values are the same only if they're one value.
+            Kind::Boxed(_) if self.is_cell(&kind) && matches!(op, BinOp::Eq | BinOp::NotEq) => {
+                let (same, cc) = (self.temp(), if op == BinOp::Eq { "eq" } else { "ne" });
+                self.line(&format!("{same} = icmp {cc} ptr {a}, {b}"));
+                same
+            }
             Kind::Boxed(_) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_blocks(op, (&a, &b)),
             Kind::Enum(id) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_enums(op, id, (&a, &b))?,
             Kind::Struct(id) => self.compare_structs(op, id, (&a, &b))?,

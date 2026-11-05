@@ -1520,7 +1520,6 @@ impl Emit<'_, '_, '_> {
         let returns = self.module.kind(&callee.returns)?;
         let mut shown = Vec::with_capacity(args.len() + 2);
         let mut lent = Vec::new();
-        let mut held_copies = Vec::new();
         let returned_at = if returns.in_memory() {
             let at = self.label("%ret");
             let text = self.text_of(&returns);
@@ -1544,21 +1543,6 @@ impl Emit<'_, '_, '_> {
             if fresh {
                 lent.push(value.clone());
             }
-            // Passed `mut` as well, it's changed during the call, and this one mustn't see that.
-            let changing = callee.mut_params.iter().any(|at| args.get(*at) == Some(arg));
-            let value = if changing && !fresh && kind.in_memory() {
-                let place = self.place_for(&kind);
-                self.store_field(&kind, &value, &place, "");
-                self.retain_inline(&kind, &place);
-                held_copies.push((place.clone(), kind.clone()));
-                place
-            } else {
-                if changing && !fresh && kind.counted() && !matches!(kind, Kind::Str | Kind::MaybeText) {
-                    self.retain_value(&value, &kind);
-                    lent.push(value.clone());
-                }
-                value
-            };
             if kind.in_memory() {
                 shown.push(format!("ptr {value}"));
             } else {
@@ -1593,9 +1577,6 @@ impl Emit<'_, '_, '_> {
         }
         for block in lent {
             self.release(&block);
-        }
-        for (place, kind) in held_copies {
-            self.release_inline(&kind, &place);
         }
         match (dest, returned_at) {
             (Some(dest), Some(at)) => self.assign_memory_owned(dest, &at)?,

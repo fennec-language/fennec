@@ -77,9 +77,9 @@ def main(stdout: Stdout):
         walked.append(walk)
     stdout.print(walked)
 
-    # Passed both ways, the argument without `mut` keeps its items.
+    # A `mut` argument has its list to itself, so the other one is given a copy, which keeps its items.
     mut twice = [1, 2]
-    stdout.print(both(twice, mut twice), twice)
+    stdout.print(both(copy(twice), mut twice), twice)
 
     # A call can give back more than fits in a machine's return registers.
     mut ints = [1]

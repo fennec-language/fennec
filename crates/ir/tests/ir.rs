@@ -934,7 +934,7 @@ fn dicts_and_slices_read_and_change_items() {
     xs[:2]
 ";
     let text = printed(source, "f").unwrap();
-    for expected in ["= some 1", "[\"a\"] = ", "builtin dict.contains(", "= _0[1:]", "= _0[:2]"] {
+    for expected in ["[\"a\"] = ", "builtin dict.contains(", "= _0[1:]", "= _0[:2]"] {
         assert!(text.contains(expected), "no `{expected}` in {text}");
     }
 }

@@ -48,6 +48,7 @@ impl FnCx<'_> {
     }
 
     pub(crate) fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Type {
+        self.closure_locks_again(callee);
         match &callee.kind {
             ExprKind::Attr { object, name, .. } if self.is_built_in_function(object, name) => {
                 return self.built_in_function(name, args, span);
@@ -524,6 +525,7 @@ impl FnCx<'_> {
         let MethodCall { object, method, types, args, span } = *call;
         let (key, takes_self) = method_key;
         self.locks_again(object, receiver, &format!("calling `{method}`"));
+        self.method_on_holder(object, receiver, method);
         if let Some(owner) = receiver.type_name() {
             self.private_member(owner, method, object.span.to(span));
         }

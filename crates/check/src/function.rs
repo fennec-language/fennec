@@ -90,6 +90,8 @@ pub(crate) struct FnCx<'c> {
     /// The type expected of the value of the block being checked: the return type for a
     /// function's body, or what's expected of a `match` for its cases.
     pub(crate) tail: Option<Type>,
+    /// The functions in sight, by name, that capture a `shared` handle.
+    pub(crate) handle_closures: std::collections::HashSet<String>,
     /// How many arrow functions and comprehensions this is inside, which `else` can't leave.
     pub(crate) value_functions: usize,
     /// The fields and method calls in the chain before an `else`, which may be on a value
@@ -126,6 +128,7 @@ impl<'c> FnCx<'c> {
             first_var,
             expecting: None,
             tail: None,
+            handle_closures: std::collections::HashSet::new(),
             value_functions: 0,
             else_chain: std::collections::HashSet::new(),
             fails: None,

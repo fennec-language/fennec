@@ -1827,31 +1827,84 @@ def main(stdout: Stdout):
     stdout.print("before", one.total)
 "#;
 
-/// A comprehension replacing a list in a cell can't change the items where they are: a call in it
-/// can reach the cell another way, and reads the list as it was until the new one is stored.
-const CELL_LIST_REPLACED: &str = r"shared Box:
+/// Each way a function can reach a cell its caller holds the lock of, past what the checker sees.
+const TAKEN_AGAIN: [(&str, &str); 6] = [
+    ("holder", "    with one as mut x:\n        x.total = through_holder(holder)\n"),
+    ("list", "    with one as mut x:\n        x.total = through_list([one])\n"),
+    (
+        "reading",
+        "    mut seen = 0\n    with one as x:\n        seen = x.total + through_holder(holder)\n    stdout.print(seen)\n",
+    ),
+    (
+        "closure",
+        "    def inner() -> int:\n        one.total\n    with one as mut x:\n        x.total = inner()\n",
+    ),
+    (
+        "comprehension",
+        "    with one as mut x:\n        x.items = [n + through_holder(holder) for n in x.items]\n",
+    ),
+    ("method", "    one.through_itself(holder)\n"),
+];
+
+const LOCK_HELD: &str = r#"shared Box:
+    total = 1
     items = [1, 2, 3]
+
+    def through_itself(mut self, holder: Holder):
+        self.total += through_holder(holder)
 
 struct Holder:
     box: Box
 
-def first(holder: Holder) -> int:
-    holder.box.items[0]
+def through_holder(holder: Holder) -> int:
+    holder.box.total
+
+def through_list(boxes: list[Box]) -> int:
+    boxes[0].total
 
 def main(stdout: Stdout):
     one = Box()
     holder = Holder(box=one)
-    with one as mut x:
-        x.items = [n + first(holder) for n in x.items]
-    stdout.print(one.items)
-";
+    stdout.print("before", through_holder(holder))
+"#;
 
+/// A lock this thread holds, taken again, ends the program, as it would wait forever otherwise.
 #[test]
-fn a_comprehension_replacing_a_list_in_a_cell_keeps_it_whole_for_other_names() -> std::io::Result<()> {
+fn taking_a_lock_already_held_ends_the_program() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("cell_list_replaced", CELL_LIST_REPLACED)
+    let dir = folder("taken-again")?;
+    let path = |file: &Path| file.display().to_string();
+    for (name, shape) in TAKEN_AGAIN {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("{LOCK_HELD}{shape}    stdout.print(\"not here\")\n"))?;
+        let executable = dir.join(name);
+        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = outcome(&Command::new(&executable).output()?);
+        let interpreted = outcome(&fennec(&["run", "--interp", &path(&program)], &dir)?);
+        assert_eq!((&ran.0, ran.2), (&interpreted.0, interpreted.2), "{name}");
+        assert_eq!(ran.1.lines().next(), interpreted.1.lines().next(), "{name}");
+        assert_eq!(ran.2, Some(1), "{name}");
+        assert_eq!(ran.0, "before 1\n", "{name}");
+        assert!(ran.1.contains("that's already held"), "{name}: {}", ran.1);
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A comprehension replacing a list in a cell changes it where it is, as nothing else can read
+/// the list while the lock's held.
+#[test]
+fn a_comprehension_replacing_a_list_in_a_cell_makes_no_second_list() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "cell_list_replaced",
+        "shared Box:\n    items = [1, 2, 3]\n\n    def doubled(mut self):\n        self.items = [n * 2 for n in self.items]\n\ndef main(stdout: Stdout):\n    one = Box()\n    one.doubled()\n    with one as mut x:\n        x.items = [n + 1 for n in x.items]\n    stdout.print(one.items)\n",
+    )
 }
 
 #[test]

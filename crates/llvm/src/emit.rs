@@ -300,6 +300,9 @@ fn unit<'p>(
 /// What a `with` that takes one `shared` value under two names says, in every engine.
 const TAKEN_TWICE: &str = "this `with` takes the same `shared` value twice";
 
+/// What taking the lock of a `shared` value this thread holds already says, in every engine.
+const TAKEN_AGAIN: &str = "this takes the lock of a `shared` value that's already held";
+
 impl<'p> Module<'_, 'p> {
     pub(crate) fn add_helper(&mut self, name: &str, text: String) {
         self.helpers.entry(name.to_owned()).or_insert(text);
@@ -1005,8 +1008,37 @@ impl Emit<'_, '_, '_> {
 
     /// Fails if a call here would go too deep. The limit never changes once the program's
     /// running and the frame stays put, so LLVM drops all but the first check on a path.
-    /// Taking several `shared` values at once: the same one twice ends the program. With only one
-    /// thread, nothing else could be holding a lock, so that's all there is to do.
+    /// Where a cell's lock is: the word after its fields.
+    fn lock_word(&mut self, handle: &Operand) -> Result<String, String> {
+        let (value, kind) = self.operand(handle)?;
+        let Kind::Boxed(id) = kind else { return Err(format!("it locks a {kind:?}")) };
+        let size = self.layout_of(id)?.size;
+        Ok(self.offset(&value, crate::lists::FIELDS_OFFSET + size - 8))
+    }
+
+    /// Taking a `shared` value's lock. With only one thread, whatever holds it is this thread,
+    /// further up, which would wait forever with real threads, so it ends the program.
+    fn lock(&mut self, handle: &Operand, span: Span) -> Result<(), String> {
+        let word = self.lock_word(handle)?;
+        let (held, taken) = (self.temp(), self.temp());
+        self.line(&format!("{held} = load i64, ptr {word}"));
+        self.line(&format!("{taken} = icmp ne i64 {held}, 0"));
+        let (again, free) = (self.label("held"), self.label("free"));
+        self.line(&format!("br i1 {taken}, label %{again}, label %{free}, !prof !8"));
+        self.start_block(&again);
+        self.stop(TAKEN_AGAIN, span);
+        self.start_block(&free);
+        self.line(&format!("store i64 1, ptr {word}"));
+        Ok(())
+    }
+
+    fn unlock(&mut self, handle: &Operand) -> Result<(), String> {
+        let word = self.lock_word(handle)?;
+        self.line(&format!("store i64 0, ptr {word}"));
+        Ok(())
+    }
+
+    /// Taking several `shared` values at once: the same one twice ends the program.
     fn lock_all(&mut self, handles: &[(Operand, bool)], span: Span) -> Result<(), String> {
         let mut seen: Vec<(String, Kind)> = Vec::with_capacity(handles.len());
         for (handle, _) in handles {
@@ -1021,7 +1053,7 @@ impl Emit<'_, '_, '_> {
             }
             seen.push((value, kind));
         }
-        Ok(())
+        handles.iter().try_for_each(|(handle, _)| self.lock(handle, span))
     }
 
     pub(crate) fn check_stack(&mut self, span: Span) {
@@ -1909,12 +1941,11 @@ impl Emit<'_, '_, '_> {
             InstKind::Resume { dest, generator, known } => {
                 self.resume(*dest, generator, known.as_deref(), span)
             }
+            InstKind::Lock { handle, .. } if !self.module.threads => self.lock(handle, span),
+            InstKind::Unlock { handle } if !self.module.threads => self.unlock(handle),
             InstKind::LockAll { handles } if !self.module.threads => self.lock_all(handles, span),
-            InstKind::Lock { .. } | InstKind::Unlock { .. } | InstKind::UnlockAll { .. }
-                if !self.module.threads =>
-            {
-                // With only one thread, nothing else could be holding a lock.
-                Ok(())
+            InstKind::UnlockAll { handles } if !self.module.threads => {
+                handles.iter().try_for_each(|handle| self.unlock(handle))
             }
             other => Err(format!("it uses `{other}`, which this backend doesn't take yet")),
         }

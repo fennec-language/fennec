@@ -39,8 +39,8 @@ pub const HANDLE_OWNER: u64 = 0xFFFE;
 
 /// Where a `shared` value's table is.
 enum Held {
-    /// With nobody holding it.
-    Free(Table),
+    /// With nobody holding it. Boxed, so taking it moves a pointer.
+    Free(Box<Table>),
     /// Read by those holding the read lock, or by nobody since.
     Read(Arc<Table>),
     /// With the thread holding the write lock.
@@ -213,7 +213,7 @@ pub extern "C" fn shared_new(cell: i64) -> i64 {
         let count = block.first().copied().unwrap_or(1);
         let held: Vec<u64> = places.iter().filter_map(|place| block.get(*place).copied()).collect();
         // Put back for what it holds to be read from: the table only takes it once they're copied.
-        state.heap.enter_table(Table::hashed(), GUARDED_OWNER << OWNER_SHIFT);
+        state.heap.enter_table(Box::new(Table::hashed()), GUARDED_OWNER << OWNER_SHIFT);
         for (place, old) in places.iter().zip(&held) {
             if *old != 0 {
                 let new = copied(state, *old)?;
@@ -253,13 +253,13 @@ fn enter(state: &mut State, slot: &Slot, write: bool) -> Result<(), Diagnostic> 
     if write {
         let table = match std::mem::replace(&mut *held, Held::Taken) {
             Held::Free(table) => table,
-            Held::Read(table) => Arc::try_unwrap(table).map_err(|_| still_read())?,
+            Held::Read(table) => Box::new(Arc::try_unwrap(table).map_err(|_| still_read())?),
             Held::Taken => return Err(still_read()),
         };
         state.heap.enter_table(table, GUARDED_OWNER << OWNER_SHIFT);
     } else {
         let reading = match std::mem::replace(&mut *held, Held::Taken) {
-            Held::Free(table) => Arc::new(table),
+            Held::Free(table) => Arc::new(*table),
             Held::Read(table) => table,
             Held::Taken => return Err(still_read()),
         };
@@ -289,7 +289,10 @@ pub extern "C" fn shared_leave(cell: i64, write: i64) -> i64 {
             state.heap.reading.pop();
         }
         // Text kept of its blocks is no use once another thread can change or free them.
-        state.heap.texts.get_mut().clear();
+        let texts = state.heap.texts.get_mut();
+        if !texts.is_empty() {
+            texts.clear();
+        }
         Ok(state.heap.owner_number())
     })
 }
@@ -381,7 +384,7 @@ pub(super) fn free_table(state: &mut State, cell: u64) {
     GONE.fetch_add(1, Ordering::Release);
     let held = std::mem::replace(&mut *slot.held.lock().unwrap_or_else(PoisonError::into_inner), Held::Taken);
     let table = match held {
-        Held::Free(table) => table,
+        Held::Free(table) => *table,
         Held::Read(table) => Arc::try_unwrap(table).unwrap_or_default(),
         Held::Taken => return,
     };

@@ -2094,6 +2094,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "min.key"
                     | "list.remove"
                     | "main.result"
+                    | "set.remove"
                     | "Regex.replace"
                     | "Regex.split"
                     | "Regex.find_all"

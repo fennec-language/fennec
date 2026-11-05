@@ -1690,3 +1690,27 @@ fn constants_are_worked_out_while_compiling() {
         text(&output.stderr)
     );
 }
+
+/// What a copy names is the item it's in, as it's written.
+#[test]
+fn a_copy_names_the_item_it_is_in() -> std::io::Result<()> {
+    let dir = std::env::temp_dir().join(format!("fennec_copy_names_{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("items.fen");
+    for (at, said) in [("0", "units[0].tags"), ("at", "units[at].tags")] {
+        std::fs::write(
+            &program,
+            format!(
+                "struct Unit:\n    tags: list[int]\n\ndef main(stdout: Stdout):\n    mut units = [Unit(tags=[1])]\n    \
+                 at = 0\n    for round in range(3):\n        held = units[{at}]\n        units[{at}].tags.append(round)\n        \
+                 stdout.print(held.tags, at)\n"
+            ),
+        )?;
+        let checked = fennec(&["check", &program.to_string_lossy()], "")?;
+        let told = text(&checked.stderr);
+        assert!(told.contains(&format!("`{said}` is copied each time round the loop")), "{told}");
+        assert!(told.contains(&format!("write `copy({said})`")), "{told}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}

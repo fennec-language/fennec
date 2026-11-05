@@ -55,7 +55,7 @@ fn kit_root(dir: &Path) -> Option<PathBuf> {
 }
 
 /// Adds `path` if it's a file, or the `.fen` files under it if it's a folder, sorted.
-fn collect(path: &Path, named: bool, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+pub(crate) fn collect(path: &Path, named: bool, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
     if !path.is_dir() {
         if named || path.extension().is_some_and(|ext| ext == "fen") {
             files.push(path.to_path_buf());

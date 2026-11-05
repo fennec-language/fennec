@@ -67,6 +67,11 @@ const PARSE_CASES: &[(&str, &str)] = &[
     ("field_needs_type", "struct A:\n    x\n"),
     ("param_needs_type", "def f(x):\n    pass\n"),
     ("mut_needs_name", "def f():\n    mut a.b = 1\n"),
+    (
+        "ref_in_each_place",
+        "def f(ref self, ref x: int):\n    for ref y in x:\n        pass\n    g(ref x)\n    with a as ref b:\n        pass\n",
+    ),
+    ("no_inline_ref", "def f():\n    ref a = 1\n"),
     ("not_assignable", "def f():\n    f() = 1\n"),
     ("tuple_augmented", "def f():\n    a, b += 1\n"),
     ("optional_attr_assigned", "def f():\n    a?.b = 1\n"),

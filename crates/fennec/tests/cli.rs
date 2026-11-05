@@ -83,7 +83,7 @@ fn run_hands_main_its_arguments_and_input() {
 fn run_reports_errors_and_fails() {
     let output = fennec(&["run", "examples/errors/print.fen"], "").unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(text(&output.stderr).starts_with("error: `print` doesn't exist"));
+    assert!(text(&output.stderr).starts_with("error: there's no global `print`"));
 }
 
 #[test]
@@ -1286,6 +1286,78 @@ fn fix_writes_in_return_types_and_removes_arrows_to_none() {
     assert!(again.status.success() && again.stdout.is_empty());
 }
 
+/// `print` where the function has a `Stdout` is fixed, and with none there's nothing to write.
+#[test]
+fn fix_writes_the_stdout_a_function_has() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-fix-print", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("print.fen");
+    let path = program.to_string_lossy().into_owned();
+    std::fs::write(&program, "def main(out: Stdout):\n    print(\"hello\")\n").unwrap();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    std::fs::write(&program, "def main():\n    print(\"hello\")\n").unwrap();
+    let unfixed = fennec(&["fix", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(written, "def main(out: Stdout):\n    out.print(\"hello\")\n");
+    assert_eq!(unfixed.status.code(), Some(1));
+    assert!(text(&unfixed.stderr).contains("def main(stdout: Stdout):"), "{}", text(&unfixed.stderr));
+}
+
+/// A program with `mut` in each place that moves to `ref`.
+const MUT_IN_EACH_PLACE: &str = "struct Counter:\n    count: int\n\n    def bump(mut self):\n        self.count += 1\n\ndef grow(mut items: list[int]):\n    items.append(3)\n\ndef main(stdout: Stdout):\n    mut items = [1, 2]\n    grow(mut items)\n    for mut item in items:\n        item += 1\n    mut counter = Counter(count=0)\n    counter.bump()\n    stdout.print(items, counter.count)\n";
+
+/// `fennec fix --mut-to-ref` writes `ref`, and the program does what it did.
+#[test]
+fn fix_writes_ref_only_when_asked() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-mut-to-ref", std::process::id()));
+    std::fs::create_dir_all(dir.join("inner")).unwrap();
+    let program = dir.join("inner/program.fen");
+    let path = program.to_string_lossy().into_owned();
+    std::fs::write(&program, MUT_IN_EACH_PLACE).unwrap();
+    let before = fennec(&["run", &path], "").unwrap();
+    assert!(before.status.success(), "{}", text(&before.stderr));
+
+    let plain = fennec(&["fix", &path], "").unwrap();
+    assert!(plain.status.success(), "{}", text(&plain.stderr));
+    assert!(std::fs::read_to_string(&program).unwrap().contains("(mut self)"));
+
+    let folder = dir.to_string_lossy().into_owned();
+    let fixed = fennec(&["fix", "--mut-to-ref", &folder], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    let again = fennec(&["fix", "--mut-to-ref", &path], "").unwrap();
+    let after = fennec(&["run", &path], "").unwrap();
+    let formatted = fennec(&["fmt", "--check", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    assert!(fixed.status.success() && text(&fixed.stdout).starts_with("fixed "), "{}", text(&fixed.stderr));
+    assert_eq!(written, MUT_IN_EACH_PLACE.replace("(mut ", "(ref ").replace("for mut", "for ref"));
+    assert!(written.contains("    mut items = [1, 2]\n"), "{written}");
+    assert!(again.status.success() && again.stdout.is_empty());
+    assert_eq!(text(&after.stdout), text(&before.stdout), "{}", text(&after.stderr));
+    assert!(formatted.status.success(), "{}", text(&formatted.stderr));
+}
+
+/// It says what a person has to read, and goes past a file it can't read.
+#[test]
+fn fix_to_ref_says_what_it_left() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-mut-left", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.fen"), "x = \"never closed\n").unwrap();
+    std::fs::write(dir.join("b.fen"), "# takes a `mut` list\ndef f(mut items: list[int]):\n    pass\n")
+        .unwrap();
+    let folder = dir.to_string_lossy().into_owned();
+    let output = fennec(&["fix", "--mut-to-ref", &folder], "").unwrap();
+    let written = std::fs::read_to_string(dir.join("b.fen")).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let said = text(&output.stderr);
+    assert!(output.status.success(), "{said}");
+    assert!(said.contains("a.fen: it can't be read"), "{said}");
+    assert!(said.contains("b.fen:1: this still says `mut`"), "{said}");
+    assert_eq!(written, "# takes a `mut` list\ndef f(ref items: list[int]):\n    pass\n");
+}
+
 #[test]
 fn fix_reports_what_it_cant_fix() {
     let output =
@@ -1660,6 +1732,30 @@ fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
         let built = fennec(&build, "")?;
         assert!(!built.status.success(), "{build:?}");
         assert!(text(&built.stderr).contains("is copied each time"), "{build:?}: {}", text(&built.stderr));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// What a copy names is the item it's in, as it's written.
+#[test]
+fn a_copy_names_the_item_it_is_in() -> std::io::Result<()> {
+    let dir = std::env::temp_dir().join(format!("fennec_copy_names_{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("items.fen");
+    for (at, said) in [("0", "units[0].tags"), ("at", "units[at].tags")] {
+        std::fs::write(
+            &program,
+            format!(
+                "struct Unit:\n    tags: list[int]\n\ndef main(stdout: Stdout):\n    mut units = [Unit(tags=[1])]\n    \
+                 at = 0\n    for round in range(3):\n        held = units[{at}]\n        units[{at}].tags.append(round)\n        \
+                 stdout.print(held.tags, at)\n"
+            ),
+        )?;
+        let checked = fennec(&["check", &program.to_string_lossy()], "")?;
+        let told = text(&checked.stderr);
+        assert!(told.contains(&format!("`{said}` is copied each time round the loop")), "{told}");
+        assert!(told.contains(&format!("write `copy({said})`")), "{told}");
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())

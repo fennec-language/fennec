@@ -318,7 +318,11 @@ fn emitted_with(
     let checked =
         fennec_check::check(reached).map_err(|_| "the program didn't check once trimmed".to_owned())?;
     // `parallel` runs on the runtime's threads, its work lifted for each range of positions.
-    let lowered = fennec_ir::lower_with(reached, &checked, fennec_ir::Options { outline_parallel: true });
+    let lowered = fennec_ir::lower_with(
+        reached,
+        &checked,
+        fennec_ir::Options { outline_parallel: true, stop_on_failed_main: true },
+    );
     if !lowered.not_lowered.is_empty() {
         let skipped: Vec<String> = lowered
             .not_lowered

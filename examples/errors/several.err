@@ -14,10 +14,10 @@ error: can't mix int and float in `+`
   |
   = help: convert one side with float(...) or int(...)
 
-error: `print` doesn't exist
+error: there's no global `print`
  --> examples/errors/several.fen:8:5
   |
 8 |     print(enemy)
   |     ^^^^^
   |
-  = help: there's no global output: write with the `stdout` that `main` receives, like `stdout.print(x)`
+  = help: a function reaches outside itself only through what's in its signature: write `stdout.print(...)`

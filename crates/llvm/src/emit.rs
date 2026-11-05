@@ -884,6 +884,9 @@ impl Emit<'_, '_, '_> {
             if matches!(held, Kind::Maybe(_) | Kind::MaybeText | Kind::Str) && self.is_optional(kind) {
                 return self.optional_as_enum(&value, &held, kind);
             }
+            if self.widens(&held, kind) {
+                return Ok((self.widened(&value, &held, kind)?, true));
+            }
             return Ok((value, false));
         }
         match kind {
@@ -1263,6 +1266,12 @@ impl Emit<'_, '_, '_> {
                 _ => self.string_binary(op, (&a, &b))?,
             },
             Kind::Str => self.string_binary(op, (&a, &b))?,
+            // Two `shared` values are the same only if they're one value.
+            Kind::Boxed(_) if self.is_cell(&kind) && matches!(op, BinOp::Eq | BinOp::NotEq) => {
+                let (same, cc) = (self.temp(), if op == BinOp::Eq { "eq" } else { "ne" });
+                self.line(&format!("{same} = icmp {cc} ptr {a}, {b}"));
+                same
+            }
             Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) | Kind::Maybe(_)
                 if matches!(op, BinOp::Eq | BinOp::NotEq) =>
             {
@@ -1608,6 +1617,7 @@ impl Emit<'_, '_, '_> {
         match name {
             // A test's `Stdout` is a fake that keeps what's printed, which the runtime holds.
             "Stdout.print" if !self.module.shared.traced => self.print(args.get(1..).unwrap_or_default()),
+            "Stdout.write" if !self.module.shared.traced => self.write(args.get(1..).unwrap_or_default()),
             "list.len" => {
                 if let Some(Operand::Local(local)) = first
                     && let Some(map) = self.known.map_walks.get(&local.0).copied()
@@ -1704,6 +1714,10 @@ impl Emit<'_, '_, '_> {
             {
                 self.capability_call(dest, other, args, span)
             }
+            // A test's network is a fake, which only the interpreter holds.
+            other if crate::analysis::is_socket_method(other) && !self.module.shared.traced => {
+                self.socket_call(dest, other, args, span)
+            }
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }
     }
@@ -1751,6 +1765,14 @@ impl Emit<'_, '_, '_> {
             }
         }
         if from != wanted {
+            if self.widens(&from, &wanted) {
+                let (held, _) = self.operand(value)?;
+                let made = self.widened(&held, &from, &wanted)?;
+                if wanted.in_memory() {
+                    return self.assign_memory_owned(dest, &made);
+                }
+                return self.assign(dest, &made);
+            }
             if self.is_optional(&wanted) {
                 return self.make_case(dest, "Some", std::slice::from_ref(value));
             }
@@ -1874,6 +1896,8 @@ impl Emit<'_, '_, '_> {
             InstKind::IsErr { dest, value } => self.is_case(*dest, value, "Err"),
             InstKind::GetOk { dest, value } => self.get_case_field(*dest, value, "Ok", "value"),
             InstKind::GetErr { dest, value } => self.get_case_field(*dest, value, "Err", "error"),
+            InstKind::IsError { dest, value, type_name } => self.is_case(*dest, value, type_name),
+            InstKind::AsError { dest, value } => self.as_error(*dest, value),
             InstKind::GetField { dest, object, field } => self.get_field(*dest, object, field),
             InstKind::SetField { object, path, value } => self.set_field(*object, path, value),
             InstKind::MakeTuple { dest, items } => self.make(*dest, items),
@@ -2120,17 +2144,17 @@ impl Emit<'_, '_, '_> {
         let text = self.text_of(&returns);
         let keeps = self.keeps_its_value();
         if returns.in_memory() {
-            let (at, _) =
+            let (at, fresh) =
                 self.value_for(value.ok_or("it returns nothing where a value is due")?, &returns)?;
             let held = self.temp();
             self.line(&format!("{held} = load {text}, ptr {at}"));
             self.line(&format!("store {text} {held}, ptr %ret"));
             // Leaving, a local's blocks go with its value; others' get another owner.
             let moved = match value {
-                Some(Operand::Local(local)) if self.owns_inline(*local) => Some(*local),
+                Some(Operand::Local(local)) if !fresh && self.owns_inline(*local) => Some(*local),
                 _ => None,
             };
-            if moved.is_none() {
+            if moved.is_none() && !fresh {
                 self.retain_inline(&returns, "%ret");
             }
             if keeps {
@@ -2149,7 +2173,7 @@ impl Emit<'_, '_, '_> {
         let (held, fresh) = self.value_for(operand, &returns)?;
         // Leaving, a local's owner goes with its value.
         let moved = match operand {
-            Operand::Local(local) if returns.counted() && self.owns(*local) => Some(*local),
+            Operand::Local(local) if !fresh && returns.counted() && self.owns(*local) => Some(*local),
             _ => None,
         };
         if returns.counted() && moved.is_none() && !fresh {
@@ -2209,6 +2233,7 @@ def main(stdout: Stdout, args: Args, clock: Clock):
     stdout.print(args.len(), args.program, started.nanos)
     for arg in args:
         stdout.print(arg, args[0])
+    stdout.write(args.len())
 ";
         let text = text_of(source, "main")?;
         assert!(text.contains("@fennec_args_list("), "{text}");
@@ -2272,7 +2297,11 @@ def main(stdout: Stdout):
                       stdout.print(counts)\n";
         let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
-        let program = fennec_ir::lower_with(&module, &checked, fennec_ir::Options { outline_parallel: true });
+        let program = fennec_ir::lower_with(
+            &module,
+            &checked,
+            fennec_ir::Options { outline_parallel: true, ..fennec_ir::Options::default() },
+        );
         assert!(crate::parallel::uses_parallel(&program), "{:?}", program.not_lowered);
         let (units, _, _) = emit(&program)?;
         let text =

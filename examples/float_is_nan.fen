@@ -1,0 +1,14 @@
+# `x.is_nan()` asks about NaN. Since NaN equals NaN, so that floats work as keys and sort, `==`
+# can't.
+
+struct Reading:
+    level = 0.5
+
+def main(stdout: Stdout):
+    big = 1e308 * 10.0
+    nothing = big - big
+    stdout.print(nothing.is_nan(), big.is_nan(), (0.5).is_nan(), (-big).is_nan())
+    readings = [Reading(), Reading(level=nothing)]
+    stdout.print([reading.level.is_nan() for reading in readings])
+    good = [level for level in [1.0, nothing, 2.0] if not level.is_nan()]
+    stdout.print(good)

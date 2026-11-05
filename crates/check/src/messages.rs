@@ -163,6 +163,13 @@ pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -
         (Type::Int, Type::Float) => {
             diagnostic.with_help("convert it with int(...), round(...) or math.floor(...)")
         }
+        (Type::Arrow(..), Type::Function(key)) => {
+            let name = key.rsplit('.').next().unwrap_or(key);
+            diagnostic.with_help(format!(
+                "`{name}` has to take and give back what {} says, with no `mut` parameter or type parameters of its own",
+                a(expected)
+            ))
+        }
         _ => diagnostic,
     }
 }

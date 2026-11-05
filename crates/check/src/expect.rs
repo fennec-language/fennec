@@ -38,6 +38,13 @@ impl FnCx<'_> {
             ExprKind::Match { subject, arms } => {
                 self.match_expr(subject, arms, expr.span, Some(expected.clone()))
             }
+            // `step: (int) -> int = n => n + 1`: an arrow takes its parameters' types from the
+            // function type expected of it.
+            ExprKind::Lambda { params, body }
+                if let Type::Arrow(types, _) = self.checker.settled(expected).without_none() =>
+            {
+                self.lambda(params, body, &types, expr.span)
+            }
             ExprKind::List(items)
                 if let Type::Array(item, size) = self.checker.settled(expected).without_none() =>
             {

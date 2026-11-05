@@ -376,7 +376,8 @@ fn a_named_function_goes_where_its_function_type_is_written() {
 
         def main(stdout: Stdout):
             step: (int) -> int = twice
-            stdout.print(apply(twice, 3), step(1))
+            bumped: (int) -> int = n => n + 1
+            stdout.print(apply(twice, 3), step(1), bumped(1))
             stdout.print(apply(add, 1))
             touch: (int) -> nothing = bump
     ";

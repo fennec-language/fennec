@@ -259,7 +259,10 @@ fn fails_can_name_several_errors_and_question_mark_passes_any_up() {
          read(path)?\n\n\
          def main(stdout: Stdout):\n    match load(\"a\"):\n        case Ok(n): stdout.print(n)\n        \
          case Err(.NotFound(path)): stdout.print(path)\n        case Err(.Bad(text)): stdout.print(text)\n        \
-         case Err(_): pass\n    stdout.print(apply(path => load(path), \"b\") else 0)\n"
+         case Err(_): pass\n    stdout.print(apply(path => load(path), \"b\") else 0)\n    \
+         reader: (str) -> int fails LoadError | ParseError = path => load(path)\n    \
+         stdout.print(said(reader(\"c\")))\n\n\
+         def said(found: Result[int, LoadError | ParseError]) -> int:\n    found else -1\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
     assert_eq!(
@@ -270,7 +273,7 @@ fn fails_can_name_several_errors_and_question_mark_passes_any_up() {
              def check(path: str) -> int fails LoadError:\n    other()?\n"
         )),
         [
-            "`fails` names errors, but `int` is an int @ int",
+            "`|` joins errors, but `int` is an int @ int",
             "no enum has a case called `Gone` @ .Gone(path)",
             "`check` says it fails with `LoadError`, but it can fail with `Other` too @ LoadError",
         ]

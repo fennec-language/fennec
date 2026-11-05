@@ -540,6 +540,10 @@ struct Parser:
     ## are one written type named `|`.
     def fails_type(mut self) -> TypeExpr:
         self.advance()
+        self.errors_type()?
+
+    ## One error, or several joined by `|`, as after `fails` or in `Result[int, A | B]`.
+    def errors_type(mut self) -> TypeExpr:
         first = self.type_expr()?
         if not self.at_punct("|"):
             return first
@@ -584,9 +588,9 @@ struct Parser:
             while self.eat_punct("."):
                 name += "." + self.name("a type")?
         if self.eat_punct("["):
-            args.append(self.type_expr()?)
+            args.append(self.errors_type()?)
             while self.eat_punct(","):
-                args.append(self.type_expr()?)
+                args.append(self.errors_type()?)
             self.expect_punct("]")?
         optional = self.eat_punct("?")
         TypeExpr(name=name, args=args, optional=optional, span=start.to(self.prev_span()))

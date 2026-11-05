@@ -1,0 +1,79 @@
+name: Staging
+
+# Commits reach `staging` from this machine's gate (see `.github/scripts/fennec-land`), and this
+# checks the newest one on every platform. If it passes, main moves to exactly that commit. Each
+# commit holds the ones before it, so one that waited and was replaced still gets checked. A running
+# check is never cancelled: `staging` moves every few minutes, so cancelling would mean main never
+# moved at all.
+on:
+  push:
+    branches: [staging]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging
+  cancel-in-progress: false
+
+jobs:
+  # actionlint and the runner take only `./` for a workflow in this repository.
+  ci:
+    uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+
+  codeql:
+    uses: ./.github/workflows/codeql.yml # zizmor: ignore[self-repository]
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      security-events: write
+
+  # Until the repository variable says otherwise, this only says what it would do.
+  would-move-main:
+    name: Say whether main could move
+    needs: [ci, codeql]
+    if: vars.STAGING_MOVES_MAIN != 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - run: |
+          git fetch --quiet origin main
+          if git merge-base --is-ancestor origin/main "$GITHUB_SHA"; then
+            echo "::notice::main could move to $GITHUB_SHA"
+          else
+            echo "::notice::main has commits this doesn't, so it couldn't move to $GITHUB_SHA"
+          fi
+
+  # The only thing allowed past main's rules: a deploy key, which only this environment can read,
+  # and only a run on `staging` can use. It never forces, so main can only move forward, and it
+  # names the commit that passed, not whatever `staging` is by now.
+  move-main:
+    name: Move main to this commit
+    needs: [ci, codeql]
+    if: vars.STAGING_MOVES_MAIN == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    environment: main-fast-forward
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ssh-key: ${{ secrets.MAIN_FAST_FORWARD_KEY }}
+          # Pushing is what this job is for, and it uploads nothing the key could end up in.
+          persist-credentials: true # zizmor: ignore[artipacked]
+      - run: |
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor origin/main "$GITHUB_SHA"; then
+            echo "::error::main has commits $GITHUB_SHA doesn't, so it can't fast-forward"
+            exit 1
+          fi
+          git push origin "$GITHUB_SHA:refs/heads/main"

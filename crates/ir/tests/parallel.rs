@@ -11,7 +11,7 @@ fn lowered(source: &str, options: Options) -> Result<Program, String> {
     Ok(program)
 }
 
-const OUTLINED: Options = Options { outline_parallel: true };
+const OUTLINED: Options = Options { outline_parallel: true, stop_on_failed_main: false };
 
 fn function_named<'p>(program: &'p Program, name: &str) -> Option<&'p Function> {
     program.functions.iter().find(|function| function.name == name)
@@ -220,7 +220,7 @@ def twice(f: (int) -> int, n: int) -> int:
 def total(grids: list[list[int]]) -> int:
     sum(sum(twice(n => n + 1, cell) for cell in parallel(row)) for row in parallel(grids))
 ";
-    let program = lowered(source, Options { outline_parallel: true })?;
+    let program = lowered(source, OUTLINED)?;
     let mut names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
     names.sort_unstable();
     let count = names.len();

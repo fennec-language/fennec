@@ -23,7 +23,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, RwLock};
 
 use fennec_syntax::{Diagnostic, Span};
 
@@ -49,7 +49,9 @@ enum Held {
 
 /// What the runtime keeps of a `shared` value.
 struct Slot {
-    held: Mutex<Held>,
+    /// Only ever held for a moment: the lock's word in the block is what makes threads wait. Read by
+    /// every reader of a value, so they don't line up here.
+    held: RwLock<Held>,
     /// How many handles there are to it.
     handles: AtomicU64,
 }
@@ -228,7 +230,7 @@ pub extern "C" fn shared_new(cell: i64) -> i64 {
         }
         state.heap.blocks.insert(block);
         let table = state.heap.leave_table();
-        let slot = Slot { held: Mutex::new(Held::Free(table)), handles: AtomicU64::new(count) };
+        let slot = Slot { held: RwLock::new(Held::Free(table)), handles: AtomicU64::new(count) };
         tables(|tables| tables.insert(address, Arc::new(slot)));
         // The counts it held of what it was given go, with their copies in the table.
         for old in held.into_iter().filter(|old| *old != 0) {
@@ -249,23 +251,30 @@ pub extern "C" fn shared_enter(cell: i64, write: i64) -> i64 {
 }
 
 fn enter(state: &mut State, slot: &Slot, write: bool) -> Result<(), Diagnostic> {
-    let mut held = slot.held.lock().unwrap_or_else(PoisonError::into_inner);
     if write {
+        let mut held = slot.held.write().unwrap_or_else(PoisonError::into_inner);
         let table = match std::mem::replace(&mut *held, Held::Taken) {
             Held::Free(table) => table,
             Held::Read(table) => Box::new(Arc::try_unwrap(table).map_err(|_| still_read())?),
             Held::Taken => return Err(still_read()),
         };
+        drop(held);
         state.heap.enter_table(table, GUARDED_OWNER << OWNER_SHIFT);
-    } else {
-        let reading = match std::mem::replace(&mut *held, Held::Taken) {
-            Held::Free(table) => Arc::new(*table),
-            Held::Read(table) => table,
-            Held::Taken => return Err(still_read()),
-        };
-        state.heap.reading.push(Arc::clone(&reading));
-        *held = Held::Read(reading);
+        return Ok(());
     }
+    if let Held::Read(table) = &*slot.held.read().unwrap_or_else(PoisonError::into_inner) {
+        state.heap.reading.push(Arc::clone(table));
+        return Ok(());
+    }
+    // The first to read it since it was written, or another thread that was.
+    let mut held = slot.held.write().unwrap_or_else(PoisonError::into_inner);
+    let reading = match std::mem::replace(&mut *held, Held::Taken) {
+        Held::Free(table) => Arc::new(*table),
+        Held::Read(table) => table,
+        Held::Taken => return Err(still_read()),
+    };
+    state.heap.reading.push(Arc::clone(&reading));
+    *held = Held::Read(reading);
     Ok(())
 }
 
@@ -282,7 +291,7 @@ pub extern "C" fn shared_leave(cell: i64, write: i64) -> i64 {
         if write != 0 {
             let table = state.heap.leave_table();
             let left = with_slot(address, |slot| {
-                *slot.held.lock().unwrap_or_else(PoisonError::into_inner) = Held::Free(table);
+                *slot.held.write().unwrap_or_else(PoisonError::into_inner) = Held::Free(table);
             });
             left.ok_or_else(|| lost(address))?;
         } else {
@@ -382,7 +391,8 @@ pub extern "C" fn shared_wait() {
 pub(super) fn free_table(state: &mut State, cell: u64) {
     let Some(slot) = tables(|tables| tables.remove(&cell)) else { return };
     GONE.fetch_add(1, Ordering::Release);
-    let held = std::mem::replace(&mut *slot.held.lock().unwrap_or_else(PoisonError::into_inner), Held::Taken);
+    let held =
+        std::mem::replace(&mut *slot.held.write().unwrap_or_else(PoisonError::into_inner), Held::Taken);
     let table = match held {
         Held::Free(table) => *table,
         Held::Read(table) => Arc::try_unwrap(table).unwrap_or_default(),

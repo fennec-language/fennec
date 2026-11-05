@@ -160,7 +160,7 @@ impl Emit<'_, '_, '_> {
                     emit.line(&format!("call void @fennec_str_print(ptr {block})"));
                 });
             }
-            Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => {
+            Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => {
                 self.declare("declare void @fennec_print_block(ptr) nounwind");
                 self.line(&format!("call void @fennec_print_block(ptr {value})"));
             }

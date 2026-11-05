@@ -917,6 +917,18 @@ pub(super) fn read_word(state: &State, element: &Element, word: u64) -> Value {
     read(state, element, &mut std::iter::once(&word))
 }
 
+/// Whether a type is an error, which an enum says by its type too.
+#[cfg(not(feature = "lean"))]
+fn names_an_error(state: &State, name: &str) -> bool {
+    state.interp.type_info(type_name(name)).is_some_and(|info| info.kind == crate::interp::TypeKind::Error)
+}
+
+/// With no interpreter, nothing that reads a value asks whether it's an error.
+#[cfg(feature = "lean")]
+fn names_an_error(_: &State, _: &str) -> bool {
+    false
+}
+
 fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'w u64>) -> Value {
     let word = |words: &mut dyn Iterator<Item = &'w u64>| words.next().copied().unwrap_or(0);
     match element {
@@ -978,10 +990,7 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
                 _ => {
                     let value = instance(name, Some(case), read);
                     // An error with cases says so by its type too.
-                    let error = state
-                        .interp
-                        .type_info(type_name(name))
-                        .is_some_and(|info| info.kind == crate::interp::TypeKind::Error);
+                    let error = names_an_error(state, name);
                     match value {
                         Value::Instance(mut made) if error => {
                             if let Some(made) = Rc::get_mut(&mut made) {

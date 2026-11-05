@@ -201,9 +201,20 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{count} = load i64, ptr {live_at}"));
         self.line(&format!("{one_fewer} = add i64 {count}, -1"));
         self.line(&format!("store i64 {one_fewer}, ptr {live_at}"));
+        self.free_slot(&fields, parts, &at);
         self.line(&format!("br label %{next}"));
         self.start_block(&next);
         self.loop_end(&end);
+    }
+
+    /// There's a free slot at `at` now, so nothing above it may be used first.
+    fn free_slot(&mut self, fields: &str, parts: &Parts, at: &str) {
+        let free_at = self.offset(fields, parts.free_from);
+        let (first, lower, lowest) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{first} = load i64, ptr {free_at}"));
+        self.line(&format!("{lower} = icmp slt i64 {at}, {first}"));
+        self.line(&format!("{lowest} = select i1 {lower}, i64 {at}, i64 {first}"));
+        self.line(&format!("store i64 {lowest}, ptr {free_at}"));
     }
 
     pub(crate) fn id_map_builtin(
@@ -369,13 +380,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{live} = load i64, ptr {live_at}"));
                 self.line(&format!("{one_fewer} = add i64 {live}, -1"));
                 self.line(&format!("store i64 {one_fewer}, ptr {live_at}"));
-                // There's a free slot here now, so nothing above it may be used first.
-                let free_at = self.offset(&fields, parts.free_from);
-                let (first, lower, lowest) = (self.temp(), self.temp(), self.temp());
-                self.line(&format!("{first} = load i64, ptr {free_at}"));
-                self.line(&format!("{lower} = icmp slt i64 {}, {first}", id.0));
-                self.line(&format!("{lowest} = select i1 {lower}, i64 {}, i64 {first}", id.0));
-                self.line(&format!("store i64 {lowest}, ptr {free_at}"));
+                self.free_slot(&fields, parts, &id.0);
                 self.line(&format!("br label %{done}"));
                 self.start_block(&no);
                 if let Some(dest) = dest {

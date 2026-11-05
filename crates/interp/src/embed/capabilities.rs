@@ -147,27 +147,10 @@ pub extern "C" fn call(word: i64, method: i64, count: i64, start: i64, end: i64)
     })
 }
 
-/// `list(capability)`: what looping over one gives, as a temporary holding a list.
-pub extern "C" fn items(word: i64, start: i64, end: i64) -> i64 {
-    attempt(|state: &mut State| {
-        let receiver = value_of(state, word);
-        let items = state.interp.iterate(receiver, span(start, end))?;
-        Ok(state.push(Value::list(items)))
-    })
-}
-
-/// `capability[at]`, as a temporary holding the item.
-pub extern "C" fn item(word: i64, at: i64, start: i64, end: i64) -> i64 {
-    attempt(|state: &mut State| {
-        let receiver = value_of(state, word);
-        let item = state.interp.index(receiver, Value::Int(at), span(start, end))?;
-        Ok(state.push(item))
-    })
-}
-
 /// Runs a method of one of std's types that's written in the runtime, like `Connection.write`,
 /// with the last `count` temporaries handed in, the value first. `name` has any named arguments on
 /// the end as a call writes them, like `Connection.read_line.timeout`, which come last.
+#[cfg(not(feature = "lean"))]
 pub extern "C" fn std_method(name: i64, count: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let at = span(start, end);

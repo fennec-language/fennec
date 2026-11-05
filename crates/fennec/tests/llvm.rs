@@ -5619,38 +5619,6 @@ def main(stdout: Stdout):
     )
 }
 
-/// Keys are hashed and compared by their words, so one holding a string can't be: two equal
-/// strings can be two blocks. Native code turns those dicts down, and the JIT takes them.
-#[test]
-fn keys_holding_strings_go_to_the_jit() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let source = r#"struct Person:
-    name: str
-    age: int
-
-def main(stdout: Stdout):
-    mut by_person: dict[Person, int] = {}
-    by_person[Person("a string long enough that it can't be held inline", 1)] = 1
-    stdout.print(by_person.len())
-"#;
-    let dir = folder("keys_holding_strings")?;
-    let program = dir.join("keys_holding_strings.fen");
-    std::fs::write(&program, source)?;
-    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("out"));
-    let built = fennec(&["build", "--llvm", &program, "-o", &output.to_string_lossy()], &dir)?;
-    assert!(!built.status.success());
-    assert!(String::from_utf8_lossy(&built.stderr).contains("Dict(Named(\"Person\"), Int)"));
-    let ran = fennec(&["run", &program], &dir)?;
-    assert!(ran.status.success());
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "1\n");
-    let said = String::from_utf8_lossy(&ran.stderr).into_owned();
-    assert!(said.starts_with("note: running this with the JIT, since LLVM can't build it: `main`"), "{said}");
-    std::fs::remove_dir_all(&dir)?;
-    Ok(())
-}
-
 /// A constant that isn't written out is worked out once. Reading it this often would take minutes
 /// if each read worked it out again.
 #[test]

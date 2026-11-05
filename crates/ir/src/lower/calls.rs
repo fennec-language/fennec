@@ -57,6 +57,7 @@ pub(super) fn owner_name(ty: &Type) -> Option<&str> {
         Type::Int => Some("int"),
         Type::Float => Some("float"),
         Type::Bool => Some("bool"),
+        Type::Optional(_) => Some("Optional"),
         Type::Named(name) => Some(name),
         _ => None,
     }

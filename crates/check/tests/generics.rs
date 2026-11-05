@@ -763,3 +763,18 @@ fn a_function_with_no_self_has_its_first_parameter_compared_too() {
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].contains("takes other arguments"), "{found:?}");
 }
+
+#[test]
+fn what_might_be_missing_can_be_saved_when_what_it_holds_can() {
+    let empty: [&str; 0] = [];
+    let types = "struct Plain:\n    size = 1\n\ndef saved[T: Serializable](x: T) -> int:\n    1\n\ndef loaded[T: Deserializable]() -> int:\n    1\n";
+    let body =
+        "words: list[str?] = [None]\nstdout.print(saved(words), loaded[int?](), loaded[list[str?]]())\n";
+    assert_eq!(crate::in_main_after(types, body), empty);
+    let found = crate::in_main_after(types, "plains: list[Plain?] = [None]\nstdout.print(saved(plains))\n");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("isn't a `Serializable`"), "{found:?}");
+    let found = crate::in_main_after(types, "stdout.print(saved([Plain()]))\n");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("asks more of what it holds"), "{found:?}");
+}

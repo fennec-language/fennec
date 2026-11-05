@@ -188,3 +188,7 @@ def main(stdout: Stdout):
     squad.serialize(mut counted)
     stdout.print(counted.total)
     stdout.print(shown(bytes([1, 2])))
+
+    # What might be missing is saved as what it holds, or as nothing.
+    maybes: list[int?] = [1, None]
+    stdout.print(shown(maybes))

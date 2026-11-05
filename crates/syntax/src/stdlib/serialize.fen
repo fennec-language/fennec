@@ -149,3 +149,15 @@ extend set[T: Hashable & Deserializable]:
         for item in src.sequence[T]()?:
             found.add(item)
         found
+
+extend Optional[T: Serializable]:
+    def serialize(self, mut out: Serializer):
+        if self is None:
+            out.none()
+        else:
+            out.value(self)
+
+extend Optional[T: Deserializable]:
+    def deserialize(mut src: Deserializer) -> T? fails ParseError:
+        if src.none()?: return None
+        src.value[T]()?

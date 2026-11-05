@@ -227,6 +227,16 @@ pub fn shapes(layouts: &Layouts) -> Vec<Rc<Element>> {
         .collect()
 }
 
+/// The numbers of the shapes of `shared` values.
+fn cells(layouts: &Layouts) -> Vec<u64> {
+    (0..layouts.len())
+        .filter_map(|id| {
+            let cell = layouts.get(u32::try_from(id).ok()?)?.cell;
+            cell.then(|| u64::try_from(id).ok()).flatten()
+        })
+        .collect()
+}
+
 /// How the runtime reads values of a kind from words.
 pub fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
     let fields = |fields: &[Field]| -> Option<Vec<(Rc<str>, Element)>> {
@@ -291,6 +301,7 @@ impl<'l> Registry<'l> {
     pub fn new(layouts: &'l Layouts) -> Self {
         let mut tables = Tables {
             shapes: shapes(layouts),
+            cells: cells(layouts),
             str_shape: u64::try_from(layouts.len()).unwrap_or(0),
             text_headers: layouts.text_headers(),
             ..Tables::default()

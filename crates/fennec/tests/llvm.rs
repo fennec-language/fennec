@@ -1994,6 +1994,59 @@ fn one_shared_value_under_two_names_in_a_with_stays_one_value() -> std::io::Resu
     same_as_the_interpreter_in_both_builds("one_cell_two_names", ONE_CELL_TWO_NAMES)
 }
 
+/// `==` on `shared` values, alone and inside other values: the same only if they're one value, as
+/// comparing what two hold would take a second lock while one is held.
+const SHARED_SAME: &str = "shared Account:
+    total = 0
+
+struct Holder:
+    account: Account
+    n: int
+
+enum Either:
+    One(account: Account)
+    Nothing
+
+def main(stdout: Stdout):
+    a = Account(total=1)
+    b = a
+    c = Account(total=1)
+    stdout.print(a == a, a == b, a == c, a != a, a != c)
+    stdout.print(Holder(a, 1) == Holder(b, 1), Holder(a, 1) == Holder(c, 1))
+    stdout.print([a] == [b], [a] == [c], a in [c], a in [b], [a, c].index(c))
+    stdout.print(Either.One(a) == Either.One(b), Either.One(a) == Either.One(c))
+    maybe: Account? = a
+    stdout.print(maybe == b, maybe == c)
+    with b as mut held:
+        held.total = 2
+    stdout.print(a == b, a == c)
+";
+
+#[test]
+fn shared_values_are_the_same_only_if_they_are_one_value() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let (printed, ..) = interpreted("shared_same_said", SHARED_SAME)?;
+    let wanted = "True True False False True\nTrue False\nTrue False False True 1\nTrue False\nTrue False\nTrue False\n";
+    assert_eq!(printed, wanted);
+    same_as_the_interpreter_in_both_builds("shared_same", SHARED_SAME)?;
+    // A type's own `def ==` still decides, wherever it's written.
+    let own = "\
+shared Account:
+    total = 0
+
+    def ==(self, other: Account) -> bool:
+        self.total > 100
+
+def main(stdout: Stdout):
+    a = Account(total=1)
+    c = Account(total=200)
+    stdout.print(a == a, a == c, c == a, c == c, a != c, c != a)
+";
+    same_as_the_interpreter_in_both_builds("shared_own_same", own)
+}
+
 #[test]
 fn what_changes_where_it_is_stays_right_with_one_cell_under_two_names() -> std::io::Result<()> {
     if !ready() {

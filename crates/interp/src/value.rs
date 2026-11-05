@@ -349,6 +349,7 @@ impl PartialEq for Value {
             (Value::Unit, Value::Unit) | (Value::None, Value::None) => true,
             (Value::Lent(a), Value::Lent(b)) => a.address == b.address,
             (Value::Generator(a), Value::Generator(b)) => Rc::ptr_eq(a, b),
+            (Value::Shared(a), Value::Shared(b)) => Rc::ptr_eq(a, b),
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => floats_same(*a, *b),

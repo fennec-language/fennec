@@ -1263,6 +1263,12 @@ impl Emit<'_, '_, '_> {
                 _ => self.string_binary(op, (&a, &b))?,
             },
             Kind::Str => self.string_binary(op, (&a, &b))?,
+            // Two `shared` values are the same only if they're one value.
+            Kind::Boxed(_) if self.is_cell(&kind) && matches!(op, BinOp::Eq | BinOp::NotEq) => {
+                let (same, cc) = (self.temp(), if op == BinOp::Eq { "eq" } else { "ne" });
+                self.line(&format!("{same} = icmp {cc} ptr {a}, {b}"));
+                same
+            }
             Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) | Kind::Maybe(_)
                 if matches!(op, BinOp::Eq | BinOp::NotEq) =>
             {

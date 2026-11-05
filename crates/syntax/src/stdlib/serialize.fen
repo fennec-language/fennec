@@ -80,6 +80,10 @@ interface Deserializer:
     ## The error for a `where` rule that what was read breaks.
     def rule(self, message: str) -> ParseError
 
+    ## The error for the item at `at` of what was just read as a sequence, saying `message` about
+    ## it, like a row of a `Grid` that's the wrong length.
+    def at_item(self, at: int, message: str) -> ParseError
+
     ## Which of `cases` comes next, as a place in it: each its name and whether it has data. One
     ## with data then reads its fields as a struct's, and `end_case` finishes it.
     def case(mut self, name: str, cases: list[(str, bool)]) -> int fails ParseError

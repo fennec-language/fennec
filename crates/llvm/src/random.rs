@@ -47,6 +47,9 @@ impl Emit<'_, '_, '_> {
     ) -> Result<(), String> {
         self.random_helpers();
         let dest = dest.ok_or("no result")?;
+        if let ("random_choice" | "random.random_choice", [seed, drawn, list]) = (name, args) {
+            return self.random_choice(dest, (seed, drawn), list, span);
+        }
         let mut ints = Vec::with_capacity(args.len());
         for arg in args {
             ints.push(self.operand(arg)?.0);
@@ -95,6 +98,39 @@ impl Emit<'_, '_, '_> {
             }
             _ => Err(format!("it calls `{name}`, which this backend doesn't take yet")),
         }
+    }
+
+    /// `random_choice`: an item of a list, by the number drawn, and how many were drawn after it.
+    fn random_choice(
+        &mut self,
+        dest: LocalId,
+        (seed, drawn): (&Operand, &Operand),
+        list: &Operand,
+        span: Span,
+    ) -> Result<(), String> {
+        let ((seed, _), (drawn, _)) = (self.operand(seed)?, self.operand(drawn)?);
+        let (list, _, held) = self.list_operand(list)?;
+        let length = self.list_length(&list);
+        let (empty, stop, go) = (self.temp(), self.label("empty"), self.label("some"));
+        self.line(&format!("{empty} = icmp eq i64 {length}, 0"));
+        self.line(&format!("br i1 {empty}, label %{stop}, label %{go}, !prof !0"));
+        self.start_block(&stop);
+        let message = self.literal("can't choose from an empty list");
+        self.stop_with(&message, span);
+        self.start_block(&go);
+        let (pair, at, after) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{pair} = call {{ i64, i64 }} @fen_below(i64 {seed}, i64 {drawn}, i64 {length})"));
+        self.line(&format!("{at} = extractvalue {{ i64, i64 }} {pair}, 0"));
+        self.line(&format!("{after} = extractvalue {{ i64, i64 }} {pair}, 1"));
+        let item = self.item_value(&list, &held, &at);
+        let kind = self.kind_of(dest)?.clone();
+        let place = self.place_for(&kind);
+        self.put_pair(&kind, &place, [(&held, &item), (&Kind::Int, &after)])?;
+        if kind.in_memory() {
+            return self.assign_memory_owned(dest, &place);
+        }
+        let block = self.load_field(&kind, &place, "");
+        self.assign(dest, &block)
     }
 
     /// "can't pick a number from LOW to HIGH: `low` is bigger than `high`", as the interpreter

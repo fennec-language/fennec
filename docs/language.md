@@ -159,7 +159,7 @@ stream = fs.open(filename) else:
 ```
 
 - `?` is only for failures, `else` ends a chain and can leave, and ignoring a returned value is an error.
-- `.Case` is required when the type is known.
+- `.Case` is required when the type is known, in values and in `case` patterns; `fennec fix` writes it. Built.
 - `fails A | B` combines failures from different places.
 - An `else:` block must leave: it ends with `return`, `fail`, `continue` or `break`. Built.
 

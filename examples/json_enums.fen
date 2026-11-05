@@ -41,7 +41,7 @@ test "cases are their names, or objects of their fields":
     assert json.loads[list[Order]](text)? == orders
 
 test "a generic struct reads its fields with its type filled in":
-    pair = Pair(first=Tile.Wall, second=Tile.Door(locked=True))
+    pair = Pair(first=Tile.Wall, second=.Door(locked=True))
     loaded = json.loads[Pair[Tile]](json.dumps(pair))?
     assert loaded == pair
     assert json.loads[Pair[int]]("{\"first\": 1, \"second\": 2}")? == Pair(first=1, second=2)
@@ -62,7 +62,7 @@ test "a whole level saves and loads with one call":
     text = json.dumps(level)
     loaded = json.loads[Level](text)?
     assert json.dumps(loaded) == text
-    assert loaded.tiles[(2, 1)] == Tile.Door(locked=False)
+    assert loaded.tiles[(2, 1)] == .Door(locked=False)
     assert loaded.rooms.lists() == [[0, 1], [], [5]]
     assert loaded.scores.items() == [("ash", 3), ("kit", 3), ("vex", 3)]
 

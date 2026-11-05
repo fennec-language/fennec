@@ -616,7 +616,7 @@ fn only_sum_takes_a_start() {
 fn a_literal_default_gives_its_type() {
     let text = "enum Mode:\n    Fast\n    Slow\n\ndef scan(limit=8, ratio=-0.5, name='x', on=True, mode=Mode.Fast) -> str:\n    \
         f'{limit + 1} {ratio * 2.0} {name.upper()} {not on} {mode}'\n\ndef main(stdout: Stdout):\n    \
-        stdout.print(scan(limit=2, mode=Mode.Slow))\n";
+        stdout.print(scan(limit=2, mode=.Slow))\n";
     let empty: [&str; 0] = [];
     assert_eq!(problems(text), empty);
     let wrong = text.replace("scan(limit=2", "scan(limit='two'");

@@ -223,7 +223,10 @@ impl<'c> FnCx<'c> {
         for (param, written) in params.iter().zip(&def.params) {
             cx.default_written(written);
             if let Some(default) = &written.default {
-                let actual = cx.expr_as(default, &param.ty);
+                // A parameter with no type written takes it from its default, so only a written
+                // one is expected of the default.
+                let actual =
+                    if written.ty.is_some() { cx.expr_as(default, &param.ty) } else { cx.expr(default) };
                 cx.check_arg(param, &actual, default.span);
             }
             cx.declare_as(&param.name, param.ty.clone(), param.is_mut, Origin::Param, written.span);
@@ -497,7 +500,9 @@ impl<'c> FnCx<'c> {
     fn check_field_default(&mut self, type_name: &str, case: Option<&str>, field: &Field) {
         let expected = self.checker.field_type(type_name, case, &field.name);
         let Some(default) = &field.default else { return };
-        let actual = self.expr_as(default, &expected);
+        // A field with no type written takes it from its default, so only a written one is
+        // expected of the default.
+        let actual = if field.ty.is_some() { self.expr_as(default, &expected) } else { self.expr(default) };
         if !self.checker.fits(&expected, &actual) {
             let what = format!("`{}`", field.name);
             self.error(crate::messages::mismatch(&what, &expected, &actual, default.span));

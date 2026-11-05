@@ -68,4 +68,4 @@ def main(stdout: Stdout):
         case False:
             "no"
     stdout.print(said)
-    stdout.print(Junction(at=cell, light=.Red) == Junction(at=Cell(3, 4), light=Light.Red))
+    stdout.print(Junction(at=cell, light=.Red) == Junction(at=Cell(3, 4), light=.Red))

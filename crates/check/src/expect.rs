@@ -102,7 +102,20 @@ impl FnCx<'_> {
             wanted => wanted,
         };
         if matches!(&wanted, Type::Named(name) if name == written) && self.has_case(written, case) {
-            self.checker.named_cases.insert((object.span.start, object.span.end));
+            // Code the checker writes, like a generated `serialize`, has its spans in the prelude.
+            if object.span.in_prelude() {
+                return;
+            }
+            let shown = match &object.kind {
+                ExprKind::Name(name) => name.as_str(),
+                _ => written,
+            };
+            let message = format!("the type here is known, so write `.{case}` without `{shown}`");
+            self.error(
+                Diagnostic::new(message, object.span)
+                    .with_help("`fennec fix` makes this change")
+                    .with_fix(object.span, ""),
+            );
         }
     }
 

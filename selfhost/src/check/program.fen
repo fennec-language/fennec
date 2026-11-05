@@ -259,11 +259,11 @@ struct Program:
         if builtin:
             ty = builtin_type(name, args)
         elif name in generics:
-            ty = Type.Param(name)
+            ty = .Param(name)
         elif name in self.types and args.len() > 0:
-            ty = Type.Generic(name, args)
+            ty = .Generic(name, args)
         elif name in self.types:
-            ty = Type.Named(name)
+            ty = .Named(name)
         else:
             if depth == 0:
                 fail Diagnostic(
@@ -294,45 +294,45 @@ struct Program:
 def builtin_type(name: str, args: list[Type]) -> Type:
     match name:
         case "int":
-            Type.Int
+            .Int
         case "float":
-            Type.Float
+            .Float
         case "bool":
-            Type.Bool
+            .Bool
         case "str":
-            Type.Str
+            .Str
         case "bytes":
-            Type.Bytes
+            .Bytes
         case "None":
-            Type.NoneType
+            .NoneType
         case "nothing":
-            Type.Unit
+            .Unit
         case "list":
-            Type.List(args[0])
+            .List(args[0])
         case "SoaList":
-            Type.List(args[0])
+            .List(args[0])
         # The self-hosted checker has no fixed-size arrays of its own yet, so it reads one as a list.
         case "array":
-            Type.List(args[0])
+            .List(args[0])
         # The self-hosted checker has no generators of its own yet, so it reads one as a list.
         case "Iterator":
-            Type.List(args[0])
+            .List(args[0])
         case "set":
-            Type.Set(args[0])
+            .Set(args[0])
         case "dict":
-            Type.Dict(args[0], args[1])
+            .Dict(args[0], args[1])
         case "Result":
-            Type.Result(args[0], args[1])
+            .Result(args[0], args[1])
         case "tuple":
-            Type.Tuple(args)
+            .Tuple(args)
         case "->":
-            Type.Arrow(args[:-1], args[-1])
+            .Arrow(args[:-1], args[-1])
         case "Id":
-            Type.Id(args[0])
+            .Id(args[0])
         case "Table":
-            Type.Table(args[0])
+            .Table(args[0])
         case _:
-            Type.Named(name)
+            .Named(name)
 
 ## An interface written where a type goes, as in `list[Shape]`.
 def interface_as_type(name: str, span: Span) -> Diagnostic:

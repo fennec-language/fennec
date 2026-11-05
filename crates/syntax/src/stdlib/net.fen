@@ -30,17 +30,17 @@ error NetError:
     ## What went wrong, in words.
     def message(self) -> str:
         match self:
-            case NotFound(host):
+            case .NotFound(host):
                 f"there's no host called `{host}`"
-            case Refused(host, port):
+            case .Refused(host, port):
                 f"`{host}` refused a connection on port {port}"
-            case TimedOut(after):
+            case .TimedOut(after):
                 f"gave up after {after.as_seconds()}s"
-            case Closed:
+            case .Closed:
                 "the other side closed the connection"
             case Denied(reason) | Tls(reason) | Other(reason):
                 reason
-            case Status(code):
+            case .Status(code):
                 f"the response's status was {code}"
 
 ## What a server answered. A 404 is an answer like any other, so `ok()` says which it was. Its

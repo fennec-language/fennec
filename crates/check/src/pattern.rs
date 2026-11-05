@@ -56,7 +56,17 @@ impl FnCx<'_> {
         let Type::Named(owner) = self.checker.settled(subject) else { return };
         let info = self.checker.program.type_info(&owner);
         if info.is_some_and(|info| info.def.cases.iter().any(|case| case.name == *name)) {
-            self.checker.undotted_cases.insert((span.start, span.end));
+            if span.in_prelude() {
+                return;
+            }
+            // The pattern starts after `case` and its one space, as `fennec fmt` writes it.
+            let start = span.start + 5;
+            let message = format!("the type here is known, so write this case as `.{name}`");
+            self.error(
+                Diagnostic::new(message, span)
+                    .with_help("`fennec fix` makes this change")
+                    .with_fix(Span { start, end: start }, "."),
+            );
         }
     }
 

@@ -158,7 +158,7 @@ def main(stdout: Stdout):
         scores={"ash": 3},
         ready=True,
         pace=0.5,
-        order=Order.Move(x=4),
+        order=.Move(x=4),
     )
     stdout.print(shown(squad))
     mut counted = Counted()

@@ -50,16 +50,16 @@ struct Log:
     fields: dict[str, str] = {}
 
     def debug(self, message: str, fields: dict[str, str]? = None):
-        self.write(LogLevel.Debug, message, fields)
+        self.write(.Debug, message, fields)
 
     def info(self, message: str, fields: dict[str, str]? = None):
-        self.write(LogLevel.Info, message, fields)
+        self.write(.Info, message, fields)
 
     def warn(self, message: str, fields: dict[str, str]? = None):
-        self.write(LogLevel.Warn, message, fields)
+        self.write(.Warn, message, fields)
 
     def error(self, message: str, fields: dict[str, str]? = None):
-        self.write(LogLevel.Error, message, fields)
+        self.write(.Error, message, fields)
 
     ## Whether an entry of this level would be written, for when making one takes work.
     def enabled(self, level: LogLevel) -> bool:

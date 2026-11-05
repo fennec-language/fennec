@@ -124,7 +124,11 @@ impl FnCx<'_> {
             }
             ExprKind::Comprehension { kind, elem, value, names, iter, cond } => {
                 let parts = (elem.as_ref(), value.as_deref(), cond.as_deref());
-                let (elem, value) = self.comprehension(parts, names, iter, span);
+                let kept =
+                    *kind == CompKind::Generator && !self.worked_out_here.contains(&(span.start, span.end));
+                self.kept_generators += usize::from(kept);
+                let (elem, value) = self.comprehension(parts, names, iter, span, kept);
+                self.kept_generators -= usize::from(kept);
                 match kind {
                     CompKind::List => Type::list(elem),
                     CompKind::Generator => {
@@ -742,12 +746,14 @@ impl FnCx<'_> {
         names: &[String],
         iter: &Expr,
         span: Span,
+        kept: bool,
     ) -> (Type, Type) {
         let (elem, value, cond) = parts;
         let iter_ty = self.expr(iter);
         let item = self.item_type(&iter_ty, iter.span);
         let before = self.snapshot();
-        self.push(false);
+        // One kept for later runs after this line, so it can't change what's around it.
+        self.push(kept);
         self.value_functions += 1;
         self.bind_names(names, &item, false, (iter.span, span));
         if let Some(cond) = cond {

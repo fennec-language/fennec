@@ -596,6 +596,7 @@ impl Layouts {
             Type::Optional(inner) if self.one_word_optionals => {
                 Block::of(self.ty(inner)).map_or(Ty::Obj, Ty::Maybe)
             }
+            Type::Bytes if self.native_buffers => Ty::Bytes,
             Type::Named(name) => match (Cap::named(name), self.id(name)) {
                 (Some(cap), _) => Ty::Cap(cap),
                 (None, Some(id)) if self.get(id).is_some_and(|layout| layout.boxed) => Ty::Boxed(id),
@@ -665,6 +666,7 @@ fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type)
         Type::Float => Ty::Float,
         Type::Bool => Ty::Bool,
         Type::Str => Ty::Str,
+        Type::Bytes if layouts.native_buffers => Ty::Bytes,
         Type::Named(name) => match (reserved.get(name), layouts.id(name)) {
             (Some(id), _) => Ty::Boxed(*id),
             (None, Some(id)) => Ty::Struct(id),

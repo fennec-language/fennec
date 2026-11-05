@@ -36,6 +36,10 @@ pub(crate) struct Checker {
     /// The enum chosen for each leading-dot case that more than one enum has, by the span
     /// of the case, as the type expected where it's written decided.
     pub(crate) cases: BTreeMap<(u32, u32), String>,
+    /// Where a case's enum is written though the type expected there says it already.
+    pub(crate) named_cases: BTreeSet<(u32, u32)>,
+    /// The `case`s that name a case of what's matched without its dot, by the span of the `case`.
+    pub(crate) undotted_cases: BTreeSet<(u32, u32)>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.
     pub(crate) float_sums: BTreeSet<(u32, u32)>,
     /// The defaults each call leaves out.
@@ -102,6 +106,8 @@ impl Checker {
             vars: Vec::new(),
             typed: BTreeMap::new(),
             cases: BTreeMap::new(),
+            named_cases: BTreeSet::new(),
+            undotted_cases: BTreeSet::new(),
             float_sums: BTreeSet::new(),
             defaults: BTreeMap::new(),
             generator_types: BTreeMap::new(),
@@ -183,6 +189,8 @@ impl Checker {
                 signatures,
                 types,
                 cases: self.cases,
+                named_cases: self.named_cases,
+                undotted_cases: self.undotted_cases,
                 float_sums: self.float_sums,
                 defaults: self.defaults,
                 generator_types: self.generator_types,

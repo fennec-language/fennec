@@ -208,6 +208,25 @@ pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, en
     })
 }
 
+/// `fennec_crypto_call(name, count, start, end)`: one of `std.crypto`'s functions, with the last
+/// `count` temporaries handed in as its arguments. `name` is a string block with its full name.
+pub extern "C" fn crypto_call(name: i64, count: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let at = span(start, end);
+        let name = u64::try_from(name)
+            .ok()
+            .and_then(|address| state.heap.block(address))
+            .filter(|block| super::heap::is_text(state, block))
+            .map(super::heap::block_text)
+            .ok_or_else(|| Diagnostic::new("the native code lost a function's name", at))?;
+        let count = usize::try_from(count).unwrap_or(0).min(state.inputs.len());
+        let given = state.inputs.split_off(state.inputs.len() - count);
+        let given: Vec<Value> = given.into_iter().map(Value::unpacked).collect();
+        let result = crate::stdlib::crypto::run(&name, &given, at)?;
+        Ok(state.push(result))
+    })
+}
+
 /// A method of a whole capability.
 fn native_method(
     capability: Capability,

@@ -40,6 +40,7 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_buffer_pop_empty",
     "fennec_capability_call",
     "fennec_std_call",
+    "fennec_crypto_call",
     "fennec_toml_dumps",
     "fennec_toml_loads",
     "fennec_native_capability",
@@ -346,6 +347,7 @@ export! {
     fennec_capability(a0: i64) -> i64 => temps::capability(a0);
     fennec_capability_block(a0: i64) -> i64 => capabilities::block(a0);
     fennec_native_capability(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::native_call(a0, a1, a2, a3, a4);
+    fennec_crypto_call(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => capabilities::crypto_call(a0, a1, a2, a3);
     fennec_clock_now() -> i64 => capabilities::clock_now();
     fennec_clock_sleep(a0: i64) => capabilities::clock_sleep(a0);
     fennec_args_len() -> i64 => capabilities::args_len();

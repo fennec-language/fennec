@@ -83,8 +83,9 @@ impl Emit<'_, '_, '_> {
             self.offset(block, FIELDS_OFFSET)
         } else {
             self.release_held(dest)?;
-            let (slot, text) = (self.slot(dest), self.text_of(&kind));
-            self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
+            let slot = self.slot(dest);
+            let zero = self.zero_line(&kind, &slot);
+            self.line(&zero);
             slot
         };
         self.declare("declare i8 @fennec_is_err(i64) nounwind");

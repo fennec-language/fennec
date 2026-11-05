@@ -217,8 +217,9 @@ impl Emit<'_, '_, '_> {
             self.offset(boxed, crate::lists::FIELDS_OFFSET)
         } else {
             self.release_held(dest)?;
-            let (slot, text) = (self.slot(dest), self.text_of(&kind));
-            self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
+            let slot = self.slot(dest);
+            let zero = self.zero_line(&kind, &slot);
+            self.line(&zero);
             slot
         };
         let function = if name == "int" { "fennec_parse_int" } else { "fennec_parse_float" };
@@ -304,8 +305,9 @@ impl Emit<'_, '_, '_> {
             self.offset(boxed, crate::lists::FIELDS_OFFSET)
         } else {
             self.release_held(dest)?;
-            let (slot, text) = (self.slot(dest), self.text_of(&kind));
-            self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
+            let slot = self.slot(dest);
+            let zero = self.zero_line(&kind, &slot);
+            self.line(&zero);
             slot
         };
         let is_made = self.temp();

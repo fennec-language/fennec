@@ -47,9 +47,12 @@ def _capital(word: str) -> str:
 ## A float as JSON writes it: an exponent has no `+` and no leading zeros.
 def _float_text(value: float) -> str:
     text = str(value)
-    if value != value or value - value != 0.0:
-        return text
-    if value != 0.0 and not (value >= 0.0001 and value < 10000000000000000.0) and not (value <= -0.0001 and value > -10000000000000000.0):
+    if value != value or value - value != 0.0: return text
+    if (
+        value != 0.0
+        and not (value >= 0.0001 and value < 10000000000000000.0)
+        and not (value <= -0.0001 and value > -10000000000000000.0)
+    ):
         mut at = 0
         while text_byte(text, at) != 101:
             at += 1
@@ -107,23 +110,17 @@ def _base64_digit(n: int) -> str:
 
 ## What a base64 digit stands for, or -1 for anything else.
 def _base64_value(b: int) -> int:
-    if b >= 65 and b <= 90:
-        return b - 65
-    if b >= 97 and b <= 122:
-        return b - 71
-    if b >= 48 and b <= 57:
-        return b + 4
-    if b == 43:
-        return 62
-    if b == 47:
-        return 63
+    if b >= 65 and b <= 90: return b - 65
+    if b >= 97 and b <= 122: return b - 71
+    if b >= 48 and b <= 57: return b + 4
+    if b == 43: return 62
+    if b == 47: return 63
     -1
 
 ## The bytes standard base64 text stands for, or None if it isn't base64.
 def _from_base64(text: str) -> bytes?:
     size = text_size(text)
-    if size % 4 != 0:
-        return None
+    if size % 4 != 0: return None
     mut out = list[int]()
     mut at = 0
     while at < size:
@@ -134,8 +131,7 @@ def _from_base64(text: str) -> bytes?:
         d_byte = text_byte(text, at + 3)
         c = -2 if last and c_byte == 61 and d_byte == 61 else _base64_value(c_byte)
         d = -2 if last and d_byte == 61 else _base64_value(d_byte)
-        if a < 0 or b < 0 or c == -1 or d == -1:
-            return None
+        if a < 0 or b < 0 or c == -1 or d == -1: return None
         out.append(a * 4 + b // 16)
         if c >= 0:
             out.append(b % 16 * 16 + c // 4)
@@ -367,12 +363,29 @@ def _no_reason() -> ParseError:
 
 def _article(name: str) -> str:
     first = text_byte(name, 0)
-    if first == 97 or first == 101 or first == 105 or first == 111 or first == 117 or first == 65 or first == 69 or first == 73 or first == 79 or first == 85:
+    if (
+        first == 97
+        or first == 101
+        or first == 105
+        or first == 111
+        or first == 117
+        or first == 65
+        or first == 69
+        or first == 73
+        or first == 79
+        or first == 85
+    ):
         return f"an {name}"
     f"a {name}"
 
 def _powers() -> list[float]:
-    [1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0, 10000000.0, 100000000.0, 1000000000.0, 10000000000.0, 100000000000.0, 1000000000000.0, 10000000000000.0, 100000000000000.0, 1000000000000000.0, 10000000000000000.0, 100000000000000000.0, 1000000000000000000.0, 10000000000000000000.0, 100000000000000000000.0, 1000000000000000000000.0, 10000000000000000000000.0]
+    [
+        1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0, 10000000.0, 100000000.0,
+        1000000000.0, 10000000000.0, 100000000000.0, 1000000000000.0, 10000000000000.0,
+        100000000000000.0, 1000000000000000.0, 10000000000000000.0, 100000000000000000.0,
+        1000000000000000000.0, 10000000000000000000.0, 100000000000000000000.0,
+        1000000000000000000000.0, 10000000000000000000000.0,
+    ]
 
 _POWERS = _powers()
 
@@ -403,8 +416,7 @@ struct JsonReader:
 
     ## Where the reader is, as messages say it.
     def _where(self) -> str:
-        if self._path.len() == 0:
-            return "the text"
+        if self._path.len() == 0: return "the text"
         f"`{self._joined()}`"
 
     def _joined(self) -> str:
@@ -418,31 +430,28 @@ struct JsonReader:
     ## What the next value is, for a message.
     def _found(mut self) -> str:
         b = self._space()
-        if b == 123:
-            return "a table"
-        if b == 110:
-            return "null"
-        if b == 34:
-            return "a str"
-        if b == 91:
-            return "a list"
-        if b == 116 or b == 102:
-            return "a bool"
+        if b == 123: return "a table"
+        if b == 110: return "null"
+        if b == 34: return "a str"
+        if b == 91: return "a list"
+        if b == 116 or b == 102: return "a bool"
         mut at = self._at
         mut c = text_byte(self._source, at)
         while c == 45 or c == 43 or (c >= 48 and c <= 57):
             at += 1
             c = text_byte(self._source, at)
-        if c == 46 or c == 101 or c == 69:
-            return "a float"
+        if c == 46 or c == 101 or c == 69: return "a float"
         "an int"
 
     ## The error for a value that isn't what's wanted.
     def _misfit(mut self, wanted: str) -> ParseError:
-        if not self._explain:
-            return _no_reason()
+        if not self._explain: return _no_reason()
         found = self._found()
-        ParseError(message=f"{self._where()} should be {_article(wanted)}, but it's {found}", line=0, column=0)
+        ParseError(
+            message=f"{self._where()} should be {_article(wanted)}, but it's {found}",
+            line=0,
+            column=0,
+        )
 
     def int(mut self) -> int fails ParseError:
         mut at = self._at
@@ -464,8 +473,7 @@ struct JsonReader:
             value = value * 10 + b - 48 if at - leading < 18 else value
             at += 1
             b = text_byte(self._source, at)
-        if text_byte(self._source, leading) == 48 and at - leading > 1:
-            fail _no_reason()
+        if text_byte(self._source, leading) == 48 and at - leading > 1: fail _no_reason()
         if at - leading > 18 or b == 46 or b == 101 or b == 69:
             self._at = start
             return self._long_int()?
@@ -480,16 +488,18 @@ struct JsonReader:
                 case Ok(n):
                     return n
                 case Err(_):
-                    if not self._explain:
-                        fail _no_reason()
-                    fail ParseError(message=f"{self._where()} has the key \"{key}\", which isn't an int", line=0, column=0)
+                    if not self._explain: fail _no_reason()
+                    fail ParseError(
+                        message=f"{self._where()} has the key \"{key}\", which isn't an int",
+                        line=0,
+                        column=0,
+                    )
         fail self._misfit("int")
 
     ## An int of too many digits for the quick way, or what's a float or isn't a number.
     def _long_int(mut self) -> int fails ParseError:
         start = self._at
-        if self._number_end(start) < 0:
-            fail self._misfit("int")
+        if self._number_end(start) < 0: fail self._misfit("int")
         end = self._number_end(start)
         match int(text_part(self._source, start, end)):
             case Ok(n):
@@ -507,8 +517,7 @@ struct JsonReader:
         while b >= 48 and b <= 57:
             at += 1
             b = text_byte(self._source, at)
-        if b == 46 or b == 101 or b == 69:
-            return -1
+        if b == 46 or b == 101 or b == 69: return -1
         at
 
     def float(mut self) -> float fails ParseError:
@@ -533,22 +542,19 @@ struct JsonReader:
             digits += 1
             at += 1
             b = text_byte(self._source, at)
-        if text_byte(self._source, leading) == 48 and at - leading > 1:
-            fail _no_reason()
+        if text_byte(self._source, leading) == 48 and at - leading > 1: fail _no_reason()
         mut places = 0
         if b == 46:
             at += 1
             b = text_byte(self._source, at)
-            if b < 48 or b > 57:
-                fail _no_reason()
+            if b < 48 or b > 57: fail _no_reason()
             while b >= 48 and b <= 57:
                 whole = whole * 10 + b - 48 if digits < 18 else whole
                 digits += 1
                 places += 1
                 at += 1
                 b = text_byte(self._source, at)
-        if b == 101 or b == 69 or digits > 15 or places > 22:
-            return self._long_float(start)?
+        if b == 101 or b == 69 or digits > 15 or places > 22: return self._long_float(start)?
         self._at = at
         value = float(whole) / _POWERS[places]
         -value if negative else value
@@ -570,10 +576,21 @@ struct JsonReader:
     def bool(mut self) -> bool fails ParseError:
         b = self._space()
         at = self._at
-        if b == 116 and text_byte(self._source, at + 1) == 114 and text_byte(self._source, at + 2) == 117 and text_byte(self._source, at + 3) == 101:
+        if (
+            b == 116
+            and text_byte(self._source, at + 1) == 114
+            and text_byte(self._source, at + 2) == 117
+            and text_byte(self._source, at + 3) == 101
+        ):
             self._at = at + 4
             return True
-        if b == 102 and text_byte(self._source, at + 1) == 97 and text_byte(self._source, at + 2) == 108 and text_byte(self._source, at + 3) == 115 and text_byte(self._source, at + 4) == 101:
+        if (
+            b == 102
+            and text_byte(self._source, at + 1) == 97
+            and text_byte(self._source, at + 2) == 108
+            and text_byte(self._source, at + 3) == 115
+            and text_byte(self._source, at + 4) == 101
+        ):
             self._at = at + 5
             return False
         fail self._misfit("bool")
@@ -602,14 +619,12 @@ struct JsonReader:
         fail _no_reason()
 
     def bytes(mut self) -> bytes fails ParseError:
-        if self._space() != 34:
-            fail self._misfit("bytes")
+        if self._space() != 34: fail self._misfit("bytes")
         text = self.text()?
         _from_base64(text) else fail self._not_base64()
 
     def _not_base64(self) -> ParseError:
-        if not self._explain:
-            return _no_reason()
+        if not self._explain: return _no_reason()
         ParseError(message=f"{self._where()} should be bytes, written in base64", line=0, column=0)
 
     ## The rest of a string with an escape in it, from just inside its opening quote.
@@ -623,8 +638,7 @@ struct JsonReader:
                 out += text_part(self._source, start, at)
                 self._at = at + 1
                 return out
-            if b < 32:
-                fail _no_reason()
+            if b < 32: fail _no_reason()
             if b != 92:
                 at += 1
             else:
@@ -652,12 +666,14 @@ struct JsonReader:
                         mut code = self._hex(at)
                         at += 4
                         if code >= 55296 and code < 56320:
-                            if text_byte(self._source, at) != 92 or text_byte(self._source, at + 1) != 117:
+                            if (
+                                text_byte(self._source, at) != 92
+                                or text_byte(self._source, at + 1) != 117
+                            ):
                                 fail _no_reason()
                             low = self._hex(at + 2)
                             at += 6
-                            if low < 56320 or low >= 57344:
-                                fail _no_reason()
+                            if low < 56320 or low >= 57344: fail _no_reason()
                             code = 65536 + (code - 55296) * 1024 + low - 56320
                         elif code < 0 or (code >= 56320 and code < 57344):
                             fail _no_reason()
@@ -683,10 +699,13 @@ struct JsonReader:
 
     def none(mut self) -> bool fails ParseError:
         b = self._space()
-        if b != 110:
-            return False
+        if b != 110: return False
         at = self._at
-        if text_byte(self._source, at + 1) != 117 or text_byte(self._source, at + 2) != 108 or text_byte(self._source, at + 3) != 108:
+        if (
+            text_byte(self._source, at + 1) != 117
+            or text_byte(self._source, at + 2) != 108
+            or text_byte(self._source, at + 3) != 108
+        ):
             fail _no_reason()
         self._at = at + 4
         True
@@ -695,12 +714,10 @@ struct JsonReader:
         T.deserialize(mut self)?
 
     def sequence[T: Deserializable](mut self) -> list[T] fails ParseError:
-        if self._space() != 91:
-            fail self._misfit(f"list[{type_name[T]()}]")
+        if self._space() != 91: fail self._misfit(f"list[{type_name[T]()}]")
         self._at += 1
         self._depth += 1
-        if self._depth > _MOST_DEEP:
-            fail _no_reason()
+        if self._depth > _MOST_DEEP: fail _no_reason()
         mut found = list[T]()
         if self._space() == 93:
             self._at += 1
@@ -719,19 +736,15 @@ struct JsonReader:
             if b == 93:
                 self._depth -= 1
                 return found
-            if b != 44:
-                fail _no_reason()
+            if b != 44: fail _no_reason()
 
     def map[K: Deserializable, V: Deserializable](mut self) -> list[(K, V)] fails ParseError:
         b = self._space()
-        if b == 91:
-            return self._pairs[K, V]()?
-        if b != 123:
-            fail self._misfit(f"dict[{type_name[K]()}, {type_name[V]()}]")
+        if b == 91: return self._pairs[K, V]()?
+        if b != 123: fail self._misfit(f"dict[{type_name[K]()}, {type_name[V]()}]")
         self._at += 1
         self._depth += 1
-        if self._depth > _MOST_DEEP:
-            fail _no_reason()
+        if self._depth > _MOST_DEEP: fail _no_reason()
         mut found = list[(K, V)]()
         if self._space() == 125:
             self._at += 1
@@ -742,8 +755,7 @@ struct JsonReader:
             self._in_key = True
             key = K.deserialize(mut self)?
             self._in_key = False
-            if self._space() != 58:
-                fail _no_reason()
+            if self._space() != 58: fail _no_reason()
             if self._explain:
                 self._path.append(f"[{text_part(self._source, self._key_start(start), self._at)}]")
             self._at += 1
@@ -756,8 +768,7 @@ struct JsonReader:
             if c == 125:
                 self._depth -= 1
                 return found
-            if c != 44:
-                fail _no_reason()
+            if c != 44: fail _no_reason()
 
     def _key_start(self, start: int) -> int:
         mut at = start
@@ -779,38 +790,32 @@ struct JsonReader:
             if self._explain:
                 self._path.append(f"[{count}]")
                 count += 1
-            if self._space() != 91:
-                fail self._misfit("[key, value] pair")
+            if self._space() != 91: fail self._misfit("[key, value] pair")
             self._at += 1
             if self._explain:
                 self._path.append("[0]")
             key = K.deserialize(mut self)?
             if self._explain:
                 _ = self._path.pop()
-            if self._space() != 44:
-                fail self._not_a_pair()
+            if self._space() != 44: fail self._not_a_pair()
             self._at += 1
             if self._explain:
                 self._path.append("[1]")
             value = V.deserialize(mut self)?
             if self._explain:
                 _ = self._path.pop()
-            if self._space() != 93:
-                fail self._not_a_pair()
+            if self._space() != 93: fail self._not_a_pair()
             self._at += 1
             if self._explain:
                 _ = self._path.pop()
             found.append((key, value))
             b = self._space()
             self._at += 1
-            if b == 93:
-                return found
-            if b != 44:
-                fail _no_reason()
+            if b == 93: return found
+            if b != 44: fail _no_reason()
 
     def _not_a_pair(self) -> ParseError:
-        if not self._explain:
-            return _no_reason()
+        if not self._explain: return _no_reason()
         _ = self._path
         ParseError(message=f"{self._where()} should be a [key, value] pair", line=0, column=0)
 
@@ -824,8 +829,7 @@ struct JsonReader:
         self._at += 1
         self._first = True
         self._depth += 1
-        if self._depth > _MOST_DEEP:
-            fail _no_reason()
+        if self._depth > _MOST_DEEP: fail _no_reason()
         if self._explain:
             self._owner = name
 
@@ -848,12 +852,10 @@ struct JsonReader:
                 self._at += 1
                 self._depth -= 1
                 return False
-            if b != 44:
-                fail _no_reason()
+            if b != 44: fail _no_reason()
             self._at += 1
         key = self.text()?
-        if self._space() != 58:
-            fail _no_reason()
+        if self._space() != 58: fail _no_reason()
         self._at += 1
         return self._named(key, fields)?
 
@@ -879,14 +881,20 @@ struct JsonReader:
     def _place_of(self, key: str, fields: list[(str, str)]) -> int:
         mut at = 0
         for saved, own in fields:
-            if saved == key and not (saved == own and self._names != JsonNames.snake_case and _spelled(own, self._names) != key):
+            if (
+                saved == key
+                and not (
+                    saved == own
+                    and self._names != JsonNames.snake_case
+                    and _spelled(own, self._names) != key
+                )
+            ):
                 return at
             at += 1
         if self._names != JsonNames.snake_case:
             at = 0
             for saved, own in fields:
-                if saved == own and _spelled(own, self._names) == key:
-                    return at
+                if saved == own and _spelled(own, self._names) == key: return at
                 at += 1
         -1
 
@@ -896,65 +904,64 @@ struct JsonReader:
         start = self._at
         while True:
             key = self.text()?
-            if self._place_of(key, fields) < 0:
-                fail self._unknown(key, fields)
+            if self._place_of(key, fields) < 0: fail self._unknown(key, fields)
             _ = self._space()
             self._at += 1
             self._skip(self._depth)?
             b = self._space()
             self._at += 1
-            if b != 44:
-                break
+            if b != 44: break
         self._at = start
 
     def _unknown(self, key: str, fields: list[(str, str)]) -> ParseError:
-        if not self._explain:
-            return _no_reason()
+        if not self._explain: return _no_reason()
         owner = f"`{self._owner}`"
         where = self._where()
         for saved, own in fields:
             if _spelled(own, self._names) == key:
                 if saved == "":
-                    return ParseError(message=f"{owner} doesn't save `{own}`, which has `@skip`, but {where} has it", line=0, column=0)
-                return ParseError(message=f"{owner} saves `{own}` as \"{saved}\", but {where} has \"{key}\"", line=0, column=0)
+                    return ParseError(
+                        message=f"{owner} doesn't save `{own}`, which has `@skip`, but {where} has it",
+                        line=0,
+                        column=0,
+                    )
+                return ParseError(
+                    message=f"{owner} saves `{own}` as \"{saved}\", but {where} has \"{key}\"",
+                    line=0,
+                    column=0,
+                )
         ParseError(message=f"{owner} has no field \"{key}\", but {where} has one", line=0, column=0)
 
     def field_at(self) -> int:
         self._place
 
     def missing(self, name: str) -> ParseError:
-        if not self._explain:
-            return _no_reason()
+        if not self._explain: return _no_reason()
         mut wire = name
         for saved, own in self._fields:
             if saved == name and saved == own:
                 wire = _spelled(own, self._names)
         joined = self._joined()
-        if joined == "":
-            return ParseError(message=f"`{wire}` is missing", line=0, column=0)
+        if joined == "": return ParseError(message=f"`{wire}` is missing", line=0, column=0)
         if text_byte(wire, 0) == 91:
             return ParseError(message=f"`{joined}{wire}` is missing", line=0, column=0)
         ParseError(message=f"`{joined}.{wire}` is missing", line=0, column=0)
 
     def rule(self, message: str) -> ParseError:
-        if not self._explain:
-            return _no_reason()
+        if not self._explain: return _no_reason()
         ParseError(message=f"in {self._where()}, {message}", line=0, column=0)
 
     def case(mut self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         b = self._space()
-        if b == 34:
-            return self._plain_case(name, cases)?
-        if b != 123:
-            fail self._misfit(name)
+        if b == 34: return self._plain_case(name, cases)?
+        if b != 123: fail self._misfit(name)
         start = self._at
         self._at += 1
         if self._space() != 34:
             self._at = start
             fail self._misfit(name)
         key = self.text()?
-        if self._space() != 58:
-            fail _no_reason()
+        if self._space() != 58: fail _no_reason()
         self._at += 1
         if self._space() != 123:
             self._at = start
@@ -964,8 +971,7 @@ struct JsonReader:
             if case == key:
                 if not has_data:
                     self._at += 1
-                    if self._space() != 125:
-                        fail self._no_field(f"{name}.{case}")
+                    if self._space() != 125: fail self._no_field(f"{name}.{case}")
                     self._at += 1
                     self.end_case()?
                 return at
@@ -974,11 +980,14 @@ struct JsonReader:
 
     ## The error for a case with no data that the text gives a field.
     def _no_field(mut self, owner: str) -> ParseError:
-        if not self._explain:
-            return _no_reason()
+        if not self._explain: return _no_reason()
         match self.text():
             case Ok(key):
-                ParseError(message=f"`{owner}` has no field \"{key}\", but {self._where()} has one", line=0, column=0)
+                ParseError(
+                    message=f"`{owner}` has no field \"{key}\", but {self._where()} has one",
+                    line=0,
+                    column=0,
+                )
             case Err(_):
                 _no_reason()
 
@@ -988,35 +997,37 @@ struct JsonReader:
         for case, has_data in cases:
             if case == key:
                 if has_data:
-                    if not self._explain:
-                        fail _no_reason()
-                    fail ParseError(message=f"{self._where()} is `{name}.{case}`, which needs its fields", line=0, column=0)
+                    if not self._explain: fail _no_reason()
+                    fail ParseError(
+                        message=f"{self._where()} is `{name}.{case}`, which needs its fields",
+                        line=0,
+                        column=0,
+                    )
                 return at
             at += 1
         fail self._no_case(name, key)
 
     def _no_case(self, name: str, key: str) -> ParseError:
-        if not self._explain:
-            return _no_reason()
-        ParseError(message=f"{self._where()} is \"{key}\", which isn't a case of `{name}`", line=0, column=0)
+        if not self._explain: return _no_reason()
+        ParseError(
+            message=f"{self._where()} is \"{key}\", which isn't a case of `{name}`",
+            line=0,
+            column=0,
+        )
 
     def end_case(mut self) fails ParseError:
-        if self._space() != 125:
-            fail _no_reason()
+        if self._space() != 125: fail _no_reason()
         self._at += 1
 
     ## What comes after everything's been read has to be nothing.
     def finish(mut self) fails ParseError:
-        if self._space() != -1:
-            fail _no_reason()
+        if self._space() != -1: fail _no_reason()
 
     ## What's next, for a message about the text itself: "`x`", or "the end of the text".
     def _next_char(self) -> str:
         b = text_byte(self._source, self._at)
-        if b < 0:
-            return "the end of the text"
-        if b == 10:
-            return "the end of the line"
+        if b < 0: return "the end of the text"
+        if b == 10: return "the end of the line"
         mut size = 1
         if b >= 240:
             size = 4
@@ -1072,7 +1083,9 @@ struct JsonReader:
             b = text_byte(self._source, at)
         word = text_part(self._source, start, at)
         if word != "true" and word != "false" and word != "null":
-            fail self._bad(f"`{word}` isn't a JSON value; the words JSON knows are true, false and null")
+            fail self._bad(
+                f"`{word}` isn't a JSON value; the words JSON knows are true, false and null",
+            )
         self._at = at
 
     def _skip_object(mut self, depth: int) fails ParseError:
@@ -1093,7 +1106,9 @@ struct JsonReader:
                 self._at += 1
                 return
             if b != 44:
-                fail self._bad(f"expected `,` or `}}` after the value, but found {self._next_char()}")
+                fail self._bad(
+                    f"expected `,` or `}}` after the value, but found {self._next_char()}",
+                )
             self._at += 1
 
     def _skip_array(mut self, depth: int) fails ParseError:
@@ -1108,7 +1123,9 @@ struct JsonReader:
                 self._at += 1
                 return
             if b != 44:
-                fail self._bad(f"expected `,` or `]` after the value, but found {self._next_char()}")
+                fail self._bad(
+                    f"expected `,` or `]` after the value, but found {self._next_char()}",
+                )
             self._at += 1
 
     def _skip_string(mut self) fails ParseError:
@@ -1119,10 +1136,11 @@ struct JsonReader:
             if b == 34:
                 self._at += 1
                 return
-            if b < 0:
-                fail self._bad_at("this string never ends", start)
+            if b < 0: fail self._bad_at("this string never ends", start)
             if b < 32:
-                fail self._bad("a string can't hold a line break or control character; write `\\n` or `\\t`")
+                fail self._bad(
+                    "a string can't hold a line break or control character; write `\\n` or `\\t`",
+                )
             self._at += 1
             if b == 92:
                 self._skip_escape()?
@@ -1130,32 +1148,37 @@ struct JsonReader:
     def _skip_escape(mut self) fails ParseError:
         at = self._at
         b = text_byte(self._source, at)
-        if b < 0:
-            fail self._bad("this string never ends")
+        if b < 0: fail self._bad("this string never ends")
         self._at = at + 1
         if b == 117:
             self._skip_unicode()?
-        elif b != 34 and b != 92 and b != 47 and b != 98 and b != 102 and b != 110 and b != 114 and b != 116:
+        elif (
+            b != 34
+            and b != 92
+            and b != 47
+            and b != 98
+            and b != 102
+            and b != 110
+            and b != 114
+            and b != 116
+        ):
             self._at = at
             fail self._bad(f"`\\{self._next_char()[1:-1]}` isn't a JSON escape")
 
     def _skip_unicode(mut self) fails ParseError:
         start = self._at
         high = self._hex(start)
-        if high < 0:
-            fail self._bad("`\\u` needs 4 hex digits")
+        if high < 0: fail self._bad("`\\u` needs 4 hex digits")
         self._at = start + 4
         if high < 55296 or high >= 56320:
-            if high >= 56320 and high < 57344:
-                fail self._bad("this `\\u` escape isn't a character")
+            if high >= 56320 and high < 57344: fail self._bad("this `\\u` escape isn't a character")
             return
         if text_byte(self._source, self._at) != 92 or text_byte(self._source, self._at + 1) != 117:
             self._at = start
             fail self._bad("this `\\u` escape is half of a pair, so another `\\u` must follow it")
         self._at += 2
         low = self._hex(self._at)
-        if low < 0:
-            fail self._bad("`\\u` needs 4 hex digits")
+        if low < 0: fail self._bad("`\\u` needs 4 hex digits")
         if low < 56320 or low >= 57344:
             self._at = start
             fail self._bad("these `\\u` escapes aren't a valid pair")
@@ -1167,8 +1190,7 @@ struct JsonReader:
             self._at += 1
         whole = self._at
         self._digits()
-        if self._at == whole:
-            fail self._bad(f"expected a digit, but found {self._next_char()}")
+        if self._at == whole: fail self._bad(f"expected a digit, but found {self._next_char()}")
         if self._at - whole > 1 and text_byte(self._source, whole) == 48:
             self._at = start
             fail self._bad("a number can't start with 0 unless it is 0")
@@ -1209,11 +1231,17 @@ struct JsonReader:
     def _whole(mut self) fails ParseError:
         self._skip(0)?
         if self._space() != -1:
-            fail self._bad(f"expected the end of the text after the value, but found {self._next_char()}")
+            fail self._bad(
+                f"expected the end of the text after the value, but found {self._next_char()}",
+            )
 
 ## `text` read as a `T`, through its own `def deserialize`.
 ## Native code runs `json.loads` through this, with `None` for the options' defaults, as `native_dumps`.
-def native_loads[T: Deserializable](text: str, names: JsonNames? = None, extra: JsonExtra? = None) -> T fails ParseError:
+def native_loads[T: Deserializable](
+    text: str,
+    names: JsonNames? = None,
+    extra: JsonExtra? = None,
+) -> T fails ParseError:
     spelled = names else JsonNames.snake_case
     keys = extra else JsonExtra.error
     mut src = JsonReader(_source=text, _names=spelled, _extra=keys)
@@ -1230,7 +1258,11 @@ def _read[T: Deserializable](mut src: JsonReader) -> T fails ParseError:
 
 ## Fails with what's wrong with text that failed to read: first anything wrong with it as JSON,
 ## then what doesn't fit the type, found by reading it again keeping track of where it is.
-def _explained[T: Deserializable](text: str, names: JsonNames, extra: JsonExtra) -> T fails ParseError:
+def _explained[T: Deserializable](
+    text: str,
+    names: JsonNames,
+    extra: JsonExtra,
+) -> T fails ParseError:
     mut check = JsonReader(_source=text)
     check._whole()?
     mut src = JsonReader(_source=text, _names=names, _extra=extra, _explain=True)

@@ -1,5 +1,5 @@
 from std.intrinsics import text_byte, text_of_code, text_part, text_size, type_name
-from std.json import _article, _escaped, _float_text, _from_base64, _base64
+from std.json import _article, _base64, _escaped, _float_text, _from_base64
 
 ## How deeply arrays and inline tables may nest, so bad input can't overflow the stack.
 _MOST_DEEP = 500
@@ -29,8 +29,7 @@ struct _Table:
     def place_of(self, key: str) -> int:
         mut at = 0
         for name in self.keys:
-            if name == key:
-                return at
+            if name == key: return at
             at += 1
         -1
 
@@ -51,17 +50,14 @@ struct _Parser:
 
     def starts(self, word: str) -> bool:
         for place in range(text_size(word)):
-            if text_byte(self.source, self.at + place) != text_byte(word, place):
-                return False
+            if text_byte(self.source, self.at + place) != text_byte(word, place): return False
         True
 
     ## What's next, for a message: "`x`", or "the end of the text".
     def found(self) -> str:
         b = self.byte()
-        if b < 0:
-            return "the end of the text"
-        if b == 10:
-            return "the end of the line"
+        if b < 0: return "the end of the text"
+        if b == 10: return "the end of the line"
         mut size = 1
         if b >= 240:
             size = 4
@@ -105,8 +101,7 @@ struct _Parser:
             while b == 32 or b == 9 or b == 10 or b == 13 or b == 11 or b == 12:
                 self.at += 1
                 b = self.byte()
-            if b != 35:
-                return
+            if b != 35: return
             self.skip_comment()
 
     ## After a header or key/value pair, only spaces and a comment can come before the line ends.
@@ -126,8 +121,7 @@ struct _Parser:
         while True:
             self.skip_blank_lines()
             b = self.byte()
-            if b < 0:
-                return root
+            if b < 0: return root
             if b == 91:
                 current = self.header(mut root)?
             else:
@@ -140,8 +134,7 @@ struct _Parser:
     ## `= value`, after a key.
     def after_key(mut self, depth: int) -> _Toml fails ParseError:
         self.skip_spaces()
-        if self.byte() != 61:
-            fail self.bad(f"expected `=` after the key, but found {self.found()}")
+        if self.byte() != 61: fail self.bad(f"expected `=` after the key, but found {self.found()}")
         self.at += 1
         self.skip_spaces()
         self.value(depth)?
@@ -169,42 +162,38 @@ struct _Parser:
         while True:
             keys.append(self.simple_key()?)
             self.skip_spaces()
-            if self.byte() != 46:
-                return keys
+            if self.byte() != 46: return keys
             self.at += 1
             self.skip_spaces()
 
     def simple_key(mut self) -> str fails ParseError:
         b = self.byte()
-        if b == 34:
-            return self.basic_string()?
-        if b == 39:
-            return self.literal_string()?
+        if b == 34: return self.basic_string()?
+        if b == 39: return self.literal_string()?
         start = self.at
         mut c = b
-        while (c >= 97 and c <= 122) or (c >= 65 and c <= 90) or (c >= 48 and c <= 57) or c == 95 or c == 45:
+        while (
+            (c >= 97 and c <= 122)
+            or (c >= 65 and c <= 90)
+            or (c >= 48 and c <= 57)
+            or c == 95
+            or c == 45
+        ):
             self.at += 1
             c = self.byte()
-        if self.at == start:
-            fail self.bad(f"expected a key, but found {self.found()}")
+        if self.at == start: fail self.bad(f"expected a key, but found {self.found()}")
         text_part(self.source, start, self.at)
 
     def value(mut self, depth: int) -> _Toml fails ParseError:
         if depth > _MOST_DEEP:
             fail self.bad(f"arrays and tables nest more than {_MOST_DEEP} deep here")
         b = self.byte()
-        if self.starts("\"\"\""):
-            return _Toml.Text(text=self.multi_line(34)?)
-        if self.starts("'''"):
-            return _Toml.Text(text=self.multi_line(39)?)
-        if b == 34:
-            return _Toml.Text(text=self.basic_string()?)
-        if b == 39:
-            return _Toml.Text(text=self.literal_string()?)
-        if b == 91:
-            return self.array(depth)?
-        if b == 123:
-            return self.inline_table(depth)?
+        if self.starts("\"\"\""): return _Toml.Text(text=self.multi_line(34)?)
+        if self.starts("'''"): return _Toml.Text(text=self.multi_line(39)?)
+        if b == 34: return _Toml.Text(text=self.basic_string()?)
+        if b == 39: return _Toml.Text(text=self.literal_string()?)
+        if b == 91: return self.array(depth)?
+        if b == 123: return self.inline_table(depth)?
         if b >= 48 and b <= 57 and self.is_date_or_time():
             return _Toml.Text(text=self.date_or_time()?)
         if (b >= 48 and b <= 57) or b == 43 or b == 45 or b == 105 or b == 110:
@@ -216,10 +205,8 @@ struct _Parser:
                 self.at += 1
                 c = self.byte()
             word = text_part(self.source, at, self.at)
-            if word == "true":
-                return _Toml.Bool(b=True)
-            if word == "false":
-                return _Toml.Bool(b=False)
+            if word == "true": return _Toml.Bool(b=True)
+            if word == "false": return _Toml.Bool(b=False)
             fail self.bad_at(f"`{word}` isn't a TOML value", at)
         fail self.bad(f"expected a value, but found {self.found()}")
 
@@ -236,7 +223,10 @@ struct _Parser:
             if b == 92:
                 out += self.escape()?
             elif b == 10 or b == 13 or b < 0:
-                fail self.bad_at("this string never ends on its line; use `\"\"\"` for text over several lines", start)
+                fail self.bad_at(
+                    "this string never ends on its line; use `\"\"\"` for text over several lines",
+                    start,
+                )
             else:
                 out += self.plain_char()?
 
@@ -251,7 +241,10 @@ struct _Parser:
                 self.at += 1
                 return out
             if b == 10 or b == 13 or b < 0:
-                fail self.bad_at("this string never ends on its line; use `'''` for text over several lines", start)
+                fail self.bad_at(
+                    "this string never ends on its line; use `'''` for text over several lines",
+                    start,
+                )
             out += self.plain_char()?
 
     ## `"""text"""` or `'''text'''`. A line break right after the opening quotes is dropped.
@@ -271,8 +264,7 @@ struct _Parser:
                     quotes += 1
                     self.at += 1
                 if quotes >= 3:
-                    if quotes > 5:
-                        fail self.bad("too many quotes end this string")
+                    if quotes > 5: fail self.bad("too many quotes end this string")
                     for _ in range(quotes - 3):
                         out += text_of_code(quote)
                     return out
@@ -301,7 +293,11 @@ struct _Parser:
     ## A character inside a string, which can't be a control character other than a tab.
     def plain_char(mut self) -> str fails ParseError:
         b = self.byte()
-        if (b < 32 and b != 9) or b == 127 or (b == 194 and text_byte(self.source, self.at + 1) < 160):
+        if (
+            (b < 32 and b != 9)
+            or b == 127
+            or (b == 194 and text_byte(self.source, self.at + 1) < 160)
+        ):
             fail self.bad("a string can't hold a control character; write an escape like `\\u0007`")
         mut size = 1
         if b >= 240:
@@ -318,8 +314,7 @@ struct _Parser:
         at = self.at
         self.at += 1
         b = self.byte()
-        if b < 0:
-            fail self.bad_at("this string never ends", at)
+        if b < 0: fail self.bad_at("this string never ends", at)
         if b == 117 or b == 85:
             self.at += 1
             return self.hex_char(4 if b == 117 else 8)?
@@ -415,15 +410,22 @@ struct _Parser:
 
     ## Whether a value starts like a date (`1979-05-27`) or a time (`07:32`).
     def is_date_or_time(self) -> bool:
-        date = self.digit_at(0) and self.digit_at(1) and self.digit_at(2) and self.digit_at(3) and text_byte(self.source, self.at + 4) == 45
-        date or (self.digit_at(0) and self.digit_at(1) and text_byte(self.source, self.at + 2) == 58)
+        date = (
+            self.digit_at(0)
+            and self.digit_at(1)
+            and self.digit_at(2)
+            and self.digit_at(3)
+            and text_byte(self.source, self.at + 4) == 45
+        )
+        date or (
+            self.digit_at(0) and self.digit_at(1) and text_byte(self.source, self.at + 2) == 58
+        )
 
     ## Reads exactly `width` digits making a number from `low` to `high`.
     def field(mut self, width: int, low: int, high: int) -> bool:
         mut n = 0
         for place in range(width):
-            if not self.digit_at(place):
-                return False
+            if not self.digit_at(place): return False
             n = n * 10 + text_byte(self.source, self.at + place) - 48
         self.at += width
         n >= low and n <= high
@@ -438,8 +440,7 @@ struct _Parser:
             if not self.field(2, 1, 12) or self.byte() != 45:
                 fail self.bad_at("this isn't a valid date", start)
             self.at += 1
-            if not self.field(2, 1, 31):
-                fail self.bad_at("this isn't a valid date", start)
+            if not self.field(2, 1, 31): fail self.bad_at("this isn't a valid date", start)
             b = self.byte()
             next_digit = self.digit_at(1)
             if not (b == 84 or b == 116 or (b == 32 and next_digit)):
@@ -448,19 +449,16 @@ struct _Parser:
         if not self.field(2, 0, 23) or self.byte() != 58:
             fail self.bad_at("this isn't a valid time", start)
         self.at += 1
-        if not self.field(2, 0, 59):
-            fail self.bad_at("this isn't a valid time", start)
+        if not self.field(2, 0, 59): fail self.bad_at("this isn't a valid time", start)
         if self.byte() == 58:
             self.at += 1
-            if not self.field(2, 0, 60):
-                fail self.bad_at("this isn't a valid time", start)
+            if not self.field(2, 0, 60): fail self.bad_at("this isn't a valid time", start)
         if self.byte() == 46:
             self.at += 1
             place = self.at
             while self.digit_at(0):
                 self.at += 1
-            if self.at == place:
-                fail self.bad_at("this isn't a valid time", start)
+            if self.at == place: fail self.bad_at("this isn't a valid time", start)
         b = self.byte()
         if b == 90 or b == 122:
             self.at += 1
@@ -469,14 +467,21 @@ struct _Parser:
             if not self.field(2, 0, 23) or self.byte() != 58:
                 fail self.bad_at("this isn't a valid time offset", start)
             self.at += 1
-            if not self.field(2, 0, 59):
-                fail self.bad_at("this isn't a valid time offset", start)
+            if not self.field(2, 0, 59): fail self.bad_at("this isn't a valid time offset", start)
         text_part(self.source, start, self.at)
 
     def number(mut self) -> _Toml fails ParseError:
         at = self.at
         mut b = self.byte()
-        while (b >= 97 and b <= 122) or (b >= 65 and b <= 90) or (b >= 48 and b <= 57) or b == 95 or b == 43 or b == 45 or b == 46:
+        while (
+            (b >= 97 and b <= 122)
+            or (b >= 65 and b <= 90)
+            or (b >= 48 and b <= 57)
+            or b == 95
+            or b == 43
+            or b == 45
+            or b == 46
+        ):
             self.at += 1
             b = self.byte()
         token = text_part(self.source, at, self.at)
@@ -485,31 +490,25 @@ struct _Parser:
         negative = lead == 45
         unsigned = text_part(token, 1 if signed else 0, text_size(token))
         unknown = f"`{token}` isn't a number TOML knows"
-        if unsigned == "inf":
-            return _Toml.Float(x=-1e308 * 10.0 if negative else 1e308 * 10.0)
-        if unsigned == "nan":
-            return _Toml.Float(x=1e308 * 10.0 - 1e308 * 10.0)
+        if unsigned == "inf": return _Toml.Float(x=-1e308 * 10.0 if negative else 1e308 * 10.0)
+        if unsigned == "nan": return _Toml.Float(x=1e308 * 10.0 - 1e308 * 10.0)
         if text_size(unsigned) >= 2 and text_byte(unsigned, 0) == 48:
             kind = text_byte(unsigned, 1)
             radix = 16 if kind == 120 else (8 if kind == 111 else (2 if kind == 98 else 10))
             if radix != 10:
                 digits = text_part(unsigned, 2, text_size(unsigned))
-                if signed or not _digits_ok(digits, radix):
-                    fail self.bad_at(unknown, at)
+                if signed or not _digits_ok(digits, radix): fail self.bad_at(unknown, at)
                 n = _radix_int(digits, radix)
-                if n < 0:
-                    fail self.bad_at(f"`{token}` is too big for an int", at)
+                if n < 0: fail self.bad_at(f"`{token}` is too big for an int", at)
                 return _Toml.Int(n=n)
         if _has_any(unsigned, 46, 101, 69):
-            if not _float_ok(unsigned):
-                fail self.bad_at(unknown, at)
+            if not _float_ok(unsigned): fail self.bad_at(unknown, at)
             match float(_without_underscores(token)):
                 case Ok(x):
                     return _Toml.Float(x=x)
                 case Err(_):
                     fail self.bad_at(unknown, at)
-        if not _whole_ok(unsigned):
-            fail self.bad_at(unknown, at)
+        if not _whole_ok(unsigned): fail self.bad_at(unknown, at)
         match int(_without_underscores(token)):
             case Ok(n):
                 _Toml.Int(n=n)
@@ -528,8 +527,7 @@ def _hex_upper(code: int) -> str:
 def _has_any(text: str, a: int, b: int, c: int) -> bool:
     for at in range(text_size(text)):
         byte = text_byte(text, at)
-        if byte == a or byte == b or byte == c:
-            return True
+        if byte == a or byte == b or byte == c: return True
     False
 
 def _without_underscores(text: str) -> str:
@@ -543,24 +541,19 @@ def _without_underscores(text: str) -> str:
     out + text_part(text, start, size)
 
 def _digit_value(b: int) -> int:
-    if b >= 48 and b <= 57:
-        return b - 48
-    if b >= 97 and b <= 122:
-        return b - 87
-    if b >= 65 and b <= 90:
-        return b - 55
+    if b >= 48 and b <= 57: return b - 48
+    if b >= 97 and b <= 122: return b - 87
+    if b >= 65 and b <= 90: return b - 55
     99
 
 ## Digits in a radix, with each underscore between two digits.
 def _digits_ok(digits: str, radix: int) -> bool:
     size = text_size(digits)
-    if size == 0 or text_byte(digits, 0) == 95 or text_byte(digits, size - 1) == 95:
-        return False
+    if size == 0 or text_byte(digits, 0) == 95 or text_byte(digits, size - 1) == 95: return False
     for at in range(size):
         b = text_byte(digits, at)
         if b == 95:
-            if text_byte(digits, at + 1) == 95:
-                return False
+            if text_byte(digits, at + 1) == 95: return False
         elif _digit_value(b) >= radix:
             return False
     True
@@ -583,14 +576,12 @@ def _float_ok(text: str) -> bool:
         mut digits = exponent + 1
         while text_byte(text, digits) == 43 or text_byte(text, digits) == 45:
             digits += 1
-        if not _digits_ok(text_part(text, digits, size), 10):
-            return False
+        if not _digits_ok(text_part(text, digits, size), 10): return False
     mut dot = -1
     for at in range(end):
         if text_byte(text, at) == 46 and dot < 0:
             dot = at
-    if dot < 0:
-        return _whole_ok(text_part(text, 0, end))
+    if dot < 0: return _whole_ok(text_part(text, 0, end))
     _whole_ok(text_part(text, 0, dot)) and _digits_ok(text_part(text, dot + 1, end), 10)
 
 ## An int in a radix, or -1 if it's too big.
@@ -600,19 +591,28 @@ def _radix_int(digits: str, radix: int) -> int:
         b = text_byte(digits, at)
         if b != 95:
             digit = _digit_value(b)
-            if value > (9223372036854775807 - digit) // radix:
-                return -1
+            if value > (9223372036854775807 - digit) // radix: return -1
             value = value * radix + digit
     value
 
 ## The error for a key that has a value, or a table somewhere a dotted key can't add to.
 def _no_table(parser: _Parser, key: str, at: int, dotted: bool, inner_dotted: bool) -> ParseError:
     if dotted and not inner_dotted:
-        return parser.bad_at(f"`{key}` is a table defined elsewhere, so a dotted key can't add to it", at)
+        return parser.bad_at(
+            f"`{key}` is a table defined elsewhere, so a dotted key can't add to it",
+            at,
+        )
     parser.bad_at(f"`{key}` already has a value, so it can't hold a table", at)
 
 ## Adds `keys = value` under the table a header named, making the tables that dotted keys name.
-def _insert(mut table: _Table, path: list[str], step: int, keys: list[str], value: _Toml, where: (_Parser, int)) fails ParseError:
+def _insert(
+    mut table: _Table,
+    path: list[str],
+    step: int,
+    keys: list[str],
+    value: _Toml,
+    where: (_Parser, int),
+) fails ParseError:
     parser, at = where
     if step < path.len():
         key = path[step]
@@ -633,12 +633,17 @@ def _insert(mut table: _Table, path: list[str], step: int, keys: list[str], valu
         return
     _insert_dotted(mut table, keys, 0, value, where)?
 
-def _insert_dotted(mut table: _Table, keys: list[str], step: int, value: _Toml, where: (_Parser, int)) fails ParseError:
+def _insert_dotted(
+    mut table: _Table,
+    keys: list[str],
+    step: int,
+    value: _Toml,
+    where: (_Parser, int),
+) fails ParseError:
     parser, at = where
     key = keys[step]
     if step == keys.len() - 1:
-        if table.place_of(key) >= 0:
-            fail parser.bad_at(f"`{_joined(keys)}` is defined twice", at)
+        if table.place_of(key) >= 0: fail parser.bad_at(f"`{_joined(keys)}` is defined twice", at)
         table.add(key, value)
         return
     mut place = table.place_of(key)
@@ -647,10 +652,8 @@ def _insert_dotted(mut table: _Table, keys: list[str], step: int, value: _Toml, 
         place = table.values.len() - 1
     match table.values[place]:
         case .Table(inner):
-            if inner.inline:
-                fail _no_table(parser, key, at, False, False)
-            if not inner.dotted:
-                fail _no_table(parser, key, at, True, False)
+            if inner.inline: fail _no_table(parser, key, at, False, False)
+            if not inner.dotted: fail _no_table(parser, key, at, True, False)
             mut child = inner
             _insert_dotted(mut child, keys, step + 1, value, where)?
             table.values[place] = _Toml.Table(table=child)
@@ -660,7 +663,13 @@ def _insert_dotted(mut table: _Table, keys: list[str], step: int, value: _Toml, 
             fail _no_table(parser, key, at, False, False)
 
 ## Starts the table a header names, going through what its path names on the way.
-def _define(mut table: _Table, keys: list[str], step: int, array: bool, where: (_Parser, int)) fails ParseError:
+def _define(
+    mut table: _Table,
+    keys: list[str],
+    step: int,
+    array: bool,
+    where: (_Parser, int),
+) fails ParseError:
     parser, at = where
     key = keys[step]
     place = table.place_of(key)
@@ -671,8 +680,7 @@ def _define(mut table: _Table, keys: list[str], step: int, array: bool, where: (
             held = table.values.len() - 1
         match table.values[held]:
             case .Table(inner):
-                if inner.inline:
-                    fail _no_table(parser, key, at, False, False)
+                if inner.inline: fail _no_table(parser, key, at, False, False)
                 mut child = inner
                 _define(mut child, keys, step + 1, array, where)?
                 table.values[held] = _Toml.Table(table=child)
@@ -696,20 +704,29 @@ def _define(mut table: _Table, keys: list[str], step: int, array: bool, where: (
     match table.values[place]:
         case .Tables(tables):
             if not array:
-                fail parser.bad_at(f"`{name}` is already defined as something else, so it can't be `{shown}`", at)
+                fail parser.bad_at(
+                    f"`{name}` is already defined as something else, so it can't be `{shown}`",
+                    at,
+                )
             mut children = tables
             children.append(_Table(header=True))
             table.values[place] = _Toml.Tables(tables=children)
         case .Table(inner):
             if array or inner.inline:
-                fail parser.bad_at(f"`{name}` is already defined as something else, so it can't be `{shown}`", at)
+                fail parser.bad_at(
+                    f"`{name}` is already defined as something else, so it can't be `{shown}`",
+                    at,
+                )
             if inner.header or inner.dotted:
                 fail parser.bad_at(f"the table `[{name}]` is defined twice", at)
             mut child = inner
             child.header = True
             table.values[place] = _Toml.Table(table=child)
         case _:
-            fail parser.bad_at(f"`{name}` is already defined as something else, so it can't be `{shown}`", at)
+            fail parser.bad_at(
+                f"`{name}` is already defined as something else, so it can't be `{shown}`",
+                at,
+            )
 
 ## Where a reader is in a table it's reading.
 struct _Frame:
@@ -727,8 +744,7 @@ struct TomlReader:
     _in_key = False
 
     def _where(self) -> str:
-        if self._path.len() == 0:
-            return "the text"
+        if self._path.len() == 0: return "the text"
         f"`{self._dotted()}`"
 
     def _dotted(self) -> str:
@@ -757,7 +773,11 @@ struct TomlReader:
                 "a table"
 
     def _misfit(self, wanted: str) -> ParseError:
-        ParseError(message=f"{self._where()} should be {_article(wanted)}, but it's {self._found()}", line=0, column=0)
+        ParseError(
+            message=f"{self._where()} should be {_article(wanted)}, but it's {self._found()}",
+            line=0,
+            column=0,
+        )
 
     def int(mut self) -> int fails ParseError:
         match self._here:
@@ -769,7 +789,11 @@ struct TomlReader:
                         case Ok(n):
                             return n
                         case Err(_):
-                            fail ParseError(message=f"{self._where()} has the key \"{text}\", which isn't an int", line=0, column=0)
+                            fail ParseError(
+                                message=f"{self._where()} has the key \"{text}\", which isn't an int",
+                                line=0,
+                                column=0,
+                            )
                 fail self._misfit("int")
             case _:
                 fail self._misfit("int")
@@ -800,7 +824,11 @@ struct TomlReader:
     def bytes(mut self) -> bytes fails ParseError:
         match self._here:
             case .Text(text):
-                _from_base64(text) else fail ParseError(message=f"{self._where()} should be bytes, written in base64", line=0, column=0)
+                _from_base64(text) else fail ParseError(
+                    message=f"{self._where()} should be bytes, written in base64",
+                    line=0,
+                    column=0,
+                )
             case _:
                 fail self._misfit("bytes")
 
@@ -887,17 +915,28 @@ struct TomlReader:
         for saved, own in fields:
             if own == key:
                 if saved == "":
-                    fail ParseError(message=f"{owner} doesn't save `{own}`, which has `@skip`, but {where} has it", line=0, column=0)
-                fail ParseError(message=f"{owner} saves `{own}` as \"{saved}\", but {where} has \"{key}\"", line=0, column=0)
-        fail ParseError(message=f"{owner} has no field \"{key}\", but {where} has one", line=0, column=0)
+                    fail ParseError(
+                        message=f"{owner} doesn't save `{own}`, which has `@skip`, but {where} has it",
+                        line=0,
+                        column=0,
+                    )
+                fail ParseError(
+                    message=f"{owner} saves `{own}` as \"{saved}\", but {where} has \"{key}\"",
+                    line=0,
+                    column=0,
+                )
+        fail ParseError(
+            message=f"{owner} has no field \"{key}\", but {where} has one",
+            line=0,
+            column=0,
+        )
 
     def field_at(self) -> int:
         self._place
 
     def missing(self, name: str) -> ParseError:
         joined = self._dotted()
-        if joined == "":
-            return ParseError(message=f"`{name}` is missing", line=0, column=0)
+        if joined == "": return ParseError(message=f"`{name}` is missing", line=0, column=0)
         ParseError(message=f"`{joined}.{name}` is missing", line=0, column=0)
 
     def rule(self, message: str) -> ParseError:
@@ -910,13 +949,20 @@ struct TomlReader:
                 for case, has_data in cases:
                     if case == key:
                         if has_data:
-                            fail ParseError(message=f"{self._where()} is `{name}.{case}`, which needs its fields", line=0, column=0)
+                            fail ParseError(
+                                message=f"{self._where()} is `{name}.{case}`, which needs its fields",
+                                line=0,
+                                column=0,
+                            )
                         return at
                     at += 1
-                fail ParseError(message=f"{self._where()} is \"{key}\", which isn't a case of `{name}`", line=0, column=0)
+                fail ParseError(
+                    message=f"{self._where()} is \"{key}\", which isn't a case of `{name}`",
+                    line=0,
+                    column=0,
+                )
             case .Table(table):
-                if table.keys.len() != 1:
-                    fail self._misfit(name)
+                if table.keys.len() != 1: fail self._misfit(name)
                 key = table.keys[0]
                 inner = table.values[0]
                 match inner:
@@ -925,11 +971,19 @@ struct TomlReader:
                         for case, has_data in cases:
                             if case == key:
                                 if not has_data and fields.keys.len() > 0:
-                                    fail ParseError(message=f"`{name}.{case}` has no field \"{fields.keys[0]}\", but {self._where()} has one", line=0, column=0)
+                                    fail ParseError(
+                                        message=f"`{name}.{case}` has no field \"{fields.keys[0]}\", but {self._where()} has one",
+                                        line=0,
+                                        column=0,
+                                    )
                                 self._here = inner
                                 return at
                             at += 1
-                        fail ParseError(message=f"{self._where()} is \"{key}\", which isn't a case of `{name}`", line=0, column=0)
+                        fail ParseError(
+                            message=f"{self._where()} is \"{key}\", which isn't a case of `{name}`",
+                            line=0,
+                            column=0,
+                        )
                     case _:
                         fail self._misfit(name)
             case _:
@@ -1054,11 +1108,16 @@ def _quoted(text: str) -> str:
 
 def _table_key(key: str) -> str:
     size = text_size(key)
-    if size == 0:
-        return _quoted(key)
+    if size == 0: return _quoted(key)
     for at in range(size):
         b = text_byte(key, at)
-        if not ((b >= 97 and b <= 122) or (b >= 65 and b <= 90) or (b >= 48 and b <= 57) or b == 95 or b == 45):
+        if not (
+            (b >= 97 and b <= 122)
+            or (b >= 65 and b <= 90)
+            or (b >= 48 and b <= 57)
+            or b == 95
+            or b == 45
+        ):
             return _quoted(key)
     key
 
@@ -1081,8 +1140,7 @@ def _one_line(value: _Toml) -> str:
             _inline(table)
 
 def _inline(table: _Table) -> str:
-    if table.keys.len() == 0:
-        return "{}"
+    if table.keys.len() == 0: return "{}"
     mut parts = list[str]()
     mut at = 0
     for key in table.keys:
@@ -1092,8 +1150,7 @@ def _inline(table: _Table) -> str:
 
 ## The tables a list holds, if it's a non-empty list of nothing else.
 def _all_tables(items: list[_Toml]) -> list[_Table]?:
-    if items.len() == 0:
-        return None
+    if items.len() == 0: return None
     mut tables = list[_Table]()
     for item in items:
         match item:

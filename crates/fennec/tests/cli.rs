@@ -83,7 +83,7 @@ fn run_hands_main_its_arguments_and_input() {
 fn run_reports_errors_and_fails() {
     let output = fennec(&["run", "examples/errors/print.fen"], "").unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(text(&output.stderr).starts_with("error: `print` doesn't exist"));
+    assert!(text(&output.stderr).starts_with("error: there's no global `print`"));
 }
 
 #[test]
@@ -1284,6 +1284,25 @@ fn fix_writes_in_return_types_and_removes_arrows_to_none() {
         "def square(n: int) -> int:\n    n * n\n\ndef greet(stdout: Stdout):\n    stdout.print(square(3))\n\ndef main(stdout: Stdout):\n    greet(stdout)\n"
     );
     assert!(again.status.success() && again.stdout.is_empty());
+}
+
+/// `print` where the function has a `Stdout` is fixed, and with none there's nothing to write.
+#[test]
+fn fix_writes_the_stdout_a_function_has() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-fix-print", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("print.fen");
+    let path = program.to_string_lossy().into_owned();
+    std::fs::write(&program, "def main(out: Stdout):\n    print(\"hello\")\n").unwrap();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    std::fs::write(&program, "def main():\n    print(\"hello\")\n").unwrap();
+    let unfixed = fennec(&["fix", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(written, "def main(out: Stdout):\n    out.print(\"hello\")\n");
+    assert_eq!(unfixed.status.code(), Some(1));
+    assert!(text(&unfixed.stderr).contains("def main(stdout: Stdout):"), "{}", text(&unfixed.stderr));
 }
 
 #[test]

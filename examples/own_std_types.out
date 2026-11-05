@@ -1,3 +1,4 @@
 False
 Duration(label="long") Path(parts=["a", "b"]) Match(found=True)
 Counter(count=1)
+Table(rows=["fox"])

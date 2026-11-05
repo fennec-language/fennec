@@ -1836,12 +1836,70 @@ def main(stdout: Stdout):
     stdout.print(read_write(two, three), two.total, three.total)
 ";
 
+/// A comprehension replacing a list in a cell can't change the items where they are: another name
+/// for the cell reads the list as it was until the new one is stored.
+const CELL_LIST_REPLACED: &str = r#"struct Point:
+    x: int
+    y: int
+
+shared Box:
+    items = [1, 2, 3]
+    names = ["a", "b"]
+    points = [Point(x=1, y=2), Point(x=3, y=4)]
+
+struct Holder:
+    box: Box
+
+def main(stdout: Stdout):
+    one = Box()
+    with one, one as mut x, y:
+        x.items = [n + y.items[0] for n in x.items]
+    stdout.print(one.items)
+    with one, one as mut x, y:
+        x.points = [Point(x=p.y, y=y.points[0].x) for p in x.points]
+    stdout.print(one.points[0].x, one.points[0].y, one.points[1].x, one.points[1].y)
+    with one, one as mut x, mut y:
+        x.names = [s + y.names[0] for s in x.names]
+    stdout.print(one.names)
+    holder = Holder(box=one)
+    with holder.box, one as mut x, y:
+        x.items = [n + y.items[0] for n in x.items]
+    stdout.print(one.items)
+"#;
+
+#[test]
+fn a_comprehension_replacing_a_list_in_a_cell_keeps_it_whole_for_other_names() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("cell_list_replaced", CELL_LIST_REPLACED)
+}
+
 #[test]
 fn one_shared_value_under_two_names_in_a_with_stays_one_value() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
     same_as_the_interpreter_in_both_builds("one_cell_two_names", ONE_CELL_TWO_NAMES)
+}
+
+#[test]
+fn what_changes_where_it_is_stays_right_with_one_cell_under_two_names() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("shared_two_names", include_str!("fixtures/shared_two_names.fen"))
+}
+
+#[test]
+fn walking_a_map_in_a_cell_while_another_name_changes_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "shared_map_walked",
+        include_str!("fixtures/shared_map_walked.fen"),
+    )
 }
 
 #[test]

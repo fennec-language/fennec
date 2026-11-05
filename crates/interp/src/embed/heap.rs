@@ -66,9 +66,7 @@ pub(super) struct Cursor {
 #[derive(Default)]
 pub(crate) struct Heap {
     pub(super) blocks: super::table::Table,
-    /// By size, only for sizes `fresh` has been asked for: keeping what's only ever made another way,
-    /// as most strings are, would fill the limit and be no use to anything.
-    spare: Vec<Option<Vec<Box<[u64]>>>>,
+    spare: Vec<Vec<Box<[u64]>>>,
     /// How many words `spare`'s blocks hold.
     spare_words: usize,
     /// How many of the blocks live for the whole run.
@@ -185,6 +183,9 @@ pub const IMMORTAL: u64 = 1 << 48;
 /// through allocator and table pages that then can't be given back.
 const SPARE_TOTAL_WORDS: usize = 1 << 20;
 
+/// How many words of freed blocks of any one size a heap keeps: 1 MB.
+const SPARE_SIZE_WORDS: usize = 1 << 17;
+
 /// The biggest block, in words, kept for reuse.
 const SPARE_WORDS: usize = 256;
 
@@ -251,8 +252,7 @@ impl Heap {
 
     /// A zeroed block of `words` words, reusing a freed one when there is one.
     pub(super) fn fresh(&mut self, words: usize) -> Box<[u64]> {
-        let Some(Some(kept)) = self.spare.get_mut(words) else { return self.fresh_of_new_size(words) };
-        match kept.pop() {
+        match self.spare.get_mut(words).and_then(Vec::pop) {
             Some(mut block) => {
                 self.spare_words -= block.len();
                 zero(&mut block);
@@ -262,24 +262,9 @@ impl Heap {
         }
     }
 
-    /// `fresh` for a size it hasn't been asked for yet, which is now worth keeping.
-    #[cold]
-    #[inline(never)]
-    fn fresh_of_new_size(&mut self, words: usize) -> Box<[u64]> {
-        if words <= SPARE_WORDS {
-            if self.spare.len() <= words {
-                self.spare.resize_with(words + 1, || None);
-            }
-            if let Some(kept) = self.spare.get_mut(words) {
-                *kept = Some(Vec::new());
-            }
-        }
-        vec![0; words].into_boxed_slice()
-    }
-
-    /// Keeps a freed block for reuse, when it's a size `fresh` is asked for: anything else, like a
-    /// long list's, is rare enough to give back.
-    pub(super) fn recycle(&mut self, block: Box<[u64]>) {
+    /// Keeps a freed block for reuse, when it's small: big ones, like a long list's, are
+    /// rare enough to give back.
+    fn recycle(&mut self, block: Box<[u64]>) {
         // Under AddressSanitizer every freed block is given back, for it to watch.
         if cfg!(feature = "sanitize") {
             return;
@@ -288,7 +273,29 @@ impl Heap {
             return;
         }
         let words = block.len();
-        if let Some(Some(spare)) = self.spare.get_mut(words) {
+        match self.spare.get_mut(words) {
+            // Each size gets a share, so one nothing reuses, like most strings', can't take all of it.
+            Some(spare) if (spare.len() + 1) * words > SPARE_SIZE_WORDS => {}
+            Some(spare) => {
+                spare.push(block);
+                self.spare_words += words;
+            }
+            None => self.recycle_first(block),
+        }
+    }
+
+    /// `recycle`, for the first block of its size.
+    #[cold]
+    #[inline(never)]
+    fn recycle_first(&mut self, block: Box<[u64]>) {
+        let words = block.len();
+        if words > SPARE_WORDS {
+            return;
+        }
+        if self.spare.len() <= words {
+            self.spare.resize_with(words + 1, Vec::new);
+        }
+        if let Some(spare) = self.spare.get_mut(words) {
             spare.push(block);
             self.spare_words += words;
         }

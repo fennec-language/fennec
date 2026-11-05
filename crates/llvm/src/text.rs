@@ -154,7 +154,7 @@ impl Emit<'_, '_, '_> {
                     emit.line(&format!("call void @fennec_str_print(ptr {block})"));
                 });
             }
-            Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => {
+            Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => {
                 self.declare("declare void @fennec_print_block(ptr) nounwind");
                 self.line(&format!("call void @fennec_print_block(ptr {value})"));
             }
@@ -317,6 +317,7 @@ impl Emit<'_, '_, '_> {
             | Kind::Enum(_)
             | Kind::List(_)
             | Kind::Boxed(_)
+            | Kind::Bytes
             | Kind::Dict(..) => true,
             _ => false,
         }
@@ -385,7 +386,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{text} = call ptr @fennec_str_repr(ptr {block})"));
                 Ok(text)
             }
-            Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => Ok(self.text_of_block(value)),
+            Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => Ok(self.text_of_block(value)),
             _ => self.plain_text(value, kind),
         }
     }
@@ -430,7 +431,9 @@ impl Emit<'_, '_, '_> {
                     return Ok(value);
                 }
                 Kind::Bool | Kind::Struct(_) | Kind::Enum(_) => return self.plain_text(&value, &kind),
-                Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => return Ok(self.text_of_block(&value)),
+                Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => {
+                    return Ok(self.text_of_block(&value));
+                }
                 other => return Err(format!("it formats a {other:?}, which this backend doesn't take yet")),
             }
             return Ok(temp);

@@ -244,7 +244,7 @@ impl Program {
         let wanted = match name {
             "->" => written.args.len().max(1),
             "list" | "set" | "SoaList" | "Buffer" | "Id" | "Table" | "Iterator" => 1,
-            "dict" | "Result" => 2,
+            "dict" | "Result" | "array" => 2,
             "tuple" => written.args.len(),
             name => self.type_params(name).len(),
         };
@@ -252,7 +252,8 @@ impl Program {
             return Err(wrong_type_args(written, wanted));
         }
         let mut args = Vec::new();
-        for arg in &written.args {
+        // An array's size is a number, not a type.
+        for arg in written.args.iter().take(if name == "array" { 1 } else { usize::MAX }) {
             args.push(self.resolve_within(arg, generics, depth)?);
         }
         let mut items = args.clone().into_iter();
@@ -269,6 +270,7 @@ impl Program {
             "nothing" => Type::Unit,
             "list" | "SoaList" => Type::List(arg()),
             "Buffer" => Type::Buffer(arg()),
+            "array" => Type::Array(arg(), array_size(written)?),
             "Iterator" => Type::Iterator(arg()),
             "set" => Type::Set(arg()),
             "dict" => Type::Dict(arg(), arg()),
@@ -385,10 +387,10 @@ impl Program {
 
 pub(crate) use fennec_syntax::visit::BUILT_IN_INTERFACES;
 
-pub(crate) const BUILT_IN_TYPES: [&str; 26] = [
-    "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "SoaList", "Buffer", "set", "dict",
-    "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Net", "Result",
-    "Iterator", "->",
+pub(crate) const BUILT_IN_TYPES: [&str; 27] = [
+    "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "array", "SoaList", "Buffer", "set",
+    "dict", "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Net",
+    "Result", "Iterator", "->",
 ];
 
 /// An interface written where a type goes, as in `list[Shape]`.
@@ -396,6 +398,15 @@ fn interface_as_type(name: &str, span: Span) -> Diagnostic {
     Diagnostic::new(format!("`{name}` is an interface, not a type"), span).with_help(format!(
         "take a type parameter that fits it, like `def f[T: {name}](items: list[T])`, or use an enum for a mix of types"
     ))
+}
+
+/// The `16` in `array[float, 16]`: a whole number of at least 1, written out.
+fn array_size(written: &TypeExpr) -> Result<u64, Diagnostic> {
+    let size = written.args.get(1).and_then(|size| size.name.parse::<u64>().ok());
+    size.filter(|size| *size > 0).ok_or_else(|| {
+        Diagnostic::new("an array's size is a whole number of at least 1, written out", written.span)
+            .with_help("write it like `array[float, 16]`")
+    })
 }
 
 fn wrong_type_args(written: &TypeExpr, wanted: usize) -> Diagnostic {

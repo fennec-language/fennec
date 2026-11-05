@@ -2357,6 +2357,10 @@ fn every_example_kit_lowers_to_valid_ir() {
     assert!(kits >= 6, "only {kits} kits");
 }
 
+/// Examples that use what lowering doesn't take yet: fixed-size arrays wait on their inline
+/// layout, which the LLVM lane builds.
+const NOT_LOWERED_YET: &[&str] = &["arrays.fen"];
+
 #[test]
 fn every_example_lowers_to_valid_ir() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
@@ -2373,6 +2377,10 @@ fn every_example_lowers_to_valid_ir() {
             .unwrap_or_else(|problems| panic!("{file}: {problems:?}"));
         let program = lower(&module, &checked);
         validate(&program).unwrap_or_else(|problems| panic!("{file}: {problems:?}\n{program}"));
+        if NOT_LOWERED_YET.contains(&file.as_str()) {
+            assert_ne!(program.not_lowered, [], "{file} lowers now: take it off `NOT_LOWERED_YET`");
+            continue;
+        }
         assert_eq!(program.not_lowered, [], "{file}");
         assert_eq!(program.external, Vec::<String>::new(), "{file}");
         lowered_functions

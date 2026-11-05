@@ -494,7 +494,7 @@ impl<'c> FnCx<'c> {
     fn check_field_default(&mut self, type_name: &str, case: Option<&str>, field: &Field) {
         let expected = self.checker.field_type(type_name, case, &field.name);
         let Some(default) = &field.default else { return };
-        let actual = self.expr(default);
+        let actual = self.expr_as(default, &expected);
         if !self.checker.fits(&expected, &actual) {
             let what = format!("`{}`", field.name);
             self.error(crate::messages::mismatch(&what, &expected, &actual, default.span));

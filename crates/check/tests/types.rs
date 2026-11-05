@@ -183,6 +183,67 @@ fn slicing_fits_what_is_sliced() {
 }
 
 #[test]
+fn a_fixed_size_array_holds_exactly_its_size() {
+    let program = "
+        struct Item:
+            name = ''
+
+        struct Bag:
+            slots = array[Item?, 3]()
+            m: array[float, 4] = [1.0, 0.0, 0.0, 1.0] where all(x >= 0.0 for x in m)
+
+        def bump(ref xs: array[int, 3]):
+            for ref x in xs:
+                x += 1
+
+        def main(stdout: Stdout):
+            mut bag = Bag()
+            bag.slots[0] = Item(name='rope')
+            bag.slots[-1] = None
+            mut xs = array[int, 3]()
+            bump(ref xs)
+            grid = array[array[int, 2], 2]()
+            stdout.print(xs[2] + 1, xs.len(), 2 in xs, xs == array[int, 3](), list(xs), grid[1][0], bag.m[3] * 2.0)
+    ";
+    assert_eq!(problems(&program.replace('\'', "\"")), Vec::<String>::new());
+}
+
+#[test]
+fn a_fixed_size_array_refuses_a_wrong_size_or_position() {
+    let program = "
+        struct Enemy:
+            name: str
+
+        def takes(xs: list[int]) -> int:
+            xs.len()
+
+        def main(stdout: Stdout):
+            a: array[int, 3] = [1, 2]
+            b: array[int, 0] = [1]
+            c: array[str, 2] = ['a', 1]
+            d = array[Enemy, 2]()
+            e = array[int, 3](5)
+            mut f = array[int, 3]()
+            f[3] = 1
+            stdout.print(f[-4], f[-3], takes(f), f[0:2])
+    ";
+    assert_eq!(
+        problems(&program.replace('\'', "\"")),
+        [
+            "this array holds 3 items, but this list has 2 items @ [1, 2]",
+            "an array's size is a whole number of at least 1, written out @ array[int, 0]",
+            "this array holds a str, not an int @ 1",
+            "an Enemy has no zero to fill an array with @ array[Enemy, 2]()",
+            "`array[int, 3]()` fills it with zeros, so it takes nothing @ array[int, 3](5)",
+            "this array has 3 items, so there's no item 3 @ 3",
+            "this array has 3 items, so there's no item -4 @ -4",
+            "`xs` should be a list[int], but this is an array[int, 3] @ f",
+            "an array can't be sliced @ f[0:2]",
+        ]
+    );
+}
+
+#[test]
 fn loops_go_over_collections() {
     let program = "
         struct Bag:

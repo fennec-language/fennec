@@ -32,6 +32,11 @@ impl FnCx<'_> {
                 self.key_fits(&Type::Int, &at, index.span);
                 item.as_ref().clone()
             }
+            Type::Array(item, size) => {
+                self.key_fits(&Type::Int, &at, index.span);
+                self.array_index_in_range(index, *size);
+                item.as_ref().clone()
+            }
             Type::Str => {
                 self.key_fits(&Type::Int, &at, index.span);
                 Type::Str
@@ -86,6 +91,28 @@ impl FnCx<'_> {
             other => format!("this is looked up by {}, not {}", a(other), a(actual)),
         };
         self.error(Diagnostic::new(message, span));
+    }
+
+    /// `slots[20]` on an `array[Item?, 20]`: a position written as a number has to be inside
+    /// the array, counting from the end when it's below 0 as for a list.
+    fn array_index_in_range(&mut self, index: &Expr, size: u64) {
+        let written = match &index.kind {
+            ExprKind::Int(n) => *n,
+            ExprKind::Unary { op: UnaryOp::Neg, expr } => match expr.kind {
+                ExprKind::Int(n) => n.saturating_neg(),
+                _ => return,
+            },
+            _ => return,
+        };
+        let size_signed = i64::try_from(size).unwrap_or(i64::MAX);
+        if written < size_signed && written >= -size_signed {
+            return;
+        }
+        let last = size - 1;
+        self.error(
+            Diagnostic::new(format!("this array has {size} items, so there's no item {written}"), index.span)
+                .with_help(format!("its items are 0 to {last}")),
+        );
     }
 
     /// `pair[0]`: the item's type. The index has to be written as a number, unless every

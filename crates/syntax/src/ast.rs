@@ -387,6 +387,17 @@ impl Expr {
     /// The type an expression spells, as in `json.loads[list[int]]`: a name, a name with
     /// types in brackets, a tuple of types, or any of those with `?`. `None` for anything
     /// else.
+    /// A type in brackets with others, or a number there: an array's size, `16` in
+    /// `array[float, 16]`.
+    fn as_type_or_size(&self) -> Option<TypeExpr> {
+        match self.kind {
+            ExprKind::Int(size) => {
+                Some(TypeExpr { name: size.to_string(), args: Vec::new(), optional: false, span: self.span })
+            }
+            _ => self.as_type(),
+        }
+    }
+
     pub fn as_type(&self) -> Option<TypeExpr> {
         let plain = |name: &str, args: Vec<TypeExpr>| TypeExpr {
             name: name.to_owned(),
@@ -405,7 +416,7 @@ impl Expr {
                     ExprKind::Tuple(items)
                         if items.first().is_some_and(|first| first.span.start == index.span.start) =>
                     {
-                        items.iter().map(Expr::as_type).collect::<Option<Vec<_>>>()?
+                        items.iter().map(Expr::as_type_or_size).collect::<Option<Vec<_>>>()?
                     }
                     _ => vec![index.as_type()?],
                 };

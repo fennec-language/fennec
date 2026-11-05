@@ -85,6 +85,7 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_shared_leave",
     "fennec_shared_new",
     "fennec_shared_out",
+    "fennec_shared_settle",
     "fennec_set_remove_header",
     "fennec_spec_text",
     "fennec_stmt",
@@ -287,7 +288,8 @@ export! {
     fennec_shared_enter(a0: i64, a1: i64) -> i64 => guarded::shared_enter(a0, a1);
     fennec_shared_leave(a0: i64, a1: i64) -> i64 => guarded::shared_leave(a0, a1);
     fennec_shared_in(a0: i64) -> i64 => guarded::shared_in(a0);
-    fennec_shared_out(a0: i64) -> i64 => guarded::shared_out(a0);
+    fennec_shared_out(a0: i64, a1: i64) -> i64 => guarded::shared_out(a0, a1);
+    fennec_shared_settle(a0: i64) => guarded::shared_settle(a0);
     fennec_shared_wait() => guarded::shared_wait();
     fennec_cell_new(a0: i64) -> i64 => heap::cell_new(a0);
     fennec_cell_read(a0: i64) -> i64 => heap::cell_read(a0);

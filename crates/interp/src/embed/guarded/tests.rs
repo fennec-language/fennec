@@ -140,12 +140,65 @@ fn values_are_copied_at_the_edge_each_way() {
     // What's already there is the same value with one more owner.
     assert_eq!(shared_in(copy), copy);
     assert_eq!(word(copy, 0), 2);
-    let out = shared_out(copy);
+    let out = shared_out(copy, 1);
     assert_ne!(out, copy);
     assert_eq!(word(out, 1) >> OWNER_SHIFT, 0, "it's this thread's");
     shared_leave(log, 1);
     assert_eq!(lines(out), ["mine"]);
     assert_eq!(word(out, 0), 1);
+    finish();
+}
+
+#[test]
+fn leaving_an_inner_lock_copies_to_the_table_of_the_lock_around_it() {
+    begin();
+    let (outer, inner) = (log_of(&[]), log_of(&["inner"]));
+    shared_new(outer);
+    shared_new(inner);
+    shared_enter(outer, 1);
+    shared_enter(inner, 1);
+    let inside = i64::try_from(word(inner, FIELDS)).unwrap();
+    let out = shared_out(inside, 1);
+    shared_leave(inner, 1);
+    assert_eq!(lines(out), ["inner"]);
+    assert_eq!(word(out, 1) >> OWNER_SHIFT, GUARDED_OWNER, "it's the outer value's");
+    shared_leave(outer, 1);
+    assert_eq!(word(out, 0), 0, "it left with the outer value's table");
+    finish();
+}
+
+#[test]
+fn two_values_held_at_once_each_end_up_with_only_what_is_their_own() {
+    begin();
+    let (first, second) = (log_of(&["first"]), log_of(&["second"]));
+    shared_new(first);
+    shared_new(second);
+    shared_enter(first, 1);
+    shared_enter(second, 1);
+    // The second's table is on top, and what's made goes there, whichever value it's for.
+    let made = with(|state| lists::list_of_strings(state, LINES, &["made for the first"]));
+    let old = i64::try_from(word(first, FIELDS)).unwrap();
+    set_word(first, FIELDS, made);
+    heap::free(old);
+    shared_settle(first);
+    assert_eq!(word(first, 0), 0, "the first's own block is still there to read");
+    assert!(
+        with(|state| state.heap.blocks.get(usize::try_from(second).unwrap()).is_some()),
+        "the second's table is on top again"
+    );
+    shared_settle(second);
+    shared_leave(second, 1);
+    shared_leave(first, 1);
+    shared_enter(first, 1);
+    let inside = i64::try_from(word(first, FIELDS)).unwrap();
+    assert_ne!(inside, made, "the first has its own");
+    assert_eq!(lines(inside), ["made for the first"]);
+    shared_leave(first, 1);
+    shared_enter(second, 1);
+    let inside = i64::try_from(word(second, FIELDS)).unwrap();
+    assert_eq!(lines(inside), ["second"]);
+    assert_eq!(word(made, 0), 0, "it isn't anywhere the second's table can be asked for");
+    shared_leave(second, 1);
     finish();
 }
 
@@ -184,7 +237,7 @@ fn another_thread_reads_and_changes_what_this_one_put_there() {
             let inside = i64::try_from(word(log, FIELDS)).unwrap();
             assert_eq!(lines(inside).len(), round + 1);
             // Reading out of the lock is a copy, in this thread's own table.
-            let copy = shared_out(inside);
+            let copy = shared_out(inside, 0);
             shared_leave(log, 0);
             assert_eq!(lines(copy).len(), round + 1);
             heap::free(copy);

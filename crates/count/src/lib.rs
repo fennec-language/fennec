@@ -8,6 +8,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// A program to run: a command, its arguments, and a file for its standard input.
+#[derive(Clone)]
 pub struct Program {
     pub command: PathBuf,
     pub args: Vec<String>,

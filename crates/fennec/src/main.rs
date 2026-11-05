@@ -135,6 +135,8 @@ fn main() -> ExitCode {
         ["daemon", action] => daemon::command(action),
         ["lsp"] => lsp::lsp(),
         ["dev", "fallbacks"] => on_big_stack(fallbacks::fallbacks, "."),
+        ["dev", "fallbacks", "--llvm"] => on_big_stack(fallbacks::not_lowered, "."),
+        ["dev", "fallbacks", "--llvm", path] => on_big_stack(fallbacks::not_lowered, path),
         ["dev", "fallbacks", path] => on_big_stack(fallbacks::fallbacks, path),
         ["dev", "copies"] => on_big_stack(copies::copies, "."),
         ["dev", "copies", "--run"] => on_big_stack(copies::copies_in_a_run, "."),

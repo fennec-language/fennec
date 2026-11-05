@@ -244,6 +244,7 @@ impl Interp<'_> {
                 Value::Tuple(items) if keys.len() > 1 => items.to_vec(),
                 resource => vec![resource],
             };
+            taken_twice(&resources, value.span)?;
             self.frame.push();
             for (at, (key, resource)) in keys.iter().zip(resources).enumerate() {
                 self.frame.declare(key, resource, names.get(at).is_some_and(|held| held.is_mut));
@@ -459,4 +460,16 @@ fn parallel_items(iter: &Expr) -> Option<&Expr> {
     let ExprKind::Name(name) = &callee.kind else { return None };
     let [first] = args.as_slice() else { return None };
     (name == "parallel" && first.name.is_none() && !first.is_mut).then_some(&first.value)
+}
+
+/// A `with` that takes one `shared` value under two names ends the program.
+fn taken_twice(resources: &[Value], span: Span) -> Result<(), Diagnostic> {
+    for (at, resource) in resources.iter().enumerate() {
+        let Value::Shared(cell) = resource else { continue };
+        let earlier = resources.iter().take(at);
+        if earlier.into_iter().any(|other| matches!(other, Value::Shared(seen) if Rc::ptr_eq(seen, cell))) {
+            return Err(Diagnostic::new("this `with` takes the same `shared` value twice", span));
+        }
+    }
+    Ok(())
 }

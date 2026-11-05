@@ -1767,7 +1767,7 @@ def main(stdout: Stdout):
         log.add(\"in a loop\")
     stdout.print(first.seen(), logs[1].seen())
     mut inside = 0
-    with first, second as mut a, b:
+    with first, logs[1] as mut a, b:
         a.count = 100
         a.lines.append(\"inside with\")
         inside = b.count
@@ -1776,16 +1776,12 @@ def main(stdout: Stdout):
     stdout.print(logs[1])
 ";
 
-/// One cell under two names in a `with`: each sees what the other wrote, so nothing can be assumed
-/// apart. Whether this shape stops at run time is still open, and this pins what it does today.
-const ONE_CELL_TWO_NAMES: &str = r"shared Account:
+/// Two cells in a `with`, each changed through its own name.
+const TWO_CELLS: &str = r"shared Account:
     total = 0
 
     def add(mut self, amount: int):
         self.total += amount
-
-    def balance(self) -> int:
-        self.total
 
 def transfer(source: Account, target: Account, amount: int) -> bool:
     with source, target as mut x, mut y:
@@ -1794,78 +1790,58 @@ def transfer(source: Account, target: Account, amount: int) -> bool:
         y.add(amount)
     True
 
-def both(a: Account, b: Account, rounds: int) -> list[int]:
-    mut seen = list[int]()
-    with a, b as mut x, mut y:
-        for n in range(rounds):
-            before = x.total
-            y.total = before + n
-            x.add(1)
-            y.add(x.total)
-            seen.append(x.total)
-            seen.append(y.total)
-            seen.append(before)
-    seen
-
-def read_write(a: Account, b: Account) -> list[int]:
-    mut seen = list[int]()
-    with a, b as x, mut y:
-        first = x.total
-        y.total = first + 7
-        seen.append(x.total)
-        seen.append(first)
-    seen
-
 def main(stdout: Stdout):
-    one = Account(total=10)
-    mut seen = 0
-    with one, one as mut x, mut y:
-        x.total = 1
-        y.total = 2
-        seen = x.total
-    stdout.print(seen, one.total)
-    stdout.print(transfer(one, one, 1), one.total)
-    stdout.print(transfer(one, one, 2), one.total)
-    stdout.print(transfer(one, one, 5), one.total)
-    stdout.print(both(one, one, 4), one.total)
-    stdout.print(read_write(one, one), one.total)
     two = Account(total=10)
     three = Account(total=20)
     stdout.print(transfer(two, three, 4), two.total, three.total)
-    stdout.print(both(two, three, 3), two.total, three.total)
-    stdout.print(read_write(two, three), two.total, three.total)
+    stdout.print(transfer(three, two, 40), two.total, three.total)
 ";
 
-/// A comprehension replacing a list in a cell can't change the items where they are: another name
-/// for the cell reads the list as it was until the new one is stored.
-const CELL_LIST_REPLACED: &str = r#"struct Point:
-    x: int
-    y: int
+/// Each way a `with` can come to take one cell twice, all after printing something.
+const TAKEN_TWICE: [(&str, &str); 5] = [
+    ("spelled", "    with one, one as mut x, mut y:\n        x.total = y.total + 1\n"),
+    ("reading", "    mut seen = 0\n    with one, one as x, y:\n        seen = x.total + y.total\n"),
+    ("named", "    other = one\n    with one, other as mut x, y:\n        x.total = y.total + 1\n"),
+    ("passed", "    both(one, one)\n"),
+    ("held", "    with Holder(box=one).box, one as mut x, y:\n        x.total = y.total + 1\n"),
+];
 
-shared Box:
+const TAKING: &str = r#"shared Account:
+    total = 0
+
+struct Holder:
+    box: Account
+
+def both(a: Account, b: Account):
+    with a, b as mut x, mut y:
+        x.total = y.total + 1
+
+def main(stdout: Stdout):
+    one = Account(total=10)
+    two = Account(total=20)
+    with one, two as mut x, y:
+        x.total = y.total + 1
+    stdout.print("before", one.total)
+"#;
+
+/// A comprehension replacing a list in a cell can't change the items where they are: a call in it
+/// can reach the cell another way, and reads the list as it was until the new one is stored.
+const CELL_LIST_REPLACED: &str = r"shared Box:
     items = [1, 2, 3]
-    names = ["a", "b"]
-    points = [Point(x=1, y=2), Point(x=3, y=4)]
 
 struct Holder:
     box: Box
 
+def first(holder: Holder) -> int:
+    holder.box.items[0]
+
 def main(stdout: Stdout):
     one = Box()
-    with one, one as mut x, y:
-        x.items = [n + y.items[0] for n in x.items]
-    stdout.print(one.items)
-    with one, one as mut x, y:
-        x.points = [Point(x=p.y, y=y.points[0].x) for p in x.points]
-    stdout.print(one.points[0].x, one.points[0].y, one.points[1].x, one.points[1].y)
-    with one, one as mut x, mut y:
-        x.names = [s + y.names[0] for s in x.names]
-    stdout.print(one.names)
     holder = Holder(box=one)
-    with holder.box, one as mut x, y:
-        x.items = [n + y.items[0] for n in x.items]
+    with one as mut x:
+        x.items = [n + first(holder) for n in x.items]
     stdout.print(one.items)
-"#;
+";
 
 #[test]
 fn a_comprehension_replacing_a_list_in_a_cell_keeps_it_whole_for_other_names() -> std::io::Result<()> {
@@ -1876,19 +1852,35 @@ fn a_comprehension_replacing_a_list_in_a_cell_keeps_it_whole_for_other_names() -
 }
 
 #[test]
-fn one_shared_value_under_two_names_in_a_with_stays_one_value() -> std::io::Result<()> {
+fn two_cells_in_a_with_each_change_through_their_own_name() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("one_cell_two_names", ONE_CELL_TWO_NAMES)
+    same_as_the_interpreter_in_both_builds("two_cells", TWO_CELLS)
 }
 
+/// One cell taken twice ends the program, after what it printed, however it came about.
 #[test]
-fn what_changes_where_it_is_stays_right_with_one_cell_under_two_names() -> std::io::Result<()> {
+fn a_with_taking_one_cell_twice_ends_the_program() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_interpreter_in_both_builds("shared_two_names", include_str!("fixtures/shared_two_names.fen"))
+    let dir = folder("taken-twice")?;
+    let path = |file: &Path| file.display().to_string();
+    for (name, shape) in TAKEN_TWICE {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("{TAKING}{shape}    stdout.print(\"not here\")\n"))?;
+        let executable = dir.join(name);
+        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = outcome(&Command::new(&executable).output()?);
+        assert_eq!(ran, outcome(&fennec(&["run", "--interp", &path(&program)], &dir)?), "{name}");
+        assert_eq!(ran.2, Some(1), "{name}");
+        assert_eq!(ran.0, "before 21\n", "{name}");
+        assert!(ran.1.contains("takes the same `shared` value twice"), "{name}: {}", ran.1);
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }
 
 #[test]

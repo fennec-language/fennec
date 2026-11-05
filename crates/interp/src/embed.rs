@@ -117,6 +117,8 @@ pub struct Tables {
     pub elements: Vec<Rc<crate::packed::Element>>,
     /// The shapes of boxed values' blocks, by their number.
     pub shapes: Vec<Rc<crate::packed::Element>>,
+    /// The kinds of block a dict's values can be, by the number `dicts::Word::Block` has.
+    pub blocks: Vec<Rc<crate::packed::Element>>,
     /// The shape number strings' blocks have.
     pub str_shape: u64,
     /// Blocks that live for the whole run, like string literals, made while compiling so

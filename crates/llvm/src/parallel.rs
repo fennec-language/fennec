@@ -172,6 +172,8 @@ enum Shape {
     Into,
     /// `(from, to) -> int` or `-> float`: a sum's range, giving back its partial.
     Partial { float: bool },
+    /// `(conn) -> ()`: a server's task for a connection, on a stack of its own.
+    Task,
 }
 
 impl Shape {
@@ -181,14 +183,18 @@ impl Shape {
             Shape::Into => "@fen_parallel_range_into",
             Shape::Partial { float: false } => "@fen_parallel_partial_int",
             Shape::Partial { float: true } => "@fen_parallel_partial_float",
+            Shape::Task => "@fen_parallel_task",
         }
     }
 
     /// The shim's text: the runtime's body, calling the closure `%env` names over the range.
     fn shim(self) -> String {
+        if matches!(self, Shape::Task) {
+            return task_shim();
+        }
         let name = self.name();
         let (extra, args, call, keep) = match self {
-            Shape::Each => ("", "", "call swiftcc void", String::new()),
+            Shape::Each | Shape::Task => ("", "", "call swiftcc void", String::new()),
             Shape::Into => (", i64 %out", ", ptr %into", "call swiftcc void", String::new()),
             Shape::Partial { float: false } => (
                 ", ptr %partial",
@@ -217,6 +223,24 @@ impl Shape {
              %result = call i64 {running}(i64 %env, i64 %from, i64 %to, i64 %thread{extra})\n  ret i64 %result\n}}\n\n"
         )
     }
+}
+
+/// The shim for a server's task: as a range's, but each task has a stack of its own, so its limit
+/// is set every time, whatever this thread has run.
+fn task_shim() -> String {
+    let name = Shape::Task.name();
+    let running = format!("@\"{}.run\"", name.trim_start_matches('@'));
+    format!(
+        "define internal i64 {running}(i64 %env, i64 %conn) noinline #0 {{\nentry:\n  \
+         %closure = inttoptr i64 %env to ptr\n  %code_at = getelementptr inbounds i8, ptr %closure, i64 {CODE}\n  \
+         %code = load ptr, ptr %code_at\n  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n  \
+         call swiftcc void %code(ptr %closure, i64 %conn, ptr swifterror %failed)\n  \
+         %held = load ptr, ptr %failed\n  %bad = icmp ne ptr %held, null\n  %result = zext i1 %bad to i64\n  \
+         ret i64 %result\n}}\n\n\
+         define internal i64 {name}(i64 %env, i64 %conn, i64 %thread) #0 {{\n{READY}  \
+         %task_limit = call i64 @fennec_aot_stack_limit()\n  store i64 %task_limit, ptr @fennec_stack_limit\n  \
+         %result = call i64 {running}(i64 %env, i64 %conn)\n  ret i64 %result\n}}\n\n"
+    )
 }
 
 impl Emit<'_, '_, '_> {
@@ -319,6 +343,11 @@ impl Emit<'_, '_, '_> {
                 Ok(())
             }
             ("parallel.for", [list, range]) => self.parallel_for(list, range),
+            ("parallel.serve", [server, task]) => self.parallel_serve(server, task),
+            ("parallel.peer", [Operand::Local(conn)]) => {
+                let (handle, _) = self.operand(&Operand::Local(*conn))?;
+                self.socket_method(dest, &handle, "Connection.peer", &[], span)
+            }
             ("parallel.map", [list, range]) => {
                 self.parallel_map(dest.ok_or("a map keeps nothing")?, list, range)
             }
@@ -353,6 +382,33 @@ impl Emit<'_, '_, '_> {
         let env = self.temp();
         self.line(&format!("{env} = ptrtoint ptr {closure} to i64"));
         Ok((list, env))
+    }
+
+    /// `parallel.serve(server, task)`: each connection a task of the runtime's, until it's stopped.
+    fn parallel_serve(&mut self, server: &Operand, task: &Operand) -> Result<(), String> {
+        let handle = self.socket_handle(server)?;
+        let (closure, _) = self.operand(task)?;
+        let env = self.temp();
+        self.line(&format!("{env} = ptrtoint ptr {closure} to i64"));
+        let shim = self.shim(Shape::Task);
+        self.declare("declare i64 @fennec_net_serve(i64, ptr, i64) nounwind");
+        let done = self.temp();
+        self.line(&format!("{done} = call i64 @fennec_net_serve(i64 {handle}, ptr {shim}, i64 {env})"));
+        self.leave_if_failed();
+        Ok(())
+    }
+
+    /// A parked task's stack limit, read again after anything that can park: other tasks have run
+    /// on this thread since.
+    pub(crate) fn stack_limit_again(&mut self) {
+        if !self.on_workers() {
+            return;
+        }
+        self.declare(stack_limit_global(self.module.threads));
+        self.declare("declare i64 @fennec_aot_stack_limit()");
+        let limit = self.temp();
+        self.line(&format!("{limit} = call i64 @fennec_aot_stack_limit()"));
+        self.line(&format!("store i64 {limit}, ptr @fennec_stack_limit"));
     }
 
     /// `parallel.for(list, range)`: each range of the list's positions, as the runtime splits

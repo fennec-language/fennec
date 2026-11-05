@@ -1,0 +1,13 @@
+# The twin of the kernel in `bench/server`. Not part of the workspace: it's what Fennec is measured
+# against, with nothing but the standard library: a thread for each connection.
+[package]
+name = "fennec-server-twins"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "echo"
+path = "echo.rs"

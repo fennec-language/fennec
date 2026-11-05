@@ -47,6 +47,8 @@ extend Parser:
     def keyword_stmt(mut self, word: str) -> StmtKind:
         if word == "mut":
             return self.mut_declaration()?
+        if word == "ref":
+            fail no_inline_ref(self.span())
         if word not in ["return", "fail", "yield", "assert", "break", "continue", "pass"]:
             return self.expr_or_assign()?
         self.advance()
@@ -132,7 +134,7 @@ extend Parser:
 
     def for_stmt(mut self) -> Stmt:
         start = self.advance().span
-        is_mut = self.eat_keyword("mut")
+        is_mut = self.eat_ref()
         names = self.loop_names()?
         iter, body = self.condition_and_block()?
         Stmt(kind=.For(names, is_mut, iter, body), span=start.to(self.prev_span()))
@@ -163,7 +165,7 @@ extend Parser:
         if self.eat_keyword("as"):
             while True:
                 at = self.span()
-                is_mut = self.eat_keyword("mut")
+                is_mut = self.eat_ref()
                 name = self.name("a name after `as`")?
                 names.append(WithName(name=name, is_mut=is_mut, span=at.to(self.prev_span())))
                 if not self.eat_punct(","):
@@ -212,6 +214,10 @@ def assignment_op(tok: Tok) -> BinOp?:
 ## Whether a token makes what's before it the target of an assignment.
 def starts_assignment(tok: Tok) -> bool:
     tok == .Punct("=") or assignment_op(tok) is not None
+
+def no_inline_ref(span: Span) -> Diagnostic:
+    help = "`ref` is for loops and parameters. To change something in a list, write to it there, like `units[0].health -= 1`; to make a name that can change, write `mut`"
+    Diagnostic(message="there's no inline `ref`", span=span, help=help)
 
 def python_only(word: str, span: Span) -> Diagnostic:
     mut help = "Fennec has no exceptions: pass errors up with `?`, give a default with `else`, or handle them with `match`"

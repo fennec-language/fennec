@@ -313,6 +313,17 @@ struct JsonWriter:
         self._open("{")
 
     def field[T: Serializable](mut self, name: str, x: T):
+        # Written on one line with names as they are, as most output is, a field takes three pieces.
+        if self._indent < 0 and self._names == JsonNames.snake_case:
+            if self._first:
+                self._first = False
+                self._text += "\""
+            else:
+                self._text += ", \""
+            self._text += name
+            self._text += "\": "
+            x.serialize(mut self)
+            return
         self._entry()
         self._text += "\""
         match self._names:
@@ -389,6 +400,14 @@ def _powers() -> list[float]:
 
 _POWERS = _powers()
 
+## Whether the `size` bytes of `text` from `start` are those of `word`.
+def _same_bytes(text: str, start: int, word: str, size: int) -> bool:
+    mut at = 0
+    while at < size:
+        if text_byte(text, start + at) != text_byte(word, at): return False
+        at += 1
+    True
+
 ## Reads JSON a byte at a time, straight into what it's read as. The first read of a text says
 ## nothing about what's wrong; only a failed one is read again, keeping track of where it is.
 struct JsonReader:
@@ -404,6 +423,9 @@ struct JsonReader:
     _path = list[str]()
     _fields = list[(str, str)]()
     _owner = ""
+    ## For each object being read, innermost last, the field most likely to come next: the one
+    ## after the last found, since text usually has them in order.
+    _hints = list[int]()
 
     def _space(mut self) -> int:
         mut at = self._at
@@ -832,6 +854,7 @@ struct JsonReader:
         if self._depth > _MOST_DEEP: fail _no_reason()
         if self._explain:
             self._owner = name
+        self._hints.append(0)
 
     def next_field(mut self, fields: list[(str, str)]) -> bool fails ParseError:
         if self._explain:
@@ -842,6 +865,7 @@ struct JsonReader:
             if b == 125:
                 self._at += 1
                 self._depth -= 1
+                _ = self._hints.pop()
                 return False
             if self._explain and self._extra == JsonExtra.error:
                 self._unknown_first(fields)?
@@ -851,13 +875,53 @@ struct JsonReader:
             if b == 125:
                 self._at += 1
                 self._depth -= 1
+                _ = self._hints.pop()
                 return False
             if b != 44: fail _no_reason()
             self._at += 1
+        if not self._explain and self._names == JsonNames.snake_case:
+            at = self._key_in_place(fields)
+            if at >= 0:
+                self._place = at
+                self._hints[self._hints.len() - 1] = at + 1
+                return True
         key = self.text()?
         if self._space() != 58: fail _no_reason()
         self._at += 1
         return self._named(key, fields)?
+
+    ## Which of `fields` the key ahead is, read where it is in the text with no `str` made for it,
+    ## trying the likeliest first, and steps past it and its `:`. -1, and nothing taken, when it
+    ## isn't a plain match: then the key's read as usual.
+    def _key_in_place(mut self, fields: list[(str, str)]) -> int:
+        b = self._space()
+        if b != 34: return -1
+        start = self._at + 1
+        count = fields.len()
+        last = self._hints.len() - 1
+        mut place = self._hints[last]
+        mut tries = 0
+        while tries < count:
+            if place >= count:
+                place = 0
+            saved = fields[place][0]
+            size = text_size(saved)
+            if (
+                size > 0
+                and text_byte(self._source, start + size) == 34
+                and _same_bytes(self._source, start, saved, size)
+            ):
+                mut at = start + size + 1
+                mut c = text_byte(self._source, at)
+                while c == 32 or c == 10 or c == 13 or c == 9:
+                    at += 1
+                    c = text_byte(self._source, at)
+                if c != 58: return -1
+                self._at = at + 1
+                return place
+            place += 1
+            tries += 1
+        -1
 
     ## Takes in a field's key: which of `fields` it is, or what's done with a key none has.
     def _named(mut self, key: str, fields: list[(str, str)]) -> bool fails ParseError:

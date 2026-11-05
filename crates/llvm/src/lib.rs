@@ -30,6 +30,7 @@
 )]
 
 mod analysis;
+mod arrays;
 mod build;
 mod builders;
 mod builtins;

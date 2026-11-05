@@ -1,6 +1,7 @@
 //! Lowering a checked module to the IR, one function at a time. The types come from the
 //! checker's typed tree, never from working them out again.
 
+mod arrays;
 pub(crate) mod calls;
 mod closures;
 mod collections;
@@ -144,6 +145,7 @@ fn lower_from(
     program.structs = defs;
     program.enums = enums;
     program.errors = errors;
+    crate::arrays::spill_big_arrays(&mut program);
     program
 }
 
@@ -307,7 +309,8 @@ impl Context<'_> {
             | Type::Set(item)
             | Type::Optional(item)
             | Type::Table(item)
-            | Type::Id(item) => self.holds(item),
+            | Type::Id(item)
+            | Type::Array(item, _) => self.holds(item),
             Type::Dict(key, value) => self.holds(key) && self.holds(value),
             Type::Tuple(items) => items.iter().all(|item| self.holds(item)),
             Type::Arrow(params, returns) => {

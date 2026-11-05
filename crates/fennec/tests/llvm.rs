@@ -2101,6 +2101,171 @@ def main(stdout: Stdout):
     )
 }
 
+/// Fixed-size arrays: a copy is a copy of every item, changing an item or what it holds changes
+/// only that copy, and items are read and written by position, from the end too. Strings, lists,
+/// structs and optionals as items; an array in a struct, in a list and in an array; one passed by
+/// `ref`, looped over by `ref`, compared, searched and made a list.
+const ARRAYS: &str = r#"struct Named:
+    label = ""
+    tags: array[str, 3] = ["a", "b", "c"]
+    lists: array[list[int], 2] = [[], [1]]
+
+struct Holder:
+    slots: array[dict[str, int], 2] = [{}, {}]
+
+def make(first: str) -> array[str, 3]:
+    [first, first + "!", first + "?"]
+
+def bump(ref values: array[float, 4]):
+    for ref value in values:
+        value += 0.5
+
+def grow(ref items: list[int]):
+    items.append(9)
+
+def main(stdout: Stdout):
+    mut words = make("hi")
+    copied = words
+    words[0] = "changed"
+    words[-1] = "last"
+    stdout.print(words, copied, words == copied, "hi!" in words, "nope" not in words, words.len())
+    stdout.print(f"{words} and {copied[1]}", str(copied))
+
+    mut floats = array[float, 4]()
+    bump(ref floats)
+    floats[2] = 3.25
+    stdout.print(floats, sum(floats), max(floats), sorted(floats), list(floats) + [1.0])
+
+    mut named = Named(label="x")
+    other = named
+    named.tags[1] += "x"
+    named.lists[0].append(5)
+    grow(ref named.lists[1])
+    stdout.print(named, other)
+
+    mut items = [Named(label="one"), Named(label="two")]
+    more = items
+    items[1].tags[0] = "zero"
+    stdout.print(items[1].tags, more[1].tags)
+
+    mut grid = array[array[int, 3], 2]()
+    mut row = grid[1]
+    row[2] = 7
+    grid[1] = row
+    grid[0][1] = 4
+    stdout.print(grid, [sum(each) for each in grid])
+
+    mut holder = Holder()
+    kept = holder
+    holder.slots[1]["k"] = 3
+    stdout.print(holder.slots, kept.slots)
+
+    mut maybe: array[str?, 3] = [None, "a", None]
+    before = maybe
+    maybe[1] = "there"
+    stdout.print(maybe, before, maybe[0] is None)
+
+    mut texts: array[str, 2] = ["p", "q"]
+    keep = texts
+    for ref text in texts:
+        text += "!"
+    stdout.print(texts, keep)
+"#;
+
+#[test]
+fn arrays_keep_value_semantics_like_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("arrays", ARRAYS)
+}
+
+/// An array too big to keep in place is held as a list, which nothing in the program can tell:
+/// here one of ints, one of strings and one in a struct. One just small enough is in place.
+#[test]
+fn a_big_array_behaves_as_a_small_one() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "big_arrays",
+        "struct Big:
+    values = array[int, 10000]()
+
+def fill(ref values: array[int, 10000]):
+    for index in range(10000):
+        values[index] = index * 3
+
+def main(stdout: Stdout):
+    mut big = array[int, 10000]()
+    fill(ref big)
+    copy = big
+    big[0] = -1
+    big[-1] = 99
+    stdout.print(sum(big), sum(copy), big.len(), big[9998], copy[0], big == copy)
+    mut holder = Big()
+    holder.values[5] = 5
+    stdout.print(sum(holder.values), holder.values[5], holder.values[6])
+    names = array[str, 5000]()
+    mut more = names
+    more[4999] = \"end\"
+    stdout.print(names[4999] == \"\", more[-1])
+    mut in_place = array[int, 8192]()
+    in_place[8191] = 1
+    mut other = in_place
+    other[0] = 2
+    stdout.print(sum(in_place), sum(other), in_place == other)
+",
+    )
+}
+
+/// An index outside an array fails as one outside a list does, counting from the end too.
+#[test]
+fn an_index_outside_an_array_fails_like_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, at) in [("array_past_the_end", "3"), ("array_before_the_start", "-4")] {
+        let source = format!(
+            "def main(stdout: Stdout):\n    values = array[int, 3]()\n    mut at = {at}\n    stdout.print(values[at + 0])\n"
+        );
+        same_as_the_interpreter_in_both_builds(name, &source)?;
+    }
+    Ok(())
+}
+
+/// An array of numbers is kept where it is, so math on one in a loop allocates nothing.
+#[test]
+fn an_array_of_numbers_allocates_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let counts = counts_of(
+        "array_math",
+        "struct Mat2:
+    m: array[float, 4] = [1.0, 0.0, 0.0, 1.0]
+
+    def times(self, other: Mat2) -> Mat2:
+        mut out = Mat2()
+        for row in range(2):
+            for col in range(2):
+                out.m[row * 2 + col] = self.m[row * 2] * other.m[col] + self.m[row * 2 + 1] * other.m[2 + col]
+        out
+
+def main(stdout: Stdout):
+    mut product = Mat2()
+    step = Mat2(m=[1.0, 0.001, 0.0, 1.0])
+    mut counts = array[int, 8]()
+    for i in range(1000):
+        product = product.times(step)
+        counts[i % 8] += 1
+    stdout.print(product.m[1], counts[7])
+",
+    )?;
+    assert_eq!(count(&counts, "allocations"), Some(0), "{counts}");
+    Ok(())
+}
+
 /// Every name for a `shared` value sees it change, however it was reached, and what's plain
 /// around it stays a copy.
 const SHARED_NAMES: &str = "\

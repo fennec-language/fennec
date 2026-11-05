@@ -47,6 +47,7 @@ pub(super) fn external(program: &Program) -> Vec<String> {
 pub(super) fn owner_name(ty: &Type) -> Option<&str> {
     match ty {
         Type::List(_) => Some("list"),
+        Type::Array(..) => Some("array"),
         Type::Buffer(_) => Some("Buffer"),
         Type::Set(_) => Some("set"),
         Type::Dict(..) => Some("dict"),
@@ -169,6 +170,20 @@ impl Lowering<'_> {
                 return Err(super::operators::OWN_EQUALITY.to_owned());
             }
             let mut values = self.builtin_args((&mut name, object, changes), args, &mut write_backs, span)?;
+            if let Some(size) = self.array_len(&name, &values) {
+                dest = keep.map(|ty| self.temporary(ty));
+                if let Some(dest) = dest {
+                    self.emit(InstKind::Copy { dest, value: Operand::Int(size) }, span);
+                }
+                return Ok(dest);
+            }
+            self.arrays_as_lists(&name, &mut values, span)?;
+            // A new array is given its size, which a backend keeping it as a list needs.
+            if name == "array.new"
+                && let Some(Type::Array(_, size)) = &keep
+            {
+                values.push(Operand::Int(i64::try_from(*size).map_err(|_| "an array too long to count")?));
+            }
             self.fit_list_item(&name, &mut values, span)?;
             dest = keep.map(|ty| self.temporary(ty));
             self.emit(InstKind::Builtin { dest, name, args: values, changes }, span);

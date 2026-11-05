@@ -211,9 +211,10 @@ impl Emit<'_, '_, '_> {
                 Ok(text)
             }
             // Holding strings or lists, or an enum's fields, it's written by the runtime, from a
-            // block made of it.
+            // block made of it. So is an array, which is written as a list.
             Kind::Struct(id) | Kind::Enum(id)
                 if self.holds_inline(kind)
+                    || self.array_shape(kind).is_some()
                     || self.module.layouts.get(*id).is_some_and(|layout| {
                         layout.cases.iter().flatten().any(|case| !case.fields.is_empty())
                     }) =>

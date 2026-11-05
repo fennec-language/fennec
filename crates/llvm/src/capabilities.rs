@@ -120,7 +120,7 @@ impl Emit<'_, '_, '_> {
         self.crossing(dest, (runtime, "ptr", &word), method, rest, span)
     }
 
-    /// A method of a `Connection` or `Server`, which the runtime does by the handle it holds.
+    /// A method of a `Connection`, `Server` or `UdpSocket`, which the runtime does by the handle it holds.
     pub(crate) fn socket_call(
         &mut self,
         dest: Option<LocalId>,

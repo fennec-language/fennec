@@ -83,7 +83,7 @@ impl Method {
     }
 
     /// The last `optional` arguments can be left out.
-    fn optional(self, optional: usize) -> Method {
+    pub(crate) fn optional(self, optional: usize) -> Method {
         Method { arity: (self.arity.0.saturating_sub(optional), self.arity.1), ..self }
     }
 
@@ -248,7 +248,10 @@ fn bytes_method(name: &str) -> Option<Method> {
 fn waits_on_network(type_name: &str, name: &str) -> bool {
     matches!(
         (type_name, name),
-        ("Net", "connect") | ("Connection", "read" | "read_line") | ("Server", "accept")
+        ("Net", "connect")
+            | ("Connection", "read" | "read_line")
+            | ("Server", "accept")
+            | ("UdpSocket", "receive")
     )
 }
 
@@ -296,12 +299,13 @@ impl FnCx<'_> {
         let named: &[&str] = match ty.type_name() {
             _ if name == "sort" => &["key"],
             Some(owner) if waits_on_network(owner, name) => &["timeout"],
+            Some("Net") if name == "udp" => &["port"],
             _ => &[],
         };
         let plain = self.builtin_args(name, args, named, &method.receives, span);
-        if name == "write"
-            && *ty == Type::named("Connection")
-            && let [(data, at)] = plain.as_slice()
+        if (name == "write" && *ty == Type::named("Connection")
+            || name == "send_to" && *ty == Type::named("UdpSocket"))
+            && let [(data, at), ..] = plain.as_slice()
             && !matches!(data, Type::Str | Type::Bytes | Type::Unknown | Type::Var(_))
         {
             self.error(
@@ -370,6 +374,11 @@ impl FnCx<'_> {
                 Some("timeout") if named.contains(&"timeout") => {
                     if !self.checker.fits(&Type::named("Duration"), &ty) {
                         self.error(mismatch("`timeout`", &Type::named("Duration"), &ty, arg.value.span));
+                    }
+                }
+                Some("port") if named.contains(&"port") => {
+                    if !self.checker.fits(&Type::Int, &ty) {
+                        self.error(mismatch("`port`", &Type::Int, &ty, arg.value.span));
                     }
                 }
                 Some("indent") if named.contains(&"indent") => {

@@ -3458,6 +3458,63 @@ fn the_real_network_works_natively() -> std::io::Result<()> {
     same_as_the_interpreter_in_both_builds("real_network", REAL_NETWORK)
 }
 
+/// `bytes` over TCP and UDP natively, against the interpreter: what isn't text, reads of none and
+/// at the end, a packet's sender, timing out, a bad address and port, and looping over a socket.
+const NETWORK_BYTES: &str = "\
+from std.net import NetError
+
+def talk(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        with net.connect(\"127.0.0.1\", server.port, timeout=2s)? as client:
+            with server.accept(timeout=2s)? as conn:
+                client.write(bytes([0, 255, 10, 65]))?
+                client.write(\"x\".encode())?
+                data = conn.read(4, timeout=2s)?
+                stdout.print(data, data.len(), data[1])
+                stdout.print(conn.read(1, timeout=2s)?.decode() else \"\")
+                stdout.print(conn.read(0)?.len())
+                client.close()
+                stdout.print(conn.read(4, timeout=2s)?.len())
+    with net.udp(port=0)? as first:
+        with net.udp()? as second:
+            first.send_to(\"ping\", f\"127.0.0.1:{second.port}\")?
+            packet = second.receive(timeout=2s)?
+            stdout.print(packet.data.decode() else \"\", packet.sender.endswith(str(first.port)))
+            second.send_to(bytes([1, 2, 3]), packet.sender)?
+            answer = first.receive(timeout=2s)?
+            stdout.print(answer.data, answer.data[0])
+            match first.receive(timeout=20ms):
+                case Err(error):
+                    stdout.print(error.message())
+                case Ok(_):
+                    stdout.print(\"a packet from nowhere\")
+            match first.send_to(\"x\", \"no-such-host.invalid:9\"):
+                case Err(error):
+                    stdout.print(error.message())
+                case Ok(_):
+                    stdout.print(\"sent to nothing\")
+            first.send_to(\"last\", f\"127.0.0.1:{second.port}\")?
+            for packet in second:
+                stdout.print(packet.data.decode() else \"\")
+                second.close()
+
+def main(net: Net, stdout: Stdout):
+    match talk(net, stdout):
+        case Err(error):
+            stdout.print(error.message())
+        case Ok(_):
+            stdout.print(\"done\")
+    _ = net.udp(port=99999)
+";
+
+#[test]
+fn bytes_and_packets_cross_the_real_network_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("network_bytes", NETWORK_BYTES)
+}
+
 /// A program built with no interpreter in its runtime prints what it should and has none of the
 /// interpreter in it, and one still needing the interpreter fails to link rather than to run.
 #[test]

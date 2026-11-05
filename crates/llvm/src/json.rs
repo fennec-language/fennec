@@ -245,6 +245,23 @@ impl Emit<'_, '_, '_> {
                 self.release(&value);
                 return Ok(());
             }
+            // An optional string: all zeros for `None`, otherwise as a string is held.
+            Kind::MaybeText => {
+                self.declare("declare i8 @fennec_is_none(i64) nounwind");
+                let (byte, none) = (self.temp(), self.temp());
+                self.line(&format!("{byte} = call i8 @fennec_is_none(i64 {handle})"));
+                self.line(&format!("{none} = icmp ne i8 {byte}, 0"));
+                let (missing, holds, joined) = (self.label("none"), self.label("holds"), self.label("read"));
+                self.line(&format!("br i1 {none}, label %{missing}, label %{holds}"));
+                self.start_block(&missing);
+                self.store_field(kind, "zeroinitializer", at, "");
+                self.line(&format!("br label %{joined}"));
+                self.start_block(&holds);
+                self.native_at(handle, &Kind::Str, at, span)?;
+                self.line(&format!("br label %{joined}"));
+                self.start_block(&joined);
+                return Ok(());
+            }
             other => {
                 return Err(format!("it reads JSON into a {other:?}, which this backend doesn't take yet"));
             }

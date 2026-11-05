@@ -110,7 +110,42 @@ impl Emit<'_, '_, '_> {
         if !test && self.native_capability(dest, name, rest)? {
             return Ok(());
         }
-        let method = name.rsplit('.').next().unwrap_or(name);
+        // A named `timeout=` stays on the method's name: the runtime takes it off.
+        let method = name.split_once('.').map_or(name, |(_, method)| method);
+        let (word, _) = self.operand(receiver)?;
+        // What's still only written for the interpreter is a symbol of its own, so a program that
+        // needs it can't link without the interpreter.
+        let runtime = if test { "fennec_capability_call" } else { "fennec_native_capability" };
+        self.crossing(dest, (runtime, "ptr", &word), method, rest, span)
+    }
+
+    /// A method of a `Connection` or `Server`, which the runtime does by the handle it holds.
+    pub(crate) fn socket_call(
+        &mut self,
+        dest: Option<LocalId>,
+        name: &str,
+        args: &[Operand],
+        span: Span,
+    ) -> Result<(), String> {
+        let (receiver, rest) = args.split_first().ok_or("a method with nothing to call it on")?;
+        let (held, kind) = self.operand(receiver)?;
+        let inside = if matches!(kind, Kind::Boxed(_)) { self.offset(&held, FIELDS_OFFSET) } else { held };
+        let (offset, _) = self.field(&kind, "_handle")?;
+        let at = self.offset(&inside, offset);
+        let handle = self.temp();
+        self.line(&format!("{handle} = load i64, ptr {at}"));
+        self.crossing(dest, ("fennec_net_call", "i64", &handle), name, rest, span)
+    }
+
+    /// Hands arguments over to a method in the runtime, and makes what it gives back native.
+    fn crossing(
+        &mut self,
+        dest: Option<LocalId>,
+        (runtime, word_type, word): (&str, &str, &str),
+        method: &str,
+        rest: &[Operand],
+        span: Span,
+    ) -> Result<(), String> {
         let (from, to) = (i64::from(span.start), i64::from(span.end));
         self.declare("declare i64 @fennec_mark() nounwind");
         self.declare("declare void @fennec_truncate(i64) nounwind");
@@ -124,17 +159,11 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("call void @fennec_input(i64 {handle})"));
             crossed.extend(block);
         }
-        let (word, _) = self.operand(receiver)?;
         let named = self.literal(method);
-        // What's still only written for the interpreter is a symbol of its own, so a program that
-        // needs it can't link without the interpreter.
-        let interpreted =
-            ["Net.", "Connection.", "Server.", "Stdout."].iter().any(|owner| name.starts_with(owner));
-        let runtime = if test || interpreted { "fennec_capability_call" } else { "fennec_native_capability" };
-        self.declare(&format!("declare i64 @{runtime}(ptr, ptr, i64, i64, i64) nounwind"));
+        self.declare(&format!("declare i64 @{runtime}({word_type}, ptr, i64, i64, i64) nounwind"));
         let handle = self.temp();
         self.line(&format!(
-            "{handle} = call i64 @{runtime}(ptr {word}, ptr {named}, i64 {}, i64 {from}, i64 {to})",
+            "{handle} = call i64 @{runtime}({word_type} {word}, ptr {named}, i64 {}, i64 {from}, i64 {to})",
             rest.len()
         ));
         self.leave_if_failed();

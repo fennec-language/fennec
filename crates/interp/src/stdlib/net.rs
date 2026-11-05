@@ -1,13 +1,15 @@
 //! `std.net`: TCP through the `Net` capability. A `Connection` or `Server` holds a private
 //! handle into the program's table of open sockets, so code that was never given `Net` can't
-//! make one up to reach a socket. In a test, the network is in memory, in `Fake`.
+//! make one up to reach a socket. What's real here needs nothing of the interpreter, as native
+//! code runs it too. In a test, the network is in memory, in `Fake`.
 //! Nothing else runs while a test waits, so a read that would wait forever stops the test and
 //! says why, and a server with no connection waiting is done.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
-use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::rc::Rc;
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use fennec_syntax::{Diagnostic, Span};
@@ -31,15 +33,25 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The hosts a test's fake network has: its own, where its servers are.
 const FAKE_HOSTS: [&str; 2] = ["localhost", "127.0.0.1"];
 
-enum Socket {
-    Stream(BufReader<TcpStream>),
-    Listener(TcpListener),
+/// A real connection, which any thread holding its handle can use: one thread reading and another
+/// writing don't wait for each other, and nothing's interleaved within either.
+struct Stream {
+    socket: TcpStream,
+    reader: Mutex<BufReader<TcpStream>>,
+    writing: Mutex<()>,
 }
 
-/// The real sockets a program has open, by handle.
-#[derive(Default)]
-pub(crate) struct Sockets {
-    open: HashMap<i64, Socket>,
+#[derive(Clone)]
+enum Socket {
+    Stream(Arc<Stream>),
+    Listener(Arc<TcpListener>),
+}
+
+/// The real sockets this process has open, by handle. Held only to find one, never while it waits.
+static OPEN: LazyLock<Mutex<HashMap<i64, Socket>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn open<T>(use_them: impl FnOnce(&mut HashMap<i64, Socket>) -> T) -> T {
+    use_them(&mut OPEN.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
 /// One end of a connection in a test's network.
@@ -187,29 +199,34 @@ impl Interp<'_> {
         self.world.as_mut().map(|world| &mut world.net)
     }
 
+    /// The types what's real gives back: a program using `Net` needn't have named them.
+    fn load_net_types(&mut self) -> Result<(), Diagnostic> {
+        for name in ["Connection", "NetError", "Duration"] {
+            self.load_std_providing(name)?;
+        }
+        Ok(())
+    }
+
     /// `net.connect(host, port)` and `net.listen(port)`.
     pub(crate) fn net_method(&mut self, method: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
         let (args, timeout) = with_timeout(args, method, span)?;
+        self.load_net_types()?;
+        if !self.faked_net() {
+            return real_net(method, &args, timeout, span);
+        }
         let found = match (method, args.as_slice()) {
             ("connect", [Value::Str(host), Value::Int(port)]) => {
                 let port = port_of(*port, span)?;
-                let timeout = timeout.unwrap_or(CONNECT_TIMEOUT);
-                if self.faked_net() { self.fake_connect(host, port) } else { self.real_connect(host, port, timeout) }
+                self.fake_connect(host, port)
             }
             ("listen", [Value::Int(port)]) => {
                 let port = port_of(*port, span)?;
-                if self.faked_net() { self.fake_listen(port) } else { self.real_listen(port) }
+                self.fake_listen(port)
             }
             ("connect" | "listen", _) => return Err(wrong(method, span)),
             _ => return Err(no_method(&Value::Capability(Capability::Net), method, span)),
         };
-        match found {
-            Ok((type_name, fields)) => {
-                let made = self.make_value(type_name, fields.iter().map(|(name, value)| (*name, value.clone())).collect(), span)?;
-                Ok(Value::Ok(Rc::new(made)))
-            }
-            Err(failure) => self.net_error(&failure, span),
-        }
+        Ok(made_or_failed(found))
     }
 
     fn connection_method(
@@ -219,194 +236,51 @@ impl Interp<'_> {
         args: Vec<CallArg>,
         span: Span,
     ) -> Result<Value, Diagnostic> {
+        if !matches!(method, "read" | "read_line" | "write" | "close") {
+            return Err(no_method(&Value::Instance(Rc::new(connection.clone())), method, span));
+        }
         let handle = handle_of(connection);
         let (args, timeout) = with_timeout(args, method, span)?;
-        let faked = self.faked_net();
+        self.load_net_types()?;
+        if !self.faked_net() {
+            return real_connection(handle, method, &args, timeout, span);
+        }
         let done = match (method, args.as_slice()) {
             ("read", [Value::Int(count)]) => {
-                let count = usize::try_from(*count)
-                    .map_err(|_| Diagnostic::new(format!("`read` can't give {count} bytes"), span))?;
-                let read = if faked { self.fake_read(handle, Some(count), span)? } else { self.real_read(handle, count, timeout) };
-                read.map(|data| Value::Bytes(Rc::from(data.unwrap_or_default())))
+                let count = bytes_asked(*count, span)?;
+                self.fake_read(handle, Some(count), span)?.map(|data| Value::Bytes(Rc::from(data.unwrap_or_default())))
             }
-            ("read_line", []) => {
-                let read = if faked { self.fake_read(handle, None, span)? } else { self.real_read_line(handle, timeout) };
-                read.map(|line| match line {
-                    Some(line) => Value::str(String::from_utf8_lossy(trim_line(&line)).as_ref()),
-                    None => Value::None,
-                })
-            }
+            ("read_line", []) => self.fake_read(handle, None, span)?.map(|line| line_value(line.as_deref())),
             ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
-                let data: &[u8] = match data {
-                    Value::Str(text) => text.as_bytes(),
-                    Value::Bytes(data) => data,
-                    _ => &[],
-                };
-                let data = data.to_vec();
-                if faked { self.fake_write(handle, &data) } else { self.real_write(handle, &data) }.map(|()| Value::Unit)
+                self.fake_write(handle, data_of(data)).map(|()| Value::Unit)
             }
             ("close", []) => {
-                if faked { self.fake_close(handle) } else { self.sockets.open.remove(&handle); }
+                self.fake_close(handle);
                 return Ok(Value::Unit);
             }
-            ("read" | "read_line" | "write" | "close", _) => return Err(wrong(method, span)),
-            _ => return Err(no_method(&Value::Instance(Rc::new(connection.clone())), method, span)),
+            _ => return Err(wrong(method, span)),
         };
-        match done {
-            Ok(value) => Ok(Value::Ok(Rc::new(value))),
-            Err(failure) => self.net_error(&failure, span),
-        }
+        Ok(done_or_failed(done))
     }
 
     fn server_method(&mut self, server: &Instance, method: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
+        if !matches!(method, "accept" | "close") {
+            return Err(no_method(&Value::Instance(Rc::new(server.clone())), method, span));
+        }
         let handle = handle_of(server);
         let (args, timeout) = with_timeout(args, method, span)?;
-        let faked = self.faked_net();
+        self.load_net_types()?;
+        if !self.faked_net() {
+            return real_server(handle, method, &args, timeout, span);
+        }
         match (method, args.as_slice()) {
-            ("accept", []) => {
-                let accepted = if faked { self.fake_accept(handle) } else { self.real_accept(handle, timeout) };
-                match accepted {
-                    Ok((connection, peer)) => {
-                        let fields = vec![("_handle", Value::Int(connection)), ("peer", Value::str(&peer))];
-                        Ok(Value::Ok(Rc::new(self.make_value("Connection", fields, span)?)))
-                    }
-                    Err(failure) => self.net_error(&failure, span),
-                }
-            }
+            ("accept", []) => Ok(made_or_failed(self.fake_accept(handle).map(connection_made))),
             ("close", []) => {
-                if faked { self.fake_close(handle) } else { self.sockets.open.remove(&handle); }
+                self.fake_close(handle);
                 Ok(Value::Unit)
             }
-            ("accept" | "close", _) => Err(wrong(method, span)),
-            _ => Err(no_method(&Value::Instance(Rc::new(server.clone())), method, span)),
+            _ => Err(wrong(method, span)),
         }
-    }
-
-    /// Takes a real server's listener out of the program's open sockets, for `parallel(server)`
-    /// to serve from. A server in a test's fake network, or one already closed, has none.
-    #[cfg(any(test, feature = "threads"))]
-    pub(crate) fn take_listener(&mut self, server: &Value) -> Option<TcpListener> {
-        let Value::Instance(server) = server else { return None };
-        let handle = handle_of(server);
-        match self.sockets.open.remove(&handle)? {
-            Socket::Listener(listener) => Some(listener),
-            other @ Socket::Stream(_) => {
-                self.sockets.open.insert(handle, other);
-                None
-            }
-        }
-    }
-
-    /// The case of `NetError` a failure is.
-    pub(crate) fn net_error(&mut self, failure: &Failure, span: Span) -> Result<Value, Diagnostic> {
-        let (case, fields) = match failure {
-            Failure::NotFound(host) => ("NotFound", vec![Value::str(host)]),
-            Failure::Refused(host, port) => ("Refused", vec![Value::str(host), Value::Int(*port)]),
-            Failure::TimedOut(after) => {
-                let nanos = i64::try_from(after.as_nanos()).unwrap_or(i64::MAX);
-                ("TimedOut", vec![self.make_value("Duration", vec![("nanos", Value::Int(nanos))], span)?])
-            }
-            Failure::Closed => ("Closed", Vec::new()),
-            Failure::Other(reason) => ("Other", vec![Value::str(reason)]),
-        };
-        let args = fields.into_iter().map(|value| CallArg::plain(value, span)).collect();
-        let error = self.construct_variant(Some("NetError"), case, args, span)?;
-        Ok(Value::Err(Rc::new(error)))
-    }
-
-    fn real_connect(&mut self, host: &str, port: u16, timeout: Duration) -> Result<Made, Failure> {
-        let addresses: Vec<_> = (host, port).to_socket_addrs().map_err(|_| Failure::NotFound(host.to_owned()))?.collect();
-        if addresses.is_empty() {
-            return Err(Failure::NotFound(host.to_owned()));
-        }
-        let mut failure = Failure::NotFound(host.to_owned());
-        for address in addresses {
-            match TcpStream::connect_timeout(&address, timeout) {
-                Ok(stream) => {
-                    let peer = stream.peer_addr().map_or_else(|_| format!("{host}:{port}"), |peer| peer.to_string());
-                    let handle = fresh_handle(&self.sockets.open);
-                    self.sockets.open.insert(handle, Socket::Stream(BufReader::new(stream)));
-                    return Ok(("Connection", vec![("_handle", Value::Int(handle)), ("peer", Value::str(&peer))]));
-                }
-                Err(error) => {
-                    failure = match error.kind() {
-                        ErrorKind::ConnectionRefused => Failure::Refused(host.to_owned(), i64::from(port)),
-                        ErrorKind::TimedOut | ErrorKind::WouldBlock => Failure::TimedOut(timeout),
-                        _ => Failure::Other(error.to_string()),
-                    };
-                }
-            }
-        }
-        Err(failure)
-    }
-
-    fn real_listen(&mut self, port: u16) -> Result<Made, Failure> {
-        let listener = TcpListener::bind(("0.0.0.0", port)).map_err(|error| match error.kind() {
-            ErrorKind::AddrInUse => Failure::Other(format!("port {port} is already in use")),
-            _ => Failure::Other(error.to_string()),
-        })?;
-        let port = listener.local_addr().map_or(port, |address| address.port());
-        let handle = fresh_handle(&self.sockets.open);
-        self.sockets.open.insert(handle, Socket::Listener(listener));
-        Ok(("Server", vec![("_handle", Value::Int(handle)), ("port", Value::Int(i64::from(port)))]))
-    }
-
-    fn stream(&mut self, handle: i64) -> Result<&mut BufReader<TcpStream>, Failure> {
-        match self.sockets.open.get_mut(&handle) {
-            Some(Socket::Stream(stream)) => Ok(stream),
-            _ => Err(Failure::Closed),
-        }
-    }
-
-    fn real_read(&mut self, handle: i64, count: usize, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, Failure> {
-        let stream = self.stream(handle)?;
-        stream.get_ref().set_read_timeout(timeout).map_err(|error| Failure::of(&error, timeout))?;
-        let mut data = vec![0; count];
-        let read = stream.read(&mut data).map_err(|error| Failure::of(&error, timeout))?;
-        data.truncate(read);
-        Ok(Some(data))
-    }
-
-    fn real_read_line(&mut self, handle: i64, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, Failure> {
-        let stream = self.stream(handle)?;
-        stream.get_ref().set_read_timeout(timeout).map_err(|error| Failure::of(&error, timeout))?;
-        let mut line = Vec::new();
-        let read = stream.read_until(b'\n', &mut line).map_err(|error| Failure::of(&error, timeout))?;
-        Ok((read > 0).then_some(line))
-    }
-
-    fn real_write(&mut self, handle: i64, data: &[u8]) -> Result<(), Failure> {
-        let stream = self.stream(handle)?.get_mut();
-        stream.write_all(data).and_then(|()| stream.flush()).map_err(|error| Failure::of(&error, None))
-    }
-
-    fn real_accept(&mut self, handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failure> {
-        let Some(Socket::Listener(listener)) = self.sockets.open.get(&handle) else { return Err(Failure::Closed) };
-        let accepted = match timeout {
-            None => listener.accept().map_err(|error| Failure::of(&error, None))?,
-            Some(limit) => {
-                // A listener has no timeout of its own, so it's asked again until one passes.
-                listener.set_nonblocking(true).map_err(|error| Failure::Other(error.to_string()))?;
-                let started = Instant::now();
-                let accepted = loop {
-                    match listener.accept() {
-                        Ok(accepted) => break Ok(accepted),
-                        Err(error) if error.kind() == ErrorKind::WouldBlock && started.elapsed() < limit => {
-                            std::thread::sleep(Duration::from_millis(5));
-                        }
-                        Err(error) if error.kind() == ErrorKind::WouldBlock => break Err(Failure::TimedOut(limit)),
-                        Err(error) => break Err(Failure::of(&error, Some(limit))),
-                    }
-                };
-                listener.set_nonblocking(false).map_err(|error| Failure::Other(error.to_string()))?;
-                accepted?
-            }
-        };
-        let (stream, peer) = accepted;
-        stream.set_nonblocking(false).map_err(|error| Failure::Other(error.to_string()))?;
-        let connection = fresh_handle(&self.sockets.open);
-        self.sockets.open.insert(connection, Socket::Stream(BufReader::new(stream)));
-        Ok((connection, peer.to_string()))
     }
 
     fn fake_listen(&mut self, port: u16) -> Result<Made, Failure> {
@@ -506,6 +380,261 @@ impl Interp<'_> {
         }
         fake.close_stream(handle);
     }
+}
+
+/// `net.connect(host, port)` and `net.listen(port)` on the real network: needing nothing of the
+/// interpreter, for native code too.
+pub(crate) fn real_net(method: &str, args: &[Value], timeout: Option<Duration>, span: Span) -> Result<Value, Diagnostic> {
+    let found = match (method, args) {
+        ("connect", [Value::Str(host), Value::Int(port)]) => {
+            connect(host, port_of(*port, span)?, timeout.unwrap_or(CONNECT_TIMEOUT))
+        }
+        ("listen", [Value::Int(port)]) => listen(port_of(*port, span)?),
+        ("connect" | "listen", _) => return Err(wrong(method, span)),
+        _ => return Err(no_method(&Value::Capability(Capability::Net), method, span)),
+    };
+    Ok(made_or_failed(found))
+}
+
+/// A method of a real connection, by its handle.
+pub(crate) fn real_connection(
+    handle: i64,
+    method: &str,
+    args: &[Value],
+    timeout: Option<Duration>,
+    span: Span,
+) -> Result<Value, Diagnostic> {
+    let done = match (method, args) {
+        ("read", [Value::Int(count)]) => {
+            read(handle, bytes_asked(*count, span)?, timeout).map(|data| Value::Bytes(Rc::from(data)))
+        }
+        ("read_line", []) => read_line(handle, timeout).map(|line| line_value(line.as_deref())),
+        ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
+            write(handle, data_of(data)).map(|()| Value::Unit)
+        }
+        ("close", []) => {
+            close(handle);
+            return Ok(Value::Unit);
+        }
+        _ => return Err(wrong(method, span)),
+    };
+    Ok(done_or_failed(done))
+}
+
+/// A method of a real server, by its handle.
+pub(crate) fn real_server(
+    handle: i64,
+    method: &str,
+    args: &[Value],
+    timeout: Option<Duration>,
+    span: Span,
+) -> Result<Value, Diagnostic> {
+    match (method, args) {
+        ("accept", []) => Ok(made_or_failed(accept(handle, timeout).map(connection_made))),
+        ("close", []) => {
+            close(handle);
+            Ok(Value::Unit)
+        }
+        _ => Err(wrong(method, span)),
+    }
+}
+
+/// A method native code names, its arguments and how long it may wait: `read_line.timeout` is
+/// `read_line` with `timeout=` given last.
+pub(crate) fn timed<'a>(
+    method: &'a str,
+    args: &'a [Value],
+    span: Span,
+) -> Result<(&'a str, &'a [Value], Option<Duration>), Diagnostic> {
+    let (Some(method), Some((timeout, args))) = (method.strip_suffix(".timeout"), args.split_last()) else {
+        return Ok((method, args, None));
+    };
+    Ok((method, args, Some(duration_of(timeout, span)?)))
+}
+
+fn bytes_asked(count: i64, span: Span) -> Result<usize, Diagnostic> {
+    usize::try_from(count).map_err(|_| Diagnostic::new(format!("`read` can't give {count} bytes"), span))
+}
+
+fn data_of(data: &Value) -> &[u8] {
+    match data {
+        Value::Str(text) => text.as_bytes(),
+        Value::Bytes(data) => data,
+        _ => &[],
+    }
+}
+
+fn line_value(line: Option<&[u8]>) -> Value {
+    line.map_or(Value::None, |line| Value::str(String::from_utf8_lossy(trim_line(line)).as_ref()))
+}
+
+fn connection_made((connection, peer): (i64, String)) -> Made {
+    ("Connection", vec![("_handle", Value::Int(connection)), ("peer", Value::str(&peer))])
+}
+
+fn made_or_failed(found: Result<Made, Failure>) -> Value {
+    done_or_failed(found.map(|(type_name, fields)| Value::made(type_name, fields)))
+}
+
+fn done_or_failed(done: Result<Value, Failure>) -> Value {
+    match done {
+        Ok(value) => Value::Ok(Rc::new(value)),
+        Err(failure) => failed(&failure),
+    }
+}
+
+/// The `Err` holding the case of `NetError` a failure is.
+pub(crate) fn failed(failure: &Failure) -> Value {
+    let (case, fields) = match failure {
+        Failure::NotFound(host) => ("NotFound", vec![("host", Value::str(host))]),
+        Failure::Refused(host, port) => {
+            ("Refused", vec![("host", Value::str(host)), ("port", Value::Int(*port))])
+        }
+        Failure::TimedOut(after) => {
+            let nanos = i64::try_from(after.as_nanos()).unwrap_or(i64::MAX);
+            ("TimedOut", vec![("after", Value::made("Duration", vec![("nanos", Value::Int(nanos))]))])
+        }
+        Failure::Closed => ("Closed", Vec::new()),
+        Failure::Other(reason) => ("Other", vec![("reason", Value::str(reason))]),
+    };
+    Value::Err(Rc::new(Value::made_case("NetError", case, fields)))
+}
+
+fn connect(host: &str, port: u16, timeout: Duration) -> Result<Made, Failure> {
+    let addresses: Vec<_> = (host, port).to_socket_addrs().map_err(|_| Failure::NotFound(host.to_owned()))?.collect();
+    if addresses.is_empty() {
+        return Err(Failure::NotFound(host.to_owned()));
+    }
+    let mut failure = Failure::NotFound(host.to_owned());
+    for address in addresses {
+        match TcpStream::connect_timeout(&address, timeout) {
+            Ok(stream) => {
+                let peer = stream.peer_addr().map_or_else(|_| format!("{host}:{port}"), |peer| peer.to_string());
+                let handle = keep_stream(stream)?;
+                return Ok(connection_made((handle, peer)));
+            }
+            Err(error) => {
+                failure = match error.kind() {
+                    ErrorKind::ConnectionRefused => Failure::Refused(host.to_owned(), i64::from(port)),
+                    ErrorKind::TimedOut | ErrorKind::WouldBlock => Failure::TimedOut(timeout),
+                    _ => Failure::Other(error.to_string()),
+                };
+            }
+        }
+    }
+    Err(failure)
+}
+
+fn keep_stream(socket: TcpStream) -> Result<i64, Failure> {
+    let reader = socket.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
+    let stream = Stream { socket, reader: Mutex::new(BufReader::new(reader)), writing: Mutex::new(()) };
+    Ok(open(|open| {
+        let handle = fresh_handle(open);
+        open.insert(handle, Socket::Stream(Arc::new(stream)));
+        handle
+    }))
+}
+
+fn listen(port: u16) -> Result<Made, Failure> {
+    let listener = TcpListener::bind(("0.0.0.0", port)).map_err(|error| match error.kind() {
+        ErrorKind::AddrInUse => Failure::Other(format!("port {port} is already in use")),
+        _ => Failure::Other(error.to_string()),
+    })?;
+    let port = listener.local_addr().map_or(port, |address| address.port());
+    let handle = open(|open| {
+        let handle = fresh_handle(open);
+        open.insert(handle, Socket::Listener(Arc::new(listener)));
+        handle
+    });
+    Ok(("Server", vec![("_handle", Value::Int(handle)), ("port", Value::Int(i64::from(port)))]))
+}
+
+fn stream(handle: i64) -> Result<Arc<Stream>, Failure> {
+    match open(|open| open.get(&handle).cloned()) {
+        Some(Socket::Stream(stream)) => Ok(stream),
+        _ => Err(Failure::Closed),
+    }
+}
+
+fn read(handle: i64, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>, Failure> {
+    let stream = stream(handle)?;
+    let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
+    reader.get_ref().set_read_timeout(timeout).map_err(|error| Failure::of(&error, timeout))?;
+    let mut data = vec![0; count];
+    let read = reader.read(&mut data).map_err(|error| Failure::of(&error, timeout))?;
+    data.truncate(read);
+    Ok(data)
+}
+
+fn read_line(handle: i64, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, Failure> {
+    let stream = stream(handle)?;
+    let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
+    reader.get_ref().set_read_timeout(timeout).map_err(|error| Failure::of(&error, timeout))?;
+    let mut line = Vec::new();
+    let read = reader.read_until(b'\n', &mut line).map_err(|error| Failure::of(&error, timeout))?;
+    Ok((read > 0).then_some(line))
+}
+
+fn write(handle: i64, data: &[u8]) -> Result<(), Failure> {
+    let stream = stream(handle)?;
+    let _writing = stream.writing.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut socket = &stream.socket;
+    socket.write_all(data).and_then(|()| socket.flush()).map_err(|error| Failure::of(&error, None))
+}
+
+fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failure> {
+    let Some(Socket::Listener(listener)) = open(|open| open.get(&handle).cloned()) else {
+        return Err(Failure::Closed);
+    };
+    let accepted = match timeout {
+        None => listener.accept().map_err(|error| Failure::of(&error, None))?,
+        Some(limit) => {
+            // A listener has no timeout of its own, so it's asked again until one passes.
+            listener.set_nonblocking(true).map_err(|error| Failure::Other(error.to_string()))?;
+            let started = Instant::now();
+            let accepted = loop {
+                match listener.accept() {
+                    Ok(accepted) => break Ok(accepted),
+                    Err(error) if error.kind() == ErrorKind::WouldBlock && started.elapsed() < limit => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => break Err(Failure::TimedOut(limit)),
+                    Err(error) => break Err(Failure::of(&error, Some(limit))),
+                }
+            };
+            listener.set_nonblocking(false).map_err(|error| Failure::Other(error.to_string()))?;
+            accepted?
+        }
+    };
+    let (stream, peer) = accepted;
+    stream.set_nonblocking(false).map_err(|error| Failure::Other(error.to_string()))?;
+    Ok((keep_stream(stream)?, peer.to_string()))
+}
+
+/// Closes a socket. Whoever else was using it finds out: a read waiting on another thread ends.
+fn close(handle: i64) {
+    if let Some(Socket::Stream(stream)) = open(|open| open.remove(&handle)) {
+        // It may be closed already from the other side, which is what closing wanted.
+        let _ = stream.socket.shutdown(Shutdown::Both);
+    }
+}
+
+/// Takes a real server's listener out of the open sockets, for `parallel(server)` to serve from.
+/// A server in a test's fake network, or one already closed, has none.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn take_listener(server: &Value) -> Option<TcpListener> {
+    let Value::Instance(server) = server else { return None };
+    let handle = handle_of(server);
+    open(|open| match open.remove(&handle) {
+        Some(Socket::Listener(listener)) => {
+            Arc::try_unwrap(listener).or_else(|listener| listener.try_clone()).ok()
+        }
+        Some(other) => {
+            open.insert(handle, other);
+            None
+        }
+        None => None,
+    })
 }
 
 impl Fake {

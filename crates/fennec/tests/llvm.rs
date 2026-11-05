@@ -2961,6 +2961,70 @@ fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
     Ok(())
 }
 
+/// The real network, with no interpreter behind it: a server and a client on this machine, each
+/// way a call can come out, and looping over each.
+const REAL_NETWORK: &str = "from std.net import NetError, Connection
+
+def reason[T](found: Result[T, NetError]) -> str:
+    match found:
+        case Err(error):
+            error.message()
+        case _:
+            \"it worked\"
+
+def lines_of(connection: Connection) -> int fails NetError:
+    mut count = 0
+    for line in connection.lines():
+        connection.write(line + \"!\\n\")?
+        count += 1
+    count
+
+def talk(net: Net, stdout: Stdout) -> int fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port > 0)
+        with net.connect(\"localhost\", server.port)? as client:
+            stdout.print(client.peer.endswith(f\":{server.port}\"))
+            client.write(\"hello\\nfrom a client\\r\\nand more\")?
+            with server.accept()? as conn:
+                stdout.print(conn.read_line()?)
+                stdout.print(conn.read_line()?)
+                stdout.print(reason(conn.read_line(timeout=20ms)))
+                stdout.print(reason(server.accept(timeout=20ms)))
+                client.write(\"\\n\")?
+                stdout.print(conn.read_line()?)
+                client.write(\"one\\ntwo\\n\")?
+                client.close()
+                stdout.print(lines_of(conn))
+                stdout.print(conn.read_line()?)
+                conn.close()
+                stdout.print(reason(conn.read_line()))
+                stdout.print(reason(conn.write(\"gone\")))
+    7
+
+def main(net: Net, stdout: Stdout):
+    stdout.print(reason(talk(net, stdout)))
+    server = net.listen(0).expect(\"it listens\")
+    client = net.connect(\"127.0.0.1\", server.port).expect(\"it connects\")
+    client.write(\"looped\\n\").expect(\"it writes\")
+    client.close()
+    for conn in server:
+        for line in conn.lines():
+            stdout.print(line)
+        break
+    port = server.port
+    server.close()
+    stdout.print(reason(server.accept()))
+    stdout.print(reason(net.connect(\"127.0.0.1\", port)) == f\"`127.0.0.1` refused a connection on port {port}\")
+";
+
+#[test]
+fn the_real_network_works_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("real_network", REAL_NETWORK)
+}
+
 /// A program built with no interpreter in its runtime prints what it should and has none of the
 /// interpreter in it, and one still needing the interpreter fails to link rather than to run.
 #[test]

@@ -1663,6 +1663,10 @@ impl Emit<'_, '_, '_> {
             {
                 self.capability_call(dest, other, args, span)
             }
+            // A test's network is a fake, which only the interpreter holds.
+            other if crate::analysis::is_socket_method(other) && !self.module.shared.traced => {
+                self.socket_call(dest, other, args, span)
+            }
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }
     }

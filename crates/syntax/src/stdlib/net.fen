@@ -218,13 +218,13 @@ def _read_request(connection: Connection, timeout: Duration) -> _Read fails NetE
             if pair == "": continue
             equals = pair.find("=")
             if equals is None:
-                query[_unquoted(pair)] = ""
+                query[_unquoted(pair, True)] = ""
             else:
-                query[_unquoted(pair[:equals])] = _unquoted(pair[equals + 1:])
+                query[_unquoted(pair[:equals], True)] = _unquoted(pair[equals + 1:], True)
     _Read.Got(
         request=Request(
             method=parts[0],
-            path=_unquoted(path),
+            path=_unquoted(path, False),
             query=query,
             headers=headers,
             body=body,
@@ -232,16 +232,16 @@ def _read_request(connection: Connection, timeout: Duration) -> _Read fails NetE
         keep=keep,
     )
 
-## Text from a URL, with `+` a space and `%41` the byte it names. Anything that doesn't decode
-## stays as it was.
-def _unquoted(text: str) -> str:
-    if text.find("%") is None and text.find("+") is None: return text
+## Text from a URL, with `%41` the byte it names, and in a query, `+` a space. Anything that
+## doesn't decode stays as it was.
+def _unquoted(text: str, plus: bool) -> str:
+    if text.find("%") is None and (not plus or text.find("+") is None): return text
     raw = text.encode()
     mut out: list[int] = []
     mut at = 0
     while at < raw.len():
         b = raw[at]
-        if b == 43:
+        if b == 43 and plus:
             out.append(32)
             at += 1
         elif (

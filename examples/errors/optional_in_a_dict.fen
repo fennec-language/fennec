@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    ages: dict[str, int?] = {"ash": 3}
+    stdout.print(ages)

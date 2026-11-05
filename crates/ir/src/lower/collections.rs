@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use fennec_check::Type;
-use fennec_syntax::{CompKind, Expr, ExprKind, Span, Stmt, StmtKind, fuse};
+use fennec_syntax::{CompKind, Expr, ExprKind, Span, Stmt, StmtKind, UnaryOp, fuse};
 
 use super::lists::Over;
 use super::order::Reads;
@@ -146,7 +146,14 @@ impl Lowering<'_> {
         reads.add(self, object);
         let (has_start, has_end) = (start.is_some(), end.is_some());
         for bound in [start, end].into_iter().flatten() {
-            let bound = self.expr(bound)?;
+            // A bound counting from the back stays a number, as a tuple's has to be known.
+            let bound = match &bound.kind {
+                ExprKind::Unary { op: UnaryOp::Neg, expr } => match expr.kind {
+                    ExprKind::Int(at) => Operand::Int(-at),
+                    _ => self.expr(bound)?,
+                },
+                _ => self.expr(bound)?,
+            };
             reads.add(self, bound);
         }
         let mut values = reads.finish(self, expr.span).into_iter();

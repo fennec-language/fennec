@@ -130,7 +130,7 @@ impl Emit<'_, '_, '_> {
         if !owned {
             self.retain_inline(held, at);
         }
-        if matches!(optional, Kind::Maybe(_)) {
+        if matches!(optional, Kind::Maybe(_) | Kind::MaybeText) {
             return self.assign(dest, &value);
         }
         let (number, fields) = self.case_of(&optional, "Some")?;

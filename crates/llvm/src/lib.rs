@@ -33,6 +33,7 @@ mod analysis;
 mod build;
 mod builders;
 mod builtins;
+mod bytes;
 mod capabilities;
 mod closures;
 mod conversions;

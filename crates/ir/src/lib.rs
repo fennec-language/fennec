@@ -452,8 +452,8 @@ pub enum InstKind {
     },
     /// Takes the locks of several `shared` handles, each to write or to read, for a `with`
     /// block. They're taken in the order of their cells' addresses, so two blocks that lock the
-    /// same handles never each wait for the other. Handles that reach the same cell take its lock
-    /// once, to write if any of them writes.
+    /// same handles never each wait for the other. Two handles that reach the same cell end the
+    /// program.
     LockAll {
         handles: Vec<(Operand, bool)>,
     },

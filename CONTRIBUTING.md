@@ -34,7 +34,7 @@ Then add the module's name to the `modules!` list in each crate's `stdlib.rs`, o
 
 ## The bar a change has to clear
 
-CI runs all of this on every pull request, and a change merges only when it all passes:
+Maintainers land changes as `docs/landing.md` describes. Formatting, clippy, the tests and the examples run on the author's machine before a pull request merges. Mutation testing and dependency review run on the pull request, and the rest of CI runs on `main` after it merges:
 
 - `cargo fmt --check`, and `cargo clippy` with every warning denied. Safety lints like `unwrap_used`, `panic` and `indexing_slicing` are forbidden outside tests.
 - Tests on Linux (x86 and ARM), macOS and Windows.

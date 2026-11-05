@@ -123,7 +123,7 @@ impl FnCx<'_> {
             "Eq" | "Format" => !matches!(ty, Type::Function(_) | Type::Arrow(..)),
             "Hashable" => self.is_hashable(ty),
             "Ordered" => self.is_ordered(ty),
-            _ => return self.fits_interface(ty, bound),
+            _ => return self.fits_interface_or_says_why(ty, bound),
         };
         if fits {
             return Ok(());
@@ -168,6 +168,24 @@ impl FnCx<'_> {
     }
 
     /// Whether a type has every method an interface asks for, or why not and what to do.
+    /// Whether a type fits an interface. For saving and loading, what's wrong is further down: what
+    /// a type holds, since its methods are generated from what it holds.
+    fn fits_interface_or_says_why(&mut self, ty: &Type, interface: &str) -> Result<(), (String, String)> {
+        let fits = self.fits_interface(ty, interface);
+        if fits.is_err()
+            && matches!(interface, "Serializable" | "Deserializable")
+            && let Some((place, what, field, owner)) = crate::saving::what_stops_saving(self.checker, ty)
+        {
+            return Err((
+                format!("`{place}` is {what}, which can't be saved"),
+                format!(
+                    "`@skip` the field `{field}`, with a default, or write `def serialize` and `def deserialize` for `{owner}`"
+                ),
+            ));
+        }
+        fits
+    }
+
     pub(crate) fn fits_interface(&mut self, ty: &Type, interface: &str) -> Result<(), (String, String)> {
         let methods = self.checker.program.interfaces.get(interface).map(|found| found.methods.clone());
         for wanted in methods.unwrap_or_default() {
@@ -201,6 +219,11 @@ impl FnCx<'_> {
             .method_owner()
             .and_then(|owner| self.checker.program.method(owner, &wanted.name).map(|(key, _)| key));
         let actual = if let Some(key) = key {
+            if !self.extension_bounds_fit(ty, &key) {
+                let why =
+                    format!("it has no `{wanted_text}`. Its `{}` asks more of what it holds", wanted.name);
+                return Err((why, fix));
+            }
             let Some(signature) = self.checker.signature(&key) else { return Ok(()) };
             // A function with no `self` has no value to read its type's parameters from.
             let takes_self = self.checker.program.functions.get(&key).is_some_and(|f| f.def.takes_self());
@@ -250,6 +273,21 @@ impl FnCx<'_> {
             return Err((format!("it has no `{wanted_text}`. Its `{}` returns {returns}", wanted.name), fix));
         }
         Ok(())
+    }
+
+    /// Whether what a type holds fits the bounds the extension giving it `key` asks for, like
+    /// `T: Serializable` in `extend list[T: Serializable]:`.
+    fn extension_bounds_fit(&mut self, ty: &Type, key: &str) -> bool {
+        let Some(entry) = self.checker.program.functions.get(key) else { return true };
+        let wanted: Vec<Vec<String>> = entry
+            .extension
+            .iter()
+            .map(|generic| generic.bounds.iter().map(|bound| bound.name.clone()).collect())
+            .collect();
+        wanted.into_iter().zip(ty.type_args()).all(|(bounds, arg)| {
+            let arg = self.checker.settled(&arg);
+            !arg.is_known() || bounds.iter().all(|bound| self.fits_bound(&arg, bound).is_ok())
+        })
     }
 
     /// A method's signature for a value of type `receiver`, with its type's parameters

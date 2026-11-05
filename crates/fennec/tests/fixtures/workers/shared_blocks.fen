@@ -62,6 +62,11 @@ shared Box:
     items = [1, 2, 3]
     total = 0
 
+shared Purse:
+    notes = list[str]()
+    total = 0
+    biggest = Point(x=0, name="the biggest note so far in this purse")
+
 struct Holder:
     box: Box
     name: str
@@ -130,8 +135,43 @@ def holders(stdout: Stdout):
         both = x.items.len() + y.items.len()
     stdout.print(both)
 
+def passed_along(from_purse: Purse, to_purse: Purse, n: int):
+    with from_purse, to_purse as mut source, mut target:
+        made = f"a note made here, long enough to be a block {n}"
+        source.notes.append(made)
+        source.total += 1
+        target.notes = [note for note in source.notes if note.len() % 2 == 0]
+        target.total += source.notes.len() % 1
+        if n > source.biggest.x:
+            source.biggest = Point(x=n, name=f"the biggest note, number {n}, in this purse")
+            target.biggest = source.biggest
+        source.notes = [made]
+
+def read_across(mine: Purse, other: Purse) -> int:
+    mut seen = 0
+    with mine, other as mut held, looked:
+        held.notes = looked.notes
+        seen = held.notes.len() % 1
+    seen
+
+def purses(stdout: Stdout):
+    one = Purse()
+    two = Purse()
+    mut units = units_of(2000)
+    for mut unit in parallel(units):
+        if unit.x % 2 == 0:
+            passed_along(one, two, unit.x)
+        else:
+            passed_along(two, one, unit.x)
+        unit.x += read_across(one, two)
+    stdout.print(one.total + two.total, one.biggest.x, two.biggest.x, one.biggest.name)
+    # How many there are depends on the order the bodies ran in; what each one says doesn't.
+    damaged = [note for note in one.notes + two.notes if note[0:6] != "a note"]
+    stdout.print(damaged, sum(unit.x for unit in parallel(units)))
+
 def main(stdout: Stdout):
     logs(stdout)
+    purses(stdout)
     boards(stdout)
     tables(stdout)
     grids(stdout)

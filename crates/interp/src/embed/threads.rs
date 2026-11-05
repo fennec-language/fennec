@@ -39,7 +39,7 @@ thread_local! {
 }
 
 thread_local! {
-    /// The `shared` values' lock words this thread holds.
+    /// The `shared` values' lock words this thread holds beside the one native code remembers.
     static LOCKS: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -53,11 +53,6 @@ pub extern "C" fn lock_note(word: u64) -> i64 {
         held.push(word);
         0
     })
-}
-
-/// Whether this thread holds any `shared` value's lock.
-pub(super) fn holds_locks() -> bool {
-    LOCKS.with_borrow(|held| !held.is_empty())
 }
 
 /// Notes that this thread has given back the lock at `word`.

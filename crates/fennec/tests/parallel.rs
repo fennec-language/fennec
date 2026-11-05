@@ -489,32 +489,6 @@ fn a_worker_taking_a_lock_it_holds_ends_the_program() -> std::io::Result<()> {
     Ok(())
 }
 
-/// A `with` changing several values holding blocks stays refused on threads: what's made in its body
-/// could end up in the wrong one's table.
-#[test]
-fn a_with_changing_several_values_holding_blocks_is_refused_on_threads() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let dir = std::env::temp_dir().join(format!("fennec-parallel-several-{}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
-    let program = dir.join("program.fen");
-    std::fs::write(
-        &program,
-        "shared Logs:\n    lines = list[str]()\n\ndef main(stdout: Stdout):\n    a = Logs()\n    b = Logs()\n    \
-         with a, b as mut x, mut y:\n        x.lines = [\"made in the body, long enough to be a block\"]\n        \
-         y.lines = x.lines\n    mut items = [n for n in range(100)]\n    for mut item in parallel(items):\n        \
-         item += 1\n    stdout.print(items.len(), a.lines, b.lines)\n",
-    )?;
-    let path = program.to_string_lossy().into_owned();
-    let built = fennec(&["build", "--llvm", &path, "-o", &dir.join("program").to_string_lossy()], &dir)?;
-    assert!(!built.status.success());
-    let said = String::from_utf8_lossy(&built.stderr);
-    assert!(said.contains("`Logs` holds something other than numbers"), "{said}");
-    std::fs::remove_dir_all(&dir)?;
-    Ok(())
-}
-
 /// A body changing, through places, its own copy of what the caller holds: each block on the way
 /// is the caller's until it's copied, from the root down, and the caller's stays as it was.
 const CHANGED_PLACES: &str = include_str!("fixtures/workers/places.fen");

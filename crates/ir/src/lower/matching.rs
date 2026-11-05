@@ -200,14 +200,19 @@ impl Lowering<'_> {
         fail: BlockId,
         span: Span,
     ) -> Lowered<()> {
+        // One of several errors, by its type's name or, for an error with cases, by a case's:
+        // which error it is is tested first, then what that one holds.
         if let Type::Errors(names) = ty
-            && names.iter().any(|error| error == name)
+            && let Some(error) = names
+                .iter()
+                .find(|error| *error == name)
+                .or_else(|| names.iter().find(|error| self.case_fields(error, name).is_some()))
         {
             let dest = self.temporary(Type::Bool);
             let value_of = value.clone();
-            self.emit(InstKind::IsError { dest, value: value_of, type_name: name.to_owned() }, span);
+            self.emit(InstKind::IsError { dest, value: value_of, type_name: error.clone() }, span);
             self.branch_or(Operand::Local(dest), fail);
-            let one = Type::Named(name.to_owned());
+            let one = Type::Named(error.clone());
             let held = self.temporary(one.clone());
             self.emit(InstKind::AsError { dest: held, value: value.clone() }, span);
             return self.variant((name, dotted, args), (&Operand::Local(held), &one), fail, span);

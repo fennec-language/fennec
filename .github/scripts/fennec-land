@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Lands the current branch on `staging`: merges the latest `staging` in, and pushes, which runs the
+# gate through the pre-push hook. If another branch landed first, the push is refused and this goes
+# round again. It stops at a merge conflict or any failed step, and pushes nothing then.
+set -u
+ATTEMPTS=5
+fail() {
+  echo "fennec-land: $*" >&2
+  exit 1
+}
+
+branch="$(git symbolic-ref --short HEAD)" || fail "this isn't on a branch"
+[ "$branch" != staging ] && [ "$branch" != main ] || fail "land from your own branch, not $branch"
+[ -z "$(git status --porcelain)" ] || fail "commit or put away what's changed first"
+
+for attempt in $(seq 1 "$ATTEMPTS"); do
+  git fetch --quiet origin staging || fail "couldn't fetch staging"
+  if ! git merge --no-edit origin/staging; then
+    fail "this conflicts with staging: resolve it, commit, and run this again"
+  fi
+  [ -z "$(git ls-files -u)" ] || fail "the merge left conflicts"
+  sha="$(git rev-parse HEAD)"
+  if git -c core.hooksPath=.githooks push origin "$sha:refs/heads/staging"; then
+    echo "fennec-land: staging is now $sha"
+    exit 0
+  fi
+  # A push that lost the race says so once it's rejected; anything else is a real failure.
+  git fetch --quiet origin staging || fail "couldn't fetch staging"
+  if git merge-base --is-ancestor origin/staging "$sha"; then
+    fail "the gate or the push failed, and nobody else landed: see above"
+  fi
+  echo "fennec-land: another branch landed first, going round again ($attempt of $ATTEMPTS)"
+done
+fail "staging kept moving: run this again"

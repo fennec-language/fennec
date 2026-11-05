@@ -56,6 +56,12 @@ pub extern "C" fn fail(code: i64, start: i64, end: i64) {
     });
 }
 
+/// `round(x, places)`.
+pub extern "C" fn round_places(x: f64, places: i64) -> f64 {
+    let scale = 10_f64.powi(i32::try_from(places).unwrap_or(0));
+    (x * scale).round_ties_even() / scale
+}
+
 pub extern "C" fn sin(x: f64) -> f64 {
     x.sin()
 }

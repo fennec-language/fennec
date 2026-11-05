@@ -3762,10 +3762,10 @@ def main(stdout: Stdout, args: Args, process: Process):
         &needs,
         "\
 from std import json
-from std.collections import Deque
+from std.collections import Table
 
 def main(stdout: Stdout):
-    stdout.print(json.dumps(Deque[int]()))
+    stdout.print(json.dumps(Table[int]()))
 ",
     )?;
     let refused = lean(&needs, &dir.join("needs"))?;

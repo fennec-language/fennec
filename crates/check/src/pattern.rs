@@ -26,6 +26,7 @@ impl FnCx<'_> {
         let mut values = Vec::new();
         for arm in arms {
             self.push(false);
+            self.note_undotted_case(&arm.pattern, &ty, arm.span);
             self.bind_pattern(&arm.pattern, &ty, arm.span);
             if let Some(guard) = &arm.guard {
                 self.guard(guard);
@@ -45,6 +46,18 @@ impl FnCx<'_> {
             return Type::Unit;
         }
         self.join_or_report(&values, span, "the cases of this `match` give")
+    }
+
+    /// Notes a `case` that names a case of the enum or error being matched without its dot. On a
+    /// result, a name with no dot means a case of the error and a dot means one of the value, so
+    /// a dot wouldn't mean the same there, and nothing's noted.
+    fn note_undotted_case(&mut self, pattern: &Pattern, subject: &Type, span: Span) {
+        let Pattern::Variant { name, dotted: false, .. } = pattern else { return };
+        let Type::Named(owner) = self.checker.settled(subject) else { return };
+        let info = self.checker.program.type_info(&owner);
+        if info.is_some_and(|info| info.def.cases.iter().any(|case| case.name == *name)) {
+            self.checker.undotted_cases.insert((span.start, span.end));
+        }
     }
 
     fn bind_pattern(&mut self, pattern: &Pattern, subject: &Type, span: Span) {

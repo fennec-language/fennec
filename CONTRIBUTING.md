@@ -34,7 +34,7 @@ Then add the module's name to the `modules!` list in each crate's `stdlib.rs`, o
 
 ## The bar a change has to clear
 
-CI runs all of this on every pull request, and a change merges only when it all passes:
+Maintainers land changes through `staging`, as `docs/landing.md` describes. CI runs all of this on every pull request, and on every commit before `main` moves to it:
 
 - `cargo fmt --check`, and `cargo clippy` with every warning denied. Safety lints like `unwrap_used`, `panic` and `indexing_slicing` are forbidden outside tests.
 - Tests on Linux (x86 and ARM), macOS and Windows.

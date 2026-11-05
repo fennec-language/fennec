@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 106;
+const BUILDING_EXAMPLES: usize = 108;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -91,6 +91,35 @@ fn outcome(output: &Output) -> Outcome {
         String::from_utf8_lossy(&output.stdout).into_owned(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
         output.status.code(),
+    )
+}
+
+/// `stdout.write` shows what `print` shows, with no newline, in compiled code.
+#[test]
+fn writing_to_stdout_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "stdout_write",
+        r#"struct Point:
+    x: int
+    label: str
+
+def maybe(present: bool) -> str?:
+    if present:
+        return "here"
+    None
+
+def main(stdout: Stdout):
+    stdout.write("no newline, ")
+    stdout.write("then one\n")
+    stdout.write(1, 2.5, True, "words", [1, 2], Point(x=1, label="p"), maybe(True), maybe(False))
+    stdout.write()
+    stdout.write("")
+    stdout.print(" and print after")
+    stdout.write(f"{1 + 1}\n")
+"#,
     )
 }
 
@@ -1730,6 +1759,89 @@ fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// `list` of a capability, `round` to places, the codes of text, and clearing and taking keys out
+/// of dicts and sets.
+#[test]
+fn more_small_calls_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "more_small_calls",
+        r#"struct Key:
+    x: int
+    y: int
+
+def main(args: Args, stdout: Stdout):
+    stdout.print(list(args).len())
+    for arg in args:
+        stdout.print(arg.len() > 0)
+    stdout.print(round(3.14159, 2), round(2.5, 0), round(1234.5, -2), round(0.125, 2))
+    stdout.print("héllo".codes(), "".codes(), "€".code())
+    for code in [65, 233, 8364, -1, 55296, 1114112]:
+        match str.from_code(code):
+            case Ok(text):
+                stdout.print(text, text.len())
+            case Err(error):
+                stdout.print(error.message)
+    mut numbers = {1: 2, 3: 4}
+    shared = numbers
+    numbers.clear()
+    stdout.print(numbers, shared, numbers.len())
+    numbers[5] = 6
+    stdout.print(numbers)
+    mut names = {"a": "b", "a long string that is held in a block": "c"}
+    names.clear()
+    names["d"] = "e"
+    stdout.print(names)
+    mut ints = {1, 2, 3}
+    kept = ints
+    ints.discard(2)
+    ints.discard(9)
+    ints.remove(3)
+    stdout.print(ints, kept)
+    ints.clear()
+    ints.add(7)
+    stdout.print(ints, ints.len())
+    mut words = {"a", "b", "a long string that is held in a block"}
+    words.discard("a")
+    words.discard("nope")
+    words.remove("a long string that is held in a block")
+    stdout.print(words)
+    mut keys = {Key(x=1, y=2), Key(x=3, y=4)}
+    keys.discard(Key(x=1, y=2))
+    keys.discard(Key(x=9, y=9))
+    keys.remove(Key(x=3, y=4))
+    stdout.print(keys, keys.len())
+"#,
+    )
+}
+
+/// `set.remove` of a key that isn't there fails as the JIT does.
+#[test]
+fn removing_what_a_set_lacks_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, set, key) in [
+        ("remove_int", "{1, 2}", "3"),
+        ("remove_str", "{\"a\"}", "\"b\""),
+        ("remove_long", "{\"a\"}", "\"a long string that is held in a block\""),
+    ] {
+        same_message_as_the_jit(
+            name,
+            &format!(
+                "def main(stdout: Stdout):
+    mut held = {set}
+    held.remove({key})
+    stdout.print(held)
+"
+            ),
+        )?;
+    }
+    Ok(())
+}
+
 /// Shifts, `~`, sorting a list where it is, a `match` on a bool and `random_choice`.
 #[test]
 fn bits_sorts_and_choices_match_the_jit() -> std::io::Result<()> {
@@ -3176,6 +3288,69 @@ fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(outcome(&ran), outcome(&interpreted));
     Ok(())
+}
+
+/// The real network, with no interpreter behind it: a server and a client on this machine, each
+/// way a call can come out, and looping over each.
+const REAL_NETWORK: &str = "from std.net import NetError, Connection
+
+def reason[T](found: Result[T, NetError]) -> str:
+    match found:
+        case Err(error):
+            error.message()
+        case _:
+            \"it worked\"
+
+def lines_of(connection: Connection) -> int fails NetError:
+    mut count = 0
+    for line in connection.lines():
+        count += line.len()
+    count
+
+def talk(net: Net, stdout: Stdout) -> int fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port > 0)
+        with net.connect(\"localhost\", server.port)? as client:
+            stdout.print(client.peer.endswith(f\":{server.port}\"))
+            client.write(\"hello\\nfrom a client\\r\\nand more\")?
+            with server.accept()? as conn:
+                stdout.print(conn.read_line()?)
+                stdout.print(conn.read_line()?)
+                stdout.print(reason(conn.read_line(timeout=20ms)))
+                stdout.print(reason(server.accept(timeout=20ms)))
+                client.write(\"\\n\")?
+                stdout.print(conn.read_line()?)
+                client.write(\"one\\ntwo\\n\")?
+                client.close()
+                stdout.print(lines_of(conn)?)
+                stdout.print(conn.read_line()?)
+                conn.close()
+                stdout.print(reason(conn.read_line()))
+                stdout.print(reason(conn.write(\"gone\")))
+    7
+
+def main(net: Net, stdout: Stdout):
+    stdout.print(reason(talk(net, stdout)))
+    server = net.listen(0).expect(\"it listens\")
+    client = net.connect(\"127.0.0.1\", server.port).expect(\"it connects\")
+    client.write(\"looped\\n\").expect(\"it writes\")
+    client.close()
+    for conn in server:
+        for line in conn.lines():
+            stdout.print(line)
+        break
+    port = server.port
+    server.close()
+    stdout.print(reason(server.accept()))
+    stdout.print(reason(net.connect(\"127.0.0.1\", port)) == f\"`127.0.0.1` refused a connection on port {port}\")
+";
+
+#[test]
+fn the_real_network_works_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("real_network", REAL_NETWORK)
 }
 
 /// A program built with no interpreter in its runtime prints what it should and has none of the

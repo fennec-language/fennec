@@ -1911,7 +1911,10 @@ def main(stdout: Stdout):
 /// Each way a `with` can come to take one cell twice, all after printing something.
 const TAKEN_TWICE: [(&str, &str); 5] = [
     ("spelled", "    with one, one as mut x, mut y:\n        x.total = y.total + 1\n"),
-    ("reading", "    mut seen = 0\n    with one, one as x, y:\n        seen = x.total + y.total\n"),
+    (
+        "reading",
+        "    mut seen = 0\n    with one, one as x, y:\n        seen = x.total + y.total\n    stdout.print(seen)\n",
+    ),
     ("named", "    other = one\n    with one, other as mut x, y:\n        x.total = y.total + 1\n"),
     ("passed", "    both(one, one)\n"),
     ("held", "    with Holder(box=one).box, one as mut x, y:\n        x.total = y.total + 1\n"),

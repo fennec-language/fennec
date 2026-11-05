@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 79;
+const BUILDING_EXAMPLES: usize = 106;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -1730,6 +1730,51 @@ fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// Shifts, `~`, sorting a list where it is, a `match` on a bool and `random_choice`.
+#[test]
+fn bits_sorts_and_choices_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "bits_sorts_and_choices",
+        r#"from std.random import Random
+
+def name(flag: bool) -> str:
+    match flag:
+        case True:
+            "yes"
+        case False:
+            "no"
+
+struct Bag:
+    numbers: list[int]
+
+def main(stdout: Stdout):
+    for count in [0, 1, 63]:
+        stdout.print(1 << count, -8 >> count, 255 >> count, ~count)
+    mut items = [3, 1, 2]
+    shared = items
+    items.sort()
+    stdout.print(items, shared)
+    items.sort(key=n => -n)
+    stdout.print(items, shared)
+    mut words = ["pear", "fig", "a word long enough to be held in a block"]
+    words.sort(key=word => word.len())
+    stdout.print(words)
+    words.sort()
+    stdout.print(words)
+    mut bag = Bag(numbers=[2, 1])
+    bag.numbers.sort()
+    stdout.print(bag)
+    stdout.print(name(True), name(False))
+    mut random = Random(7)
+    stdout.print(random.choice([1, 2, 3, 4]), random.choice(["a", "b", "a string long enough to be a block"]), random.choice([1.5, 2.5]))
+    stdout.print(random.choice([(1, "one"), (2, "two")]))
+"#,
+    )
+}
+
 #[test]
 fn lists_keep_value_semantics_like_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -1968,7 +2013,7 @@ def main(stdout: Stdout):
     c = Account(total=1)
     stdout.print(a == a, a == b, a == c, a != a, a != c)
     stdout.print(Holder(a, 1) == Holder(b, 1), Holder(a, 1) == Holder(c, 1))
-    stdout.print(a in [c], a in [b], [a, c].index(c))
+    stdout.print([a] == [b], [a] == [c], a in [c], a in [b], [a, c].index(c))
     stdout.print(Either.One(a) == Either.One(b), Either.One(a) == Either.One(c))
     maybe: Account? = a
     stdout.print(maybe == b, maybe == c)
@@ -1983,7 +2028,7 @@ fn shared_values_are_the_same_only_if_they_are_one_value() -> std::io::Result<()
         return Ok(());
     }
     let (printed, ..) = interpreted("shared_same_said", SHARED_SAME)?;
-    let wanted = "True True False False True\nTrue False\nFalse True 1\nTrue False\nTrue False\nTrue False\n";
+    let wanted = "True True False False True\nTrue False\nTrue False False True 1\nTrue False\nTrue False\nTrue False\n";
     assert_eq!(printed, wanted);
     same_as_the_interpreter_in_both_builds("shared_same", SHARED_SAME)?;
     // A type's own `def ==` still decides, wherever it's written.
@@ -3437,6 +3482,41 @@ fn float_keys_hash_as_decided_on_the_interpreter() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `==`, `+` and ordering on lists of each kind of item, and `==` on dicts and sets.
+#[test]
+fn operators_on_collections_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "operators_on_collections",
+        r#"struct Spot:
+    x: int
+    y: str
+
+def maybe(on: bool) -> Spot?:
+    if on:
+        return Spot(x=1, y="a")
+    None
+
+def main(stdout: Stdout):
+    a = [1, 2]
+    stdout.print(a == [1, 2], a != [1, 2], a == [1], a + [3], a, [] + a, [1.5] == [1.5], [True] != [False])
+    words = ["a", "a string long enough to be held in a block"]
+    stdout.print(words == ["a", "a string long enough to be held in a block"], words + ["c"], words != words)
+    spots = [Spot(x=1, y="a")]
+    stdout.print(spots == [Spot(x=1, y="a")], spots == [Spot(x=2, y="a")], spots + spots)
+    stdout.print([[1], [2, 3]] == [[1], [2, 3]], [[1]] + [[2]], [(1, "a")] == [(1, "a")])
+    stdout.print([1] < [1, 0], [2] < [1, 0], [1, 2] <= [1, 2], [1, 2] > [1], [1.5] >= [2.5], ["a"] < ["b"], ["b", "a"] > ["b"])
+    stdout.print({1, 2} == {2, 1}, {1, 2} != {1, 3}, {"a": 1} == {"a": 1}, {"a": 1} != {"a": 1}, {1: 2} == {1: 3})
+    stdout.print(maybe(True) == maybe(True), maybe(True) == maybe(False), maybe(False) == None)
+    mut grown = a + [3]
+    grown.append(4)
+    stdout.print(grown, a)
+"#,
+    )
+}
+
 #[test]
 fn tuples_and_structs_compare_like_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -3701,6 +3781,57 @@ fn slices_as_dict_keys_match_the_jit() -> std::io::Result<()> {
         counts[chunk] = (counts.get(chunk) else 0) + 1
     for key, value in sorted(counts.items()):
         stdout.print(key, value)
+"#,
+    )
+}
+
+/// What std's runtime calls give back: hashes, TOML and JSON with its names respelled.
+#[test]
+fn std_calls_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "std_calls",
+        r#"import std.crypto as crypto
+import std.json as json
+import std.toml as toml
+
+struct Tool:
+    main_weapon: str
+    uses: int
+
+error Wrapped:
+    why: str
+
+error Inner:
+    what: str
+
+def inner(n: int) -> int:
+    if n > 1: fail Inner(what="too many")
+    n
+
+def outer(n: int) -> int:
+    inner(n)? from Wrapped(why="inner failed")
+
+def main(stdout: Stdout):
+    stdout.print(crypto.sha256("abc"), crypto.blake3("abc"))
+    stdout.print(crypto.keyed_blake3("0000000000000000000000000000000000000000000000000000000000000000", "abc") else "no")
+    stdout.print(crypto.equal("a", "a"), crypto.equal("a", "b"))
+    tool = Tool(main_weapon="bow", uses=3)
+    stdout.print(json.dumps(tool, names=.camel_case), json.dumps(tool, names=.kebab_case))
+    stdout.print(toml.dumps(tool) else "no")
+    match toml.loads[Tool]("main_weapon = \"axe\"\nuses = 2\n"):
+        case Ok(read):
+            stdout.print(read)
+        case Err(error):
+            stdout.print(error.message)
+    match toml.loads[Tool]("not toml"):
+        case Ok(read):
+            stdout.print(read)
+        case Err(error):
+            stdout.print(error.message)
+    stdout.print(outer(1) else -1, outer(2) else -1)
 "#,
     )
 }
@@ -4538,6 +4669,41 @@ def main(stdout: Stdout):
     )
 }
 
+/// A value passed `mut`, with a copy or another name for it passed without: that one keeps what it held.
+#[test]
+fn a_value_passed_both_ways_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "passed_both_ways",
+        r#"struct Bag:
+    label: str
+    count: int
+
+def both(items: list[int], mut others: list[int]) -> int:
+    others.append(9)
+    others[0] = 7
+    items.len() * 10 + items[0]
+
+def bags(bag: Bag, mut other: Bag) -> str:
+    other.count = 5
+    other.label = "a label long enough to be held in a block"
+    f"{bag.label} {bag.count}"
+
+def main(stdout: Stdout):
+    mut twice = [1, 2]
+    stdout.print(both(copy(twice), mut twice), twice)
+    mut bag = Bag(label="short", count=1)
+    stdout.print(bags(copy(bag), mut bag), bag)
+    kept = twice
+    stdout.print(both(kept, mut twice), twice, kept)
+    held = bag
+    stdout.print(bags(held, mut bag), bag, held)
+"#,
+    )
+}
+
 /// What's written whole through a `mut` parameter belongs to the caller's local, and what `pop`
 /// and `remove_where` take out of a list keeps or loses the owners the list had. A string made
 /// for the call has no other owner, so an owner too few frees it while it's still in use.
@@ -4779,6 +4945,9 @@ def named(present: bool) -> str?:
         "named(True) is None",
         "named(False) is not None",
         "seen(True) == seen(False)",
+        "[1, 2] == [1, 3]",
+        "[\"a\"] == [\"b\"]",
+        "{\"a\": 1} == {\"a\": 2}",
         "3 in [1, 2]",
         "1 not in [1, 2]",
         "\"z\" in {\"a\": 1}",
@@ -4798,6 +4967,21 @@ def named(present: bool) -> str?:
         assert_eq!(ours_err, jit_err, "{condition}");
     }
     Ok(())
+}
+
+/// A shift by a count that isn't one fails as the JIT says.
+#[test]
+fn a_bad_shift_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "bad_shift",
+        "def main(stdout: Stdout):
+    for count in [1, 64]:
+        stdout.print(1 << count)
+",
+    )
 }
 
 /// A float outside an int's range doesn't become one.
@@ -5094,6 +5278,7 @@ fn failing_calls_alone_in_a_function_fail_like_the_jit() -> std::io::Result<()> 
         ("alone_range", "range(0, 1, 0)"),
         ("alone_max", "max(empty)"),
         ("alone_min", "min(empty)"),
+        ("alone_shift", "1 << 64"),
     ] {
         same_message_as_the_jit(
             name,

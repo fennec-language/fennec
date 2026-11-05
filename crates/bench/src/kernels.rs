@@ -87,30 +87,30 @@ fn front_end(sources: &[PathBuf], out_dir: &Path, selfhost: &Path) -> Result<Ker
 }
 
 impl Kernel {
-    /// Running the whole kernel, natively.
-    pub(crate) fn run(&self, fennec: &Path) -> Program {
+    /// Running the kernel with the JIT, for one LLVM can't build yet: it says when the
+    /// interpreter stands in.
+    pub(crate) fn on_the_jit(&self, fennec: &Path) -> Program {
         Program {
             command: fennec.to_path_buf(),
-            // `--jit` says when the interpreter stands in, and means native code in older
-            // builds too, which the suite compares against.
             args: vec!["run".to_owned(), "--jit".to_owned(), self.path.clone()],
             stdin: self.stdin.clone(),
         }
     }
 
-    /// Everything before its `main`.
-    pub(crate) fn startup(&self, fennec: &Path) -> Program {
-        Program {
-            command: fennec.to_path_buf(),
-            args: vec!["dev".to_owned(), "startup".to_owned(), self.path.clone()],
-            stdin: None,
-        }
+    /// The kernel built by `fennec build --llvm --release` into `out_dir`, run as it is. `tag`
+    /// keeps one `fennec`'s build apart from another's.
+    pub(crate) fn built(&self, fennec: &Path, out_dir: &Path, tag: &str) -> Result<Program, String> {
+        let name = format!("{}.{tag}", self.name);
+        let command = crate::llvm_suite::built(fennec, &self.path, out_dir, &name)?;
+        Ok(Program { command, args: Vec::new(), stdin: self.stdin.clone() })
     }
 
-    /// How many places in its compiled code aren't native, as `fennec dev fallbacks` reports.
+    /// How many functions in it LLVM doesn't take yet, as `fennec dev fallbacks --llvm` reports.
     pub(crate) fn not_native(&self, fennec: &Path) -> Option<usize> {
-        let output =
-            std::process::Command::new(fennec).args(["dev", "fallbacks", &self.path]).output().ok()?;
+        let output = std::process::Command::new(fennec)
+            .args(["dev", "fallbacks", "--llvm", &self.path])
+            .output()
+            .ok()?;
         output.status.success().then(|| places(&String::from_utf8_lossy(&output.stdout)))
     }
 

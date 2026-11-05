@@ -374,6 +374,28 @@ fn a_parallel_loop_cant_change_names_outside_it() {
 }
 
 #[test]
+fn a_plain_name_read_from_a_place_says_where_to_write() {
+    let types = "struct Stats:\n    mana = 1\n\nstruct Unit:\n    health = 1\n    stats: Stats\n\n    def heal(mut self):\n        self.health += 1\n";
+    let start = "mut units = [Unit(stats=Stats())]\nat = 0\n";
+    let help = |body: &str| {
+        let lines = format!("{start}{body}").trim_end().replace('\n', "\n    ");
+        helps(&format!("{types}\ndef main(stdout: Stdout):\n    {lines}\n"))
+    };
+    for (body, said) in [
+        ("target = units[at]\ntarget.health -= 10\n", "to change `units`: write to `units[at].health`"),
+        ("target = units[0]\ntarget.stats.mana = 2\n", "to change `units`: write to `units[0].stats.mana`"),
+        ("target = units[at]\ntarget.heal()\n", "to change `units`: write to `units[at]`"),
+        ("stats = units[at].stats\nstats.mana += 1\n", "to change `units`: write to `units[at].stats.mana`"),
+    ] {
+        assert_eq!(help(body), [said], "{body}");
+    }
+    assert_eq!(
+        help("plain = Stats()\nplain.mana = 2\n"),
+        ["declare it with `mut plain = ...` if it needs to change"]
+    );
+}
+
+#[test]
 fn a_name_that_hides_a_mut_one_says_so() {
     let said = "this `k` is a new name, which hides the `mut k` around it @ k";
     let types = "enum Sized:\n    Small(size: int)\n";

@@ -2167,17 +2167,10 @@ def main(stdout: Stdout):
 const CELL_LIST_REPLACED: &str = r"shared Box:
     items = [1, 2, 3]
 
-struct Holder:
-    box: Box
-
-def first(holder: Holder) -> int:
-    holder.box.items[0]
-
 def main(stdout: Stdout):
     one = Box()
-    holder = Holder(box=one)
     with one as mut x:
-        x.items = [n + first(holder) for n in x.items]
+        x.items = [n + x.items[0] for n in x.items]
     stdout.print(one.items)
 ";
 
@@ -5879,6 +5872,33 @@ fn a_format_reads_a_type_through_its_deserialize() -> std::io::Result<()> {
          failed: in the text, Unit.health breaks its `where` rule at 6\n\
          1 2 7\n"
     );
+    Ok(())
+}
+
+/// A generic function's type parameter can be used only in its body, when a call writes it in
+/// brackets: each copy is made from that, not only from the function's signature.
+#[test]
+fn a_type_parameter_used_only_in_a_body_is_given_by_the_call() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "interface Made:\n    def make() -> Self\n\n    def measure(self) -> int\n\n\
+                  struct Part:\n    size = 3\n\n    def make() -> Self:\n        Self(size=4)\n\n    \
+                  def measure(self) -> int:\n        self.size\n\n\
+                  struct Other:\n    size = 8\n\n    def make() -> Self:\n        Self(size=9)\n\n    \
+                  def measure(self) -> int:\n        self.size\n\n\
+                  def build[T: Made]() -> T:\n    T.make()\n\n\
+                  def named[T: Made](text: str) -> str:\n    made = build[T]()\n    f\"{text} {made.measure()}\"\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(named[Part](\"part\"), named[Other](\"other\"))\n";
+    let dir = folder("body_only_type_param")?;
+    let program = dir.join("told.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("told"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours.0, "part 4 other 9\n");
     Ok(())
 }
 

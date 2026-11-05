@@ -230,6 +230,27 @@ impl Emit<'_, '_, '_> {
         self.take_what_crossed(dest, &handle, (&mark, crossed), span)
     }
 
+    /// One of `std.crypto`'s functions, which the runtime runs with no interpreter.
+    pub(crate) fn crypto_call(
+        &mut self,
+        dest: Option<LocalId>,
+        name: &str,
+        args: &[Operand],
+        span: Span,
+    ) -> Result<(), String> {
+        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (mark, crossed) = self.cross_arguments(args)?;
+        let named = self.literal(name);
+        self.declare("declare i64 @fennec_crypto_call(ptr, i64, i64, i64) nounwind");
+        let handle = self.temp();
+        self.line(&format!(
+            "{handle} = call i64 @fennec_crypto_call(ptr {named}, i64 {}, i64 {from}, i64 {to})",
+            args.len()
+        ));
+        self.leave_if_failed();
+        self.take_what_crossed(dest, &handle, (&mark, crossed), span)
+    }
+
     /// Hands the runtime arguments as temporaries: where they start, and the blocks that carry
     /// them across, to let go of after.
     fn cross_arguments(&mut self, args: &[Operand]) -> Result<(String, Vec<String>), String> {

@@ -4514,6 +4514,43 @@ fn slices_as_dict_keys_match_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// All of `std.crypto`, of text and of bytes, which needs no interpreter.
+#[test]
+fn crypto_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "crypto_all",
+        r#"from std import crypto
+
+def main(stdout: Stdout):
+    stdout.print(crypto.sha256(""), crypto.blake3(""))
+    stdout.print(crypto.hmac_sha256("key", "message"))
+    key = crypto.derive_key("a context", "a secret")
+    stdout.print(key, crypto.keyed_blake3(key, "message"))
+    stdout.print(crypto.equal(key, key), crypto.equal("short", "longer"))
+"#,
+    )
+}
+
+/// A BLAKE3 key that isn't one says so, as it does on the JIT.
+#[test]
+fn a_bad_crypto_key_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "crypto_bad_key",
+        r#"from std import crypto
+
+def main(stdout: Stdout):
+    stdout.print(1)
+    stdout.print(crypto.keyed_blake3("not hex", "message"))
+"#,
+    )
+}
+
 /// What std's runtime calls give back: hashes, TOML and JSON with its names respelled.
 #[test]
 fn std_calls_match_the_jit() -> std::io::Result<()> {

@@ -46,7 +46,11 @@ fn hex(bytes: &[u8]) -> Value {
 }
 
 fn call(_: &mut Interp<'_>, name: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
-    let values = plain(args, name, span)?;
+    run(name, &plain(args, name, span)?, span)
+}
+
+/// One of these functions, which need nothing of the interpreter.
+pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic> {
     let wrong = || Diagnostic::new(format!("`{name}` takes text or bytes"), span);
     let data = |at: usize| values.get(at).and_then(bytes_of).ok_or_else(wrong);
     match name {

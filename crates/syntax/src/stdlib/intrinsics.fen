@@ -111,9 +111,26 @@ def type_name[T]() -> str
 @intrinsic
 def id_key[T](id: Id[T]) -> int
 
-## The `Id` of the item at `position` in a `Table` nothing's been taken out of.
+## The `Id` of the item at `position` in a `Table` with the tag `tag` that nothing's been taken
+## out of.
 @intrinsic
-def id_at[T](position: int) -> Id[T]
+def id_at[T](position: int, tag: int) -> Id[T]
+
+## The tag of the `Table` an `Id` is from.
+@intrinsic
+def id_tag[T](id: Id[T]) -> int
+
+## A `Table`'s tag, which its `Id`s have and no other `Table`'s do.
+@intrinsic
+def table_tag[T](table: Table[T]) -> int
+
+## A tag no `Table` has had.
+@intrinsic
+def new_tag() -> int
+
+## An empty `Table` with the tag `tag`.
+@intrinsic
+def table_tagged[T](tag: int) -> Table[T]
 
 ## Ends the program, saying `message`, as a failed `assert` does.
 @intrinsic

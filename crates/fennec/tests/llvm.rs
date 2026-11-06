@@ -5036,6 +5036,60 @@ def main(stdout: Stdout):
     )
 }
 
+/// An `Id` finds nothing in a `Table` other than the one that gave it out, though a copy of that
+/// one, holding the same items, is the same `Table`.
+#[test]
+fn ids_from_another_table_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "other_table",
+        r#"from std.collections import Id, Table
+
+def main(stdout: Stdout):
+    mut ours = Table[str]()
+    mut theirs = Table[str]()
+    fox = ours.add("fox")
+    kit = theirs.add("kit")
+    stdout.print(fox == kit, ours.get(kit) is None, kit in ours, fox in theirs)
+    stdout.print(theirs.remove(fox) is None, theirs.len(), ours[fox])
+    mut copied = ours
+    copied[fox] = "den"
+    stdout.print(copied[fox], ours[fox], fox in copied)
+    held: list[Id[str]] = ours.ids()
+    for id, name in theirs.items():
+        stdout.print(name, id in theirs, id in ours, held[0] in ours)
+"#,
+    )?;
+    same_message_as_the_jit(
+        "other_table_stop",
+        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    stdout.print(ours[kit])\n",
+    )?;
+    same_message_as_the_jit(
+        "other_table_store",
+        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    ours[kit] = \"den\"\n    stdout.print(ours.len())\n",
+    )?;
+    // Saved, an `Id` has to be from the `Table` saved with it.
+    same_message_as_the_jit(
+        "other_table_saved",
+        r#"from std import json
+from std.collections import Id, Table
+
+struct World:
+    units = Table[str]()
+    selected = list[Id[str]]()
+
+def main(stdout: Stdout):
+    mut world = World()
+    mut elsewhere = Table[str]()
+    world.units.add("ash")
+    world.selected = [elsewhere.add("vex")]
+    stdout.print(json.dumps(world))
+"#,
+    )
+}
+
 /// Slices of tuples, with what they hold kept by both, and `enumerate` of a string.
 #[test]
 fn tuple_slices_and_enumerated_text_match_the_jit() -> std::io::Result<()> {
@@ -7003,6 +7057,9 @@ struct Words:
 
     def saw_table(mut self, kind: str, count: int):
         pass
+
+    def tag(mut self, kind: str) -> int:
+        0
 
     def none(mut self) -> bool fails ParseError:
         if self.at < self.parts.len() and self.parts[self.at] == "-":

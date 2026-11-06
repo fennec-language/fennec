@@ -936,6 +936,12 @@ fn children(state: &State, block: &[u64]) -> Vec<u64> {
     found
 }
 
+/// A new `Table`'s tag: the next of one count for the whole process, which never comes round
+/// again, so an `Id` from another `Table` finds nothing.
+pub extern "C" fn new_tag() -> i64 {
+    crate::value::new_tag().cast_signed()
+}
+
 /// A new block of a shape, owned once, its fields zero.
 pub extern "C" fn alloc(shape: i64) -> i64 {
     with(|state| {
@@ -1350,7 +1356,29 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
     let Some(shape) = shape_of(state, left) else { return false };
     let (left, right) =
         (left.get(HEADER_WORDS..).unwrap_or_default(), right.get(HEADER_WORDS..).unwrap_or_default());
+    if let Element::Struct { name, fields } = shape.as_ref()
+        && named::is_id_map(name)
+    {
+        return same_tables(state, fields, left, right);
+    }
     same_words(state, &shape, left, right)
+}
+
+/// Whether two `Table`s are equal, as the interpreter has it: the same items in the same slots,
+/// with the same generations. Which `Table` each is, its tag, and where a search for a free
+/// slot starts don't count.
+fn same_tables(state: &State, fields: &[(Rc<str>, Element)], left: &[u64], right: &[u64]) -> bool {
+    let mut at = 0;
+    for (field, element) in fields {
+        if matches!(field.as_ref(), "items" | "generations") {
+            let (Some(x), Some(y)) = (left.get(at), right.get(at)) else { return false };
+            if !same(state, *x, *y) {
+                return false;
+            }
+        }
+        at += element.words();
+    }
+    true
 }
 
 /// Whether two values of a kind, laid out as words, are equal: the same plain words, and

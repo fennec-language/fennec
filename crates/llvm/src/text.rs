@@ -81,8 +81,9 @@ impl Emit<'_, '_, '_> {
             && self.module.layouts.get(*id).is_some_and(|layout| layout.name == "Id")
         {
             self.print_text("Id(");
-            let slot = self.temp();
-            self.line(&format!("{slot} = load i64, ptr {value}"));
+            let (key, slot) = (self.temp(), self.temp());
+            self.line(&format!("{key} = load i64, ptr {value}"));
+            self.line(&format!("{slot} = lshr i64 {key}, 32"));
             self.print_one(&slot, &Kind::Int)?;
             self.print_text(")");
             return Ok(());

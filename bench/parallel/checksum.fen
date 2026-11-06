@@ -1,0 +1,13 @@
+# A reduction: each of two million numbers stirred a hundred times with a Lehmer generator's step,
+# and what's left of each added up with `sum` over `parallel`. Every item costs the same, and the
+# partials combine in a fixed order, so only splitting and combining are measured. Integers keep
+# the answer exact however the partials are grouped.
+
+def stirred(n: int) -> int:
+    mut x = n % 2_147_483_646 + 1
+    for _ in range(100):
+        x = x * 48_271 % 2_147_483_647
+    x % 1_000
+
+def main(stdout: Stdout):
+    stdout.print(sum(stirred(n) for n in parallel(range(2_000_000))))

@@ -1,8 +1,13 @@
 //! `fennec-bench parallel`: the kernels in `bench/parallel`, which use `parallel`, built through
-//! LLVM with the runtime that has threads, beside rayon twins, by wall clock at 1, 2, 4 and 8
-//! threads. Beside them are the same kernel without `parallel` and a plain Rust twin on one
-//! thread, which say what running in parallel costs and how much it gives. Each side runs in
-//! turn and its best run counts, as in `llvm_suite`.
+//! LLVM with the runtime that has threads, beside rayon twins, by wall clock at 1, 2, 4, 8 and 16
+//! threads, as many of those as the machine has cores for, and at all its cores. Beside each are
+//! the same kernel without `parallel` and a plain Rust twin on one thread, which say what running
+//! in parallel costs and how much it gives. Each side runs in turn and its best run counts, as in
+//! `llvm_suite`.
+//!
+//! The kernels cover each form `parallel` takes: `ecs` a `for ref` loop of light work run many
+//! times, `mandel` one of heavy and uneven work, `collatz` a comprehension of uneven work, and
+//! `checksum` a reduction of even work.
 //!
 //! These aren't in the locked suite, which counts instructions a thread at a time. Nothing here
 //! fails for being slow: only a kernel that prints something other than its twin does. It prints
@@ -15,8 +20,9 @@ use std::time::{Duration, Instant};
 
 use crate::llvm_suite::summary;
 
-const THREADS: [usize; 4] = [1, 2, 4, 8];
-const KERNEL: &str = "ecs";
+/// The thread counts measured, up to the machine's cores.
+const THREADS: [usize; 5] = [1, 2, 4, 8, 16];
+const KERNELS: [&str; 4] = ["ecs", "mandel", "collatz", "checksum"];
 const OUT_DIR: &str = "target/bench/parallel";
 
 /// One program to time: how long each of its runs took, and which variable says its threads.
@@ -102,14 +108,24 @@ pub(crate) fn shown(side: &Side) -> String {
     format!("{:.0} ms{}", best * 1000.0, if noisy { " (noisy)" } else { "" })
 }
 
-/// The section for the report: `plain` is the two sides without `parallel`, Fennec's first, and
-/// each of `threaded` is Fennec's and rayon's at a number of threads.
-fn section(plain: &[Side; 2], threaded: &[[Side; 2]]) -> String {
+/// The thread counts to measure on a machine with `cores` cores: each of `THREADS` it has cores
+/// for, and all of them.
+fn thread_counts(cores: usize) -> Vec<usize> {
+    let mut counts: Vec<usize> = THREADS.iter().copied().filter(|count| *count <= cores.max(1)).collect();
+    if counts.last().is_some_and(|last| *last < cores) {
+        counts.push(cores);
+    }
+    counts
+}
+
+/// A kernel's section for the report: `plain` is the two sides without `parallel`, Fennec's first,
+/// and each of `threaded` is Fennec's and rayon's at the matching one of `counts` threads.
+fn section(kernel: &str, counts: &[usize], plain: &[Side; 2], threaded: &[[Side; 2]]) -> String {
     let [ours_plain, rust_plain] = plain;
     let (cpu, cores) = (crate::machine::cpu(), crate::machine::cores());
     let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
     let mut text =
-        format!("## Parallel: `{KERNEL}` against rayon, on {os} {arch}, {cpu} with {cores} cores\n\n");
+        format!("## Parallel: `{kernel}` against rayon, on {os} {arch}, {cpu} with {cores} cores\n\n");
     text += "| threads | Fennec | speedup | rayon | speedup | Fennec's speed, % of rayon's |\n";
     text += "|---|---:|---:|---:|---:|---:|\n";
     let percent = |rust: f64, ours: f64| if ours > 0.0 { rust / ours * 100.0 } else { 0.0 };
@@ -122,7 +138,7 @@ fn section(plain: &[Side; 2], threaded: &[[Side; 2]]) -> String {
     );
     let ones = threaded.first().map_or((0.0, 0.0), |[ours, rust]| (ours.best().0, rust.best().0));
     let ratio = |one: f64, many: f64| if many > 0.0 { one / many } else { 0.0 };
-    for (count, [ours, rust]) in THREADS.iter().zip(threaded) {
+    for (count, [ours, rust]) in counts.iter().zip(threaded) {
         let (mine, theirs) = (ours.best().0, rust.best().0);
         let _ = writeln!(
             text,
@@ -145,21 +161,52 @@ fn section(plain: &[Side; 2], threaded: &[[Side; 2]]) -> String {
     text
 }
 
-/// Runs the section. It fails only for a kernel that doesn't build or prints the wrong thing.
+/// Runs every kernel's section. It fails only for a kernel that doesn't build or prints the wrong
+/// thing. Every kernel is built before the twins, so a broken compiler says so first.
 pub(crate) fn run(fennec: &Path, dir: &Path, runs: usize, markdown: Option<&Path>) -> Result<(), String> {
     let out = Path::new(OUT_DIR);
     std::fs::create_dir_all(out).map_err(|err| format!("couldn't make {}: {err}", out.display()))?;
-    let threaded = built(fennec, &dir.join(format!("{KERNEL}.fen")), out.join(KERNEL), true)?;
-    let plain = format!("{KERNEL}_plain");
-    let plain = built(fennec, &dir.join(format!("{plain}.fen")), out.join(plain), false)?;
+    let mut builds = Vec::new();
+    for kernel in KERNELS {
+        let threaded = built(fennec, &dir.join(format!("{kernel}.fen")), out.join(kernel), true)?;
+        let plain = format!("{kernel}_plain");
+        builds.push((
+            kernel,
+            threaded,
+            built(fennec, &dir.join(format!("{plain}.fen")), out.join(plain), false)?,
+        ));
+    }
     let twin = twins(dir, out)?;
-    let mut plain = [Side::new(plain, None), Side::new(twin.join(format!("{KERNEL}_plain")), None)];
-    let mut sides: Vec<[Side; 2]> = THREADS
+    let counts = thread_counts(crate::machine::cores());
+    let mut text = String::new();
+    for (kernel, threaded, plain) in builds {
+        let section = timed(kernel, [threaded, plain], &twin, &counts, runs)?;
+        println!("{section}");
+        text += &section;
+        text += "\n";
+    }
+    if let Some(path) = markdown {
+        std::fs::write(path, &text).map_err(|err| format!("couldn't write {}: {err}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Times one kernel, built with threads and without `parallel`, against its twins, both sides
+/// taking turns, giving back its section.
+fn timed(
+    kernel: &str,
+    [threaded, plain]: [PathBuf; 2],
+    twin: &Path,
+    counts: &[usize],
+    runs: usize,
+) -> Result<String, String> {
+    let mut plain = [Side::new(plain, None), Side::new(twin.join(format!("{kernel}_plain")), None)];
+    let mut sides: Vec<[Side; 2]> = counts
         .iter()
         .map(|&count| {
             [
                 Side::new(threaded.clone(), Some(("FENNEC_THREADS", count))),
-                Side::new(twin.join(KERNEL), Some(("RAYON_NUM_THREADS", count))),
+                Side::new(twin.join(kernel), Some(("RAYON_NUM_THREADS", count))),
             ]
         })
         .collect();
@@ -168,20 +215,15 @@ pub(crate) fn run(fennec: &Path, dir: &Path, runs: usize, markdown: Option<&Path
         let want = expected.last().cloned().unwrap_or_default();
         let printed = sides.iter_mut().flatten().map(Side::run).collect::<Result<Vec<_>, _>>()?;
         if let Some(wrong) = expected.iter().chain(&printed).find(|said| **said != want) {
-            return Err(format!("`{KERNEL}` printed `{}`, and its twin `{}`", wrong.trim(), want.trim()));
+            return Err(format!("`{kernel}` printed `{}`, and its twin `{}`", wrong.trim(), want.trim()));
         }
     }
-    let text = section(&plain, &sides);
-    println!("{text}");
-    if let Some(path) = markdown {
-        std::fs::write(path, &text).map_err(|err| format!("couldn't write {}: {err}", path.display()))?;
-    }
-    Ok(())
+    Ok(section(kernel, counts, &plain, &sides))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Side, section};
+    use super::{Side, section, thread_counts};
     use std::time::Duration;
 
     fn side(millis: u64) -> Side {
@@ -194,11 +236,19 @@ mod tests {
     fn the_section_shows_each_side_s_speedup_and_fennec_against_rayon() {
         let plain = [side(90), side(100)];
         let threaded = [[side(100), side(110)], [side(50), side(44)]];
-        let text = section(&plain, &threaded);
+        let text = section("ecs", &[1, 2], &plain, &threaded);
         assert!(text.contains("| none, without `parallel` | 90 ms | | 100 ms | | 111 |"), "{text}");
         assert!(text.contains("| 1 | 100 ms | 1.00× | 110 ms | 1.00× | 110 |"), "{text}");
         assert!(text.contains("| 2 | 50 ms | 2.00× | 44 ms | 2.50× | 88 |"), "{text}");
         assert!(text.contains("costs Fennec 11.1% and rayon 10.0%"), "{text}");
+    }
+
+    #[test]
+    fn threads_are_measured_up_to_the_machine_s_cores_and_at_all_of_them() {
+        assert_eq!(thread_counts(18), [1, 2, 4, 8, 16, 18]);
+        assert_eq!(thread_counts(8), [1, 2, 4, 8]);
+        assert_eq!(thread_counts(3), [1, 2, 3]);
+        assert_eq!(thread_counts(1), [1]);
     }
 
     #[test]

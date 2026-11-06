@@ -16,6 +16,30 @@ path = "ecs.rs"
 name = "ecs_plain"
 path = "ecs_plain.rs"
 
+[[bin]]
+name = "collatz"
+path = "collatz.rs"
+
+[[bin]]
+name = "collatz_plain"
+path = "collatz_plain.rs"
+
+[[bin]]
+name = "checksum"
+path = "checksum.rs"
+
+[[bin]]
+name = "checksum_plain"
+path = "checksum_plain.rs"
+
+[[bin]]
+name = "mandel"
+path = "mandel.rs"
+
+[[bin]]
+name = "mandel_plain"
+path = "mandel_plain.rs"
+
 [dependencies]
 # The version that runs on rayon-core 1.13, the one Fennec's own pool uses.
 rayon = "=1.11.0"

@@ -203,12 +203,11 @@ impl fmt::Display for InstKind {
             | InstKind::MakeMember { .. }
             | InstKind::IsMember { .. }
             | InstKind::GetMember { .. } => wrapped(self, f),
-            InstKind::MakeOk { dest, value: Some(value) } => write!(f, "{dest} = ok {value}"),
-            InstKind::MakeOk { dest, value: None } => write!(f, "{dest} = ok"),
-            InstKind::IsError { dest, value, type_name } => write!(f, "{dest} = {value} is {type_name}"),
-            InstKind::AsError { dest, value } => write!(f, "{dest} = {value} as error"),
             InstKind::MakeClosure { .. } | InstKind::CallClosure { .. } => closure(self, f),
-            InstKind::MakeErr { .. }
+            InstKind::MakeOk { .. }
+            | InstKind::IsError { .. }
+            | InstKind::AsError { .. }
+            | InstKind::MakeErr { .. }
             | InstKind::IsErr { .. }
             | InstKind::GetOk { .. }
             | InstKind::GetErr { .. } => result(self, f),
@@ -252,6 +251,10 @@ fn collection(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 /// An instruction on a result.
 fn result(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match inst {
+        InstKind::MakeOk { dest, value: Some(value) } => write!(f, "{dest} = ok {value}"),
+        InstKind::MakeOk { dest, value: None } => write!(f, "{dest} = ok"),
+        InstKind::IsError { dest, value, type_name } => write!(f, "{dest} = {value} is {type_name}"),
+        InstKind::AsError { dest, value } => write!(f, "{dest} = {value} as error"),
         InstKind::MakeErr { dest, error } => write!(f, "{dest} = err {error}"),
         InstKind::IsErr { dest, value } => write!(f, "{dest} = {value} is err"),
         InstKind::GetOk { dest, value } => write!(f, "{dest} = {value} as ok"),

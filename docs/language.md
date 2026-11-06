@@ -51,6 +51,8 @@ interface Shape:           # what a type can do
 
 There are no classes and no handle keyword. Nearly everything you write is a `struct`.
 
+A field named `_like_this` is private. Only the type's own methods read, write or change it. Its constructor can set it from anywhere in the type's own kit, like `Account(owner="ash", _balance=0)`. Other kits build the type through the functions it gives them, since another kit setting a `_` field could forge a value its methods never made.
+
 ## Mistakes the compiler stops
 
 ```fennec
@@ -207,7 +209,6 @@ Each connection gets its own task, and a failure ends only that task. The wrappe
 | Float order | Keep one order, and measure x86 before calling it settled |
 | `x / 0.0` | Keep stopping the program |
 | `where` | A broken rule always stops the program |
-| Private fields | Allow them in a constructor inside the same kit; other kits use named constructors |
 | A shared method calling another | Refuse calls into a `shared` passed as a parameter |
 | `?` inside `parallel` | It ends only that task |
 | Generators | One use only: a second loop is a compile error when the compiler can see it, and otherwise stops the program |

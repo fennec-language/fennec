@@ -919,7 +919,7 @@ import game.world.physics as physics
 ## Visibility
 
 **`pub` marks what other kits can use, and goes on top-level things only.** It goes on each `def`, `struct`, `shared`, `enum`, `error`, `interface`, `type` alias and re-exported `import` that other kits may use. There's no field-level `pub`.
-- `_name` hides a field from everything but its type, in its own kit too.
+- `_name` hides a field from everything but its type, in its own kit too. The one way in is the type's constructor, from code in the same kit, so `Account(owner="ash", _balance=0)` works anywhere in the kit. Reading or writing the field, `copy(...)` with it, and a pattern naming it stay the type's own. Built: until kits have dependencies, the other kit is the standard library, whose `_` fields a program can't set.
 - A `pub struct`'s other fields are its API. If it has no `_name` fields, other kits get its automatic constructor. Otherwise they build it through its `pub` named constructors.
 - Enum cases and interface methods come with their type and have no `pub` of their own.
 - Writes from another kit still run the field's `where` rules.

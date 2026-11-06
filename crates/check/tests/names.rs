@@ -366,6 +366,28 @@ fn a_types_own_methods_reach_its_underscore_names() {
 }
 
 #[test]
+fn its_own_kit_can_set_a_types_underscore_fields_in_its_constructor() {
+    let empty: [&str; 0] = [];
+    let made = |call: &str| {
+        problems(&format!(
+            "{ACCOUNT}def main(stdout: Stdout):\n    account = {call}\n    stdout.print(account.owner)\n"
+        ))
+    };
+    assert_eq!(made("Account(owner=\"x\", _balance=100)"), empty);
+    assert_eq!(made("Account(\"x\", 100)"), empty);
+    // Another kit can't: the standard library's types are built through their own functions.
+    assert_eq!(
+        problems(
+            "from std.collections import Packed\n\ndef main(stdout: Stdout):\n    packed = Packed[int](_items=[1], _starts=[0, 1])\n    stdout.print(packed.len())\n"
+        ),
+        ["`_items` is private to `Packed` @ [1]", "`_starts` is private to `Packed` @ [0, 1]"]
+    );
+    // Only the constructor: reading, writing, `copy` and patterns stay the type's own.
+    let private = "`_balance` is private to `Account`";
+    assert_eq!(made("copy(Account(\"x\"), _balance=9)"), [format!("{private} @ 9")]);
+}
+
+#[test]
 fn nothing_outside_a_type_reaches_its_underscore_names() {
     let in_main = |body: &str| {
         problems(&format!("{ACCOUNT}def main(stdout: Stdout):\n    mut account = Account(\"ash\")\n{body}"))
@@ -377,8 +399,6 @@ fn nothing_outside_a_type_reaches_its_underscore_names() {
         in_main("    stdout.print(account._audit())\n"),
         ["`_audit` is private to `Account` @ account._audit()"]
     );
-    assert_eq!(in_main("    forged = Account(owner=\"x\", _balance=100)\n"), [format!("{private} @ 100")]);
-    assert_eq!(in_main("    forged = Account(\"x\", 100)\n"), [format!("{private} @ 100")]);
     assert_eq!(in_main("    forged = copy(account, _balance=9)\n"), [format!("{private} @ 9")]);
     assert_eq!(
         in_main("    match account:\n        case Account(owner, balance): stdout.print(balance)\n"),

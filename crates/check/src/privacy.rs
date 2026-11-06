@@ -1,7 +1,8 @@
 //! `_name` fields and methods: hidden from everything but their own type. Only the type's own
-//! methods, and the functions nested in them, can read, write or set one, or call one. Code
-//! outside can't forge a value with a `_` field set to whatever it likes, which capabilities
-//! like a network connection rely on.
+//! methods, and the functions nested in them, can read, write or call one. The one way in from
+//! outside is the type's constructor, from code in the type's own kit: another kit, like a
+//! program using the standard library, can't forge a value with a `_` field set to whatever it
+//! likes, which capabilities like a network connection rely on.
 
 use fennec_syntax::{Arg, Diagnostic, Field, Span};
 
@@ -42,9 +43,12 @@ impl FnCx<'_> {
         )));
     }
 
-    /// Reports arguments that set `owner`'s `_` fields when it's made from outside it, by name
-    /// or by position.
+    /// Reports arguments that set `owner`'s `_` fields when it's made from another kit, by name
+    /// or by position. Code in its own kit can set them, as its methods can.
     pub(crate) fn private_fields_given(&mut self, owner: &str, fields: &[Field], args: &[Arg]) {
+        let in_std = self.checker.program.type_info(owner).is_some_and(|info| info.prelude);
+        // Until kits have dependencies, the only other kit is the standard library.
+        let same_kit = |arg: &Arg| in_std == arg.value.span.in_prelude();
         let mut next = 0;
         for arg in args {
             let field = if let Some(name) = &arg.name {
@@ -53,7 +57,9 @@ impl FnCx<'_> {
                 next += 1;
                 fields.get(next - 1)
             };
-            if let Some(field) = field {
+            if let Some(field) = field
+                && !same_kit(arg)
+            {
                 self.private_member(owner, &field.name, arg.value.span);
             }
         }

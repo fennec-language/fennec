@@ -64,6 +64,30 @@ fn print_says_what_to_do_where_it_is() {
     assert_eq!(in_main("print(1)"), ["there's no global `print` @ print"]);
 }
 
+/// A capability read by its usual name in a function that wasn't given it says how to give it
+/// one, the way a global `print` does, or what it's called when it has one under another name.
+#[test]
+fn a_capability_that_wasnt_given_says_how_to_give_it() {
+    const WHY: &str = "a function reaches outside itself only through what's in its signature";
+    for (program, help) in [
+        ("def main():\n    stdout.print(1)\n", format!("{WHY}, so write `def main(stdout: Stdout):`")),
+        (
+            "def main(stdout: Stdout):\n    stdout.print(fs.read(\"x\"))\n",
+            format!("{WHY}, so add `fs: Fs` to `main`'s parameters"),
+        ),
+        (
+            "def greet():\n    stdout.print(1)\n\ndef main(stdout: Stdout):\n    greet()\n",
+            format!("{WHY}, so give `greet` a `stdout: Stdout` parameter and pass it from `main`"),
+        ),
+        (
+            "def report(out: Stdout):\n    stdout.print(1)\n\ndef main(stdout: Stdout):\n    report(stdout)\n",
+            "this function's `Stdout` is called `out`".to_owned(),
+        ),
+    ] {
+        assert_eq!(helps(program), [help], "{program}");
+    }
+}
+
 /// A name that doesn't exist, spelled nearly like one in sight, is most likely that one, including
 /// where `mut` says it's the thing to change.
 #[test]

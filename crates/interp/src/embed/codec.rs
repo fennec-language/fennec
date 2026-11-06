@@ -408,7 +408,8 @@ impl Image {
 
     pub fn from_bytes(bytes: &[u8]) -> Option<Image> {
         let from = &mut Reader::new(bytes);
-        let syntax = from.take(usize::try_from(from.word()?).ok()?)?;
+        let length = usize::try_from(from.word()?).ok()?;
+        let syntax = from.take(length)?;
         let module =
             if cfg!(feature = "lean") { Module { items: Vec::new() } } else { Module::decode(&mut Reader::new(syntax))? };
         let mut sources = Sources::new();

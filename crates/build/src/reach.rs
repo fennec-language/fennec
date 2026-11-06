@@ -8,7 +8,7 @@
 //! and a `for mut` over positions' `len` and `is_live`. Reaching too much only means running a test that didn't need it; anything that can
 //! change a test's result is reached.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use fennec_blake3::{Hash, Hasher};
 use fennec_syntax::{
@@ -61,6 +61,8 @@ pub(crate) struct Graph {
     /// Which build of Fennec the keys are for, since another one's compiler may behave
     /// differently.
     pub(crate) build: String,
+    /// The names the program declares at the top, which a function's own names never stand for.
+    top: HashSet<String>,
 }
 
 impl Graph {
@@ -72,6 +74,7 @@ impl Graph {
             implicit: HashMap::new(),
             unowned: Vec::new(),
             build: build.to_owned(),
+            top: crate::locals::top_names(module),
         };
         for item in &module.items {
             graph.item(item);
@@ -96,7 +99,8 @@ impl Graph {
     fn item(&mut self, item: &Item) {
         match item {
             Item::Function(def) => {
-                let at = self.add(format!("def {}", def.name), tree_hash(def), function_uses(def), None);
+                let hash = tree_hash(&crate::locals::function(def, &self.top));
+                let at = self.add(format!("def {}", def.name), hash, function_uses(def), None);
                 self.name(&def.name, at);
             }
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => self.type_def(def),
@@ -134,7 +138,8 @@ impl Graph {
                 uses.stmts(&test.body);
                 let named = (!test.bench).then(|| test.name.clone());
                 let word = if test.bench { "bench" } else { "test" };
-                self.add(format!("{word} \"{}\"", test.name), tree_hash(test), uses, named);
+                let hash = tree_hash(&crate::locals::test(test, &self.top));
+                self.add(format!("{word} \"{}\"", test.name), hash, uses, named);
             }
             Item::Import(import) => self.import(import),
             Item::Stmt(_) => {}
@@ -178,8 +183,8 @@ impl Graph {
     }
 
     fn method(&mut self, owner: &str, method: &FnDef) {
-        let at =
-            self.add(format!("def {owner}.{}", method.name), tree_hash(method), function_uses(method), None);
+        let hash = tree_hash(&crate::locals::function(method, &self.top));
+        let at = self.add(format!("def {owner}.{}", method.name), hash, function_uses(method), None);
         self.members.entry(method.name.clone()).or_default().push(at);
         if is_implicit(&method.name) {
             self.unowned.push((owner.to_owned(), at));

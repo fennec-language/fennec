@@ -74,6 +74,81 @@ fn layout_and_comments_change_no_key() {
     assert_eq!(affected(PROGRAM, &moved), Vec::<String>::new());
 }
 
+/// A program whose function and test have names of their own to rename.
+const LOCALS: &str = "def total(items: list[int]) -> int:
+    mut sum = 0
+    for item in items:
+        sum += item
+    sum
+
+def shown(pairs: list[(str, int)]) -> list[str]:
+    [f\"{name}={count}\" for name, count in pairs if count > 0]
+
+test \"adds\":
+    values = [1, 2, -4]
+    picked = [value for value in values if value > 0]
+    assert total(picked) == 3
+
+test \"shows\":
+    pair = (1, shown([(\"a\", 1)])[0])
+    match pair:
+        case (times, first):
+            assert times == 1 and first == \"a=1\"
+";
+
+/// `source` with every whole word `from` written as `to`.
+fn with_word_renamed(source: &str, from: &str, to: &str) -> String {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out = String::new();
+    let mut rest = source;
+    while let Some(at) = rest.find(from) {
+        let before = rest.get(..at).unwrap_or_default();
+        let after = rest.get(at + from.len()..).unwrap_or_default();
+        let whole = !before.chars().next_back().is_some_and(word) && !after.chars().next().is_some_and(word);
+        out.push_str(before);
+        out.push_str(if whole { to } else { from });
+        rest = after;
+    }
+    out + rest
+}
+
+/// Renaming a name a function or test binds itself changes nothing it does, so no test runs
+/// again for it: a local, a loop's, a comprehension's, an arrow function's or a case's.
+#[test]
+fn renaming_a_local_affects_no_test() {
+    assert_eq!(keys(LOCALS).len(), 2, "it has to parse, or every key is the same");
+    for (from, to) in [
+        ("sum", "acc"),
+        ("item", "each"),
+        ("values", "numbers"),
+        ("value", "number"),
+        ("name", "label"),
+        ("first", "only"),
+        ("times", "count_seen"),
+    ] {
+        let renamed = with_word_renamed(LOCALS, from, to);
+        assert_ne!(renamed, LOCALS);
+        assert_eq!(affected(LOCALS, &renamed), Vec::<String>::new(), "renaming {from}");
+    }
+}
+
+/// Names that keep their spelling: a parameter, which a call can name, and two locals swapping
+/// places, which isn't a rename.
+#[test]
+fn renaming_a_parameter_or_swapping_locals_still_counts() {
+    assert_eq!(affected(LOCALS, &LOCALS.replace("items", "numbers")), ["adds"]);
+    let source = "def f() -> int:\n    a = 5\n    b = 2\n    a - b\n\ntest \"t\":\n    assert f() == 3\n";
+    assert_eq!(affected(source, &source.replace("a - b", "b - a")), ["t"]);
+}
+
+/// A name that's called keeps its spelling, since out of a block's reach it can mean a function
+/// the program or the standard library declares.
+#[test]
+fn renaming_a_name_that_is_called_still_counts() {
+    let source = "test \"t\":\n    twice = x => x * 2\n    assert twice(2) == 4\n";
+    assert_eq!(affected(source, &source.replace("twice", "double")), ["t"]);
+}
+
 #[test]
 fn changing_a_function_affects_the_tests_that_call_it() {
     assert_eq!(affected(PROGRAM, &PROGRAM.replace("x * 2", "x + x")), ["doubling"]);

@@ -138,6 +138,9 @@ pub struct Interp<'out> {
     pub(crate) given: crate::inputs::Given,
     /// How the `json.loads` call being read spells field names and treats unknown keys.
     pub(crate) reading: crate::formats::Reading,
+    /// Where each `Table` a load has read from its text is, so a field left to its default
+    /// doesn't count as one when its `Id`s are checked.
+    pub(crate) tables_read: Vec<String>,
     /// The methods the standard library gives built-in types, like `str`'s `def *`, by type.
     pub(crate) built_in_methods: HashMap<String, HashMap<String, Rc<Callable>>>,
     /// The standard library's modules loaded so far. Only the core is loaded to start with; a
@@ -187,6 +190,7 @@ impl<'out> Interp<'out> {
             test_capabilities: crate::fakes::TestCapabilities::Fakes,
             given: crate::inputs::Inputs::default().into(),
             reading: crate::formats::Reading::default(),
+            tables_read: Vec::new(),
             built_in_methods: HashMap::new(),
             std_loaded: std::collections::HashSet::new(),
         };

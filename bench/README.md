@@ -113,7 +113,7 @@ installed, its column is left out.
 
 ## `parallel` against rayon
 
-`fennec-bench parallel` measures `bench/parallel/ecs.fen`, which runs on threads, by wall clock at 1, 2, 4 and 8 threads, beside a twin using rayon. The same kernel without `parallel`, `ecs_plain.fen`, runs beside plain Rust with no rayon, so the table says what `parallel` costs on one thread as well as what it gives on many.
+`fennec-bench parallel` measures the kernels in `bench/parallel`, which run on threads, by wall clock at 1, 2, 4, 8 and 16 threads, as many of those as the machine has cores for, and at all its cores, each beside a twin using rayon. They cover each form `parallel` takes: `ecs` is a `for ref` loop of light work run 200 times, `mandel` one of heavy, uneven work, `collatz` a comprehension of uneven work, and `checksum` a reduction of even work. Each kernel's version without `parallel`, like `ecs_plain.fen`, runs beside plain Rust with no rayon, so each table says what `parallel` costs on one thread as well as what it gives on many.
 
 - It's outside the locked suite, which counts instructions a thread at a time, and has no targets. Being slow never fails it: only printing something other than the twin does.
 - The twins are a small cargo project of their own in `bench/parallel/twin`, with rayon pinned in its lock file. rayon is there only to be measured against: Fennec's pool uses `rayon-core`, the same version the twin's rayon runs on.

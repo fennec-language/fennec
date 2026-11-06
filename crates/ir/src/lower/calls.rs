@@ -7,7 +7,9 @@ use fennec_syntax::{Arg, Expr, ExprKind, Span};
 
 use super::places::{Place, Step};
 use super::{Lowered, Lowering};
-use crate::{BlockId, ChangedPlace, InstKind, LocalId, Operand, PlaceStep, Program, Terminator, type_in};
+use crate::{
+    BlockId, ChangedPlace, Inst, InstKind, LocalId, Operand, PlaceStep, Program, Terminator, type_in,
+};
 
 /// The local holding what `?.` calls a method on, which no name in a program can be.
 const OPTIONAL_OBJECT: &str = "?.";
@@ -76,7 +78,18 @@ impl Lowering<'_> {
         span: Span,
     ) -> Lowered<Vec<Operand>> {
         let mut reads = super::order::Reads::default();
-        if let Some(object) = object {
+        // A field changed in place, like `self.out.append(x)`, is read after the arguments when
+        // that's the same: reading it then leaves it taken out, changed and put back with nothing
+        // between, so it has one owner while it changes. Read first, an argument with a branch
+        // in it, like `1 if x else 0`, would leave it with two, and the change would copy it.
+        let after = match object {
+            Some(object) if changes => self.read_after_arguments(object),
+            _ => None,
+        };
+        let before = (self.current, self.next_inst(), self.changed.len());
+        if let Some(object) = object
+            && after.is_none()
+        {
             if changes {
                 let place = self.place(object, (false, false), write_backs, span)?;
                 reads.add_place(place);
@@ -104,7 +117,12 @@ impl Lowering<'_> {
             written.push(arg.name.clone());
         }
         let mut read = reads.finish(self, span).into_iter();
-        let mut values: Vec<Operand> = object.iter().filter_map(|_| read.next()).collect();
+        let mut values: Vec<Operand> = match (object, after) {
+            (Some(object), Some(root)) => {
+                vec![self.read_place_after(object, root, before, write_backs, span)?]
+            }
+            _ => object.iter().filter_map(|_| read.next()).collect(),
+        };
         let mut named = Vec::new();
         for (argument, value) in written.into_iter().zip(read) {
             match argument {
@@ -118,6 +136,60 @@ impl Lowering<'_> {
             values.push(value);
         }
         Ok(values)
+    }
+
+    /// The local a field changed in place is reached from, when reading the field after the
+    /// arguments can't be told apart from reading it first: it's fields of a local all the way,
+    /// none of them a `shared` value's, so reading it can't fail and nothing else holds it.
+    fn read_after_arguments(&self, object: &Expr) -> Option<LocalId> {
+        let (root, path) = super::lists::field_path_of(object)?;
+        if path.is_empty() {
+            return None;
+        }
+        let local = self.lookup(root)?;
+        let mut ty = self.local_type(local);
+        for field in path {
+            if self.context.is_handle(&ty) {
+                return None;
+            }
+            let Type::Named(owner) = &ty else { return None };
+            let fields = self.struct_fields(owner).ok()?;
+            ty = fields.into_iter().find(|(name, _)| name == field)?.1;
+        }
+        (!matches!(ty, Type::Optional(_))).then_some(local)
+    }
+
+    /// Reads a field changed in place once the arguments are worked out. If working them out
+    /// changed what it's reached from, it's read where it's written instead, before them, as
+    /// left to right says.
+    fn read_place_after(
+        &mut self,
+        object: &Expr,
+        root: LocalId,
+        (block, at, changes): (BlockId, usize, usize),
+        write_backs: &mut Vec<WriteBack>,
+        span: Span,
+    ) -> Lowered<Operand> {
+        let root_changed = self.changed.get(changes..).is_some_and(|since| since.contains(&root));
+        let first = self.next_inst();
+        let place = self.place(object, (false, false), write_backs, span)?;
+        if root_changed {
+            let current = self.current;
+            let moved: Vec<Inst> = self
+                .blocks
+                .get_mut(current.0)
+                .map(|block| block.insts.drain(first..).collect())
+                .unwrap_or_default();
+            if let Some(earlier) = self.blocks.get_mut(block.0) {
+                let at = at.min(earlier.insts.len());
+                earlier.insts.splice(at..at, moved);
+            }
+            // Read apart from the call, it can't be taken out for it.
+            if let Some(last) = write_backs.last_mut() {
+                last.2 = None;
+            }
+        }
+        Ok(place)
     }
 
     /// The types a call writes in brackets, like `Part` in `named[Part](text)`.
@@ -441,22 +513,36 @@ impl Lowering<'_> {
         let mut lock = None;
         // An index may be one of the arguments changed, and the place stays where it was.
         let index_changes = args.iter().any(|arg| arg.is_mut);
+        let mut later = None;
         if let Some(object) = object {
             let handle = self.object_type(object).is_some_and(|ty| self.context.is_handle(&ty));
             let changed = signature.params.first().is_some_and(|param| param.is_mut);
-            let value = if changed && !handle {
-                self.place(object, (index_changes, false), write_backs, span)?
+            // A field changed in place is read after the arguments when that's the same, as for
+            // a builtin's: so nothing worked out for them holds it meanwhile.
+            let after = if changed && !handle { self.read_after_arguments(object) } else { None };
+            if let Some(root) = after {
+                later = Some((object, root, (self.current, self.next_inst(), self.changed.len())));
             } else {
-                self.expr(object)?
-            };
-            if handle && !self.locked_already(&value) {
-                lock = Some((value.clone(), changed));
+                let value = if changed && !handle {
+                    self.place(object, (index_changes, false), write_backs, span)?
+                } else {
+                    self.expr(object)?
+                };
+                if handle && !self.locked_already(&value) {
+                    lock = Some((value.clone(), changed));
+                }
+                if let Some(slot) = values.first_mut() {
+                    *slot = Some(value);
+                }
             }
+        }
+        self.direct_args((&key, own, first), &signature.params, args, (&mut values, write_backs), span)?;
+        if let Some((object, root, before)) = later {
+            let value = self.read_place_after(object, root, before, write_backs, span)?;
             if let Some(slot) = values.first_mut() {
                 *slot = Some(value);
             }
         }
-        self.direct_args((&key, own, first), &signature.params, args, (&mut values, write_backs), span)?;
         let values: Option<Vec<Operand>> = values.into_iter().collect();
         Ok((function, values.ok_or("a parameter has no argument")?, lock))
     }
@@ -475,6 +561,8 @@ impl Lowering<'_> {
         // Arguments run in the order they're written, and each lands in its parameter.
         let mut reads = super::order::Reads::default();
         let mut slots = Vec::with_capacity(args.len());
+        // Fields changed in place, read once the rest are worked out, with where each was written.
+        let mut later = Vec::new();
         for (position, arg) in args.iter().enumerate() {
             let at = match &arg.name {
                 Some(name) => params.iter().position(|param| param.name == *name),
@@ -482,7 +570,18 @@ impl Lowering<'_> {
             };
             let param = at.and_then(|at| params.get(at));
             let param = param.ok_or_else(|| format!("an argument to `{key}` matches no parameter"))?;
-            if param.is_mut && !self.context.is_handle(&param.ty) {
+            let after = (param.is_mut && !self.context.is_handle(&param.ty))
+                .then(|| self.read_after_arguments(&arg.value))
+                .flatten();
+            if let Some(root) = after {
+                later.push((
+                    slots.len(),
+                    &arg.value,
+                    root,
+                    (self.current, self.next_inst(), self.changed.len()),
+                ));
+                reads.add_place(Operand::None);
+            } else if param.is_mut && !self.context.is_handle(&param.ty) {
                 let takes_optional = matches!(param.ty, Type::Optional(_));
                 let place = self.place(&arg.value, (index_changes, takes_optional), write_backs, span)?;
                 reads.add_place(place);
@@ -493,7 +592,14 @@ impl Lowering<'_> {
             }
             slots.push(at);
         }
-        for (at, value) in slots.into_iter().zip(reads.finish(self, span)) {
+        let mut read = reads.finish(self, span);
+        for (written_at, value, root, before) in later {
+            let place = self.read_place_after(value, root, before, write_backs, span)?;
+            if let Some(slot) = read.get_mut(written_at) {
+                *slot = place;
+            }
+        }
+        for (at, value) in slots.into_iter().zip(read) {
             if let Some(slot) = at.and_then(|at| values.get_mut(at)) {
                 *slot = Some(value);
             }

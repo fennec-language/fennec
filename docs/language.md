@@ -134,7 +134,7 @@ game.add("Chris")           # takes the lock for the call
 - It can hold another `shared` type, but never in a cycle. That's a compile error. Locks are taken outer type first, so nesting can't deadlock. Built.
 - `def del` is allowed here and refused on a `struct`, which is a compile error. It runs when the last owner goes away. Built, apart from std's `Connection`, which is still a `struct` with `del` until it becomes `shared`.
 - To use two together, take both at once: `with savings as ref source, checking as ref destination:`. Taking the same value twice stops the program, like an index out of range.
-- `Connection`, files, channels and `Stdout` are `shared` types that ship with Fennec. They manage their own read and write sides, and `with` on one only closes it at the end of the block.
+- `Connection`, files, channels and `Stdout` are `shared` types that ship with Fennec. They manage their own read and write sides, and `with` on one only closes it at the end of the block. A `shared` type the standard library declares works this way: it takes no lock, and `with` runs its `del` at the end of the block. Built; the standard library's types switch to `shared` next, and running `del` when the last owner goes away is still to build.
 - You can't do I/O while holding a lock, so a `shared` pool hands out a connection and the sending happens outside its lock.
 
 A typical game doesn't use `shared`: its main loop owns the world and passes `ref world` down.

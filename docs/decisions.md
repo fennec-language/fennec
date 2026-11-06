@@ -580,6 +580,7 @@ def report(shapes: list[Shape], stdout: Stdout):
 - Members are concrete types, not type parameters; generic code uses an enum, like `enum Either[L, R]`. A union refers to itself only through a collection, as in `type Json = str | int | float | bool | list[Json] | dict[str, Json]`, and direct recursion is an error.
 - A union mixes types that already exist, and an enum defines new cases. A union may have an enum type as a member.
 - A literal assigned to a union takes its default type: `3` is an `int`.
+- Built in the checker and the interpreter: writing unions, `is` and `match` with their narrowing and exhaustiveness, methods every member has, equality, and the mistakes above. Not built yet: the inline layout in native code (LLVM hands a function using one to the JIT, which hands it to the interpreter), hashing a union, interfaces a union fits, and JSON's tags.
 - JSON always writes a union tagged with its member's type name, `{"Circle": {...}}` or `{"Tile": "Grass"}`, so loading is never ambiguous. The tag is the full name only when two members share a short name.
 
 *Why:* Mixed lists stay fast and unboxed, and they read like a Python type hint. Unions add nothing new to learn beyond `is` and `match`.

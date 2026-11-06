@@ -50,6 +50,16 @@ impl FnCx<'_> {
             {
                 self.array_literal(items, &item, size, expr.span)
             }
+            // `[Circle(...), Square(...)]` where a list of a union goes: each item is a member.
+            ExprKind::List(items)
+                if let Type::List(item) = self.checker.settled(expected).without_none()
+                    && matches!(self.checker.settled(&item).without_none(), Type::Union(_)) =>
+            {
+                for each in items {
+                    self.item_as(each, &item);
+                }
+                Type::List(item)
+            }
             // `[array[int, 3](), [1, 2, 3]]` where a list of arrays goes: each item is written
             // where an array goes, so a list literal among them is one.
             ExprKind::List(items)

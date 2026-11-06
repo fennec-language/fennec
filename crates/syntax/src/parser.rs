@@ -721,24 +721,31 @@ impl Parser {
     /// are one written type named `|`.
     fn fails_type(&mut self) -> Result<TypeExpr, Diagnostic> {
         self.advance();
-        self.errors_type()
+        self.type_expr()
     }
 
-    /// One error, or several joined by `|`, as after `fails` or in `Result[int, A | B]`.
-    fn errors_type(&mut self) -> Result<TypeExpr, Diagnostic> {
-        let first = self.type_expr()?;
+    /// A type, or several joined by `|`: a union, like `Circle | Square`, or the errors after
+    /// `fails` or in `Result[int, A | B]`. Either is one written type named `|`.
+    pub(crate) fn type_expr(&mut self) -> Result<TypeExpr, Diagnostic> {
+        let first = self.member_type()?;
         if !self.at_p(Punct::Pipe) {
             return Ok(first);
         }
         let start = first.span;
-        let mut errors = vec![first];
+        let mut members = vec![first];
         while self.eat_p(Punct::Pipe) {
-            errors.push(self.type_expr()?);
+            members.push(self.member_type()?);
         }
-        Ok(TypeExpr { name: "|".to_owned(), args: errors, optional: false, span: start.to(self.prev_span()) })
+        Ok(TypeExpr {
+            name: "|".to_owned(),
+            args: members,
+            optional: false,
+            span: start.to(self.prev_span()),
+        })
     }
 
-    pub(crate) fn type_expr(&mut self) -> Result<TypeExpr, Diagnostic> {
+    /// One type with no `|` around it, unless it's in parentheses, as in `(Circle | Square)?`.
+    fn member_type(&mut self) -> Result<TypeExpr, Diagnostic> {
         let start = self.span();
         let mut args = Vec::new();
         let name = if self.eat_kw(Kw::None) {
@@ -755,6 +762,14 @@ impl Parser {
                 }
             }
             self.expect_p(Punct::RParen)?;
+            // `(Circle | Square)?`: a union in parentheses is the union, so it can be optional.
+            if let [only] = args.as_slice()
+                && only.name == "|"
+                && !self.at_p(Punct::Arrow)
+            {
+                let optional = self.eat_p(Punct::Question);
+                return Ok(TypeExpr { optional, span: start.to(self.prev_span()), ..only.clone() });
+            }
             // `(int, str) -> bool`: a function type, its return type last. One that can fail
             // says so, as in `(str) -> int fails ParseError`, which is written in as its own
             // `fails` type holding the return type and the errors.
@@ -786,7 +801,7 @@ impl Parser {
         };
         if self.eat_p(Punct::LBracket) {
             loop {
-                args.push(self.errors_type()?);
+                args.push(self.type_expr()?);
                 if !self.eat_p(Punct::Comma) {
                     break;
                 }

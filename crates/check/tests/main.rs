@@ -23,6 +23,7 @@ mod signatures;
 mod strict;
 mod typed;
 mod types;
+mod unions;
 
 use fennec_check::{Signatures, Type};
 

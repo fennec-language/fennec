@@ -39,6 +39,7 @@ mod program;
 mod protocols;
 mod rules;
 mod saving;
+mod shapes;
 mod shared;
 mod stdlib;
 mod stmt;

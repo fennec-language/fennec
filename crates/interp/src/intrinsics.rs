@@ -41,6 +41,13 @@ pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagn
         }
         ("float_to_int", [a @ Value::Float(_)]) => crate::builtins::to_int(a, span),
         ("float_bits", [Value::Float(a)]) => Ok(Value::Int(a.to_bits().cast_signed())),
+        ("float_of_bits", [Value::Int(bits)]) => Ok(Value::Float(f64::from_bits(bits.cast_unsigned()))),
+        // What a type is, which only native code knows as it runs.
+        ("shape_hash" | "type_name", []) => Err(Diagnostic::new(
+            "this saves or loads through a format written in Fennec, like `std.pack`, which needs native code",
+            span,
+        )
+        .with_help("the interpreter has no types while it runs: run this without `--interp` or `--jit`")),
         ("text_byte", [Value::Str(text), Value::Int(at)]) => {
             let byte = usize::try_from(*at).ok().and_then(|at| text.as_bytes().get(at).copied());
             Ok(Value::Int(byte.map_or(-1, i64::from)))

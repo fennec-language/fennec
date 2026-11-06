@@ -1678,6 +1678,15 @@ impl Emit<'_, '_, '_> {
             | "intrinsics.table_tag"
             | "intrinsics.new_tag"
             | "intrinsics.table_tagged" => self.id_intrinsic(dest, name, args),
+            // A float's bits as an int, and back, which a binary format saves.
+            "intrinsics.float_bits" | "intrinsics.float_of_bits" => {
+                let (value, _) = self.operand(first.ok_or("no argument")?)?;
+                let (from, to) =
+                    if name == "intrinsics.float_bits" { ("double", "i64") } else { ("i64", "double") };
+                let cast = self.temp();
+                self.line(&format!("{cast} = bitcast {from} {value} to {to}"));
+                self.assign(dest.ok_or("no result")?, &cast)
+            }
             "intrinsics.stop" => {
                 let (value, kind) = self.operand(first.ok_or("no argument")?)?;
                 let block =

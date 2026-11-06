@@ -52,10 +52,10 @@ struct Shown:
     def end(ref self):
         self.parts.append(".")
 
-    def case(ref self, name: str, case: str):
+    def case(ref self, name: str, case: str, at: int):
         self.parts.append(f"{name}.{case}")
 
-    def case_record(ref self, name: str, case: str, count: int):
+    def case_record(ref self, name: str, case: str, at: int, count: int):
         self.parts.append(f"{name}.{case}/{count}")
 
     def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
@@ -115,10 +115,10 @@ struct Counted:
     def end(ref self):
         pass
 
-    def case(ref self, name: str, case: str):
+    def case(ref self, name: str, case: str, at: int):
         self.total += 1
 
-    def case_record(ref self, name: str, case: str, count: int):
+    def case_record(ref self, name: str, case: str, at: int, count: int):
         self.total += 1
 
     def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):

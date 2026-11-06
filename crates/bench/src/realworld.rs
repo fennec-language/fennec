@@ -12,7 +12,7 @@ use std::path::Path;
 
 use crate::parallel::{Side, built, shown, twins};
 
-const KERNELS: [&str; 1] = ["json_typed"];
+const KERNELS: [&str; 2] = ["json_typed", "pack_typed"];
 const OUT_DIR: &str = "target/bench/realworld";
 
 /// The section for the report: each kernel's name, with Fennec's side and its twin's.
@@ -27,7 +27,7 @@ fn section(kernels: &[(&str, [Side; 2])]) -> String {
         let _ = writeln!(text, "| `{name}` | {} | {} | {percent:.0} |", shown(ours), shown(rust));
     }
     text += "\nBest of each side's runs, by wall clock, taking turns. Each uses its language's own \
-             libraries: `std.json` against serde and serde_json.\n";
+             libraries: `std.json` against serde and serde_json, and `std.pack` against serde and bincode.\n";
     text
 }
 

@@ -691,17 +691,20 @@ fn reads_without_owning(inst: &InstKind, local: LocalId, changes: &dyn Fn(&str) 
     }
 }
 
-/// A read that may borrow: where it's made, what it's read from, and everything that has to
-/// stay as it is while it's live.
+/// A read that may borrow: where it's made, what it's read from, everything that has to stay as
+/// it is while it's live, and the local at the root of those if it isn't a parameter.
 struct Candidate {
     defined: (usize, usize),
     source: LocalId,
     lenders: Vec<LocalId>,
+    root: Option<LocalId>,
 }
 
 /// Finds more reads of a field or item that need no owner of their own: read any number of
 /// times, in any block, but only looked at, while nothing could change what they came from.
-/// What they came from has to be a parameter, or borrowed from one, so it outlives them.
+/// What they came from has to outlive them: a parameter, or a local still read after each
+/// place they're in use, so it can't have been given away or let go before then; or borrowed
+/// from one of those.
 fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known: &mut Analysis) {
     let is_param = |local: LocalId| local.0 < function.params;
     let mut candidates: HashMap<usize, Candidate> = HashMap::new();
@@ -715,7 +718,8 @@ fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, 
                 && let Some(copied) = candidates.get(&from.0)
             {
                 let lenders = std::iter::once(*from).chain(copied.lenders.iter().copied()).collect();
-                candidates.insert(dest.0, Candidate { defined: (at, index), source: *from, lenders });
+                let root = copied.root;
+                candidates.insert(dest.0, Candidate { defined: (at, index), source: *from, lenders, root });
                 copies.insert(dest.0);
                 continue;
             }
@@ -741,12 +745,22 @@ fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, 
             }
             let mut lenders = vec![source];
             let mut lasting = true;
+            let mut root = None;
             while let Some(&last) = lenders.last() {
                 if is_param(last) {
                     break;
                 }
                 match known.borrowed_from.get(&last.0) {
                     Some(lender) if known.borrowed.contains(&last.0) => lenders.push(*lender),
+                    // A variable that nothing takes out to change: it lasts while it's still to
+                    // be read, which is checked below. Not a temporary, which some lists' loops
+                    // read through without owning what's in them.
+                    _ if function.locals.get(last.0).is_some_and(|local| local.name.is_some())
+                        && owns_where_it_is(known, last) =>
+                    {
+                        root = Some(last);
+                        break;
+                    }
                     _ => {
                         lasting = false;
                         break;
@@ -760,7 +774,7 @@ fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, 
                 .collect();
             lenders.extend(aliased);
             if lasting {
-                candidates.insert(dest.0, Candidate { defined: (at, index), source, lenders });
+                candidates.insert(dest.0, Candidate { defined: (at, index), source, lenders, root });
             }
         }
     }
@@ -785,7 +799,15 @@ fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, 
         for (index, inst) in block.insts.iter().enumerate().rev() {
             let (mut reads, mut writes) = (Vec::new(), Vec::new());
             visit(&inst.kind, |operand| reads.extend(local_of(operand)), |local| writes.push(local.0));
-            candidates.retain(|dest, Candidate { defined, lenders, .. }| {
+            candidates.retain(|dest, Candidate { defined, lenders, root, .. }| {
+                // Borrowed from a local, which has to be read again after anywhere this is in
+                // use: until then it's neither given away nor let go.
+                if let Some(root) = root
+                    && (live.contains(dest) || reads.contains(dest))
+                    && !live.contains(&root.0)
+                {
+                    return false;
+                }
                 // Copied to a local borrowing it in turn, like the list a loop goes over.
                 let copied = matches!(&inst.kind, InstKind::Copy { dest: to, value: Operand::Local(from) }
                     if from.0 == *dest && copies.contains(&to.0));
@@ -821,6 +843,17 @@ fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, 
         known.borrowed.insert(dest);
         known.borrowed_from.insert(dest, source);
     }
+}
+
+/// Whether a local holds its value itself, as far as is known when borrows are found: not
+/// borrowed, nor taken out of somewhere to change and put back, nor on the way to such a place.
+fn owns_where_it_is(known: &Analysis, local: LocalId) -> bool {
+    let at = &local.0;
+    !known.borrowed.contains(at)
+        && !known.taken.contains(at)
+        && !known.items_taken.contains_key(at)
+        && !known.places_taken.contains_key(at)
+        && !known.place_parts.contains_key(at)
 }
 
 /// Whether a call leaves these locals as they are: only what's given `mut` can change, and

@@ -125,7 +125,47 @@ impl Checker {
         }
     }
 
-    /// Reports a `shared` type that holds another one.
+    /// The `shared` types a value of this type reaches through what it holds, at any depth,
+    /// including the type itself when it's `shared`.
+    pub(crate) fn shared_reached(&mut self, ty: &Type, open: &mut Vec<String>, found: &mut Vec<String>) {
+        for child in ty.children() {
+            self.shared_reached(&child.clone(), open, found);
+        }
+        let (Type::Named(name) | Type::Generic(name, _)) = ty else { return };
+        if self.program.is_shared(ty) && !found.contains(name) {
+            found.push(name.clone());
+        }
+        if open.contains(name) {
+            return;
+        }
+        let Some(info) = self.program.type_info(name) else { return };
+        let def = info.def.clone();
+        open.push(name.clone());
+        let fields = def.fields.iter().map(|field| (None, field));
+        let in_cases = def
+            .cases
+            .iter()
+            .flat_map(|case| case.fields.iter().map(|field| (Some(case.name.as_str()), field)));
+        for (case, field) in fields.chain(in_cases) {
+            let held = self.field_type(name, case, &field.name);
+            self.shared_reached(&held, open, found);
+        }
+        open.pop();
+    }
+
+    /// Whether a `shared` value of type `outer` holds one of type `inner`, at any depth: its
+    /// lock comes first, so a lock body for `outer` can take `inner`'s.
+    pub(crate) fn holds_shared(&mut self, outer: &str, inner: &str) -> bool {
+        if outer == inner {
+            return false;
+        }
+        let mut found = Vec::new();
+        self.shared_reached(&Type::named(outer), &mut Vec::new(), &mut found);
+        found.iter().any(|name| name == inner)
+    }
+
+    /// Reports `shared` types that hold each other in a cycle. One can hold another, and its
+    /// lock comes first, but a cycle has no first lock.
     pub(crate) fn check_shared_types(&mut self) {
         let defs: Vec<_> = self
             .program
@@ -137,15 +177,26 @@ impl Checker {
         for def in defs {
             for field in &def.fields {
                 let held = self.field_type(&def.name, None, &field.name);
-                if let Some(inner) = self.shared_inside(&held, &mut vec![def.name.clone()]) {
-                    let message = format!(
-                        "`{}` is `shared`, so it can't hold `{inner}`, which is `shared` too",
-                        def.name
-                    );
-                    self.diagnostics.push(Diagnostic::new(message, field.span).with_help(
-                        "a `shared` value holds plain values and `Id`s: keep the other handle where both are used, or hold an `Id`",
-                    ));
+                let mut found = Vec::new();
+                self.shared_reached(&held, &mut Vec::new(), &mut found);
+                if !found.contains(&def.name) {
+                    continue;
                 }
+                let first = self.shared_inside(&held, &mut Vec::new()).unwrap_or_else(|| def.name.clone());
+                let message = if first == def.name {
+                    format!(
+                        "`{}` holds itself, and `shared` types can't hold each other in a cycle",
+                        def.name
+                    )
+                } else {
+                    format!(
+                        "`{}` holds `{first}`, which holds `{}` again, and `shared` types can't hold each other in a cycle",
+                        def.name, def.name
+                    )
+                };
+                self.diagnostics.push(Diagnostic::new(message, field.span).with_help(
+                    "a cycle has no lock to take first: hold an `Id` on one side, or keep the other handle where both are used",
+                ));
             }
         }
     }
@@ -195,21 +246,28 @@ impl FnCx<'_> {
             .filter(|(_, ty)| self.checker.program.is_shared(ty))
             .map(|(held, _)| held)
             .collect();
-        if let (Some(held), Some(first)) = (
+        let locking: Vec<Type> =
+            types.iter().filter(|ty| self.checker.program.is_shared(ty)).cloned().collect();
+        let inner = locking.iter().all(|ty| self.takes_inner(ty));
+        if let (Some(held), Some(first), false) = (
             self.lock.clone(),
             items
                 .iter()
                 .find(|item| self.recorded(item.span).is_some_and(|ty| self.checker.program.is_shared(&ty))),
+            inner,
         ) {
             self.error(
                 Diagnostic::new(format!("this `with` takes another lock {held}"), first.span).with_help(
-                    "locks never nest: lock them together in one `with`, like `with a, b as mut x, mut y:`",
+                    "a lock body takes only the locks of `shared` values its locked ones hold: lock these together in one `with`, like `with a as ref x, b as ref y:`",
                 ),
             );
         }
+        let outer_types = self.locked_types.clone();
         let outer = if locked.is_empty() {
             self.lock.clone()
         } else {
+            let newly = types.iter().filter(|ty| self.checker.program.is_shared(ty));
+            self.locked_types.extend(newly.filter_map(|ty| ty.type_name().map(str::to_owned)));
             let names: Vec<String> = locked.iter().map(|held| format!("`{}`", held.name)).collect();
             let (names, verb) = match names.as_slice() {
                 [one] => (one.clone(), "is"),
@@ -226,7 +284,24 @@ impl FnCx<'_> {
         let flow = self.stmts(body, used);
         self.pop();
         self.lock = outer;
+        self.locked_types = outer_types;
         flow
+    }
+
+    /// Whether every lock held is on a `shared` type that holds one of type `ty`, so its lock
+    /// can be taken now: locks go outer type first, which no two lock bodies can take in
+    /// opposite orders.
+    pub(crate) fn takes_inner(&mut self, ty: &Type) -> bool {
+        let Some(name) = ty.type_name().map(str::to_owned) else { return false };
+        let held = self.locked_types.clone();
+        !held.is_empty() && held.iter().all(|outer| self.checker.holds_shared(outer, &name))
+    }
+
+    /// Whether every `shared` type a value of type `ty` holds is an inner one, as `takes_inner`.
+    fn holds_only_inner(&mut self, ty: &Type) -> bool {
+        let mut found = Vec::new();
+        self.checker.shared_reached(ty, &mut Vec::new(), &mut found);
+        found.iter().all(|name| self.takes_inner(&Type::named(name)))
     }
 
     /// Whether an expression is a name that holds its handle's lock already: `self` in a
@@ -239,12 +314,12 @@ impl FnCx<'_> {
     /// lock another task holds while it waits for this one. `what` takes it: "calling `add`".
     pub(crate) fn locks_again(&mut self, object: &Expr, ty: &Type, what: &str) {
         let Some(held) = self.lock.clone() else { return };
-        if !self.checker.program.is_shared(ty) || self.holds_lock(object) {
+        if !self.checker.program.is_shared(ty) || self.holds_lock(object) || self.takes_inner(ty) {
             return;
         }
         let handle = fennec_syntax::dotted(object).unwrap_or_else(|| "a handle".to_owned());
         self.error(Diagnostic::new(format!("{what} locks `{handle}` {held}"), object.span).with_help(
-            "locks never nest: lock them together in one `with`, like `with a, b as mut x, mut y:`, and use the names it gives",
+            "a lock body takes only the locks of `shared` values its locked ones hold: lock these together in one `with`, like `with a as ref x, b as ref y:`, and use the names it gives",
         ));
     }
 
@@ -261,6 +336,9 @@ impl FnCx<'_> {
                 )
                 .with_help(RETAKES),
             );
+            return;
+        }
+        if self.holds_only_inner(ty) {
             return;
         }
         if !self.checker.program.is_shared(ty) {
@@ -281,7 +359,7 @@ impl FnCx<'_> {
     /// the method could lock it. `object` itself being a handle is `locks_again`'s.
     pub(crate) fn method_on_holder(&mut self, object: &Expr, ty: &Type, method: &str) {
         let Some(held) = self.lock.clone() else { return };
-        if self.checker.program.is_shared(ty) {
+        if self.checker.program.is_shared(ty) || self.holds_only_inner(ty) {
             return;
         }
         if let Some(inner) = self.checker.shared_inside(ty, &mut Vec::new()) {

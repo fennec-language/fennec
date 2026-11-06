@@ -124,7 +124,7 @@ fn work_dir(test: &str) -> std::io::Result<PathBuf> {
 
 /// Examples that can't be built to executables yet, because the JIT doesn't take a type they
 /// use: `shared` types, for now. Each must still fail to build, so it comes off when it builds.
-const NOT_BUILT: &[&str] = &["shared_accounts.fen"];
+const NOT_BUILT: &[&str] = &["shared_accounts.fen", "shared_bank.fen"];
 
 #[test]
 #[cfg_attr(windows, ignore = "`fennec build` doesn't link executables on Windows yet")]

@@ -1,6 +1,7 @@
 ## The machine operations the standard library stands on. Each engine supplies the body. Only
 ## the standard library can import this module: a program uses `int`, `float` and `str`, which
 ## are written on top of it.
+from std.collections import Id, Table
 
 @intrinsic
 def int_add(a: int, b: int) -> int
@@ -105,3 +106,23 @@ def text_of_code(code: int) -> str
 ## A type's name as it's written. Only native code has types as it runs.
 @intrinsic
 def type_name[T]() -> str
+
+## An `Id`'s slot in its `Table`.
+@intrinsic
+def id_slot[T](id: Id[T]) -> int
+
+## An `Id`'s generation: how many times its slot had been used again when it was handed out.
+@intrinsic
+def id_generation[T](id: Id[T]) -> int
+
+## The `Id` of a slot and generation, which the `Table` it's used with may never have handed out.
+@intrinsic
+def id_of[T](slot: int, generation: int) -> Id[T]
+
+## Each of a `Table`'s slots, by its generation, or `-1 - generation` for a free one.
+@intrinsic
+def table_slots[T](table: Table[T]) -> list[int]
+
+## A `Table` with the slots `table_slots` says, and `items` in the ones that aren't free, in order.
+@intrinsic
+def table_from[T](slots: list[int], items: list[T]) -> Table[T]

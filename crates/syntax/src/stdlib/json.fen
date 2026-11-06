@@ -414,6 +414,39 @@ def _quoted(text: str) -> str:
     out.text(text)
     out.written()
 
+## The `Id`s and `Table`s a read has seen, each with where it was, for checking once everything's
+## been read that each `Id` was handed out by the one `Table` of its type, if there's one.
+struct _IdsSeen:
+    _ids = list[(str, str, int, int)]()
+    _tables = list[(str, str, list[int])]()
+
+    def id(mut self, kind: str, at: str, slot: int, generation: int):
+        self._ids.append((kind, at, slot, generation))
+
+    def table(mut self, kind: str, at: str, slots: list[int]):
+        self._tables.append((kind, at, slots))
+
+    ## What's wrong with the first `Id` its `Table` never handed out, or "" when nothing is.
+    def unissued(self) -> str:
+        for kind, at, slot, generation in self._ids:
+            mut found = -1
+            mut count = 0
+            mut place = 0
+            for table_kind, _, _ in self._tables:
+                if table_kind == kind:
+                    found = place
+                    count += 1
+                place += 1
+            if count != 1: continue
+            _, table_at, slots = self._tables[found]
+            if slot < slots.len():
+                stored = slots[slot]
+                newest = stored if stored >= 0 else -1 - stored
+                if generation <= newest: continue
+            table = "the Table" if table_at == "" else f"`{table_at}`"
+            return f"`{at}` is an Id that {table} never handed out: slot {slot}, generation {generation}"
+        ""
+
 ## Whether the `size` bytes of `text` from `start` are those of `word`.
 def _same_bytes(text: str, start: int, word: str, size: int) -> bool:
     mut at = 0
@@ -440,6 +473,7 @@ struct JsonReader:
     ## For each object being read, innermost last, the field most likely to come next: the one
     ## after the last found, since text usually has them in order.
     _hints = list[int]()
+    _ids = _IdsSeen()
 
     def _space(mut self) -> int:
         mut at = self._at
@@ -995,6 +1029,12 @@ struct JsonReader:
         if not self._explain: return _no_reason()
         owner = f"`{self._owner}`"
         where = self._where()
+        if self._owner == "Id":
+            return ParseError(
+                message=f"an Id has only `slot` and `generation`, but {where} has \"{key}\"",
+                line=0,
+                column=0,
+            )
         for saved, own in fields:
             if _spelled(own, self._names) == key:
                 if saved == "":
@@ -1024,6 +1064,16 @@ struct JsonReader:
         if text_byte(wire, 0) == 91:
             return ParseError(message=f"`{joined}{wire}` is missing", line=0, column=0)
         ParseError(message=f"`{joined}.{wire}` is missing", line=0, column=0)
+
+    def here(self, message: str) -> ParseError:
+        if not self._explain: return _no_reason()
+        ParseError(message=f"{self._where()} {message}", line=0, column=0)
+
+    def saw_id(mut self, kind: str, slot: int, generation: int):
+        self._ids.id(kind, self._joined() if self._explain else "", slot, generation)
+
+    def saw_table(mut self, kind: str, slots: list[int]):
+        self._ids.table(kind, self._joined() if self._explain else "", slots)
 
     def at_item(self, at: int, message: str) -> ParseError:
         if not self._explain: return _no_reason()
@@ -1354,6 +1404,10 @@ def native_loads[T: Deserializable](
 def _read[T: Deserializable](mut src: JsonReader) -> T fails ParseError:
     value = T.deserialize(mut src)?
     src.finish()?
+    found = src._ids.unissued()
+    if found != "":
+        if not src._explain: fail _no_reason()
+        fail ParseError(message=found, line=0, column=0)
     value
 
 ## Fails with what's wrong with text that failed to read: first anything wrong with it as JSON,

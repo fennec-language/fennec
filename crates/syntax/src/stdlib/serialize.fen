@@ -84,6 +84,16 @@ interface Deserializer:
     ## it, like a row of a `Grid` that's the wrong length.
     def at_item(self, at: int, message: str) -> ParseError
 
+    ## The error for what was just read, saying `message` about it, like a slot that's negative.
+    def here(self, message: str) -> ParseError
+
+    ## Takes note of an `Id` read, by the name of the type it's for, so that once everything's
+    ## been read, it can be checked against the one `Table` of that type that was read too.
+    def saw_id(mut self, kind: str, slot: int, generation: int)
+
+    ## Takes note of a `Table` read, by its type's name and its slots as `table_slots` gives them.
+    def saw_table(mut self, kind: str, slots: list[int])
+
     ## Which of `cases` comes next, as a place in it: each its name and whether it has data. One
     ## with data then reads its fields as a struct's, and `end_case` finishes it.
     def case(mut self, name: str, cases: list[(str, bool)]) -> int fails ParseError

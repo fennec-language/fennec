@@ -1,3 +1,5 @@
+from std.intrinsics import id_generation, id_of, id_slot, table_from, table_slots, type_name
+
 ## A double-ended queue: adding or removing at either end is quick however long it gets.
 ## For breadth-first searches, event queues and undo histories.
 struct Deque[T]:
@@ -1074,3 +1076,97 @@ extend Grid[T: Deserializable]:
                     fail src.at_item(at, f"has {row.len()} {cells}, but the first row has {width}")
                 at += 1
         Grid.of(rows)
+
+## An `Id` saves as its slot and generation, and loads only if the `Table` of its type loaded with
+## it handed it out.
+extend Id[T]:
+    def serialize(self, mut out: Serializer):
+        out.record("Id", 2)
+        out.field("slot", id_slot(self))
+        out.field("generation", id_generation(self))
+        out.end()
+
+    def deserialize(mut src: Deserializer) -> Id[T] fails ParseError:
+        fields = [("slot", "slot"), ("generation", "generation")]
+        src.record("Id")?
+        mut slot: int? = None
+        mut generation: int? = None
+        while src.next_field(fields)?:
+            read = src.value[int]()?
+            if read < 0 or read > _MOST_GENERATION: fail src.here("is out of range")
+            if src.field_at() == 0:
+                slot = read
+            else:
+                generation = read
+        found_slot = slot else fail src.missing("slot")
+        found_generation = generation else fail src.missing("generation")
+        src.saw_id(type_name[T](), found_slot, found_generation)
+        id_of[T](found_slot, found_generation)
+
+## The most a generation can be.
+_MOST_GENERATION = 4294967295
+
+## One slot of a `Table` as it's saved: its generation, and its value unless it's free.
+struct _Slot[T]:
+    generation: int
+    value: T?
+
+extend _Slot[T: Serializable]:
+    def serialize(self, mut out: Serializer):
+        out.record("slot", 2)
+        out.field("generation", self.generation)
+        if self.value is not None:
+            out.field("value", self.value)
+        out.end()
+
+extend _Slot[T: Deserializable]:
+    def deserialize(mut src: Deserializer) -> _Slot[T] fails ParseError:
+        fields = [("generation", "generation"), ("value", "value")]
+        src.record("slot")?
+        mut generation: int? = None
+        mut value: T? = None
+        while src.next_field(fields)?:
+            if src.field_at() == 0:
+                read = src.value[int]()?
+                if read < 0 or read > _MOST_GENERATION: fail src.here("is out of range")
+                generation = read
+            else:
+                value = src.value[T]()?
+        found = generation else fail src.missing("generation")
+        _Slot(generation=found, value=value)
+
+## A `Table` saves as all its slots, free ones too, so the `Id`s saved with it find the same items
+## once it's loaded, and a new item goes where it would have.
+extend Table[T: Serializable]:
+    def serialize(self, mut out: Serializer):
+        mut slots = list[_Slot[T]]()
+        mut at = 0
+        for stored in table_slots(self):
+            if stored >= 0:
+                slots.append(_Slot(generation=stored, value=self.get(id_of[T](at, stored))))
+            else:
+                slots.append(_Slot(generation=-1 - stored, value=None))
+            at += 1
+        out.record("Table", 1)
+        out.field("slots", slots)
+        out.end()
+
+extend Table[T: Deserializable]:
+    def deserialize(mut src: Deserializer) -> Table[T] fails ParseError:
+        fields = [("slots", "slots")]
+        src.record("Table")?
+        mut read: list[_Slot[T]]? = None
+        while src.next_field(fields)?:
+            read = src.value[list[_Slot[T]]]()?
+        slots = read else fail src.here("should be a Table, with its `slots`")
+        mut stored = list[int]()
+        mut items = list[T]()
+        for slot in slots:
+            if slot.value is None:
+                stored.append(-1 - slot.generation)
+                continue
+            item = slot.value else continue
+            stored.append(slot.generation)
+            items.append(item)
+        src.saw_table(type_name[T](), stored)
+        table_from(stored, items)

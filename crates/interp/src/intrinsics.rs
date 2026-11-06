@@ -5,7 +5,7 @@
 use fennec_syntax::{BinOp, Diagnostic, Span, UnaryOp};
 
 use crate::ops;
-use crate::value::Value;
+use crate::value::{Id, Slot, Table, Value};
 
 /// Runs the intrinsic named `name` on its arguments.
 pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
@@ -54,6 +54,37 @@ pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagn
             let place = |at: &i64| usize::try_from(*at).ok();
             let part = place(start).zip(place(end)).and_then(|(start, end)| text.get(start..end));
             part.map(Value::str).ok_or_else(|| wrong(name, span))
+        }
+        ("id_slot", [Value::Id(id)]) => Ok(Value::Int(i64::try_from(id.slot).unwrap_or(i64::MAX))),
+        ("id_generation", [Value::Id(id)]) => Ok(Value::Int(i64::from(id.generation))),
+        ("id_of", [Value::Int(slot), Value::Int(generation)]) => {
+            let slot = usize::try_from(*slot).map_err(|_| wrong(name, span))?;
+            let generation = u32::try_from(*generation).map_err(|_| wrong(name, span))?;
+            Ok(Value::Id(Id { slot, generation }))
+        }
+        ("table_slots", [Value::Table(table)]) => Ok(Value::list(
+            table
+                .slots
+                .iter()
+                .map(|slot| {
+                    let generation = i64::from(slot.generation);
+                    Value::Int(if slot.value.is_some() { generation } else { -1 - generation })
+                })
+                .collect(),
+        )),
+        ("table_from", [Value::List(slots), Value::List(items)]) => {
+            let mut items = items.iter();
+            let mut made = Vec::with_capacity(slots.len());
+            for slot in slots.iter() {
+                let Value::Int(stored) = slot else { return Err(wrong(name, span)) };
+                let live = *stored >= 0;
+                let generation = u32::try_from(if live { *stored } else { -1 - *stored })
+                    .map_err(|_| wrong(name, span))?;
+                let value =
+                    if live { Some(items.next().ok_or_else(|| wrong(name, span))?.clone()) } else { None };
+                made.push(Slot { generation, value });
+            }
+            Ok(Value::Table(std::rc::Rc::new(Table::new(made))))
         }
         _ => Err(wrong(name, span)),
     }

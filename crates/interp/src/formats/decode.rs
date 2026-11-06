@@ -126,7 +126,7 @@ impl Interp<'_> {
         for (n, slot) in written.iter().enumerate() {
             let here = inside(&inside(at, "slots"), &format!("[{n}]"));
             let Value::Dict(slot) = slot else {
-                return Err(format!("{} should be a slot, with its `generation`", place(&here)));
+                return Err(misfit(&here, "slot", slot));
             };
             let generation = number(entry(slot, "generation"), &inside(&here, "generation"))?;
             let value = match entry(slot, "value") {

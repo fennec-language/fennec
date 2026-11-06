@@ -54,6 +54,7 @@ pub(super) fn owner_name(ty: &Type) -> Option<&str> {
         Type::Tuple(_) => Some("tuple"),
         Type::Bytes => Some("bytes"),
         Type::Table(_) => Some("Table"),
+        Type::Id(_) => Some("Id"),
         Type::Str => Some("str"),
         Type::Int => Some("int"),
         Type::Float => Some("float"),
@@ -191,8 +192,11 @@ impl Lowering<'_> {
             let (function, values, lock) =
                 self.direct((callee, args), keep.as_ref(), &mut write_backs, span)?;
             dest = keep.map(|ty| self.temporary(ty));
-            if self.context.intrinsics.contains(&function) {
-                self.emit(InstKind::Builtin { dest, name: function, args: values, changes: false }, span);
+            // A generic intrinsic's copy, like `intrinsics.id_slot[Unit]`, is still the intrinsic.
+            let intrinsic = function.split_once('[').map_or(function.as_str(), |(base, _)| base);
+            if self.context.intrinsics.contains(intrinsic) {
+                let name = intrinsic.to_owned();
+                self.emit(InstKind::Builtin { dest, name, args: values, changes: false }, span);
                 return Ok(dest);
             }
             if let Some((handle, write)) = &lock {

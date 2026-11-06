@@ -4181,10 +4181,10 @@ def main(stdout: Stdout, args: Args, process: Process):
         &needs,
         "\
 from std import json
-from std.collections import Table
+from std.collections import Packed
 
 def main(stdout: Stdout):
-    stdout.print(json.dumps(Table[int]()))
+    stdout.print(json.dumps(Packed.of([[1, 2]])))
 ",
     )?;
     let refused = lean(&needs, &dir.join("needs"))?;
@@ -6764,6 +6764,15 @@ struct Words:
 
     def at_item(self, at: int, message: str) -> ParseError:
         ParseError(message=f"item {at} {message}", line=0, column=0)
+
+    def here(self, message: str) -> ParseError:
+        ParseError(message=message, line=0, column=0)
+
+    def saw_id(mut self, kind: str, slot: int, generation: int):
+        pass
+
+    def saw_table(mut self, kind: str, slots: list[int]):
+        pass
 
     def none(mut self) -> bool fails ParseError:
         if self.at < self.parts.len() and self.parts[self.at] == "-":

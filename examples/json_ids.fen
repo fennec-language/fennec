@@ -81,7 +81,7 @@ test "an Id or a slot written wrong says where":
     assert failure(json.loads[Table[Unit]]("{}")) == "the text should be a Table, with its `slots`"
     assert (
         failure(json.loads[Table[Unit]]("{\"slots\": [1]}"))
-        == "`slots[0]` should be a slot, with its `generation`"
+        == "`slots[0]` should be a slot, but it's an int"
     )
 
 def main(stdout: Stdout):

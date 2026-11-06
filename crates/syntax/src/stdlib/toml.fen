@@ -1,5 +1,5 @@
 from std.intrinsics import text_byte, text_of_code, text_part, text_size, type_name
-from std.json import _article, _base64, _escaped, _float_text, _from_base64
+from std.json import _IdsSeen, _article, _base64, _escaped, _float_text, _from_base64
 
 ## How deeply arrays and inline tables may nest, so bad input can't overflow the stack.
 _MOST_DEEP = 500
@@ -742,6 +742,7 @@ struct TomlReader:
     _fields = list[(str, str)]()
     _place = 0
     _in_key = False
+    _ids = _IdsSeen()
 
     def _where(self) -> str:
         if self._path.len() == 0: return "the text"
@@ -942,6 +943,15 @@ struct TomlReader:
     def rule(self, message: str) -> ParseError:
         ParseError(message=f"in {self._where()}, {message}", line=0, column=0)
 
+    def here(self, message: str) -> ParseError:
+        ParseError(message=f"{self._where()} {message}", line=0, column=0)
+
+    def saw_id(mut self, kind: str, slot: int, generation: int):
+        self._ids.id(kind, self._dotted(), slot, generation)
+
+    def saw_table(mut self, kind: str, slots: list[int]):
+        self._ids.table(kind, self._dotted(), slots)
+
     def at_item(self, at: int, message: str) -> ParseError:
         ParseError(message=f"`{self._dotted()}[{at}]` {message}", line=0, column=0)
 
@@ -1000,7 +1010,10 @@ def native_loads[T: Deserializable](text: str) -> T fails ParseError:
     mut parser = _Parser(source=text)
     root = parser.document()?
     mut src = TomlReader(_here=_Toml.Table(table=root))
-    T.deserialize(mut src)?
+    value = T.deserialize(mut src)?
+    found = src._ids.unissued()
+    if found != "": fail ParseError(message=found, line=0, column=0)
+    value
 
 ## Builds what's being written as a document's values, then writes them out.
 struct TomlWriter:

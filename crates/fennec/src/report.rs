@@ -87,9 +87,17 @@ fn finding(sources: &Sources, shown: &Finding<'_>) -> Json {
     fields.extend(located(sources, diagnostic.span));
     fields.push(("message", Json::string(shown.message)));
     fields.push(("help", diagnostic.help.as_ref().map_or(Json::Null, |help| Json::string(help.clone()))));
-    fields.push(("also", diagnostic.also.map_or(Json::Null, |also| object(located(sources, also)))));
-    fields.push(("also_is", diagnostic.also.map_or(Json::Null, |_| Json::string(diagnostic.also_is()))));
+    fields.push(("also", diagnostic.also().map_or(Json::Null, |also| object(located(sources, also)))));
+    fields.push(("also_is", diagnostic.also().map_or(Json::Null, |_| Json::string(diagnostic.also_is()))));
     fields.push(("fixes", Json::Array(diagnostic.fixes.iter().map(|fixed| edit(sources, fixed)).collect())));
+    // A fix to make by hand, which `fennec fix` never makes.
+    let hint = diagnostic.hint.as_ref().map_or(Json::Null, |hint| {
+        Json::object([
+            ("says", Json::string(hint.says.clone())),
+            ("edits", Json::Array(hint.edits.iter().map(|fixed| edit(sources, fixed)).collect())),
+        ])
+    });
+    fields.push(("hint", hint));
     object(fields)
 }
 

@@ -111,11 +111,30 @@ fn names_change_only_when_mut() {
 }
 
 #[test]
-fn the_fix_for_a_name_depends_on_where_it_came_from() {
+fn adding_mut_is_a_fix_to_make_by_hand() {
+    let source = "def main(stdout: Stdout):\n    people = [\"Ash\"]\n    people = [\"Vex\"]\n";
+    let module = fennec_syntax::parse(source).unwrap();
+    let diagnostics = fennec_check::check(&module).err().unwrap();
+    let [diagnostic] = diagnostics.as_slice() else { panic!("{diagnostics:?}") };
+    assert!(diagnostic.fixes.is_empty(), "`fennec fix` never adds `mut`");
+    let hint = diagnostic.hint.as_ref().unwrap();
+    assert_eq!(hint.says, "declare it `mut people`");
+    let mut fixed = source.to_owned();
+    for edit in &hint.edits {
+        fixed.replace_range(edit.span.start as usize..edit.span.end as usize, &edit.text);
+    }
+    assert!(fixed.contains("    mut people = [\"Ash\"]\n"), "{fixed}");
+    // `mut` can't be written into `a, b = ...`, so that one only says how.
     assert_eq!(
-        helps("def main(stdout: Stdout):\n    x = 1\n    x = 2\n"),
-        ["declare it with `mut x = ...` if it needs to change"]
+        helps("def main(stdout: Stdout):\n    a, b = (1, 2)\n    a = 3\n"),
+        ["declare it with `mut a = ...` if it needs to change"]
     );
+    assert_eq!(helps("def main(stdout: Stdout):\n    n: int = 1\n    n += 2\n"), ["fix: declare it `mut n`"]);
+}
+
+#[test]
+fn the_fix_for_a_name_depends_on_where_it_came_from() {
+    assert_eq!(helps("def main(stdout: Stdout):\n    x = 1\n    x = 2\n"), ["fix: declare it `mut x`"]);
     assert_eq!(
         helps("def heal(health: int):\n    health += 1\n"),
         [
@@ -389,10 +408,7 @@ fn a_plain_name_read_from_a_place_says_where_to_write() {
     ] {
         assert_eq!(help(body), [said], "{body}");
     }
-    assert_eq!(
-        help("plain = Stats()\nplain.mana = 2\n"),
-        ["declare it with `mut plain = ...` if it needs to change"]
-    );
+    assert_eq!(help("plain = Stats()\nplain.mana = 2\n"), ["fix: declare it `mut plain`"]);
 }
 
 #[test]

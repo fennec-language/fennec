@@ -2,13 +2,13 @@
 struct Tag:
     name: str
 
-    def str(self, mut out: StrWriter):
+    def str(self, ref out: StrWriter):
         out.write("<" + self.name + ">")
 
 struct Pair:
     x = 0
 
-    def str(self, mut out: StrWriter):
+    def str(self, ref out: StrWriter):
         out.write(f"{self.x}!")
 
 def shown(n: int) -> str:

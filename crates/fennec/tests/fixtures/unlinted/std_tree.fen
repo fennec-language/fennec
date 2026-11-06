@@ -6,7 +6,7 @@ struct Part:
     name: str
     x = 0.0
 
-    def shift(mut self, by: float):
+    def shift(ref self, by: float):
         self.x += by
 
 # Writing the type of an ID is only needed where one is stored.

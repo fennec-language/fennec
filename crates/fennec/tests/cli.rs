@@ -255,7 +255,7 @@ fn test_checks_the_program_before_running_its_tests() {
     let output = fennec(&["test", "examples/errors/mut_self.fen"], "").unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(text(&output.stdout), "");
-    assert!(text(&output.stderr).starts_with("error: `self` isn't mut"));
+    assert!(text(&output.stderr).starts_with("error: `self` isn't `ref`"));
 }
 
 #[test]

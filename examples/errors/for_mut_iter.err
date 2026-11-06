@@ -1,7 +1,7 @@
-error: `for mut` can't change the items of a `Ring`, since its `iter` makes copies of them
+error: `for ref` can't change the items of a `Ring`, since its `iter` makes copies of them
   --> examples/errors/for_mut_iter.fen:10:21
    |
-10 |     for mut slot in ring:
+10 |     for ref slot in ring:
    |                     ^^^^
    |
-   = help: give `Ring` positions: `def len(self) -> int` and the `mut` form, `def [](mut self, i: int)`
+   = help: give `Ring` positions: `def len(self) -> int` and the `ref` form, `def [](ref self, i: int)`

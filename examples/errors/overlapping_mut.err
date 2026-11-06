@@ -1,7 +1,7 @@
-error: `mut unit.position` and `mut unit.position` overlap
+error: `ref unit.position` and `ref unit.position` overlap
   --> examples/errors/overlapping_mut.fen:13:33
    |
-13 |     bump(mut unit.position, mut unit.position)
+13 |     bump(ref unit.position, ref unit.position)
    |                                 ^^^^^^^^^^^^^
    |
-   = help: a `mut` argument needs its place to itself: give the other `copy(...)` of what it reads, or make the changes one at a time
+   = help: a `ref` argument needs its place to itself: give the other `copy(...)` of what it reads, or make the changes one at a time

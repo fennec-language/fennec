@@ -445,7 +445,7 @@ fn compile_emitted(
         .as_deref()
         .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
         .map(fennec_build::Cache::new);
-    let work = std::env::temp_dir().join(format!("fennec-llvm-{}", std::process::id()));
+    let work = crate::own_temp("llvm");
     let built = if release {
         fennec_llvm::compile_whole(&tools, units, &entry, &work, runtime_bitcode(runtime).as_deref())
     } else {
@@ -470,7 +470,7 @@ fn link_objects(
     tls: bool,
 ) -> Result<std::time::Duration, String> {
     let runtime = runtime_library(runtime)?;
-    let work = std::env::temp_dir().join(format!("fennec-link-{}", std::process::id()));
+    let work = crate::own_temp("link");
     std::fs::create_dir_all(&work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
     let mut paths = Vec::with_capacity(objects.len());
     for (at, object) in objects.iter().enumerate() {
@@ -546,7 +546,7 @@ fn default_output(path: &str, program: &fennec_kit::Program) -> PathBuf {
 /// back how long linking took.
 fn link(object: &[u8], output: &Path) -> Result<std::time::Duration, String> {
     let runtime = runtime_library(Runtime::Plain)?;
-    let work = std::env::temp_dir().join(format!("fennec-build-{}", std::process::id()));
+    let work = crate::own_temp("build");
     std::fs::create_dir_all(&work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
     let object_path = work.join("program.o");
     std::fs::write(&object_path, object).map_err(|err| format!("couldn't write the object file: {err}"))?;

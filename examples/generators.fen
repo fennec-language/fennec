@@ -62,7 +62,7 @@ def total_up_to(limit: int) -> int:
     total = sum(n for n in checked(limit)?)
     total
 
-def bump(mut count: int) -> int:
+def bump(ref count: int) -> int:
     count += 1
     count
 
@@ -112,7 +112,7 @@ def main(stdout: Stdout):
 
     # Written right inside what uses it, it can change the names around it.
     mut count = 0
-    stdout.print(sum(bump(mut count) for _ in range(3)), count)
+    stdout.print(sum(bump(ref count) for _ in range(3)), count)
 
     leaves_early(stdout)
     for n in holding(stdout):

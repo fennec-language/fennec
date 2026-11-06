@@ -7,7 +7,7 @@ from parser import Parser, is_name
 
 extend Parser:
     ## The body after a `:`: an indented block, or one simple statement on the same line.
-    def block(mut self) -> list[Stmt]:
+    def block(ref self) -> list[Stmt]:
         if not self.at(.Newline):
             return [self.simple_stmt()?]
         self.expect_block_start()?
@@ -16,7 +16,7 @@ extend Parser:
             stmts.append(self.stmt()?)
         stmts
 
-    def stmt(mut self) -> Stmt:
+    def stmt(ref self) -> Stmt:
         if self.at_keyword("if"):
             return self.if_stmt()?
         if self.at_keyword("while"):
@@ -30,7 +30,7 @@ extend Parser:
             return Stmt(kind=.Def(function), span=function.span)
         self.simple_stmt()
 
-    def simple_stmt(mut self) -> Stmt:
+    def simple_stmt(ref self) -> Stmt:
         start = self.span()
         kind = match self.peek():
             case .Keyword(word): self.keyword_stmt(word)?
@@ -44,7 +44,7 @@ extend Parser:
         Stmt(kind=kind, span=span)
 
     ## A simple statement that starts with the keyword `word`.
-    def keyword_stmt(mut self, word: str) -> StmtKind:
+    def keyword_stmt(ref self, word: str) -> StmtKind:
         if word == "mut":
             return self.mut_declaration()?
         if word == "ref":
@@ -71,7 +71,7 @@ extend Parser:
             self.peek_at(1) in [.Punct("="), .Punct("."), .Punct("("), .Punct("[")]
         )
 
-    def mut_declaration(mut self) -> StmtKind:
+    def mut_declaration(ref self) -> StmtKind:
         self.advance()
         target = self.expr()?
         if not is_name_expr(target):
@@ -84,7 +84,7 @@ extend Parser:
         .Assign(target, None, value, True, ty)
 
     ## An expression on its own, or an assignment. `a, b = pair` unpacks a tuple.
-    def expr_or_assign(mut self) -> StmtKind:
+    def expr_or_assign(ref self) -> StmtKind:
         mut target = self.expr()?
         if is_name_expr(target) and self.eat_punct(":"):
             ty = self.type_expr()?
@@ -107,7 +107,7 @@ extend Parser:
         value = self.expr()?
         .Assign(target, op, value, False, None)
 
-    def if_stmt(mut self) -> Stmt:
+    def if_stmt(ref self) -> Stmt:
         start = self.advance().span
         mut branches = [self.condition_and_block()?]
         mut otherwise = None
@@ -122,17 +122,17 @@ extend Parser:
                 break
         Stmt(kind=.If(branches, otherwise), span=start.to(self.prev_span()))
 
-    def condition_and_block(mut self) -> (Expr, list[Stmt]):
+    def condition_and_block(ref self) -> (Expr, list[Stmt]):
         cond = self.expr()?
         self.expect_punct(":")?
         (cond, self.block()?)
 
-    def while_stmt(mut self) -> Stmt:
+    def while_stmt(ref self) -> Stmt:
         start = self.advance().span
         cond, body = self.condition_and_block()?
         Stmt(kind=.While(cond, body), span=start.to(self.prev_span()))
 
-    def for_stmt(mut self) -> Stmt:
+    def for_stmt(ref self) -> Stmt:
         start = self.advance().span
         is_mut = self.eat_ref()
         names = self.loop_names()?
@@ -140,7 +140,7 @@ extend Parser:
         Stmt(kind=.For(names, is_mut, iter, body), span=start.to(self.prev_span()))
 
     ## `name` or `a, b`, then `in`.
-    def loop_names(mut self) -> list[str]:
+    def loop_names(ref self) -> list[str]:
         mut names = [self.name("a loop variable")?]
         while self.eat_punct(","):
             names.append(self.name("a loop variable")?)
@@ -150,7 +150,7 @@ extend Parser:
 
     ## `with game as ref current:`, or several at once: `with a as ref x, b as ref y:`, or
     ## `with a, b as x, y:`.
-    def with_stmt(mut self) -> Stmt:
+    def with_stmt(ref self) -> Stmt:
         start = self.advance().span
         mut items = [self.expr()?]
         while self.eat_punct(","):

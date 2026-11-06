@@ -1,7 +1,7 @@
-error: `self` isn't mut
+error: `self` isn't `ref`
  --> examples/errors/mut_self.fen:5:9
   |
 5 |         self.health += 10
   |         ^^^^^^^^^^^
   |
-  = help: to change `self`, write `mut self` in `heal`'s parameters
+  = help: to change `self`, write `ref self` in `heal`'s parameters

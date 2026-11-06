@@ -6,7 +6,7 @@ struct Vector:
     def add(self, other: Vector) -> Vector:
         Vector(x=self.x + other.x)
 
-    def bump(mut self) -> int:
+    def bump(ref self) -> int:
         self.x += 1
         self.x
 

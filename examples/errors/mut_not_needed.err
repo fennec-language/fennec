@@ -1,5 +1,5 @@
-error: `total` doesn't change `scores`, so it shouldn't be passed with `mut`
+error: `total` doesn't change `scores`, so it shouldn't be passed with `ref`
  --> examples/errors/mut_not_needed.fen:6:28
   |
-6 |     stdout.print(total(mut scores))
+6 |     stdout.print(total(ref scores))
   |                            ^^^^^^

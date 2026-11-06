@@ -10,7 +10,7 @@ struct Unit:
 struct World:
     units: list[Unit]
 
-def hurt(mut stats: Stats, damage: int):
+def hurt(ref stats: Stats, damage: int):
     stats.health -= damage
 
 def main(stdout: Stdout):
@@ -18,7 +18,7 @@ def main(stdout: Stdout):
 
     # A write goes to the place it names, however deep.
     world.units[1].stats.health -= 3
-    hurt(mut world.units[1].stats, 1)
+    hurt(ref world.units[1].stats, 1)
     stdout.print(world.units[1].stats.health)
 
     # A `mut` name read from a place is your own copy.

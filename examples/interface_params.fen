@@ -33,7 +33,7 @@ def scaled_twice(scale: Scale, shape: Shape) -> float:
     shapes.append(shape)
     sum(scale.scaled(each) for each in shapes)
 
-def grown(mut shape: Square, by: float) -> float:
+def grown(ref shape: Square, by: float) -> float:
     shape.side += by
     shape.area()
 
@@ -44,4 +44,4 @@ def main(stdout: Stdout):
     )
     stdout.print(scaled_twice(Doubled(), shape=Square(side=2.0)))
     mut square = Square()
-    stdout.print(grown(mut square, by=1.0))
+    stdout.print(grown(ref square, by=1.0))

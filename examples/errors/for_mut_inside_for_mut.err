@@ -1,7 +1,7 @@
 error: you can't change `numbers` while looping over it
  --> examples/errors/for_mut_inside_for_mut.fen:5:22
   |
-5 |         for mut y in numbers:
+5 |         for ref y in numbers:
   |                      ^^^^^^^
   |
   = help: loop over indexes, or collect the changes and make them after the loop

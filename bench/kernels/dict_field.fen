@@ -4,7 +4,7 @@
 struct Counter:
     counts: dict[int, int]
 
-    def bump(mut self, key: int):
+    def bump(ref self, key: int):
         self.counts[key] = (self.counts.get(key) else 0) + 1
 
 def main(stdout: Stdout):

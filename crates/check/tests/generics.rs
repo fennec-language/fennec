@@ -474,7 +474,7 @@ fn an_interfaces_generic_method_needs_a_generic_method_to_fit() {
     assert_eq!(
         problems(&text),
         [
-            "`Plain` isn't a `Source`: it has no `field[T](mut self, at: int) -> T?`. Its `field` returns an int? @ read(mut plain)"
+            "`Plain` isn't a `Source`: it has no `field[T](ref self, at: int) -> T?`. Its `field` returns an int? @ read(mut plain)"
         ]
     );
 }
@@ -640,7 +640,7 @@ fn a_type_has_to_fail_as_its_interfaces_method_says() {
     );
     let found = problems(&text);
     assert_eq!(found.len(), 1, "{found:?}");
-    assert!(found.iter().all(|problem| problem.contains("`next(mut self) -> int fails Bad`")), "{found:?}");
+    assert!(found.iter().all(|problem| problem.contains("`next(ref self) -> int fails Bad`")), "{found:?}");
 }
 
 #[test]
@@ -736,7 +736,7 @@ fn a_method_that_changes_its_value_doesnt_fit_an_interfaces_self() {
     assert!(found[0].contains("it has no `next(self) -> int`. Its `next` changes `self`"), "{found:?}");
     let helped = helps(source);
     assert!(
-        helped.iter().any(|help| help.contains("write `mut self` in the interface's `next`")),
+        helped.iter().any(|help| help.contains("write `ref self` in the interface's `next`")),
         "{helped:?}"
     );
 }

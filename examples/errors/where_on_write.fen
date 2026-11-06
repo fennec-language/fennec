@@ -1,7 +1,7 @@
 struct Player:
     level: int where level >= 1
 
-    def drain(mut self, by: int):
+    def drain(ref self, by: int):
         self.level -= by
 
 def main(stdout: Stdout):

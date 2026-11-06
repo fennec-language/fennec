@@ -32,7 +32,7 @@ def main(stdout: Stdout):
     numbers = [n for n in range(20_000)]
     stdout.print(sum(grown(base, n) for n in parallel(numbers)), base.len())
     mut tags = [Tag(f"a name long enough to be held in a block of its own, {n}", n) for n in range(20_000)]
-    for mut tag in parallel(tags):
+    for ref tag in parallel(tags):
         if tag.n % 2 == 0:
             tag.name = tag.name + "*"
         tag.n += 1

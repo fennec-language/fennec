@@ -628,10 +628,15 @@ impl<'c> FnCx<'c> {
         }
         // A new name, from a `for` or a `case`, over one that can change.
         let same_name = self.scopes.iter().rev().flat_map(|scope| scope.bindings.iter().rev());
-        let hides = same_name.filter(|binding| binding.name == name).skip(1).any(|binding| binding.is_mut);
-        if hides && !crossed && !binding.is_mut {
+        let hidden = same_name.filter(|binding| binding.name == name).skip(1).find(|binding| binding.is_mut);
+        if let Some(hidden) = hidden
+            && !crossed
+            && !binding.is_mut
+        {
+            // Only a local is written `mut`: a parameter, loop or `with` name is `ref`.
+            let word = if matches!(hidden.origin, Origin::Local | Origin::Captured) { "mut" } else { "ref" };
             return Diagnostic::new(
-                format!("this `{name}` is a new name, which hides the `mut {name}` around it"),
+                format!("this `{name}` is a new name, which hides the `{word} {name}` around it"),
                 span,
             )
             .with_help(format!("give this one another name, to change the `{name}` around it"));
@@ -645,17 +650,17 @@ impl<'c> FnCx<'c> {
         }
         let help = match binding.origin {
             Origin::Param if name == "self" => {
-                format!("to change `self`, write `mut self` in `{}`'s parameters", self.name)
+                format!("to change `self`, write `ref self` in `{}`'s parameters", self.name)
             }
             Origin::Param => format!(
-                "parameters are read-only: to change it, write `mut {name}` in `{}`'s parameters, and pass it with `mut` at each call",
+                "parameters are read-only: to change it, write `ref {name}` in `{}`'s parameters, and pass it with `ref` at each call",
                 self.name
             ),
-            Origin::Loop => format!("loop with `for mut {name} in ...` to change each item"),
-            Origin::Locked => format!("it's locked to read: lock it to write with `as mut {name}`"),
+            Origin::Loop => format!("loop with `for ref {name} in ...` to change each item"),
+            Origin::Locked => format!("it's locked to read: lock it to write with `as ref {name}`"),
             Origin::Local | Origin::Captured => return not_mut(name, span),
         };
-        Diagnostic::new(format!("`{name}` isn't mut"), span).with_help(help)
+        Diagnostic::new(format!("`{name}` isn't `ref`"), span).with_help(help)
     }
 
     /// The type a name was declared with.

@@ -1,6 +1,6 @@
 # decision: Printing is one more format.
 
-# A type prints from its fields unless it writes `def str(self, mut out: StrWriter)`. `print`,
+# A type prints from its fields unless it writes `def str(self, ref out: StrWriter)`. `print`,
 # `str(x)` and f-strings all call it, and so does printing a collection that holds the type.
 # The standard library's collections print their items this way, not their insides.
 from std.collections import Deque, SortedMap
@@ -9,7 +9,7 @@ struct Card:
     rank: int
     suit: str
 
-    def str(self, mut out: StrWriter):
+    def str(self, ref out: StrWriter):
         out.write(["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"][self.rank - 1])
         out.write(self.suit)
 

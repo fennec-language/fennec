@@ -25,4 +25,4 @@ def main(stdout: Stdout):
     for ref member in party:
         member.stats.level -= 8
     stdout.print(party[0].stats.level)
-    stdout.print(replace(stats, level=7).level)
+    stdout.print(copy(stats, level=7).level)

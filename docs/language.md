@@ -79,7 +79,7 @@ One silent mistake remains: changing a `mut` copy and then reading it, believing
 uppercased = [copy(person, name=person.name.upper()) for person in people]
 ```
 
-`copy(x, field=...)` makes a changed copy and re-runs `where` rules. A plain `=` covers everything else, and the compiler skips the real copy when nobody can tell. A plain parameter can't change, so passing something huge costs nothing.
+`copy(x, field=...)` makes a changed copy and re-runs `where` rules. Built: `replace` was its old name, and `fennec fix` moves it to `copy`. A plain `=` covers everything else, and the compiler skips the real copy when nobody can tell. A plain parameter can't change, so passing something huge costs nothing.
 
 ## Fixed-size arrays
 

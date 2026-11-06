@@ -763,11 +763,14 @@ impl<'a> Lowering<'a> {
         Ok(Operand::Local(dest))
     }
 
-    /// A call that makes its value itself rather than calling a function: `replace(...)`, a
+    /// A call that makes its value itself rather than calling a function: `copy(x, field=...)`, a
     /// consumer like `sum(...)`, or `Ok(...)` or `Err(...)` written out.
     fn made_by_name(&mut self, expr: &Expr, callee: &Expr, args: &[Arg]) -> Lowered<Option<Operand>> {
-        if matches!(&callee.kind, ExprKind::Name(name) if name == "replace" && self.lookup(name).is_none())
-            && !self.context.functions.contains("replace")
+        // `copy(value, field=new)` copies with fields changed. `replace` was its old name.
+        if let ExprKind::Name(name) = &callee.kind
+            && (name == "replace" || name == "copy" && args.len() > 1)
+            && self.lookup(name).is_none()
+            && !self.context.functions.contains(name)
         {
             return self.replace(args, expr.span).map(Some);
         }

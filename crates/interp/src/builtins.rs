@@ -86,7 +86,8 @@ impl Interp<'_> {
                 span,
             ));
         }
-        if name == "replace" {
+        // `copy(value, field=new)` copies with fields changed. `replace` was its old name.
+        if name == "replace" || name == "copy" && args.len() > 1 {
             return self.replace(args, span);
         }
         if let Some(module) = stdlib::module_of(name) {

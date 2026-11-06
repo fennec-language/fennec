@@ -1,0 +1,8 @@
+# `copy` with fields runs the `where` rule of each field it changes, as a write does.
+struct Player:
+    level: int where level >= 1
+
+def main(stdout: Stdout):
+    player = Player(level=5)
+    stdout.print(copy(player, level=player.level - 2).level)
+    stdout.print(copy(player, level=player.level - 5).level)

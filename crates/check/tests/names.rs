@@ -355,7 +355,7 @@ fn nothing_outside_a_type_reaches_its_underscore_names() {
     );
     assert_eq!(in_main("    forged = Account(owner=\"x\", _balance=100)\n"), [format!("{private} @ 100")]);
     assert_eq!(in_main("    forged = Account(\"x\", 100)\n"), [format!("{private} @ 100")]);
-    assert_eq!(in_main("    forged = replace(account, _balance=9)\n"), [format!("{private} @ 9")]);
+    assert_eq!(in_main("    forged = copy(account, _balance=9)\n"), [format!("{private} @ 9")]);
     assert_eq!(
         in_main("    match account:\n        case Account(owner, balance): stdout.print(balance)\n"),
         [format!("{private} @ case Account(owner, balance): stdout.print(balance)\n")]

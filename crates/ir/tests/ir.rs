@@ -1420,14 +1420,11 @@ def h(data: bytes, at: int) -> int:
 
 #[test]
 fn a_loop_over_a_generator_with_a_cleanup_or_match_still_lowers() {
-    let source = "struct Door:
-    open: bool
+    // Only a type the standard library ships, like `Connection`, has `def del` on a struct.
+    let source = "from std.net import Connection
 
-    def del(self):
-        pass
-
-def held() -> Iterator[int]:
-    with Door(open=True) as door:
+def held(door: Connection) -> Iterator[int]:
+    with door as open:
         yield 1
     match 2:
         case 2:
@@ -1435,12 +1432,12 @@ def held() -> Iterator[int]:
         case _:
             return
 
-def f() -> int:
-    sum(n for n in held())
+def f(door: Connection) -> int:
+    sum(n for n in held(door))
 ";
     assert!(printed(source, "held.resume").is_ok());
     let closing = printed(source, "held.abandon").unwrap();
-    assert!(closing.contains("call Door.del"), "{closing}");
+    assert!(closing.contains("call Connection.del"), "{closing}");
     let module = fennec_syntax::parse(source).unwrap();
     let checked = fennec_check::check(&module).unwrap();
     let program = lower(&module, &checked);
@@ -1764,69 +1761,64 @@ def f() -> int:
 
 #[test]
 fn with_cleans_up_however_its_block_is_left() {
-    let source = "struct File:
-    name: str
+    // Only a type the standard library ships, like `Connection`, has `def del` on a struct.
+    let source = "from std.net import Connection
 
-    def del(self):
-        pass
-
-def f(n: int) -> int:
+def f(n: int, a: Connection, b: Connection) -> int:
     while n > 0:
-        with File(\"a\") as file:
+        with a as file:
             if n == 1:
                 break
             if n == 2:
-                return file.name.len()
-    with File(\"b\"):
+                return file.peer.len()
+    with b:
         pass
     0
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
-        "fn f(_0) -> int
+        "fn f(_0, _1, _2) -> int
   local _0 n: int
-  local _1: bool
-  local _2: File
-  local _3 file: File
-  local _4: bool
+  local _1 a: Connection
+  local _2 b: Connection
+  local _3: bool
+  local _4 file: Connection
   local _5: bool
-  local _6: str
-  local _7: int
+  local _6: bool
+  local _7: str
   local _8: int
-  local _9: File
-  local _10: File
+  local _9: int
+  local _10: Connection
   bb0:
     jump bb1
   bb1:
-    _1 = _0 > 0
-    branch _1 bb2 bb3
+    _3 = _0 > 0
+    branch _3 bb2 bb3
   bb2:
-    _2 = make File(\"a\")
-    _3 = _2
-    _4 = _0 == 1
-    branch _4 bb5 bb6
+    _4 = _1
+    _5 = _0 == 1
+    branch _5 bb5 bb6
   bb3:
-    _9 = make File(\"b\")
-    _10 = _9
-    call File.del(_10)
+    _10 = _2
+    call Connection.del(_10)
     return 0
   bb4:
-    _5 = _0 == 2
-    branch _5 bb8 bb9
+    _6 = _0 == 2
+    branch _6 bb8 bb9
   bb5:
-    call File.del(_3)
+    call Connection.del(_4)
     jump bb3
   bb6:
     jump bb4
   bb7:
-    call File.del(_3)
+    call Connection.del(_4)
     jump bb1
   bb8:
-    _6 = _3.name
-    _7 = builtin str.len(_6)
-    _8 = _7
-    call File.del(_3)
-    return _8
+    _7 = _4.peer
+    _8 = builtin str.len(_7)
+    _9 = _8
+    call Connection.del(_4)
+    return _9
   bb9:
     jump bb7
 "

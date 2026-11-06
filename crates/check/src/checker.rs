@@ -166,6 +166,7 @@ impl Checker {
         self.check_saving_pairs();
         self.check_function_annotations();
         self.check_shared_types();
+        self.check_dels();
         self.settle_typed();
         if self.diagnostics.is_empty() {
             self.unknowns_left();

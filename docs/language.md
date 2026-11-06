@@ -132,7 +132,7 @@ game.add("Chris")           # takes the lock for the call
 - Writing a field needs a `ref self` method or `with game as ref current:`, so the code shows how long it holds the lock.
 - A value leaving a `shared` is your own copy, and one going in is the `shared` value's own. So `names = game.names` costs a copy, and using `current.names` inside `with` doesn't.
 - It can hold another `shared` type, but never in a cycle. That's a compile error. Locks are taken outer type first, so nesting can't deadlock.
-- `def del` is allowed here and refused on a `struct`. It runs when the last owner goes away.
+- `def del` is allowed here and refused on a `struct`, which is a compile error. It runs when the last owner goes away. Built, apart from std's `Connection`, which is still a `struct` with `del` until it becomes `shared`.
 - To use two together, take both at once: `with savings as ref source, checking as ref destination:`. Taking the same value twice stops the program, like an index out of range.
 - `Connection`, files, channels and `Stdout` are `shared` types that ship with Fennec. They manage their own read and write sides, and `with` on one only closes it at the end of the block.
 - You can't do I/O while holding a lock, so a `shared` pool hands out a connection and the sending happens outside its lock.

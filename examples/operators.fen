@@ -23,12 +23,6 @@ struct Grid:
         for cell in self.cells:
             yield cell
 
-struct File:
-    name: str
-
-    def del(self):
-        pass
-
 def main(stdout: Stdout):
     total = Money(cents=150) + Money(cents=275)
     stdout.print(total, total > Money(cents=400), max([Money(cents=5), Money(cents=9)]))
@@ -37,5 +31,3 @@ def main(stdout: Stdout):
     grid[(1, 1)] = 7
     stdout.print(grid[(1, 1)], sum(cell for cell in grid))
 
-    with File(name="save.dat") as file:
-        stdout.print(f"writing {file.name}")

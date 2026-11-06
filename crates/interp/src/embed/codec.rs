@@ -410,8 +410,11 @@ impl Image {
         let from = &mut Reader::new(bytes);
         let length = usize::try_from(from.word()?).ok()?;
         let syntax = from.take(length)?;
-        let module =
-            if cfg!(feature = "lean") { Module { items: Vec::new() } } else { Module::decode(&mut Reader::new(syntax))? };
+        let module = if cfg!(feature = "lean") {
+            Module { items: Vec::new() }
+        } else {
+            Module::decode(&mut Reader::new(syntax))?
+        };
         let mut sources = Sources::new();
         for (path, text) in Vec::<(String, String)>::decode(from)? {
             sources.add(path, text);

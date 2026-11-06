@@ -5,9 +5,58 @@
 
 use fennec_syntax::{Diagnostic, Module};
 
-/// Each copy a resolved module makes each time round a loop without saying so.
+/// Each copy a resolved module makes each time round a loop without saying so, and anything that
+/// may allocate or copy in a `@hot` function or what it calls.
 pub(crate) fn implicit_copies(module: &Module, signatures: &fennec_check::Signatures) -> Vec<Diagnostic> {
-    fennec_lint::implicit_copies(&fennec_ir::costs(&fennec_ir::lower(module, signatures)))
+    let lowered = fennec_ir::lower(module, signatures);
+    let findings = fennec_ir::costs(&lowered);
+    let mut problems = fennec_lint::implicit_copies(&findings);
+    let hot = hot_functions(module);
+    if hot.is_empty() {
+        return problems;
+    }
+    let keys: Vec<String> = hot.iter().map(|(key, _)| key.clone()).collect();
+    problems.extend(fennec_lint::hot_costs(&findings, &fennec_ir::reached_from_hot(&lowered, &keys)));
+    for (key, span) in hot {
+        let base = |name: &str| name.split_once('[').map_or(name, |(base, _)| base).to_owned();
+        if let Some(missing) = lowered.not_lowered.iter().find(|missing| base(&missing.function) == key) {
+            let message = format!(
+                "`@hot` `{key}` can't be checked yet, since it isn't built natively: {}",
+                missing.why
+            );
+            problems.push(Diagnostic::new(message, span).with_help("take `@hot` off until it is"));
+        }
+    }
+    problems
+}
+
+/// Where a function says it's `@hot`, if it does.
+fn hot(def: &fennec_syntax::FnDef) -> Option<&fennec_syntax::Annotation> {
+    def.annotations.iter().find(|annotation| annotation.name == "hot")
+}
+
+/// The program's own `@hot` functions and methods, by key, with where `@hot` is written.
+fn hot_functions(module: &Module) -> Vec<(String, fennec_syntax::Span)> {
+    let mut found = Vec::new();
+    for item in &module.items {
+        let (owner, methods) = match item {
+            fennec_syntax::Item::Function(def) => {
+                found.extend(
+                    hot(def).filter(|_| !def.span.in_prelude()).map(|at| (def.name.clone(), at.span)),
+                );
+                continue;
+            }
+            fennec_syntax::Item::Struct(def)
+            | fennec_syntax::Item::Enum(def)
+            | fennec_syntax::Item::Error(def) => (&def.name, &def.methods),
+            fennec_syntax::Item::Extend(extension) => (&extension.name, &extension.methods),
+            _ => continue,
+        };
+        for method in methods.iter().filter(|method| !method.span.in_prelude()) {
+            found.extend(hot(method).map(|at| (format!("{owner}.{}", method.name), at.span)));
+        }
+    }
+    found
 }
 
 /// Checks a program to run, with its implicit copies each time round a loop as errors, and its

@@ -1,7 +1,8 @@
 //! Annotations on fields: data written above a field, like `@skip`, that formats and other code
 //! read at compile time. An annotation never changes the field, so each is checked here for
-//! being one the language has, written the way it reads. A `def` can have one too: std's
-//! `@intrinsic` functions, which have no body because the engines provide them.
+//! being one the language has, written the way it reads. A `def` can have one too: `@hot`, for a
+//! function that may not allocate or copy, and std's `@intrinsic` functions, which have no body
+//! because the engines provide them.
 
 use fennec_syntax::{Annotation, Diagnostic, ExprKind, Field, FnDef};
 
@@ -115,10 +116,14 @@ fn function_problem(def: &FnDef, annotation: &Annotation, prelude: bool) -> Opti
             Diagnostic::new(format!("`{}` is `@intrinsic`, so it has no body", def.name), span)
                 .with_help("end the signature without `:`, since the engines provide what it does"),
         ),
-        "intrinsic" => None,
+        "hot" if !annotation.args.is_empty() => Some(
+            Diagnostic::new("`@hot` takes nothing", span)
+                .with_help("write it as `@hot`: the function and what it calls may not allocate or copy"),
+        ),
+        "intrinsic" | "hot" => None,
         other => Some(
             Diagnostic::new(format!("`@{other}` isn't something a `def` can have"), span)
-                .with_help("only std's machine operations are marked, with `@intrinsic`"),
+                .with_help("a `def` can be `@hot`, and std's machine operations are marked `@intrinsic`"),
         ),
     }
 }

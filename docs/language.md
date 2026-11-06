@@ -197,7 +197,7 @@ Each connection gets its own task, and a failure ends only that task. The wrappe
 ## Speed
 
 - Everyday builds stay fast, and release builds can take as long as they need.
-- `@hot` turns a hidden copy into a compile error, and the tracer shows where each copy happens and why.
+- `@hot` turns a hidden copy into a compile error, and the tracer shows where each copy happens and why. Built: anything that may allocate or copy in a `@hot` function, or in what it calls, is an error that says why. Count checks aren't looked at yet.
 
 ## Still to decide
 

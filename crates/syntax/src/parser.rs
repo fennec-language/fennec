@@ -253,12 +253,12 @@ impl Parser {
             }
             return Ok(Item::Function(FnDef { annotations, ..self.def()? }));
         }
-        // `pub`, `export` and `noalloc` are accepted. Inside a kit everything is visible, and
-        // allocation checks come later.
+        // `pub` and `export` are accepted. Inside a kit everything is visible.
         self.eat_pub();
         self.eat_kw(Kw::Export);
-        if self.eat_kw(Kw::Noalloc) && !self.at_kw(Kw::Def) {
-            return Err(Diagnostic::new("`noalloc` goes right before `def`", self.span()));
+        if self.at_kw(Kw::Noalloc) {
+            return Err(Diagnostic::new("`noalloc` is written `@hot` now", self.span())
+                .with_help("write `@hot` on the line above the `def`: the function and what it calls may not allocate or copy"));
         }
         match self.peek().clone() {
             Tok::Kw(Kw::Def) => Ok(Item::Function(self.def()?)),

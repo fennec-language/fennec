@@ -42,9 +42,9 @@ def fold(calc: Calc) -> Calc:
         case .Op(.Plus, .Lit(0), b):
             fold(b)
         case .Op(sign, a, b):
-            .Op(sign, fold(a), fold(b))
+            .Op(sign, left=fold(a), right=fold(b))
         case .Times(a, b):
-            .Times(fold(a), fold(b))
+            .Times(fold(a), right=fold(b))
         case .Clamp(range, inner):
             .Clamp(range, fold(inner))
         case other:
@@ -52,29 +52,34 @@ def fold(calc: Calc) -> Calc:
 
 def grow(depth: int, seed: int) -> Calc:
     if depth == 0: return Calc.Arg if seed % 3 == 0 else .Lit(seed % 7)
-    a = grow(depth - 1, seed * 5 + 1)
-    b = grow(depth - 1, seed * 3 + 2)
+    a = grow(depth - 1, seed=seed * 5 + 1)
+    b = grow(depth - 1, seed=seed * 3 + 2)
     match seed % 6:
         case 0:
-            .Op(.Plus, a, b)
+            .Op(.Plus, left=a, right=b)
         case 1:
-            .Op(.Minus, .Lit(0), b)
+            .Op(.Minus, left=.Lit(0), right=b)
         case 2:
-            .Times(.Lit(1), a)
+            .Times(.Lit(1), right=a)
         case 3:
-            .Clamp(Range(low=-50, high=50), .Times(a, b))
+            .Clamp(Range(low=-50, high=50), .Times(a, right=b))
         case 4:
-            .Times(.Lit(0), a)
+            .Times(.Lit(0), right=a)
         case _:
-            .Op(.Minus, a, b)
+            .Op(.Minus, left=a, right=b)
 
 def main(stdout: Stdout):
-    calc = grow(10, 1)
+    calc = grow(10, seed=1)
     folded = fold(calc)
     mut same = 0
     for arg in range(-5, 6):
         if run(calc, arg) == run(folded, arg):
             same += 1
     stdout.print(same, run(calc, 3), run(folded, 3))
-    stdout.print(fold(folded) == folded, calc == folded, grow(10, 1) == calc, calc != grow(10, 2))
+    stdout.print(
+        fold(folded) == folded,
+        calc == folded,
+        grow(10, seed=1) == calc,
+        calc != grow(10, seed=2),
+    )
     stdout.print(Range(low=1, high=2) == Range(low=1, high=2), Sign.Plus == .Minus)

@@ -1002,6 +1002,74 @@ done:
         self.assign(dest, &result)
     }
 
+    /// `bytes_text(data, start, end)`: the text in those bytes of `data`, which a format has
+    /// checked are inside it. A short run of ASCII is made inline straight from the bytes, with
+    /// nothing to allocate, and anything else by the runtime, which checks it's UTF-8 and gives
+    /// the empty text when it isn't.
+    pub(crate) fn bytes_text(
+        &mut self,
+        dest: fennec_ir::LocalId,
+        args: &[fennec_ir::Operand],
+    ) -> Result<(), String> {
+        if !self.headers() {
+            return Err("it calls `bytes_text` where strings aren't headers".to_owned());
+        }
+        let (data, _) = self.operand(args.first().ok_or("no bytes")?)?;
+        let (start, _) = self.operand(args.get(1).ok_or("no start")?)?;
+        let (end, _) = self.operand(args.get(2).ok_or("no end")?)?;
+        let (size, short) = (self.temp(), self.temp());
+        self.line(&format!("{size} = sub i64 {end}, {start}"));
+        self.line(&format!("{short} = icmp ule i64 {size}, 23"));
+        let base = self.offset(&data, fennec_interp::embed::bytes::DATA_OFFSET);
+        let at = self.temp();
+        self.line(&format!("{at} = getelementptr inbounds i8, ptr {base}, i64 {start}"));
+        let (head, body, tail, fast, slow, done) = (
+            self.label("run_ascii"),
+            self.label("run_byte"),
+            self.label("run_checked"),
+            self.label("run_inline"),
+            self.label("run_runtime"),
+            self.label("run_done"),
+        );
+        let before = self.current.clone();
+        self.line(&format!("br i1 {short}, label %{head}, label %{slow}"));
+        // Every byte under 128, or-ed together, is under 128.
+        self.start_block(&head);
+        let (step, seen, more, next, joined) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{step} = phi i64 [ 0, %{before} ], [ {next}, %{body} ]"));
+        self.line(&format!("{seen} = phi i64 [ 0, %{before} ], [ {joined}, %{body} ]"));
+        self.line(&format!("{more} = icmp ult i64 {step}, {size}"));
+        self.line(&format!("br i1 {more}, label %{body}, label %{tail}"));
+        self.start_block(&body);
+        let (place, byte, wide) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{place} = getelementptr inbounds i8, ptr {at}, i64 {step}"));
+        self.line(&format!("{byte} = load i8, ptr {place}"));
+        self.line(&format!("{wide} = zext i8 {byte} to i64"));
+        self.line(&format!("{joined} = or i64 {seen}, {wide}"));
+        self.line(&format!("{next} = add i64 {step}, 1"));
+        self.line(&format!("br label %{head}"));
+        self.start_block(&tail);
+        let ascii = self.temp();
+        self.line(&format!("{ascii} = icmp ult i64 {seen}, 128"));
+        self.line(&format!("br i1 {ascii}, label %{fast}, label %{slow}"));
+        self.start_block(&fast);
+        let piece = self.inline_from(&at, &size);
+        let fast_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&slow);
+        self.declare("declare ptr @fennec_bytes_text_part(ptr, i64, i64) nounwind");
+        let made = self.temp();
+        self.line(&format!("{made} = call ptr @fennec_bytes_text_part(ptr {data}, i64 {start}, i64 {end})"));
+        let other = self.text_from_block(&made);
+        let slow_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let result = self.temp();
+        self.line(&format!("{result} = phi {HEADER} [ {piece}, %{fast_end} ], [ {other}, %{slow_end} ]"));
+        self.assign(dest, &result)
+    }
+
     /// `text[start:end]` on a header (an absent bound as `i64::MIN`): a short piece of ASCII text
     /// with both bounds inside it made inline from its bytes, and anything else by the runtime.
     pub(crate) fn header_slice(

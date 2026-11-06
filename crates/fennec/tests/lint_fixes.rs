@@ -49,7 +49,9 @@ fn every_example_with_every_fix_does_the_same() {
     let result = std::sync::Arc::clone(&compared);
     on_big_stack(move || *result.lock().unwrap() = every_example()).unwrap();
     let compared = compared.lock().unwrap().clone().unwrap();
-    assert!(compared >= 14, "only {compared} programs had fixes to try");
+    // Fixtures whose only fixes were `positional-arguments` have none left: it's a compile error now,
+    // so they're written with names.
+    assert!(compared >= 6, "only {compared} programs had fixes to try");
 }
 
 /// How many programs had fixes to try, each of which still did the same, or the first that didn't.

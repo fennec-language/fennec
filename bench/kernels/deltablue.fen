@@ -174,23 +174,23 @@ struct Planner:
                     )
 
     def satisfy(ref self, at: int, mark: int) -> int:
-        self.choose_method(at, mark)
+        self.choose_method(at, mark=mark)
         if not self.constraints[at].satisfied(): return NONE
-        self.mark_inputs(at, mark)
+        self.mark_inputs(at, mark=mark)
         out = self.constraints[at].output()
         overridden = self.variables[out].determined_by
         if overridden != NONE:
             self.constraints[overridden].direction = UNDECIDED
         self.variables[out].determined_by = at
-        self.add_propagate(at, mark)
+        self.add_propagate(at, mark=mark)
         self.variables[out].mark = mark
         overridden
 
     def incremental_add(ref self, at: int):
         mark = self.new_mark()
-        mut overridden = self.satisfy(at, mark)
+        mut overridden = self.satisfy(at, mark=mark)
         while overridden != NONE:
-            overridden = self.satisfy(overridden, mark)
+            overridden = self.satisfy(overridden, mark=mark)
 
     def incremental_remove(ref self, at: int):
         out = self.constraints[at].output()
@@ -246,7 +246,7 @@ struct Planner:
         while True:
             next = todo.pop() else break
             out = self.constraints[next].output()
-            if self.variables[out].mark != mark and self.inputs_known(next, mark):
+            if self.variables[out].mark != mark and self.inputs_known(next, mark=mark):
                 plan.append(next)
                 self.variables[out].mark = mark
                 self.consuming(out, ref todo)
@@ -308,14 +308,14 @@ def projection_test(size: int) -> int:
                 offset=offset,
             ),
         )
-    planner.change(sources[0], 17)
+    planner.change(sources[0], value=17)
     mut total = planner.variables[targets[0]].value
-    planner.change(targets[0], 1050)
+    planner.change(targets[0], value=1050)
     total += planner.variables[sources[0]].value
-    planner.change(scale, 5)
+    planner.change(scale, value=5)
     for target in targets:
         total += planner.variables[target].value
-    planner.change(offset, 2000)
+    planner.change(offset, value=2000)
     for target in targets:
         total += planner.variables[target].value
     total

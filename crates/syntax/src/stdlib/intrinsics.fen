@@ -111,6 +111,11 @@ def text_of_code(code: int) -> str
 @intrinsic
 def type_name[T]() -> str
 
+## The text in bytes `start` up to `end` of `data`, made straight from them, or the empty text when
+## they aren't UTF-8, which bytes that are there never decode to. Both places have to be inside it.
+@intrinsic
+def bytes_text(data: bytes, start: int, end: int) -> str
+
 ## A number for a type's shape: its fields in order, with their names and types, and its cases.
 ## It changes when any of them does, so a format that saves no names can refuse to read data
 ## written for another shape. Only native code has types as it runs.

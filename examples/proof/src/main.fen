@@ -42,7 +42,7 @@ def raise_army(ref world: World, team: Team, columns: (int, int), rally: (int, i
             if placed == 12: break
             at = (column, row)
             if not world.field.walkable(at) or world.unit_at(at) is not None: continue
-            if random.randint(0, 2) == 0: continue
+            if random.randint(0, high=2) == 0: continue
             kind = kinds[placed % kinds.len()]
             id = world.spawn(f"{team.name()}{placed + 1}", team, kind, at)
             if kind == .Medic:

@@ -132,7 +132,7 @@ fn whole_program(path: &str, results: &Results) -> Result<Plan, ExitCode> {
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Tests) else {
         return Err(ExitCode::FAILURE);
     };
-    let signatures = match crate::copy_rule::check_and_resolve(&mut program.module) {
+    let signatures = match crate::copy_rule::check_and_resolve(&mut program.module, &program.sources) {
         Ok(signatures) => signatures,
         Err(diagnostics) => {
             eprint!("{}", program.sources.render_all(&diagnostics));

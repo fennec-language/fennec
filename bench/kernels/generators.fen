@@ -55,5 +55,5 @@ def main(stdout: Stdout):
         result += pipeline(src)
         chain = running(odd_squares(count_up(200_000 + round)), 16)
         result += sum(n % 7 for n in chain)
-        result += first_over(1_000, 990 - round)
+        result += first_over(1_000, over=990 - round)
     stdout.print(result)

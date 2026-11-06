@@ -79,14 +79,15 @@ fn what_a_run_rejects(
     if !left_out {
         return None;
     }
-    let diagnostics = crate::copy_rule::check_and_resolve(&mut run.module.clone()).err()?;
+    let diagnostics = crate::copy_rule::check_and_resolve(&mut run.module.clone(), &run.sources).err()?;
     Some((run, diagnostics))
 }
 
 fn checked(path: &str, json: bool) -> ExitCode {
     let Some(program) = loaded(path, json) else { return ExitCode::FAILURE };
-    let diagnostics =
-        crate::copy_rule::check_and_resolve(&mut program.module.clone()).err().unwrap_or_default();
+    let diagnostics = crate::copy_rule::check_and_resolve(&mut program.module.clone(), &program.sources)
+        .err()
+        .unwrap_or_default();
     if diagnostics.is_empty()
         && let Some((run, diagnostics)) = what_a_run_rejects(path, &program)
     {

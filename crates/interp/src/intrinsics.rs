@@ -44,6 +44,11 @@ pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagn
         }
         ("float_to_int", [a @ Value::Float(_)]) => crate::builtins::to_int(a, span),
         ("float_bits", [Value::Float(a)]) => Ok(Value::Int(a.to_bits().cast_signed())),
+        ("bytes_text", [Value::Bytes(data), Value::Int(start), Value::Int(end)]) => {
+            let part = usize::try_from(*start).ok().zip(usize::try_from(*end).ok()).and_then(|(from, to)| data.get(from..to));
+            let text = part.and_then(|part| std::str::from_utf8(part).ok()).unwrap_or("");
+            Ok(Value::str(text))
+        }
         ("float_of_bits", [Value::Int(bits)]) => Ok(Value::Float(f64::from_bits(bits.cast_unsigned()))),
         // What a type is, which only native code knows as it runs.
         ("shape_hash" | "type_name", []) => Err(Diagnostic::new(

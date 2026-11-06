@@ -1696,6 +1696,7 @@ impl Emit<'_, '_, '_> {
             | "intrinsics.table_slots"
             | "intrinsics.table_of_slots"
             | "intrinsics.id_of_key" => self.id_intrinsic(dest, name, args),
+            "intrinsics.bytes_text" => self.bytes_text(dest.ok_or("no result")?, args),
             // A float's bits as an int, and back, which a binary format saves.
             "intrinsics.float_bits" | "intrinsics.float_of_bits" => {
                 let (value, _) = self.operand(first.ok_or("no argument")?)?;
@@ -1729,7 +1730,7 @@ impl Emit<'_, '_, '_> {
             }
             "Table" | "Table.len" | "Table.contains" | "Table.get" | "Table.add" | "Table.remove"
             | "Table.values" | "Table.ids" | "Table.items" | "Table.remove_where" | "Table.clear"
-            | "Table.slots" | "Table.slot_live" | "Table.at_slot" | "Table.slot_id" => {
+            | "Table.modify" | "Table.slots" | "Table.slot_live" | "Table.at_slot" | "Table.slot_id" => {
                 self.id_map_builtin(dest, name, args, span)
             }
             "is_regex" | "re.is_regex" | "re.pattern_problem" | "Regex.replace" | "Regex.split"

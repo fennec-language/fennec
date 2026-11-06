@@ -335,7 +335,7 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     let mut found = expressions(module, sources);
     for def in functions(module) {
         needless_pass(&def.body, &mut found);
-        // A function's last line is its value. The `mut` form of `def []` returns a place, and
+        // A function's last line is its value. The `ref` form of `def []` returns a place, and
         // says so.
         if let Some(Stmt { kind: StmtKind::Return(Some(value)), span }) = def.body.last()
             && def.name != "[]mut"

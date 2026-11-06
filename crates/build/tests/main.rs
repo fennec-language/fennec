@@ -15,7 +15,7 @@ fn hashes(source: &str) -> Result<BTreeMap<String, String>, fennec_syntax::Diagn
 }
 
 const GAME: &str = "from std.math import Vec3\nimport std.collections\n\ntype Id = int\n\n\
-## An enemy.\nstruct Enemy:\n    health: int\n\n    def hurt(mut self, amount: int):\n        self.health -= amount\n\n\
+## An enemy.\nstruct Enemy:\n    health: int\n\n    def hurt(ref self, amount: int):\n        self.health -= amount\n\n\
 enum Shape:\n    Point\n\nerror Gone:\n    id: int\n\ninterface Named:\n    def name(self) -> str\n\n\
 def main(stdout: Stdout):\n    stdout.print(\"hi\")\n\ntest \"it works\":\n    assert True\n";
 
@@ -42,7 +42,7 @@ fn every_definition_has_a_hash() {
 #[test]
 fn layout_comments_and_order_change_no_hash() {
     let moved = "def main(stdout: Stdout):\n    # hello\n    stdout.print( \"hi\" )\n\n\n\
-test \"it works\":\n  assert True\ninterface Named:\n    def name(self) -> str\nstruct Enemy:\n    health: int\n    def hurt(mut self, amount: int):\n        self.health -= amount\n\
+test \"it works\":\n  assert True\ninterface Named:\n    def name(self) -> str\nstruct Enemy:\n    health: int\n    def hurt(ref self, amount: int):\n        self.health -= amount\n\
 enum Shape:\n    Point\nerror Gone:\n    id: int\ntype Id = int\nimport std.collections\nfrom std.math import Vec3\n";
     assert_eq!(hashes(GAME).unwrap(), hashes(moved).unwrap());
 }

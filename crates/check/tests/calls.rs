@@ -368,7 +368,7 @@ fn a_named_function_goes_where_its_function_type_is_written() {
         def add(a: int, b: int) -> int:
             a + b
 
-        def bump(mut n: int):
+        def bump(ref n: int):
             n += 1
 
         def apply(f: (int) -> int, n: int) -> int:

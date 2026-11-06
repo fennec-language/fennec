@@ -258,7 +258,7 @@ extend Parser:
     def call_args(ref self) -> list[Arg]:
         mut args = []
         while not self.at_punct(")"):
-            is_mut = self.eat_ref()
+            is_mut = self.eat_ref("an argument")
             mut name = None
             if not is_mut and self.peek_at(1) == .Punct("=") and (is_name(self.peek()) or is_field_word(self.peek())):
                 name = self.field_name("an argument name")?
@@ -423,6 +423,7 @@ def fstring_parts(parts: list[FPart]) -> list[FStrPart]:
                 parser.eat(.Newline)
                 if not parser.at(.Eof):
                     fail parser.unexpected("`}`")
+                parser.check_old_mut()?
                 parsed.append(FStrPart.Code(expr, spec))
     parsed
 

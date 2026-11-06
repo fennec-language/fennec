@@ -50,8 +50,8 @@ fn literals_lambdas_and_comprehensions() {
 #[test]
 fn operator_methods_and_generics_are_written_tight() {
     check(
-        "struct Grid[T :Shape]:\n    cells: list[T]\n\n    def + (self, other: Grid[T]):\n        self\n\n    def [] = (mut self, at: int, value: T):\n        pass\n",
-        "struct Grid[T: Shape]:\n    cells: list[T]\n\n    def +(self, other: Grid[T]):\n        self\n\n    def []=(mut self, at: int, value: T):\n        pass\n",
+        "struct Grid[T :Shape]:\n    cells: list[T]\n\n    def + (self, other: Grid[T]):\n        self\n\n    def [] = (ref self, at: int, value: T):\n        pass\n",
+        "struct Grid[T: Shape]:\n    cells: list[T]\n\n    def +(self, other: Grid[T]):\n        self\n\n    def []=(ref self, at: int, value: T):\n        pass\n",
     );
 }
 
@@ -95,8 +95,8 @@ fn blocks_indent_four_spaces() {
 #[test]
 fn declarations_get_one_blank_line_around_them() {
     check(
-        "from std.math import Vec3\nfrom std.collections import Id\ntype EnemyId = Id[Enemy]\nstruct A:\n    x: int\n    def get(self):\n        self.x\n    def set(mut self, x: int):\n        self.x = x\n\n\n\nerror Gone:\n    id: int\ndef main(stdout: Stdout):\n    pass\ntest \"it works\":\n    pass\n",
-        "from std.collections import Id\nfrom std.math import Vec3\ntype EnemyId = Id[Enemy]\n\nstruct A:\n    x: int\n\n    def get(self):\n        self.x\n\n    def set(mut self, x: int):\n        self.x = x\n\nerror Gone:\n    id: int\n\ndef main(stdout: Stdout):\n    pass\n\ntest \"it works\":\n    pass\n",
+        "from std.math import Vec3\nfrom std.collections import Id\ntype EnemyId = Id[Enemy]\nstruct A:\n    x: int\n    def get(self):\n        self.x\n    def set(ref self, x: int):\n        self.x = x\n\n\n\nerror Gone:\n    id: int\ndef main(stdout: Stdout):\n    pass\ntest \"it works\":\n    pass\n",
+        "from std.collections import Id\nfrom std.math import Vec3\ntype EnemyId = Id[Enemy]\n\nstruct A:\n    x: int\n\n    def get(self):\n        self.x\n\n    def set(ref self, x: int):\n        self.x = x\n\nerror Gone:\n    id: int\n\ndef main(stdout: Stdout):\n    pass\n\ntest \"it works\":\n    pass\n",
     );
 }
 
@@ -119,8 +119,8 @@ fn interfaces_keep_their_signatures_together() {
 #[test]
 fn doc_comments_stay_with_what_they_document() {
     check(
-        "## The module.\nimport std.collections\n## A point.\nstruct Point:\n    ## Across.\n    x: int\n    ## Moves it.\n    def move(mut self):\n        pass\n## Runs it.\ndef main(stdout: Stdout):\n    pass\n",
-        "## The module.\nimport std.collections\n\n## A point.\nstruct Point:\n    ## Across.\n    x: int\n\n    ## Moves it.\n    def move(mut self):\n        pass\n\n## Runs it.\ndef main(stdout: Stdout):\n    pass\n",
+        "## The module.\nimport std.collections\n## A point.\nstruct Point:\n    ## Across.\n    x: int\n    ## Moves it.\n    def move(ref self):\n        pass\n## Runs it.\ndef main(stdout: Stdout):\n    pass\n",
+        "## The module.\nimport std.collections\n\n## A point.\nstruct Point:\n    ## Across.\n    x: int\n\n    ## Moves it.\n    def move(ref self):\n        pass\n\n## Runs it.\ndef main(stdout: Stdout):\n    pass\n",
     );
 }
 

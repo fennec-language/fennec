@@ -3,7 +3,7 @@
 use crate::problems;
 
 const ACCOUNT: &str =
-    "shared Account:\n    total = 0\n\n    def add(mut self, amount: int):\n        self.total += amount\n\n";
+    "shared Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n";
 
 #[test]
 fn any_name_for_a_handle_can_call_a_method_that_changes_it() {
@@ -29,9 +29,9 @@ fn a_handles_fields_change_only_in_its_methods() {
 fn a_shared_value_holds_another_and_takes_its_lock_inside_its_own() {
     let text = format!(
         "{ACCOUNT}shared Bank:\n    main: Account\n    accounts = list[Account]()\n\n    \
-         def deposit(mut self, amount: int):\n        self.main.add(amount)\n        self.accounts[0].add(1)\n\n\
+         def deposit(ref self, amount: int):\n        self.main.add(amount)\n        self.accounts[0].add(1)\n\n\
          def main(stdout: Stdout):\n    bank = Bank(main=Account())\n    bank.deposit(5)\n    \
-         with bank as mut held:\n        held.main.add(1)\n        with held.main as mut inner:\n            \
+         with bank as ref held:\n        held.main.add(1)\n        with held.main as ref inner:\n            \
          inner.total += 1\n    stdout.print(bank.main.total)\n"
     );
     let empty: [&str; 0] = [];
@@ -56,7 +56,7 @@ fn a_lock_body_takes_only_inner_locks() {
     let text = format!(
         "{ACCOUNT}shared Bank:\n    main: Account\n\n\
          def main(stdout: Stdout):\n    bank = Bank(main=Account())\n    account = bank.main\n    \
-         with account as mut held:\n        with bank as mut outer:\n            pass\n    stdout.print(1)\n"
+         with account as ref held:\n        with bank as ref outer:\n            pass\n    stdout.print(1)\n"
     );
     assert_eq!(problems(&text), ["this `with` takes another lock while `held` is locked @ bank"]);
 }
@@ -74,7 +74,7 @@ fn a_shared_value_cant_be_a_constant() {
 #[test]
 fn a_with_block_changes_handles_through_the_names_it_locks() {
     let text = format!(
-        "{ACCOUNT}def transfer(a: Account, b: Account, amount: int):\n    with a, b as mut x, mut y:\n        \
+        "{ACCOUNT}def transfer(a: Account, b: Account, amount: int):\n    with a, b as ref x, ref y:\n        \
          x.total -= amount\n        y.add(amount)\n\ndef main(stdout: Stdout):\n    a = Account(total=10)\n    \
          b = Account()\n    transfer(a, b, 3)\n    mut total = 0\n    with a as seen:\n        \
          total = seen.total\n    stdout.print(total)\n"
@@ -107,7 +107,7 @@ fn a_with_block_locks_only_handles_and_names_each_one() {
         ["a `with` holds several values only to lock `shared` handles, but this is an int @ 5"]
     );
     assert_eq!(
-        problems(&with("    with a as mut x:\n        x = b\n")),
+        problems(&with("    with a as ref x:\n        x = b\n")),
         ["`x` holds a lock for this `with` block, so it can't name anything else @ x"]
     );
     assert_eq!(problems(&with("    with a, b as x:\n")), ["parse: this `with` holds 2 values but names 1"]);
@@ -138,13 +138,13 @@ fn a_lock_body_does_no_io_and_cant_leave_early() {
     );
     assert_eq!(
         locking(
-            "shared Log:\n    count = 0\n\n    def set(mut self, n: int):\n        self.count = checked(n)?\n"
+            "shared Log:\n    count = 0\n\n    def set(ref self, n: int):\n        self.count = checked(n)?\n"
         ),
         ["`?` can't leave while `self` is locked @ checked(n)?"]
     );
     assert_eq!(
         locking(
-            "def drain(a: Account):\n    with a as mut x:\n        if x.total < 0:\n            \
+            "def drain(a: Account):\n    with a as ref x:\n        if x.total < 0:\n            \
              fail TooLow(total=x.total)\n        x.total = 0\n"
         ),
         ["`fail` can't leave while `x` is locked @ TooLow(total=x.total)"]
@@ -155,7 +155,7 @@ fn a_lock_body_does_no_io_and_cant_leave_early() {
 fn locks_never_nest() {
     assert_eq!(
         locking(
-            "def pay(a: Account, b: Account):\n    with a as mut x:\n        b.add(1)\n        \
+            "def pay(a: Account, b: Account):\n    with a as ref x:\n        b.add(1)\n        \
              x.total = b.total\n        with b as y:\n            pass\n"
         ),
         [
@@ -167,7 +167,7 @@ fn locks_never_nest() {
     assert_eq!(
         locking(
             "def pay(account: Account):\n    account.add(1)\n\nshared Bank:\n    total = 0\n\n    \
-             def take(mut self, source: Account):\n        source.add(-1)\n\n    def give(self, to: Account):\n        \
+             def take(ref self, source: Account):\n        source.add(-1)\n\n    def give(self, to: Account):\n        \
              pay(to)\n"
         ),
         [
@@ -180,7 +180,7 @@ fn locks_never_nest() {
 const HOLDERS: &str = "shared Cell:
     count = 0
 
-    def add(mut self, by: int):
+    def add(ref self, by: int):
         self.count += by
 
 struct Holder:
@@ -206,7 +206,7 @@ fn in_a_lock(body: &str) -> Vec<String> {
     let body = body.replace('\n', "\n    ");
     let found = crate::in_main_after(
         HOLDERS,
-        &format!("one = Cell()\nwith one as mut locked:\n    locked.count += 1\n    {body}\n"),
+        &format!("one = Cell()\nwith one as ref locked:\n    locked.count += 1\n    {body}\n"),
     );
     found.iter().filter_map(|said| said.split(" @ ").next().map(str::to_owned)).collect()
 }
@@ -231,7 +231,7 @@ fn what_holds_a_handle_cant_be_handed_on_under_a_lock() {
 fn a_function_that_captures_a_handle_cant_run_under_a_lock() {
     let before = |lines: &str, body: &str| {
         let source =
-            format!("one = Cell()\n{lines}\nwith one as mut locked:\n    locked.count += 1\n    {body}\n");
+            format!("one = Cell()\n{lines}\nwith one as ref locked:\n    locked.count += 1\n    {body}\n");
         let found = crate::in_main_after(HOLDERS, &source);
         found.iter().filter_map(|said| said.split(" @ ").next().map(str::to_owned)).collect::<Vec<_>>()
     };

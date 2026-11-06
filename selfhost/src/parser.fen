@@ -23,10 +23,14 @@ struct Parser:
     ## Set when an expression ended with an indented block (a `match`), so the statement
     ## holding it has no line ending of its own to consume.
     block_ended = False
+    ## Each `mut` written where the language now says `ref`, and what it was on. Parsing goes on
+    ## past them, so the one error they give can fix every one in the file.
+    old_mut: list[Span]
+    old_mut_on: list[str]
 
     def over(tokens: list[Token]) -> Parser:
         end = tokens[-1].span if tokens.len() > 0 else Span(start=0, end=0)
-        Parser(tokens=tokens, eof=Token(tok=.Eof, span=end))
+        Parser(tokens=tokens, eof=Token(tok=.Eof, span=end), old_mut=[], old_mut_on=[])
 
     def current(self) -> Token:
         if self.pos < self.tokens.len():
@@ -86,10 +90,28 @@ struct Parser:
     def eat_keyword(ref self, word: str) -> bool:
         self.eat(.Keyword(word))
 
-    ## `ref` on a loop, a parameter, an argument or a `with` name, where `mut` still means the same
-    ## until `fennec fix --mut-to-ref` has been run everywhere.
-    def eat_ref(ref self) -> bool:
-        self.eat_keyword("ref") or self.eat_keyword("mut")
+    ## `ref` on `what`: a loop, a parameter, an argument or a `with` name. `mut` there was the old
+    ## spelling. It's kept as `ref` so parsing can go on, and the file fails with one error at
+    ## the end, which `fennec fix` mends everywhere it was written.
+    def eat_ref(ref self, what: str) -> bool:
+        if self.at_keyword("mut"):
+            self.old_mut.append(self.advance().span)
+            self.old_mut_on.append(what)
+            return True
+        self.eat_keyword("ref")
+
+    ## Fails at the first `mut` that should be `ref`, saying how many more there are. It comes
+    ## before any later mistake, since it's earlier in the file.
+    def check_old_mut(self):
+        if self.old_mut.len() == 0:
+            return
+        others = self.old_mut.len() - 1
+        more = "" if others == 0 else (" and in 1 other place" if others == 1 else f" and in {others} other places")
+        fail Diagnostic(
+            message=f"{self.old_mut_on[0]} is written `ref`, not `mut`",
+            span=self.old_mut[0],
+            help=f"`mut` is only for a new local name. `fennec fix` writes `ref` here{more}",
+        )
 
     def expect_punct(ref self, text: str) -> Span:
         if not self.at_punct(text):
@@ -145,7 +167,12 @@ struct Parser:
                 pass
             if self.at(.Eof):
                 break
-            items.append(self.item()?)
+            match self.item():
+                case Ok(item): items.append(item)
+                case Err(problem):
+                    self.check_old_mut()?
+                    fail problem
+        self.check_old_mut()?
         Module(items=items)
 
     def item(ref self) -> Item:
@@ -494,7 +521,7 @@ struct Parser:
 
     def param(ref self) -> Param:
         start = self.span()
-        is_mut = self.eat_ref()
+        is_mut = self.eat_ref("a parameter")
         name = self.name("a parameter name")?
         if name == "self":
             return Param(name=name, ty=None, is_mut=is_mut, is_self=True, default=None, span=start.to(self.prev_span()))

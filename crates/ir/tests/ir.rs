@@ -242,7 +242,7 @@ fn lists_are_written_out_read_changed_and_looped_over() {
   bb0:
     _1 = [1, _0]
     _2 = _1
-    builtin list.append(mut _2, 3)
+    builtin list.append(ref _2, 3)
     _3 = _2[0]
     _4 = _3 + 1
     _2[0] = _4
@@ -275,32 +275,32 @@ fn a_mut_field_is_copied_in_and_back_out() {
     let source = "struct Bag:
     items: list[int]
 
-    def add(mut self, item: int):
+    def add(ref self, item: int):
         self.items.append(item)
 
-def grow(mut items: list[int]):
+def grow(ref items: list[int]):
     items.append(1)
 
-def fill(mut bag: Bag):
-    grow(mut bag.items)
+def fill(ref bag: Bag):
+    grow(ref bag.items)
     bag.add(2)
 ";
     assert_eq!(
         printed(source, "Bag.add").unwrap(),
-        "fn Bag.add(mut _0, _1)
+        "fn Bag.add(ref _0, _1)
   local _0 self: Bag
   local _1 item: int
   local _2: list[int]
   bb0:
     _2 = _0.items
-    builtin list.append(mut _2, _1)
+    builtin list.append(ref _2, _1)
     _0.items = _2
     return
 "
     );
     assert_eq!(
         printed(source, "fill").unwrap(),
-        "fn fill(mut _0)
+        "fn fill(ref _0)
   local _0 bag: Bag
   local _1: list[int]
   bb0:
@@ -760,7 +760,7 @@ fn values_are_wrapped_going_where_an_optional_goes_and_else_runs_only_when_neede
     let source = "struct Slot:
     held: int?
 
-def fill(mut slot: Slot, value: int?) -> int:
+def fill(ref slot: Slot, value: int?) -> int:
     slot.held = 1
     slot.held = None
     mut kept: int? = 2
@@ -892,7 +892,7 @@ fn a_comprehension_is_a_loop_that_fills_a_collection() {
     return _1
   bb5:
     _9 = _7 * 2
-    builtin list.append(mut _1, _9)
+    builtin list.append(ref _1, _9)
     jump bb3
 "
     );
@@ -902,7 +902,7 @@ fn a_comprehension_is_a_loop_that_fills_a_collection() {
 fn dict_and_set_comprehensions() {
     let source = "def f(xs: list[int]) -> dict[int, str]:\n    {x: str(x) for x in {x for x in xs}}\n";
     let text = printed(source, "f").unwrap();
-    for expected in ["= dict {}", "= set {}", "builtin set.add(mut", "builtin list(", "] = "] {
+    for expected in ["= dict {}", "= set {}", "builtin set.add(ref", "builtin list(", "] = "] {
         assert!(text.contains(expected), "no `{expected}` in {text}");
     }
 }
@@ -950,13 +950,13 @@ fn a_types_own_operators_are_calls() {
     def <(self, other: Money) -> bool:
         self.cents < other.cents
 
-def f(mut a: Money, b: Money) -> bool:
+def f(ref a: Money, b: Money) -> bool:
     a += b
     a >= b
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
-        "fn f(mut _0, _1) -> bool
+        "fn f(ref _0, _1) -> bool
   local _0 a: Money
   local _1 b: Money
   local _2: Money
@@ -1079,8 +1079,8 @@ fn a_range_with_a_step_goes_through_a_list() {
 
 #[test]
 fn for_mut_writes_each_item_back_however_the_loop_is_left() {
-    let source = "def f(mut xs: list[int]) -> int:
-    for mut x in xs:
+    let source = "def f(ref xs: list[int]) -> int:
+    for ref x in xs:
         x += 1
         if x > 3:
             break
@@ -1090,7 +1090,7 @@ fn for_mut_writes_each_item_back_however_the_loop_is_left() {
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
-        "fn f(mut _0) -> int
+        "fn f(ref _0) -> int
   local _0 xs: list[int]
   local _1: list[int]
   local _2: int
@@ -1148,13 +1148,13 @@ fn changing_an_items_insides_reads_it_changes_it_and_writes_it_back() {
     let source = "struct P:
     x: int
 
-def f(mut ps: list[P], mut grid: list[list[int]]):
+def f(ref ps: list[P], ref grid: list[list[int]]):
     ps[0].x += 1
     grid[1][2] = 3
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
-        "fn f(mut _0, mut _1)
+        "fn f(ref _0, ref _1)
   local _0 ps: list[P]
   local _1 grid: list[list[int]]
   local _2: P
@@ -1185,19 +1185,19 @@ fn a_types_own_indexing_is_calls() {
     def [](self, at: int) -> int:
         self.cells[at]
 
-    def []=(mut self, at: int, value: int):
+    def []=(ref self, at: int, value: int):
         self.cells[at] = value
 
 struct Holder:
     grid: Grid
 
-def f(mut holder: Holder) -> int:
+def f(ref holder: Holder) -> int:
     holder.grid[1] = 2
     holder.grid[0]
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
-        "fn f(mut _0) -> int
+        "fn f(ref _0) -> int
   local _0 holder: Holder
   local _1: Grid
   local _2: Grid
@@ -1215,16 +1215,16 @@ def f(mut holder: Holder) -> int:
 
 #[test]
 fn mut_arguments_can_be_items() {
-    let source = "def bump(mut n: int):
+    let source = "def bump(ref n: int):
     n += 1
 
-def f(mut xs: list[int], mut lists: list[list[int]]):
-    bump(mut xs[0])
+def f(ref xs: list[int], ref lists: list[list[int]]):
+    bump(ref xs[0])
     lists[1].append(2)
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
-        "fn f(mut _0, mut _1)
+        "fn f(ref _0, ref _1)
   local _0 xs: list[int]
   local _1 lists: list[list[int]]
   local _2: int
@@ -1234,7 +1234,7 @@ def f(mut xs: list[int], mut lists: list[list[int]]):
     call bump(_2)
     _0[0] = _2
     _3 = _1[1]
-    builtin list.append(mut _3, 2)
+    builtin list.append(ref _3, 2)
     _1[1] = _3
     return
 "
@@ -1691,7 +1691,7 @@ fn an_id_map_is_read_and_changed_by_id() {
 struct Enemy:
     health: int
 
-    def hit(mut self):
+    def hit(ref self):
         self.health -= 1
 
 def f() -> int:
@@ -1699,7 +1699,7 @@ def f() -> int:
     one = map.add(Enemy(2))
     map[one] = Enemy(3)
     map.modify(one, e => e.hit())
-    for mut enemy in map:
+    for ref enemy in map:
         enemy.hit()
     map[one].health
 ";
@@ -1727,12 +1727,12 @@ def f() -> int:
     _0 = builtin Table()
     _1 = _0
     _2 = make Enemy(2)
-    _3 = builtin Table.add(mut _1, _2)
+    _3 = builtin Table.add(ref _1, _2)
     _4 = _3
     _5 = make Enemy(3)
     _1[_4] = _5
     _6 = closure f.arrow@232[]
-    builtin Table.modify(mut _1, _4, _6)
+    builtin Table.modify(ref _1, _4, _6)
     _7 = builtin Table.items(_1)
     _8 = builtin list.len(_7)
     _9 = 0
@@ -1831,10 +1831,10 @@ fn an_argument_is_copied_only_when_a_later_one_changes_it() {
         "def show(a: list[int], b: int) -> int:
     b
 
-def kept(mut xs: list[int], ys: list[int]) -> int:
+def kept(ref xs: list[int], ys: list[int]) -> int:
     show(xs, ys.len()) + show(ys, xs.len())
 
-def changed(mut xs: list[int]) -> int:
+def changed(ref xs: list[int]) -> int:
     show(xs, xs.pop())
 ",
     )
@@ -1950,7 +1950,7 @@ fn a_method_changing_a_name_known_not_to_be_none_writes_back_an_optional() {
     let source = "struct P:
     x: int
 
-    def up(mut self):
+    def up(ref self):
         self.x += 1
 
 def f(p: P?) -> P?:
@@ -2137,7 +2137,7 @@ def f() -> int:
 
 #[test]
 fn a_method_of_a_list_is_copied_for_what_it_holds() {
-    let source = "def f(mut xs: list[int]) -> int:
+    let source = "def f(ref xs: list[int]) -> int:
     xs.reverse()
     xs.count(1)
 ";
@@ -2217,12 +2217,12 @@ fn facts_narrow_a_local_holding_one_value_along_branches() {
 
 #[test]
 fn facts_keep_a_count_inside_its_loop_and_say_nothing_of_a_changed_local() {
-    let source = "def bump(mut x: int):
+    let source = "def bump(ref x: int):
     x += 1
 
 def f(n: int) -> int:
     mut total = 0
-    bump(mut total)
+    bump(ref total)
     once = 5
     for i in range(3, 9):
         total += i + once
@@ -2250,7 +2250,7 @@ fn a_write_runs_only_the_rule_of_the_field_it_writes() {
     low: int where low >= 0
     high: int where high >= 9
 
-def f(mut pair: Pair):
+def f(ref pair: Pair):
     pair.low = 1
 ";
     let text = printed(source, "f").unwrap();
@@ -2262,7 +2262,7 @@ const ACCOUNT: &str = "shared Account:
     total = 0
     log = list[int]()
 
-    def add(mut self, amount: int):
+    def add(ref self, amount: int):
         self.total += amount
         self.log.append(amount)
         self.note()
@@ -2305,7 +2305,7 @@ fn a_shared_types_methods_are_called_with_its_lock() {
     _3 = _2 + _1
     _0.total = _3
     _4 = _0.log
-    builtin list.append(mut _4, _1)
+    builtin list.append(ref _4, _1)
     _0.log = _4
     call Account.note(_0)
     return
@@ -2701,11 +2701,11 @@ fn a_buffer_is_made_filled_and_read_through_its_own_builtins() {
 const TRANSFER: &str = "shared Account:
     total = 0
 
-    def add(mut self, amount: int):
+    def add(ref self, amount: int):
         self.total += amount
 
 def transfer(a: Account, b: Account, amount: int) -> bool:
-    with a, b as mut x, mut y:
+    with a, b as ref x, ref y:
         if x.total < amount:
             return False
         x.total -= amount
@@ -2870,7 +2870,7 @@ fn in_calls_a_types_own_in() {
 /// what it wrote, so native code never prints such a value from its fields.
 #[test]
 fn a_type_with_its_own_str_prints_through_it() {
-    let source = "struct Point:\n    x: int\n\n    def str(self, mut out: StrWriter):\n        out.value(self.x)\n\ndef label(p: Point) -> str:\n    f\"at {p}\"\n";
+    let source = "struct Point:\n    x: int\n\n    def str(self, ref out: StrWriter):\n        out.value(self.x)\n\ndef label(p: Point) -> str:\n    f\"at {p}\"\n";
     assert_eq!(
         printed(source, "label").unwrap(),
         r#"fn label(_0) -> str

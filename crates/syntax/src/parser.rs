@@ -41,7 +41,7 @@ pub(crate) fn parse_statements_at(source: &str, base: u32) -> Result<Vec<Stmt>, 
     while !parser.eat(&Tok::Dedent) && !parser.at(&Tok::Eof) {
         stmts.push(parser.stmt()?);
     }
-    Ok(stmts)
+    parser.old_mut_error().map_or(Ok(stmts), Err)
 }
 
 pub(crate) struct Parser {
@@ -51,12 +51,21 @@ pub(crate) struct Parser {
     /// Set when an expression ended with an indented block (a `match`), so the statement
     /// holding it has no line ending of its own to consume.
     block_ended: bool,
+    /// Each `mut` written where the language now says `ref`, and what it was on. Parsing goes on
+    /// past them, so the one error they give can fix every one in the file.
+    old_mut: Vec<(Span, &'static str)>,
 }
 
 impl Parser {
     fn new(tokens: Vec<Token>) -> Self {
         let end = tokens.last().map_or_else(Span::default, |token| token.span);
-        Parser { tokens, pos: 0, eof: Token { tok: Tok::Eof, span: end }, block_ended: false }
+        Parser {
+            tokens,
+            pos: 0,
+            eof: Token { tok: Tok::Eof, span: end },
+            block_ended: false,
+            old_mut: Vec::new(),
+        }
     }
 
     fn current(&self) -> &Token {
@@ -128,10 +137,34 @@ impl Parser {
         self.eat(&Tok::Kw(kw))
     }
 
-    /// `ref` on a loop, a parameter, an argument or a `with` name, where `mut` still means the
-    /// same until `fennec fix --mut-to-ref` has been run everywhere.
-    fn eat_ref(&mut self) -> bool {
-        self.eat_kw(Kw::Ref) || self.eat_kw(Kw::Mut)
+    /// `ref` on `what`: a loop, a parameter, an argument or a `with` name. `mut` there was the old
+    /// spelling. It's kept as `ref` so parsing can go on, and the file fails with one error at
+    /// the end, which `fennec fix` mends everywhere it was written.
+    fn eat_ref(&mut self, what: &'static str) -> bool {
+        if self.at_kw(Kw::Mut) {
+            let span = self.advance().span;
+            self.old_mut.push((span, what));
+            return true;
+        }
+        self.eat_kw(Kw::Ref)
+    }
+
+    /// The error for each `mut` that should be `ref`, at the first one, with the fixes for all of
+    /// them. It comes before any later mistake, since it's earlier in the file.
+    fn old_mut_error(&self) -> Option<Diagnostic> {
+        let &(span, what) = self.old_mut.first()?;
+        let others = self.old_mut.len() - 1;
+        let more = match others {
+            0 => String::new(),
+            1 => " and in 1 other place".to_owned(),
+            _ => format!(" and in {others} other places"),
+        };
+        let mut diagnostic = Diagnostic::new(format!("{what} is written `ref`, not `mut`"), span)
+            .with_help(format!("`mut` is only for a new local name. `fennec fix` writes `ref` here{more}"));
+        for &(span, _) in &self.old_mut {
+            diagnostic = diagnostic.with_fix(span, "ref");
+        }
+        Some(diagnostic)
     }
 
     fn expect_p(&mut self, punct: Punct) -> Result<Span, Diagnostic> {
@@ -187,6 +220,14 @@ impl Parser {
     }
 
     fn module(&mut self) -> Result<Module, Diagnostic> {
+        let module = self.items();
+        match self.old_mut_error() {
+            Some(old_mut) => Err(old_mut),
+            None => module,
+        }
+    }
+
+    fn items(&mut self) -> Result<Module, Diagnostic> {
         let mut items = Vec::new();
         loop {
             while self.eat(&Tok::Newline) {}
@@ -612,7 +653,7 @@ impl Parser {
 
     fn param(&mut self) -> Result<Param, Diagnostic> {
         let start = self.span();
-        let is_mut = self.eat_ref();
+        let is_mut = self.eat_ref("a parameter");
         let name = self.name("a parameter name")?;
         if name == "self" {
             return Ok(Param {

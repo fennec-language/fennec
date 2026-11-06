@@ -26,27 +26,27 @@ struct Unit:
     x: float
     health: float
 
-def step(mut units: list[Unit], by: float):
-    for mut unit in parallel(units):
+def step(ref units: list[Unit], by: float):
+    for ref unit in parallel(units):
         unit.x += by
         if unit.x > 5.0:
             unit.health -= 1.0
 
-def take(mut state: list[int]) -> list[int]:
+def take(ref state: list[int]) -> list[int]:
     state.append(9)
     [1, 2]
 
-def show(stdout: Stdout, mut state: list[int]):
-    for n in parallel(take(mut state)):
+def show(stdout: Stdout, ref state: list[int]):
+    for n in parallel(take(ref state)):
         stdout.print(n, state.len())
 
 def main(stdout: Stdout):
     mut units = [Unit(float(n), 10.0) for n in range(8)]
-    step(mut units, 2.0)
+    step(ref units, 2.0)
     stdout.print([unit.x for unit in parallel(units)])
     stdout.print(sum(unit.health for unit in parallel(units)))
     mut state = [0]
-    show(stdout, mut state)
+    show(stdout, ref state)
 ";
 
 #[test]
@@ -364,11 +364,11 @@ fn a_character_first_read_on_a_worker_is_found_by_every_range() -> std::io::Resu
 const INPUTS: &str = "\
 def main(stdout: Stdout, args: Args, stdin: Stdin):
     mut counts = [0, 0, 0, 0, 0, 0, 0, 0]
-    for mut count in parallel(counts):
+    for ref count in parallel(counts):
         count = args.len()
     stdout.print(counts)
     mut lines = [0, 0, 0, 0]
-    for mut count in parallel(lines):
+    for ref count in parallel(lines):
         count = stdin.lines().len()
     stdout.print(sum(lines))
 ";
@@ -475,8 +475,8 @@ fn a_worker_failing_under_a_lock_ends_the_program() -> std::io::Result<()> {
         let source = format!(
             "shared Counter:\n    total = 0\n{fields}\n\
              def main(stdout: Stdout):\n    one = Counter()\n    \
-             mut items = [n for n in range(50_000)]\n    for mut item in parallel(items):\n        \
-             with one as mut x:\n            x.total = 100 // (item - 25_000)\n        item += 1\n    \
+             mut items = [n for n in range(50_000)]\n    for ref item in parallel(items):\n        \
+             with one as ref x:\n            x.total = 100 // (item - 25_000)\n        item += 1\n    \
              stdout.print(items.len())\n"
         );
         let built = build_on_threads(&dir, &source, name)?;
@@ -641,10 +641,10 @@ def answer(connection: Connection, counter: Counter) -> int fails NetError:
     connection.write(\"ready\\n\")?
     for line in connection.lines():
         if line == \"fail\":
-            with counter as mut held:
+            with counter as ref held:
                 held.total = 1 // (held.total - held.total)
         else:
-            with counter as mut held:
+            with counter as ref held:
                 held.total += 1
             connection.write(f\"{counter.total}\\n\")?
     0
@@ -776,7 +776,7 @@ fn workers_read_a_constant_the_calling_thread_worked_out() -> std::io::Result<()
     std::fs::create_dir_all(&dir)?;
     let source = "LONG = f\"{1 + 1} and then a string too long to fit in a header\"\n\
                   WORDS = [\"a\", \"b\", LONG]\n\n\
-                  def main(stdout: Stdout):\n    mut counts = [at for at in range(2000)]\n    for mut count in parallel(counts):\n        \
+                  def main(stdout: Stdout):\n    mut counts = [at for at in range(2000)]\n    for ref count in parallel(counts):\n        \
                   count = LONG.len() + WORDS.len() + WORDS[2].upper().len()\n    \
                   stdout.print(sum(counts), LONG, WORDS.len())\n    mut mine = WORDS\n    mine.append(\"mine\")\n    \
                   stdout.print(mine.len(), WORDS.len())\n";

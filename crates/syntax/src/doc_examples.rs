@@ -90,16 +90,6 @@ fn fences(source: &str) -> Vec<Fence<'_>> {
     fences
 }
 
-/// The code of each example in a file's doc comments, with the rest blanked, so each byte is where
-/// it is in the file.
-pub(crate) fn example_code(source: &str) -> Vec<String> {
-    fences(source)
-        .iter()
-        .filter(|fence| fence.closed && fence.runs)
-        .map(|fence| only(source, &fence.body))
-        .collect()
-}
-
 /// The examples in a file's doc comments, as tests. The file is shown as `shown`, its spans start
 /// at byte `base`, and a fence that's never closed or code that doesn't parse is a mistake.
 pub fn doc_examples(source: &str, base: u32, shown: &str) -> Result<Vec<Item>, Diagnostic> {

@@ -79,7 +79,7 @@ impl Function {
         use fmt::Write as _;
         let params: Vec<String> = (0..self.params)
             .map(|at| {
-                let word = if self.mut_params.contains(&at) { "mut " } else { "" };
+                let word = if self.mut_params.contains(&at) { "ref " } else { "" };
                 format!("{word}{}", LocalId(at))
             })
             .collect();
@@ -185,7 +185,7 @@ impl fmt::Display for InstKind {
             InstKind::Builtin { dest, name, args, changes } => {
                 let mut shown: Vec<String> = args.iter().map(ToString::to_string).collect();
                 if let (true, Some(first)) = (*changes, shown.first_mut()) {
-                    *first = format!("mut {first}");
+                    *first = format!("ref {first}");
                 }
                 if let Some(dest) = dest {
                     write!(f, "{dest} = ")?;

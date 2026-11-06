@@ -667,6 +667,10 @@ impl Lowering<'_> {
         self.emit(InstKind::Copy { dest: whole, value: text }, span);
         let length = self.temporary(Type::Int);
         self.emit(builtin("str.byte_len", length, vec![Operand::Local(whole)]), span);
+        // Whether it's all ASCII, worked out once: each character is then its byte, and the loop
+        // can be split in two, the ASCII one with nothing to test for each.
+        let ascii = self.temporary(Type::Bool);
+        self.emit(builtin("str.is_ascii", ascii, vec![Operand::Local(whole)]), span);
         let at = self.temporary(Type::Int);
         self.emit(InstKind::Copy { dest: at, value: Operand::Int(0) }, span);
         let step = self.temporary(Type::Int);
@@ -682,7 +686,7 @@ impl Lowering<'_> {
         self.current = then;
         self.scopes.push(HashMap::new());
         let character = self.declare(name, Type::Str);
-        let args = vec![Operand::Local(whole), Operand::Local(at)];
+        let args = vec![Operand::Local(whole), Operand::Local(at), Operand::Local(ascii)];
         self.emit(builtin("str.char_at_byte", character, args), span);
         self.emit(builtin("str.byte_len", step, vec![Operand::Local(character)]), span);
         self.loops.push(Loop { next, exit, depth: self.leaving.len() });
@@ -692,8 +696,9 @@ impl Lowering<'_> {
         lowered?;
         self.finish(Terminator::Jump(next));
         self.current = next;
-        let lhs = Operand::Local(at);
-        self.emit(InstKind::Binary { dest: at, op: BinOp::Add, lhs, rhs: Operand::Local(step) }, span);
+        // Where the next character starts: never past the text's end, so it can't overflow.
+        let args = vec![Operand::Local(at), Operand::Local(step)];
+        self.emit(builtin("str.next_place", at, args), span);
         self.finish(Terminator::Jump(head));
         self.current = exit;
         Ok(())

@@ -12,9 +12,13 @@ use super::codec::Image;
 use super::{State, heap, with};
 use crate::fakes::{TestCapabilities, TestWorld};
 
-/// The stack an executable's program runs on. It's only reserved, not used, until calls
-/// nest deeply.
+/// The stack an executable's program runs on, off macOS. It's only reserved, not used, until
+/// calls nest deeply.
 const STACK_BYTES: usize = 1 << 30;
+
+/// The main thread's stack on macOS, as `fennec build` links it: the most the linker gives on
+/// arm64. Native calls may use `NATIVE_STACK_BYTES` of it, which leaves as much for the runtime.
+pub const MAIN_STACK_BYTES: usize = 1 << 29;
 
 /// How much of the stack native calls may use, leaving the rest for the runtime and the
 /// interpreter.
@@ -55,6 +59,15 @@ pub extern "C" fn image(word: i64) {
 /// Gives back the process's exit code.
 pub fn run(entry: extern "C" fn(i64), length: i64, stop: fn(i32)) -> i32 {
     let bytes = program_handed_over(length, stop);
+    // On macOS `fennec build` links every executable with a main thread of `MAIN_STACK_BYTES`, so
+    // the program runs there, with no thread to start. Elsewhere the main thread's stack is the
+    // system's, so it gets a thread of its own.
+    if cfg!(target_os = "macos") {
+        return match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(entry, &bytes))) {
+            Ok((output, failure)) => report(&output, &failure),
+            Err(_) => report(b"", "error: the program stopped unexpectedly\n"),
+        };
+    }
     let ran = std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(STACK_BYTES)

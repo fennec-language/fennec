@@ -178,6 +178,13 @@ struct PackWriter:
         self._optional = False
         self._varint(at)
 
+    def member(ref self, name: str, at: int):
+        self._optional = False
+        self._varint(at)
+
+    def end_member(ref self):
+        pass
+
     def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
         self.sequence(items)
 
@@ -466,3 +473,15 @@ struct PackReader:
 
     def end_case(ref self) fails ParseError:
         pass
+
+    def member(ref self, names: list[str]) -> int fails ParseError:
+        start = self._at
+        at = self._varint()?
+        if at < 0 or at >= names.len():
+            union = " | ".join(names)
+            fail self._fail_at(start, f"`{union}` has no member {at}")
+        self._deeper()?
+        at
+
+    def end_member(ref self) fails ParseError:
+        self._depth -= 1

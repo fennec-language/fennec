@@ -2005,6 +2005,33 @@ fn isdigit_matches_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// `//` and `%` by a power of two are a shift and a mask, which round toward negative infinity
+/// as Fennec's do: for every sign, from the lowest int to the highest, and the divisors from 1 up.
+#[test]
+fn dividing_by_a_power_of_two_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("power_of_two_division", POWER_OF_TWO_DIVISION)
+}
+
+const POWER_OF_TWO_DIVISION: &str = r#"def main(stdout: Stdout):
+    lowest = -9223372036854775807 - 1
+    highest = 9223372036854775807
+    values = [0, 1, -1, 2, -2, 3, -3, 7, -7, 8, -8, 9, -9, 1023, -1023, 1024, -1024, 123456789, -123456789, lowest, lowest + 1, highest, highest - 1]
+    mut lines = []
+    for v in values:
+        lines.append(f"{v}: {v // 1} {v % 1} {v // 2} {v % 2} {v // 4} {v % 4} {v // 8} {v % 8} {v // 1024} {v % 1024} {v // 16384} {v % 16384} {v // 4611686018427387904} {v % 4611686018427387904}")
+    for line in lines:
+        stdout.print(line)
+    mut total = 0
+    for n in range(-50, 50):
+        total += n // 2 + n % 2 * 3 + n // 16 - n % 32
+        if n % 2 == 0:
+            total += n // 2
+    stdout.print(total)
+"#;
+
 /// A product past the check is known not to have overflowed, which lets LLVM drop later checks:
 /// one that does overflow still fails, from either sign, and one that doesn't goes on to its sums.
 #[test]

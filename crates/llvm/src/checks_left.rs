@@ -1,11 +1,11 @@
 //! The checks a program's native code keeps: each place that can still stop the program with an
-//! overflow, an index outside, a division by zero and the like, because the analysis emit uses
-//! couldn't prove it never does. Worked out from the IR and that analysis alone, with no LLVM.
+//! overflow, an index outside, a division by zero and the like. Emit notes each as it writes it,
+//! so what's here is what the code has, with no LLVM needed: a repeated `xs[at]` that emit checks
+//! once is here once. LLVM can drop more while optimizing, from what it learns; those are still
+//! here, since nothing promises it will.
 //!
-//! LLVM drops a check on a constant it can see the answer to, as `x // 2` or `x << 3`, and
-//! those aren't here. It can drop others too, from what it learns while optimizing; those are
-//! still here, since nothing promises it will. Emit also checks an index into a list once until
-//! the list or the index changes, so `xs[at]` read twice keeps one check; both are here.
+//! A program emit can't write yet is worked out from the analysis emit uses instead, which can
+//! say a check is kept where emit would have made it once.
 
 use fennec_check::Type;
 use fennec_ir::{Function, InstKind, LocalId, Operand, PlaceStep, Program};
@@ -23,7 +23,7 @@ pub struct CheckLeft {
 }
 
 /// What a check is for.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum CheckKind {
     /// An int `+`, `-`, `*`, `**` or negation that might overflow, or `//` or `%` by what might be
     /// -1 with the lowest int.
@@ -40,10 +40,26 @@ pub enum CheckKind {
     Builtin(String),
 }
 
-/// Every check the native code keeps, function by function in the program's order, each in the
-/// order of its blocks.
+/// Every check the native code keeps, function by function in the order they're written, each
+/// once however many callers its function is copied into.
 #[must_use]
 pub fn checks_left(program: &Program) -> Vec<CheckLeft> {
+    let noting = crate::Shared { noting_checks: true, ..crate::Shared::default() };
+    let Ok((_, shared, _)) = crate::emit::emit_with(program, crate::Cpu::Usual, noting) else {
+        return checks_from_analysis(program);
+    };
+    let mut seen = std::collections::HashSet::new();
+    shared
+        .checks
+        .into_iter()
+        .filter(|check| {
+            seen.insert((check.function.clone(), check.span.start, check.span.end, check.what.clone()))
+        })
+        .collect()
+}
+
+/// The checks the analysis emit uses says are kept, for a program emit can't write.
+fn checks_from_analysis(program: &Program) -> Vec<CheckLeft> {
     let everything = whole(program);
     let mut found = Vec::new();
     for function in program.functions.iter().chain(&program.constants) {
@@ -238,6 +254,7 @@ mod tests {
             "def go(xs: list[float]) -> float:\n    mut sum = 0.0\n    for x in xs:\n        sum += x\n    sum\n",
             "struct Unit:\n    hp: int\n\ndef go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.hp -= 1\n",
             "def go(xs: list[int], at: int) -> int:\n    mut total = xs[at]\n    for i in range(xs.len()):\n        total += xs[i] - xs[-1]\n    total\n",
+            "def go(xs: list[int], at: int) -> int:\n    xs[at] + xs[at] * 2\n",
         ] {
             let program = lowered(body)?;
             let reported = checks_left(&program)
@@ -275,6 +292,26 @@ mod tests {
             let found = kept(body)?;
             assert!(!found.iter().any(|(what, _)| *what == CheckKind::Bounds), "{body}{found:?}");
         }
+        Ok(())
+    }
+
+    /// An index read twice is checked once, until something could change the list or the index.
+    #[test]
+    fn an_index_read_twice_keeps_one_check() -> Result<(), String> {
+        let found = kept("def go(xs: list[int], at: int) -> int:\n    xs[at] + xs[at] * 2\n")?;
+        let bounds = found.iter().filter(|(what, _)| *what == CheckKind::Bounds).count();
+        assert_eq!(bounds, 1, "{found:?}");
+        Ok(())
+    }
+
+    /// A `match` the checker saw cover every case isn't a check, and nor is a call's failing,
+    /// which is its function's; what a builtin checks where it runs is.
+    #[test]
+    fn a_match_is_no_check_but_a_builtin_s_is() -> Result<(), String> {
+        let found = kept(
+            "enum Shape:\n    Round\n    Square\n\ndef half(x: int) -> int:\n    x // 2\n\ndef go(x: float, n: int, shape: Shape) -> int:\n    match shape:\n        case .Round:\n            int(x) | half(n)\n        case .Square:\n            n\n",
+        )?;
+        assert_eq!(found, [(CheckKind::Builtin("int".to_owned()), "int(x)".to_owned())]);
         Ok(())
     }
 

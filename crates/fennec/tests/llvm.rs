@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 126;
+const BUILDING_EXAMPLES: usize = 129;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -2044,6 +2044,37 @@ fn removing_what_a_set_lacks_fails_like_the_jit() -> std::io::Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// Sorting by a key that's a tuple, in place or into a new list, keeping equal keys in order.
+#[test]
+fn sorting_by_tuple_keys_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "tuple_keys",
+        r#"struct Unit:
+    name: str
+    hp: int
+
+def main(stdout: Stdout):
+    words = ["bramble", "kit", "ash", "a long word that sits in a block", "kit"]
+    stdout.print(sorted(words, key=(word) => (word.len(), word)))
+    stdout.print(sorted([3, 1, 2], key=(n) => (n % 2, -n)))
+    stdout.print(sorted([1.5, -2.5], key=(x) => (x, 1)))
+    units = [Unit(name="b", hp=2), Unit(name="a", hp=2), Unit(name="c", hp=1), Unit(name="d", hp=2)]
+    stdout.print(sorted(units, key=(unit) => (unit.hp, unit.name)))
+    stdout.print(sorted(units, key=(unit) => (unit.hp, 0)))
+    mut changing = [5, 3, 9, 1]
+    kept = changing
+    changing.sort(key=(n) => (n % 3, n))
+    stdout.print(changing, kept)
+    empty: list[int] = []
+    stdout.print(sorted(empty, key=(n) => (n, n)))
+    stdout.print(words)
+"#,
+    )
 }
 
 /// Shifts, `~`, sorting a list where it is, a `match` on a bool and `random_choice`.

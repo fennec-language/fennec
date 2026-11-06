@@ -40,6 +40,17 @@ interface Serializer:
     ## Starts an enum's case with `count` fields of data, which follow as a struct's do.
     def case_record(mut self, name: str, case: str, count: int)
 
+    ## A `Table` of items of the type named `kind`: each item in order, with its `Id`.
+    def table[T: Serializable](mut self, kind: str, ids: list[Id[T]], items: list[T])
+
+    ## An `Id` into the `Table` of `kind`, by its `id_key`, which is written as where its item is
+    ## in that `Table`.
+    def id(mut self, kind: str, key: int)
+
+    ## An optional's value, which is there. An `Id` in one whose item has gone is written as
+    ## a missing value rather than failing.
+    def some[T: Serializable](mut self, x: T)
+
 ## What can be saved.
 interface Serializable:
     def serialize(self, mut out: Serializer)
@@ -83,6 +94,16 @@ interface Deserializer:
     ## The error for the item at `at` of what was just read as a sequence, saying `message` about
     ## it, like a row of a `Grid` that's the wrong length.
     def at_item(self, at: int, message: str) -> ParseError
+
+    ## The error for what was just read, saying `message` about it, like an `Id` that's negative.
+    def here(self, message: str) -> ParseError
+
+    ## Takes note of an `Id` read, by the name of the type it's for and where its item is in the
+    ## `Table`, so it can be checked once everything's been read.
+    def saw_id(mut self, kind: str, position: int)
+
+    ## Takes note of a `Table` read, by the name of its items' type and how many it has.
+    def saw_table(mut self, kind: str, count: int)
 
     ## Which of `cases` comes next, as a place in it: each its name and whether it has data. One
     ## with data then reads its fields as a struct's, and `end_case` finishes it.
@@ -163,7 +184,7 @@ extend Optional[T: Serializable]:
         if self is None:
             out.none()
         else:
-            out.value(self)
+            out.some(self)
 
 extend Optional[T: Deserializable]:
     def deserialize(mut src: Deserializer) -> T? fails ParseError:

@@ -1,6 +1,7 @@
 ## The machine operations the standard library stands on. Each engine supplies the body. Only
 ## the standard library can import this module: a program uses `int`, `float` and `str`, which
 ## are written on top of it.
+from std.collections import Id, Table
 
 @intrinsic
 def int_add(a: int, b: int) -> int
@@ -105,3 +106,15 @@ def text_of_code(code: int) -> str
 ## A type's name as it's written. Only native code has types as it runs.
 @intrinsic
 def type_name[T]() -> str
+
+## A number that's the same for equal `Id`s and differs for others, to look one up by.
+@intrinsic
+def id_key[T](id: Id[T]) -> int
+
+## The `Id` of the item at `position` in a `Table` nothing's been taken out of.
+@intrinsic
+def id_at[T](position: int) -> Id[T]
+
+## Ends the program, saying `message`, as a failed `assert` does.
+@intrinsic
+def stop(message: str)

@@ -38,9 +38,9 @@ def built_in_interfaces() -> list[str]:
 
 def built_in_types() -> list[str]:
     [
-        "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "array", "SoaList", "Iterator",
-        "set", "dict", "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process",
-        "Entropy", "Net", "Result", "->",
+        "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "array", "SoaList",
+        "Iterator", "set", "dict", "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin",
+        "Process", "Entropy", "Net", "Result", "->",
     ]
 
 ## Every declaration in a program, keyed the way the signature table is: `name` for a
@@ -124,7 +124,13 @@ struct Program:
         elif name in built_in_types() and not prelude:
             self.problems.append(not_own(name, "is built in", extension))
             return
-        elif name in ["int", "float", "bool", "bytes", "str", "list", "dict", "set", "Optional"]:
+        elif (
+            name
+            in [
+                "int", "float", "bool", "bytes", "str", "list", "dict", "set", "Optional", "Id",
+                "Table",
+            ]
+        ):
             # The standard library gives built-in types methods, like `str`'s `def *`.
             pass
         elif self.is_interface(name):
@@ -165,7 +171,7 @@ struct Program:
         name = extension.name
         written = [generic.name for generic in extension.generics]
         mut declared = self.type_params(name)
-        if name == "list" or name == "set" or name == "Optional":
+        if name == "list" or name == "set" or name == "Optional" or name == "Id" or name == "Table":
             if written.len() == 1: return None
             declared = ["T"]
         if name == "dict":
@@ -245,8 +251,10 @@ struct Program:
             mut names = []
             for error in written.args:
                 match self.resolve_within(error, generics, depth)?:
-                    case .Named(error_name): names.append(error_name)
-                    case _: pass
+                    case .Named(error_name):
+                        names.append(error_name)
+                    case _:
+                        pass
             return .Errors(sorted(names))
         # `(str) -> int fails ParseError`: a function that gives back a result.
         if name == "fails" and written.args.len() == 2:

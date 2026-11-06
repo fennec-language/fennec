@@ -352,6 +352,36 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// `std.intrinsics`' ways into an `Id`, which std uses to save and load them: a number for
+    /// one, and the `Id` of an item in a `Table` nothing's been taken out of.
+    pub(crate) fn id_intrinsic(
+        &mut self,
+        dest: Option<LocalId>,
+        name: &str,
+        args: &[Operand],
+    ) -> Result<(), String> {
+        let dest = dest.ok_or("no result")?;
+        let given = args.first().ok_or("no argument")?;
+        match name {
+            "intrinsics.id_key" => {
+                let (slot, generation) = self.id_parts(given)?;
+                let (high, key) = (self.temp(), self.temp());
+                self.line(&format!("{high} = shl i64 {slot}, 32"));
+                self.line(&format!("{key} = or i64 {high}, {generation}"));
+                self.assign(dest, &key)
+            }
+            "intrinsics.id_at" => {
+                let (position, _) = self.operand(given)?;
+                let at = self.slot(dest);
+                let generation_at = self.offset(&at, 8);
+                self.line(&format!("store i64 {position}, ptr {at}"));
+                self.line(&format!("store i64 0, ptr {generation_at}"));
+                Ok(())
+            }
+            other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
+        }
+    }
+
     fn new_id_map(&mut self, dest: LocalId) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();
         let Kind::Boxed(id) = kind else { return Err("a Table that isn't boxed".to_owned()) };

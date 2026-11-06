@@ -189,6 +189,9 @@ impl FnCx<'_> {
 
     /// A name that doesn't exist, and what was probably meant if there's nothing else to say.
     pub(crate) fn unknown(&self, name: &str, span: Span) -> Diagnostic {
+        if let Some(problem) = self.missing_capability(name, span) {
+            return problem;
+        }
         let problem = unknown_name(name, span);
         match self.similar_name(name).filter(|_| problem.help.is_none()) {
             Some(similar) => problem.with_help(format!("did you mean `{similar}`?")),
@@ -209,14 +212,45 @@ impl FnCx<'_> {
                 diagnostic
             };
         }
-        let to_add = if self.key == "main" {
-            "so write `def main(stdout: Stdout):`".to_owned()
-        } else if self.in_a_test() {
-            "so give this test a `(stdout: Stdout)` after its name".to_owned()
-        } else {
-            format!("so give `{}` a `stdout: Stdout` parameter and pass it from `main`", self.key)
-        };
+        let to_add = self.give_it("stdout: Stdout");
         diagnostic.with_help(format!("{WHY}, {to_add}, then `stdout.print(...)`"))
+    }
+
+    /// A capability read by its usual name, like `stdout` or `fs`, in a function that wasn't given
+    /// it: how to give it one, or what it's called here when it has one under another name.
+    fn missing_capability(&self, name: &str, span: Span) -> Option<Diagnostic> {
+        let mut letters = name.chars();
+        let first = letters.next()?;
+        let ty: String = first.to_uppercase().chain(letters).collect();
+        if !first.is_lowercase() || !crate::shared::is_capability(&ty) && ty != "Net" {
+            return None;
+        }
+        let diagnostic = Diagnostic::new(format!("`{name}` doesn't exist"), span);
+        if let Some(held) = self.name_holding(&Type::named(&ty)) {
+            let help = format!("this function's `{ty}` is called `{held}`");
+            return Some(diagnostic.with_help(help).with_fix(span, held));
+        }
+        let to_add = self.give_it(&format!("{name}: {ty}"));
+        Some(diagnostic.with_help(format!(
+            "a function reaches outside itself only through what's in its signature, {to_add}"
+        )))
+    }
+
+    /// How to give the function being checked a parameter, written as `param`: in `main`'s
+    /// signature, beside what it already takes, after a test's name, or in a function's
+    /// parameters and passed from `main`.
+    fn give_it(&self, param: &str) -> String {
+        let takes_some =
+            self.checker.program.functions.get(&self.key).is_some_and(|main| !main.def.params.is_empty());
+        if self.key == "main" && takes_some {
+            format!("so add `{param}` to `main`'s parameters")
+        } else if self.key == "main" {
+            format!("so write `def main({param}):`")
+        } else if self.in_a_test() {
+            format!("so give this test a `({param})` after its name")
+        } else {
+            format!("so give `{}` a `{param}` parameter and pass it from `main`", self.key)
+        }
     }
 
     fn name(&mut self, name: &str, span: Span) -> Type {

@@ -268,6 +268,11 @@ pub(crate) fn takes(module: &fennec_syntax::Module) -> Result<(), String> {
     emitted(module, false).map(|_| ())
 }
 
+/// The IR a trimmed program's native code is written from, as a build lowers it.
+pub(crate) fn lowered_for_native(module: &fennec_syntax::Module) -> Result<fennec_ir::Program, String> {
+    emitted(module, false).map(|emitted| emitted.lowered)
+}
+
 /// What building an executable through LLVM did.
 pub(crate) struct Built {
     /// How many functions the program has, and how many weren't in the cache.

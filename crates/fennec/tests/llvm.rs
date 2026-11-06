@@ -2072,6 +2072,23 @@ const POWER_OF_TWO_DIVISION: &str = r#"def main(stdout: Stdout):
     stdout.print(total)
 "#;
 
+/// Steps proved not to overflow, from a comparison on the way to them or from every value a local
+/// is given, run right up to the highest and lowest ints; and a step past what's proved, which
+/// still fails as on the interpreter.
+#[test]
+fn steps_proved_safe_match_the_interpreter_at_the_ends_of_the_ints() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let program = |last: &str| {
+        format!(
+            "def closing(low: int, high: int) -> (int, int):\n    mut a = low\n    mut b = high\n    while a < b:\n        a += 1\n        b -= 1\n    (a, b)\n\ndef counted(limit: int, start: int) -> int:\n    mut count = start\n    while count < limit and count % 1000 != 999:\n        count += 1\n    count\n\ndef stirred(n: int) -> int:\n    mut seed = 42\n    mut total = 0\n    for _ in range(n):\n        seed = (seed * 3877 + 29573) % 139968\n        total += seed % 10\n    total\n\ndef main(stdout: Stdout):\n    highest = 9223372036854775807\n    lowest = -9223372036854775807 - 1\n    stdout.print(closing(highest - 9, high=highest), closing(lowest, high=lowest + 7), closing(5, high=1))\n    stdout.print(counted(highest, start=highest - 5), counted(10, start=3), stirred(1000))\n    mut x = highest - 1\n    if x < highest:\n        x += 1\n    stdout.print(x)\n    {last}\n"
+        )
+    };
+    same_as_the_interpreter_in_both_builds("proved_steps", &program("stdout.print(\"done\")"))?;
+    same_as_the_interpreter_in_both_builds("proved_steps_then_past", &program("x += 1\n    stdout.print(x)"))
+}
+
 /// A product past the check is known not to have overflowed, which lets LLVM drop later checks:
 /// one that does overflow still fails, from either sign, and one that doesn't goes on to its sums.
 #[test]

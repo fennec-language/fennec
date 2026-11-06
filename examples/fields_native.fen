@@ -18,7 +18,7 @@ struct Bag:
     name: str
     total = 0
 
-    def add(mut self, id: int, tag: str) -> int:
+    def add(ref self, id: int, tag: str) -> int:
         self.items.append(Item(id=id, tags=[tag], near=[]))
         self.total += id
         self.items.len() - 1
@@ -26,23 +26,23 @@ struct Bag:
     def tag_of(self, at: int) -> str:
         self.items[at].tags[0]
 
-    def bump(mut self) -> int:
+    def bump(ref self) -> int:
         self.total += 1
         self.total
 
-    def link(mut self, first: int, second: int):
+    def link(ref self, first: int, second: int):
         self.items[first].near.append(second)
         self.items[second].near.append(first)
 
-    def first_big(mut self) -> int:
-        for mut point in self.points:
+    def first_big(ref self) -> int:
+        for ref point in self.points:
             if point.x > 3:
                 point.x = 0
                 return point.x + 1
         -1
 
-    def mean_near(mut self) -> int:
-        for mut point in self.points:
+    def mean_near(ref self) -> int:
+        for ref point in self.points:
             point.x += self.numbers.len() + self.points.len()
         self.numbers.remove_where((n) => n == self.numbers.len())
         self.items[0].near.remove_where((n) => n > self.items.len())
@@ -135,7 +135,7 @@ def main(stdout: Stdout):
         stdout.print(key)
     for point in bag.points:
         stdout.print(point.x)
-    for mut point in bag.points:
+    for ref point in bag.points:
         point.x += 1
     stdout.print(bag.points[1].x, sum(bag.numbers), [n * 2 for n in bag.numbers])
     floats = [0.0, 1.5]

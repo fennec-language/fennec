@@ -112,13 +112,13 @@ struct World:
     tick = 0
 
     ## Adds a unit, and gives back its `Id`.
-    def spawn(mut self, name: str, team: Team, kind: Kind, at: (int, int)) -> Id[Unit]:
+    def spawn(ref self, name: str, team: Team, kind: Kind, at: (int, int)) -> Id[Unit]:
         assert self.field.walkable(at)
         unit = Unit(name=name, team=team, kind=kind, at=at, health=kind.most_health())
         self.units.add(unit)
 
     ## Puts `members` in a squad led by the first of them, heading for `rally`.
-    def form_squad(mut self, name: str, members: list[Id[Unit]], rally: (int, int)) -> Id[Squad]:
+    def form_squad(ref self, name: str, members: list[Id[Unit]], rally: (int, int)) -> Id[Squad]:
         leader = members[0]
         team = self.units[leader].team
         squad = self.squads.add(

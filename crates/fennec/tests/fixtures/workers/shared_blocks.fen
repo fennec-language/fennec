@@ -18,7 +18,7 @@ shared Log:
     name = "a log with a long enough name to have a block"
     seen = {"start": 0}
 
-    def add(mut self, line: str):
+    def add(ref self, line: str):
         self.lines.append(line)
         self.count += 1
         self.seen[line] = self.count
@@ -30,7 +30,7 @@ shared Board:
     points = [Point(x=0, name="the very first point on this board")]
     best = Point(x=0, name="the best point on this board so far")
 
-    def put(mut self, point: Point):
+    def put(ref self, point: Point):
         self.points.append(point)
         if point.x > self.best.x:
             self.best = point
@@ -42,7 +42,7 @@ shared Table:
     rows = list[str]()
     kept = list[str]()
 
-    def fill(mut self):
+    def fill(ref self):
         self.rows = DEFAULTS
         self.kept.append("a literal that is much too long to fit inside a header")
 
@@ -53,7 +53,7 @@ shared Grid:
     cells = [[1, 2], [3, 4]]
     maybe: int? = None
 
-    def bump(mut self, row: int, by: list[int]):
+    def bump(ref self, row: int, by: list[int]):
         self.cells[row].append(by[0])
         self.cells[row][0] += by.len()
         self.maybe = self.cells[row].len()
@@ -72,7 +72,7 @@ struct Holder:
     name: str
 
 def touch(holder: Holder, n: int) -> int:
-    with holder.box as mut held:
+    with holder.box as ref held:
         held.items[0] = n
         held.total += 1
     holder.box.total * 0 + holder.name.len()
@@ -83,7 +83,7 @@ def units_of(count: int) -> list[Unit]:
 def logs(stdout: Stdout):
     log = Log()
     mut units = units_of(4000)
-    for mut unit in parallel(units):
+    for ref unit in parallel(units):
         log.add(f"unit number {unit.x} with a long line of text here")
         unit.x = log.size() % 1 + unit.x
     stdout.print(log.count, log.lines.len(), log.size(), log.seen.len())
@@ -92,7 +92,7 @@ def logs(stdout: Stdout):
 def boards(stdout: Stdout):
     board = Board()
     mut units = units_of(3000)
-    for mut unit in parallel(units):
+    for ref unit in parallel(units):
         board.put(Point(x=unit.x, name=f"point {unit.x} with a long enough name"))
         kept = board.top()
         unit.x = kept.x % 1 + unit.x
@@ -102,7 +102,7 @@ def boards(stdout: Stdout):
 def tables(stdout: Stdout):
     table = Table()
     mut units = units_of(2000)
-    for mut unit in parallel(units):
+    for ref unit in parallel(units):
         table.fill()
         unit.x += table.rows_now().len()
     stdout.print(table.rows, table.kept.len(), DEFAULTS.len())
@@ -112,7 +112,7 @@ def grids(stdout: Stdout):
     grid = Grid()
     given = [5, 6, 7]
     mut units = units_of(2000)
-    for mut unit in parallel(units):
+    for ref unit in parallel(units):
         grid.bump(unit.x % 2, given)
         unit.x += given.len()
     stdout.print(grid.cells[0].len(), grid.cells[1].len(), grid.cells[0][0], grid.maybe, given)
@@ -126,7 +126,7 @@ def holders(stdout: Stdout):
         Holder(box=two, name="b"),
     ]
     mut units = units_of(2000)
-    for mut unit in parallel(units):
+    for ref unit in parallel(units):
         unit.x += touch(held[unit.x % 2], unit.x)
     stdout.print(one.total, two.total, held[0].box.total)
     stdout.print(sum(unit.x for unit in parallel(units)))
@@ -136,7 +136,7 @@ def holders(stdout: Stdout):
     stdout.print(both)
 
 def passed_along(from_purse: Purse, to_purse: Purse, n: int):
-    with from_purse, to_purse as mut source, mut target:
+    with from_purse, to_purse as ref source, ref target:
         made = f"a note made here, long enough to be a block {n}"
         source.notes.append(made)
         source.total += 1
@@ -149,7 +149,7 @@ def passed_along(from_purse: Purse, to_purse: Purse, n: int):
 
 def read_across(mine: Purse, other: Purse) -> int:
     mut seen = 0
-    with mine, other as mut held, looked:
+    with mine, other as ref held, looked:
         held.notes = looked.notes
         seen = held.notes.len() % 1
     seen
@@ -158,7 +158,7 @@ def purses(stdout: Stdout):
     one = Purse()
     two = Purse()
     mut units = units_of(2000)
-    for mut unit in parallel(units):
+    for ref unit in parallel(units):
         if unit.x % 2 == 0:
             passed_along(one, two, unit.x)
         else:
@@ -174,7 +174,7 @@ shared Tally:
     point = 0.5
 
 def counted_with_text(tally: Tally, log: Log, n: int):
-    with tally, log as mut counting, mut logging:
+    with tally, log as ref counting, ref logging:
         counting.total += 1
         logging.lines.append(f"line {counting.total % 1} from body number {n % 1} of them all")
         logging.count += 1
@@ -183,7 +183,7 @@ def mixed(stdout: Stdout):
     tally = Tally()
     log = Log()
     mut units = units_of(2000)
-    for mut unit in parallel(units):
+    for ref unit in parallel(units):
         counted_with_text(tally, log, unit.x)
         with log, tally as held, seen:
             unit.x += held.lines.len() % 1 + seen.total % 1

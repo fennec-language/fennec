@@ -10,7 +10,7 @@ from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, C
 from parser import Parser, is_field_word, is_name, describe
 
 extend Parser:
-    def expr(mut self) -> Expr:
+    def expr(ref self) -> Expr:
         if self.at_match():
             return self.match_expr()?
         lambda = self.lambda()?
@@ -43,7 +43,7 @@ extend Parser:
 
     ## `continue`, `return` or `fail` after `else`, as a `match` with one case that leaves, which
     ## every engine and analysis already follows out of the expression.
-    def leaving(mut self) -> Expr:
+    def leaving(ref self) -> Expr:
         start = self.span()
         word = self.peek()
         self.advance()
@@ -60,7 +60,7 @@ extend Parser:
 
     ## An `else:` block, which says something and then leaves. It's the same `match` as
     ## `else return`, with more statements in its case.
-    def leaving_block(mut self) -> Expr:
+    def leaving_block(ref self) -> Expr:
         start = self.advance().span
         indented = self.at(.Newline)
         body = self.block()?
@@ -76,7 +76,7 @@ extend Parser:
         )
 
     ## `x => body` or `(a, b) => body`.
-    def lambda(mut self) -> Expr?:
+    def lambda(ref self) -> Expr?:
         start = self.span()
         mut params = []
         if is_name(self.peek()) and self.peek_at(1) == .Punct("=>"):
@@ -114,19 +114,19 @@ extend Parser:
             return None
         (params, at + 2)
 
-    def or_expr(mut self) -> Expr:
+    def or_expr(ref self) -> Expr:
         mut lhs = self.and_expr()?
         while self.eat_keyword("or"):
             lhs = binary(.Or, lhs, self.and_expr()?)
         lhs
 
-    def and_expr(mut self) -> Expr:
+    def and_expr(ref self) -> Expr:
         mut lhs = self.not_expr()?
         while self.eat_keyword("and"):
             lhs = binary(.And, lhs, self.not_expr()?)
         lhs
 
-    def not_expr(mut self) -> Expr:
+    def not_expr(ref self) -> Expr:
         start = self.span()
         if self.eat_keyword("not"):
             operand = self.not_expr()?
@@ -134,7 +134,7 @@ extend Parser:
         self.comparison()
 
     ## Comparisons chain as in Python: `a < b <= c` means `a < b and b <= c`.
-    def comparison(mut self) -> Expr:
+    def comparison(ref self) -> Expr:
         mut lhs = self.bit_or()?
         mut chain = None
         while True:
@@ -151,39 +151,39 @@ extend Parser:
             lhs = rhs
         chain else lhs
 
-    def bit_or(mut self) -> Expr:
+    def bit_or(ref self) -> Expr:
         mut lhs = self.bit_xor()?
         while self.eat_punct("|"):
             lhs = binary(.BitOr, lhs, self.bit_xor()?)
         lhs
 
-    def bit_xor(mut self) -> Expr:
+    def bit_xor(ref self) -> Expr:
         mut lhs = self.bit_and()?
         while self.eat_punct("^"):
             lhs = binary(.BitXor, lhs, self.bit_and()?)
         lhs
 
-    def bit_and(mut self) -> Expr:
+    def bit_and(ref self) -> Expr:
         mut lhs = self.shift()?
         while self.eat_punct("&"):
             lhs = binary(.BitAnd, lhs, self.shift()?)
         lhs
 
-    def shift(mut self) -> Expr:
+    def shift(ref self) -> Expr:
         mut lhs = self.sum()?
         while self.at_punct("<<") or self.at_punct(">>"):
             op = BinOp.ShiftLeft if self.advance().tok == .Punct("<<") else BinOp.ShiftRight
             lhs = binary(op, lhs, self.sum()?)
         lhs
 
-    def sum(mut self) -> Expr:
+    def sum(ref self) -> Expr:
         mut lhs = self.term()?
         while self.at_punct("+") or self.at_punct("-"):
             op = BinOp.Add if self.advance().tok == .Punct("+") else BinOp.Sub
             lhs = binary(op, lhs, self.term()?)
         lhs
 
-    def term(mut self) -> Expr:
+    def term(ref self) -> Expr:
         mut lhs = self.unary()?
         while True:
             op = term_op(self.peek())
@@ -193,7 +193,7 @@ extend Parser:
             lhs = binary(op, lhs, self.unary()?)
         lhs
 
-    def unary(mut self) -> Expr:
+    def unary(ref self) -> Expr:
         start = self.span()
         if self.eat_punct("-"):
             operand = self.unary()?
@@ -206,7 +206,7 @@ extend Parser:
             return binary(.Pow, base, self.unary()?)
         base
 
-    def postfix(mut self) -> Expr:
+    def postfix(ref self) -> Expr:
         mut expr = self.atom()?
         while True:
             if self.eat_punct("("):
@@ -228,7 +228,7 @@ extend Parser:
         expr
 
     ## `object[index]` or a slice `object[start:end]`, after the `[`.
-    def index(mut self, object: Expr) -> Expr:
+    def index(ref self, object: Expr) -> Expr:
         mut start: Expr? = None
         if not self.at_punct(":"):
             first = self.expr()?
@@ -255,7 +255,7 @@ extend Parser:
 
     ## Arguments up to (not including) `)`. A single argument followed by `for` is a generator
     ## expression, as in `sum(x * x for x in xs)`.
-    def call_args(mut self) -> list[Arg]:
+    def call_args(ref self) -> list[Arg]:
         mut args = []
         while not self.at_punct(")"):
             is_mut = self.eat_ref()
@@ -272,7 +272,7 @@ extend Parser:
         args
 
     ## The `for names in iter if cond` part of a comprehension, after its element.
-    def comprehension(mut self, kind: CompKind, elem: Expr, value: Expr?) -> Expr:
+    def comprehension(ref self, kind: CompKind, elem: Expr, value: Expr?) -> Expr:
         self.advance()
         names = self.loop_names()?
         iter = self.or_expr()?
@@ -282,7 +282,7 @@ extend Parser:
         span = elem.span.to(self.prev_span())
         Expr(kind=.Comprehension(kind, elem, value, names, iter, cond), span=span)
 
-    def atom(mut self) -> Expr:
+    def atom(ref self) -> Expr:
         token = self.advance()
         span = token.span
         kind = match token.tok:
@@ -309,7 +309,7 @@ extend Parser:
         Expr(kind=kind, span=span.to(self.prev_span()))
 
     ## `True`, `False` or `None`, after the keyword. Any other keyword can't start a value.
-    def keyword_atom(mut self, word: str, span: Span) -> ExprKind:
+    def keyword_atom(ref self, word: str, span: Span) -> ExprKind:
         match word:
             case "True": .Bool(True)
             case "False": .Bool(False)
@@ -321,7 +321,7 @@ extend Parser:
                 fail Diagnostic(message=f"expected a value, found `{word}`", span=span)
 
     ## `(expr)`, or a tuple: `()`, `(a,)`, `(a, b)`.
-    def parenthesized(mut self, start: Span) -> Expr:
+    def parenthesized(ref self, start: Span) -> Expr:
         mut items = []
         mut trailing_comma = False
         while not self.at_punct(")"):
@@ -339,7 +339,7 @@ extend Parser:
             return items[0]
         Expr(kind=.Tuple(items), span=span)
 
-    def list(mut self, start: Span) -> Expr:
+    def list(ref self, start: Span) -> Expr:
         mut items = []
         while not self.at_punct("]"):
             item = self.expr()?
@@ -353,7 +353,7 @@ extend Parser:
         Expr(kind=.List(items), span=span)
 
     ## `{}` (an empty dict), `{k: v, ...}`, `{a, b}`, or a dict or set comprehension.
-    def braces(mut self, start: Span) -> Expr:
+    def braces(ref self, start: Span) -> Expr:
         if self.at_punct("}"):
             return Expr(kind=.Dict([]), span=start.to(self.advance().span))
         first = self.expr()?

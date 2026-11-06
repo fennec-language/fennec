@@ -14,11 +14,11 @@ extend Enemy:
 error Dodged:
     name: str
 
-def hit(mut enemy: enemies.Enemy, amount: int) -> int:
+def hit(ref enemy: enemies.Enemy, amount: int) -> int:
     if amount == 0: fail Dodged(enemy.name)
     enemy.health -= amount
     enemy.health
 
 test "hitting takes health away":
     mut enemy = enemies.spawn("dummy", Vec3.zero, 100)
-    assert hit(mut enemy, 10) == Ok(90)
+    assert hit(ref enemy, 10) == Ok(90)

@@ -1,7 +1,7 @@
 struct Inner:
     tags: list[int]
 
-    def grow(mut self, value: int):
+    def grow(ref self, value: int):
         self.tags.append(value)
 
 struct Unit:
@@ -9,7 +9,7 @@ struct Unit:
     tags: list[int]
     inner: Inner
 
-    def grow(mut self, value: int):
+    def grow(ref self, value: int):
         self.tags.append(value)
         self.hp += value
 

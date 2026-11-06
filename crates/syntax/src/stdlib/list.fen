@@ -2,12 +2,12 @@
 ## operations the engines provide.
 extend list[T]:
     ## Adds every item of `more` to the end, in order.
-    def extend(mut self, more: list[T]):
+    def extend(ref self, more: list[T]):
         for item in more:
             self.append(item)
 
     ## Reverses the items in place.
-    def reverse(mut self):
+    def reverse(ref self):
         mut low = 0
         mut high = self.len() - 1
         while low < high:

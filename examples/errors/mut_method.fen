@@ -1,7 +1,7 @@
 struct Enemy:
     health = 100
 
-    def take_damage(mut self, amount: int):
+    def take_damage(ref self, amount: int):
         self.health -= amount
 
 def main(stdout: Stdout):

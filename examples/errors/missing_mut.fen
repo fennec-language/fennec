@@ -1,4 +1,4 @@
-def apply_damage(mut health: int, amount: int):
+def apply_damage(ref health: int, amount: int):
     health -= amount
 
 def main(stdout: Stdout):

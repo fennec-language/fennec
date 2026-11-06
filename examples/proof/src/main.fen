@@ -30,7 +30,7 @@ FIELD = [
 ]
 
 ## An army of `size` on `team`, in two squads, starting in the given columns.
-def raise_army(mut world: World, team: Team, columns: (int, int), rally: (int, int), seed: int):
+def raise_army(ref world: World, team: Team, columns: (int, int), rally: (int, int), seed: int):
     mut random = Random(seed=seed)
     kinds = [Kind.Soldier, Kind.Soldier, Kind.Archer, Kind.Soldier, Kind.Medic, Kind.Archer]
     first, last = columns
@@ -77,26 +77,26 @@ def show(stdout: Stdout, world: World):
     for row in rows:
         stdout.print(row)
 
-def play(stdout: Stdout, mut world: World, mut board: Scoreboard, until: int):
+def play(stdout: Stdout, ref world: World, ref board: Scoreboard, until: int):
     while world.tick < until and world.alive_count(.Red) > 0 and world.alive_count(.Blue) > 0:
-        combat.tick(mut world, mut board)
+        combat.tick(ref world, ref board)
         if world.tick % 20 == 0:
             report(stdout, world, board)
 
 def main(stdout: Stdout):
     mut world = World(field=map.Map.drawn(FIELD))
-    raise_army(mut world, .Red, (0, 4), (10, 2), 7)
-    raise_army(mut world, .Blue, (19, 23), (12, 7), 11)
+    raise_army(ref world, .Red, (0, 4), (10, 2), 7)
+    raise_army(ref world, .Blue, (19, 23), (12, 7), 11)
     mut board = Scoreboard()
     stdout.print(f"{world.units.len()} units in {world.squads.len()} squads")
     show(stdout, world)
-    play(stdout, mut world, mut board, LONGEST // 2)
+    play(stdout, ref world, ref board, LONGEST // 2)
 
     # Half way: save, load, and carry on from the loaded copy.
     text = save.dumps(world)
     mut loaded = save.loads(text) else world
     stdout.print(f"saved {text.len()} bytes; loads back the same: {save.dumps(loaded) == text}")
-    play(stdout, mut loaded, mut board, LONGEST)
+    play(stdout, ref loaded, ref board, LONGEST)
 
     report(stdout, loaded, board)
     show(stdout, loaded)

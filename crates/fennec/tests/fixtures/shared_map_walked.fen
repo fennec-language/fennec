@@ -5,13 +5,13 @@ from std.collections import Id, Table
 shared Log:
     map = Table[str]()
 
-    def add(mut self, name: str):
+    def add(ref self, name: str):
         self.map.add(name)
 
-    def drop(mut self, id: Id[str]):
+    def drop(ref self, id: Id[str]):
         self.map.remove(id)
 
-def through_names(log: Log, other: Log, mut said: list[str]):
+def through_names(log: Log, other: Log, ref said: list[str]):
     for id, name in log.map.items():
         other.drop(id)
         said.append(f"{name} {log.map.len()} {other.map.len()}")
@@ -25,11 +25,11 @@ def main(stdout: Stdout):
     log.add("b")
     log.add("c")
     mut said = list[str]()
-    through_names(log, log, mut said)
+    through_names(log, log, ref said)
     stdout.print(said, log.map.len())
     second = log
     log.add("x")
     log.add("y")
     mut more = list[str]()
-    through_names(log, second, mut more)
+    through_names(log, second, ref more)
     stdout.print(more, log.map.len())

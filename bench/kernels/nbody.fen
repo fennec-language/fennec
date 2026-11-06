@@ -25,7 +25,7 @@ def energy(bodies: list[Body]) -> float:
             total -= a.mass * b.mass / sqrt(dx * dx + dy * dy + dz * dz)
     total
 
-def advance(mut bodies: list[Body], dt: float):
+def advance(ref bodies: list[Body], dt: float):
     count = bodies.len()
     for i in range(count):
         for j in range(i + 1, count):
@@ -102,5 +102,5 @@ def main(stdout: Stdout):
     bodies[0].vz = -pz / solar_mass
     stdout.print(f"{energy(bodies):.9f}")
     for _ in range(200_000):
-        advance(mut bodies, 0.01)
+        advance(ref bodies, 0.01)
     stdout.print(f"{energy(bodies):.9f}")

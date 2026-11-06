@@ -28,7 +28,7 @@ enum Light:
             case _:
                 1.5
 
-    def cycle(mut self):
+    def cycle(ref self):
         self = self.next()
 
 struct Junction:
@@ -47,7 +47,7 @@ def main(stdout: Stdout):
     j = junctions["j"]
     stdout.print(j.light.next(), j.at.row, j)
     mut all = [Light.Red, .Green(1.0), .Amber(False)]
-    for mut l in all:
+    for ref l in all:
         l = l.next()
     stdout.print(all)
     all.append(.Green(2.0))

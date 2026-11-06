@@ -90,7 +90,10 @@ fn a_with_block_locks_only_handles_and_names_each_one() {
             "{ACCOUNT}def main(stdout: Stdout):\n    a = Account()\n    b = Account()\n{body}        pass\n"
         )
     };
-    assert_eq!(problems(&with("    with a, b as x, y:\n        x.total = 1\n")), ["`x` isn't `ref` @ x.total"]);
+    assert_eq!(
+        problems(&with("    with a, b as x, y:\n        x.total = 1\n")),
+        ["`x` isn't `ref` @ x.total"]
+    );
     assert_eq!(
         problems(&with("    with a as x:\n        x.add(1)\n")),
         ["`x` is locked to read, and `add` changes it @ x"]

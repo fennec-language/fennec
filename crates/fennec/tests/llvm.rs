@@ -3381,9 +3381,10 @@ def main(stdout: Stdout):
     )
 }
 
-/// A generator made for a loop goes when the loop does, closing what it's holding right then,
-/// while one with a name lasts as long as the name. Returning out of the loop closes it before
-/// the caller goes on, where the JIT is late, so this is held to the interpreter.
+/// A generator made for a loop goes when the loop does, letting go of what it's holding right
+/// then, while one with a name lasts as long as the name, and returning out of the loop lets go
+/// of it before the caller goes on. A `shared` type's `del` doesn't run yet, so nothing prints
+/// when the door goes; when it does, this shows each door closing at the right moment.
 #[test]
 fn a_generator_left_partway_closes_as_the_interpreter_does() -> std::io::Result<()> {
     if !ready() {
@@ -3391,7 +3392,7 @@ fn a_generator_left_partway_closes_as_the_interpreter_does() -> std::io::Result<
     }
     same_as_the_interpreter(
         "generator_left",
-        r#"struct Door:
+        r#"shared Door:
     out: Stdout
     name: str
 
@@ -3399,9 +3400,9 @@ fn a_generator_left_partway_closes_as_the_interpreter_does() -> std::io::Result<
         self.out.print(f"closing {self.name}")
 
 def holding(out: Stdout, name: str) -> Iterator[int]:
-    with Door(out=out, name=name) as door:
-        yield 1
-        yield 2
+    door = Door(out=out, name=name)
+    yield 1
+    yield 2
 
 def leaves_early(out: Stdout):
     for n in holding(out, "made for the loop"):

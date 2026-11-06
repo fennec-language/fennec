@@ -1,4 +1,5 @@
-# An `else:` block says something, then leaves with `return`, `fail`, `continue` or `break`.
+# An `else:` block says something, then leaves with `return`, `fail`, `continue` or `break`. A
+# plain `else` can leave the same way, as in `else break`.
 
 error LookupError:
     Missing(name: str)
@@ -20,6 +21,12 @@ def main(stdout: Stdout):
             stdout.print(f"stopping at {name}")
             break
         stdout.print(cost)
+    queue = {0: "kiwi", 1: "pear"}
+    mut at = 0
+    while True:
+        name = queue.get(at) else break
+        stdout.print(f"next: {name}")
+        at += 1
     total = price(prices, "fig") else:
         stdout.print("couldn't price the fig")
         return

@@ -39,9 +39,9 @@ extend Parser:
         value
 
     def at_leaving(self) -> bool:
-        self.peek() in [.Keyword("continue"), .Keyword("return"), .Keyword("fail")]
+        self.peek() in [.Keyword("continue"), .Keyword("break"), .Keyword("return"), .Keyword("fail")]
 
-    ## `continue`, `return` or `fail` after `else`, as a `match` with one case that leaves, which
+    ## `continue`, `break`, `return` or `fail` after `else`, as a `match` with one case that leaves, which
     ## every engine and analysis already follows out of the expression.
     def leaving(ref self) -> Expr:
         start = self.span()
@@ -49,6 +49,7 @@ extend Parser:
         self.advance()
         kind: StmtKind = match word:
             case .Keyword("continue"): .Continue
+            case .Keyword("break"): .Break
             case .Keyword("fail"): .Fail(self.expr()?)
             case _:
                 if self.at(.Newline) or self.at(.Eof) or self.at(.Dedent):

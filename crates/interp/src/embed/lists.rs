@@ -412,6 +412,26 @@ fn copied_for_sorting(state: &mut State, list: i64) -> Option<(u64, usize, usize
     Some((copy, start, stride, words.len() / stride))
 }
 
+/// A new list owned once of a list's items in the order of their keys, a list as long as it, by
+/// a function comparing two keys by their addresses, as when keys are tuples.
+pub extern "C" fn sorted_by_keys_with(list: i64, keys: i64, compare: extern "C" fn(i64, i64) -> i64) -> i64 {
+    let Some((copy, base, stride, count)) = with(|state| copied_for_sorting(state, keys)) else {
+        return 0;
+    };
+    let address = |place: usize| i64::try_from(base + place * stride * 8).unwrap_or(0);
+    let mut places: Vec<usize> = (0..count).collect();
+    places.sort_by(|a, b| {
+        if super::failed() {
+            return std::cmp::Ordering::Equal;
+        }
+        compare(address(*a), address(*b)).cmp(&0)
+    });
+    with(|state| {
+        release(state, copy);
+        in_places(state, u64::try_from(list).unwrap_or(0), &places).unwrap_or(0)
+    })
+}
+
 /// A new list owned once of a list's items in the order of their keys, a list as long as it.
 /// Items with the same key stay in the order they were in.
 pub extern "C" fn sorted_by(list: i64, keys: i64, kind: i64) -> i64 {

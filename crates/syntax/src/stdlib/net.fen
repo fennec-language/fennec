@@ -48,7 +48,7 @@ error NetError:
 struct Response:
     status: int
     ## By their names in lower case.
-    headers: dict[str, str] = {}
+    headers = dict[str, str]()
     body = bytes([])
 
     ## Whether the status is one of the 200s.
@@ -115,12 +115,11 @@ struct Server:
 
     ## Answers HTTP/1.1 with `respond`, each connection its own task, until the server is closed. A
     ## connection is kept open for more requests unless either side says to close it, and one that
-    ## sends nothing for `timeout`, 30 seconds unless it says, is closed. A request that's too big,
-    ## or isn't HTTP, is answered with the 4xx status that says so, without calling `respond`.
-    def serve(self, respond: (Request) -> Response, timeout: Duration? = None):
-        waits = timeout else 30s
+    ## sends nothing for `timeout` is closed. A request that's too big, or isn't HTTP, is answered
+    ## with the 4xx status that says so, without calling `respond`.
+    def serve(self, respond: (Request) -> Response, timeout: Duration = 30s):
         for connection in parallel(self):
-            _ = _answer_all(connection, respond, waits)
+            _ = _answer_all(connection, respond, timeout)
 
     def del(self):
         self.close()
@@ -130,8 +129,8 @@ struct Server:
 struct Request:
     method: str
     path: str
-    query: dict[str, str] = {}
-    headers: dict[str, str] = {}
+    query = dict[str, str]()
+    headers = dict[str, str]()
     body = bytes([])
 
     ## The body as text, or empty text when it isn't UTF-8.

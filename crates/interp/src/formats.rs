@@ -240,13 +240,15 @@ impl Interp<'_> {
             }
             ("toml.loads", [Value::Str(text)]) => self.parsed(text, toml::parse(text), span),
             ("json.dumps", [value]) => {
-                let value = self.natural(value, reading.names, span)?;
+                let value = self.saved_ids(value).map_err(|why| Diagnostic::new(why, span))?;
+                let value = self.natural(&value, reading.names, span)?;
                 dump::json(&value, indent)
                     .map(|text| Value::str(&text))
                     .map_err(|why| Diagnostic::new(why, span))
             }
             ("toml.dumps", [value]) => {
-                let value = self.natural(value, Names::Snake, span)?;
+                let value = self.saved_ids(value).map_err(|why| Diagnostic::new(why, span))?;
+                let value = self.natural(&value, Names::Snake, span)?;
                 dump::toml(&value).map(|text| Value::str(&text)).map_err(|why| Diagnostic::new(why, span))
             }
             _ => Err(Diagnostic::new(format!("`{name}` was called with the wrong arguments"), span)),

@@ -1220,9 +1220,17 @@ impl Emit<'_, '_, '_> {
         self.declare(&format!("declare {{ i64, i1 }} {intrinsic}(i64, i64)"));
         let (pair, value, bad) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{pair} = call {{ i64, i1 }} {intrinsic}(i64 {a}, i64 {b})"));
-        self.line(&format!("{value} = extractvalue {{ i64, i1 }} {pair}, 0"));
         self.line(&format!("{bad} = extractvalue {{ i64, i1 }} {pair}, 1"));
         self.fail_if(&bad, OVERFLOW, span);
+        // A product past the check is the plain multiply's, which says it didn't overflow: so LLVM
+        // knows one of numbers that aren't negative isn't either, and can drop checks after it
+        // that can't fail. A sum or difference stays as it was, as saying the same of a counter
+        // lets LLVM unroll short loops in ways that cost more than they save.
+        if name == "smul" {
+            self.line(&format!("{value} = mul nsw i64 {a}, {b}"));
+        } else {
+            self.line(&format!("{value} = extractvalue {{ i64, i1 }} {pair}, 0"));
+        }
         value
     }
 
@@ -1655,6 +1663,17 @@ impl Emit<'_, '_, '_> {
             | "intrinsics.text_size"
             | "intrinsics.text_part"
             | "intrinsics.text_of_code" => self.text_by_place(dest, name, args, span),
+            "intrinsics.id_key" | "intrinsics.id_at" => self.id_intrinsic(dest, name, args),
+            "intrinsics.stop" => {
+                let (value, kind) = self.operand(first.ok_or("no argument")?)?;
+                let block =
+                    if kind == Kind::Str && self.headers() { self.owned_text_block(&value) } else { value };
+                self.declare("declare ptr @fennec_block_text(ptr) nounwind");
+                let text = self.temp();
+                self.line(&format!("{text} = call ptr @fennec_block_text(ptr {block})"));
+                self.stop_with(&text, span);
+                Ok(())
+            }
             "random.random_int" | "random.random_float" | "random_choice" | "random.random_choice" => {
                 self.random_builtin(dest, name, args, span)
             }

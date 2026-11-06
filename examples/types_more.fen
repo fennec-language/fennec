@@ -27,12 +27,6 @@ struct Money:
 struct Score:
     value: int where value >= 0
 
-struct Door:
-    out: Stdout
-
-    def del(self):
-        self.out.print("closing the door")
-
 struct Player:
     name: str
 
@@ -68,11 +62,6 @@ def main(stdout: Stdout):
     # `where` rules: literals are checked as the program is read; anything else gives a result.
     for value in [5, -1]:
         stdout.print(Score(value=value))
-
-    # `with` runs `del` when the block ends.
-    with Door(out=stdout) as door:
-        door.out.print("inside")
-    stdout.print("outside")
 
     # A method call on a value that might be None needs `else` to end the chain.
     stdout.print(

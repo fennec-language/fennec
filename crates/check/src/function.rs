@@ -111,6 +111,9 @@ pub(crate) struct FnCx<'c> {
     /// Which locks are held while checking a lock body, a `shared` type's method or a `with`
     /// block that locks handles, for messages: "while `x` is locked".
     pub(crate) lock: Option<String>,
+    /// The `shared` types whose locks are held, which a lock body can take only the inner
+    /// types of: those they hold.
+    pub(crate) locked_types: Vec<String>,
     /// The error it says it fails with, from `fails E`.
     pub(crate) fails: Option<Type>,
 }
@@ -149,6 +152,7 @@ impl<'c> FnCx<'c> {
             else_chain: std::collections::HashSet::new(),
             fails: None,
             lock: None,
+            locked_types: Vec::new(),
         }
     }
 
@@ -236,6 +240,12 @@ impl<'c> FnCx<'c> {
             && params.first().is_some_and(|param| cx.checker.program.is_shared(&param.ty))
         {
             cx.lock = Some("while `self` is locked".to_owned());
+            cx.locked_types = params
+                .first()
+                .and_then(|param| param.ty.type_name())
+                .map(str::to_owned)
+                .into_iter()
+                .collect();
         }
         cx.tail = if cx.generator { None } else { cx.declared.clone() };
         let flow = cx.stmts(&def.body, true);

@@ -326,6 +326,16 @@ impl Emit<'_, '_, '_> {
     ) -> Result<(), String> {
         let (list, _, held) = self.list_operand(list)?;
         let (keys, kind) = self.keys_of(&list, &held, key, span)?;
+        if matches!(kind, Kind::Struct(_) | Kind::Boxed(_)) {
+            let compare = self.tuple_comparison(&kind)?;
+            self.declare("declare ptr @fennec_list_sorted_by_keys_with(ptr, ptr, ptr) nounwind");
+            let result = self.temp();
+            self.line(&format!(
+                "{result} = call ptr @fennec_list_sorted_by_keys_with(ptr {list}, ptr {keys}, ptr {compare})"
+            ));
+            self.release(&keys);
+            return self.assign(dest, &result);
+        }
         let how = Self::sort_kind(&kind)?;
         self.declare("declare ptr @fennec_list_sorted_by(ptr, ptr, i64) nounwind");
         let result = self.temp();
@@ -344,11 +354,15 @@ impl Emit<'_, '_, '_> {
     ) -> Result<(String, Kind), String> {
         let (closure, kind) = self.operand(key)?;
         let Kind::Closure(_, returns) = kind else { return Err("a key that isn't a closure".to_owned()) };
-        Self::sort_kind(&returns)?;
+        if !matches!(*returns, Kind::Struct(_) | Kind::Boxed(_)) {
+            Self::sort_kind(&returns)?;
+        }
         let key_item = match *returns {
             Kind::Int => ListItem::Int,
             Kind::Bool => ListItem::Bool,
             Kind::Float => ListItem::Float,
+            Kind::Struct(id) => ListItem::Struct(id),
+            Kind::Boxed(id) => ListItem::Boxed(id),
             _ => ListItem::Str,
         };
         let length = self.list_length(list);

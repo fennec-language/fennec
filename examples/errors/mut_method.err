@@ -4,4 +4,4 @@ error: `enemy` isn't mut
 9 |     enemy.take_damage(10)
   |     ^^^^^
   |
-  = help: declare it with `mut enemy = ...` if it needs to change
+  = fix: declare it `mut enemy`

@@ -25,6 +25,8 @@ pub(crate) struct Binding {
     pub(crate) declared: Type,
     pub(crate) is_mut: bool,
     pub(crate) origin: Origin,
+    /// Where `mut ` would go to make it changeable: before the name in `name = value`.
+    pub(crate) mut_at: Option<u32>,
 }
 
 /// Where a name came from, for explaining how to make it changeable.
@@ -572,7 +574,7 @@ impl<'c> FnCx<'c> {
 
     pub(crate) fn declare_as(&mut self, name: &str, ty: Type, is_mut: bool, origin: Origin, at: Span) {
         self.declare_with(
-            Binding { name: name.to_owned(), ty: ty.clone(), declared: ty, is_mut, origin },
+            Binding { name: name.to_owned(), ty: ty.clone(), declared: ty, is_mut, origin, mut_at: None },
             at,
         );
     }
@@ -584,7 +586,15 @@ impl<'c> FnCx<'c> {
             Type::None => Type::Optional(Box::new(self.checker.fresh(at, Hole::None))),
             other => other,
         };
-        self.declare_with(Binding { name: name.to_owned(), ty, declared, is_mut, origin: Origin::Local }, at);
+        let binding = Binding {
+            name: name.to_owned(),
+            ty,
+            declared,
+            is_mut,
+            origin: Origin::Local,
+            mut_at: Some(at.start),
+        };
+        self.declare_with(binding, at);
     }
 
     /// Declares a name with the type it was declared with, and what it holds now.
@@ -599,6 +609,17 @@ impl<'c> FnCx<'c> {
     /// A name from around a nested function, which it can read.
     fn capture(&mut self, binding: Binding) {
         self.bind(Binding { is_mut: false, origin: Origin::Captured, ..binding });
+    }
+
+    /// `name`, just declared by unpacking, which `mut` can't be written before.
+    pub(crate) fn unpacked(&mut self, name: &str) {
+        let here = self
+            .scopes
+            .last_mut()
+            .and_then(|scope| scope.bindings.iter_mut().rev().find(|binding| binding.name == name));
+        if let Some(binding) = here {
+            binding.mut_at = None;
+        }
     }
 
     fn bind(&mut self, binding: Binding) {
@@ -618,7 +639,7 @@ impl<'c> FnCx<'c> {
             }
             crossed |= scope.barrier;
         }
-        let Some(binding) = found else { return not_mut(name, span) };
+        let Some(binding) = found else { return not_mut(name, span, None) };
         if crossed && self.kept_generators > 0 {
             let message =
                 format!("a generator kept for later can't change `{name}`, which is defined outside it");
@@ -658,7 +679,7 @@ impl<'c> FnCx<'c> {
             ),
             Origin::Loop => format!("loop with `for ref {name} in ...` to change each item"),
             Origin::Locked => format!("it's locked to read: lock it to write with `as ref {name}`"),
-            Origin::Local | Origin::Captured => return not_mut(name, span),
+            Origin::Local | Origin::Captured => return not_mut(name, span, binding.mut_at),
         };
         Diagnostic::new(format!("`{name}` isn't `ref`"), span).with_help(help)
     }

@@ -39,6 +39,8 @@ impl FnCx<'_> {
                 if let Some((_, false)) = self.lookup(name) {
                     let mut problem = self.cannot_change(name, expr.span);
                     if let Some(fix) = self.write_it_there(name, expr) {
+                        // `mut target` would change a copy, so the change would be lost.
+                        problem.hint = None;
                         problem = problem.with_help(fix);
                     }
                     self.error(problem);
@@ -99,7 +101,11 @@ impl FnCx<'_> {
                 let parts = self.unpack(&ty, names.len(), value.span);
                 for (name, ty) in names.iter().zip(parts) {
                     if let ExprKind::Name(text) = &name.kind {
+                        let new = self.lookup(text).is_none();
                         self.assign_name(text, name.span, None, ty, false);
+                        if new {
+                            self.unpacked(text);
+                        }
                     }
                 }
             }
@@ -159,8 +165,14 @@ impl FnCx<'_> {
         if !self.checker.fits(&declared, ty) {
             self.error(mismatch(&format!("`{name}`"), &declared, ty, value));
         }
-        let binding =
-            Binding { name: name.to_owned(), ty: ty.clone(), declared, is_mut, origin: Origin::Local };
+        let binding = Binding {
+            name: name.to_owned(),
+            ty: ty.clone(),
+            declared,
+            is_mut,
+            origin: Origin::Local,
+            mut_at: Some(at.start),
+        };
         self.declare_with(binding, at);
         self.record(at, &self.checker.settled(ty));
     }

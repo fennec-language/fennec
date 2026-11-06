@@ -11,7 +11,7 @@ use fennec_blake3::Hash;
 use fennec_build::{Row, item_span, rows};
 use fennec_check::Checked;
 use fennec_kit::{Entry, Overlay};
-use fennec_syntax::{Diagnostic, Item, Module, Sources, Span};
+use fennec_syntax::{Diagnostic, Edit, Item, Module, Sources, Span};
 
 use crate::findings::{self, Located};
 use crate::json::Json;
@@ -249,13 +249,31 @@ impl Analysis {
 
     /// The other place a diagnostic involves, as the protocol's related information.
     fn related(&self, diagnostic: &Diagnostic, uri_of: &dyn Fn(&str) -> String) -> Vec<Json> {
-        let Some((path, text, from, to)) = diagnostic.also.and_then(|also| self.place(also)) else {
+        let Some((path, text, from, to)) = diagnostic.also().and_then(|also| self.place(also)) else {
             return Vec::new();
         };
         let location =
             Json::object([("uri", Json::string(uri_of(path))), ("range", text::range(text, from, to))]);
         let message = format!("{} is here", diagnostic.also_is());
         vec![Json::object([("location", location), ("message", Json::string(message))])]
+    }
+
+    /// `edits` as a protocol workspace edit's changes, grouped by the file each is in.
+    fn changes(&self, edits: &[Edit], uri_of: &dyn Fn(&str) -> String) -> Vec<(String, Json)> {
+        let mut changes: Vec<(String, Json)> = Vec::new();
+        for edit in edits {
+            let Some((file, text, start, end)) = self.place(edit.span) else { continue };
+            let text_edit = Json::object([
+                ("range", text::range(text, start, end)),
+                ("newText", Json::string(&edit.text)),
+            ]);
+            let uri = uri_of(file);
+            match changes.iter_mut().find(|(changed, _)| *changed == uri) {
+                Some((_, Json::Array(edits))) => edits.push(text_edit),
+                _ => changes.push((uri, Json::Array(vec![text_edit]))),
+            }
+        }
+        changes
     }
 
     /// The fixes for the diagnostics in `path` that touch bytes `from..to`, as code actions.
@@ -267,34 +285,23 @@ impl Analysis {
         uri_of: &dyn Fn(&str) -> String,
     ) -> Vec<Json> {
         let mut actions = Vec::new();
-        for diagnostic in self.diagnostics.iter().filter(|diagnostic| !diagnostic.fixes.is_empty()) {
+        for diagnostic in &self.diagnostics {
             let Some((file, text, start, end)) = self.place(diagnostic.span) else { continue };
             if file != path || end < from || start > to {
                 continue;
             }
-            let mut changes: Vec<(String, Json)> = Vec::new();
-            for edit in &diagnostic.fixes {
-                let Some((file, text, start, end)) = self.place(edit.span) else { continue };
-                let text_edit = Json::object([
-                    ("range", text::range(text, start, end)),
-                    ("newText", Json::string(&edit.text)),
-                ]);
-                let uri = uri_of(file);
-                match changes.iter_mut().find(|(changed, _)| *changed == uri) {
-                    Some((_, Json::Array(edits))) => edits.push(text_edit),
-                    _ => changes.push((uri, Json::Array(vec![text_edit]))),
-                }
-            }
-            let title = diagnostic.help.as_deref().unwrap_or(&diagnostic.message);
             let shown =
                 protocol_diagnostic(text::range(text, start, end), &message_of(diagnostic), Vec::new());
-            actions.push(Json::object([
-                ("title", Json::string(format!("Fix: {title}"))),
-                ("kind", Json::string("quickfix")),
-                ("diagnostics", Json::Array(vec![shown])),
-                ("isPreferred", Json::Bool(true)),
-                ("edit", Json::object([("changes", Json::Object(changes))])),
-            ]));
+            if !diagnostic.fixes.is_empty() {
+                let title = diagnostic.help.as_deref().unwrap_or(&diagnostic.message);
+                let changes = self.changes(&diagnostic.fixes, uri_of);
+                actions.push(action(&format!("Fix: {title}"), shown.clone(), changes, true));
+            }
+            // A fix to make by hand is offered, but never as the one to take without looking.
+            if let Some(hint) = &diagnostic.hint {
+                let changes = self.changes(&hint.edits, uri_of);
+                actions.push(action(&format!("Fix by hand: {}", hint.says), shown, changes, false));
+            }
         }
         let touched =
             self.findings.iter().filter(|found| found.path == path && found.to >= from && found.from <= to);
@@ -303,12 +310,27 @@ impl Analysis {
     }
 }
 
+/// A code action that makes `changes`, for the diagnostic `shown`.
+fn action(title: &str, shown: Json, changes: Vec<(String, Json)>, preferred: bool) -> Json {
+    Json::object([
+        ("title", Json::string(title)),
+        ("kind", Json::string("quickfix")),
+        ("diagnostics", Json::Array(vec![shown])),
+        ("isPreferred", Json::Bool(preferred)),
+        ("edit", Json::object([("changes", Json::Object(changes))])),
+    ])
+}
+
 /// A diagnostic's message with its help, which the protocol has no place of its own for.
 fn message_of(diagnostic: &Diagnostic) -> String {
-    match &diagnostic.help {
-        Some(help) => format!("{}\nhelp: {help}", diagnostic.message),
-        None => diagnostic.message.clone(),
+    let mut message = diagnostic.message.clone();
+    if let Some(help) = &diagnostic.help {
+        message = format!("{message}\nhelp: {help}");
     }
+    if let Some(hint) = &diagnostic.hint {
+        message = format!("{message}\nfix: {}", hint.says);
+    }
+    message
 }
 
 fn protocol_diagnostic(range: Json, message: &str, related: Vec<Json>) -> Json {

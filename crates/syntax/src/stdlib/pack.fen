@@ -22,7 +22,7 @@
 ## same slots, so a replay's later `add`s hand out the same `Id`s, and an `Id` whose item had gone
 ## is still gone. Either way an `Id` has to be in a `Table` saved with it, one of each type.
 
-from std.intrinsics import append_text, bytes_text, float_bits, float_of_bits, new_tag, shape_hash, text_byte, text_size, type_name
+from std.intrinsics import bytes_builder, bytes_push, bytes_push_bytes, bytes_push_text, bytes_push_word, bytes_set, bytes_text, float_bits, float_of_bits, new_tag, shape_hash, text_byte, text_size, type_name
 from std.json import _IdsSeen, _found_tables
 
 ## How far a load may go. Bytes that ask for more fail to load.
@@ -38,13 +38,13 @@ def dumps[T: Serializable](value: T, exact: bool = False) -> bytes:
     mut out = PackWriter(_exact=exact)
     out._header(shape_hash[T]())
     value.serialize(ref out)
-    if not out._wants_tables: return bytes(out._out)
+    if not out._wants_tables: return out._done()
     # It holds `Id`s, so where each one's item is comes first, and every one's checked.
     found = _found_tables(value, exact)
     mut again = PackWriter(_exact=exact, _tables=found.positions(), _tags=found.tags(), _found=True)
     again._header(shape_hash[T]())
     value.serialize(ref again)
-    bytes(again._out)
+    again._done()
 
 ## A `T` from bytes `dumps` wrote for a `T`. It fails if they were written for another shape of
 ## type, if they end too soon or go on past it, or if they go past `limits`.
@@ -81,7 +81,8 @@ _LOW_63 = 9223372036854775807
 
 ## Writes what a value's `serialize` gives it as bytes.
 struct PackWriter:
-    _out = list[int]()
+    ## What's written so far, in a builder with room to grow.
+    _out = bytes_builder()
     _exact = False
     ## Where each `Id` is in its `Table`, by the name of its type and then its `id_key` and tag,
     ## and each `Table`'s tag, once what's written has been gone through. Until then an `Id` asks
@@ -95,24 +96,27 @@ struct PackWriter:
     _optional = False
     _some_at = 0
 
+    ## The bytes written, at their exact size, which is all anything but this writer sees of them.
+    def _done(self) -> bytes:
+        self._out[0:self._out.len()]
+
     def _header(ref self, shape: int):
         # `FPK1`, or `FPKE` for `Table`s slot for slot.
         for b in [70, 80, 75, 69 if self._exact else 49]:
-            self._out.append(b)
+            bytes_push(ref self._out, b)
         self._word(shape)
 
     ## A whole word, low byte first.
     def _word(ref self, bits: int):
-        for at in range(8):
-            self._out.append((bits >> (8 * at)) & 255)
+        bytes_push_word(ref self._out, bits)
 
     ## A number as unsigned, 7 bits a byte, low first, with the top bit of each saying more come.
     def _varint(ref self, n: int):
         mut rest = n
         while rest < 0 or rest >= 128:
-            self._out.append((rest & 127) | 128)
+            bytes_push(ref self._out, (rest & 127) | 128)
             rest = (rest >> 7) & _LOW_57
-        self._out.append(rest)
+        bytes_push(ref self._out, rest)
 
     def int(ref self, value: int):
         # Zigzag: small numbers either side of 0 take one byte.
@@ -122,23 +126,22 @@ struct PackWriter:
         self._word(float_bits(value))
 
     def bool(ref self, value: bool):
-        self._out.append(1 if value else 0)
+        bytes_push(ref self._out, 1 if value else 0)
 
     def text(ref self, value: str):
         self._varint(text_size(value))
-        append_text(ref self._out, value)
+        bytes_push_text(ref self._out, value)
 
     def bytes(ref self, value: bytes):
         self._varint(value.len())
-        for at in range(value.len()):
-            self._out.append(value[at])
+        bytes_push_bytes(ref self._out, value)
 
     def none(ref self):
-        self._out.append(0)
+        bytes_push(ref self._out, 0)
 
     def some[T: Serializable](ref self, x: T):
         self._some_at = self._out.len()
-        self._out.append(1)
+        bytes_push(ref self._out, 1)
         self._optional = True
         x.serialize(ref self)
         self._optional = False
@@ -214,7 +217,7 @@ struct PackWriter:
                 return
         # Going through it found nothing wrong, so it's optional: it's saved as missing.
         if optional:
-            self._out[self._some_at] = 0
+            bytes_set(ref self._out, self._some_at, 0)
 
 ## Reads bytes `PackWriter` wrote, for a value's `deserialize`.
 struct PackReader:

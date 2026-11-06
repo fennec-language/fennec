@@ -98,9 +98,9 @@ extend Parser:
             mut span = self.prev_span()
             for item in items:
                 span = span.to(item.span)
-            target = Expr(kind=ExprKind.Tuple(items), span=span)
+            target = Expr(kind=.Tuple(items), span=span)
         if not starts_assignment(self.peek()):
-            return StmtKind.Expr(target)
+            return .Expr(target)
         op = assignment_op(self.advance().tok)
         if not is_assignable(target, op is None):
             fail Diagnostic(message="this can't be assigned to", span=target.span)
@@ -160,7 +160,7 @@ extend Parser:
             mut span = self.prev_span()
             for item in items:
                 span = span.to(item.span)
-            value = Expr(kind=ExprKind.Tuple(items), span=span)
+            value = Expr(kind=.Tuple(items), span=span)
         mut names = list[WithName]()
         if self.eat_keyword("as"):
             while True:

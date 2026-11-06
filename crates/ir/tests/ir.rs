@@ -481,7 +481,7 @@ fn a_leading_dot_case_takes_its_enum_from_the_typed_tree() {
         case .Name(text):
             .Name(text)
         case .Eof:
-            ExprKind.Negative(0)
+            .Negative(0)
 "
     );
     assert_eq!(

@@ -28,5 +28,5 @@ def show(expr: Expr) -> str:
             "-" + show(inner)
 
 test "the return type picks the enum":
-    assert literal(Tok.Int(2)) == ExprKind.Int(2)
+    assert literal(.Int(2)) == .Int(2)
     assert show(Expr(.Negative(Expr(.Name("x"))))) == "-x"

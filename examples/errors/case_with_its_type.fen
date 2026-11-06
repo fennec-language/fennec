@@ -1,0 +1,13 @@
+enum Color:
+    Red
+    Blue
+
+def paint(color: Color) -> str:
+    match color:
+        case Red:
+            "red"
+        case .Blue:
+            "blue"
+
+def main(stdout: Stdout):
+    stdout.print(paint(Color.Blue))

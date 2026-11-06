@@ -283,8 +283,46 @@ impl FnCx<'_> {
         names.iter().map(|field| self.checker.field_type(owner, case, field)).collect()
     }
 
+    /// A `match` over a union has to handle each type in it, as `case Circle(...)` does, or have
+    /// `case _`.
+    fn check_members(&mut self, members: &[Type], arms: &[MatchArm], span: Span) {
+        let unguarded: Vec<&Pattern> = arms
+            .iter()
+            .filter(|arm| arm.guard.is_none())
+            .flat_map(|arm| alternatives(&arm.pattern))
+            .collect();
+        if unguarded.iter().any(|pattern| matches!(pattern, Pattern::Wildcard | Pattern::Bind(_))) {
+            return;
+        }
+        let covered: Vec<&str> = unguarded
+            .iter()
+            .filter_map(|pattern| match pattern {
+                Pattern::Variant { name, args, dotted: false } if args.iter().all(always_matches) => {
+                    Some(name.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        let missing: Vec<String> = members
+            .iter()
+            .map(ToString::to_string)
+            .filter(|member| !covered.contains(&member.as_str()))
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        let named: Vec<String> = missing.iter().map(|member| format!("`{member}`")).collect();
+        self.error(
+            Diagnostic::new(format!("this `match` doesn't handle {}", named.join(" or ")), span)
+                .with_help("add a case for each type in the union, or `case _:` for everything else"),
+        );
+    }
+
     /// A `match` over an enum has to handle every case, or have `case _`.
     fn check_cases(&mut self, subject: &Type, arms: &[MatchArm], span: Span) {
+        if let Type::Union(members) = subject {
+            return self.check_members(members, arms, span);
+        }
         let Type::Named(owner) = subject else { return };
         let Some(info) = self.checker.program.type_info(owner).filter(|info| !info.def.cases.is_empty())
         else {

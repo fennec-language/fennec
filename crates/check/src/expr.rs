@@ -55,6 +55,7 @@ impl FnCx<'_> {
                 self.track(lhs);
                 let before = self.snapshot();
                 self.narrow(&not_none(lhs, *op == BinOp::And));
+                self.narrow_members(&crate::stmt::members(lhs, *op == BinOp::And));
                 self.condition(rhs, op.symbol());
                 self.restore(&before);
                 Type::Bool
@@ -66,6 +67,13 @@ impl FnCx<'_> {
                 }
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
+            ExprKind::Binary { op: BinOp::Is | BinOp::IsNot, lhs, rhs }
+                if let ExprKind::Name(member) = &rhs.kind
+                    && self.lookup(member).is_none()
+                    && self.member_type(member, rhs.span).is_some() =>
+            {
+                self.is_member(lhs, member, rhs.span)
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let (left, right) = (self.expr(lhs), self.expr(rhs));
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
@@ -75,9 +83,11 @@ impl FnCx<'_> {
                 self.track(cond);
                 let before = self.snapshot();
                 self.narrow(&not_none(cond, true));
+                self.narrow_members(&crate::stmt::members(cond, true));
                 let then = self.expr(then);
                 self.restore(&before);
                 self.narrow(&not_none(cond, false));
+                self.narrow_members(&crate::stmt::members(cond, false));
                 let otherwise = self.expr(otherwise);
                 self.restore(&before);
                 self.join_or_report(&[then, otherwise], span, "the two sides of this `if` give")

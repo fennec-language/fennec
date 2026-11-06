@@ -127,6 +127,12 @@ impl Lowerer<'_, '_> {
             ExprKind::Binary { op: op @ (BinOp::And | BinOp::Or), lhs, rhs } => {
                 self.logic(*op, lhs, rhs).map(|value| (Some(value), Ty::Bool))
             }
+            // `s is Circle`: which type a union holds, which the interpreter tells.
+            ExprKind::Binary { op: BinOp::Is | BinOp::IsNot, rhs, .. }
+                if !matches!(rhs.kind, ExprKind::None) =>
+            {
+                self.fallback(expr)
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let left = self.expr(lhs)?;
                 let right = self.expr(rhs)?;

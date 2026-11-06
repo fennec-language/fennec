@@ -184,6 +184,12 @@ impl Lowerer<'_, '_> {
             ExprKind::Unary { op, expr: inner } => {
                 ExprKind::Unary { op: *op, expr: Box::new(self.input(inner, handover)?) }
             }
+            // `s is Circle`: the name after `is` is a type, which the interpreter reads as written.
+            ExprKind::Binary { op: op @ (BinOp::Is | BinOp::IsNot), lhs, rhs }
+                if matches!(rhs.kind, ExprKind::Name(_)) =>
+            {
+                ExprKind::Binary { op: *op, lhs: Box::new(self.input(lhs, handover)?), rhs: rhs.clone() }
+            }
             ExprKind::Binary { op, lhs, rhs } if !matches!(op, BinOp::And | BinOp::Or) => {
                 let lhs = self.input(lhs, handover)?;
                 ExprKind::Binary { op: *op, lhs: Box::new(lhs), rhs: Box::new(self.input(rhs, handover)?) }

@@ -1,0 +1,7 @@
+error: `None` is never part of a union
+ --> examples/errors/union_with_none.fen:2:23
+  |
+2 | def shown(name: str | None) -> str:
+  |                       ^^^^
+  |
+  = help: write `str?`: an optional says it can be missing

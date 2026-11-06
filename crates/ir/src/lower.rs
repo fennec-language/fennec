@@ -978,13 +978,15 @@ fn reachable(blocks: Vec<Open>) -> Vec<Block> {
         .collect()
 }
 
-/// The `shared` types a module declares.
+/// The `shared` types a module declares that take a lock. One the standard library ships, like a
+/// connection, is a resource: lowered like a struct around what it holds, with no lock, and a
+/// `with` on it runs its `del` when the block ends.
 fn shared_types(module: &Module) -> Vec<String> {
     module
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Struct(def) if def.shared => Some(def.name.clone()),
+            Item::Struct(def) if def.shared && !def.span.in_prelude() => Some(def.name.clone()),
             _ => None,
         })
         .collect()

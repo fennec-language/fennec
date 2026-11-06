@@ -416,8 +416,25 @@ impl Interp<'_> {
         result
     }
 
-    /// Runs a value's `def del` when a `with` block ends.
+    /// Whether a `shared` value is a resource the standard library ships, like a connection: it
+    /// takes no lock, and a `with` on it closes it when the block ends.
+    pub(crate) fn is_resource(&self, cell: &Rc<std::cell::RefCell<Value>>) -> bool {
+        let name = cell.borrow().type_name();
+        self.type_info(&name).is_some_and(|info| matches!(info.def, crate::interp::TypeRef::Std(_)))
+    }
+
+    /// Runs a value's `def del` when a `with` block ends: a struct the standard library ships,
+    /// or a resource `shared` value.
     pub(crate) fn clean_up(&mut self, value: Value, span: Span) -> Result<(), Diagnostic> {
+        if let Value::Shared(cell) = &value
+            && self.is_resource(cell)
+        {
+            let name = cell.borrow().type_name();
+            if let Some(cleanup) = self.type_info(&name).and_then(|info| info.methods.get("del").cloned()) {
+                self.call_on_shared(cell, &cleanup, Vec::new(), span)?;
+            }
+            return Ok(());
+        }
         if let Value::Instance(instance) = &value
             && let Some(cleanup) =
                 self.type_info(&instance.type_name).and_then(|info| info.methods.get("del").cloned())

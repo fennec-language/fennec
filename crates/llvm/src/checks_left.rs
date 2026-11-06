@@ -315,6 +315,65 @@ mod tests {
         Ok(())
     }
 
+    /// The overflow checks `go` keeps, as the source each is on.
+    fn overflows(body: &str) -> Result<Vec<String>, String> {
+        Ok(kept(body)?
+            .into_iter()
+            .filter(|(what, _)| *what == CheckKind::Overflow)
+            .map(|(_, on)| on)
+            .collect())
+    }
+
+    /// A local written more than once holds what every write gives: a seed kept below a modulus
+    /// can't overflow the product that steps it.
+    #[test]
+    fn a_seed_kept_below_its_modulus_steps_without_a_check() -> Result<(), String> {
+        let found = overflows(
+            "def go(n: int) -> int:\n    mut seed = 42\n    mut total = 0\n    for _ in range(n):\n        seed = (seed * 3877 + 29573) % 139968\n        total += seed\n    total\n",
+        )?;
+        assert_eq!(found, ["total += seed"], "{found:?}");
+        Ok(())
+    }
+
+    /// One write that could be anything leaves the local's other writes checked too.
+    #[test]
+    fn a_seed_also_written_from_anything_keeps_its_checks() -> Result<(), String> {
+        let found = overflows(
+            "def go(n: int, start: int) -> int:\n    mut seed = start\n    for _ in range(n):\n        seed = (seed * 3877 + 29573) % 139968\n    seed\n",
+        )?;
+        assert!(found.iter().any(|on| on.contains("seed * 3877")), "{found:?}");
+        Ok(())
+    }
+
+    /// `x += 1` where `x < y` holds can't pass the highest int, whatever `y` is, and `y -= 1`
+    /// where `y > x` holds can't pass the lowest: in a `while`, and through `and`.
+    #[test]
+    fn a_step_under_a_comparison_keeps_no_check() -> Result<(), String> {
+        for body in [
+            "def go(n: int) -> int:\n    mut low = 0\n    mut high = n\n    while low < high:\n        low += 1\n        high -= 1\n    low\n",
+            "def go(limit: int, x: float) -> int:\n    mut count = 0\n    while count < limit and x * float(count) <= 4.0:\n        count += 1\n    count\n",
+        ] {
+            assert_eq!(overflows(body)?, Vec::<String>::new(), "{body}");
+        }
+        Ok(())
+    }
+
+    /// What doesn't follow from the comparison keeps its check: a step past it, a step by more,
+    /// a step where the comparison was changed after, and a second write the comparison doesn't
+    /// cover, which keeps the first one's check too, since both go by the same local.
+    #[test]
+    fn a_step_the_comparison_doesn_t_bound_keeps_its_check() -> Result<(), String> {
+        for body in [
+            "def go(n: int) -> int:\n    mut x = 0\n    while x < n:\n        x += 2\n    x\n",
+            "def go(n: int) -> int:\n    mut x = 0\n    while x <= n:\n        x += 1\n    x\n",
+            "def go(n: int, m: int) -> int:\n    mut x = 0\n    while x < n:\n        x = m\n        x += 1\n    x\n",
+            "def go(n: int, m: int) -> int:\n    mut x = m\n    if x < n:\n        x += 1\n    x += 1\n    x\n",
+        ] {
+            assert!(!overflows(body)?.is_empty(), "{body}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn divisions_and_shifts_keep_what_a_constant_doesn_t_settle() -> Result<(), String> {
         let found = kept(

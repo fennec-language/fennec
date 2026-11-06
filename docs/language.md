@@ -73,6 +73,16 @@ for unit in units:
 
 `dict[str, int?]` is an error too: leave the key out, since not being in a dict already means missing. The same goes for optional keys and set items.
 
+A generator is used once. Passing it to a function that loops over it is its one use, and any use after that, on every way the code can go, is a compile error. A second use the compiler can't see, like one in a later round of a loop, stops the program instead.
+
+```fennec
+found = (n for n in numbers if n % 2 == 0)
+stdout.print(sum(found))
+for even in found:
+# error: this generator has already been used
+#        a generator can be used once: `list(...)` keeps its items to use again
+```
+
 One silent mistake remains: changing a `mut` copy and then reading it, believing the list changed. A rule gets added for that only if testing shows real bugs.
 
 ## Copies
@@ -211,6 +221,5 @@ Each connection gets its own task, and a failure ends only that task. The wrappe
 | `where` | A broken rule always stops the program |
 | A shared method calling another | Refuse calls into a `shared` passed as a parameter |
 | `?` inside `parallel` | It ends only that task |
-| Generators | One use only: a second loop is a compile error when the compiler can see it, and otherwise stops the program |
 | A scoped `ref` | Possibly `with units[target_id] as ref target:` |
 | Closing written files | Automatic close can't report failure, so writers get an explicit `close()?` |

@@ -1,0 +1,8 @@
+error: this generator has already been used
+  --> examples/errors/generator_used_twice.fen:10:17
+   |
+10 |     for even in found:
+   |                 ^^^^^
+   |
+   = help: a generator can be used once: `list(...)` keeps its items to use again
+   = note: its first use is at examples/errors/generator_used_twice.fen:9:22

@@ -355,6 +355,7 @@ impl Checker {
         for (key, entry) in self.program.functions.iter().filter(|(_, entry)| !entry.prelude) {
             problems.extend(crate::loops::check_function(self, key, &entry.def));
             problems.extend(crate::loops::check_arguments(&entry.def.body));
+            problems.extend(crate::once::check_function(self, key, &entry.def));
         }
         for test in &self.program.tests {
             problems.extend(crate::loops::check_arguments(&test.body));

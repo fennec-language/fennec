@@ -18,6 +18,13 @@ pub(crate) fn check_function(checker: &Checker, key: &str, def: &FnDef) -> Vec<D
     let Some(body) = checker.typed.get(key) else { return Vec::new() };
     let mut walk = Walk { body, problems: Vec::new(), groups: 0 };
     let mut state = State::default();
+    // A generator passed in is one the function can use once too.
+    for param in &def.params {
+        if param.ty.as_ref().is_some_and(|ty| ty.name == "Iterator" && !ty.optional) {
+            walk.groups += 1;
+            state.names.insert(param.name.clone(), walk.groups);
+        }
+    }
     walk.block(&def.body, &mut state);
     walk.problems
 }

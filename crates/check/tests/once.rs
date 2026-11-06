@@ -44,3 +44,15 @@ fn a_use_that_may_not_happen_or_a_new_generator_is_left_to_the_run() {
         assert_eq!(in_function(body), empty, "{body}");
     }
 }
+
+#[test]
+fn a_generator_passed_in_is_used_once_there_too() {
+    let empty: [&str; 0] = [];
+    let total = "def total(numbers: Iterator[int]) -> int:\n    sum(numbers)\n\n";
+    let passed = format!("{COUNT}{total}def f(stdout: Stdout):\n    stdout.print(total(count(3)))\n");
+    assert_eq!(problems(&passed), empty, "passing one down to be looped there is its one use");
+    let twice = format!(
+        "{COUNT}def twice(numbers: Iterator[int]) -> int:\n    first = sum(numbers)\n    first + sum(numbers)\n"
+    );
+    assert_eq!(problems(&twice), ["this generator has already been used @ numbers"]);
+}

@@ -28,6 +28,11 @@ struct Armory:
     items = Table[Item]()
     units = Table[Armed]()
 
+struct Camp:
+    items = Table[Item]()
+    best: Id[Item]? = None
+    units = Table[Unit]()
+
 def failure[T](found: Result[T, ParseError]) -> str:
     match found:
         case Err(error):
@@ -110,6 +115,18 @@ test "an Id whose Table the text leaves out isn't loaded as a bare position":
     assert (
         failure(json.loads[World]("{\"selected\": [0]}"))
         == "`selected[0]` is an Id, but the text has no `Table[Unit]` for it to be in"
+    )
+
+test "an Id isn't taken for a removed one of another type in the same slot":
+    mut camp = Camp()
+    axe = camp.items.add(Item(name="axe"))
+    gone = camp.units.add(Unit(name="gone", health=1))
+    camp.units.add(Unit(name="ash", health=10, target=gone))
+    camp.units.remove(gone)
+    camp.best = axe
+    assert (
+        json.dumps(camp)
+        == "{\"items\": [{\"name\": \"axe\"}], \"best\": 0, \"units\": [{\"name\": \"ash\", \"health\": 10, \"target\": null}]}"
     )
 
 test "each load makes a Table of its own, so its Ids find nothing in another load's":

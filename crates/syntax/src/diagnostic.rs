@@ -1,5 +1,7 @@
 //! Errors that point at the code they're about, with a fix where there is one.
 
+use std::fmt::Write as _;
+
 use crate::span::Span;
 
 /// A problem in a Fennec program: what's wrong, where, and how to fix it.
@@ -8,12 +10,23 @@ pub struct Diagnostic {
     pub message: String,
     pub span: Span,
     pub help: Option<String>,
-    /// Another place the problem involves, like the first of two methods with one name.
-    pub also: Option<Span>,
-    /// What `also` points at, for the note about it.
-    pub also_is: Also,
-    /// Changes to the source that fix the problem, which `fennec fix` makes.
+    /// Another place the problem involves, like the first of two methods with one name, and
+    /// what it is, for the note about it. Boxed with `hint`'s reason: few have one.
+    pub elsewhere: Option<Box<(Span, Also)>>,
+    /// Changes to the source that fix the problem, which `fennec fix` makes. Each one leaves
+    /// what the program does as it was.
     pub fixes: Vec<Edit>,
+    /// A change that would fix the problem but may change what the program does, like adding
+    /// `mut`. `fennec fix` never makes it: it's shown as `fix: ...`, to be made by hand.
+    /// Boxed, since few have one and every `Result` that fails carries a diagnostic.
+    pub hint: Option<Box<Hint>>,
+}
+
+/// A fix to make by hand: what it says, and the change it is, for an editor to offer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hint {
+    pub says: String,
+    pub edits: Vec<Edit>,
 }
 
 /// What a diagnostic's other place is, for the note that points at it.
@@ -23,6 +36,8 @@ pub enum Also {
     Other,
     /// The loop going over what changed.
     Loop,
+    /// Where a generator was used first.
+    FirstUse,
 }
 
 /// One change to a source: the text at `span` becomes `text`. An empty span inserts.
@@ -38,9 +53,9 @@ impl Diagnostic {
             message: message.into(),
             span,
             help: None,
-            also: None,
-            also_is: Also::Other,
+            elsewhere: None,
             fixes: Vec::new(),
+            hint: None,
         }
     }
 
@@ -52,24 +67,29 @@ impl Diagnostic {
 
     /// Points at another place the problem involves.
     #[must_use]
-    pub fn also_at(mut self, span: Span) -> Self {
-        self.also = Some(span);
-        self
+    pub fn also_at(self, span: Span) -> Self {
+        let what = self.elsewhere.as_ref().map_or(Also::Other, |elsewhere| elsewhere.1);
+        self.also_at_the(what, span)
     }
 
     /// Points at another place the problem involves, saying what it is.
     #[must_use]
     pub fn also_at_the(mut self, what: Also, span: Span) -> Self {
-        self.also = Some(span);
-        self.also_is = what;
+        self.elsewhere = Some(Box::new((span, what)));
         self
+    }
+
+    /// The other place the problem involves, if there's one.
+    pub fn also(&self) -> Option<Span> {
+        self.elsewhere.as_ref().map(|elsewhere| elsewhere.0)
     }
 
     /// What `also` points at, as the notes about it say.
     pub fn also_is(&self) -> &'static str {
-        match self.also_is {
+        match self.elsewhere.as_ref().map_or(Also::Other, |elsewhere| elsewhere.1) {
             Also::Other => "the other one",
             Also::Loop => "the loop",
+            Also::FirstUse => "its first use",
         }
     }
 
@@ -80,17 +100,35 @@ impl Diagnostic {
         self
     }
 
+    /// Adds a fix to make by hand, saying `says`: the text at `span` becomes `text`.
+    #[must_use]
+    pub fn with_hint(mut self, says: impl Into<String>, span: Span, text: impl Into<String>) -> Self {
+        self.hint = Some(Box::new(Hint { says: says.into(), edits: vec![Edit { span, text: text.into() }] }));
+        self
+    }
+
+    /// The help and the fix to make by hand, as lines under the error, each starting with `pad`.
+    fn notes(&self, pad: &str) -> String {
+        let mut written = String::new();
+        if let Some(help) = &self.help {
+            let _ = writeln!(written, "{pad} = help: {help}");
+        }
+        if let Some(hint) = &self.hint {
+            let _ = writeln!(written, "{pad} = fix: {}", hint.says);
+        }
+        written
+    }
+
     /// Renders the diagnostic with the line it points at, for a terminal.
     pub fn render(&self, path: &str, source: &str) -> String {
-        let also = self.also.map(|span| place(path, source, span));
+        let also = self.also().map(|span| place(path, source, span));
         self.render_with(path, source, also.as_deref())
     }
 
     /// Like `render`, with where `also` points written out, as `path:line:column`.
     pub(crate) fn render_with(&self, path: &str, source: &str, also: Option<&str>) -> String {
         if self.span.in_prelude() {
-            let help = self.help.as_ref().map_or_else(String::new, |help| format!("  = help: {help}\n"));
-            return format!("error: {}\n --> the standard library\n{help}", self.message);
+            return format!("error: {}\n --> the standard library\n{}", self.message, self.notes(" "));
         }
         let start = usize::try_from(self.span.start).unwrap_or(0).min(source.len());
         let before = source.get(..start).unwrap_or("");
@@ -105,8 +143,8 @@ impl Diagnostic {
 
         let gutter = line_number.to_string();
         let pad = " ".repeat(gutter.len());
-        let help =
-            self.help.as_ref().map_or_else(String::new, |help| format!("{pad} |\n{pad} = help: {help}\n"));
+        let notes = self.notes(&pad);
+        let help = if notes.is_empty() { notes } else { format!("{pad} |\n{notes}") };
         let note =
             also.map_or_else(String::new, |also| format!("{pad} = note: {} is at {also}\n", self.also_is()));
         format!(

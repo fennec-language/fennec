@@ -135,9 +135,11 @@ pub(crate) fn callees(function: &Function) -> impl Iterator<Item = &str> {
     })
 }
 
-fn range_of(facts: &Facts, operand: &Operand, block: usize) -> Range {
+fn range_of(facts: &Facts, multi: &HashMap<usize, Range>, operand: &Operand, block: usize) -> Range {
     match operand {
-        Operand::Local(local) => facts.range_in(*local, block).unwrap_or(FULL),
+        Operand::Local(local) => {
+            facts.range_in(*local, block).or_else(|| multi.get(&local.0).copied()).unwrap_or(FULL)
+        }
         Operand::Int(value) => (*value, *value),
         _ => FULL,
     }
@@ -277,14 +279,14 @@ pub(crate) fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: 
 /// What the facts leave to say about one instruction.
 fn note(
     function: &Function,
-    facts: &mut Facts,
+    (facts, multi): (&mut Facts, &HashMap<usize, Range>),
     known: &mut Analysis,
     stepped: &HashSet<usize>,
     (block, inst): (usize, &InstKind),
 ) {
     match inst {
         InstKind::Copy { dest, value } => {
-            facts.note_write(*dest, range_of(facts, value, block));
+            facts.note_write(*dest, range_of(facts, multi, value, block));
             if let Operand::Local(from) = value {
                 if known.nonzero.contains(&from.0) {
                     known.nonzero.insert(dest.0);
@@ -306,7 +308,7 @@ fn note(
                 known.safe.insert(dest.0);
                 return;
             }
-            let (a, b) = (range_of(facts, lhs, block), range_of(facts, rhs, block));
+            let (a, b) = (range_of(facts, multi, lhs, block), range_of(facts, multi, rhs, block));
             if let Some((low, high)) = exact(*op, a, b) {
                 if low >= i128::from(i64::MIN) && high <= i128::from(i64::MAX) {
                     known.safe.insert(dest.0);
@@ -324,7 +326,7 @@ fn note(
             }
         }
         InstKind::Unary { dest, op: UnaryOp::Neg, value } => {
-            let range = range_of(facts, value, block);
+            let range = range_of(facts, multi, value, block);
             if function.type_of(value) == Some(Type::Int) && range.0 > i64::MIN {
                 known.safe.insert(dest.0);
                 facts.note_write(*dest, (-range.1, -range.0));
@@ -332,7 +334,7 @@ fn note(
         }
         InstKind::Builtin { dest: Some(dest), name, args, .. } => match name.as_str() {
             "float" => {
-                let (low, high) = args.first().map_or(FULL, |arg| range_of(facts, arg, block));
+                let (low, high) = args.first().map_or(FULL, |arg| range_of(facts, multi, arg, block));
                 if low > 0 || high < 0 {
                     known.nonzero.insert(dest.0);
                 }
@@ -417,40 +419,7 @@ fn analyze(
     changes: &dyn Fn(&str) -> Vec<usize>,
     keeps: &dyn Fn(&str, usize) -> bool,
 ) -> Analysis {
-    let count = function.locals.len();
-    let mut known = Analysis {
-        safe: HashSet::new(),
-        nonzero: HashSet::new(),
-        below: HashMap::new(),
-        length_of: HashMap::new(),
-        reads: vec![0; count],
-        writes: vec![0; count],
-        shared: HashSet::new(),
-        changed: HashSet::new(),
-        given_mut: HashSet::new(),
-        read_again: HashSet::new(),
-        borrowed: HashSet::new(),
-        borrowed_from: HashMap::new(),
-        taken: HashSet::new(),
-        items_taken: HashMap::new(),
-        path_taken: HashMap::new(),
-        loop_taken: HashSet::new(),
-        places_taken: HashMap::new(),
-        place_parts: HashMap::new(),
-        place_paths: HashMap::new(),
-        places_waiting: HashSet::new(),
-        field_of: HashMap::new(),
-        slice_keys: HashMap::new(),
-        unmade: HashSet::new(),
-        aliases: HashMap::new(),
-        reservations: HashMap::new(),
-        zero_filled: HashSet::new(),
-        last_copies: HashSet::new(),
-        enumerated: HashMap::new(),
-        map_walks: HashMap::new(),
-        walk_items: HashMap::new(),
-        pairs: HashMap::new(),
-    };
+    let mut known = Analysis::empty(function.locals.len());
     let grown = count_uses(function, (changes, keeps), &mut known);
     find_reads_again(function, &mut known);
     find_place_takes(function, changes, &mut known);
@@ -500,13 +469,15 @@ fn analyze(
             _ => {}
         }
     }
-    let mut facts = Facts::of(function, changes);
     let stepped: HashSet<usize> = function.counts.iter().map(|count| count.count.0).collect();
+    let multi = written_ranges(function, changes, &known, &stepped);
+    let mut facts = Facts::of(function, changes);
     for (block, written) in function.blocks.iter().enumerate() {
         for inst in &written.insts {
-            note(function, &mut facts, &mut known, &stepped, (block, &inst.kind));
+            note(function, (&mut facts, &multi), &mut known, &stepped, (block, &inst.kind));
         }
     }
+    find_guarded_steps(function, (&facts, &multi), &mut known);
     // A length only says something about a list that keeps it.
     let writes = known.writes.clone();
     let params = function.params;
@@ -520,6 +491,403 @@ fn analyze(
     find_unmade_enumerates(function, &mut known);
     find_counts_inside(function, &mut known);
     known
+}
+
+/// One side of a comparison: a local, or a number written out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Side {
+    Local(usize),
+    Int(i64),
+}
+
+/// A comparison known on the way to a place, `x op y`, with `op` one of `<`, `<=`, `>`, `>=`: so
+/// far as it holds outright, or whenever a bool local is true, or whenever it's false.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Guard {
+    Holds(usize, u8, Side),
+    IfTrue(usize, usize, u8, Side),
+    IfFalse(usize, usize, u8, Side),
+}
+
+const LESS: u8 = 0;
+const AT_MOST: u8 = 1;
+const MORE: u8 = 2;
+const AT_LEAST: u8 = 3;
+
+fn relation(op: BinOp) -> Option<u8> {
+    Some(match op {
+        BinOp::Lt => LESS,
+        BinOp::LtEq => AT_MOST,
+        BinOp::Gt => MORE,
+        BinOp::GtEq => AT_LEAST,
+        _ => return None,
+    })
+}
+
+/// `y op x` for `x op y`, and what's true when `x op y` isn't.
+fn turned(relation: u8) -> u8 {
+    match relation {
+        LESS => MORE,
+        AT_MOST => AT_LEAST,
+        MORE => LESS,
+        _ => AT_MOST,
+    }
+}
+
+fn denied(relation: u8) -> u8 {
+    match relation {
+        LESS => AT_LEAST,
+        AT_MOST => MORE,
+        MORE => AT_MOST,
+        _ => LESS,
+    }
+}
+
+impl Guard {
+    /// Whether it says anything about a local.
+    fn mentions(&self, local: usize) -> bool {
+        let (flag, x, y) = match *self {
+            Guard::Holds(x, _, y) => (None, x, y),
+            Guard::IfTrue(flag, x, _, y) | Guard::IfFalse(flag, x, _, y) => (Some(flag), x, y),
+        };
+        flag == Some(local) || x == local || y == Side::Local(local)
+    }
+}
+
+/// The comparisons a compare's result says, each way round: `a < b` says `a < b` and `b > a`.
+fn compared(function: &Function, op: BinOp, lhs: &Operand, rhs: &Operand) -> Vec<(usize, u8, Side)> {
+    let side = |operand: &Operand| match operand {
+        Operand::Local(local) if function.locals.get(local.0).is_some_and(|held| held.ty == Type::Int) => {
+            Some(Side::Local(local.0))
+        }
+        Operand::Int(value) => Some(Side::Int(*value)),
+        _ => None,
+    };
+    let (Some(relation), Some(a), Some(b)) = (relation(op), side(lhs), side(rhs)) else { return Vec::new() };
+    let mut found = Vec::new();
+    if let Side::Local(x) = a {
+        found.push((x, relation, b));
+    }
+    if let Side::Local(y) = b {
+        found.push((y, turned(relation), a));
+    }
+    found
+}
+
+/// What's known after an instruction, from what was known before it. `range` says what's known
+/// about a local anywhere it's read, for keeping what a comparison said about one side when the
+/// other side is written: `x > y`, with `y` written, still says `x` is above the lowest `y` can be.
+fn guarded_after(
+    function: &Function,
+    known: &mut std::collections::BTreeSet<Guard>,
+    inst: &InstKind,
+    range: &dyn Fn(usize) -> Range,
+) {
+    let mut written = Vec::new();
+    visit(inst, |_| {}, |local| written.push(local.0));
+    let before = known.clone();
+    let mut kept = Vec::new();
+    for guard in known.iter() {
+        if let Guard::Holds(x, relation, Side::Local(y)) = *guard
+            && written.contains(&y)
+            && !written.contains(&x)
+        {
+            let (low, high) = range(y);
+            kept.push(match relation {
+                LESS => Guard::Holds(x, AT_MOST, Side::Int(high.saturating_sub(1))),
+                AT_MOST => Guard::Holds(x, AT_MOST, Side::Int(high)),
+                MORE => Guard::Holds(x, AT_LEAST, Side::Int(low.saturating_add(1))),
+                _ => Guard::Holds(x, AT_LEAST, Side::Int(low)),
+            });
+        }
+    }
+    known.retain(|guard| !written.iter().any(|local| guard.mentions(*local)));
+    known.extend(kept);
+    for flag in written
+        .iter()
+        .copied()
+        .filter(|at| function.locals.get(*at).is_some_and(|held| held.ty == Type::Bool))
+    {
+        let mut new = Vec::new();
+        // A bool written while a comparison holds says it either way.
+        for guard in known.iter() {
+            if let Guard::Holds(x, relation, y) = *guard {
+                new.push(Guard::IfTrue(flag, x, relation, y));
+                new.push(Guard::IfFalse(flag, x, relation, y));
+            }
+        }
+        match inst {
+            InstKind::Binary { op, lhs, rhs, .. } => {
+                for (x, relation, y) in compared(function, *op, lhs, rhs) {
+                    if x != flag && y != Side::Local(flag) {
+                        new.push(Guard::IfTrue(flag, x, relation, y));
+                        new.push(Guard::IfFalse(flag, x, denied(relation), y));
+                    }
+                }
+            }
+            // A copy of a bool says what that one said.
+            InstKind::Copy { value: Operand::Local(from), .. } => {
+                for guard in &before {
+                    match *guard {
+                        Guard::IfTrue(at, x, relation, y) if at == from.0 && !written.contains(&x) => {
+                            new.push(Guard::IfTrue(flag, x, relation, y));
+                        }
+                        Guard::IfFalse(at, x, relation, y) if at == from.0 && !written.contains(&x) => {
+                            new.push(Guard::IfFalse(flag, x, relation, y));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        known.extend(
+            new.into_iter()
+                .filter(|guard| !written.iter().any(|local| *local != flag && guard.mentions(*local))),
+        );
+    }
+}
+
+/// Steps made safe by a comparison on the way to them: `x + 1` where `x < y` holds can't pass the
+/// highest int, whatever `y` is, and `x - 1` where `x > y` holds can't pass the lowest. What
+/// holds is worked out forward over the blocks: a branch on a compare says it on the way it
+/// goes, a bool says what the compare it copies said, and writing a local forgets what was
+/// known about it. Where ways in meet, only what holds on all of them is kept.
+fn find_guarded_steps(
+    function: &Function,
+    (facts, multi): (&Facts, &HashMap<usize, Range>),
+    known: &mut Analysis,
+) {
+    use std::collections::BTreeSet;
+    let steps = |inst: &InstKind| {
+        matches!(inst, InstKind::Binary { dest, op: BinOp::Add | BinOp::Sub | BinOp::Mul, lhs, .. }
+            if function.type_of(lhs) == Some(Type::Int) && !known.is_safe(*dest))
+    };
+    if !function.blocks.iter().flat_map(|block| &block.insts).any(|inst| steps(&inst.kind)) {
+        return;
+    }
+    let count = function.blocks.len();
+    // What holds on each way into each block, once that way's been worked out.
+    let mut coming: Vec<HashMap<usize, BTreeSet<Guard>>> = vec![HashMap::new(); count];
+    let mut entered: Vec<Option<BTreeSet<Guard>>> = vec![None; count];
+    let mut settled = false;
+    for _ in 0..64 {
+        let mut changed = false;
+        for (at, block) in function.blocks.iter().enumerate() {
+            let state = if at == 0 {
+                Some(BTreeSet::new())
+            } else {
+                coming.get(at).and_then(|ways| {
+                    ways.values().cloned().reduce(|a, b| a.intersection(&b).copied().collect())
+                })
+            };
+            let Some(mut state) = state else { continue };
+            if let Some(slot) = entered.get_mut(at) {
+                *slot = Some(state.clone());
+            }
+            let range = |local: usize| range_of(facts, multi, &Operand::Local(LocalId(local)), at);
+            for inst in &block.insts {
+                guarded_after(function, &mut state, &inst.kind, &range);
+            }
+            let outs: Vec<(usize, BTreeSet<Guard>)> = match &block.end {
+                Terminator::Branch { cond: Operand::Local(flag), then, otherwise } => {
+                    let holds = |when_true: bool| {
+                        let mut out = state.clone();
+                        for guard in &state {
+                            match *guard {
+                                Guard::IfTrue(at, x, relation, y) if when_true && at == flag.0 => {
+                                    out.insert(Guard::Holds(x, relation, y));
+                                }
+                                Guard::IfFalse(at, x, relation, y) if !when_true && at == flag.0 => {
+                                    out.insert(Guard::Holds(x, relation, y));
+                                }
+                                _ => {}
+                            }
+                        }
+                        out
+                    };
+                    if then == otherwise {
+                        vec![(then.0, state.clone())]
+                    } else {
+                        vec![(then.0, holds(true)), (otherwise.0, holds(false))]
+                    }
+                }
+                end => end.targets().into_iter().map(|target| (target.0, state.clone())).collect(),
+            };
+            for (target, out) in outs {
+                if let Some(ways) = coming.get_mut(target)
+                    && ways.get(&at) != Some(&out)
+                {
+                    ways.insert(at, out);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            settled = true;
+            break;
+        }
+    }
+    // What was worked out partway may say more than holds.
+    if !settled {
+        return;
+    }
+    let bounded = |state: &BTreeSet<Guard>, operand: &Operand, block: usize| -> Range {
+        let mut range = range_of(facts, multi, operand, block);
+        let Operand::Local(local) = operand else { return range };
+        for guard in state {
+            let Guard::Holds(x, relation, y) = *guard else { continue };
+            if x != local.0 {
+                continue;
+            }
+            let other = match y {
+                Side::Int(value) => (value, value),
+                Side::Local(at) => range_of(facts, multi, &Operand::Local(LocalId(at)), block),
+            };
+            match relation {
+                LESS => range.1 = range.1.min(other.1.saturating_sub(1)),
+                AT_MOST => range.1 = range.1.min(other.1),
+                MORE => range.0 = range.0.max(other.0.saturating_add(1)),
+                _ => range.0 = range.0.max(other.0),
+            }
+        }
+        range
+    };
+    // Whether each sum, difference or product is proved, by the local it's written to: what's
+    // safe goes by that local, so one written twice is safe only if both are.
+    let mut proved: HashMap<usize, bool> = HashMap::new();
+    for (at, block) in function.blocks.iter().enumerate() {
+        let reached = entered.get(at).cloned().flatten();
+        let unreached = reached.is_none();
+        let mut state = reached.unwrap_or_default();
+        let range = |local: usize| range_of(facts, multi, &Operand::Local(LocalId(local)), at);
+        for inst in &block.insts {
+            if let InstKind::Binary { dest, op: op @ (BinOp::Add | BinOp::Sub | BinOp::Mul), lhs, rhs } =
+                &inst.kind
+                && function.type_of(lhs) == Some(Type::Int)
+            {
+                // A block nothing reaches holds nothing to check.
+                let holds = unreached
+                    || known.is_safe(*dest)
+                    || exact(*op, bounded(&state, lhs, at), bounded(&state, rhs, at)).is_some_and(
+                        |(low, high)| low >= i128::from(i64::MIN) && high <= i128::from(i64::MAX),
+                    );
+                let all = proved.entry(dest.0).or_insert(true);
+                *all &= holds;
+            }
+            guarded_after(function, &mut state, &inst.kind, &range);
+        }
+    }
+    known.safe.extend(proved.into_iter().filter(|(_, all)| *all).map(|(dest, _)| dest));
+}
+
+/// What's known about each int local written more than once: every value written to it is in
+/// the range, given that every such local read is in its own. It's found by guessing from what
+/// each write gives with nothing known about them, then checking the guess holds, widening it
+/// when it doesn't, and leaving out what still doesn't settle. `seed = (seed * k + c) % m`
+/// stays below `m`, so the product that makes it can't overflow.
+fn written_ranges(
+    function: &Function,
+    changes: &dyn Fn(&str) -> Vec<usize>,
+    known: &Analysis,
+    stepped: &HashSet<usize>,
+) -> HashMap<usize, Range> {
+    let candidates: HashSet<usize> = function
+        .locals
+        .iter()
+        .enumerate()
+        .filter(|(at, local)| {
+            *at >= function.params
+                && local.ty == Type::Int
+                && known.writes.get(*at).is_some_and(|written| *written >= 2)
+                && !stepped.contains(at)
+                && !known.given_mut.contains(at)
+        })
+        .map(|(at, _)| at)
+        .collect();
+    if candidates.is_empty() {
+        return HashMap::new();
+    }
+    let mut guess: HashMap<usize, Range> = HashMap::new();
+    for _ in 0..6 {
+        let given = writes_under(function, changes, stepped, &candidates, &guess);
+        // A write of something not known at all leaves its local out.
+        let next: HashMap<usize, Range> = given.into_iter().filter(|(_, range)| *range != FULL).collect();
+        let held = next.iter().all(|(local, range)| {
+            guess.get(local).is_some_and(|guessed| guessed.0 <= range.0 && range.1 <= guessed.1)
+        });
+        if held && next.len() == guess.len() {
+            return guess;
+        }
+        // Widened, every write the guess didn't hold goes in.
+        guess = next
+            .into_iter()
+            .map(|(local, range)| match guess.get(&local) {
+                Some(old) => (local, (old.0.min(range.0), old.1.max(range.1))),
+                None => (local, range),
+            })
+            .collect();
+    }
+    HashMap::new()
+}
+
+/// The range of every value written to each candidate, with each candidate read taken to be in
+/// its guessed range, or anything at all where there's none.
+fn writes_under(
+    function: &Function,
+    changes: &dyn Fn(&str) -> Vec<usize>,
+    stepped: &HashSet<usize>,
+    candidates: &HashSet<usize>,
+    guess: &HashMap<usize, Range>,
+) -> HashMap<usize, Range> {
+    let mut facts = Facts::of(function, changes);
+    let mut scratch = Analysis::empty(function.locals.len());
+    let mut given: HashMap<usize, Range> = HashMap::new();
+    for (block, written) in function.blocks.iter().enumerate() {
+        for inst in &written.insts {
+            let mut dests = Vec::new();
+            visit(&inst.kind, |_| {}, |local| dests.push(local));
+            for dest in dests.into_iter().filter(|dest| candidates.contains(&dest.0)) {
+                let range = write_range(function, (&facts, guess), &inst.kind, block);
+                let union = given.get(&dest.0).map_or(range, |old| (old.0.min(range.0), old.1.max(range.1)));
+                given.insert(dest.0, union);
+            }
+            note(function, (&mut facts, guess), &mut scratch, stepped, (block, &inst.kind));
+        }
+    }
+    given
+}
+
+/// The range of the int an instruction writes, as `note` works it out, or anything at all.
+fn write_range(
+    function: &Function,
+    (facts, multi): (&Facts, &HashMap<usize, Range>),
+    inst: &InstKind,
+    block: usize,
+) -> Range {
+    match inst {
+        InstKind::Copy { value, .. } => range_of(facts, multi, value, block),
+        InstKind::Binary { op, lhs, rhs, .. } if function.type_of(lhs) == Some(Type::Int) => {
+            let (a, b) = (range_of(facts, multi, lhs, block), range_of(facts, multi, rhs, block));
+            if let Some((low, high)) = exact(*op, a, b)
+                && low >= i128::from(i64::MIN)
+                && high <= i128::from(i64::MAX)
+            {
+                return (clamp(low), clamp(high));
+            }
+            match (op, rhs) {
+                (BinOp::FloorDiv, Operand::Int(by @ 1..)) => (a.0.div_euclid(*by), a.1.div_euclid(*by)),
+                (BinOp::Mod, Operand::Int(by @ 1..)) => (0, by - 1),
+                _ => FULL,
+            }
+        }
+        InstKind::Unary { op: UnaryOp::Neg, value, .. } => {
+            let range = range_of(facts, multi, value, block);
+            if range.0 > i64::MIN { (-range.1, -range.0) } else { FULL }
+        }
+        InstKind::Builtin { name, .. } if name == "list.len" => (0, MOST_ITEMS),
+        _ => FULL,
+    }
 }
 
 /// `d.get(text[a:b])` and `d[text[a:b]] = v`, with the slice used for nothing else and what it
@@ -1710,6 +2078,43 @@ fn fills_with_zeros(
 }
 
 impl Analysis {
+    /// Nothing known yet, about a function with this many locals.
+    fn empty(count: usize) -> Analysis {
+        Analysis {
+            safe: HashSet::new(),
+            nonzero: HashSet::new(),
+            below: HashMap::new(),
+            length_of: HashMap::new(),
+            reads: vec![0; count],
+            writes: vec![0; count],
+            shared: HashSet::new(),
+            changed: HashSet::new(),
+            given_mut: HashSet::new(),
+            read_again: HashSet::new(),
+            borrowed: HashSet::new(),
+            borrowed_from: HashMap::new(),
+            taken: HashSet::new(),
+            items_taken: HashMap::new(),
+            path_taken: HashMap::new(),
+            loop_taken: HashSet::new(),
+            places_taken: HashMap::new(),
+            place_parts: HashMap::new(),
+            place_paths: HashMap::new(),
+            places_waiting: HashSet::new(),
+            field_of: HashMap::new(),
+            slice_keys: HashMap::new(),
+            unmade: HashSet::new(),
+            aliases: HashMap::new(),
+            reservations: HashMap::new(),
+            zero_filled: HashSet::new(),
+            last_copies: HashSet::new(),
+            enumerated: HashMap::new(),
+            map_walks: HashMap::new(),
+            walk_items: HashMap::new(),
+            pairs: HashMap::new(),
+        }
+    }
+
     pub(crate) fn is_safe(&self, dest: LocalId) -> bool {
         self.safe.contains(&dest.0)
     }

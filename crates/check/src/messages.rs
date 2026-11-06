@@ -77,9 +77,16 @@ fn edits(a: &[char], b: &[char]) -> usize {
     at(&last, b.len())
 }
 
-pub(crate) fn not_mut(name: &str, span: Span) -> Diagnostic {
-    Diagnostic::new(format!("`{name}` isn't mut"), span)
-        .with_help(format!("declare it with `mut {name} = ...` if it needs to change"))
+/// `name` given a new value, with where `mut ` would go in its declaration when there's one.
+pub(crate) fn not_mut(name: &str, span: Span, mut_at: Option<u32>) -> Diagnostic {
+    let diagnostic = Diagnostic::new(format!("`{name}` isn't mut"), span);
+    match mut_at {
+        // Adding `mut` changes what the program means, so it's a fix to make by hand.
+        Some(at) => {
+            diagnostic.with_hint(format!("declare it `mut {name}`"), Span { start: at, end: at }, "mut ")
+        }
+        None => diagnostic.with_help(format!("declare it with `mut {name} = ...` if it needs to change")),
+    }
 }
 
 pub(crate) fn might_be_none(span: Span) -> Diagnostic {

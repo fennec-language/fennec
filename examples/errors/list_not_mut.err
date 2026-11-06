@@ -4,4 +4,4 @@ error: `scores` isn't mut
 3 |     scores.append(4)
   |     ^^^^^^
   |
-  = help: declare it with `mut scores = ...` if it needs to change
+  = fix: declare it `mut scores`

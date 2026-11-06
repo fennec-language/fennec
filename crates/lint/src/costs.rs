@@ -100,7 +100,7 @@ fn problem(finding: &Finding) -> Option<Diagnostic> {
     );
     let diagnostic = Diagnostic::new(message, finding.span).with_help(help);
     Some(match later {
-        Some(later) => Diagnostic { also: Some(later), ..diagnostic },
+        Some(later) => diagnostic.also_at(later),
         None => diagnostic,
     })
 }

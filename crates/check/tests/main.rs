@@ -17,6 +17,7 @@ mod lost;
 mod mutation;
 mod names;
 mod narrowing;
+mod once;
 mod returns;
 mod shared;
 mod signatures;
@@ -102,7 +103,13 @@ fn helps(text: &str) -> Vec<String> {
     match fennec_check::check(&module) {
         Ok(_) => Vec::new(),
         Err(diagnostics) => {
-            diagnostics.into_iter().map(|diagnostic| diagnostic.help.unwrap_or_default()).collect()
+            // A fix to make by hand is shown as `fix: ...` where there's no help.
+            let help = |diagnostic: fennec_syntax::Diagnostic| match (diagnostic.help, diagnostic.hint) {
+                (Some(help), _) => help,
+                (None, Some(hint)) => format!("fix: {}", hint.says),
+                (None, None) => String::new(),
+            };
+            diagnostics.into_iter().map(help).collect()
         }
     }
 }

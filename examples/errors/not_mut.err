@@ -4,4 +4,4 @@ error: `name` isn't mut
 3 |     name = "Vex"
   |     ^^^^
   |
-  = help: declare it with `mut name = ...` if it needs to change
+  = fix: declare it `mut name`

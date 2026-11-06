@@ -31,7 +31,6 @@ const INTERPRETED_FUNCTIONS: &[(&str, &[&str])] = &[
     ("imports.fen", &["Deque.iter"]),
     ("json_collections.fen", &["Grid.iter", "SortedMap.iter"]),
     ("json_enums.fen", &["Grid.iter"]),
-    ("operators.fen", &["Grid.iter"]),
     ("own_positions.fen", &["Deque.iter", "Grid.iter"]),
     ("std_collections.fen", &["Counter.iter", "Deque.iter"]),
     ("std_grid.fen", &["Deque.iter", "Grid.iter"]),

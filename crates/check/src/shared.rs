@@ -97,6 +97,34 @@ impl Checker {
         found
     }
 
+    /// Reports a `def del` on anything but a `shared` type. A plain value is copied freely, so
+    /// nothing can tell which copy is the last one; a `shared` value is one value, and its `del`
+    /// runs when the last name for it goes away.
+    pub(crate) fn check_dels(&mut self) {
+        let plain: Vec<String> = self
+            .program
+            .types
+            .values()
+            .filter(|info| !info.def.shared && !info.prelude)
+            .map(|info| info.def.name.clone())
+            .collect();
+        for name in plain {
+            let Some((_, entry)) = self.program.method(&name, "del") else { continue };
+            let kind = match self.program.type_info(&name).map(|info| info.kind) {
+                Some(crate::program::TypeKind::Enum) => "an `enum`",
+                Some(crate::program::TypeKind::Error) => "an `error`",
+                _ => "a `struct`",
+            };
+            let message = format!(
+                "`{name}` is {kind}, so it can't have `def del`: a plain value is copied freely, so nothing can tell which copy is the last"
+            );
+            self.diagnostics.push(
+                Diagnostic::new(message, entry.def.span)
+                    .with_help("hold a file or connection, which closes itself, or make this a `shared`"),
+            );
+        }
+    }
+
     /// The `shared` types a value of this type reaches through what it holds, at any depth,
     /// including the type itself when it's `shared`.
     pub(crate) fn shared_reached(&mut self, ty: &Type, open: &mut Vec<String>, found: &mut Vec<String>) {

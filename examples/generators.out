@@ -22,13 +22,9 @@ q 1
 [(0, 0), (1, 2)]
 6 3
 got 1
-closing inner
-closing outer
 left the loop
 got 1
 got 2
-closing inner
-past the inner door
-closing outer
+past the second item
 10
 failed TooBig(at=2)

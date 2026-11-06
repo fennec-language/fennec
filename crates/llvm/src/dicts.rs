@@ -399,7 +399,24 @@ impl Emit<'_, '_, '_> {
         };
         let missing = self.temp();
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
-        self.line(&format!("br i1 {missing}, label %{slow}, label %{change}"));
+        // A short new key held inline, for values holding no block, goes straight in.
+        let absent = if key_word == Word::Text && plain_value(value_word) {
+            self.label("absent")
+        } else {
+            slow.clone()
+        };
+        self.line(&format!("br i1 {missing}, label %{absent}, label %{change}"));
+        if absent != slow {
+            self.start_block(&absent);
+            self.add_short_key_helper();
+            let (bytes, length) = (self.header_bytes(&key), self.header_byte_length(&key));
+            let word = self.dict_word(&value_kind, &held, false);
+            let added = self.temp();
+            self.line(&format!(
+                "{added} = call i1 @fen_add_short_key(ptr {dict}, ptr {bytes}, i64 {length}, i64 {word})"
+            ));
+            self.line(&format!("br i1 {added}, label %{done}, label %{slow}"));
+        }
         self.start_block(&change);
         let value_at = self.temp();
         self.line(&format!(
@@ -601,6 +618,132 @@ impl Emit<'_, '_, '_> {
     /// Where the value of the key that's the slice `text[from:to]` is, or null. In ASCII text a
     /// character is a byte, so the slice's bytes are hashed as a stored key's are and looked up
     /// right here; other text asks the runtime, as does an inline header.
+    /// Defines `@fen_add_short_key(dict, bytes, length, value)`, which adds a key of 23 bytes or
+    /// fewer to a dict that nothing else holds and that hasn't got it, when the dict has room: as
+    /// an inline header, with a value that holds no block. Gives back whether it did, the runtime
+    /// doing anything else, as its `set_inline` does the same. It's hashed as a lookup hashes it.
+    fn add_short_key_helper(&mut self) {
+        self.string_slice_helpers();
+        let header = header_bytes();
+        self.module.add_helper(
+            "fen_add_short_key",
+            format!(
+                "define internal i1 @fen_add_short_key(ptr %d, ptr %bytes, i64 %length, i64 %value) #0 {{
+entry:
+  %made = alloca [3 x i64], align 8
+  %short = icmp ule i64 %length, 23
+  br i1 %short, label %room, label %no
+room:
+  %used_at = getelementptr inbounds i8, ptr %d, i64 {USED}
+  %used = load i64, ptr %used_at
+  %mask_at = getelementptr inbounds i8, ptr %d, i64 {MASK}
+  %mask = load i64, ptr %mask_at
+  %count = add i64 %mask, 1
+  %quarter = lshr i64 %count, 2
+  %holds = sub i64 %count, %quarter
+  %fits = icmp ult i64 %used, %holds
+  br i1 %fits, label %add, label %no
+add:
+  store [3 x i64] zeroinitializer, ptr %made
+  call void @llvm.memcpy.p0.p0.i64(ptr %made, ptr %bytes, i64 %length, i1 false)
+  %tag = or i64 %length, 128
+  %tag_byte = trunc i64 %tag to i8
+  %tag_at = getelementptr inbounds i8, ptr %made, i64 23
+  store i8 %tag_byte, ptr %tag_at
+  %a = load i64, ptr %made
+  %b_at = getelementptr inbounds i64, ptr %made, i64 1
+  %b = load i64, ptr %b_at
+  %c_at = getelementptr inbounds i64, ptr %made, i64 2
+  %c = load i64, ptr %c_at
+  %mixed = call i64 @fen_slice_hash(ptr %bytes, i64 %length)
+  %high = lshr i64 %mixed, 29
+  %folded = xor i64 %mixed, %high
+  %hash = lshr i64 %folded, 1
+  %slots = getelementptr inbounds i8, ptr %d, i64 {header}
+  %first = and i64 %hash, %mask
+  br label %probe
+probe:
+  %at = phi i64 [ %first, %add ], [ %after, %taken ]
+  %slot = getelementptr inbounds i64, ptr %slots, i64 %at
+  %held = load i64, ptr %slot
+  %empty = icmp eq i64 %held, 0
+  br i1 %empty, label %place, label %taken
+taken:
+  %stepped = add i64 %at, 1
+  %after = and i64 %stepped, %mask
+  br label %probe
+place:
+  %number = add i64 %used, 1
+  store i64 %number, ptr %slot
+  %entries = getelementptr inbounds i64, ptr %slots, i64 %count
+  %added = getelementptr inbounds [5 x i64], ptr %entries, i64 %used
+  store i64 %hash, ptr %added
+  %a_to = getelementptr inbounds i64, ptr %added, i64 1
+  store i64 %a, ptr %a_to
+  %b_to = getelementptr inbounds i64, ptr %added, i64 2
+  store i64 %b, ptr %b_to
+  %c_to = getelementptr inbounds i64, ptr %added, i64 3
+  store i64 %c, ptr %c_to
+  %value_to = getelementptr inbounds i64, ptr %added, i64 4
+  store i64 %value, ptr %value_to
+  %keys_at = getelementptr inbounds i8, ptr %d, i64 {KEYS}
+  %keys = load i64, ptr %keys_at
+  %more_keys = add i64 %keys, 1
+  store i64 %more_keys, ptr %keys_at
+  store i64 %number, ptr %used_at
+  ret i1 true
+no:
+  ret i1 false
+}}
+
+"
+            ),
+        );
+    }
+
+    /// Where an ASCII string's slice is and how many bytes it has, as slicing clamps it, and
+    /// whether it is one: `false` for text that isn't ASCII or a header holding its text.
+    fn ascii_slice_bytes(&mut self, [text, from, to]: &[String; 3]) -> (String, String, String) {
+        let (block_path, joined) = (self.label("slice_bytes"), self.label("slice_bytes_done"));
+        let came_from = self.current.clone();
+        let text = if self.headers() {
+            let in_block = self.header_in_block(text);
+            self.line(&format!("br i1 {in_block}, label %{block_path}, label %{joined}"));
+            self.start_block(&block_path);
+            let (first, block) = (self.header_word(text, 0), self.temp());
+            self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
+            block
+        } else {
+            self.line(&format!("br label %{block_path}"));
+            self.start_block(&block_path);
+            text.clone()
+        };
+        let (bytes_at, chars_at) =
+            (self.offset(&text, TEXT_BYTES.unsigned_abs()), self.offset(&text, TEXT_CHARS.unsigned_abs()));
+        let (length, chars, ascii) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{length} = load i64, ptr {bytes_at}"));
+        self.line(&format!("{chars} = load i64, ptr {chars_at}"));
+        self.line(&format!("{ascii} = icmp eq i64 {length}, {chars}"));
+        let start = self.clamp_place(from, &length, "0");
+        let end = self.clamp_place(to, &length, &length);
+        let (later, size, first) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{later} = call i64 @llvm.smax.i64(i64 {end}, i64 {start})"));
+        self.line(&format!("{size} = sub i64 {later}, {start}"));
+        let text_start = self.offset(&text, TEXT.unsigned_abs());
+        self.line(&format!("{first} = getelementptr inbounds i8, ptr {text_start}, i64 {start}"));
+        let block_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        if !self.headers() {
+            return (ascii, first, size);
+        }
+        let (ok, bytes, count) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{ok} = phi i1 [ false, %{came_from} ], [ {ascii}, %{block_end} ]"));
+        self.line(&format!("{bytes} = phi ptr [ null, %{came_from} ], [ {first}, %{block_end} ]"));
+        self.line(&format!("{count} = phi i64 [ 0, %{came_from} ], [ {size}, %{block_end} ]"));
+        (ok, bytes, count)
+    }
+
     fn slice_value_at(&mut self, dict: &str, key_word: Word, [text, from, to]: &[String; 3]) -> String {
         self.string_slice_helpers();
         let (here, there, joined) = (self.label("ascii"), self.label("other"), self.label("looked"));
@@ -811,6 +954,26 @@ impl Emit<'_, '_, '_> {
         }
         self.line(&format!("br label %{done}"));
         self.start_block(&add);
+        // A short new key of an ASCII string, for values holding no block, goes straight in.
+        if key_word == Word::Text && plain_value(value_word) {
+            let (ok, bytes, size) = self.ascii_slice_bytes(&sliced);
+            let word = self.dict_word(&value_kind, &held, false);
+            let (missing, try_it) = (self.temp(), self.temp());
+            self.line(&format!("{missing} = xor i1 {there}, true"));
+            let both = self.temp();
+            self.line(&format!("{both} = and i1 {alone}, {missing}"));
+            self.line(&format!("{try_it} = and i1 {both}, {ok}"));
+            let (native, runtime) = (self.label("add_here"), self.label("add_runtime"));
+            self.line(&format!("br i1 {try_it}, label %{native}, label %{runtime}"));
+            self.start_block(&native);
+            self.add_short_key_helper();
+            let added = self.temp();
+            self.line(&format!(
+                "{added} = call i1 @fen_add_short_key(ptr {dict}, ptr {bytes}, i64 {size}, i64 {word})"
+            ));
+            self.line(&format!("br i1 {added}, label %{done}, label %{runtime}"));
+            self.start_block(&runtime);
+        }
         // Mostly a new key, so the runtime doesn't look for it again before adding it; it still
         // finds one that's there, in a dict something else holds.
         let word = self.dict_word(&value_kind, &held, !fresh);
@@ -1132,4 +1295,9 @@ fn word_ty(word: Word) -> Ty {
         Word::Plain(id) => Ty::Struct(id),
         Word::Block(number) => Ty::Block(number),
     }
+}
+
+/// Whether a dict's values are words that hold no block, so adding one owns nothing.
+fn plain_value(word: Word) -> bool {
+    matches!(word, Word::Int | Word::Float | Word::Bool | Word::Nothing)
 }

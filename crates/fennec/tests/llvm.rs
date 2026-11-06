@@ -1739,6 +1739,49 @@ fn reading_a_string_that_isnt_ascii_in_order_takes_a_step_for_each_character() -
     )
 }
 
+/// Reading a string that isn't ASCII by position, as a parser does: the cursor's character again,
+/// the next, characters of each width, back and from the end, positions outside it, an empty
+/// string, and slices, after which reading carries on from where it was.
+#[test]
+fn reading_characters_by_position_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "characters_by_position",
+        r#"def words(text: str) -> list[str]:
+    mut found = []
+    mut at = 0
+    while at < text.len():
+        while at < text.len() and text[at] == " ":
+            at += 1
+        start = at
+        while at < text.len() and text[at] != " ":
+            at += 1
+        if at > start:
+            found.append(text[start:at])
+    found
+
+def main(stdout: Stdout):
+    text = "fóx ünïcode 日本語 🦊🦊 and plain ascii past an inline header é"
+    stdout.print(words(text))
+    stdout.print(words(""), words("é"), words(" é 🦊 "))
+    mut seen = []
+    for at in [0, 0, 1, 1, 2, 5, 4, 30, 29, 31, -1, -2, -60, 2, 3, 13, 12, 14, 15, 16, 17]:
+        if -text.len() <= at and at < text.len():
+            seen.append(f"{at}={text[at]}")
+    stdout.print("".join(seen))
+    stdout.print(text[4:11], text[12:15], text[16:18], text[-1:], text[:3], text[5])
+    mut total = 0
+    for at in range(text.len()):
+        total += text[at].code()
+        if at % 7 == 0:
+            total += text[at // 2].code()
+    stdout.print(total)
+"#,
+    )
+}
+
 /// A loop over a string's characters: a text all ASCII takes a byte at a time with nothing to
 /// test, and any other its characters' bytes, whether it's inline or a block's, and the body
 /// breaking, going on, or looping over text of its own.
@@ -2004,6 +2047,33 @@ fn isdigit_matches_the_jit() -> std::io::Result<()> {
 "#,
     )
 }
+
+/// `//` and `%` by a power of two are a shift and a mask, which round toward negative infinity
+/// as Fennec's do: for every sign, from the lowest int to the highest, and the divisors from 1 up.
+#[test]
+fn dividing_by_a_power_of_two_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("power_of_two_division", POWER_OF_TWO_DIVISION)
+}
+
+const POWER_OF_TWO_DIVISION: &str = r#"def main(stdout: Stdout):
+    lowest = -9223372036854775807 - 1
+    highest = 9223372036854775807
+    values = [0, 1, -1, 2, -2, 3, -3, 7, -7, 8, -8, 9, -9, 1023, -1023, 1024, -1024, 123456789, -123456789, lowest, lowest + 1, highest, highest - 1]
+    mut lines = []
+    for v in values:
+        lines.append(f"{v}: {v // 1} {v % 1} {v // 2} {v % 2} {v // 4} {v % 4} {v // 8} {v % 8} {v // 1024} {v % 1024} {v // 16384} {v % 16384} {v // 4611686018427387904} {v % 4611686018427387904}")
+    for line in lines:
+        stdout.print(line)
+    mut total = 0
+    for n in range(-50, 50):
+        total += n // 2 + n % 2 * 3 + n // 16 - n % 32
+        if n % 2 == 0:
+            total += n // 2
+    stdout.print(total)
+"#;
 
 /// A product past the check is known not to have overflowed, which lets LLVM drop later checks:
 /// one that does overflow still fails, from either sign, and one that doesn't goes on to its sums.
@@ -3923,6 +3993,29 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A list that's packed in native code, as it crosses to the JSON writer.
+#[test]
+fn json_of_packed_lists_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "json_packed",
+        r#"from std import json
+
+struct Scores:
+    name: str
+    points: list[int]
+    rates: list[float]
+
+def main(stdout: Stdout):
+    stdout.print(json.dumps(Scores(name="a", points=[1, 2], rates=[0.5])))
+    stdout.print(json.dumps([1, 2, 3]), json.dumps([[1], [2, 3], []]), json.dumps((1, [2])))
+    stdout.print(json.dumps({"6": [6], "7": []}), json.dumps({"a": {"b": [1.5]}}))
+"#,
+    )
+}
+
 /// `json.dumps` of plain structs, lists, strings and ints, and `json.loads` reading a struct, a
 /// list of plain structs, and failing on bad text, as the interpreter does.
 #[test]
@@ -5293,6 +5386,52 @@ False False
     Ok(())
 }
 
+/// Floats as keys have one equality: `-0.0` is `0.0`, and every NaN is the same, with the key
+/// kept as it was first written.
+#[test]
+fn float_keys_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "float_keys",
+        r#"from std.math import sqrt
+
+def main(stdout: Stdout):
+    mut floats = {1.5, 2.5}
+    stdout.print(floats, 1.5 in floats, 3.5 in floats, floats.len(), sorted(floats), sorted({"b", "a"}))
+    floats.add(1.5)
+    floats.add(3.5)
+    floats.discard(2.5)
+    stdout.print(floats, floats.len(), list(floats), sum(x for x in floats))
+    zero = 0.0
+    mut zeros = {zero}
+    negative = -zero
+    stdout.print(negative in zeros, zero in zeros)
+    zeros.add(negative)
+    stdout.print(zeros, zeros.len())
+    mut signed = {negative}
+    signed.add(zero)
+    stdout.print(signed, signed.len(), zero in signed)
+    nan = 1e300 * 1e300 - 1e300 * 1e300
+    mut nans = {nan}
+    nans.add(nan)
+    nans.add(-nan)
+    stdout.print(nans.len(), nan in nans, -nan in nans, 1.0 in nans)
+    mut named = {1.5: "a", 2.5: "b"}
+    named[1.5] = "c"
+    named[0.0] = "z"
+    stdout.print(named, named[1.5], named[negative], named.get(9.5), named.keys(), named.values())
+    stdout.print(named.pop(2.5), named, {1.5, 2.5} == {2.5, 1.5})
+    mut counts: dict[float, int] = {}
+    for at in range(100):
+        key = float(at % 7) / 2.0
+        counts[key] = (counts.get(key) else 0) + 1
+    stdout.print(counts.len(), counts[0.0], counts[3.0])
+"#,
+    )
+}
+
 /// Floats as keys hash as they compare, on the interpreter here. LLVM's float keys are held to the
 /// same answers where they're lowered.
 #[test]
@@ -5428,6 +5567,64 @@ def main(stdout: Stdout):
     copied.remove(ids[1])
     names.remove(ids[3])
     stdout.print(copied.add(Named("g")), names.add(Named("h")), copied.values(), names.values())
+"#,
+    )
+}
+
+/// `reversed` of text and tuples, and `remove_where` and `clear` on a `Table`. An item added
+/// after either goes in the first slot it left free.
+#[test]
+fn reversing_and_removing_from_tables_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "reversed_removed",
+        r#"from std.collections import Table
+from std.math import sqrt
+
+struct Unit:
+    name: str
+    hp: int
+
+def main(stdout: Stdout):
+    four = 16
+    stdout.print(sqrt(16), sqrt(four), sqrt(2.25))
+    stdout.print(reversed("fennec"), reversed("héllo"), reversed(""), reversed([1, 2, 3]))
+    stdout.print(reversed((1, 2)), reversed((1, 2, 3, 4)), reversed(("a", "a long string in a block")))
+    mut names = Table[str]()
+    first = names.add("ash")
+    names.add("kit")
+    third = names.add("a long name that sits in its own block")
+    copied = names
+    names.remove_where(name => name.startswith("k"))
+    stdout.print(names.values(), names.len(), copied.values(), copied.len(), names[first], names[third])
+    fourth = names.add("vex")
+    stdout.print(names.values(), names.len(), names[fourth])
+    names.remove_where(name => False)
+    stdout.print(names.len())
+    names.remove_where(name => True)
+    stdout.print(names.values(), names.len(), names.get(first))
+    mut units = Table[Unit]()
+    weak = units.add(Unit(name="weak", hp=1))
+    strong = units.add(Unit(name="strong", hp=9))
+    units.remove_where(unit => unit.hp < 5)
+    stdout.print(units.values(), units.get(weak), units[strong].name)
+    mut numbers = Table[int]()
+    numbers.add(1)
+    numbers.add(2)
+    numbers.remove_where(n => n % 2 == 0)
+    stdout.print(numbers.values(), numbers.len())
+    numbers.clear()
+    stdout.print(numbers.values(), numbers.len())
+    gone = numbers.add(5)
+    stdout.print(numbers.values(), numbers.len(), numbers[gone])
+    mut cleared = copy(names)
+    cleared.add("again")
+    cleared.clear()
+    stdout.print(cleared.len(), names.len(), cleared.values())
+    ignore(numbers.remove(gone), "it's fine if it's gone")
+    stdout.print(numbers.len())
 "#,
     )
 }
@@ -7430,6 +7627,22 @@ def main(stdout: Stdout):
     stdout.print(floats)
     holder = Holder([8, None])
     stdout.print(holder.values)
+"#,
+    )
+}
+
+/// `None` itself inside a tuple.
+#[test]
+fn none_in_a_tuple_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "none_in_tuple",
+        r#"def main(stdout: Stdout):
+    pair = (1, None)
+    stdout.print(pair, (None, "a"), (None, None))
+    stdout.print(pair == (1, None), [(1, None), (2, None)])
 "#,
     )
 }

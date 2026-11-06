@@ -449,11 +449,12 @@ jobs:
           cp target/lean-threads/release/libfennec_runtime.a target/release/libfennec_runtime_lean_threads.a
       - name: Build and run every example and kernel
         run: |
-          still_needs=" "
+          # By path, as an example and a kernel can share a name.
+          still_needs=" examples/json "
           built=0
           failed=0
           for program in examples/*.fen bench/kernels/*.fen; do
-            name=$(basename "$program" .fen)
+            name=${program%.fen}
             if ! ./target/release/fennec build --llvm "$program" -o checked > /dev/null 2> built.txt; then
               # Anything but a failed link is the backend saying what it doesn't take yet.
               grep -qE "linking failed|Undefined symbols|undefined reference" built.txt || continue

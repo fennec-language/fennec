@@ -1398,6 +1398,21 @@ impl Emit<'_, '_, '_> {
 
     /// Rounds toward negative infinity, unlike the machine's division.
     fn division(&mut self, op: BinOp, (a, b): (&str, &str), rhs: &Operand, span: Span) -> String {
+        // By a power of two, rounding toward negative infinity is what shifting does, and the
+        // remainder that goes with it is the low bits, whatever the sign: `-7 // 2` is `-7 >> 1`,
+        // -4, and `-7 % 2` is `-7 & 1`, 1. So nothing's left to fix up, and LLVM can see that
+        // `n % 2 == 0` leaves `n // 2` exact.
+        if let Operand::Int(divisor @ 1..) = rhs
+            && divisor.count_ones() == 1
+        {
+            let result = self.temp();
+            if op == BinOp::FloorDiv {
+                self.line(&format!("{result} = ashr i64 {a}, {}", divisor.trailing_zeros()));
+            } else {
+                self.line(&format!("{result} = and i64 {a}, {}", divisor - 1));
+            }
+            return result;
+        }
         if !matches!(rhs, Operand::Int(1..)) {
             let zero = self.temp();
             self.line(&format!("{zero} = icmp eq i64 {b}, 0"));
@@ -1714,7 +1729,9 @@ impl Emit<'_, '_, '_> {
                 self.copy(dest.ok_or("no result")?, from)
             }
             "Table" | "Table.len" | "Table.contains" | "Table.get" | "Table.add" | "Table.remove"
-            | "Table.values" | "Table.ids" | "Table.items" => self.id_map_builtin(dest, name, args, span),
+            | "Table.values" | "Table.ids" | "Table.items" | "Table.remove_where" | "Table.clear" => {
+                self.id_map_builtin(dest, name, args, span)
+            }
             "is_regex" | "re.is_regex" | "re.pattern_problem" | "Regex.replace" | "Regex.split"
             | "Regex.find_all" | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
                 self.regex_builtin(dest, name, args, span)
@@ -1749,7 +1766,14 @@ impl Emit<'_, '_, '_> {
                 self.assign(dest.ok_or("no result")?, &temp)
             }
             "math.sqrt" => {
-                let (value, _) = self.operand(first.ok_or("no argument")?)?;
+                let (value, kind) = self.operand(first.ok_or("no argument")?)?;
+                let value = if kind == Kind::Int {
+                    let wide = self.temp();
+                    self.line(&format!("{wide} = sitofp i64 {value} to double"));
+                    wide
+                } else {
+                    value
+                };
                 let negative = self.temp();
                 self.line(&format!("{negative} = fcmp olt double {value}, {}", float_text(0.0)));
                 self.fail_if(&negative, NEGATIVE_SQRT, span);

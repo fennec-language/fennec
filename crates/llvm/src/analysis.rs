@@ -2097,6 +2097,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "list.insert"
                     | "sorted.key"
                     | "list.remove_where"
+                    | "Table.remove_where"
                     | "result.expect"
                     | "dict.pop"
                     | "random.random_int"

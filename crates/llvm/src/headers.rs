@@ -652,15 +652,74 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Defines `@fen_char_place(text, at)`: where character `at` of a string's block starts, in
-    /// bytes, counting from the end if `at` is negative, or -1 if there's no such character. It
-    /// walks from whichever is nearest of the start, the end and the block's cursor, and leaves
-    /// the cursor there, so reading a string in order takes a step for each character.
+    /// bytes, counting from the end if `at` is negative, or -1 if there's no such character. A
+    /// parser reads the character at the block's cursor again or the one after it, so those
+    /// are found where it's called, from the cursor and the lead byte's length. Anything else
+    /// is walked to by `@fen_char_walk`.
     pub(crate) fn char_place_helper(&mut self) {
-        use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS, TEXT_CURSOR};
+        use fennec_interp::embed::layout::{TEXT, TEXT_CHARS, TEXT_CURSOR};
+        self.char_walk_helper();
+        self.declare("declare i8 @llvm.ctlz.i8(i8, i1)");
         self.module.add_helper(
             "fen_char_place",
             format!(
-                "define internal i64 @fen_char_place(ptr %text, i64 %at) #0 {{
+                "define internal i64 @fen_char_place(ptr %text, i64 %at) #2 {{
+entry:
+  %chars_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_CHARS}
+  %chars = load i64, ptr %chars_at
+  %inside = icmp ult i64 %at, %chars
+  br i1 %inside, label %near, label %walk
+near:
+  %cursor_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_CURSOR}
+  %cursor = load atomic i64, ptr %cursor_at monotonic, align 8
+  %kept_char = and i64 %cursor, 4294967295
+  %kept_byte = lshr i64 %cursor, 32
+  %again = icmp eq i64 %at, %kept_char
+  br i1 %again, label %done, label %next_or_not
+next_or_not:
+  %after = add nuw nsw i64 %kept_char, 1
+  %is_next = icmp eq i64 %at, %after
+  br i1 %is_next, label %next, label %walk
+next:
+  %lead_at = getelementptr inbounds i8, ptr %text, i64 {TEXT}
+  %lead_byte_at = getelementptr inbounds i8, ptr %lead_at, i64 %kept_byte
+  %lead = load i8, ptr %lead_byte_at
+  %flipped = xor i8 %lead, -1
+  %ones = call i8 @llvm.ctlz.i8(i8 %flipped, i1 false)
+  %single = icmp eq i8 %ones, 0
+  %wide = zext i8 %ones to i64
+  %width = select i1 %single, i64 1, i64 %wide
+  %stepped = add nuw nsw i64 %kept_byte, %width
+  %fits = icmp ult i64 %stepped, 4294967296
+  br i1 %fits, label %step, label %walk
+step:
+  %high = shl nuw i64 %stepped, 32
+  %packed = or i64 %high, %at
+  store atomic i64 %packed, ptr %cursor_at monotonic, align 8
+  br label %done
+walk:
+  %walked = call i64 @fen_char_walk(ptr %text, i64 %at)
+  br label %done
+done:
+  %place = phi i64 [ %kept_byte, %near ], [ %stepped, %step ], [ %walked, %walk ]
+  ret i64 %place
+}}
+
+"
+            ),
+        );
+    }
+
+    /// Defines `@fen_char_walk(text, at)`, which `@fen_char_place` gives anything but the cursor's
+    /// character and the next. It walks from whichever is nearest of the start, the end and the
+    /// block's cursor, and leaves the cursor there, so reading a string in order takes a step for
+    /// each character.
+    fn char_walk_helper(&mut self) {
+        use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS, TEXT_CURSOR};
+        self.module.add_helper(
+            "fen_char_walk",
+            format!(
+                "define internal i64 @fen_char_walk(ptr %text, i64 %at) #0 {{
 entry:
   %bytes_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_BYTES}
   %bytes = load i64, ptr %bytes_at
@@ -1088,7 +1147,7 @@ done:
         (start, end): (&str, &str),
         (no_end, slow, done): (&str, &str, &str),
     ) -> (String, String) {
-        use fennec_interp::embed::layout::{TEXT_BYTES, TEXT_CHARS};
+        use fennec_interp::embed::layout::{TEXT_BYTES, TEXT_CHARS, TEXT_CURSOR};
         let in_block = self.header_in_block(text);
         let wide = self.label("slice_wide");
         self.line(&format!("br i1 {in_block}, label %{wide}, label %{slow}"));
@@ -1125,7 +1184,13 @@ done:
             emit.line(&format!("{place} = select i1 {at_end}, i64 {bytes}, i64 {found}"));
             place
         };
-        let (from_place, to_place) = (place(self, &from), place(self, &to));
+        // The end first, which a parser has just read up to and the cursor is at; then the start,
+        // walked back to, with the cursor put back at the end, where reading carries on.
+        let to_place = place(self, &to);
+        let (cursor_at, cursor) = (self.offset(&block, TEXT_CURSOR.unsigned_abs()), self.temp());
+        self.line(&format!("{cursor} = load atomic i64, ptr {cursor_at} monotonic, align 8"));
+        let from_place = place(self, &from);
+        self.line(&format!("store atomic i64 {cursor}, ptr {cursor_at} monotonic, align 8"));
         let (size, short) = (self.temp(), self.temp());
         self.line(&format!("{size} = sub i64 {to_place}, {from_place}"));
         self.line(&format!("{short} = icmp ule i64 {size}, 23"));

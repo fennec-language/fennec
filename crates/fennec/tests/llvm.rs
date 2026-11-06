@@ -5812,7 +5812,7 @@ fn walking_a_tables_slots_in_place_allocates_nothing() -> std::io::Result<()> {
     }
     let counts = counts_of(
         "walking_slots_in_place",
-        r#"from std.collections import Table
+        r"from std.collections import Table
 
 struct Enemy:
     hp: int
@@ -5834,7 +5834,7 @@ def main(stdout: Stdout):
         for enemy in enemies:
             total += enemy.hp
     stdout.print(total)
-"#,
+",
     )?;
     assert!(counts.starts_with("copies 0 "), "{counts}");
     assert!(count(&counts, "allocations") < Some(40), "{counts}");

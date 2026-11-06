@@ -4279,8 +4279,11 @@ def main(stdout: Stdout, args: Args, process: Process):
         assert!(symbols.status.success(), "{}", String::from_utf8_lossy(&symbols.stderr));
         let symbols = String::from_utf8_lossy(&symbols.stdout);
         assert!(symbols.contains("fennec_clock_now") || symbols.contains("fennec_print_block"), "{symbols}");
-        // Rust writes the type as its name's length and the name.
-        assert!(!symbols.contains("6Interp"), "the interpreter is still linked");
+        // The interpreter's constructor, which the full runtime always calls when the program
+        // starts. Rust writes each name as its length and the name. A looser match finds
+        // `Interp` in the name of a small closure the linker folded together with the native code's own
+        // copy, in a release build.
+        assert!(!symbols.contains("6Interp11with_output"), "the interpreter is still linked");
     }
 
     let needs = dir.join("needs.fen");
@@ -4324,7 +4327,8 @@ fn a_build_leaves_the_interpreter_out_unless_the_program_needs_it() -> std::io::
     };
     let has_interpreter = |executable: &Path| -> std::io::Result<bool> {
         let symbols = Command::new("nm").arg(executable).output()?;
-        Ok(String::from_utf8_lossy(&symbols.stdout).contains("6Interp"))
+        // The interpreter's constructor, as `a_lean_runtime_leaves_the_interpreter_out` looks for it.
+        Ok(String::from_utf8_lossy(&symbols.stdout).contains("6Interp11with_output"))
     };
     let lean = built("def main(stdout: Stdout):\n    stdout.print([1, 2], {\"key\": 3})\n", "lean")?;
     assert_eq!(String::from_utf8_lossy(&Command::new(&lean).output()?.stdout), "[1, 2] {\"key\": 3}\n");

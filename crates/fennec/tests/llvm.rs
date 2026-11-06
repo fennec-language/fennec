@@ -190,9 +190,9 @@ def main(stdout: Stdout):
     stdout.print(many[0], many[-1], many.len(), many)
     for held in [Held.Empty, Held.Full(data=bytes([1]))]:
         match held:
-            case Empty:
+            case .Empty:
                 stdout.print("empty")
-            case Full(inner):
+            case .Full(inner):
                 stdout.print(inner, inner[0], held)
     stdout.print(maybe(True), maybe(False), maybe(True) is None, maybe(False) is None)
     got = maybe(True) else bytes()
@@ -448,7 +448,7 @@ def cleared_text(mut value: str?):
     value = None
 
 def reshaped(mut shape: Shape):
-    shape = Shape.Dot
+    shape = .Dot
 
 def newbox(mut box: Box):
     box = Box([5], 0, "new")
@@ -590,15 +590,15 @@ def main(stdout: Stdout):
         stdout.print(places)
     mut shape = Shape.Line(2, [1, 2])
     match shape:
-        case Line(size, tags):
+        case .Line(size, tags):
             reshaped(mut shape)
             stdout.print(size, tags, tags.len())
-        case Dot:
+        case .Dot:
             stdout.print("dot")
     match shape:
-        case Line(size, tags):
+        case .Line(size, tags):
             stdout.print(size)
-        case Dot:
+        case .Dot:
             stdout.print("dot")
 
     # An arithmetic result, known to fit, from something changed.
@@ -2550,7 +2550,7 @@ def main(stdout: Stdout):
     stdout.print(a == a, a == b, a == c, a != a, a != c)
     stdout.print(Holder(a, 1) == Holder(b, 1), Holder(a, 1) == Holder(c, 1))
     stdout.print([a] == [b], [a] == [c], a in [c], a in [b], [a, c].index(c))
-    stdout.print(Either.One(a) == Either.One(b), Either.One(a) == Either.One(c))
+    stdout.print(Either.One(a) == .One(b), Either.One(a) == .One(c))
     maybe: Account? = a
     stdout.print(maybe == b, maybe == c)
     with b as mut held:
@@ -3090,19 +3090,19 @@ def main(stdout: Stdout):
     stdout.print(points, other, points["p"].x, points == other, points.get("q"), points.get("r"))
     stdout.print(points.values(), points.items(), points.pop("q"), points)
     mut lights = {"go": Light.Green, "wait": Light.Amber(seconds=3)}
-    lights["stop"] = Light.Red
-    stdout.print(lights, lights["wait"], lights["go"] == Light.Green)
+    lights["stop"] = .Red
+    stdout.print(lights, lights["wait"], lights["go"] == .Green)
     for name, light in lights.items():
         match light:
-            case Red:
+            case .Red:
                 stdout.print(name, "red")
-            case Green:
+            case .Green:
                 stdout.print(name, "green")
-            case Amber(seconds):
+            case .Amber(seconds):
                 stdout.print(name, seconds)
     mut notes = {1: Note.Said(text="a long note that sits in its own block"), 2: Note.Empty}
-    notes[3] = Note.Said(text="short")
-    notes[1] = Note.Said(text="replaced")
+    notes[3] = .Said(text="short")
+    notes[1] = .Said(text="replaced")
     stdout.print(notes, notes[3])
     stdout.print(notes.pop(1), notes.get(3), notes.values())
     mut people = {"me": Named(name="me", tags=["a"])}
@@ -4284,7 +4284,7 @@ def said[T](found: Result[T, ParseError]) -> str:
             "read"
 
 def main(stdout: Stdout):
-    ash = Unit(name="Ash \"the\" fox\n", level=3, kind=Kind.Owl(wise=True), pet=None, at=Spot(x=1), tags=["a", "é"], stats={"hp": 10})
+    ash = Unit(name="Ash \"the\" fox\n", level=3, kind=.Owl(wise=True), pet=None, at=Spot(x=1), tags=["a", "é"], stats={"hp": 10})
     text = json.dumps(ash)
     stdout.print(text)
     stdout.print(json.dumps([ash, ash], indent=2))
@@ -4468,7 +4468,7 @@ def main(stdout: Stdout):
     kept = shelf.first_tags()
     shelf.relabel()
     stdout.print(seen, kept, shelf.items[0].name, shelf.log)
-    tree = Tree.Node(left=Tree.Node(left=Tree.Leaf, right=Tree.Leaf), right=Tree.Leaf)
+    tree = Tree.Node(left=.Node(left=.Leaf, right=.Leaf), right=.Leaf)
     stdout.print(size(tree))
 "#;
     same_as_the_jit("borrowed", source)?;
@@ -4562,7 +4562,7 @@ def main(stdout: Stdout):
     stdout.print(Pair(x=zero, y=nan) != Pair(x=minus, y=other))
     stdout.print((zero, nan) == (minus, other), (nan, 1.0) == (1.0, 1.0))
     stdout.print(zero in [minus], other in [nan], 1.0 in [nan])
-    stdout.print(Light.Green(zero) == Light.Green(minus), Light.Green(nan) == Light.Green(other))
+    stdout.print(Light.Green(zero) == .Green(minus), Light.Green(nan) == .Green(other))
     stdout.print(Tagged(x=zero, name="a") == Tagged(x=minus, name="a"), Tagged(x=nan, name="a") == Tagged(x=other, name="a"))
     stdout.print(Tagged(x=1.0, name="a") == Tagged(x=2.0, name="a"), Tagged(x=1.0, name="a") == Tagged(x=1.0, name="b"))
 "#;
@@ -5087,14 +5087,14 @@ struct Spot:
 
 def main(stdout: Stdout):
     at = (3, 4)
-    one = Spot(x=1, y=2.5, on=True, team=Team.Blue)
+    one = Spot(x=1, y=2.5, on=True, team=.Blue)
     flag = 3 > 2
     stdout.print(f"at {at} {one} {flag} {not flag} {Team.Red}")
     mut items = [5, 6, 7, 8]
     gone = items.pop(1)
     last = items.pop(-1)
     stdout.print(gone, last, items)
-    mut spots = [Spot(x=9, y=0.5, on=False, team=Team.Red), one]
+    mut spots = [Spot(x=9, y=0.5, on=False, team=.Red), one]
     first = spots.pop(0)
     stdout.print(f"{first}", spots.len())
 "#,
@@ -5556,7 +5556,7 @@ enum Wrap:
     Inner(token: Token)
 
 def word(text: str) -> Token:
-    Token.Word(text)
+    .Word(text)
 
 def describe(token: Token) -> str:
     match token:
@@ -5570,16 +5570,16 @@ def describe(token: Token) -> str:
             f"{label}: {items.len()} items, first {items[0]}"
 
 def replace(mut token: Token, text: str):
-    token = Token.Word(text)
+    token = .Word(text)
 
 def pick(at: int) -> Token?:
     if at == 0:
         return None
     if at == 1:
-        return Token.Word("a string long enough that it can't be held inline")
+        return .Word("a string long enough that it can't be held inline")
     if at == 2:
-        return Token.Word("short")
-    Token.Many([at], "label")
+        return .Word("short")
+    .Many([at], "label")
 
 def someone(at: int) -> Person?:
     if at == 0:
@@ -5595,7 +5595,7 @@ def main(stdout: Stdout):
     # Copies, and changes after copying.
     mut a = word(long + "!")
     b = a
-    a = Token.Num(1)
+    a = .Num(1)
     stdout.print(describe(a), describe(b))
     mut c = copy(b)
     replace(mut c, "changed")
@@ -5607,8 +5607,8 @@ def main(stdout: Stdout):
     stdout.print(describe(last))
     # Equality.
     same = [word(long) == word(long), word("x") == word("x"), word("x") == word("y"),
-        word("x") != Token.Num(1), Token.Blank == Token.Blank, Token.Num(1) == Token.Num(1),
-        Token.Many([1], "a") == Token.Many([1], "a"), Token.Many([1], "a") == Token.Many([2], "a"),
+        word("x") != .Num(1), Token.Blank == .Blank, Token.Num(1) == .Num(1),
+        Token.Many([1], "a") == .Many([1], "a"), Token.Many([1], "a") == .Many([2], "a"),
         word(long[0:30]) == word(long[0:30])]
     stdout.print(same)
     # In structs and lists.
@@ -5619,13 +5619,13 @@ def main(stdout: Stdout):
     mut list_of = [word("one")]
     for at in range(100):
         list_of.append(word(f"item number {at} long enough not to be held inline"))
-    list_of[0] = Token.Num(9)
+    list_of[0] = .Num(9)
     popped = list_of.pop()
     stdout.print(list_of.len(), describe(list_of[0]), describe(list_of[50]), describe(popped))
     # First case holding a string, moved out and let go of at the end.
     mut first = First.Named(long)
     moved = first
-    first = First.Named("other")
+    first = .Named("other")
     stdout.print(first, moved)
     # A struct inside a case, and an enum inside a case.
     wrap = Wrap.Who(Person(long, 3))
@@ -5691,10 +5691,10 @@ def main(stdout: Stdout):
             case Err(failure):
                 stdout.print("err", failure)
     # JSON of them.
-    d = Doc(Token.Word(long), [Token.Blank, Token.Num(2), Token.Word("x")], long)
+    d = Doc(.Word(long), [Token.Blank, Token.Num(2), Token.Word("x")], long)
     text = json.dumps(d)
     stdout.print(text)
-    back = json.loads[Doc](text) else Doc(Token.Blank, [], "")
+    back = json.loads[Doc](text) else Doc(.Blank, [], "")
     stdout.print(back == d, back)
     token = json.loads[Token](json.dumps(Token.Word(long))) else Token.Blank
     stdout.print(token)
@@ -5747,17 +5747,17 @@ struct Wrapped:
 
 def printed(value: Json) -> str:
     match value:
-        case Null:
+        case .Null:
             "null"
-        case Flag(flag):
+        case .Flag(flag):
             "true" if flag else "false"
-        case Number(number):
+        case .Number(number):
             str(number)
-        case Text(text):
+        case .Text(text):
             f"'{text}'"
-        case Items(values):
+        case .Items(values):
             ",".join([printed(item) for item in values])
-        case Fields(names, values):
+        case .Fields(names, values):
             mut parts = []
             for at, name in enumerate(names):
                 parts.append(f"{name}={printed(values[at])}")
@@ -5765,8 +5765,8 @@ def printed(value: Json) -> str:
 
 def document(depth: int) -> Json:
     if depth == 0:
-        return Json.Number(7)
-    Json.Fields(
+        return .Number(7)
+    .Fields(
         ["a much longer name than fits in a header", "b"],
         [Json.Items([document(depth - 1), Json.Null, Json.Flag(True)]), Json.Text("é")],
     )
@@ -5793,19 +5793,19 @@ def depth_of(tree: Tree) -> int:
 
 def total(expr: Expr) -> int:
     match expr:
-        case Number(value):
+        case .Number(value):
             value
-        case Add(parts):
+        case .Add(parts):
             sum(total(part) for part in parts)
-        case Named(name, value):
+        case .Named(name, value):
             name.len() + sum(total(part) for part in value.parts)
 
 def changed(value: Json) -> Json:
     match value:
-        case Items(values):
+        case .Items(values):
             mut more = copy(values)
             more.append(Json.Null)
-            Json.Items(more)
+            .Items(more)
         case _:
             value
 
@@ -5815,14 +5815,14 @@ def main(stdout: Stdout):
     held = made
     other = changed(made)
     stdout.print(printed(held) == printed(made), printed(other).len())
-    stdout.print(printed(changed(Json.Items([made, made]))).len())
-    stdout.print(made == held, made == Json.Null, Json.Number(1) == Json.Number(1))
-    stdout.print(Json.Text("a") == Json.Text("a"), Json.Items([Json.Null]) == Json.Items([Json.Null]))
+    stdout.print(printed(changed(.Items([made, made]))).len())
+    stdout.print(made == held, made == .Null, Json.Number(1) == .Number(1))
+    stdout.print(Json.Text("a") == .Text("a"), Json.Items([Json.Null]) == .Items([Json.Null]))
 
     mut items = [Json.Null, Json.Text("in a list"), Json.Items([Json.Number(1)])]
     copied = items
     items.append(document(1))
-    items[0] = Json.Text("replaced")
+    items[0] = .Text("replaced")
     last = items.pop()
     stdout.print(items.len(), copied.len(), printed(items[0]), printed(copied[0]), printed(last))
     stdout.print(items)
@@ -5861,7 +5861,7 @@ fn a_type_holding_itself_through_a_list_allocates_no_block_of_its_own() -> std::
     if !ready() || std::env::var_os("FENNEC_INLINE_STRUCTS").is_some_and(|set| set == "0") {
         return Ok(());
     }
-    let source = "enum Json:\n    Number(value: int)\n    Items(values: list[Json])\n\ndef main(stdout: Stdout):\n    mut items = []\n    for n in range(1000):\n        items.append(Json.Number(n))\n    stdout.print(Json.Items(items) == Json.Number(0))\n";
+    let source = "enum Json:\n    Number(value: int)\n    Items(values: list[Json])\n\ndef main(stdout: Stdout):\n    mut items = []\n    for n in range(1000):\n        items.append(Json.Number(n))\n    stdout.print(Json.Items(items) == .Number(0))\n";
     let counts = counts_of("through_lists_blocks", source)?;
     assert!(count(&counts, "allocations") < Some(30), "{counts}");
     Ok(())
@@ -5902,13 +5902,13 @@ def main(stdout: Stdout):
     long = "a string long enough that it can't be held inline"
     mut tokens = [Token.Word(long), Token.Blank, Token.Many([1, 2], long), Token.Word("short")]
     for mut item in parallel(tokens):
-        item = Token.Word("changed, and long enough that it can't be held inline")
+        item = .Word("changed, and long enough that it can't be held inline")
     stdout.print(tokens)
     stdout.print([describe(item) for item in parallel(tokens)])
     mut more = [Token.Word(long + "!") for at in range(200)]
     for mut item in parallel(more):
         if describe(item).len() > 10:
-            item = Token.Blank
+            item = .Blank
     stdout.print(more[0], more[199], sum(describe(item).len() for item in parallel(more)))
 "#,
     )
@@ -5977,7 +5977,7 @@ def set_token(mut token: Token, other: Token):
     token = other
 
 def retext(mut token: Token, text: str):
-    token = Token.Word(text)
+    token = .Word(text)
 
 def main(stdout: Stdout):
     long = "a string long enough that it can't be held inline"
@@ -6002,7 +6002,7 @@ def main(stdout: Stdout):
         last = tokens.pop()
         early = tokens.pop(0)
         tokens.pop(0)
-        tokens.remove_where((item) => item == Token.Blank)
+        tokens.remove_where((item) => item == .Blank)
         total += gone.name.len() + first.name.len() + people.len() + tokens.len()
         if same or last == early:
             total += 1
@@ -6279,7 +6279,7 @@ def named(present: bool) -> str?:
         "Plain(x=1, y=2.0) == Plain(x=2, y=2.0)",
         "Point(x=1, label=\"p\") == Point(x=2, label=\"q\")",
         "Shown(x=1) != Shown(x=1)",
-        "Light.Red == Light.Green",
+        "Light.Red == .Green",
         "seen(True) is None",
         "seen(False) is not None",
         "named(True) is None",

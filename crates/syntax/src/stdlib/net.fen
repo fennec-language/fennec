@@ -30,17 +30,17 @@ error NetError:
     ## What went wrong, in words.
     def message(self) -> str:
         match self:
-            case NotFound(host):
+            case .NotFound(host):
                 f"there's no host called `{host}`"
-            case Refused(host, port):
+            case .Refused(host, port):
                 f"`{host}` refused a connection on port {port}"
-            case TimedOut(after):
+            case .TimedOut(after):
                 f"gave up after {after.as_seconds()}s"
-            case Closed:
+            case .Closed:
                 "the other side closed the connection"
             case Denied(reason) | Tls(reason) | Other(reason):
                 reason
-            case Status(code):
+            case .Status(code):
                 f"the response's status was {code}"
 
 ## What a server answered. A 404 is an answer like any other, so `ok()` says which it was. Its
@@ -172,16 +172,16 @@ def _answer_all(
 
 ## The next request on a connection.
 def _read_request(connection: Connection, timeout: Duration) -> _Read fails NetError:
-    first = connection.read_line(timeout=timeout)? else return _Read.Done
-    if first == "": return _Read.Done
+    first = connection.read_line(timeout=timeout)? else return .Done
+    if first == "": return .Done
     parts = first.split(" ")
     if parts.len() != 3 or not parts[2].startswith("HTTP/1."):
-        return _Read.Bad(status=400, reason="that isn't an HTTP/1.1 request line")
+        return .Bad(status=400, reason="that isn't an HTTP/1.1 request line")
     mut headers: dict[str, str] = {}
     mut size = first.len()
     mut lines = 0
     while True:
-        line = connection.read_line(timeout=timeout)? else return _Read.Bad(
+        line = connection.read_line(timeout=timeout)? else return .Bad(
             status=400,
             reason="the headers didn't end",
         )
@@ -189,22 +189,22 @@ def _read_request(connection: Connection, timeout: Duration) -> _Read fails NetE
         size += line.len()
         lines += 1
         if lines > _MOST_HEADERS or size > _MOST_HEADER_BYTES:
-            return _Read.Bad(status=431, reason="the headers are too big")
-        colon = line.find(":") else return _Read.Bad(status=400, reason="a header has no `:`")
+            return .Bad(status=431, reason="the headers are too big")
+        colon = line.find(":") else return .Bad(status=400, reason="a header has no `:`")
         headers[line[:colon].strip().lower()] = line[colon + 1:].strip()
     if "transfer-encoding" in headers:
-        return _Read.Bad(status=501, reason="chunked bodies aren't taken yet")
+        return .Bad(status=501, reason="chunked bodies aren't taken yet")
     mut body = bytes([])
     if "content-length" in headers:
-        length = int(headers["content-length"]) else return _Read.Bad(
+        length = int(headers["content-length"]) else return .Bad(
             status=400,
             reason="the content length isn't a number",
         )
-        if length < 0: return _Read.Bad(status=400, reason="the content length is negative")
-        if length > _MOST_BODY: return _Read.Bad(status=413, reason="the body is too big")
+        if length < 0: return .Bad(status=400, reason="the content length is negative")
+        if length > _MOST_BODY: return .Bad(status=413, reason="the body is too big")
         while body.len() < length:
             more = connection.read(length - body.len(), timeout=timeout)?
-            if more.len() == 0: return _Read.Bad(status=400, reason="the body ended early")
+            if more.len() == 0: return .Bad(status=400, reason="the body ended early")
             body = body + more
     version = parts[2]
     asked = (headers.get("connection") else "").lower()
@@ -222,7 +222,7 @@ def _read_request(connection: Connection, timeout: Duration) -> _Read fails NetE
                 query[_unquoted(pair, True)] = ""
             else:
                 query[_unquoted(pair[:equals], True)] = _unquoted(pair[equals + 1:], True)
-    _Read.Got(
+    .Got(
         request=Request(
             method=parts[0],
             path=_unquoted(path, False),

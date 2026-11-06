@@ -5422,6 +5422,54 @@ fn string_keys_in_place_match_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// New string keys a dict nothing else holds gets, from slices and whole strings: added in
+/// native code while short and the dict has room, and by the runtime when long, the dict is
+/// full or shared, or the text isn't ASCII. Every way gives what the interpreter does.
+#[test]
+fn new_string_keys_go_in_as_on_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "new_string_keys",
+        r#"def main(stdout: Stdout):
+    dna = "acgtacgtttgacca" * 300
+    for size in [1, 3, 12, 23, 24, 30]:
+        mut counts: dict[str, int] = {}
+        for at in range(dna.len() - size + 1):
+            piece = dna[at:at + size]
+            counts[piece] = (counts.get(piece) else 0) + 1
+        mut best = 0
+        for key, value in counts.items():
+            best = max(best, value)
+        stdout.print(size, counts.len(), best, counts.get(dna[:size]) else -1)
+    mut words: dict[str, float] = {}
+    for at in range(200):
+        words[f"w{at % 37}"] = float(at) * 0.5
+        words[f"a much longer key than a header holds {at % 5}"] = 1.0
+    stdout.print(words.len(), words["w3"], sorted(words.keys())[:4])
+    mut seen: set[str] = set()
+    for at in range(100):
+        seen.add(dna[at:at + 4])
+    stdout.print(seen.len(), "acgt" in seen)
+    mut shared: dict[str, int] = {"x": 1}
+    copy = shared
+    for at in range(50):
+        shared[dna[at:at + 2]] = at
+    stdout.print(shared.len(), copy.len(), copy)
+    mut flags: dict[str, bool] = {}
+    for at in range(40):
+        flags[f"{at % 9}"] = at % 2 == 0
+    stdout.print(flags)
+    uni = "éacgtü" * 20
+    mut by: dict[str, int] = {}
+    for at in range(uni.len() - 3):
+        by[uni[at:at + 3]] = at
+    stdout.print(by.len(), by["acg"])
+"#,
+    )
+}
+
 /// Reading a string key a dict doesn't have fails with the key in the message.
 #[test]
 fn a_missing_string_key_fails_like_the_jit() -> std::io::Result<()> {

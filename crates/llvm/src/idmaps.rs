@@ -312,6 +312,38 @@ impl Emit<'_, '_, '_> {
                 let found = self.finds(&block, &parts, &id);
                 self.assign(dest.ok_or("no result")?, &found)
             }
+            // A loop going through the slots in place: how many there are, whether one has an
+            // item, the item, and its `Id`. The loop keeps inside the slots.
+            "Table.slots" => {
+                let (block, _) = self.operand(&Operand::Local(*map))?;
+                let (_, generations) = self.part(&block, parts.generations, false);
+                let count = self.list_length(&generations);
+                self.assign(dest.ok_or("no result")?, &count)
+            }
+            "Table.slot_live" | "Table.slot_id" => {
+                let (at, _) = self.operand(args.get(1).ok_or("no slot")?)?;
+                let (block, _) = self.operand(&Operand::Local(*map))?;
+                let (_, generations) = self.part(&block, parts.generations, false);
+                let word_at = self.item_address(&generations, "i64", &at);
+                let word = self.temp();
+                self.line(&format!("{word} = load i64, ptr {word_at}{ITEM_ACCESS}"));
+                if name == "Table.slot_live" {
+                    let live = self.temp();
+                    self.line(&format!("{live} = icmp sge i64 {word}, 0"));
+                    return self.assign(dest.ok_or("no result")?, &live);
+                }
+                let tag = self.tag_of(&block, &parts);
+                let place = self.slot(dest.ok_or("no result")?);
+                self.write_id(&place, (&at, &word, &tag));
+                Ok(())
+            }
+            "Table.at_slot" => {
+                let (at, _) = self.operand(args.get(1).ok_or("no slot")?)?;
+                let (block, _) = self.operand(&Operand::Local(*map))?;
+                let (_, items) = self.part(&block, parts.items, false);
+                let place = self.item_address(&items, &memory, &at);
+                self.read_into(dest.ok_or("no result")?, &held, &place, ITEM_ACCESS)
+            }
             "Table.get" => {
                 let dest = dest.ok_or("no result")?;
                 let id = self.id_parts(args.get(1).ok_or("no argument")?)?;

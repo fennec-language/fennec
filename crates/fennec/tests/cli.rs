@@ -1304,6 +1304,28 @@ fn fix_writes_in_return_types_and_removes_arrows_to_none() {
     assert!(again.status.success() && again.stdout.is_empty());
 }
 
+/// Adding `mut` may change what a program does, so `fennec fix` shows it and leaves it.
+#[test]
+fn fix_leaves_a_fix_that_may_change_what_a_program_does_to_be_made_by_hand() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-by-hand", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("by_hand.fen");
+    let source = "def main(stdout: Stdout):\n    people = [\"Ash\"]\n    people = [\"Vex\"]\n    stdout.print(people)\n";
+    std::fs::write(&program, source).unwrap();
+    let path = program.to_string_lossy().into_owned();
+    let output = fennec(&["fix", &path], "").unwrap();
+    let after = std::fs::read_to_string(&program).unwrap();
+    let json = text(&fennec(&["check", "--json", &path], "").unwrap().stdout);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(after, source, "the source is left as it was");
+    assert!(!output.status.success());
+    let said = text(&output.stderr);
+    assert!(said.contains("= fix: declare it `mut people`"), "{said}");
+    assert!(said.contains("left to be made by hand"), "{said}");
+    assert!(json.contains(r#""fixes":[],"hint":{"says":"declare it `mut people`","edits":[{"#), "{json}");
+    assert!(json.contains(r#""line":2,"column":5,"end_line":2,"end_column":5"#), "{json}");
+}
+
 /// Enums with a case in common, which only the expected type can tell apart, and an error.
 const CASES_BEFORE: &str = "enum Color:
     Red

@@ -41,6 +41,9 @@ pub(crate) fn fix(path: &str) -> ExitCode {
         if changed.is_empty() {
             eprint!("{}", program.sources.render_all(&diagnostics));
             eprintln!("\nthese have no fix `fennec fix` can make");
+            if diagnostics.iter().any(|diagnostic| diagnostic.hint.is_some()) {
+                eprintln!("a `fix:` may change what the program does, so it's left to be made by hand");
+            }
             return ExitCode::FAILURE;
         }
         if let Err(code) = write_all(changed) {

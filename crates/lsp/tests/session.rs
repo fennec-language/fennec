@@ -261,6 +261,35 @@ fn a_diagnostics_fix_is_a_code_action() {
     assert_eq!(edit.at(&["range", "start"]), Some(&position(text, ":\n", 0)));
 }
 
+#[test]
+fn a_fix_to_make_by_hand_is_offered_but_not_preferred() {
+    let mut editor = Editor::new("by-hand").unwrap();
+    let text = "def main(stdout: Stdout):\n    names = [1]\n    names = [2]\n    stdout.print(names)\n";
+    let published = editor.open("src/main.fen", text);
+    let shown = messages(for_file(&published, "main.fen").unwrap());
+    assert!(shown.iter().any(|message| message.contains("fix: declare it `mut names`")), "{shown:?}");
+    let params = Json::object([
+        ("textDocument", Json::object([("uri", Json::string(editor.uri("src/main.fen")))])),
+        (
+            "range",
+            Json::object([
+                ("start", position(text, "names = [2]", 0)),
+                ("end", position(text, "names = [2]", 5)),
+            ]),
+        ),
+        ("context", Json::object([("diagnostics", Json::Array(Vec::new()))])),
+    ]);
+    let actions = editor.request("textDocument/codeAction", params);
+    let [action] = actions.as_array().unwrap() else { panic!("{actions:?}") };
+    assert_eq!(action.get("title"), Some(&Json::string("Fix by hand: declare it `mut names`")));
+    assert_eq!(action.get("isPreferred"), Some(&Json::Bool(false)));
+    let edits =
+        action.at(&["edit", "changes"]).and_then(|changes| changes.get(&editor.uri("src/main.fen"))).unwrap();
+    let edit = &edits.as_array().unwrap()[0];
+    assert_eq!(edit.get("newText"), Some(&Json::string("mut ")));
+    assert_eq!(edit.at(&["range", "start"]), Some(&position(text, "names", 0)));
+}
+
 /// What a published diagnostic's `code` is: a lint's rule.
 fn codes(diagnostics: &[Json]) -> Vec<&str> {
     diagnostics.iter().filter_map(|diagnostic| diagnostic.get("code")?.as_str()).collect()

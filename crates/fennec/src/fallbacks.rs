@@ -36,6 +36,39 @@ pub(crate) fn fallbacks(path: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `fennec dev checks [path]`: each check native code keeps in what `main` reaches, where it is
+/// and what it's for, then how many of each kind there are.
+pub(crate) fn checks(path: &str) -> ExitCode {
+    let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
+    if !crate::run::check(&mut program) {
+        return ExitCode::FAILURE;
+    }
+    let mut reached = program.module.clone();
+    fennec_build::keep_what_main_reaches(&mut reached);
+    let lowered = match crate::aot::lowered_for_native(&reached) {
+        Ok(lowered) => lowered,
+        Err(why) => {
+            eprintln!("{why}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut kinds: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for check in fennec_llvm::checks_left(&lowered) {
+        let (path, line, column, text) = program.sources.locate(check.span).unwrap_or(("?", 0, 0, ""));
+        let what = match &check.what {
+            fennec_llvm::CheckKind::Builtin(name) => format!("Builtin {name}"),
+            other => format!("{other:?}"),
+        };
+        println!("{path}:{line}:{column} in `{}`: {what}", check.function);
+        println!("    {}", text.trim());
+        *kinds.entry(what).or_default() += 1;
+    }
+    for (what, count) in &kinds {
+        println!("{count} {what}");
+    }
+    ExitCode::SUCCESS
+}
+
 /// `fennec dev fallbacks --llvm [path]`: what LLVM doesn't take yet in what `main` reaches, a
 /// line for each function, and how many there are.
 pub(crate) fn not_lowered(path: &str) -> ExitCode {

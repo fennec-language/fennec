@@ -26,15 +26,39 @@ fn a_handles_fields_change_only_in_its_methods() {
 }
 
 #[test]
-fn a_shared_value_cant_hold_another() {
-    let text = format!("{ACCOUNT}shared Bank:\n    main: Account\n    accounts = list[Account]()\n");
+fn a_shared_value_holds_another_and_takes_its_lock_inside_its_own() {
+    let text = format!(
+        "{ACCOUNT}shared Bank:\n    main: Account\n    accounts = list[Account]()\n\n    \
+         def deposit(mut self, amount: int):\n        self.main.add(amount)\n        self.accounts[0].add(1)\n\n\
+         def main(stdout: Stdout):\n    bank = Bank(main=Account())\n    bank.deposit(5)\n    \
+         with bank as mut held:\n        held.main.add(1)\n        with held.main as mut inner:\n            \
+         inner.total += 1\n    stdout.print(bank.main.total)\n"
+    );
+    let empty: [&str; 0] = [];
+    assert_eq!(problems(&text), empty);
+}
+
+#[test]
+fn shared_values_never_hold_each_other_in_a_cycle() {
+    let text = "shared A:\n    b: B?\n\nshared B:\n    a: A?\n\nshared Node:\n    next: list[Node]\n";
     assert_eq!(
-        problems(&text),
+        problems(text),
         [
-            "`Bank` is `shared`, so it can't hold `Account`, which is `shared` too @ main: Account",
-            "`Bank` is `shared`, so it can't hold `Account`, which is `shared` too @ accounts = list[Account]()",
+            "`A` holds `B`, which holds `A` again, and `shared` types can't hold each other in a cycle @ b: B?",
+            "`B` holds `A`, which holds `B` again, and `shared` types can't hold each other in a cycle @ a: A?",
+            "`Node` holds itself, and `shared` types can't hold each other in a cycle @ next: list[Node]",
         ]
     );
+}
+
+#[test]
+fn a_lock_body_takes_only_inner_locks() {
+    let text = format!(
+        "{ACCOUNT}shared Bank:\n    main: Account\n\n\
+         def main(stdout: Stdout):\n    bank = Bank(main=Account())\n    account = bank.main\n    \
+         with account as mut held:\n        with bank as mut outer:\n            pass\n    stdout.print(1)\n"
+    );
+    assert_eq!(problems(&text), ["this `with` takes another lock while `held` is locked @ bank"]);
 }
 
 #[test]

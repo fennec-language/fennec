@@ -10,7 +10,7 @@ use fennec_jit::JitError;
 
 /// Examples the JIT may hand back to the interpreter whole, because it can't compile their
 /// `main` yet. Every other example must run natively. The JIT doesn't take `shared` types yet.
-const INTERPRETED: &[&str] = &["shared_accounts.fen"];
+const INTERPRETED: &[&str] = &["shared_accounts.fen", "shared_bank.fen"];
 
 /// The functions the JIT can't compile yet, in the examples that have any: generators,
 /// functions with functions inside them, and `match`es with a guarded `case`. They run in
@@ -31,7 +31,6 @@ const INTERPRETED_FUNCTIONS: &[(&str, &[&str])] = &[
     ("imports.fen", &["Deque.iter"]),
     ("json_collections.fen", &["Grid.iter", "SortedMap.iter"]),
     ("json_enums.fen", &["Grid.iter"]),
-    ("operators.fen", &["Grid.iter"]),
     ("own_positions.fen", &["Deque.iter", "Grid.iter"]),
     ("std_collections.fen", &["Counter.iter", "Deque.iter"]),
     ("std_grid.fen", &["Deque.iter", "Grid.iter"]),

@@ -173,11 +173,6 @@ impl FnCx<'_> {
     }
 
     fn fail(&mut self, error: &Expr) {
-        self.not_under_lock(
-            "`fail` can't leave",
-            error.span,
-            "give back a value that says what went wrong, so what the lock guards isn't left half changed",
-        );
         // A leading-dot case here is a case of the error the function says it fails with.
         let ty = match self.fails.clone() {
             Some(fails) => self.expr_as(error, &fails),

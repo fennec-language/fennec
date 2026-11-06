@@ -396,23 +396,12 @@ impl FnCx<'_> {
         }
     }
 
-    /// Reports what a lock body can't do: I/O, `?`, `fail` and `yield`. Each could leave the lock
-    /// held for long, or leave what it guards half changed.
+    /// Reports what a lock body can't do: pause with `yield`, which would hold the lock for as
+    /// long as whatever asks for the next item waits. Leaving early with `?`, `fail`, `return`,
+    /// `break` or `continue` releases the lock on the way out, and I/O only makes it slow.
     pub(crate) fn not_under_lock(&mut self, what: &str, span: fennec_syntax::Span, help: &str) {
         if let Some(held) = self.lock.clone() {
             self.error(Diagnostic::new(format!("{what} {held}"), span).with_help(help));
-        }
-    }
-
-    /// Reports a capability used inside a lock body: everything it does is I/O.
-    pub(crate) fn io_under_lock(&mut self, expr: &Expr, ty: &Type) {
-        let (ExprKind::Name(name), Type::Named(capability)) = (&expr.kind, ty) else { return };
-        if is_capability(capability) {
-            self.not_under_lock(
-                &format!("`{name}` does I/O, which can't happen"),
-                expr.span,
-                "do the I/O before or after the lock, with what the block works out",
-            );
         }
     }
 

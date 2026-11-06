@@ -7,7 +7,7 @@ struct Ball:
     speed = 0.0
 
     ## Falls for one step of the simulation.
-    def fall(mut self, dt: Duration):
+    def fall(ref self, dt: Duration):
         self.speed -= 9.8 * dt.as_seconds()
         self.y += self.speed * dt.as_seconds()
 

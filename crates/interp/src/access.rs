@@ -62,8 +62,7 @@ impl Interp<'_> {
             (Value::Ok(_) | Value::Err(_), _) => Err(unhandled_result(span)),
             (Value::None, _) => Err(might_be_none(span)),
             (Value::Table(map), Value::Id(id)) => map.get(*id).cloned().ok_or_else(|| {
-                Diagnostic::new("this Id refers to something that's been removed", span)
-                    .with_help("use `.get(id)`, which gives None instead")
+                Diagnostic::new(map.missing(*id), span).with_help("use `.get(id)`, which gives None instead")
             }),
             (Value::Dict(pairs), key) => pairs.get(key).cloned().ok_or_else(|| {
                 Diagnostic::new(format!("the dict has no key {}", crate::format::repr(key)), span)

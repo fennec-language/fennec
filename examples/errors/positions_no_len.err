@@ -1,7 +1,7 @@
 error: `for mut` over a `Pool` needs its `def len`
  --> examples/errors/positions_no_len.fen:9:21
   |
-9 |     for mut item in pool:
+9 |     for ref item in pool:
   |                     ^^^^
   |
   = help: give `Pool` positions: `def len(self) -> int` and the `mut` form, `def [](mut self, i: int)`

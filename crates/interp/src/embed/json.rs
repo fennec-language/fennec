@@ -156,7 +156,7 @@ mod tests {
             let fields = fields.into_iter().map(|(field, element)| (Rc::from(field), element)).collect();
             Element::Struct { name: Rc::from(name), fields }
         };
-        let id = named("Id", vec![("slot", Element::Int), ("generation", Element::Int)]);
+        let id = named("Id", vec![("key", Element::Int), ("tag", Element::Int)]);
         let none: Vec<(Rc<str>, Element)> = Vec::new();
         let some = vec![(Rc::from("value"), id.clone())];
         let option = Element::Enum {
@@ -174,6 +174,7 @@ mod tests {
                 ("generations", generations),
                 ("live", Element::Int),
                 ("free_from", Element::Int),
+                ("tag", Element::Int),
             ],
         );
         let tables =
@@ -189,12 +190,13 @@ mod tests {
                 cause: None,
             }))
         };
+        let tag = crate::value::new_tag();
         let slots = vec![
             Slot { generation: 0, value: Some(unit("a", Value::None)) },
             Slot { generation: 3, value: None },
-            Slot { generation: 1, value: Some(unit("b", Value::Id(Id { slot: 0, generation: 0 }))) },
+            Slot { generation: 1, value: Some(unit("b", Value::Id(Id { slot: 0, generation: 0, tag }))) },
         ];
-        let original = Value::Table(Rc::new(Table::new(slots)));
+        let original = Value::Table(Rc::new(Table::tagged(slots, tag)));
         let value = with(|state| Some(state.push(original.clone()))).unwrap();
         let block = heap::from_value(value, 0, 0, 0);
         assert_ne!(block, 0);

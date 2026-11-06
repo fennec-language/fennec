@@ -26,6 +26,19 @@ mod test_inputs;
 mod trace;
 mod verdict;
 
+/// A path in the temporary folder for this command's own scratch work, named so that nothing
+/// else can have it: the process's id and when it asked, as the temporary folder is shared by
+/// every process, and one killed before it tidied up can leave a tool it started still writing to
+/// a folder named by an id the system has given out again.
+pub(crate) fn own_temp(what: &str) -> std::path::PathBuf {
+    static ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let count = ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("fennec-{what}-{}-{at:x}-{count}", std::process::id()))
+}
+
 use std::process::ExitCode;
 
 const USAGE: &str = "usage:

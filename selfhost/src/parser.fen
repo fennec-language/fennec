@@ -50,7 +50,7 @@ struct Parser:
             return self.tokens[self.pos - 1].span
         self.span()
 
-    def advance(mut self) -> Token:
+    def advance(ref self) -> Token:
         token = self.current()
         if self.pos < self.tokens.len():
             self.pos += 1
@@ -69,29 +69,29 @@ struct Parser:
     def at_soft(self, word: str) -> bool:
         self.peek() == .Name(word)
 
-    def eat(mut self, tok: Tok) -> bool:
+    def eat(ref self, tok: Tok) -> bool:
         found = self.at(tok)
         if found:
             self.pos += 1
         found
 
-    def eat_punct(mut self, text: str) -> bool:
+    def eat_punct(ref self, text: str) -> bool:
         self.eat(.Punct(text))
 
     ## Skips `pub` before a declaration or field. It matters only between kits.
-    def eat_pub(mut self):
+    def eat_pub(ref self):
         if self.at_soft("pub") and (is_name(self.peek_at(1)) or is_keyword_tok(self.peek_at(1))):
             self.advance()
 
-    def eat_keyword(mut self, word: str) -> bool:
+    def eat_keyword(ref self, word: str) -> bool:
         self.eat(.Keyword(word))
 
     ## `ref` on a loop, a parameter, an argument or a `with` name, where `mut` still means the same
     ## until `fennec fix --mut-to-ref` has been run everywhere.
-    def eat_ref(mut self) -> bool:
+    def eat_ref(ref self) -> bool:
         self.eat_keyword("ref") or self.eat_keyword("mut")
 
-    def expect_punct(mut self, text: str) -> Span:
+    def expect_punct(ref self, text: str) -> Span:
         if not self.at_punct(text):
             fail self.unexpected(f"`{text}`")
         self.advance().span
@@ -99,7 +99,7 @@ struct Parser:
     def unexpected(self, expected: str) -> Diagnostic:
         Diagnostic(message=f"expected {expected}, found {describe(self.peek())}", span=self.span())
 
-    def name(mut self, what: str) -> str:
+    def name(ref self, what: str) -> str:
         match self.peek():
             case .Name(name):
                 self.advance()
@@ -123,7 +123,7 @@ struct Parser:
         )
 
     ## The start of an indented block: a line break, then a deeper indent.
-    def expect_block_start(mut self):
+    def expect_block_start(ref self):
         if not (self.eat(.Newline) and self.eat(.Indent)):
             fail Diagnostic(
                 message="expected an indented block",
@@ -131,14 +131,14 @@ struct Parser:
                 help="indent the body 4 spaces more than the line ending in `:`",
             )
 
-    def end_line(mut self):
+    def end_line(ref self):
         block_ended = self.block_ended
         self.block_ended = False
         if block_ended or self.eat(.Newline) or self.at(.Eof) or self.at(.Dedent):
             return
         fail self.unexpected("the end of the line")
 
-    def module(mut self) -> Module:
+    def module(ref self) -> Module:
         mut items = []
         while True:
             while self.eat(.Newline):
@@ -148,7 +148,7 @@ struct Parser:
             items.append(self.item()?)
         Module(items=items)
 
-    def item(mut self) -> Item:
+    def item(ref self) -> Item:
         annotations = self.annotations()?
         if annotations.len() > 0:
             self.eat_pub()
@@ -183,7 +183,7 @@ struct Parser:
             return is_str(self.peek_at(1))
         False
 
-    def declaration(mut self, word: str) -> Item:
+    def declaration(ref self, word: str) -> Item:
         start = self.advance().span
         match word:
             case "struct": .Struct(self.type_def(start, False)?)
@@ -212,7 +212,7 @@ struct Parser:
 
     ## An error: fields, like a struct's, or cases, like an enum's, each failing its own way:
     ## `NotFound(path: str)`. A line that's a name and then `(` or nothing is a case.
-    def error_def(mut self, start: Span) -> TypeDef:
+    def error_def(ref self, start: Span) -> TypeDef:
         type_def = self.type_body(start, False, True)?
         if type_def.fields.len() > 0 and type_def.cases.len() > 0:
             fail Diagnostic(
@@ -222,11 +222,11 @@ struct Parser:
             )
         type_def
 
-    def type_def(mut self, start: Span, is_enum: bool) -> TypeDef:
+    def type_def(ref self, start: Span, is_enum: bool) -> TypeDef:
         self.type_body(start, is_enum, False)?
 
     ## A struct's, enum's or error's name and body. An error's body may have cases.
-    def type_body(mut self, start: Span, is_enum: bool, is_error: bool) -> TypeDef:
+    def type_body(ref self, start: Span, is_enum: bool, is_error: bool) -> TypeDef:
         name = self.name("a type name")?
         generics = self.generic_params()?
         span = start.to(self.prev_span())
@@ -255,7 +255,7 @@ struct Parser:
         type_def
 
     ## The annotations above a field or a `def`, each on its own line.
-    def annotations(mut self) -> list[Annotation]:
+    def annotations(ref self) -> list[Annotation]:
         mut found = []
         while self.at_punct("@"):
             start = self.advance().span
@@ -270,7 +270,7 @@ struct Parser:
         found
 
     ## A field's name, which may be any word, keywords included.
-    def field_name(mut self, what: str) -> str:
+    def field_name(ref self, what: str) -> str:
         match self.peek():
             case .Keyword(word):
                 if not is_reserved(word):
@@ -280,7 +280,7 @@ struct Parser:
         self.name(what)?
 
     ## `name: type`, `name = default`, or both, with a `where` rule when `rules` allows.
-    def field(mut self, rules: bool) -> Field:
+    def field(ref self, rules: bool) -> Field:
         start = self.span()
         name = self.field_name("a field name")?
         mut ty = None
@@ -301,7 +301,7 @@ struct Parser:
             )
         Field(name=name, ty=ty, default=default, rule=rule, span=start.to(self.prev_span()))
 
-    def case(mut self) -> Case:
+    def case(ref self) -> Case:
         start = self.span()
         name = self.name("an enum case")?
         mut fields = []
@@ -315,7 +315,7 @@ struct Parser:
         self.end_line()?
         Case(name=name, fields=fields, span=span)
 
-    def interface(mut self, start: Span) -> Item:
+    def interface(ref self, start: Span) -> Item:
         name = self.name("an interface name")?
         self.expect_punct(":")?
         self.expect_block_start()?
@@ -327,7 +327,7 @@ struct Parser:
         .Interface(Interface(name=name, methods=methods, span=start.to(self.prev_span())))
 
     ## `extend Name:` and its methods. A field is an error: an extension adds methods only.
-    def extension(mut self, start: Span) -> Item:
+    def extension(ref self, start: Span) -> Item:
         name = self.name("a type name")?
         generics = self.generic_params()?
         span = start.to(self.prev_span())
@@ -348,7 +348,7 @@ struct Parser:
                 )
         .Extend(Extension(name=name, generics=generics, methods=methods, span=span))
 
-    def test(mut self, start: Span, bench: bool) -> Item:
+    def test(ref self, start: Span, bench: bool) -> Item:
         mut name = ""
         match self.advance().tok:
             case .Str(text): name = text
@@ -371,7 +371,7 @@ struct Parser:
         .Test(TestDef(name=name, capabilities=capabilities, inputs=inputs, body=body, bench=bench, span=span))
 
     ## `import a.b`, or `from a.b import x, y`, each maybe renamed with `as`.
-    def import_names(mut self) -> Import:
+    def import_names(ref self) -> Import:
         start = self.span()
         is_from = self.eat_keyword("from")
         if not is_from:
@@ -397,13 +397,13 @@ struct Parser:
         Import(module=module, names=names, aliases=aliases, alias=alias, span=span)
 
     ## `as name` after something imported, if it's there.
-    def import_alias(mut self) -> str?:
+    def import_alias(ref self) -> str?:
         if self.eat_keyword("as"):
             return self.name("a name to import it as")?
         None
 
     ## `[T, U: Shape & Eq]` after a function or type name.
-    def generic_params(mut self) -> list[Generic]:
+    def generic_params(ref self) -> list[Generic]:
         mut generics = []
         if not self.eat_punct("["):
             return generics
@@ -423,7 +423,7 @@ struct Parser:
 
     ## `def name(params) -> ret:` and its body, or the signature alone, which only std's
     ## `@intrinsic` functions may be.
-    def function(mut self) -> FnDef:
+    def function(ref self) -> FnDef:
         mut function = self.signature()?
         bodiless = (self.at(.Newline) and self.peek_at(1) != .Indent) or self.at(.Eof) or self.at(.Dedent)
         if bodiless:
@@ -435,7 +435,7 @@ struct Parser:
 
     ## `def name(params) -> ret`, without a body. Operators, indexing and `in` are defined as
     ## `def +`, `def []`, `def []=` and `def in`.
-    def signature(mut self) -> FnDef:
+    def signature(ref self) -> FnDef:
         start = self.advance().span
         mut name = ""
         match self.peek():
@@ -469,7 +469,7 @@ struct Parser:
             if not self.eat_punct(","):
                 break
         self.expect_punct(")")?
-        # `def [](mut self, i)` is the `mut` form, which a type can have beside `def [](self, i)`.
+        # `def [](ref self, i)` is the `ref` form, which a type can have beside `def [](self, i)`.
         if name == "[]" and params.len() > 0 and params[0].is_self and params[0].is_mut:
             name = "[]mut"
         mut ret = None
@@ -492,7 +492,7 @@ struct Parser:
             span=start.to(self.prev_span()),
         )
 
-    def param(mut self) -> Param:
+    def param(ref self) -> Param:
         start = self.span()
         is_mut = self.eat_ref()
         name = self.name("a parameter name")?
@@ -515,7 +515,7 @@ struct Parser:
         Param(name=name, ty=ty, is_mut=is_mut, is_self=False, default=default, span=start.to(self.prev_span()))
 
     ## A parameter's default: a plain value, known without running anything.
-    def param_default(mut self, name: str, is_mut: bool) -> Expr:
+    def param_default(ref self, name: str, is_mut: bool) -> Expr:
         value = self.expr()?
         if is_mut:
             fail Diagnostic(
@@ -538,12 +538,12 @@ struct Parser:
 
     ## `fails LoadError`, or `fails ParseError | RangeError`: the errors after `fails`. Several
     ## are one written type named `|`.
-    def fails_type(mut self) -> TypeExpr:
+    def fails_type(ref self) -> TypeExpr:
         self.advance()
         self.errors_type()?
 
     ## One error, or several joined by `|`, as after `fails` or in `Result[int, A | B]`.
-    def errors_type(mut self) -> TypeExpr:
+    def errors_type(ref self) -> TypeExpr:
         first = self.type_expr()?
         if not self.at_punct("|"):
             return first
@@ -552,7 +552,7 @@ struct Parser:
             errors.append(self.type_expr()?)
         TypeExpr(name="|", args=errors, optional=False, span=first.span.to(self.prev_span()))
 
-    def type_expr(mut self) -> TypeExpr:
+    def type_expr(ref self) -> TypeExpr:
         start = self.span()
         mut args = []
         mut name = ""

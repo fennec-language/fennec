@@ -1,4 +1,4 @@
-from std.intrinsics import id_at, id_key, type_name
+from std.intrinsics import id_at, id_key, id_tag, table_tag, table_tagged, type_name
 
 ## A double-ended queue: adding or removing at either end is quick however long it gets.
 ## For breadth-first searches, event queues and undo histories.
@@ -15,8 +15,8 @@ struct Deque[T]:
     def len(self) -> int:
         self.count
 
-    ## The item at a position, counting from the front, which `for mut` changes where it is.
-    def [](mut self, at: int) -> T:
+    ## The item at a position, counting from the front, which `for ref` changes where it is.
+    def [](ref self, at: int) -> T:
         assert 0 <= at and at < self.count
         return self.slots[(self.head + at) % self.slots.len()]
 
@@ -27,32 +27,32 @@ struct Deque[T]:
         False
 
     ## Prints its items: `Deque([1, 2])`.
-    def str(self, mut out: StrWriter):
+    def str(self, ref out: StrWriter):
         out.write("Deque(")
         out.value(list(self))
         out.write(")")
 
     ## Adds an item at the back.
-    def append(mut self, item: T):
+    def append(ref self, item: T):
         self.make_room(item)
         self.slots[(self.head + self.count) % self.slots.len()] = item
         self.count += 1
 
     ## Adds an item at the front.
-    def appendleft(mut self, item: T):
+    def appendleft(ref self, item: T):
         self.make_room(item)
         self.head = (self.head - 1) % self.slots.len()
         self.slots[self.head] = item
         self.count += 1
 
     ## Removes the item at the back and gives it back, or None when the deque is empty.
-    def pop(mut self) -> T?:
+    def pop(ref self) -> T?:
         if self.count == 0: return None
         self.count -= 1
         self.slots[(self.head + self.count) % self.slots.len()]
 
     ## Removes the item at the front and gives it back, or None when the deque is empty.
-    def popleft(mut self) -> T?:
+    def popleft(ref self) -> T?:
         if self.count == 0: return None
         item = self.slots[self.head]
         self.head = (self.head + 1) % self.slots.len()
@@ -69,7 +69,7 @@ struct Deque[T]:
         if self.count == 0: return None
         self.slots[(self.head + self.count - 1) % self.slots.len()]
 
-    def clear(mut self):
+    def clear(ref self):
         self.slots = []
         self.head = 0
         self.count = 0
@@ -84,7 +84,7 @@ struct Deque[T]:
 
     ## Makes room for one more item, doubling the slots when they're full. `filler` fills
     ## the new slots.
-    def make_room(mut self, filler: T):
+    def make_room(ref self, filler: T):
         if self.count < self.slots.len(): return
         mut slots = self.items()
         for _ in range(slots.len() + 1):
@@ -114,7 +114,7 @@ struct Heap[T: Ordered]:
     def len(self) -> int:
         self.items.len()
 
-    def push(mut self, item: T):
+    def push(ref self, item: T):
         self.items.append(item)
         mut at = self.items.len() - 1
         while at > 0:
@@ -124,7 +124,7 @@ struct Heap[T: Ordered]:
             at = parent
 
     ## Removes the smallest item and gives it back, or None when the heap is empty.
-    def pop(mut self) -> T?:
+    def pop(ref self) -> T?:
         if self.items.len() == 0: return None
         smallest = self.items[0]
         last = self.items.pop()
@@ -138,11 +138,11 @@ struct Heap[T: Ordered]:
         if self.items.len() == 0: return None
         self.items[0]
 
-    def clear(mut self):
+    def clear(ref self):
         self.items = []
 
     ## Moves the item at `start` down until it's no bigger than the items below it.
-    def sift_down(mut self, start: int):
+    def sift_down(ref self, start: int):
         mut at = start
         while True:
             left = 2 * at + 1
@@ -154,7 +154,7 @@ struct Heap[T: Ordered]:
             self.swap(at, child)
             at = child
 
-    def swap(mut self, a: int, b: int):
+    def swap(ref self, a: int, b: int):
         item = self.items[a]
         self.items[a] = self.items[b]
         self.items[b] = item
@@ -171,14 +171,14 @@ struct PriorityQueue[T, P: Ordered]:
     def len(self) -> int:
         self.heap.len()
 
-    def push(mut self, item: T, priority: P):
+    def push(ref self, item: T, priority: P):
         self.heap.push((priority, self.pushed))
         self.waiting[self.pushed] = item
         self.pushed += 1
 
     ## Removes the item with the lowest priority and gives it back, or None when the queue
     ## is empty.
-    def pop(mut self) -> T?:
+    def pop(ref self) -> T?:
         entry = self.heap.pop()
         if entry is None: return None
         priority, order = entry
@@ -206,17 +206,17 @@ struct Counter[T: Hashable]:
         self.counts.len()
 
     ## Prints its items: `Counter({"x": 2})`.
-    def str(self, mut out: StrWriter):
+    def str(self, ref out: StrWriter):
         out.write("Counter(")
         out.value(self.counts)
         out.write(")")
 
     ## Counts one more `item`.
-    def add(mut self, item: T):
+    def add(ref self, item: T):
         self.counts[item] = (self.counts.get(item) else 0) + 1
 
     ## Counts each of `items`.
-    def update(mut self, items: list[T]):
+    def update(ref self, items: list[T]):
         for item in items:
             self.add(item)
 
@@ -228,7 +228,7 @@ struct Counter[T: Hashable]:
     def in(self, item: T) -> bool:
         item in self.counts
 
-    def []=(mut self, item: T, count: int):
+    def []=(ref self, item: T, count: int):
         self.counts[item] = count
 
     ## How many items were counted in all.
@@ -274,7 +274,7 @@ struct Packed[T]:
         self._starts.len() - 1
 
     ## Prints its items: `Packed([[1, 2], [3]])`.
-    def str(self, mut out: StrWriter):
+    def str(self, ref out: StrWriter):
         out.write("Packed(")
         out.value(list(self))
         out.write(")")
@@ -296,16 +296,16 @@ struct Packed[T]:
         self._items.len()
 
     ## Adds `items` as a new list at the end.
-    def append(mut self, items: list[T]):
+    def append(ref self, items: list[T]):
         self._items.extend(items)
         self._starts.append(self._items.len())
 
     ## Starts a new, empty list at the end, for `push` to add to.
-    def start_list(mut self):
+    def start_list(ref self):
         self._starts.append(self._items.len())
 
     ## Adds `item` to the end of the last list. With no list yet, it starts one.
-    def push(mut self, item: T):
+    def push(ref self, item: T):
         if self.len() == 0:
             self.start_list()
         self._items.append(item)
@@ -346,7 +346,7 @@ struct Tree[T]:
         self._nodes.len()
 
     ## Adds a node as the last child of `parent`, or as a root when it has none.
-    def add(mut self, value: T, parent: Id[TreeNode[T]]? = None) -> Id[TreeNode[T]]:
+    def add(ref self, value: T, parent: Id[TreeNode[T]]? = None) -> Id[TreeNode[T]]:
         id = self._nodes.add(TreeNode(value=value, parent=parent))
         if parent is None:
             self._roots.append(id)
@@ -357,7 +357,7 @@ struct Tree[T]:
     def [](self, id: Id[TreeNode[T]]) -> T:
         self._nodes[id].value
 
-    def []=(mut self, id: Id[TreeNode[T]], value: T):
+    def []=(ref self, id: Id[TreeNode[T]], value: T):
         self._nodes[id].value = value
 
     ## The value of a node, or None when it's been removed.
@@ -409,7 +409,7 @@ struct Tree[T]:
         found
 
     ## Moves a node, with everything below it, to be the last child of `parent`.
-    def move(mut self, id: Id[TreeNode[T]], parent: Id[TreeNode[T]]):
+    def move(ref self, id: Id[TreeNode[T]], parent: Id[TreeNode[T]]):
         if id == parent or id in self.ancestors(parent):
             fail TreeCycle(message="a node can't move under itself or its descendants")
         self._unlink(id)
@@ -417,13 +417,13 @@ struct Tree[T]:
         self._nodes[parent].children.append(id)
 
     ## Makes a node a root, with everything below it staying below it.
-    def make_root(mut self, id: Id[TreeNode[T]]):
+    def make_root(ref self, id: Id[TreeNode[T]]):
         self._unlink(id)
         self._nodes[id].parent = None
         self._roots.append(id)
 
     ## Removes a node and everything below it.
-    def remove(mut self, id: Id[TreeNode[T]]):
+    def remove(ref self, id: Id[TreeNode[T]]):
         doomed = self.descendants(id)
         self._unlink(id)
         self._nodes.remove(id)
@@ -431,7 +431,7 @@ struct Tree[T]:
             self._nodes.remove(at)
 
     ## Takes a node out of its parent's children, or out of the roots.
-    def _unlink(mut self, id: Id[TreeNode[T]]):
+    def _unlink(ref self, id: Id[TreeNode[T]]):
         parent = self._nodes[id].parent
         if parent is None:
             self._roots.remove(id)
@@ -467,7 +467,7 @@ struct SortedMap[K: Ordered, V]:
         self._count
 
     ## Prints its items: `SortedMap({1: "a", 2: "b"})`.
-    def str(self, mut out: StrWriter):
+    def str(self, ref out: StrWriter):
         out.write("SortedMap(")
         out.value({key: value for key, value in self.items()})
         out.write(")")
@@ -489,11 +489,11 @@ struct SortedMap[K: Ordered, V]:
         assert node >= 0
         self._nodes[node].values[i]
 
-    def []=(mut self, key: K, value: V):
+    def []=(ref self, key: K, value: V):
         self.set(key, value)
 
     ## Gives `key` the value `value`, replacing any it had.
-    def set(mut self, key: K, value: V):
+    def set(ref self, key: K, value: V):
         if self._root < 0:
             self._root = self._new_node(_SortedNode(keys=[key], values=[value]))
             self._count = 1
@@ -526,7 +526,7 @@ struct SortedMap[K: Ordered, V]:
             at = self._nodes[at].children[next]
 
     ## Removes `key` and gives back its value, or None when it had none.
-    def remove(mut self, key: K) -> V?:
+    def remove(ref self, key: K) -> V?:
         if key not in self: return None
         mut taken: list[V] = []
         mut wanted = key
@@ -614,14 +614,14 @@ struct SortedMap[K: Ordered, V]:
     def items(self) -> list[(K, V)]:
         mut found = []
         if self._root >= 0:
-            self._walk(self._root, mut found)
+            self._walk(self._root, ref found)
         found
 
     ## The keys and values from `low` up to, but not including, `high`, in order.
     def between(self, low: K, high: K) -> list[(K, V)]:
         mut found = []
         if self._root >= 0:
-            self._walk_between(self._root, low, high, mut found)
+            self._walk_between(self._root, low, high, ref found)
         found
 
     def keys(self) -> list[K]:
@@ -634,7 +634,7 @@ struct SortedMap[K: Ordered, V]:
     ## the way got to.
     def iter(self) -> Iterator[K]:
         mut trail: list[(int, int)] = []
-        self._descend(self._root, mut trail)
+        self._descend(self._root, ref trail)
         while trail.len() > 0:
             at, spot = trail[-1]
             node = self._nodes[at]
@@ -647,9 +647,9 @@ struct SortedMap[K: Ordered, V]:
                 continue
             trail[-1] = (at, spot + 1)
             yield node.keys[spot]
-            self._descend(node.children[spot + 1], mut trail)
+            self._descend(node.children[spot + 1], ref trail)
 
-    def clear(mut self):
+    def clear(ref self):
         self._nodes = []
         self._root = -1
         self._count = 0
@@ -688,7 +688,7 @@ struct SortedMap[K: Ordered, V]:
             at = node.children[i]
         (-1, -1)
 
-    def _new_node(mut self, node: _SortedNode[K, V]) -> int:
+    def _new_node(ref self, node: _SortedNode[K, V]) -> int:
         if self._free.len() > 0:
             at = self._free.pop()
             self._nodes[at] = node
@@ -696,12 +696,12 @@ struct SortedMap[K: Ordered, V]:
         self._nodes.append(node)
         self._nodes.len() - 1
 
-    def _release(mut self, at: int):
+    def _release(ref self, at: int):
         self._nodes[at] = _SortedNode()
         self._free.append(at)
 
     ## Splits the full child `i` of `parent` in two, moving its middle key up into `parent`.
-    def _split(mut self, parent: int, i: int):
+    def _split(ref self, parent: int, i: int):
         child = self._nodes[parent].children[i]
         full = self._nodes[child]
         half = SortedMap._degree()
@@ -720,7 +720,7 @@ struct SortedMap[K: Ordered, V]:
             self._nodes[child].children = full.children[:half]
 
     ## Merges child `i + 1` of `parent` into child `i`, with the key between them.
-    def _merge(mut self, parent: int, i: int):
+    def _merge(ref self, parent: int, i: int):
         left = self._nodes[parent].children[i]
         right = self._nodes[parent].children[i + 1]
         moved = self._nodes[right]
@@ -733,7 +733,7 @@ struct SortedMap[K: Ordered, V]:
         self._release(right)
 
     ## When merging emptied the root, the merged child takes its place.
-    def _shrunk_root(mut self, at: int, child: int) -> int:
+    def _shrunk_root(ref self, at: int, child: int) -> int:
         if at == self._root and self._nodes[at].keys.len() == 0:
             self._release(at)
             self._root = child
@@ -741,7 +741,7 @@ struct SortedMap[K: Ordered, V]:
 
     ## Makes sure child `i` of `at` has a key to spare before going down into it, by taking
     ## one from a sibling or merging with one. Gives back the node to go down into.
-    def _fill(mut self, at: int, i: int) -> int:
+    def _fill(ref self, at: int, i: int) -> int:
         child = self._nodes[at].children[i]
         if self._nodes[child].keys.len() > SortedMap._fewest(): return child
         fewest = SortedMap._fewest()
@@ -784,7 +784,7 @@ struct SortedMap[K: Ordered, V]:
         (node.keys[-1], node.values[-1])
 
     ## Goes down the first children from `at` to a leaf, adding each node to `trail`.
-    def _descend(self, start: int, mut trail: list[(int, int)]):
+    def _descend(self, start: int, ref trail: list[(int, int)]):
         mut at = start
         while at >= 0:
             trail.append((at, 0))
@@ -792,27 +792,27 @@ struct SortedMap[K: Ordered, V]:
             if children.len() == 0: return
             at = children[0]
 
-    def _walk(self, at: int, mut found: list[(K, V)]):
+    def _walk(self, at: int, ref found: list[(K, V)]):
         node = self._nodes[at]
         for i in range(node.keys.len()):
             if node.children.len() > 0:
-                self._walk(node.children[i], mut found)
+                self._walk(node.children[i], ref found)
             found.append((node.keys[i], node.values[i]))
         if node.children.len() > 0:
-            self._walk(node.children[-1], mut found)
+            self._walk(node.children[-1], ref found)
 
     ## Like `_walk`, leaving out the children that can't hold a key in the range.
-    def _walk_between(self, at: int, low: K, high: K, mut found: list[(K, V)]):
+    def _walk_between(self, at: int, low: K, high: K, ref found: list[(K, V)]):
         node = self._nodes[at]
         leaf = node.children.len() == 0
         start = SortedMap._position(node.keys, low)
         for i in range(start, node.keys.len()):
             if not leaf:
-                self._walk_between(node.children[i], low, high, mut found)
+                self._walk_between(node.children[i], low, high, ref found)
             if not node.keys[i] < high: return
             found.append((node.keys[i], node.values[i]))
         if not leaf:
-            self._walk_between(node.children[-1], low, high, mut found)
+            self._walk_between(node.children[-1], low, high, ref found)
 
 ## Sorted maps of values that can be compared are equal when they hold equal keys with equal
 ## values, however their trees are shaped.
@@ -841,21 +841,21 @@ struct SortedSet[T: Ordered]:
         self._items.len()
 
     ## Prints its items: `SortedSet([1, 3])`.
-    def str(self, mut out: StrWriter):
+    def str(self, ref out: StrWriter):
         out.write("SortedSet(")
         out.value(list(self))
         out.write(")")
 
-    def add(mut self, item: T):
+    def add(ref self, item: T):
         self._items[item] = True
 
     ## Removes `item` if it's there.
-    def discard(mut self, item: T):
+    def discard(ref self, item: T):
         if item in self._items:
             self._items.remove(item)
 
     ## Removes `item`. One that isn't there stops the program, like a set.
-    def remove(mut self, item: T):
+    def remove(ref self, item: T):
         assert self._items.remove(item) is not None
 
     ## `item in set`.
@@ -902,7 +902,7 @@ struct SortedSet[T: Ordered]:
         for item in self._items:
             yield item
 
-    def clear(mut self):
+    def clear(ref self):
         self._items.clear()
 
     ## The items in either set.
@@ -951,12 +951,12 @@ struct Grid[T]:
     def len(self) -> int:
         self.width * self.height
 
-    ## The cell at a position, row by row, which `for mut` changes where it is.
-    def [](mut self, at: int) -> T:
+    ## The cell at a position, row by row, which `for ref` changes where it is.
+    def [](ref self, at: int) -> T:
         return self._cells[at]
 
     ## Prints its items: `Grid([[1, 2], [3, 4]])`.
-    def str(self, mut out: StrWriter):
+    def str(self, ref out: StrWriter):
         out.write("Grid(")
         out.value(self.rows())
         out.write(")")
@@ -969,7 +969,7 @@ struct Grid[T]:
     def [](self, at: (int, int)) -> T:
         self._cells[self._spot(at)]
 
-    def []=(mut self, at: (int, int), value: T):
+    def []=(ref self, at: (int, int), value: T):
         spot = self._spot(at)
         self._cells[spot] = value
 
@@ -979,7 +979,7 @@ struct Grid[T]:
         self[at]
 
     ## Sets every cell to `value`.
-    def fill(mut self, value: T):
+    def fill(ref self, value: T):
         self._cells = [value for _ in range(self.len())]
 
     ## The cells that share an edge with `(x, y)`, up, right, down and left, leaving out
@@ -1036,36 +1036,36 @@ struct Grid[T]:
 ## stored does: a `SortedMap` as an object, or as `[key, value]` pairs when its keys aren't text
 ## or ints, a `SortedSet` or a `Deque` as an array, and a `Grid` as an array of rows.
 extend SortedMap[K: Ordered & Serializable, V: Serializable]:
-    def serialize(self, mut out: Serializer):
+    def serialize(self, ref out: Serializer):
         out.map(self.items())
 
 extend SortedMap[K: Ordered & Deserializable, V: Deserializable]:
-    def deserialize(mut src: Deserializer) -> SortedMap[K, V] fails ParseError:
+    def deserialize(ref src: Deserializer) -> SortedMap[K, V] fails ParseError:
         SortedMap.of(src.map[K, V]()?)
 
 extend SortedSet[T: Ordered & Serializable]:
-    def serialize(self, mut out: Serializer):
+    def serialize(self, ref out: Serializer):
         out.sequence(self.items())
 
 extend SortedSet[T: Ordered & Deserializable]:
-    def deserialize(mut src: Deserializer) -> SortedSet[T] fails ParseError:
+    def deserialize(ref src: Deserializer) -> SortedSet[T] fails ParseError:
         SortedSet.of(src.sequence[T]()?)
 
 extend Deque[T: Serializable]:
-    def serialize(self, mut out: Serializer):
+    def serialize(self, ref out: Serializer):
         out.sequence(self.items())
 
 extend Deque[T: Deserializable]:
-    def deserialize(mut src: Deserializer) -> Deque[T] fails ParseError:
+    def deserialize(ref src: Deserializer) -> Deque[T] fails ParseError:
         Deque.of(src.sequence[T]()?)
 
 extend Grid[T: Serializable]:
-    def serialize(self, mut out: Serializer):
+    def serialize(self, ref out: Serializer):
         out.sequence(self.rows())
 
 extend Grid[T: Deserializable]:
     ## Rows that aren't all as long as the first fail, saying which.
-    def deserialize(mut src: Deserializer) -> Grid[T] fails ParseError:
+    def deserialize(ref src: Deserializer) -> Grid[T] fails ParseError:
         rows = src.sequence[list[T]]()?
         if rows.len() > 0:
             width = rows[0].len()
@@ -1081,29 +1081,31 @@ extend Grid[T: Deserializable]:
 ## list. Loading makes a new `Table`, so every `Id` loaded with it finds its item there. One that
 ## finds nothing can't be saved, unless it's optional, and then it's saved as missing.
 extend Id[T]:
-    def serialize(self, mut out: Serializer):
-        out.id(type_name[T](), id_key(self))
+    def serialize(self, ref out: Serializer):
+        out.id(type_name[T](), id_key(self), id_tag(self))
 
-    def deserialize(mut src: Deserializer) -> Id[T] fails ParseError:
+    def deserialize(ref src: Deserializer) -> Id[T] fails ParseError:
         position = src.value[int]()?
         if position < 0: fail src.here("is out of range")
-        src.saw_id(type_name[T](), position)
-        id_at[T](position)
+        kind = type_name[T]()
+        src.saw_id(kind, position)
+        id_at[T](position, src.tag(kind))
 
 extend Table[T: Serializable]:
-    def serialize(self, mut out: Serializer):
+    def serialize(self, ref out: Serializer):
         mut ids = list[Id[T]]()
         mut items = list[T]()
         for id, item in self.items():
             ids.append(id)
             items.append(item)
-        out.table(type_name[T](), ids, items)
+        out.table(type_name[T](), table_tag(self), ids, items)
 
 extend Table[T: Deserializable]:
-    def deserialize(mut src: Deserializer) -> Table[T] fails ParseError:
+    def deserialize(ref src: Deserializer) -> Table[T] fails ParseError:
         items = src.value[list[T]]()?
-        mut table = Table[T]()
+        kind = type_name[T]()
+        mut table = table_tagged[T](src.tag(kind))
         for item in items:
             _ = table.add(item)
-        src.saw_table(type_name[T](), items.len())
+        src.saw_table(kind, items.len())
         table

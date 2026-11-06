@@ -1,7 +1,7 @@
 from player import Player
 
 extend Player:
-    def reset(mut self):
+    def reset(ref self):
         self.x = 1.0
 
 def main(stdout: Stdout):

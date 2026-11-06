@@ -1,11 +1,11 @@
 struct Pool:
     items: list[int]
 
-    def [](mut self, i: int) -> int:
+    def [](ref self, i: int) -> int:
         return self.items[i]
 
 def main(stdout: Stdout):
     mut pool = Pool(items=[1])
-    for mut item in pool:
+    for ref item in pool:
         item += 1
     stdout.print(pool[0])

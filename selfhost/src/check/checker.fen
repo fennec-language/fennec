@@ -21,7 +21,7 @@ struct Checker:
     program: Program = Program()
     diagnostics = list[Diagnostic]()
 
-    def check_all(mut self):
+    def check_all(ref self):
         self.check_declarations()
         for key, entry in self.program.functions.items():
             if not entry.prelude:
@@ -39,7 +39,7 @@ struct Checker:
 
     ## Reports types written in signatures and interfaces that don't mean anything, and
     ## type parameters bound to something that isn't an interface.
-    def check_declarations(mut self):
+    def check_declarations(ref self):
         for key, entry in self.program.functions.items():
             if entry.prelude:
                 continue
@@ -62,7 +62,7 @@ struct Checker:
                 self.check_bounds(info.type_def.generics)
 
     ## Bounds that aren't interfaces, as in `T: Enemy`.
-    def check_bounds(mut self, generics: list[Generic]):
+    def check_bounds(ref self, generics: list[Generic]):
         for generic in generics:
             for bound in generic.bounds:
                 if not self.program.is_interface(bound.name):
@@ -77,13 +77,13 @@ struct Checker:
     ## A function's return type, and every type written in its body. A function defined
     ## inside another sees that one's type parameters, and has its return type checked but
     ## not its parameters' types, as the Rust checker does.
-    def check_function(mut self, function: FnDef, generics: list[Generic]):
+    def check_function(ref self, function: FnDef, generics: list[Generic]):
         self.check_written(function.ret, generic_names(generics))
         self.check_arrow(function)
         self.check_body(function.body, generics)
 
     ## `-> None` or `-> nothing`: no arrow already means a `def` gives back nothing.
-    def check_arrow(mut self, function: FnDef):
+    def check_arrow(ref self, function: FnDef):
         ret = function.ret
         arrow = function.arrow
         if ret is None or arrow is None:
@@ -95,7 +95,7 @@ struct Checker:
                 help="a `def` with no `->` gives back nothing: remove the arrow and what follows it",
             ))
 
-    def check_fields(mut self, fields: list[Field], generics: list[str]):
+    def check_fields(ref self, fields: list[Field], generics: list[str]):
         for field in fields:
             self.check_written(field.ty, generics)
             # A default like `list[Token]()` says the field's type.
@@ -105,14 +105,14 @@ struct Checker:
 
     ## A parameter's type. An interface alone is fine here, since each call gives it a type of
     ## its own.
-    def check_param(mut self, written: TypeExpr?, generics: list[str]):
+    def check_param(ref self, written: TypeExpr?, generics: list[str]):
         if written is None:
             return
         by_itself = written.args.len() == 0 and not written.optional
         if not by_itself or written.name in generics or not self.program.is_interface(written.name):
             self.check_written(written, generics)
 
-    def check_written(mut self, written: TypeExpr?, generics: list[str]):
+    def check_written(ref self, written: TypeExpr?, generics: list[str]):
         if written is None:
             return
         match self.program.resolve_in(written, generics):
@@ -120,7 +120,7 @@ struct Checker:
             case Err(problem): self.diagnostics.append(problem)
 
     ## The types written inside a body: typed names, and the bodies of nested functions.
-    def check_body(mut self, stmts: list[Stmt], generics: list[Generic]):
+    def check_body(ref self, stmts: list[Stmt], generics: list[Generic]):
         names = generic_names(generics)
         for stmt in stmts:
             match stmt.kind:
@@ -140,7 +140,7 @@ struct Checker:
                 case _: pass
 
     ## The bodies of a `match`'s arms, when `expr` is one.
-    def check_arms(mut self, expr: Expr, generics: list[Generic]):
+    def check_arms(ref self, expr: Expr, generics: list[Generic]):
         match expr.kind:
             case .Match(_, arms):
                 for arm in arms:

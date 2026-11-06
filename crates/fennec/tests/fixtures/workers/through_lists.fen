@@ -50,7 +50,7 @@ def main(stdout: Stdout):
     seen = sorted([total(boxes[n % 2].tree) + boxes[n % 2].tag.len() for n in parallel(range(32))])
     stdout.print(seen[0], seen[31])
     mut owned = [Points(xs=[1, 2], label=long), Points(xs=[3], label="p")]
-    for mut held in parallel(owned):
+    for ref held in parallel(owned):
         held.xs.append(held.label.len())
     stdout.print(owned)
     stdout.print(trees)

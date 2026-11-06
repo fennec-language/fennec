@@ -320,8 +320,9 @@ fn id(fields: &Fields, words: &mut dyn Iterator<Item = &u64>, out: &mut Written)
         let mut mine = (&mut *words).take(element.words());
         let first = word(&mut mine);
         mine.for_each(drop);
-        if field.as_ref() == "slot" {
-            slot = first;
+        // The slot is the key's high 32 bits.
+        if field.as_ref() == "key" {
+            slot = first >> 32;
         }
     }
     let _ = write!(out, "Id({slot})");

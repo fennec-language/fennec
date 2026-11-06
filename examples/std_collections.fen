@@ -1,4 +1,4 @@
-# decision: Taking from an empty `Deque`, `Heap` or `PriorityQueue` gives `None`.
+# decision: Taking from an empty `list`, `Deque`, `Heap` or `PriorityQueue` gives `None`.
 
 from std.collections import Counter, Deque, Heap, PriorityQueue
 

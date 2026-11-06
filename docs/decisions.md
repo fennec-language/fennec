@@ -1208,8 +1208,8 @@ match tok:
 **Failures inside the standard library point at the program's call.** When a standard library function written in Fennec fails, the error shows the line in the program that called it, in both engines.
 *Why:* The library's own source isn't something the reader can fix, or even see.
 
-**Taking from an empty `Deque`, `Heap` or `PriorityQueue` gives `None`.** `pop`, `popleft` and `peek` return optionals, so the checker makes the empty case visible. `list.pop` keeps Python's behavior and fails on an empty list.
-*Why:* Draining a queue until it's empty is the normal way to use one, so the empty case is expected, not a mistake.
+**Taking from an empty `list`, `Deque`, `Heap` or `PriorityQueue` gives `None`.** `pop`, `popleft` and `peek` return optionals, so the checker makes the empty case visible: `next = todo.pop() else break`. A list's `pop(at)` still fails on a position that isn't there, as `items[at]` does. Built.
+*Why:* Draining a list or a queue until it's empty is the normal way to use one, so the empty case is expected, not a mistake.
 
 **Regular expressions take linear time.** `std.re` runs patterns on a Pike VM, which follows every way a pattern could match at once, so no pattern can make matching blow up. There are no backreferences or lookarounds, which need backtracking. A pattern written in the program is checked before it runs; `Regex(text)` with a pattern built while it runs gives a result, like any struct with a `where` rule.
 *Why:* A pattern from a mod, a config file or a player can't hang a game or a server.

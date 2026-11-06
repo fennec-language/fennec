@@ -247,7 +247,7 @@ fn an_argument_cant_change_what_its_call_changes() {
     let cases = [
         ("holder.pool.items.append(holder.pool.grow())", said, "holder.pool.grow()"),
         ("push(ref holder.pool.items, holder.pool.grow())", said, "holder.pool.grow()"),
-        ("holder.pool.items.append(holder.pool.items.pop())", said, "holder.pool.items.pop()"),
+        ("holder.pool.items.append(holder.pool.items.pop() else 0)", said, "holder.pool.items.pop()"),
     ];
     for (call, message, at) in cases {
         let body = format!("mut holder = Holder()\n{call}\nstdout.print(holder.pool.items)\n");
@@ -259,7 +259,7 @@ fn an_argument_cant_change_what_its_call_changes() {
         "holder.pool.items.append(holder.pool.take())",
         "push(ref holder.pool.items, holder.pool.take())",
         "holder.pool.spare.append(holder.pool.grow())",
-        "mut lists = [[1], [2]]\nlists[0].append(lists[1].pop())\nstdout.print(lists)",
+        "mut lists = [[1], [2]]\nlists[0].append(lists[1].pop() else 0)\nstdout.print(lists)",
     ] {
         let body = format!("mut holder = Holder()\n{call}\nstdout.print(holder.pool.items)\n");
         assert_eq!(in_main_after(POOL, &body), empty, "{call}");

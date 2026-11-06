@@ -10,7 +10,7 @@ use super::calls::owner_name;
 use super::generics::FunctionInstance;
 use super::places::{Leaving, Place};
 use super::{Loop, Lowered, Lowering, Tail};
-use crate::{FormatPart, InstKind, LocalId, Operand, Terminator};
+use crate::{BlockId, FormatPart, InstKind, LocalId, Operand, Terminator};
 
 /// What a `for` loop counts through. Its names hold the count, or the item at the count,
 /// unpacked when there are several.
@@ -39,6 +39,88 @@ pub(super) struct Over<'a> {
 }
 
 impl Lowering<'_> {
+    /// `list.pop()` on a place that can be read twice, like `self.items`: the last item, or
+    /// `None` when it's empty. The length is tested first, and only then is the list taken
+    /// out, popped and put back, with nothing between, so it has one owner while it changes and
+    /// isn't copied.
+    pub(super) fn pop_or_none(
+        &mut self,
+        callee: &Expr,
+        object: &Expr,
+        keep: Option<&Type>,
+        span: Span,
+    ) -> Lowered<Option<LocalId>> {
+        let list = self.expr(object)?;
+        let dest = keep.map(|ty| self.temporary(ty.clone()));
+        let some = self.when_not_empty(list, dest, span);
+        self.popping = true;
+        let item = match keep {
+            Some(Type::Optional(item)) => Some((**item).clone()),
+            other => other.cloned(),
+        };
+        let popped = self.call(callee, &[], item, span);
+        self.popping = false;
+        self.popped_into(dest, popped?, keep, some, span)
+    }
+
+    /// The same for a place that can't be read twice, tested and popped where it is. A list in
+    /// a field may be copied here, since the test comes between taking it out and putting it back.
+    pub(super) fn pop_in_block(
+        &mut self,
+        values: Vec<Operand>,
+        keep: Option<&Type>,
+        span: Span,
+    ) -> Lowered<Option<LocalId>> {
+        let list = values.first().cloned().ok_or("`pop` with nothing to pop")?;
+        let Some(Type::List(item)) = crate::type_in(&self.locals, &list) else {
+            return Err("`pop` on something that isn't a list".to_owned());
+        };
+        let dest = keep.map(|ty| self.temporary(ty.clone()));
+        let some = self.when_not_empty(list, dest, span);
+        let popped = dest.map(|_| self.temporary(*item));
+        let name = "list.pop".to_owned();
+        self.emit(InstKind::Builtin { dest: popped, name, args: values, changes: true }, span);
+        self.popped_into(dest, popped, keep, some, span)
+    }
+
+    /// Tests whether `list` is empty, giving `dest` `None` if it is, and carries on in the block
+    /// where it isn't. It gives back the block that the two meet in.
+    fn when_not_empty(&mut self, list: Operand, dest: Option<LocalId>, span: Span) -> BlockId {
+        let length = self.temporary(Type::Int);
+        let name = "list.len".to_owned();
+        self.emit(InstKind::Builtin { dest: Some(length), name, args: vec![list], changes: false }, span);
+        let empty = self.temporary(Type::Bool);
+        let (lhs, rhs) = (Operand::Local(length), Operand::Int(0));
+        self.emit(InstKind::Binary { dest: empty, op: BinOp::Eq, lhs, rhs }, span);
+        let (none, some, join) = (self.new_block(), self.new_block(), self.new_block());
+        self.finish(Terminator::Branch { cond: Operand::Local(empty), then: none, otherwise: some });
+        self.current = none;
+        if let Some(dest) = dest {
+            self.emit(InstKind::Copy { dest, value: Operand::None }, span);
+        }
+        self.finish(Terminator::Jump(join));
+        self.current = some;
+        join
+    }
+
+    /// Puts what was popped in `dest` as an optional, and goes on where the empty case meets it.
+    fn popped_into(
+        &mut self,
+        dest: Option<LocalId>,
+        popped: Option<LocalId>,
+        keep: Option<&Type>,
+        join: BlockId,
+        span: Span,
+    ) -> Lowered<Option<LocalId>> {
+        if let (Some(dest), Some(popped), Some(ty)) = (dest, popped, keep) {
+            let value = self.coerce(Operand::Local(popped), ty, span)?;
+            self.emit(InstKind::Copy { dest, value }, span);
+        }
+        self.finish(Terminator::Jump(join));
+        self.current = join;
+        Ok(dest)
+    }
+
     pub(super) fn list(&mut self, expr: &Expr, items: &[Expr]) -> Lowered<Operand> {
         let ty = self.ty(expr)?;
         let (Type::List(item) | Type::Array(item, _)) = &ty else {

@@ -70,6 +70,17 @@ jobs:
           cargo rustc --release --locked -p fennec-runtime --features threads --target-dir target/threads --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
           cp target/threads/release/libfennec_runtime.a target/release/libfennec_runtime_threads.a
           cp "$(find target/threads/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime_threads.bc
+      # The runtimes with no interpreter, which `fennec build` uses for every program that doesn't
+      # cross into it.
+      - name: Build the runtimes with no interpreter, and their bitcode
+        run: |
+          for features in lean lean,threads; do
+            dir="target/$(echo "$features" | tr , -)"
+            name="libfennec_runtime_$(echo "$features" | tr , _)"
+            cargo rustc --release --locked -p fennec-runtime --features "$features" --target-dir "$dir" --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
+            cp "$dir/release/libfennec_runtime.a" "target/release/$name.a"
+            cp "$(find "$dir/release/deps" -name 'fennec_runtime-*.bc' -print -quit)" "target/release/$name.bc"
+          done
       - name: Measure every kernel against its twin
         env:
           OS: ${{ matrix.os }}

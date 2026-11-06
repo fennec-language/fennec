@@ -421,9 +421,10 @@ jobs:
           path: found
           if-no-files-found: ignore
 
-  # Programs built with no interpreter in their runtime: nothing but what's listed may still need
-  # it, which fails at link, and everything else prints what it should, on one thread and on
-  # several. When JSON and the network are native, the list is empty and this is the default.
+  # Programs built with no interpreter in their runtime, as `fennec build` builds every program
+  # whose code doesn't cross into it: nothing but what's listed may still need it, which fails at
+  # link when this job asks for the lean runtime for all of them, and everything else prints
+  # what it should, on one thread and on several.
   lean-runtime:
     name: Programs with no interpreter
     needs: changes

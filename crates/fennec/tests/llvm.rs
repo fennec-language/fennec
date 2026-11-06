@@ -883,7 +883,7 @@ def main(stdout: Stdout):
 
     # A list read as an argument, then changed by a later one, and its length.
     mut zs = [1, 2, 3]
-    stdout.print(listed(zs, zs.pop()), zs)
+    stdout.print(listed(zs, zs.pop() else 0), zs)
     stdout.print(zs, zs.pop(), zs.len())
 
     # An optional given to what can clear it, its value held in a name first.
@@ -1062,7 +1062,7 @@ def main(stdout: Stdout):
     lists[0].tags.append(lists[0].tags.len())
     lists[1].tags.extend(lists[0].tags)
     lists[1].tags.extend(lists[1].tags)
-    lists[2].inner.tags.append(lists[1].tags.pop())
+    lists[2].inner.tags.append(lists[1].tags.pop() else 0)
     lists[2].tags.insert(0, lists[0].tags[0])
     lists[0].tags.pop()
     show(stdout, lists)
@@ -1071,7 +1071,7 @@ def main(stdout: Stdout):
     chosen[pick].append(pick)
     chosen[pick + 1].append(chosen[pick][0])
     copied_chosen = chosen
-    chosen[0].append(chosen[1].pop())
+    chosen[0].append(chosen[1].pop() else 0)
     stdout.print(chosen, copied_chosen)
     mut tables = [{"a": 1}, {"b": 2}]
     tables[0]["c"] = tables[1]["b"]
@@ -1135,7 +1135,7 @@ fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
     }
     let types = "struct Row:\n    tags: list[int]\n\nshared Queue:\n    items = list[int]()\n    \
                  rows = [Row(tags=[1])]\n\n    def push(ref self, item: int):\n        self.items.append(item)\n\n    \
-                 def pop(ref self) -> int:\n        self.items.pop()\n\n    \
+                 def pop(ref self) -> int:\n        self.items.pop() else 0\n\n    \
                  def first(ref self, item: int):\n        self.items.insert(0, item)\n\n    \
                  def more(ref self, others: list[int]):\n        self.items.extend(others)\n\n    \
                  def nested(ref self, item: int):\n        self.rows[0].tags.append(item)\n        self.rows[0].tags.pop()\n\n    \
@@ -1153,7 +1153,7 @@ fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
         ("called", "    for n in range(2000):\n        queue.called(n)\n"),
         (
             "with",
-            "    with queue as ref held:\n        for n in range(2000):\n            held.items.append(n)\n        for n in range(2000):\n            seen += held.items.pop()\n",
+            "    with queue as ref held:\n        for n in range(2000):\n            held.items.append(n)\n        for n in range(2000):\n            seen += held.items.pop() else 0\n",
         ),
     ] {
         let counts =
@@ -3006,7 +3006,7 @@ def show(a: list[int], b: int) -> str:
     f"{a} {b}"
 
 def take(ref a: list[int]) -> int:
-    a.pop()
+    a.pop() else 0
 
 def pair(a: int, b: int) -> str:
     f"{a} {b}"
@@ -3016,14 +3016,14 @@ def bump(ref a: int) -> int:
     a
 
 def through(called: (list[int], int) -> str, ref items: list[int]) -> str:
-    called(items, items.pop())
+    called(items, items.pop() else 0)
 
 def main(stdout: Stdout):
     mut xs = [1, 2, 3]
     stdout.print(xs, xs.pop())
     stdout.print(xs)
     mut ys = [1, 2, 3]
-    stdout.print(show(ys, ys.pop()), ys)
+    stdout.print(show(ys, ys.pop() else 0), ys)
     mut zs = [1, 2, 3]
     stdout.print(show(zs, take(ref zs)), zs)
     mut d = {1: 2, 3: 4}
@@ -3038,25 +3038,25 @@ def main(stdout: Stdout):
     stdout.print(b.items, b.grow(), b.items)
     stdout.print(b, b.grow(), b)
     mut q = [1]
-    stdout.print([q, [q.pop()]], q)
+    stdout.print([q, [q.pop() else 0]], q)
     mut r = [1, 2]
     stdout.print((r, r.pop()), r)
     mut s = [1, 2]
     stdout.print(f"{s} {s.pop()} {s}")
     mut u = [1, 2]
-    stdout.print(show(u, show(u, u.pop()).len()), u)
+    stdout.print(show(u, show(u, u.pop() else 0).len()), u)
     mut v = [1, 2]
     stdout.print(v[0], v.pop(0), v[0])
     mut w = [1, 2, 3]
-    stdout.print(w[w.pop() - 3], w)
+    stdout.print(w[(w.pop() else 0) - 3], w)
     mut x = [1, 2, 3]
-    stdout.print(x[:x.pop()], x)
+    stdout.print(x[:x.pop() else 0], x)
     mut f = 2
     stdout.print(f + bump(ref f), f)
     mut i = [1]
-    stdout.print(Pair(first=i, second=i.pop()), i)
+    stdout.print(Pair(first=i, second=i.pop() else 0), i)
     mut j = [1]
-    stdout.print(Pair(second=j.pop(), first=j), j)
+    stdout.print(Pair(second=j.pop() else 0, first=j), j)
     mut m = [1, 2]
     stdout.print([m.pop(), m.len(), m.pop(), m.len()], m)
     mut o = [1, 2]
@@ -6409,7 +6409,7 @@ def main(stdout: Stdout):
     for at in range(100):
         list_of.append(word(f"item number {at} long enough not to be held inline"))
     list_of[0] = .Num(9)
-    popped = list_of.pop()
+    popped = list_of.pop() else return
     stdout.print(list_of.len(), describe(list_of[0]), describe(list_of[50]), describe(popped))
     # First case holding a string, moved out and let go of at the end.
     mut first = First.Named(long)
@@ -6612,7 +6612,7 @@ def main(stdout: Stdout):
     copied = items
     items.append(document(1))
     items[0] = .Text("replaced")
-    last = items.pop()
+    last = items.pop() else return
     stdout.print(items.len(), copied.len(), printed(items[0]), printed(copied[0]), printed(last))
     stdout.print(items)
 
@@ -6738,6 +6738,49 @@ def main(stdout: Stdout):
     )
 }
 
+/// `list.pop()` gives `None` once the list is empty, and the item as an optional before then:
+/// for numbers, text and structs, from a name, a field, an item of a list, and an item picked
+/// by a call, which is read once.
+#[test]
+fn popping_an_empty_list_gives_none() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "pop_or_none",
+        r#"struct Unit:
+    name: str
+
+struct Squad:
+    units: list[Unit]
+    rows: list[list[int]]
+
+def picked(at: int) -> int:
+    at % 2
+
+def drained(ref items: list[str]) -> int:
+    mut count = 0
+    while True:
+        item = items.pop() else break
+        count += item.len()
+    count
+
+def main(stdout: Stdout):
+    mut numbers = [1, 2]
+    stdout.print(numbers.pop(), numbers.pop(), numbers.pop(), numbers)
+    mut words = ["a long word that isn't held inline", "fox"]
+    stdout.print(drained(ref words), words, words.pop() else "none")
+    mut squad = Squad(units=[Unit(name="ash")], rows=[[1], [2, 3]])
+    first = squad.units.pop()
+    stdout.print(first.name if first is not None else "none", squad.units.pop() is None)
+    stdout.print(squad.rows[1].pop(), squad.rows[picked(1)].pop(), squad.rows[picked(1)].pop())
+    squad.rows[0].pop()
+    squad.rows[0].pop()
+    stdout.print(squad.rows)
+"#,
+    )
+}
+
 /// What's written whole through a `mut` parameter belongs to the caller's local, and what `pop`
 /// and `remove_where` take out of a list keeps or loses the owners the list had. A string made
 /// for the call has no other owner, so an owner too few frees it while it's still in use.
@@ -6784,11 +6827,11 @@ def main(stdout: Stdout):
         same = token == other
         set_token(ref token, other)
         mut people = [Person(long + "a", 1), Person(long + "b", 2), Person(long + "c", 3)]
-        gone = people.pop()
+        gone = people.pop() else return
         first = people.pop(0)
         people.pop()
         mut tokens = [Token.Word(long + "a"), Token.Blank, Token.Word(long + "b"), Token.Word(long + "c")]
-        last = tokens.pop()
+        last = tokens.pop() else return
         early = tokens.pop(0)
         tokens.pop(0)
         tokens.remove_where((item) => item == .Blank)

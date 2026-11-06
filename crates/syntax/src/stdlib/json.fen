@@ -1,5 +1,5 @@
 from std.collections import Id
-from std.intrinsics import id_key, new_tag, stop, text_byte, text_of_code, text_part, text_size, type_name
+from std.intrinsics import id_key, new_tag, stop, text_byte, text_escape_at, text_of_code, text_part, text_plain_end, text_size, type_name
 
 ## How field names are spelled in JSON, set with `names=`. `snake_case` writes them as the
 ## program does. The keys of a dict are written as they are.
@@ -242,13 +242,12 @@ struct JsonWriter:
         self._text += "\""
         size = text_size(value)
         mut start = 0
-        mut at = 0
+        # Each run of bytes written as they are is found in one go.
+        mut at = text_escape_at(value, 0)
         while at < size:
             b = text_byte(value, at)
-            if b >= 32 and b != 34 and b != 92 and b != 127 and b != 194:
-                at += 1
-            elif b == 194 and (text_byte(value, at + 1) < 128 or text_byte(value, at + 1) > 159):
-                at += 2
+            if b == 194 and (text_byte(value, at + 1) < 128 or text_byte(value, at + 1) > 159):
+                at = text_escape_at(value, at + 2)
             else:
                 self._text += text_part(value, start, at)
                 if b == 194:
@@ -258,6 +257,7 @@ struct JsonWriter:
                     self._text += _escaped(b)
                 at += 1
                 start = at
+                at = text_escape_at(value, at)
         if start == 0:
             self._text += value
         else:
@@ -898,10 +898,9 @@ struct JsonReader:
             fail self._misfit("str")
         at += 1
         start = at
+        # The text up to its closing quote, or a backslash, found in one go.
+        at = text_plain_end(self._source, at)
         b = text_byte(self._source, at)
-        while b != 34 and b != 92 and b >= 32:
-            at += 1
-            b = text_byte(self._source, at)
         if b == 34:
             self._at = at + 1
             return text_part(self._source, start, at)

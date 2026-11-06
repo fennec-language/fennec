@@ -116,6 +116,16 @@ def type_name[T]() -> str
 @intrinsic
 def bytes_text(data: bytes, start: int, end: int) -> str
 
+## From byte `at` of a text, the first that's `"`, `\` or a control character, or the text's
+## size: where a JSON reader has to look closer.
+@intrinsic
+def text_plain_end(text: str, at: int) -> int
+
+## From byte `at` of a text, the first JSON writes escaped, or that starts a character it might:
+## `"`, `\`, a control character, DEL or 194. Or the text's size.
+@intrinsic
+def text_escape_at(text: str, at: int) -> int
+
 ## A number for a type's shape: its fields in order, with their names and types, and its cases.
 ## It changes when any of them does, so a format that saves no names can refuse to read data
 ## written for another shape. Only native code has types as it runs.

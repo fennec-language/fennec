@@ -425,6 +425,60 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// `text_plain_end(text, at)` and `text_escape_at(text, at)`: from byte `at`, the first byte a
+    /// JSON reader or writer has to look at, or the text's length. Reading, that's `"`, `\\` or a
+    /// control character; writing, it's those, DEL, and any 194, which starts the C1 controls.
+    /// Each is one tight loop over the bytes where they are.
+    pub(crate) fn text_scan(
+        &mut self,
+        dest: fennec_ir::LocalId,
+        name: &str,
+        args: &[fennec_ir::Operand],
+    ) -> Result<(), String> {
+        if !self.headers() {
+            return Err(format!("it calls `{name}` where strings aren't headers"));
+        }
+        let (text, _) = self.operand(args.first().ok_or("no text")?)?;
+        let (from, _) = self.operand(args.get(1).ok_or("no place")?)?;
+        let length = self.header_byte_length(&text);
+        let bytes = self.header_bytes(&text);
+        let before = self.current.clone();
+        let (head, body, done) = (self.label("scan"), self.label("scan_byte"), self.label("scanned"));
+        let (at, more, next) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("br label %{head}"));
+        self.start_block(&head);
+        self.line(&format!("{at} = phi i64 [ {from}, %{before} ], [ {next}, %{body} ]"));
+        self.line(&format!("{more} = icmp ult i64 {at}, {length}"));
+        let check = self.label("scan_check");
+        self.line(&format!("br i1 {more}, label %{check}, label %{done}"));
+        self.start_block(&check);
+        let (place, byte, control, quote, slash, special) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{place} = getelementptr inbounds i8, ptr {bytes}, i64 {at}"));
+        self.line(&format!("{byte} = load i8, ptr {place}"));
+        self.line(&format!("{control} = icmp ult i8 {byte}, 32"));
+        self.line(&format!("{quote} = icmp eq i8 {byte}, 34"));
+        self.line(&format!("{slash} = icmp eq i8 {byte}, 92"));
+        let (some, either) = (self.temp(), self.temp());
+        self.line(&format!("{some} = or i1 {control}, {quote}"));
+        self.line(&format!("{either} = or i1 {some}, {slash}"));
+        if name == "intrinsics.text_escape_at" {
+            let (delete, wide, more_special) = (self.temp(), self.temp(), self.temp());
+            self.line(&format!("{delete} = icmp eq i8 {byte}, 127"));
+            self.line(&format!("{wide} = icmp eq i8 {byte}, -62"));
+            self.line(&format!("{more_special} = or i1 {delete}, {wide}"));
+            self.line(&format!("{special} = or i1 {either}, {more_special}"));
+        } else {
+            self.line(&format!("{special} = or i1 {either}, false"));
+        }
+        self.line(&format!("br i1 {special}, label %{done}, label %{body}"));
+        self.start_block(&body);
+        self.line(&format!("{next} = add i64 {at}, 1"));
+        self.line(&format!("br label %{head}"));
+        self.start_block(&done);
+        self.assign(dest, &at)
+    }
+
     /// Where a header's text starts: in its block, or in a copy of the header on the stack.
     pub(crate) fn header_bytes(&mut self, header: &str) -> String {
         let in_block = self.header_in_block(header);

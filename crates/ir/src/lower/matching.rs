@@ -217,6 +217,19 @@ impl Lowering<'_> {
             self.emit(InstKind::AsError { dest: held, value: value.clone() }, span);
             return self.variant((name, dotted, args), (&Operand::Local(held), &one), fail, span);
         }
+        // A member of a union, by its type's name: which member it holds is tested first, then
+        // what that member holds.
+        if let Type::Union(members) = ty
+            && let Some(member) = members.iter().position(|member| member.to_string() == name)
+        {
+            let dest = self.temporary(Type::Bool);
+            self.emit(InstKind::IsMember { dest, value: value.clone(), member }, span);
+            self.branch_or(Operand::Local(dest), fail);
+            let one = members.get(member).cloned().ok_or("a member that isn't there")?;
+            let held = self.temporary(one.clone());
+            self.emit(InstKind::GetMember { dest: held, value: value.clone(), member }, span);
+            return self.variant((name, dotted, args), (&Operand::Local(held), &one), fail, span);
+        }
         let Type::Named(owner) = ty else { return Err(format!("it matches `{name}` on {ty}")) };
         let case = self.case_fields(owner, name);
         let fields = match &case {

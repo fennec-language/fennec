@@ -1309,6 +1309,12 @@ struct JsonReader:
     def end_ordered(ref self):
         pass
 
+    def map_count(ref self) -> int fails ParseError:
+        -1
+
+    def end_map(ref self):
+        pass
+
     def at_item(self, at: int, message: str) -> ParseError:
         if not self._explain: return _no_reason()
         ParseError(message=f"`{self._joined()}[{at}]` {message}", line=0, column=0)

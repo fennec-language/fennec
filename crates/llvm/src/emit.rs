@@ -1780,6 +1780,7 @@ impl Emit<'_, '_, '_> {
             "intrinsics.text_plain_end" | "intrinsics.text_escape_at" => {
                 self.text_scan(dest.ok_or("no result")?, name, args)
             }
+            "intrinsics.append_text" => self.text_into_list(args),
             // A float's bits as an int, and back, which a binary format saves.
             "intrinsics.float_bits" | "intrinsics.float_of_bits" => {
                 let (value, _) = self.operand(first.ok_or("no argument")?)?;
@@ -2012,6 +2013,10 @@ impl Emit<'_, '_, '_> {
             return done;
         }
         match inst {
+            // A union's layout is still to be built here.
+            InstKind::MakeMember { .. } | InstKind::IsMember { .. } | InstKind::GetMember { .. } => {
+                Err("it uses a union, which this backend doesn't take yet".to_owned())
+            }
             // Used only as a key the runtime finds where it is.
             InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }
                 if self.known.unmade.contains(&dest.0) =>

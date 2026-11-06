@@ -44,6 +44,7 @@ pub(crate) const MODULE: Module = Module {
         "bytes_text",
         "text_plain_end",
         "text_escape_at",
+        "append_text",
         "id_key",
         "id_at",
         "id_tag",

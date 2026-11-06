@@ -126,6 +126,10 @@ def text_plain_end(text: str, at: int) -> int
 @intrinsic
 def text_escape_at(text: str, at: int) -> int
 
+## Adds a text's bytes to the end of a list of them, each an int from 0 to 255, all at once.
+@intrinsic
+def append_text(ref out: list[int], text: str)
+
 ## A number for a type's shape: its fields in order, with their names and types, and its cases.
 ## It changes when any of them does, so a format that saves no names can refuse to read data
 ## written for another shape. Only native code has types as it runs.

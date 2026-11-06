@@ -5,7 +5,7 @@ use super::Module;
 
 pub(crate) const MODULE: Module = Module {
     name: "json",
-    names: &["loads", "dumps", "ParseError", "JsonNames", "JsonExtra", "native_dumps", "native_loads", "_article", "_escaped", "_float_text", "_base64", "_from_base64", "_quoted", "_IdsSeen", "_tables_in"],
+    names: &["loads", "dumps", "ParseError", "JsonNames", "JsonExtra", "native_dumps", "native_loads", "_article", "_escaped", "_float_text", "_base64", "_from_base64", "_quoted", "_IdsSeen", "_tables_in", "_found_tables"],
     source: include_str!("json.fen"),
     gives: &[],
 };

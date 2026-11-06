@@ -456,12 +456,102 @@ impl Emit<'_, '_, '_> {
                 let tag = self.tag_of(&block, &parts);
                 self.assign(dest, &tag)
             }
+            "intrinsics.id_of_key" => {
+                let (key, _) = self.operand(given)?;
+                let (tag, _) = self.operand(args.get(1).ok_or("no tag")?)?;
+                let at = self.slot(dest);
+                let tag_at = self.offset(&at, 8);
+                self.line(&format!("store i64 {key}, ptr {at}"));
+                self.line(&format!("store i64 {tag}, ptr {tag_at}"));
+                Ok(())
+            }
+            // The generations a `Table` holds are its slots as `table_slots` gives them: the
+            // same list, shared until one of them changes it.
+            "intrinsics.table_slots" => {
+                let (block, kind) = self.operand(given)?;
+                let parts = self.parts(&kind)?;
+                let (_, generations) = self.part(&block, parts.generations, false);
+                let list = self.kind_of(dest)?.clone();
+                self.retain_value(&generations, &list);
+                self.assign(dest, &generations)
+            }
+            "intrinsics.table_of_slots" => self.table_of_slots(dest, args),
             "intrinsics.table_tagged" => {
                 let (tag, _) = self.operand(given)?;
                 self.new_id_map_tagged(dest, Some(&tag))
             }
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }
+    }
+
+    /// A new `Table` of a tag, with each slot as `table_slots` gives it and the items in the
+    /// slots in use, in order. A load has checked there are as many items as slots in use.
+    fn table_of_slots(&mut self, dest: LocalId, args: &[Operand]) -> Result<(), String> {
+        let (tag, _) = self.operand(args.first().ok_or("no tag")?)?;
+        let (slots, slots_kind) = self.operand(args.get(1).ok_or("no slots")?)?;
+        let (items, _) = self.operand(args.get(2).ok_or("no items")?)?;
+        let kind = self.kind_of(dest)?.clone();
+        let Kind::Boxed(id) = kind else { return Err("a Table that isn't boxed".to_owned()) };
+        let parts = self.parts(&kind)?;
+        let held = parts.held.clone();
+        let memory = held.memory(self.module.layouts);
+        let item = list_item(&self.field(&kind, "items")?.1)?;
+        let count = self.list_length(&slots);
+        let out = self.new_list(item, &count);
+        let before = self.current.clone();
+        let (head, body, copy, next, done) = (
+            self.label("slots"),
+            self.label("slot"),
+            self.label("live"),
+            self.label("slot_next"),
+            self.label("slotted"),
+        );
+        let (at, taken, more, step, taken_after, taken_next) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("br label %{head}"));
+        self.start_block(&head);
+        self.line(&format!("{at} = phi i64 [ 0, %{before} ], [ {step}, %{next} ]"));
+        self.line(&format!("{taken} = phi i64 [ 0, %{before} ], [ {taken_next}, %{next} ]"));
+        self.line(&format!("{more} = icmp slt i64 {at}, {count}"));
+        self.line(&format!("br i1 {more}, label %{body}, label %{done}"));
+        self.start_block(&body);
+        let word_at = self.item_address(&slots, "i64", &at);
+        let (word, live) = (self.temp(), self.temp());
+        self.line(&format!("{word} = load i64, ptr {word_at}{ITEM_ACCESS}"));
+        self.line(&format!("{live} = icmp sge i64 {word}, 0"));
+        self.line(&format!("br i1 {live}, label %{copy}, label %{next}"));
+        self.start_block(&copy);
+        let from = self.item_address(&items, &memory, &taken);
+        let to = self.item_address(&out, &memory, &at);
+        if held.in_memory() {
+            self.store_field(&held, &from, &to, ITEM_ACCESS);
+            self.retain_inline(&held, &to);
+        } else {
+            let value = self.load_field(&held, &from, ITEM_ACCESS);
+            if held.counted() {
+                self.retain_value(&value, &held);
+            }
+            self.store_field(&held, &value, &to, ITEM_ACCESS);
+        }
+        self.line(&format!("{taken_after} = add i64 {taken}, 1"));
+        let copied = self.current.clone();
+        self.line(&format!("br label %{next}"));
+        self.start_block(&next);
+        self.line(&format!("{taken_next} = phi i64 [ {taken_after}, %{copied} ], [ {taken}, %{body} ]"));
+        self.line(&format!("{step} = add i64 {at}, 1"));
+        self.line(&format!("br label %{head}"));
+        self.start_block(&done);
+        let block = self.new_block(id)?;
+        let fields = self.offset(&block, FIELDS_OFFSET);
+        self.retain_value(&slots, &slots_kind);
+        for (offset, list) in [(parts.items, &out), (parts.generations, &slots)] {
+            let place = self.offset(&fields, offset);
+            self.line(&format!("store ptr {list}, ptr {place}"));
+        }
+        let (live_at, tag_at) = (self.offset(&fields, parts.live), self.offset(&fields, parts.tag));
+        self.line(&format!("store i64 {taken}, ptr {live_at}"));
+        self.line(&format!("store i64 {tag}, ptr {tag_at}"));
+        self.assign(dest, &block)
     }
 
     /// A tag no `Table` has had, from the runtime's one count.

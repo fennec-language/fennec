@@ -61,6 +61,13 @@ struct Shown:
     def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
         self.sequence(items)
 
+    def exact(self) -> bool:
+        False
+
+    def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+        # Never asked for: `exact` says no.
+        pass
+
     def id(ref self, kind: str, key: int, tag: int):
         self.parts.append(f"Id[{kind}]")
 
@@ -123,6 +130,13 @@ struct Counted:
 
     def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
         self.sequence(items)
+
+    def exact(self) -> bool:
+        False
+
+    def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+        # Never asked for: `exact` says no.
+        pass
 
     def id(ref self, kind: str, key: int, tag: int):
         self.total += 1

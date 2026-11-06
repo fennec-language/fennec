@@ -197,6 +197,13 @@ struct _Key:
     def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
         pass
 
+    def exact(self) -> bool:
+        False
+
+    def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+        # Never asked for: `exact` says no.
+        pass
+
     def id(ref self, kind: str, key: int, tag: int):
         pass
 
@@ -274,6 +281,13 @@ struct JsonWriter:
 
     def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
         self.sequence(items)
+
+    def exact(self) -> bool:
+        False
+
+    def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+        # Never asked for: `exact` says no.
+        pass
 
     def id(ref self, kind: str, key: int, tag: int):
         optional = self._optional
@@ -412,12 +426,17 @@ def native_dumps[T: Serializable](value: T, names: JsonNames? = None, indent: in
 ## Where each `Id` in `value` is in its `Table`, by the name of its type and its `id_key`. A value
 ## with an `Id` that can't be saved stops the program, saying why and where.
 def _tables_in[T: Serializable](value: T) -> dict[str, dict[(int, int), int]]:
-    mut finder = _TableFinder()
+    _found_tables(value, False).positions()
+
+## What's found going through `value` for its `Table`s and `Id`s, saved slot for slot when `exact`
+## is true. A value with an `Id` that can't be saved stops the program, saying why and where.
+def _found_tables[T: Serializable](value: T, exact: bool) -> _TableFinder:
+    mut finder = _TableFinder(_exact=exact)
     value.serialize(ref finder)
     problem = finder.problem()
     if problem != "":
         stop(problem)
-    finder._positions
+    finder
 
 ## How deeply arrays and objects may nest, so bad input can't overflow the stack.
 _MOST_DEEP = 500
@@ -472,6 +491,8 @@ def _quoted(text: str) -> str:
 ## The `Id`s and `Table`s a read has seen, each with where it was, for checking once everything's
 ## been read that each `Id` is in the one `Table` of its type.
 struct _IdsSeen:
+    ## What a message calls everything read: "the text", or "the data".
+    _whole = "the text"
     _ids = list[(str, str, int)]()
     _tables = list[(str, str, int)]()
 
@@ -499,7 +520,7 @@ struct _IdsSeen:
                     )
                     return f"{at} is item {position} of {table_at}, which has {items}"
             if not found:
-                return f"{at} is an Id, but the text has no `Table[{kind}]` for it to be in"
+                return f"{at} is an Id, but {self._whole} has no `Table[{kind}]` for it to be in"
         ""
 
 ## Goes through what's being saved for its `Table`s and `Id`s, writing nothing, so each `Id` can
@@ -512,6 +533,19 @@ struct _TableFinder:
     _path = list[str]()
     _problem = ""
     _optional = False
+    ## Whether `Table`s are saved slot for slot, so an `Id` whose item has gone is saved as it is.
+    _exact = False
+
+    def exact(self) -> bool:
+        self._exact
+
+    ## Where each `Id` is in its `Table`, by the name of its type, then its `id_key` and tag.
+    def positions(self) -> dict[str, dict[(int, int), int]]:
+        self._positions
+
+    ## Each `Table`'s tag, by the name of its items' type.
+    def tags(self) -> dict[str, int]:
+        self._tags
 
     def int(ref self, value: int):
         pass
@@ -589,6 +623,17 @@ struct _TableFinder:
             self._positions[kind] = positions
         self.sequence(items)
 
+    def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+        here = _place(self._path)
+        if kind in self._where:
+            if self._problem == "":
+                self._problem = f"{self._where[kind]} and {here} are both a `Table[{kind}]`, so an Id can't say which it's in"
+        else:
+            self._where[kind] = here
+            self._tags[kind] = tag
+            self._positions[kind] = dict[(int, int), int]()
+        self.sequence(items)
+
     def id(ref self, kind: str, key: int, tag: int):
         self._ids.append((kind, key, tag, self._optional, _place(self._path)))
         self._optional = False
@@ -604,11 +649,13 @@ struct _TableFinder:
         for kind, key, tag, optional, at in self._ids:
             if kind not in self._positions:
                 return f"{at} is an Id, but nothing saved with it is a `Table[{kind}]`"
+            if optional: continue
+            where = self._where.get(kind) else "its Table"
+            if tag != (self._tags.get(kind) else 0):
+                return f"{at} is an Id from another `Table[{kind}]` than {where}"
+            # Saved slot for slot, an `Id` whose item has gone is saved as it is, still gone.
             positions = self._positions.get(kind) else dict[(int, int), int]()
-            if (key, tag) not in positions and not optional:
-                where = self._where.get(kind) else "its Table"
-                if tag != (self._tags.get(kind) else 0):
-                    return f"{at} is an Id from another `Table[{kind}]` than {where}"
+            if not self._exact and (key, tag) not in positions:
                 return f"{at} is an Id of something that's been taken out of {where}"
         ""
 
@@ -1253,6 +1300,9 @@ struct JsonReader:
 
     def missing_as_none(self) -> bool:
         True
+
+    def exact(self) -> bool:
+        False
 
     def at_item(self, at: int, message: str) -> ParseError:
         if not self._explain: return _no_reason()

@@ -14,9 +14,16 @@
 ##
 ## Loading checks every length against what's left and against `Limits` before it takes
 ## anything, so bytes that aren't what `dumps` wrote fail with a `ParseError` rather than nesting
-## too deep or asking for more than they hold. `Table`s and `Id`s don't save yet.
+## too deep or asking for more than they hold.
+##
+## A `Table` is saved as JSON saves it, as its items in order, with each `Id` as where its item is,
+## and loading makes a new `Table`. With `exact=True` it's saved slot for slot instead: the slots
+## taken out, their generations, and each `Id` as its slot and generation. Loading then gives the
+## same slots, so a replay's later `add`s hand out the same `Id`s, and an `Id` whose item had gone
+## is still gone. Either way an `Id` has to be in a `Table` saved with it, one of each type.
 
-from std.intrinsics import float_bits, float_of_bits, new_tag, shape_hash, stop, text_byte, text_size, type_name
+from std.intrinsics import float_bits, float_of_bits, new_tag, shape_hash, text_byte, text_size, type_name
+from std.json import _IdsSeen, _found_tables
 
 ## How far a load may go. Bytes that ask for more fail to load.
 struct Limits:
@@ -25,22 +32,44 @@ struct Limits:
     ## The most bytes one text or `bytes` may hold, and the most items a load may read in all.
     length = 16_000_000
 
-## `value` as bytes, which `loads` reads back into the same type.
-def dumps[T: Serializable](value: T) -> bytes:
-    mut out = PackWriter()
+## `value` as bytes, which `loads` reads back into the same type. With `exact`, its `Table`s are
+## saved slot for slot.
+def dumps[T: Serializable](value: T, exact: bool = False) -> bytes:
+    mut out = PackWriter(_exact=exact)
     out._header(shape_hash[T]())
     value.serialize(ref out)
-    bytes(out._out)
+    if not out._wants_tables: return bytes(out._out)
+    # It holds `Id`s, so where each one's item is comes first, and every one's checked.
+    found = _found_tables(value, exact)
+    mut again = PackWriter(_exact=exact, _tables=found.positions(), _tags=found.tags(), _found=True)
+    again._header(shape_hash[T]())
+    value.serialize(ref again)
+    bytes(again._out)
 
 ## A `T` from bytes `dumps` wrote for a `T`. It fails if they were written for another shape of
 ## type, if they end too soon or go on past it, or if they go past `limits`.
 def loads[T: Deserializable](data: bytes, limits: Limits? = None) -> T fails ParseError:
     held = limits else Limits()
     mut src = PackReader(_data=data, _most_deep=held.depth, _longest=held.length)
+    match _read[T](ref src):
+        case Ok(value):
+            value
+        case Err(_):
+            # Read again keeping track of where it is, which a load that works never pays for.
+            mut again = PackReader(
+                _data=data,
+                _most_deep=held.depth,
+                _longest=held.length,
+                _explain=True,
+            )
+            _read[T](ref again)?
+
+def _read[T: Deserializable](ref src: PackReader) -> T fails ParseError:
     src._header(shape_hash[T](), type_name[T]())?
     value = T.deserialize(ref src)?
-    if src._tables: fail src._fail("`std.pack` doesn't load a `Table` or an `Id` yet")
-    if src._at != data.len(): fail src._fail("there's more after the value")
+    if src._at != src._data.len(): fail src._fail("there's more after the value")
+    problem = src._ids.problem()
+    if problem != "": fail ParseError(message=problem if src._explain else "", line=0, column=0)
     value
 
 ## The bits a varint takes, 7 at a time, with the top 7 cleared after an arithmetic shift so it
@@ -53,9 +82,22 @@ _LOW_63 = 9223372036854775807
 ## Writes what a value's `serialize` gives it as bytes.
 struct PackWriter:
     _out = list[int]()
+    _exact = False
+    ## Where each `Id` is in its `Table`, by the name of its type and then its `id_key` and tag,
+    ## and each `Table`'s tag, once what's written has been gone through. Until then an `Id` asks
+    ## for them.
+    _tables: dict[str, dict[(int, int), int]] = {}
+    _tags: dict[str, int] = {}
+    _found = False
+    _wants_tables = False
+    ## Whether what's being written is in an optional, and where its byte that says it's there is,
+    ## for an `Id` that's saved as missing.
+    _optional = False
+    _some_at = 0
 
     def _header(ref self, shape: int):
-        for b in [70, 80, 75, 49]:
+        # `FPK1`, or `FPKE` for `Table`s slot for slot.
+        for b in [70, 80, 75, 69 if self._exact else 49]:
             self._out.append(b)
         self._word(shape)
 
@@ -100,25 +142,30 @@ struct PackWriter:
         self._out.append(0)
 
     def some[T: Serializable](ref self, x: T):
+        self._some_at = self._out.len()
         self._out.append(1)
+        self._optional = True
         x.serialize(ref self)
+        self._optional = False
 
     def value[T: Serializable](ref self, x: T):
         x.serialize(ref self)
 
     def sequence[T: Serializable](ref self, items: list[T]):
+        self._optional = False
         self._varint(items.len())
         for item in items:
             item.serialize(ref self)
 
     def map[K: Serializable, V: Serializable](ref self, pairs: list[(K, V)]):
+        self._optional = False
         self._varint(pairs.len())
         for key, value in pairs:
             key.serialize(ref self)
             value.serialize(ref self)
 
     def record(ref self, name: str, count: int):
-        pass
+        self._optional = False
 
     def field[T: Serializable](ref self, name: str, x: T):
         x.serialize(ref self)
@@ -133,13 +180,39 @@ struct PackWriter:
         self._varint(at)
 
     def case_record(ref self, name: str, case: str, at: int, count: int):
+        self._optional = False
         self._varint(at)
 
     def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
-        stop(f"`std.pack` doesn't save a `Table[{kind}]` yet")
+        self.sequence(items)
+
+    def exact(self) -> bool:
+        self._exact
+
+    def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+        self.sequence(slots)
+        self.sequence(items)
 
     def id(ref self, kind: str, key: int, tag: int):
-        stop(f"`std.pack` doesn't save an `Id[{kind}]` yet")
+        optional = self._optional
+        self._optional = False
+        if not self._found:
+            self._wants_tables = True
+            return
+        if self._exact:
+            if tag == (self._tags.get(kind) else 0):
+                self.int(key >> 32)
+                self.int(key & 4294967295)
+                return
+        else:
+            positions = self._tables.get(kind) else dict[(int, int), int]()
+            position = positions.get((key, tag)) else -1
+            if position >= 0:
+                self.int(position)
+                return
+        # Going through it found nothing wrong, so it's optional: it's saved as missing.
+        if optional:
+            self._out[self._some_at] = 0
 
 ## Reads bytes `PackWriter` wrote, for a value's `deserialize`.
 struct PackReader:
@@ -153,7 +226,14 @@ struct PackReader:
     ## The next field of each struct being read, innermost last, and the one just read.
     _next = list[int]()
     _field = 0
-    _tables = False
+    _exact = False
+    ## Each `Id` and `Table` read, checked once everything has been.
+    _ids = _IdsSeen(_whole="the data")
+    ## The tag each `Table` of a type gets, new for each load.
+    _tags: dict[str, int] = {}
+    ## Whether to keep track of where it is, for a message, and where.
+    _explain = False
+    _path = list[str]()
 
     def _fail(self, message: str) -> ParseError:
         self._fail_at(self._at, message)
@@ -165,8 +245,11 @@ struct PackReader:
     def _header(ref self, shape: int, name: str) fails ParseError:
         self._items_left = self._longest
         if self._data.len() < 12: fail self._fail("these aren't bytes `std.pack` wrote")
-        for at, b in enumerate([70, 80, 75, 49]):
+        for at, b in enumerate([70, 80, 75]):
             if self._data[at] != b: fail self._fail("these aren't bytes `std.pack` wrote")
+        mode = self._data[3]
+        if mode != 49 and mode != 69: fail self._fail("these aren't bytes `std.pack` wrote")
+        self._exact = mode == 69
         self._at = 4
         if self._word()? != shape:
             self._at = 4
@@ -261,9 +344,13 @@ struct PackReader:
         n = self._length()?
         self._deeper()?
         mut found = list[T]()
-        for _ in range(n):
+        for at in range(n):
             self._item()?
+            if self._explain:
+                self._path.append(f"[{at}]")
             found.append(T.deserialize(ref self)?)
+            if self._explain:
+                _ = self._path.pop()
         self._depth -= 1
         found
 
@@ -271,17 +358,23 @@ struct PackReader:
         n = self._length()?
         self._deeper()?
         mut found = list[(K, V)]()
-        for _ in range(n):
+        for at in range(n):
             self._item()?
+            if self._explain:
+                self._path.append(f"[{at}]")
             key = K.deserialize(ref self)?
             value = V.deserialize(ref self)?
             found.append((key, value))
+            if self._explain:
+                _ = self._path.pop()
         self._depth -= 1
         found
 
     def record(ref self, name: str) fails ParseError:
         self._deeper()?
         self._next.append(0)
+        if self._explain:
+            self._path.append("")
 
     def next_field(ref self, fields: list[(str, str)]) -> bool fails ParseError:
         at = self._next[self._next.len() - 1]
@@ -289,10 +382,23 @@ struct PackReader:
         if at < fields.len() and fields[at][0] != "":
             self._next[self._next.len() - 1] = at + 1
             self._field = at
+            if self._explain:
+                self._path[self._path.len() - 1] = fields[at][0]
             return True
         _ = self._next.pop()
         self._depth -= 1
+        if self._explain:
+            _ = self._path.pop()
         False
+
+    ## Where the reader is, as messages say it.
+    def _where(self) -> str:
+        mut out = ""
+        for part in self._path:
+            if out != "" and text_byte(part, 0) != 91:
+                out += "."
+            out += part
+        "the data" if out == "" else f"`{out}`"
 
     def field_at(self) -> int:
         self._field
@@ -307,19 +413,26 @@ struct PackReader:
         self._fail(f"item {at} {message}")
 
     def here(self, message: str) -> ParseError:
-        self._fail(message)
+        self._fail(f"{self._where()} {message}")
 
     def saw_id(ref self, kind: str, position: int):
-        self._tables = True
+        self._ids.id(kind, self._where() if self._explain else "", position)
 
     def saw_table(ref self, kind: str, count: int):
-        self._tables = True
+        self._ids.table(kind, self._where() if self._explain else "", count)
 
     def tag(ref self, kind: str) -> int:
-        new_tag()
+        found = self._tags.get(kind) else 0
+        if found > 0: return found
+        made = new_tag()
+        self._tags[kind] = made
+        made
 
     def missing_as_none(self) -> bool:
         False
+
+    def exact(self) -> bool:
+        self._exact
 
     def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         start = self._at

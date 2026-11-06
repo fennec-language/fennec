@@ -1,0 +1,14 @@
+# A `match` over a union handles each type in it, or says `case _:` for the rest.
+struct Circle:
+    radius: float
+
+struct Square:
+    side: float
+
+def named(shape: Circle | Square) -> str:
+    match shape:
+        case Circle(radius):
+            f"circle {radius}"
+
+def main(stdout: Stdout):
+    stdout.print(named(Square(side=1.0)))

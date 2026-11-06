@@ -1,0 +1,7 @@
+error: this `match` doesn't handle `Square`
+ --> examples/errors/union_match_misses_a_member.fen:9:11
+  |
+9 |     match shape:
+  |           ^^^^^
+  |
+  = help: add a case for each type in the union, or `case _:` for everything else

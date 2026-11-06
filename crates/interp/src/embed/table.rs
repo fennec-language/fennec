@@ -117,7 +117,12 @@ impl Table {
 
     fn slot(&self, address: usize) -> Option<&[u64]> {
         let (region, page, place) = split(address);
-        pages_of(&self.regions, region)?.get(page)?.as_ref()?.get(place)?.as_deref().filter(|block| at(block) == address)
+        pages_of(&self.regions, region)?
+            .get(page)?
+            .as_ref()?
+            .get(place)?
+            .as_deref()
+            .filter(|block| at(block) == address)
     }
 
     pub(super) fn get(&self, address: usize) -> Option<&[u64]> {

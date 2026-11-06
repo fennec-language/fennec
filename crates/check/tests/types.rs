@@ -338,6 +338,7 @@ fn builtins_give_back_the_right_types() {
         ("set([1]) + 1", "can't use `+` on a set and an int @ set([1]) + 1"),
         ("PI + 1", "can't mix int and float in `+` @ PI + 1"),
         ("xs.pop(0) + 1.0", "can't mix int and float in `+` @ xs.pop(0) + 1.0"),
+        ("xs.pop() + 1", "this might be None @ xs.pop()"),
         ("{'a': 1}.keys()[0] + 1", "can't use `+` on a str and an int @ {\"a\": 1}.keys()[0] + 1"),
         ("{'a': 1}.values()[0] + 1.0", "can't mix int and float in `+` @ {\"a\": 1}.values()[0] + 1.0"),
         ("{'a': 1}.items()[0][1] + 1.0", "can't mix int and float in `+` @ {\"a\": 1}.items()[0][1] + 1.0"),

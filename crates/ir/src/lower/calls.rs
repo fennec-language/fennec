@@ -216,6 +216,12 @@ impl Lowering<'_> {
         if let ExprKind::Attr { object, name, optional: true } = &callee.kind {
             return self.optional_method((object, name), args, keep, span);
         }
+        if !self.popping
+            && let Some(object) = popped_place(callee, args)
+            && matches!(self.type_at(object.span), Some(Type::List(_)))
+        {
+            return self.pop_or_none(callee, object, keep.as_ref(), span);
+        }
         if let Some(value) = self.type_called(callee) {
             let dest = keep.map(|ty| self.temporary(ty));
             if let Some(dest) = dest {
@@ -258,8 +264,8 @@ impl Lowering<'_> {
                 values.push(Operand::Int(i64::try_from(*size).map_err(|_| "an array too long to count")?));
             }
             self.fit_list_item(&name, &mut values, span)?;
-            if name == "list.pop" && values.len() == 1 {
-                dest = self.pop_or_none(values, keep, span)?;
+            if name == "list.pop" && values.len() == 1 && !self.popping {
+                dest = self.pop_in_block(values, keep.as_ref(), span)?;
             } else {
                 dest = keep.map(|ty| self.temporary(ty));
                 self.emit(InstKind::Builtin { dest, name, args: values, changes }, span);
@@ -703,4 +709,22 @@ fn shape_hash(shape: &str) -> i64 {
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     hash.cast_signed()
+}
+
+/// What `list.pop()` is called on, when it's a place that can be read twice, with nothing but
+/// names, fields and plain indexes on the way: `self.items` or `rows[i].tags`.
+fn popped_place<'e>(callee: &'e Expr, args: &[Arg]) -> Option<&'e Expr> {
+    let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return None };
+    (name == "pop" && args.is_empty() && read_twice(object)).then_some(&**object)
+}
+
+fn read_twice(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Name(_) => true,
+        ExprKind::Attr { object, optional: false, .. } => read_twice(object),
+        ExprKind::Index { object, index } => {
+            read_twice(object) && matches!(index.kind, ExprKind::Int(_) | ExprKind::Name(_))
+        }
+        _ => false,
+    }
 }

@@ -1071,7 +1071,7 @@ def main(stdout: Stdout):
     chosen[pick].append(pick)
     chosen[pick + 1].append(chosen[pick][0])
     copied_chosen = chosen
-    chosen[0].append(chosen[1].pop())
+    chosen[0].append(chosen[1].pop() else 0)
     stdout.print(chosen, copied_chosen)
     mut tables = [{"a": 1}, {"b": 2}]
     tables[0]["c"] = tables[1]["b"]
@@ -3016,14 +3016,14 @@ def bump(ref a: int) -> int:
     a
 
 def through(called: (list[int], int) -> str, ref items: list[int]) -> str:
-    called(items, items.pop())
+    called(items, items.pop() else 0)
 
 def main(stdout: Stdout):
     mut xs = [1, 2, 3]
     stdout.print(xs, xs.pop())
     stdout.print(xs)
     mut ys = [1, 2, 3]
-    stdout.print(show(ys, ys.pop()), ys)
+    stdout.print(show(ys, ys.pop() else 0), ys)
     mut zs = [1, 2, 3]
     stdout.print(show(zs, take(ref zs)), zs)
     mut d = {1: 2, 3: 4}
@@ -3038,25 +3038,25 @@ def main(stdout: Stdout):
     stdout.print(b.items, b.grow(), b.items)
     stdout.print(b, b.grow(), b)
     mut q = [1]
-    stdout.print([q, [q.pop()]], q)
+    stdout.print([q, [q.pop() else 0]], q)
     mut r = [1, 2]
     stdout.print((r, r.pop()), r)
     mut s = [1, 2]
     stdout.print(f"{s} {s.pop()} {s}")
     mut u = [1, 2]
-    stdout.print(show(u, show(u, u.pop()).len()), u)
+    stdout.print(show(u, show(u, u.pop() else 0).len()), u)
     mut v = [1, 2]
     stdout.print(v[0], v.pop(0), v[0])
     mut w = [1, 2, 3]
-    stdout.print(w[w.pop() - 3], w)
+    stdout.print(w[(w.pop() else 0) - 3], w)
     mut x = [1, 2, 3]
-    stdout.print(x[:x.pop()], x)
+    stdout.print(x[:x.pop() else 0], x)
     mut f = 2
     stdout.print(f + bump(ref f), f)
     mut i = [1]
-    stdout.print(Pair(first=i, second=i.pop()), i)
+    stdout.print(Pair(first=i, second=i.pop() else 0), i)
     mut j = [1]
-    stdout.print(Pair(second=j.pop(), first=j), j)
+    stdout.print(Pair(second=j.pop() else 0, first=j), j)
     mut m = [1, 2]
     stdout.print([m.pop(), m.len(), m.pop(), m.len()], m)
     mut o = [1, 2]
@@ -6734,6 +6734,49 @@ def main(stdout: Stdout):
     stdout.print(both(kept, ref twice), twice, kept)
     held = bag
     stdout.print(bags(held, ref bag), bag, held)
+"#,
+    )
+}
+
+/// `list.pop()` gives `None` once the list is empty, and the item as an optional before then:
+/// for numbers, text and structs, from a name, a field, an item of a list, and an item picked
+/// by a call, which is read once.
+#[test]
+fn popping_an_empty_list_gives_none() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "pop_or_none",
+        r#"struct Unit:
+    name: str
+
+struct Squad:
+    units: list[Unit]
+    rows: list[list[int]]
+
+def picked(at: int) -> int:
+    at % 2
+
+def drained(ref items: list[str]) -> int:
+    mut count = 0
+    while True:
+        item = items.pop() else break
+        count += item.len()
+    count
+
+def main(stdout: Stdout):
+    mut numbers = [1, 2]
+    stdout.print(numbers.pop(), numbers.pop(), numbers.pop(), numbers)
+    mut words = ["a long word that isn't held inline", "fox"]
+    stdout.print(drained(ref words), words, words.pop() else "none")
+    mut squad = Squad(units=[Unit(name="ash")], rows=[[1], [2, 3]])
+    first = squad.units.pop()
+    stdout.print(first.name if first is not None else "none", squad.units.pop() is None)
+    stdout.print(squad.rows[1].pop(), squad.rows[picked(1)].pop(), squad.rows[picked(1)].pop())
+    squad.rows[0].pop()
+    squad.rows[0].pop()
+    stdout.print(squad.rows)
 "#,
     )
 }

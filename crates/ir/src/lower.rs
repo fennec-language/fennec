@@ -371,6 +371,8 @@ struct Lowering<'a> {
     copied: Vec<(String, &'a Body, Option<generics::Subst>)>,
     /// The types written in brackets at the call being lowered.
     written_types: Vec<Type>,
+    /// Set while lowering a `list.pop()` whose list is known not to be empty.
+    popping: bool,
 }
 
 impl<'a> Lowering<'a> {
@@ -402,6 +404,7 @@ impl<'a> Lowering<'a> {
             fills: Vec::new(),
             copied: Vec::new(),
             written_types: Vec::new(),
+            popping: false,
         }
     }
 

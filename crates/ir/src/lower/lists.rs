@@ -608,7 +608,9 @@ impl Lowering<'_> {
     where
         F: FnOnce(&mut Self) -> Lowered<()>,
     {
-        let once = if back.is_some() { None } else { Some(self.expr(iter)?) };
+        // A name or a field of one is read where it is each time, so the loop holds no owner of
+        // its own that would outlast it; anything else is worked out once.
+        let once = if back.is_some() || names_a_field(iter) { None } else { Some(self.expr(iter)?) };
         let walk = Walk { iter, once, span };
         let stop = self.temporary(Type::Int);
         walk.ask(self, stop, "Table.slots", None)?;
@@ -960,4 +962,13 @@ fn reads_apart(elem: &Expr, root: &str, first_field: Option<&str>) -> bool {
         _ => {}
     });
     apart && named == other_fields && (first_field.is_some() || named == 0)
+}
+
+/// Whether an expression is a name, or a field of one, which reading again only reads.
+fn names_a_field(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Name(_) => true,
+        ExprKind::Attr { object, optional: false, .. } => names_a_field(object),
+        _ => false,
+    }
 }

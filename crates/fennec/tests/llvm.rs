@@ -6013,6 +6013,48 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// The same with the `Table` in a field, gone through by a plain loop after each round too: the
+/// plain loop reads the field where it is, so it holds no owner that would make the next round's
+/// `for ref` find the `Table` shared and copy it.
+#[test]
+fn walking_a_tables_slots_in_a_field_copies_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let counts = counts_of(
+        "walking_slots_in_a_field",
+        r"from std.collections import Table
+
+struct Enemy:
+    hp: int
+    x: float
+
+struct World:
+    enemies = Table[Enemy]()
+
+@hot
+def step(ref world: World, dt: float):
+    for ref enemy in world.enemies:
+        enemy.x += dt
+        enemy.hp -= 1
+
+def main(stdout: Stdout):
+    mut world = World()
+    for n in range(1000):
+        world.enemies.add(Enemy(hp=n, x=0.0))
+    mut total = 0
+    for round in range(100):
+        step(ref world, 0.5)
+        for enemy in world.enemies:
+            total += enemy.hp
+    stdout.print(total)
+",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    assert!(count(&counts, "allocations") < Some(40), "{counts}");
+    Ok(())
+}
+
 #[test]
 fn id_maps_match_the_jit() -> std::io::Result<()> {
     if !ready() {

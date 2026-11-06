@@ -360,8 +360,51 @@ fn made(out: &mut String, indent: &str, make: &str, all: &[Field]) {
         writeln!(out, "{indent}    case Err(broken__):\n{indent}        fail src__.rule(broken__.message)");
 }
 
+/// Reads fields that come in order, every one there, as a format that saves no names gives them,
+/// each straight into a name of its own, then gives back the value made of them.
+fn load_in_order(
+    out: &mut String,
+    indent: &str,
+    (name, make): (&str, &str),
+    all: &[Field],
+    fields: &Fields<'_>,
+) {
+    let (reads, left_out) = fields;
+    let _ = writeln!(out, "{indent}if src__.ordered(\"{name}\")?:");
+    for read in reads {
+        let _ = writeln!(out, "{indent}    in_{} = src__.value[{}]()?", read.field.name, read.ty);
+    }
+    let _ = writeln!(out, "{indent}    src__.end_ordered()");
+    if make != "Self" {
+        let _ = writeln!(out, "{indent}    src__.end_case()?");
+    }
+    let given: Vec<String> = all
+        .iter()
+        .map(|field| {
+            if left_out.iter().any(|(gone, _)| gone.name == field.name) {
+                format!("{0}=DEFAULT_{0}", field.name)
+            } else {
+                format!("{0}=in_{0}", field.name)
+            }
+        })
+        .collect();
+    let value = make.strip_prefix("return ").unwrap_or(make);
+    if all.iter().all(|field| field.rule.is_none()) {
+        let _ = writeln!(out, "{indent}    return {value}({})", given.join(", "));
+        return;
+    }
+    let _ = writeln!(out, "{indent}    match {value}({}):", given.join(", "));
+    let _ = writeln!(out, "{indent}        case Ok(value__):\n{indent}            return value__");
+    let _ = writeln!(
+        out,
+        "{indent}        case Err(broken__):\n{indent}            fail src__.rule(broken__.message)"
+    );
+}
+
 fn load_struct(name: &str, all: &[Field], fields: &Fields<'_>) -> String {
-    let mut out = format!("        src__.record(\"{name}\")?\n");
+    let mut out = String::new();
+    load_in_order(&mut out, "        ", (name, "Self"), all, fields);
+    let _ = writeln!(out, "        src__.record(\"{name}\")?");
     load_fields(&mut out, "        ", &constant(name, ""), fields);
     made(&mut out, "        ", "Self", all);
     out
@@ -382,6 +425,7 @@ fn load_case(
     }
     let list = constant(name, case);
     let _ = writeln!(text, "{list} = [{}]\n", field_list(all));
+    load_in_order(out, indent, (case, &format!("{name}.{case}")), all, fields);
     let _ = writeln!(out, "{indent}src__.record(\"{case}\")?");
     load_fields(out, indent, &list, fields);
     let _ = writeln!(out, "{indent}src__.end_case()?");

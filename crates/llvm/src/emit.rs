@@ -1681,6 +1681,7 @@ impl Emit<'_, '_, '_> {
             | "intrinsics.table_slots"
             | "intrinsics.table_of_slots"
             | "intrinsics.id_of_key" => self.id_intrinsic(dest, name, args),
+            "intrinsics.bytes_text" => self.bytes_text(dest.ok_or("no result")?, args),
             // A float's bits as an int, and back, which a binary format saves.
             "intrinsics.float_bits" | "intrinsics.float_of_bits" => {
                 let (value, _) = self.operand(first.ok_or("no argument")?)?;

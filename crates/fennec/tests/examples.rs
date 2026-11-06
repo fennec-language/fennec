@@ -583,8 +583,8 @@ fn run_both(source: &str) -> Result<[(String, Option<String>); 2], Vec<fennec_sy
 fn using_a_generator_twice_fails_in_both_engines() {
     let source = "def main(stdout: Stdout):
     made = (n for n in [1, 2])
-    stdout.print(list(made))
-    stdout.print(list(made))
+    for _ in range(2):
+        stdout.print(list(made))
 ";
     for (output, failure) in run_both(source).unwrap() {
         assert_eq!(output, "[1, 2]\n");

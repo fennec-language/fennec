@@ -459,7 +459,17 @@ impl FnCx<'_> {
     }
 
     pub(crate) fn call_builtin(&mut self, name: &str, args: &[Arg], span: Span) -> Type {
+        if name == "copy" && args.len() > 1 {
+            return self.replace(args, span);
+        }
         if name == "replace" {
+            // The callee is the name the call starts with.
+            let callee = Span { start: span.start, end: span.start + 7 };
+            self.error(
+                Diagnostic::new("`replace` is called `copy` now: `copy(value, field=new)`", callee)
+                    .with_help("`fennec fix` writes `copy`")
+                    .with_fix(callee, "copy"),
+            );
             return self.replace(args, span);
         }
         // An arrow function passed as `key` receives the items of the first argument.
@@ -660,22 +670,23 @@ impl FnCx<'_> {
         Type::result(Type::Str, Type::named("InvalidValue"))
     }
 
-    /// `replace(value, field=new, ...)`: a copy with some fields changed.
+    /// `copy(value, field=new, ...)`: a copy of a struct with some fields changed, each new
+    /// value the type its field is.
     fn replace(&mut self, args: &[Arg], span: Span) -> Type {
         let types: Vec<Type> = args.iter().map(|arg| self.arg_value(arg, &[])).collect();
         let Some(ty) = types.first() else {
             self.error(
-                Diagnostic::new("`replace` takes a struct value, then the fields to change", span)
-                    .with_help("like `replace(enemy, health=50)`"),
+                Diagnostic::new("`copy` with fields takes a struct value, then the fields to change", span)
+                    .with_help("like `copy(enemy, health=50)`"),
             );
             return Type::Unknown;
         };
         if args.iter().any(|arg| arg.is_mut) {
-            self.error(needless_mut("replace", span));
+            self.error(needless_mut("copy", span));
         }
         let Some(type_name) = ty.type_name() else {
             if ty.is_known() {
-                let message = format!("`replace` copies a struct, but this is {}", a(ty));
+                let message = format!("`copy` with fields copies a struct, but this is {}", a(ty));
                 self.error(Diagnostic::new(message, span));
             }
             return ty.clone();

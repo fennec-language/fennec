@@ -1,0 +1,7 @@
+error: this breaks the `where` rule on `Player.level`
+ --> examples/errors/where_on_copy.fen:8:18
+  |
+8 |     stdout.print(copy(player, level=player.level - 5).level)
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: `where` rules are checked on every write: check the value first

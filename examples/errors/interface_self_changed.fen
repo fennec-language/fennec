@@ -4,7 +4,7 @@ interface Source:
 struct Count:
     left = 2
 
-    def next(mut self) -> int:
+    def next(ref self) -> int:
         self.left -= 1
         self.left
 

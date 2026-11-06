@@ -147,60 +147,60 @@ struct _Key:
     text = ""
     fits = False
 
-    def int(mut self, value: int):
+    def int(ref self, value: int):
         self.text = str(value)
         self.fits = True
 
-    def float(mut self, value: float):
+    def float(ref self, value: float):
         pass
 
-    def bool(mut self, value: bool):
+    def bool(ref self, value: bool):
         pass
 
-    def text(mut self, value: str):
+    def text(ref self, value: str):
         self.text = value
         self.fits = True
 
-    def bytes(mut self, value: bytes):
+    def bytes(ref self, value: bytes):
         pass
 
-    def none(mut self):
+    def none(ref self):
         pass
 
-    def value[T: Serializable](mut self, x: T):
+    def value[T: Serializable](ref self, x: T):
         pass
 
-    def sequence[T: Serializable](mut self, items: list[T]):
+    def sequence[T: Serializable](ref self, items: list[T]):
         pass
 
-    def map[K: Serializable, V: Serializable](mut self, pairs: list[(K, V)]):
+    def map[K: Serializable, V: Serializable](ref self, pairs: list[(K, V)]):
         pass
 
-    def record(mut self, name: str, count: int):
+    def record(ref self, name: str, count: int):
         pass
 
-    def field[T: Serializable](mut self, name: str, x: T):
+    def field[T: Serializable](ref self, name: str, x: T):
         pass
 
-    def renamed[T: Serializable](mut self, name: str, x: T):
+    def renamed[T: Serializable](ref self, name: str, x: T):
         pass
 
-    def end(mut self):
+    def end(ref self):
         pass
 
-    def case(mut self, name: str, case: str, at: int):
+    def case(ref self, name: str, case: str, at: int):
         pass
 
-    def case_record(mut self, name: str, case: str, at: int, count: int):
+    def case_record(ref self, name: str, case: str, at: int, count: int):
         pass
 
-    def table[T: Serializable](mut self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+    def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
         pass
 
-    def id(mut self, kind: str, key: int, tag: int):
+    def id(ref self, kind: str, key: int, tag: int):
         pass
 
-    def some[T: Serializable](mut self, x: T):
+    def some[T: Serializable](ref self, x: T):
         pass
 
 ## Writes JSON into one growing text.
@@ -220,18 +220,18 @@ struct JsonWriter:
     def written(self) -> str:
         self._text
 
-    def int(mut self, value: int):
+    def int(ref self, value: int):
         self._text += str(value)
 
-    def float(mut self, value: float):
+    def float(ref self, value: float):
         if value != value or value - value != 0.0:
             assert False
         self._text += _float_text(value)
 
-    def bool(mut self, value: bool):
+    def bool(ref self, value: bool):
         self._text += "true" if value else "false"
 
-    def text(mut self, value: str):
+    def text(ref self, value: str):
         self._text += "\""
         size = text_size(value)
         mut start = 0
@@ -257,25 +257,25 @@ struct JsonWriter:
             self._text += text_part(value, start, size)
         self._text += "\""
 
-    def bytes(mut self, value: bytes):
+    def bytes(ref self, value: bytes):
         self.text(_base64(value))
 
-    def none(mut self):
+    def none(ref self):
         self._text += "null"
 
-    def value[T: Serializable](mut self, x: T):
-        x.serialize(mut self)
+    def value[T: Serializable](ref self, x: T):
+        x.serialize(ref self)
 
-    def _open(mut self, opening: str):
+    def _open(ref self, opening: str):
         self._text += opening
         self._depth += 1
         self._first = True
         self._optional = False
 
-    def table[T: Serializable](mut self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+    def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
         self.sequence(items)
 
-    def id(mut self, kind: str, key: int, tag: int):
+    def id(ref self, kind: str, key: int, tag: int):
         optional = self._optional
         self._optional = False
         if not self._found:
@@ -289,12 +289,12 @@ struct JsonWriter:
         else:
             self._text += str(position)
 
-    def some[T: Serializable](mut self, x: T):
+    def some[T: Serializable](ref self, x: T):
         self._optional = True
-        x.serialize(mut self)
+        x.serialize(ref self)
         self._optional = False
 
-    def _close(mut self, closing: str):
+    def _close(ref self, closing: str):
         self._depth -= 1
         if self._indent >= 0 and not self._first:
             self._text += "\n"
@@ -302,7 +302,7 @@ struct JsonWriter:
         self._text += closing
         self._first = False
 
-    def _entry(mut self):
+    def _entry(ref self):
         if self._first:
             self._first = False
         elif self._indent < 0:
@@ -313,28 +313,28 @@ struct JsonWriter:
             self._text += "\n"
             self._text += " " * (self._indent * self._depth)
 
-    def sequence[T: Serializable](mut self, items: list[T]):
+    def sequence[T: Serializable](ref self, items: list[T]):
         self._open("[")
         for item in items:
             self._entry()
-            item.serialize(mut self)
+            item.serialize(ref self)
         self._close("]")
 
-    def map[K: Serializable, V: Serializable](mut self, pairs: list[(K, V)]):
+    def map[K: Serializable, V: Serializable](ref self, pairs: list[(K, V)]):
         mut as_object = True
         if pairs.len() > 0:
             mut first = _Key()
-            pairs[0][0].serialize(mut first)
+            pairs[0][0].serialize(ref first)
             as_object = first.fits
         if as_object:
             self._open("{")
             for key, value in pairs:
                 mut name = _Key()
-                key.serialize(mut name)
+                key.serialize(ref name)
                 self._entry()
                 self.text(name.text)
                 self._text += ": "
-                value.serialize(mut self)
+                value.serialize(ref self)
             self._close("}")
         else:
             self._open("[")
@@ -342,16 +342,16 @@ struct JsonWriter:
                 self._entry()
                 self._open("[")
                 self._entry()
-                key.serialize(mut self)
+                key.serialize(ref self)
                 self._entry()
-                value.serialize(mut self)
+                value.serialize(ref self)
                 self._close("]")
             self._close("]")
 
-    def record(mut self, name: str, count: int):
+    def record(ref self, name: str, count: int):
         self._open("{")
 
-    def field[T: Serializable](mut self, name: str, x: T):
+    def field[T: Serializable](ref self, name: str, x: T):
         # Written on one line with names as they are, as most output is, a field takes three pieces.
         if self._indent < 0 and self._names == .snake_case:
             if self._first:
@@ -361,7 +361,7 @@ struct JsonWriter:
                 self._text += ", \""
             self._text += name
             self._text += "\": "
-            x.serialize(mut self)
+            x.serialize(ref self)
             return
         self._entry()
         self._text += "\""
@@ -371,23 +371,23 @@ struct JsonWriter:
             case _:
                 self._text += _spelled(name, self._names)
         self._text += "\": "
-        x.serialize(mut self)
+        x.serialize(ref self)
 
-    def renamed[T: Serializable](mut self, name: str, x: T):
+    def renamed[T: Serializable](ref self, name: str, x: T):
         self._entry()
         self.text(name)
         self._text += ": "
-        x.serialize(mut self)
+        x.serialize(ref self)
 
-    def end(mut self):
+    def end(ref self):
         self._close("}")
 
-    def case(mut self, name: str, case: str, at: int):
+    def case(ref self, name: str, case: str, at: int):
         self._text += "\""
         self._text += case
         self._text += "\""
 
-    def case_record(mut self, name: str, case: str, at: int, count: int):
+    def case_record(ref self, name: str, case: str, at: int, count: int):
         self._open("{")
         self._entry()
         self._text += "\""
@@ -401,19 +401,19 @@ struct JsonWriter:
 def native_dumps[T: Serializable](value: T, names: JsonNames? = None, indent: int = -1) -> str:
     spelled = names else JsonNames.snake_case
     mut out = JsonWriter(_names=spelled, _indent=indent)
-    value.serialize(mut out)
+    value.serialize(ref out)
     if not out._wants_tables: return out.written()
     # It holds `Id`s, so where each one's item is comes first, and every one's checked.
     tables = _tables_in(value)
     mut again = JsonWriter(_names=spelled, _indent=indent, _tables=tables, _found=True)
-    value.serialize(mut again)
+    value.serialize(ref again)
     again.written()
 
 ## Where each `Id` in `value` is in its `Table`, by the name of its type and its `id_key`. A value
 ## with an `Id` that can't be saved stops the program, saying why and where.
 def _tables_in[T: Serializable](value: T) -> dict[str, dict[(int, int), int]]:
     mut finder = _TableFinder()
-    value.serialize(mut finder)
+    value.serialize(ref finder)
     problem = finder.problem()
     if problem != "":
         stop(problem)
@@ -475,10 +475,10 @@ struct _IdsSeen:
     _ids = list[(str, str, int)]()
     _tables = list[(str, str, int)]()
 
-    def id(mut self, kind: str, at: str, position: int):
+    def id(ref self, kind: str, at: str, position: int):
         self._ids.append((kind, at, position))
 
-    def table(mut self, kind: str, at: str, count: int):
+    def table(ref self, kind: str, at: str, count: int):
         self._tables.append((kind, at, count))
 
     ## What's wrong with the `Id`s and `Table`s read, or "" when nothing is.
@@ -513,67 +513,67 @@ struct _TableFinder:
     _problem = ""
     _optional = False
 
-    def int(mut self, value: int):
+    def int(ref self, value: int):
         pass
 
-    def float(mut self, value: float):
+    def float(ref self, value: float):
         pass
 
-    def bool(mut self, value: bool):
+    def bool(ref self, value: bool):
         pass
 
-    def text(mut self, value: str):
+    def text(ref self, value: str):
         pass
 
-    def bytes(mut self, value: bytes):
+    def bytes(ref self, value: bytes):
         pass
 
-    def none(mut self):
+    def none(ref self):
         pass
 
-    def value[T: Serializable](mut self, x: T):
-        x.serialize(mut self)
+    def value[T: Serializable](ref self, x: T):
+        x.serialize(ref self)
 
-    def sequence[T: Serializable](mut self, items: list[T]):
+    def sequence[T: Serializable](ref self, items: list[T]):
         self._optional = False
         mut at = 0
         for item in items:
             self._path.append(f"[{at}]")
-            item.serialize(mut self)
+            item.serialize(ref self)
             _ = self._path.pop()
             at += 1
 
-    def map[K: Serializable, V: Serializable](mut self, pairs: list[(K, V)]):
+    def map[K: Serializable, V: Serializable](ref self, pairs: list[(K, V)]):
         self._optional = False
         for key, value in pairs:
             mut name = _Key()
-            key.serialize(mut name)
+            key.serialize(ref name)
             self._path.append(f"[{_quoted(name.text)}]" if name.fits else "[...]")
-            key.serialize(mut self)
-            value.serialize(mut self)
+            key.serialize(ref self)
+            value.serialize(ref self)
             _ = self._path.pop()
 
-    def record(mut self, name: str, count: int):
+    def record(ref self, name: str, count: int):
         self._optional = False
 
-    def field[T: Serializable](mut self, name: str, x: T):
+    def field[T: Serializable](ref self, name: str, x: T):
         self._path.append(name)
-        x.serialize(mut self)
+        x.serialize(ref self)
         _ = self._path.pop()
 
-    def renamed[T: Serializable](mut self, name: str, x: T):
+    def renamed[T: Serializable](ref self, name: str, x: T):
         self.field(name, x)
 
-    def end(mut self):
+    def end(ref self):
         pass
 
-    def case(mut self, name: str, case: str, at: int):
+    def case(ref self, name: str, case: str, at: int):
         pass
 
-    def case_record(mut self, name: str, case: str, at: int, count: int):
+    def case_record(ref self, name: str, case: str, at: int, count: int):
         self._optional = False
 
-    def table[T: Serializable](mut self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+    def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
         here = _place(self._path)
         if kind in self._where:
             if self._problem == "":
@@ -589,13 +589,13 @@ struct _TableFinder:
             self._positions[kind] = positions
         self.sequence(items)
 
-    def id(mut self, kind: str, key: int, tag: int):
+    def id(ref self, kind: str, key: int, tag: int):
         self._ids.append((kind, key, tag, self._optional, _place(self._path)))
         self._optional = False
 
-    def some[T: Serializable](mut self, x: T):
+    def some[T: Serializable](ref self, x: T):
         self._optional = True
-        x.serialize(mut self)
+        x.serialize(ref self)
         self._optional = False
 
     ## What's wrong with saving the `Id`s and `Table`s gone through, or "" when nothing is.
@@ -650,7 +650,7 @@ struct JsonReader:
     _ids = _IdsSeen()
     _tags: dict[str, int] = {}
 
-    def _space(mut self) -> int:
+    def _space(ref self) -> int:
         mut at = self._at
         mut b = text_byte(self._source, at)
         while b == 32 or b == 10 or b == 13 or b == 9:
@@ -673,7 +673,7 @@ struct JsonReader:
         out
 
     ## What the next value is, for a message.
-    def _found(mut self) -> str:
+    def _found(ref self) -> str:
         b = self._space()
         if b == 123: return "a table"
         if b == 110: return "null"
@@ -689,7 +689,7 @@ struct JsonReader:
         "an int"
 
     ## The error for a value that isn't what's wanted.
-    def _misfit(mut self, wanted: str) -> ParseError:
+    def _misfit(ref self, wanted: str) -> ParseError:
         if not self._explain: return _no_reason()
         found = self._found()
         ParseError(
@@ -698,7 +698,7 @@ struct JsonReader:
             column=0,
         )
 
-    def int(mut self) -> int fails ParseError:
+    def int(ref self) -> int fails ParseError:
         mut at = self._at
         mut b = text_byte(self._source, at)
         while b == 32 or b == 10 or b == 13 or b == 9:
@@ -726,7 +726,7 @@ struct JsonReader:
         -value if negative else value
 
     ## An int that isn't plain digits: the digits of a dict's key, or what isn't an int.
-    def _int_otherwise(mut self) -> int fails ParseError:
+    def _int_otherwise(ref self) -> int fails ParseError:
         if self._in_key and text_byte(self._source, self._at) == 34:
             key = self.text()?
             match int(key):
@@ -742,7 +742,7 @@ struct JsonReader:
         fail self._misfit("int")
 
     ## An int of too many digits for the quick way, or what's a float or isn't a number.
-    def _long_int(mut self) -> int fails ParseError:
+    def _long_int(ref self) -> int fails ParseError:
         start = self._at
         if self._number_end(start) < 0: fail self._misfit("int")
         end = self._number_end(start)
@@ -765,7 +765,7 @@ struct JsonReader:
         if b == 46 or b == 101 or b == 69: return -1
         at
 
-    def float(mut self) -> float fails ParseError:
+    def float(ref self) -> float fails ParseError:
         mut at = self._at
         mut b = text_byte(self._source, at)
         while b == 32 or b == 10 or b == 13 or b == 9:
@@ -805,7 +805,7 @@ struct JsonReader:
         -value if negative else value
 
     ## A float the quick way can't be sure of, read by the runtime.
-    def _long_float(mut self, start: int) -> float fails ParseError:
+    def _long_float(ref self, start: int) -> float fails ParseError:
         mut at = start
         mut b = text_byte(self._source, at)
         while b == 45 or b == 43 or b == 46 or b == 101 or b == 69 or (b >= 48 and b <= 57):
@@ -818,7 +818,7 @@ struct JsonReader:
             case Err(_):
                 fail _no_reason()
 
-    def bool(mut self) -> bool fails ParseError:
+    def bool(ref self) -> bool fails ParseError:
         b = self._space()
         at = self._at
         if (
@@ -840,7 +840,7 @@ struct JsonReader:
             return False
         fail self._misfit("bool")
 
-    def text(mut self) -> str fails ParseError:
+    def text(ref self) -> str fails ParseError:
         mut at = self._at
         mut b = text_byte(self._source, at)
         while b == 32 or b == 10 or b == 13 or b == 9:
@@ -863,7 +863,7 @@ struct JsonReader:
             return self._unescaped()?
         fail _no_reason()
 
-    def bytes(mut self) -> bytes fails ParseError:
+    def bytes(ref self) -> bytes fails ParseError:
         if self._space() != 34: fail self._misfit("bytes")
         text = self.text()?
         _from_base64(text) else fail self._not_base64()
@@ -873,7 +873,7 @@ struct JsonReader:
         ParseError(message=f"{self._where()} should be bytes, written in base64", line=0, column=0)
 
     ## The rest of a string with an escape in it, from just inside its opening quote.
-    def _unescaped(mut self) -> str fails ParseError:
+    def _unescaped(ref self) -> str fails ParseError:
         mut out = ""
         mut at = self._at
         mut start = at
@@ -942,7 +942,7 @@ struct JsonReader:
                 return -1
         code
 
-    def none(mut self) -> bool fails ParseError:
+    def none(ref self) -> bool fails ParseError:
         b = self._space()
         if b != 110: return False
         at = self._at
@@ -955,10 +955,10 @@ struct JsonReader:
         self._at = at + 4
         True
 
-    def value[T: Deserializable](mut self) -> T fails ParseError:
-        T.deserialize(mut self)?
+    def value[T: Deserializable](ref self) -> T fails ParseError:
+        T.deserialize(ref self)?
 
-    def sequence[T: Deserializable](mut self) -> list[T] fails ParseError:
+    def sequence[T: Deserializable](ref self) -> list[T] fails ParseError:
         if self._space() != 91: fail self._misfit(f"list[{type_name[T]()}]")
         self._at += 1
         self._depth += 1
@@ -973,7 +973,7 @@ struct JsonReader:
             if self._explain:
                 self._path.append(f"[{count}]")
                 count += 1
-            found.append(T.deserialize(mut self)?)
+            found.append(T.deserialize(ref self)?)
             if self._explain:
                 _ = self._path.pop()
             b = self._space()
@@ -983,7 +983,7 @@ struct JsonReader:
                 return found
             if b != 44: fail _no_reason()
 
-    def map[K: Deserializable, V: Deserializable](mut self) -> list[(K, V)] fails ParseError:
+    def map[K: Deserializable, V: Deserializable](ref self) -> list[(K, V)] fails ParseError:
         b = self._space()
         if b == 91: return self._pairs[K, V]()?
         if b != 123: fail self._misfit(f"dict[{type_name[K]()}, {type_name[V]()}]")
@@ -998,13 +998,13 @@ struct JsonReader:
         while True:
             start = self._at
             self._in_key = True
-            key = K.deserialize(mut self)?
+            key = K.deserialize(ref self)?
             self._in_key = False
             if self._space() != 58: fail _no_reason()
             if self._explain:
                 self._path.append(f"[{text_part(self._source, self._key_start(start), self._at)}]")
             self._at += 1
-            value = V.deserialize(mut self)?
+            value = V.deserialize(ref self)?
             if self._explain:
                 _ = self._path.pop()
             found.append((key, value))
@@ -1024,7 +1024,7 @@ struct JsonReader:
         at
 
     ## A dict whose keys can't be an object's, as an array of `[key, value]` pairs.
-    def _pairs[K: Deserializable, V: Deserializable](mut self) -> list[(K, V)] fails ParseError:
+    def _pairs[K: Deserializable, V: Deserializable](ref self) -> list[(K, V)] fails ParseError:
         self._at += 1
         mut found = list[(K, V)]()
         if self._space() == 93:
@@ -1039,14 +1039,14 @@ struct JsonReader:
             self._at += 1
             if self._explain:
                 self._path.append("[0]")
-            key = K.deserialize(mut self)?
+            key = K.deserialize(ref self)?
             if self._explain:
                 _ = self._path.pop()
             if self._space() != 44: fail self._not_a_pair()
             self._at += 1
             if self._explain:
                 self._path.append("[1]")
-            value = V.deserialize(mut self)?
+            value = V.deserialize(ref self)?
             if self._explain:
                 _ = self._path.pop()
             if self._space() != 93: fail self._not_a_pair()
@@ -1064,7 +1064,7 @@ struct JsonReader:
         _ = self._path
         ParseError(message=f"{self._where()} should be a [key, value] pair", line=0, column=0)
 
-    def record(mut self, name: str) fails ParseError:
+    def record(ref self, name: str) fails ParseError:
         if self._space() != 123:
             mut wanted = name
             at = name.find(".")
@@ -1079,7 +1079,7 @@ struct JsonReader:
             self._owner = name
         self._hints.append(0)
 
-    def next_field(mut self, fields: list[(str, str)]) -> bool fails ParseError:
+    def next_field(ref self, fields: list[(str, str)]) -> bool fails ParseError:
         if self._explain:
             self._fields = fields
         b = self._space()
@@ -1116,7 +1116,7 @@ struct JsonReader:
     ## Which of `fields` the key ahead is, read where it is in the text with no `str` made for it,
     ## trying the likeliest first, and steps past it and its `:`. -1, and nothing taken, when it
     ## isn't a plain match: then the key's read as usual.
-    def _key_in_place(mut self, fields: list[(str, str)]) -> int:
+    def _key_in_place(ref self, fields: list[(str, str)]) -> int:
         b = self._space()
         if b != 34: return -1
         start = self._at + 1
@@ -1147,7 +1147,7 @@ struct JsonReader:
         -1
 
     ## Takes in a field's key: which of `fields` it is, or what's done with a key none has.
-    def _named(mut self, key: str, fields: list[(str, str)]) -> bool fails ParseError:
+    def _named(ref self, key: str, fields: list[(str, str)]) -> bool fails ParseError:
         at = self._place_of(key, fields)
         if at >= 0:
             self._place = at
@@ -1187,7 +1187,7 @@ struct JsonReader:
 
     ## Fails on the first key in the object ahead that no field has, before any field's value is
     ## read, as the interpreter's reader does. Only a read that's explaining a failure does this.
-    def _unknown_first(mut self, fields: list[(str, str)]) fails ParseError:
+    def _unknown_first(ref self, fields: list[(str, str)]) fails ParseError:
         start = self._at
         while True:
             key = self.text()?
@@ -1238,13 +1238,13 @@ struct JsonReader:
         if not self._explain: return _no_reason()
         ParseError(message=f"{self._where()} {message}", line=0, column=0)
 
-    def saw_id(mut self, kind: str, position: int):
+    def saw_id(ref self, kind: str, position: int):
         self._ids.id(kind, self._where() if self._explain else "", position)
 
-    def saw_table(mut self, kind: str, count: int):
+    def saw_table(ref self, kind: str, count: int):
         self._ids.table(kind, self._where() if self._explain else "", count)
 
-    def tag(mut self, kind: str) -> int:
+    def tag(ref self, kind: str) -> int:
         found = self._tags.get(kind) else 0
         if found > 0: return found
         made = new_tag()
@@ -1262,7 +1262,7 @@ struct JsonReader:
         if not self._explain: return _no_reason()
         ParseError(message=f"in {self._where()}, {message}", line=0, column=0)
 
-    def case(mut self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+    def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         b = self._space()
         if b == 34: return self._plain_case(name, cases)?
         if b != 123: fail self._misfit(name)
@@ -1291,7 +1291,7 @@ struct JsonReader:
         at
 
     ## The error for a case with no data that the text gives a field.
-    def _no_field(mut self, owner: str) -> ParseError:
+    def _no_field(ref self, owner: str) -> ParseError:
         if not self._explain: return _no_reason()
         match self.text():
             case Ok(key):
@@ -1303,7 +1303,7 @@ struct JsonReader:
             case Err(_):
                 _no_reason()
 
-    def _plain_case(mut self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+    def _plain_case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         mut at = -1 if self._explain else self._case_in_place(cases)
         mut key = ""
         if at < 0:
@@ -1322,7 +1322,7 @@ struct JsonReader:
 
     ## Which of `cases` the string ahead names, read where it is with no `str` made for it, and
     ## steps past it. -1, and nothing taken, when it isn't plainly one of them.
-    def _case_in_place(mut self, cases: list[(str, bool)]) -> int:
+    def _case_in_place(ref self, cases: list[(str, bool)]) -> int:
         start = self._at + 1
         mut at = 0
         for case, _ in cases:
@@ -1344,12 +1344,12 @@ struct JsonReader:
             column=0,
         )
 
-    def end_case(mut self) fails ParseError:
+    def end_case(ref self) fails ParseError:
         if self._space() != 125: fail _no_reason()
         self._at += 1
 
     ## What comes after everything's been read has to be nothing.
-    def finish(mut self) fails ParseError:
+    def finish(ref self) fails ParseError:
         if self._space() != -1: fail _no_reason()
 
     ## What's next, for a message about the text itself: "`x`", or "the end of the text".
@@ -1386,7 +1386,7 @@ struct JsonReader:
         ParseError(message=f"{message}, at line {line}, column {column}", line=line, column=column)
 
     ## Goes past one value, saying what's wrong with it if anything is.
-    def _skip(mut self, depth: int) fails ParseError:
+    def _skip(ref self, depth: int) fails ParseError:
         if depth > _MOST_DEEP:
             fail self._bad(f"arrays and objects nest more than {_MOST_DEEP} deep here")
         b = self._space()
@@ -1403,7 +1403,7 @@ struct JsonReader:
         else:
             fail self._bad(f"expected a value, but found {self._next_char()}")
 
-    def _skip_word(mut self) fails ParseError:
+    def _skip_word(ref self) fails ParseError:
         start = self._at
         mut at = start
         mut b = text_byte(self._source, at)
@@ -1417,7 +1417,7 @@ struct JsonReader:
             )
         self._at = at
 
-    def _skip_object(mut self, depth: int) fails ParseError:
+    def _skip_object(ref self, depth: int) fails ParseError:
         self._at += 1
         if self._space() == 125:
             self._at += 1
@@ -1440,7 +1440,7 @@ struct JsonReader:
                 )
             self._at += 1
 
-    def _skip_array(mut self, depth: int) fails ParseError:
+    def _skip_array(ref self, depth: int) fails ParseError:
         self._at += 1
         if self._space() == 93:
             self._at += 1
@@ -1457,7 +1457,7 @@ struct JsonReader:
                 )
             self._at += 1
 
-    def _skip_string(mut self) fails ParseError:
+    def _skip_string(ref self) fails ParseError:
         start = self._at
         self._at += 1
         while True:
@@ -1474,7 +1474,7 @@ struct JsonReader:
             if b == 92:
                 self._skip_escape()?
 
-    def _skip_escape(mut self) fails ParseError:
+    def _skip_escape(ref self) fails ParseError:
         at = self._at
         b = text_byte(self._source, at)
         if b < 0: fail self._bad("this string never ends")
@@ -1494,7 +1494,7 @@ struct JsonReader:
             self._at = at
             fail self._bad(f"`\\{self._next_char()[1:-1]}` isn't a JSON escape")
 
-    def _skip_unicode(mut self) fails ParseError:
+    def _skip_unicode(ref self) fails ParseError:
         start = self._at
         high = self._hex(start)
         if high < 0: fail self._bad("`\\u` needs 4 hex digits")
@@ -1513,7 +1513,7 @@ struct JsonReader:
             fail self._bad("these `\\u` escapes aren't a valid pair")
         self._at += 4
 
-    def _skip_number(mut self) fails ParseError:
+    def _skip_number(ref self) fails ParseError:
         start = self._at
         if text_byte(self._source, start) == 45:
             self._at += 1
@@ -1550,14 +1550,14 @@ struct JsonReader:
                 case Err(_):
                     fail self._bad_at(f"`{number}` is too big for an int", start)
 
-    def _digits(mut self):
+    def _digits(ref self):
         mut b = text_byte(self._source, self._at)
         while b >= 48 and b <= 57:
             self._at += 1
             b = text_byte(self._source, self._at)
 
     ## Goes over the whole text, saying what's wrong with it if anything is.
-    def _whole(mut self) fails ParseError:
+    def _whole(ref self) fails ParseError:
         self._skip(0)?
         if self._space() != -1:
             fail self._bad(
@@ -1574,14 +1574,14 @@ def native_loads[T: Deserializable](
     spelled = names else JsonNames.snake_case
     keys = extra else JsonExtra.error
     mut src = JsonReader(_source=text, _names=spelled, _extra=keys)
-    match _read[T](mut src):
+    match _read[T](ref src):
         case Ok(value):
             value
         case Err(_):
             _explained[T](text, spelled, keys)?
 
-def _read[T: Deserializable](mut src: JsonReader) -> T fails ParseError:
-    value = T.deserialize(mut src)?
+def _read[T: Deserializable](ref src: JsonReader) -> T fails ParseError:
+    value = T.deserialize(ref src)?
     src.finish()?
     found = src._ids.problem()
     if found != "":
@@ -1599,4 +1599,4 @@ def _explained[T: Deserializable](
     mut check = JsonReader(_source=text)
     check._whole()?
     mut src = JsonReader(_source=text, _names=names, _extra=extra, _explain=True)
-    _read[T](mut src)?
+    _read[T](ref src)?

@@ -3,12 +3,12 @@
 # A `shared` value is one cell that every name for it reaches. Its methods take its lock, so a
 # call can't race another. To change several together, `with` locks them all for the block, in
 # an order every block agrees on, and the block changes them through the names it gives them:
-# `mut` ones to write, the rest to read.
+# `ref` ones to write, the rest to read.
 
 shared Account:
     total = 0
 
-    def add(mut self, amount: int):
+    def add(ref self, amount: int):
         self.total += amount
 
     def balance(self) -> int:

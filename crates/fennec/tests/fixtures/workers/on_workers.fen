@@ -4,7 +4,7 @@ struct Unit:
 
 def main(stdout: Stdout):
     mut units = [Unit(float(n % 100), 10.0) for n in range(50_000)]
-    for mut unit in parallel(units):
+    for ref unit in parallel(units):
         unit.x += 2.0
         if unit.x > 50.0:
             unit.health -= 1.0

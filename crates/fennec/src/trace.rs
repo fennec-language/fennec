@@ -167,7 +167,7 @@ fn traced_run(path: &str, work: &Path) -> Result<Run, ExitCode> {
 
 /// Runs `report` on a traced run in a folder of its own, which is gone afterwards.
 fn with_run(path: &str, report: fn(&Run)) -> ExitCode {
-    let work = std::env::temp_dir().join(format!("fennec-trace-{}", std::process::id()));
+    let work = crate::own_temp("trace");
     if let Err(err) = std::fs::create_dir_all(&work) {
         eprintln!("error: couldn't make {}: {err}", work.display());
         return ExitCode::FAILURE;

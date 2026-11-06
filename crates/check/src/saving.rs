@@ -225,11 +225,11 @@ fn pair_for(checker: &mut Checker, def: &TypeDef) -> Option<Vec<Item>> {
     };
     let shown = bounded(def, "Serializable");
     let _ =
-        writeln!(text, "extend {name}{shown}:\n    def serialize(self, mut out__: Serializer):\n{saving}");
+        writeln!(text, "extend {name}{shown}:\n    def serialize(self, ref out__: Serializer):\n{saving}");
     let shown = bounded(def, "Deserializable");
     let _ = writeln!(
         text,
-        "extend {name}{shown}:\n    def deserialize(mut src__: Deserializer) -> Self fails ParseError:\n{loading}"
+        "extend {name}{shown}:\n    def deserialize(ref src__: Deserializer) -> Self fails ParseError:\n{loading}"
     );
     let mut parsed = fennec_syntax::parse_prelude(&text).ok()?;
     fill_in(&mut parsed, def);

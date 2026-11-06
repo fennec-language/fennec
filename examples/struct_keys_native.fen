@@ -18,7 +18,7 @@ struct Grid:
     seen: dict[Cell, int]
     marks: set[Cell]
 
-def visit(mut grid: Grid, cell: Cell):
+def visit(ref grid: Grid, cell: Cell):
     grid.seen[cell] = (grid.seen.get(cell) else 0) + 1
     grid.marks.add(cell)
 
@@ -87,8 +87,8 @@ def main(stdout: Stdout):
     stdout.print(made.len(), sorted([cell.x for cell in made]))
 
     mut grid = Grid(seen={}, marks={Cell(x=0, y=0)})
-    visit(mut grid, Cell(x=1, y=0))
-    visit(mut grid, Cell(x=1, y=0))
+    visit(ref grid, Cell(x=1, y=0))
+    visit(ref grid, Cell(x=1, y=0))
     grid.seen[Cell(x=5, y=5)] = 50
     grid.marks.remove(Cell(x=0, y=0))
     stdout.print(grid, (grid.seen.get(Cell(x=1, y=0)) else 0))

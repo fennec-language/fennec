@@ -11,7 +11,7 @@ shared Queue:
     rows = [Row(tags=[1, 2, 3]), Row(tags=[4])]
     kept = list[int]()
 
-    def reading_itself(mut self):
+    def reading_itself(ref self):
         self.items.append(self.items.len())
         self.items.insert(self.items.len(), self.total)
         self.items.extend(self.items)
@@ -19,11 +19,11 @@ shared Queue:
         self.rows[self.total % 2].tags.append(self.rows[1].tags[0])
         self.total += self.items.pop()
 
-    def through_a_call(mut self):
-        grow(mut self.items, self.items.len())
-        grow(mut self.rows[1].tags, self.rows[0].tags.len())
+    def through_a_call(ref self):
+        grow(ref self.items, self.items.len())
+        grow(ref self.rows[1].tags, self.rows[0].tags.len())
 
-    def keeping_it(mut self) -> list[int]:
+    def keeping_it(ref self) -> list[int]:
         self.kept = self.items
         self.items.append(100)
         self.kept.append(200)
@@ -32,13 +32,13 @@ shared Queue:
     def handing_out(self) -> list[int]:
         self.items
 
-    def row_kept(mut self) -> Row:
+    def row_kept(ref self) -> Row:
         row = self.rows[0]
         self.rows[0].tags.append(300)
         self.rows[0].name += " changed"
         row
 
-def grow(mut numbers: list[int], by: int):
+def grow(ref numbers: list[int], by: int):
     numbers.append(by)
     numbers[0] += by
 
@@ -55,7 +55,7 @@ def main(stdout: Stdout):
     stdout.print(mine, queue.items)
     row = queue.row_kept()
     stdout.print(row.tags, row.name, queue.rows[0].tags, queue.rows[0].name)
-    with queue as mut held:
+    with queue as ref held:
         before = held.items
         held.items.append(held.items.len())
         held.items.extend(before)

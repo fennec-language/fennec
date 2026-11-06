@@ -7,6 +7,6 @@ struct Ring:
 
 def main(stdout: Stdout):
     mut ring = Ring(slots=[1, 2])
-    for mut slot in ring:
+    for ref slot in ring:
         slot += 1
     stdout.print(ring.slots)

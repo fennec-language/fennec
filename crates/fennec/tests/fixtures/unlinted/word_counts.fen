@@ -12,7 +12,7 @@ def total(counts: dict[str, int]) -> int:
         sum += counts[word]
     return sum
 
-def bump(mut counts: dict[str, int], word: str):
+def bump(ref counts: dict[str, int], word: str):
     counts[word] = (counts.get(word) else 0) + 1
 
 def main(stdout: Stdout):
@@ -62,7 +62,7 @@ def main(stdout: Stdout):
     removed = squares.pop(7)
     stdout.print(removed, squares.len(), 7 in squares)
     mut seen: dict[str, int] = {}
-    bump(mut seen, "fox")
-    bump(mut seen, "fox")
-    bump(mut seen, "den")
+    bump(ref seen, "fox")
+    bump(ref seen, "fox")
+    bump(ref seen, "den")
     stdout.print(seen)

@@ -246,6 +246,31 @@ impl Lowering<'_> {
         Ok(dest)
     }
 
+    /// A call that isn't made by name: through a closure, with `?.`, `pop()` on a list that may be
+    /// empty, or a method of whichever member a union holds.
+    fn special_call(
+        &mut self,
+        callee: &Expr,
+        args: &[Arg],
+        keep: Option<&Type>,
+        span: Span,
+    ) -> Option<Lowered<Option<LocalId>>> {
+        if let Some(ty) = self.closure_callee(callee) {
+            return Some(self.call_closure(callee, &ty, args, keep.cloned(), span));
+        }
+        if let ExprKind::Attr { object, name, optional: true } = &callee.kind {
+            return Some(self.optional_method((object, name), args, keep.cloned(), span));
+        }
+        if !self.popping
+            && let Some(object) = popped_place(callee, args)
+            && matches!(self.type_at(object.span), Some(Type::List(_)))
+        {
+            return Some(self.pop_or_none(callee, object, keep, span));
+        }
+        let (object, members) = self.union_receiver(callee)?;
+        Some(self.union_method(callee, (object, &members), args, keep, span))
+    }
+
     /// Lowers a call. When it's given the type of what the call gives back, that's kept in a
     /// new temporary.
     pub(super) fn call(
@@ -255,20 +280,8 @@ impl Lowering<'_> {
         keep: Option<Type>,
         span: Span,
     ) -> Lowered<Option<LocalId>> {
-        if let Some(ty) = self.closure_callee(callee) {
-            return self.call_closure(callee, &ty, args, keep, span);
-        }
-        if let ExprKind::Attr { object, name, optional: true } = &callee.kind {
-            return self.optional_method((object, name), args, keep, span);
-        }
-        if !self.popping
-            && let Some(object) = popped_place(callee, args)
-            && matches!(self.type_at(object.span), Some(Type::List(_)))
-        {
-            return self.pop_or_none(callee, object, keep.as_ref(), span);
-        }
-        if let Some((object, members)) = self.union_receiver(callee) {
-            return self.union_method(callee, (object, &members), args, keep.as_ref(), span);
+        if let Some(lowered) = self.special_call(callee, args, keep.as_ref(), span) {
+            return lowered;
         }
         if let Some(value) = self.type_called(callee) {
             let dest = keep.map(|ty| self.temporary(ty));

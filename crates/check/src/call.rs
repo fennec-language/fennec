@@ -47,6 +47,33 @@ impl FnCx<'_> {
         if name == "from_code" { self.char_from_code(args, span) } else { self.bytes_from_hex(args, span) }
     }
 
+    /// What's called with types given and isn't a type or a function of this module's: `json.loads[T]`,
+    /// a module's generic function like `pack.loads[T]`, checked as the function's own name with
+    /// them, or a method with types for its own type parameters, like `src.field[int]()`.
+    fn called_with_types(
+        &mut self,
+        (object, index): (&Expr, &Expr),
+        callee_span: Span,
+        args: &[Arg],
+        span: Span,
+    ) -> Option<Type> {
+        if let Some(builtin) = self.loads(object) {
+            return Some(self.typed_loads(&builtin, index, args, span));
+        }
+        let ExprKind::Attr { object: owner, name, .. } = &object.kind else {
+            return self.typed_method_call(object, index, args, span);
+        };
+        let Some(Member::Name(member)) = self.module_member(owner, name, object.span) else {
+            return self.typed_method_call(object, index, args, span);
+        };
+        let named = Expr { kind: ExprKind::Name(member), span: object.span };
+        let given = Expr {
+            kind: ExprKind::Index { object: Box::new(named), index: Box::new(index.clone()) },
+            span: callee_span,
+        };
+        Some(self.call(&given, args, span))
+    }
+
     /// A generator right inside what uses it is worked out here, in order, as a loop would be.
     fn note_generator_worked_out_here(&mut self, callee: &Expr, args: &[Arg]) {
         if let (ExprKind::Name(name), Some(first)) = (&callee.kind, args.first())
@@ -104,21 +131,7 @@ impl FnCx<'_> {
                     self.record(object.span, &Type::Function(function.clone()));
                     return self.call_with_types(&function, name, (args, &types), span);
                 }
-                if let Some(builtin) = self.loads(object) {
-                    return self.typed_loads(&builtin, index, args, span);
-                }
-                // `pack.loads[T](data)`: a module's generic function, with its types given.
-                if let ExprKind::Attr { object: owner, name, .. } = &object.kind
-                    && let Some(Member::Name(member)) = self.module_member(owner, name, object.span)
-                {
-                    let named = Expr { kind: ExprKind::Name(member), span: object.span };
-                    let given = Expr {
-                        kind: ExprKind::Index { object: Box::new(named), index: index.clone() },
-                        span: callee.span,
-                    };
-                    return self.call(&given, args, span);
-                }
-                if let Some(returns) = self.typed_method_call(object, index, args, span) {
+                if let Some(returns) = self.called_with_types((object, index), callee.span, args, span) {
                     return returns;
                 }
             }

@@ -170,7 +170,7 @@ def main(stdout: Stdout, fs: Fs):
     stdout.print("hello")
 ```
 
-A function reaches outside itself only through what's in its signature, so there's no global `print`. The error message has to teach this, since it's the first thing newcomers hit.
+A function reaches outside itself only through what's in its signature, so there's no global `print`. The error message has to teach this, since it's the first thing newcomers hit: calling `print`, or reading `stdout` or `fs` in a function that wasn't given it, says how to give it one, or what it's called there. Built.
 
 ## A whole program
 

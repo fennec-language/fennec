@@ -5,8 +5,8 @@
 //! program runs. And it's tried: with it taken out, the program has to check, so no stale copy
 //! can be read.
 //!
-//! A `copy` where a place is named is left alone: the whole value of `mut x = ...`, a `mut`
-//! argument, or what `for mut` loops over, or the start of a path that is. There, taking it out
+//! A `copy` where a place is named is left alone: the whole value of `mut x = ...`, a `ref`
+//! argument, or what `for ref` loops over, or the start of a path that is. There, taking it out
 //! would make the name stand for the place, so changing it would change the original, which a
 //! program may well do on purpose. Anywhere else, a copy never changes what a program computes,
 //! so the fix is safe for `fennec fix`.
@@ -57,7 +57,7 @@ fn root(expr: &Expr) -> &Expr {
 }
 
 /// Where a place is named, by the span of the start of its path: what `mut x = ...` declares,
-/// what `for mut` loops over, and each `mut` argument, anywhere: in a function, a test, a nested
+/// what `for ref` loops over, and each `ref` argument, anywhere: in a function, a test, a nested
 /// function or a case of a `match`.
 pub(crate) fn places(module: &Module) -> HashSet<(u32, u32)> {
     fn block(stmts: &[Stmt], found: &mut HashSet<(u32, u32)>) {

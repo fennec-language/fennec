@@ -9,6 +9,9 @@ use std::process::ExitCode;
 const ROUNDS: usize = 8;
 
 pub(crate) fn fix(path: &str) -> ExitCode {
+    if let Err(code) = parse_fixes(path) {
+        return code;
+    }
     if let Err(code) = moved_imports(path) {
         return code;
     }
@@ -48,51 +51,35 @@ pub(crate) fn fix(path: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// `fennec fix --mut-to-ref`: writes `ref` where the language has moved from `mut`, in each file or
-/// folder named, or the current folder. It reads each file on its own and doesn't check it, so it
-/// runs on anything that can be read as tokens. It asks for by name, so `fennec fix` never renames
-/// on its own, and what it can't decide, a person reads.
-pub(crate) fn mut_to_ref(paths: &[&str]) -> ExitCode {
+/// Makes the fixes a file's parse error carries, like writing `ref` for each `mut` on a
+/// parameter, before anything else, since a file that doesn't parse can't be checked. The
+/// examples in its doc comments are parsed on their own, so they're asked too.
+fn parse_fixes(path: &str) -> Result<(), ExitCode> {
     let mut files = Vec::new();
-    for path in if paths.is_empty() { &["."] } else { paths } {
-        if let Err(err) = crate::fmt::collect(Path::new(path), true, &mut files) {
-            eprintln!("error: couldn't read {path}: {err}");
-            return ExitCode::FAILURE;
+    if crate::fmt::collect(Path::new(path), true, &mut files).is_err() {
+        // Loading says what's wrong with the path.
+        return Ok(());
+    }
+    let mut changed = Vec::new();
+    for file in files {
+        let Ok(source) = std::fs::read_to_string(&file) else { continue };
+        let mut text = source.clone();
+        // Each round fixes everything up to the first mistake without a fix, so a round can
+        // only show more when it changed something.
+        for _ in 0..ROUNDS {
+            let problem = match fennec_syntax::parse(&text) {
+                Ok(_) => fennec_syntax::doc_examples(&text, 0, "").err(),
+                Err(diagnostic) => Some(diagnostic),
+            };
+            let Some(diagnostic) = problem else { break };
+            let Some(fixed) = fennec_syntax::apply_fixes(&text, 0, &[diagnostic]) else { break };
+            text = fixed;
+        }
+        if text != source {
+            changed.push((file.to_string_lossy().into_owned(), text));
         }
     }
-    let mut failed = false;
-    for file in &files {
-        let shown = file.strip_prefix(".").unwrap_or(file).display();
-        let source = match std::fs::read_to_string(file) {
-            Ok(source) => source,
-            Err(err) => {
-                eprintln!("error: couldn't read {shown}: {err}");
-                failed = true;
-                continue;
-            }
-        };
-        let renamed = match fennec_syntax::mut_to_ref(&source) {
-            Ok(renamed) => renamed,
-            Err(diagnostic) => {
-                let (line, column) = crate::fmt::position(&source, diagnostic.span.start);
-                eprintln!("skipped {shown}: it can't be read ({line}:{column}: {})", diagnostic.message);
-                continue;
-            }
-        };
-        if renamed.text != source {
-            if let Err(err) = std::fs::write(file, &renamed.text) {
-                eprintln!("error: couldn't write {shown}: {err}");
-                failed = true;
-                continue;
-            }
-            println!("fixed {shown}");
-        }
-        for span in renamed.left {
-            let (line, _) = crate::fmt::position(&source, span.start);
-            eprintln!("{shown}:{line}: this still says `mut`, so read it");
-        }
-    }
-    if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+    write_all(changed)
 }
 
 /// Rewrites each `from std.game import ...` under `path`, which can't load, to the module those

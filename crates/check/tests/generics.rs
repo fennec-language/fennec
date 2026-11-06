@@ -195,7 +195,7 @@ fn generic_types_fill_in_their_parameters() {
         struct Stack[T]:
             items = list[T]()
 
-            def push(mut self, item: T):
+            def push(ref self, item: T):
                 self.items.append(item)
 
             def top(self) -> T?:
@@ -430,16 +430,16 @@ fn a_program_cant_extend_dict_or_set() {
 }
 
 const SOURCE: &str = "interface Source:
-    def field[T](mut self, at: int) -> T?
+    def field[T](ref self, at: int) -> T?
 
 struct Fake:
     n = 0
 
-    def field[T](mut self, at: int) -> T?:
+    def field[T](ref self, at: int) -> T?:
         self.n += at
         None
 
-def read[S: Source](mut src: S) -> int:
+def read[S: Source](ref src: S) -> int:
     src.field[int](0) else 7
 
 ";
@@ -449,7 +449,7 @@ fn a_method_takes_its_own_types_in_brackets() {
     let text = format!(
         "{SOURCE}struct Pair[A]:\n    first: A\n\n    def with_second[B](self, second: B) -> (A, B):\n        \
          (self.first, second)\n\ndef main(stdout: Stdout):\n    mut fake = Fake()\n    \
-         stdout.print(read(mut fake), fake.field[str](2) else \"none\", Pair(first=1).with_second[str](\"two\"))\n"
+         stdout.print(read(ref fake), fake.field[str](2) else \"none\", Pair(first=1).with_second[str](\"two\"))\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
     let text = format!(
@@ -468,13 +468,13 @@ fn a_method_takes_its_own_types_in_brackets() {
 #[test]
 fn an_interfaces_generic_method_needs_a_generic_method_to_fit() {
     let text = format!(
-        "{SOURCE}struct Plain:\n    n = 0\n\n    def field(mut self, at: int) -> int?:\n        None\n\n\
-         def main(stdout: Stdout):\n    mut plain = Plain()\n    stdout.print(read(mut plain))\n"
+        "{SOURCE}struct Plain:\n    n = 0\n\n    def field(ref self, at: int) -> int?:\n        None\n\n\
+         def main(stdout: Stdout):\n    mut plain = Plain()\n    stdout.print(read(ref plain))\n"
     );
     assert_eq!(
         problems(&text),
         [
-            "`Plain` isn't a `Source`: it has no `field[T](ref self, at: int) -> T?`. Its `field` returns an int? @ read(mut plain)"
+            "`Plain` isn't a `Source`: it has no `field[T](ref self, at: int) -> T?`. Its `field` returns an int? @ read(ref plain)"
         ]
     );
 }
@@ -614,29 +614,29 @@ fn a_programs_own_interface_can_be_named_like_a_library_interface() {
 }
 
 const READS: &str =
-    "error Bad:\n    message: str\n\ninterface Reads:\n    def next(mut self) -> int fails Bad\n\n";
+    "error Bad:\n    message: str\n\ninterface Reads:\n    def next(ref self) -> int fails Bad\n\n";
 
 #[test]
 fn a_method_of_an_interface_can_say_how_it_fails() {
-    let fits = "struct Counter:\n    at = 0\n\n    def next(mut self) -> int fails Bad:\n        self.at += 1\n        self.at\n\n";
+    let fits = "struct Counter:\n    at = 0\n\n    def next(ref self) -> int fails Bad:\n        self.at += 1\n        self.at\n\n";
     let text = format!(
-        "{READS}{fits}def two(mut source: Reads) -> int fails Bad:\n    source.next()? + source.next()?\n\n\
-         def main(stdout: Stdout):\n    mut counter = Counter()\n    stdout.print(two(mut counter) else 0)\n"
+        "{READS}{fits}def two(ref source: Reads) -> int fails Bad:\n    source.next()? + source.next()?\n\n\
+         def main(stdout: Stdout):\n    mut counter = Counter()\n    stdout.print(two(ref counter) else 0)\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
     // What it gives back is a result, so `?` or `else` has to say what happens.
-    let text = format!("{READS}{fits}def one(mut source: Reads) -> int:\n    source.next()\n");
+    let text = format!("{READS}{fits}def one(ref source: Reads) -> int:\n    source.next()\n");
     assert_eq!(problems(&text).len(), 1, "{:?}", problems(&text));
-    let text = "interface Reads:\n    def next(mut self) -> int fails Nope\n";
+    let text = "interface Reads:\n    def next(ref self) -> int fails Nope\n";
     assert_eq!(problems(text), ["`Nope` isn't a type @ Nope"]);
 }
 
 #[test]
 fn a_type_has_to_fail_as_its_interfaces_method_says() {
     let text = format!(
-        "{READS}struct Sure:\n    def next(mut self) -> int:\n        1\n\n\
-         def two(mut source: Reads) -> int fails Bad:\n    source.next()?\n\n\
-         def main(stdout: Stdout):\n    mut sure = Sure()\n    stdout.print(two(mut sure) else 0)\n"
+        "{READS}struct Sure:\n    def next(ref self) -> int:\n        1\n\n\
+         def two(ref source: Reads) -> int fails Bad:\n    source.next()?\n\n\
+         def main(stdout: Stdout):\n    mut sure = Sure()\n    stdout.print(two(ref sure) else 0)\n"
     );
     let found = problems(&text);
     assert_eq!(found.len(), 1, "{found:?}");
@@ -728,7 +728,7 @@ def build[T: Made]() -> T:
 #[test]
 fn a_method_that_changes_its_value_doesnt_fit_an_interfaces_self() {
     let source = "interface Source:\n    def next(self) -> int\n\n\
-                  struct Count:\n    left = 2\n\n    def next(mut self) -> int:\n        self.left -= 1\n        self.left\n\n\
+                  struct Count:\n    left = 2\n\n    def next(ref self) -> int:\n        self.left -= 1\n        self.left\n\n\
                   def two(source: Source) -> int:\n    source.next() + source.next()\n\n\
                   def main(stdout: Stdout):\n    counter = Count()\n    stdout.print(two(counter))\n";
     let found = problems(source);
@@ -744,12 +744,12 @@ fn a_method_that_changes_its_value_doesnt_fit_an_interfaces_self() {
 #[test]
 fn an_interfaces_mut_self_fits_a_method_that_changes_it_or_one_that_doesnt() {
     let empty: [&str; 0] = [];
-    let source = "interface Source:\n    def next(mut self) -> int\n\n\
-                  struct Count:\n    left = 2\n\n    def next(mut self) -> int:\n        self.left -= 1\n        self.left\n\n\
+    let source = "interface Source:\n    def next(ref self) -> int\n\n\
+                  struct Count:\n    left = 2\n\n    def next(ref self) -> int:\n        self.left -= 1\n        self.left\n\n\
                   struct Fixed:\n    held = 7\n\n    def next(self) -> int:\n        self.held\n\n\
-                  def two(mut source: Source) -> int:\n    source.next() + source.next()\n\n\
+                  def two(ref source: Source) -> int:\n    source.next() + source.next()\n\n\
                   def main(stdout: Stdout):\n    mut counter = Count()\n    mut fixed = Fixed()\n    \
-                  stdout.print(two(mut counter), counter.left, two(mut fixed))\n";
+                  stdout.print(two(ref counter), counter.left, two(ref fixed))\n";
     assert_eq!(problems(source), empty);
 }
 
@@ -852,12 +852,12 @@ fn what_cant_be_saved_names_where_it_is_and_the_fixes() {
 #[test]
 fn a_type_writes_both_or_neither() {
     let one =
-        "struct Spot:\n    x = 0\n\n    def serialize(self, mut out: Serializer):\n        out.int(self.x)\n";
+        "struct Spot:\n    x = 0\n\n    def serialize(self, ref out: Serializer):\n        out.int(self.x)\n";
     assert_eq!(problems(one), ["`Spot` writes `def serialize` but not `def deserialize` @ struct Spot"]);
-    let other = "struct Spot:\n    x = 0\n\n    def deserialize(mut src: Deserializer) -> Self fails ParseError:\n        Spot(x=src.int()?)\n";
+    let other = "struct Spot:\n    x = 0\n\n    def deserialize(ref src: Deserializer) -> Self fails ParseError:\n        Spot(x=src.int()?)\n";
     assert_eq!(problems(other), ["`Spot` writes `def deserialize` but not `def serialize` @ struct Spot"]);
     let empty: [&str; 0] = [];
-    let both = "struct Spot:\n    x = 0\n\n    def serialize(self, mut out: Serializer):\n        out.int(self.x)\n\n    def deserialize(mut src: Deserializer) -> Self fails ParseError:\n        Spot(x=src.int()?)\n";
+    let both = "struct Spot:\n    x = 0\n\n    def serialize(self, ref out: Serializer):\n        out.int(self.x)\n\n    def deserialize(ref src: Deserializer) -> Self fails ParseError:\n        Spot(x=src.int()?)\n";
     assert_eq!(problems(both), empty);
 }
 

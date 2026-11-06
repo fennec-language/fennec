@@ -1,0 +1,7 @@
+error: a parameter is written `ref`, not `mut`
+ --> examples/errors/mut_on_a_parameter.fen:2:10
+  |
+2 | def heal(mut health: int):
+  |          ^^^
+  |
+  = help: `mut` is only for a new local name. `fennec fix` writes `ref` here and in 1 other place

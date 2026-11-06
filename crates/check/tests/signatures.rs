@@ -120,7 +120,7 @@ fn signatures_cover_methods_nested_functions_and_the_standard_library() {
         struct Enemy:
             health = 100
 
-            def take_damage(mut self, amount: int):
+            def take_damage(ref self, amount: int):
                 self.health -= amount
 
             def at(health: int):
@@ -285,8 +285,8 @@ fn recursive_functions_give_back_what_their_arrow_says() {
     assert_eq!(returns(program, "fact"), Ok(Type::Int));
     // No arrow means it gives back nothing, which needs nothing written.
     let program = "
-        def walk(mut items: list[int], label: str?):
-            walk(mut items, label)
+        def walk(ref items: list[int], label: str?):
+            walk(ref items, label)
 
         def outer():
             def inner(n: int):

@@ -1494,54 +1494,32 @@ fn fix_writes_the_stdout_a_function_has() {
 /// A program with `mut` in each place that moves to `ref`.
 const MUT_IN_EACH_PLACE: &str = "struct Counter:\n    count: int\n\n    def bump(mut self):\n        self.count += 1\n\ndef grow(mut items: list[int]):\n    items.append(3)\n\ndef main(stdout: Stdout):\n    mut items = [1, 2]\n    grow(mut items)\n    for mut item in items:\n        item += 1\n    mut counter = Counter(count=0)\n    counter.bump()\n    stdout.print(items, counter.count)\n";
 
-/// `fennec fix --mut-to-ref` writes `ref`, and the program does what it did.
+/// `mut` in a place that's now `ref` stops the program, and `fennec fix` writes `ref` in every one.
 #[test]
-fn fix_writes_ref_only_when_asked() {
+fn fix_writes_ref_where_mut_was_on_a_parameter_loop_or_argument() {
     let dir = std::env::temp_dir().join(format!("fennec-cli-{}-mut-to-ref", std::process::id()));
-    std::fs::create_dir_all(dir.join("inner")).unwrap();
-    let program = dir.join("inner/program.fen");
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("program.fen");
     let path = program.to_string_lossy().into_owned();
     std::fs::write(&program, MUT_IN_EACH_PLACE).unwrap();
     let before = fennec(&["run", &path], "").unwrap();
-    assert!(before.status.success(), "{}", text(&before.stderr));
-
-    let plain = fennec(&["fix", &path], "").unwrap();
-    assert!(plain.status.success(), "{}", text(&plain.stderr));
-    assert!(std::fs::read_to_string(&program).unwrap().contains("(mut self)"));
-
-    let folder = dir.to_string_lossy().into_owned();
-    let fixed = fennec(&["fix", "--mut-to-ref", &folder], "").unwrap();
+    let fixed = fennec(&["fix", &path], "").unwrap();
     let written = std::fs::read_to_string(&program).unwrap();
-    let again = fennec(&["fix", "--mut-to-ref", &path], "").unwrap();
+    let again = fennec(&["fix", &path], "").unwrap();
     let after = fennec(&["run", &path], "").unwrap();
     let formatted = fennec(&["fmt", "--check", &path], "").unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
 
+    let said = text(&before.stderr);
+    assert!(!before.status.success());
+    assert!(said.starts_with("error: a parameter is written `ref`, not `mut`"), "{said}");
+    assert!(said.contains("`fennec fix` writes `ref` here and in 3 other places"), "{said}");
     assert!(fixed.status.success() && text(&fixed.stdout).starts_with("fixed "), "{}", text(&fixed.stderr));
     assert_eq!(written, MUT_IN_EACH_PLACE.replace("(mut ", "(ref ").replace("for mut", "for ref"));
     assert!(written.contains("    mut items = [1, 2]\n"), "{written}");
-    assert!(again.status.success() && again.stdout.is_empty());
-    assert_eq!(text(&after.stdout), text(&before.stdout), "{}", text(&after.stderr));
+    assert!(again.status.success() && again.stdout.is_empty(), "{}", text(&again.stdout));
+    assert_eq!(text(&after.stdout), "[2, 3, 4] 1\n", "{}", text(&after.stderr));
     assert!(formatted.status.success(), "{}", text(&formatted.stderr));
-}
-
-/// It says what a person has to read, and goes past a file it can't read.
-#[test]
-fn fix_to_ref_says_what_it_left() {
-    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-mut-left", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("a.fen"), "x = \"never closed\n").unwrap();
-    std::fs::write(dir.join("b.fen"), "# takes a `mut` list\ndef f(mut items: list[int]):\n    pass\n")
-        .unwrap();
-    let folder = dir.to_string_lossy().into_owned();
-    let output = fennec(&["fix", "--mut-to-ref", &folder], "").unwrap();
-    let written = std::fs::read_to_string(dir.join("b.fen")).unwrap();
-    std::fs::remove_dir_all(&dir).unwrap();
-    let said = text(&output.stderr);
-    assert!(output.status.success(), "{said}");
-    assert!(said.contains("a.fen: it can't be read"), "{said}");
-    assert!(said.contains("b.fen:1: this still says `mut`"), "{said}");
-    assert_eq!(written, "# takes a `mut` list\ndef f(ref items: list[int]):\n    pass\n");
 }
 
 /// A program from before `IdMap` became `Table`, which `fennec fix` moves over.
@@ -1829,7 +1807,7 @@ fn a_loop_changing_a_dict_in_a_struct_stays_small() {
     let program = dir.join("counter.fen");
     std::fs::write(
         &program,
-        "struct Counter:\n    counts: dict[int, int]\n\n    def bump(mut self, key: int):\n        \
+        "struct Counter:\n    counts: dict[int, int]\n\n    def bump(ref self, key: int):\n        \
          self.counts[key] = (self.counts.get(key) else 0) + 1\n\ndef main(stdout: Stdout):\n    mut counter = \
          Counter(counts={})\n    for i in range(20_000):\n        counter.bump(i * 7919 % 10_007)\n    \
          stdout.print(counter.counts.len())\n",
@@ -1869,7 +1847,7 @@ fn a_copy_each_time_round_a_loop_has_to_be_written() {
 fn a_shared_value_is_one_cell_however_its_reached() {
     let dir = scratch("shared").unwrap();
     let program = dir.join("account.fen");
-    std::fs::write(&program, "shared Account:\n    total = 0\n\n    def add(mut self, amount: int):\n        self.total += amount\n\n    def balance(self) -> int:\n        self.total\n\ndef pay(account: Account, amount: int):\n    account.add(amount)\n\ndef main(stdout: Stdout):\n    account = Account()\n    same = account\n    pay(account, 5)\n    same.add(10)\n    stdout.print(account.balance(), same.total, account)\n").unwrap();
+    std::fs::write(&program, "shared Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n    def balance(self) -> int:\n        self.total\n\ndef pay(account: Account, amount: int):\n    account.add(amount)\n\ndef main(stdout: Stdout):\n    account = Account()\n    same = account\n    pay(account, 5)\n    same.add(10)\n    stdout.print(account.balance(), same.total, account)\n").unwrap();
     for engine in ["--interp", "--no-test"] {
         let output = fennec(&["run", engine, program.to_str().unwrap()], "").unwrap();
         assert_eq!(text(&output.stdout), "15 15 Account(total=15)\n", "{engine}");

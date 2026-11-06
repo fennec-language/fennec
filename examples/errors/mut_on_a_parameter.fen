@@ -1,0 +1,8 @@
+# `ref` marks a parameter a function changes. `mut` is only for a new local name.
+def heal(mut health: int):
+    health += 10
+
+def main(stdout: Stdout):
+    mut health = 5
+    heal(mut health)
+    stdout.print(health)

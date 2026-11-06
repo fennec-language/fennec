@@ -379,7 +379,7 @@ impl Interp<'_> {
             let place = if is_mut {
                 Some(self.mut_place(
                     iter,
-                    "`for mut` changes each item, so loop over something held in a mut name or field",
+                    "`for ref` changes each item, so loop over something held in a mut name or field",
                 )?)
             } else {
                 None

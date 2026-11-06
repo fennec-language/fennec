@@ -98,7 +98,7 @@ impl Lowerer<'_, '_> {
             if lowerer.for_packed(names, held, body, true)? {
                 Ok((None, Ty::Unit))
             } else {
-                Err(unsupported("this `for mut` loop", held.span))
+                Err(unsupported("this `for ref` loop", held.span))
             }
         });
         self.close_scope()?;

@@ -302,6 +302,7 @@ export! {
     fennec_bytes_of_list(a0: i64, a1: i64, a2: i64) -> i64 => bytes::of_list(a0, a1, a2);
     fennec_bytes_join(a0: i64, a1: i64) -> i64 => bytes::join(a0, a1);
     fennec_bytes_slice(a0: i64, a1: i64, a2: i64) -> i64 => bytes::slice(a0, a1, a2);
+    fennec_bytes_text_part(a0: i64, a1: i64, a2: i64) -> i64 => bytes::text_part(a0, a1, a2);
     fennec_bytes_order(a0: i64, a1: i64) -> i64 => bytes::order(a0, a1);
     fennec_bytes_contains(a0: i64, a1: i64) -> i8 => bytes::contains(a0, a1);
     fennec_bytes_hex(a0: i64, a1: i64) -> i64 => bytes::hex_text(a0, a1);

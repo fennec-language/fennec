@@ -127,6 +127,12 @@ interface Deserializer:
     ## Whether what's read was saved slot for slot, as `Serializer.exact` says.
     def exact(self) -> bool
 
+    ## Starts reading a struct, or a case's data, whose fields come in order, every one there, as a
+    ## format that saves no names gives them, and says whether it did. Then each field is read
+    ## with `value` and `end_ordered` finishes it. A format that says no is read with `record`.
+    def ordered(ref self, name: str) -> bool fails ParseError
+    def end_ordered(ref self)
+
     ## Which of `cases` comes next, as a place in it: each its name and whether it has data. One
     ## with data then reads its fields as a struct's, and `end_case` finishes it.
     def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError

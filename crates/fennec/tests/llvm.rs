@@ -7898,6 +7898,12 @@ struct Words:
     def exact(self) -> bool:
         False
 
+    def ordered(ref self, name: str) -> bool fails ParseError:
+        False
+
+    def end_ordered(ref self):
+        pass
+
     def none(ref self) -> bool fails ParseError:
         if self.at < self.parts.len() and self.parts[self.at] == "-":
             self.at += 1

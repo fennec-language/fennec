@@ -554,6 +554,15 @@ pub extern "C" fn int_text(n: i64) -> i64 {
     with(|state| text_address(state, text))
 }
 
+/// `reversed(text)`: a new string of its characters, last first.
+pub extern "C" fn reversed(address: i64) -> i64 {
+    with(|state| {
+        let whole = text(state, address).unwrap_or_default();
+        let turned: String = whole.chars().rev().collect();
+        text_address(state, &turned)
+    })
+}
+
 /// `text.codes()`: a new list of the code of each character.
 pub extern "C" fn codes(address: i64, element: i64) -> i64 {
     with(|state| {

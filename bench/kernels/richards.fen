@@ -22,7 +22,7 @@ struct Packet:
     id: int
     kind: int
     a1 = 0
-    a2: list[int]
+    a2: array[int, 4]
 
 struct Task:
     kind: Kind
@@ -58,7 +58,7 @@ struct Scheduler:
         self.newest = self.tasks.len() - 1
 
     def add_packet(ref self, link: int, id: int, kind: int) -> int:
-        self.packets.append(Packet(link=link, id=id, kind=kind, a2=[0, 0, 0, 0]))
+        self.packets.append(Packet(link=link, id=id, kind=kind, a2=array[int, 4]()))
         self.packets.len() - 1
 
     def schedule(ref self):
@@ -127,10 +127,11 @@ struct Scheduler:
         self.tasks[at].v2 -= 1
         if self.tasks[at].v2 == 0: return self.hold_current()
         state = self.tasks[at].v1
-        if state % 2 == 0:
-            self.tasks[at].v1 = state // 2
+        if state & 1 == 0:
+            self.tasks[at].v1 = state >> 1
             return self.release(DEVICE_A)
-        self.tasks[at].v1 = xor_d008(state // 2)
+        # 53_256 is 0xD008.
+        self.tasks[at].v1 = (state >> 1) ^ 53_256
         self.release(DEVICE_B)
 
     def run_device(ref self, at: int, packet: int) -> int:
@@ -176,14 +177,6 @@ struct Scheduler:
                 self.tasks[at].v1 = self.packets[work].link
                 return self.send(work)
         self.suspend_current()
-
-## `value ^ 0xD008` for a value under 0x8000, since Fennec has no bit operators yet.
-def xor_d008(value: int) -> int:
-    mut result = value + 32768
-    result += -16384 if value // 16384 % 2 == 1 else 16384
-    result += -4096 if value // 4096 % 2 == 1 else 4096
-    result += -8 if value // 8 % 2 == 1 else 8
-    result
 
 def simulate() -> (int, int):
     mut scheduler = Scheduler(tasks=[], packets=[])

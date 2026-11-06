@@ -75,21 +75,41 @@ pub extern "C" fn new(length: i64) -> i64 {
 /// `bytes(items)`: each item has to be an int from 0 to 255.
 pub extern "C" fn of_list(list: i64, start: i64, end: i64) -> i64 {
     let span = Span { start: u32::try_from(start).unwrap_or(0), end: u32::try_from(end).unwrap_or(0) };
-    let items: Vec<u64> = with(|state| {
-        state.heap.block(list.cast_unsigned()).map(|block| super::lists::items(block, 1).to_vec())
-    })
-    .unwrap_or_default();
-    let mut data = Vec::with_capacity(items.len());
-    for item in items {
-        let item = item.cast_signed();
-        let Ok(byte) = u8::try_from(item) else {
-            let message = format!("a byte is an int from 0 to 255, not {item}");
-            fail_with(Diagnostic::new(message, span));
-            return 0;
-        };
-        data.push(byte);
+    // Packed eight to a word as they're checked, so the items are read once and nothing as big as
+    // the list is copied on the way.
+    let packed: Option<Result<(Vec<u64>, usize), i64>> = with(|state| {
+        let items = state
+            .heap
+            .block(list.cast_unsigned())
+            .map(|block| super::lists::items(block, 1))
+            .unwrap_or_default();
+        let mut words = Vec::with_capacity(items.len().div_ceil(8));
+        for chunk in items.chunks(8) {
+            let mut word = 0;
+            for (at, item) in chunk.iter().enumerate() {
+                if *item > 255 {
+                    return Some(Err(item.cast_signed()));
+                }
+                word |= item << (8 * at);
+            }
+            words.push(word);
+        }
+        Some(Ok((words, items.len())))
+    });
+    match packed.unwrap_or(Ok((Vec::new(), 0))) {
+        Ok((words, length)) => with(|state| {
+            let mut block = state.heap.fresh(HEADER_WORDS + words.len());
+            let header = [1, super::heap::BYTES_SHAPE, u64::try_from(length).unwrap_or(0)];
+            for (slot, word) in block.iter_mut().zip(header.iter().chain(&words)) {
+                *slot = *word;
+            }
+            state.heap.insert(block)
+        }),
+        Err(item) => {
+            fail_with(Diagnostic::new(format!("a byte is an int from 0 to 255, not {item}"), span));
+            0
+        }
     }
-    with(|state| make(state, &data))
 }
 
 /// `a + b`.
@@ -120,6 +140,25 @@ pub extern "C" fn slice(bytes: i64, start: i64, end: i64) -> i64 {
         // Only the part is copied out, so taking a small part of a long run costs only the part.
         let part = part_of(block, from, to.max(from));
         make(state, &part)
+    })
+}
+
+/// The text in bytes `start` up to `end` of a run of bytes, made straight from them, or the empty
+/// text when they aren't UTF-8. Both places are inside it, and a format checks that first.
+pub extern "C" fn text_part(bytes: i64, start: i64, end: i64) -> i64 {
+    with(|state| {
+        let block = state.heap.block(bytes.cast_unsigned()).unwrap_or_default();
+        let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+        let from = usize::try_from(start).unwrap_or(0).min(length);
+        let to = usize::try_from(end).unwrap_or(0).clamp(from, length);
+        let part = part_of(block, from, to);
+        match std::str::from_utf8(&part) {
+            Ok(text) => {
+                let chars = text.chars().count();
+                super::heap::text_from_bytes(state, &part, chars)
+            }
+            Err(_) => text_address(state, ""),
+        }
     })
 }
 

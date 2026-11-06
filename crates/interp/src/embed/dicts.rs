@@ -62,7 +62,7 @@ impl Word {
     }
 }
 
-const KEYS: [Word; 4] = [Word::Int, Word::Str, Word::Plain(0), Word::Text];
+const KEYS: [Word; 5] = [Word::Int, Word::Str, Word::Plain(0), Word::Text, Word::Float];
 
 /// Words an entry with a string header for its key takes: hash, the header's three, value.
 const HEADER_ENTRY_WORDS: usize = 5;
@@ -195,8 +195,24 @@ fn finish(hash: u64) -> u64 {
     (hash ^ (hash >> 29)) >> 1
 }
 
+/// A float key's bits as they compare and hash: floats have one equality, with `-0.0` the same as
+/// `0.0` and every NaN the same.
+fn float_key(bits: u64) -> u64 {
+    let value = f64::from_bits(bits);
+    if value == 0.0 {
+        0
+    } else if value.is_nan() {
+        f64::NAN.to_bits()
+    } else {
+        bits
+    }
+}
+
 fn hash_key(state: &State, key_word: Word, key: &[u64]) -> u64 {
     let first = key.first().copied().unwrap_or(0);
+    if key_word == Word::Float {
+        return hash_int(float_key(first));
+    }
     if let Word::Plain(_) = key_word {
         return hash_words(
             state.heap.block(first).and_then(|block| block.get(HEADER_WORDS..)).unwrap_or_default(),
@@ -239,6 +255,7 @@ fn hash_header(state: &State, key: &[u64]) -> u64 {
 
 fn keys_equal(state: &State, key_word: Word, a: &[u64], b: &[u64]) -> bool {
     match (a, b) {
+        ([a], [b]) if key_word == Word::Float => float_key(*a) == float_key(*b),
         ([a], [b]) => a == b || (key_word.owned() && same(state, *a, *b)),
         // Equal strings have the same form, so inline headers are equal exactly when their
         // words are, and only two blocks need their bytes compared.

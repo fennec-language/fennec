@@ -25,8 +25,12 @@ step() {
 
 runtime() {
   cargo build --locked -p fennec -p fennec-runtime || return 1
-  cargo build --locked -p fennec-runtime --features threads --target-dir target/threads || return 1
-  cp target/threads/debug/libfennec_runtime.a target/debug/libfennec_runtime_threads.a
+  # Every variant `fennec build` may take, fresh, so none is left over from another commit.
+  for features in threads lean lean,threads; do
+    dir="target/$(echo "$features" | tr , -)"
+    cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir" || return 1
+    cp "$dir/debug/libfennec_runtime.a" "target/debug/libfennec_runtime_$(echo "$features" | tr , _).a"
+  done
 }
 
 # Every example and kit through the command, as the first thing a person would do with them.

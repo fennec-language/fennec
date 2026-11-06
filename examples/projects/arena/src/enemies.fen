@@ -18,9 +18,12 @@ pub enum Rank:
 ## One enemy in the arena.
 pub struct Enemy:
     ## What messages call it.
-    pub name: str
+    name: str
+    ## Where it stands.
     position: Vec3
+    ## How strong it is.
     rank = Rank.Grunt
+    ## What it has left before it's beaten.
     health = 100
 
     ## A line saying who it is, where it is and how healthy.

@@ -433,6 +433,17 @@ pub struct Leftovers {
 
 /// Ends the run: what it printed, why it failed if it did, and what it left behind.
 pub fn finish() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
+    finish_run(false)
+}
+
+/// `finish`, for a process about to exit: the runtime's state, its heap and every block in it,
+/// is left for the exit to give back. Freeing them one at a time was most of what an executable
+/// did after its `main`.
+pub(crate) fn finish_for_exit() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
+    finish_run(true)
+}
+
+fn finish_run(leave: bool) -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
     heap::run_abandons();
     let state = STATE.take();
     set_failed(0);
@@ -447,7 +458,12 @@ pub fn finish() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
                 boxes: state.heap.live(),
                 counts: state.heap.counts,
             };
-            (state.output.0.take(), state.failure, leftovers)
+            let finished = (state.output.0.take(), state.failure.take(), leftovers);
+            if leave {
+                // Kept until the process ends, which gives back all of it at once.
+                Box::leak(Box::new(state));
+            }
+            finished
         }
         None => (Vec::new(), None, Leftovers::default()),
     }

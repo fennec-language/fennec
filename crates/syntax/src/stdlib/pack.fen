@@ -22,7 +22,7 @@
 ## same slots, so a replay's later `add`s hand out the same `Id`s, and an `Id` whose item had gone
 ## is still gone. Either way an `Id` has to be in a `Table` saved with it, one of each type.
 
-from std.intrinsics import float_bits, float_of_bits, new_tag, shape_hash, text_byte, text_size, type_name
+from std.intrinsics import bytes_text, float_bits, float_of_bits, new_tag, shape_hash, text_byte, text_size, type_name
 from std.json import _IdsSeen, _found_tables
 
 ## How far a load may go. Bytes that ask for more fail to load.
@@ -122,10 +122,7 @@ struct PackWriter:
         self._word(float_bits(value))
 
     def bool(ref self, value: bool):
-        # Worked out first: with the `if` inside the call, native code holds the list twice while
-        # it appends, and copies it all.
-        b = 1 if value else 0
-        self._out.append(b)
+        self._out.append(1 if value else 0)
 
     def text(ref self, value: str):
         size = text_size(value)
@@ -270,8 +267,16 @@ struct PackReader:
         bits
 
     def _varint(ref self) -> int fails ParseError:
-        mut n = 0
-        mut shift = 0
+        # Most take one byte, read here with no call.
+        at = self._at
+        if at < self._data.len():
+            b = self._data[at]
+            if b < 128:
+                self._at = at + 1
+                return b
+        first = self._byte()?
+        mut n = first & 127
+        mut shift = 7
         while True:
             b = self._byte()?
             if shift == 63 and b > 1: fail self._fail("a number is too long")
@@ -302,9 +307,9 @@ struct PackReader:
         if self._depth > self._most_deep:
             fail self._fail(f"it nests deeper than the limit of {self._most_deep}")
 
-    ## Counts an item against the limit on items.
-    def _item(ref self) fails ParseError:
-        self._items_left -= 1
+    ## Counts `n` items against the limit on items, before any is read.
+    def _items(ref self, n: int) fails ParseError:
+        self._items_left -= n
         if self._items_left < 0:
             fail self._fail(f"it holds more than the limit of {self._longest} items")
 
@@ -322,12 +327,13 @@ struct PackReader:
 
     def text(ref self) -> str fails ParseError:
         start = self._at
-        part = self._run()?
-        match part.decode():
-            case Ok(text):
-                return text
-            case Err(_):
-                fail self._fail_at(start, "a text isn't UTF-8")
+        n = self._length()?
+        if n > self._data.len() - self._at: fail self._fail("the data ends too soon")
+        # Made straight from the bytes, which bytes that aren't UTF-8 never come out empty from.
+        text = bytes_text(self._data, self._at, self._at + n)
+        if n > 0 and text_size(text) == 0: fail self._fail_at(start, "a text isn't UTF-8")
+        self._at += n
+        text
 
     def bytes(ref self) -> bytes fails ParseError:
         self._run()?
@@ -342,10 +348,10 @@ struct PackReader:
 
     def sequence[T: Deserializable](ref self) -> list[T] fails ParseError:
         n = self._length()?
+        self._items(n)?
         self._deeper()?
         mut found = list[T]()
         for at in range(n):
-            self._item()?
             if self._explain:
                 self._path.append(f"[{at}]")
             found.append(T.deserialize(ref self)?)
@@ -356,10 +362,10 @@ struct PackReader:
 
     def map[K: Deserializable, V: Deserializable](ref self) -> list[(K, V)] fails ParseError:
         n = self._length()?
+        self._items(n)?
         self._deeper()?
         mut found = list[(K, V)]()
         for at in range(n):
-            self._item()?
             if self._explain:
                 self._path.append(f"[{at}]")
             key = K.deserialize(ref self)?
@@ -430,6 +436,15 @@ struct PackReader:
 
     def missing_as_none(self) -> bool:
         False
+
+    def ordered(ref self, name: str) -> bool fails ParseError:
+        # Read again for a message, it goes through `record`, which keeps track of names.
+        if self._explain: return False
+        self._deeper()?
+        True
+
+    def end_ordered(ref self):
+        self._depth -= 1
 
     def exact(self) -> bool:
         self._exact

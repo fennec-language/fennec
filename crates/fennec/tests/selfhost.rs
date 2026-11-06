@@ -64,6 +64,7 @@ const PARSE_CASES: &[(&str, &str)] = &[
     ("top_level_statement", "x = 1\n"),
     ("noalloc_struct", "noalloc struct A:\n    x: int\n"),
     ("noalloc_def", "noalloc def f():\n    pass\n"),
+    ("pub_field", "struct A:\n    pub x: int\n"),
     ("missing_block", "def f():\nx\n"),
     ("needs_else", "def f():\n    a if b\n"),
     ("field_needs_type", "struct A:\n    x\n"),

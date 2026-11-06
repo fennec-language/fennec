@@ -148,19 +148,13 @@ extend Parser:
             fail self.unexpected("`in`")
         names
 
+    ## `with game as ref current:`, or several at once: `with a as ref x, b as ref y:`, or
+    ## `with a, b as x, y:`.
     def with_stmt(mut self) -> Stmt:
         start = self.advance().span
-        mut value = self.expr()?
-        mut held = 1
-        if self.at_punct(","):
-            mut items = [value]
-            while self.eat_punct(","):
-                items.append(self.expr()?)
-            held = items.len()
-            mut span = self.prev_span()
-            for item in items:
-                span = span.to(item.span)
-            value = Expr(kind=.Tuple(items), span=span)
+        mut items = [self.expr()?]
+        while self.eat_punct(","):
+            items.append(self.expr()?)
         mut names = list[WithName]()
         if self.eat_keyword("as"):
             while True:
@@ -170,6 +164,18 @@ extend Parser:
                 names.append(WithName(name=name, is_mut=is_mut, span=at.to(self.prev_span())))
                 if not self.eat_punct(","):
                     break
+                # `with a as ref x, b as ref y:`: the next value comes with its own name.
+                if names.len() == items.len() and not self.at_with_name():
+                    items.append(self.expr()?)
+                    if not self.eat_keyword("as"):
+                        fail self.unexpected("`as` and a name for it")
+        held = items.len()
+        mut value = items[0]
+        if held > 1:
+            mut span = items[0].span
+            for item in items:
+                span = span.to(item.span)
+            value = Expr(kind=.Tuple(items), span=span)
         if names.len() > 0 and names.len() != held:
             mut span = value.span
             for name in names:
@@ -177,11 +183,18 @@ extend Parser:
             fail Diagnostic(
                 message=f"this `with` holds {held} values but names {names.len()}",
                 span=span,
-                help="give one name for each value, in order: `with a, b as x, y:`",
+                help="give each value its own name: `with a as ref x, b as ref y:`",
             )
         self.expect_punct(":")?
         body = self.block()?
         Stmt(kind=.With(value, names, body), span=start.to(self.prev_span()))
+
+    ## Whether a name after `as` comes next, as in `with a, b as x, y:`, rather than another
+    ## value: `ref` or `mut`, or a name and then `,` or `:`.
+    def at_with_name(self) -> bool:
+        if self.at_keyword("ref") or self.at_keyword("mut"):
+            return True
+        is_name(self.peek()) and (self.peek_at(1) == .Punct(",") or self.peek_at(1) == .Punct(":"))
 
 def is_name_expr(expr: Expr) -> bool:
     match expr.kind:

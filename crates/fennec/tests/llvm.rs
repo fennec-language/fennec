@@ -4276,7 +4276,7 @@ fn a_build_leaves_the_interpreter_out_unless_the_program_needs_it() -> std::io::
     let lean = built("def main(stdout: Stdout):\n    stdout.print([1, 2], {\"key\": 3})\n", "lean")?;
     assert_eq!(String::from_utf8_lossy(&Command::new(&lean).output()?.stdout), "[1, 2] {\"key\": 3}\n");
     let needs = built(
-        "from std import json\nfrom std.collections import Table\n\ndef main(stdout: Stdout):\n    stdout.print(json.dumps(Table[int]()))\n",
+        "from std import json\nfrom std.collections import Packed\n\ndef main(stdout: Stdout):\n    stdout.print(json.dumps(Packed.of([[1, 2]])))\n",
         "needs",
     )?;
     assert!(Command::new(&needs).output()?.status.success());

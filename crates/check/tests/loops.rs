@@ -221,6 +221,51 @@ fn a_mut_argument_cant_change_what_picks_another_arguments_place() {
     assert_eq!(in_main_after(moved, fine), empty);
 }
 
+/// A pool whose methods change one field each, for an argument changing what its call changes.
+const POOL: &str = "def push(ref items: list[int], value: int):
+    items.append(value)
+
+struct Pool:
+    items = list[int]()
+    spare = list[int]()
+
+    def grow(ref self) -> int:
+        self.items.append(9)
+        self.items.len()
+
+    def take(ref self) -> int:
+        self.spare.append(1)
+        self.spare.len()
+
+struct Holder:
+    pool = Pool()
+";
+
+#[test]
+fn an_argument_cant_change_what_its_call_changes() {
+    let said = "this changes `holder.pool.items`, which the call it's passed to changes too";
+    let cases = [
+        ("holder.pool.items.append(holder.pool.grow())", said, "holder.pool.grow()"),
+        ("push(ref holder.pool.items, holder.pool.grow())", said, "holder.pool.grow()"),
+        ("holder.pool.items.append(holder.pool.items.pop())", said, "holder.pool.items.pop()"),
+    ];
+    for (call, message, at) in cases {
+        let body = format!("mut holder = Holder()\n{call}\nstdout.print(holder.pool.items)\n");
+        assert_eq!(in_main_after(POOL, &body), [format!("{message} @ {at}")], "{call}");
+    }
+    let empty: [&str; 0] = [];
+    for call in [
+        "holder.pool.items.append(holder.pool.items.len())",
+        "holder.pool.items.append(holder.pool.take())",
+        "push(ref holder.pool.items, holder.pool.take())",
+        "holder.pool.spare.append(holder.pool.grow())",
+        "mut lists = [[1], [2]]\nlists[0].append(lists[1].pop())\nstdout.print(lists)",
+    ] {
+        let body = format!("mut holder = Holder()\n{call}\nstdout.print(holder.pool.items)\n");
+        assert_eq!(in_main_after(POOL, &body), empty, "{call}");
+    }
+}
+
 #[test]
 fn an_index_that_isnt_known_as_written_could_be_the_other_one() {
     for (call, said) in [

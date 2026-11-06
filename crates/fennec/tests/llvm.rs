@@ -4226,7 +4226,8 @@ def main(stdout: Stdout, args: Args, process: Process):
         assert!(symbols.status.success(), "{}", String::from_utf8_lossy(&symbols.stderr));
         let symbols = String::from_utf8_lossy(&symbols.stdout);
         assert!(symbols.contains("fennec_clock_now") || symbols.contains("fennec_print_block"), "{symbols}");
-        assert!(!symbols.contains("5Interp"), "the interpreter is still linked");
+        // Rust writes the type as its name's length and the name.
+        assert!(!symbols.contains("6Interp"), "the interpreter is still linked");
     }
 
     let needs = dir.join("needs.fen");
@@ -4244,6 +4245,46 @@ def main(stdout: Stdout):
     assert!(!refused.status.success(), "it linked without the interpreter");
     let said = String::from_utf8_lossy(&refused.stderr);
     assert!(said.contains("fennec_json"), "{said}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// With nothing asked, a program whose code doesn't cross into the interpreter is built with the
+/// runtime that leaves it out, and one that does is built with the runtime that has it, and runs.
+#[test]
+fn a_build_leaves_the_interpreter_out_unless_the_program_needs_it() -> std::io::Result<()> {
+    if !ready() || !crate::executables::lean_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("lean-default")?;
+    let built = |source: &str, name: &str| -> std::io::Result<PathBuf> {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        let built = crate::executables::fennec_command()
+            .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
+            .env("FENNEC_HOME", &dir)
+            .env_remove("FENNEC_LEAN_RUNTIME")
+            .output()?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        Ok(executable)
+    };
+    let has_interpreter = |executable: &Path| -> std::io::Result<bool> {
+        let symbols = Command::new("nm").arg(executable).output()?;
+        Ok(String::from_utf8_lossy(&symbols.stdout).contains("6Interp"))
+    };
+    let lean = built("def main(stdout: Stdout):\n    stdout.print([1, 2], {\"key\": 3})\n", "lean")?;
+    assert_eq!(String::from_utf8_lossy(&Command::new(&lean).output()?.stdout), "[1, 2] {\"key\": 3}\n");
+    let needs = built(
+        "from std import json\nfrom std.collections import Packed\n\ndef main(stdout: Stdout):\n    stdout.print(json.dumps(Packed.of([[1, 2]])))\n",
+        "needs",
+    )?;
+    assert!(Command::new(&needs).output()?.status.success());
+    // A Windows executable has no symbols to look through.
+    if !cfg!(windows) {
+        assert!(!has_interpreter(&lean)?, "the interpreter is still linked");
+        assert!(has_interpreter(&needs)?, "a program that needs the interpreter lost it");
+    }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

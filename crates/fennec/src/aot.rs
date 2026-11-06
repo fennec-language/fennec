@@ -100,18 +100,35 @@ impl Runtime {
     /// The runtime a lowered program needs: the threads one when it runs `parallel` and
     /// `FENNEC_THREADS_RUNTIME=1` asks for it. Until a range's copies of what it captures are
     /// its own, workers would count shared blocks plainly, so the plain one stays the default.
-    /// `FENNEC_LEAN_RUNTIME=1` asks for one with no interpreter in it, which a program still
-    /// needing the interpreter fails to link against.
-    fn for_program(lowered: &fennec_ir::Program) -> Self {
-        let on = |name: &str| std::env::var_os(name).is_some_and(|on| on == "1");
-        let threads = on("FENNEC_THREADS_RUNTIME") && fennec_llvm::uses_parallel(lowered);
-        match (on("FENNEC_LEAN_RUNTIME"), threads) {
-            (false, false) => Self::Plain,
-            (false, true) => Self::Threads,
-            (true, false) => Self::Lean,
-            (true, true) => Self::LeanThreads,
+    ///
+    /// The lean one, with no interpreter in it, unless the program's code calls something only
+    /// the interpreter's runtime has, or the lean one isn't there. `FENNEC_LEAN_RUNTIME=0` asks
+    /// for the interpreter's anyway, and `=1` for the lean one, which a program still needing
+    /// the interpreter fails to link against.
+    fn for_program<'t>(lowered: &fennec_ir::Program, texts: impl IntoIterator<Item = &'t str>) -> Self {
+        let set = |name: &str| std::env::var_os(name).filter(|on| !on.is_empty()).map(|on| on == "1");
+        let threads = set("FENNEC_THREADS_RUNTIME") == Some(true) && fennec_llvm::uses_parallel(lowered);
+        let (with_interpreter, lean) =
+            if threads { (Self::Threads, Self::LeanThreads) } else { (Self::Plain, Self::Lean) };
+        match set("FENNEC_LEAN_RUNTIME") {
+            Some(true) => lean,
+            None if runtime_library(lean).is_ok() && !calls_the_interpreter(texts) => lean,
+            Some(false) | None => with_interpreter,
         }
     }
+}
+
+/// Whether LLVM text calls anything only the runtime with the interpreter exports.
+fn calls_the_interpreter<'t>(texts: impl IntoIterator<Item = &'t str>) -> bool {
+    let only: std::collections::HashSet<&str> =
+        fennec_interp::embed::INTERPRETER_EXPORTS.iter().copied().collect();
+    texts.into_iter().any(|text| {
+        text.split('@').skip(1).any(|after| {
+            let name =
+                after.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).next().unwrap_or_default();
+            only.contains(name)
+        })
+    })
 }
 
 pub(crate) fn build(path: &str, output: Option<&str>) -> ExitCode {
@@ -414,12 +431,13 @@ fn compile_emitted(
     ) -> Result<String, String>,
 ) -> Result<Compiled, String> {
     let Emitted { lowered, units, shared, layouts } = emitted;
-    let runtime = Runtime::for_program(lowered);
     let tls = fennec_llvm::uses_tls(lowered);
     let tools = fennec_llvm::Tools::find()?;
     let mut image = fennec_llvm::Image::of(layouts, shared)?;
     let bytes = image_of(&mut image);
     let entry = entry_of(lowered, shared, &image, &bytes)?;
+    let runtime =
+        Runtime::for_program(lowered, units.iter().map(|unit| unit.text.as_str()).chain([entry.as_str()]));
     let home = fennec_build::fennec_home();
     let cache = home
         .as_deref()

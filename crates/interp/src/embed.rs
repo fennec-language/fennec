@@ -84,7 +84,7 @@ use crate::place::Place;
 use crate::scope::Frame;
 use crate::value::{Capability, Value};
 
-pub use heap::Counts;
+pub use heap::{Counts, count_allocations};
 #[cfg(not(feature = "lean"))]
 pub use tests::{next_test, ran_in_interpreter};
 

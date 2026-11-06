@@ -169,6 +169,12 @@ pub extern "C" fn of(address: i64) -> Text {
 /// no block.
 pub extern "C" fn int_header(n: i64) -> Text {
     let mut digits = [0_u8; 20];
+    Text { words: inline(decimal(n, &mut digits)) }
+}
+
+/// An int's decimal digits, with a `-` before them when it's negative, written into the end of
+/// `digits`, which the longest of them fills.
+pub(super) fn decimal(n: i64, digits: &mut [u8; 20]) -> &[u8] {
     let mut at = digits.len();
     let mut rest = n.unsigned_abs();
     loop {
@@ -187,7 +193,7 @@ pub extern "C" fn int_header(n: i64) -> Text {
             *sign = b'-';
         }
     }
-    Text { words: inline(digits.get(at..).unwrap_or_default()) }
+    digits.get(at..).unwrap_or_default()
 }
 
 /// `fennec_code_header(code)`: the character with a code as a header. A number that isn't a
@@ -241,6 +247,20 @@ mod tests {
 
     fn live() -> usize {
         with(|state| state.heap.live())
+    }
+
+    /// An int's text, as a header or as a string's block, is what Rust writes for it, at both ends
+    /// of what an int holds.
+    #[test]
+    fn an_int_s_text_is_its_decimal_digits() {
+        begin();
+        for n in [0, 7, -7, 10, -1_000_000, i64::MAX, i64::MIN] {
+            assert_eq!(text_of(super::int_header(n).words), n.to_string());
+            let block = strings::int_text(n);
+            let made = with(|state| Some(heap::block_text(state.heap.block(block.cast_unsigned())?)));
+            assert_eq!(made.as_deref(), Some(n.to_string().as_str()));
+        }
+        finish();
     }
 
     /// Numbers come back as headers. All of them but the longest floats make no block.

@@ -548,7 +548,10 @@ pub extern "C" fn print(address: i64) {
 
 /// A new string with an int's text.
 pub extern "C" fn int_text(n: i64) -> i64 {
-    with(|state| text_address(state, &n.to_string()))
+    // Written on the stack, so the only thing made is the string's block.
+    let mut digits = [0_u8; 20];
+    let text = std::str::from_utf8(super::text::decimal(n, &mut digits)).unwrap_or_default();
+    with(|state| text_address(state, text))
 }
 
 /// `text.codes()`: a new list of the code of each character.

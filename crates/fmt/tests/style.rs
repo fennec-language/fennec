@@ -100,6 +100,17 @@ fn declarations_get_one_blank_line_around_them() {
     );
 }
 
+/// An annotation goes right above what it's on: the blank line a declaration gets goes above
+/// its annotations, and none comes between them.
+#[test]
+fn an_annotation_stays_on_the_line_above_its_def() {
+    check(
+        "from std.math import Vec3\n@hot\ndef step(n: int) -> int:\n    n\n## Moves.\n@hot\ndef other(n: int) -> int:\n    n\n",
+        "from std.math import Vec3\n\n@hot\ndef step(n: int) -> int:\n    n\n\n## Moves.\n@hot\ndef other(n: int) -> int:\n    n\n",
+    );
+    check("struct S:\n    @skip\n    x = 0\n    y = 1\n", "struct S:\n    @skip\n    x = 0\n    y = 1\n");
+}
+
 #[test]
 fn blank_lines_inside_blocks_are_kept_but_never_doubled() {
     check(

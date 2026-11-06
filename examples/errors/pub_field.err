@@ -1,0 +1,7 @@
+error: a field has no `pub` of its own
+ --> examples/errors/pub_field.fen:3:5
+  |
+3 |     pub owner: str
+  |     ^^^
+  |
+  = help: a `pub struct`'s fields are what other kits see, and `_name` hides one from them

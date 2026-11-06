@@ -3698,6 +3698,74 @@ fn a_field_changed_with_any_argument_is_never_copied() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A loop over a variable's field borrows the list while nothing changes the variable, so what
+/// changes it next finds the list with one owner: a `ref` function changing the items, then a
+/// plain loop reading them, round after round, copies nothing.
+#[test]
+fn a_loop_over_a_variables_field_leaves_it_alone_for_the_next_change() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let counts = counts_of(
+        "loop_over_field",
+        "struct Enemy:\n    hp: int\n    x: float\n\nstruct World:\n    enemies = list[Enemy]()\n\ndef step(ref world: World, dt: float):\n    for ref enemy in world.enemies:\n        enemy.x += dt\n        enemy.hp -= 1\n\ndef main(stdout: Stdout):\n    mut world = World()\n    for n in range(1000):\n        world.enemies.append(Enemy(hp=n, x=0.0))\n    mut total = 0\n    for _ in range(100):\n        step(ref world, 0.5)\n        for enemy in world.enemies:\n            total += enemy.hp\n    stdout.print(total)\n",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    Ok(())
+}
+
+/// What a borrowed field can't outlast: the variable written while the loop runs, given away
+/// before it's done, or the list grown from inside the loop. Each still says what it did.
+#[test]
+fn a_loop_over_a_variables_field_matches_the_interpreter_when_the_variable_changes() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "loop_over_changing_field",
+        r#"struct Bag:
+    items = list[int]()
+    name = "bag"
+
+def grow(ref bag: Bag):
+    bag.items.append(bag.items.len())
+
+def rename(ref bag: Bag, by: int):
+    bag.name = f"{bag.name}-{by}"
+
+def main(stdout: Stdout):
+    mut bag = Bag()
+    for i in range(5):
+        bag.items.append(i)
+    mut seen = []
+    for item in bag.items:
+        seen.append(item)
+        if item == 2:
+            bag = Bag(items=[7, 8], name="other")
+    stdout.print(seen, bag.items, bag.name)
+    mut more = Bag(items=[1, 2, 3])
+    held = more.items
+    mut other = more
+    other = Bag(items=[9])
+    junk = [40, 50, 60]
+    for item in held:
+        stdout.print(item, other.items.len(), junk[0])
+    mut grown = Bag(items=[1, 2])
+    for item in grown.items:
+        stdout.print(item, grown.items)
+    grow(ref grown)
+    grown.items.append(30)
+    stdout.print(grown.items)
+    mut renamed = Bag(items=[4, 5])
+    for item in renamed.items:
+        renamed.name = f"{renamed.name}{item}"
+        rename(ref renamed, item)
+    renamed.items[0] = 100
+    stdout.print(renamed.name, renamed.items)
+"#,
+    )
+}
+
 #[test]
 fn what_a_field_or_an_items_field_holds_changes_without_being_copied() -> std::io::Result<()> {
     if !ready() {
@@ -5848,6 +5916,141 @@ fn walking_a_map_makes_no_list() -> std::io::Result<()> {
     }
     let source = "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut numbers = Table[int]()\n    for n in range(1000):\n        numbers.add(n)\n    mut found = 0\n    for round in range(100):\n        for id, number in numbers.items():\n            found += number\n        for number in numbers.values():\n            found += number\n    stdout.print(found)\n";
     let counts = counts_of("walking_no_list", source)?;
+    assert!(count(&counts, "allocations") < Some(40), "{counts}");
+    Ok(())
+}
+
+/// `for ref` and `for` over a `Table`, walking its slots in place: the slots taken out are
+/// stepped over, one used again is walked where it is, and `continue` and `break` put the item
+/// back as the end of the body does.
+const WALKING_SLOTS: &str = r#"from std.collections import Id, Table
+
+struct Enemy:
+    name: str
+    hp: int
+    x: float
+
+struct World:
+    enemies = Table[Enemy]()
+
+@hot
+def step(ref world: World, dt: float):
+    for ref enemy in world.enemies:
+        enemy.x += dt
+        if enemy.hp < 0: continue
+        enemy.hp -= 1
+
+def first_low(ref world: World) -> str:
+    mut found = ""
+    for ref enemy in world.enemies:
+        if enemy.hp < 3:
+            enemy.name = enemy.name + "!"
+            found = enemy.name
+            break
+    found
+
+def main(stdout: Stdout):
+    mut world = World()
+    a = world.enemies.add(Enemy(name="ash", hp=5, x=0.0))
+    b = world.enemies.add(Enemy(name="bo", hp=-1, x=1.0))
+    c = world.enemies.add(Enemy(name="cy", hp=2, x=2.0))
+    world.enemies.remove(b)
+    d = world.enemies.add(Enemy(name="di", hp=9, x=3.0))
+    for _ in range(3):
+        step(ref world, 0.5)
+    for enemy in world.enemies:
+        stdout.print(enemy.name, enemy.hp, enemy.x)
+    stdout.print(first_low(ref world), world.enemies[c].name, world.enemies[a].hp, d in world.enemies)
+    mut total = 0
+    for enemy in world.enemies:
+        total += enemy.hp
+    stdout.print(total, world.enemies.len())
+"#;
+
+#[test]
+fn walking_a_tables_slots_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit("walking_slots", WALKING_SLOTS)
+}
+
+/// A `@hot` loop changing each item of a `Table` in place makes nothing and copies nothing:
+/// only the `Table` itself, before the rounds, is allocated.
+#[test]
+fn walking_a_tables_slots_in_place_allocates_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let counts = counts_of(
+        "walking_slots_in_place",
+        r"from std.collections import Table
+
+struct Enemy:
+    hp: int
+    x: float
+
+@hot
+def step(ref enemies: Table[Enemy], dt: float):
+    for ref enemy in enemies:
+        enemy.x += dt
+        enemy.hp -= 1
+
+def main(stdout: Stdout):
+    mut enemies = Table[Enemy]()
+    for n in range(1000):
+        enemies.add(Enemy(hp=n, x=0.0))
+    mut total = 0
+    for round in range(100):
+        step(ref enemies, 0.5)
+        for enemy in enemies:
+            total += enemy.hp
+    stdout.print(total)
+",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    assert!(count(&counts, "allocations") < Some(40), "{counts}");
+    Ok(())
+}
+
+/// The same with the `Table` in a field, gone through by a plain loop after each round too: the
+/// plain loop reads the field where it is, so it holds no owner that would make the next round's
+/// `for ref` find the `Table` shared and copy it.
+#[test]
+fn walking_a_tables_slots_in_a_field_copies_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let counts = counts_of(
+        "walking_slots_in_a_field",
+        r"from std.collections import Table
+
+struct Enemy:
+    hp: int
+    x: float
+
+struct World:
+    enemies = Table[Enemy]()
+
+@hot
+def step(ref world: World, dt: float):
+    for ref enemy in world.enemies:
+        enemy.x += dt
+        enemy.hp -= 1
+
+def main(stdout: Stdout):
+    mut world = World()
+    for n in range(1000):
+        world.enemies.add(Enemy(hp=n, x=0.0))
+    mut total = 0
+    for round in range(100):
+        step(ref world, 0.5)
+        for enemy in world.enemies:
+            total += enemy.hp
+    stdout.print(total)
+",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
     assert!(count(&counts, "allocations") < Some(40), "{counts}");
     Ok(())
 }

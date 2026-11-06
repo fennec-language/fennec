@@ -1713,16 +1713,15 @@ def f() -> int:
   local _4 one: Id[Enemy]
   local _5: Enemy
   local _6: (Enemy) -> nothing
-  local _7: list[(Id[Enemy], Enemy)]
+  local _7: int
   local _8: int
-  local _9: int
-  local _10: int
-  local _11: bool
-  local _12: (Id[Enemy], Enemy)
+  local _9: bool
+  local _10: bool
+  local _11: Enemy
+  local _12 enemy: Enemy
   local _13: Id[Enemy]
-  local _14 enemy: Enemy
-  local _15: Enemy
-  local _16: int
+  local _14: Enemy
+  local _15: int
   bb0:
     _0 = builtin Table()
     _1 = _0
@@ -1733,28 +1732,32 @@ def f() -> int:
     _1[_4] = _5
     _6 = closure f.arrow@232[]
     builtin Table.modify(ref _1, _4, _6)
-    _7 = builtin Table.items(_1)
-    _8 = builtin list.len(_7)
-    _9 = 0
-    _10 = _8
+    _7 = builtin Table.slots(_1)
+    _8 = 0
     jump bb1
   bb1:
-    _11 = _9 < _10
-    branch _11 bb2 bb4
+    _9 = _8 < _7
+    branch _9 bb2 bb4
   bb2:
-    _12 = _7[_9]
-    _13 = _12.0
-    _14 = _12.1
-    call Enemy.hit(_14)
-    jump bb3
+    _10 = builtin Table.slot_live(_1, _8)
+    branch _10 bb3 bb5
   bb3:
-    _1[_13] = _14
-    _9 = _9 + 1
-    jump bb1
+    _11 = builtin Table.at_slot(_1, _8)
+    _12 = _11
+    _13 = builtin Table.slot_id(_1, _8)
+    call Enemy.hit(_12)
+    jump bb6
   bb4:
-    _15 = _1[_4]
-    _16 = _15.health
-    return _16
+    _14 = _1[_4]
+    _15 = _14.health
+    return _15
+  bb5:
+    _8 = _8 + 1
+    jump bb1
+  bb6:
+    _1[_13] = _12
+    _8 = _8 + 1
+    jump bb1
 "
     );
 }

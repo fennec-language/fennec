@@ -164,8 +164,7 @@ struct PackReader:
 
     def _header(ref self, shape: int, name: str) fails ParseError:
         self._items_left = self._longest
-        if self._data.len() < 12:
-            fail self._fail("these aren't bytes `std.pack` wrote")
+        if self._data.len() < 12: fail self._fail("these aren't bytes `std.pack` wrote")
         for at, b in enumerate([70, 80, 75, 49]):
             if self._data[at] != b: fail self._fail("these aren't bytes `std.pack` wrote")
         self._at = 4
@@ -203,7 +202,8 @@ struct PackReader:
     def _length(ref self) -> int fails ParseError:
         start = self._at
         n = self._varint()?
-        if n < 0 or n > self._longest: fail self._fail_at(start, f"a length is over the limit of {self._longest}")
+        if n < 0 or n > self._longest:
+            fail self._fail_at(start, f"a length is over the limit of {self._longest}")
         n
 
     ## The next `n` bytes, which have to be there.
@@ -216,12 +216,14 @@ struct PackReader:
 
     def _deeper(ref self) fails ParseError:
         self._depth += 1
-        if self._depth > self._most_deep: fail self._fail(f"it nests deeper than the limit of {self._most_deep}")
+        if self._depth > self._most_deep:
+            fail self._fail(f"it nests deeper than the limit of {self._most_deep}")
 
     ## Counts an item against the limit on items.
     def _item(ref self) fails ParseError:
         self._items_left -= 1
-        if self._items_left < 0: fail self._fail(f"it holds more than the limit of {self._longest} items")
+        if self._items_left < 0:
+            fail self._fail(f"it holds more than the limit of {self._longest} items")
 
     def int(ref self) -> int fails ParseError:
         z = self._varint()?

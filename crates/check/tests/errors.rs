@@ -222,8 +222,8 @@ fn an_error_with_cases_is_made_from_one_and_matched_whole() {
     );
     assert_eq!(
         in_main(
-            "    problem = DialError.Closed\n    match problem:\n        case Closed: stdout.print(\"closed\")\n        \
-             case NotFound(host): stdout.print(host)\n"
+            "    problem = DialError.Closed\n    match problem:\n        case .Closed: stdout.print(\"closed\")\n        \
+             case .NotFound(host): stdout.print(host)\n"
         ),
         ["this `match` doesn't handle `DialError.Refused` @ problem"]
     );
@@ -240,10 +240,10 @@ const LOAD_ERROR: &str =
 fn fails_names_the_one_error_a_function_can_fail_with() {
     let text = format!(
         "{LOAD_ERROR}def load(path: str) -> float fails LoadError:\n    if path == \"\":\n        \
-         fail LoadError.NotFound(path)\n    if path == \"bad\":\n        return Err(LoadError.BadRow(3))\n    1.5\n\n\
+         fail .NotFound(path)\n    if path == \"bad\":\n        return Err(LoadError.BadRow(3))\n    1.5\n\n\
          def total(paths: list[str]) -> float fails LoadError:\n    mut sum = 0.0\n    for path in paths:\n        \
          sum += load(path)?\n    sum\n\ndef check(path: str) fails LoadError:\n    if load(path)? < 0.0:\n        \
-         fail LoadError.BadRow(0)\n"
+         fail .BadRow(0)\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
 }
@@ -259,7 +259,10 @@ fn fails_can_name_several_errors_and_question_mark_passes_any_up() {
          read(path)?\n\n\
          def main(stdout: Stdout):\n    match load(\"a\"):\n        case Ok(n): stdout.print(n)\n        \
          case Err(.NotFound(path)): stdout.print(path)\n        case Err(.Bad(text)): stdout.print(text)\n        \
-         case Err(_): pass\n    stdout.print(apply(path => load(path), \"b\") else 0)\n"
+         case Err(_): pass\n    stdout.print(apply(path => load(path), \"b\") else 0)\n    \
+         reader: (str) -> int fails LoadError | ParseError = path => load(path)\n    \
+         stdout.print(said(reader(\"c\")))\n\n\
+         def said(found: Result[int, LoadError | ParseError]) -> int:\n    found else -1\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
     assert_eq!(
@@ -270,7 +273,7 @@ fn fails_can_name_several_errors_and_question_mark_passes_any_up() {
              def check(path: str) -> int fails LoadError:\n    other()?\n"
         )),
         [
-            "`fails` names errors, but `int` is an int @ int",
+            "`|` joins errors, but `int` is an int @ int",
             "no enum has a case called `Gone` @ .Gone(path)",
             "`check` says it fails with `LoadError`, but it can fail with `Other` too @ LoadError",
         ]

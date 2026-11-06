@@ -50,4 +50,4 @@ def optional_type(inner: Type) -> Type:
         case .Unknown:
             inner
         case _:
-            Type.Optional(inner)
+            .Optional(inner)

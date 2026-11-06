@@ -30,7 +30,7 @@ def still_good(world: World, actor: Unit, target: Id[Unit]?) -> bool:
     if target is None: return False
     found = world.units.get(target)
     if found is None: return False
-    if actor.kind == Kind.Medic:
+    if actor.kind == .Medic:
         return found.team == actor.team and found.health < found.kind.most_health()
     found.team != actor.team
 
@@ -41,7 +41,7 @@ def choose_target(world: World, id: Id[Unit], actor: Unit) -> Id[Unit]?:
     for other_id, other in world.units.items():
         if other_id == id: continue
         mut score = 0
-        if actor.kind == Kind.Medic:
+        if actor.kind == .Medic:
             if other.team != actor.team or other.health >= other.kind.most_health(): continue
             # The more hurt, the better, and nearer is better still.
             score = other.health * 2 + gap(actor.at, other.at)
@@ -91,14 +91,14 @@ def decide(world: World, id: Id[Unit], blocked: set[(int, int)]) -> Decision:
     if target is not None:
         aim = world.units[target]
         if gap(actor.at, aim.at) <= actor.kind.reach():
-            if actor.kind == Kind.Medic:
-                return Decision(actor=id, action=Action.Heal(target=target), target=target)
-            return Decision(actor=id, action=Action.Attack(target=target), target=target)
+            if actor.kind == .Medic:
+                return Decision(actor=id, action=.Heal(target=target), target=target)
+            return Decision(actor=id, action=.Attack(target=target), target=target)
         action, path = walk(world, actor, aim.at, blocked)
         return Decision(actor=id, action=action, target=target, path=path)
     goal = destination(world, actor)
     if goal is None or gap(actor.at, goal) <= 1:
-        return Decision(actor=id, action=Action.Wait, target=None)
+        return Decision(actor=id, action=.Wait, target=None)
     action, path = walk(world, actor, goal, blocked)
     Decision(actor=id, action=action, target=None, path=path)
 
@@ -114,19 +114,19 @@ test "a soldier goes after the nearest enemy":
     world.spawn("far", .Blue, .Soldier, (4, 1))
     decision = decide(world, ash, world.occupied())
     assert decision.target == near
-    assert decision.action == Action.Step(to=(1, 0))
+    assert decision.action == .Step(to=(1, 0))
 
 test "a unit in reach attacks":
     mut world = World(field=map.Map.drawn(["..."]))
     ash = world.spawn("ash", .Red, .Soldier, (0, 0))
     vex = world.spawn("vex", .Blue, .Soldier, (1, 0))
-    assert decide(world, ash, world.occupied()).action == Action.Attack(target=vex)
+    assert decide(world, ash, world.occupied()).action == .Attack(target=vex)
 
 test "an archer shoots from afar":
     mut world = World(field=map.Map.drawn(["......"]))
     bow = world.spawn("bow", .Red, .Archer, (0, 0))
     vex = world.spawn("vex", .Blue, .Soldier, (4, 0))
-    assert decide(world, bow, world.occupied()).action == Action.Attack(target=vex)
+    assert decide(world, bow, world.occupied()).action == .Attack(target=vex)
 
 test "a medic heals the most hurt friend":
     mut world = World(field=map.Map.drawn(["....."]))
@@ -135,7 +135,7 @@ test "a medic heals the most hurt friend":
     b = world.spawn("b", .Red, .Soldier, (3, 0))
     world.units[a].health = 50
     world.units[b].health = 20
-    assert decide(world, doc, world.occupied()).action == Action.Heal(target=b)
+    assert decide(world, doc, world.occupied()).action == .Heal(target=b)
 
 test "a dead target is let go":
     mut world = World(field=map.Map.drawn(["....."]))
@@ -152,5 +152,5 @@ test "with nobody to fight, a unit follows its leader":
     tail = world.spawn("tail", .Red, .Soldier, (0, 0))
     world.form_squad("pair", [lead, tail], (5, 0))
     decision = decide(world, tail, world.occupied())
-    assert decision.action == Action.Step(to=(1, 0))
+    assert decision.action == .Step(to=(1, 0))
     assert decision.path == [(2, 0), (3, 0), (4, 0), (5, 0)]

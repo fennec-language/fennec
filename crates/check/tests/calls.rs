@@ -376,7 +376,8 @@ fn a_named_function_goes_where_its_function_type_is_written() {
 
         def main(stdout: Stdout):
             step: (int) -> int = twice
-            stdout.print(apply(twice, 3), step(1))
+            bumped: (int) -> int = n => n + 1
+            stdout.print(apply(twice, 3), step(1), bumped(1))
             stdout.print(apply(add, 1))
             touch: (int) -> nothing = bump
     ";
@@ -646,7 +647,7 @@ fn only_sum_takes_a_start() {
 fn a_literal_default_gives_its_type() {
     let text = "enum Mode:\n    Fast\n    Slow\n\ndef scan(limit=8, ratio=-0.5, name='x', on=True, mode=Mode.Fast) -> str:\n    \
         f'{limit + 1} {ratio * 2.0} {name.upper()} {not on} {mode}'\n\ndef main(stdout: Stdout):\n    \
-        stdout.print(scan(limit=2, mode=Mode.Slow))\n";
+        stdout.print(scan(limit=2, mode=.Slow))\n";
     let empty: [&str; 0] = [];
     assert_eq!(problems(text), empty);
     let wrong = text.replace("scan(limit=2", "scan(limit='two'");

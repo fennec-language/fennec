@@ -130,7 +130,7 @@ extend Parser:
         start = self.span()
         if self.eat_keyword("not"):
             operand = self.not_expr()?
-            return Expr(kind=.Unary(UnaryOp.Not, operand), span=start.to(operand.span))
+            return Expr(kind=.Unary(.Not, operand), span=start.to(operand.span))
         self.comparison()
 
     ## Comparisons chain as in Python: `a < b <= c` means `a < b and b <= c`.
@@ -197,10 +197,10 @@ extend Parser:
         start = self.span()
         if self.eat_punct("-"):
             operand = self.unary()?
-            return Expr(kind=.Unary(UnaryOp.Neg, operand), span=start.to(operand.span))
+            return Expr(kind=.Unary(.Neg, operand), span=start.to(operand.span))
         if self.eat_punct("~"):
             operand = self.unary()?
-            return Expr(kind=.Unary(UnaryOp.BitNot, operand), span=start.to(operand.span))
+            return Expr(kind=.Unary(.BitNot, operand), span=start.to(operand.span))
         base = self.postfix()?
         if self.eat_punct("**"):
             return binary(.Pow, base, self.unary()?)
@@ -241,7 +241,7 @@ extend Parser:
                 mut span = self.prev_span()
                 for item in items:
                     span = span.to(item.span)
-                start = Expr(kind=ExprKind.Tuple(items), span=span)
+                start = Expr(kind=.Tuple(items), span=span)
         is_slice = self.eat_punct(":")
         mut end = None
         if is_slice and not self.at_punct("]"):
@@ -311,8 +311,8 @@ extend Parser:
     ## `True`, `False` or `None`, after the keyword. Any other keyword can't start a value.
     def keyword_atom(mut self, word: str, span: Span) -> ExprKind:
         match word:
-            case "True": ExprKind.Bool(True)
-            case "False": ExprKind.Bool(False)
+            case "True": .Bool(True)
+            case "False": .Bool(False)
             case "None": .Nothing
             case _:
                 if is_reserved(word):
@@ -337,25 +337,25 @@ extend Parser:
         span = start.to(self.expect_punct(")")?)
         if items.len() == 1 and not trailing_comma:
             return items[0]
-        Expr(kind=ExprKind.Tuple(items), span=span)
+        Expr(kind=.Tuple(items), span=span)
 
     def list(mut self, start: Span) -> Expr:
         mut items = []
         while not self.at_punct("]"):
             item = self.expr()?
             if items.len() == 0 and self.at_keyword("for"):
-                comprehension = self.comprehension(CompKind.List, item, None)?
+                comprehension = self.comprehension(.List, item, None)?
                 return Expr(kind=comprehension.kind, span=start.to(self.expect_punct("]")?))
             items.append(item)
             if not self.eat_punct(","):
                 break
         span = start.to(self.expect_punct("]")?)
-        Expr(kind=ExprKind.List(items), span=span)
+        Expr(kind=.List(items), span=span)
 
     ## `{}` (an empty dict), `{k: v, ...}`, `{a, b}`, or a dict or set comprehension.
     def braces(mut self, start: Span) -> Expr:
         if self.at_punct("}"):
-            return Expr(kind=ExprKind.Dict([]), span=start.to(self.advance().span))
+            return Expr(kind=.Dict([]), span=start.to(self.advance().span))
         first = self.expr()?
         is_dict = self.eat_punct(":")
         mut first_value = None
@@ -371,11 +371,11 @@ extend Parser:
                 key = self.expr()?
                 self.expect_punct(":")?
                 pairs.append((key, self.expr()?))
-            return Expr(kind=ExprKind.Dict(pairs), span=start.to(self.expect_punct("}")?))
+            return Expr(kind=.Dict(pairs), span=start.to(self.expect_punct("}")?))
         mut items = [first]
         while self.eat_punct(",") and not self.at_punct("}"):
             items.append(self.expr()?)
-        Expr(kind=ExprKind.Set(items), span=start.to(self.expect_punct("}")?))
+        Expr(kind=.Set(items), span=start.to(self.expect_punct("}")?))
 
 ## The comparison that `first` (and `second`, for `not in` and `is not`) start, if any.
 def comparison_op(first: Tok, second: Tok) -> BinOp?:

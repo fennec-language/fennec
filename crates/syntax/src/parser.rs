@@ -673,6 +673,11 @@ impl Parser {
     /// are one written type named `|`.
     fn fails_type(&mut self) -> Result<TypeExpr, Diagnostic> {
         self.advance();
+        self.errors_type()
+    }
+
+    /// One error, or several joined by `|`, as after `fails` or in `Result[int, A | B]`.
+    fn errors_type(&mut self) -> Result<TypeExpr, Diagnostic> {
         let first = self.type_expr()?;
         if !self.at_p(Punct::Pipe) {
             return Ok(first);
@@ -733,7 +738,7 @@ impl Parser {
         };
         if self.eat_p(Punct::LBracket) {
             loop {
-                args.push(self.type_expr()?);
+                args.push(self.errors_type()?);
                 if !self.eat_p(Punct::Comma) {
                     break;
                 }

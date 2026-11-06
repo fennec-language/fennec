@@ -8,7 +8,7 @@ import physics
 
 def main(stdout: Stdout):
     mut enemies = wave(3)
-    enemies.append(Enemy(name="boss", position=Vec3(x=9.0), rank=Rank.Boss, health=250))
+    enemies.append(Enemy(name="boss", position=Vec3(x=9.0), rank=.Boss, health=250))
     for enemy in enemies:
         stdout.print(enemy.describe())
 

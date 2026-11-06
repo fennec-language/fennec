@@ -38,6 +38,13 @@ impl FnCx<'_> {
             ExprKind::Match { subject, arms } => {
                 self.match_expr(subject, arms, expr.span, Some(expected.clone()))
             }
+            // `step: (int) -> int = n => n + 1`: an arrow takes its parameters' types from the
+            // function type expected of it.
+            ExprKind::Lambda { params, body }
+                if let Type::Arrow(types, _) = self.checker.settled(expected).without_none() =>
+            {
+                self.lambda(params, body, &types, expr.span)
+            }
             ExprKind::List(items)
                 if let Type::Array(item, size) = self.checker.settled(expected).without_none() =>
             {
@@ -102,7 +109,20 @@ impl FnCx<'_> {
             wanted => wanted,
         };
         if matches!(&wanted, Type::Named(name) if name == written) && self.has_case(written, case) {
-            self.checker.named_cases.insert((object.span.start, object.span.end));
+            // Code the checker writes, like a generated `serialize`, has its spans in the prelude.
+            if object.span.in_prelude() {
+                return;
+            }
+            let shown = match &object.kind {
+                ExprKind::Name(name) => name.as_str(),
+                _ => written,
+            };
+            let message = format!("the type here is known, so write `.{case}` without `{shown}`");
+            self.error(
+                Diagnostic::new(message, object.span)
+                    .with_help("`fennec fix` makes this change")
+                    .with_fix(object.span, ""),
+            );
         }
     }
 

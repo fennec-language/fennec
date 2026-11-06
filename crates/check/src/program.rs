@@ -229,11 +229,7 @@ impl Program {
                 Type::Unknown => {}
                 other => {
                     return Err(Diagnostic::new(
-                        format!(
-                            "`fails` names errors, but `{}` is {}",
-                            written(error),
-                            crate::types::a(&other)
-                        ),
+                        format!("`|` joins errors, but `{}` is {}", written(error), crate::types::a(&other)),
                         error.span,
                     )
                     .with_help("declare the ways it can fail with `error`, like `error LoadError:`"));

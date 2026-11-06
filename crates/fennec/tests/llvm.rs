@@ -5680,6 +5680,59 @@ def main(stdout: Stdout):
     )
 }
 
+/// `Table.modify` changes an item where it is through a closure with a `ref` parameter, and a
+/// `Table`'s items change their fields as a list's do.
+#[test]
+fn changing_what_a_table_holds_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "table_changes",
+        r#"from std.collections import Id, Table
+
+struct Enemy:
+    name: str
+    health: int
+    tags: list[str]
+
+    def take_damage(ref self, amount: int) -> int:
+        self.health = self.health - amount
+        self.tags.append("hit")
+        self.health
+
+struct Node:
+    value: int
+    children: list[Id[Node]]
+
+struct World:
+    enemies: Table[Enemy]
+
+def main(stdout: Stdout):
+    mut world = World(enemies=Table[Enemy]())
+    near = world.enemies.add(Enemy(name="near", health=100, tags=[]))
+    far = world.enemies.add(Enemy(name="a long name that sits in its own block", health=50, tags=["x"]))
+    kept = world
+    stdout.print(world.enemies.modify(far, foe => foe.take_damage(25)))
+    stdout.print(world.enemies[far], kept.enemies[far])
+    world.enemies.remove(near)
+    stdout.print(world.enemies.modify(near, foe => foe.take_damage(1)), world.enemies.len())
+    mut numbers = Table[int]()
+    one = numbers.add(1)
+    numbers.modify(one, n => n * 5)
+    stdout.print(numbers[one])
+    mut nodes = Table[Node]()
+    root = nodes.add(Node(value=1, children=[]))
+    leaf = nodes.add(Node(value=2, children=[]))
+    nodes[root].children.append(leaf)
+    nodes[root].value = 9
+    copied = nodes
+    nodes[root].children.append(root)
+    stdout.print(nodes[root].value, nodes[root].children.len(), copied[root].children.len())
+"#,
+    )
+}
+
 /// `items()` and `values()` gone through in order, with slots empty, at the start and the end,
 /// and everything an item can be, which the loop walks with no list made.
 const WALKING_A_MAP: &str = r#"from std.collections import Table

@@ -1,7 +1,8 @@
 # mimalloc, the allocator executables and `fennec` use, reserves address space for its arenas 64 MiB
-# at a time instead of 1 GiB. Measured on the kernel suite: every program peaks 0.3–4.4% lower, at no cost
-# in instructions. It's set here, as mimalloc's C is compiled, so every OS and every build gets the same. On Windows, `libmimalloc-sys` compiles mimalloc as C++, which takes `CXXFLAGS`, so it's given there
-# too. A builder's own `CFLAGS` or `CXXFLAGS` replaces it, which the runtime's tests catch.
+# at a time instead of 1 GiB. Measured on the kernel suite: every program peaks 0.3–4.4% lower, at no
+# cost in instructions. It's set here, as mimalloc's C is compiled, so every OS and every build gets the
+# same. On Windows, `libmimalloc-sys` compiles mimalloc as C++, which takes `CXXFLAGS`, so it's given
+# there too. A builder's own `CFLAGS` or `CXXFLAGS` replaces it, which the runtime's tests catch.
 [env]
 CFLAGS = "-DMI_DEFAULT_ARENA_RESERVE=65536"
 CXXFLAGS = "-DMI_DEFAULT_ARENA_RESERVE=65536"

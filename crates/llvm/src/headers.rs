@@ -460,17 +460,27 @@ impl Emit<'_, '_, '_> {
             let length = self.header_byte_length(text);
             return self.assign(dest, &length);
         }
+        if name == "str.is_ascii" {
+            let ascii = self.header_ascii(text);
+            return self.assign(dest, &ascii);
+        }
         let (byte, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+        // Whether the whole text is ASCII, which a loop over it works out once: each character is
+        // then its byte, with nothing to test.
+        let whole_ascii = match args.get(2) {
+            Some(ascii) => self.operand(ascii)?.0,
+            None => self.header_ascii(text),
+        };
         let start = self.header_bytes(text);
         let lead_at = self.temp();
         self.line(&format!("{lead_at} = getelementptr inbounds i8, ptr {start}, i64 {byte}"));
-        let header = self.char_header_at(&lead_at);
+        let header = self.char_header_at(&lead_at, Some(&whole_ascii));
         self.assign(dest, &header)
     }
 
     /// The character whose first byte is at `lead_at`, as an inline header: one byte for ASCII,
     /// up to four otherwise. What follows the last character is never read.
-    fn char_header_at(&mut self, lead_at: &str) -> String {
+    fn char_header_at(&mut self, lead_at: &str, whole_ascii: Option<&str>) -> String {
         let lead = self.temp();
         self.line(&format!("{lead} = load i8, ptr {lead_at}"));
         // 1 byte below 0xC0, 2 below 0xE0, 3 below 0xF0, else 4.
@@ -487,8 +497,14 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{plain} = icmp sge i8 {lead}, 0"));
         self.line(&format!("{wide} = zext i8 {lead} to i64"));
         let ascii_header = self.header_of([&wide, "0", "-9151314442816847872"]);
-        let ascii_end = self.current.clone();
         let (other, done) = (self.label("char_other"), self.label("char_done"));
+        let mut ascii_ends = vec![self.current.clone()];
+        if let Some(whole) = whole_ascii {
+            let each = self.label("char_lead");
+            self.line(&format!("br i1 {whole}, label %{done}, label %{each}"));
+            self.start_block(&each);
+            ascii_ends.push(each);
+        }
         self.line(&format!("br i1 {plain}, label %{done}, label %{other}"));
         self.start_block(&other);
         let out = self.place_for_text();
@@ -505,9 +521,9 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
         let header = self.temp();
-        self.line(&format!(
-            "{header} = phi {HEADER} [ {ascii_header}, %{ascii_end} ], [ {wider}, %{other_end} ]"
-        ));
+        let from_ascii: Vec<String> =
+            ascii_ends.iter().map(|end| format!("[ {ascii_header}, %{end} ]")).collect();
+        self.line(&format!("{header} = phi {HEADER} {}, [ {wider}, %{other_end} ]", from_ascii.join(", ")));
         header
     }
 
@@ -783,7 +799,7 @@ done:
         let wide_start = self.offset(&block, crate::emit::TEXT_START);
         let lead_at = self.temp();
         self.line(&format!("{lead_at} = getelementptr inbounds i8, ptr {wide_start}, i64 {place}"));
-        let from_wide = self.char_header_at(&lead_at);
+        let from_wide = self.char_header_at(&lead_at, None);
         let wide_end = self.current.clone();
         self.line(&format!("br label %{done}"));
         self.start_block(&block_byte);

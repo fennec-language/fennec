@@ -1658,7 +1658,16 @@ impl Emit<'_, '_, '_> {
             }
             "list.append" => self.append(args),
             "result.expect" => self.expect(dest, args, span),
-            "str.byte_len" | "str.char_at_byte" => self.text_by_bytes(dest, name, args),
+            "str.byte_len" | "str.char_at_byte" | "str.is_ascii" => self.text_by_bytes(dest, name, args),
+            // A place in a string's bytes and a character's length there: the next place, which is
+            // never past the text's end, so it can't overflow.
+            "str.next_place" => {
+                let (at, _) = self.operand(first.ok_or("no place")?)?;
+                let (step, _) = self.operand(args.get(1).ok_or("no step")?)?;
+                let next = self.temp();
+                self.line(&format!("{next} = add nuw nsw i64 {at}, {step}"));
+                self.assign(dest.ok_or("no result")?, &next)
+            }
             "intrinsics.text_byte"
             | "intrinsics.text_size"
             | "intrinsics.text_part"

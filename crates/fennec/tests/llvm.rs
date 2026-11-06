@@ -3981,7 +3981,7 @@ def respond(request: Request) -> Response:
 def main(net: Net, stdout: Stdout):
     with net.listen(0)? as server:
         stdout.print(server.port)
-        server.serve((request) => respond(request), timeout=10s)
+        server.serve(respond, timeout=10s)
 "#;
     let dir = folder("http_server")?;
     let program = dir.join("serve.fen");

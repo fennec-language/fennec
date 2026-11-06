@@ -29,7 +29,7 @@ test "a request goes through the server"(net: Net):
     with net.listen(0)? as server:
         with net.connect("localhost", server.port)? as client:
             client.write("GET /hello?name=red%20fox HTTP/1.1\r\nconnection: close\r\n\r\n")?
-            server.serve((request) => respond(request))
+            server.serve(respond)
             assert (
                 list(client.lines())
                 == [
@@ -45,4 +45,4 @@ def main(net: Net, args: Args, stdout: Stdout):
     port = int(args[0]) else 8080
     with net.listen(port)? as server:
         stdout.print(f"serving on http://localhost:{server.port}")
-        server.serve((request) => respond(request))
+        server.serve(respond)

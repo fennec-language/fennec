@@ -5,7 +5,7 @@ shared Counter:
     total = 0
     peak = 0.5
 
-    def add(mut self, amount: int):
+    def add(ref self, amount: int):
         self.total += amount
         self.peak = self.peak * 1.0
 
@@ -19,12 +19,12 @@ def main(stdout: Stdout):
     first = Counter()
     second = Counter(total=5)
     mut units = [Unit(n % 100) for n in range(50_000)]
-    for mut unit in parallel(units):
+    for ref unit in parallel(units):
         first.add(unit.x)
-        with first, second as mut a, mut b:
+        with first, second as ref a, ref b:
             a.total += 1
             b.total += 2
-        with second, first as mut b, mut a:
+        with second, first as ref b, ref a:
             b.total += a.total % 2
             b.total -= a.total % 2
         unit.x += first.total % 1 + second.seen() % 1

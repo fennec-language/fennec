@@ -7,7 +7,7 @@ struct Particle:
     x: float
     speed: float
 
-    def nudge(mut self, by: float):
+    def nudge(ref self, by: float):
         self.x += by
 
 def first_negative(numbers: list[int]) -> int:

@@ -1,21 +1,21 @@
 interface Damageable:
-    def damage(mut self, amount: int)
+    def damage(ref self, amount: int)
 
 struct Enemy:
     health = 100
 
-    def damage(mut self, amount: int):
+    def damage(ref self, amount: int):
         self.health -= amount
 
 struct Rock:
     weight = 10
 
-def hit_all[T: Damageable](mut targets: list[T]):
-    for mut target in targets:
+def hit_all[T: Damageable](ref targets: list[T]):
+    for ref target in targets:
         target.damage(5)
 
 def main(stdout: Stdout):
     mut enemies = [Enemy()]
-    hit_all(mut enemies)
+    hit_all(ref enemies)
     mut rocks = [Rock()]
-    hit_all(mut rocks)
+    hit_all(ref rocks)

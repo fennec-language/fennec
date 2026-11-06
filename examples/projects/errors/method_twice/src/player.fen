@@ -1,5 +1,5 @@
 struct Player:
     x = 0.0
 
-    def reset(mut self):
+    def reset(ref self):
         self.x = 0.0

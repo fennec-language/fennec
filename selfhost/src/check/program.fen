@@ -57,7 +57,7 @@ struct Program:
     ## Problems found while adding declarations, like methods that can't be added.
     problems = list[Diagnostic]()
 
-    def add(mut self, module: Module, prelude: bool):
+    def add(ref self, module: Module, prelude: bool):
         for item in module.items:
             match item:
                 case .Function(function):
@@ -93,7 +93,7 @@ struct Program:
                 case _:
                     pass
 
-    def add_import(mut self, imported: Import):
+    def add_import(ref self, imported: Import):
         if imported.module.len() == 1 and imported.module[0] == "std":
             for at in range(imported.names.len()):
                 self.modules.append(imported.aliases[at] else imported.names[at])
@@ -102,7 +102,7 @@ struct Program:
         ):
             self.modules.append(imported.alias else ".".join(imported.module))
 
-    def add_type(mut self, type_def: TypeDef, kind: TypeKind, prelude: bool):
+    def add_type(ref self, type_def: TypeDef, kind: TypeKind, prelude: bool):
         # A program's own type replaces a standard library type of the same name, methods too.
         if not prelude:
             methods = f"{type_def.name}."
@@ -115,7 +115,7 @@ struct Program:
 
     ## Adds an extension's methods to its type, once every type is known. Mirrors
     ## `crates/check/src/extend.rs`.
-    def add_extension(mut self, extension: Extension, prelude: bool):
+    def add_extension(ref self, extension: Extension, prelude: bool):
         name = extension.name
         if name in self.types:
             if self.types[name].prelude and not prelude:
@@ -193,7 +193,7 @@ struct Program:
 
     ## Adds one method to a type, unless the type already has a method of that name.
     def add_method(
-        mut self,
+        ref self,
         type_name: str,
         method: FnDef,
         prelude: bool,

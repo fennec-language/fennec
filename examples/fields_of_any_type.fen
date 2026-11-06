@@ -13,7 +13,7 @@ struct Holder:
     words: list[str?]
     total = 0
 
-    def bump(mut self) -> int:
+    def bump(ref self) -> int:
         self.count += 1
         self.total += self.count
         self.total
@@ -21,7 +21,7 @@ struct Holder:
     def label(self) -> str:
         self.maybe.label else "none"
 
-    def set_inner(mut self, label: str):
+    def set_inner(ref self, label: str):
         self.maybe = Inner(label=label, note=None)
 
 enum Shape:

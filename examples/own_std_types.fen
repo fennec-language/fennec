@@ -15,13 +15,13 @@ struct Match:
 struct Table:
     rows: list[str]
 
-    def add(mut self, row: str):
+    def add(ref self, row: str):
         self.rows.append(row)
 
 struct Counter:
     count = 0
 
-    def bump(mut self):
+    def bump(ref self):
         self.count += 1
 
 def main(stdout: Stdout, clock: Clock):

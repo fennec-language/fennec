@@ -6,5 +6,5 @@ struct Body:
     position: Vec3
     velocity: Vec3
 
-def step(mut body: Body, dt: float):
+def step(ref body: Body, dt: float):
     body.position += body.velocity * dt

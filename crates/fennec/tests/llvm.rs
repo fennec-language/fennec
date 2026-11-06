@@ -7387,6 +7387,43 @@ fn unions_holding_blocks_match_the_interpreter() -> std::io::Result<()> {
     same_as_the_interpreter_in_both_builds("unions_holding_blocks", UNIONS_HOLDING_BLOCKS)
 }
 
+/// A member given where a builtin takes its union: a dict's key to `get`, `pop` and `in`, a
+/// set's item to `add` and `in`, and a list's item to `append`.
+#[test]
+fn members_given_to_builtins_taking_a_union_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("members_given_to_builtins", MEMBERS_GIVEN_TO_BUILTINS)
+}
+
+const MEMBERS_GIVEN_TO_BUILTINS: &str = r#"struct Circle:
+    radius: float
+
+struct Square:
+    side: float
+
+type Shape = Circle | Square
+
+def main(stdout: Stdout):
+    mut counts: dict[int | str, int] = {1: 2, "fox": 3}
+    stdout.print(counts.get("owl") else 0, counts.get("fox") else 0, counts.get(1) else 0)
+    key: int | str = "owl"
+    stdout.print(counts.get(key) else 7)
+    stdout.print("fox" in counts, 5 in counts, "owl" not in counts)
+    counts.pop("fox")
+    stdout.print(counts.len(), counts)
+    mut shapes: list[Shape] = []
+    shapes.append(Circle(radius=1.0))
+    shapes.append(Square(side=2.0))
+    stdout.print(shapes.len())
+    mut seen: set[int | str] = {1}
+    seen.add("a")
+    seen.add(2)
+    seen.add("a")
+    stdout.print(seen.len(), "a" in seen, 3 in seen)
+"#;
+
 const UNIONS_HOLDING_BLOCKS: &str = r#"struct Circle:
     radius: float
 

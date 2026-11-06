@@ -60,7 +60,7 @@ pub(crate) fn modules_with(name: &str) -> Vec<&'static str> {
 pub(crate) struct Method {
     pub(crate) changes: bool,
     /// The types of its arguments, in order. Arguments past these can be anything.
-    params: Vec<Type>,
+    pub(crate) params: Vec<Type>,
     returns: Type,
     arity: (usize, usize),
     /// The types an arrow function passed to it receives, like the item for `remove_where`.

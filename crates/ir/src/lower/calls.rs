@@ -98,8 +98,17 @@ impl Lowering<'_> {
                 reads.add(self, value);
             }
         }
+        // What a method takes where its parameter is a union, like a key of a `dict[int | str, V]`:
+        // a member given there is made a value of the union.
+        let unions: Vec<Option<Type>> = object
+            .and_then(|object| self.object_type(object))
+            .and_then(|ty| fennec_check::builtin_method_params(&ty, name.rsplit('.').next().unwrap_or("")))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|param| matches!(param, Type::Union(_)).then_some(param))
+            .collect();
         let mut written = Vec::with_capacity(args.len());
-        for arg in args {
+        for (position, arg) in args.iter().enumerate() {
             if arg.is_mut {
                 return Err(format!("its call to `{name}` has a `mut` argument"));
             }
@@ -112,6 +121,10 @@ impl Lowering<'_> {
                     self.shown(&arg.value)?
                 }
                 _ => self.expr(&arg.value)?,
+            };
+            let value = match unions.get(position) {
+                Some(Some(union)) if arg.name.is_none() => self.coerce(value, union, arg.value.span)?,
+                _ => value,
             };
             reads.add(self, value);
             written.push(arg.name.clone());

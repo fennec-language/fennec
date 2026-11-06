@@ -1,0 +1,15 @@
+# `grow` appends to `items`, and so does the `append` it's passed to: which one comes first?
+struct Pool:
+    items: list[int]
+
+    def grow(ref self) -> int:
+        self.items.append(0)
+        self.items.len()
+
+    def fill(ref self):
+        self.items.append(self.grow())
+
+def main(stdout: Stdout):
+    mut pool = Pool(items=[])
+    pool.fill()
+    stdout.print(pool.items)

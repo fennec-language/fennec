@@ -24,6 +24,7 @@ pub(super) fn abi(ty: Ty) -> Option<types::Type> {
         | Ty::Boxed(_)
         | Ty::Str
         | Ty::Bytes
+        | Ty::Gen
         | Ty::Dict(..)
         | Ty::List(_)
         | Ty::Maybe(_)

@@ -6816,10 +6816,10 @@ struct Words:
     def here(self, message: str) -> ParseError:
         ParseError(message=message, line=0, column=0)
 
-    def saw_id(mut self, kind: str, slot: int, generation: int):
+    def saw_id(mut self, kind: str, position: int):
         pass
 
-    def saw_table(mut self, kind: str, slots: list[int]):
+    def saw_table(mut self, kind: str, count: int):
         pass
 
     def none(mut self) -> bool fails ParseError:

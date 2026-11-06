@@ -107,22 +107,14 @@ def text_of_code(code: int) -> str
 @intrinsic
 def type_name[T]() -> str
 
-## An `Id`'s slot in its `Table`.
+## A number that's the same for equal `Id`s and differs for others, to look one up by.
 @intrinsic
-def id_slot[T](id: Id[T]) -> int
+def id_key[T](id: Id[T]) -> int
 
-## An `Id`'s generation: how many times its slot had been used again when it was handed out.
+## The `Id` of the item at `position` in a `Table` nothing's been taken out of.
 @intrinsic
-def id_generation[T](id: Id[T]) -> int
+def id_at[T](position: int) -> Id[T]
 
-## The `Id` of a slot and generation, which the `Table` it's used with may never have handed out.
+## Ends the program, saying `message`, as a failed `assert` does.
 @intrinsic
-def id_of[T](slot: int, generation: int) -> Id[T]
-
-## Each of a `Table`'s slots, by its generation, or `-1 - generation` for a free one.
-@intrinsic
-def table_slots[T](table: Table[T]) -> list[int]
-
-## A `Table` with the slots `table_slots` says, and `items` in the ones that aren't free, in order.
-@intrinsic
-def table_from[T](slots: list[int], items: list[T]) -> Table[T]
+def stop(message: str)

@@ -352,7 +352,8 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    /// `std.intrinsics`' ways into an `Id` and a `Table`, which std uses to save and load them.
+    /// `std.intrinsics`' ways into an `Id`, which std uses to save and load them: a number for
+    /// one, and the `Id` of an item in a `Table` nothing's been taken out of.
     pub(crate) fn id_intrinsic(
         &mut self,
         dest: Option<LocalId>,
@@ -360,104 +361,25 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
     ) -> Result<(), String> {
         let dest = dest.ok_or("no result")?;
-        let arg = |at: usize| args.get(at).ok_or("no argument");
+        let given = args.first().ok_or("no argument")?;
         match name {
-            "intrinsics.id_slot" | "intrinsics.id_generation" => {
-                let (slot, generation) = self.id_parts(arg(0)?)?;
-                self.assign(dest, if name == "intrinsics.id_slot" { &slot } else { &generation })
+            "intrinsics.id_key" => {
+                let (slot, generation) = self.id_parts(given)?;
+                let (high, key) = (self.temp(), self.temp());
+                self.line(&format!("{high} = shl i64 {slot}, 32"));
+                self.line(&format!("{key} = or i64 {high}, {generation}"));
+                self.assign(dest, &key)
             }
-            "intrinsics.id_of" => {
-                let (slot, _) = self.operand(arg(0)?)?;
-                let (generation, _) = self.operand(arg(1)?)?;
+            "intrinsics.id_at" => {
+                let (position, _) = self.operand(given)?;
                 let at = self.slot(dest);
                 let generation_at = self.offset(&at, 8);
-                self.line(&format!("store i64 {slot}, ptr {at}"));
-                self.line(&format!("store i64 {generation}, ptr {generation_at}"));
+                self.line(&format!("store i64 {position}, ptr {at}"));
+                self.line(&format!("store i64 0, ptr {generation_at}"));
                 Ok(())
             }
-            "intrinsics.table_slots" => {
-                let Operand::Local(map) = arg(0)? else {
-                    return Err("a Table that isn't a local".to_owned());
-                };
-                let kind = self.kind_of(*map)?.clone();
-                let parts = self.parts(&kind)?;
-                let (block, _) = self.operand(&Operand::Local(*map))?;
-                let (_, generations) = self.part(&block, parts.generations, false);
-                let listed = self.kind_of(dest)?.clone();
-                self.retain_value(&generations, &listed);
-                self.assign(dest, &generations)
-            }
-            "intrinsics.table_from" => self.table_from(dest, arg(0)?, arg(1)?),
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }
-    }
-
-    /// A `Table` with `stored` as its slots' generations, a free one's as `-1 - generation`, and
-    /// `values` in the slots that aren't free, in order.
-    fn table_from(&mut self, dest: LocalId, stored: &Operand, values: &Operand) -> Result<(), String> {
-        let kind = self.kind_of(dest)?.clone();
-        let Kind::Boxed(id) = kind else { return Err("a Table that isn't boxed".to_owned()) };
-        let parts = self.parts(&kind)?;
-        let item = list_item(&self.field(&kind, "items")?.1)?;
-        let held = parts.held.clone();
-        let memory = held.memory(self.module.layouts);
-        let block = self.new_block(id)?;
-        let fields = self.offset(&block, FIELDS_OFFSET);
-        let (stored, stored_kind) = self.operand(stored)?;
-        self.retain_value(&stored, &stored_kind);
-        let generations_at = self.offset(&fields, parts.generations);
-        self.line(&format!("store ptr {stored}, ptr {generations_at}"));
-        let (values, _) = self.operand(values)?;
-        let length = self.list_length(&stored);
-        let items = self.new_list(item, &length);
-        let items_at = self.offset(&fields, parts.items);
-        self.line(&format!("store ptr {items}, ptr {items_at}"));
-        let before = self.current.clone();
-        let (head, body, copy, skip, next, done) = (
-            self.label("slots"),
-            self.label("slot"),
-            self.label("live"),
-            self.label("free"),
-            self.label("next_slot"),
-            self.label("filled"),
-        );
-        let (at, taken, more) = (self.temp(), self.temp(), self.temp());
-        let (step, taken_after, one_more) = (self.temp(), self.temp(), self.temp());
-        self.line(&format!("br label %{head}"));
-        self.start_block(&head);
-        self.line(&format!("{at} = phi i64 [ 0, %{before} ], [ {step}, %{next} ]"));
-        self.line(&format!("{taken} = phi i64 [ 0, %{before} ], [ {taken_after}, %{next} ]"));
-        self.line(&format!("{more} = icmp slt i64 {at}, {length}"));
-        self.line(&format!("br i1 {more}, label %{body}, label %{done}"));
-        self.start_block(&body);
-        let generation_at = self.item_address(&stored, "i64", &at);
-        let (generation, live) = (self.temp(), self.temp());
-        self.line(&format!("{generation} = load i64, ptr {generation_at}{ITEM_ACCESS}"));
-        self.line(&format!("{live} = icmp sge i64 {generation}, 0"));
-        self.line(&format!("br i1 {live}, label %{copy}, label %{skip}"));
-        self.start_block(&copy);
-        let from = self.item_address(&values, &memory, &taken);
-        let value = if held.in_memory() { from.clone() } else { self.load_field(&held, &from, ITEM_ACCESS) };
-        if held.counted() {
-            self.retain_value(&value, &held);
-        }
-        self.retain_inline(&held, &from);
-        let to = self.item_address(&items, &memory, &at);
-        self.store_field(&held, &value, &to, ITEM_ACCESS);
-        self.line(&format!("{one_more} = add i64 {taken}, 1"));
-        // Copying an item can take blocks of its own, so the block it ends in comes next.
-        let copied = self.current.clone();
-        self.line(&format!("br label %{next}"));
-        self.start_block(&skip);
-        self.line(&format!("br label %{next}"));
-        self.start_block(&next);
-        self.line(&format!("{taken_after} = phi i64 [ {one_more}, %{copied} ], [ {taken}, %{skip} ]"));
-        self.line(&format!("{step} = add i64 {at}, 1"));
-        self.line(&format!("br label %{head}"));
-        self.start_block(&done);
-        let live_at = self.offset(&fields, parts.live);
-        self.line(&format!("store i64 {taken}, ptr {live_at}"));
-        self.assign(dest, &block)
     }
 
     fn new_id_map(&mut self, dest: LocalId) -> Result<(), String> {

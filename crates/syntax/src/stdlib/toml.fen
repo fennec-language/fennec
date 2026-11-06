@@ -1,5 +1,6 @@
-from std.intrinsics import text_byte, text_of_code, text_part, text_size, type_name
-from std.json import _IdsSeen, _article, _base64, _escaped, _float_text, _from_base64
+from std.collections import Id
+from std.intrinsics import stop, text_byte, text_of_code, text_part, text_size, type_name
+from std.json import _IdsSeen, _article, _base64, _escaped, _float_text, _from_base64, _tables_in
 
 ## How deeply arrays and inline tables may nest, so bad input can't overflow the stack.
 _MOST_DEEP = 500
@@ -945,11 +946,11 @@ struct TomlReader:
     def here(self, message: str) -> ParseError:
         ParseError(message=f"{self._where()} {message}", line=0, column=0)
 
-    def saw_id(mut self, kind: str, slot: int, generation: int):
-        self._ids.id(kind, self._dotted(), slot, generation)
+    def saw_id(mut self, kind: str, position: int):
+        self._ids.id(kind, self._where(), position)
 
-    def saw_table(mut self, kind: str, slots: list[int]):
-        self._ids.table(kind, self._dotted(), slots)
+    def saw_table(mut self, kind: str, count: int):
+        self._ids.table(kind, self._where(), count)
 
     def at_item(self, at: int, message: str) -> ParseError:
         ParseError(message=f"`{self._dotted()}[{at}]` {message}", line=0, column=0)
@@ -1010,7 +1011,7 @@ def native_loads[T: Deserializable](text: str) -> T fails ParseError:
     root = parser.document()?
     mut src = TomlReader(_here=.Table(table=root))
     value = T.deserialize(mut src)?
-    found = src._ids.unissued()
+    found = src._ids.problem()
     if found != "": fail ParseError(message=found, line=0, column=0)
     value
 
@@ -1020,6 +1021,11 @@ struct TomlWriter:
     _tables = list[_Table]()
     _wraps = list[str]()
     _after_case = False
+    ## Where each `Id` is in its `Table`, as `JsonWriter` keeps it.
+    _id_tables: dict[str, dict[int, int]] = {}
+    _found = False
+    _wants_tables = False
+    _optional = False
 
     def int(mut self, value: int):
         self._done = .Int(n=value)
@@ -1043,6 +1049,7 @@ struct TomlWriter:
         x.serialize(mut self)
 
     def sequence[T: Serializable](mut self, items: list[T]):
+        self._optional = False
         mut built = list[_Toml]()
         for item in items:
             item.serialize(mut self)
@@ -1059,6 +1066,7 @@ struct TomlWriter:
         self._done = .Table(table=table)
 
     def record(mut self, name: str, count: int):
+        self._optional = False
         self._tables.append(_Table())
         self._wraps.append("")
 
@@ -1088,6 +1096,29 @@ struct TomlWriter:
     def case_record(mut self, name: str, case: str, count: int):
         self._tables.append(_Table())
         self._wraps.append(case)
+
+    def table[T: Serializable](mut self, kind: str, ids: list[Id[T]], items: list[T]):
+        self.sequence(items)
+
+    def id(mut self, kind: str, key: int):
+        optional = self._optional
+        self._optional = False
+        if not self._found:
+            self._wants_tables = True
+            self._done = .Int(n=0)
+            return
+        positions = self._id_tables.get(kind) else dict[int, int]()
+        position = positions.get(key) else -1
+        if position < 0 and optional:
+            stop(
+                "TOML has no None, so an optional Id whose item has gone can't be saved; leave it out",
+            )
+        self._done = .Int(n=position)
+
+    def some[T: Serializable](mut self, x: T):
+        self._optional = True
+        x.serialize(mut self)
+        self._optional = False
 
 def _key_text(key: _Toml) -> str:
     match key:
@@ -1225,6 +1256,9 @@ def _write_table(text: str, path: list[str], table: _Table, array: bool) -> str:
 def native_dumps[T: Serializable](value: T) -> str:
     mut out = TomlWriter()
     value.serialize(mut out)
+    if out._wants_tables:
+        out = TomlWriter(_id_tables=_tables_in(value), _found=True)
+        value.serialize(mut out)
     mut text = ""
     match out._done:
         case .Table(table):

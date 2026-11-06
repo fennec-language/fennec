@@ -99,8 +99,18 @@ impl Interp<'_> {
                 }
                 Ok(Value::Tuple(Rc::new(read)))
             }
-            ("Id", Value::Dict(pairs)) => id_of(&pairs, at).map(Value::Id),
-            ("Table", Value::Dict(pairs)) => self.decode_id_map(&pairs, &arg(0)?, at, span),
+            ("Id", Value::Int(position)) => usize::try_from(position)
+                .map(|slot| Value::Id(Id { slot, generation: 0 }))
+                .map_err(|_| format!("{} is out of range", place(at))),
+            ("Table", Value::List(items)) => {
+                let item = arg(0)?;
+                let mut slots = Vec::new();
+                for (n, held) in items.iter().enumerate() {
+                    let value = self.decode(held.clone(), &item, &inside(at, &format!("[{n}]")), span)?;
+                    slots.push(Slot { generation: 0, value: Some(value) });
+                }
+                Ok(Value::Table(Rc::new(Table::new(slots))))
+            }
             (name, value) if self.has_shape(name) => {
                 let read = self.decode(value, &Self::shape_of(ty), at, span)?;
                 self.build_shaped(name, read, at, span)
@@ -109,33 +119,6 @@ impl Interp<'_> {
             (name, Value::Dict(pairs)) if self.is_struct(name) => self.decode_struct(ty, &pairs, at, span),
             (_, value) => Err(misfit(at, &written(ty), &value)),
         }
-    }
-
-    /// A `Table` from its slots: each one's generation, and its value unless it's free.
-    fn decode_id_map(
-        &mut self,
-        pairs: &[(Value, Value)],
-        item: &TypeExpr,
-        at: &str,
-        span: Span,
-    ) -> Result<Value, Misfit> {
-        let Some(Value::List(written)) = entry(pairs, "slots") else {
-            return Err(format!("{} should be a Table, with its `slots`", place(at)));
-        };
-        let mut slots = Vec::new();
-        for (n, slot) in written.iter().enumerate() {
-            let here = inside(&inside(at, "slots"), &format!("[{n}]"));
-            let Value::Dict(slot) = slot else {
-                return Err(misfit(&here, "slot", slot));
-            };
-            let generation = number(entry(slot, "generation"), &inside(&here, "generation"))?;
-            let value = match entry(slot, "value") {
-                Some(value) => Some(self.decode(value.clone(), item, &inside(&here, "value"), span)?),
-                None => None,
-            };
-            slots.push(Slot { generation, value });
-        }
-        Ok(Value::Table(Rc::new(Table::new(slots))))
     }
 
     fn is_struct(&self, name: &str) -> bool {
@@ -356,36 +339,6 @@ pub(super) fn substituted(ty: &TypeExpr, given: &[(String, TypeExpr)]) -> TypeEx
         return TypeExpr { optional: ty.optional || filled.optional, ..filled.clone() };
     }
     TypeExpr { args: ty.args.iter().map(|arg| substituted(arg, given)).collect(), ..ty.clone() }
-}
-
-/// The value of `name` in an object, if it has one.
-fn entry<'p>(pairs: &'p [(Value, Value)], name: &str) -> Option<&'p Value> {
-    pairs.iter().find(|(key, _)| matches!(key, Value::Str(key) if **key == *name)).map(|(_, value)| value)
-}
-
-/// A slot's generation, or an `Id`'s, which is a whole number that isn't negative.
-fn number<N: TryFrom<i64>>(value: Option<&Value>, at: &str) -> Result<N, Misfit> {
-    match value {
-        Some(Value::Int(n)) => N::try_from(*n).map_err(|_| format!("{} is out of range", place(at))),
-        Some(other) => Err(misfit(at, "int", other)),
-        None => Err(format!("{} is missing", place(at))),
-    }
-}
-
-/// An `Id` from its slot and generation.
-fn id_of(pairs: &[(Value, Value)], at: &str) -> Result<Id, Misfit> {
-    for (key, _) in pairs {
-        if !matches!(key, Value::Str(key) if **key == *"slot" || **key == *"generation") {
-            return Err(format!(
-                "an Id has only `slot` and `generation`, but {} has {}",
-                place(at),
-                crate::format::repr(key)
-            ));
-        }
-    }
-    let slot = number(entry(pairs, "slot"), &inside(at, "slot"))?;
-    let generation = number(entry(pairs, "generation"), &inside(at, "generation"))?;
-    Ok(Id { slot, generation })
 }
 
 fn misfit(at: &str, wanted: &str, value: &Value) -> Misfit {

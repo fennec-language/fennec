@@ -1,5 +1,6 @@
 # A format is a type with a `Serializer`'s methods. Each call is compiled for the format it's
 # given, so nothing is looked up as it runs, and one `def serialize` serves every format.
+from std.collections import Id
 
 struct Shown:
     parts = list[str]()
@@ -57,6 +58,15 @@ struct Shown:
     def case_record(mut self, name: str, case: str, count: int):
         self.parts.append(f"{name}.{case}/{count}")
 
+    def table[T: Serializable](mut self, kind: str, ids: list[Id[T]], items: list[T]):
+        self.sequence(items)
+
+    def id(mut self, kind: str, key: int):
+        self.parts.append(f"Id[{kind}]")
+
+    def some[T: Serializable](mut self, x: T):
+        x.serialize(mut self)
+
     def shown(self) -> str:
         " ".join(self.parts)
 
@@ -110,6 +120,15 @@ struct Counted:
 
     def case_record(mut self, name: str, case: str, count: int):
         self.total += 1
+
+    def table[T: Serializable](mut self, kind: str, ids: list[Id[T]], items: list[T]):
+        self.sequence(items)
+
+    def id(mut self, kind: str, key: int):
+        self.total += 1
+
+    def some[T: Serializable](mut self, x: T):
+        x.serialize(mut self)
 
 struct Spot:
     x: int

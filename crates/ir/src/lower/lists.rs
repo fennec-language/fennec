@@ -706,7 +706,7 @@ impl Lowering<'_> {
 }
 
 /// The name an expression starts from and the fields it goes through, if that's all it is.
-fn field_path_of(expr: &Expr) -> Option<(&str, Vec<&str>)> {
+pub(super) fn field_path_of(expr: &Expr) -> Option<(&str, Vec<&str>)> {
     match &expr.kind {
         ExprKind::Name(name) => Some((name, Vec::new())),
         ExprKind::Attr { object, name, optional: false } => {

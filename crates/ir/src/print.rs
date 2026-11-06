@@ -197,12 +197,12 @@ impl fmt::Display for InstKind {
             | InstKind::MakeTuple { .. }
             | InstKind::GetTupleItem { .. }
             | InstKind::Slice { .. } => collection(self, f),
-            InstKind::MakeSome { dest, value } => write!(f, "{dest} = some {value}"),
-            InstKind::IsNone { dest, value } => write!(f, "{dest} = {value} is none"),
-            InstKind::GetSome { dest, value } => write!(f, "{dest} = {value} as some"),
-            InstKind::MakeMember { dest, value, member } => write!(f, "{dest} = member {member} {value}"),
-            InstKind::IsMember { dest, value, member } => write!(f, "{dest} = {value} is member {member}"),
-            InstKind::GetMember { dest, value, member } => write!(f, "{dest} = {value} as member {member}"),
+            InstKind::MakeSome { .. }
+            | InstKind::IsNone { .. }
+            | InstKind::GetSome { .. }
+            | InstKind::MakeMember { .. }
+            | InstKind::IsMember { .. }
+            | InstKind::GetMember { .. } => wrapped(self, f),
             InstKind::MakeOk { dest, value: Some(value) } => write!(f, "{dest} = ok {value}"),
             InstKind::MakeOk { dest, value: None } => write!(f, "{dest} = ok"),
             InstKind::IsError { dest, value, type_name } => write!(f, "{dest} = {value} is {type_name}"),
@@ -320,5 +320,19 @@ impl fmt::Display for Terminator {
             Terminator::Stop { message, .. } => write!(f, "stop {message:?}"),
             Terminator::Unreachable => write!(f, "unreachable"),
         }
+    }
+}
+
+/// An optional's and a union's instructions: a value wrapped, tested, or read back out. A
+/// union's name the member by its place in the union.
+fn wrapped(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match inst {
+        InstKind::MakeSome { dest, value } => write!(f, "{dest} = some {value}"),
+        InstKind::IsNone { dest, value } => write!(f, "{dest} = {value} is none"),
+        InstKind::GetSome { dest, value } => write!(f, "{dest} = {value} as some"),
+        InstKind::MakeMember { dest, value, member } => write!(f, "{dest} = member {member} {value}"),
+        InstKind::IsMember { dest, value, member } => write!(f, "{dest} = {value} is member {member}"),
+        InstKind::GetMember { dest, value, member } => write!(f, "{dest} = {value} as member {member}"),
+        _ => Ok(()),
     }
 }

@@ -201,6 +201,15 @@ impl Lowering<'_> {
         }
     }
 
+    /// What a method call is made on, with the types in its union, when it's a union.
+    fn union_receiver<'e>(&self, callee: &'e Expr) -> Option<(&'e Expr, Vec<Type>)> {
+        let ExprKind::Attr { object, optional: false, .. } = &callee.kind else { return None };
+        match self.type_at(object.span) {
+            Some(Type::Union(members)) if self.type_named(object).is_none() => Some((object, members)),
+            _ => None,
+        }
+    }
+
     /// A method every member of a union has, called on whichever member it holds: a test for
     /// each member but the last, then that member's method, with what it is read as that member.
     /// It's read again in each branch, so it has to be a name or a path of fields from one.
@@ -209,14 +218,14 @@ impl Lowering<'_> {
         callee: &Expr,
         (object, members): (&Expr, &[Type]),
         args: &[Arg],
-        keep: Option<Type>,
+        keep: Option<&Type>,
         span: Span,
     ) -> Lowered<Option<LocalId>> {
         if fennec_syntax::dotted(object).is_none() {
             return Err("it calls a method on a union that isn't a name or a field".to_owned());
         }
         let union = self.expr(object)?;
-        let dest = keep.clone().map(|ty| self.temporary(ty));
+        let dest = keep.map(|ty| self.temporary(ty.clone()));
         let join = self.new_block();
         for (member, ty) in members.iter().enumerate() {
             let next = (member + 1 < members.len()).then(|| self.new_block());
@@ -226,9 +235,9 @@ impl Lowering<'_> {
                 self.branch_or(Operand::Local(test), next);
             }
             self.retyped.push((object.span, ty.clone()));
-            let called = self.call(callee, args, keep.clone(), span);
+            let member_result = self.call(callee, args, keep.cloned(), span);
             self.retyped.pop();
-            if let (Some(dest), Some(result)) = (dest, called?) {
+            if let (Some(dest), Some(result)) = (dest, member_result?) {
                 self.emit(InstKind::Copy { dest, value: Operand::Local(result) }, span);
             }
             self.finish(Terminator::Jump(join));
@@ -258,11 +267,8 @@ impl Lowering<'_> {
         {
             return self.pop_or_none(callee, object, keep.as_ref(), span);
         }
-        if let ExprKind::Attr { object, optional: false, .. } = &callee.kind
-            && self.type_named(object).is_none()
-            && let Some(Type::Union(members)) = self.type_at(object.span)
-        {
-            return self.union_method(callee, (object, &members), args, keep, span);
+        if let Some((object, members)) = self.union_receiver(callee) {
+            return self.union_method(callee, (object, &members), args, keep.as_ref(), span);
         }
         if let Some(value) = self.type_called(callee) {
             let dest = keep.map(|ty| self.temporary(ty));

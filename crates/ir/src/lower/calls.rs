@@ -201,6 +201,42 @@ impl Lowering<'_> {
         }
     }
 
+    /// A method every member of a union has, called on whichever member it holds: a test for
+    /// each member but the last, then that member's method, with what it is read as that member.
+    /// It's read again in each branch, so it has to be a name or a path of fields from one.
+    fn union_method(
+        &mut self,
+        callee: &Expr,
+        (object, members): (&Expr, &[Type]),
+        args: &[Arg],
+        keep: Option<Type>,
+        span: Span,
+    ) -> Lowered<Option<LocalId>> {
+        if fennec_syntax::dotted(object).is_none() {
+            return Err("it calls a method on a union that isn't a name or a field".to_owned());
+        }
+        let union = self.expr(object)?;
+        let dest = keep.clone().map(|ty| self.temporary(ty));
+        let join = self.new_block();
+        for (member, ty) in members.iter().enumerate() {
+            let next = (member + 1 < members.len()).then(|| self.new_block());
+            if let Some(next) = next {
+                let test = self.temporary(Type::Bool);
+                self.emit(InstKind::IsMember { dest: test, value: union.clone(), member }, span);
+                self.branch_or(Operand::Local(test), next);
+            }
+            self.retyped.push((object.span, ty.clone()));
+            let called = self.call(callee, args, keep.clone(), span);
+            self.retyped.pop();
+            if let (Some(dest), Some(result)) = (dest, called?) {
+                self.emit(InstKind::Copy { dest, value: Operand::Local(result) }, span);
+            }
+            self.finish(Terminator::Jump(join));
+            self.current = next.unwrap_or(join);
+        }
+        Ok(dest)
+    }
+
     /// Lowers a call. When it's given the type of what the call gives back, that's kept in a
     /// new temporary.
     pub(super) fn call(
@@ -221,6 +257,12 @@ impl Lowering<'_> {
             && matches!(self.type_at(object.span), Some(Type::List(_)))
         {
             return self.pop_or_none(callee, object, keep.as_ref(), span);
+        }
+        if let ExprKind::Attr { object, optional: false, .. } = &callee.kind
+            && self.type_named(object).is_none()
+            && let Some(Type::Union(members)) = self.type_at(object.span)
+        {
+            return self.union_method(callee, (object, &members), args, keep, span);
         }
         if let Some(value) = self.type_called(callee) {
             let dest = keep.map(|ty| self.temporary(ty));

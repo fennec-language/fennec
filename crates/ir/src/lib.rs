@@ -357,6 +357,25 @@ pub enum InstKind {
         dest: LocalId,
         value: Operand,
     },
+    /// A member's value as its union, tagged with the member: its place in the union's types,
+    /// which `fennec_check::Type::Union` keeps in a fixed order.
+    MakeMember {
+        dest: LocalId,
+        value: Operand,
+        member: usize,
+    },
+    /// Whether a union holds the member at that place, for `is` and `match`.
+    IsMember {
+        dest: LocalId,
+        value: Operand,
+        member: usize,
+    },
+    /// The value inside a union known to hold the member at that place.
+    GetMember {
+        dest: LocalId,
+        value: Operand,
+        member: usize,
+    },
     /// A result that succeeded, holding nothing when `value` is `None`.
     MakeOk {
         dest: LocalId,
@@ -535,6 +554,9 @@ impl InstKind {
             | InstKind::MakeSome { dest, .. }
             | InstKind::IsNone { dest, .. }
             | InstKind::GetSome { dest, .. }
+            | InstKind::MakeMember { dest, .. }
+            | InstKind::IsMember { dest, .. }
+            | InstKind::GetMember { dest, .. }
             | InstKind::MakeOk { dest, .. }
             | InstKind::MakeErr { dest, .. }
             | InstKind::IsErr { dest, .. }

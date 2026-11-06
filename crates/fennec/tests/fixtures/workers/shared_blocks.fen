@@ -160,10 +160,10 @@ def purses(stdout: Stdout):
     mut units = units_of(2000)
     for ref unit in parallel(units):
         if unit.x % 2 == 0:
-            passed_along(one, two, unit.x)
+            passed_along(one, to_purse=two, n=unit.x)
         else:
-            passed_along(two, one, unit.x)
-        unit.x += read_across(one, two)
+            passed_along(two, to_purse=one, n=unit.x)
+        unit.x += read_across(one, other=two)
     stdout.print(one.total + two.total, one.biggest.x, two.biggest.x, one.biggest.name)
     # How many there are depends on the order the bodies ran in; what each one says doesn't.
     damaged = [note for note in one.notes + two.notes if note[0:6] != "a note"]

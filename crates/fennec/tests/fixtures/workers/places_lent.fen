@@ -59,7 +59,7 @@ def main(stdout: Stdout):
     xs = [n for n in range(3000)]
     stdout.print(sum(method_places(captured, x) for x in parallel(xs)))
     stdout.print(sum(builtin_places(captured, x) for x in parallel(xs)))
-    stdout.print(sum(given_place(captured, grid, x) for x in parallel(xs)))
+    stdout.print(sum(given_place(captured, grid=grid, at=x) for x in parallel(xs)))
     for one in captured:
         stdout.print(one.hp, one.tags, one.inner.tags, one.name)
     for row in grid:

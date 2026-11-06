@@ -10,7 +10,7 @@ def row(v: list[float], i: int, transpose: bool) -> float:
     mut total = 0.0
     mut j = 0
     for x in v:
-        total += (a(j, i) if transpose else a(i, j)) * x
+        total += (a(j, j=i) if transpose else a(i, j=j)) * x
         j += 1
     total
 
@@ -18,7 +18,7 @@ def times(v: list[float], transpose: bool) -> list[float]:
     [row(v, i, transpose) for i in range(v.len())]
 
 def times_transposed(v: list[float]) -> list[float]:
-    times(times(v, False), True)
+    times(times(v, transpose=False), transpose=True)
 
 def main(stdout: Stdout):
     n = 100

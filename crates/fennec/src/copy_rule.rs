@@ -3,14 +3,20 @@
 //! further up the calls, the program says so with `copy(...)` or stops sharing the value. A copy
 //! made once, the first time round, stays a hint.
 
-use fennec_syntax::{Diagnostic, Module};
+use fennec_syntax::{Diagnostic, Module, Sources};
 
-/// Each copy a resolved module makes each time round a loop without saying so, and anything that
-/// may allocate or copy in a `@hot` function or what it calls.
-pub(crate) fn implicit_copies(module: &Module, signatures: &fennec_check::Signatures) -> Vec<Diagnostic> {
+/// Each copy a resolved module makes each time round a loop without saying so, anything that may
+/// allocate or copy in a `@hot` function or what it calls, and each call whose positional
+/// arguments are easy to get backwards.
+pub(crate) fn implicit_copies(
+    module: &Module,
+    signatures: &fennec_check::Signatures,
+    sources: &Sources,
+) -> Vec<Diagnostic> {
     let lowered = fennec_ir::lower(module, signatures);
     let findings = fennec_ir::costs(&lowered);
     let mut problems = fennec_lint::implicit_copies(&findings);
+    problems.extend(positional_arguments(module, sources));
     let hot = hot_functions(module);
     if hot.is_empty() {
         return problems;
@@ -28,6 +34,15 @@ pub(crate) fn implicit_copies(module: &Module, signatures: &fennec_check::Signat
         }
     }
     problems
+}
+
+/// Each of the program's own calls whose positional arguments are easy to get backwards.
+fn positional_arguments(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
+    fennec_lint::positional_arguments(module, sources)
+        .into_iter()
+        .filter(|lint| !lint.diagnostic.span.in_prelude())
+        .map(|lint| Diagnostic { message: lint.message().to_owned(), ..lint.diagnostic })
+        .collect()
 }
 
 /// Where a function says it's `@hot`, if it does.
@@ -61,32 +76,44 @@ fn hot_functions(module: &Module) -> Vec<(String, fennec_syntax::Span)> {
 
 /// Checks a program to run, with its implicit copies each time round a loop as errors, and its
 /// constants worked out while compiling.
-pub(crate) fn check_to_run(module: &mut Module) -> Result<fennec_check::Signatures, Vec<Diagnostic>> {
+pub(crate) fn check_to_run(
+    module: &mut Module,
+    sources: &Sources,
+) -> Result<fennec_check::Signatures, Vec<Diagnostic>> {
     let signatures = baked(module, fennec_check::check_to_run)?;
-    let copies = implicit_copies(module, &signatures);
+    let copies = implicit_copies(module, &signatures, sources);
     if copies.is_empty() { Ok(signatures) } else { Err(copies) }
 }
 
 /// Like `check_to_run`, without working out the constants: what a check that only asks
 /// whether the program is sound needs.
-pub(crate) fn check_rules(module: &mut Module) -> Result<fennec_check::Signatures, Vec<Diagnostic>> {
+pub(crate) fn check_rules(
+    module: &mut Module,
+    sources: &Sources,
+) -> Result<fennec_check::Signatures, Vec<Diagnostic>> {
     let signatures = fennec_check::check_to_run(module)?;
-    let copies = implicit_copies(module, &signatures);
+    let copies = implicit_copies(module, &signatures, sources);
     if copies.is_empty() { Ok(signatures) } else { Err(copies) }
 }
 
 /// Like `check_rules`, checking all of a module, as a build does, which works constants out when
 /// the program starts.
-pub(crate) fn check_all_rules(module: &mut Module) -> Result<fennec_check::Signatures, Vec<Diagnostic>> {
+pub(crate) fn check_all_rules(
+    module: &mut Module,
+    sources: &Sources,
+) -> Result<fennec_check::Signatures, Vec<Diagnostic>> {
     let signatures = fennec_check::check_and_resolve(module)?;
-    let copies = implicit_copies(module, &signatures);
+    let copies = implicit_copies(module, &signatures, sources);
     if copies.is_empty() { Ok(signatures) } else { Err(copies) }
 }
 
 /// Like `check_to_run`, checking all of a module, as tests do.
-pub(crate) fn check_and_resolve(module: &mut Module) -> Result<fennec_check::Signatures, Vec<Diagnostic>> {
+pub(crate) fn check_and_resolve(
+    module: &mut Module,
+    sources: &Sources,
+) -> Result<fennec_check::Signatures, Vec<Diagnostic>> {
     let signatures = baked(module, fennec_check::check_and_resolve)?;
-    let copies = implicit_copies(module, &signatures);
+    let copies = implicit_copies(module, &signatures, sources);
     if copies.is_empty() { Ok(signatures) } else { Err(copies) }
 }
 

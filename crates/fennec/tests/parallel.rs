@@ -41,7 +41,7 @@ def show(stdout: Stdout, ref state: list[int]):
         stdout.print(n, state.len())
 
 def main(stdout: Stdout):
-    mut units = [Unit(float(n), 10.0) for n in range(8)]
+    mut units = [Unit(float(n), health=10.0) for n in range(8)]
     step(ref units, 2.0)
     stdout.print([unit.x for unit in parallel(units)])
     stdout.print(sum(unit.health for unit in parallel(units)))

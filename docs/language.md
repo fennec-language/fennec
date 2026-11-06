@@ -79,7 +79,7 @@ One silent mistake remains: changing a `mut` copy and then reading it, believing
 uppercased = [copy(person, name=person.name.upper()) for person in people]
 ```
 
-`copy(x, field=...)` makes a changed copy and re-runs `where` rules. A plain `=` covers everything else, and the compiler skips the real copy when nobody can tell. A plain parameter can't change, so passing something huge costs nothing.
+`copy(x, field=...)` makes a changed copy and re-runs `where` rules. Built: `replace` was its old name, and `fennec fix` moves it to `copy`. A plain `=` covers everything else, and the compiler skips the real copy when nobody can tell. A plain parameter can't change, so passing something huge costs nothing.
 
 ## Fixed-size arrays
 
@@ -171,7 +171,7 @@ def main(stdout: Stdout, fs: Fs):
     stdout.print("hello")
 ```
 
-A function reaches outside itself only through what's in its signature, so there's no global `print`. The error message has to teach this, since it's the first thing newcomers hit.
+A function reaches outside itself only through what's in its signature, so there's no global `print`. The error message has to teach this, since it's the first thing newcomers hit: calling `print`, or reading `stdout` or `fs` in a function that wasn't given it, says how to give it one, or what it's called there. Built.
 
 ## A whole program
 
@@ -197,7 +197,7 @@ Each connection gets its own task, and a failure ends only that task. The wrappe
 ## Speed
 
 - Everyday builds stay fast, and release builds can take as long as they need.
-- `@hot` turns a hidden copy into a compile error, and the tracer shows where each copy happens and why.
+- `@hot` turns a hidden copy into a compile error, and the tracer shows where each copy happens and why. Built: anything that may allocate or copy in a `@hot` function, or in what it calls, is an error that says why. Count checks aren't looked at yet.
 
 ## Still to decide
 

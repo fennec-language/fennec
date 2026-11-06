@@ -325,7 +325,7 @@ fn values_and_builtins_do_not_take_mut() {
     let program = "
         mut n = 1
         mut s = 'a'
-        stdout.print(sorted(ref s), Enemy(ref n), 'a'.startswith(ref s), replace(Enemy(), ref n))
+        stdout.print(sorted(ref s), Enemy(ref n), 'a'.startswith(ref s), copy(Enemy(), ref n))
     ";
     assert_eq!(
         with_enemy(program),
@@ -333,7 +333,7 @@ fn values_and_builtins_do_not_take_mut() {
             "`sorted` doesn't change its arguments, so don't pass `ref` @ sorted(ref s)",
             "building a value doesn't change its arguments, so don't pass `ref` @ n",
             "`startswith` doesn't change `prefix`, so it shouldn't be passed with `ref` @ s",
-            "`replace` doesn't change its arguments, so don't pass `ref` @ replace(Enemy(), ref n)",
+            "`copy` doesn't change its arguments, so don't pass `ref` @ copy(Enemy(), ref n)",
             "name the field to change, like `health=50` @ n",
         ]
     );

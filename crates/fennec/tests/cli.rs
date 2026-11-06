@@ -1841,6 +1841,38 @@ fn a_copy_each_time_round_a_loop_has_to_be_written() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// `@hot` on a function means it, and everything it calls, may not allocate or copy: each place
+/// that may is a compile error that says why, and one that does neither builds and runs.
+#[test]
+fn a_hot_function_and_what_it_calls_cant_allocate() {
+    let dir = scratch("hot").unwrap();
+    let program = dir.join("hot.fen");
+    let source = "struct Unit:\n    hp: int\n    tags: list[str]\n\ndef tagged(ref unit: Unit, tag: str):\n    \
+                  unit.tags.append(tag)\n\n@hot\ndef tick(ref units: list[Unit], dt: int) -> int:\n    \
+                  mut total = 0\n    for ref unit in units:\n        unit.hp -= dt\n        total += unit.hp\n    \
+                  tagged(ref units[0], \"hit\")\n    total\n\ndef main(stdout: Stdout):\n    \
+                  mut units = [Unit(hp=10, tags=[]), Unit(hp=20, tags=[])]\n    stdout.print(tick(ref units, 1))\n";
+    std::fs::write(&program, source).unwrap();
+    for command in ["check", "run"] {
+        let output = fennec(&[command, program.to_str().unwrap()], "").unwrap();
+        assert!(!output.status.success(), "{command}");
+        let printed = text(&output.stderr);
+        assert!(
+            printed.contains(
+                "growing it with `list.append` may allocate in `tagged`, which `@hot` `tick` calls"
+            ),
+            "{printed}"
+        );
+    }
+    std::fs::write(&program, source.replace("    tagged(ref units[0], \"hit\")\n", "")).unwrap();
+    let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
+    assert_eq!(text(&output.stdout), "28\n", "{}", text(&output.stderr));
+    std::fs::write(&program, "noalloc def f():\n    pass\n").unwrap();
+    let output = fennec(&["check", program.to_str().unwrap()], "").unwrap();
+    assert!(text(&output.stderr).contains("`noalloc` is written `@hot` now"), "{}", text(&output.stderr));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A `shared` value is a handle: every name for it, and every function it's passed to, changes
 /// one cell. The JIT hands such a program to the interpreter for now, so both print the same.
 #[test]

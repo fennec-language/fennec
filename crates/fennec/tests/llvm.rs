@@ -6738,6 +6738,28 @@ def main(stdout: Stdout):
     )
 }
 
+/// `copy` with fields changes only what it names and runs the `where` rule of each field it
+/// changes, so a copy that breaks one stops the program as a write would.
+#[test]
+fn copy_with_fields_runs_their_rules() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "copy_with_fields",
+        r#"struct Player:
+    name: str
+    level: int where level >= 1
+
+def main(stdout: Stdout):
+    player = Player(name="Ash", level=5)
+    raised = copy(player, level=player.level + 1)
+    stdout.print(player.level, raised.level, raised.name)
+    stdout.print(copy(player, name="Kit", level=player.level - 5).level)
+"#,
+    )
+}
+
 /// `list.pop()` gives `None` once the list is empty, and the item as an optional before then:
 /// for numbers, text and structs, from a name, a field, an item of a list, and an item picked
 /// by a call, which is read once.

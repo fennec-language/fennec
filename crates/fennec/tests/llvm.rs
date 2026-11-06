@@ -3429,6 +3429,84 @@ fn counts_of(name: &str, source: &str) -> std::io::Result<String> {
     Ok(errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default().to_owned())
 }
 
+/// A field changed in place, by a builtin, a method on `ref self` or a `ref` argument, with an
+/// argument worked out with a branch, a loop or a call: the field is read once the arguments
+/// are, so it has one owner while it changes. Each way gives what the interpreter does, copies
+/// and failures included.
+#[test]
+fn a_field_changed_with_any_argument_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("changed_with_any_argument", CHANGED_WITH_ANY_ARGUMENT)
+}
+
+const CHANGED_WITH_ANY_ARGUMENT: &str = r#"struct Bag:
+    items = list[int]()
+
+    def add(ref self, value: int):
+        self.items.append(value)
+
+def push(ref items: list[int], value: int):
+    items.append(value)
+
+def twice(x: int) -> int:
+    x * 2
+
+struct Holder:
+    bag = Bag()
+    items = list[int]()
+    counts = dict[int, int]()
+    text = ""
+
+    def put(ref self, value: int, flag: bool):
+        self.items.append(1 if flag else 0)
+        self.items.append(sum([value for _ in range(2)]))
+        self.items.append(self.items.len() if flag else twice(value))
+        self.bag.add(value if flag else -value)
+        push(ref self.items, value * 3 if value > 1 else 7)
+        self.items.extend([value for _ in range(1) if flag])
+        self.counts[value % 5] = 1 if flag else 0
+        self.text += "a" if flag else "b"
+
+def main(stdout: Stdout):
+    mut holder = Holder()
+    for i in range(6):
+        holder.put(i, i % 2 == 0)
+    copy = holder
+    holder.put(9, True)
+    stdout.print(holder.items, holder.bag.items, holder.counts, holder.text)
+    stdout.print(copy.items, copy.bag.items, copy.text)
+    zero = holder.items.len() - holder.items.len()
+    holder.items.append(10 // zero if zero > 0 else 3)
+    stdout.print(holder.items.len())
+    holder.items.append(10 // zero)
+    stdout.print(holder.items.len())
+"#;
+
+/// The same changes, each in a loop: none of them copies the field, whatever its argument is.
+#[test]
+fn a_field_changed_with_any_argument_is_never_copied() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let shapes = [
+        "self.items.append(1 if flag else 0)",
+        "self.items.append(sum([value for _ in range(2)]))",
+        "self.bag.add(value if flag else -value)",
+        "push(ref self.items, value * 3 if value > 1 else 7)",
+        "self.items.extend([value for _ in range(1) if flag])",
+    ];
+    for shape in shapes {
+        let source = format!(
+            "struct Bag:\n    items = list[int]()\n\n    def add(ref self, value: int):\n        self.items.append(value)\n\ndef push(ref items: list[int], value: int):\n    items.append(value)\n\nstruct Holder:\n    bag = Bag()\n    items = list[int]()\n\n    def put(ref self, value: int, flag: bool):\n        {shape}\n\n    def size(self) -> int:\n        self.items.len() + self.bag.items.len()\n\ndef main(stdout: Stdout):\n    mut holder = Holder()\n    for i in range(2000):\n        holder.put(i, i % 2 == 0)\n    stdout.print(holder.size())\n"
+        );
+        let counts = counts_of("changed_field", &source)?;
+        assert_eq!(count(&counts, "copies"), Some(0), "{shape}: {counts}");
+    }
+    Ok(())
+}
+
 #[test]
 fn what_a_field_or_an_items_field_holds_changes_without_being_copied() -> std::io::Result<()> {
     if !ready() {

@@ -6,8 +6,8 @@
 use fennec_syntax::{Diagnostic, Module, Sources};
 
 /// Each copy a resolved module makes each time round a loop without saying so, anything that may
-/// allocate or copy in a `@hot` function or what it calls, or any check native code keeps there,
-/// and each call whose positional arguments are easy to get backwards.
+/// allocate or copy in a `@hot` function or what it calls, or any check native code keeps there
+/// apart from overflow, and each call whose positional arguments are easy to get backwards.
 pub(crate) fn implicit_copies(
     module: &Module,
     signatures: &fennec_check::Signatures,
@@ -39,20 +39,18 @@ pub(crate) fn implicit_copies(
 }
 
 /// Each check native code keeps in a `@hot` function or what it calls: one the compiler couldn't
-/// show can't fail, like an index it can't place inside its list, or a sum it can't bound.
+/// show can't fail, like an index it can't place inside its list. An overflow check it couldn't
+/// prove away stays, as the safety net it is everywhere else.
 fn checks_kept(checks: &[fennec_llvm::CheckLeft], reach: &fennec_ir::HotReach) -> Vec<Diagnostic> {
     use fennec_llvm::CheckKind;
     let key = |name: &str| name.split_once('[').map_or(name, |(key, _)| key).to_owned();
     checks
         .iter()
-        .filter(|check| !check.span.in_prelude())
+        .filter(|check| !check.span.in_prelude() && check.what != CheckKind::Overflow)
         .filter_map(|check| {
             let (_, root) = reach.reached.iter().find(|(name, _)| *name == check.function)?;
             let (what, help) = match &check.what {
-                CheckKind::Overflow => (
-                    "this may overflow, so it keeps its overflow check".to_owned(),
-                    "keep the numbers where the compiler can see their range, like a loop's count",
-                ),
+                CheckKind::Overflow => return None,
                 CheckKind::Bounds => (
                     "this index may be outside what it indexes, so it keeps its bounds check".to_owned(),
                     "index with a loop's count over the length, as in `for i in range(items.len())`",

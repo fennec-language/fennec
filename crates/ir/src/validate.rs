@@ -145,6 +145,22 @@ impl<'p> Check<'p> {
                 Some(Type::Optional(inner)) => self.local(*dest) == Some(*inner),
                 _ => false,
             },
+            InstKind::MakeMember { dest, value, member } => match self.local(*dest) {
+                Some(Type::Union(members)) => {
+                    members.get(*member).is_some_and(|wanted| held(self, value).as_ref() == Some(wanted))
+                }
+                _ => false,
+            },
+            InstKind::IsMember { dest, value, member } => {
+                self.local(*dest) == Some(Type::Bool)
+                    && matches!(held(self, value), Some(Type::Union(members)) if *member < members.len())
+            }
+            InstKind::GetMember { dest, value, member } => match held(self, value) {
+                Some(Type::Union(members)) => {
+                    members.get(*member).is_some_and(|wanted| self.local(*dest).as_ref() == Some(wanted))
+                }
+                _ => false,
+            },
             InstKind::MakeOk { dest, value } => match (self.local(*dest), value) {
                 (Some(Type::Result(ok, _)), Some(value)) => {
                     held(self, value).is_some_and(|ty| fits(&ok, &ty))

@@ -81,6 +81,16 @@ impl Lowering<'_> {
         if left == right {
             return Ok((lhs, rhs));
         }
+        // A member compared with its union is compared as the union: the same member, then
+        // equal values.
+        let member_of =
+            |union: &Type, member: &Type| matches!(union, Type::Union(members) if members.contains(member));
+        if member_of(&right, &left) {
+            return Ok((self.as_type(lhs, &right, span)?, rhs));
+        }
+        if member_of(&left, &right) {
+            return Ok((lhs, self.as_type(rhs, &left, span)?));
+        }
         if fits(&right, &left) && !fits(&left, &right) {
             let lhs = self.as_type(lhs, &right, span)?;
             return Ok((lhs, rhs));

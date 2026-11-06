@@ -99,9 +99,12 @@ impl Interp<'_> {
                 }
                 Ok(Value::Tuple(Rc::new(read)))
             }
-            ("Id", Value::Int(position)) => usize::try_from(position)
-                .map(|slot| Value::Id(Id { slot, generation: 0 }))
-                .map_err(|_| format!("{} is out of range", place(at))),
+            ("Id", Value::Int(position)) => {
+                let tag = self.load_tag(&written(&arg(0)?));
+                u32::try_from(position)
+                    .map(|slot| Value::Id(Id { slot, generation: 0, tag }))
+                    .map_err(|_| format!("{} is out of range", place(at)))
+            }
             ("Table", Value::List(items)) => {
                 let item = arg(0)?;
                 let mut slots = Vec::new();
@@ -110,7 +113,8 @@ impl Interp<'_> {
                     slots.push(Slot { generation: 0, value: Some(value) });
                 }
                 self.tables_read.push(at.to_owned());
-                Ok(Value::Table(Rc::new(Table::new(slots))))
+                let tag = self.load_tag(&written(&item));
+                Ok(Value::Table(Rc::new(Table::tagged(slots, tag))))
             }
             (name, value) if self.has_shape(name) => {
                 let read = self.decode(value, &Self::shape_of(ty), at, span)?;
@@ -120,6 +124,11 @@ impl Interp<'_> {
             (name, Value::Dict(pairs)) if self.is_struct(name) => self.decode_struct(ty, &pairs, at, span),
             (_, value) => Err(misfit(at, &written(ty), &value)),
         }
+    }
+
+    /// The tag a load gives the `Table` of `kind` it reads, and its `Id`s: new for each load.
+    fn load_tag(&mut self, kind: &str) -> u64 {
+        *self.load_tags.entry(kind.to_owned()).or_insert_with(crate::value::new_tag)
     }
 
     fn is_struct(&self, name: &str) -> bool {

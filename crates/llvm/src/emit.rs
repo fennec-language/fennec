@@ -1663,7 +1663,12 @@ impl Emit<'_, '_, '_> {
             | "intrinsics.text_size"
             | "intrinsics.text_part"
             | "intrinsics.text_of_code" => self.text_by_place(dest, name, args, span),
-            "intrinsics.id_key" | "intrinsics.id_at" => self.id_intrinsic(dest, name, args),
+            "intrinsics.id_key"
+            | "intrinsics.id_at"
+            | "intrinsics.id_tag"
+            | "intrinsics.table_tag"
+            | "intrinsics.new_tag"
+            | "intrinsics.table_tagged" => self.id_intrinsic(dest, name, args),
             "intrinsics.stop" => {
                 let (value, kind) = self.operand(first.ok_or("no argument")?)?;
                 let block =

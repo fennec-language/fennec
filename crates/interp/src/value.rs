@@ -175,11 +175,29 @@ pub(crate) struct Lambda {
 }
 
 /// Slots that hand out generational IDs, so a stale ID never finds the wrong thing.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct Table {
     pub(crate) slots: Vec<Slot>,
     /// No slot below this one is free, so finding the first free slot needn't look at them.
     free_from: usize,
+    /// Which `Table` this is, so an `Id` from another finds nothing in it. A copy keeps it, since
+    /// it holds the same items in the same slots.
+    pub(crate) tag: u64,
+}
+
+/// The next `Table`'s tag. Tags count up from 1 for the whole run and are never used again; a
+/// 64-bit count can't run out.
+static NEXT_TAG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A tag no `Table` has had.
+pub(crate) fn new_tag() -> u64 {
+    NEXT_TAG.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+impl Default for Table {
+    fn default() -> Table {
+        Table::new(Vec::new())
+    }
 }
 
 /// Maps are the same when their slots are: where one's looking for a free slot is no part of it.
@@ -195,29 +213,66 @@ pub(crate) struct Slot {
     pub(crate) value: Option<Value>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Id {
-    pub(crate) slot: usize,
+    /// A `u32`, so an `Id` with its tag is as big as a `Value`'s other contents and no bigger.
+    pub(crate) slot: u32,
     pub(crate) generation: u32,
+    /// The tag of the `Table` that handed it out.
+    pub(crate) tag: u64,
+}
+
+// An `Id` stays as big as a `str`'s handle, so holding one doesn't make every `Value` bigger.
+const _: () = assert!(size_of::<Id>() == 16);
+
+impl Id {
+    pub(crate) fn new(slot: usize, generation: u32, tag: u64) -> Id {
+        Id { slot: u32::try_from(slot).unwrap_or(u32::MAX), generation, tag }
+    }
+
+    /// Where its slot is.
+    pub(crate) fn at(self) -> usize {
+        self.slot as usize
+    }
 }
 
 impl Table {
+    /// A `Table` with a tag of its own.
     pub(crate) fn new(slots: Vec<Slot>) -> Table {
-        Table { slots, free_from: 0 }
+        Table::tagged(slots, new_tag())
+    }
+
+    pub(crate) fn tagged(slots: Vec<Slot>, tag: u64) -> Table {
+        Table { slots, free_from: 0, tag }
     }
 
     pub(crate) fn get(&self, id: Id) -> Option<&Value> {
+        if id.tag != self.tag {
+            return None;
+        }
         self.slots
-            .get(id.slot)
+            .get(id.at())
             .filter(|slot| slot.generation == id.generation)
             .and_then(|slot| slot.value.as_ref())
     }
 
     pub(crate) fn get_mut(&mut self, id: Id) -> Option<&mut Value> {
+        if id.tag != self.tag {
+            return None;
+        }
         self.slots
-            .get_mut(id.slot)
+            .get_mut(id.at())
             .filter(|slot| slot.generation == id.generation)
             .and_then(|slot| slot.value.as_mut())
+    }
+
+    /// What finding nothing for `id` says when it has to be there.
+    pub(crate) fn missing(&self, id: Id) -> &'static str {
+        if id.tag == self.tag {
+            "this Id refers to something that's been removed"
+        } else {
+            "this Id is from another Table"
+        }
     }
 
     /// Puts a value in the first free slot, or a new one.
@@ -228,20 +283,23 @@ impl Table {
         if let Some(slot) = at.and_then(|at| self.slots.get_mut(at)) {
             slot.generation += 1;
             slot.value = Some(value);
-            return Id { slot: self.free_from - 1, generation: slot.generation };
+            return Id::new(self.free_from - 1, slot.generation, self.tag);
         }
         self.slots.push(Slot { generation: 0, value: Some(value) });
-        Id { slot: self.slots.len() - 1, generation: 0 }
+        Id::new(self.slots.len() - 1, 0, self.tag)
     }
 
     pub(crate) fn remove(&mut self, id: Id) -> Option<Value> {
+        if id.tag != self.tag {
+            return None;
+        }
         let removed = self
             .slots
-            .get_mut(id.slot)
+            .get_mut(id.at())
             .filter(|slot| slot.generation == id.generation)
             .and_then(|slot| slot.value.take());
         if removed.is_some() {
-            self.free_from = self.free_from.min(id.slot);
+            self.free_from = self.free_from.min(id.at());
         }
         removed
     }
@@ -249,7 +307,7 @@ impl Table {
     /// Live entries, in slot order.
     pub(crate) fn entries(&self) -> impl Iterator<Item = (Id, &Value)> {
         self.slots.iter().enumerate().filter_map(|(at, slot)| {
-            slot.value.as_ref().map(|value| (Id { slot: at, generation: slot.generation }, value))
+            slot.value.as_ref().map(|value| (Id::new(at, slot.generation, self.tag), value))
         })
     }
 }

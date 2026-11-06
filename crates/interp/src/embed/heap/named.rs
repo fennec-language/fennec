@@ -92,9 +92,10 @@ fn id(instance: &Instance) -> Option<Id> {
         Value::Int(n) => Some(*n),
         _ => None,
     };
-    let slot = usize::try_from(number("slot")?).ok()?;
+    let slot = u32::try_from(number("slot")?).ok()?;
     let generation = u32::try_from(number("generation")?).ok()?;
-    Some(Id { slot, generation })
+    let tag = u64::try_from(number("tag")?).ok()?;
+    Some(Id { slot, generation, tag })
 }
 
 fn id_map(instance: &Instance) -> Option<Table> {
@@ -111,7 +112,11 @@ fn id_map(instance: &Instance) -> Option<Table> {
             Slot { generation: u32::try_from(*generation).ok()?, value: Some(item.clone()) }
         })
     });
-    Some(Table::new(slots.collect::<Option<_>>()?))
+    let tag = match instance.field("tag")? {
+        Value::Int(tag) => u64::try_from(*tag).ok()?,
+        _ => return None,
+    };
+    Some(Table::tagged(slots.collect::<Option<_>>()?, tag))
 }
 
 /// What `write_named` did.
@@ -172,8 +177,7 @@ pub(super) fn write_named(
             written.into()
         }
         (Element::Struct { name, .. }, Value::Id(id)) if name.as_ref() == "Id" => {
-            let Ok(slot) = u64::try_from(id.slot) else { return Written::Failed };
-            words.extend([slot, u64::from(id.generation)]);
+            words.extend([u64::from(id.slot), u64::from(id.generation), id.tag]);
             Written::Done
         }
         (Element::Struct { name, fields }, Value::Table(map)) if is_id_map(name) => {
@@ -213,5 +217,6 @@ fn write_id_map(
     words.push(u64::try_from(live).ok()?);
     // Where to start looking for a free slot: from the first is always right.
     words.push(0);
+    words.push(map.tag);
     Some(())
 }

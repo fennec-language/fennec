@@ -267,6 +267,7 @@ impl Interp<'_> {
         let read = self.format_builtin(name, args, span)?;
         let Value::Ok(value) = read else { return Ok(read) };
         self.tables_read.clear();
+        self.load_tags.clear();
         let read = self.decode(value.as_ref().clone(), ty, "", span);
         // How this call reads is over once it has.
         self.reading = Reading::default();

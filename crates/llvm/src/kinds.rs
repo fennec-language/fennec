@@ -72,7 +72,11 @@ pub(crate) fn define_named(ty: &Type, layouts: Option<&Layouts>, out: &mut BTree
         Type::Id(_) => {
             out.insert(
                 "Id".to_owned(),
-                Written::Struct(vec![field("slot", &Type::Int), field("generation", &Type::Int)]),
+                Written::Struct(vec![
+                    field("slot", &Type::Int),
+                    field("generation", &Type::Int),
+                    field("tag", &Type::Int),
+                ]),
             );
         }
         Type::Table(item) => {
@@ -82,6 +86,7 @@ pub(crate) fn define_named(ty: &Type, layouts: Option<&Layouts>, out: &mut BTree
                 field("generations", &Type::List(Box::new(Type::Int))),
                 field("live", &Type::Int),
                 field("free_from", &Type::Int),
+                field("tag", &Type::Int),
             ];
             out.insert(format!("Table[{item}]"), Written::Struct(fields));
         }

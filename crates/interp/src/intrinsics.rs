@@ -5,7 +5,7 @@
 use fennec_syntax::{BinOp, Diagnostic, Span, UnaryOp};
 
 use crate::ops;
-use crate::value::{Id, Value};
+use crate::value::{Id, Table, Value};
 
 /// Runs the intrinsic named `name` on its arguments.
 pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
@@ -56,12 +56,18 @@ pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagn
             part.map(Value::str).ok_or_else(|| wrong(name, span))
         }
         ("id_key", [Value::Id(id)]) => {
-            let slot = i64::try_from(id.slot).unwrap_or(i64::MAX);
+            let slot = i64::from(id.slot);
             Ok(Value::Int((slot << 32) | i64::from(id.generation)))
         }
-        ("id_at", [Value::Int(position)]) => {
-            let slot = usize::try_from(*position).map_err(|_| wrong(name, span))?;
-            Ok(Value::Id(Id { slot, generation: 0 }))
+        ("id_at", [Value::Int(position), Value::Int(tag)]) => {
+            let slot = u32::try_from(*position).map_err(|_| wrong(name, span))?;
+            Ok(Value::Id(Id { slot, generation: 0, tag: tag.cast_unsigned() }))
+        }
+        ("id_tag", [Value::Id(id)]) => Ok(Value::Int(id.tag.cast_signed())),
+        ("table_tag", [Value::Table(table)]) => Ok(Value::Int(table.tag.cast_signed())),
+        ("new_tag", []) => Ok(Value::Int(crate::value::new_tag().cast_signed())),
+        ("table_tagged", [Value::Int(tag)]) => {
+            Ok(Value::Table(std::rc::Rc::new(Table::tagged(Vec::new(), tag.cast_unsigned()))))
         }
         ("stop", [Value::Str(message)]) => Err(Diagnostic::new(message.to_string(), span)),
         _ => Err(wrong(name, span)),

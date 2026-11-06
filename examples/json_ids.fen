@@ -112,6 +112,15 @@ test "an Id whose Table the text leaves out isn't loaded as a bare position":
         == "`selected[0]` is an Id, but the text has no `Table[Unit]` for it to be in"
     )
 
+test "each load makes a Table of its own, so its Ids find nothing in another load's":
+    text = "{\"units\": [{\"name\": \"ash\", \"health\": 10}], \"selected\": [0]}"
+    first = json.loads[World](text)?
+    second = json.loads[World](text)?
+    ash = first.selected[0]
+    assert ash in first.units and ash not in second.units
+    assert second.units.get(ash) is None
+    assert second.units[second.selected[0]].name == "ash"
+
 def main(stdout: Stdout):
     mut world = World()
     ash = world.units.add(Unit(name="ash", health=10))

@@ -936,6 +936,12 @@ fn children(state: &State, block: &[u64]) -> Vec<u64> {
     found
 }
 
+/// A new `Table`'s tag: the next of one count for the whole process, which never comes round
+/// again, so an `Id` from another `Table` finds nothing.
+pub extern "C" fn new_tag() -> i64 {
+    crate::value::new_tag().cast_signed()
+}
+
 /// A new block of a shape, owned once, its fields zero.
 pub extern "C" fn alloc(shape: i64) -> i64 {
     with(|state| {

@@ -94,11 +94,7 @@ fn built_and_run(
     } else {
         program
     };
-    let executable = std::env::temp_dir().join(format!(
-        "fennec-run-{}{}",
-        std::process::id(),
-        std::env::consts::EXE_SUFFIX
-    ));
+    let executable = crate::own_temp("run").with_extension(std::env::consts::EXE_EXTENSION);
     crate::aot::executable(program, &executable, false)?;
     let mut command = std::process::Command::new(&executable);
     // `args.program` is the program it ran, not where it was built to for this run.

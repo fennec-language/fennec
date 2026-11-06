@@ -91,7 +91,8 @@ pub(crate) struct Heap {
     spare_cells: Vec<usize>,
     /// What native code's run has cost so far, counted only when something will read it.
     pub(super) counts: Counts,
-    /// Whether `counts` is kept: under `FENNEC_COUNTS`, which reports it, and in tests.
+    /// Whether `counts` is kept: under `FENNEC_COUNTS`, which reports it, after `count_allocations`,
+    /// and in tests.
     counting: bool,
     /// In a program built to trace what it costs, the same for each place in its source, and the
     /// place native code said it's at last. Empty otherwise.
@@ -125,6 +126,15 @@ pub(crate) struct Heap {
     pub(super) lent_owners: HashMap<u64, i64, BuildHasherDefault<AddressHasher>>,
     /// Words copied out of one block on the way to another, kept to save making them anew.
     pub(super) scratch: Vec<u64>,
+}
+
+/// Whether heaps made from now on count what they allocate, for a caller that reads `Counts`
+/// back: `fennec dev copies --run` does. A run under `FENNEC_COUNTS` counts too.
+static COUNTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Has every run from now on count what it allocates.
+pub fn count_allocations() {
+    COUNTING.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// What a run of native code allocated and copied. Blocks that live for the whole run, and what
@@ -252,7 +262,9 @@ impl Heap {
 
     pub(crate) fn new(statics: Vec<Box<[u64]>>) -> Heap {
         let owner_bits = u64::from(super::threads::index()) << OWNER_SHIFT;
-        let counting = cfg!(test) || std::env::var_os("FENNEC_COUNTS").is_some();
+        let counting = cfg!(test)
+            || COUNTING.load(std::sync::atomic::Ordering::Relaxed)
+            || std::env::var_os("FENNEC_COUNTS").is_some();
         let mut heap = Heap { statics: statics.len(), owner_bits, counting, ..Heap::default() };
         for block in statics {
             heap.insert(block);

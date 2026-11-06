@@ -16,6 +16,7 @@ pub(crate) fn copies_in_a_run(path: &str) -> ExitCode {
     if !crate::run::check(&mut program) {
         return ExitCode::FAILURE;
     }
+    fennec_interp::embed::count_allocations();
     match fennec_jit::run_with_report(&program.module, &mut std::io::sink()) {
         Ok(report) => {
             println!("{}", ran(&report.counts));

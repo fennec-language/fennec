@@ -9,10 +9,10 @@ use fennec_ir::{FormatPart, Function, GeneratorDef, InstKind, LocalId, Operand, 
 use fennec_layout::Layouts;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
-use crate::Shared;
 use crate::analysis::{Analysis, Whole, callees, visit, whole};
 use crate::kinds::{Kind, struct_definitions};
 use crate::uniqueness::{FieldPath, Tracked, coming_in, unsettled, written_order};
+use crate::{CheckKind, CheckLeft, Shared};
 
 /// The level of processor code is built for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -110,7 +110,7 @@ pub fn emit_tracing_costs(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Sha
     emit_with(program, cpu, Shared { tracing_costs: true, ..Shared::default() })
 }
 
-fn emit_with(
+pub(crate) fn emit_with(
     program: &Program,
     cpu: Cpu,
     mut shared: Shared,
@@ -445,6 +445,7 @@ impl<'p> Module<'_, 'p> {
             taken_items: HashMap::new(),
             place_homes: HashMap::new(),
             at: (usize::MAX, usize::MAX),
+            check_kind: None,
             inside_items: Vec::new(),
             inside_slots: HashMap::new(),
             pair_slots: HashMap::new(),
@@ -516,6 +517,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) place_homes: HashMap<usize, (String, Kind, &'static str)>,
     /// The instruction being written: its block, and its place in it.
     at: (usize, usize),
+    /// What the next way out on a failure is for, when what writes it says.
+    check_kind: Option<(Span, Option<CheckKind>)>,
     /// Items of lists, by field path and index, known to be inside their lists here.
     pub(crate) inside_items: Vec<FieldPath>,
     /// Where the position each was found at is kept, negative indexes counted from the end.
@@ -1032,9 +1035,20 @@ impl Emit<'_, '_, '_> {
     }
 
     /// How a function leaves when it has failed.
-    pub(crate) fn failed_exit(&self) -> String {
+    pub(crate) fn failed_exit(&mut self) -> String {
         self.leaves.set(true);
+        // Each way out on a failure is a check: what it's for, if what writes it said so.
+        match self.check_kind.take() {
+            Some((span, Some(what))) => self.note_check(span, what),
+            Some((_, None)) => {}
+            None => self.note_runtime_check(),
+        }
         self.failed.clone()
+    }
+
+    /// Says what the next way out on a failure is for, or with `None` that it isn't a check.
+    pub(crate) fn next_check(&mut self, span: Span, what: Option<CheckKind>) {
+        self.check_kind = Some((span, what));
     }
 
     /// Leaves the function, the failure already recorded, when `failed` holds.
@@ -1047,6 +1061,15 @@ impl Emit<'_, '_, '_> {
 
     /// Calls the runtime's failure and leaves the function when `bad` holds.
     pub(crate) fn fail_if(&mut self, bad: &str, code: i64, span: Span) {
+        let what = match code {
+            OVERFLOW => Some(CheckKind::Overflow),
+            DIVISION_BY_ZERO => Some(CheckKind::DivideByZero),
+            fennec_interp::embed::checks::BAD_SHIFT => Some(CheckKind::ShiftRange),
+            // How deep the calls go is checked on the way into a function, not by what it does.
+            TOO_DEEP => None,
+            _ => Some(CheckKind::Builtin(self.failing_here())),
+        };
+        self.next_check(span, what);
         let (fail, ok) = (self.label("fail"), self.label("ok"));
         self.line(&format!("br i1 {bad}, label %{fail}, label %{ok}, !prof !0"));
         self.start_block(&ok);
@@ -1055,6 +1078,57 @@ impl Emit<'_, '_, '_> {
         let failed = self.failed_exit();
         let _ =
             writeln!(self.cold, "{fail}:\n{place}  call void @fennec_fail(i64 {code}, {args})\n  {failed}");
+    }
+
+    /// Notes a check as it's written, when checks are being noted.
+    pub(crate) fn note_check(&mut self, span: Span, what: CheckKind) {
+        if self.module.shared.noting_checks {
+            let function = self.function.name.clone();
+            self.module.shared.checks.push(CheckLeft { function, span, what });
+        }
+    }
+
+    /// What the instruction being written is, for a check the runtime makes in it.
+    fn failing_here(&self) -> String {
+        let function = self.function;
+        let inst = function.blocks.get(self.at.0).and_then(|block| block.insts.get(self.at.1));
+        match inst.map(|inst| &inst.kind) {
+            Some(InstKind::Builtin { name, .. }) => name.clone(),
+            Some(InstKind::Format { .. }) => "a format".to_owned(),
+            Some(InstKind::Slice { .. }) => "a slice".to_owned(),
+            Some(InstKind::Constant { .. }) => "a constant".to_owned(),
+            Some(InstKind::Lock { .. } | InstKind::LockAll { .. }) => "a lock".to_owned(),
+            _ => "a check".to_owned(),
+        }
+    }
+
+    /// Notes the check the runtime made in what was just called, which leaves when it failed.
+    /// What a call to a function fails with is noted in that function, and a call through a
+    /// closure or into a generator in what runs there.
+    pub(crate) fn note_runtime_check(&mut self) {
+        if !self.module.shared.noting_checks {
+            return;
+        }
+        let function = self.function;
+        let Some(inst) = function.blocks.get(self.at.0).and_then(|block| block.insts.get(self.at.1)) else {
+            return;
+        };
+        let what = match &inst.kind {
+            InstKind::Call { .. } | InstKind::CallClosure { .. } | InstKind::Resume { .. } => return,
+            InstKind::Binary { op: BinOp::Pow, .. } => CheckKind::Overflow,
+            InstKind::GetIndex { object, .. } => match function.type_of(object) {
+                Some(
+                    fennec_check::Type::Str
+                    | fennec_check::Type::Bytes
+                    | fennec_check::Type::List(_)
+                    | fennec_check::Type::Array(..),
+                ) => CheckKind::Bounds,
+                _ => CheckKind::MissingKey,
+            },
+            InstKind::SetIndex { .. } => CheckKind::MissingKey,
+            _ => CheckKind::Builtin(self.failing_here()),
+        };
+        self.note_check(inst.span, what);
     }
 
     /// A value: a number as itself, a block's address, or the slot of something in memory.
@@ -1352,7 +1426,8 @@ impl Emit<'_, '_, '_> {
             BinOp::Mul => self.checked("smul", a, b, span),
             BinOp::FloorDiv | BinOp::Mod => self.division(op, (a, b), rhs, span),
             BinOp::Div => {
-                if !matches!(rhs, Operand::Int(1..)) {
+                // A number written out that isn't zero needs no check.
+                if matches!(rhs, Operand::Local(_) | Operand::Int(0)) {
                     let zero = self.temp();
                     self.line(&format!("{zero} = icmp eq i64 {b}, 0"));
                     self.fail_if(&zero, DIVISION_BY_ZERO, span);
@@ -1374,9 +1449,11 @@ impl Emit<'_, '_, '_> {
                 temp
             }
             BinOp::ShiftLeft | BinOp::ShiftRight => {
-                let outside = self.temp();
-                self.line(&format!("{outside} = icmp uge i64 {b}, 64"));
-                self.fail_if(&outside, fennec_interp::embed::checks::BAD_SHIFT, span);
+                if !matches!(rhs, Operand::Int(0..64)) {
+                    let outside = self.temp();
+                    self.line(&format!("{outside} = icmp uge i64 {b}, 64"));
+                    self.fail_if(&outside, fennec_interp::embed::checks::BAD_SHIFT, span);
+                }
                 let word = if op == BinOp::ShiftLeft { "shl" } else { "ashr" };
                 let temp = self.temp();
                 self.line(&format!("{temp} = {word} i64 {a}, {b}"));
@@ -1413,10 +1490,13 @@ impl Emit<'_, '_, '_> {
             }
             return result;
         }
-        if !matches!(rhs, Operand::Int(1..)) {
+        // A number written out is checked only for what it can be: zero, or -1 with the lowest int.
+        if matches!(rhs, Operand::Local(_) | Operand::Int(0)) {
             let zero = self.temp();
             self.line(&format!("{zero} = icmp eq i64 {b}, 0"));
             self.fail_if(&zero, DIVISION_BY_ZERO, span);
+        }
+        if matches!(rhs, Operand::Local(_) | Operand::Int(-1)) {
             let (minus_one, lowest, both) = (self.temp(), self.temp(), self.temp());
             self.line(&format!("{minus_one} = icmp eq i64 {b}, -1"));
             self.line(&format!("{lowest} = icmp eq i64 {a}, {}", i64::MIN));

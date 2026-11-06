@@ -1,0 +1,6 @@
+# A function reaches outside itself only through its signature, so `greet` needs a `stdout`.
+def greet(name: str):
+    stdout.print(f"hello, {name}")
+
+def main(stdout: Stdout):
+    greet("Ash")

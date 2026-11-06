@@ -36,6 +36,7 @@ mod builders;
 mod builtins;
 mod bytes;
 mod capabilities;
+mod checks_left;
 mod closures;
 mod conversions;
 mod dicts;
@@ -61,6 +62,7 @@ use fennec_ir::{EnumDef, Program};
 use fennec_layout::{ListItem, Written, generator_definition};
 
 pub use build::{Built, Tools, compile, compile_whole, sanitize_flag};
+pub use checks_left::{CheckKind, CheckLeft, checks_left};
 pub use emit::{Cpu, Unit, emit, emit_for, emit_traced, emit_tracing_costs};
 pub use entry::{Image, entry, tests_entry};
 pub use fennec_layout::Layouts;

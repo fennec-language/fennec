@@ -2052,36 +2052,22 @@ pub(crate) fn is_socket_method(name: &str) -> bool {
     name.starts_with("Connection.") || name.starts_with("Server.") || name.starts_with("UdpSocket.")
 }
 
-fn fails_itself(function: &Function, known: &Analysis) -> bool {
-    let inst_fails = |inst: &InstKind| match inst {
-        InstKind::Binary { dest, op, lhs, rhs } => match (function.type_of(lhs), op) {
-            (Some(Type::Int), BinOp::Add | BinOp::Sub | BinOp::Mul) => !known.is_safe(*dest),
-            (Some(Type::Int), BinOp::FloorDiv | BinOp::Mod | BinOp::Div) => !matches!(rhs, Operand::Int(1..)),
-            (Some(Type::Float), BinOp::Div | BinOp::FloorDiv | BinOp::Mod) => !known.is_nonzero(rhs),
-            // Items of a list may order by a type's own `<`, which can fail.
-            (Some(Type::Int), BinOp::Pow | BinOp::ShiftLeft | BinOp::ShiftRight)
-            | (Some(Type::List(_)), BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => true,
-            _ => false,
-        },
-        InstKind::Unary { dest, op: UnaryOp::Neg, value } => {
-            function.type_of(value) == Some(Type::Int) && !known.is_safe(*dest)
-        }
-        // A capability's method runs in the runtime, which can fail it, as when it's narrowed.
-        InstKind::Builtin { args, .. }
-            if args.first().and_then(|first| function.type_of(first)).is_some_and(
-                |ty| matches!(&ty, Type::Named(name) if fennec_layout::Cap::named(name).is_some()),
-            ) =>
-        {
-            true
-        }
-        // A connection's or server's method runs in the runtime too.
-        InstKind::Builtin { name, .. } if is_socket_method(name) => true,
-        InstKind::Builtin { name, .. } if name.starts_with("crypto.") => true,
-        InstKind::Builtin { name, .. } if name.starts_with("json.") || name.starts_with("toml.") => true,
-        InstKind::Builtin { name, .. } => {
-            matches!(
-                name.as_str(),
-                "math.sqrt"
+/// Whether a builtin can fail where it runs: in the runtime, or by a check of its own.
+pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -> bool {
+    // A capability's method runs in the runtime, which can fail it, as when it's narrowed.
+    let capability = args
+        .first()
+        .and_then(|first| function.type_of(first))
+        .is_some_and(|ty| matches!(&ty, Type::Named(name) if fennec_layout::Cap::named(name).is_some()));
+    // A connection's or server's method runs in the runtime too.
+    capability
+        || is_socket_method(name)
+        || name.starts_with("crypto.")
+        || name.starts_with("json.")
+        || name.starts_with("toml.")
+        || matches!(
+            name,
+            "math.sqrt"
                     | "Buffer.pop"
                     | "Buffer.insert"
                     | "Buffer.remove"
@@ -2127,8 +2113,24 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "parallel.peer"
                     | "parallel.map"
                     | "parallel.sum"
-            )
+        )
+}
+
+fn fails_itself(function: &Function, known: &Analysis) -> bool {
+    let inst_fails = |inst: &InstKind| match inst {
+        InstKind::Binary { dest, op, lhs, rhs } => match (function.type_of(lhs), op) {
+            (Some(Type::Int), BinOp::Add | BinOp::Sub | BinOp::Mul) => !known.is_safe(*dest),
+            (Some(Type::Int), BinOp::FloorDiv | BinOp::Mod | BinOp::Div) => !matches!(rhs, Operand::Int(1..)),
+            (Some(Type::Float), BinOp::Div | BinOp::FloorDiv | BinOp::Mod) => !known.is_nonzero(rhs),
+            // Items of a list may order by a type's own `<`, which can fail.
+            (Some(Type::Int), BinOp::Pow | BinOp::ShiftLeft | BinOp::ShiftRight)
+            | (Some(Type::List(_)), BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => true,
+            _ => false,
+        },
+        InstKind::Unary { dest, op: UnaryOp::Neg, value } => {
+            function.type_of(value) == Some(Type::Int) && !known.is_safe(*dest)
         }
+        InstKind::Builtin { name, args, .. } => builtin_fails(function, name, args),
         InstKind::GetIndex { object: Operand::Local(list), index, .. } => !known.inside(*list, index),
         InstKind::SetIndex { object, path, index, .. } => !path.is_empty() || !known.inside(*object, index),
         InstKind::GetIndex { .. }

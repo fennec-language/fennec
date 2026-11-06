@@ -38,3 +38,7 @@ def main(stdout: Stdout):
     stdout.print(bumped(41), bumped("fox"))
     picked: Shape = Square(side=2.0)
     stdout.print(picked == shapes[1], picked == shapes[0])
+    # A union is a dict key when each type in it is: it hashes by its type, then its value.
+    mut counts: dict[int | str, int] = {1: 2, "fox": 3}
+    counts[1] += 10
+    stdout.print(counts[1], counts["fox"], counts.get("owl") else 0)

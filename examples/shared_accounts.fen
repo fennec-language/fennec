@@ -15,10 +15,10 @@ shared Account:
         self.total
 
 def transfer(source: Account, target: Account, amount: int) -> bool:
-    with source, target as mut x, mut y:
-        if x.total < amount: return False
-        x.total -= amount
-        y.add(amount)
+    with source as ref paying, target as ref paid:
+        if paying.total < amount: return False
+        paying.total -= amount
+        paid.add(amount)
     True
 
 def main(stdout: Stdout):

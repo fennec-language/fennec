@@ -121,6 +121,9 @@ impl Emit<'_, '_, '_> {
 
     /// The address of a key's entry, or zero.
     fn find(&mut self, dict: &str, word: Word, key: &str) -> String {
+        if word == Word::Float {
+            return self.find_float_key(dict, key);
+        }
         // A key held as a header is found by its bytes here, as a slice's are: its inline bytes
         // are zero after its length, as a block's text is, so they hash the same.
         if word == Word::Text {
@@ -180,6 +183,28 @@ impl Emit<'_, '_, '_> {
         entry
     }
 
+    /// The entry of a float key, given as its bits. Floats have one equality, with `-0.0` the same
+    /// as `0.0` and every NaN the same, so they're hashed and compared as one form of each, while
+    /// the entry keeps the key as it was written.
+    fn find_float_key(&mut self, dict: &str, key: &str) -> String {
+        let nan = f64::NAN.to_bits().cast_signed();
+        self.module.add_helper(
+            "fen_float_key",
+            format!(
+                "define internal i64 @fen_float_key(i64 %bits) #0 {{\nentry:\n  %value = bitcast i64 %bits to double\n  %zero = fcmp oeq double %value, 0x0000000000000000\n  %nan = fcmp uno double %value, %value\n  %plain = select i1 %zero, i64 0, i64 %bits\n  %key = select i1 %nan, i64 {nan}, i64 %plain\n  ret i64 %key\n}}\n\n"
+            ),
+        );
+        let mut text = find_start("fen_find_float", "i64");
+        text += "  %other = load i64, ptr %other_at\n  %other_key = call i64 @fen_float_key(i64 %other)\n  %same = icmp eq i64 %other_key, %key\n  br i1 %same, label %found, label %next\n}\n\n";
+        self.module.add_helper("fen_find_float", text);
+        let wanted = self.temp();
+        self.line(&format!("{wanted} = call i64 @fen_float_key(i64 {key})"));
+        let hash = self.hash(Word::Int, &wanted);
+        let entry = self.temp();
+        self.line(&format!("{entry} = call ptr @fen_find_float(ptr {dict}, i64 {wanted}, i64 {hash})"));
+        entry
+    }
+
     /// The entry of the string key with these bytes in a dict whose keys are held as headers,
     /// or null: hashed as a block's text is, and compared by bytes, inline keys where they lie.
     fn find_text_key(&mut self, dict: &str, (bytes, from): (&str, KeyBytes), length: &str) -> String {
@@ -231,8 +256,10 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{wide} = zext i1 {value} to i64"));
             return Ok(wide);
         }
-        if matches!(word, Word::Float) {
-            return Err("it uses a float as a key".to_owned());
+        if word == Word::Float {
+            let bits = self.temp();
+            self.line(&format!("{bits} = bitcast double {value} to i64"));
+            return Ok(bits);
         }
         Ok(value)
     }

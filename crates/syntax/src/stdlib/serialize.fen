@@ -133,6 +133,12 @@ interface Deserializer:
     def ordered(ref self, name: str) -> bool fails ParseError
     def end_ordered(ref self)
 
+    ## Starts the pairs of a map whose number comes first, as a format that saves it gives them,
+    ## and gives that number, or -1 for a format that doesn't, which `map` reads instead. Each key
+    ## and value is then read with `value`, and `end_map` finishes it.
+    def map_count(ref self) -> int fails ParseError
+    def end_map(ref self)
+
     ## Which of `cases` comes next, as a place in it: each its name and whether it has data. One
     ## with data then reads its fields as a struct's, and `end_case` finishes it.
     def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError
@@ -192,6 +198,14 @@ extend dict[K: Hashable & Serializable, V: Serializable]:
 extend dict[K: Hashable & Deserializable, V: Deserializable]:
     def deserialize(ref src: Deserializer) -> dict[K, V] fails ParseError:
         mut found = dict[K, V]()
+        count = src.map_count()?
+        if count >= 0:
+            # Read straight into the dict, with no list of pairs on the way.
+            for _ in range(count):
+                key = src.value[K]()?
+                found[key] = src.value[V]()?
+            src.end_map()
+            return found
         for key, value in src.map[K, V]()?:
             found[key] = value
         found

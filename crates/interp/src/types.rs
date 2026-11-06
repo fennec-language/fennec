@@ -233,8 +233,11 @@ impl Interp<'_> {
     pub(crate) fn replace(&mut self, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
         let mut args = args.into_iter();
         let Some(CallArg { value: Value::Instance(instance), name: None, .. }) = args.next() else {
-            return Err(Diagnostic::new("`copy` with fields takes a struct value, then the fields to change", span)
-                .with_help("like `copy(enemy, health=50)`"));
+            return Err(Diagnostic::new(
+                "`copy` with fields takes a struct value, then the fields to change",
+                span,
+            )
+            .with_help("like `copy(enemy, health=50)`"));
         };
         let mut changed = instance.as_ref().clone();
         for arg in args {

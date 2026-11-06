@@ -770,7 +770,7 @@ impl<'a> Lowering<'a> {
         if let ExprKind::Name(name) = &callee.kind
             && (name == "replace" || name == "copy" && args.len() > 1)
             && self.lookup(name).is_none()
-            && !self.context.functions.contains(name)
+            && !self.context.functions.contains(name.as_str())
         {
             return self.replace(args, expr.span).map(Some);
         }

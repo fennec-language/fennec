@@ -1922,13 +1922,13 @@ def f(p: P?) -> int:
 }
 
 #[test]
-fn replace_copies_and_changes_fields() {
+fn copy_with_fields_copies_and_changes_them() {
     let source = "struct P:
     x: int
     y: int? = None
 
 def f(p: P) -> P:
-    replace(p, y=1)
+    copy(p, y=1)
 ";
     assert_eq!(
         printed(source, "f").unwrap(),

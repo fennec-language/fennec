@@ -39,13 +39,13 @@ enum Tile:
 def tile_of(symbol: str) -> Tile:
     match symbol:
         case "#":
-            Tile.Wall
+            .Wall
         case "^":
-            Tile.Forest
+            .Forest
         case "~":
-            Tile.Water
+            .Water
         case _:
-            Tile.Floor
+            .Floor
 
 struct Map:
     tiles: Grid[Tile]

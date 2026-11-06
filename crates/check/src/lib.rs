@@ -319,17 +319,6 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
 }
 
 impl Checked {
-    /// Where a case's enum is written though the type expected there says it already, like `Color`
-    /// in `paint(Color.Red)`, which could be `paint(.Red)`.
-    pub fn named_cases(&self) -> impl Iterator<Item = Span> + '_ {
-        self.named_cases.iter().map(|(start, end)| Span { start: *start, end: *end })
-    }
-
-    /// The `case`s that name a case of what's matched without its dot, like `case Red:`.
-    pub fn undotted_cases(&self) -> impl Iterator<Item = Span> + '_ {
-        self.undotted_cases.iter().map(|(start, end)| Span { start: *start, end: *end })
-    }
-
     /// The signatures, holding the type of every expression too, for compilers to use.
     fn into_signatures(self) -> Signatures {
         Signatures { types: self.types, ..self.signatures }
@@ -351,10 +340,6 @@ pub struct Checked {
     pub types: Types,
     /// The enum the expected type chose for each leading-dot case more than one enum has.
     cases: BTreeMap<(u32, u32), String>,
-    /// Where a case's enum is written though the type expected there says it already.
-    named_cases: BTreeSet<(u32, u32)>,
-    /// The `case`s that name a case of what's matched without its dot, by the span of the `case`.
-    undotted_cases: BTreeSet<(u32, u32)>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.
     float_sums: BTreeSet<(u32, u32)>,
     /// The defaults each call leaves out, to write into it.

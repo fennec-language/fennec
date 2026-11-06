@@ -13,9 +13,9 @@ enum Team:
     def other(self) -> Team:
         match self:
             case .Red:
-                Team.Blue
+                .Blue
             case .Blue:
-                Team.Red
+                .Red
 
     def name(self) -> str:
         match self:

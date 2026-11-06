@@ -187,21 +187,21 @@ def xor_d008(value: int) -> int:
 
 def simulate() -> (int, int):
     mut scheduler = Scheduler(tasks=[], packets=[])
-    scheduler.add_task(Kind.Idle, 0, NONE, 1, 10000)
+    scheduler.add_task(.Idle, 0, NONE, 1, 10000)
     scheduler.tasks[IDLE].suspended = False
     work = scheduler.add_packet(NONE, WORKER, WORK_PACKET)
     work_queue = scheduler.add_packet(work, WORKER, WORK_PACKET)
-    scheduler.add_task(Kind.Worker, 1000, work_queue, HANDLER_A, 0)
+    scheduler.add_task(.Worker, 1000, work_queue, HANDLER_A, 0)
     mut queue = NONE
     for _ in range(3):
         queue = scheduler.add_packet(queue, DEVICE_A, DEVICE_PACKET)
-    scheduler.add_task(Kind.Handler, 2000, queue, NONE, NONE)
+    scheduler.add_task(.Handler, 2000, queue, NONE, NONE)
     queue = NONE
     for _ in range(3):
         queue = scheduler.add_packet(queue, DEVICE_B, DEVICE_PACKET)
-    scheduler.add_task(Kind.Handler, 3000, queue, NONE, NONE)
-    scheduler.add_task(Kind.Device, 4000, NONE, NONE, 0)
-    scheduler.add_task(Kind.Device, 5000, NONE, NONE, 0)
+    scheduler.add_task(.Handler, 3000, queue, NONE, NONE)
+    scheduler.add_task(.Device, 4000, NONE, NONE, 0)
+    scheduler.add_task(.Device, 5000, NONE, NONE, 0)
     scheduler.schedule()
     (scheduler.queued, scheduler.holds)
 

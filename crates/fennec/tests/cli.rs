@@ -1425,8 +1425,8 @@ def main(stdout: Stdout):
         case Ok(_): stdout.print(\"fine\")
 ";
 
-/// `fennec fix` writes `.Case` where the type is known, and the program does what it did, on every
-/// engine.
+/// A case written with its type where the type is known doesn't compile, and `fennec fix` writes
+/// `.Case` there, which runs the same on every engine.
 #[test]
 fn fix_writes_leading_dots_where_the_type_is_known() {
     let dir = std::env::temp_dir().join(format!("fennec-cli-{}-short-cases", std::process::id()));
@@ -1434,21 +1434,20 @@ fn fix_writes_leading_dots_where_the_type_is_known() {
     let program = dir.join("cases.fen");
     let path = program.to_string_lossy().into_owned();
     std::fs::write(&program, CASES_BEFORE).unwrap();
-    let before = fennec(&["run", "--interp", &path], "").unwrap();
+    let before = fennec(&["check", &path], "").unwrap();
     let fixed = fennec(&["fix", &path], "").unwrap();
     let written = std::fs::read_to_string(&program).unwrap();
     let again = fennec(&["fix", &path], "").unwrap();
-    let after: Vec<_> = [["run", "--interp"], ["run", "--jit"]]
-        .map(|how| fennec(&[how[0], how[1], &path], "").unwrap())
-        .into();
+    let [interpreted, jitted] =
+        [["run", "--interp"], ["run", "--jit"]].map(|how| fennec(&[how[0], how[1], &path], "").unwrap());
     std::fs::remove_dir_all(&dir).unwrap();
-    assert!(before.status.success(), "{}", text(&before.stderr));
+    assert!(!before.status.success());
+    assert!(text(&before.stderr).contains("the type here is known, so write"), "{}", text(&before.stderr));
     assert!(fixed.status.success(), "{}", text(&fixed.stderr));
     assert_eq!(written, CASES_AFTER);
     assert!(again.status.success() && again.stdout.is_empty(), "{}", text(&again.stdout));
-    for run in after {
-        assert_eq!(text(&run.stdout), text(&before.stdout), "{}", text(&run.stderr));
-    }
+    assert!(interpreted.status.success(), "{}", text(&interpreted.stderr));
+    assert_eq!(text(&jitted.stdout), text(&interpreted.stdout), "{}", text(&jitted.stderr));
 }
 
 /// In a kit, the leading dot of a case its own file declares comes to the checker with its enum

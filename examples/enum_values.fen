@@ -132,7 +132,7 @@ def main(stdout: Stdout):
         first == second,
         first != second,
         second == .Step(.South, 2),
-        second == Move.Quit,
+        second == .Quit,
         Move.Wait() == .Wait(1),
     )
     stdout.print(Token.Decimal(0.0) == .Decimal(2.0), Token.Decimal(1.5) == .Decimal(1.5))

@@ -34,7 +34,7 @@ def grown(tree: Tree, n: int) -> Tree:
         case .Many(items):
             mut mine = items
             mine.append(Tree.Leaf(value=n))
-            Tree.Many(items=mine)
+            .Many(items=mine)
         case _:
             tree
 
@@ -46,7 +46,7 @@ def main(stdout: Stdout):
     stdout.print(totals[0], totals[31], totals.len())
     made = [grown(shared_tree, n) for n in parallel(range(32))]
     stdout.print(sum(total(tree) for tree in made), total(shared_tree))
-    boxes = [Box(tree=shared_tree, tag=long), Box(tree=Tree.Leaf(value=9), tag="t")]
+    boxes = [Box(tree=shared_tree, tag=long), Box(tree=.Leaf(value=9), tag="t")]
     seen = sorted([total(boxes[n % 2].tree) + boxes[n % 2].tag.len() for n in parallel(range(32))])
     stdout.print(seen[0], seen[31])
     mut owned = [Points(xs=[1, 2], label=long), Points(xs=[3], label="p")]

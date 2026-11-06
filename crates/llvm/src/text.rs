@@ -972,6 +972,7 @@ impl Emit<'_, '_, '_> {
     }
 
     pub(crate) fn leave_if_failed(&mut self) {
+        self.note_runtime_check();
         let flag_at = self.failure_flag();
         let (flag, failed) = (self.temp(), self.temp());
         self.line(&format!("{flag} = load i8, ptr {flag_at}"));
@@ -1058,6 +1059,8 @@ impl Emit<'_, '_, '_> {
         self.declare("declare void @fennec_no_match(i64, i64, i64) #1");
         let (from, to) = (i64::from(span.start), i64::from(span.end));
         self.line(&format!("call void @fennec_no_match(i64 {handle}, i64 {from}, i64 {to})"));
+        // A match the checker saw covers everything, so this is never a check of the program's.
+        self.next_check(span, None);
         let failed = self.failed_exit();
         self.line(&failed);
         Ok(())

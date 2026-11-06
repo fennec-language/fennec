@@ -96,6 +96,11 @@ pub struct Shared {
     pub tracing_costs: bool,
     /// What's at each place that says so, by where it starts in its file.
     pub sites: BTreeMap<u32, String>,
+    /// Whether each check the code is written with is noted in `checks`, as it's written.
+    pub noting_checks: bool,
+    /// The checks written, when they're noted: the same one more than once if its function is
+    /// copied into callers.
+    pub checks: Vec<CheckLeft>,
 }
 
 /// The layouts of everything a program defines, generic types' copies included, and of the

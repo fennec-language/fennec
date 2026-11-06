@@ -237,6 +237,8 @@ impl<'p> Emit<'_, '_, 'p> {
             self.line(line.trim_start());
         }
         self.line(&format!("call void @fennec_stop(ptr {text}, {args})"));
+        // Stopping is what the program says to do, not a check.
+        self.next_check(span, None);
         let failed = self.failed_exit();
         self.line(&failed);
     }

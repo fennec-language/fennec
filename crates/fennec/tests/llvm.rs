@@ -1739,6 +1739,59 @@ fn reading_a_string_that_isnt_ascii_in_order_takes_a_step_for_each_character() -
     )
 }
 
+/// A loop over a string's characters: a text all ASCII takes a byte at a time with nothing to
+/// test, and any other its characters' bytes, whether it's inline or a block's, and the body
+/// breaking, going on, or looping over text of its own.
+#[test]
+fn looping_over_characters_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "character_loops",
+        r##"def kinds(text: str) -> str:
+    mut out = []
+    for c in text:
+        if c == " ":
+            out.append("_")
+        elif c.isdigit():
+            out.append("#")
+        elif c == "é" or c == "🦊":
+            out.append("*")
+        else:
+            out.append(c)
+    "".join(out)
+
+def until(text: str, stop: str) -> int:
+    mut seen = 0
+    for c in text:
+        if c == stop:
+            break
+        if c == "a":
+            continue
+        seen += 1
+    seen
+
+def main(stdout: Stdout):
+    for text in ["", "a", "short ascii", "héllo wörld 🦊 and 日本", "a much longer ASCII text than any inline header can hold",
+                 "a much longer text than a header holds, ending in é", "🦊🦊🦊🦊🦊🦊🦊🦊🦊", "x1 y2 z3 " * 20]:
+        stdout.print(kinds(text), until(text, "z"), until(text, "🦊"), text.len())
+    mut joined = []
+    for c in "nested é":
+        for d in "ab":
+            joined.append(c + d)
+    stdout.print("".join(joined))
+    mut changed = 0
+    for c in "rename ü inside":
+        more = c + "!"
+        changed += more.len()
+    stdout.print(changed)
+    words = ["plain", "wörd", "日本語", "long enough ascii word to need a block of its own"]
+    stdout.print([sum(1 for c in w if c != "o") for w in words])
+"##,
+    )
+}
+
 /// Indexing and slicing text that isn't ASCII, in and out of order, from either end, clamped
 /// and empty, as native code finds characters from a block's cursor.
 #[test]

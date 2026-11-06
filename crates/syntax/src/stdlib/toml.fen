@@ -1092,8 +1092,8 @@ struct TomlWriter:
         if self._after_case:
             self._after_case = False
             return
-        table = self._tables.pop()
-        wrap = self._wraps.pop()
+        table = self._tables.pop(-1)
+        wrap = self._wraps.pop(-1)
         self._done = .Table(table=table)
         if wrap != "":
             mut outer = _Table()

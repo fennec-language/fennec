@@ -47,16 +47,20 @@ impl Lowering<'_> {
         keep: Option<Type>,
         span: Span,
     ) -> Lowered<Option<LocalId>> {
-        let Some(Type::List(item)) = values.first().and_then(|list| crate::type_in(&self.locals, list)) else {
+        let Some(Type::List(item)) = values.first().and_then(|list| crate::type_in(&self.locals, list))
+        else {
             return Err("`pop` on something that isn't a list".to_owned());
         };
         let length = self.temporary(Type::Int);
         let args = values.clone();
-        self.emit(InstKind::Builtin { dest: Some(length), name: "list.len".to_owned(), args, changes: false }, span);
+        self.emit(
+            InstKind::Builtin { dest: Some(length), name: "list.len".to_owned(), args, changes: false },
+            span,
+        );
         let empty = self.temporary(Type::Bool);
         let (lhs, rhs) = (Operand::Local(length), Operand::Int(0));
         self.emit(InstKind::Binary { dest: empty, op: BinOp::Eq, lhs, rhs }, span);
-        let dest = keep.map(|ty| self.temporary(ty));
+        let dest = keep.clone().map(|ty| self.temporary(ty));
         let (none, some, join) = (self.new_block(), self.new_block(), self.new_block());
         self.finish(Terminator::Branch { cond: Operand::Local(empty), then: none, otherwise: some });
         self.current = none;
@@ -68,9 +72,8 @@ impl Lowering<'_> {
         let popped = dest.map(|_| self.temporary(*item));
         let name = "list.pop".to_owned();
         self.emit(InstKind::Builtin { dest: popped, name, args: values, changes: true }, span);
-        if let (Some(dest), Some(popped)) = (dest, popped) {
-            let ty = self.locals[dest.0].ty.clone();
-            let value = self.coerce(Operand::Local(popped), &ty, span)?;
+        if let (Some(dest), Some(popped), Some(ty)) = (dest, popped, &keep) {
+            let value = self.coerce(Operand::Local(popped), ty, span)?;
             self.emit(InstKind::Copy { dest, value }, span);
         }
         self.finish(Terminator::Jump(join));

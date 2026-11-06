@@ -125,12 +125,11 @@ struct Heap[T: Ordered]:
 
     ## Removes the smallest item and gives it back, or None when the heap is empty.
     def pop(ref self) -> T?:
-        if self.items.len() == 0: return None
+        last = self.items.pop() else return None
+        if self.items.len() == 0: return last
         smallest = self.items[0]
-        last = self.items.pop()
-        if self.items.len() > 0:
-            self.items[0] = last
-            self.sift_down(0)
+        self.items[0] = last
+        self.sift_down(0)
         smallest
 
     ## The smallest item, or None when the heap is empty.
@@ -401,8 +400,8 @@ struct Tree[T]:
     def descendants(self, id: Id[TreeNode[T]]) -> list[Id[TreeNode[T]]]:
         mut found = []
         mut waiting = reversed(self._nodes[id].children)
-        while waiting.len() > 0:
-            at = waiting.pop()
+        while True:
+            at = waiting.pop() else break
             found.append(at)
             for child in reversed(self._nodes[at].children):
                 waiting.append(child)
@@ -689,12 +688,11 @@ struct SortedMap[K: Ordered, V]:
         (-1, -1)
 
     def _new_node(ref self, node: _SortedNode[K, V]) -> int:
-        if self._free.len() > 0:
-            at = self._free.pop()
-            self._nodes[at] = node
-            return at
-        self._nodes.append(node)
-        self._nodes.len() - 1
+        at = self._free.pop() else:
+            self._nodes.append(node)
+            return self._nodes.len() - 1
+        self._nodes[at] = node
+        at
 
     def _release(ref self, at: int):
         self._nodes[at] = _SortedNode()
@@ -750,10 +748,10 @@ struct SortedMap[K: Ordered, V]:
             left = self._nodes[at].children[i - 1]
             self._nodes[child].keys.insert(0, self._nodes[at].keys[i - 1])
             self._nodes[child].values.insert(0, self._nodes[at].values[i - 1])
-            self._nodes[at].keys[i - 1] = self._nodes[left].keys.pop()
-            self._nodes[at].values[i - 1] = self._nodes[left].values.pop()
+            self._nodes[at].keys[i - 1] = self._nodes[left].keys.pop(-1)
+            self._nodes[at].values[i - 1] = self._nodes[left].values.pop(-1)
             if self._nodes[left].children.len() > 0:
-                self._nodes[child].children.insert(0, self._nodes[left].children.pop())
+                self._nodes[child].children.insert(0, self._nodes[left].children.pop(-1))
             return child
         if i + 1 < siblings and self._nodes[self._nodes[at].children[i + 1]].keys.len() > fewest:
             right = self._nodes[at].children[i + 1]

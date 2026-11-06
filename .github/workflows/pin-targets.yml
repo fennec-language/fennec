@@ -24,7 +24,7 @@ jobs:
           persist-credentials: false
       # The kernels are built by `fennec build --llvm`, which uses the toolchain's `opt` and `llc`.
       - run: rustup component add llvm-tools-preview
-      - run: cargo build --release --locked -p fennec -p fennec-bench
+      - run: cargo build --release --locked -p fennec -p fennec-runtime -p fennec-bench
       - name: Install what counts instructions
         run: |
           sudo apt-get update -qq

@@ -26,6 +26,9 @@ impl FnCx<'_> {
     /// since it can come to hold `None`.
     pub(crate) fn expected_kind(&mut self, expr: &Expr, expected: &Type) -> Type {
         self.note_named_case(expr, expected);
+        if let Some(ty) = self.union_literal(expr, expected) {
+            return ty;
+        }
         match &expr.kind {
             ExprKind::Variant(case) => {
                 let owner = self.case_owner(case, expected, expr.span);
@@ -49,16 +52,6 @@ impl FnCx<'_> {
                 if let Type::Array(item, size) = self.checker.settled(expected).without_none() =>
             {
                 self.array_literal(items, &item, size, expr.span)
-            }
-            // `[Circle(...), Square(...)]` where a list of a union goes: each item is a member.
-            ExprKind::List(items)
-                if let Type::List(item) = self.checker.settled(expected).without_none()
-                    && matches!(self.checker.settled(&item).without_none(), Type::Union(_)) =>
-            {
-                for each in items {
-                    self.item_as(each, &item);
-                }
-                Type::List(item)
             }
             // `[array[int, 3](), [1, 2, 3]]` where a list of arrays goes: each item is written
             // where an array goes, so a list literal among them is one.
@@ -89,6 +82,38 @@ impl FnCx<'_> {
                 if of_optionals && self.checker.fits(&wanted, &ty) { wanted } else { ty }
             }
             _ => self.expr_kind(expr),
+        }
+    }
+
+    /// A list, set or dict written where one holding a union goes: each item is checked as a
+    /// member, as `[Circle(...), Square(...)]` is where a `list[Shape]` goes.
+    fn union_literal(&mut self, expr: &Expr, expected: &Type) -> Option<Type> {
+        let union = |checker: &mut crate::checker::Checker, ty: &Type| {
+            matches!(checker.settled(ty).without_none(), Type::Union(_))
+        };
+        match (&expr.kind, self.checker.settled(expected).without_none()) {
+            (ExprKind::List(items), Type::List(item)) if union(self.checker, &item) => {
+                for each in items {
+                    self.item_as(each, &item);
+                }
+                Some(Type::List(item))
+            }
+            (ExprKind::Set(items), Type::Set(item)) if union(self.checker, &item) => {
+                for each in items {
+                    self.item_as(each, &item);
+                }
+                Some(Type::Set(item))
+            }
+            (ExprKind::Dict(pairs), Type::Dict(key, value))
+                if union(self.checker, &key) || union(self.checker, &value) =>
+            {
+                for (each_key, each_value) in pairs {
+                    self.item_as(each_key, &key);
+                    self.item_as(each_value, &value);
+                }
+                Some(Type::Dict(key, value))
+            }
+            _ => None,
         }
     }
 

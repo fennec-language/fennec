@@ -22,7 +22,7 @@
 ## same slots, so a replay's later `add`s hand out the same `Id`s, and an `Id` whose item had gone
 ## is still gone. Either way an `Id` has to be in a `Table` saved with it, one of each type.
 
-from std.intrinsics import bytes_text, float_bits, float_of_bits, new_tag, shape_hash, text_byte, text_size, type_name
+from std.intrinsics import append_text, bytes_text, float_bits, float_of_bits, new_tag, shape_hash, text_byte, text_size, type_name
 from std.json import _IdsSeen, _found_tables
 
 ## How far a load may go. Bytes that ask for more fail to load.
@@ -125,10 +125,8 @@ struct PackWriter:
         self._out.append(1 if value else 0)
 
     def text(ref self, value: str):
-        size = text_size(value)
-        self._varint(size)
-        for at in range(size):
-            self._out.append(text_byte(value, at))
+        self._varint(text_size(value))
+        append_text(ref self._out, value)
 
     def bytes(ref self, value: bytes):
         self._varint(value.len())
@@ -444,6 +442,17 @@ struct PackReader:
         True
 
     def end_ordered(ref self):
+        self._depth -= 1
+
+    def map_count(ref self) -> int fails ParseError:
+        # Read again for a message, it goes through `map`, which keeps track of where it is.
+        if self._explain: return -1
+        n = self._length()?
+        self._items(n)?
+        self._deeper()?
+        n
+
+    def end_map(ref self):
         self._depth -= 1
 
     def exact(self) -> bool:

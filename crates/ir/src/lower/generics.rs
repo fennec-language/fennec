@@ -227,6 +227,9 @@ impl Lowering<'_> {
 
     /// The type of the expression at a span, as it is in this copy.
     pub(super) fn type_at(&self, span: fennec_syntax::Span) -> Option<Type> {
+        if let Some((_, ty)) = self.retyped.iter().rev().find(|(at, _)| *at == span) {
+            return Some(ty.clone());
+        }
         if let Some(ty) = self.body.expr(span) {
             return Some(self.concrete(ty));
         }

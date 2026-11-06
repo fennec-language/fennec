@@ -7,9 +7,6 @@ use std::process::{Command, Output};
 
 use crate::executables::runtime_built;
 
-/// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 129;
-
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
 }
@@ -3140,8 +3137,18 @@ def main(stdout: Stdout):
     )
 }
 
-/// Every example this backend takes prints exactly what it should. Those it doesn't take yet
-/// say so, and the count keeps that from shrinking unnoticed.
+/// Programs that don't build natively yet, each waiting on named backend work. A listed program
+/// that does build natively fails the tests below, so the list only ever shrinks.
+const NOT_NATIVE_YET: &[&str] = &[
+    // Unions' native layout is the LLVM lane's next piece of work, after their IR lowering.
+    "unions.fen",
+];
+
+fn not_native_yet(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()).is_some_and(|name| NOT_NATIVE_YET.contains(&name))
+}
+
+/// Every example builds through LLVM and prints exactly what it should.
 #[test]
 fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
     if !ready() {
@@ -3149,7 +3156,7 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
     }
     let dir = folder("examples")?;
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
-    let (mut built, mut wrong) = (0, Vec::new());
+    let (mut refused, mut wrong) = (Vec::new(), Vec::new());
     for entry in std::fs::read_dir(examples)? {
         let path = entry?.path();
         let wanted = path.with_extension("out");
@@ -3159,12 +3166,18 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
         let executable = dir.join("example");
         let made =
             fennec(&["build", "--llvm", &path.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
-        if !made.status.success() {
-            let said = String::from_utf8_lossy(&made.stderr).into_owned();
-            assert!(said.contains("doesn't take yet") || said.contains("error"), "{said}");
+        if not_native_yet(&path) {
+            assert!(
+                !made.status.success(),
+                "{} builds natively now: take it off NOT_NATIVE_YET",
+                path.display()
+            );
             continue;
         }
-        built += 1;
+        if !made.status.success() {
+            refused.push(format!("{}: {}", path.display(), String::from_utf8_lossy(&made.stderr).trim()));
+            continue;
+        }
         let ran = Command::new(&executable).output()?;
         if String::from_utf8_lossy(&ran.stdout) != std::fs::read_to_string(&wanted)? {
             wrong.push(path);
@@ -3172,7 +3185,64 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
     }
     std::fs::remove_dir_all(&dir)?;
     assert!(wrong.is_empty(), "printed the wrong thing: {wrong:?}");
-    assert!(built >= BUILDING_EXAMPLES, "only {built} examples build");
+    assert!(refused.is_empty(), "these don't build through LLVM:\n{}", refused.join("\n"));
+    Ok(())
+}
+
+/// Every program in the repository builds as native code, with nothing left to the JIT or the
+/// interpreter: each example, kit and benchmark, `examples/proof` and `selfhost`. The examples
+/// that print something are run by the test above, and the rest by their own suites.
+#[test]
+fn every_program_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut programs = Vec::new();
+    for entry in std::fs::read_dir(repo.join("examples"))? {
+        let path = entry?.path();
+        if path.extension().is_some_and(|ext| ext == "fen") {
+            programs.push(path);
+        }
+    }
+    for entry in std::fs::read_dir(repo.join("examples/projects"))? {
+        let path = entry?.path();
+        if path.join("kit.toml").is_file() {
+            programs.push(path);
+        }
+    }
+    programs.extend([repo.join("examples/proof"), repo.join("selfhost")]);
+    let mut folders = vec![repo.join("bench")];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(folder)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "fen") {
+                programs.push(path);
+            }
+        }
+    }
+    programs.sort();
+    let dir = folder("every_program")?;
+    let mut not_native = Vec::new();
+    for program in &programs {
+        let said = fennec(&["dev", "fallbacks", "--llvm", &program.to_string_lossy()], &dir)?;
+        let told = String::from_utf8_lossy(&said.stdout);
+        let native =
+            said.status.success() && told.lines().last() == Some("everything compiles to native code");
+        if not_native_yet(program) {
+            assert!(!native, "{} builds natively now: take it off NOT_NATIVE_YET", program.display());
+            continue;
+        }
+        if !native {
+            let why = format!("{told}{}", String::from_utf8_lossy(&said.stderr));
+            not_native.push(format!("{}:\n  {}", program.display(), why.trim().replace('\n', "\n  ")));
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    assert!(programs.len() > 180, "found only {} programs", programs.len());
+    assert!(not_native.is_empty(), "these aren't all native code:\n{}", not_native.join("\n"));
     Ok(())
 }
 
@@ -8206,6 +8276,12 @@ struct Words:
         False
 
     def end_ordered(ref self):
+        pass
+
+    def map_count(ref self) -> int fails ParseError:
+        -1
+
+    def end_map(ref self):
         pass
 
     def none(ref self) -> bool fails ParseError:

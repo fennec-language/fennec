@@ -81,8 +81,10 @@ pub(crate) struct Heap {
     cursor: Cursor,
     /// Generators let go partway, waiting for what closes what they hold.
     abandoning: Vec<u64>,
-    /// Blocks waiting to be freed and a freed block's children, kept to save making them anew.
+    /// Blocks waiting to be freed and a freed block's children, kept to save making them anew:
+    /// by address, and those already taken out of the table, with their addresses.
     pending: Vec<u64>,
+    taken: Vec<(u64, Box<[u64]>)>,
     found: Vec<u64>,
     /// The interpreter values cells hold, by the number in each cell, and unused numbers.
     cells: Vec<Value>,

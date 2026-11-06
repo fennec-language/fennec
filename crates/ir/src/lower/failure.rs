@@ -72,6 +72,12 @@ impl Lowering<'_> {
                 self.emit(InstKind::MakeOk { dest, value: Some(value) }, span);
                 Ok(Operand::Local(dest))
             }
+            // A member where its union goes, tagged with which member it is.
+            Type::Union(members) if let Some(member) = members.iter().position(|member| *member == from) => {
+                let dest = self.temporary(to.clone());
+                self.emit(InstKind::MakeMember { dest, value, member }, span);
+                Ok(Operand::Local(dest))
+            }
             _ => Err(format!("it gives {from} where {to} goes")),
         }
     }
@@ -92,8 +98,39 @@ impl Lowering<'_> {
                 self.emit(InstKind::GetSome { dest, value }, expr.span);
                 Ok(Operand::Local(dest))
             }
+            // A union the checker narrowed to one member, by `is` or a `match`.
+            (Type::Union(members), read)
+                if let Some(member) = members.iter().position(|member| *member == read) =>
+            {
+                let dest = self.temporary(read);
+                self.emit(InstKind::GetMember { dest, value, member }, expr.span);
+                Ok(Operand::Local(dest))
+            }
             (from, read) => Err(format!("it reads {from} as {read}")),
         }
+    }
+
+    /// `s is Circle`: whether a union holds that member. A value the checker already narrowed to
+    /// one member is known to, or known not to.
+    fn is_member(&mut self, op: BinOp, lhs: &Expr, member: &str, span: Span) -> Lowered<(Operand, Operand)> {
+        let value = self.expr(lhs)?;
+        let held = type_in(&self.locals, &value).ok_or("a value has no type")?;
+        let test = match &held {
+            Type::Union(members) => {
+                let at = members.iter().position(|each| each.to_string() == member);
+                let at = at.ok_or_else(|| format!("`{member}` isn't one of the types in {held}"))?;
+                let dest = self.temporary(Type::Bool);
+                self.emit(InstKind::IsMember { dest, value: value.clone(), member: at }, span);
+                Operand::Local(dest)
+            }
+            other => Operand::Bool(other.to_string() == member),
+        };
+        if op == BinOp::Is {
+            return Ok((test, value));
+        }
+        let dest = self.temporary(Type::Bool);
+        self.emit(InstKind::Unary { dest, op: UnaryOp::Not, value: test }, span);
+        Ok((Operand::Local(dest), value))
     }
 
     /// `value is None` and `value is not None`.
@@ -109,6 +146,9 @@ impl Lowering<'_> {
         rhs: &Expr,
         span: Span,
     ) -> Lowered<(Operand, Operand)> {
+        if let ExprKind::Name(member) = &rhs.kind {
+            return self.is_member(op, lhs, member, span);
+        }
         if !matches!(rhs.kind, ExprKind::None) {
             return Err("it uses `is` with something other than `None`".to_owned());
         }

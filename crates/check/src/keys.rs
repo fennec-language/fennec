@@ -42,6 +42,13 @@ fn keys_in(ty: &Type, keys: &mut Vec<Type>) {
 /// Why a type can't be a key, if it can't. `open` holds the types being looked at, since a type
 /// can hold itself.
 fn key_problem(cx: &mut FnCx<'_>, ty: &Type, open: &mut Vec<String>) -> Option<String> {
+    // A union hashes by which type it holds and then that value, so each type has to be a key.
+    if let Type::Union(members) = ty {
+        return members.iter().find_map(|member| {
+            let problem = key_problem(cx, member, open)?;
+            Some(format!("`{member}` is one of its types, and {problem}"))
+        });
+    }
     let name = match ty {
         Type::Named(name) => name,
         Type::Generic(name, args) => {

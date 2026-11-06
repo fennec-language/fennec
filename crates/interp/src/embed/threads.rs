@@ -232,6 +232,12 @@ pub extern "C" fn release_shared(address: i64, owner: i64) {
 /// Whether a block whose owner has just let go of its last count is still held by another
 /// thread, in which case it waits for that thread to let go, rather than being freed now.
 #[inline]
+/// Whether any block may be counted by threads that didn't make it, so freeing one has to ask
+/// `held_elsewhere` first.
+pub(super) fn counted_elsewhere() -> bool {
+    ON && ANY_SHARED.load(Ordering::Relaxed)
+}
+
 pub(super) fn held_elsewhere(address: u64) -> bool {
     ON && ANY_SHARED.load(Ordering::Relaxed) && held_elsewhere_now(address)
 }

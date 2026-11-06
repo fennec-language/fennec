@@ -191,6 +191,9 @@ pub(crate) fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: 
         | InstKind::MakeSome { dest, value }
         | InstKind::GetSome { dest, value }
         | InstKind::IsNone { dest, value }
+        | InstKind::MakeMember { dest, value, .. }
+        | InstKind::IsMember { dest, value, .. }
+        | InstKind::GetMember { dest, value, .. }
         | InstKind::IsCase { dest, value, .. }
         | InstKind::GetCaseField { dest, value, .. }
         | InstKind::MakeErr { dest, error: value }

@@ -105,17 +105,7 @@ impl Interp<'_> {
                     .map(|slot| Value::Id(Id { slot, generation: 0, tag }))
                     .map_err(|_| format!("{} is out of range", place(at)))
             }
-            ("Table", Value::List(items)) => {
-                let item = arg(0)?;
-                let mut slots = Vec::new();
-                for (n, held) in items.iter().enumerate() {
-                    let value = self.decode(held.clone(), &item, &inside(at, &format!("[{n}]")), span)?;
-                    slots.push(Slot { generation: 0, value: Some(value) });
-                }
-                self.tables_read.push(at.to_owned());
-                let tag = self.load_tag(&written(&item));
-                Ok(Value::Table(Rc::new(Table::tagged(slots, tag))))
-            }
+            ("Table", Value::List(items)) => self.decode_table(&items, &arg(0)?, at, span),
             (name, value) if self.has_shape(name) => {
                 let read = self.decode(value, &Self::shape_of(ty), at, span)?;
                 self.build_shaped(name, read, at, span)
@@ -127,6 +117,24 @@ impl Interp<'_> {
     }
 
     /// The tag a load gives the `Table` of `kind` it reads, and its `Id`s: new for each load.
+    /// A new `Table` of `items`, read in order, with the tag this load gives its type.
+    fn decode_table(
+        &mut self,
+        items: &[Value],
+        item: &TypeExpr,
+        at: &str,
+        span: Span,
+    ) -> Result<Value, Misfit> {
+        let mut slots = Vec::new();
+        for (n, held) in items.iter().enumerate() {
+            let value = self.decode(held.clone(), item, &inside(at, &format!("[{n}]")), span)?;
+            slots.push(Slot { generation: 0, value: Some(value) });
+        }
+        self.tables_read.push(at.to_owned());
+        let tag = self.load_tag(&written(item));
+        Ok(Value::Table(Rc::new(Table::tagged(slots, tag))))
+    }
+
     fn load_tag(&mut self, kind: &str) -> u64 {
         *self.load_tags.entry(kind.to_owned()).or_insert_with(crate::value::new_tag)
     }

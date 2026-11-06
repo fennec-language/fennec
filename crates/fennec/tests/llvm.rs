@@ -1304,7 +1304,7 @@ fn a_place_is_found_again_after_a_call_changes_its_index() -> std::io::Result<()
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "2 11 14 3\n");
     assert!(!stopped.status.success());
     let said = String::from_utf8_lossy(&stopped.stderr);
-    assert!(said.contains("`mut at` changes what picks `units[at]`"), "{said}");
+    assert!(said.contains("`ref at` changes what picks `units[at]`"), "{said}");
     Ok(())
 }
 
@@ -1346,7 +1346,7 @@ fn mut_arguments_to_different_fields_both_change_and_overlapping_ones_dont_build
     assert_eq!(ours.0, "1 10\n");
     assert!(!refused.status.success());
     let said = String::from_utf8_lossy(&refused.stderr);
-    assert!(said.contains("`mut unit.position` and `mut unit.position` overlap"), "{said}");
+    assert!(said.contains("`ref unit.position` and `ref unit.position` overlap"), "{said}");
     Ok(())
 }
 
@@ -4279,8 +4279,11 @@ def main(stdout: Stdout, args: Args, process: Process):
         assert!(symbols.status.success(), "{}", String::from_utf8_lossy(&symbols.stderr));
         let symbols = String::from_utf8_lossy(&symbols.stdout);
         assert!(symbols.contains("fennec_clock_now") || symbols.contains("fennec_print_block"), "{symbols}");
-        // Rust writes the type as its name's length and the name.
-        assert!(!symbols.contains("6Interp"), "the interpreter is still linked");
+        // The interpreter's constructor, which the full runtime always calls when the program
+        // starts. Rust writes each name as its length and the name. A looser match finds
+        // `Interp` in the name of a small closure the linker folded together with the native code's own
+        // copy, in a release build.
+        assert!(!symbols.contains("6Interp11with_output"), "the interpreter is still linked");
     }
 
     let needs = dir.join("needs.fen");
@@ -4324,7 +4327,8 @@ fn a_build_leaves_the_interpreter_out_unless_the_program_needs_it() -> std::io::
     };
     let has_interpreter = |executable: &Path| -> std::io::Result<bool> {
         let symbols = Command::new("nm").arg(executable).output()?;
-        Ok(String::from_utf8_lossy(&symbols.stdout).contains("6Interp"))
+        // The interpreter's constructor, as `a_lean_runtime_leaves_the_interpreter_out` looks for it.
+        Ok(String::from_utf8_lossy(&symbols.stdout).contains("6Interp11with_output"))
     };
     let lean = built("def main(stdout: Stdout):\n    stdout.print([1, 2], {\"key\": 3})\n", "lean")?;
     assert_eq!(String::from_utf8_lossy(&Command::new(&lean).output()?.stdout), "[1, 2] {\"key\": 3}\n");
@@ -4337,6 +4341,50 @@ fn a_build_leaves_the_interpreter_out_unless_the_program_needs_it() -> std::io::
     if !cfg!(windows) {
         assert!(!has_interpreter(&lean)?, "the interpreter is still linked");
         assert!(has_interpreter(&needs)?, "a program that needs the interpreter lost it");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// With nothing asked, a program that uses `parallel` is built with the runtime that runs it on
+/// every core, and prints what it should; `FENNEC_THREADS_RUNTIME=0` keeps it on one thread.
+#[test]
+fn a_build_runs_parallel_on_every_core_unless_asked_not_to() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("threads-default")?;
+    let program = dir.join("squares.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    xs = [i for i in range(100_000)]\n    squares = [x * x % 7 for x in parallel(xs)]\n    stdout.print(sum(n for n in parallel(squares)), squares[99_999])\n",
+    )?;
+    let built = |threads: Option<&str>, name: &str| -> std::io::Result<PathBuf> {
+        let executable = dir.join(name);
+        let mut command = crate::executables::fennec_command();
+        command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+        command.env("FENNEC_HOME", &dir).env_remove("FENNEC_THREADS_RUNTIME");
+        if let Some(threads) = threads {
+            command.env("FENNEC_THREADS_RUNTIME", threads);
+        }
+        let built = command.output()?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        Ok(executable)
+    };
+    let has_pool = |executable: &Path| -> std::io::Result<bool> {
+        let symbols = Command::new("nm").arg(executable).output()?;
+        Ok(String::from_utf8_lossy(&symbols.stdout).contains("rayon_core"))
+    };
+    let wanted = "199999 2\n";
+    let every_core = built(None, "every-core")?;
+    let ran = Command::new(&every_core).env("FENNEC_THREADS", "4").output()?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted);
+    let one_thread = built(Some("0"), "one-thread")?;
+    assert_eq!(String::from_utf8_lossy(&Command::new(&one_thread).output()?.stdout), wanted);
+    // A Windows executable has no symbols to look through.
+    if !cfg!(windows) {
+        assert!(has_pool(&every_core)?, "the program has no pool to run on");
+        assert!(!has_pool(&one_thread)?, "asked for one thread, the program has a pool");
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())

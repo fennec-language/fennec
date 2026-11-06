@@ -519,9 +519,9 @@ struct Parser:
         value = self.expr()?
         if is_mut:
             fail Diagnostic(
-                message=f"`mut` parameter `{name}` can't have a default",
+                message=f"`ref` parameter `{name}` can't have a default",
                 span=value.span,
-                help="a `mut` parameter changes what the caller passes, so a call has to pass something",
+                help="a `ref` parameter changes what the caller passes, so a call has to pass something",
             )
         if not is_plain_value(value):
             fail Diagnostic(

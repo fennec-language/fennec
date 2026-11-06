@@ -33,7 +33,7 @@ struct Target<'a> {
     given: Vec<(String, Type)>,
 }
 
-const MUT_ARG: &str = "only a name, or a field or item of one, can be passed with `mut`";
+const MUT_ARG: &str = "only a name, or a field or item of one, can be passed with `ref`";
 
 impl FnCx<'_> {
     /// Whether this is one of the functions on built-in types, `str.from_code(n)` and
@@ -320,15 +320,15 @@ impl FnCx<'_> {
         match (param.is_mut, arg.is_mut) {
             (true, false) => self.error(
                 Diagnostic::new(
-                    format!("`{function}` changes `{}`, so it has to be passed with `mut`", param.name),
+                    format!("`{function}` changes `{}`, so it has to be passed with `ref`", param.name),
                     span,
                 )
-                .with_help("write `mut` before the argument, so readers can see it changes"),
+                .with_help("write `ref` before the argument, so readers can see it changes"),
             ),
             (false, true) => {
                 let diagnostic = Diagnostic::new(
                     format!(
-                        "`{function}` doesn't change `{}`, so it shouldn't be passed with `mut`",
+                        "`{function}` doesn't change `{}`, so it shouldn't be passed with `ref`",
                         param.name
                     ),
                     span,
@@ -336,7 +336,7 @@ impl FnCx<'_> {
                 // It's most likely meant for what the function does change.
                 self.error(match params.iter().find(|other| other.is_mut) {
                     Some(changed) => diagnostic.with_help(format!(
-                        "did you mean to put `mut` on `{}`, which `{function}` does change?",
+                        "did you mean to put `ref` on `{}`, which `{function}` does change?",
                         changed.name
                     )),
                     None => diagnostic,
@@ -613,7 +613,7 @@ impl FnCx<'_> {
                     format!("`{name}` is locked to read, and `{method}` changes it"),
                     object.span,
                 )
-                .with_help(format!("lock it to write with `as mut {name}`")),
+                .with_help(format!("lock it to write with `as ref {name}`")),
             );
         }
         self.bind_args(method, params, args, span);
@@ -1011,7 +1011,7 @@ impl FnCx<'_> {
                 .map(|field| self.checker.field_type(type_name, case, &field.name).substitute(&target.given));
             let ty = self.arg_as(arg, &[], expected.as_ref());
             if arg.is_mut {
-                let message = "building a value doesn't change its arguments, so don't pass `mut`";
+                let message = "building a value doesn't change its arguments, so don't pass `ref`";
                 self.error(Diagnostic::new(message, arg.value.span));
             }
             let Some((field, slot)) = at.and_then(|at| fields.get(at).zip(given.get_mut(at))) else {

@@ -97,9 +97,10 @@ impl Runtime {
         }
     }
 
-    /// The runtime a lowered program needs: the threads one when it runs `parallel` and
-    /// `FENNEC_THREADS_RUNTIME=1` asks for it. Until a range's copies of what it captures are
-    /// its own, workers would count shared blocks plainly, so the plain one stays the default.
+    /// The runtime a lowered program needs: the threads one when it runs `parallel` and that
+    /// runtime is there, so its loops run on every core and a server's connections each get a
+    /// task. `FENNEC_THREADS_RUNTIME=0` asks for the plain one anyway, which runs them in order,
+    /// and `=1` for the threads one, which fails if it isn't there.
     ///
     /// The lean one, with no interpreter in it, unless the program's code calls something only
     /// the interpreter's runtime has, or the lean one isn't there. `FENNEC_LEAN_RUNTIME=0` asks
@@ -107,7 +108,8 @@ impl Runtime {
     /// the interpreter fails to link against.
     fn for_program<'t>(lowered: &fennec_ir::Program, texts: impl IntoIterator<Item = &'t str>) -> Self {
         let set = |name: &str| std::env::var_os(name).filter(|on| !on.is_empty()).map(|on| on == "1");
-        let threads = set("FENNEC_THREADS_RUNTIME") == Some(true) && fennec_llvm::uses_parallel(lowered);
+        let threads = fennec_llvm::uses_parallel(lowered)
+            && set("FENNEC_THREADS_RUNTIME").unwrap_or_else(|| runtime_library(Self::Threads).is_ok());
         let (with_interpreter, lean) =
             if threads { (Self::Threads, Self::LeanThreads) } else { (Self::Plain, Self::Lean) };
         match set("FENNEC_LEAN_RUNTIME") {

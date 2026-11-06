@@ -57,7 +57,8 @@ line that line is about.
    to an error that isn't listed needs nothing here.
 5. **Run the test:** `cargo test -p fennec --test fennec selfhost`. It runs both front ends
    over every example, every error example, the example kits, the standard library and
-   `selfhost/` itself, with the interpreter and with the JIT.
+   `selfhost/` itself, built through LLVM and on the JIT. LLVM's build fails if a function
+   in `selfhost/` isn't native code.
 
 Fennec code here has to pass the type checker too, so a stricter checker can break `selfhost/`
 itself: `fennec run selfhost` then fails before it prints anything, with the checker's own

@@ -82,7 +82,7 @@ fn a_guard_is_a_bool_that_changes_nothing() {
         with_shapes(program),
         [
             "`if` needs a bool, but this is an int @ n",
-            "a guard can't change anything, so it can't pass `mut` @ sizes",
+            "a guard can't change anything, so it can't pass `ref` @ sizes",
         ]
     );
 }

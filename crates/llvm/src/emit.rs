@@ -1531,6 +1531,17 @@ impl Emit<'_, '_, '_> {
             let more = self.temp();
             self.line(&format!("{more} = add i64 {remainder}, {b}"));
             self.line(&format!("{result} = select i1 {adjust}, i64 {more}, i64 {remainder}"));
+            // By a positive number, the remainder is always from 0 up to it: said to LLVM, a value
+            // worked out from it again, as in `x = x * k % m`, needs no fix-up for a sign it can't
+            // have, and is the machine's remainder alone.
+            if let Operand::Int(divisor @ 1..) = rhs {
+                self.declare("declare void @llvm.assume(i1)");
+                let (low, high) = (self.temp(), self.temp());
+                self.line(&format!("{low} = icmp sge i64 {result}, 0"));
+                self.line(&format!("call void @llvm.assume(i1 {low})"));
+                self.line(&format!("{high} = icmp slt i64 {result}, {divisor}"));
+                self.line(&format!("call void @llvm.assume(i1 {high})"));
+            }
         }
         result
     }

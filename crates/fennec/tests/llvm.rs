@@ -2045,6 +2045,40 @@ fn isdigit_matches_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// A remainder by a positive number is known to be from 0 up to it, which lets LLVM drop the work
+/// for a sign it can't have: the remainders of either sign, by any positive or negative number,
+/// still match, and so do ones fed back in, compared or cut again.
+#[test]
+fn a_remainder_kept_in_range_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("remainder_in_range", REMAINDER_IN_RANGE)
+}
+
+const REMAINDER_IN_RANGE: &str = r#"def stirred(n: int) -> int:
+    mut x = n % 2_147_483_646 + 1
+    for _ in range(100):
+        x = x * 48_271 % 2_147_483_647
+    x % 1_000
+
+def main(stdout: Stdout):
+    lowest = -9223372036854775807 - 1
+    highest = 9223372036854775807
+    values = [0, 1, -1, 6, -6, 7, -7, 8, -8, 999, -999, 1000, -1000, 123456789, -123456789, lowest, lowest + 1, highest, highest - 1]
+    for v in values:
+        stdout.print(f"{v}: {v % 3} {v // 3} {v % 7} {v // 7} {v % 1000} {v // 1000} {v % -7} {v // -7} {v % 2147483647} {v // 2147483647} {v % highest} {v // highest}")
+        stdout.print(f"{v % 7 < 0} {v % 7 >= 7} {v % 7 == 6} {v % 7 * 3 % 5} {(v % 1000 - 500) % 9}")
+    mut total = 0
+    for n in range(-500, 500):
+        total += stirred(n)
+        mut x = n
+        for _ in range(5):
+            x = x * 31 % 1_009 - 504
+        total += x
+    stdout.print(total)
+"#;
+
 /// `//` and `%` by a power of two are a shift and a mask, which round toward negative infinity
 /// as Fennec's do: for every sign, from the lowest int to the highest, and the divisors from 1 up.
 #[test]

@@ -17,7 +17,7 @@ shared Queue:
         self.items.extend(self.items)
         self.rows[0].tags.append(self.rows[0].tags.len())
         self.rows[self.total % 2].tags.append(self.rows[1].tags[0])
-        self.total += self.items.pop()
+        self.total += self.items.pop() else 0
 
     def through_a_call(ref self):
         grow(ref self.items, self.items.len())

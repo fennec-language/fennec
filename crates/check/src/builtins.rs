@@ -369,6 +369,11 @@ impl FnCx<'_> {
             );
             return value.as_ref().clone();
         }
+        // `pop()` gives `None` for an empty list. `pop(at)` fails on a position that isn't there,
+        // as `items[at]` does.
+        if let (Type::List(item), "pop", []) = (ty, name, plain.as_slice()) {
+            return Type::optional(item.as_ref().clone());
+        }
         method.returns
     }
 

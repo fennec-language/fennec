@@ -273,9 +273,7 @@ impl Interp<'_> {
     ) -> Result<Value, Diagnostic> {
         match (method, args) {
             ("append", [value]) => items.push(value.clone()),
-            ("pop", []) => {
-                return items.pop().ok_or_else(|| Diagnostic::new("can't pop from an empty list", span));
-            }
+            ("pop", []) => return Ok(items.pop().unwrap_or(Value::None)),
             ("pop", [Value::Int(at)]) => return Ok(items.remove(ops::position(*at, items.len(), span)?)),
             ("insert", [Value::Int(at), value]) => {
                 let at = usize::try_from(*at).ok().filter(|&at| at <= items.len()).ok_or_else(|| {

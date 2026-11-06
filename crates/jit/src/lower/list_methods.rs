@@ -1,8 +1,6 @@
-//! The methods that change a native list, and `in`. Native code takes the last item off
-//! itself; the runtime moves items around for the rest.
+//! The methods that change a native list, and `in`. The runtime moves items around.
 
-use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::{InstBuilder, MemFlagsData, Value, types};
+use cranelift_codegen::ir::{InstBuilder, Value};
 use fennec_syntax::{Arg, BinOp, Diagnostic, Expr, ExprKind, Span, UnaryOp};
 
 use super::expr::Lowered;
@@ -26,7 +24,6 @@ impl Lowerer<'_, '_> {
         }
         let plain = args.iter().all(|arg| arg.name.is_none());
         match (name.as_str(), args) {
-            ("pop", []) => self.pop_last(&list, item, span).map(Some),
             ("pop", [at]) if plain => self.pop_at(&list, item, &at.value, span).map(Some),
             ("clear", []) => {
                 let held = self.own_list_named(&list)?;
@@ -49,42 +46,6 @@ impl Lowerer<'_, '_> {
     fn own_list_named(&mut self, name: &str) -> Result<Value, Diagnostic> {
         let items = self.items_at(name, Ty::Int, true)?;
         Ok(self.b.ins().iadd_imm_s(items, -LIST_ITEMS))
-    }
-
-    /// `list.pop()`: the last item, which moves out of the list.
-    fn pop_last(&mut self, name: &str, item: Ty, span: Span) -> Result<Lowered, Diagnostic> {
-        let flags = MemFlagsData::trusted();
-        let list = self.own_list_named(name)?;
-        let length = self.length_of_list(list);
-        let empty = self.b.ins().icmp_imm_s(IntCC::Equal, length, 0);
-        let [fail, ok] = [(); 2].map(|()| self.b.create_block());
-        self.b.set_cold_block(fail);
-        let here = self.b.current_block();
-        self.b.ins().brif(empty, fail, &[], ok, &[]);
-        self.b.switch_to_block(fail);
-        self.b.seal_block(fail);
-        let [start, end] = self.span_args(span);
-        self.call_helper(Helper::PopEmpty, &[start, end])?;
-        self.b.ins().jump(self.bail, &[]);
-        self.carry_on(here, ok);
-        self.b.seal_block(ok);
-        let shorter = self.b.ins().iadd_imm_s(length, -1);
-        let stride = self.stride(item)?;
-        let offset = self.b.ins().imul_imm_s(shorter, stride);
-        let address = self.b.ins().iadd(list, offset);
-        let address = self.b.ins().iadd_imm_s(address, LIST_ITEMS);
-        let popped = self.load_item(address, item)?;
-        if item.counted() {
-            // Whatever comes next finds the room empty, and the item has one owner fewer.
-            let value = popped.0.ok_or_else(|| internal("a lost item", span))?;
-            let count = self.b.ins().load(types::I64, flags, value, 0);
-            let fewer = self.b.ins().iadd_imm_s(count, -1);
-            self.b.ins().store(flags, fewer, value, 0);
-            let none = self.int(0);
-            self.b.ins().store(flags, none, address, 0);
-        }
-        self.b.ins().store(flags, shorter, list, 16);
-        Ok(popped)
     }
 
     /// `list.pop(at)`.

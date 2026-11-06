@@ -147,8 +147,10 @@ fn all_saved(checker: &mut Checker, def: &TypeDef, generated: &BTreeSet<String>)
 /// ask of what it stands for.
 fn saved(checker: &Checker, ty: &Type, generated: &BTreeSet<String>) -> bool {
     match ty {
-        Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::Param(_) => true,
-        Type::List(inner) | Type::Set(inner) | Type::Optional(inner) => saved(checker, inner, generated),
+        Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::Param(_) | Type::Id(_) => true,
+        Type::List(inner) | Type::Set(inner) | Type::Optional(inner) | Type::Table(inner) => {
+            saved(checker, inner, generated)
+        }
         Type::Dict(key, value) => saved(checker, key, generated) && saved(checker, value, generated),
         Type::Named(name) | Type::Generic(name, _) => {
             let own = generated.contains(name) || has_both(checker, name);
@@ -437,10 +439,15 @@ fn field_stops(
 ) -> Option<(String, String, String, String)> {
     let stop = |what: String| Some((place.to_owned(), what, field.to_owned(), owner.to_owned()));
     match ty {
-        Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::Param(_) | Type::Unknown => {
-            None
-        }
-        Type::List(inner) | Type::Set(inner) | Type::Optional(inner) => {
+        Type::Int
+        | Type::Float
+        | Type::Bool
+        | Type::Str
+        | Type::Bytes
+        | Type::Param(_)
+        | Type::Unknown
+        | Type::Id(_) => None,
+        Type::List(inner) | Type::Set(inner) | Type::Optional(inner) | Type::Table(inner) => {
             field_stops(checker, inner, place, (field, owner), open)
         }
         Type::Dict(key, value) => field_stops(checker, key, place, (field, owner), open)

@@ -85,8 +85,8 @@ impl<'m> Keep<'m> for Copied {
 }
 
 /// The built-in types the standard library's code gives methods to with `extend`.
-const BUILT_IN_OWNERS: [&str; 9] =
-    ["Optional", "int", "float", "bool", "bytes", "str", "list", "dict", "set"];
+const BUILT_IN_OWNERS: [&str; 11] =
+    ["Optional", "int", "float", "bool", "bytes", "str", "list", "dict", "set", "Id", "Table"];
 
 /// A running Fennec program: its declarations, the current call's names, and its output.
 pub struct Interp<'out> {
@@ -357,6 +357,8 @@ impl<'out> Interp<'out> {
             Value::List(_) | Value::Packed(_) => "list",
             Value::Dict(_) => "dict",
             Value::Set(_) => "set",
+            Value::Id(_) => "Id",
+            Value::Table(_) => "Table",
             _ => return None,
         };
         self.built_in_methods.get(owner)?.get(method).cloned()

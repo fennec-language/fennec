@@ -9,7 +9,7 @@ use std::fmt::Write;
 use std::rc::Rc;
 
 use crate::format;
-use crate::value::{Table, Value};
+use crate::value::Value;
 
 /// Whether a dict is written as an object: its keys are text or ints, which are written as
 /// their digits. Otherwise JSON writes it as an array of `[key, value]` pairs.
@@ -39,25 +39,8 @@ fn entries(value: &Value, format: &str) -> Result<Option<Vec<(String, Value)>>, 
                 instance.fields.iter().map(|(name, value)| (Value::str(name), value.clone())).collect();
             Ok(Some(vec![(case, Value::Dict(Rc::new(fields.into())))]))
         }
-        Value::Id(id) => Ok(Some(vec![
-            ("slot".to_owned(), Value::Int(i64::try_from(id.slot).unwrap_or(i64::MAX))),
-            ("generation".to_owned(), Value::Int(i64::from(id.generation))),
-        ])),
-        Value::Table(map) => Ok(Some(vec![("slots".to_owned(), slots(map))])),
         _ => Ok(None),
     }
-}
-
-/// A `Table`'s slots, each its generation and, unless it's free, its value.
-fn slots(map: &Table) -> Value {
-    let slots = map.slots.iter().map(|slot| {
-        let mut pairs = vec![(Value::str("generation"), Value::Int(i64::from(slot.generation)))];
-        if let Some(value) = &slot.value {
-            pairs.push((Value::str("value"), value.clone()));
-        }
-        Value::Dict(Rc::new(pairs.into()))
-    });
-    Value::list(slots.collect())
 }
 
 fn a(value: &Value) -> String {

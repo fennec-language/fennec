@@ -116,6 +116,16 @@ def type_name[T]() -> str
 @intrinsic
 def bytes_text(data: bytes, start: int, end: int) -> str
 
+## From byte `at` of a text, the first that's `"`, `\` or a control character, or the text's
+## size: where a JSON reader has to look closer.
+@intrinsic
+def text_plain_end(text: str, at: int) -> int
+
+## From byte `at` of a text, the first JSON writes escaped, or that starts a character it might:
+## `"`, `\`, a control character, DEL or 194. Or the text's size.
+@intrinsic
+def text_escape_at(text: str, at: int) -> int
+
 ## Adds a text's bytes to the end of a list of them, each an int from 0 to 255, all at once.
 @intrinsic
 def append_text(ref out: list[int], text: str)

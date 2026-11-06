@@ -98,3 +98,34 @@ fn a_union_has_no_none_no_member_twice_and_no_type_parameter() {
         ["`T` is a type parameter, which can't be part of a union @ T"]
     );
 }
+
+#[test]
+fn a_union_is_a_key_when_each_type_in_it_is() {
+    let empty: [&str; 0] = [];
+    let keyed = "counts: dict[int | str, int] = {1: 2, \"a\": 3}\nseen: set[Dot | str] = {Dot(at=1), \"x\"}\nstdout.print(counts, seen)\n";
+    assert_eq!(with_shapes(keyed), empty);
+    assert_eq!(
+        with_shapes("shapes: dict[Shape, int] = {}\nstdout.print(shapes)\n"),
+        [
+            "`Circle | Square` can't be a dict key or set item, because `Circle` is one of its types, and its field `radius` is a float @ shapes"
+        ]
+    );
+}
+
+#[test]
+fn a_union_fits_an_interface_every_type_in_it_fits() {
+    let empty: [&str; 0] = [];
+    let interface = "interface HasArea:\n    def area(self) -> float\n\ndef total[T: HasArea](items: list[T]) -> float:\n    sum(item.area() for item in items)\n\n";
+    let fits = format!(
+        "{SHAPES}{interface}def main(stdout: Stdout):\n    shapes: list[Shape] = [Circle(radius=1.0)]\n    stdout.print(total(shapes))\n"
+    );
+    assert_eq!(problems(&fits), empty);
+    let not = format!(
+        "{SHAPES}{interface}def main(stdout: Stdout):\n    dots: list[Circle | Dot] = [Dot(at=1)]\n    stdout.print(total(dots))\n"
+    );
+    assert_eq!(
+        helps(&not),
+        ["give `Dot` the method `def area(self) -> float`"],
+        "the member that doesn't fit is named"
+    );
+}

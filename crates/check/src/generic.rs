@@ -187,6 +187,15 @@ impl FnCx<'_> {
     }
 
     pub(crate) fn fits_interface(&mut self, ty: &Type, interface: &str) -> Result<(), (String, String)> {
+        // A union fits an interface every type in it fits: a call through it goes to whichever
+        // member it holds.
+        if let Type::Union(members) = ty {
+            for member in members {
+                self.fits_interface(member, interface)
+                    .map_err(|(why, fix)| (format!("`{member}` is one of its types, and {why}"), fix))?;
+            }
+            return Ok(());
+        }
         let methods = self.checker.program.interfaces.get(interface).map(|found| found.methods.clone());
         for wanted in methods.unwrap_or_default() {
             // A generic method fits when it does for the same stand-ins in each position, which

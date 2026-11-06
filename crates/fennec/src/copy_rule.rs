@@ -6,8 +6,8 @@
 use fennec_syntax::{Diagnostic, Module, Sources};
 
 /// Each copy a resolved module makes each time round a loop without saying so, anything that may
-/// allocate or copy in a `@hot` function or what it calls, and each call whose positional
-/// arguments are easy to get backwards.
+/// allocate or copy in a `@hot` function or what it calls, or any check native code keeps there
+/// apart from overflow, and each call whose positional arguments are easy to get backwards.
 pub(crate) fn implicit_copies(
     module: &Module,
     signatures: &fennec_check::Signatures,
@@ -22,7 +22,9 @@ pub(crate) fn implicit_copies(
         return problems;
     }
     let keys: Vec<String> = hot.iter().map(|(key, _)| key.clone()).collect();
-    problems.extend(fennec_lint::hot_costs(&findings, &fennec_ir::reached_from_hot(&lowered, &keys)));
+    let reach = fennec_ir::reached_from_hot(&lowered, &keys);
+    problems.extend(fennec_lint::hot_costs(&findings, &reach));
+    problems.extend(checks_kept(&fennec_llvm::checks_left(&lowered), &reach));
     for (key, span) in hot {
         let base = |name: &str| name.split_once('[').map_or(name, |(base, _)| base).to_owned();
         if let Some(missing) = lowered.not_lowered.iter().find(|missing| base(&missing.function) == key) {
@@ -34,6 +36,51 @@ pub(crate) fn implicit_copies(
         }
     }
     problems
+}
+
+/// Each check native code keeps in a `@hot` function or what it calls: one the compiler couldn't
+/// show can't fail, like an index it can't place inside its list. An overflow check it couldn't
+/// prove away stays, as the safety net it is everywhere else.
+fn checks_kept(checks: &[fennec_llvm::CheckLeft], reach: &fennec_ir::HotReach) -> Vec<Diagnostic> {
+    use fennec_llvm::CheckKind;
+    let key = |name: &str| name.split_once('[').map_or(name, |(key, _)| key).to_owned();
+    checks
+        .iter()
+        .filter(|check| !check.span.in_prelude() && check.what != CheckKind::Overflow)
+        .filter_map(|check| {
+            let (_, root) = reach.reached.iter().find(|(name, _)| *name == check.function)?;
+            let (what, help) = match &check.what {
+                CheckKind::Overflow => return None,
+                CheckKind::Bounds => (
+                    "this index may be outside what it indexes, so it keeps its bounds check".to_owned(),
+                    "index with a loop's count over the length, as in `for i in range(items.len())`",
+                ),
+                CheckKind::MissingKey => (
+                    "this key may be missing, so it keeps its check".to_owned(),
+                    "look it up with `.get(key) else ...`, before the hot path if it can be",
+                ),
+                CheckKind::DivideByZero => (
+                    "this may divide by zero, so it keeps its check".to_owned(),
+                    "divide by something the compiler can see isn't zero, like a number written out",
+                ),
+                CheckKind::ShiftRange => (
+                    "this shift may be outside 0 to 63, so it keeps its check".to_owned(),
+                    "shift by a number written out, or one the compiler can see is in range",
+                ),
+                CheckKind::Builtin(name) => (
+                    format!("`{name}` can fail here, so it keeps its check"),
+                    "do what can fail before the hot path, and pass in what it gives",
+                ),
+            };
+            let whose = if key(&check.function) == *root {
+                format!("`@hot` `{root}`")
+            } else {
+                format!("`{}`, which `@hot` `{root}` calls", key(&check.function))
+            };
+            let message = format!("{what} in {whose}");
+            Some(Diagnostic::new(message, check.span).with_help(format!("{help}, or take `@hot` off")))
+        })
+        .collect()
 }
 
 /// Each of the program's own calls whose positional arguments are easy to get backwards.

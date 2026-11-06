@@ -1867,11 +1867,11 @@ fn a_hot_loop_over_a_table_makes_nothing() {
 fn a_hot_function_and_what_it_calls_cant_allocate() {
     let dir = scratch("hot").unwrap();
     let program = dir.join("hot.fen");
-    let source = "struct Unit:\n    hp: int\n    tags: list[str]\n\ndef tagged(ref unit: Unit, tag: str):\n    \
-                  unit.tags.append(tag)\n\n@hot\ndef tick(ref units: list[Unit], dt: int) -> int:\n    \
-                  mut total = 0\n    for ref unit in units:\n        unit.hp -= dt\n        total += unit.hp\n    \
+    let source = "struct Unit:\n    hp: float\n    tags: list[str]\n\ndef tagged(ref unit: Unit, tag: str):\n    \
+                  unit.tags.append(tag)\n\n@hot\ndef tick(ref units: list[Unit], dt: float) -> float:\n    \
+                  mut total = 0.0\n    for ref unit in units:\n        unit.hp -= dt\n        total += unit.hp\n    \
                   tagged(ref units[0], \"hit\")\n    total\n\ndef main(stdout: Stdout):\n    \
-                  mut units = [Unit(hp=10, tags=[]), Unit(hp=20, tags=[])]\n    stdout.print(tick(ref units, 1))\n";
+                  mut units = [Unit(hp=10.0, tags=[]), Unit(hp=20.0, tags=[])]\n    stdout.print(tick(ref units, 1.0))\n";
     std::fs::write(&program, source).unwrap();
     for command in ["check", "run"] {
         let output = fennec(&[command, program.to_str().unwrap()], "").unwrap();
@@ -1886,10 +1886,39 @@ fn a_hot_function_and_what_it_calls_cant_allocate() {
     }
     std::fs::write(&program, source.replace("    tagged(ref units[0], \"hit\")\n", "")).unwrap();
     let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
-    assert_eq!(text(&output.stdout), "28\n", "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "28.0\n", "{}", text(&output.stderr));
     std::fs::write(&program, "noalloc def f():\n    pass\n").unwrap();
     let output = fennec(&["check", program.to_str().unwrap()], "").unwrap();
     assert!(text(&output.stderr).contains("`noalloc` is written `@hot` now"), "{}", text(&output.stderr));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `@hot` also means no check is left in native code: an index the compiler can't place inside
+/// its list is a compile error. A loop over a list keeps none, and an overflow check stays.
+#[test]
+fn a_hot_function_keeps_no_checks() {
+    let dir = scratch("hot-checks").unwrap();
+    let program = dir.join("hot.fen");
+    let source = "@hot\ndef total(xs: list[float], at: int) -> float:\n    mut sum = 0.0\n    for x in xs:\n        \
+                  sum += x\n    sum + xs[at]\n\ndef main(stdout: Stdout):\n    stdout.print(total([1.0, 2.0], 1))\n";
+    std::fs::write(&program, source).unwrap();
+    let output = fennec(&["check", program.to_str().unwrap()], "").unwrap();
+    let printed = text(&output.stderr);
+    assert!(!output.status.success());
+    assert!(
+        printed.contains(
+            "this index may be outside what it indexes, so it keeps its bounds check in `@hot` `total`"
+        ),
+        "{printed}"
+    );
+    assert_eq!(printed.matches("keeps its").count(), 1, "the loop keeps no check: {printed}");
+    std::fs::write(&program, source.replace("sum + xs[at]", "sum")).unwrap();
+    let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
+    assert_eq!(text(&output.stdout), "3.0\n", "{}", text(&output.stderr));
+    // An overflow check the compiler can't prove away stays, as the safety net it is everywhere.
+    std::fs::write(&program, "@hot\ndef add(a: int, b: int) -> int:\n    a + b\n\ndef main(stdout: Stdout):\n    stdout.print(add(1, b=2))\n").unwrap();
+    let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
+    assert_eq!(text(&output.stdout), "3\n", "{}", text(&output.stderr));
     std::fs::remove_dir_all(dir).unwrap();
 }
 

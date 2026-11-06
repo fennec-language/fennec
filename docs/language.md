@@ -197,7 +197,7 @@ Each connection gets its own task, and a failure ends only that task. The wrappe
 ## Speed
 
 - Everyday builds stay fast, and release builds can take as long as they need.
-- `@hot` turns a hidden copy into a compile error, and the tracer shows where each copy happens and why. Built: anything that may allocate or copy in a `@hot` function, or in what it calls, is an error that says why. Count checks aren't looked at yet.
+- `@hot` turns a hidden copy into a compile error, and the tracer shows where each copy happens and why. Built: anything that may allocate or copy in a `@hot` function, or in what it calls, is an error that says why, and so is any check native code keeps there, like an index it can't place inside its list. An overflow check the compiler can't prove away stays, as the safety net it is everywhere.
 
 ## Still to decide
 

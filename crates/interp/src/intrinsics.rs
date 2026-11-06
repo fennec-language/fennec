@@ -49,6 +49,14 @@ pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagn
             let text = part.and_then(|part| std::str::from_utf8(part).ok()).unwrap_or("");
             Ok(Value::str(text))
         }
+        ("text_plain_end" | "text_escape_at", [Value::Str(text), Value::Int(at)]) => {
+            let writing = name == "text_escape_at";
+            let from = usize::try_from(*at).unwrap_or(0);
+            let found = text.bytes().enumerate().skip(from).find(|(_, b)| {
+                *b < 32 || *b == 34 || *b == 92 || (writing && (*b == 127 || *b == 194))
+            });
+            Ok(Value::Int(i64::try_from(found.map_or(text.len(), |(at, _)| at)).unwrap_or(i64::MAX)))
+        }
         ("float_of_bits", [Value::Int(bits)]) => Ok(Value::Float(f64::from_bits(bits.cast_unsigned()))),
         // What a type is, which only native code knows as it runs.
         ("shape_hash" | "type_name", []) => Err(Diagnostic::new(

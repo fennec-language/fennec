@@ -4346,6 +4346,50 @@ fn a_build_leaves_the_interpreter_out_unless_the_program_needs_it() -> std::io::
     Ok(())
 }
 
+/// With nothing asked, a program that uses `parallel` is built with the runtime that runs it on
+/// every core, and prints what it should; `FENNEC_THREADS_RUNTIME=0` keeps it on one thread.
+#[test]
+fn a_build_runs_parallel_on_every_core_unless_asked_not_to() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("threads-default")?;
+    let program = dir.join("squares.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    xs = [i for i in range(100_000)]\n    squares = [x * x % 7 for x in parallel(xs)]\n    stdout.print(sum(n for n in parallel(squares)), squares[99_999])\n",
+    )?;
+    let built = |threads: Option<&str>, name: &str| -> std::io::Result<PathBuf> {
+        let executable = dir.join(name);
+        let mut command = crate::executables::fennec_command();
+        command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+        command.env("FENNEC_HOME", &dir).env_remove("FENNEC_THREADS_RUNTIME");
+        if let Some(threads) = threads {
+            command.env("FENNEC_THREADS_RUNTIME", threads);
+        }
+        let built = command.output()?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        Ok(executable)
+    };
+    let has_pool = |executable: &Path| -> std::io::Result<bool> {
+        let symbols = Command::new("nm").arg(executable).output()?;
+        Ok(String::from_utf8_lossy(&symbols.stdout).contains("rayon_core"))
+    };
+    let wanted = "199999 2\n";
+    let every_core = built(None, "every-core")?;
+    let ran = Command::new(&every_core).env("FENNEC_THREADS", "4").output()?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted);
+    let one_thread = built(Some("0"), "one-thread")?;
+    assert_eq!(String::from_utf8_lossy(&Command::new(&one_thread).output()?.stdout), wanted);
+    // A Windows executable has no symbols to look through.
+    if !cfg!(windows) {
+        assert!(has_pool(&every_core)?, "the program has no pool to run on");
+        assert!(!has_pool(&one_thread)?, "asked for one thread, the program has a pool");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// JSON and TOML of types that save themselves go through std's readers and writers in Fennec,
 /// std's collections among them, so a program reading and writing them links with no interpreter
 /// in it.

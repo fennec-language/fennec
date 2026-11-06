@@ -395,10 +395,15 @@ impl Heap {
     /// Takes a block out of the heap for reuse, leaving the blocks it refers to as they are:
     /// for a block whose contents moved to a new one.
     pub(super) fn discard(&mut self, address: u64) {
-        self.forget_place(address);
-        if let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(at)) {
+        if let Some(block) = self.take_out(address) {
             self.recycle(block);
         }
+    }
+
+    /// Takes a block of this thread's out of the heap, for its contents to move to a new one.
+    pub(super) fn take_out(&mut self, address: u64) -> Option<Box<[u64]>> {
+        self.forget_place(address);
+        self.blocks.remove(usize::try_from(address).ok()?)
     }
 
     /// Where a string that isn't ASCII was last read.
@@ -574,8 +579,9 @@ pub(super) fn is_text(state: &State, block: &[u64]) -> bool {
 }
 
 /// Words a string's block starts with: its owner count, shape, length in bytes, length in
-/// characters, and how many bytes its block has room for.
-pub const TEXT_HEADER_WORDS: usize = 5;
+/// characters, how many bytes its block has room for, and a cursor native code keeps (see
+/// `layout::TEXT_CURSOR`).
+pub const TEXT_HEADER_WORDS: usize = 6;
 
 /// A string's block: owned `count` times, its bytes packed eight to a word.
 pub fn text_block(shape: u64, text: &str, count: u64) -> Box<[u64]> {
@@ -583,7 +589,7 @@ pub fn text_block(shape: u64, text: &str, count: u64) -> Box<[u64]> {
     let length = |n: usize| u64::try_from(n).unwrap_or(0);
     let words = bytes.len().div_ceil(8).max(1);
     let mut block = Vec::with_capacity(TEXT_HEADER_WORDS + words);
-    block.extend([count, shape, length(bytes.len()), length(text.chars().count()), length(words * 8)]);
+    block.extend([count, shape, length(bytes.len()), length(text.chars().count()), length(words * 8), 0]);
     // Native code reads the first word of text without checking the length.
     if bytes.is_empty() {
         block.push(0);
@@ -608,7 +614,7 @@ pub(super) fn text_from_bytes(state: &mut State, bytes: &[u8], chars: usize) -> 
     let words = bytes.len().div_ceil(8).max(1);
     let mut block = state.heap.fresh(TEXT_HEADER_WORDS + words);
     let number = |n: usize| u64::try_from(n).unwrap_or(0);
-    let header = [1, state.tables.str_shape, number(bytes.len()), number(chars), number(words * 8)];
+    let header = [1, state.tables.str_shape, number(bytes.len()), number(chars), number(words * 8), 0];
     if let Some(start) = block.get_mut(..TEXT_HEADER_WORDS) {
         start.copy_from_slice(&header);
     }

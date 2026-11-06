@@ -168,18 +168,18 @@ fn grow_to(state: &mut State, list: i64, more: usize, least: usize) -> Option<i6
     let room = usize::try_from(*block.get(3)?).ok()?;
     let shared = !state.heap.is_alone(address, block);
     let wanted = if count + more > room { grown_room(count, more) } else { room }.max(least);
-    let address = if shared || wanted > room {
+    let address = if shared {
         let kept = items(block, stride).to_vec();
-        if shared {
-            state.heap.copied(kept.len());
-            retain_items(state, &element, &kept);
-        }
+        state.heap.copied(kept.len());
+        retain_items(state, &element, &kept);
         let grown = build(state, at, stride, &kept, wanted);
-        if shared {
-            release(state, address);
-        } else {
-            state.heap.discard(address);
-        }
+        release(state, address);
+        u64::try_from(state.heap.insert(grown)).ok()?
+    } else if wanted > room {
+        // Its own block: taken out first, its items move straight across with no copy on the way.
+        let old = state.heap.take_out(address)?;
+        let grown = build(state, at, stride, items(&old, stride), wanted);
+        state.heap.recycle(old);
         u64::try_from(state.heap.insert(grown)).ok()?
     } else {
         address

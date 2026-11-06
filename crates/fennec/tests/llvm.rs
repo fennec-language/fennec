@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 120;
+const BUILDING_EXAMPLES: usize = 126;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -1739,6 +1739,51 @@ fn reading_a_string_that_isnt_ascii_in_order_takes_a_step_for_each_character() -
     )
 }
 
+/// Indexing and slicing text that isn't ASCII, in and out of order, from either end, clamped
+/// and empty, as native code finds characters from a block's cursor.
+#[test]
+fn indexing_and_slicing_a_string_that_isnt_ascii_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "wide_slices",
+        r#"def main(stdout: Stdout):
+    text = "héllo wörld, ünïcode ✓ and 🦊 fox; then plain ascii after all that"
+    n = text.len()
+    mut parts = []
+    for a in [0, 1, 5, 21, 26, 27, 28, 40, 64, 65, -1, -5, -30, -70, 70]:
+        for b in [0, 2, 6, 22, 27, 28, 29, 45, 64, 65, -1, -3, -40, 100]:
+            parts.append(text[a:b])
+    stdout.print(parts)
+    stdout.print(text[:5], text[60:], text[:], text[-6:], text[:-60], text[3:3], text[27:28])
+    mut walked = []
+    for i in range(n - 2):
+        walked.append(text[i:i + 2] + text[i] + text[-1 - i])
+    stdout.print("|".join(walked))
+    mut jumps = []
+    for i in [3, 50, 7, 60, 0, 61, 28, 27, 26, -1, -64]:
+        jumps.append(text[i])
+    stdout.print(jumps, text[0:40], text[5:n])
+    stdout.print(text[n])
+"#,
+    )
+}
+
+/// Reading characters and short parts of text that isn't ASCII, in order, makes nothing.
+#[test]
+fn reading_text_that_isnt_ascii_makes_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let made =
+        "def main(stdout: Stdout):\n    text = \"é\" + \"abc日\" * 1000\n    stdout.print(text.len())\n";
+    let read = "def main(stdout: Stdout):\n    text = \"é\" + \"abc日\" * 1000\n    mut found = 0\n    mut size = 0\n    for at in range(text.len() - 2):\n        if text[at] == \"日\":\n            found += 1\n        size += text[at:at + 2].len()\n    stdout.print(found, size)\n";
+    let (made, read) = (counts_of("text_made", made)?, counts_of("text_read", read)?);
+    assert_eq!(count(&read, "allocations"), count(&made, "allocations"), "{made} / {read}");
+    Ok(())
+}
+
 /// A program changing `for mut` items in every way a body can, and leaving in every way.
 const FOR_MUT_ITEMS: &str = r#"error Bad:
     why: str
@@ -2984,6 +3029,144 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
     assert!(wrong.is_empty(), "printed the wrong thing: {wrong:?}");
     assert!(built >= BUILDING_EXAMPLES, "only {built} examples build");
     Ok(())
+}
+
+/// Dicts whose values are blocks, with what's done to them.
+#[test]
+fn dicts_of_blocks_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "dict_values",
+        r#"struct Book:
+    title: str
+    pages: dict[str, list[int]]
+
+def main(stdout: Stdout):
+    mut lists = {"a": [1, 2], "b": []}
+    lists["c"] = [3]
+    copied = lists
+    lists["a"] = [9]
+    stdout.print(lists, copied, lists["a"], copied["a"][1], lists.len())
+    lists["c"].append(4)
+    stdout.print(lists["c"], copied["c"])
+    stdout.print(lists.get("c"), lists.get("nope"), "a" in lists, "z" in lists)
+    stdout.print(lists.keys(), lists.values(), lists.items())
+    for key, value in lists.items():
+        stdout.print(key, value, value.len())
+    stdout.print(lists.pop("a"), lists)
+    mut by_int = {1: ["one"], 2: ["two", "too"]}
+    by_int[3] = ["three"]
+    stdout.print(by_int, by_int[2][1], by_int == {1: ["one"]}, by_int == by_int)
+    mut nested = {"x": {"y": [1]}}
+    nested["z"] = {}
+    nested["z"]["w"] = [2]
+    stdout.print(nested, nested["x"]["y"], nested["z"]["w"][0])
+    mut sets = {"s": {1, 2}}
+    sets["t"] = {3}
+    stdout.print(sets, 1 in sets["s"])
+    mut raw = {"b": bytes([1, 2])}
+    raw["c"] = "hi".encode()
+    stdout.print(raw, raw["c"].len())
+    book = Book(title="t", pages={"one": [1], "two": [2, 2]})
+    stdout.print(book, book.pages["two"], book.pages.keys())
+    mut empty: dict[str, list[int]] = {}
+    empty.clear()
+    stdout.print(empty, empty.get("a"), empty.len())
+    mut grown: dict[int, list[int]] = {}
+    for at in range(100):
+        grown[at] = [at, at + 1]
+    stdout.print(grown[99], grown.len(), sum(sum(items) for items in grown.values()))
+"#,
+    )
+}
+
+/// Dicts whose values are plain structs and enums, or `Id`s, with what's done to them.
+#[test]
+fn dicts_of_plain_values_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "dict_plain_values",
+        r#"from std.collections import Table
+
+struct Point:
+    x: int
+    y: float
+
+struct Named:
+    name: str
+    tags: list[str]
+
+enum Light:
+    Red
+    Green
+    Amber(seconds: int)
+
+enum Note:
+    Empty
+    Said(text: str)
+
+struct Home:
+    id: int
+
+def main(stdout: Stdout):
+    mut points = {"p": Point(x=1, y=2.0)}
+    points["q"] = Point(x=3, y=4.0)
+    points["p"] = Point(x=5, y=6.0)
+    other = points
+    points["q"] = Point(x=7, y=8.0)
+    stdout.print(points, other, points["p"].x, points == other, points.get("q"), points.get("r"))
+    stdout.print(points.values(), points.items(), points.pop("q"), points)
+    mut lights = {"go": Light.Green, "wait": Light.Amber(seconds=3)}
+    lights["stop"] = Light.Red
+    stdout.print(lights, lights["wait"], lights["go"] == Light.Green)
+    for name, light in lights.items():
+        match light:
+            case Red:
+                stdout.print(name, "red")
+            case Green:
+                stdout.print(name, "green")
+            case Amber(seconds):
+                stdout.print(name, seconds)
+    mut notes = {1: Note.Said(text="a long note that sits in its own block"), 2: Note.Empty}
+    notes[3] = Note.Said(text="short")
+    notes[1] = Note.Said(text="replaced")
+    stdout.print(notes, notes[3])
+    stdout.print(notes.pop(1), notes.get(3), notes.values())
+    mut people = {"me": Named(name="me", tags=["a"])}
+    people["you"] = Named(name="a long name that sits in its own block", tags=[])
+    kept = people["you"]
+    people["you"] = Named(name="other", tags=["b", "c"])
+    stdout.print(people, kept, people["you"].tags[1], people == people)
+    mut ids = Table[Home]()
+    first = ids.add(Home(id=1))
+    second = ids.add(Home(id=2))
+    mut links = {first: second}
+    links[second] = first
+    stdout.print(links[first] == second, links[second] == first, first in links, links.len())
+    mut homes = {"first": first}
+    homes["second"] = second
+    stdout.print(homes["second"] == second, homes.get("nope") is None, homes.len())
+"#,
+    )
+}
+
+/// A key a dict of blocks doesn't have fails as the JIT's does.
+#[test]
+fn a_missing_key_in_a_dict_of_lists_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "missing_list",
+        "def main(stdout: Stdout):
+    held = {\"a\": [1]}
+    stdout.print(held[\"b\"])
+",
+    )
 }
 
 #[test]
@@ -5948,6 +6131,18 @@ fn errors_of_several_types_go_up_and_show_as_on_the_interpreter() -> std::io::Re
     same_as_the_interpreter_in_both_builds(
         "errors_of_several_types",
         include_str!("fixtures/errors_of_several_types.fen"),
+    )
+}
+
+/// A function that says `fails A | B`, with errors that have cases among them.
+#[test]
+fn failing_several_ways_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "fails_several_ways",
+        include_str!("fixtures/fails_several_ways.fen"),
     )
 }
 

@@ -49,7 +49,7 @@ pub extern "C" fn with_room(bytes: i64) -> i64 {
     with(|state| {
         let words = usize::try_from(bytes).unwrap_or(0).div_ceil(8).max(1);
         let mut block = state.heap.fresh(TEXT_HEADER_WORDS + words);
-        if let Some([count, shape, _, _, room]) = block.get_mut(..TEXT_HEADER_WORDS) {
+        if let Some([count, shape, _, _, room, _cursor]) = block.get_mut(..TEXT_HEADER_WORDS) {
             *count = 1;
             *shape = state.tables.str_shape;
             *room = u64::try_from(words * 8).unwrap_or(0);
@@ -109,7 +109,7 @@ fn grow_by(state: &mut State, text: i64, added: &[u64], extra: usize, extra_char
     }
     put_words(&mut grown, length, added, extra);
     set_lengths(&mut grown, total, chars + extra_chars);
-    if let Some([count, .., bytes]) = grown.get_mut(..TEXT_HEADER_WORDS) {
+    if let Some([count, _, _, _, bytes, _cursor]) = grown.get_mut(..TEXT_HEADER_WORDS) {
         *count = 1;
         *bytes = u64::try_from(room * 8).unwrap_or(0);
     }
@@ -395,6 +395,7 @@ fn ascii_part(state: &mut State, address: i64, from: i64, to: i64) -> Option<i64
         number(size),
         number(size),
         number(words * 8),
+        0,
     ]);
     let text = state.heap.block(source)?.get(TEXT_HEADER_WORDS..)?;
     // Each word of the part is made of the end of one word and the start of the next.
@@ -740,7 +741,7 @@ pub(super) fn ascii_part_of(
     let words = kept.div_ceil(8);
     let mut part = state.heap.fresh(TEXT_HEADER_WORDS + words);
     let number = |n: usize| u64::try_from(n).unwrap_or(0);
-    let header = [1, state.tables.str_shape, number(kept), chars, number(words * 8)];
+    let header = [1, state.tables.str_shape, number(kept), chars, number(words * 8), 0];
     part.get_mut(..TEXT_HEADER_WORDS)?.copy_from_slice(&header);
     let source = state.heap.block(address)?.get(TEXT_HEADER_WORDS + from / 8..)?;
     let shift = u32::try_from(from % 8 * 8).ok()?;
@@ -808,7 +809,7 @@ pub extern "C" fn join(separator: i64, list: i64) -> i64 {
             (at, chars) = (at + length, chars + count);
         }
         let room = u64::try_from(joined.len() - TEXT_HEADER_WORDS).unwrap_or(0) * 8;
-        let header = [1, state.tables.str_shape, 0, 0, room];
+        let header = [1, state.tables.str_shape, 0, 0, room, 0];
         if let Some(start) = joined.get_mut(..TEXT_HEADER_WORDS) {
             start.copy_from_slice(&header);
         }

@@ -104,6 +104,8 @@ pub struct Tables {
     /// The numbers of the shapes of `shared` values, which are the same only if they're one
     /// value.
     pub cells: Vec<u64>,
+    /// The kinds of block a dict's values can be, by the number `dicts::Word::Block` has.
+    pub blocks: Vec<Rc<crate::packed::Element>>,
     /// The shape number strings' blocks have.
     pub str_shape: u64,
     /// Blocks that live for the whole run, like string literals, made while compiling so

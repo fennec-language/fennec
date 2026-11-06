@@ -3196,6 +3196,46 @@ fn not_native_yet(path: &Path) -> bool {
     path.file_name().and_then(|name| name.to_str()).is_some_and(|name| NOT_NATIVE_YET.contains(&name))
 }
 
+/// How many builds the examples' tests run at once: one per core, up to 8. One at a time took 71
+/// seconds; 8 take 29, and holding under 100 megabytes each, stay well inside 4 gigabytes.
+fn builds_at_once() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(8)
+}
+
+/// Runs `each` on every item, `builds_at_once()` at a time, each worker with its own number for a
+/// folder of its own. The results come back in the items' order.
+fn at_once<T: Sync, R: Send>(
+    items: &[T],
+    each: impl Fn(usize, &T) -> std::io::Result<R> + Sync,
+) -> std::io::Result<Vec<R>> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let done = std::sync::Mutex::new(Vec::with_capacity(items.len()));
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..builds_at_once().min(items.len()))
+            .map(|worker| {
+                let (next, done, each) = (&next, &done, &each);
+                scope.spawn(move || -> std::io::Result<()> {
+                    loop {
+                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(item) = items.get(at) else { return Ok(()) };
+                        let result = each(worker, item)?;
+                        done.lock()
+                            .map_err(|_| std::io::Error::other("a worker panicked"))?
+                            .push((at, result));
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().map_err(|_| std::io::Error::other("a worker panicked"))??;
+        }
+        Ok::<_, std::io::Error>(())
+    })?;
+    let mut done = done.into_inner().map_err(|_| std::io::Error::other("a worker panicked"))?;
+    done.sort_by_key(|(at, _)| *at);
+    Ok(done.into_iter().map(|(_, result)| result).collect())
+}
+
 /// Every example builds through LLVM and prints exactly what it should.
 #[test]
 fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
@@ -3204,34 +3244,42 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
     }
     let dir = folder("examples")?;
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
-    let (mut refused, mut wrong) = (Vec::new(), Vec::new());
+    let mut paths = Vec::new();
     for entry in std::fs::read_dir(examples)? {
         let path = entry?.path();
-        let wanted = path.with_extension("out");
-        if path.extension().is_none_or(|ext| ext != "fen") || !wanted.exists() {
-            continue;
+        if path.extension().is_some_and(|ext| ext == "fen") && path.with_extension("out").exists() {
+            paths.push(path);
         }
-        let executable = dir.join("example");
-        let made =
-            fennec(&["build", "--llvm", &path.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
-        if not_native_yet(&path) {
-            assert!(
-                !made.status.success(),
-                "{} builds natively now: take it off NOT_NATIVE_YET",
-                path.display()
-            );
-            continue;
-        }
+    }
+    paths.sort();
+    // What became of each: built and printed this, or refused with this.
+    let outcomes = at_once(&paths, |worker, path| {
+        let home = dir.join(format!("home-{worker}"));
+        let executable = dir.join(format!("example-{worker}"));
+        let made = fennec(
+            &["build", "--llvm", &path.to_string_lossy(), "-o", &executable.to_string_lossy()],
+            &home,
+        )?;
         if !made.status.success() {
-            refused.push(format!("{}: {}", path.display(), String::from_utf8_lossy(&made.stderr).trim()));
-            continue;
+            return Ok(Err(String::from_utf8_lossy(&made.stderr).trim().to_owned()));
         }
         let ran = Command::new(&executable).output()?;
-        if String::from_utf8_lossy(&ran.stdout) != std::fs::read_to_string(&wanted)? {
-            wrong.push(path);
+        Ok(Ok(String::from_utf8_lossy(&ran.stdout).into_owned()))
+    })?;
+    let (mut refused, mut wrong, mut now_native) = (Vec::new(), Vec::new(), Vec::new());
+    for (path, outcome) in paths.iter().zip(outcomes) {
+        match outcome {
+            Ok(_) if not_native_yet(path) => now_native.push(path),
+            Err(_) if not_native_yet(path) => {}
+            Err(why) => refused.push(format!("{}: {why}", path.display())),
+            Ok(printed) if printed != std::fs::read_to_string(path.with_extension("out"))? => {
+                wrong.push(path);
+            }
+            Ok(_) => {}
         }
     }
     std::fs::remove_dir_all(&dir)?;
+    assert!(now_native.is_empty(), "these build natively now: take them off NOT_NATIVE_YET: {now_native:?}");
     assert!(wrong.is_empty(), "printed the wrong thing: {wrong:?}");
     assert!(refused.is_empty(), "these don't build through LLVM:\n{}", refused.join("\n"));
     Ok(())
@@ -3273,19 +3321,28 @@ fn every_program_builds_natively() -> std::io::Result<()> {
     }
     programs.sort();
     let dir = folder("every_program")?;
-    let mut not_native = Vec::new();
-    for program in &programs {
-        let said = fennec(&["dev", "fallbacks", "--llvm", &program.to_string_lossy()], &dir)?;
+    // What each said: nothing where it's all native code, or why it isn't.
+    let said = at_once(&programs, |worker, program| {
+        let said = fennec(
+            &["dev", "fallbacks", "--llvm", &program.to_string_lossy()],
+            &dir.join(format!("home-{worker}")),
+        )?;
         let told = String::from_utf8_lossy(&said.stdout);
-        let native =
-            said.status.success() && told.lines().last() == Some("everything compiles to native code");
-        if not_native_yet(program) {
-            assert!(!native, "{} builds natively now: take it off NOT_NATIVE_YET", program.display());
-            continue;
+        if said.status.success() && told.lines().last() == Some("everything compiles to native code") {
+            return Ok(None);
         }
-        if !native {
-            let why = format!("{told}{}", String::from_utf8_lossy(&said.stderr));
-            not_native.push(format!("{}:\n  {}", program.display(), why.trim().replace('\n', "\n  ")));
+        Ok(Some(format!("{told}{}", String::from_utf8_lossy(&said.stderr))))
+    })?;
+    let mut not_native = Vec::new();
+    for (program, why) in programs.iter().zip(said) {
+        match why {
+            None if not_native_yet(program) => {
+                panic!("{} builds natively now: take it off NOT_NATIVE_YET", program.display())
+            }
+            Some(why) if !not_native_yet(program) => {
+                not_native.push(format!("{}:\n  {}", program.display(), why.trim().replace('\n', "\n  ")));
+            }
+            _ => {}
         }
     }
     std::fs::remove_dir_all(&dir)?;

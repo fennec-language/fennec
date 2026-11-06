@@ -110,6 +110,9 @@ impl Checker {
             (Type::Arrow(p1, r1), Type::Arrow(p2, r2)) if p1.len() == p2.len() => {
                 p1.iter().zip(p2).all(|(a, b)| self.fits(b, a)) && self.fits(r1, r2)
             }
+            // A member goes where its union is wanted, and so does a union of some of its members.
+            (Type::Union(members), Type::Union(others)) => others.iter().all(|other| members.contains(other)),
+            (Type::Union(members), other) => members.contains(other),
             _ => false,
         }
     }

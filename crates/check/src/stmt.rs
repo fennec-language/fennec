@@ -205,21 +205,27 @@ impl FnCx<'_> {
         }
         let before = self.snapshot();
         let mut ruled_out = Vec::new();
+        let mut not_members = Vec::new();
         let mut paths = Vec::new();
         let mut values = Vec::new();
-        let mut arms: Vec<(Vec<String>, Option<&[Stmt]>)> = Vec::new();
+        let mut arms: Vec<Arm<'_>> = Vec::new();
         for (cond, body) in branches {
             self.narrow(&ruled_out);
+            self.narrow_members(&not_members);
             self.condition(cond, "if");
             let mut known = ruled_out.clone();
             known.extend(not_none(cond, true));
-            arms.push((known, Some(body)));
+            let mut held = not_members.clone();
+            held.extend(members(cond, true));
+            arms.push((known, held, Some(body)));
             ruled_out.extend(not_none(cond, false));
+            not_members.extend(members(cond, false));
             self.restore(&before);
         }
-        arms.push((ruled_out, otherwise));
-        for (known, body) in arms {
+        arms.push((ruled_out, not_members, otherwise));
+        for (known, held, body) in arms {
             self.narrow(&known);
+            self.narrow_members(&held);
             let flow = match body {
                 Some(body) => self.block(body, used),
                 None => Flow::unit(),
@@ -246,6 +252,7 @@ impl FnCx<'_> {
         self.track(cond);
         let before = self.snapshot();
         self.narrow(&not_none(cond, true));
+        self.narrow_members(&members(cond, true));
         self.block(body, false);
         let after = self.snapshot();
         self.merge(&[before, after]);
@@ -421,6 +428,34 @@ pub(crate) fn not_none(cond: &Expr, when: bool) -> Vec<String> {
             not_none(lhs, false).into_iter().chain(not_none(rhs, false)).collect()
         }
         ExprKind::Unary { op: UnaryOp::Not, expr } => not_none(expr, !when),
+        _ => Vec::new(),
+    }
+}
+
+/// A name, a member of its union by its written name, and whether the name holds that member.
+pub(crate) type Member = (String, String, bool);
+
+/// One way through an `if`: the names known not to be None there, what's known of the unions
+/// names hold, and its body, if it has one.
+type Arm<'s> = (Vec<String>, Vec<Member>, Option<&'s [Stmt]>);
+
+/// What a condition shows about which member of a union a name holds, when it's `true` or when
+/// it's `false`: `s is Circle` shows `s` holds a `Circle` when true and doesn't when false, and
+/// `and`, `or` and `not` combine them as for `None`. Each is the path, the member's written name,
+/// and whether it holds that member.
+pub(crate) fn members(cond: &Expr, when: bool) -> Vec<Member> {
+    match &cond.kind {
+        ExprKind::Binary { op: op @ (BinOp::Is | BinOp::IsNot), lhs, rhs } => match (path(lhs), &rhs.kind) {
+            (Some(path), ExprKind::Name(member)) => vec![(path, member.clone(), (*op == BinOp::Is) == when)],
+            _ => Vec::new(),
+        },
+        ExprKind::Binary { op: BinOp::And, lhs, rhs } if when => {
+            members(lhs, true).into_iter().chain(members(rhs, true)).collect()
+        }
+        ExprKind::Binary { op: BinOp::Or, lhs, rhs } if !when => {
+            members(lhs, false).into_iter().chain(members(rhs, false)).collect()
+        }
+        ExprKind::Unary { op: UnaryOp::Not, expr } => members(expr, !when),
         _ => Vec::new(),
     }
 }

@@ -580,19 +580,21 @@ struct Parser:
     ## are one written type named `|`.
     def fails_type(ref self) -> TypeExpr:
         self.advance()
-        self.errors_type()?
+        self.type_expr()?
 
-    ## One error, or several joined by `|`, as after `fails` or in `Result[int, A | B]`.
-    def errors_type(ref self) -> TypeExpr:
-        first = self.type_expr()?
+    ## A type, or several joined by `|`: a union, like `Circle | Square`, or the errors after
+    ## `fails` or in `Result[int, A | B]`. Either is one written type named `|`.
+    def type_expr(ref self) -> TypeExpr:
+        first = self.member_type()?
         if not self.at_punct("|"):
             return first
-        mut errors = [first]
+        mut members = [first]
         while self.eat_punct("|"):
-            errors.append(self.type_expr()?)
-        TypeExpr(name="|", args=errors, optional=False, span=first.span.to(self.prev_span()))
+            members.append(self.member_type()?)
+        TypeExpr(name="|", args=members, optional=False, span=first.span.to(self.prev_span()))
 
-    def type_expr(ref self) -> TypeExpr:
+    ## One type with no `|` around it, unless it's in parentheses, as in `(Circle | Square)?`.
+    def member_type(ref self) -> TypeExpr:
         start = self.span()
         mut args = []
         mut name = ""
@@ -609,6 +611,10 @@ struct Parser:
                 if not self.eat_punct(","):
                     break
             self.expect_punct(")")?
+            # `(Circle | Square)?`: a union in parentheses is the union, so it can be optional.
+            if args.len() == 1 and args[0].name == "|" and not self.at_punct("->"):
+                optional = self.eat_punct("?")
+                return copy(args[0], optional=optional, span=start.to(self.prev_span()))
             # `(int, str) -> bool`: a function type, its return type last. One that can fail
             # says so, as in `(str) -> int fails ParseError`, which is written in as its own
             # `fails` type holding the return type and the errors.
@@ -628,9 +634,9 @@ struct Parser:
             while self.eat_punct("."):
                 name += "." + self.name("a type")?
         if self.eat_punct("["):
-            args.append(self.errors_type()?)
+            args.append(self.type_expr()?)
             while self.eat_punct(","):
-                args.append(self.errors_type()?)
+                args.append(self.type_expr()?)
             self.expect_punct("]")?
         optional = self.eat_punct("?")
         TypeExpr(name=name, args=args, optional=optional, span=start.to(self.prev_span()))

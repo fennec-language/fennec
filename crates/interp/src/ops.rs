@@ -53,12 +53,35 @@ pub(crate) fn binary(op: BinOp, lhs: Value, rhs: Value, span: Span) -> Result<Va
 }
 
 fn is_none(op: BinOp, lhs: &Value, rhs: &Value, span: Span) -> Result<Value, Diagnostic> {
+    // `s is Circle`: which member of a union a value holds.
+    let member = match rhs {
+        Value::Type(name) => Some(name.as_ref()),
+        Value::Builtin(name @ ("int" | "float" | "bool" | "str" | "bytes")) => Some(*name),
+        _ => None,
+    };
+    if let Some(member) = member {
+        return Ok(Value::Bool(holds(lhs, member) == (op == BinOp::Is)));
+    }
     if *rhs != Value::None {
         return Err(
             Diagnostic::new("`is` only compares with None", span).with_help("use `==` to compare values")
         );
     }
     Ok(Value::Bool((*lhs == Value::None) == (op == BinOp::Is)))
+}
+
+/// Whether a value is of the type named `member`, a struct's or enum's name or a built-in one.
+fn holds(value: &Value, member: &str) -> bool {
+    match value {
+        Value::Instance(instance) => instance.type_name.as_ref() == member,
+        Value::Shared(cell) => holds(&cell.borrow(), member),
+        Value::Int(_) => member == "int",
+        Value::Float(_) => member == "float",
+        Value::Bool(_) => member == "bool",
+        Value::Str(_) => member == "str",
+        Value::Bytes(_) => member == "bytes",
+        _ => false,
+    }
 }
 
 fn arithmetic(op: BinOp, lhs: Value, rhs: Value, span: Span) -> Result<Value, Diagnostic> {

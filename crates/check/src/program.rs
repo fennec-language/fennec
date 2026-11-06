@@ -218,6 +218,19 @@ impl Program {
 
     /// `ParseError | RangeError` after `fails`: one of several errors. Each has to be one.
     fn errors_named(&self, union: &TypeExpr, generics: &[String], depth: usize) -> Result<Type, Diagnostic> {
+        let members: Vec<Type> = union
+            .args
+            .iter()
+            .map(|member| self.resolve_within(member, generics, depth))
+            .collect::<Result<_, _>>()?;
+        let is_error = |ty: &Type| {
+            matches!(ty, Type::Named(name) if self.types.get(name).is_some_and(|info| info.kind == TypeKind::Error))
+                || matches!(ty, Type::Errors(_))
+        };
+        if !members.iter().any(is_error) {
+            let ty = union_of(union, members)?;
+            return Ok(if union.optional { Type::optional(ty) } else { ty });
+        }
         let mut names = Vec::new();
         for error in &union.args {
             match self.resolve_within(error, generics, depth)? {
@@ -616,4 +629,51 @@ pub(crate) fn optional_inside(ty: &Type, span: Span) -> Option<Diagnostic> {
         _ => return None,
     };
     Some(Diagnostic::new(message, span).with_help(help))
+}
+
+/// `Circle | Square`: the union of `members`, flattened and in a fixed order, so `A | B` is
+/// `B | A`. A member that's there twice, `None`, or a type parameter is a mistake.
+fn union_of(written: &TypeExpr, members: Vec<Type>) -> Result<Type, Diagnostic> {
+    let mut flat = Vec::new();
+    for (member, at) in members.into_iter().zip(&written.args) {
+        match member {
+            Type::Union(inner) => flat.extend(inner.into_iter().map(|inner| (inner, at.span))),
+            Type::None | Type::Optional(_) => {
+                let others: Vec<String> =
+                    written.args.iter().filter(|arg| arg.name != "None").map(written_type).collect();
+                let without = match others.as_slice() {
+                    [one] => format!("{one}?"),
+                    _ => format!("({})?", others.join(" | ")),
+                };
+                return Err(Diagnostic::new("`None` is never part of a union", at.span)
+                    .with_help(format!("write `{without}`: an optional says it can be missing"))
+                    .with_fix(written.span, without));
+            }
+            Type::Param(name) => {
+                return Err(Diagnostic::new(
+                    format!("`{name}` is a type parameter, which can't be part of a union"),
+                    at.span,
+                )
+                .with_help(
+                    "a union mixes types that are known; generic code uses an enum, like `enum Either[L, R]`",
+                ));
+            }
+            member => flat.push((member, at.span)),
+        }
+    }
+    flat.sort_by_key(|(member, _)| member.to_string());
+    let twice = flat.windows(2).find_map(|pair| match pair {
+        [(one, _), (other, at)] if one == other => Some((other, at)),
+        _ => None,
+    });
+    if let Some((member, at)) = twice {
+        return Err(
+            Diagnostic::new(format!("`{member}` is in this union twice"), *at).with_help("write it once")
+        );
+    }
+    Ok(Type::Union(flat.into_iter().map(|(member, _)| member).collect()))
+}
+
+fn written_type(ty: &TypeExpr) -> String {
+    written(ty)
 }

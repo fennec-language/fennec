@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use fennec_check::{Checked, Type};
-use fennec_syntax::{Expr, ExprKind, FStrPart, Item, Module, Pattern, Span, Stmt, StmtKind};
+use fennec_syntax::{BinOp, Expr, ExprKind, FStrPart, Item, Module, Pattern, Span, Stmt, StmtKind};
 
 use crate::{dedent, list, named, optional};
 
@@ -178,6 +178,12 @@ fn values(expr: &Expr, found: &mut Vec<Expr>) {
             );
         }
         ExprKind::Unary { expr, .. } => inner.push(expr),
+        // `s is Circle`: the name after `is` is a type, not a value.
+        ExprKind::Binary { op: BinOp::Is | BinOp::IsNot, lhs, rhs }
+            if matches!(rhs.kind, ExprKind::Name(_)) =>
+        {
+            inner.push(lhs);
+        }
         ExprKind::Binary { lhs: a, rhs: b, .. }
         | ExprKind::Else { value: a, default: b }
         | ExprKind::Index { object: a, index: b } => inner.extend([a.as_ref(), b.as_ref()]),

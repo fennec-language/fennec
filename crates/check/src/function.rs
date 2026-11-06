@@ -850,6 +850,72 @@ impl<'c> FnCx<'c> {
         self.forget_fields(&name);
     }
 
+    /// Records which member of its union each name holds, or doesn't: a name known to hold one
+    /// is that member's type, and one known not to is the union of the rest.
+    pub(crate) fn narrow_members(&mut self, known: &[(String, String, bool)]) {
+        for (name, member, holds) in known {
+            let Some(member) = self.member_type(member, Span::default()) else { continue };
+            let Some(ty) = self.union_of(name) else { continue };
+            let Type::Union(members) = ty else { continue };
+            if !members.contains(&member) {
+                continue;
+            }
+            let narrowed = if *holds {
+                member
+            } else {
+                let mut rest: Vec<Type> = members.into_iter().filter(|other| *other != member).collect();
+                if rest.len() == 1 { rest.remove(0) } else { Type::Union(rest) }
+            };
+            if let Some(binding) = self.binding_mut(name) {
+                binding.ty = narrowed;
+            }
+        }
+    }
+
+    /// The union a name or field path holds, by the type it was declared with, since what was
+    /// last given to it may have narrowed it to one member already.
+    fn union_of(&mut self, name: &str) -> Option<Type> {
+        let binding = self
+            .scopes
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.bindings.iter().rev())
+            .find(|b| b.name == name)?;
+        let (ty, declared) = (binding.ty.clone(), binding.declared.clone());
+        [declared, ty].into_iter().map(|ty| self.checker.settled(&ty)).find(|ty| matches!(ty, Type::Union(_)))
+    }
+
+    /// The type a name after `is` stands for, if it names one: `Circle` in `s is Circle`.
+    pub(crate) fn member_type(&self, name: &str, span: Span) -> Option<Type> {
+        let written =
+            fennec_syntax::TypeExpr { name: name.to_owned(), args: Vec::new(), optional: false, span };
+        self.checker.program.resolve(&written).ok().filter(|ty| !matches!(ty, Type::Unknown))
+    }
+
+    /// `s is Circle`: a bool, for a name or field holding a union with that member.
+    pub(crate) fn is_member(&mut self, value: &Expr, member: &str, at: Span) -> Type {
+        let ty = self.expr(value);
+        let declared = path(value).and_then(|name| self.union_of(&name));
+        let settled = declared.unwrap_or_else(|| self.checker.settled(&ty));
+        let Some(wanted) = self.member_type(member, at) else { return Type::Bool };
+        match &settled {
+            Type::Union(members) if members.contains(&wanted) => {}
+            Type::Union(_) => {
+                let message = format!("`{member}` isn't one of the types in {}", crate::types::a(&settled));
+                self.error(Diagnostic::new(message, at));
+            }
+            Type::Unknown => {}
+            other => {
+                let message =
+                    format!("this is always {}, so `is {member}` says nothing", crate::types::a(other));
+                self.error(
+                    Diagnostic::new(message, value.span).with_help("`is` tells apart the types in a union"),
+                );
+            }
+        }
+        Type::Bool
+    }
+
     /// Records that these names aren't None.
     pub(crate) fn narrow(&mut self, names: &[String]) {
         for name in names {

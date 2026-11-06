@@ -32,12 +32,12 @@ def wrapped(n: int) -> str:
 struct Maker:
     made = 0
 
-    def make(mut self, n: int) -> str:
+    def make(ref self, n: int) -> str:
         self.made += 1
         if n > 2: fail TooBig(limit=n)
         word(n)?
 
-    def twice(mut self, n: int) -> list[str]:
+    def twice(ref self, n: int) -> list[str]:
         [self.make(n)?, self.make(n + 1)?]
 
 def main(stdout: Stdout):

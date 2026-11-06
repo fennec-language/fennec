@@ -17,7 +17,7 @@ struct Tree:
 struct Deque:
     items: list[int]
 
-    def append(mut self, item: int):
+    def append(ref self, item: int):
         self.items.append(item)
 
     def len(self) -> int:
@@ -27,7 +27,7 @@ struct Deque:
 struct Random:
     seed: int
 
-    def randint(mut self, low: int, high: int) -> int:
+    def randint(ref self, low: int, high: int) -> int:
         self.seed = self.seed * 3 + 1
         low + self.seed % (high - low + 1)
 

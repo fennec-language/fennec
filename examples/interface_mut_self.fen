@@ -1,19 +1,19 @@
-# An interface says whether a method changes its value, and a method that does fits only `mut self`.
+# An interface says whether a method changes its value, and a method that does fits only `ref self`.
 
 interface Source:
-    def next(mut self) -> int
+    def next(ref self) -> int
 
 struct Count:
     left = 2
 
-    def next(mut self) -> int:
+    def next(ref self) -> int:
         self.left -= 1
         self.left
 
-def two(mut source: Source) -> int:
+def two(ref source: Source) -> int:
     source.next() + source.next()
 
 def main(stdout: Stdout):
     mut counter = Count()
     kept = copy(counter)
-    stdout.print(two(mut counter), counter.left, kept.left)
+    stdout.print(two(ref counter), counter.left, kept.left)

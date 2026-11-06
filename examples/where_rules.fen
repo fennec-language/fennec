@@ -8,7 +8,7 @@ struct Player:
     name: str where name.len() > 0
     stats: Stats
 
-    def rise(mut self):
+    def rise(ref self):
         self.stats.level += 1
 
 def main(stdout: Stdout):
@@ -22,7 +22,7 @@ def main(stdout: Stdout):
     stdout.print(player.name, player.stats.level, player.stats.speed)
     mut party = [player]
     party[0].stats.level = 9
-    for mut member in party:
+    for ref member in party:
         member.stats.level -= 8
     stdout.print(party[0].stats.level)
     stdout.print(replace(stats, level=7).level)

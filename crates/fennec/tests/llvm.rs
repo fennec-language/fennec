@@ -7113,10 +7113,10 @@ def main(stdout: Stdout):
     )
 }
 
-/// Keys are hashed and compared by their words, so one holding a string can't be: two equal
-/// strings can be two blocks. Native code turns those dicts down, and the JIT takes them.
+/// A key holding a string is hashed and compared by what it holds, not by its words, as two equal
+/// strings can be two blocks. So native code takes those dicts.
 #[test]
-fn keys_holding_strings_go_to_the_jit() -> std::io::Result<()> {
+fn keys_holding_strings_build_natively() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -7134,13 +7134,10 @@ def main(stdout: Stdout):
     std::fs::write(&program, source)?;
     let (program, output) = (program.to_string_lossy().into_owned(), dir.join("out"));
     let built = fennec(&["build", "--llvm", &program, "-o", &output.to_string_lossy()], &dir)?;
-    assert!(!built.status.success());
-    assert!(String::from_utf8_lossy(&built.stderr).contains("Dict(Named(\"Person\"), Int)"));
-    let ran = fennec(&["run", &program], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&output).output()?;
     assert!(ran.status.success());
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "1\n");
-    let said = String::from_utf8_lossy(&ran.stderr).into_owned();
-    assert!(said.starts_with("note: running this with the JIT, since LLVM can't build it: `main`"), "{said}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

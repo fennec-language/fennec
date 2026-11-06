@@ -2371,8 +2371,7 @@ fn every_example_kit_lowers_to_valid_ir() {
 }
 
 /// Examples that use what lowering doesn't take yet.
-/// Examples that use what the IR doesn't lower yet: a union's layout is for native code to settle.
-const NOT_LOWERED_YET: &[&str] = &["unions.fen"];
+const NOT_LOWERED_YET: &[&str] = &[];
 
 #[test]
 fn every_example_lowers_to_valid_ir() {

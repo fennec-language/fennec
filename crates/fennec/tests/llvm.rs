@@ -1739,6 +1739,49 @@ fn reading_a_string_that_isnt_ascii_in_order_takes_a_step_for_each_character() -
     )
 }
 
+/// Reading a string that isn't ASCII by position, as a parser does: the cursor's character again,
+/// the next, characters of each width, back and from the end, positions outside it, an empty
+/// string, and slices, after which reading carries on from where it was.
+#[test]
+fn reading_characters_by_position_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "characters_by_position",
+        r#"def words(text: str) -> list[str]:
+    mut found = []
+    mut at = 0
+    while at < text.len():
+        while at < text.len() and text[at] == " ":
+            at += 1
+        start = at
+        while at < text.len() and text[at] != " ":
+            at += 1
+        if at > start:
+            found.append(text[start:at])
+    found
+
+def main(stdout: Stdout):
+    text = "fóx ünïcode 日本語 🦊🦊 and plain ascii past an inline header é"
+    stdout.print(words(text))
+    stdout.print(words(""), words("é"), words(" é 🦊 "))
+    mut seen = []
+    for at in [0, 0, 1, 1, 2, 5, 4, 30, 29, 31, -1, -2, -60, 2, 3, 13, 12, 14, 15, 16, 17]:
+        if -text.len() <= at and at < text.len():
+            seen.append(f"{at}={text[at]}")
+    stdout.print("".join(seen))
+    stdout.print(text[4:11], text[12:15], text[16:18], text[-1:], text[:3], text[5])
+    mut total = 0
+    for at in range(text.len()):
+        total += text[at].code()
+        if at % 7 == 0:
+            total += text[at // 2].code()
+    stdout.print(total)
+"#,
+    )
+}
+
 /// A loop over a string's characters: a text all ASCII takes a byte at a time with nothing to
 /// test, and any other its characters' bytes, whether it's inline or a block's, and the body
 /// breaking, going on, or looping over text of its own.

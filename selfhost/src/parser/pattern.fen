@@ -60,16 +60,16 @@ extend Parser:
                     mut dotted = name
                     while self.eat_punct("."):
                         dotted += "." + self.name("a name")?
-                    return Pattern.Variant(dotted, False, self.pattern_args()?)
+                    return .Variant(dotted, False, self.pattern_args()?)
                 if name[0] >= "A" and name[0] <= "Z":
-                    return Pattern.Variant(name, False, self.pattern_args()?)
+                    return .Variant(name, False, self.pattern_args()?)
                 .Bind(name)
-            case .Int(value): literal(ExprKind.Int(value), token.span)
-            case .Float(value): literal(ExprKind.Float(value), token.span)
-            case .Str(text): literal(ExprKind.Str(text), token.span)
+            case .Int(value): literal(.Int(value), token.span)
+            case .Float(value): literal(.Float(value), token.span)
+            case .Str(text): literal(.Str(text), token.span)
             case .Keyword(word):
                 if word == "True" or word == "False":
-                    return literal(ExprKind.Bool(word == "True"), token.span)
+                    return literal(.Bool(word == "True"), token.span)
                 if word == "None":
                     return literal(.Nothing, token.span)
                 self.pos -= 1
@@ -83,11 +83,11 @@ extend Parser:
     def punct_pattern(mut self, text: str, span: Span) -> Pattern:
         if text == ".":
             name = self.name("an enum case")?
-            return Pattern.Variant(name, True, self.pattern_args()?)
+            return .Variant(name, True, self.pattern_args()?)
         if text == "-":
             match self.advance().tok:
-                case .Int(value): return literal(ExprKind.Int(-value), span)
-                case .Float(value): return literal(ExprKind.Float(-value), span)
+                case .Int(value): return literal(.Int(-value), span)
+                case .Float(value): return literal(.Float(-value), span)
                 case _: fail Diagnostic(message="expected a number after `-`", span=span)
         if text == "(":
             mut items = []
@@ -96,7 +96,7 @@ extend Parser:
                 if not self.eat_punct(","):
                     break
             self.expect_punct(")")?
-            return Pattern.Tuple(items)
+            return .Tuple(items)
         self.pos -= 1
         fail self.unexpected("a pattern")
 

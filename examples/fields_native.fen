@@ -153,11 +153,7 @@ def main(stdout: Stdout):
     more.points.pop()
     stdout.print(more.points, more.first_big())
     stdout.print(
-        describe(Shape.Group(parts=[Shape.Dot, Shape.Line(length=2)], names=["a"])),
-        describe(Shape.Dot),
+        describe(.Group(parts=[Shape.Dot, Shape.Line(length=2)], names=["a"])),
+        describe(.Dot),
     )
-    stdout.print(
-        kind_of(Shape.Dot),
-        kind_of(Shape.Line(length=1)),
-        kind_of(Shape.Group(parts=[], names=[])),
-    )
+    stdout.print(kind_of(.Dot), kind_of(.Line(length=1)), kind_of(.Group(parts=[], names=[])))

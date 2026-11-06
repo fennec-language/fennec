@@ -314,7 +314,7 @@ struct JsonWriter:
 
     def field[T: Serializable](mut self, name: str, x: T):
         # Written on one line with names as they are, as most output is, a field takes three pieces.
-        if self._indent < 0 and self._names == JsonNames.snake_case:
+        if self._indent < 0 and self._names == .snake_case:
             if self._first:
                 self._first = False
                 self._text += "\""
@@ -915,7 +915,7 @@ struct JsonReader:
                 self._depth -= 1
                 _ = self._hints.pop()
                 return False
-            if self._explain and self._extra == JsonExtra.error:
+            if self._explain and self._extra == .error:
                 self._unknown_first(fields)?
         else:
             if self._explain:
@@ -927,7 +927,7 @@ struct JsonReader:
                 return False
             if b != 44: fail _no_reason()
             self._at += 1
-        if not self._explain and self._names == JsonNames.snake_case:
+        if not self._explain and self._names == .snake_case:
             at = self._key_in_place(fields)
             if at >= 0:
                 self._place = at
@@ -997,13 +997,13 @@ struct JsonReader:
                 saved == key
                 and not (
                     saved == own
-                    and self._names != JsonNames.snake_case
+                    and self._names != .snake_case
                     and _spelled(own, self._names) != key
                 )
             ):
                 return at
             at += 1
-        if self._names != JsonNames.snake_case:
+        if self._names != .snake_case:
             at = 0
             for saved, own in fields:
                 if saved == own and _spelled(own, self._names) == key: return at

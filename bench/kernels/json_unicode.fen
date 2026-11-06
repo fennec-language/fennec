@@ -44,7 +44,7 @@ struct Reader:
                 self.at += 1
                 self.skip_space()
         self.at += 1
-        Json.Items(values=values)
+        .Items(values=values)
 
     def fields(mut self) -> Json:
         self.at += 1
@@ -61,24 +61,24 @@ struct Reader:
                 self.at += 1
                 self.skip_space()
         self.at += 1
-        Json.Fields(names=names, values=values)
+        .Fields(names=names, values=values)
 
     def value(mut self) -> Json:
         self.skip_space()
         first = self.text[self.at]
         if first == "{": return self.fields()
         if first == "[": return self.items()
-        if first == "\"": return Json.Text(value=self.expect_text())
+        if first == "\"": return .Text(value=self.expect_text())
         if first == "t":
             self.at += 4
-            return Json.Flag(value=True)
+            return .Flag(value=True)
         if first == "f":
             self.at += 5
-            return Json.Flag(value=False)
+            return .Flag(value=False)
         if first == "n":
             self.at += 4
-            return Json.Null
-        Json.Number(value=self.number())
+            return .Null
+        .Number(value=self.number())
 
 def printed(value: Json, mut out: list[str]):
     match value:

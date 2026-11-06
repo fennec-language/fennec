@@ -119,10 +119,12 @@ struct Program:
         name = extension.name
         if name in self.types:
             if self.types[name].prelude and not prelude:
-                self.problems.append(not_own(name, "is from the standard library", extension))
+                self.problems.append(
+                    not_own(name, why="is from the standard library", extension=extension),
+                )
                 return
         elif name in built_in_types() and not prelude:
-            self.problems.append(not_own(name, "is built in", extension))
+            self.problems.append(not_own(name, why="is built in", extension=extension))
             return
         elif (
             name
@@ -259,7 +261,7 @@ struct Program:
         # `(str) -> int fails ParseError`: a function that gives back a result.
         if name == "fails" and written.args.len() == 2:
             returns = self.resolve_within(written.args[0], generics, depth)?
-            return .Result(returns, self.resolve_within(written.args[1], generics, depth)?)
+            return .Result(returns, error=self.resolve_within(written.args[1], generics, depth)?)
         builtin = name in built_in_types()
         if (
             not builtin
@@ -342,7 +344,7 @@ def builtin_type(name: str, args: list[Type]) -> Type:
         case "dict":
             .Dict(args[0], args[1])
         case "Result":
-            .Result(args[0], args[1])
+            .Result(args[0], error=args[1])
         case "tuple":
             .Tuple(args)
         case "->":

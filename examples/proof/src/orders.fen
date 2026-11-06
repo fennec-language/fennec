@@ -23,7 +23,7 @@ struct Decision:
 
 ## Steps between two cells, going only across and down.
 def gap(a: (int, int), b: (int, int)) -> int:
-    map.distance(a, b)
+    map.distance(a, b=b)
 
 ## Whether `target` still stands and is still worth going after.
 def still_good(world: World, actor: Unit, target: Id[Unit]?) -> bool:
@@ -44,11 +44,11 @@ def choose_target(world: World, id: Id[Unit], actor: Unit) -> Id[Unit]?:
         if actor.kind == .Medic:
             if other.team != actor.team or other.health >= other.kind.most_health(): continue
             # The more hurt, the better, and nearer is better still.
-            score = other.health * 2 + gap(actor.at, other.at)
-            if gap(actor.at, other.at) > 8: continue
+            score = other.health * 2 + gap(actor.at, b=other.at)
+            if gap(actor.at, b=other.at) > 8: continue
         else:
             if other.team == actor.team: continue
-            score = gap(actor.at, other.at) * 100 + other.health
+            score = gap(actor.at, b=other.at) * 100 + other.health
         if score < best_score:
             best = other_id
             best_score = score
@@ -74,7 +74,7 @@ def walk(world: World, actor: Unit, goal: (int, int), blocked: set[(int, int)]) 
     mut path = actor.path
     still_leads = path.len() > 0 and path[-1] == goal and path[0] not in blocked
     if not still_leads:
-        found = world.field.path(actor.at, goal, blocked)
+        found = world.field.path(actor.at, goal=goal, blocked=blocked)
         if found is None: return (Action.Wait, [])
         path = found
     if path.len() == 0: return (Action.Wait, [])
@@ -90,14 +90,14 @@ def decide(world: World, id: Id[Unit], blocked: set[(int, int)]) -> Decision:
         target = choose_target(world, id, actor)
     if target is not None:
         aim = world.units[target]
-        if gap(actor.at, aim.at) <= actor.kind.reach():
+        if gap(actor.at, b=aim.at) <= actor.kind.reach():
             if actor.kind == .Medic:
                 return Decision(actor=id, action=.Heal(target=target), target=target)
             return Decision(actor=id, action=.Attack(target=target), target=target)
         action, path = walk(world, actor, aim.at, blocked)
         return Decision(actor=id, action=action, target=target, path=path)
     goal = destination(world, actor)
-    if goal is None or gap(actor.at, goal) <= 1:
+    if goal is None or gap(actor.at, b=goal) <= 1:
         return Decision(actor=id, action=.Wait, target=None)
     action, path = walk(world, actor, goal, blocked)
     Decision(actor=id, action=action, target=None, path=path)

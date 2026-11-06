@@ -1228,7 +1228,9 @@ fn find_path_takes(function: &Function, known: &mut Analysis) {
                 continue;
             }
             let Some((None, list, Some(index))) = defined(*item, at) else { continue };
-            if is_array(function, list) {
+            // Only a list's item is in a place this can reach: an array's isn't, and a `Table`'s is
+            // read and put back.
+            if !matches!(function.type_of(&Operand::Local(list)), Some(Type::List(_))) {
                 continue;
             }
             // The list is a field of the root, or the root itself.
@@ -2084,6 +2086,7 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
                     | "sorted.key"
                     | "list.remove_where"
                     | "Table.remove_where"
+                    | "Table.modify"
                     | "result.expect"
                     | "dict.pop"
                     | "random.random_int"

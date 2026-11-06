@@ -81,11 +81,11 @@ struct Scheduler:
             case .Idle:
                 self.run_idle(at)
             case .Worker:
-                self.run_worker(at, packet)
+                self.run_worker(at, packet=packet)
             case .Handler:
-                self.run_handler(at, packet)
+                self.run_handler(at, packet=packet)
             case .Device:
-                self.run_device(at, packet)
+                self.run_device(at, packet=packet)
 
     def release(ref self, id: int) -> int:
         self.tasks[id].held = False
@@ -111,7 +111,7 @@ struct Scheduler:
             self.tasks[to].runnable = True
             if self.tasks[to].priority > self.tasks[self.current].priority: return to
         else:
-            self.tasks[to].queue = self.appended(packet, self.tasks[to].queue)
+            self.tasks[to].queue = self.appended(packet, queue=self.tasks[to].queue)
         self.current
 
     def appended(ref self, packet: int, queue: int) -> int:
@@ -160,9 +160,9 @@ struct Scheduler:
     def run_handler(ref self, at: int, packet: int) -> int:
         if packet != NONE:
             if self.packets[packet].kind == WORK_PACKET:
-                self.tasks[at].v1 = self.appended(packet, self.tasks[at].v1)
+                self.tasks[at].v1 = self.appended(packet, queue=self.tasks[at].v1)
             else:
-                self.tasks[at].v2 = self.appended(packet, self.tasks[at].v2)
+                self.tasks[at].v2 = self.appended(packet, queue=self.tasks[at].v2)
         work = self.tasks[at].v1
         if work != NONE:
             count = self.packets[work].a1
@@ -180,21 +180,21 @@ struct Scheduler:
 
 def simulate() -> (int, int):
     mut scheduler = Scheduler(tasks=[], packets=[])
-    scheduler.add_task(.Idle, 0, NONE, 1, 10000)
+    scheduler.add_task(.Idle, priority=0, queue=NONE, v1=1, v2=10000)
     scheduler.tasks[IDLE].suspended = False
-    work = scheduler.add_packet(NONE, WORKER, WORK_PACKET)
-    work_queue = scheduler.add_packet(work, WORKER, WORK_PACKET)
-    scheduler.add_task(.Worker, 1000, work_queue, HANDLER_A, 0)
+    work = scheduler.add_packet(NONE, id=WORKER, kind=WORK_PACKET)
+    work_queue = scheduler.add_packet(work, id=WORKER, kind=WORK_PACKET)
+    scheduler.add_task(.Worker, priority=1000, queue=work_queue, v1=HANDLER_A, v2=0)
     mut queue = NONE
     for _ in range(3):
-        queue = scheduler.add_packet(queue, DEVICE_A, DEVICE_PACKET)
-    scheduler.add_task(.Handler, 2000, queue, NONE, NONE)
+        queue = scheduler.add_packet(queue, id=DEVICE_A, kind=DEVICE_PACKET)
+    scheduler.add_task(.Handler, priority=2000, queue=queue, v1=NONE, v2=NONE)
     queue = NONE
     for _ in range(3):
-        queue = scheduler.add_packet(queue, DEVICE_B, DEVICE_PACKET)
-    scheduler.add_task(.Handler, 3000, queue, NONE, NONE)
-    scheduler.add_task(.Device, 4000, NONE, NONE, 0)
-    scheduler.add_task(.Device, 5000, NONE, NONE, 0)
+        queue = scheduler.add_packet(queue, id=DEVICE_B, kind=DEVICE_PACKET)
+    scheduler.add_task(.Handler, priority=3000, queue=queue, v1=NONE, v2=NONE)
+    scheduler.add_task(.Device, priority=4000, queue=NONE, v1=NONE, v2=0)
+    scheduler.add_task(.Device, priority=5000, queue=NONE, v1=NONE, v2=0)
     scheduler.schedule()
     (scheduler.queued, scheduler.holds)
 

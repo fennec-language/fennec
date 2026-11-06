@@ -543,7 +543,7 @@ impl Layouts {
     }
 
     /// Whether a plain struct or enum holds a block anywhere, in a field or a case.
-    fn holds_counted(&self, id: u32) -> bool {
+    pub fn holds_counted(&self, id: u32) -> bool {
         let Some(layout) = self.get(id) else { return false };
         let cases = layout.cases.iter().flatten().flat_map(|case| &case.fields);
         layout.fields.iter().chain(cases).any(|field| match field.ty {
@@ -739,8 +739,9 @@ fn key_word(layouts: &Layouts, key: &Type) -> Option<Word> {
         Type::Named(name) => {
             let id = layouts.id(name)?;
             layouts.get(id).filter(|layout| !layout.boxed)?;
-            // Keys are compared and hashed by their words, which only numbers can be.
-            (!layouts.holds_counted(id)).then_some(Word::Plain(id))
+            // Keys are compared and hashed by their words, which only numbers can be, unless the
+            // runtime does it by what they hold.
+            (layouts.native_buffers || !layouts.holds_counted(id)).then_some(Word::Plain(id))
         }
         _ => None,
     }

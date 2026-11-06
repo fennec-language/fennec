@@ -968,18 +968,20 @@ def transfer(a: Account, b: Account, amount: int):
         y.total += amount
 ```
 - `a = cache` gives a second name for the same cell. Fields are private with `_name`.
-- It holds plain values and `Id`s, never another `shared`, so handles can't form a cycle. There's no `weak` and no cycle collector.
+- It can hold another `shared`, but never in a cycle, which is a compile error. There's no `weak` and no cycle collector.
 - `with a, b as mut x, mut y:` takes several at once, in a fixed order.
 - There's no module-level `shared`. A handle in a signature acts like a capability, so what a function can reach is in its parameters.
 
 *Why:* Some things really are shared, like a cache or a server's stats. Holding the lock for every access rules out data races, and a method call can't forget to take it. Plain structs pay nothing for it, and a search for `shared` finds every shared resource in a program.
 
-**Lock bodies are short and can't deadlock.**
-- They do no I/O, including in functions they call, and can't use `?` or `fail`.
-- Locks never nest out of order.
+**Lock bodies can't deadlock.**
+- They can do I/O, and can leave early with `?`, `fail`, `return`, `break` or `continue`. The lock is released on the way out, as in Rust, Go and Python. A lock isn't a transaction, so nothing is undone.
+- They can't receive on a channel, since the sender may be waiting on the same lock.
+- Locks never nest out of order: a lock body takes only the locks of `shared` values its locked ones hold.
+- A `shared` type's `del` may do I/O.
 - `try_with` exists but isn't the default.
 
-*Why:* I/O under a lock is the usual cause of stalls, and leaving a lock early is how state gets left half changed. A "busy" error from a try-lock passes single-threaded tests and then fails under load, so waiting is what the short form does.
+*Why:* I/O under a lock only makes it slow, which a profile shows, but waiting on a channel under one can wait forever. A "busy" error from a try-lock passes single-threaded tests and then fails under load, so waiting is what the short form does.
 
 **`with launch(physics_loop) as physics:` runs a long-lived task.** `launch` creates a channel, passes one end to the function, runs it, and hands back the other end. The block's end stops it.
 ```fennec

@@ -8,10 +8,10 @@ test "reversing twice gives the original" for items: list[int]:
     assert reverse(reverse(items)) == items
 
 test "clamp stays in range" for value: int:
-    assert 0 <= clamp(value, 0, 10) <= 10
+    assert 0 <= clamp(value, low=0, high=10) <= 10
 
 test "reversing a known list":
     assert reverse([1, 2, 3]) == [3, 2, 1]
 
 def main(stdout: Stdout):
-    stdout.print(reverse([1, 2, 3]), clamp(42, 0, 10))
+    stdout.print(reverse([1, 2, 3]), clamp(42, low=0, high=10))

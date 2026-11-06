@@ -59,11 +59,18 @@ impl Lint {
     }
 }
 
+/// Each call whose positional arguments are easy to get backwards, which is a compile error
+/// rather than a lint: a bare `True` or `False`, neighbors of one type, or three or more that
+/// could swap unnoticed. Each says which names to write, and its fix writes them.
+#[must_use]
+pub fn positional_arguments(module: &Module, sources: &Sources) -> Vec<Lint> {
+    calls::of(module, sources)
+}
+
 /// Everything the lints find in a loaded program, in the order it's written.
 pub fn lint(module: &Module, sources: &Sources) -> Vec<Lint> {
     let mut found = sizes::of(module, sources);
     found.extend(rewrites::of(module, sources));
-    found.extend(calls::of(module));
     found.extend(flow::of(module, sources));
     found.extend(dead::of(module, sources));
     found.extend(loops::of(module, sources));

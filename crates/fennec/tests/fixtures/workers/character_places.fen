@@ -24,12 +24,12 @@ def main(stdout: Stdout):
         mut found = 0
         if kind == 0:
             text = accented(size // 2)
-            found = count(text, "é", xs)
+            found = count(text, wanted="é", xs=xs)
         elif kind == 1:
             text = wide(size // 3)
-            found = count(text, "日", xs)
+            found = count(text, wanted="日", xs=xs)
         else:
             text = mixed(size // 2)
-            found = count(text, "é", xs)
+            found = count(text, wanted="é", xs=xs)
         total += found
     stdout.print(total)

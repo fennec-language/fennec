@@ -1,4 +1,5 @@
-//! `positional-arguments`: an argument whose meaning can't be read from the call has to be named.
+//! `positional-arguments`: an argument whose meaning can't be read from the call has to be named,
+//! or the program doesn't compile.
 //! That's a bare `True` or `False`, an argument beside a parameter of the same type, which is easy
 //! to swap unnoticed, and any argument past the first when there are three or more, unless every
 //! two neighbors have types that can't hold each other's values, so a swap wouldn't compile. The
@@ -9,8 +10,8 @@
 use std::collections::{HashMap, HashSet};
 
 use fennec_syntax::{
-    Arg, Diagnostic, Expr, ExprKind, Field, FnDef, Generic, Item, Module, Param, Span, Stmt, StmtKind,
-    TypeDef, TypeExpr,
+    Arg, Diagnostic, Expr, ExprKind, Field, FnDef, Generic, Item, Module, Param, Sources, Span, Stmt,
+    StmtKind, TypeDef, TypeExpr,
 };
 
 use crate::Lint;
@@ -173,15 +174,45 @@ fn same_type(a: Option<&TypeExpr>, b: Option<&TypeExpr>) -> bool {
     a.zip(b).is_some_and(|(a, b)| same(a, b))
 }
 
-/// Whether the positional argument at `at`, not the first, has to be named, where `many` says
-/// there are three or more that a swap could go unnoticed among.
-fn needs_name(args: &[&Arg], takes: &Takes<'_>, at: usize, many: bool) -> bool {
-    let ty = |at: usize| takes.get(at).and_then(|taken| taken.ty);
-    let bare = args.get(at).is_some_and(|arg| matches!(arg.value.kind, ExprKind::Bool(_)));
-    bare || many || same_type(ty(at), ty(at - 1)) || same_type(ty(at), ty(at + 1))
+/// Why the positional argument at `at`, not the first, has to be named, if it does, where `many`
+/// says there are three or more that a swap could go unnoticed among.
+fn needs_name(args: &[&Arg], takes: &Takes<'_>, at: usize, many: bool) -> Option<String> {
+    let param = |at: usize| takes.get(at);
+    let ty = |at: usize| param(at).and_then(|taken| taken.ty);
+    if let Some(ExprKind::Bool(value)) = args.get(at).map(|arg| &arg.value.kind) {
+        let written = if *value { "True" } else { "False" };
+        return Some(format!("a bare `{written}` doesn't say what it's for"));
+    }
+    for other in [at - 1, at + 1] {
+        if same_type(ty(at), ty(other)) {
+            let (one, two) = (param(at.min(other))?.name, param(at.max(other))?.name);
+            let shown = ty(at).map_or_else(String::new, |ty| ty.name.clone());
+            return Some(format!(
+                "`{one}` and `{two}` both take `{shown}`, so swapping them would still compile"
+            ));
+        }
+    }
+    many.then(|| "three or more arguments in a row are easy to get backwards".to_owned())
 }
 
-fn call(callees: &Callees<'_>, args: &[Arg], takes: &Takes<'_>) -> Option<Lint> {
+/// Where an argument starts as written: before any `(` its value's span leaves out, as in
+/// `(seed >> 16) & 255`, so a name written there goes outside them.
+fn written_start(sources: &Sources, value: Span) -> u32 {
+    let Some((_, text, base)) = sources.file_at(value) else { return value.start };
+    let Ok(mut at) = usize::try_from(value.start - base) else { return value.start };
+    let mut start = at;
+    while let Some(before) = at.checked_sub(1).and_then(|before| text.as_bytes().get(before)) {
+        match before {
+            b'(' => start = at - 1,
+            b' ' | b'\t' | b'\n' => {}
+            _ => break,
+        }
+        at -= 1;
+    }
+    u32::try_from(start).map_or(value.start, |start| base + start)
+}
+
+fn call(callees: &Callees<'_>, args: &[Arg], takes: &Takes<'_>, sources: &Sources) -> Option<Lint> {
     let positional: Vec<&Arg> = args.iter().take_while(|arg| arg.name.is_none()).collect();
     if positional.len() < 2 || positional.len() > takes.len() || positional.iter().any(|arg| arg.is_mut) {
         return None;
@@ -189,26 +220,27 @@ fn call(callees: &Callees<'_>, args: &[Arg], takes: &Takes<'_>) -> Option<Lint> 
     let passed = takes.get(..positional.len())?;
     let many = positional.len() >= 3
         && !passed.windows(2).all(|pair| matches!(pair, [a, b] if callees.distinct(a, b)));
-    let first = (1..positional.len()).find(|at| needs_name(&positional, takes, *at, many))?;
+    let (first, why) =
+        (1..positional.len()).find_map(|at| needs_name(&positional, takes, at, many).map(|why| (at, why)))?;
     let name = takes.get(first)?.name;
     let at = positional.get(first)?.value.span;
-    let mut diagnostic = Diagnostic::new(format!("name this argument: `{name}=`"), at)
-        .with_help("arguments that are easy to mix up or can't be read from the call have names");
+    let mut diagnostic = Diagnostic::new(format!("{why}: name it, as `{name}=`"), at)
+        .with_help("an argument named at the call shows which parameter it's for, so a swap can't hide");
     // What follows a named argument has to be named too.
     for (arg, taken) in positional.iter().zip(takes).skip(first) {
-        let start = arg.value.span.start;
+        let start = written_start(sources, arg.value.span);
         diagnostic = diagnostic.with_fix(Span { start, end: start }, format!("{}=", taken.name));
     }
     Some(Lint::new("positional-arguments", diagnostic))
 }
 
-pub(crate) fn of(module: &Module) -> Vec<Lint> {
+pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     let callees = Callees::of(module);
     let mut found = Vec::new();
     let mut walked = module.clone();
     fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
         if let ExprKind::Call { callee, args } = &expr.kind {
-            found.extend(callees.of_call(callee).and_then(|takes| call(&callees, args, takes)));
+            found.extend(callees.of_call(callee).and_then(|takes| call(&callees, args, takes, sources)));
         }
     });
     found

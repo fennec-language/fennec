@@ -1729,9 +1729,8 @@ impl Emit<'_, '_, '_> {
                 self.copy(dest.ok_or("no result")?, from)
             }
             "Table" | "Table.len" | "Table.contains" | "Table.get" | "Table.add" | "Table.remove"
-            | "Table.values" | "Table.ids" | "Table.items" | "Table.remove_where" | "Table.clear" => {
-                self.id_map_builtin(dest, name, args, span)
-            }
+            | "Table.values" | "Table.ids" | "Table.items" | "Table.remove_where" | "Table.clear"
+            | "Table.modify" => self.id_map_builtin(dest, name, args, span),
             "is_regex" | "re.is_regex" | "re.pattern_problem" | "Regex.replace" | "Regex.split"
             | "Regex.find_all" | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
                 self.regex_builtin(dest, name, args, span)

@@ -133,7 +133,7 @@ struct Lexer:
                 self.skip_comment()
             else:
                 self.at_line_start = False
-                self.set_indent(width, line_start)?
+                self.set_indent(width, line_start=line_start)?
                 return True
         False
 
@@ -195,7 +195,7 @@ struct Lexer:
                     self.digits()
                 numbers.append(self.text(part_start, self.pos).replace("_", ""))
                 units.append(self.unit())
-            nanos = duration(self.text(start, self.pos), numbers, units, self.span(start))?
+            nanos = duration(self.text(start, self.pos), numbers=numbers, units=units, span=self.span(start))?
             self.push(.Duration(nanos), start)
             return
         if is_float:
@@ -429,7 +429,7 @@ def duration(written: str, numbers: list[str], units: list[str], span: Span) -> 
                 help="write each unit once, the largest first, like `1h30min`",
             )
         previous = per
-        total += part_nanos(written, number, per, span)?
+        total += part_nanos(written, number=number, per=per, span=span)?
     total
 
 ## The nanoseconds in `number` of a unit `per` nanoseconds long.

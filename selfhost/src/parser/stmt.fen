@@ -81,7 +81,7 @@ extend Parser:
             ty = self.type_expr()?
         self.expect_punct("=")?
         value = self.expr()?
-        .Assign(target, None, value, True, ty)
+        .Assign(target, None, value, declare_mut=True, ty=ty)
 
     ## An expression on its own, or an assignment. `a, b = pair` unpacks a tuple.
     def expr_or_assign(ref self) -> StmtKind:
@@ -90,7 +90,7 @@ extend Parser:
             ty = self.type_expr()?
             self.expect_punct("=")?
             value = self.expr()?
-            return .Assign(target, None, value, False, ty)
+            return .Assign(target, None, value, declare_mut=False, ty=ty)
         if self.at_punct(","):
             mut items = [target]
             while self.eat_punct(","):
@@ -105,7 +105,7 @@ extend Parser:
         if not is_assignable(target, op is None):
             fail Diagnostic(message="this can't be assigned to", span=target.span)
         value = self.expr()?
-        .Assign(target, op, value, False, None)
+        .Assign(target, op, value, declare_mut=False, ty=None)
 
     def if_stmt(ref self) -> Stmt:
         start = self.advance().span
@@ -187,7 +187,7 @@ extend Parser:
             )
         self.expect_punct(":")?
         body = self.block()?
-        Stmt(kind=.With(value, names, body), span=start.to(self.prev_span()))
+        Stmt(kind=.With(value, names=names, body=body), span=start.to(self.prev_span()))
 
     ## Whether a name after `as` comes next, as in `with a, b as x, y:`, rather than another
     ## value: `ref` or `mut`, or a name and then `,` or `:`.

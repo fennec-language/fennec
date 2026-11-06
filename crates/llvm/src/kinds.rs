@@ -9,12 +9,14 @@ use fennec_layout::{Block, Layouts, ListItem, Ty, Written};
 
 const WORD: u32 = 8;
 
-/// The name a tuple, optional or result goes by, laid out as a struct or enum of that name, so
-/// that where one fits in memory, and what it holds on to, works as for any other type.
+/// The name a tuple, optional, result or union goes by, laid out as a struct or enum of that
+/// name, so that where one fits in memory, and what it holds on to, works as for any other type.
 pub(crate) fn canon(ty: &Type) -> Type {
     match ty {
         // An array kept in place is a struct with a field for each item, named by its position.
-        Type::Tuple(_) | Type::Generic(..) | Type::Errors(_) | Type::Array(..) => Type::Named(ty.to_string()),
+        Type::Tuple(_) | Type::Generic(..) | Type::Errors(_) | Type::Array(..) | Type::Union(_) => {
+            Type::Named(ty.to_string())
+        }
         Type::Optional(inner) => Type::Named(format!("Option[{inner}]")),
         Type::Result(value, error) => Type::Named(format!("Result[{value}, {error}]")),
         // Every `Id` looks the same whatever it's of.
@@ -63,6 +65,16 @@ pub(crate) fn define_named(ty: &Type, layouts: Option<&Layouts>, out: &mut BTree
             let ok = if **value == Type::Unit { Vec::new() } else { vec![field("value", value)] };
             let cases = vec![("Ok".to_owned(), ok), ("Err".to_owned(), vec![field("error", error)])];
             out.insert(format!("Result[{value}, {error}]"), Written::Enum(cases));
+        }
+        // A union: a case for each member, by its place among them, holding the member. It's kept
+        // in place like a plain enum, the case's number first, sized for its largest member.
+        Type::Union(members) => {
+            for member in members {
+                define_named(member, layouts, out);
+            }
+            let cases =
+                members.iter().map(|member| (member.to_string(), vec![field("value", member)])).collect();
+            out.insert(ty.to_string(), Written::Enum(cases));
         }
         // One of several errors: a case for each, named for its type.
         Type::Errors(names) => {

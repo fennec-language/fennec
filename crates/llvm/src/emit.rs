@@ -1080,6 +1080,17 @@ impl Emit<'_, '_, '_> {
             writeln!(self.cold, "{fail}:\n{place}  call void @fennec_fail(i64 {code}, {args})\n  {failed}");
     }
 
+    /// The case a union's member is held under: the member's name, by its place among them.
+    fn member_case(&self, union: &Operand, member: usize) -> Result<String, String> {
+        match self.function.type_of(union) {
+            Some(fennec_check::Type::Union(members)) => members
+                .get(member)
+                .map(ToString::to_string)
+                .ok_or_else(|| format!("a union has no member {member}")),
+            other => Err(format!("it reads a union's member from a {other:?}")),
+        }
+    }
+
     /// Notes a check as it's written, when checks are being noted.
     pub(crate) fn note_check(&mut self, span: Span, what: CheckKind) {
         if self.module.shared.noting_checks {
@@ -2018,9 +2029,18 @@ impl Emit<'_, '_, '_> {
             return done;
         }
         match inst {
-            // A union's layout is still to be built here.
-            InstKind::MakeMember { .. } | InstKind::IsMember { .. } | InstKind::GetMember { .. } => {
-                Err("it uses a union, which this backend doesn't take yet".to_owned())
+            // A union is laid out as an enum with a case for each member, named for it.
+            InstKind::MakeMember { dest, value, member } => {
+                let case = self.member_case(&Operand::Local(*dest), *member)?;
+                self.make_case(*dest, &case, std::slice::from_ref(value))
+            }
+            InstKind::IsMember { dest, value, member } => {
+                let case = self.member_case(value, *member)?;
+                self.is_case(*dest, value, &case)
+            }
+            InstKind::GetMember { dest, value, member } => {
+                let case = self.member_case(value, *member)?;
+                self.get_case_field(*dest, value, &case, "value")
             }
             // Used only as a key the runtime finds where it is.
             InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }

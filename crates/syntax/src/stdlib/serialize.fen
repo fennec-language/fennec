@@ -45,6 +45,14 @@ interface Serializer:
     ## A `Table` of items of the type named `kind`, with its tag: each item in order, with its `Id`.
     def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T])
 
+    ## Whether `Table`s are saved slot for slot, with their `Id`s as slots and generations, so a
+    ## load holds the same slots and hands out the same `Id`s after it: what replays need.
+    def exact(self) -> bool
+
+    ## A `Table` saved slot for slot, when `exact` says so: each slot as `table_slots` gives it,
+    ## then the items in the slots in use, in order.
+    def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T])
+
     ## An `Id` into a `Table` of `kind`, by its `id_key` and its `Table`'s tag, which is written as
     ## where its item is in that `Table`.
     def id(ref self, kind: str, key: int, tag: int)
@@ -115,6 +123,9 @@ interface Deserializer:
     ## default takes as missing. A format that says no saves a field's value with nothing to say
     ## it's there, so only a field that's optional asks `none`.
     def missing_as_none(self) -> bool
+
+    ## Whether what's read was saved slot for slot, as `Serializer.exact` says.
+    def exact(self) -> bool
 
     ## Which of `cases` comes next, as a place in it: each its name and whether it has data. One
     ## with data then reads its fields as a struct's, and `end_case` finishes it.

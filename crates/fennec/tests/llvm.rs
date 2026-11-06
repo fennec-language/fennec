@@ -4789,6 +4789,104 @@ fn pack_loads_of_changed_and_random_bytes_fail_without_crashing() -> std::io::Re
     Ok(())
 }
 
+/// What the next test builds: a world of `Table`s and `Id`s, saved both ways, and bytes changed.
+const PACK_TABLES: &str = r#"from std import pack
+from std.collections import Id, Table
+
+struct Unit:
+    name: str
+    target: Id[Unit]? = None
+
+struct World:
+    units = Table[Unit]()
+    selected = list[Id[Unit]]()
+    last: Id[Unit]? = None
+
+def said[T](found: Result[T, ParseError]) -> str:
+    match found:
+        case Ok(_):
+            return "loaded"
+        case Err(error):
+            return error.message
+
+def changed(data: bytes, at: int, to: int) -> bytes:
+    mut items = list[int]()
+    for b in range(data.len()):
+        items.append(to if b == at else data[b])
+    bytes(items)
+
+def main(stdout: Stdout):
+    mut world = World()
+    ash = world.units.add(Unit(name="ash"))
+    gone = world.units.add(Unit(name="gone"))
+    vex = world.units.add(Unit(name="vex", target=ash))
+    world.units.remove(gone)
+    kit = world.units.add(Unit(name="kit", target=vex))
+    world.units.remove(ash)
+    world.selected = [vex, kit]
+    world.last = ash
+    # By position: the items in order, and the Id whose item has gone saved as missing.
+    data = pack.dumps(world)
+    back = pack.loads[World](data) else World()
+    stdout.print(data.len(), back.units.len(), back.last is None, pack.dumps(back) == data)
+    for id in back.selected:
+        unit = back.units[id]
+        target = unit.target
+        stdout.print(unit.name, back.units[target].name if target is not None else "-")
+    # Slot for slot: the same slots and generations, and the Id whose item has gone still gone.
+    exact = pack.dumps(world, exact=True)
+    mut same = pack.loads[World](exact) else World()
+    stdout.print(exact.len(), exact[3], same.units.len(), same.units[same.selected[1]].name)
+    stdout.print(same.last is not None, (same.last else same.selected[0]) in same.units)
+    # The next add takes the same slot, at the same generation, in both.
+    _ = world.units.add(Unit(name="fox"))
+    _ = same.units.add(Unit(name="fox"))
+    stdout.print(pack.dumps(same, exact=True) == pack.dumps(world, exact=True))
+    # What doesn't load.
+    stdout.print(said(pack.loads[World](changed(data, 18, 9))))
+    stdout.print(said(pack.loads[World](changed(exact, 12, 2))))
+    stdout.print(said(pack.loads[World](changed(exact, 32, 20))))
+    stdout.print(said(pack.loads[World](changed(exact, 13, 200))))
+    # Every truncation fails, and every byte changed loads or fails, in both modes.
+    mut seed = 11
+    for good in [data, exact]:
+        mut cut = 0
+        for size in range(good.len()):
+            if said(pack.loads[World](good[0:size])) == "loaded":
+                cut += 1
+        mut changes = 0
+        for at in range(good.len()):
+            for _ in range(30):
+                seed = (seed * 1103515245 + 12345) % 2147483648
+                found = pack.loads[World](changed(good, at, (seed >> 16) & 255))
+                match found:
+                    case Ok(loaded):
+                        # What loads has every Id somewhere in its Table, or gone.
+                        for id in loaded.selected:
+                            _ = loaded.units.get(id)
+                    case Err(_):
+                        pass
+                changes += 1
+        stdout.print("truncated", cut, "changed", changes)
+"#;
+
+/// `std.pack` saves a `Table` as JSON does, by position, with an `Id` whose item has gone saved
+/// as missing, and with `exact=True` slot for slot: the gone `Id` still gone, and the next `add`
+/// in the same slot. An `Id` past its `Table`, or slots that don't fit the items, don't load, and
+/// no truncation or changed byte crashes a load in either mode.
+#[test]
+fn pack_saves_tables_by_position_and_slot_for_slot() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("pack_tables", PACK_TABLES)?;
+    assert_eq!(
+        printed,
+        "28 2 True True\nvex -\nkit vex\n39 69 2 kit\nTrue False\nTrue\n`units[0].target` is out of range, at byte 19\n`units` has 1 slot in use but 0 items, at byte 16\n`selected[0]` is item 10 of `units`, which has only 3\nthe data ends too soon, at byte 19\ntruncated 0 changed 840\ntruncated 0 changed 1170\n"
+    );
+    Ok(())
+}
+
 /// A `Buffer` popped empty, or inserted into past its end, fails as the interpreter says, not
 /// as a list does.
 #[test]
@@ -7319,6 +7417,9 @@ struct Words:
 
     def missing_as_none(self) -> bool:
         True
+
+    def exact(self) -> bool:
+        False
 
     def none(mut self) -> bool fails ParseError:
         if self.at < self.parts.len() and self.parts[self.at] == "-":

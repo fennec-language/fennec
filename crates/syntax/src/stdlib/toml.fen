@@ -963,6 +963,9 @@ struct TomlReader:
     def missing_as_none(self) -> bool:
         True
 
+    def exact(self) -> bool:
+        False
+
     def at_item(self, at: int, message: str) -> ParseError:
         ParseError(message=f"`{self._dotted()}[{at}]` {message}", line=0, column=0)
 
@@ -1110,6 +1113,13 @@ struct TomlWriter:
 
     def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
         self.sequence(items)
+
+    def exact(self) -> bool:
+        False
+
+    def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+        # Never asked for: `exact` says no.
+        pass
 
     def id(ref self, kind: str, key: int, tag: int):
         optional = self._optional

@@ -31,8 +31,13 @@ pub const TEXT_BYTES: i32 = 16;
 pub const TEXT_CHARS: i32 = 24;
 /// How many bytes a string has room for.
 pub const TEXT_ROOM: i32 = 32;
+/// The last character native code found in a string that isn't ASCII, so reading one in order
+/// takes a step for each: its number in the low 32 bits and where its bytes start in the high 32,
+/// or 0, which is always right. Read and written atomically, as threads may share the string; any
+/// value written is right for it, since its text only ever grows at the end.
+pub const TEXT_CURSOR: i32 = 40;
 /// Where a string's UTF-8 starts.
-pub const TEXT: i32 = 40;
+pub const TEXT: i32 = 48;
 
 /// A generator's block, whose words come after its count and shape like a boxed value's. Every
 /// generator's start the same way, so a loop can read one without knowing which it is. A

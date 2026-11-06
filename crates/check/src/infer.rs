@@ -104,11 +104,29 @@ impl Checker {
             (Type::Generic(n1, a), Type::Generic(n2, b)) if n1 == n2 && a.len() == b.len() => {
                 a.iter().zip(b).all(|(a, b)| self.fits(a, b))
             }
+            // A function named as a value, like `handle` in `server.serve(handle)`, fits a function
+            // type that takes and gives back what its signature does.
+            (Type::Arrow(params, returns), Type::Function(key)) => self.function_fits(params, returns, key),
             (Type::Arrow(p1, r1), Type::Arrow(p2, r2)) if p1.len() == p2.len() => {
                 p1.iter().zip(p2).all(|(a, b)| self.fits(b, a)) && self.fits(r1, r2)
             }
             _ => false,
         }
+    }
+
+    /// Whether the function `key` can go where a `(params) -> returns` is wanted. A generic
+    /// one, or one with a `mut` parameter, can't: a call through the type can't say which types
+    /// it stands for or pass anything `mut`.
+    fn function_fits(&mut self, params: &[Type], returns: &Type, key: &str) -> bool {
+        let Some(signature) = self.signature(key) else { return false };
+        signature.generics.is_empty()
+            && signature.params.len() == params.len()
+            && signature
+                .params
+                .iter()
+                .zip(params)
+                .all(|(param, ty)| !param.is_mut && self.fits(&param.ty, ty))
+            && self.fits(returns, &signature.returns)
     }
 
     /// The type of a value that comes from either `a` or `b`, or `None` when they don't fit

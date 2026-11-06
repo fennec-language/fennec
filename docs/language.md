@@ -160,7 +160,7 @@ stream = fs.open(filename) else:
 
 - `?` is only for failures, `else` ends a chain and can leave, and ignoring a returned value is an error.
 - `.Case` is required when the type is known.
-- `fails A | B` combines failures from different places.
+- `fails A | B` combines failures from different places: `?` passes any of them up as it is, and a function type can say it too, as in `(str) -> int fails ParseError | RangeError`. Built.
 - An `else:` block must leave: it ends with `return`, `fail`, `continue` or `break`. Built.
 
 ## Capabilities

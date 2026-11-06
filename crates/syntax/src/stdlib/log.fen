@@ -1,4 +1,4 @@
-from std.json import dumps
+from std.json import _quoted
 
 ## How much a log entry matters, least first.
 enum LogLevel:
@@ -101,11 +101,11 @@ struct Log:
         mut parts = []
         if seconds != "":
             parts.append(f"\"time\": {seconds}")
-        parts.append(f"\"level\": {dumps(level.label())}")
-        parts.append(f"\"message\": {dumps(message)}")
+        parts.append(f"\"level\": {_quoted(level.label())}")
+        parts.append(f"\"message\": {_quoted(message)}")
         for name, value in fields.items():
             if name != "time" and name != "level" and name != "message":
-                parts.append(f"{dumps(name)}: {dumps(value)}")
+                parts.append(f"{_quoted(name)}: {_quoted(value)}")
         "{" + ", ".join(parts) + "}"
 
     ## Text that can't start another line, so an entry can't pretend to be two.

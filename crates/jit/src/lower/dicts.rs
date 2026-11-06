@@ -21,9 +21,8 @@ const USED: i32 = 24;
 const MASK: i32 = 32;
 const SLOTS: i64 = 40;
 
-/// Where a string's length in bytes and its text are.
-const TEXT_BYTES: i32 = 16;
-const TEXT: i32 = 40;
+/// Where a string's length in bytes and its text are, as the runtime lays out its block.
+use fennec_interp::embed::layout::{TEXT, TEXT_BYTES};
 
 const MIX: i64 = 0x9E37_79B9_7F4A_7C15_u64.cast_signed();
 
@@ -37,6 +36,7 @@ pub(super) fn word_ty(word: Word) -> Ty {
         Word::Str | Word::Text => Ty::Str,
         Word::Nothing => Ty::Unit,
         Word::Plain(id) => Ty::Struct(id),
+        Word::Block(number) => Ty::Block(number),
     }
 }
 
@@ -742,7 +742,7 @@ impl Lowerer<'_, '_> {
         match word {
             Word::Float => self.b.ins().bitcast(types::I64, MemFlagsData::new(), value),
             Word::Bool => self.b.ins().uextend(types::I64, value),
-            Word::Int | Word::Str | Word::Text | Word::Nothing | Word::Plain(_) => value,
+            Word::Int | Word::Str | Word::Text | Word::Nothing | Word::Plain(_) | Word::Block(_) => value,
         }
     }
 
@@ -751,7 +751,7 @@ impl Lowerer<'_, '_> {
         match word {
             Word::Float => self.b.ins().bitcast(types::F64, MemFlagsData::new(), bits),
             Word::Bool => self.b.ins().ireduce(types::I8, bits),
-            Word::Int | Word::Str | Word::Text | Word::Nothing | Word::Plain(_) => bits,
+            Word::Int | Word::Str | Word::Text | Word::Nothing | Word::Plain(_) | Word::Block(_) => bits,
         }
     }
 }

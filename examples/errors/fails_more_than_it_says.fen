@@ -1,0 +1,17 @@
+error ParseError:
+    Bad(text: str)
+
+error DiskError:
+    Gone(path: str)
+
+error RangeError:
+    TooBig(value: int)
+
+def disk(path: str) -> int fails DiskError:
+    fail .Gone(path)
+
+def load(path: str) -> int fails ParseError | RangeError:
+    disk(path)?
+
+def main(stdout: Stdout):
+    stdout.print(load("a") else 0)

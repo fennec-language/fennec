@@ -122,6 +122,15 @@ impl FnCx<'_> {
     fn case_owner(&mut self, case: &str, expected: &Type, span: Span) -> Option<String> {
         let owner = match self.checker.settled(expected) {
             Type::Named(name) => name,
+            // `fail .Bad(text)` in a function that `fails ParseError | RangeError`: the one of
+            // them with that case.
+            Type::Errors(names) => {
+                let having: Vec<String> =
+                    names.into_iter().filter(|name| self.has_case(name, case)).collect();
+                let [owner] = having.as_slice() else { return None };
+                self.checker.cases.insert((span.start, span.end), owner.clone());
+                return Some(owner.clone());
+            }
             Type::Optional(inner) => match *inner {
                 Type::Named(name) => name,
                 _ => return None,

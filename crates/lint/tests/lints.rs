@@ -1,13 +1,16 @@
 //! What each lint flags, and what `fennec fix` makes of it.
 
-use fennec_lint::{Lint, lint};
+use fennec_lint::{Lint, lint, positional_arguments};
 use fennec_syntax::{Sources, apply_fixes, parse_at};
 
 fn found(source: &str) -> Result<Vec<Lint>, String> {
     let mut sources = Sources::new();
     let base = sources.add("game.fen", source);
     let module = parse_at(source, base).map_err(|problem| problem.message)?;
-    Ok(lint(&module, &sources))
+    // Positional arguments are a compile error now, kept with the lints they began as.
+    let mut found = lint(&module, &sources);
+    found.extend(positional_arguments(&module, &sources));
+    Ok(found)
 }
 
 /// The rules about names, which most tests' short names would set off: `name_rules` has them.

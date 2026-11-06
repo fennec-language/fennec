@@ -179,7 +179,7 @@ def as_type(expr: Expr) -> TypeExpr?:
                         # `dict[str, int]` has two types; `list[(int, int)]` has one, a tuple,
                         # whose span starts at its `(` rather than at its first item.
                         case .Tuple(items) if items.len() > 0 and items[0].span.start == index.span.start:
-                            found = as_types(items, True)
+                            found = as_types(items, sizes=True)
                             if found is None:
                                 return None
                             args = found
@@ -191,7 +191,7 @@ def as_type(expr: Expr) -> TypeExpr?:
                     TypeExpr(name=name, args=args, optional=False, span=expr.span)
                 case _: None
         case .Tuple(items):
-            found = as_types(items, False)
+            found = as_types(items, sizes=False)
             if found is None:
                 return None
             TypeExpr(name="tuple", args=found, optional=False, span=expr.span)

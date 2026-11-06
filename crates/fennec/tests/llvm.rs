@@ -529,7 +529,7 @@ def main(stdout: Stdout):
     stdout.print(boxes[0].items[boxes[0].at], other.items, other.at)
     newbox(ref boxes[1])
     stdout.print(boxes[1].items, boxes[1].name, boxes.len())
-    mut pair = Pair(Box([1], 0, "l"), Box([2], 0, "r"))
+    mut pair = Pair(Box([1], 0, "l"), right=Box([2], 0, "r"))
     pair.left.more(6)
     pair.left.next()
     newbox(ref pair.right)
@@ -859,17 +859,17 @@ def maybe_cleared(a: int, ref value: int?) -> int:
 def main(stdout: Stdout):
     # An index read as an argument, then changed by a later one.
     mut i = 0
-    stdout.print(pair(i, bump(ref i)), i)
+    stdout.print(pair(i, b=bump(ref i)), i)
     mut xs = [10, 20, 30, 40]
-    stdout.print(pair(xs[i], bump(ref i)), i, xs[i])
-    stdout.print(three(i, xs[i], bump(ref i)), i)
+    stdout.print(pair(xs[i], b=bump(ref i)), i, xs[i])
+    stdout.print(three(i, b=xs[i], c=bump(ref i)), i)
     i = 0
     stdout.print(i, xs[i], bump(ref i), xs[i], i)
 
     # What it remembered about the index ends, in order, with the old read kept.
     mut j = 0
     xs[j] = 11
-    held = pair(xs[j], bump(ref j))
+    held = pair(xs[j], b=bump(ref j))
     xs[j] = 22
     stdout.print(held, j, xs)
 
@@ -1013,7 +1013,7 @@ def main(stdout: Stdout):
     show(stdout, grid[1])
     show(stdout, grid[0])
     mut held = band()
-    held.grow_at(1, 70)
+    held.grow_at(1, value=70)
     held.rows[0][1].inner.grow(80)
     show(stdout, held.units)
     show(stdout, held.rows[1])
@@ -1037,7 +1037,7 @@ def main(stdout: Stdout):
     mut nested = band()
     copied = nested
     row = nested.rows[1]
-    nested.grow_at(1, 5)
+    nested.grow_at(1, value=5)
     nested.rows[1][1].inner.grow(6)
     show(stdout, nested.rows[1])
     show(stdout, copied.rows[1])
@@ -1818,7 +1818,7 @@ def until(text: str, stop: str) -> int:
 def main(stdout: Stdout):
     for text in ["", "a", "short ascii", "héllo wörld 🦊 and 日本", "a much longer ASCII text than any inline header can hold",
                  "a much longer text than a header holds, ending in é", "🦊🦊🦊🦊🦊🦊🦊🦊🦊", "x1 y2 z3 " * 20]:
-        stdout.print(kinds(text), until(text, "z"), until(text, "🦊"), text.len())
+        stdout.print(kinds(text), until(text, stop="z"), until(text, stop="🦊"), text.len())
     mut joined = []
     for c in "nested é":
         for d in "ab":
@@ -1980,7 +1980,7 @@ def main(stdout: Stdout):
     grow(ref g, 6)
     grow(ref g, 7)
     stdout.print(g)
-    mut w = World(make(), [], 3)
+    mut w = World(make(), log=[], turn=3)
     step(ref w)
     other = w
     step(ref w)
@@ -2084,7 +2084,7 @@ fn a_product_that_overflows_still_fails_as_on_the_interpreter() -> std::io::Resu
     }
     let program = |a: &str, b: &str| {
         format!(
-            "def scaled(i: int, j: int) -> float:\n    1.0 / float((i + j) * (i + j + 1) // 2 + i + 1)\n\ndef main(stdout: Stdout):\n    mut total = 0.0\n    for i in range(50):\n        for j in range(50):\n            total += scaled(i, j)\n    stdout.print(f\"{{total:.6f}}\")\n    big = {a}\n    stdout.print(big * {b})\n"
+            "def scaled(i: int, j: int) -> float:\n    1.0 / float((i + j) * (i + j + 1) // 2 + i + 1)\n\ndef main(stdout: Stdout):\n    mut total = 0.0\n    for i in range(50):\n        for j in range(50):\n            total += scaled(i, j=j)\n    stdout.print(f\"{{total:.6f}}\")\n    big = {a}\n    stdout.print(big * {b})\n"
         )
     };
     for (name, a, b) in [
@@ -2561,8 +2561,8 @@ def transfer(source: Account, target: Account, amount: int) -> bool:
 def main(stdout: Stdout):
     two = Account(total=10)
     three = Account(total=20)
-    stdout.print(transfer(two, three, 4), two.total, three.total)
-    stdout.print(transfer(three, two, 40), two.total, three.total)
+    stdout.print(transfer(two, target=three, amount=4), two.total, three.total)
+    stdout.print(transfer(three, target=two, amount=40), two.total, three.total)
 ";
 
 /// Each way a `with` can come to take one cell twice, all after printing something.
@@ -2573,7 +2573,7 @@ const TAKEN_TWICE: [(&str, &str); 5] = [
         "    mut seen = 0\n    with one, one as x, y:\n        seen = x.total + y.total\n    stdout.print(seen)\n",
     ),
     ("named", "    other = one\n    with one, other as ref x, y:\n        x.total = y.total + 1\n"),
-    ("passed", "    both(one, one)\n"),
+    ("passed", "    both(one, b=one)\n"),
     ("held", "    with Holder(box=one).box, one as ref x, y:\n        x.total = y.total + 1\n"),
 ];
 
@@ -3101,7 +3101,7 @@ def main(stdout: Stdout):
     mut e = {1: 2, 3: 4}
     stdout.print(e.len(), e.pop(1), e.len())
     mut n = 1
-    stdout.print(pair(n, bump(ref n)), n)
+    stdout.print(pair(n, b=bump(ref n)), n)
     stdout.print(n, bump(ref n), n)
     mut b = Box(items=[1], count=0)
     stdout.print(b.count, b.grow(), b.count)
@@ -3559,7 +3559,7 @@ def main(stdout: Stdout):
     stdout.print(sum(n for n in running(odd_squares(count_up(30)))))
     for word in words(3):
         stdout.print(word, word.len())
-    stdout.print(first_over(100, 50), first_over(5, 50))
+    stdout.print(first_over(100, over=50), first_over(5, over=50))
     kept = words(4)
     mut joined = ""
     for word in kept:
@@ -3665,7 +3665,7 @@ def main(stdout: Stdout):
     for i in range(6):
         holder.put(i, i % 2 == 0)
     copy = holder
-    holder.put(9, True)
+    holder.put(9, flag=True)
     stdout.print(holder.items, holder.bag.items, holder.counts, holder.text)
     stdout.print(copy.items, copy.bag.items, copy.text)
     zero = holder.items.len() - holder.items.len()
@@ -3710,7 +3710,7 @@ fn what_a_field_or_an_items_field_holds_changes_without_being_copied() -> std::i
     assert!(counts.starts_with("copies 0 "), "{counts}");
     let counts = counts_of(
         "items",
-        "struct Var:\n    value: int\n    links: list[int]\n\nstruct Holder:\n    vars: list[Var]\n\n    def add(ref self, value: int):\n        self.vars.append(Var(value=value, links=[]))\n\n    def link(ref self, at: int, other: int):\n        self.vars[at].links.append(other)\n\ndef main(stdout: Stdout):\n    mut holder = Holder(vars=[])\n    for i in range(100):\n        holder.add(i)\n    for i in range(1000):\n        holder.link(i % 100, i)\n    stdout.print(holder.vars[5].links.len())\n",
+        "struct Var:\n    value: int\n    links: list[int]\n\nstruct Holder:\n    vars: list[Var]\n\n    def add(ref self, value: int):\n        self.vars.append(Var(value=value, links=[]))\n\n    def link(ref self, at: int, other: int):\n        self.vars[at].links.append(other)\n\ndef main(stdout: Stdout):\n    mut holder = Holder(vars=[])\n    for i in range(100):\n        holder.add(i)\n    for i in range(1000):\n        holder.link(i % 100, other=i)\n    stdout.print(holder.vars[5].links.len())\n",
     )?;
     assert!(counts.starts_with("copies 0 "), "{counts}");
     // A method written in Fennec changing a field: `self.inner.add(x)` and std's `extend`.
@@ -4962,11 +4962,11 @@ def main(stdout: Stdout):
         deep = Link(next=deep)
     stdout.print(said(pack.loads[Link](pack.dumps(deep), limits=Limits(depth=4))), said(pack.loads[Link](pack.dumps(deep))))
     medic = pack.dumps(Kind.Medic)
-    stdout.print(said(pack.loads[Kind](changed(medic, 12, 9))))
-    stdout.print(said(pack.loads[bool](changed(pack.dumps(True), 12, 2))))
+    stdout.print(said(pack.loads[Kind](changed(medic, at=12, to=9))))
+    stdout.print(said(pack.loads[bool](changed(pack.dumps(True), at=12, to=2))))
     one = pack.dumps(Guarded(points=1))
     # The points, 1, are the zigzag byte 2, and 1 is -1.
-    stdout.print(said(pack.loads[Guarded](changed(one, 12, 1))))
+    stdout.print(said(pack.loads[Guarded](changed(one, at=12, to=1))))
 "#;
 
 /// `std.pack` reads back what it wrote, ints at both ends, a name that isn't ASCII, a case with
@@ -5135,10 +5135,10 @@ def main(stdout: Stdout):
     _ = same.units.add(Unit(name="fox"))
     stdout.print(pack.dumps(same, exact=True) == pack.dumps(world, exact=True))
     # What doesn't load.
-    stdout.print(said(pack.loads[World](changed(data, 18, 9))))
-    stdout.print(said(pack.loads[World](changed(exact, 12, 2))))
-    stdout.print(said(pack.loads[World](changed(exact, 32, 20))))
-    stdout.print(said(pack.loads[World](changed(exact, 13, 200))))
+    stdout.print(said(pack.loads[World](changed(data, at=18, to=9))))
+    stdout.print(said(pack.loads[World](changed(exact, at=12, to=2))))
+    stdout.print(said(pack.loads[World](changed(exact, at=32, to=20))))
+    stdout.print(said(pack.loads[World](changed(exact, at=13, to=200))))
     # Every truncation fails, and every byte changed loads or fails, in both modes.
     mut seed = 11
     for good in [data, exact]:
@@ -5150,7 +5150,7 @@ def main(stdout: Stdout):
         for at in range(good.len()):
             for _ in range(30):
                 seed = (seed * 1103515245 + 12345) % 2147483648
-                found = pack.loads[World](changed(good, at, (seed >> 16) & 255))
+                found = pack.loads[World](changed(good, at=at, to=(seed >> 16) & 255))
                 match found:
                     case Ok(loaded):
                         # What loads has every Id somewhere in its Table, or gone.
@@ -5348,8 +5348,8 @@ def main(stdout: Stdout):
     nan = 1e300 * 1e300 - 1e300 * 1e300
     other = -nan
     one = 1.0
-    stdout.print(same(zero, minus), same(nan, nan), same(nan, other), same(nan, one), same(one, one))
-    stdout.print(different(zero, minus), different(nan, other), different(nan, one), different(one, 2.0))
+    stdout.print(same(zero, b=minus), same(nan, b=nan), same(nan, b=other), same(nan, b=one), same(one, b=one))
+    stdout.print(different(zero, b=minus), different(nan, b=other), different(nan, b=one), different(one, b=2.0))
     stdout.print(zero == -0.0, nan == 1.0, 1.0 == nan, nan != 1.0, 1.0 != nan, -0.0 == zero)
     stdout.print(Pair(x=zero, y=nan) == Pair(x=minus, y=other), Pair(x=1.0, y=nan) == Pair(x=1.0, y=2.0))
     stdout.print(Pair(x=zero, y=nan) != Pair(x=minus, y=other))
@@ -6163,12 +6163,12 @@ def main(stdout: Stdout):
     mut dice = Random(seed=42)
     mut total = 0
     for _ in range(1000):
-        total += dice.randint(1, 6)
-    stdout.print(total, dice.randint(-5, 5), dice.drawn)
-    stdout.print(f"{dice.random():.6f}", f"{dice.uniform(2.0, 3.0):.6f}")
+        total += dice.randint(1, high=6)
+    stdout.print(total, dice.randint(-5, high=5), dice.drawn)
+    stdout.print(f"{dice.random():.6f}", f"{dice.uniform(2.0, high=3.0):.6f}")
     mut wide = Random(seed=-7)
-    stdout.print(wide.randint(-9223372036854775807, 9223372036854775807))
-    stdout.print(dice.randint(3, 1))
+    stdout.print(wide.randint(-9223372036854775807, high=9223372036854775807))
+    stdout.print(dice.randint(3, high=1))
 "#,
     )
 }
@@ -6793,8 +6793,8 @@ def main(stdout: Stdout):
     # An expected result whose error is one.
     stdout.print(get(5).expect("five is fine"))
     # Enums that hold numbers only, printed.
-    stdout.print(Shape.Circle(1.5), Shape.Empty, [Shape.Rect(1.0, 2.0)])
-    stdout.print(f"{Shape.Rect(1.0, 2.0)}")
+    stdout.print(Shape.Circle(1.5), Shape.Empty, [Shape.Rect(1.0, h=2.0)])
+    stdout.print(f"{Shape.Rect(1.0, h=2.0)}")
 "#;
 
 /// Everything that holds, copies, compares or shows an enum in place, in every case.
@@ -7836,7 +7836,7 @@ def main(stdout: Stdout):
             case Err(error):
                 stdout.print("other", error, f"{error}")
     for code in [0, 3]:
-        match three("", 1, code):
+        match three("", level=1, code=code):
             case Ok(text):
                 stdout.print(text)
             case Plain(code):
@@ -7845,7 +7845,7 @@ def main(stdout: Stdout):
                 stdout.print("not found", name.len())
             case Err(error):
                 stdout.print("other", error)
-    match three("kit", 1, 0):
+    match three("kit", level=1, code=0):
         case Err(error):
             stdout.print(error)
         case Ok(text):
@@ -8345,7 +8345,7 @@ def main(stdout: Stdout):
             case Err(error):
                 stdout.print(error.message)
     stdout.print(int("12") else 0, int("x") else -1, float("0.5") else 0.0, float("y") else -1.5)
-    stdout.print(add("1", "2") else -1, add("1", "two") else -1)
+    stdout.print(add("1", b="2") else -1, add("1", b="two") else -1)
     for pattern in ["[0-9]+", "[0-9+"]:
         match Regex(pattern):
             case Ok(regex):

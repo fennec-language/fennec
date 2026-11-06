@@ -43,7 +43,7 @@ def main(stdout: Stdout):
     lights = {"a": Light.Green(2.5), "b": .Amber(True)}
     got = lights["a"]
     stdout.print(got, got.wait(), got == .Green(2.5), got.next())
-    junctions = {"j": Junction(at=Cell(1, 2), light=.Amber(False))}
+    junctions = {"j": Junction(at=Cell(1, col=2), light=.Amber(False))}
     j = junctions["j"]
     stdout.print(j.light.next(), j.at.row, j)
     mut all = [Light.Red, .Green(1.0), .Amber(False)]
@@ -52,7 +52,7 @@ def main(stdout: Stdout):
     stdout.print(all)
     all.append(.Green(2.0))
     stdout.print(all[-1] == .Green(0.0), all[-1] == .Green(2.0), all.len())
-    cell = Cell(3, 4)
+    cell = Cell(3, col=4)
     picked = match cell:
         case Cell(0, c):
             c
@@ -68,4 +68,4 @@ def main(stdout: Stdout):
         case False:
             "no"
     stdout.print(said)
-    stdout.print(Junction(at=cell, light=.Red) == Junction(at=Cell(3, 4), light=.Red))
+    stdout.print(Junction(at=cell, light=.Red) == Junction(at=Cell(3, col=4), light=.Red))

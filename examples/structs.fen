@@ -34,4 +34,4 @@ def main(stdout: Stdout):
 
     velocity = Vec3(x=1.0, y=2.0, z=0.0)
     stdout.print(ash.position + velocity * 2.0)
-    stdout.print(ash == twin, twin == copy(twin))
+    stdout.print(ash == twin, twin == copy(twin, health=70))

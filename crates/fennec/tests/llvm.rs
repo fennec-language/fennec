@@ -4548,18 +4548,8 @@ fn printed_by(name: &str, source: &str) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
 }
 
-/// `std.pack` reads back what it wrote, ints at both ends, a name that isn't ASCII, a case with
-/// data and a dict among them, and says why bytes don't load: a type of another shape, bytes
-/// that end too soon or go on past it, ones it didn't write, a length or a depth over the
-/// limit, a case or a bool that doesn't exist, and a `where` rule broken.
-#[test]
-fn pack_reads_back_what_it_wrote_and_says_why_other_bytes_do_not_load() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let printed = printed_by(
-        "pack_messages",
-        r#"from std import pack
+/// What the next test builds: a round trip, then bytes `std.pack` should refuse.
+const PACK_MESSAGES: &str = r#"from std import pack
 from std.pack import Limits
 
 enum Kind:
@@ -4637,8 +4627,18 @@ def main(stdout: Stdout):
     one = pack.dumps(Guarded(points=1))
     # The points, 1, are the zigzag byte 2, and 1 is -1.
     stdout.print(said(pack.loads[Guarded](changed(one, 12, 1))))
-"#,
-    )?;
+"#;
+
+/// `std.pack` reads back what it wrote, ints at both ends, a name that isn't ASCII, a case with
+/// data and a dict among them, and says why bytes don't load: a type of another shape, bytes
+/// that end too soon or go on past it, ones it didn't write, a length or a depth over the
+/// limit, a case or a bool that doesn't exist, and a `where` rule broken.
+#[test]
+fn pack_reads_back_what_it_wrote_and_says_why_other_bytes_do_not_load() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("pack_messages", PACK_MESSAGES)?;
     assert_eq!(
         printed,
         "105 True vëx -9223372036854775808 {\"a\": 1, \"b\": -1} 2.25\n\
@@ -4656,17 +4656,8 @@ def main(stdout: Stdout):
     Ok(())
 }
 
-/// Bytes that aren't what `std.pack` wrote never crash a load or take more than its limits:
-/// every truncation of good bytes fails, and so do most with one byte changed, at the default
-/// limits and small ones, and random bytes after a good header.
-#[test]
-fn pack_loads_of_changed_and_random_bytes_fail_without_crashing() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let printed = printed_by(
-        "pack_fuzz",
-        r#"from std import pack
+/// What the next test builds: loads of good bytes truncated, changed and replaced.
+const PACK_FUZZ: &str = r#"from std import pack
 from std.pack import Limits
 
 enum Shape:
@@ -4735,8 +4726,17 @@ def main(stdout: Stdout):
             random.append((seed >> 16) & 255)
         loaded += tried(bytes(random), Limits())
     stdout.print("random", loaded >= 0)
-"#,
-    )?;
+"#;
+
+/// Bytes that aren't what `std.pack` wrote never crash a load or take more than its limits:
+/// every truncation of good bytes fails, and so do most with one byte changed, at the default
+/// limits and small ones, and random bytes after a good header.
+#[test]
+fn pack_loads_of_changed_and_random_bytes_fail_without_crashing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("pack_fuzz", PACK_FUZZ)?;
     assert_eq!(printed, "59 1 1\ntruncated 0\nchanged 4720 True\nrandom True\n");
     Ok(())
 }

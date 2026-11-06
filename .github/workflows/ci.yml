@@ -199,6 +199,37 @@ jobs:
           path: ${{ runner.temp }}/fennec-home
           key: fennec-tests-${{ github.event.pull_request.number || 'shared' }}-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
 
+  # Native code on an Intel Mac. Linux covers x86-64 and the other Mac covers Arm, but an Arm-only
+  # pass can hide what only x86-64 does, like having two return registers, not eight, and macOS
+  # has its own way of calling on each. Every program in the repository has to build as native code
+  # here, and every LLVM test, the examples' output among them, has to pass. A merge group leaves
+  # it out, as it does the other Mac.
+  x86-mac:
+    name: Native code on x86-64 macOS
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true' && github.event_name != 'merge_group'
+    runs-on: macos-15-intel
+    timeout-minutes: 40
+    env:
+      FENNEC_EXPECT_LLVM: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install LLVM's tools
+        run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build the runtime libraries
+        run: |
+          cargo build --locked -p fennec-runtime
+          for features in threads lean lean,threads; do
+            dir="target/$(echo "$features" | tr , -)"
+            name="fennec_runtime_$(echo "$features" | tr , _)"
+            cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
+            cp "$dir/debug/libfennec_runtime.a" "target/debug/lib$name.a"
+          done
+      - run: cargo test --locked -p fennec --test fennec 'llvm::'
+
   # Only a report, of tests `test` runs too, so a merge group leaves it out. The pull request
   # and the push to main each have it.
   coverage:
@@ -650,7 +681,7 @@ jobs:
   ok:
     name: CI passed
     if: always()
-    needs: [changes, lint, test, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, lean-runtime, asan, parked-sanitizers]
+    needs: [changes, lint, test, x86-mac, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, lean-runtime, asan, parked-sanitizers]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -672,11 +703,18 @@ jobs:
             [ "$result" = skipped ] && [ "$DOCS_ONLY" = true ] && continue
             if [ "$result" = skipped ] && [ "$EVENT" = merge_group ]; then
               [ "$job" = coverage ] && continue
+              [ "$job" = x86-mac ] && continue
               [ "$job" = parked-sanitizers ] && [ "$PARKED_CHANGED" != true ] && continue
             fi
-            if [ "$job" = test ] && [ "$result" != skipped ]; then
+            # `test` has one result for its whole matrix, so each OS's job is looked at, and so is
+            # the Intel Mac's.
+            case "$job" in
+              test) jobs='(^|/ )Test \\(' ;;
+              x86-mac) jobs='(^|/ )Native code on x86-64 macOS$' ;;
+              *) jobs='' ;;
+            esac
+            if [ -n "$jobs" ] && [ "$result" != skipped ]; then
               looked_at=0
-              # `test` has one result for its whole matrix, so each OS's job is looked at.
               # The one exception, on pull requests only: GitHub's macOS runners are short, and
               # a macOS job no runner ever took (cancelled, with no runner and no steps) is a
               # warning rather than a failure. A macOS job that ran and failed still fails, and
@@ -685,7 +723,7 @@ jobs:
               while IFS='|' read -r name conclusion runner steps; do
                 looked_at=1
                 [ "$conclusion" = success ] && continue
-                if [ "$EVENT" = pull_request ] && [ "$name" = "Test (macos-latest)" ] \
+                if [ "$EVENT" = pull_request ] && [[ "$name" =~ (macos-latest\)|macOS)$ ]] \
                   && [ "$conclusion" = cancelled ] && [ -z "$runner" ] && [ "$steps" = 0 ]; then
                   echo "::warning::$name never got a runner, so it doesn't count; the push to main runs it again"
                   continue
@@ -693,10 +731,10 @@ jobs:
                 echo "$name finished with: $conclusion"
                 failed=1
               done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" \
-                --jq '.jobs[] | select(.name | test("(^|/ )Test \\(")) | [.name, (.conclusion // "unfinished"), (.runner_name // ""), (.steps | length | tostring)] | join("|")')
+                --jq ".jobs[] | select(.name | test(\"$jobs\")) | [.name, (.conclusion // \"unfinished\"), (.runner_name // \"\"), (.steps | length | tostring)] | join(\"|\")")
               # Run through `staging.yml`, a job's name has that job's in front. If this ever found
               # no jobs at all, it can't say they passed.
-              [ "$looked_at" = 1 ] || { echo "found no Test jobs to look at"; failed=1; }
+              [ "$looked_at" = 1 ] || { echo "found no $job jobs to look at"; failed=1; }
               continue
             fi
             echo "$job finished with: $result"

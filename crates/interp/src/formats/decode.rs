@@ -109,6 +109,7 @@ impl Interp<'_> {
                     let value = self.decode(held.clone(), &item, &inside(at, &format!("[{n}]")), span)?;
                     slots.push(Slot { generation: 0, value: Some(value) });
                 }
+                self.tables_read.push(at.to_owned());
                 Ok(Value::Table(Rc::new(Table::new(slots))))
             }
             (name, value) if self.has_shape(name) => {

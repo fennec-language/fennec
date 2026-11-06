@@ -17,6 +17,17 @@ struct TwoTables:
     ours = Table[Unit]()
     theirs = Table[Unit]()
 
+struct Item:
+    name: str
+
+struct Armed:
+    name: str
+    weapon: Id[Item]
+
+struct Armory:
+    items = Table[Item]()
+    units = Table[Armed]()
+
 def failure[T](found: Result[T, ParseError]) -> str:
     match found:
         case Err(error):
@@ -75,6 +86,30 @@ test "an Id needs the one Table of its type":
     assert (
         failure(json.loads[TwoTables]("{\"ours\": [], \"theirs\": []}"))
         == "`ours` and `theirs` are both a `Table[Unit]`, so an Id can't say which it's in"
+    )
+
+test "an Id points into another Table in the same text":
+    mut armory = Armory()
+    _ = armory.items.add(Item(name="axe"))
+    sword = armory.items.add(Item(name="sword"))
+    _ = armory.units.add(Armed(name="ash", weapon=sword))
+    text = json.dumps(armory)
+    assert (
+        text
+        == "{\"items\": [{\"name\": \"axe\"}, {\"name\": \"sword\"}], \"units\": [{\"name\": \"ash\", \"weapon\": 1}]}"
+    )
+    loaded = json.loads[Armory](text)?
+    for _, unit in loaded.units.items():
+        assert loaded.items[unit.weapon].name == "sword"
+
+test "an Id whose Table the text leaves out isn't loaded as a bare position":
+    assert (
+        failure(json.loads[Armory]("{\"units\": [{\"name\": \"ash\", \"weapon\": 0}]}"))
+        == "`units[0].weapon` is an Id, but the text has no `Table[Item]` for it to be in"
+    )
+    assert (
+        failure(json.loads[World]("{\"selected\": [0]}"))
+        == "`selected[0]` is an Id, but the text has no `Table[Unit]` for it to be in"
     )
 
 def main(stdout: Stdout):

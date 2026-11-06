@@ -64,6 +64,46 @@ fn text_at(state: &State, at: i64) -> String {
     state.heap.block(at.cast_unsigned()).map(block_text).unwrap_or_default()
 }
 
+/// The room a byte builder's block has for `length` bytes: the next power of two, and at least 16.
+/// Native code works it out from the length alone, so a builder needs no word for it. Only std's
+/// own builder intrinsics write into one, and it's copied to its exact size before anything else
+/// sees it, so nothing that compares or hashes bytes by their words meets the room.
+fn builder_room(length: usize) -> usize {
+    length.max(16).next_power_of_two()
+}
+
+/// An empty byte builder, with room for 16 bytes.
+pub extern "C" fn builder() -> i64 {
+    with(|state| {
+        let mut block = with_room(state, builder_room(0));
+        if let Some(length) = block.get_mut(2) {
+            *length = 0;
+        }
+        state.heap.insert(block)
+    })
+}
+
+/// A byte builder with room for at least `wanted` bytes, holding what `bytes` does. It takes over
+/// the caller's owner of `bytes`, and lets go of it, so what it gives back is the caller's alone.
+pub extern "C" fn grow(bytes: i64, wanted: i64) -> i64 {
+    with(|state| {
+        let block = state.heap.block(bytes.cast_unsigned()).unwrap_or_default();
+        let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+        let kept: Vec<u64> =
+            block.get(HEADER_WORDS..HEADER_WORDS + length.div_ceil(8)).unwrap_or_default().to_vec();
+        let room = builder_room(usize::try_from(wanted).unwrap_or(0).max(length));
+        let mut grown = with_room(state, room);
+        if let Some(header) = grown.get_mut(2) {
+            *header = u64::try_from(length).unwrap_or(0);
+        }
+        for (word, held) in grown.iter_mut().skip(HEADER_WORDS).zip(kept) {
+            *word = held;
+        }
+        super::heap::release(state, bytes.cast_unsigned());
+        state.heap.insert(grown)
+    })
+}
+
 /// A new block of this length for native code to copy bytes into.
 pub extern "C" fn new(length: i64) -> i64 {
     with(|state| {
@@ -137,8 +177,28 @@ pub extern "C" fn slice(bytes: i64, start: i64, end: i64) -> i64 {
             usize::try_from(at.clamp(0, length)).unwrap_or(0)
         };
         let (from, to) = (bound(start, 0), bound(end, length));
+        let to = to.max(from);
+        // A part starting at a word, as a whole run does, is copied a word at a time, with what's
+        // past its end in the last word cleared, since bytes compare and hash by their words.
+        if from % 8 == 0 {
+            let words: Vec<u64> = block
+                .get(HEADER_WORDS + from / 8..HEADER_WORDS + to.div_ceil(8))
+                .unwrap_or_default()
+                .to_vec();
+            let size = to - from;
+            let mut made = with_room(state, size);
+            for (word, held) in made.iter_mut().skip(HEADER_WORDS).zip(words) {
+                *word = held;
+            }
+            if size % 8 != 0
+                && let Some(last) = made.last_mut()
+            {
+                *last &= (1u64 << (8 * (size % 8))) - 1;
+            }
+            return state.heap.insert(made);
+        }
         // Only the part is copied out, so taking a small part of a long run costs only the part.
-        let part = part_of(block, from, to.max(from));
+        let part = part_of(block, from, to);
         make(state, &part)
     })
 }

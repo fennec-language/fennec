@@ -1952,6 +1952,28 @@ fn isdigit_matches_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// A product past the check is known not to have overflowed, which lets LLVM drop later checks:
+/// one that does overflow still fails, from either sign, and one that doesn't goes on to its sums.
+#[test]
+fn a_product_that_overflows_still_fails_as_on_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let program = |a: &str, b: &str| {
+        format!(
+            "def scaled(i: int, j: int) -> float:\n    1.0 / float((i + j) * (i + j + 1) // 2 + i + 1)\n\ndef main(stdout: Stdout):\n    mut total = 0.0\n    for i in range(50):\n        for j in range(50):\n            total += scaled(i, j)\n    stdout.print(f\"{{total:.6f}}\")\n    big = {a}\n    stdout.print(big * {b})\n"
+        )
+    };
+    for (name, a, b) in [
+        ("product_fits", "3037000499", "3037000499"),
+        ("product_too_big", "3037000500", "3037000500"),
+        ("product_too_small", "-3037000500", "3037000500"),
+    ] {
+        same_as_the_interpreter_in_both_builds(name, &program(a, b))?;
+    }
+    Ok(())
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {

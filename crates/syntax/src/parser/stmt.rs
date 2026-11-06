@@ -186,19 +186,13 @@ impl Parser {
         Ok(names)
     }
 
-    /// `with value as name:`, or `with a, b as mut x, mut y:` with one name for each value.
+    /// `with game as ref current:`, or several at once: `with a as ref x, b as ref y:`, or
+    /// `with a, b as x, y:`.
     fn with_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.advance().span;
-        let mut value = self.expr()?;
-        let mut held = 1;
-        if self.at_p(Punct::Comma) {
-            let mut items = vec![value];
-            while self.eat_p(Punct::Comma) {
-                items.push(self.expr()?);
-            }
-            held = items.len();
-            let span = items.iter().fold(self.prev_span(), |span, item| span.to(item.span));
-            value = Expr { kind: ExprKind::Tuple(items), span };
+        let mut items = vec![self.expr()?];
+        while self.eat_p(Punct::Comma) {
+            items.push(self.expr()?);
         }
         let mut names = Vec::new();
         if self.eat_kw(Kw::As) {
@@ -210,19 +204,42 @@ impl Parser {
                 if !self.eat_p(Punct::Comma) {
                     break;
                 }
+                // `with a as ref x, b as ref y:`: the next value comes with its own name.
+                if names.len() == items.len() && !self.at_with_name() {
+                    items.push(self.expr()?);
+                    if !self.eat_kw(Kw::As) {
+                        return Err(self.unexpected("`as` and a name for it"));
+                    }
+                }
             }
         }
+        let held = items.len();
+        let value = if let [one] = items.as_slice() {
+            one.clone()
+        } else {
+            let first = items.first().map_or(start, |item| item.span);
+            let span = items.iter().fold(first, |span, item| span.to(item.span));
+            Expr { kind: ExprKind::Tuple(items), span }
+        };
         if !names.is_empty() && names.len() != held {
             let span = names.iter().fold(value.span, |span, name| span.to(name.span));
             return Err(Diagnostic::new(
                 format!("this `with` holds {held} values but names {}", names.len()),
                 span,
             )
-            .with_help("give one name for each value, in order: `with a, b as x, y:`"));
+            .with_help("give each value its own name: `with a as ref x, b as ref y:`"));
         }
         self.expect_p(Punct::Colon)?;
         let body = self.block()?;
         Ok(Stmt { kind: StmtKind::With { value, names, body }, span: start.to(self.prev_span()) })
+    }
+
+    /// Whether a name after `as` comes next, as in `with a, b as x, y:`, rather than another
+    /// value: `ref` or `mut`, or a name and then `,` or `:`.
+    fn at_with_name(&self) -> bool {
+        matches!(self.peek(), Tok::Kw(Kw::Ref | Kw::Mut))
+            || matches!(self.peek(), Tok::Name(_))
+                && matches!(self.peek_at(1), Tok::P(Punct::Comma | Punct::Colon))
     }
 }
 

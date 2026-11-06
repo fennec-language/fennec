@@ -1220,9 +1220,17 @@ impl Emit<'_, '_, '_> {
         self.declare(&format!("declare {{ i64, i1 }} {intrinsic}(i64, i64)"));
         let (pair, value, bad) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{pair} = call {{ i64, i1 }} {intrinsic}(i64 {a}, i64 {b})"));
-        self.line(&format!("{value} = extractvalue {{ i64, i1 }} {pair}, 0"));
         self.line(&format!("{bad} = extractvalue {{ i64, i1 }} {pair}, 1"));
         self.fail_if(&bad, OVERFLOW, span);
+        // A product past the check is the plain multiply's, which says it didn't overflow: so LLVM
+        // knows one of numbers that aren't negative isn't either, and can drop checks after it
+        // that can't fail. A sum or difference stays as it was, as saying the same of a counter
+        // lets LLVM unroll short loops in ways that cost more than they save.
+        if name == "smul" {
+            self.line(&format!("{value} = mul nsw i64 {a}, {b}"));
+        } else {
+            self.line(&format!("{value} = extractvalue {{ i64, i1 }} {pair}, 0"));
+        }
         value
     }
 

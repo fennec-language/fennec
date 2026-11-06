@@ -247,7 +247,9 @@ impl Interp<'_> {
             };
             taken_twice(&resources, value.span)?;
             for resource in &resources {
-                if let Value::Shared(cell) = resource {
+                if let Value::Shared(cell) = resource
+                    && !self.is_resource(cell)
+                {
                     self.check_lock(cell, value.span)?;
                     self.locks.push((Rc::clone(cell), self.depth));
                     locked += 1;

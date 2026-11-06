@@ -237,7 +237,7 @@ impl<'c> FnCx<'c> {
         }
         // A `shared` type's method holds its lock for the whole call.
         if def.params.first().is_some_and(|param| param.is_self)
-            && params.first().is_some_and(|param| cx.checker.program.is_shared(&param.ty))
+            && params.first().is_some_and(|param| cx.checker.program.takes_lock(&param.ty))
         {
             cx.lock = Some("while `self` is locked".to_owned());
             cx.locked_types = params

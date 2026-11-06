@@ -105,6 +105,12 @@ impl Interp<'_> {
     pub(crate) fn check_ids(&self, value: &Value, ty: &TypeExpr) -> Result<(), String> {
         let mut found = Found::default();
         self.find(value, Some(ty), "", &mut found, &mut Vec::new());
+        // A `Table` the text left out, which took its field's default, isn't in the text.
+        found.tables.retain(|(_, at, _)| {
+            self.tables_read
+                .iter()
+                .any(|read| read.strip_prefix('.').unwrap_or(read) == at.strip_prefix('.').unwrap_or(at))
+        });
         if let Some(twice) = found.twice("the text") {
             return Err(twice);
         }

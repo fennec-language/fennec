@@ -28,6 +28,14 @@ impl Program {
         let (Type::Named(name) | Type::Generic(name, _)) = ty else { return false };
         self.type_info(name).is_some_and(|info| info.def.shared)
     }
+
+    /// Whether a value of this type has a lock: a `shared` type a program declares. One the
+    /// standard library ships, like a connection, is a resource: it manages its own sides, takes
+    /// no lock, and a `with` on it closes it when the block ends.
+    pub(crate) fn takes_lock(&self, ty: &Type) -> bool {
+        let (Type::Named(name) | Type::Generic(name, _)) = ty else { return false };
+        self.type_info(name).is_some_and(|info| info.def.shared && !info.prelude)
+    }
 }
 
 impl Checker {
@@ -65,7 +73,7 @@ impl Checker {
 
     /// The `shared` type a value of this type holds, in it or anything inside it.
     pub(crate) fn shared_inside(&mut self, ty: &Type, open: &mut Vec<String>) -> Option<String> {
-        if self.program.is_shared(ty) {
+        if self.program.takes_lock(ty) {
             return ty.type_name().map(str::to_owned);
         }
         for child in ty.children() {
@@ -132,7 +140,7 @@ impl Checker {
             self.shared_reached(&child.clone(), open, found);
         }
         let (Type::Named(name) | Type::Generic(name, _)) = ty else { return };
-        if self.program.is_shared(ty) && !found.contains(name) {
+        if self.program.takes_lock(ty) && !found.contains(name) {
             found.push(name.clone());
         }
         if open.contains(name) {
@@ -219,8 +227,8 @@ impl FnCx<'_> {
             (_, ty) => (vec![value], vec![ty]),
         };
         for (item, ty) in items.iter().zip(&types) {
-            let shared = self.checker.program.is_shared(ty);
-            if items.len() > 1 && !shared && *ty != Type::Unknown {
+            let shared = self.checker.program.takes_lock(ty);
+            if items.len() > 1 && !self.checker.program.is_shared(ty) && *ty != Type::Unknown {
                 let message = format!(
                     "a `with` holds several values only to lock `shared` handles, but this is {}",
                     a(ty)
@@ -243,17 +251,17 @@ impl FnCx<'_> {
         let locked: Vec<&WithName> = names
             .iter()
             .zip(&types)
-            .filter(|(_, ty)| self.checker.program.is_shared(ty))
+            .filter(|(_, ty)| self.checker.program.takes_lock(ty))
             .map(|(held, _)| held)
             .collect();
         let locking: Vec<Type> =
-            types.iter().filter(|ty| self.checker.program.is_shared(ty)).cloned().collect();
+            types.iter().filter(|ty| self.checker.program.takes_lock(ty)).cloned().collect();
         let inner = locking.iter().all(|ty| self.takes_inner(ty));
         if let (Some(held), Some(first), false) = (
             self.lock.clone(),
             items
                 .iter()
-                .find(|item| self.recorded(item.span).is_some_and(|ty| self.checker.program.is_shared(&ty))),
+                .find(|item| self.recorded(item.span).is_some_and(|ty| self.checker.program.takes_lock(&ty))),
             inner,
         ) {
             self.error(
@@ -266,7 +274,7 @@ impl FnCx<'_> {
         let outer = if locked.is_empty() {
             self.lock.clone()
         } else {
-            let newly = types.iter().filter(|ty| self.checker.program.is_shared(ty));
+            let newly = types.iter().filter(|ty| self.checker.program.takes_lock(ty));
             self.locked_types.extend(newly.filter_map(|ty| ty.type_name().map(str::to_owned)));
             let names: Vec<String> = locked.iter().map(|held| format!("`{}`", held.name)).collect();
             let (names, verb) = match names.as_slice() {
@@ -278,7 +286,7 @@ impl FnCx<'_> {
         };
         self.push(false);
         for (held, ty) in names.iter().zip(types) {
-            let origin = if self.checker.program.is_shared(&ty) { Origin::Locked } else { Origin::Local };
+            let origin = if self.checker.program.takes_lock(&ty) { Origin::Locked } else { Origin::Local };
             self.declare_as(&held.name, ty, held.is_mut, origin, held.span);
         }
         let flow = self.stmts(body, used);
@@ -314,7 +322,7 @@ impl FnCx<'_> {
     /// lock another task holds while it waits for this one. `what` takes it: "calling `add`".
     pub(crate) fn locks_again(&mut self, object: &Expr, ty: &Type, what: &str) {
         let Some(held) = self.lock.clone() else { return };
-        if !self.checker.program.is_shared(ty) || self.holds_lock(object) || self.takes_inner(ty) {
+        if !self.checker.program.takes_lock(ty) || self.holds_lock(object) || self.takes_inner(ty) {
             return;
         }
         let handle = fennec_syntax::dotted(object).unwrap_or_else(|| "a handle".to_owned());
@@ -341,7 +349,7 @@ impl FnCx<'_> {
         if self.holds_only_inner(ty) {
             return;
         }
-        if !self.checker.program.is_shared(ty) {
+        if !self.checker.program.takes_lock(ty) {
             if let Some(inner) = self.checker.shared_inside(ty, &mut Vec::new()) {
                 let message =
                     format!("{} holds a `shared` `{inner}`, so it can't be passed to a call {held}", a(ty));
@@ -359,7 +367,7 @@ impl FnCx<'_> {
     /// the method could lock it. `object` itself being a handle is `locks_again`'s.
     pub(crate) fn method_on_holder(&mut self, object: &Expr, ty: &Type, method: &str) {
         let Some(held) = self.lock.clone() else { return };
-        if self.checker.program.is_shared(ty) || self.holds_only_inner(ty) {
+        if self.checker.program.takes_lock(ty) || self.holds_only_inner(ty) {
             return;
         }
         if let Some(inner) = self.checker.shared_inside(ty, &mut Vec::new()) {

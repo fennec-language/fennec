@@ -330,6 +330,49 @@ fn capability(kind: i64) -> Capability {
     }
 }
 
+/// The runtime's exports only the one with the interpreter has: native code calling any of these
+/// can't link against the lean runtime. The runtime's own tests check it's exactly those.
+pub const INTERPRETER_EXPORTS: &[&str] = &[
+    "fennec_enter",
+    "fennec_leave",
+    "fennec_push_scope",
+    "fennec_pop_scope",
+    "fennec_declare",
+    "fennec_assign",
+    "fennec_get",
+    "fennec_take",
+    "fennec_put_back",
+    "fennec_declare_capability",
+    "fennec_expr",
+    "fennec_stmt",
+    "fennec_matches",
+    "fennec_bind",
+    "fennec_print_value",
+    "fennec_print_spec",
+    "fennec_items",
+    "fennec_next",
+    "fennec_binary",
+    "fennec_field",
+    "fennec_index",
+    "fennec_path_get",
+    "fennec_put",
+    "fennec_put_item",
+    "fennec_entries",
+    "fennec_make_instance",
+    "fennec_value_text",
+    "fennec_spec_text",
+    "fennec_make_variant",
+    "fennec_case_of",
+    "fennec_json_dumps",
+    "fennec_json_loads",
+    "fennec_capability_call",
+    "fennec_std_call",
+    "fennec_toml_dumps",
+    "fennec_toml_loads",
+    "fennec_aot_test_done",
+    "fennec_aot_test_world",
+];
+
 /// Sets up the runtime to run `module` with `tables` and `inputs`, replacing any earlier
 /// run's.
 pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Result<(), Diagnostic> {

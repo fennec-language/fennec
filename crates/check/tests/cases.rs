@@ -66,14 +66,14 @@ fn every_alternative_binds_the_same_names() {
 #[test]
 fn a_guard_is_a_bool_that_changes_nothing() {
     let program = "
-        def grow(mut sizes: list[int]):
+        def grow(ref sizes: list[int]):
             sizes.append(1)
 
-        def check(n: int, mut sizes: list[int]) -> int:
+        def check(n: int, ref sizes: list[int]) -> int:
             match n:
                 case 0 if n:
                     0
-                case 1 if grow(mut sizes) is None:
+                case 1 if grow(ref sizes) is None:
                     1
                 case _:
                     2

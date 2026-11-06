@@ -337,7 +337,7 @@ impl Parser {
     pub(crate) fn call_args(&mut self) -> Result<Vec<Arg>, Diagnostic> {
         let mut args = Vec::new();
         while !self.at_p(Punct::RParen) {
-            let is_mut = self.eat_ref();
+            let is_mut = self.eat_ref("an argument");
             let name = match (self.peek().clone(), self.peek_at(1)) {
                 (Tok::Name(name), Tok::P(Punct::Assign)) if !is_mut => {
                     self.pos += 2;
@@ -520,6 +520,9 @@ fn fstring_parts(parts: Vec<FPart>) -> Result<Vec<FStrPart>, Diagnostic> {
                 parser.eat(&Tok::Newline);
                 if !parser.at(&Tok::Eof) {
                     return Err(parser.unexpected("`}`"));
+                }
+                if let Some(old_mut) = parser.old_mut_error() {
+                    return Err(old_mut);
                 }
                 Ok(FStrPart::Expr { expr, spec })
             }

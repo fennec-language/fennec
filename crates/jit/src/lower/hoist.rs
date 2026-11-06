@@ -293,7 +293,7 @@ mod tests {
 
     /// What `indexed_only` says about the `while` loop in a function's body, for `xs`.
     fn loop_uses(body: &str) -> Option<bool> {
-        let source = format!("def f(mut xs: list[int]) -> int:\n    mut at = 0\n{body}    at\n");
+        let source = format!("def f(ref xs: list[int]) -> int:\n    mut at = 0\n{body}    at\n");
         let module = fennec_syntax::parse(&source).unwrap();
         let Some(Item::Function(def)) = module.items.first() else { panic!("no function") };
         let Some(StmtKind::While { cond, body }) = def.body.get(1).map(|stmt| &stmt.kind) else {

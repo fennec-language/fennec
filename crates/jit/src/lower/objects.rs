@@ -406,7 +406,7 @@ impl Lowerer<'_, '_> {
         body: &[Stmt],
     ) -> Result<(), Diagnostic> {
         let (value, ty) = self.expr(iter)?;
-        self.note(iter.span, "the runtime lists the items a `for mut` loop changes");
+        self.note(iter.span, "the runtime lists the items a `for ref` loop changes");
         let source = self.handle_of(value, ty, iter.span)?;
         let [start, end] = self.span_args(iter.span);
         let entries = self.help(Helper::Entries, &[source, start, end])?;

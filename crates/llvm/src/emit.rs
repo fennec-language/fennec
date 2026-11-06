@@ -2352,7 +2352,7 @@ def main(stdout: Stdout):
     #[test]
     fn a_program_using_parallel_works_out_its_constants_before_any_worker_starts() -> Result<(), String> {
         let source = "WORDS = [\"a\", \"b\"]\nFIRST = WORDS[5]\n\ndef main(stdout: Stdout):\n    mut counts = [1, 2]\n    \
-                      for mut count in parallel(counts):\n        count += WORDS.len() + FIRST.len()\n    \
+                      for ref count in parallel(counts):\n        count += WORDS.len() + FIRST.len()\n    \
                       stdout.print(counts)\n";
         let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
@@ -2385,9 +2385,9 @@ def main(stdout: Stdout):
     fn appending_to_a_field_of_an_item_takes_it_out_and_lets_go_of_nothing() -> Result<(), String> {
         let types =
             "struct Unit:\n    tags: list[int]\n    hp: int\n\nstruct World:\n    units: list[Unit]\n\n";
-        let main = "def main(stdout: Stdout):\n    mut units = [Unit([1], 0)]\n    grow(mut units, 0, 1)\n    mut world = World(units)\n    grow_field(mut world, 0, 1)\n    stdout.print(units[0].hp, read(world, 0))\n";
+        let main = "def main(stdout: Stdout):\n    mut units = [Unit([1], 0)]\n    grow(ref units, 0, 1)\n    mut world = World(units)\n    grow_field(ref world, 0, 1)\n    stdout.print(units[0].hp, read(world, 0))\n";
         let source = format!(
-            "{types}def grow(mut units: list[Unit], at: int, v: int):\n    units[at].tags.append(v)\n\ndef grow_field(mut world: World, at: int, v: int):\n    world.units[at].tags.append(v)\n\ndef read(world: World, at: int) -> int:\n    world.units[at].hp\n\n{main}"
+            "{types}def grow(ref units: list[Unit], at: int, v: int):\n    units[at].tags.append(v)\n\ndef grow_field(ref world: World, at: int, v: int):\n    world.units[at].tags.append(v)\n\ndef read(world: World, at: int) -> int:\n    world.units[at].hp\n\n{main}"
         );
         for function in ["grow", "grow_field"] {
             let text = text_of(&source, function)?;
@@ -2409,7 +2409,7 @@ def main(stdout: Stdout):
 struct Note:
     text = \"\"
 
-def in_field(mut note: Note, more: str):
+def in_field(ref note: Note, more: str):
     note.text += more
 
 def in_local(more: str) -> str:
@@ -2422,7 +2422,7 @@ def anew(note: Note, more: str) -> str:
 
 def main(stdout: Stdout):
     mut note = Note()
-    in_field(mut note, \"a\")
+    in_field(ref note, \"a\")
     stdout.print(in_local(\"b\"), anew(note, \"c\"))
 ";
         for function in ["in_field", "in_local"] {

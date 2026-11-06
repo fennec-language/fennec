@@ -8,10 +8,10 @@ const UNIT: &str = "struct Unit:
     health = 10
     tags = list[str]()
 
-    def heal(mut self):
+    def heal(ref self):
         self.health += 1
 
-    def healed(mut self) -> int:
+    def healed(ref self) -> int:
         self.health += 1
         self.health
 
@@ -27,7 +27,7 @@ fn indented(body: &str) -> String {
 
 fn after_units(body: &str) -> Vec<String> {
     let indented = indented(body);
-    problems(&format!("{UNIT}def run(mut units: list[Unit], stdout: Stdout) -> int:\n{indented}    0\n"))
+    problems(&format!("{UNIT}def run(ref units: list[Unit], stdout: Stdout) -> int:\n{indented}    0\n"))
 }
 
 #[test]
@@ -115,10 +115,10 @@ fn anything_later_reading_it_keeps_the_change() {
         "mut unit = find(units, 0)\nstdout.print(unit.healed())\n",
         "mut unit = find(units, 0)\nunit.healed()\n",
         // Passing it on, even as `mut`, is up to what it's passed to.
-        "mut unit = find(units, 0)\ngrow(mut unit)\n",
+        "mut unit = find(units, 0)\ngrow(ref unit)\n",
     ] {
         let text = format!(
-            "{UNIT}def grow(mut unit: Unit):\n    unit.health += 1\n\ndef run(mut units: list[Unit], stdout: Stdout) -> int:\n{}    0\n",
+            "{UNIT}def grow(ref unit: Unit):\n    unit.health += 1\n\ndef run(ref units: list[Unit], stdout: Stdout) -> int:\n{}    0\n",
             indented(body)
         );
         assert_eq!(problems(&text), NONE, "{body}");
@@ -162,9 +162,9 @@ fn a_loop_keeps_a_change_a_later_time_round_reads() {
 #[test]
 fn what_a_change_reaches_outside_isnt_lost() {
     // A `mut` parameter is the caller's to read.
-    assert_eq!(problems(&format!("{UNIT}def run(mut unit: Unit):\n    unit.health = 1\n")), NONE);
+    assert_eq!(problems(&format!("{UNIT}def run(ref unit: Unit):\n    unit.health = 1\n")), NONE);
     // A `for mut` writes its item back.
-    assert_eq!(after_units("for mut unit in units:\n    unit.health = 1\n"), NONE);
+    assert_eq!(after_units("for ref unit in units:\n    unit.health = 1\n"), NONE);
     // A nested function can read it whenever it's called.
     assert_eq!(
         after_units(
@@ -177,21 +177,21 @@ fn what_a_change_reaches_outside_isnt_lost() {
 #[test]
 fn a_local_that_does_more_than_hold_isnt_lost() {
     // Through a capability, a method can do what no read shows.
-    let logger = "struct Logger:\n    out: Stdout\n    lines = 0\n\n    def log(mut self):\n        self.lines += 1\n        self.out.print(self.lines)\n\n";
+    let logger = "struct Logger:\n    out: Stdout\n    lines = 0\n\n    def log(ref self):\n        self.lines += 1\n        self.out.print(self.lines)\n\n";
     assert_eq!(
         problems(&format!(
             "{logger}def main(stdout: Stdout):\n    mut logs = Logger(out=stdout)\n    logs.log()\n"
         )),
         NONE
     );
-    let given = "struct Tally:\n    lines = 0\n\n    def show(mut self, out: Stdout):\n        self.lines += 1\n        out.print(self.lines)\n\n";
+    let given = "struct Tally:\n    lines = 0\n\n    def show(ref self, out: Stdout):\n        self.lines += 1\n        out.print(self.lines)\n\n";
     assert_eq!(
         problems(&format!(
             "{given}def main(stdout: Stdout):\n    mut tally = Tally()\n    tally.show(stdout)\n"
         )),
         NONE
     );
-    let handle = "shared Account:\n    total = 0\n\n    def add(mut self, amount: int):\n        self.total += amount\n\n\
+    let handle = "shared Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n\
                   def main(stdout: Stdout):\n    mut held = Account()\n    held.add(1)\n";
     assert_eq!(problems(handle), NONE);
 }

@@ -8,13 +8,13 @@ struct Enemy:
     health = 100
     tags = ['boss']
 
-    def take_damage(mut self, amount: int):
+    def take_damage(ref self, amount: int):
         self.health -= amount
 
     def is_alive(self):
         self.health > 0
 
-    def []=(mut self, at: int, value: int):
+    def []=(ref self, at: int, value: int):
         self.health = value
 ";
 
@@ -41,7 +41,7 @@ struct Slots:
     def [](self, at: int) -> Part:
         self.items[at]
 
-    def []=(mut self, at: int, value: Part):
+    def []=(ref self, at: int, value: Part):
         self.items[at] = value
 ";
     let only_read = "`Parts` has a `def []` but no `def []=`, so its items can't be changed";
@@ -75,13 +75,13 @@ struct Grid:
     def [](self, at: int) -> int:
         self.cells[at]
 
-    def []=(mut self, at: int, value: int):
+    def []=(ref self, at: int, value: int):
         self.cells[at] = value
 
 struct Writes:
     cells: list[int]
 
-    def []=(mut self, at: int, value: int):
+    def []=(ref self, at: int, value: int):
         self.cells[at] = value
 ";
     assert_eq!(
@@ -259,17 +259,17 @@ fn builtin_methods_that_change_a_value_need_a_mut_place() {
 #[test]
 fn mut_arguments_match_mut_parameters() {
     let program = "
-        def heal(mut health: int, amount: int):
+        def heal(ref health: int, amount: int):
             health += amount
 
         def main(stdout: Stdout):
             mut health = 1
             heal(health, 1)
-            heal(mut health, mut health)
-            heal(mut health, 1)
+            heal(ref health, ref health)
+            heal(ref health, 1)
             fixed = 1
-            heal(mut fixed, 1)
-            heal(mut 3, 1)
+            heal(ref fixed, 1)
+            heal(ref 3, 1)
     ";
     assert_eq!(
         problems(program),
@@ -281,7 +281,7 @@ fn mut_arguments_match_mut_parameters() {
         ]
     );
     assert_eq!(
-        helps("def f(mut n: int):\n    n += 1\n\ndef g():\n    mut n = 1\n    f(n)\n"),
+        helps("def f(ref n: int):\n    n += 1\n\ndef g():\n    mut n = 1\n    f(n)\n"),
         ["write `ref` before the argument, so readers can see it changes"]
     );
 }
@@ -289,12 +289,12 @@ fn mut_arguments_match_mut_parameters() {
 #[test]
 fn for_mut_needs_a_mut_place() {
     let program = "
-        def bump(mut scores: list[int], fixed: list[int]):
-            for mut score in scores:
+        def bump(ref scores: list[int], fixed: list[int]):
+            for ref score in scores:
                 score += 1
-            for mut score in fixed:
+            for ref score in fixed:
                 score += 1
-            for mut n in [1, 2]:
+            for ref n in [1, 2]:
                 n += 1
             for score in scores:
                 score += 1
@@ -312,7 +312,7 @@ fn for_mut_needs_a_mut_place() {
 #[test]
 fn with_names_can_be_mut() {
     let program = "
-        with [1] as mut items:
+        with [1] as ref items:
             items.append(2)
         with [1] as items:
             items.append(2)
@@ -325,15 +325,15 @@ fn values_and_builtins_do_not_take_mut() {
     let program = "
         mut n = 1
         mut s = 'a'
-        stdout.print(sorted(mut s), Enemy(mut n), 'a'.startswith(mut s), replace(Enemy(), mut n))
+        stdout.print(sorted(ref s), Enemy(ref n), 'a'.startswith(ref s), replace(Enemy(), ref n))
     ";
     assert_eq!(
         with_enemy(program),
         [
-            "`sorted` doesn't change its arguments, so don't pass `ref` @ sorted(mut s)",
+            "`sorted` doesn't change its arguments, so don't pass `ref` @ sorted(ref s)",
             "building a value doesn't change its arguments, so don't pass `ref` @ n",
             "`startswith` doesn't change `prefix`, so it shouldn't be passed with `ref` @ s",
-            "`replace` doesn't change its arguments, so don't pass `ref` @ replace(Enemy(), mut n)",
+            "`replace` doesn't change its arguments, so don't pass `ref` @ replace(Enemy(), ref n)",
             "name the field to change, like `health=50` @ n",
         ]
     );
@@ -354,7 +354,7 @@ fn only_places_can_be_assigned() {
 #[test]
 fn a_parallel_loop_changes_its_own_items() {
     let text = "struct Unit:\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit(hp=1)]\n    \
-        for mut unit in parallel(units):\n        unit.hp += 1\n        bonus = unit.hp * 2\n        stdout.print(bonus)\n";
+        for ref unit in parallel(units):\n        unit.hp += 1\n        bonus = unit.hp * 2\n        stdout.print(bonus)\n";
     let empty: [&str; 0] = [];
     assert_eq!(problems(text), empty);
 }
@@ -362,7 +362,7 @@ fn a_parallel_loop_changes_its_own_items() {
 #[test]
 fn a_parallel_loop_cant_change_names_outside_it() {
     let text = "def main(stdout: Stdout):\n    mut hps = [1, 2]\n    mut total = 0\n    mut log: list[int] = []\n    \
-        for mut hp in parallel(hps):\n        total += hp\n        log.append(hp)\n    for hp in parallel(hps):\n        total = hp\n";
+        for ref hp in parallel(hps):\n        total += hp\n        log.append(hp)\n    for hp in parallel(hps):\n        total = hp\n";
     assert_eq!(
         problems(text),
         [
@@ -375,7 +375,7 @@ fn a_parallel_loop_cant_change_names_outside_it() {
 
 #[test]
 fn a_plain_name_read_from_a_place_says_where_to_write() {
-    let types = "struct Stats:\n    mana = 1\n\nstruct Unit:\n    health = 1\n    stats: Stats\n\n    def heal(mut self):\n        self.health += 1\n";
+    let types = "struct Stats:\n    mana = 1\n\nstruct Unit:\n    health = 1\n    stats: Stats\n\n    def heal(ref self):\n        self.health += 1\n";
     let start = "mut units = [Unit(stats=Stats())]\nat = 0\n";
     let help = |body: &str| {
         let lines = format!("{start}{body}").trim_end().replace('\n', "\n    ");
@@ -411,22 +411,22 @@ fn a_name_that_hides_a_mut_one_says_so() {
 #[test]
 fn a_generator_kept_for_later_cant_change_whats_around_it() {
     let empty: [&str; 0] = [];
-    let bump = "def bump(mut k: int) -> int:\n    k += 1\n    k\n";
+    let bump = "def bump(ref k: int) -> int:\n    k += 1\n    k\n";
     let told = |name: &str, at: &str| {
         vec![format!("a generator kept for later can't change `{name}`, which is defined outside it @ {at}")]
     };
-    let kept = "mut k = 1\ng = (bump(mut k) for x in range(3))\nstdout.print(list(g), k)\n";
+    let kept = "mut k = 1\ng = (bump(ref k) for x in range(3))\nstdout.print(list(g), k)\n";
     assert_eq!(crate::in_main_after(bump, kept), told("k", "k"));
     let method = "mut xs = [1, 2]\ng = (xs.pop() for x in range(2))\nstdout.print(list(g), xs)\n";
     assert_eq!(crate::in_main_after(bump, method), told("xs", "xs"));
     let looped =
-        "mut k = 1\nfor one in (bump(mut k) for x in range(3)):\n    stdout.print(one)\nstdout.print(k)\n";
+        "mut k = 1\nfor one in (bump(ref k) for x in range(3)):\n    stdout.print(one)\nstdout.print(k)\n";
     assert_eq!(crate::in_main_after(bump, looped), told("k", "k"));
     for used in ["sum", "min", "max", "sorted", "list", "set"] {
-        let body = format!("mut k = 1\nstdout.print({used}(bump(mut k) for x in range(3)), k)\n");
+        let body = format!("mut k = 1\nstdout.print({used}(bump(ref k) for x in range(3)), k)\n");
         assert_eq!(crate::in_main_after(bump, &body), empty, "{body}");
     }
-    let asked = "mut k = 1\nstdout.print(any(bump(mut k) > 9 for x in range(3)), k)\n";
+    let asked = "mut k = 1\nstdout.print(any(bump(ref k) > 9 for x in range(3)), k)\n";
     assert_eq!(crate::in_main_after(bump, asked), empty);
     let read = "k = 1\ng = (k + x for x in range(3))\nstdout.print(list(g))\n";
     assert_eq!(crate::in_main_after(bump, read), empty);
@@ -434,9 +434,9 @@ fn a_generator_kept_for_later_cant_change_whats_around_it() {
 
 #[test]
 fn a_parallel_loop_can_change_a_shared_value_outside_it() {
-    let source = "shared Counter:\n    total = 0\n\n    def add(mut self, amount: int):\n        self.total += amount\n\n\
+    let source = "shared Counter:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n\
                   def main(stdout: Stdout):\n    counter = Counter()\n    mut hps = [1, 2]\n    \
-                  for mut hp in parallel(hps):\n        counter.add(hp)\n        with counter as mut held:\n            \
+                  for ref hp in parallel(hps):\n        counter.add(hp)\n        with counter as ref held:\n            \
                   held.total += hp\n        hp += 1\n    stdout.print(counter.total, hps)\n";
     assert_eq!(problems(source), Vec::<String>::new());
 }

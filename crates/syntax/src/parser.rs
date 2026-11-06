@@ -651,9 +651,9 @@ impl Parser {
     fn param_default(&mut self, name: &str, is_mut: bool) -> Result<crate::ast::Expr, Diagnostic> {
         let value = self.expr()?;
         if is_mut {
-            let message = format!("`mut` parameter `{name}` can't have a default");
+            let message = format!("`ref` parameter `{name}` can't have a default");
             return Err(Diagnostic::new(message, value.span).with_help(
-                "a `mut` parameter changes what the caller passes, so a call has to pass something",
+                "a `ref` parameter changes what the caller passes, so a call has to pass something",
             ));
         }
         if !value.is_plain_value() {

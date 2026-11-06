@@ -1304,7 +1304,7 @@ fn a_place_is_found_again_after_a_call_changes_its_index() -> std::io::Result<()
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "2 11 14 3\n");
     assert!(!stopped.status.success());
     let said = String::from_utf8_lossy(&stopped.stderr);
-    assert!(said.contains("`mut at` changes what picks `units[at]`"), "{said}");
+    assert!(said.contains("`ref at` changes what picks `units[at]`"), "{said}");
     Ok(())
 }
 
@@ -1346,7 +1346,7 @@ fn mut_arguments_to_different_fields_both_change_and_overlapping_ones_dont_build
     assert_eq!(ours.0, "1 10\n");
     assert!(!refused.status.success());
     let said = String::from_utf8_lossy(&refused.stderr);
-    assert!(said.contains("`mut unit.position` and `mut unit.position` overlap"), "{said}");
+    assert!(said.contains("`ref unit.position` and `ref unit.position` overlap"), "{said}");
     Ok(())
 }
 

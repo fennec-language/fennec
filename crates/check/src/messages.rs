@@ -143,7 +143,7 @@ pub(crate) fn wrong_args(function: &str, span: Span) -> Diagnostic {
 }
 
 pub(crate) fn needless_mut(function: &str, span: Span) -> Diagnostic {
-    Diagnostic::new(format!("`{function}` doesn't change its arguments, so don't pass `mut`"), span)
+    Diagnostic::new(format!("`{function}` doesn't change its arguments, so don't pass `ref`"), span)
 }
 
 /// A value of the wrong type for a parameter or field.
@@ -166,7 +166,7 @@ pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -
         (Type::Arrow(..), Type::Function(key)) => {
             let name = key.rsplit('.').next().unwrap_or(key);
             diagnostic.with_help(format!(
-                "`{name}` has to take and give back what {} says, with no `mut` parameter or type parameters of its own",
+                "`{name}` has to take and give back what {} says, with no `ref` parameter or type parameters of its own",
                 a(expected)
             ))
         }

@@ -204,7 +204,7 @@ impl FnCx<'_> {
         self.condition(guard, "if");
         if let Some(span) = mut_arg(guard) {
             self.error(
-                Diagnostic::new("a guard can't change anything, so it can't pass `mut`", span)
+                Diagnostic::new("a guard can't change anything, so it can't pass `ref`", span)
                     .with_help("change it in the case's body instead"),
             );
         }

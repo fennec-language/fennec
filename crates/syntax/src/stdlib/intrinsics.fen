@@ -87,6 +87,10 @@ def float_to_int(a: float) -> int
 @intrinsic
 def float_bits(a: float) -> int
 
+## The float with these bits, as `float_bits` gives them.
+@intrinsic
+def float_of_bits(bits: int) -> float
+
 ## The byte at a place in a text's bytes, or -1 past its end.
 @intrinsic
 def text_byte(text: str, at: int) -> int
@@ -106,6 +110,12 @@ def text_of_code(code: int) -> str
 ## A type's name as it's written. Only native code has types as it runs.
 @intrinsic
 def type_name[T]() -> str
+
+## A number for a type's shape: its fields in order, with their names and types, and its cases.
+## It changes when any of them does, so a format that saves no names can refuse to read data
+## written for another shape. Only native code has types as it runs.
+@intrinsic
+def shape_hash[T]() -> int
 
 ## A number that's the same for equal `Id`s and differs for others, to look one up by.
 @intrinsic

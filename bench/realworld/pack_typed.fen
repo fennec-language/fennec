@@ -1,0 +1,95 @@
+## A binary format as a real program uses one: loading bytes into typed structs through
+## `std.pack`, using them, and writing them back, against serde and bincode.
+
+from std import pack
+
+enum Kind:
+    Player
+    Monster
+    Trader
+
+enum Order:
+    Hold
+    Move(x: int, y: int)
+    Say(text: str)
+
+struct Spot:
+    x: float
+    y: float
+
+struct Item:
+    name: str
+    count: int
+    tags: list[str]
+
+struct Unit:
+    id: int
+    name: str
+    active: bool
+    health: float
+    kind: Kind
+    pet: str?
+    at: Spot
+    tags: list[str]
+    bag: list[Item]
+    stats: dict[str, int]
+    orders: list[Order]
+
+def order(i: int) -> Order:
+    match i % 3:
+        case 0:
+            .Hold
+        case 1:
+            .Move(x=i, y=-i)
+        case _:
+            .Say(text=f"unit {i} says \"hello\"\n")
+
+def unit(i: int) -> Unit:
+    kinds = [Kind.Player, Kind.Monster, Kind.Trader]
+    Unit(
+        id=i,
+        name=f"fox-{i}",
+        active=i % 2 == 0,
+        health=float(i % 100) + 0.5,
+        kind=kinds[i % 3],
+        pet=f"pet-{i}" if i % 4 == 0 else None,
+        at=Spot(x=float(i) * 0.25, y=float(i) * -0.5),
+        tags=["fast", "été", f"group-{i % 7}"],
+        bag=[Item(name=f"item-{at}", count=i + at, tags=["a", "b"]) for at in range(i % 5)],
+        stats={"armor": i % 11, "attack": i % 13, "speed": i % 17},
+        orders=[order(i + at) for at in range(3)],
+    )
+
+def score(units: list[Unit]) -> int:
+    mut total = 0
+    for unit in units:
+        total += unit.id + unit.name.len() + unit.tags.len() + unit.stats["attack"]
+        if unit.active:
+            total += 1
+        if unit.pet is not None:
+            total += 2
+        for item in unit.bag:
+            total += item.count
+        for order in unit.orders:
+            match order:
+                case .Hold:
+                    total += 1
+                case .Move(x, y):
+                    total += x - y
+                case .Say(text):
+                    total += text.len()
+    total
+
+def main(stdout: Stdout):
+    data = pack.dumps([unit(i) for i in range(300)])
+    mut scored = 0
+    mut same = 0
+    for _ in range(40):
+        match pack.loads[list[Unit]](data):
+            case Ok(units):
+                scored += score(units)
+                if pack.dumps(units) == data:
+                    same += 1
+            case Err(error):
+                stdout.print(error.message)
+    stdout.print(scored, same)

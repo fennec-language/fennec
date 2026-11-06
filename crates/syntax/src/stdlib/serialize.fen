@@ -34,11 +34,13 @@ interface Serializer:
     ## Closes the struct or case started last.
     def end(mut self)
 
-    ## An enum's case with no data, by name.
-    def case(mut self, name: str, case: str)
+    ## An enum's case with no data, by name, and by where it is among the type's cases, `at`, for
+    ## a format that saves no names.
+    def case(mut self, name: str, case: str, at: int)
 
-    ## Starts an enum's case with `count` fields of data, which follow as a struct's do.
-    def case_record(mut self, name: str, case: str, count: int)
+    ## Starts an enum's case with `count` fields of data, which follow as a struct's do. `at` is
+    ## where it is among the type's cases.
+    def case_record(mut self, name: str, case: str, at: int, count: int)
 
     ## A `Table` of items of the type named `kind`, with its tag: each item in order, with its `Id`.
     def table[T: Serializable](mut self, kind: str, tag: int, ids: list[Id[T]], items: list[T])
@@ -108,6 +110,11 @@ interface Deserializer:
     ## The tag this read gives the `Table` of `kind` it makes, and every `Id` into it: new for
     ## each read, so they find their items there and in no other `Table`.
     def tag(mut self, kind: str) -> int
+
+    ## Whether any field may be given a missing value, like JSON's `null`, which a field with a
+    ## default takes as missing. A format that says no saves a field's value with nothing to say
+    ## it's there, so only a field that's optional asks `none`.
+    def missing_as_none(self) -> bool
 
     ## Which of `cases` comes next, as a place in it: each its name and whether it has data. One
     ## with data then reads its fields as a struct's, and `end_case` finishes it.

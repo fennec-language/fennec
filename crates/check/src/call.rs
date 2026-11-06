@@ -107,6 +107,17 @@ impl FnCx<'_> {
                 if let Some(builtin) = self.loads(object) {
                     return self.typed_loads(&builtin, index, args, span);
                 }
+                // `pack.loads[T](data)`: a module's generic function, with its types given.
+                if let ExprKind::Attr { object: owner, name, .. } = &object.kind
+                    && let Some(Member::Name(member)) = self.module_member(owner, name, object.span)
+                {
+                    let named = Expr { kind: ExprKind::Name(member), span: object.span };
+                    let given = Expr {
+                        kind: ExprKind::Index { object: Box::new(named), index: index.clone() },
+                        span: callee.span,
+                    };
+                    return self.call(&given, args, span);
+                }
                 if let Some(returns) = self.typed_method_call(object, index, args, span) {
                     return returns;
                 }

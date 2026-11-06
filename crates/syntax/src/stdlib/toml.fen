@@ -960,6 +960,9 @@ struct TomlReader:
         self._tags[kind] = made
         made
 
+    def missing_as_none(self) -> bool:
+        True
+
     def at_item(self, at: int, message: str) -> ParseError:
         ParseError(message=f"`{self._dotted()}[{at}]` {message}", line=0, column=0)
 
@@ -1098,10 +1101,10 @@ struct TomlWriter:
             self._done = .Table(table=outer)
             self._after_case = True
 
-    def case(mut self, name: str, case: str):
+    def case(mut self, name: str, case: str, at: int):
         self._done = .Text(text=case)
 
-    def case_record(mut self, name: str, case: str, count: int):
+    def case_record(mut self, name: str, case: str, at: int, count: int):
         self._tables.append(_Table())
         self._wraps.append(case)
 

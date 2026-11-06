@@ -1,0 +1,329 @@
+## `std.pack`: a compact binary format for anything that saves, through the same `serialize` and
+## `deserialize` as JSON and TOML. Fields go in the order they're written, with no names, so
+## the bytes say nothing of the type they were written from but its shape: they start with
+## `FPK1` and a number for the type's shape, and loading into a type whose shape differs fails
+## at once rather than reading the bytes as something else. Changing a field, its type or its
+## place, or a case of an enum, changes the shape.
+##
+## ```fennec
+## from std import pack
+##
+## data = pack.dumps(world)
+## back = pack.loads[World](data)?
+## ```
+##
+## Loading checks every length against what's left and against `Limits` before it takes
+## anything, so bytes that aren't what `dumps` wrote fail with a `ParseError` rather than nesting
+## too deep or asking for more than they hold. `Table`s and `Id`s don't save yet.
+
+from std.intrinsics import float_bits, float_of_bits, new_tag, shape_hash, stop, text_byte, text_size, type_name
+
+## How far a load may go. Bytes that ask for more fail to load.
+struct Limits:
+    ## How deeply lists, dicts, structs and cases may nest.
+    depth = 64
+    ## The most bytes one text or `bytes` may hold, and the most items a load may read in all.
+    length = 16_000_000
+
+## `value` as bytes, which `loads` reads back into the same type.
+def dumps[T: Serializable](value: T) -> bytes:
+    mut out = PackWriter()
+    out._header(shape_hash[T]())
+    value.serialize(mut out)
+    bytes(out._out)
+
+## A `T` from bytes `dumps` wrote for a `T`. It fails if they were written for another shape of
+## type, if they end too soon or go on past it, or if they go past `limits`.
+def loads[T: Deserializable](data: bytes, limits: Limits? = None) -> T fails ParseError:
+    held = limits else Limits()
+    mut src = PackReader(_data=data, _most_deep=held.depth, _longest=held.length)
+    src._header(shape_hash[T](), type_name[T]())?
+    value = T.deserialize(mut src)?
+    if src._tables: fail src._fail("`std.pack` doesn't load a `Table` or an `Id` yet")
+    if src._at != data.len(): fail src._fail("there's more after the value")
+    value
+
+## The bits a varint takes, 7 at a time, with the top 7 cleared after an arithmetic shift so it
+## goes down as an unsigned number would.
+_LOW_57 = 144115188075855871
+
+## The top bit of an int cleared, for a shift by 1 that goes down as an unsigned number would.
+_LOW_63 = 9223372036854775807
+
+## Writes what a value's `serialize` gives it as bytes.
+struct PackWriter:
+    _out = list[int]()
+
+    def _header(mut self, shape: int):
+        for b in [70, 80, 75, 49]:
+            self._out.append(b)
+        self._word(shape)
+
+    ## A whole word, low byte first.
+    def _word(mut self, bits: int):
+        for at in range(8):
+            self._out.append((bits >> (8 * at)) & 255)
+
+    ## A number as unsigned, 7 bits a byte, low first, with the top bit of each saying more come.
+    def _varint(mut self, n: int):
+        mut rest = n
+        while rest < 0 or rest >= 128:
+            self._out.append((rest & 127) | 128)
+            rest = (rest >> 7) & _LOW_57
+        self._out.append(rest)
+
+    def int(mut self, value: int):
+        # Zigzag: small numbers either side of 0 take one byte.
+        self._varint((value << 1) ^ (value >> 63))
+
+    def float(mut self, value: float):
+        self._word(float_bits(value))
+
+    def bool(mut self, value: bool):
+        # Worked out first: with the `if` inside the call, native code holds the list twice while
+        # it appends, and copies it all.
+        b = 1 if value else 0
+        self._out.append(b)
+
+    def text(mut self, value: str):
+        size = text_size(value)
+        self._varint(size)
+        for at in range(size):
+            self._out.append(text_byte(value, at))
+
+    def bytes(mut self, value: bytes):
+        self._varint(value.len())
+        for at in range(value.len()):
+            self._out.append(value[at])
+
+    def none(mut self):
+        self._out.append(0)
+
+    def some[T: Serializable](mut self, x: T):
+        self._out.append(1)
+        x.serialize(mut self)
+
+    def value[T: Serializable](mut self, x: T):
+        x.serialize(mut self)
+
+    def sequence[T: Serializable](mut self, items: list[T]):
+        self._varint(items.len())
+        for item in items:
+            item.serialize(mut self)
+
+    def map[K: Serializable, V: Serializable](mut self, pairs: list[(K, V)]):
+        self._varint(pairs.len())
+        for key, value in pairs:
+            key.serialize(mut self)
+            value.serialize(mut self)
+
+    def record(mut self, name: str, count: int):
+        pass
+
+    def field[T: Serializable](mut self, name: str, x: T):
+        x.serialize(mut self)
+
+    def renamed[T: Serializable](mut self, name: str, x: T):
+        x.serialize(mut self)
+
+    def end(mut self):
+        pass
+
+    def case(mut self, name: str, case: str, at: int):
+        self._varint(at)
+
+    def case_record(mut self, name: str, case: str, at: int, count: int):
+        self._varint(at)
+
+    def table[T: Serializable](mut self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+        stop(f"`std.pack` doesn't save a `Table[{kind}]` yet")
+
+    def id(mut self, kind: str, key: int, tag: int):
+        stop(f"`std.pack` doesn't save an `Id[{kind}]` yet")
+
+## Reads bytes `PackWriter` wrote, for a value's `deserialize`.
+struct PackReader:
+    _data: bytes
+    _at = 0
+    _depth = 0
+    _most_deep = 64
+    _longest = 16_000_000
+    ## How many more items this load may read.
+    _items_left = 16_000_000
+    ## The next field of each struct being read, innermost last, and the one just read.
+    _next = list[int]()
+    _field = 0
+    _tables = False
+
+    def _fail(self, message: str) -> ParseError:
+        self._fail_at(self._at, message)
+
+    ## The error for what starts at byte `at`.
+    def _fail_at(self, at: int, message: str) -> ParseError:
+        ParseError(message=f"{message}, at byte {at}", line=0, column=0)
+
+    def _header(mut self, shape: int, name: str) fails ParseError:
+        self._items_left = self._longest
+        if self._data.len() < 12:
+            fail self._fail("these aren't bytes `std.pack` wrote")
+        for at, b in enumerate([70, 80, 75, 49]):
+            if self._data[at] != b: fail self._fail("these aren't bytes `std.pack` wrote")
+        self._at = 4
+        if self._word()? != shape:
+            self._at = 4
+            fail self._fail(f"this was packed from a different `{name}`")
+
+    def _byte(mut self) -> int fails ParseError:
+        if self._at >= self._data.len(): fail self._fail("the data ends too soon")
+        b = self._data[self._at]
+        self._at += 1
+        b
+
+    def _word(mut self) -> int fails ParseError:
+        if self._at + 8 > self._data.len(): fail self._fail("the data ends too soon")
+        mut bits = 0
+        for at in range(8):
+            bits = bits | (self._data[self._at + at] << (8 * at))
+        self._at += 8
+        bits
+
+    def _varint(mut self) -> int fails ParseError:
+        mut n = 0
+        mut shift = 0
+        while True:
+            b = self._byte()?
+            if shift == 63 and b > 1: fail self._fail("a number is too long")
+            n = n | ((b & 127) << shift)
+            if b < 128: return n
+            shift += 7
+            if shift > 63: fail self._fail("a number is too long")
+        n
+
+    ## A count of what follows, which may be no more than the limit.
+    def _length(mut self) -> int fails ParseError:
+        start = self._at
+        n = self._varint()?
+        if n < 0 or n > self._longest: fail self._fail_at(start, f"a length is over the limit of {self._longest}")
+        n
+
+    ## The next `n` bytes, which have to be there.
+    def _run(mut self) -> bytes fails ParseError:
+        n = self._length()?
+        if n > self._data.len() - self._at: fail self._fail("the data ends too soon")
+        part = self._data[self._at:self._at + n]
+        self._at += n
+        part
+
+    def _deeper(mut self) fails ParseError:
+        self._depth += 1
+        if self._depth > self._most_deep: fail self._fail(f"it nests deeper than the limit of {self._most_deep}")
+
+    ## Counts an item against the limit on items.
+    def _item(mut self) fails ParseError:
+        self._items_left -= 1
+        if self._items_left < 0: fail self._fail(f"it holds more than the limit of {self._longest} items")
+
+    def int(mut self) -> int fails ParseError:
+        z = self._varint()?
+        ((z >> 1) & _LOW_63) ^ (0 - (z & 1))
+
+    def float(mut self) -> float fails ParseError:
+        float_of_bits(self._word()?)
+
+    def bool(mut self) -> bool fails ParseError:
+        b = self._byte()?
+        if b > 1: fail self._fail_at(self._at - 1, "a bool should be 0 or 1")
+        b == 1
+
+    def text(mut self) -> str fails ParseError:
+        start = self._at
+        part = self._run()?
+        match part.decode():
+            case Ok(text):
+                return text
+            case Err(_):
+                fail self._fail_at(start, "a text isn't UTF-8")
+
+    def bytes(mut self) -> bytes fails ParseError:
+        self._run()?
+
+    def none(mut self) -> bool fails ParseError:
+        b = self._byte()?
+        if b > 1: fail self._fail_at(self._at - 1, "an optional should start with 0 or 1")
+        b == 0
+
+    def value[T: Deserializable](mut self) -> T fails ParseError:
+        T.deserialize(mut self)?
+
+    def sequence[T: Deserializable](mut self) -> list[T] fails ParseError:
+        n = self._length()?
+        self._deeper()?
+        mut found = list[T]()
+        for _ in range(n):
+            self._item()?
+            found.append(T.deserialize(mut self)?)
+        self._depth -= 1
+        found
+
+    def map[K: Deserializable, V: Deserializable](mut self) -> list[(K, V)] fails ParseError:
+        n = self._length()?
+        self._deeper()?
+        mut found = list[(K, V)]()
+        for _ in range(n):
+            self._item()?
+            key = K.deserialize(mut self)?
+            value = V.deserialize(mut self)?
+            found.append((key, value))
+        self._depth -= 1
+        found
+
+    def record(mut self, name: str) fails ParseError:
+        self._deeper()?
+        self._next.append(0)
+
+    def next_field(mut self, fields: list[(str, str)]) -> bool fails ParseError:
+        at = self._next[self._next.len() - 1]
+        # Fields that aren't saved come last, with no name in the text.
+        if at < fields.len() and fields[at][0] != "":
+            self._next[self._next.len() - 1] = at + 1
+            self._field = at
+            return True
+        _ = self._next.pop()
+        self._depth -= 1
+        False
+
+    def field_at(self) -> int:
+        self._field
+
+    def missing(self, name: str) -> ParseError:
+        self._fail(f"`{name}` is missing")
+
+    def rule(self, message: str) -> ParseError:
+        self._fail(message)
+
+    def at_item(self, at: int, message: str) -> ParseError:
+        self._fail(f"item {at} {message}")
+
+    def here(self, message: str) -> ParseError:
+        self._fail(message)
+
+    def saw_id(mut self, kind: str, position: int):
+        self._tables = True
+
+    def saw_table(mut self, kind: str, count: int):
+        self._tables = True
+
+    def tag(mut self, kind: str) -> int:
+        new_tag()
+
+    def missing_as_none(self) -> bool:
+        False
+
+    def case(mut self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+        start = self._at
+        at = self._varint()?
+        if at < 0 or at >= cases.len(): fail self._fail_at(start, f"`{name}` has no case {at}")
+        at
+
+    def end_case(mut self) fails ParseError:
+        pass

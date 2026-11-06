@@ -214,7 +214,7 @@ fn pair_for(checker: &mut Checker, def: &TypeDef) -> Option<Vec<Item>> {
         let mut loading = format!("        match src__.case(\"{name}\", {})?:\n", constant(name, ""));
         for (at, case) in def.cases.iter().enumerate() {
             let fields = reads(checker, name, Some(&case.name), &case.fields)?;
-            save_case(&mut saving, name, &case.name, &fields.0);
+            save_case(&mut saving, name, (at, &case.name), &fields.0);
             load_case(&mut text, &mut loading, name, (at, &case.name), (&case.fields, &fields));
         }
         let _ = writeln!(
@@ -276,15 +276,20 @@ fn save_struct(name: &str, fields: &[Read<'_>]) -> String {
     out
 }
 
-fn save_case(out: &mut String, name: &str, case: &str, fields: &[Read<'_>]) {
+/// Writes a case by its name, and by `at`, where it is among the type's cases, for a format that
+/// saves no names.
+fn save_case(out: &mut String, name: &str, (at, case): (usize, &str), fields: &[Read<'_>]) {
     if fields.is_empty() {
-        let _ =
-            writeln!(out, "            case .{case}:\n                out__.case(\"{name}\", \"{case}\")");
+        let _ = writeln!(
+            out,
+            "            case .{case}:\n                out__.case(\"{name}\", \"{case}\", {at})"
+        );
         return;
     }
     let names: Vec<&str> = fields.iter().map(|read| read.field.name.as_str()).collect();
     let _ = writeln!(out, "            case .{case}({}):", names.join(", "));
-    let _ = writeln!(out, "                out__.case_record(\"{name}\", \"{case}\", {})", fields.len());
+    let _ =
+        writeln!(out, "                out__.case_record(\"{name}\", \"{case}\", {at}, {})", fields.len());
     save_fields(out, "                ", fields, str::to_owned);
     let _ = writeln!(out, "                out__.end()");
 }
@@ -302,11 +307,18 @@ fn load_fields(out: &mut String, indent: &str, list: &str, (fields, left_out): &
     }
     let _ = writeln!(out, "{indent}while src__.next_field({list})?:\n{indent}    match src__.field_at():");
     for (at, read) in fields.iter().enumerate() {
-        let wanted = if read.optional { read.ty.clone() } else { format!("{}?", read.ty) };
+        let name = &read.field.name;
+        let _ = writeln!(out, "{indent}        case {at}:");
+        if read.optional {
+            let _ = writeln!(out, "{indent}            read_{name} = src__.value[{}]()?", read.ty);
+            continue;
+        }
+        // A format with a missing value, like JSON's `null`, may give one for any field, which
+        // then takes its default. One with none reads what the field holds.
         let _ = writeln!(
             out,
-            "{indent}        case {at}:\n{indent}            read_{} = src__.value[{wanted}]()?",
-            read.field.name
+            "{indent}            if src__.missing_as_none():\n{indent}                read_{name} = src__.value[{0}?]()?\n{indent}            else:\n{indent}                read_{name} = src__.value[{0}]()?",
+            read.ty
         );
     }
     let _ = writeln!(out, "{indent}        case _:\n{indent}            pass");

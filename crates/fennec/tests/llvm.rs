@@ -4533,6 +4533,214 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// Builds and runs a program through LLVM, giving back what it printed.
+fn printed_by(name: &str, source: &str) -> std::io::Result<String> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let executable = dir.join(name);
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
+}
+
+/// `std.pack` reads back what it wrote, ints at both ends, a name that isn't ASCII, a case with
+/// data and a dict among them, and says why bytes don't load: a type of another shape, bytes
+/// that end too soon or go on past it, ones it didn't write, a length or a depth over the
+/// limit, a case or a bool that doesn't exist, and a `where` rule broken.
+#[test]
+fn pack_reads_back_what_it_wrote_and_says_why_other_bytes_do_not_load() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "pack_messages",
+        r#"from std import pack
+from std.pack import Limits
+
+enum Kind:
+    Soldier
+    Archer(range: int)
+    Medic
+
+struct Item:
+    name: str
+    weight = 1.5
+
+struct Place:
+    x: int
+    y: int
+
+struct Unit:
+    name: str
+    health: int
+    kind: Kind
+    at: Place
+    items: list[Item]
+    target: int? = None
+    tags = dict[str, int]()
+    alive = True
+
+struct Guarded:
+    points: int where points >= 0
+
+struct Link:
+    next: Link? = None
+
+def said[T](found: Result[T, ParseError]) -> str:
+    match found:
+        case Ok(_):
+            return "loaded"
+        case Err(error):
+            return error.message
+
+def changed(data: bytes, at: int, to: int) -> bytes:
+    mut items = list[int]()
+    for b in range(data.len()):
+        items.append(to if b == at else data[b])
+    bytes(items)
+
+def main(stdout: Stdout):
+    units = [
+        Unit(name="ash", health=10, kind=.Soldier, at=Place(x=0, y=-3), items=[Item(name="axe", weight=2.25)]),
+        Unit(
+            name="vëx",
+            health=9223372036854775807,
+            kind=.Archer(range=7),
+            at=Place(x=-9223372036854775807 - 1, y=1),
+            items=[],
+            target=3,
+            tags={"a": 1, "b": -1},
+        ),
+        Unit(name="", health=0, kind=.Medic, at=Place(x=1, y=2), items=[Item(name="x"), Item(name="y")], alive=False),
+    ]
+    data = pack.dumps(units)
+    back = pack.loads[list[Unit]](data) else []
+    stdout.print(data.len(), back == units, back[1].name, back[1].at.x, back[1].tags, back[0].items[0].weight)
+    stdout.print(pack.loads[float](pack.dumps(-0.1)) else 0.0, pack.loads[str](pack.dumps("")) else "x")
+    stdout.print(said(pack.loads[list[Item]](data)))
+    stdout.print(said(pack.loads[list[Unit]](data[0:data.len() - 1])))
+    stdout.print(said(pack.loads[int](bytes([1, 2, 3]))))
+    stdout.print(said(pack.loads[int](pack.dumps(5) + bytes([0]))))
+    stdout.print(said(pack.loads[str](pack.dumps("hello world"), limits=Limits(length=4))))
+    mut deep = Link()
+    for _ in range(10):
+        deep = Link(next=deep)
+    stdout.print(said(pack.loads[Link](pack.dumps(deep), limits=Limits(depth=4))), said(pack.loads[Link](pack.dumps(deep))))
+    medic = pack.dumps(Kind.Medic)
+    stdout.print(said(pack.loads[Kind](changed(medic, 12, 9))))
+    stdout.print(said(pack.loads[bool](changed(pack.dumps(True), 12, 2))))
+    one = pack.dumps(Guarded(points=1))
+    # The points, 1, are the zigzag byte 2, and 1 is -1.
+    stdout.print(said(pack.loads[Guarded](changed(one, 12, 1))))
+"#,
+    )?;
+    assert_eq!(
+        printed,
+        "105 True vëx -9223372036854775808 {\"a\": 1, \"b\": -1} 2.25\n\
+         -0.1 \n\
+         this was packed from a different `list[Item]`, at byte 4\n\
+         the data ends too soon, at byte 104\n\
+         these aren't bytes `std.pack` wrote, at byte 0\n\
+         there's more after the value, at byte 13\n\
+         a length is over the limit of 4, at byte 12\n\
+         it nests deeper than the limit of 4, at byte 16 loaded\n\
+         `Kind` has no case 9, at byte 12\n\
+         a bool should be 0 or 1, at byte 12\n\
+         Guarded.points breaks its `where` rule, at byte 13\n"
+    );
+    Ok(())
+}
+
+/// Bytes that aren't what `std.pack` wrote never crash a load or take more than its limits:
+/// every truncation of good bytes fails, and so do most with one byte changed, at the default
+/// limits and small ones, and random bytes after a good header.
+#[test]
+fn pack_loads_of_changed_and_random_bytes_fail_without_crashing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "pack_fuzz",
+        r#"from std import pack
+from std.pack import Limits
+
+enum Shape:
+    Dot
+    Circle(radius: float)
+    Box(width: int, height: int)
+
+struct Node:
+    name: str
+    shape: Shape
+    data: bytes
+    weights: list[float]
+    names: dict[str, int]
+    next: Node? = None
+
+## A number from the last, the same every run.
+def step(seed: int) -> int:
+    (seed * 1103515245 + 12345) % 2147483648
+
+def tried(data: bytes, limits: Limits) -> int:
+    match pack.loads[Node](data, limits=limits):
+        case Ok(_):
+            return 1
+        case Err(_):
+            return 0
+
+def main(stdout: Stdout):
+    tail = Node(name="tail", shape=.Dot, data=bytes([0, 255]), weights=[], names={})
+    node = Node(
+        name="héad", shape=.Box(width=3, height=-4), data=bytes([1, 2, 3]), weights=[0.5, -2.0], names={"a": 1}, next=tail
+    )
+    good = pack.dumps(node)
+    small = Limits(depth=8, length=64)
+    stdout.print(good.len(), tried(good, Limits()), tried(good, small))
+    # Every truncation fails.
+    mut loaded = 0
+    for size in range(good.len()):
+        loaded += tried(good[0:size], Limits())
+    stdout.print("truncated", loaded)
+    mut items = list[int]()
+    for at in range(good.len()):
+        items.append(good[at])
+    # Every byte changed, one at a time, to bytes from a seed.
+    mut seed = 7
+    loaded = 0
+    mut runs = 0
+    for at in range(good.len()):
+        for _ in range(40):
+            seed = step(seed)
+            mut changed = copy(items)
+            changed[at] = (seed >> 16) & 255
+            loaded += tried(bytes(changed), Limits())
+            loaded += tried(bytes(changed), small)
+            runs += 2
+    stdout.print("changed", runs, loaded > 0)
+    # Bytes from a seed after a good header.
+    loaded = 0
+    for round in range(3000):
+        seed = step(seed)
+        size = (seed >> 8) % 64
+        mut random = list[int]()
+        for at in range(12):
+            random.append(items[at])
+        for _ in range(size):
+            seed = step(seed)
+            random.append((seed >> 16) & 255)
+        loaded += tried(bytes(random), Limits())
+    stdout.print("random", loaded >= 0)
+"#,
+    )?;
+    assert_eq!(printed, "59 1 1\ntruncated 0\nchanged 4720 True\nrandom True\n");
+    Ok(())
+}
+
 /// A `Buffer` popped empty, or inserted into past its end, fails as the interpreter says, not
 /// as a list does.
 #[test]
@@ -7060,6 +7268,9 @@ struct Words:
 
     def tag(mut self, kind: str) -> int:
         0
+
+    def missing_as_none(self) -> bool:
+        True
 
     def none(mut self) -> bool fails ParseError:
         if self.at < self.parts.len() and self.parts[self.at] == "-":

@@ -188,14 +188,13 @@ struct _Parser:
         if depth > _MOST_DEEP:
             fail self.bad(f"arrays and tables nest more than {_MOST_DEEP} deep here")
         b = self.byte()
-        if self.starts("\"\"\""): return _Toml.Text(text=self.multi_line(34)?)
-        if self.starts("'''"): return _Toml.Text(text=self.multi_line(39)?)
-        if b == 34: return _Toml.Text(text=self.basic_string()?)
-        if b == 39: return _Toml.Text(text=self.literal_string()?)
+        if self.starts("\"\"\""): return .Text(text=self.multi_line(34)?)
+        if self.starts("'''"): return .Text(text=self.multi_line(39)?)
+        if b == 34: return .Text(text=self.basic_string()?)
+        if b == 39: return .Text(text=self.literal_string()?)
         if b == 91: return self.array(depth)?
         if b == 123: return self.inline_table(depth)?
-        if b >= 48 and b <= 57 and self.is_date_or_time():
-            return _Toml.Text(text=self.date_or_time()?)
+        if b >= 48 and b <= 57 and self.is_date_or_time(): return .Text(text=self.date_or_time()?)
         if (b >= 48 and b <= 57) or b == 43 or b == 45 or b == 105 or b == 110:
             return self.number()?
         if b == 116 or b == 102:
@@ -205,8 +204,8 @@ struct _Parser:
                 self.at += 1
                 c = self.byte()
             word = text_part(self.source, at, self.at)
-            if word == "true": return _Toml.Bool(b=True)
-            if word == "false": return _Toml.Bool(b=False)
+            if word == "true": return .Bool(b=True)
+            if word == "false": return .Bool(b=False)
             fail self.bad_at(f"`{word}` isn't a TOML value", at)
         fail self.bad(f"expected a value, but found {self.found()}")
 
@@ -368,12 +367,12 @@ struct _Parser:
             self.skip_blank_lines()
             if self.byte() == 93:
                 self.at += 1
-                return _Toml.List(items=items)
+                return .List(items=items)
             items.append(self.value(depth + 1)?)
             self.skip_blank_lines()
             if self.byte() == 93:
                 self.at += 1
-                return _Toml.List(items=items)
+                return .List(items=items)
             if self.byte() != 44:
                 fail self.bad(f"expected `,` or `]` after the value, but found {self.found()}")
             self.at += 1
@@ -386,7 +385,7 @@ struct _Parser:
         if self.byte() == 125:
             self.at += 1
             table.inline = True
-            return _Toml.Table(table=table)
+            return .Table(table=table)
         while True:
             self.skip_blank_lines()
             at = self.at
@@ -399,7 +398,7 @@ struct _Parser:
             if self.byte() == 125:
                 self.at += 1
                 table.inline = True
-                return _Toml.Table(table=table)
+                return .Table(table=table)
             if self.byte() != 44:
                 fail self.bad(f"expected `,` or `}}` after the value, but found {self.found()}")
             self.at += 1
@@ -490,8 +489,8 @@ struct _Parser:
         negative = lead == 45
         unsigned = text_part(token, 1 if signed else 0, text_size(token))
         unknown = f"`{token}` isn't a number TOML knows"
-        if unsigned == "inf": return _Toml.Float(x=-1e308 * 10.0 if negative else 1e308 * 10.0)
-        if unsigned == "nan": return _Toml.Float(x=1e308 * 10.0 - 1e308 * 10.0)
+        if unsigned == "inf": return .Float(x=-1e308 * 10.0 if negative else 1e308 * 10.0)
+        if unsigned == "nan": return .Float(x=1e308 * 10.0 - 1e308 * 10.0)
         if text_size(unsigned) >= 2 and text_byte(unsigned, 0) == 48:
             kind = text_byte(unsigned, 1)
             radix = 16 if kind == 120 else (8 if kind == 111 else (2 if kind == 98 else 10))
@@ -500,18 +499,18 @@ struct _Parser:
                 if signed or not _digits_ok(digits, radix): fail self.bad_at(unknown, at)
                 n = _radix_int(digits, radix)
                 if n < 0: fail self.bad_at(f"`{token}` is too big for an int", at)
-                return _Toml.Int(n=n)
+                return .Int(n=n)
         if _has_any(unsigned, 46, 101, 69):
             if not _float_ok(unsigned): fail self.bad_at(unknown, at)
             match float(_without_underscores(token)):
                 case Ok(x):
-                    return _Toml.Float(x=x)
+                    return .Float(x=x)
                 case Err(_):
                     fail self.bad_at(unknown, at)
         if not _whole_ok(unsigned): fail self.bad_at(unknown, at)
         match int(_without_underscores(token)):
             case Ok(n):
-                _Toml.Int(n=n)
+                .Int(n=n)
             case Err(_):
                 fail self.bad_at(f"`{token}` is too big for an int", at)
 
@@ -621,13 +620,13 @@ def _insert(
             case .Table(inner):
                 mut child = inner
                 _insert(mut child, path, step + 1, keys, value, where)?
-                table.values[place] = _Toml.Table(table=child)
+                table.values[place] = .Table(table=child)
             case .Tables(tables):
                 mut children = tables
                 mut last = children[children.len() - 1]
                 _insert(mut last, path, step + 1, keys, value, where)?
                 children[children.len() - 1] = last
-                table.values[place] = _Toml.Tables(tables=children)
+                table.values[place] = .Tables(tables=children)
             case _:
                 fail parser.bad_at("this table can't be found again", at)
         return
@@ -648,7 +647,7 @@ def _insert_dotted(
         return
     mut place = table.place_of(key)
     if place < 0:
-        table.add(key, _Toml.Table(table=_Table(dotted=True)))
+        table.add(key, .Table(table=_Table(dotted=True)))
         place = table.values.len() - 1
     match table.values[place]:
         case .Table(inner):
@@ -656,7 +655,7 @@ def _insert_dotted(
             if not inner.dotted: fail _no_table(parser, key, at, True, False)
             mut child = inner
             _insert_dotted(mut child, keys, step + 1, value, where)?
-            table.values[place] = _Toml.Table(table=child)
+            table.values[place] = .Table(table=child)
         case .Tables(_):
             fail _no_table(parser, key, at, True, False)
         case _:
@@ -676,29 +675,29 @@ def _define(
     if step < keys.len() - 1:
         mut held = place
         if held < 0:
-            table.add(key, _Toml.Table(table=_Table()))
+            table.add(key, .Table(table=_Table()))
             held = table.values.len() - 1
         match table.values[held]:
             case .Table(inner):
                 if inner.inline: fail _no_table(parser, key, at, False, False)
                 mut child = inner
                 _define(mut child, keys, step + 1, array, where)?
-                table.values[held] = _Toml.Table(table=child)
+                table.values[held] = .Table(table=child)
             case .Tables(tables):
                 mut children = tables
                 mut last = children[children.len() - 1]
                 _define(mut last, keys, step + 1, array, where)?
                 children[children.len() - 1] = last
-                table.values[held] = _Toml.Tables(tables=children)
+                table.values[held] = .Tables(tables=children)
             case _:
                 fail _no_table(parser, key, at, False, False)
         return
     name = _joined(keys)
     if place < 0:
         if array:
-            table.add(key, _Toml.Tables(tables=[_Table(header=True)]))
+            table.add(key, .Tables(tables=[_Table(header=True)]))
         else:
-            table.add(key, _Toml.Table(table=_Table(header=True)))
+            table.add(key, .Table(table=_Table(header=True)))
         return
     shown = f"[[{name}]]" if array else f"[{name}]"
     match table.values[place]:
@@ -710,7 +709,7 @@ def _define(
                 )
             mut children = tables
             children.append(_Table(header=True))
-            table.values[place] = _Toml.Tables(tables=children)
+            table.values[place] = .Tables(tables=children)
         case .Table(inner):
             if array or inner.inline:
                 fail parser.bad_at(
@@ -721,7 +720,7 @@ def _define(
                 fail parser.bad_at(f"the table `[{name}]` is defined twice", at)
             mut child = inner
             child.header = True
-            table.values[place] = _Toml.Table(table=child)
+            table.values[place] = .Table(table=child)
         case _:
             fail parser.bad_at(
                 f"`{name}` is already defined as something else, so it can't be `{shown}`",
@@ -854,7 +853,7 @@ struct TomlReader:
                 for table in tables:
                     self._path.append(f"[{count}]")
                     count += 1
-                    self._here = _Toml.Table(table=table)
+                    self._here = .Table(table=table)
                     found.append(T.deserialize(mut self)?)
                     _ = self._path.pop()
             case _:
@@ -867,7 +866,7 @@ struct TomlReader:
             case .Table(table):
                 mut at = 0
                 for key in table.keys:
-                    self._here = _Toml.Text(text=key)
+                    self._here = .Text(text=key)
                     self._in_key = True
                     read = K.deserialize(mut self)?
                     self._in_key = False
@@ -999,7 +998,7 @@ struct TomlReader:
 def native_loads[T: Deserializable](text: str) -> T fails ParseError:
     mut parser = _Parser(source=text)
     root = parser.document()?
-    mut src = TomlReader(_here=_Toml.Table(table=root))
+    mut src = TomlReader(_here=.Table(table=root))
     T.deserialize(mut src)?
 
 ## Builds what's being written as a document's values, then writes them out.
@@ -1010,19 +1009,19 @@ struct TomlWriter:
     _after_case = False
 
     def int(mut self, value: int):
-        self._done = _Toml.Int(n=value)
+        self._done = .Int(n=value)
 
     def float(mut self, value: float):
-        self._done = _Toml.Float(x=value)
+        self._done = .Float(x=value)
 
     def bool(mut self, value: bool):
-        self._done = _Toml.Bool(b=value)
+        self._done = .Bool(b=value)
 
     def text(mut self, value: str):
-        self._done = _Toml.Text(text=value)
+        self._done = .Text(text=value)
 
     def bytes(mut self, value: bytes):
-        self._done = _Toml.Text(text=_base64(value))
+        self._done = .Text(text=_base64(value))
 
     def none(mut self):
         assert False
@@ -1035,7 +1034,7 @@ struct TomlWriter:
         for item in items:
             item.serialize(mut self)
             built.append(self._done)
-        self._done = _Toml.List(items=built)
+        self._done = .List(items=built)
 
     def map[K: Serializable, V: Serializable](mut self, pairs: list[(K, V)]):
         mut table = _Table()
@@ -1044,7 +1043,7 @@ struct TomlWriter:
             name = _key_text(self._done)
             value.serialize(mut self)
             table.add(name, self._done)
-        self._done = _Toml.Table(table=table)
+        self._done = .Table(table=table)
 
     def record(mut self, name: str, count: int):
         self._tables.append(_Table())
@@ -1063,15 +1062,15 @@ struct TomlWriter:
             return
         table = self._tables.pop()
         wrap = self._wraps.pop()
-        self._done = _Toml.Table(table=table)
+        self._done = .Table(table=table)
         if wrap != "":
             mut outer = _Table()
             outer.add(wrap, self._done)
-            self._done = _Toml.Table(table=outer)
+            self._done = .Table(table=outer)
             self._after_case = True
 
     def case(mut self, name: str, case: str):
-        self._done = _Toml.Text(text=case)
+        self._done = .Text(text=case)
 
     def case_record(mut self, name: str, case: str, count: int):
         self._tables.append(_Table())
@@ -1138,7 +1137,7 @@ def _one_line(value: _Toml) -> str:
         case .List(items):
             "[" + ", ".join([_one_line(item) for item in items]) + "]"
         case .Tables(tables):
-            "[" + ", ".join([_one_line(_Toml.Table(table=table)) for table in tables]) + "]"
+            "[" + ", ".join([_one_line(.Table(table=table)) for table in tables]) + "]"
         case .Table(table):
             _inline(table)
 

@@ -45,12 +45,12 @@ def raise_army(mut world: World, team: Team, columns: (int, int), rally: (int, i
             if random.randint(0, 2) == 0: continue
             kind = kinds[placed % kinds.len()]
             id = world.spawn(f"{team.name()}{placed + 1}", team, kind, at)
-            if kind == Kind.Medic:
+            if kind == .Medic:
                 world.units[id].items = [
                     Item(name="bandage", heals=15),
                     Item(name="bandage", heals=15),
                 ]
-            if kind == Kind.Soldier and placed % 3 == 0:
+            if kind == .Soldier and placed % 3 == 0:
                 world.units[id].items = [Item(name="whetstone", sharpens=3)]
             squads[placed % 2].append(id)
             placed += 1
@@ -71,7 +71,7 @@ def show(stdout: Stdout, world: World):
     for unit in world.units.values():
         x, y = unit.at
         mark = unit.kind.name()[0]
-        letter = mark.upper() if unit.team == Team.Red else mark
+        letter = mark.upper() if unit.team == .Red else mark
         row = rows[y]
         rows[y] = row[:x] + letter + row[x + 1:]
     for row in rows:

@@ -248,7 +248,7 @@ fn match_over_an_enum_covers_every_case() {
         def f(light: Light):
             match light:
                 case .Purple: 1
-                case Red: 2
+                case .Red: 2
                 case _: 3
     ";
     assert_eq!(
@@ -385,7 +385,7 @@ fn match_cases_bind_typed_values() {
 
         def b(shape: Shape, other: T):
             match shape:
-                case Circle(r): r + 1
+                case .Circle(r): r + 1
             match other:
                 case .Circle(dotted): dotted + 1
                 case Circle(plain): plain + 1

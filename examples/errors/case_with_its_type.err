@@ -1,0 +1,15 @@
+error: the type here is known, so write this case as `.Red`
+ --> examples/errors/case_with_its_type.fen:7:9
+  |
+7 |         case Red:
+  |         ^^^^^^^^^
+  |
+  = help: `fennec fix` makes this change
+
+error: the type here is known, so write `.Blue` without `Color`
+  --> examples/errors/case_with_its_type.fen:13:24
+   |
+13 |     stdout.print(paint(Color.Blue))
+   |                        ^^^^^
+   |
+   = help: `fennec fix` makes this change

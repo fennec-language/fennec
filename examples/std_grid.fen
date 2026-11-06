@@ -14,7 +14,7 @@ def distances(map: Grid[Tile], start: (int, int)) -> Grid[int]:
     while waiting.len() > 0:
         here = waiting.popleft() else start
         for near in map.neighbors(here):
-            if map[near] == Tile.Floor and steps[near] == -1:
+            if map[near] == .Floor and steps[near] == -1:
                 steps[near] = steps[here] + 1
                 waiting.append(near)
     steps
@@ -72,5 +72,5 @@ def main(stdout: Stdout):
     for y in range(map.height):
         mut line = ""
         for x in range(map.width):
-            line += "#" if map[(x, y)] == Tile.Wall else f"{steps[(x, y)] % 10}"
+            line += "#" if map[(x, y)] == .Wall else f"{steps[(x, y)] % 10}"
         stdout.print(line)

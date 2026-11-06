@@ -167,7 +167,7 @@ struct Lexer:
         if is_keyword(word):
             self.push(.Keyword(word), start)
         else:
-            self.push(Tok.Name(word), start)
+            self.push(.Name(word), start)
 
     def number(mut self, start: int):
         self.digits()
@@ -196,18 +196,18 @@ struct Lexer:
                 numbers.append(self.text(part_start, self.pos).replace("_", ""))
                 units.append(self.unit())
             nanos = duration(self.text(start, self.pos), numbers, units, self.span(start))?
-            self.push(Tok.Duration(nanos), start)
+            self.push(.Duration(nanos), start)
             return
         if is_float:
             match float(text):
                 case Ok(value):
-                    self.push(Tok.Float(value), start)
+                    self.push(.Float(value), start)
                 case Err(_):
                     fail Diagnostic(message="this isn't a valid number", span=self.span(start))
         else:
             match int(text):
                 case Ok(value):
-                    self.push(Tok.Int(value), start)
+                    self.push(.Int(value), start)
                 case Err(_):
                     fail Diagnostic(
                         message="this number is too big for an int",
@@ -261,7 +261,7 @@ struct Lexer:
                 text += c
                 self.pos += 1
         self.pos += 1
-        self.push(Tok.Str(text), start)
+        self.push(.Str(text), start)
 
     ## `r"..."`: backslashes are kept as written, for patterns like `r"\d+"`.
     def raw_string(mut self, start: int):
@@ -274,7 +274,7 @@ struct Lexer:
             text += c
             self.pos += 1
         self.pos += 1
-        self.push(Tok.Str(text), start)
+        self.push(.Str(text), start)
 
     def unterminated(self, start: int) -> Diagnostic:
         Diagnostic(
@@ -369,7 +369,7 @@ struct Lexer:
         self.pos += 1
         if text != "":
             parts.append(FPart.Text(text))
-        self.push(Tok.FStr(parts), start)
+        self.push(.FStr(parts), start)
 
     ## Reads `{expression}` or `{expression:spec}` inside an f-string.
     def fstring_code(mut self, start: int) -> FPart:
@@ -392,7 +392,7 @@ struct Lexer:
         self.pos += 1
         code_end = spec_start else end
         spec = self.text(spec_start + 1, end) if spec_start is not None else None
-        FPart.Code(self.text(code_start, code_end), self.offset(code_start), spec)
+        .Code(self.text(code_start, code_end), self.offset(code_start), spec)
 
 ## How many nanoseconds a unit of time is, or 0 when it isn't one. Minutes are `min`, so `m`
 ## is never a unit.

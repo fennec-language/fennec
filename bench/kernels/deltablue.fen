@@ -257,7 +257,7 @@ struct Planner:
             self.execute(at)
 
     def change(mut self, place: int, value: int):
-        edit = self.add(Constraint(kind=Kind.Edit, strength=PREFERRED, first=place))
+        edit = self.add(Constraint(kind=.Edit, strength=PREFERRED, first=place))
         plan = self.plan_from([edit])
         for _ in range(10):
             self.variables[place].value = value
@@ -270,11 +270,11 @@ def chain_test(size: int) -> int:
     places = [planner.variable(0) for _ in range(size + 1)]
     for i in range(size):
         planner.add(
-            Constraint(kind=Kind.Equal, strength=REQUIRED, first=places[i], second=places[i + 1]),
+            Constraint(kind=.Equal, strength=REQUIRED, first=places[i], second=places[i + 1]),
         )
     last = places[size]
-    planner.add(Constraint(kind=Kind.Stay, strength=STRONG_DEFAULT, first=last))
-    edit = planner.add(Constraint(kind=Kind.Edit, strength=PREFERRED, first=places[0]))
+    planner.add(Constraint(kind=.Stay, strength=STRONG_DEFAULT, first=last))
+    edit = planner.add(Constraint(kind=.Edit, strength=PREFERRED, first=places[0]))
     plan = planner.plan_from([edit])
     mut total = 0
     for value in range(100):
@@ -297,10 +297,10 @@ def projection_test(size: int) -> int:
         target = planner.variable(i)
         sources.append(source)
         targets.append(target)
-        planner.add(Constraint(kind=Kind.Stay, strength=NORMAL, first=source))
+        planner.add(Constraint(kind=.Stay, strength=NORMAL, first=source))
         planner.add(
             Constraint(
-                kind=Kind.Scale,
+                kind=.Scale,
                 strength=REQUIRED,
                 first=source,
                 second=target,

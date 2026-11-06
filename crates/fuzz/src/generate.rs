@@ -86,6 +86,12 @@ struct Writer<'b> {
     plainly: bool,
 }
 
+/// A shape written where a `Shape` is expected, which names its case with a leading dot: the type
+/// there is known.
+fn expected_shape(value: &str) -> String {
+    value.strip_prefix("Shape").map_or_else(|| value.to_owned(), str::to_owned)
+}
+
 impl Writer<'_> {
     /// The next choice. Running out always chooses 0, so every input ends.
     fn byte(&mut self) -> u8 {
@@ -148,7 +154,7 @@ impl Writer<'_> {
             }
             10 => {
                 let shape = self.of(Kind::Shape, next);
-                self.bounded(&format!("area({shape})"))
+                self.bounded(&format!("area({})", expected_shape(&shape)))
             }
             _ => format!("({} if {} else {})", self.int(next), self.of(Kind::Bool, next), self.int(next)),
         }
@@ -244,7 +250,7 @@ impl Writer<'_> {
     fn printable(&self, value: String, kind: Kind) -> String {
         match kind {
             Kind::Point if self.plainly => format!("{value}.total()"),
-            Kind::Shape if self.plainly => format!("area({value})"),
+            Kind::Shape if self.plainly => format!("area({})", expected_shape(&value)),
             _ => value,
         }
     }

@@ -92,10 +92,9 @@ fn id(instance: &Instance) -> Option<Id> {
         Value::Int(n) => Some(*n),
         _ => None,
     };
-    let slot = u32::try_from(number("slot")?).ok()?;
-    let generation = u32::try_from(number("generation")?).ok()?;
+    let key = u64::try_from(number("key")?).ok()?;
     let tag = u64::try_from(number("tag")?).ok()?;
-    Some(Id { slot, generation, tag })
+    Some(Id::from_key(key, tag))
 }
 
 fn id_map(instance: &Instance) -> Option<Table> {
@@ -177,7 +176,7 @@ pub(super) fn write_named(
             written.into()
         }
         (Element::Struct { name, .. }, Value::Id(id)) if name.as_ref() == "Id" => {
-            words.extend([u64::from(id.slot), u64::from(id.generation), id.tag]);
+            words.extend([id.key(), id.tag]);
             Written::Done
         }
         (Element::Struct { name, fields }, Value::Table(map)) if is_id_map(name) => {

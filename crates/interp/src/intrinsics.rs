@@ -55,10 +55,7 @@ pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagn
             let part = place(start).zip(place(end)).and_then(|(start, end)| text.get(start..end));
             part.map(Value::str).ok_or_else(|| wrong(name, span))
         }
-        ("id_key", [Value::Id(id)]) => {
-            let slot = i64::from(id.slot);
-            Ok(Value::Int((slot << 32) | i64::from(id.generation)))
-        }
+        ("id_key", [Value::Id(id)]) => Ok(Value::Int(id.key().cast_signed())),
         ("id_at", [Value::Int(position), Value::Int(tag)]) => {
             let slot = u32::try_from(*position).map_err(|_| wrong(name, span))?;
             Ok(Value::Id(Id { slot, generation: 0, tag: tag.cast_unsigned() }))

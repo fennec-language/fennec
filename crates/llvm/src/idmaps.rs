@@ -1,9 +1,10 @@
-//! `Table`s and `Id`s, which the runtime doesn't hold natively. An `Id` is a plain struct of its
-//! slot, generation and tag. A `Table` is a boxed struct of its items, each slot's generation,
+//! `Table`s and `Id`s, which the runtime doesn't hold natively. An `Id` is a plain struct of two
+//! words: its slot and generation, 32 bits each in one, and its tag. A `Table` is a boxed struct of its items, each slot's generation,
 //! how many are live, and its tag, a number from the runtime no other `Table` has, so an `Id`
 //! from another finds nothing in it: a removed slot's generation is stored as `-1 - generation`, and its item
 //! is zero, so a stale `Id` never finds the wrong thing and a slot is used again with the next
-//! generation, as the interpreter's are. The first free slot is used first, and the map says how
+//! generation, as the interpreter's are. A slot whose generation can't go higher is retired, never
+//! used again, so a generation never comes round. The first free slot is used first, and the map says how
 //! far up there's none, so filling a map doesn't look again at what it's filled already.
 
 use fennec_ir::{LocalId, Operand};
@@ -16,6 +17,10 @@ use crate::lists::{FIELDS_OFFSET, list_item};
 /// What failing to find an `Id` says, as the interpreter does.
 const REMOVED: &str = "this Id refers to something that's been removed";
 const ANOTHER: &str = "this Id is from another Table";
+
+/// A slot removed at the last generation an `Id` can hold, `-1 - u32::MAX`, which is never used
+/// again.
+const RETIRED: i64 = -4_294_967_296;
 
 /// An `Id`'s slot, generation and tag, loaded.
 type IdParts = (String, String, String);
@@ -50,19 +55,30 @@ impl Emit<'_, '_, '_> {
     /// An `Id`'s slot, generation and tag.
     fn id_parts(&mut self, id: &Operand) -> Result<IdParts, String> {
         let (at, _) = self.operand(id)?;
-        let (slot, generation, tag) = (self.temp(), self.temp(), self.temp());
-        let (generation_at, tag_at) = (self.offset(&at, 8), self.offset(&at, 16));
-        self.line(&format!("{slot} = load i64, ptr {at}"));
-        self.line(&format!("{generation} = load i64, ptr {generation_at}"));
+        let (key, slot, generation, tag) = (self.temp(), self.temp(), self.temp(), self.temp());
+        let tag_at = self.offset(&at, 8);
+        self.line(&format!("{key} = load i64, ptr {at}"));
+        self.line(&format!("{slot} = lshr i64 {key}, 32"));
+        self.line(&format!("{generation} = and i64 {key}, 4294967295"));
         self.line(&format!("{tag} = load i64, ptr {tag_at}"));
         Ok((slot, generation, tag))
     }
 
+    /// An `Id`'s key: its slot in the high 32 bits, and its generation in the low 32.
+    fn id_key_of(&mut self, id: &Operand) -> Result<String, String> {
+        let (at, _) = self.operand(id)?;
+        let key = self.temp();
+        self.line(&format!("{key} = load i64, ptr {at}"));
+        Ok(key)
+    }
+
     /// Writes an `Id` where `base` is.
     fn write_id(&mut self, base: &str, (slot, generation, tag): (&str, &str, &str)) {
-        let (generation_at, tag_at) = (self.offset(base, 8), self.offset(base, 16));
-        self.line(&format!("store i64 {slot}, ptr {base}"));
-        self.line(&format!("store i64 {generation}, ptr {generation_at}"));
+        let (high, key) = (self.temp(), self.temp());
+        self.line(&format!("{high} = shl i64 {slot}, 32"));
+        self.line(&format!("{key} = or i64 {high}, {generation}"));
+        let tag_at = self.offset(base, 8);
+        self.line(&format!("store i64 {key}, ptr {base}"));
         self.line(&format!("store i64 {tag}, ptr {tag_at}"));
     }
 
@@ -275,9 +291,10 @@ impl Emit<'_, '_, '_> {
                 let first = self.temp();
                 self.line(&format!("{first} = load i64, ptr {free_at}"));
                 let before = self.current.clone();
-                let (head, body, next, reuse, append, done) = (
+                let (head, body, free, next, reuse, append, done) = (
                     self.label("look"),
                     self.label("slot"),
+                    self.label("free"),
                     self.label("next"),
                     self.label("reuse"),
                     self.label("append"),
@@ -291,10 +308,15 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("br i1 {more}, label %{body}, label %{append}"));
                 self.start_block(&body);
                 let generation_at = self.item_address(&generations, "i64", &at);
-                let (stored, removed) = (self.temp(), self.temp());
+                let (stored, removed, spent) = (self.temp(), self.temp(), self.temp());
                 self.line(&format!("{stored} = load i64, ptr {generation_at}{ITEM_ACCESS}"));
                 self.line(&format!("{removed} = icmp slt i64 {stored}, 0"));
-                self.line(&format!("br i1 {removed}, label %{reuse}, label %{next}"));
+                self.line(&format!("br i1 {removed}, label %{free}, label %{next}"));
+                // Free, and not retired: removed at a generation below the last there is. Only a
+                // free slot is asked, so the slots passed on the way cost nothing more.
+                self.start_block(&free);
+                self.line(&format!("{spent} = icmp eq i64 {stored}, {RETIRED}"));
+                self.line(&format!("br i1 {spent}, label %{next}, label %{reuse}, !prof !0"));
                 self.start_block(&next);
                 self.line(&format!("{step} = add i64 {at}, 1"));
                 self.line(&format!("br label %{head}"));
@@ -414,10 +436,7 @@ impl Emit<'_, '_, '_> {
         let given = args.first().ok_or("no argument")?;
         match name {
             "intrinsics.id_key" => {
-                let (slot, generation, _) = self.id_parts(given)?;
-                let (high, key) = (self.temp(), self.temp());
-                self.line(&format!("{high} = shl i64 {slot}, 32"));
-                self.line(&format!("{key} = or i64 {high}, {generation}"));
+                let key = self.id_key_of(given)?;
                 self.assign(dest, &key)
             }
             "intrinsics.id_at" => {

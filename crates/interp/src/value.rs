@@ -234,6 +234,18 @@ impl Id {
     pub(crate) fn at(self) -> usize {
         self.slot as usize
     }
+
+    /// Its slot and generation in one number, as native code holds them: the slot in the high 32
+    /// bits, and the generation in the low 32.
+    pub(crate) fn key(self) -> u64 {
+        (u64::from(self.slot) << 32) | u64::from(self.generation)
+    }
+
+    pub(crate) fn from_key(key: u64, tag: u64) -> Id {
+        let slot = u32::try_from(key >> 32).unwrap_or(u32::MAX);
+        let generation = u32::try_from(key & u64::from(u32::MAX)).unwrap_or(u32::MAX);
+        Id { slot, generation, tag }
+    }
 }
 
 impl Table {
@@ -277,7 +289,14 @@ impl Table {
 
     /// Puts a value in the first free slot, or a new one.
     pub(crate) fn insert(&mut self, value: Value) -> Id {
-        let free = self.slots.iter().enumerate().skip(self.free_from).find(|(_, slot)| slot.value.is_none());
+        // A slot at the last generation an `Id` can hold is retired: used again, an old `Id`
+        // would find what's new there.
+        let free = self
+            .slots
+            .iter()
+            .enumerate()
+            .skip(self.free_from)
+            .find(|(_, slot)| slot.value.is_none() && slot.generation < u32::MAX);
         let at = free.map(|(at, _)| at);
         self.free_from = at.unwrap_or(self.slots.len()) + 1;
         if let Some(slot) = at.and_then(|at| self.slots.get_mut(at)) {
@@ -439,5 +458,29 @@ impl PartialEq for Value {
             (Value::Capability(a), Value::Capability(b)) => a == b,
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Id, Slot, Table, Value};
+
+    /// A slot freed at the last generation an `Id` can hold is never used again, so no `Id`'s
+    /// generation comes round to one an old `Id` has.
+    #[test]
+    fn a_slot_at_its_last_generation_is_retired() {
+        let mut table = Table::new(vec![Slot { generation: u32::MAX, value: None }]);
+        let added = table.insert(Value::Int(1));
+        assert_eq!(added.at(), 1);
+        let old = Id { slot: 0, generation: u32::MAX, tag: table.tag };
+        assert!(table.get(old).is_none());
+    }
+
+    /// An `Id`'s key packs its slot above its generation, and comes back the same.
+    #[test]
+    fn an_id_goes_through_its_key_unchanged() {
+        let id = Id { slot: 7, generation: u32::MAX, tag: 3 };
+        assert_eq!(id.key(), (7 << 32) | u64::from(u32::MAX));
+        assert_eq!(Id::from_key(id.key(), 3), id);
     }
 }

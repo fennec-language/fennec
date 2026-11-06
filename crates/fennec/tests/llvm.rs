@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 126;
+const BUILDING_EXAMPLES: usize = 129;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -1952,6 +1952,28 @@ fn isdigit_matches_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// A product past the check is known not to have overflowed, which lets LLVM drop later checks:
+/// one that does overflow still fails, from either sign, and one that doesn't goes on to its sums.
+#[test]
+fn a_product_that_overflows_still_fails_as_on_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let program = |a: &str, b: &str| {
+        format!(
+            "def scaled(i: int, j: int) -> float:\n    1.0 / float((i + j) * (i + j + 1) // 2 + i + 1)\n\ndef main(stdout: Stdout):\n    mut total = 0.0\n    for i in range(50):\n        for j in range(50):\n            total += scaled(i, j)\n    stdout.print(f\"{{total:.6f}}\")\n    big = {a}\n    stdout.print(big * {b})\n"
+        )
+    };
+    for (name, a, b) in [
+        ("product_fits", "3037000499", "3037000499"),
+        ("product_too_big", "3037000500", "3037000500"),
+        ("product_too_small", "-3037000500", "3037000500"),
+    ] {
+        same_as_the_interpreter_in_both_builds(name, &program(a, b))?;
+    }
+    Ok(())
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -2044,6 +2066,37 @@ fn removing_what_a_set_lacks_fails_like_the_jit() -> std::io::Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// Sorting by a key that's a tuple, in place or into a new list, keeping equal keys in order.
+#[test]
+fn sorting_by_tuple_keys_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "tuple_keys",
+        r#"struct Unit:
+    name: str
+    hp: int
+
+def main(stdout: Stdout):
+    words = ["bramble", "kit", "ash", "a long word that sits in a block", "kit"]
+    stdout.print(sorted(words, key=(word) => (word.len(), word)))
+    stdout.print(sorted([3, 1, 2], key=(n) => (n % 2, -n)))
+    stdout.print(sorted([1.5, -2.5], key=(x) => (x, 1)))
+    units = [Unit(name="b", hp=2), Unit(name="a", hp=2), Unit(name="c", hp=1), Unit(name="d", hp=2)]
+    stdout.print(sorted(units, key=(unit) => (unit.hp, unit.name)))
+    stdout.print(sorted(units, key=(unit) => (unit.hp, 0)))
+    mut changing = [5, 3, 9, 1]
+    kept = changing
+    changing.sort(key=(n) => (n % 3, n))
+    stdout.print(changing, kept)
+    empty: list[int] = []
+    stdout.print(sorted(empty, key=(n) => (n, n)))
+    stdout.print(words)
+"#,
+    )
 }
 
 /// Shifts, `~`, sorting a list where it is, a `match` on a bool and `random_choice`.

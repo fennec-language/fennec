@@ -1013,11 +1013,19 @@ fn missing_words(dict: i64, key: &[u64], augmented: i8, (start, end): (i64, i64)
     });
 }
 
-/// The addresses of the strings a dict's block owns.
+/// The addresses of the blocks a dict's block owns, read where its entries are, with no copy of them.
 pub(super) fn children(state: &State, block: &[u64]) -> Vec<u64> {
     let Some(layout) = layout(state, block) else { return Vec::new() };
+    // Numbers as keys and values hold no blocks, so there's nothing to look through.
+    if !layout.value.owned() && !layout.key.owned() && layout.key != Word::Text {
+        return Vec::new();
+    }
+    let slots = block.get(4).map_or(0, |mask| usize::try_from(*mask).unwrap_or(0) + 1);
+    let used = block.get(3).and_then(|used| usize::try_from(*used).ok()).unwrap_or(0);
+    let start = DICT_HEADER_WORDS + slots;
+    let words = block.get(start..start + used * layout.width).unwrap_or_default();
     let mut found = Vec::new();
-    for entry in entries(block, layout.width).chunks_exact(layout.width) {
+    for entry in words.chunks_exact(layout.width).filter(|entry| entry.first() != Some(&REMOVED)) {
         found.extend(key_block(layout.key, key_of(entry)));
         found.extend(layout.value.owned().then(|| value_of(entry)));
     }

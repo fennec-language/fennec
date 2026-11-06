@@ -265,12 +265,12 @@ impl FnCx<'_> {
         let ty = self.checker.settled(ty);
         let (Type::Named(name) | Type::Generic(name, _)) = &ty else { return None };
         let give_positions = format!(
-            "give `{name}` positions: `def len(self) -> int` and the `mut` form, `def [](mut self, i: int)`"
+            "give `{name}` positions: `def len(self) -> int` and the `ref` form, `def [](ref self, i: int)`"
         );
         let Some((key, entry)) = self.checker.program.method(name, "[]mut") else {
             if self.checker.program.method(name, "iter").is_some() {
                 let message = format!(
-                    "`for mut` can't change the items of a `{name}`, since its `iter` makes copies of them"
+                    "`for ref` can't change the items of a `{name}`, since its `iter` makes copies of them"
                 );
                 self.error(Diagnostic::new(message, span).with_help(give_positions));
             }
@@ -278,13 +278,13 @@ impl FnCx<'_> {
         };
         let own_items = crate::protocols::writes_one_item(&entry.def);
         if self.checker.program.method(name, "len").is_none() {
-            let message = format!("`for mut` over a `{name}` needs its `def len`");
+            let message = format!("`for ref` over a `{name}` needs its `def len`");
             self.error(Diagnostic::new(message, span).with_help(give_positions));
         } else if in_parallel && !own_items {
             let message = format!(
-                "`for mut` over `parallel(...)` needs `{name}`'s `mut` form of `def []` to touch only its own item"
+                "`for ref` over `parallel(...)` needs `{name}`'s `ref` form of `def []` to touch only its own item"
             );
-            let help = "write it as `return self.field[i]`, or use a plain `for mut`";
+            let help = "write it as `return self.field[i]`, or use a plain `for ref`";
             self.error(Diagnostic::new(message, span).with_help(help));
         }
         self.method_signature(&ty, &key).map(|signature| signature.returns)
@@ -293,7 +293,7 @@ impl FnCx<'_> {
     fn for_stmt(&mut self, names: &[String], is_mut: bool, iter: &Expr, body: &[Stmt], span: Span) {
         let parallel = crate::parallel::parallel_items(iter).filter(|_| self.lookup("parallel").is_none());
         if is_mut {
-            let what = "`for mut` changes each item, so loop over something held in a mut name";
+            let what = "`for ref` changes each item, so loop over something held in a mut name";
             self.mut_place(parallel.unwrap_or(iter), what);
         }
         if parallel.is_some() {

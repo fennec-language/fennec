@@ -73,7 +73,7 @@ fn a_loop_cant_change_what_it_goes_over() {
         helps(&format!(
             "{TEAM}\ndef main(stdout: Stdout):\n    mut names = [\"ash\"]\n    for name in names:\n        names.append(name)\n"
         )),
-        ["use `for mut`, or loop over indexes"]
+        ["use `for ref`, or loop over indexes"]
     );
 }
 
@@ -172,16 +172,16 @@ fn given(body: &str) -> Vec<String> {
 #[test]
 fn one_place_cant_be_given_as_mut_with_anything_that_reaches_it() {
     let cases: [(&str, &str); 8] = [
-        ("bump(mut unit.position, mut unit.position)", "`mut unit.position` and `mut unit.position` overlap"),
-        ("bump(mut spots[i], mut spots[j])", "`mut spots[i]` and `mut spots[j]` overlap"),
-        ("bump(mut spots[0], mut spots[0])", "`mut spots[0]` and `mut spots[0]` overlap"),
-        ("read(mut unit.position, unit.position)", "`mut unit.position` and `unit.position` overlap"),
-        ("fill(mut spots, spots[i])", "`mut spots` and `spots[i]` overlap"),
-        ("fill(mut unit.spots, unit.spots[i + 1])", "`mut unit.spots` and `unit.spots[...]` overlap"),
-        ("unit.absorb(mut unit)", "`mut unit` overlaps `unit`, which this method is called on"),
+        ("bump(mut unit.position, mut unit.position)", "`ref unit.position` and `ref unit.position` overlap"),
+        ("bump(mut spots[i], mut spots[j])", "`ref spots[i]` and `ref spots[j]` overlap"),
+        ("bump(mut spots[0], mut spots[0])", "`ref spots[0]` and `ref spots[0]` overlap"),
+        ("read(mut unit.position, unit.position)", "`ref unit.position` and `unit.position` overlap"),
+        ("fill(mut spots, spots[i])", "`ref spots` and `spots[i]` overlap"),
+        ("fill(mut unit.spots, unit.spots[i + 1])", "`ref unit.spots` and `unit.spots[...]` overlap"),
+        ("unit.absorb(mut unit)", "`ref unit` overlaps `unit`, which this method is called on"),
         (
             "unit.look(mut unit.position)",
-            "`mut unit.position` overlaps `unit`, which this method is called on",
+            "`ref unit.position` overlaps `unit`, which this method is called on",
         ),
     ];
     for (call, said) in cases {
@@ -196,9 +196,9 @@ fn a_mut_argument_cant_change_what_picks_another_arguments_place() {
     let spot = "def step(mut at: int, spot: Spot):\n    at += spot.x\n\ndef walk(mut spot: Spot, mut at: int):\n    at += spot.x\n\n";
     let types = format!("{PLACES}\n{spot}");
     let cases: [(&str, &str); 3] = [
-        ("step(mut i, spots[i])", "`mut i` changes what picks `spots[i]`"),
-        ("walk(mut spots[i], mut i)", "`mut i` changes what picks `spots[i]`"),
-        ("walk(mut spots[i + 1], mut i)", "`mut i` changes what picks `spots[...]`"),
+        ("step(mut i, spots[i])", "`ref i` changes what picks `spots[i]`"),
+        ("walk(mut spots[i], mut i)", "`ref i` changes what picks `spots[i]`"),
+        ("walk(mut spots[i + 1], mut i)", "`ref i` changes what picks `spots[...]`"),
     ];
     for (call, said) in cases {
         let body = format!(
@@ -214,7 +214,7 @@ fn a_mut_argument_cant_change_what_picks_another_arguments_place() {
         "mut movers = [Mover()]\nmut at = 0\nmovers[at].shift(mut at)\nstdout.print(movers.len(), at)\n",
     );
     let messages: Vec<&str> = found.iter().filter_map(|one| one.split(" @ ").next()).collect();
-    assert_eq!(messages, ["`mut at` changes what picks `movers[at]`"]);
+    assert_eq!(messages, ["`ref at` changes what picks `movers[at]`"]);
     // An index that isn't changed is fine, and so is a name changed that picks nothing here.
     let empty: [&str; 0] = [];
     let fine = "mut movers = [Mover()]\nmut at = 0\nmut other = 0\nmovers[at].shift(mut other)\nstdout.print(movers.len(), at, other)\n";
@@ -224,9 +224,9 @@ fn a_mut_argument_cant_change_what_picks_another_arguments_place() {
 #[test]
 fn an_index_that_isnt_known_as_written_could_be_the_other_one() {
     for (call, said) in [
-        ("bump(mut spots[0], mut spots[-1])", "`mut spots[0]` and `mut spots[...]` overlap"),
-        ("bump(mut spots[0], mut spots[i])", "`mut spots[0]` and `mut spots[i]` overlap"),
-        ("bump(mut spots[i], mut spots[i + 1])", "`mut spots[i]` and `mut spots[...]` overlap"),
+        ("bump(mut spots[0], mut spots[-1])", "`ref spots[0]` and `ref spots[...]` overlap"),
+        ("bump(mut spots[0], mut spots[i])", "`ref spots[0]` and `ref spots[i]` overlap"),
+        ("bump(mut spots[i], mut spots[i + 1])", "`ref spots[i]` and `ref spots[...]` overlap"),
     ] {
         let found = given(&format!("{call}\nstdout.print(unit.position.x, spots.len())\n"));
         let messages: Vec<&str> = found.iter().filter_map(|one| one.split(" @ ").next()).collect();

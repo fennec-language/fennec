@@ -82,15 +82,18 @@ pub(crate) struct Heap {
     /// Generators let go partway, waiting for what closes what they hold.
     abandoning: Vec<u64>,
     /// Blocks waiting to be freed and a freed block's children, kept to save making them anew:
-    /// by address, and those already taken out of the table, with their addresses.
+    /// by address, and those already taken out of the table, each at its own address.
     pending: Vec<u64>,
-    taken: Vec<(u64, Box<[u64]>)>,
+    taken: Vec<Box<[u64]>>,
     found: Vec<u64>,
     /// The interpreter values cells hold, by the number in each cell, and unused numbers.
     cells: Vec<Value>,
     spare_cells: Vec<usize>,
-    /// What native code's run has cost so far.
+    /// What native code's run has cost so far, counted only when something will read it.
     pub(super) counts: Counts,
+    /// Whether `counts` is kept: under `FENNEC_COUNTS`, which reports it, after `count_allocations`,
+    /// and in tests.
+    counting: bool,
     /// In a program built to trace what it costs, the same for each place in its source, and the
     /// place native code said it's at last. Empty otherwise.
     pub(super) sites: HashMap<u32, Counts>,
@@ -123,6 +126,15 @@ pub(crate) struct Heap {
     pub(super) lent_owners: HashMap<u64, i64, BuildHasherDefault<AddressHasher>>,
     /// Words copied out of one block on the way to another, kept to save making them anew.
     pub(super) scratch: Vec<u64>,
+}
+
+/// Whether heaps made from now on count what they allocate, for a caller that reads `Counts`
+/// back: `fennec dev copies --run` does. A run under `FENNEC_COUNTS` counts too.
+static COUNTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Has every run from now on count what it allocates.
+pub fn count_allocations() {
+    COUNTING.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// What a run of native code allocated and copied. Blocks that live for the whole run, and what
@@ -250,7 +262,10 @@ impl Heap {
 
     pub(crate) fn new(statics: Vec<Box<[u64]>>) -> Heap {
         let owner_bits = u64::from(super::threads::index()) << OWNER_SHIFT;
-        let mut heap = Heap { statics: statics.len(), owner_bits, ..Heap::default() };
+        let counting = cfg!(test)
+            || COUNTING.load(std::sync::atomic::Ordering::Relaxed)
+            || std::env::var_os("FENNEC_COUNTS").is_some();
+        let mut heap = Heap { statics: statics.len(), owner_bits, counting, ..Heap::default() };
         for block in statics {
             heap.insert(block);
         }
@@ -331,8 +346,18 @@ impl Heap {
         self.site = Some(site);
     }
 
-    /// Notes that `bytes` bytes were allocated.
+    /// Notes that `bytes` bytes were allocated, when anything will read it: every block made
+    /// comes here, so the rest is out of its way.
+    #[inline]
     pub(super) fn allocated(&mut self, bytes: u64) {
+        if self.counting || self.site.is_some() {
+            self.count_allocated(bytes);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn count_allocated(&mut self, bytes: u64) {
         self.counts.allocated(bytes);
         if let Some(site) = self.site {
             self.sites.entry(site).or_default().allocated(bytes);

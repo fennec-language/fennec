@@ -64,7 +64,7 @@ impl FnCx<'_> {
                 }
                 // With only the `mut` form, reaching an item takes a `mut` name.
                 if let Some((key, _)) = self.checker.program.method(name, "[]mut") {
-                    let what = format!("`{name}` has only the `mut` form of `def []`, so index a mut name");
+                    let what = format!("`{name}` has only the `ref` form of `def []`, so index a mut name");
                     self.mut_place(object, &what);
                     return self.call_operator(&ty, &key, &at, index.span);
                 }

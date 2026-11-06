@@ -884,7 +884,7 @@ fn missing_return_type(def: &FnDef, value: &Type, generator: bool, fixable: bool
         .params
         .iter()
         .map(|param| {
-            let prefix = if param.is_mut { "mut " } else { "" };
+            let prefix = if param.is_mut { "ref " } else { "" };
             match &param.ty {
                 Some(ty) => format!("{prefix}{}: {}", param.name, written(ty)),
                 None => format!("{prefix}{}", param.name),

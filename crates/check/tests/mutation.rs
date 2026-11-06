@@ -119,16 +119,16 @@ fn the_fix_for_a_name_depends_on_where_it_came_from() {
     assert_eq!(
         helps("def heal(health: int):\n    health += 1\n"),
         [
-            "parameters are read-only: to change it, write `mut health` in `heal`'s parameters, and pass it with `mut` at each call"
+            "parameters are read-only: to change it, write `ref health` in `heal`'s parameters, and pass it with `ref` at each call"
         ]
     );
     assert_eq!(
         helps("struct A:\n    n = 1\n\n    def bump(self):\n        self.n = 2\n"),
-        ["to change `self`, write `mut self` in `bump`'s parameters"]
+        ["to change `self`, write `ref self` in `bump`'s parameters"]
     );
     assert_eq!(
         helps("def f(items: list[int]):\n    for item in items:\n        item += 1\n"),
-        ["loop with `for mut item in ...` to change each item"]
+        ["loop with `for ref item in ...` to change each item"]
     );
 }
 
@@ -274,15 +274,15 @@ fn mut_arguments_match_mut_parameters() {
     assert_eq!(
         problems(program),
         [
-            "`heal` changes `health`, so it has to be passed with `mut` @ health",
-            "`heal` doesn't change `amount`, so it shouldn't be passed with `mut` @ health",
+            "`heal` changes `health`, so it has to be passed with `ref` @ health",
+            "`heal` doesn't change `amount`, so it shouldn't be passed with `ref` @ health",
             "`fixed` isn't mut @ fixed",
-            "only a name, or a field or item of one, can be passed with `mut` @ 3",
+            "only a name, or a field or item of one, can be passed with `ref` @ 3",
         ]
     );
     assert_eq!(
         helps("def f(mut n: int):\n    n += 1\n\ndef g():\n    mut n = 1\n    f(n)\n"),
-        ["write `mut` before the argument, so readers can see it changes"]
+        ["write `ref` before the argument, so readers can see it changes"]
     );
 }
 
@@ -302,9 +302,9 @@ fn for_mut_needs_a_mut_place() {
     assert_eq!(
         problems(program),
         [
-            "`fixed` isn't mut @ fixed",
-            "`for mut` changes each item, so loop over something held in a mut name @ [1, 2]",
-            "`score` isn't mut @ score",
+            "`fixed` isn't `ref` @ fixed",
+            "`for ref` changes each item, so loop over something held in a mut name @ [1, 2]",
+            "`score` isn't `ref` @ score",
         ]
     );
 }
@@ -330,10 +330,10 @@ fn values_and_builtins_do_not_take_mut() {
     assert_eq!(
         with_enemy(program),
         [
-            "`sorted` doesn't change its arguments, so don't pass `mut` @ sorted(mut s)",
-            "building a value doesn't change its arguments, so don't pass `mut` @ n",
-            "`startswith` doesn't change `prefix`, so it shouldn't be passed with `mut` @ s",
-            "`replace` doesn't change its arguments, so don't pass `mut` @ replace(Enemy(), mut n)",
+            "`sorted` doesn't change its arguments, so don't pass `ref` @ sorted(mut s)",
+            "building a value doesn't change its arguments, so don't pass `ref` @ n",
+            "`startswith` doesn't change `prefix`, so it shouldn't be passed with `ref` @ s",
+            "`replace` doesn't change its arguments, so don't pass `ref` @ replace(Enemy(), mut n)",
             "name the field to change, like `health=50` @ n",
         ]
     );

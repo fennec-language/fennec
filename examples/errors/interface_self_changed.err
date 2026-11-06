@@ -4,4 +4,4 @@ error: `Count` isn't a `Source`: it has no `next(self) -> int`. Its `next` chang
 16 |     stdout.print(two(counter), counter.left)
    |                  ^^^^^^^^^^^^
    |
-   = help: write `mut self` in the interface's `next`, or don't change `self` here
+   = help: write `ref self` in the interface's `next`, or don't change `self` here

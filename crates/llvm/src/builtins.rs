@@ -1,6 +1,6 @@
 //! Builtins written out here: loops over a list that the runtime has no call for.
 
-use fennec_interp::embed::layout::{TEXT, TEXT_BYTES};
+use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS};
 use fennec_interp::embed::lists::{SORT_FLOATS, SORT_INTS, SORT_STRINGS};
 use fennec_ir::{LocalId, Operand};
 use fennec_layout::ListItem;
@@ -573,6 +573,17 @@ impl Emit<'_, '_, '_> {
             let (at, bytes) = (self.offset(&text, TEXT_BYTES.unsigned_abs()), self.temp());
             self.line(&format!("{bytes} = load i64, ptr {at}{LENGTH_ACCESS}"));
             return self.assign(dest, &bytes);
+        }
+        if name == "str.is_ascii" {
+            let (bytes_at, chars_at) = (
+                self.offset(&text, TEXT_BYTES.unsigned_abs()),
+                self.offset(&text, TEXT_CHARS.unsigned_abs()),
+            );
+            let (bytes, chars, same) = (self.temp(), self.temp(), self.temp());
+            self.line(&format!("{bytes} = load i64, ptr {bytes_at}{LENGTH_ACCESS}"));
+            self.line(&format!("{chars} = load i64, ptr {chars_at}{LENGTH_ACCESS}"));
+            self.line(&format!("{same} = icmp eq i64 {bytes}, {chars}"));
+            return self.assign(dest, &same);
         }
         let (byte, _) = self.operand(args.get(1).ok_or("no argument")?)?;
         let start = self.offset(&text, TEXT.unsigned_abs());

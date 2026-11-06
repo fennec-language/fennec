@@ -37,7 +37,7 @@ impl Parser {
         }
         if self.eat_kw(Kw::Else) {
             let default = match self.peek() {
-                Tok::Kw(Kw::Continue | Kw::Return | Kw::Fail) => self.leaving()?,
+                Tok::Kw(Kw::Continue | Kw::Break | Kw::Return | Kw::Fail) => self.leaving()?,
                 Tok::P(Punct::Colon) => self.leaving_block()?,
                 _ => self.expr()?,
             };
@@ -50,7 +50,7 @@ impl Parser {
         Ok(value)
     }
 
-    /// `continue`, `return` or `fail` after `else`, as a `match` with one case that leaves, which
+    /// `continue`, `break`, `return` or `fail` after `else`, as a `match` with one case that leaves, which
     /// every engine and analysis already follows out of the expression.
     fn leaving(&mut self) -> Result<Expr, Diagnostic> {
         let start = self.span();
@@ -58,6 +58,7 @@ impl Parser {
         self.advance();
         let kind = match word {
             Tok::Kw(Kw::Continue) => StmtKind::Continue,
+            Tok::Kw(Kw::Break) => StmtKind::Break,
             Tok::Kw(Kw::Fail) => StmtKind::Fail(self.expr()?),
             _ if matches!(self.peek(), Tok::Newline | Tok::Eof | Tok::Dedent) => StmtKind::Return(None),
             _ => StmtKind::Return(Some(self.expr()?)),

@@ -475,6 +475,8 @@ fn analyze(
             InstKind::Copy { value: Operand::Local(from), .. }
             | InstKind::MakeSome { value: Operand::Local(from), .. }
             | InstKind::GetSome { value: Operand::Local(from), .. }
+            | InstKind::MakeMember { value: Operand::Local(from), .. }
+            | InstKind::GetMember { value: Operand::Local(from), .. }
                 if !known.moves(*from) =>
             {
                 known.shared.insert(from.0);

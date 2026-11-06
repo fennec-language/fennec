@@ -3139,10 +3139,7 @@ def main(stdout: Stdout):
 
 /// Programs that don't build natively yet, each waiting on named backend work. A listed program
 /// that does build natively fails the tests below, so the list only ever shrinks.
-const NOT_NATIVE_YET: &[&str] = &[
-    // Unions' native layout is the LLVM lane's next piece of work, after their IR lowering.
-    "unions.fen",
-];
+const NOT_NATIVE_YET: &[&str] = &[];
 
 fn not_native_yet(path: &Path) -> bool {
     path.file_name().and_then(|name| name.to_str()).is_some_and(|name| NOT_NATIVE_YET.contains(&name))
@@ -7237,6 +7234,132 @@ fn enums_holding_blocks_match_the_jit() -> std::io::Result<()> {
     }
     same_as_the_jit("enums_holding_blocks", ENUMS_HOLDING_BLOCKS)?;
     same_as_the_jit("enums_in_json_and_results", ENUMS_IN_JSON_AND_RESULTS)
+}
+
+/// Unions held in place, each with its member's case first: in lists and fields, optional,
+/// narrowed by `is`, read through methods every member has, compared, and copied when changed,
+/// with members that hold strings and lists.
+#[test]
+fn unions_holding_blocks_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("unions_holding_blocks", UNIONS_HOLDING_BLOCKS)
+}
+
+const UNIONS_HOLDING_BLOCKS: &str = r#"struct Circle:
+    radius: float
+
+    def area(self) -> float:
+        3.0 * self.radius * self.radius
+
+    def name(self) -> str:
+        "circle"
+
+struct Square:
+    side: float
+
+    def area(self) -> float:
+        self.side * self.side
+
+    def name(self) -> str:
+        "square"
+
+struct Label:
+    text: str
+    tags: list[str]
+
+    def area(self) -> float:
+        float(self.text.len())
+
+    def name(self) -> str:
+        f"label {self.text}"
+
+type Shape = Circle | Square | Label
+
+struct Holder:
+    shape: Shape
+    note: int | str
+
+def describe(value: int | str) -> str:
+    if value is int: return f"int {value}"
+    f"str {value.upper()}"
+
+def measure(value: float | int) -> str:
+    if value is float: return f"float {value}"
+    f"int {value}"
+
+def biggest(shapes: list[Shape]) -> Shape:
+    mut best = shapes[0]
+    for shape in shapes:
+        if shape.area() > best.area():
+            best = shape
+    best
+
+def maybe(at: int, shapes: list[Shape]) -> Shape?:
+    if at < shapes.len():
+        return shapes[at]
+    None
+
+def main(stdout: Stdout):
+    mut shapes: list[Shape] = []
+    for i in range(1000):
+        if i % 3 == 0:
+            shapes.append(Circle(radius=float(i % 7)))
+        elif i % 3 == 1:
+            shapes.append(Square(side=float(i % 5)))
+        else:
+            shapes.append(Label(text=f"l{i}", tags=["a", f"t{i}"]))
+    mut total = 0.0
+    mut circles = 0
+    mut letters = 0
+    for shape in shapes:
+        total += shape.area()
+        if shape is Circle:
+            circles += 1
+        if shape is Label:
+            letters += shape.tags.len() + shape.text.len()
+    stdout.print(total, circles, letters)
+    big = biggest(shapes)
+    stdout.print(big.name())
+    copied = shapes
+    mut changed = shapes
+    changed[1] = Label(text="swapped", tags=[])
+    (was, now) = (copied[1], changed[1])
+    stdout.print(was.name(), now.name(), copied[1] == changed[1], copied[0] == changed[0])
+    holder = Holder(shape=shapes[2], note="hello")
+    other = Holder(shape=Circle(radius=2.0), note=42)
+    stdout.print(holder.shape.name(), describe(holder.note), other.shape.area(), describe(other.note))
+    stdout.print(measure(1.5), describe(-3), describe("fox"), measure(7))
+    found = maybe(5, shapes)
+    if found is None:
+        stdout.print("none")
+    else:
+        shape: Shape = found
+        stdout.print("found", shape.name())
+    stdout.print(maybe(5000, shapes) is None)
+    mut notes: list[int | str] = [1, "two", 3]
+    notes.append("four")
+    mut joined = []
+    for note in notes:
+        joined.append(describe(note))
+    stdout.print(", ".join(joined), notes[1] == "two", notes[0] == 1, notes[0] == "1")
+"#;
+
+/// A list of a union holds each item in place, never in a block of its own: a thousand shapes
+/// take only the list's own blocks as it grows.
+#[test]
+fn a_list_of_a_union_holds_its_items_in_place() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let counts = counts_of(
+        "unions_in_place",
+        "struct Circle:\n    radius: float\n\nstruct Square:\n    side: float\n\ndef area(shape: Circle | Square) -> float:\n    if shape is Circle: return 3.0 * shape.radius * shape.radius\n    shape.side * shape.side\n\ndef main(stdout: Stdout):\n    mut shapes: list[Circle | Square] = []\n    for i in range(1000):\n        if i % 2 == 0:\n            shapes.append(Circle(radius=float(i % 7)))\n        else:\n            shapes.append(Square(side=float(i % 5)))\n    mut total = 0.0\n    for shape in shapes:\n        total += area(shape)\n    stdout.print(total)\n",
+    )?;
+    assert!(count(&counts, "allocations") < Some(30), "{counts}");
+    assert_eq!(count(&counts, "copies"), Some(0), "{counts}");
+    Ok(())
 }
 
 /// `parallel` puts items back by their case, letting go of what each item held.

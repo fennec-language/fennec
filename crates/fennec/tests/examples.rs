@@ -146,18 +146,6 @@ fn examples_print_their_expected_output() {
     .unwrap();
 }
 
-/// Unions run on the interpreter and the JIT, and wait in the fixtures until native code builds
-/// them, since every example has to: then this file goes back to `examples/`.
-#[test]
-fn unions_print_what_they_should_until_they_are_native() {
-    on_big_stack(|| {
-        let source = include_str!("fixtures/unions.fen");
-        let actual = run(source, "unions.fen").unwrap_or_else(|err| panic!("unions.fen failed:\n{err}"));
-        assert_eq!(actual, include_str!("fixtures/unions.out"));
-    })
-    .unwrap();
-}
-
 #[test]
 fn error_examples_fail_with_their_expected_message() {
     on_big_stack(|| {

@@ -3090,19 +3090,19 @@ def main(stdout: Stdout):
     stdout.print(points, other, points["p"].x, points == other, points.get("q"), points.get("r"))
     stdout.print(points.values(), points.items(), points.pop("q"), points)
     mut lights = {"go": Light.Green, "wait": Light.Amber(seconds=3)}
-    lights["stop"] = Light.Red
-    stdout.print(lights, lights["wait"], lights["go"] == Light.Green)
+    lights["stop"] = .Red
+    stdout.print(lights, lights["wait"], lights["go"] == .Green)
     for name, light in lights.items():
         match light:
-            case Red:
+            case .Red:
                 stdout.print(name, "red")
-            case Green:
+            case .Green:
                 stdout.print(name, "green")
-            case Amber(seconds):
+            case .Amber(seconds):
                 stdout.print(name, seconds)
     mut notes = {1: Note.Said(text="a long note that sits in its own block"), 2: Note.Empty}
-    notes[3] = Note.Said(text="short")
-    notes[1] = Note.Said(text="replaced")
+    notes[3] = .Said(text="short")
+    notes[1] = .Said(text="replaced")
     stdout.print(notes, notes[3])
     stdout.print(notes.pop(1), notes.get(3), notes.values())
     mut people = {"me": Named(name="me", tags=["a"])}

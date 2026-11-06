@@ -1841,6 +1841,26 @@ fn a_copy_each_time_round_a_loop_has_to_be_written() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// A `@hot` loop over a `Table`, `for ref` or not, walks its slots in place: nothing's made for it,
+/// so it checks, and it runs.
+#[test]
+fn a_hot_loop_over_a_table_makes_nothing() {
+    let dir = scratch("hot_table").unwrap();
+    let program = dir.join("hot.fen");
+    let source = "from std.collections import Table\n\nstruct Enemy:\n    hp: int\n\nstruct World:\n    \
+                  enemies = Table[Enemy]()\n\n@hot\ndef step(ref world: World) -> int:\n    mut total = 0\n    \
+                  for ref enemy in world.enemies:\n        enemy.hp -= 1\n    for enemy in world.enemies:\n        \
+                  total += enemy.hp\n    total\n\ndef main(stdout: Stdout):\n    mut world = World()\n    \
+                  _ = world.enemies.add(Enemy(hp=3))\n    _ = world.enemies.add(Enemy(hp=5))\n    \
+                  stdout.print(step(ref world))\n";
+    std::fs::write(&program, source).unwrap();
+    let checked = fennec(&["check", program.to_str().unwrap()], "").unwrap();
+    assert!(checked.status.success(), "{}", text(&checked.stderr));
+    let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
+    assert_eq!(text(&output.stdout), "6\n", "{}", text(&output.stderr));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// `@hot` on a function means it, and everything it calls, may not allocate or copy: each place
 /// that may is a compile error that says why, and one that does neither builds and runs.
 #[test]

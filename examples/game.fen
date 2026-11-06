@@ -23,6 +23,9 @@ error TargetGone:
 error OutOfRange:
     distance: float
 
+# A game's update loop walks its `Table` in place, so it makes nothing and can be `@hot`.
+@hot
+
 def step(ref world: World, dt: float):
     for ref enemy in world.enemies:
         enemy.position += enemy.velocity * dt

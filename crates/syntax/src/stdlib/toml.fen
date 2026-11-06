@@ -1031,6 +1031,30 @@ struct TomlReader:
     def end_case(ref self) fails ParseError:
         pass
 
+    def member(ref self, names: list[str]) -> int fails ParseError:
+        union = " | ".join(names)
+        match self._here:
+            case .Table(table):
+                if table.keys.len() != 1: fail self._misfit(union)
+                key = table.keys[0]
+                mut at = 0
+                for name in names:
+                    if name == key:
+                        self._here = table.values[0]
+                        self._path.append(key)
+                        return at
+                    at += 1
+                fail ParseError(
+                    message=f"{self._where()} is \"{key}\", which is none of `{union}`",
+                    line=0,
+                    column=0,
+                )
+            case _:
+                fail self._misfit(union)
+
+    def end_member(ref self) fails ParseError:
+        _ = self._path.pop()
+
 ## `text` read as a `T`, through its own `def deserialize`.
 def native_loads[T: Deserializable](text: str) -> T fails ParseError:
     mut parser = _Parser(source=text)
@@ -1047,6 +1071,8 @@ struct TomlWriter:
     _tables = list[_Table]()
     _wraps = list[str]()
     _after_case = False
+    ## The member each union being written is, innermost last.
+    _members = list[str]()
     ## Where each `Id` is in its `Table`, as `JsonWriter` keeps it.
     _id_tables: dict[str, dict[(int, int), int]] = {}
     _found = False
@@ -1122,6 +1148,15 @@ struct TomlWriter:
     def case_record(ref self, name: str, case: str, at: int, count: int):
         self._tables.append(_Table())
         self._wraps.append(case)
+
+    def member(ref self, name: str, at: int):
+        self._optional = False
+        self._members.append(name)
+
+    def end_member(ref self):
+        mut outer = _Table()
+        outer.add(self._members.pop(-1), self._done)
+        self._done = .Table(table=outer)
 
     def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
         self.sequence(items)

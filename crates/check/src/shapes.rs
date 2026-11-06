@@ -37,6 +37,18 @@ impl Signatures {
                 let items: Vec<&Type> = items.iter().collect();
                 self.wrapped(("(", ")"), &items, open, out);
             }
+            // Each member's shape, in order: a member's place is what a format saving no names
+            // writes for it.
+            Type::Union(members) => {
+                out.push('(');
+                for (at, member) in members.iter().enumerate() {
+                    if at > 0 {
+                        out.push_str(" | ");
+                    }
+                    self.shape_into(member, open, out);
+                }
+                out.push(')');
+            }
             Type::Named(name) => self.named_shape(name, &[], open, out),
             Type::Generic(name, args) => self.named_shape(name, args, open, out),
             other => {

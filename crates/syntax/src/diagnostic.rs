@@ -36,6 +36,8 @@ pub enum Also {
     Other,
     /// The loop going over what changed.
     Loop,
+    /// Where a generator was used first.
+    FirstUse,
 }
 
 /// One change to a source: the text at `span` becomes `text`. An empty span inserts.
@@ -87,6 +89,7 @@ impl Diagnostic {
         match self.elsewhere.as_ref().map_or(Also::Other, |elsewhere| elsewhere.1) {
             Also::Other => "the other one",
             Also::Loop => "the loop",
+            Also::FirstUse => "its first use",
         }
     }
 

@@ -17,6 +17,7 @@ mod lost;
 mod mutation;
 mod names;
 mod narrowing;
+mod once;
 mod returns;
 mod shared;
 mod signatures;

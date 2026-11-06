@@ -235,6 +235,20 @@ impl Emit<'_, '_, '_> {
                 self.release(&block);
                 Ok(text)
             }
+            // An `Id` shows its slot, as the interpreter's does, and never its tag, which differs
+            // from run to run.
+            Kind::Struct(id) if self.module.layouts.get(*id).is_some_and(|layout| layout.name == "Id") => {
+                let (key, slot) = (self.temp(), self.temp());
+                self.line(&format!("{key} = load i64, ptr {value}"));
+                self.line(&format!("{slot} = lshr i64 {key}, 32"));
+                let number = self.temp();
+                self.line(&format!("{number} = call ptr @fennec_int_text(i64 {slot})"));
+                let opening = self.literal("Id(");
+                self.retain(&opening);
+                let text = self.joined(&opening, &number, true);
+                let closing = self.literal(")");
+                Ok(self.joined(&text, &closing, false))
+            }
             Kind::Struct(id) => {
                 let layouts = self.module.layouts;
                 let layout = layouts.get(*id).ok_or("no such layout")?;

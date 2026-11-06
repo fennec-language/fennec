@@ -319,7 +319,10 @@ impl Context<'_> {
             }
             Type::Function(key) => self.arrow_of(key).is_some(),
             Type::Result(ok, error) => (**ok == Type::Unit || self.holds(ok)) && self.holds(error),
-            Type::Errors(names) => names.iter().all(|name| self.errors.contains(name.as_str())),
+            // An error with cases is held as an enum.
+            Type::Errors(names) => names
+                .iter()
+                .all(|name| self.errors.contains(name.as_str()) || self.enums.contains_key(name.as_str())),
             Type::Named(name) => {
                 self.structs.contains(name.as_str())
                     || self.instances.types.borrow().contains_key(name.as_str())

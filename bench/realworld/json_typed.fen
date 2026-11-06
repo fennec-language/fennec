@@ -38,11 +38,11 @@ struct Unit:
 def order(i: int) -> Order:
     match i % 3:
         case 0:
-            Order.Hold
+            .Hold
         case 1:
-            Order.Move(x=i, y=-i)
+            .Move(x=i, y=-i)
         case _:
-            Order.Say(text=f"unit {i} says \"hello\"\n")
+            .Say(text=f"unit {i} says \"hello\"\n")
 
 def unit(i: int) -> Unit:
     kinds = [Kind.Player, Kind.Monster, Kind.Trader]

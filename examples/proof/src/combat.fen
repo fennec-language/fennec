@@ -99,7 +99,7 @@ def leave_squad(mut world: World, mut board: Scoreboard, squad_id: Id[Squad], go
     mut best = -1
     for member in members:
         unit = world.units[member]
-        if unit.kind != Kind.Medic and unit.health > best:
+        if unit.kind != .Medic and unit.health > best:
             leader = member
             best = unit.health
     world.squads[squad_id].leader = leader

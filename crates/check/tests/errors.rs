@@ -222,8 +222,8 @@ fn an_error_with_cases_is_made_from_one_and_matched_whole() {
     );
     assert_eq!(
         in_main(
-            "    problem = DialError.Closed\n    match problem:\n        case Closed: stdout.print(\"closed\")\n        \
-             case NotFound(host): stdout.print(host)\n"
+            "    problem = DialError.Closed\n    match problem:\n        case .Closed: stdout.print(\"closed\")\n        \
+             case .NotFound(host): stdout.print(host)\n"
         ),
         ["this `match` doesn't handle `DialError.Refused` @ problem"]
     );
@@ -240,10 +240,10 @@ const LOAD_ERROR: &str =
 fn fails_names_the_one_error_a_function_can_fail_with() {
     let text = format!(
         "{LOAD_ERROR}def load(path: str) -> float fails LoadError:\n    if path == \"\":\n        \
-         fail LoadError.NotFound(path)\n    if path == \"bad\":\n        return Err(LoadError.BadRow(3))\n    1.5\n\n\
+         fail .NotFound(path)\n    if path == \"bad\":\n        return Err(LoadError.BadRow(3))\n    1.5\n\n\
          def total(paths: list[str]) -> float fails LoadError:\n    mut sum = 0.0\n    for path in paths:\n        \
          sum += load(path)?\n    sum\n\ndef check(path: str) fails LoadError:\n    if load(path)? < 0.0:\n        \
-         fail LoadError.BadRow(0)\n"
+         fail .BadRow(0)\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
 }

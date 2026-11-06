@@ -61,7 +61,7 @@ test "boxes are small" for box: Box:
     assert box.size < 3
 
 test "coins land heads" for coin: Coin:
-    assert coin == Coin.Heads
+    assert coin == .Heads
 
 test "big numbers are odd" for n: int:
     assert n < 100 or n % 2 == 1

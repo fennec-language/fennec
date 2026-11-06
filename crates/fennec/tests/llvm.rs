@@ -5432,6 +5432,57 @@ def main(stdout: Stdout):
     )
 }
 
+/// Keys that hold strings or floats go by what they hold, not by their words.
+#[test]
+fn keys_holding_strings_and_floats_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter(
+        "keys_by_value",
+        r#"struct Named:
+    id: int
+    name: str
+
+enum Tag:
+    Plain
+    Label(text: str)
+
+def joined(a: str, b: str) -> str:
+    a + b
+
+def main(stdout: Stdout):
+    mut pairs = {(1, "one"): [1], (2, "a long string in its own block"): [2]}
+    long = joined("a long string ", b="in its own block")
+    stdout.print(pairs[(1, "one")], pairs[(2, long)], (2, long) in pairs, (3, long) in pairs)
+    pairs[(2, long)] = [9]
+    pairs[(3, joined("th", b="ree"))] = [3]
+    kept = pairs
+    pairs[(4, "four")] = []
+    stdout.print(pairs, pairs.len(), kept.len(), pairs.get((3, "three")), pairs.get((9, "no")))
+    stdout.print(pairs.pop((1, "one")), pairs.keys(), kept == pairs, kept == kept)
+    for key, value in pairs.items():
+        stdout.print(key, value)
+    mut people = {Named(id=1, name="ann"): 1}
+    people[Named(id=2, name=joined("b", b="ob"))] = 2
+    stdout.print(people[Named(id=2, name="bob")], Named(id=1, name="ann") in people, people.len())
+    mut tags = {Tag.Plain, Tag.Label(text="x"), Tag.Label(text="x")}
+    tags.add(Tag.Label(text=joined("y", b="z")))
+    tags.discard(Tag.Label(text="x"))
+    stdout.print(tags, tags.len(), Tag.Label(text="yz") in tags, Tag.Plain in tags)
+    zero = 0.0
+    mut floats = {(zero, 1): "a"}
+    floats[(-zero, 1)] = "b"
+    floats[(1.5, 2)] = "c"
+    stdout.print(floats, floats.len(), floats[(-zero, 1)])
+    mut grown: dict[(int, str), int] = {}
+    for at in range(200):
+        grown[(at % 20, f"key {at % 20}")] = at
+    stdout.print(grown.len(), grown[(7, "key 7")], grown[(19, "key 19")])
+"#,
+    )
+}
+
 /// Floats as keys hash as they compare, on the interpreter here. LLVM's float keys are held to the
 /// same answers where they're lowered.
 #[test]
@@ -7062,10 +7113,10 @@ def main(stdout: Stdout):
     )
 }
 
-/// Keys are hashed and compared by their words, so one holding a string can't be: two equal
-/// strings can be two blocks. Native code turns those dicts down, and the JIT takes them.
+/// A key holding a string is hashed and compared by what it holds, not by its words, as two equal
+/// strings can be two blocks. So native code takes those dicts.
 #[test]
-fn keys_holding_strings_go_to_the_jit() -> std::io::Result<()> {
+fn keys_holding_strings_build_natively() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -7083,13 +7134,10 @@ def main(stdout: Stdout):
     std::fs::write(&program, source)?;
     let (program, output) = (program.to_string_lossy().into_owned(), dir.join("out"));
     let built = fennec(&["build", "--llvm", &program, "-o", &output.to_string_lossy()], &dir)?;
-    assert!(!built.status.success());
-    assert!(String::from_utf8_lossy(&built.stderr).contains("Dict(Named(\"Person\"), Int)"));
-    let ran = fennec(&["run", &program], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&output).output()?;
     assert!(ran.status.success());
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "1\n");
-    let said = String::from_utf8_lossy(&ran.stderr).into_owned();
-    assert!(said.starts_with("note: running this with the JIT, since LLVM can't build it: `main`"), "{said}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

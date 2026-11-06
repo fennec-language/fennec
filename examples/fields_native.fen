@@ -124,7 +124,8 @@ def main(stdout: Stdout):
         kept == bag,
     )
 
-    stdout.print(bag.numbers.pop(), bag.numbers, bag.items.pop().id, bag.items.len())
+    last = bag.items.pop() else return
+    stdout.print(bag.numbers.pop(), bag.numbers, last.id, bag.items.len())
     bag.numbers.insert(0, 42)
     bag.numbers.remove(8)
     bag.numbers.sort()

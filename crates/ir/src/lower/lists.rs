@@ -39,6 +39,45 @@ pub(super) struct Over<'a> {
 }
 
 impl Lowering<'_> {
+    /// `list.pop()`: the last item, or `None` when the list is empty, so an empty list is
+    /// tested here and the backend's pop only ever runs on a list with something in it.
+    pub(super) fn pop_or_none(
+        &mut self,
+        values: Vec<Operand>,
+        keep: Option<Type>,
+        span: Span,
+    ) -> Lowered<Option<LocalId>> {
+        let Some(Type::List(item)) = values.first().and_then(|list| crate::type_in(&self.locals, list)) else {
+            return Err("`pop` on something that isn't a list".to_owned());
+        };
+        let length = self.temporary(Type::Int);
+        let args = values.clone();
+        self.emit(InstKind::Builtin { dest: Some(length), name: "list.len".to_owned(), args, changes: false }, span);
+        let empty = self.temporary(Type::Bool);
+        let (lhs, rhs) = (Operand::Local(length), Operand::Int(0));
+        self.emit(InstKind::Binary { dest: empty, op: BinOp::Eq, lhs, rhs }, span);
+        let dest = keep.map(|ty| self.temporary(ty));
+        let (none, some, join) = (self.new_block(), self.new_block(), self.new_block());
+        self.finish(Terminator::Branch { cond: Operand::Local(empty), then: none, otherwise: some });
+        self.current = none;
+        if let Some(dest) = dest {
+            self.emit(InstKind::Copy { dest, value: Operand::None }, span);
+        }
+        self.finish(Terminator::Jump(join));
+        self.current = some;
+        let popped = dest.map(|_| self.temporary(*item));
+        let name = "list.pop".to_owned();
+        self.emit(InstKind::Builtin { dest: popped, name, args: values, changes: true }, span);
+        if let (Some(dest), Some(popped)) = (dest, popped) {
+            let ty = self.locals[dest.0].ty.clone();
+            let value = self.coerce(Operand::Local(popped), &ty, span)?;
+            self.emit(InstKind::Copy { dest, value }, span);
+        }
+        self.finish(Terminator::Jump(join));
+        self.current = join;
+        Ok(dest)
+    }
+
     pub(super) fn list(&mut self, expr: &Expr, items: &[Expr]) -> Lowered<Operand> {
         let ty = self.ty(expr)?;
         let (Type::List(item) | Type::Array(item, _)) = &ty else {

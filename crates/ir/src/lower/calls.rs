@@ -258,8 +258,12 @@ impl Lowering<'_> {
                 values.push(Operand::Int(i64::try_from(*size).map_err(|_| "an array too long to count")?));
             }
             self.fit_list_item(&name, &mut values, span)?;
-            dest = keep.map(|ty| self.temporary(ty));
-            self.emit(InstKind::Builtin { dest, name, args: values, changes }, span);
+            if name == "list.pop" && values.len() == 1 {
+                dest = self.pop_or_none(values, keep, span)?;
+            } else {
+                dest = keep.map(|ty| self.temporary(ty));
+                self.emit(InstKind::Builtin { dest, name, args: values, changes }, span);
+            }
         } else {
             let (function, values, lock) =
                 self.direct((callee, args), keep.as_ref(), &mut write_backs, span)?;

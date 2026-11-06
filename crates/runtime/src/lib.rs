@@ -119,11 +119,22 @@ pub const CAN_FAIL: &[&str] = &[
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// Whether an export's attribute leaves it out of the lean runtime, which has no interpreter.
+#[cfg_attr(feature = "lean", expect(unused_macros, reason = "the lean runtime has none of those exports"))]
+macro_rules! for_interpreter {
+    (cfg(not(feature = "lean"))) => {
+        true
+    };
+    ($($other:tt)*) => {
+        false
+    };
+}
+
 /// Exports each function under a symbol: `symbol(params) -> result => function(args);`.
 macro_rules! export {
-    ($($(#[$meta:meta])* $symbol:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)? => $module:ident::$function:ident($($pass:ident),*);)*) => {
+    ($($(#[$($meta:tt)*])* $symbol:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)? => $module:ident::$function:ident($($pass:ident),*);)*) => {
         $(
-            $(#[$meta])*
+            $(#[$($meta)*])*
             #[unsafe(no_mangle)]
             pub extern "C" fn $symbol($($arg: $ty),*) $(-> $ret)? {
                 $module::$function($($pass),*)
@@ -131,8 +142,18 @@ macro_rules! export {
         )*
 
         /// Every symbol this library exports.
-        pub const SYMBOLS: &[&str] = &[$($(#[$meta])* stringify!($symbol)),*];
+        pub const SYMBOLS: &[&str] = &[$($(#[$($meta)*])* stringify!($symbol)),*];
+
+        /// Every symbol this library exports, and whether it's one only the interpreter's runtime
+        /// has: a program calling one of those can't link against the lean runtime.
+        pub const EXPORTS: &[(&str, bool)] =
+            &[$($(#[$($meta)*])* (stringify!($symbol), false $(|| for_interpreter!($($meta)*))*)),*];
     };
+}
+
+/// The symbols only the runtime with the interpreter exports.
+pub fn interpreter_symbols() -> impl Iterator<Item = &'static str> {
+    EXPORTS.iter().filter(|(_, interpreter)| *interpreter).map(|(symbol, _)| *symbol)
 }
 
 export! {

@@ -4,7 +4,7 @@
 /// say its settings.
 #[test]
 fn starts() {
-    assert!(!fennec_runtime::SYMBOLS.is_empty());
+    assert_ne!(fennec_runtime::SYMBOLS.len(), 0);
 }
 
 /// mimalloc reserves its arenas 64 MiB at a time, as `.cargo/config.toml` builds it to.

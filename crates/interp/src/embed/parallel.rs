@@ -124,8 +124,11 @@ impl Run {
     /// owners of the calling thread's blocks, when this thread is a worker.
     fn keep_made(&self, since: usize) {
         if super::threads::index() != self.caller {
+            // Most ranges make nothing that outlives them, and every worker shares these locks.
             let made = super::threads::hand_over(since);
-            self.made.lock().unwrap_or_else(PoisonError::into_inner).extend(made);
+            if !made.is_empty() {
+                self.made.lock().unwrap_or_else(PoisonError::into_inner).extend(made);
+            }
             let (changes, printed) = pool::range_ends();
             if !printed.is_empty() {
                 self.printed.lock().unwrap_or_else(PoisonError::into_inner).extend(printed);

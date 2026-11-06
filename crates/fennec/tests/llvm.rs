@@ -8278,6 +8278,12 @@ struct Words:
     def end_ordered(ref self):
         pass
 
+    def map_count(ref self) -> int fails ParseError:
+        -1
+
+    def end_map(ref self):
+        pass
+
     def none(ref self) -> bool fails ParseError:
         if self.at < self.parts.len() and self.parts[self.at] == "-":
             self.at += 1

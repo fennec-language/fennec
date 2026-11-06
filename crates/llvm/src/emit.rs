@@ -1398,6 +1398,21 @@ impl Emit<'_, '_, '_> {
 
     /// Rounds toward negative infinity, unlike the machine's division.
     fn division(&mut self, op: BinOp, (a, b): (&str, &str), rhs: &Operand, span: Span) -> String {
+        // By a power of two, rounding toward negative infinity is what shifting does, and the
+        // remainder that goes with it is the low bits, whatever the sign: `-7 // 2` is `-7 >> 1`,
+        // -4, and `-7 % 2` is `-7 & 1`, 1. So nothing's left to fix up, and LLVM can see that
+        // `n % 2 == 0` leaves `n // 2` exact.
+        if let Operand::Int(divisor @ 1..) = rhs
+            && divisor.count_ones() == 1
+        {
+            let result = self.temp();
+            if op == BinOp::FloorDiv {
+                self.line(&format!("{result} = ashr i64 {a}, {}", divisor.trailing_zeros()));
+            } else {
+                self.line(&format!("{result} = and i64 {a}, {}", divisor - 1));
+            }
+            return result;
+        }
         if !matches!(rhs, Operand::Int(1..)) {
             let zero = self.temp();
             self.line(&format!("{zero} = icmp eq i64 {b}, 0"));

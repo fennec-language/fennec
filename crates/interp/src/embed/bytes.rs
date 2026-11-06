@@ -49,6 +49,13 @@ pub(super) fn data_of(block: &[u64]) -> Vec<u8> {
     data
 }
 
+/// The bytes from `from` up to `to` in a block, which are inside its length.
+fn part_of(block: &[u64], from: usize, to: usize) -> Vec<u8> {
+    let words = block.get(HEADER_WORDS + from / 8..HEADER_WORDS + to.div_ceil(8)).unwrap_or_default();
+    let skip = from % 8;
+    words.iter().flat_map(|word| word.to_le_bytes()).skip(skip).take(to - from).collect()
+}
+
 fn data_at(state: &State, at: i64) -> Vec<u8> {
     state.heap.block(at.cast_unsigned()).map(data_of).unwrap_or_default()
 }
@@ -97,8 +104,8 @@ pub extern "C" fn join(a: i64, b: i64) -> i64 {
 /// `data[start:end]` with Python's rules, `i64::MIN` for a bound that isn't there.
 pub extern "C" fn slice(bytes: i64, start: i64, end: i64) -> i64 {
     with(|state| {
-        let data = data_at(state, bytes);
-        let length = i64::try_from(data.len()).unwrap_or(i64::MAX);
+        let block = state.heap.block(bytes.cast_unsigned()).unwrap_or_default();
+        let length = block.get(2).and_then(|n| i64::try_from(*n).ok()).unwrap_or(0);
         let bound = |at: i64, default: i64| {
             let at = if at == i64::MIN {
                 default
@@ -110,7 +117,9 @@ pub extern "C" fn slice(bytes: i64, start: i64, end: i64) -> i64 {
             usize::try_from(at.clamp(0, length)).unwrap_or(0)
         };
         let (from, to) = (bound(start, 0), bound(end, length));
-        make(state, data.get(from..to.max(from)).unwrap_or(&[]))
+        // Only the part is copied out, so taking a small part of a long run costs only the part.
+        let part = part_of(block, from, to.max(from));
+        make(state, &part)
     })
 }
 

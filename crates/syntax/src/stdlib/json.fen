@@ -188,10 +188,10 @@ struct _Key:
     def end(ref self):
         pass
 
-    def case(ref self, name: str, case: str):
+    def case(ref self, name: str, case: str, at: int):
         pass
 
-    def case_record(ref self, name: str, case: str, count: int):
+    def case_record(ref self, name: str, case: str, at: int, count: int):
         pass
 
     def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
@@ -382,12 +382,12 @@ struct JsonWriter:
     def end(ref self):
         self._close("}")
 
-    def case(ref self, name: str, case: str):
+    def case(ref self, name: str, case: str, at: int):
         self._text += "\""
         self._text += case
         self._text += "\""
 
-    def case_record(ref self, name: str, case: str, count: int):
+    def case_record(ref self, name: str, case: str, at: int, count: int):
         self._open("{")
         self._entry()
         self._text += "\""
@@ -567,10 +567,10 @@ struct _TableFinder:
     def end(ref self):
         pass
 
-    def case(ref self, name: str, case: str):
+    def case(ref self, name: str, case: str, at: int):
         pass
 
-    def case_record(ref self, name: str, case: str, count: int):
+    def case_record(ref self, name: str, case: str, at: int, count: int):
         self._optional = False
 
     def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
@@ -1250,6 +1250,9 @@ struct JsonReader:
         made = new_tag()
         self._tags[kind] = made
         made
+
+    def missing_as_none(self) -> bool:
+        True
 
     def at_item(self, at: int, message: str) -> ParseError:
         if not self._explain: return _no_reason()

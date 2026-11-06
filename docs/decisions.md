@@ -60,7 +60,7 @@ for attacker_id, attacker in units.items():
     units[attacker.target_id].health -= attacker.damage
 ```
 
-**Nothing can be reached two ways while it's being changed.** Overlapping `ref`s are refused, including `f(ref x, ref x)` and writing to `units` inside `for ref unit in units`.
+**Nothing can be reached two ways while it's being changed.** Overlapping `ref`s are refused, including `f(ref x, ref x)` and writing to `units` inside `for ref unit in units`. So is an argument that changes what its call changes, like `self.items.append(self.grow())` when `grow` appends to `self.items`, since which change wins would depend on the engine.
 ```fennec
 for ref unit in units:
     units[unit.target_id].health -= 1    # error: the target may be `unit`

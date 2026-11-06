@@ -5,6 +5,8 @@
 //! collects the changes and makes them after.
 //!
 //! A `mut` argument has its place to itself the same way: nothing else in the call can reach it.
+//! Nor can an argument change what its call changes, like `self.items.append(self.grow())` where
+//! `grow` appends to `self.items`: the engines would disagree on which change wins.
 
 use std::collections::{HashMap, HashSet};
 
@@ -35,6 +37,14 @@ impl Place {
     /// This place, with `inner` read as a place under it.
     fn under(&self, inner: &[Step]) -> Place {
         Place { root: self.root.clone(), steps: self.steps.iter().chain(inner).cloned().collect() }
+    }
+
+    /// The place as it's written, with `[...]` for any index.
+    fn shown(&self) -> String {
+        self.steps.iter().fold(self.root.clone(), |text, step| match step {
+            Some(field) => format!("{text}.{field}"),
+            None => format!("{text}[...]"),
+        })
     }
 }
 
@@ -100,6 +110,7 @@ pub(crate) fn check_function(checker: &Checker, key: &str, def: &FnDef) -> Vec<D
         problems: Vec::new(),
     };
     loops.loops_in(&def.body, checker.typed.get(key));
+    loops.arguments_changing_their_call(&def.body, checker.typed.get(key));
     loops.problems
 }
 
@@ -130,6 +141,98 @@ impl Loops<'_> {
             for block in blocks(stmt) {
                 self.loops_in(block, body);
             }
+        }
+    }
+
+    /// Reports each call inside an argument that changes a place the call it's passed to also
+    /// changes: what a method changing its value is called on, or a `ref` argument's place.
+    fn arguments_changing_their_call(&mut self, stmts: &[Stmt], body: Option<&Body>) {
+        for stmt in stmts {
+            for expr in exprs(stmt) {
+                self.argument_changes_in(expr, body);
+            }
+            for block in blocks(stmt) {
+                self.arguments_changing_their_call(block, body);
+            }
+        }
+    }
+
+    fn argument_changes_in(&mut self, expr: &Expr, body: Option<&Body>) {
+        if let ExprKind::Call { callee, args } = &expr.kind {
+            let held = self.call_changes(callee, args, body);
+            if !held.is_empty() {
+                for arg in args {
+                    let mut changed = Vec::new();
+                    self.written_changes(&arg.value, body, &mut changed);
+                    for (place, written, span) in changed {
+                        let Some((both, _)) = held.iter().find(|(held, held_written)| {
+                            held.overlaps(&place) && !written_apart(held_written, written)
+                        }) else {
+                            continue;
+                        };
+                        let message = format!(
+                            "this changes `{}`, which the call it's passed to changes too",
+                            both.shown()
+                        );
+                        self.problems.push(Diagnostic::new(message, span).with_help(ARGUMENT_CHANGES_FIX));
+                    }
+                }
+            }
+        }
+        if let ExprKind::Match { arms, .. } = &expr.kind {
+            for arm in arms {
+                self.arguments_changing_their_call(&arm.body, body);
+            }
+        }
+        for inner in crate::effects::children(expr) {
+            self.argument_changes_in(inner, body);
+        }
+    }
+
+    /// The places a call itself changes, apart from what its arguments do, each with the place
+    /// as it's written: what it's called on, for a method that changes its value, and what it
+    /// changes under each `ref` argument.
+    fn call_changes<'e>(
+        &mut self,
+        callee: &'e Expr,
+        args: &'e [Arg],
+        body: Option<&Body>,
+    ) -> Vec<(Place, &'e Expr)> {
+        let mut held = Vec::new();
+        if let ExprKind::Attr { object, name, .. } = &callee.kind
+            && let Some(receiver) = place(object)
+        {
+            for inner in self.method_changes(object, name, body) {
+                held.push((receiver.under(&inner), object.as_ref()));
+            }
+        }
+        let callee_key = self.function_key(callee, body);
+        for (at, arg) in args.iter().enumerate() {
+            let Some(given) = place(&arg.value).filter(|_| arg.is_mut) else { continue };
+            let inner = callee_key.as_ref().and_then(|key| self.param_changes(key, at, arg.name.as_ref()));
+            for inner in inner.unwrap_or_else(|| vec![Vec::new()]) {
+                held.push((given.under(&inner), &arg.value));
+            }
+        }
+        held
+    }
+
+    /// What the calls in an expression change, as `call_changes` gives it, with where each call is.
+    fn written_changes<'e>(
+        &mut self,
+        expr: &'e Expr,
+        body: Option<&Body>,
+        found: &mut Vec<(Place, &'e Expr, Span)>,
+    ) {
+        if let ExprKind::Call { callee, args } = &expr.kind {
+            found.extend(
+                self.call_changes(callee, args, body)
+                    .into_iter()
+                    .map(|(place, written)| (place, written, expr.span)),
+            );
+        }
+        for inner in crate::effects::children(expr) {
+            self.written_changes(inner, body, found);
         }
     }
 
@@ -394,6 +497,9 @@ fn reads(expr: &Expr, changed: &Place) -> bool {
     place(expr).is_some_and(|found| found.overlaps(changed))
         || crate::effects::children(expr).into_iter().any(|inner| reads(inner, changed))
 }
+
+const ARGUMENT_CHANGES_FIX: &str =
+    "make that change on the line before, keeping what it gives back in a name, and pass the name";
 
 const OVERLAP_FIX: &str = "a `ref` argument needs its place to itself: give the other `copy(...)` of what \
 it reads, or make the changes one at a time";

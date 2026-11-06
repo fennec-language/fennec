@@ -1,0 +1,7 @@
+error: this changes `self.items`, which the call it's passed to changes too
+  --> examples/errors/argument_changes_its_call.fen:10:27
+   |
+10 |         self.items.append(self.grow())
+   |                           ^^^^^^^^^^^
+   |
+   = help: make that change on the line before, keeping what it gives back in a name, and pass the name

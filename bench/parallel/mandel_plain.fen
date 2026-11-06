@@ -1,0 +1,39 @@
+# `mandel.fen` without `parallel`: the same pixels, one after another.
+
+WIDTH = 1200
+HEIGHT = 900
+LIMIT = 1000
+
+struct Pixel:
+    x: float
+    y: float
+    escaped: int
+
+def escape(cx: float, cy: float) -> int:
+    mut x = 0.0
+    mut y = 0.0
+    mut count = 0
+    while count < LIMIT and x * x + y * y <= 4.0:
+        next = x * x - y * y + cx
+        y = 2.0 * x * y + cy
+        x = next
+        count += 1
+    count
+
+def main(stdout: Stdout):
+    mut pixels = [
+        Pixel(
+            x=float(at % WIDTH) / float(WIDTH) * 3.0 - 2.0,
+            y=float(at // WIDTH) / float(HEIGHT) * 3.0 - 1.5,
+            escaped=0,
+        ) for at in range(WIDTH * HEIGHT)
+    ]
+    for ref pixel in pixels:
+        pixel.escaped = escape(pixel.x, cy=pixel.y)
+    mut total = 0
+    mut inside = 0
+    for pixel in pixels:
+        total += pixel.escaped
+        if pixel.escaped == LIMIT:
+            inside += 1
+    stdout.print(total, inside)

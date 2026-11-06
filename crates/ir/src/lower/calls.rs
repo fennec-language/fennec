@@ -325,8 +325,12 @@ impl Lowering<'_> {
             // A generic intrinsic's copy, like `intrinsics.id_slot[Unit]`, is still the intrinsic.
             let intrinsic = function.split_once('[').map_or(function.as_str(), |(base, _)| base);
             if self.context.intrinsics.contains(intrinsic) {
+                // One given something by `ref`, like `append_text(ref out, text)`, changes it, and
+                // it's put back after, as for any call.
                 let name = intrinsic.to_owned();
-                self.emit(InstKind::Builtin { dest, name, args: values, changes: false }, span);
+                let changes = !write_backs.is_empty();
+                self.emit(InstKind::Builtin { dest, name, args: values, changes }, span);
+                self.write_back(write_backs, span)?;
                 return Ok(dest);
             }
             if let Some((handle, write)) = &lock {

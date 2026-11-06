@@ -1,0 +1,48 @@
+# An HTTP server is a function that answers each request. `server.serve` runs it for every
+# request, each connection its own task. Start it with a port, like
+# `fennec run examples/http_server.fen 8080`, then visit http://localhost:8080/hello?name=fox.
+from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    match request.path:
+        case "/hello":
+            name = request.query.get("name") else "you"
+            Response(status=200, body=f"hello, {name}".encode())
+        case "/echo" if request.method == "POST":
+            Response(status=200, headers={"content-type": "text/plain"}, body=request.body)
+        case _:
+            Response(status=404, body="nothing here".encode())
+
+# `respond` is a plain function, so its tests call it directly.
+test "it says hello by name":
+    answer = respond(Request(method="GET", path="/hello", query={"name": "fox"}))
+    assert answer.status == 200 and answer.text() == "hello, fox"
+
+test "it echoes what's posted, and nothing else is there":
+    posted = respond(Request(method="POST", path="/echo", body="den".encode()))
+    assert posted.text() == "den"
+    assert respond(Request(method="GET", path="/den")).status == 404
+
+# A test's `Net` works in memory: the request waits at the server, which answers it and stops
+# once nothing more is waiting.
+test "a request goes through the server"(net: Net):
+    with net.listen(0)? as server:
+        with net.connect("localhost", server.port)? as client:
+            client.write("GET /hello?name=red%20fox HTTP/1.1\r\nconnection: close\r\n\r\n")?
+            server.serve(respond)
+            assert (
+                list(client.lines())
+                == [
+                    "HTTP/1.1 200 OK", "content-length: 14", "connection: close", "",
+                    "hello, red fox",
+                ]
+            )
+
+def main(net: Net, args: Args, stdout: Stdout):
+    if args.len() == 0:
+        stdout.print("give a port to serve on, like 8080")
+        return
+    port = int(args[0]) else 8080
+    with net.listen(port)? as server:
+        stdout.print(f"serving on http://localhost:{server.port}")
+        server.serve(respond)

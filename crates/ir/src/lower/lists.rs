@@ -31,6 +31,34 @@ pub(super) struct Back {
     by_id: bool,
 }
 
+/// A `Table` a loop goes through by its slots: read once, or from its place each time it's asked.
+struct Walk<'a> {
+    iter: &'a Expr,
+    once: Option<Operand>,
+    span: Span,
+}
+
+impl Walk<'_> {
+    /// Asks the `Table` something of itself, or of the slot `count` is at, into `dest`.
+    fn ask(
+        &self,
+        lowering: &mut Lowering<'_>,
+        dest: LocalId,
+        name: &str,
+        count: Option<LocalId>,
+    ) -> Lowered<()> {
+        let table = match &self.once {
+            Some(value) => value.clone(),
+            None => lowering.expr(self.iter)?,
+        };
+        let mut args = vec![table];
+        args.extend(count.map(Operand::Local));
+        let kind = InstKind::Builtin { dest: Some(dest), name: name.to_owned(), args, changes: false };
+        lowering.emit(kind, self.span);
+        Ok(())
+    }
+}
+
 /// What a loop goes through.
 pub(super) struct Over<'a> {
     pub(super) names: &'a [String],
@@ -509,6 +537,9 @@ impl Lowering<'_> {
             );
         }
         let ty = self.type_at(iter.span).ok_or("what it loops over has no type")?;
+        if let Type::Table(item) = &ty {
+            return self.through_slots(names, (iter, (**item).clone()), back.as_ref(), span, body);
+        }
         let value = self.expr(iter)?;
         if let Type::Iterator(item) = &ty {
             let known = known_generator(iter, &|key| self.context.generators.contains_key(key));
@@ -523,11 +554,6 @@ impl Lowering<'_> {
             Type::Str => (Type::List(Box::new(Type::Str)), Type::Str, Some("str.chars")),
             Type::Set(item) | Type::Dict(item, _) => (Type::List(item.clone()), *item.clone(), Some("list")),
             Type::Bytes => (Type::List(Box::new(Type::Int)), Type::Int, Some("list")),
-            Type::Table(item) if back.is_some() => {
-                let pair = Type::Tuple(vec![Type::Id(item.clone()), *item.clone()]);
-                (Type::List(Box::new(pair.clone())), pair, Some("Table.items"))
-            }
-            Type::Table(item) => (Type::List(item.clone()), *item.clone(), Some("Table.values")),
             Type::Named(name) if name == "Args" => (Type::List(Box::new(Type::Str)), Type::Str, Some("list")),
             Type::Named(name) => {
                 let found = self.resolve(&format!("{name}.iter"), &[Some(ty.clone())], None);
@@ -564,6 +590,119 @@ impl Lowering<'_> {
             span,
         );
         self.count_through(names, (items, item), back, span, body)
+    }
+
+    /// Goes through a `Table`'s slots in place, with nothing made for it: each slot in use, in
+    /// order, read where it is. For `for ref`, the item goes back by its `Id` however the body
+    /// leaves, and the `Table` is read from its place each time, so it's never held twice while
+    /// it changes. Nothing else changes it in its loop, as the checker sees to, so its number of
+    /// slots is read once.
+    fn through_slots<F>(
+        &mut self,
+        names: &[String],
+        (iter, item): (&Expr, Type),
+        back: Option<&Back>,
+        span: Span,
+        body: F,
+    ) -> Lowered<()>
+    where
+        F: FnOnce(&mut Self) -> Lowered<()>,
+    {
+        // A name or a field of one is read where it is each time, so the loop holds no owner of
+        // its own that would outlast it; anything else is worked out once.
+        let once = if back.is_some() || names_a_field(iter) { None } else { Some(self.expr(iter)?) };
+        let walk = Walk { iter, once, span };
+        let stop = self.temporary(Type::Int);
+        walk.ask(self, stop, "Table.slots", None)?;
+        let count = self.temporary(Type::Int);
+        self.emit(InstKind::Copy { dest: count, value: Operand::Int(0) }, span);
+        self.counts.push(crate::Count { count, stop, down: false });
+        let (head, then, live, exit) =
+            (self.new_block(), self.new_block(), self.new_block(), self.new_block());
+        self.finish(Terminator::Jump(head));
+        self.current = head;
+        let going = self.temporary(Type::Bool);
+        let (lhs, rhs) = (Operand::Local(count), Operand::Local(stop));
+        self.emit(InstKind::Binary { dest: going, op: BinOp::Lt, lhs, rhs }, span);
+        self.finish(Terminator::Branch { cond: Operand::Local(going), then, otherwise: exit });
+        // A slot whose item has been taken out is stepped over.
+        self.current = then;
+        let in_use = self.temporary(Type::Bool);
+        walk.ask(self, in_use, "Table.slot_live", Some(count))?;
+        let skip = self.new_block();
+        self.finish(Terminator::Branch { cond: Operand::Local(in_use), then: live, otherwise: skip });
+        self.current = skip;
+        self.step(count, span);
+        self.finish(Terminator::Jump(head));
+        self.current = live;
+        self.slot_body(names, (&walk, item, count), back, (head, exit), body)?;
+        self.current = exit;
+        Ok(())
+    }
+
+    /// One slot in use: its item under the loop's name, the body, and for `for ref` the item put
+    /// back by its `Id`, then on to the next slot.
+    fn slot_body<F>(
+        &mut self,
+        names: &[String],
+        (walk, item, count): (&Walk<'_>, Type, LocalId),
+        back: Option<&Back>,
+        (head, exit): (BlockId, BlockId),
+        body: F,
+    ) -> Lowered<()>
+    where
+        F: FnOnce(&mut Self) -> Lowered<()>,
+    {
+        let span = walk.span;
+        self.scopes.push(HashMap::new());
+        let read = self.temporary(item.clone());
+        walk.ask(self, read, "Table.at_slot", Some(count))?;
+        let bound = match names {
+            [name] => {
+                let dest = self.declare(name, item.clone());
+                self.emit(InstKind::Copy { dest, value: Operand::Local(read) }, span);
+                Ok(())
+            }
+            _ => self.unpack(names, &Operand::Local(read), span),
+        };
+        let leaving = match (back, names.first().and_then(|name| self.lookup(name))) {
+            (Some(back), Some(local)) => {
+                let id = self.temporary(Type::Id(Box::new(item)));
+                walk.ask(self, id, "Table.slot_id", Some(count))?;
+                Some(Leaving::Item { place: back.place.clone(), item: local, index: Operand::Local(id) })
+            }
+            _ => None,
+        };
+        let next = self.new_block();
+        let broke = if leaving.is_some() { self.new_block() } else { exit };
+        self.leaving.extend(leaving.clone());
+        self.loops.push(Loop { next, exit: broke, depth: self.leaving.len() });
+        let lowered = bound.and_then(|()| body(self));
+        self.loops.pop();
+        if leaving.is_some() {
+            self.leaving.pop();
+        }
+        self.scopes.pop();
+        lowered?;
+        self.finish(Terminator::Jump(next));
+        self.current = next;
+        if let Some(leaving) = &leaving {
+            self.undo(leaving, span)?;
+        }
+        self.step(count, span);
+        self.finish(Terminator::Jump(head));
+        if let Some(leaving) = &leaving {
+            self.current = broke;
+            self.undo(leaving, span)?;
+            self.finish(Terminator::Jump(exit));
+        }
+        Ok(())
+    }
+
+    /// Counts one more.
+    fn step(&mut self, count: LocalId, span: Span) {
+        let lhs = Operand::Local(count);
+        self.emit(InstKind::Binary { dest: count, op: BinOp::Add, lhs, rhs: Operand::Int(1) }, span);
     }
 
     /// Goes through a list held in a local of its own.
@@ -823,4 +962,13 @@ fn reads_apart(elem: &Expr, root: &str, first_field: Option<&str>) -> bool {
         _ => {}
     });
     apart && named == other_fields && (first_field.is_some() || named == 0)
+}
+
+/// Whether an expression is a name, or a field of one, which reading again only reads.
+fn names_a_field(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Name(_) => true,
+        ExprKind::Attr { object, optional: false, .. } => names_a_field(object),
+        _ => false,
+    }
 }

@@ -5920,6 +5920,141 @@ fn walking_a_map_makes_no_list() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `for ref` and `for` over a `Table`, walking its slots in place: the slots taken out are
+/// stepped over, one used again is walked where it is, and `continue` and `break` put the item
+/// back as the end of the body does.
+const WALKING_SLOTS: &str = r#"from std.collections import Id, Table
+
+struct Enemy:
+    name: str
+    hp: int
+    x: float
+
+struct World:
+    enemies = Table[Enemy]()
+
+@hot
+def step(ref world: World, dt: float):
+    for ref enemy in world.enemies:
+        enemy.x += dt
+        if enemy.hp < 0: continue
+        enemy.hp -= 1
+
+def first_low(ref world: World) -> str:
+    mut found = ""
+    for ref enemy in world.enemies:
+        if enemy.hp < 3:
+            enemy.name = enemy.name + "!"
+            found = enemy.name
+            break
+    found
+
+def main(stdout: Stdout):
+    mut world = World()
+    a = world.enemies.add(Enemy(name="ash", hp=5, x=0.0))
+    b = world.enemies.add(Enemy(name="bo", hp=-1, x=1.0))
+    c = world.enemies.add(Enemy(name="cy", hp=2, x=2.0))
+    world.enemies.remove(b)
+    d = world.enemies.add(Enemy(name="di", hp=9, x=3.0))
+    for _ in range(3):
+        step(ref world, 0.5)
+    for enemy in world.enemies:
+        stdout.print(enemy.name, enemy.hp, enemy.x)
+    stdout.print(first_low(ref world), world.enemies[c].name, world.enemies[a].hp, d in world.enemies)
+    mut total = 0
+    for enemy in world.enemies:
+        total += enemy.hp
+    stdout.print(total, world.enemies.len())
+"#;
+
+#[test]
+fn walking_a_tables_slots_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit("walking_slots", WALKING_SLOTS)
+}
+
+/// A `@hot` loop changing each item of a `Table` in place makes nothing and copies nothing:
+/// only the `Table` itself, before the rounds, is allocated.
+#[test]
+fn walking_a_tables_slots_in_place_allocates_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let counts = counts_of(
+        "walking_slots_in_place",
+        r"from std.collections import Table
+
+struct Enemy:
+    hp: int
+    x: float
+
+@hot
+def step(ref enemies: Table[Enemy], dt: float):
+    for ref enemy in enemies:
+        enemy.x += dt
+        enemy.hp -= 1
+
+def main(stdout: Stdout):
+    mut enemies = Table[Enemy]()
+    for n in range(1000):
+        enemies.add(Enemy(hp=n, x=0.0))
+    mut total = 0
+    for round in range(100):
+        step(ref enemies, 0.5)
+        for enemy in enemies:
+            total += enemy.hp
+    stdout.print(total)
+",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    assert!(count(&counts, "allocations") < Some(40), "{counts}");
+    Ok(())
+}
+
+/// The same with the `Table` in a field, gone through by a plain loop after each round too: the
+/// plain loop reads the field where it is, so it holds no owner that would make the next round's
+/// `for ref` find the `Table` shared and copy it.
+#[test]
+fn walking_a_tables_slots_in_a_field_copies_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let counts = counts_of(
+        "walking_slots_in_a_field",
+        r"from std.collections import Table
+
+struct Enemy:
+    hp: int
+    x: float
+
+struct World:
+    enemies = Table[Enemy]()
+
+@hot
+def step(ref world: World, dt: float):
+    for ref enemy in world.enemies:
+        enemy.x += dt
+        enemy.hp -= 1
+
+def main(stdout: Stdout):
+    mut world = World()
+    for n in range(1000):
+        world.enemies.add(Enemy(hp=n, x=0.0))
+    mut total = 0
+    for round in range(100):
+        step(ref world, 0.5)
+        for enemy in world.enemies:
+            total += enemy.hp
+    stdout.print(total)
+",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    assert!(count(&counts, "allocations") < Some(40), "{counts}");
+    Ok(())
+}
+
 #[test]
 fn id_maps_match_the_jit() -> std::io::Result<()> {
     if !ready() {

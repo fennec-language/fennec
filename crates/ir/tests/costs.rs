@@ -64,7 +64,7 @@ fn changing_ones_own_copy_of_a_parameter_copies_what_the_caller_holds() {
 #[test]
 fn a_field_changed_in_place_is_named_and_a_sibling_isnt_shared() {
     let source = "struct World:\n    positions: list[int]\n    names: list[str]\n\n\
-                  def f(mut world: World) -> int:\n    snapshot = world.positions\n    world.names.append(\"a\")\n    \
+                  def f(ref world: World) -> int:\n    snapshot = world.positions\n    world.names.append(\"a\")\n    \
                   world.positions.append(1)\n    snapshot.len()\n";
     assert_eq!(
         copies(source).unwrap(),
@@ -75,7 +75,7 @@ fn a_field_changed_in_place_is_named_and_a_sibling_isnt_shared() {
 #[test]
 fn appending_to_a_field_alone_copies_nothing() {
     let source = "struct World:\n    positions: list[int]\n\n\
-                  def f(mut world: World):\n    world.positions.append(1)\n    world.positions[0] = 2\n";
+                  def f(ref world: World):\n    world.positions.append(1)\n    world.positions[0] = 2\n";
     assert_eq!(copies(source).unwrap(), Vec::<String>::new());
 }
 
@@ -123,7 +123,7 @@ fn what_the_caller_may_hold_isnt_counted_each_time() {
 
 #[test]
 fn changing_a_container_doesnt_copy_what_it_holds() {
-    let source = "struct Reader:\n    text: str\n    at = 0\n\n    def step(mut self):\n        self.at += 1\n\n\
+    let source = "struct Reader:\n    text: str\n    at = 0\n\n    def step(ref self):\n        self.at += 1\n\n\
                   def f(text: str) -> int:\n    mut reader = Reader(text=text)\n    reader.step()\n    reader.at + text.len()\n";
     assert_eq!(copies(source).unwrap(), Vec::<String>::new());
 }
@@ -151,7 +151,7 @@ fn a_moved_value_is_never_copied() {
 #[test]
 fn a_mut_name_read_from_a_place_is_a_copy_when_the_place_is_read_after() {
     let source = "struct Box:\n    items: list[int]\n\n\
-                  def f(mut box: Box) -> int:\n    mut items = box.items\n    items.append(1)\n    box.items.len() + items.len()\n";
+                  def f(ref box: Box) -> int:\n    mut items = box.items\n    items.append(1)\n    box.items.len() + items.len()\n";
     let found = copies(source).unwrap();
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].contains("`items` is copied"), "{found:?}");
@@ -220,7 +220,7 @@ fn every_example_can_be_reported_on() {
 
 #[test]
 fn a_shared_handle_is_never_copied_and_making_one_allocates() {
-    let source = "shared Account:\n    log = list[int]()\n\n    def add(mut self, amount: int):\n        \
+    let source = "shared Account:\n    log = list[int]()\n\n    def add(ref self, amount: int):\n        \
                   self.log.append(amount)\n\ndef main(stdout: Stdout):\n    account = Account()\n    \
                   same = account\n    same.add(1)\n    stdout.print(account)\n";
     assert_eq!(copies(source).unwrap(), Vec::<String>::new());
@@ -231,7 +231,7 @@ fn a_shared_handle_is_never_copied_and_making_one_allocates() {
 #[test]
 fn a_name_for_one_field_holds_only_that_field() {
     let source = "struct Unit:\n    team: str\n    items: list[int]\n\nstruct World:\n    units: list[Unit]\n\n\
-                  def f(mut world: World) -> int:\n    unit = world.units[0]\n    team = unit.team\n    \
+                  def f(ref world: World) -> int:\n    unit = world.units[0]\n    team = unit.team\n    \
                   world.units[0].items.pop(0)\n    team.len()\n";
     assert_eq!(copies(source).unwrap(), Vec::<String>::new());
 }

@@ -126,7 +126,7 @@ struct Box[T, U: Shape]:
         self
     def [](self, at: int):
         self.items[at]
-    def []=(mut self, at: int, value: T):
+    def []=(ref self, at: int, value: T):
         self.items[at] = value
     def ==(self, other: Box):
         True
@@ -141,8 +141,8 @@ enum Shape2:
 error Oops:
     reason: str
 
-noalloc def step(mut world: World, dt: float) -> (int, str)?:
-    for mut enemy in world.enemies:
+noalloc def step(ref world: World, dt: float) -> (int, str)?:
+    for ref enemy in world.enemies:
         enemy.x += enemy.v * dt
     for a, b in pairs: pass
     while not done and (x < y <= z or x is not None):
@@ -153,7 +153,7 @@ noalloc def step(mut world: World, dt: float) -> (int, str)?:
     if a: b
     elif c: d
     else: e
-    with arena() as mut scratch:
+    with arena() as ref scratch:
         continue
     with lock():
         pass
@@ -175,7 +175,7 @@ noalloc def step(mut world: World, dt: float) -> (int, str)?:
     o = x => x + 1
     p = (a, b) => a * b
     q = () => 0
-    r = f(mut x, y=2) if False else g(-1 % 2 // 3)
+    r = f(ref x, y=2) if False else g(-1 % 2 // 3)
     t = 3 in xs and 4 not in ys or not True
     u = .Circle(radius=2.0).area()
     match = 1

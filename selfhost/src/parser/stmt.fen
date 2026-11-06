@@ -134,7 +134,7 @@ extend Parser:
 
     def for_stmt(ref self) -> Stmt:
         start = self.advance().span
-        is_mut = self.eat_ref()
+        is_mut = self.eat_ref("a loop's name")
         names = self.loop_names()?
         iter, body = self.condition_and_block()?
         Stmt(kind=.For(names, is_mut, iter, body), span=start.to(self.prev_span()))
@@ -159,7 +159,7 @@ extend Parser:
         if self.eat_keyword("as"):
             while True:
                 at = self.span()
-                is_mut = self.eat_ref()
+                is_mut = self.eat_ref("a `with` name")
                 name = self.name("a name after `as`")?
                 names.append(WithName(name=name, is_mut=is_mut, span=at.to(self.prev_span())))
                 if not self.eat_punct(","):

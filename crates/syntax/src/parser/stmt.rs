@@ -168,7 +168,7 @@ impl Parser {
 
     fn for_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.advance().span;
-        let is_mut = self.eat_ref();
+        let is_mut = self.eat_ref("a loop's name");
         let names = self.loop_names()?;
         let (iter, body) = self.condition_and_block()?;
         Ok(Stmt { kind: StmtKind::For { names, is_mut, iter, body }, span: start.to(self.prev_span()) })
@@ -198,7 +198,7 @@ impl Parser {
         if self.eat_kw(Kw::As) {
             loop {
                 let at = self.span();
-                let is_mut = self.eat_ref();
+                let is_mut = self.eat_ref("a `with` name");
                 let name = self.name("a name after `as`")?;
                 names.push(WithName { name, is_mut, span: at.to(self.prev_span()) });
                 if !self.eat_p(Punct::Comma) {

@@ -208,7 +208,7 @@ fn test_functions(number: usize, test: &TestDef, inputs: &mut Inputs<'_>) -> Opt
     let indent = if looped { "        " } else { "    " };
     for (at, input) in test.inputs.iter().enumerate() {
         let function = inputs.function_for(input.ty.as_ref()?)?;
-        let _ = writeln!(made, "{indent}input{at} = {function}(mut state, 0)");
+        let _ = writeln!(made, "{indent}input{at} = {function}(ref state, 0)");
         args.push(format!("input{at}"));
     }
     let body_call = format!("{PREFIX}{number}_body({})", args.join(", "));

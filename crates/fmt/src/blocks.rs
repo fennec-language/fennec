@@ -21,11 +21,14 @@ struct Block {
     started: bool,
     /// Whether the last line written at this level was a declaration with a body.
     last_was_item: bool,
+    /// Whether the last line written at this level was an annotation, like `@hot`, which goes
+    /// right above what it's on.
+    last_was_annotation: bool,
 }
 
 impl Block {
     fn new(width: u32, kind: BlockKind) -> Self {
-        Block { width, kind, started: false, last_was_item: false }
+        Block { width, kind, started: false, last_was_item: false, last_was_annotation: false }
     }
 }
 
@@ -123,7 +126,9 @@ impl<'s, 't> Driver<'s, 't> {
     fn line(&mut self, start: usize, end: usize) {
         let level = self.level();
         let kind = self.blocks.last().map_or(BlockKind::Other, |block| block.kind);
-        let is_item = is_item(self.toks(start, end), kind);
+        let annotation = self.toks(start, end).first().is_some_and(|tok| tok.text == "@");
+        // A declaration's annotations start it at the top level, so the blank line goes above them.
+        let is_item = is_item(self.toks(start, end), kind) || annotation && kind == BlockKind::TopLevel;
         let first = self.tokens.get(start).map_or(0, |token| token.span.start);
         let entries = self.entries(start, first, level);
         self.write_entries(&entries, level, is_item);
@@ -142,6 +147,7 @@ impl<'s, 't> Driver<'s, 't> {
         if let Some(block) = self.blocks.last_mut() {
             block.started = true;
             block.last_was_item = is_item;
+            block.last_was_annotation = annotation;
         }
         self.pending = if joined.is_some() { BlockKind::Other } else { opened_kind(self.toks(start, end)) };
         self.last_widths = self.blocks.iter().map(|block| block.width).collect();
@@ -221,7 +227,10 @@ impl<'s, 't> Driver<'s, 't> {
     /// top level and methods in a type get one blank line around them, comments included.
     fn write_entries(&mut self, entries: &[Entry<'_>], level: usize, is_item: bool) {
         let kind = self.blocks.last().map_or(BlockKind::Other, |block| block.kind);
+        // What an annotation is on follows it with no blank line between.
+        let annotated = self.blocks.last().is_some_and(|block| block.last_was_annotation);
         let separated = matches!(kind, BlockKind::TopLevel | BlockKind::TypeBody)
+            && !annotated
             && (is_item || self.blocks.last().is_some_and(|block| block.last_was_item));
         // The comments right above the line, with no blank line between, go with it.
         let touching = entries

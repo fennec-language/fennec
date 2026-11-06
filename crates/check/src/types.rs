@@ -54,6 +54,9 @@ pub enum Type {
     /// One of several error types, in name order: what something gives back when it can
     /// fail in more than one way.
     Errors(Vec<String>),
+    /// `Circle | Square`: a value that's exactly one of these types, in the order they're
+    /// shown, with none of them a union, `None` or a type parameter, and none twice.
+    Union(Vec<Type>),
     /// A type still being worked out inside one function, like the items of `[]` before
     /// anything is added. It's settled, or reported, before the function's check ends.
     Var(u32),
@@ -118,6 +121,7 @@ impl Type {
             Type::Table(_) => "Table".to_owned(),
             Type::Function(_) | Type::Arrow(..) => "function".to_owned(),
             Type::Errors(_) => "error".to_owned(),
+            Type::Union(members) => members.iter().map(ToString::to_string).collect::<Vec<_>>().join(" | "),
         }
     }
 
@@ -157,7 +161,7 @@ impl Type {
                 vec![inner]
             }
             Type::Dict(a, b) | Type::Result(a, b) => vec![a, b],
-            Type::Tuple(items) | Type::Generic(_, items) => items.iter().collect(),
+            Type::Tuple(items) | Type::Generic(_, items) | Type::Union(items) => items.iter().collect(),
             Type::Arrow(params, ret) => params.iter().chain(std::iter::once(ret.as_ref())).collect(),
             _ => Vec::new(),
         }
@@ -179,6 +183,7 @@ impl Type {
             Type::Dict(a, b) => Type::Dict(inner(a), inner(b)),
             Type::Result(a, b) => Type::Result(inner(a), inner(b)),
             Type::Tuple(items) => Type::Tuple(items.iter().map(|item| *inner(item)).collect()),
+            Type::Union(members) => Type::Union(members.iter().map(|member| *inner(member)).collect()),
             Type::Generic(name, items) => {
                 Type::Generic(name.clone(), items.iter().map(|item| *inner(item)).collect())
             }
@@ -286,7 +291,13 @@ impl Type {
             Type::Iterator(item) => format!("Iterator[{}]", item.source()?),
             Type::Dict(key, value) => format!("dict[{}, {}]", key.source()?, value.source()?),
             Type::Tuple(items) => format!("({})", all(items)?),
+            Type::Optional(inner) if matches!(**inner, Type::Union(_)) => format!("({})?", inner.source()?),
             Type::Optional(inner) => format!("{}?", inner.source()?),
+            Type::Union(members) => members
+                .iter()
+                .map(Type::source)
+                .collect::<Option<Vec<_>>>()
+                .map(|members| members.join(" | "))?,
             Type::Result(value, error) => format!("Result[{}, {}]", value.source()?, error.source()?),
             Type::Named(name) | Type::Param(name) => name.clone(),
             Type::Generic(name, args) => format!("{name}[{}]", all(args)?),
@@ -316,6 +327,7 @@ impl fmt::Display for Type {
                 let items: Vec<String> = items.iter().map(ToString::to_string).collect();
                 write!(f, "({})", items.join(", "))
             }
+            Type::Optional(inner) if matches!(**inner, Type::Union(_)) => write!(f, "({inner})?"),
             Type::Optional(inner) => write!(f, "{inner}?"),
             Type::Result(value, _) => write!(f, "result of {value}"),
             Type::Errors(names) => f.write_str(&names.join(" | ")),

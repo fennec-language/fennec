@@ -441,6 +441,7 @@ impl FnCx<'_> {
                 }
             }
             Type::Param(name) => self.interface_call(call, name),
+            Type::Union(members) => self.union_method(call, members),
             Type::Unknown | Type::Var(_) => {
                 self.ignore_args(args);
                 Type::Unknown
@@ -452,6 +453,43 @@ impl FnCx<'_> {
             }
             _ => self.builtin_method(object, ty, method, args, span),
         }
+    }
+
+    /// A method of a union, which it has when every type in it does, giving back the same type
+    /// on each. Which one runs depends on the member it holds.
+    fn union_method(&mut self, call: &MethodCall<'_>, members: &[Type]) -> Type {
+        let union = Type::Union(members.to_vec());
+        if let Some(missing) = members.iter().find(|member| !self.has_method(member, call.method)) {
+            let message =
+                format!("{} has no method `{}`, so {} doesn't either", a(missing), call.method, a(&union));
+            let help = "a union has a method when every type in it does";
+            return self.unusable(
+                Diagnostic::new(message, call.object.span.to(call.span)).with_help(help),
+                call.args,
+            );
+        }
+        let Some((first, rest)) = members.split_first() else { return Type::Unknown };
+        let returns = self.method_on(call, first, false);
+        let report = std::mem::replace(&mut self.report, false);
+        let others: Vec<Type> = rest.iter().map(|member| self.method_on(call, member, false)).collect();
+        self.report = report;
+        let settled = self.checker.settled(&returns);
+        if others.iter().any(|other| self.checker.settled(other) != settled) {
+            let message =
+                format!("`{}` gives back different types on the types in {}", call.method, a(&union));
+            self.error(
+                Diagnostic::new(message, call.span)
+                    .with_help("give each the same return type, or use `is` or `match` to tell them apart"),
+            );
+            return Type::Unknown;
+        }
+        returns
+    }
+
+    /// Whether a type has a method by this name, its own or one std or the engines give it.
+    fn has_method(&self, ty: &Type, method: &str) -> bool {
+        let own = ty.type_name().is_some_and(|name| self.checker.program.method(name, method).is_some());
+        own || self.std_method(ty, method).is_some() || builtins::method(ty, method).is_some()
     }
 
     /// The method the standard library gives a built-in type, if it has one by that name,

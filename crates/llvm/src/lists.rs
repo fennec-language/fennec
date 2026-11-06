@@ -1197,6 +1197,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{resolved} = phi i64 [ {index}, %{came_from} ], [ {back}, %{from} ]"));
         self.declare("declare void @fennec_out_of_range(i64, i64, i64, i64) #1");
         let (place, args) = self.span_values(&fail, span);
+        self.next_check(span, Some(crate::CheckKind::Bounds));
         let failed = self.failed_exit();
         self.cold_block(&format!(
             "{from}:\n  {back} = add i64 {index}, {length}\n  {back_inside} = icmp ult i64 {back}, {length}\n  br i1 {back_inside}, label %{ok}, label %{fail}\n{fail}:\n{place}  call void @fennec_out_of_range(i64 {index}, i64 {length}, {args})\n  {failed}\n"
@@ -1220,9 +1221,11 @@ impl Emit<'_, '_, '_> {
         // A pair from an `enumerate` never made isn't made either: where it points in the list
         // is checked, and kept for its parts.
         if let Some((list, _)) = self.known.pairs.get(&dest.0).cloned() {
+            // The pairs have the list's length, so an index known inside them is inside it.
+            let inside = matches!(object, Operand::Local(pairs) if self.known.inside(*pairs, index));
             let (list, _) = self.operand(&Operand::Local(list))?;
             let (index, _) = self.operand(index)?;
-            let position = self.position(&list, &index, span);
+            let position = if inside { index } else { self.position(&list, &index, span) };
             let slot = self.place_for(&Kind::Int);
             self.line(&format!("store i64 {position}, ptr {slot}"));
             self.pair_slots.insert(dest.0, slot);

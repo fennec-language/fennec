@@ -5219,6 +5219,95 @@ fn pack_loads_of_changed_and_random_bytes_fail_without_crashing() -> std::io::Re
     Ok(())
 }
 
+/// What the next test builds: a type saved as a union's member, written by hand as generated code will be.
+const UNION_MEMBERS: &str = r#"from std import json, pack, toml
+
+struct Circle:
+    radius: float
+
+struct Square:
+    side: float
+
+## Saved as a union of `Circle`, `Square` and `int` is: tagged with its member's type.
+struct Shape:
+    kind = 2
+    circle = Circle(radius=0.0)
+    square = Square(side=0.0)
+    count = 0
+
+    def serialize(self, ref out: Serializer):
+        if self.kind == 0:
+            out.member("Circle", 0)
+            out.value(self.circle)
+        elif self.kind == 1:
+            out.member("Square", 1)
+            out.value(self.square)
+        else:
+            out.member("int", 2)
+            out.value(self.count)
+        out.end_member()
+
+    def deserialize(ref src: Deserializer) -> Shape fails ParseError:
+        at = src.member(["Circle", "Square", "int"])?
+        mut made = Shape()
+        if at == 0:
+            made = Shape(kind=0, circle=src.value[Circle]()?)
+        elif at == 1:
+            made = Shape(kind=1, square=src.value[Square]()?)
+        else:
+            made = Shape(count=src.value[int]()?)
+        src.end_member()?
+        made
+
+struct Scene:
+    shapes: list[Shape]
+
+def said[T](found: Result[T, ParseError]) -> str:
+    match found:
+        case Ok(_):
+            return "loaded"
+        case Err(error):
+            return error.message
+
+def main(stdout: Stdout):
+    scene = Scene(shapes=[Shape(kind=0, circle=Circle(radius=1.5)), Shape(kind=1, square=Square(side=2.0)), Shape(count=7)])
+    text = json.dumps(scene)
+    stdout.print(text)
+    back = json.loads[Scene](text) else Scene(shapes=[])
+    stdout.print(json.dumps(back) == text)
+    written = toml.dumps(scene)
+    stdout.print(written)
+    again = toml.loads[Scene](written) else Scene(shapes=[])
+    stdout.print(json.dumps(again) == text)
+    data = pack.dumps(scene)
+    packed = pack.loads[Scene](data) else Scene(shapes=[])
+    stdout.print(json.dumps(packed) == text)
+    stdout.print(said(json.loads[Scene]("{\"shapes\": [{\"Triangle\": {}}]}")))
+    stdout.print(said(json.loads[Scene]("{\"shapes\": [5]}")))
+    stdout.print(said(toml.loads[Scene]("[[shapes]]\nTriangle = 1\n")))
+    mut items = list[int]()
+    for at in range(data.len()):
+        items.append(data[at])
+    items[13] = 9
+    stdout.print(said(pack.loads[Scene](bytes(items))))
+"#;
+
+/// A union's member is saved tagged with its type's name in JSON and TOML, and by its place in
+/// `pack`, and read back the same, its own value whatever it is: a struct, or an `int`. A member
+/// that isn't one of the union's, or something that isn't a member at all, doesn't load.
+#[test]
+fn union_members_are_saved_tagged_in_every_format() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("union_members", UNION_MEMBERS)?;
+    assert_eq!(
+        printed,
+        "{\"shapes\": [{\"Circle\": {\"radius\": 1.5}}, {\"Square\": {\"side\": 2.0}}, {\"int\": 7}]}\nTrue\n[[shapes]]\n\n[shapes.Circle]\nradius = 1.5\n\n[[shapes]]\n\n[shapes.Square]\nside = 2.0\n\n[[shapes]]\nint = 7\n\nTrue\nTrue\n`shapes[0]` is \"Triangle\", which is none of `Circle | Square | int`\n`shapes[0]` should be a Circle | Square | int, but it's an int\n`shapes[0]` is \"Triangle\", which is none of `Circle | Square | int`\n`Circle | Square | int` has no member 9, at byte 13\n"
+    );
+    Ok(())
+}
+
 /// What the next test builds: a world of `Table`s and `Id`s, saved both ways, and bytes changed.
 const PACK_TABLES: &str = r#"from std import pack
 from std.collections import Id, Table
@@ -8343,6 +8432,12 @@ struct Words:
 
     def end_case(ref self) fails ParseError:
         _ = self.next()?
+
+    def member(ref self, names: list[str]) -> int fails ParseError:
+        fail ParseError(message="no unions here", line=0, column=0)
+
+    def end_member(ref self) fails ParseError:
+        pass
 
 enum Order:
     Hold

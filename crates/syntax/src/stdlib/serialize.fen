@@ -42,6 +42,12 @@ interface Serializer:
     ## where it is among the type's cases.
     def case_record(ref self, name: str, case: str, at: int, count: int)
 
+    ## Starts a union's member, by its type's name, and `at`, where it is among the union's members,
+    ## for a format that saves no names. Its own value follows, with `value`, and `end_member`
+    ## finishes it.
+    def member(ref self, name: str, at: int)
+    def end_member(ref self)
+
     ## A `Table` of items of the type named `kind`, with its tag: each item in order, with its `Id`.
     def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T])
 
@@ -143,6 +149,11 @@ interface Deserializer:
     ## with data then reads its fields as a struct's, and `end_case` finishes it.
     def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError
     def end_case(ref self) fails ParseError
+
+    ## Which of `names` the union's member that comes next is, as a place in it: each its type's
+    ## name. Its own value is then read with `value`, and `end_member` finishes it.
+    def member(ref self, names: list[str]) -> int fails ParseError
+    def end_member(ref self) fails ParseError
 
 ## What can be loaded.
 interface Deserializable:

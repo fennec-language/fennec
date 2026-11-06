@@ -3785,7 +3785,7 @@ fn an_http_server_answers_natively() -> std::io::Result<()> {
     }
     let source = r#"from std.net import Request, Response
 
-def handle(request: Request) -> Response:
+def respond(request: Request) -> Response:
     match request.path:
         case "/hello":
             name = request.query.get("name") else "you"
@@ -3798,7 +3798,7 @@ def handle(request: Request) -> Response:
 def main(net: Net, stdout: Stdout):
     with net.listen(0)? as server:
         stdout.print(server.port)
-        server.serve((request) => handle(request), timeout=10s)
+        server.serve((request) => respond(request), timeout=10s)
 "#;
     let dir = folder("http_server")?;
     let program = dir.join("serve.fen");

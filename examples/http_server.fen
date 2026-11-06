@@ -3,7 +3,7 @@
 # `fennec run examples/http_server.fen 8080`, then visit http://localhost:8080/hello?name=fox.
 from std.net import Request, Response
 
-def handle(request: Request) -> Response:
+def respond(request: Request) -> Response:
     match request.path:
         case "/hello":
             name = request.query.get("name") else "you"
@@ -13,15 +13,15 @@ def handle(request: Request) -> Response:
         case _:
             Response(status=404, body="nothing here".encode())
 
-# A handler is a plain function, so its tests call it directly.
+# `respond` is a plain function, so its tests call it directly.
 test "it says hello by name":
-    answer = handle(Request(method="GET", path="/hello", query={"name": "fox"}))
+    answer = respond(Request(method="GET", path="/hello", query={"name": "fox"}))
     assert answer.status == 200 and answer.text() == "hello, fox"
 
 test "it echoes what's posted, and nothing else is there":
-    posted = handle(Request(method="POST", path="/echo", body="den".encode()))
+    posted = respond(Request(method="POST", path="/echo", body="den".encode()))
     assert posted.text() == "den"
-    assert handle(Request(method="GET", path="/den")).status == 404
+    assert respond(Request(method="GET", path="/den")).status == 404
 
 # A test's `Net` works in memory: the request waits at the server, which answers it and stops
 # once nothing more is waiting.
@@ -29,7 +29,7 @@ test "a request goes through the server"(net: Net):
     with net.listen(0)? as server:
         with net.connect("localhost", server.port)? as client:
             client.write("GET /hello?name=red%20fox HTTP/1.1\r\nconnection: close\r\n\r\n")?
-            server.serve((request) => handle(request))
+            server.serve((request) => respond(request))
             assert (
                 list(client.lines())
                 == [
@@ -45,4 +45,4 @@ def main(net: Net, args: Args, stdout: Stdout):
     port = int(args[0]) else 8080
     with net.listen(port)? as server:
         stdout.print(f"serving on http://localhost:{server.port}")
-        server.serve((request) => handle(request))
+        server.serve((request) => respond(request))

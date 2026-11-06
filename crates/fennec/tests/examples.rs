@@ -25,9 +25,9 @@ const INTERPRETED_FUNCTIONS: &[(&str, &[&str])] = &[
     ("generators.fen", &["checked", "countdown", "doubled", "holding", "naturals", "words"]),
     ("generators_fused.fen", &["checked", "odd", "running", "three", "upto"]),
     // Each std collection's `iter`, below, for the same reason (#450).
-    // `Server.iter`, as in `std_net.fen`, and `handle`'s `case` with a guard, which the JIT
+    // `Server.iter`, as in `std_net.fen`, and `respond`'s `case` with a guard, which the JIT
     // doesn't compile yet.
-    ("http_server.fen", &["Server.iter", "handle"]),
+    ("http_server.fen", &["Server.iter", "respond"]),
     ("imports.fen", &["Deque.iter"]),
     ("json_collections.fen", &["Grid.iter", "SortedMap.iter"]),
     ("json_enums.fen", &["Grid.iter"]),

@@ -2010,6 +2010,10 @@ impl Emit<'_, '_, '_> {
             return done;
         }
         match inst {
+            // A union's layout is still to be built here.
+            InstKind::MakeMember { .. } | InstKind::IsMember { .. } | InstKind::GetMember { .. } => {
+                Err("it uses a union, which this backend doesn't take yet".to_owned())
+            }
             // Used only as a key the runtime finds where it is.
             InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }
                 if self.known.unmade.contains(&dest.0) =>

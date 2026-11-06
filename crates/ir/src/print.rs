@@ -197,26 +197,22 @@ impl fmt::Display for InstKind {
             | InstKind::MakeTuple { .. }
             | InstKind::GetTupleItem { .. }
             | InstKind::Slice { .. } => collection(self, f),
-            InstKind::MakeSome { dest, value } => write!(f, "{dest} = some {value}"),
-            InstKind::IsNone { dest, value } => write!(f, "{dest} = {value} is none"),
-            InstKind::GetSome { dest, value } => write!(f, "{dest} = {value} as some"),
-            InstKind::MakeOk { dest, value: Some(value) } => write!(f, "{dest} = ok {value}"),
-            InstKind::MakeOk { dest, value: None } => write!(f, "{dest} = ok"),
-            InstKind::IsError { dest, value, type_name } => write!(f, "{dest} = {value} is {type_name}"),
-            InstKind::AsError { dest, value } => write!(f, "{dest} = {value} as error"),
+            InstKind::MakeSome { .. }
+            | InstKind::IsNone { .. }
+            | InstKind::GetSome { .. }
+            | InstKind::MakeMember { .. }
+            | InstKind::IsMember { .. }
+            | InstKind::GetMember { .. } => wrapped(self, f),
             InstKind::MakeClosure { .. } | InstKind::CallClosure { .. } => closure(self, f),
-            InstKind::MakeErr { .. }
+            InstKind::MakeOk { .. }
+            | InstKind::IsError { .. }
+            | InstKind::AsError { .. }
+            | InstKind::MakeErr { .. }
             | InstKind::IsErr { .. }
             | InstKind::GetOk { .. }
             | InstKind::GetErr { .. } => result(self, f),
             InstKind::Constant { dest, name } => write!(f, "{dest} = constant {name}"),
-            InstKind::Call { dest, function, args } => {
-                let args: Vec<String> = args.iter().map(ToString::to_string).collect();
-                if let Some(dest) = dest {
-                    write!(f, "{dest} = ")?;
-                }
-                write!(f, "call {function}({})", args.join(", "))
-            }
+            InstKind::Call { dest, function, args } => call(*dest, function, args, f),
             other => generator(other, f),
         }
     }
@@ -247,8 +243,21 @@ fn collection(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 }
 
 /// An instruction on a result.
+/// A call to a function by name, and what it gives back, if anything keeps it.
+fn call(dest: Option<LocalId>, function: &str, args: &[Operand], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let args: Vec<String> = args.iter().map(ToString::to_string).collect();
+    if let Some(dest) = dest {
+        write!(f, "{dest} = ")?;
+    }
+    write!(f, "call {function}({})", args.join(", "))
+}
+
 fn result(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match inst {
+        InstKind::MakeOk { dest, value: Some(value) } => write!(f, "{dest} = ok {value}"),
+        InstKind::MakeOk { dest, value: None } => write!(f, "{dest} = ok"),
+        InstKind::IsError { dest, value, type_name } => write!(f, "{dest} = {value} is {type_name}"),
+        InstKind::AsError { dest, value } => write!(f, "{dest} = {value} as error"),
         InstKind::MakeErr { dest, error } => write!(f, "{dest} = err {error}"),
         InstKind::IsErr { dest, value } => write!(f, "{dest} = {value} is err"),
         InstKind::GetOk { dest, value } => write!(f, "{dest} = {value} as ok"),
@@ -317,5 +326,19 @@ impl fmt::Display for Terminator {
             Terminator::Stop { message, .. } => write!(f, "stop {message:?}"),
             Terminator::Unreachable => write!(f, "unreachable"),
         }
+    }
+}
+
+/// An optional's and a union's instructions: a value wrapped, tested, or read back out. A
+/// union's name the member by its place in the union.
+fn wrapped(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match inst {
+        InstKind::MakeSome { dest, value } => write!(f, "{dest} = some {value}"),
+        InstKind::IsNone { dest, value } => write!(f, "{dest} = {value} is none"),
+        InstKind::GetSome { dest, value } => write!(f, "{dest} = {value} as some"),
+        InstKind::MakeMember { dest, value, member } => write!(f, "{dest} = member {member} {value}"),
+        InstKind::IsMember { dest, value, member } => write!(f, "{dest} = {value} is member {member}"),
+        InstKind::GetMember { dest, value, member } => write!(f, "{dest} = {value} as member {member}"),
+        _ => Ok(()),
     }
 }

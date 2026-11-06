@@ -775,6 +775,56 @@ def fill(ref slot: Slot, value: int?) -> int:
     }
 }
 
+/// A member going where its union goes is wrapped with its place in the union as its tag; `is`
+/// and `match` test the tag, and what the checker narrowed reads the member back out.
+#[test]
+fn a_union_is_tagged_by_its_member_and_tested_and_read_by_it() {
+    let source = "struct Circle:
+    radius: float
+
+    def area(self) -> float:
+        self.radius
+
+struct Square:
+    side: float
+
+    def area(self) -> float:
+        self.side
+
+def radius(s: Circle | Square) -> float:
+    if s is Circle:
+        return s.radius
+    0.0
+
+def named(s: Circle | Square) -> str:
+    match s:
+        case Circle(radius): \"circle\"
+        case Square(side): \"square\"
+
+def area(s: Circle | Square) -> float:
+    s.area()
+
+def made() -> Circle | Square:
+    Square(side=1.0)
+";
+    assert_eq!(lowered(source).unwrap().not_lowered, []);
+    let printed = |name: &str| printed(source, name).unwrap();
+    let radius = printed("radius");
+    for line in ["is member 0", "as member 0"] {
+        assert!(radius.contains(line), "no {line} in {radius}");
+    }
+    let named = printed("named");
+    for line in ["is member 0", "as member 0", "is member 1", "as member 1"] {
+        assert!(named.contains(line), "no {line} in {named}");
+    }
+    // A method every member has: the first member is tested, the last needs no test.
+    let area = printed("area");
+    assert!(area.contains("is member 0") && !area.contains("is member 1"), "{area}");
+    assert!(area.contains("call Circle.area") && area.contains("call Square.area"), "{area}");
+    let made = printed("made");
+    assert!(made.contains("= member 1 "), "{made}");
+}
+
 #[test]
 fn matching_an_optional_tests_for_none_first() {
     let source = "def name(code: int?) -> str:

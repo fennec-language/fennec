@@ -312,7 +312,7 @@ impl Context<'_> {
             | Type::Id(item)
             | Type::Array(item, _) => self.holds(item),
             Type::Dict(key, value) => self.holds(key) && self.holds(value),
-            Type::Tuple(items) => items.iter().all(|item| self.holds(item)),
+            Type::Tuple(items) | Type::Union(items) => items.iter().all(|item| self.holds(item)),
             Type::Arrow(params, returns) => {
                 params.iter().all(|param| self.holds(param))
                     && (**returns == Type::Unit || self.holds(returns))
@@ -373,6 +373,9 @@ struct Lowering<'a> {
     written_types: Vec<Type>,
     /// Set while lowering a `list.pop()` whose list is known not to be empty.
     popping: bool,
+    /// Types that stand in for what the typed tree says, innermost last: a union's receiver,
+    /// read as one member while that member's method is called.
+    retyped: Vec<(Span, Type)>,
 }
 
 impl<'a> Lowering<'a> {
@@ -405,6 +408,7 @@ impl<'a> Lowering<'a> {
             copied: Vec::new(),
             written_types: Vec::new(),
             popping: false,
+            retyped: Vec::new(),
         }
     }
 

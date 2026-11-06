@@ -59,7 +59,10 @@ pub(super) fn add_copies(
         }
         for (name, copy) in waiting {
             if let Some(found) = signatures.structure(&copy.base) {
-                let shared = context.generic_types.get(copy.base.as_str()).is_some_and(|def| def.shared && !def.span.in_prelude());
+                let shared = context
+                    .generic_types
+                    .get(copy.base.as_str())
+                    .is_some_and(|def| def.shared && !def.span.in_prelude());
                 structs.push(StructDef { name, fields: concrete(&found.fields, &copy.subst), shared });
             } else if let Some(found) = signatures.enumeration(&copy.base) {
                 let cases = found

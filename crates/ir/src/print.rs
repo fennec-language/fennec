@@ -212,13 +212,7 @@ impl fmt::Display for InstKind {
             | InstKind::GetOk { .. }
             | InstKind::GetErr { .. } => result(self, f),
             InstKind::Constant { dest, name } => write!(f, "{dest} = constant {name}"),
-            InstKind::Call { dest, function, args } => {
-                let args: Vec<String> = args.iter().map(ToString::to_string).collect();
-                if let Some(dest) = dest {
-                    write!(f, "{dest} = ")?;
-                }
-                write!(f, "call {function}({})", args.join(", "))
-            }
+            InstKind::Call { dest, function, args } => call(*dest, function, args, f),
             other => generator(other, f),
         }
     }
@@ -249,6 +243,15 @@ fn collection(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 }
 
 /// An instruction on a result.
+/// A call to a function by name, and what it gives back, if anything keeps it.
+fn call(dest: Option<LocalId>, function: &str, args: &[Operand], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let args: Vec<String> = args.iter().map(ToString::to_string).collect();
+    if let Some(dest) = dest {
+        write!(f, "{dest} = ")?;
+    }
+    write!(f, "call {function}({})", args.join(", "))
+}
+
 fn result(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match inst {
         InstKind::MakeOk { dest, value: Some(value) } => write!(f, "{dest} = ok {value}"),

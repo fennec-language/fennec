@@ -1,10 +1,10 @@
 struct Inner:
     tags: list[int]
 
-    def grow(mut self, value: int):
+    def grow(ref self, value: int):
         self.tags.append(value)
 
-    def reset(mut self):
+    def reset(ref self):
         self = Inner([100])
 
 struct Unit:
@@ -13,11 +13,11 @@ struct Unit:
     inner: Inner
     name: str
 
-    def grow(mut self, value: int):
+    def grow(ref self, value: int):
         self.tags.append(value)
         self.hp += value
 
-    def grown_by(mut self, values: list[int]):
+    def grown_by(ref self, values: list[int]):
         for value in values:
             self.tags.append(value)
 

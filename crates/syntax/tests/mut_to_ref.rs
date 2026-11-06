@@ -94,18 +94,21 @@ fn fennec_files(dir: &Path, found: &mut Vec<PathBuf>) -> std::io::Result<()> {
 }
 
 /// On every Fennec file in the repository, without changing any: the tree parsed from the new text
-/// is the old one's, spans and all, and running it again changes nothing.
+/// is the old one's, spans and all, and running it again changes nothing. The repository has been
+/// renamed, so a file it would change still says `mut` where `ref` goes.
 #[test]
 fn every_file_in_the_repository_means_the_same_afterwards() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut files = Vec::new();
     fennec_files(&root, &mut files).unwrap();
     assert!(files.len() > 100, "found only {} files", files.len());
-    let mut changed = 0;
+    let mut changed = Vec::new();
     for file in files {
         let source = std::fs::read_to_string(&file).unwrap();
         let Ok(result) = mut_to_ref(&source) else { continue };
-        changed += usize::from(result.text != source);
+        if result.text != source {
+            changed.push(file.display().to_string());
+        }
         assert_eq!(result.text.len(), source.len(), "{}", file.display());
         assert_eq!(
             format!("{:?}", parse(&result.text)),
@@ -115,5 +118,9 @@ fn every_file_in_the_repository_means_the_same_afterwards() {
         );
         assert_eq!(renamed(&result.text), result.text, "{}", file.display());
     }
-    assert!(changed > 50, "changed only {changed} files");
+    assert!(
+        changed.is_empty(),
+        "these still say `mut` where `ref` goes; run `cargo run -p fennec -- fix --mut-to-ref .`:\n{}",
+        changed.join("\n")
+    );
 }

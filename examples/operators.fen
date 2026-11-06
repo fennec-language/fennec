@@ -15,7 +15,7 @@ struct Grid:
         x, y = at
         self.cells[y * self.width + x]
 
-    def []=(mut self, at: (int, int), value: int):
+    def []=(ref self, at: (int, int), value: int):
         x, y = at
         self.cells[y * self.width + x] = value
 

@@ -171,7 +171,7 @@ enum StmtKind:
     Fail(value: Expr)
     Yield(value: Expr)
     Assert(value: Expr)
-    ## `with value as name:`, or `with a, b as mut x, mut y:`, whose `value` is the tuple of
+    ## `with value as name:`, or `with a, b as ref x, ref y:`, whose `value` is the tuple of
     ## what it holds and which names each one.
     With(value: Expr, names: list[WithName], body: list[Stmt])
     Def(function: FnDef)
@@ -249,7 +249,7 @@ enum FStrPart:
     Text(text: str)
     Code(expr: Expr, spec: str?)
 
-## A call argument: `value`, `name=value` or `mut name`.
+## A call argument: `value`, `name=value` or `ref name`.
 struct Arg:
     name: str?
     is_mut: bool

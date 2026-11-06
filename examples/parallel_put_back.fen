@@ -1,4 +1,4 @@
-# `for mut` over `parallel`, putting items back as they were: structs holding strings long
+# `for ref` over `parallel`, putting items back as they were: structs holding strings long
 # enough to be blocks, changed only on some items, and such strings themselves.
 
 struct Tag:
@@ -9,13 +9,13 @@ def main(stdout: Stdout):
     mut tags = [
         Tag(f"a name long enough to be held in a block of its own, {n}", n) for n in range(5_000)
     ]
-    for mut tag in parallel(tags):
+    for ref tag in parallel(tags):
         if tag.n % 2 == 0:
             tag.n += 1
     stdout.print(tags[0].name, tags[2].n)
     stdout.print(tags[4_999].name, tags[4_999].n)
     mut words = [f"another word long enough to be held in a block, {n}" for n in range(5_000)]
-    for mut word in parallel(words):
+    for ref word in parallel(words):
         if word.len() % 3 == 0:
             word = word + "!"
     stdout.print(words[0], words[4_999])

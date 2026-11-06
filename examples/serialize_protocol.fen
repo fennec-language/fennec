@@ -5,67 +5,67 @@ from std.collections import Id
 struct Shown:
     parts = list[str]()
 
-    def int(mut self, value: int):
+    def int(ref self, value: int):
         self.parts.append(str(value))
 
-    def float(mut self, value: float):
+    def float(ref self, value: float):
         self.parts.append(str(value))
 
-    def bool(mut self, value: bool):
+    def bool(ref self, value: bool):
         self.parts.append("yes" if value else "no")
 
-    def text(mut self, value: str):
+    def text(ref self, value: str):
         self.parts.append(f"'{value}'")
 
-    def bytes(mut self, value: bytes):
+    def bytes(ref self, value: bytes):
         self.parts.append("bytes")
 
-    def none(mut self):
+    def none(ref self):
         self.parts.append("nothing")
 
-    def value[T: Serializable](mut self, x: T):
-        x.serialize(mut self)
+    def value[T: Serializable](ref self, x: T):
+        x.serialize(ref self)
 
-    def sequence[T: Serializable](mut self, items: list[T]):
+    def sequence[T: Serializable](ref self, items: list[T]):
         self.parts.append("(")
         for item in items:
-            item.serialize(mut self)
+            item.serialize(ref self)
         self.parts.append(")")
 
-    def map[K: Serializable, V: Serializable](mut self, pairs: list[(K, V)]):
+    def map[K: Serializable, V: Serializable](ref self, pairs: list[(K, V)]):
         for key, value in pairs:
-            key.serialize(mut self)
+            key.serialize(ref self)
             self.parts.append("=")
-            value.serialize(mut self)
+            value.serialize(ref self)
 
-    def record(mut self, name: str, count: int):
+    def record(ref self, name: str, count: int):
         self.parts.append(f"{name}/{count}")
 
-    def field[T: Serializable](mut self, name: str, x: T):
+    def field[T: Serializable](ref self, name: str, x: T):
         self.parts.append(f"{name}:")
-        x.serialize(mut self)
+        x.serialize(ref self)
 
-    def renamed[T: Serializable](mut self, name: str, x: T):
+    def renamed[T: Serializable](ref self, name: str, x: T):
         self.parts.append(f"as {name}:")
-        x.serialize(mut self)
+        x.serialize(ref self)
 
-    def end(mut self):
+    def end(ref self):
         self.parts.append(".")
 
-    def case(mut self, name: str, case: str):
+    def case(ref self, name: str, case: str):
         self.parts.append(f"{name}.{case}")
 
-    def case_record(mut self, name: str, case: str, count: int):
+    def case_record(ref self, name: str, case: str, count: int):
         self.parts.append(f"{name}.{case}/{count}")
 
-    def table[T: Serializable](mut self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+    def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
         self.sequence(items)
 
-    def id(mut self, kind: str, key: int, tag: int):
+    def id(ref self, kind: str, key: int, tag: int):
         self.parts.append(f"Id[{kind}]")
 
-    def some[T: Serializable](mut self, x: T):
-        x.serialize(mut self)
+    def some[T: Serializable](ref self, x: T):
+        x.serialize(ref self)
 
     def shown(self) -> str:
         " ".join(self.parts)
@@ -74,61 +74,61 @@ struct Shown:
 struct Counted:
     total = 0
 
-    def int(mut self, value: int):
+    def int(ref self, value: int):
         self.total += 1
 
-    def float(mut self, value: float):
+    def float(ref self, value: float):
         self.total += 1
 
-    def bool(mut self, value: bool):
+    def bool(ref self, value: bool):
         self.total += 1
 
-    def text(mut self, value: str):
+    def text(ref self, value: str):
         self.total += 1
 
-    def bytes(mut self, value: bytes):
+    def bytes(ref self, value: bytes):
         self.total += 1
 
-    def none(mut self):
+    def none(ref self):
         self.total += 1
 
-    def value[T: Serializable](mut self, x: T):
-        x.serialize(mut self)
+    def value[T: Serializable](ref self, x: T):
+        x.serialize(ref self)
 
-    def sequence[T: Serializable](mut self, items: list[T]):
+    def sequence[T: Serializable](ref self, items: list[T]):
         for item in items:
-            item.serialize(mut self)
+            item.serialize(ref self)
 
-    def map[K: Serializable, V: Serializable](mut self, pairs: list[(K, V)]):
+    def map[K: Serializable, V: Serializable](ref self, pairs: list[(K, V)]):
         for key, value in pairs:
-            value.serialize(mut self)
+            value.serialize(ref self)
 
-    def record(mut self, name: str, count: int):
+    def record(ref self, name: str, count: int):
         pass
 
-    def field[T: Serializable](mut self, name: str, x: T):
-        x.serialize(mut self)
+    def field[T: Serializable](ref self, name: str, x: T):
+        x.serialize(ref self)
 
-    def renamed[T: Serializable](mut self, name: str, x: T):
-        x.serialize(mut self)
+    def renamed[T: Serializable](ref self, name: str, x: T):
+        x.serialize(ref self)
 
-    def end(mut self):
+    def end(ref self):
         pass
 
-    def case(mut self, name: str, case: str):
+    def case(ref self, name: str, case: str):
         self.total += 1
 
-    def case_record(mut self, name: str, case: str, count: int):
+    def case_record(ref self, name: str, case: str, count: int):
         self.total += 1
 
-    def table[T: Serializable](mut self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+    def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
         self.sequence(items)
 
-    def id(mut self, kind: str, key: int, tag: int):
+    def id(ref self, kind: str, key: int, tag: int):
         self.total += 1
 
-    def some[T: Serializable](mut self, x: T):
-        x.serialize(mut self)
+    def some[T: Serializable](ref self, x: T):
+        x.serialize(ref self)
 
 struct Spot:
     x: int
@@ -181,7 +181,7 @@ def main(stdout: Stdout):
     )
     stdout.print(shown(squad))
     mut counted = Counted()
-    squad.serialize(mut counted)
+    squad.serialize(ref counted)
     stdout.print(counted.total)
     stdout.print(shown(bytes([1, 2])))
 

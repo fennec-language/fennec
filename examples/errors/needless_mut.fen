@@ -3,4 +3,4 @@ def describe(health: int) -> str:
 
 def main(stdout: Stdout):
     mut health = 100
-    stdout.print(describe(mut health))
+    stdout.print(describe(ref health))

@@ -30,4 +30,3 @@ def main(stdout: Stdout):
     mut grid = Grid(width=2, cells=[0, 0, 0, 0])
     grid[(1, 1)] = 7
     stdout.print(grid[(1, 1)], sum(cell for cell in grid))
-

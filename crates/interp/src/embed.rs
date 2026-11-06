@@ -199,6 +199,11 @@ impl Write for Output {
             return Ok(());
         }
         let length = self.0.borrow().len();
+        // Nothing kept, as after most of a `parallel` call's ranges: standard output, which every
+        // thread shares, isn't touched.
+        if length == 0 {
+            return Ok(());
+        }
         self.write_out(length)
     }
 }

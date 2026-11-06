@@ -194,6 +194,12 @@ struct _Key:
     def case_record(ref self, name: str, case: str, at: int, count: int):
         pass
 
+    def member(ref self, name: str, at: int):
+        self.fits = False
+
+    def end_member(ref self):
+        pass
+
     def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
         pass
 
@@ -409,6 +415,15 @@ struct JsonWriter:
         self._text += "\": "
         self._open("{")
 
+    def member(ref self, name: str, at: int):
+        self._open("{")
+        self._entry()
+        self.text(name)
+        self._text += ": "
+
+    def end_member(ref self):
+        self._close("}")
+
 ## `value` as JSON text, through its own `def serialize`.
 ## Native code runs `json.dumps` through this. Its options' defaults are `None` and `-1`, since the
 ## default a call leaves out is written into the program calling it, which may not import `JsonNames`.
@@ -606,6 +621,13 @@ struct _TableFinder:
 
     def case_record(ref self, name: str, case: str, at: int, count: int):
         self._optional = False
+
+    def member(ref self, name: str, at: int):
+        self._optional = False
+        self._path.append(name)
+
+    def end_member(ref self):
+        _ = self._path.pop()
 
     def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
         here = _place(self._path)
@@ -1408,6 +1430,40 @@ struct JsonReader:
     def end_case(ref self) fails ParseError:
         if self._space() != 125: fail _no_reason()
         self._at += 1
+
+    def member(ref self, names: list[str]) -> int fails ParseError:
+        union = " | ".join(names)
+        if self._space() != 123: fail self._misfit(union)
+        start = self._at
+        self._at += 1
+        if self._space() != 34:
+            self._at = start
+            fail self._misfit(union)
+        key = self.text()?
+        if self._space() != 58: fail _no_reason()
+        self._at += 1
+        mut at = 0
+        for name in names:
+            if name == key:
+                self._depth += 1
+                if self._depth > _MOST_DEEP: fail _no_reason()
+                if self._explain:
+                    self._path.append(key)
+                return at
+            at += 1
+        if not self._explain: fail _no_reason()
+        fail ParseError(
+            message=f"{self._where()} is \"{key}\", which is none of `{union}`",
+            line=0,
+            column=0,
+        )
+
+    def end_member(ref self) fails ParseError:
+        if self._space() != 125: fail _no_reason()
+        self._at += 1
+        self._depth -= 1
+        if self._explain:
+            _ = self._path.pop()
 
     ## What comes after everything's been read has to be nothing.
     def finish(ref self) fails ParseError:

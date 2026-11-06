@@ -111,3 +111,21 @@ fn a_union_is_a_key_when_each_type_in_it_is() {
         ]
     );
 }
+
+#[test]
+fn a_union_fits_an_interface_every_type_in_it_fits() {
+    let empty: [&str; 0] = [];
+    let interface = "interface HasArea:\n    def area(self) -> float\n\ndef total[T: HasArea](items: list[T]) -> float:\n    sum(item.area() for item in items)\n\n";
+    let fits = format!(
+        "{SHAPES}{interface}def main(stdout: Stdout):\n    shapes: list[Shape] = [Circle(radius=1.0)]\n    stdout.print(total(shapes))\n"
+    );
+    assert_eq!(problems(&fits), empty);
+    let not = format!(
+        "{SHAPES}{interface}def main(stdout: Stdout):\n    dots: list[Circle | Dot] = [Dot(at=1)]\n    stdout.print(total(dots))\n"
+    );
+    assert_eq!(
+        helps(&not),
+        ["give `Dot` the method `def area(self) -> float`"],
+        "the member that doesn't fit is named"
+    );
+}

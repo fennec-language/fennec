@@ -126,9 +126,31 @@ def text_plain_end(text: str, at: int) -> int
 @intrinsic
 def text_escape_at(text: str, at: int) -> int
 
-## Adds a text's bytes to the end of a list of them, each an int from 0 to 255, all at once.
+## A byte builder, which a binary format writes into in place: empty, with room to grow. Only std
+## writes into one, with the intrinsics below, and copies it to its exact size, `data[0:data.len()]`,
+## before anything else sees it.
 @intrinsic
-def append_text(ref out: list[int], text: str)
+def bytes_builder() -> bytes
+
+## Adds a byte, from 0 to 255, at a builder's end.
+@intrinsic
+def bytes_push(ref data: bytes, byte: int)
+
+## Adds a whole word at a builder's end, low byte first.
+@intrinsic
+def bytes_push_word(ref data: bytes, bits: int)
+
+## Adds a text's bytes at a builder's end.
+@intrinsic
+def bytes_push_text(ref data: bytes, text: str)
+
+## Adds bytes at a builder's end.
+@intrinsic
+def bytes_push_bytes(ref data: bytes, more: bytes)
+
+## Writes byte `at` of a builder again, which has to be one it holds.
+@intrinsic
+def bytes_set(ref data: bytes, at: int, byte: int)
 
 ## A number for a type's shape: its fields in order, with their names and types, and its cases.
 ## It changes when any of them does, so a format that saves no names can refuse to read data

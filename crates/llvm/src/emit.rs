@@ -1777,10 +1777,15 @@ impl Emit<'_, '_, '_> {
             | "intrinsics.table_of_slots"
             | "intrinsics.id_of_key" => self.id_intrinsic(dest, name, args),
             "intrinsics.bytes_text" => self.bytes_text(dest.ok_or("no result")?, args),
+            "intrinsics.bytes_builder"
+            | "intrinsics.bytes_push"
+            | "intrinsics.bytes_push_word"
+            | "intrinsics.bytes_push_text"
+            | "intrinsics.bytes_push_bytes"
+            | "intrinsics.bytes_set" => self.byte_builder(dest, name, args),
             "intrinsics.text_plain_end" | "intrinsics.text_escape_at" => {
                 self.text_scan(dest.ok_or("no result")?, name, args)
             }
-            "intrinsics.append_text" => self.text_into_list(args),
             // A float's bits as an int, and back, which a binary format saves.
             "intrinsics.float_bits" | "intrinsics.float_of_bits" => {
                 let (value, _) = self.operand(first.ok_or("no argument")?)?;

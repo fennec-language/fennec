@@ -5,7 +5,7 @@
 use fennec_syntax::{BinOp, Diagnostic, Span, UnaryOp};
 
 use crate::ops;
-use crate::value::{Id, Table, Value};
+use crate::value::{Id, Slot, Table, Value};
 
 /// Runs the intrinsic named `name` on its arguments.
 pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
@@ -15,6 +15,9 @@ pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagn
         [a, b] => ops::binary(op, a.clone(), b.clone(), span),
         _ => Err(wrong(name, span)),
     };
+    if let Some(done) = ids(name, args, span) {
+        return done;
+    }
     match (name, args) {
         ("int_add" | "float_add", _) => binary(BinOp::Add),
         ("int_sub" | "float_sub", _) => binary(BinOp::Sub),
@@ -62,6 +65,31 @@ pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagn
             let part = place(start).zip(place(end)).and_then(|(start, end)| text.get(start..end));
             part.map(Value::str).ok_or_else(|| wrong(name, span))
         }
+        ("stop", [Value::Str(message)]) => Err(Diagnostic::new(message.to_string(), span)),
+        _ => Err(wrong(name, span)),
+    }
+}
+
+/// The intrinsics into `Table`s and `Id`s, which std uses to save and load them, or `None` for
+/// another.
+fn ids(name: &str, args: &[Value], span: Span) -> Option<Result<Value, Diagnostic>> {
+    let known = matches!(
+        name,
+        "id_key"
+            | "id_at"
+            | "id_tag"
+            | "table_tag"
+            | "new_tag"
+            | "table_tagged"
+            | "table_slots"
+            | "table_of_slots"
+            | "id_of_key"
+    );
+    known.then(|| id_intrinsic(name, args, span))
+}
+
+fn id_intrinsic(name: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    match (name, args) {
         ("id_key", [Value::Id(id)]) => Ok(Value::Int(id.key().cast_signed())),
         ("id_at", [Value::Int(position), Value::Int(tag)]) => {
             let slot = u32::try_from(*position).map_err(|_| wrong(name, span))?;
@@ -73,7 +101,34 @@ pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagn
         ("table_tagged", [Value::Int(tag)]) => {
             Ok(Value::Table(std::rc::Rc::new(Table::tagged(Vec::new(), tag.cast_unsigned()))))
         }
-        ("stop", [Value::Str(message)]) => Err(Diagnostic::new(message.to_string(), span)),
+        ("table_slots", [Value::Table(map)]) => Ok(Value::list(
+            map.slots
+                .iter()
+                .map(|slot| {
+                    let generation = i64::from(slot.generation);
+                    Value::Int(if slot.value.is_some() { generation } else { -1 - generation })
+                })
+                .collect(),
+        )),
+        ("table_of_slots", [Value::Int(tag), Value::List(words), Value::List(items)]) => {
+            let mut held = items.iter();
+            let mut slots = Vec::with_capacity(words.len());
+            for word in words.iter() {
+                let Value::Int(word) = word else { return Err(wrong(name, span)) };
+                let generation = if *word >= 0 { *word } else { -1 - *word };
+                let generation = u32::try_from(generation).map_err(|_| wrong(name, span))?;
+                let value = if *word >= 0 {
+                    Some(held.next().cloned().ok_or_else(|| wrong(name, span))?)
+                } else {
+                    None
+                };
+                slots.push(Slot { generation, value });
+            }
+            Ok(Value::Table(std::rc::Rc::new(Table::tagged(slots, tag.cast_unsigned()))))
+        }
+        ("id_of_key", [Value::Int(key), Value::Int(tag)]) => {
+            Ok(Value::Id(Id::from_key(key.cast_unsigned(), tag.cast_unsigned())))
+        }
         _ => Err(wrong(name, span)),
     }
 }

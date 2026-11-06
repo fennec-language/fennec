@@ -75,7 +75,10 @@ fn runtime_variant_built(features: &str, folder: &str, name: &str) -> bool {
         .is_ok_and(|status| status.success());
     let library = own.join(profile).join(runtime_file());
     let file = if cfg!(windows) { format!("{name}.lib") } else { format!("lib{name}.a") };
-    built && fs::copy(library, beside.join(file)).is_ok()
+    // Copied under another name and then renamed, so a build linking it at that moment, in this
+    // test run or another, finds the old library or the new one and never half of one.
+    let copying = beside.join(format!("{file}.{}.copying", std::process::id()));
+    built && fs::copy(library, &copying).is_ok() && fs::rename(&copying, beside.join(file)).is_ok()
 }
 
 /// Whether mutation testing is running the tests (CI's mutation jobs set

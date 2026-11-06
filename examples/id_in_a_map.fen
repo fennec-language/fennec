@@ -16,3 +16,5 @@ def main(stdout: Stdout):
     mut others = Table[Unit]()
     stranger = others.add(Unit(health=4))
     stdout.print(stranger in units, units.get(stranger) is None, stranger in others)
+    # An `Id` shows its slot however it's written, and never what changes between runs.
+    stdout.print(second, str(second), f"{second}", [second, third], str([second, third]))

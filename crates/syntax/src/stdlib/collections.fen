@@ -1,4 +1,4 @@
-from std.intrinsics import id_at, id_key, id_tag, table_tag, table_tagged, type_name
+from std.intrinsics import id_at, id_key, id_of_key, id_tag, table_of_slots, table_slots, table_tag, table_tagged, type_name
 
 ## A double-ended queue: adding or removing at either end is quick however long it gets.
 ## For breadth-first searches, event queues and undo histories.
@@ -1083,14 +1083,25 @@ extend Id[T]:
         out.id(type_name[T](), id_key(self), id_tag(self))
 
     def deserialize(ref src: Deserializer) -> Id[T] fails ParseError:
+        kind = type_name[T]()
+        if src.exact():
+            # Its slot and its generation.
+            slot = src.value[int]()?
+            generation = src.value[int]()?
+            if slot < 0 or generation < 0 or generation > 4294967295:
+                fail src.here("is out of range")
+            src.saw_id(kind, slot)
+            return id_of_key[T]((slot << 32) | generation, src.tag(kind))
         position = src.value[int]()?
         if position < 0: fail src.here("is out of range")
-        kind = type_name[T]()
         src.saw_id(kind, position)
         id_at[T](position, src.tag(kind))
 
 extend Table[T: Serializable]:
     def serialize(self, ref out: Serializer):
+        if out.exact():
+            out.slots(type_name[T](), table_tag(self), table_slots(self), self.values())
+            return
         mut ids = list[Id[T]]()
         mut items = list[T]()
         for id, item in self.items():
@@ -1100,8 +1111,23 @@ extend Table[T: Serializable]:
 
 extend Table[T: Deserializable]:
     def deserialize(ref src: Deserializer) -> Table[T] fails ParseError:
-        items = src.value[list[T]]()?
         kind = type_name[T]()
+        if src.exact():
+            slots = src.value[list[int]]()?
+            items = src.value[list[T]]()?
+            mut live = 0
+            for word in slots:
+                # A generation fits in 32 bits, and one taken out is stored as -1 less it.
+                if word > 4294967295 or word < -4294967296:
+                    fail src.here("has a slot past the last generation")
+                if word >= 0:
+                    live += 1
+            if live != items.len():
+                used = "1 slot" if live == 1 else f"{live} slots"
+                fail src.here(f"has {used} in use but {items.len()} items")
+            src.saw_table(kind, slots.len())
+            return table_of_slots[T](src.tag(kind), slots, items)
+        items = src.value[list[T]]()?
         mut table = table_tagged[T](src.tag(kind))
         for item in items:
             _ = table.add(item)

@@ -393,11 +393,7 @@ pub(crate) fn run(module: &Module, wanted: &[String], defines: &dyn Fn(&str) -> 
         return result;
     }
     let names: Vec<String> = (0..taken.len()).map(function_name).collect();
-    let work = std::env::temp_dir().join(format!(
-        "fennec-tests-{}{}",
-        std::process::id(),
-        std::env::consts::EXE_SUFFIX
-    ));
+    let work = crate::own_temp("tests").with_extension(std::env::consts::EXE_EXTENSION);
     let Some(trimmed) = trimmed_for(module, &taken) else {
         result.left.extend(taken.iter().map(|test| test.name.clone()));
         return result;

@@ -41,6 +41,7 @@ pub(crate) const MODULE: Module = Module {
         "text_of_code",
         "type_name",
         "shape_hash",
+        "bytes_text",
         "id_key",
         "id_at",
         "id_tag",

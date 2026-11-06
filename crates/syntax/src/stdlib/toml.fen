@@ -966,6 +966,12 @@ struct TomlReader:
     def exact(self) -> bool:
         False
 
+    def ordered(ref self, name: str) -> bool fails ParseError:
+        False
+
+    def end_ordered(ref self):
+        pass
+
     def at_item(self, at: int, message: str) -> ParseError:
         ParseError(message=f"`{self._dotted()}[{at}]` {message}", line=0, column=0)
 

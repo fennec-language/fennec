@@ -5564,6 +5564,41 @@ fn new_string_keys_go_in_as_on_the_interpreter() -> std::io::Result<()> {
     )
 }
 
+/// String keys of every length up to past what a header holds, from slices at every place in a
+/// block's text and from whole strings: a short one is compared by its header's words, its last
+/// part word read as the bytes ending where it ends, and both ways find the same entries.
+#[test]
+fn string_keys_of_every_length_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "string_key_lengths",
+        r#"def main(stdout: Stdout):
+    text = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ"
+    mut by_slice: dict[str, int] = {}
+    mut by_word: dict[str, int] = {}
+    for size in range(31):
+        for at in range(text.len() - size + 1):
+            piece = text[at:at + size]
+            by_slice[piece] = (by_slice.get(piece) else 0) + 1
+            word = "".join([text[i] for i in range(at, at + size)])
+            by_word[word] = (by_word.get(word) else 0) + 1
+    mut agree = 0
+    for key, count in by_slice.items():
+        if (by_word.get(key) else -1) == count:
+            agree += 1
+    stdout.print(by_slice.len(), by_word.len(), agree, by_slice.get("") else -1, by_slice.get(text[3:20]) else -1)
+    mut again = 0
+    for size in [0, 1, 7, 8, 9, 15, 16, 17, 22, 23, 24, 29]:
+        again += by_slice.get(text[5:5 + size]) else 0
+        again += by_word.get(text[5:5 + size]) else 0
+        again += by_slice.get(text[0:size] + "") else 0
+    stdout.print(again, by_slice.get("nothere") else -1, by_slice.get(text[:23] + "!") else -1)
+"#,
+    )
+}
+
 /// Reading a string key a dict doesn't have fails with the key in the message.
 #[test]
 fn a_missing_string_key_fails_like_the_jit() -> std::io::Result<()> {

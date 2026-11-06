@@ -36,9 +36,18 @@ thread_local! {
     static RAN: RefCell<Vec<i64>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The first room the program's bytes get: most programs fit, so they come over with no copying
+/// as they grow, which early in a process costs a fresh allocator page each time.
+const IMAGE_ROOM: usize = 64 << 10;
+
 /// The next eight bytes of the program the executable carries.
 pub extern "C" fn image(word: i64) {
-    IMAGE.with_borrow_mut(|bytes| bytes.extend_from_slice(&word.to_le_bytes()));
+    IMAGE.with_borrow_mut(|bytes| {
+        if bytes.capacity() == 0 {
+            bytes.reserve(IMAGE_ROOM);
+        }
+        bytes.extend_from_slice(&word.to_le_bytes());
+    });
 }
 
 /// Runs the program handed over, `length` bytes of it, by calling `entry` with the lowest
@@ -208,7 +217,7 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     let here = 0_u8;
     let limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
     entry(i64::try_from(limit).unwrap_or(0));
-    let (output, failure, leftovers) = super::finish();
+    let (output, failure, leftovers) = super::finish_for_exit();
     report_counts(&leftovers.counts);
     (output, failure.map(|failure| sources.render(&failure)).unwrap_or_default())
 }
@@ -278,7 +287,7 @@ pub(super) fn counts_line(counts: &heap::Counts, parallel_calls: u64, blocked_wa
 /// stays for whoever finishes the run.
 pub(super) fn stop_for_failure() {
     let Some(sources) = SOURCES.take() else { return };
-    let (output, failure, leftovers) = super::finish();
+    let (output, failure, leftovers) = super::finish_for_exit();
     report_counts(&leftovers.counts);
     let failure = failure.map(|failure| sources.render(&failure)).unwrap_or_default();
     let code = report(&output, &failure);

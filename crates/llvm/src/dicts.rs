@@ -124,6 +124,11 @@ impl Emit<'_, '_, '_> {
         if word == Word::Float {
             return self.find_float_key(dict, key);
         }
+        if let Word::Plain(id) = word
+            && self.key_by_value(id)
+        {
+            return self.find_by_value(dict, id, key);
+        }
         // A key held as a header is found by its bytes here, as a slice's are: its inline bytes
         // are zero after its length, as a block's text is, so they hash the same.
         if word == Word::Text {
@@ -180,6 +185,31 @@ impl Emit<'_, '_, '_> {
         };
         let entry = self.temp();
         self.line(&format!("{entry} = call ptr @{name}(ptr {dict}, {key_type} {key}, i64 {hash})"));
+        entry
+    }
+
+    /// Whether a plain key is hashed by what it holds, which the runtime does: strings and lists,
+    /// or floats, whose bits don't say what's equal.
+    fn key_by_value(&self, id: u32) -> bool {
+        self.module.layouts.holds_counted(id) || self.holds_a_float(id)
+    }
+
+    /// A plain key as a block of its own, with owners of what it holds.
+    fn owned_key_block(&mut self, id: u32, key: &str) -> String {
+        let block = self.key_block(id, key).unwrap_or_default();
+        let kind = Kind::from_ty(self.module.layouts, Ty::Struct(id)).unwrap_or(Kind::Struct(id));
+        let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+        self.retain_inline(&kind, &fields);
+        block
+    }
+
+    /// The entry of a plain key that's hashed by what it holds.
+    fn find_by_value(&mut self, dict: &str, id: u32, key: &str) -> String {
+        self.declare("declare ptr @fennec_dict_find_by_value(ptr, ptr) nounwind");
+        let block = self.owned_key_block(id, key);
+        let entry = self.temp();
+        self.line(&format!("{entry} = call ptr @fennec_dict_find_by_value(ptr {dict}, ptr {block})"));
+        self.release(&block);
         entry
     }
 
@@ -322,7 +352,11 @@ impl Emit<'_, '_, '_> {
     fn key_word(&mut self, word: Word, key: &str) -> Result<String, String> {
         Ok(match word {
             Word::Plain(id) => {
-                let block = self.key_block(id, key)?;
+                let block = if self.key_by_value(id) {
+                    self.owned_key_block(id, key)
+                } else {
+                    self.key_block(id, key)?
+                };
                 let held = self.temp();
                 self.line(&format!("{held} = ptrtoint ptr {block} to i64"));
                 held

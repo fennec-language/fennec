@@ -8,9 +8,12 @@ use std::process::{Command, ExitCode};
 use std::time::Instant;
 
 /// The libraries Rust's standard library needs from the system, which the runtime
-/// library uses, and the flag that drops the parts of the runtime a program never calls.
+/// library uses, and the flag that drops the parts of the runtime a program never calls. On
+/// macOS the main thread also gets the runtime's `MAIN_STACK_BYTES` of stack, which the runtime
+/// counts on to run the program there, with no thread of its own to start.
 #[cfg(target_os = "macos")]
-const SYSTEM_LIBRARIES: &[&str] = &["-lSystem", "-lc", "-lm", "-Wl,-dead_strip"];
+const SYSTEM_LIBRARIES: &[&str] =
+    &["-lSystem", "-lc", "-lm", "-Wl,-dead_strip", "-Wl,-stack_size,0x20000000"];
 /// What TLS checks certificates with, for a program that makes requests. Loading these costs
 /// every run, so nothing else links them.
 #[cfg(target_os = "macos")]
@@ -606,5 +609,17 @@ fn runtime_library(runtime: Runtime) -> Result<PathBuf, String> {
             path.display(),
             runtime.how_to_build()
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The main thread's stack an executable is linked with on macOS is the one the runtime
+    /// counts on to run the program there.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn the_main_stack_linked_is_the_one_the_runtime_counts_on() {
+        let flag = format!("-Wl,-stack_size,{:#x}", fennec_interp::embed::aot::MAIN_STACK_BYTES);
+        assert!(super::SYSTEM_LIBRARIES.contains(&flag.as_str()), "{flag}");
     }
 }

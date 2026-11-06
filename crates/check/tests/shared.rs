@@ -123,31 +123,32 @@ fn locking(rest: &str) -> Vec<String> {
 }
 
 #[test]
-fn a_lock_body_does_no_io_and_cant_leave_early() {
+fn a_lock_body_can_do_io_and_leave_early() {
+    let empty: [&str; 0] = [];
     assert_eq!(
         locking(
             "def main(stdout: Stdout):\n    a = Account()\n    with a as x:\n        stdout.print(x.total)\n"
         ),
-        ["`stdout` does I/O, which can't happen while `x` is locked @ stdout"]
+        empty
     );
     assert_eq!(
         locking(
             "shared Log:\n    count = 0\n\n    def show(self, out: Stdout):\n        out.print(self.count)\n"
         ),
-        ["`out` does I/O, which can't happen while `self` is locked @ out"]
+        empty
     );
     assert_eq!(
         locking(
             "shared Log:\n    count = 0\n\n    def set(ref self, n: int):\n        self.count = checked(n)?\n"
         ),
-        ["`?` can't leave while `self` is locked @ checked(n)?"]
+        empty
     );
     assert_eq!(
         locking(
             "def drain(a: Account):\n    with a as ref x:\n        if x.total < 0:\n            \
              fail TooLow(total=x.total)\n        x.total = 0\n"
         ),
-        ["`fail` can't leave while `x` is locked @ TooLow(total=x.total)"]
+        empty
     );
 }
 

@@ -28,7 +28,6 @@ impl FnCx<'_> {
         };
         let ty = self.checker.settled(&ty);
         self.record(expr.span, &ty);
-        self.io_under_lock(expr, &ty);
         ty
     }
 
@@ -933,11 +932,6 @@ impl FnCx<'_> {
 
     /// `value?`: the value inside a result, passing its error up.
     fn try_value(&mut self, value: &Expr, context: Option<&Expr>, span: Span) -> Type {
-        self.not_under_lock(
-            "`?` can't leave",
-            span,
-            "handle the failure here with `match` or `else`, so what the lock guards isn't left half changed",
-        );
         // A function used as a value says nothing of failing, so nothing is told to expect it.
         let in_arrow = self.arrows > 0;
         if in_arrow {

@@ -49,4 +49,4 @@ def main(stdout: Stdout):
     stdout.print(dotted)
     for c in "":
         stdout.print("never")
-    stdout.print(find("fennec", "c"), find("ü🦊x", "x"), find("ab", "z"))
+    stdout.print(find("fennec", want="c"), find("ü🦊x", want="x"), find("ab", want="z"))

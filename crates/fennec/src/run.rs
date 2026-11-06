@@ -145,7 +145,7 @@ pub(crate) fn startup(path: &str) -> ExitCode {
 /// Loads and checks all of a program.
 fn whole(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures), ExitCode> {
     let mut program = crate::load(path, fennec_kit::Entry::Main).ok_or(ExitCode::FAILURE)?;
-    match crate::copy_rule::check_to_run(&mut program.module) {
+    match crate::copy_rule::check_to_run(&mut program.module, &program.sources) {
         Ok(signatures) => Ok((program, signatures)),
         Err(diagnostics) => Err(reject(&program, &diagnostics)),
     }
@@ -170,7 +170,8 @@ fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures)
         program.sources.files().chain(embedded.iter().map(|(path, text)| (path.as_str(), text.as_str()))),
     );
     if cache.read("checked", &name).is_none_or(|passed| passed != text.as_bytes()) {
-        if let Err(diagnostics) = crate::copy_rule::check_rules(&mut program.module.clone()) {
+        if let Err(diagnostics) = crate::copy_rule::check_rules(&mut program.module.clone(), &program.sources)
+        {
             return Err(reject(&program, &diagnostics));
         }
         // A cache that can't be written only means checking all of it again next time.
@@ -277,7 +278,7 @@ pub(crate) fn check(program: &mut fennec_kit::Program) -> bool {
 /// Checks a program to build, refusing what `fennec check` and a run refuse. Returns whether it
 /// passed. Tools that report on a program use `check`, since what they report may be why.
 pub(crate) fn check_to_build(program: &mut fennec_kit::Program) -> bool {
-    match crate::copy_rule::check_all_rules(&mut program.module) {
+    match crate::copy_rule::check_all_rules(&mut program.module, &program.sources) {
         Ok(_) => true,
         Err(diagnostics) => {
             reject(program, &diagnostics);

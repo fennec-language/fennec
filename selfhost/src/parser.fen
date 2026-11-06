@@ -217,10 +217,10 @@ struct Parser:
     def declaration(ref self, word: str) -> Item:
         start = self.advance().span
         match word:
-            case "struct": .Struct(self.type_def(start, False)?)
-            case "shared": .Struct(copy(self.type_def(start, False)?, shared=True))
+            case "struct": .Struct(self.type_def(start, is_enum=False)?)
+            case "shared": .Struct(copy(self.type_def(start, is_enum=False)?, shared=True))
             case "error": .Error(self.error_def(start)?)
-            case "enum": .Enum(self.type_def(start, True)?)
+            case "enum": .Enum(self.type_def(start, is_enum=True)?)
             case "interface": self.interface(start)?
             case "extend": self.extension(start)?
             case "type":
@@ -244,7 +244,7 @@ struct Parser:
     ## An error: fields, like a struct's, or cases, like an enum's, each failing its own way:
     ## `NotFound(path: str)`. A line that's a name and then `(` or nothing is a case.
     def error_def(ref self, start: Span) -> TypeDef:
-        type_def = self.type_body(start, False, True)?
+        type_def = self.type_body(start, is_enum=False, is_error=True)?
         if type_def.fields.len() > 0 and type_def.cases.len() > 0:
             fail Diagnostic(
                 message=f"`{type_def.name}` has both fields and cases",
@@ -254,7 +254,7 @@ struct Parser:
         type_def
 
     def type_def(ref self, start: Span, is_enum: bool) -> TypeDef:
-        self.type_body(start, is_enum, False)?
+        self.type_body(start, is_enum=is_enum, is_error=False)?
 
     ## A struct's, enum's or error's name and body. An error's body may have cases.
     def type_body(ref self, start: Span, is_enum: bool, is_error: bool) -> TypeDef:

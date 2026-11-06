@@ -243,7 +243,7 @@ impl FnCx<'_> {
                 self.error(
                     Diagnostic::new(format!("this `with` locks {}, so it needs a name for it", a(ty)), item.span)
                         .with_help(format!(
-                            "name it after `as`, like `with {written} as mut locked:`, and change it through that name"
+                            "name it after `as`, like `with {written} as ref locked:`, and change it through that name"
                         )),
                 );
             }

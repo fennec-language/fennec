@@ -254,7 +254,7 @@ impl FnCx<'_> {
         let changes = actual.params.first().is_some_and(|param| param.is_mut);
         if wanted.takes_self() && changes && !wanted.params.first().is_some_and(|param| param.is_mut) {
             let help =
-                format!("write `mut self` in the interface's `{}`, or don't change `self` here", wanted.name);
+                format!("write `ref self` in the interface's `{}`, or don't change `self` here", wanted.name);
             return Err((format!("it has no `{wanted_text}`. Its `{}` changes `self`", wanted.name), help));
         }
         let first = usize::from(wanted.takes_self());
@@ -392,7 +392,7 @@ fn signature_text(def: &FnDef) -> String {
         .params
         .iter()
         .map(|param| {
-            let prefix = if param.is_mut { "mut " } else { "" };
+            let prefix = if param.is_mut { "ref " } else { "" };
             match &param.ty {
                 Some(ty) => format!("{prefix}{}: {}", param.name, crate::program::written(ty)),
                 None => format!("{prefix}{}", param.name),

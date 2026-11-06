@@ -98,7 +98,7 @@ fn mut_on_the_wrong_argument_says_which_one() {
     let program = "def grow(amount: int, mut items: list[int]):\n    items.append(amount)\n\ndef main():\n    mut xs = [1]\n    mut n = 1\n    n += 1\n    grow(mut n, xs)\n";
     let helps = helps(program);
     assert!(
-        helps.iter().any(|help| help == "did you mean to put `mut` on `items`, which `grow` does change?"),
+        helps.iter().any(|help| help == "did you mean to put `ref` on `items`, which `grow` does change?"),
         "{helps:?}"
     );
     let nothing_changes =

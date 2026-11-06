@@ -4,5 +4,5 @@ error: you can't change `names` while looping over it
 4 |         names.append(name.upper())
   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = help: use `for mut`, or loop over indexes
+  = help: use `for ref`, or loop over indexes
   = note: the loop is at examples/errors/loop_changes.fen:3:17

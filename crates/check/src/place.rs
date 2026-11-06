@@ -25,7 +25,7 @@ impl FnCx<'_> {
         {
             let message = format!("`{handle}` is `shared`, so change it in one of its methods");
             self.error(Diagnostic::new(message, expr.span).with_help(format!(
-                "a `shared` value's methods take its lock: add a `mut self` method that makes the change, or lock it for a block with `with {handle} as mut locked:`"
+                "a `shared` value's methods take its lock: add a `ref self` method that makes the change, or lock it for a block with `with {handle} as ref locked:`"
             )));
             return;
         }
@@ -231,7 +231,7 @@ impl FnCx<'_> {
         {
             let message = format!("`{name}` has a `def []` but no `def []=`, so its items can't be changed");
             let help = format!(
-                "define the `mut` form, `def [](mut self, i: int)`, or `def []=(mut self, index: ..., value: ...)` for `{name}`"
+                "define the `ref` form, `def [](ref self, i: int)`, or `def []=(ref self, index: ..., value: ...)` for `{name}`"
             );
             self.error(Diagnostic::new(message, place.span).with_help(help));
         }

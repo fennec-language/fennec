@@ -115,7 +115,7 @@ impl Loops<'_> {
                     let help = if *is_mut {
                         "loop over indexes, or collect the changes and make them after the loop"
                     } else {
-                        "use `for mut`, or loop over indexes"
+                        "use `for ref`, or loop over indexes"
                     };
                     for (_, span) in changes.iter().filter(|(changed, _)| changed.overlaps(&looped)) {
                         let message = format!("you can't change `{shown}` while looping over it");
@@ -375,7 +375,7 @@ fn picked_by_a_mut_argument(callee: &Expr, args: &[Arg], problems: &mut Vec<Diag
             let message = format!("{first} changes what picks {second}");
             problems.push(
                 Diagnostic::new(message, arg.value.span)
-                    .with_help("hold the index in another name, and give that name as `mut`"),
+                    .with_help("hold the index in another name, and give that name as `ref`"),
             );
         }
     }
@@ -395,12 +395,12 @@ fn reads(expr: &Expr, changed: &Place) -> bool {
         || crate::effects::children(expr).into_iter().any(|inner| reads(inner, changed))
 }
 
-const OVERLAP_FIX: &str = "a `mut` argument needs its place to itself: give the other `copy(...)` of what \
+const OVERLAP_FIX: &str = "a `ref` argument needs its place to itself: give the other `copy(...)` of what \
 it reads, or make the changes one at a time";
 
 /// An argument that names a place, in backticks as it's written.
 fn written(expr: &Expr, is_mut: bool) -> String {
-    let word = if is_mut { "mut " } else { "" };
+    let word = if is_mut { "ref " } else { "" };
     format!("`{word}{}`", place_text(expr))
 }
 

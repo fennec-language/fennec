@@ -295,21 +295,23 @@ fn builtins_take_the_right_arguments() {
     );
 }
 
+/// `copy` with fields changes fields that exist, to values of their types. `replace` was its old
+/// name, which `fennec fix` moves to `copy`.
 #[test]
-fn replace_changes_fields_that_exist() {
+fn copy_with_fields_changes_fields_that_exist() {
     let program = "
         enemy = Enemy(name='Ash')
-        replace(enemy, health=5)
-        replace(enemy, hp=5)
-        replace(enemy, health='x')
-        replace()
+        copy(enemy, health=5)
+        copy(enemy, hp=5)
+        copy(enemy, health='x')
+        replace(enemy, health=6)
     ";
     assert_eq!(
         with_types(program),
         [
             "`Enemy` has no field called `hp` @ 5",
             "`health` should be an int, but this is a str @ 'x'".replace('\'', "\"").as_str(),
-            "`replace` takes a struct value, then the fields to change @ replace()",
+            "`replace` is called `copy` now: `copy(value, field=new)` @ replace",
         ]
     );
 }

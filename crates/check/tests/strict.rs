@@ -219,8 +219,8 @@ fn builtins_check_what_they_are_given() {
     );
     assert_eq!(in_main("stdout.print(Err(1))"), ["can't tell what value this result could hold @ Err(1)"]);
     assert_eq!(
-        in_main("stdout.print(replace(1, n=2))"),
-        ["`replace` copies a struct, but this is an int @ replace(1, n=2)"]
+        in_main("stdout.print(copy(1, n=2))"),
+        ["`copy` with fields copies a struct, but this is an int @ copy(1, n=2)"]
     );
 }
 

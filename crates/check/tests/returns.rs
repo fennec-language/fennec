@@ -325,11 +325,11 @@ fn a_bare_return_cant_stand_for_a_value() {
 
 #[test]
 fn a_call_that_changes_something_at_the_end_of_a_def_with_no_arrow_is_a_statement() {
-    let text = "struct Board:\n    scores: list[int]\n\n    def add(mut self, score: int) -> int:\n        \
+    let text = "struct Board:\n    scores: list[int]\n\n    def add(ref self, score: int) -> int:\n        \
         self.scores.append(score)\n        self.scores.len()\n\n\
-        def bump(mut items: list[int]) -> int:\n    items.append(1)\n    items.len()\n\n\
-        def record(mut board: Board):\n    board.add(1)\n\n\
-        def grow(mut items: list[int]):\n    bump(mut items)\n";
+        def bump(ref items: list[int]) -> int:\n    items.append(1)\n    items.len()\n\n\
+        def record(ref board: Board):\n    board.add(1)\n\n\
+        def grow(ref items: list[int]):\n    bump(ref items)\n";
     let empty: [&str; 0] = [];
     assert_eq!(problems_as_written(text), empty);
 }

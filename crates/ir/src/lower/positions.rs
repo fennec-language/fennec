@@ -101,7 +101,7 @@ impl Lowering<'_> {
         let ty = self.steps_type(&holder)?;
         let (length, _) = self
             .resolve(&format!("{owner}.len"), &[Some(ty.clone())], None)
-            .ok_or_else(|| format!("`for mut` over `{owner}` needs its `len`"))?;
+            .ok_or_else(|| format!("`for ref` over `{owner}` needs its `len`"))?;
         let held = self.read_steps(holder.local, &holder.steps, span)?;
         let limit = self.temporary(Type::Int);
         self.emit(InstKind::Call { dest: Some(limit), function: length, args: vec![held] }, span);

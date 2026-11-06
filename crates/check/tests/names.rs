@@ -69,13 +69,13 @@ fn print_says_what_to_do_where_it_is() {
 #[test]
 fn a_name_spelled_nearly_like_another_says_so() {
     for (body, help) in [
-        ("mut units = [1]\n    grow(mut untis)", "did you mean `units`?"),
-        ("mut units = [1]\n    for mut unit in unit:\n        unit += 1", "did you mean `units`?"),
+        ("mut units = [1]\n    grow(ref untis)", "did you mean `units`?"),
+        ("mut units = [1]\n    for ref unit in unit:\n        unit += 1", "did you mean `units`?"),
         ("mut units = [1]\n    units.append(unts[0])", "did you mean `units`?"),
         ("stdout.print(growe)", "did you mean `grow`?"),
     ] {
         let program = format!(
-            "def grow(mut items: list[int]):\n    items.append(1)\n\ndef main(stdout: Stdout):\n    {body}\n"
+            "def grow(ref items: list[int]):\n    items.append(1)\n\ndef main(stdout: Stdout):\n    {body}\n"
         );
         assert_eq!(helps(&program), [help], "{body}");
     }
@@ -95,14 +95,14 @@ fn a_name_like_nothing_in_sight_says_nothing_more() {
 /// `mut` on the wrong argument says which one the function does change.
 #[test]
 fn mut_on_the_wrong_argument_says_which_one() {
-    let program = "def grow(amount: int, mut items: list[int]):\n    items.append(amount)\n\ndef main():\n    mut xs = [1]\n    mut n = 1\n    n += 1\n    grow(mut n, xs)\n";
+    let program = "def grow(amount: int, ref items: list[int]):\n    items.append(amount)\n\ndef main():\n    mut xs = [1]\n    mut n = 1\n    n += 1\n    grow(ref n, xs)\n";
     let helps = helps(program);
     assert!(
         helps.iter().any(|help| help == "did you mean to put `ref` on `items`, which `grow` does change?"),
         "{helps:?}"
     );
     let nothing_changes =
-        "def grow(amount: int):\n    amount + 1\n\ndef main():\n    mut n = 1\n    n += 1\n    grow(mut n)\n";
+        "def grow(amount: int):\n    amount + 1\n\ndef main():\n    mut n = 1\n    n += 1\n    grow(ref n)\n";
     assert!(!crate::helps(nothing_changes).iter().any(|help| help.contains("did you mean")));
 }
 
@@ -318,7 +318,7 @@ const ACCOUNT: &str = "struct Account:
     owner: str
     _balance = 0
 
-    def deposit(mut self, amount: int):
+    def deposit(ref self, amount: int):
         self._balance += amount
 
     def _audit(self) -> bool:

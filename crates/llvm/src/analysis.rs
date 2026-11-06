@@ -2315,12 +2315,12 @@ mod tests {
     #[test]
     fn a_for_mut_item_is_taken_on_every_way_out_of_its_body() -> Result<(), String> {
         for body in [
-            "def go(mut units: list[Unit]):\n    for mut unit in units:\n        unit.tags.append(1)\n",
-            "def go(mut units: list[Unit]):\n    for mut unit in units:\n        if unit.hp == 0:\n            continue\n        unit.tags.append(1)\n        if unit.hp == 1:\n            break\n        unit.hp = 2\n",
-            "def go(mut units: list[Unit]) -> int:\n    for mut unit in units:\n        unit.tags.append(1)\n        if unit.hp == 1:\n            return unit.tags.len()\n    0\n",
-            "def go(mut units: list[Unit]) -> int fails Bad:\n    for mut unit in units:\n        unit.tags.append(1)\n        if unit.hp == 1:\n            fail Bad(\"no\")\n    0\n",
-            "def go(mut world: World):\n    for mut unit in world.units:\n        unit.tags.append(1)\n",
-            "def go(mut world: World):\n    for mut unit in world.units:\n        world.log.append(unit.hp)\n        unit.tags.append(1)\n",
+            "def go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.tags.append(1)\n",
+            "def go(ref units: list[Unit]):\n    for ref unit in units:\n        if unit.hp == 0:\n            continue\n        unit.tags.append(1)\n        if unit.hp == 1:\n            break\n        unit.hp = 2\n",
+            "def go(ref units: list[Unit]) -> int:\n    for ref unit in units:\n        unit.tags.append(1)\n        if unit.hp == 1:\n            return unit.tags.len()\n    0\n",
+            "def go(ref units: list[Unit]) -> int fails Bad:\n    for ref unit in units:\n        unit.tags.append(1)\n        if unit.hp == 1:\n            fail Bad(\"no\")\n    0\n",
+            "def go(ref world: World):\n    for ref unit in world.units:\n        unit.tags.append(1)\n",
+            "def go(ref world: World):\n    for ref unit in world.units:\n        world.log.append(unit.hp)\n        unit.tags.append(1)\n",
         ] {
             assert!(taken(body)?, "not taken: {body}");
         }
@@ -2342,11 +2342,11 @@ mod tests {
     /// what's in the field has to last until the new value is put there.
     #[test]
     fn a_text_growing_in_a_field_is_taken_out_of_it() -> Result<(), String> {
-        let grows = "def go(mut note: Note, more: str):\n    note.text += more\n";
+        let grows = "def go(ref note: Note, more: str):\n    note.text += more\n";
         assert_eq!(taken_locals(grows)?, 1);
-        let makes = "def go(mut note: Note, more: str):\n    note.text = note.text + more\n";
+        let makes = "def go(ref note: Note, more: str):\n    note.text = note.text + more\n";
         assert_eq!(taken_locals(makes)?, 0);
-        let number = "def go(mut note: Note):\n    note.hp += 1\n";
+        let number = "def go(ref note: Note):\n    note.hp += 1\n";
         assert_eq!(taken_locals(number)?, 0);
         Ok(())
     }
@@ -2356,11 +2356,11 @@ mod tests {
     #[test]
     fn a_for_mut_item_is_not_taken_when_the_body_can_read_its_list() -> Result<(), String> {
         for body in [
-            "def go(mut units: list[Unit]):\n    for mut unit in units:\n        unit.tags.append(units[0].hp)\n",
-            "def go(mut units: list[Unit]):\n    for mut unit in units:\n        unit.hp += units.len()\n",
-            "def go(mut units: list[Unit]):\n    for mut unit in units:\n        unit.hp += total(units)\n",
-            "def go(mut world: World):\n    for mut unit in world.units:\n        unit.hp += world.units.len()\n",
-            "def go(mut world: World):\n    for mut unit in world.units:\n        unit.hp += size(world)\n",
+            "def go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.tags.append(units[0].hp)\n",
+            "def go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.hp += units.len()\n",
+            "def go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.hp += total(units)\n",
+            "def go(ref world: World):\n    for ref unit in world.units:\n        unit.hp += world.units.len()\n",
+            "def go(ref world: World):\n    for ref unit in world.units:\n        unit.hp += size(world)\n",
             "def go(units: list[Unit]) -> int:\n    mut found = 0\n    for unit in units:\n        found += unit.hp\n    found\n",
         ] {
             assert!(!taken(body)?, "taken: {body}");

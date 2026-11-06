@@ -426,25 +426,25 @@ fn a_list_written_where_a_list_of_optionals_goes_is_one() {
 #[test]
 fn what_a_mut_parameter_can_make_none_is_checked_again() {
     let program = "
-        def cleared(mut value: int?):
+        def cleared(ref value: int?):
             value = None
 
         def f(n: int?) -> int:
             mut held = n
             if held is not None:
-                cleared(mut held)
+                cleared(ref held)
                 return held + 1
             0
     ";
     assert_eq!(problems(program), ["this might be None @ held"]);
     let keeps_what_it_knows = "
-        def bumped(mut value: int):
+        def bumped(ref value: int):
             value += 1
 
         def f(n: int?) -> int:
             mut held = n
             if held is not None:
-                bumped(mut held)
+                bumped(ref held)
                 return held + 1
             0
     ";
@@ -469,7 +469,7 @@ fn a_loop_sees_what_its_body_changes() {
             "mut x: int? = 5\nfor n in names:\n    match n:\n        case 'a':\n            use(x + 1)\n        case _:\n            x = None\n",
             "x",
         ),
-        ("mut x: int? = 5\nfor n in names:\n    use(x + 1)\n    clear(mut x)\n", "x"),
+        ("mut x: int? = 5\nfor n in names:\n    use(x + 1)\n    clear(ref x)\n", "x"),
         // It never holds None, but the loop's first look at it doesn't know that.
         ("mut x: int? = 5\nfor n in names:\n    x = x + 1\n", "x"),
         (
@@ -507,7 +507,7 @@ fn in_a_loop_function(body: &str) -> String {
         "struct Held:
     x: int?
 
-    def clear(mut self):
+    def clear(ref self):
         self.x = None
 
     def show(self) -> int:
@@ -516,7 +516,7 @@ fn in_a_loop_function(body: &str) -> String {
 def use(n: int):
     pass
 
-def clear(mut slot: int?):
+def clear(ref slot: int?):
     slot = None
 
 def run(names: list[str]):

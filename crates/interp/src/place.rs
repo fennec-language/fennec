@@ -304,7 +304,7 @@ impl Interp<'_> {
         let method = |name: &str| info.as_ref().and_then(|info| info.methods.get(name).cloned());
         let (length, is_live) = (method("len"), method("is_live"));
         let length =
-            length.ok_or_else(|| Diagnostic::new("`for mut` over this needs its `def len`", span))?;
+            length.ok_or_else(|| Diagnostic::new("`for ref` over this needs its `def len`", span))?;
         let Value::Int(count) = self.call_with_values(&length, vec![source.clone()], span)? else {
             return Err(Diagnostic::new("`def len` should give an int", span));
         };

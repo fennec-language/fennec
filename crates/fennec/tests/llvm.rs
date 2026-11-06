@@ -262,7 +262,7 @@ fn a_text_growing_in_a_field_matches_the_jit() -> std::io::Result<()> {
     text = ""
     hp = 0
 
-    def add(mut self, more: str):
+    def add(ref self, more: str):
         self.text += more
 
 struct World:
@@ -310,30 +310,30 @@ def maybe(at: int) -> int:
         fail Bad("from a call")
     at
 
-def by_fail(mut units: list[Unit], at: int) -> int:
-    for mut unit in units:
+def by_fail(ref units: list[Unit], at: int) -> int:
+    for ref unit in units:
         unit.tags.append(at)
         unit.hp += 1
         if unit.hp == 2:
             fail Bad("stop")
     0
 
-def by_try(mut units: list[Unit]) -> int:
-    for mut unit in units:
+def by_try(ref units: list[Unit]) -> int:
+    for ref unit in units:
         unit.tags.append(8)
         unit.hp += maybe(unit.hp)?
     0
 
 def main(stdout: Stdout):
     mut units = [Unit([1], 0), Unit([2], 1), Unit([3], 5)]
-    stdout.print(by_fail(mut units, 9) else -1, units)
+    stdout.print(by_fail(ref units, 9) else -1, units)
     mut others = [Unit([1], 0), Unit([2], 1), Unit([3], 5)]
-    stdout.print(by_try(mut others) else -2, others)
+    stdout.print(by_try(ref others) else -2, others)
 "#;
     same_as_the_jit("failing_out_of_for_mut", shared)?;
     // Out of two loops at once. The JIT stops here with "expected an int", so this one's held to
     // what the interpreter prints.
-    let nested = "error Bad:\n    why: str\n\ndef nested(mut grid: list[list[int]]) -> int:\n    for mut row in grid:\n        for mut cell in row:\n            cell += 1\n            if cell == 5:\n                fail Bad(\"inner\")\n    0\n\ndef main(stdout: Stdout):\n    mut grid = [[1, 2], [4, 7], [9]]\n    stdout.print(nested(mut grid) else -3, grid)\n";
+    let nested = "error Bad:\n    why: str\n\ndef nested(ref grid: list[list[int]]) -> int:\n    for ref row in grid:\n        for ref cell in row:\n            cell += 1\n            if cell == 5:\n                fail Bad(\"inner\")\n    0\n\ndef main(stdout: Stdout):\n    mut grid = [[1, 2], [4, 7], [9]]\n    stdout.print(nested(ref grid) else -3, grid)\n";
     let dir = folder("failing_out_of_two_loops")?;
     let program = dir.join("two_loops.fen");
     std::fs::write(&program, nested)?;
@@ -384,19 +384,19 @@ const GIVEN_MUT: &str = r#"struct Box:
     at: int
     name: str
 
-    def next(mut self):
+    def next(ref self):
         self.at += 1
 
-    def more(mut self, value: int):
+    def more(ref self, value: int):
         self.items.append(value)
 
-    def fewer(mut self):
+    def fewer(ref self):
         self.items.pop()
 
-    def renamed(mut self, name: str):
+    def renamed(ref self, name: str):
         self.name = name
 
-    def swapped(mut self):
+    def swapped(ref self):
         self.items = [100, 200]
 
 struct Pair:
@@ -407,57 +407,57 @@ enum Shape:
     Dot
     Line(size: int, tags: list[int])
 
-def bump(mut at: int):
+def bump(ref at: int):
     at += 1
 
-def grown(mut xs: list[int]):
+def grown(ref xs: list[int]):
     xs.append(99)
 
-def shrunk(mut xs: list[int]):
+def shrunk(ref xs: list[int]):
     xs.pop()
 
-def replaced(mut xs: list[int]):
+def replaced(ref xs: list[int]):
     xs = [7]
 
-def emptied(mut xs: list[int]):
+def emptied(ref xs: list[int]):
     while xs.len() > 0:
         xs.pop()
 
-def retext(mut text: str, by: str):
+def retext(ref text: str, by: str):
     text = by
 
-def longer(mut text: str):
+def longer(ref text: str):
     text += "é"
 
-def added(mut d: dict[str, int], key: str):
+def added(ref d: dict[str, int], key: str):
     d[key] = 1
 
-def removed(mut d: dict[str, int], key: str):
+def removed(ref d: dict[str, int], key: str):
     d.pop(key)
 
-def rekeyed(mut key: str):
+def rekeyed(ref key: str):
     key = key + "x"
 
-def cleared(mut value: int?):
+def cleared(ref value: int?):
     value = None
 
 def some(value: int) -> int?:
     value
 
-def cleared_text(mut value: str?):
+def cleared_text(ref value: str?):
     value = None
 
-def reshaped(mut shape: Shape):
+def reshaped(ref shape: Shape):
     shape = .Dot
 
-def newbox(mut box: Box):
+def newbox(ref box: Box):
     box = Box([5], 0, "new")
 
-def param_index(mut at: int, mut xs: list[int]) -> int:
+def param_index(ref at: int, ref xs: list[int]) -> int:
     xs[at] = 10
-    bump(mut at)
+    bump(ref at)
     xs[at] = 20
-    bump(mut at)
+    bump(ref at)
     xs[at]
 
 def main(stdout: Stdout):
@@ -465,25 +465,25 @@ def main(stdout: Stdout):
     mut i = 0
     mut xs = [1, 2, 3, 4]
     stdout.print(xs[i])
-    bump(mut i)
+    bump(ref i)
     stdout.print(xs[i])
     mut n = xs.len()
-    bump(mut n)
+    bump(ref n)
     stdout.print(n, xs[n - 2])
 
     mut p = 0
     mut qs = [1, 2, 3]
-    stdout.print(param_index(mut p, mut qs), p, qs)
+    stdout.print(param_index(ref p, ref qs), p, qs)
 
     # A list's length, kept across a change.
     mut ys = [1, 2, 3]
     size = ys.len()
-    grown(mut ys)
+    grown(ref ys)
     stdout.print(size, ys.len(), ys[size])
-    shrunk(mut ys)
-    shrunk(mut ys)
+    shrunk(ref ys)
+    shrunk(ref ys)
     stdout.print(ys.len(), ys[-1])
-    replaced(mut ys)
+    replaced(ref ys)
     stdout.print(ys.len(), ys)
 
     # A loop's list changing in its body, by index up to a length read once.
@@ -491,16 +491,16 @@ def main(stdout: Stdout):
     for at in range(zs.len()):
         if at < zs.len():
             zs[at] += 1
-        shrunk(mut zs)
+        shrunk(ref zs)
     stdout.print(zs)
 
     # A read held across a change.
     mut lists = [[1], [2]]
     first = lists[0]
-    grown(mut lists[0])
+    grown(ref lists[0])
     stdout.print(first, lists[0])
     inner = lists[1]
-    emptied(mut lists[1])
+    emptied(ref lists[1])
     stdout.print(inner, inner.len(), lists[1].len())
 
     # A struct's list and index, through `mut self` and a `mut` argument.
@@ -518,7 +518,7 @@ def main(stdout: Stdout):
     name = box.name
     box.renamed("newer")
     stdout.print(name, box.name, box.name.len())
-    newbox(mut box)
+    newbox(ref box)
     stdout.print(box.items, box.at, box.name)
 
     # In places: through a list's item, and a field of a field.
@@ -527,12 +527,12 @@ def main(stdout: Stdout):
     boxes[0].more(5)
     boxes[0].next()
     stdout.print(boxes[0].items[boxes[0].at], other.items, other.at)
-    newbox(mut boxes[1])
+    newbox(ref boxes[1])
     stdout.print(boxes[1].items, boxes[1].name, boxes.len())
     mut pair = Pair(Box([1], 0, "l"), Box([2], 0, "r"))
     pair.left.more(6)
     pair.left.next()
-    newbox(mut pair.right)
+    newbox(ref pair.right)
     stdout.print(pair.left.items[pair.left.at], pair.right.items, pair.right.name)
 
     # A string: its length, its characters, and where reading it had got to.
@@ -540,33 +540,33 @@ def main(stdout: Stdout):
     before = text.len()
     c = text[6]
     stdout.print(before, c, text[7])
-    retext(mut text, "日本語のテキストです")
+    retext(ref text, "日本語のテキストです")
     stdout.print(text.len(), text[1], text[7])
-    longer(mut text)
+    longer(ref text)
     stdout.print(text.len(), text[-1], text[3])
-    retext(mut text, "ascii now")
+    retext(ref text, "ascii now")
     stdout.print(text.len(), text[2], text)
     mut chars = 0
     for at in range(text.len()):
         chars += 1 if text[at] == "a" else 0
         if at == 2:
-            retext(mut text, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            retext(ref text, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     stdout.print(chars)
 
     # A dict and its key, between a lookup and a write.
     mut d = {"a": 1, "b": 2}
     mut key = "a"
     if key in d:
-        rekeyed(mut key)
+        rekeyed(ref key)
         d[key] = 50
     stdout.print(key, d)
     if "b" in d:
         for extra in range(50):
-            added(mut d, f"k{extra}")
+            added(ref d, f"k{extra}")
         d["b"] = 60
     stdout.print(d["b"], d.len())
     if "b" in d:
-        removed(mut d, "b")
+        removed(ref d, "b")
         d["b"] = 70
     stdout.print(d["b"], d.len())
 
@@ -575,23 +575,23 @@ def main(stdout: Stdout):
     mut maybe: int? = 3
     if maybe is not None:
         before_clear = maybe + 1
-        cleared(mut maybe)
+        cleared(ref maybe)
         stdout.print(before_clear, maybe is None)
     mut text_maybe: str? = "held"
     if text_maybe is not None:
         size_before = text_maybe.len()
-        cleared_text(mut text_maybe)
+        cleared_text(ref text_maybe)
         stdout.print(size_before, text_maybe is None)
     mut places: list[int?] = []
     places.append(some(1))
     places.append(some(2))
     if places[0] is not None:
-        cleared(mut places[0])
+        cleared(ref places[0])
         stdout.print(places)
     mut shape = Shape.Line(2, [1, 2])
     match shape:
         case .Line(size, tags):
-            reshaped(mut shape)
+            reshaped(ref shape)
             stdout.print(size, tags, tags.len())
         case .Dot:
             stdout.print("dot")
@@ -603,16 +603,16 @@ def main(stdout: Stdout):
 
     # An arithmetic result, known to fit, from something changed.
     mut small = 1
-    bump(mut small)
+    bump(ref small)
     doubled = small * 2
-    bump(mut small)
+    bump(ref small)
     stdout.print(doubled, small, 100 // small)
     mut count = 0
     while count < 3:
-        bump(mut count)
+        bump(ref count)
     stdout.print(count)
     mut zero = 0
-    bump(mut zero)
+    bump(ref zero)
     stdout.print(10 // zero)
     more_facts(stdout)
 
@@ -620,32 +620,32 @@ struct Store:
     lists: list[list[int]]
     texts: list[str]
 
-    def keep(mut self, xs: list[int]):
+    def keep(ref self, xs: list[int]):
         self.lists.append(xs)
 
-def stash(mut xs: list[int], mut store: Store):
+def stash(ref xs: list[int], ref store: Store):
     store.lists.append(xs)
     xs.append(-1)
 
-def via(mut xs: list[int]):
-    grown(mut xs)
-    grown(mut xs)
+def via(ref xs: list[int]):
+    grown(ref xs)
+    grown(ref xs)
 
-def zeroed(mut value: float):
+def zeroed(ref value: float):
     value = 0.0
 
-def huge(mut value: int):
+def huge(ref value: int):
     value = 9223372036854775806
 
-def appended_twice(mut text: str):
-    longer(mut text)
-    longer(mut text)
+def appended_twice(ref text: str):
+    longer(ref text)
+    longer(ref text)
 
 def more_facts(stdout: Stdout):
     # A local's value kept by what it's given to, then changed here.
     mut store = Store([], [])
     mut mine = [1, 2]
-    stash(mut mine, mut store)
+    stash(ref mine, ref store)
     mine[0] = 9
     mine.append(3)
     stdout.print(mine, store.lists)
@@ -653,14 +653,14 @@ def more_facts(stdout: Stdout):
     mine[1] = 8
     stdout.print(mine, store.lists)
     mut grid = [[1], [2]]
-    stash(mut grid[0], mut store)
+    stash(ref grid[0], ref store)
     grid[0][0] = 7
     stdout.print(grid, store.lists)
 
     # Through a `mut` parameter passed on.
     mut chain = [1]
     chain[0] = 2
-    via(mut chain)
+    via(ref chain)
     chain[2] = 5
     stdout.print(chain, chain.len(), chain[-1])
 
@@ -669,79 +669,79 @@ def more_facts(stdout: Stdout):
     for at in range(4):
         filled.append(0)
         if at == 1:
-            grown(mut filled)
+            grown(ref filled)
     stdout.print(filled)
     mut none_yet = [0 for _ in range(3)]
-    grown(mut none_yet)
+    grown(ref none_yet)
     stdout.print(none_yet)
 
     # A loop's item and count given to a call.
     mut items = [1, 2, 3]
-    for mut item in items:
-        bump(mut item)
+    for ref item in items:
+        bump(ref item)
         item *= 2
     stdout.print(items)
     mut lists = [[1], [2]]
-    for mut one in lists:
-        grown(mut one)
+    for ref one in lists:
+        grown(ref one)
         one[0] = one.len()
     stdout.print(lists)
     mut limit = 3
     mut ran = 0
     for at in range(limit):
-        bump(mut limit)
+        bump(ref limit)
         ran += at
     stdout.print(limit, ran)
     for at, item in enumerate(items):
         mut here = copy(at)
-        bump(mut here)
+        bump(ref here)
         stdout.print(at, here, item)
 
     # What a closure copied, and a copy made first.
     mut caught = 1
     read = () => caught
-    bump(mut caught)
+    bump(ref caught)
     stdout.print(read(), caught)
     mut base = [1, 2]
     copied = base
     gen = sum(x for x in copied)
-    grown(mut base)
+    grown(ref base)
     stdout.print(gen, copied, base)
 
     # A string growing where it is: its length, its characters, where reading got to.
     mut long = "é" * 40
     stdout.print(long.len(), long[35], long[20])
-    longer(mut long)
+    longer(ref long)
     stdout.print(long.len(), long[40], long[39])
-    appended_twice(mut long)
+    appended_twice(ref long)
     stdout.print(long.len(), long[42], long[41], long[0])
     mut plain = "a" * 40
     stdout.print(plain.len(), plain[39])
-    longer(mut plain)
+    longer(ref plain)
     stdout.print(plain.len(), plain[40], plain[39], plain[20])
     mut short = "ab"
     stdout.print(short.len(), short[1])
-    longer(mut short)
+    longer(ref short)
     stdout.print(short.len(), short[2], short)
     for round in range(30):
-        longer(mut short)
+        longer(ref short)
     stdout.print(short.len(), short[31], short[1])
 
     # In places, read before and after.
     mut names = ["é" * 30, "b"]
     stdout.print(names[0].len(), names[0][29])
-    longer(mut names[0])
+    longer(ref names[0])
     stdout.print(names[0].len(), names[0][30], names[1])
     mut held = Box([1], 0, "é" * 30)
     stdout.print(held.name.len(), held.name[25])
-    longer(mut held.name)
+    longer(ref held.name)
     held.renamed(held.name + "z")
     stdout.print(held.name.len(), held.name[31], held.name[25])
 
     # Numbers known to fit or not to be zero, until they're changed.
     mut one_half = 2.0
     half = 1.0 / one_half
-    zeroed(mut one_half)
+    zeroed(ref one_half)
     stdout.print(half, one_half, 1.0 / one_half)
 "#;
 
@@ -761,14 +761,14 @@ fn what_a_mut_argument_changes_fails_as_it_should() -> std::io::Result<()> {
     for (name, source) in [
         (
             "given_mut_fails_1",
-            r"def shrunk(mut xs: list[int]):
+            r"def shrunk(ref xs: list[int]):
     xs.pop()
 
 def main(stdout: Stdout):
     mut xs = [1, 2, 3]
     for at in range(xs.len()):
         stdout.print(xs[at])
-        shrunk(mut xs)
+        shrunk(ref xs)
 ",
         ),
         (
@@ -776,7 +776,7 @@ def main(stdout: Stdout):
             r"struct Box:
     items: list[int]
 
-    def fewer(mut self):
+    def fewer(ref self):
         self.items.pop()
 
 def main(stdout: Stdout):
@@ -788,32 +788,32 @@ def main(stdout: Stdout):
         ),
         (
             "given_mut_fails_3",
-            r"def huge(mut value: int):
+            r"def huge(ref value: int):
     value = 9223372036854775807
 
 def main(stdout: Stdout):
     mut big = 1
     small = big + 1
-    huge(mut big)
+    huge(ref big)
     stdout.print(small)
     stdout.print(big + 1)
 ",
         ),
         (
             "given_mut_fails_4",
-            r"def zero(mut value: int):
+            r"def zero(ref value: int):
     value = 0
 
 def main(stdout: Stdout):
     mut n = 5
     stdout.print(10 // n)
-    zero(mut n)
+    zero(ref n)
     stdout.print(10 // n)
 ",
         ),
         (
             "given_mut_fails_5",
-            r"def bumped(mut at: int):
+            r"def bumped(ref at: int):
     at += 100
 
 def main(stdout: Stdout):
@@ -821,7 +821,7 @@ def main(stdout: Stdout):
     for at in range(xs.len()):
         mut i = at
         stdout.print(xs[i])
-        bumped(mut i)
+        bumped(ref i)
         stdout.print(xs[i])
 ",
         ),
@@ -834,7 +834,7 @@ def main(stdout: Stdout):
 /// What's read as an argument keeps the value it had, in order, while a later `mut` argument
 /// changes it and what's known of it ends: both the order arguments run in and an index that
 /// changes have to hold at once.
-const READ_THEN_CHANGED: &str = r#"def bump(mut at: int) -> int:
+const READ_THEN_CHANGED: &str = r#"def bump(ref at: int) -> int:
     at += 1
     at
 
@@ -847,29 +847,29 @@ def three(a: int, b: int, c: int) -> str:
 def listed(a: list[int], b: int) -> str:
     f"{a}/{b}"
 
-def put(a: int, mut item: int, mut at: int) -> str:
+def put(a: int, ref item: int, ref at: int) -> str:
     at += 1
     item += 100
     f"{a}"
 
-def maybe_cleared(a: int, mut value: int?) -> int:
+def maybe_cleared(a: int, ref value: int?) -> int:
     value = None
     a
 
 def main(stdout: Stdout):
     # An index read as an argument, then changed by a later one.
     mut i = 0
-    stdout.print(pair(i, bump(mut i)), i)
+    stdout.print(pair(i, bump(ref i)), i)
     mut xs = [10, 20, 30, 40]
-    stdout.print(pair(xs[i], bump(mut i)), i, xs[i])
-    stdout.print(three(i, xs[i], bump(mut i)), i)
+    stdout.print(pair(xs[i], bump(ref i)), i, xs[i])
+    stdout.print(three(i, xs[i], bump(ref i)), i)
     i = 0
-    stdout.print(i, xs[i], bump(mut i), xs[i], i)
+    stdout.print(i, xs[i], bump(ref i), xs[i], i)
 
     # What it remembered about the index ends, in order, with the old read kept.
     mut j = 0
     xs[j] = 11
-    held = pair(xs[j], bump(mut j))
+    held = pair(xs[j], bump(ref j))
     xs[j] = 22
     stdout.print(held, j, xs)
 
@@ -877,9 +877,9 @@ def main(stdout: Stdout):
     mut k = 0
     mut ys = [1, 2, 3]
     first = k
-    stdout.print(put(first, mut ys[first], mut k), k, ys)
+    stdout.print(put(first, ref ys[first], ref k), k, ys)
     second = k
-    stdout.print(put(second, mut ys[second], mut k), k, ys)
+    stdout.print(put(second, ref ys[second], ref k), k, ys)
 
     # A list read as an argument, then changed by a later one, and its length.
     mut zs = [1, 2, 3]
@@ -890,7 +890,7 @@ def main(stdout: Stdout):
     mut maybe: int? = 3
     if maybe is not None:
         read = maybe
-        stdout.print(maybe_cleared(read, mut maybe), maybe is None)
+        stdout.print(maybe_cleared(read, ref maybe), maybe is None)
 "#;
 
 #[test]
@@ -909,7 +909,7 @@ const CHANGED_PLACES: &str = r#"error Bad:
 struct Inner:
     tags: list[int]
 
-    def grow(mut self, value: int):
+    def grow(ref self, value: int):
         self.tags.append(value)
 
 struct Unit:
@@ -918,38 +918,38 @@ struct Unit:
     inner: Inner
     name: str
 
-    def grow(mut self, value: int):
+    def grow(ref self, value: int):
         self.tags.append(value)
         self.hp += 1
 
-    def grown_by(mut self, values: list[int]):
+    def grown_by(ref self, values: list[int]):
         self.tags.append(values.len())
         for value in values:
             self.tags.append(value)
 
-    def absorb(mut self, other: Unit):
+    def absorb(ref self, other: Unit):
         self.hp += other.hp
         for tag in other.tags:
             self.tags.append(tag)
 
-    def renamed(mut self, name: str):
+    def renamed(ref self, name: str):
         self.name = self.name + name
         self.inner.grow(name.len())
 
-    def replaced(mut self):
+    def replaced(ref self):
         self = unit(self.hp * 2)
 
-    def kept_in(mut self, mut into: list[list[int]]):
+    def kept_in(ref self, ref into: list[list[int]]):
         into.append(self.tags)
         self.tags.append(-1)
 
-    def checked(mut self, value: int) -> int fails Bad:
+    def checked(ref self, value: int) -> int fails Bad:
         if value < 0:
             fail Bad("negative")
         self.tags.append(value)
         value
 
-    def tried(mut self, value: int) -> int fails Bad:
+    def tried(ref self, value: int) -> int fails Bad:
         self.hp += 100
         self.checked(value)?
 
@@ -958,7 +958,7 @@ struct Band:
     leader: Unit
     rows: list[list[Unit]]
 
-    def grow_at(mut self, at: int, value: int):
+    def grow_at(ref self, at: int, value: int):
         self.units[at].grow(value)
         self.units[at].inner.grow(value)
         self.leader.grow(value)
@@ -968,7 +968,7 @@ struct Ruled:
     size: int where size >= 0
     tags: list[int]
 
-    def shrink(mut self):
+    def shrink(ref self):
         self.size -= 1
         self.tags.append(self.size)
 
@@ -988,11 +988,11 @@ def show(stdout: Stdout, units: list[Unit]):
 def ruled_at(size: int) -> Ruled:
     Ruled(size, []).expect("a size that's allowed")
 
-def swap_ends(mut a: list[int], mut b: list[int]):
+def swap_ends(ref a: list[int], ref b: list[int]):
     a.append(b.len())
     b.append(a.len())
 
-def try_all(mut units: list[Unit]) -> int fails Bad:
+def try_all(ref units: list[Unit]) -> int fails Bad:
     units[0].tried(1)?
     units[1].tried(-1)?
     units[0].tried(2)?
@@ -1081,17 +1081,17 @@ def main(stdout: Stdout):
     # What a call keeps stays what it was, and the place goes on from there.
     mut keeps = [unit(1)]
     mut kept: list[list[int]] = []
-    keeps[0].kept_in(mut kept)
+    keeps[0].kept_in(ref kept)
     keeps[0].grow(2)
-    keeps[0].kept_in(mut kept)
+    keeps[0].kept_in(ref kept)
     show(stdout, keeps)
     stdout.print(kept)
 
     # Two places at once, apart and in one root.
     mut left = [[1], [2]]
     mut right = [[3], [4]]
-    swap_ends(mut left[0], mut right[1])
-    swap_ends(mut left[1], mut left[0])
+    swap_ends(ref left[0], ref right[1])
+    swap_ends(ref left[1], ref left[0])
     stdout.print(left, right)
 
     # In a loop, through a loop's item, and with the rule checked after.
@@ -1099,7 +1099,7 @@ def main(stdout: Stdout):
     for round in range(3):
         for at_now in range(looped.len()):
             looped[at_now].grow(round)
-    for mut one in looped:
+    for ref one in looped:
         one.inner.grow(9)
         one.grow(8)
     show(stdout, looped)
@@ -1110,7 +1110,7 @@ def main(stdout: Stdout):
 
     # A failure leaves what was done before it.
     mut failing = [unit(1), unit(2)]
-    match try_all(mut failing):
+    match try_all(ref failing):
         case Ok(got):
             stdout.print(got)
         case Err(bad):
@@ -1134,13 +1134,13 @@ fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
         return Ok(());
     }
     let types = "struct Row:\n    tags: list[int]\n\nshared Queue:\n    items = list[int]()\n    \
-                 rows = [Row(tags=[1])]\n\n    def push(mut self, item: int):\n        self.items.append(item)\n\n    \
-                 def pop(mut self) -> int:\n        self.items.pop()\n\n    \
-                 def first(mut self, item: int):\n        self.items.insert(0, item)\n\n    \
-                 def more(mut self, others: list[int]):\n        self.items.extend(others)\n\n    \
-                 def nested(mut self, item: int):\n        self.rows[0].tags.append(item)\n        self.rows[0].tags.pop()\n\n    \
-                 def called(mut self, item: int):\n        grow(mut self.items, item)\n\n\
-                 def grow(mut numbers: list[int], item: int):\n    numbers.append(item)\n\n\
+                 rows = [Row(tags=[1])]\n\n    def push(ref self, item: int):\n        self.items.append(item)\n\n    \
+                 def pop(ref self) -> int:\n        self.items.pop()\n\n    \
+                 def first(ref self, item: int):\n        self.items.insert(0, item)\n\n    \
+                 def more(ref self, others: list[int]):\n        self.items.extend(others)\n\n    \
+                 def nested(ref self, item: int):\n        self.rows[0].tags.append(item)\n        self.rows[0].tags.pop()\n\n    \
+                 def called(ref self, item: int):\n        grow(ref self.items, item)\n\n\
+                 def grow(ref numbers: list[int], item: int):\n    numbers.append(item)\n\n\
                  def main(stdout: Stdout):\n    queue = Queue()\n    mut seen = 0\n";
     for (name, body) in [
         (
@@ -1153,7 +1153,7 @@ fn changing_a_list_in_a_shared_value_copies_nothing() -> std::io::Result<()> {
         ("called", "    for n in range(2000):\n        queue.called(n)\n"),
         (
             "with",
-            "    with queue as mut held:\n        for n in range(2000):\n            held.items.append(n)\n        for n in range(2000):\n            seen += held.items.pop()\n",
+            "    with queue as ref held:\n        for n in range(2000):\n            held.items.append(n)\n        for n in range(2000):\n            seen += held.items.pop()\n",
         ),
     ] {
         let counts =
@@ -1178,7 +1178,7 @@ fn changing_through_a_place_copies_nothing_when_nothing_else_holds_it() -> std::
     if !ready() {
         return Ok(());
     }
-    let types = "struct Inner:\n    tags: list[int]\n\n    def grow(mut self, value: int):\n        self.tags.append(value)\n\nstruct Unit:\n    hp: int\n    tags: list[int]\n    inner: Inner\n\n    def grow(mut self, value: int):\n        self.tags.append(value)\n\nstruct Band:\n    units: list[Unit]\n\n    def grow(mut self, at: int, value: int):\n        self.units[at].grow(value)\n        self.units[at].inner.grow(value)\n\ndef unit() -> Unit:\n    Unit(0, [], Inner([]))\n\ndef main(stdout: Stdout):\n";
+    let types = "struct Inner:\n    tags: list[int]\n\n    def grow(ref self, value: int):\n        self.tags.append(value)\n\nstruct Unit:\n    hp: int\n    tags: list[int]\n    inner: Inner\n\n    def grow(ref self, value: int):\n        self.tags.append(value)\n\nstruct Band:\n    units: list[Unit]\n\n    def grow(ref self, at: int, value: int):\n        self.units[at].grow(value)\n        self.units[at].inner.grow(value)\n\ndef unit() -> Unit:\n    Unit(0, [], Inner([]))\n\ndef main(stdout: Stdout):\n";
     for (name, body) in [
         (
             "item",
@@ -1213,34 +1213,34 @@ fn an_index_a_call_changes_is_read_again() -> std::io::Result<()> {
         r"struct Unit:
     tags: list[int]
 
-def bump(mut at: int):
+def bump(ref at: int):
     at += 1
 
-def bump_twice(mut at: int):
-    bump(mut at)
-    bump(mut at)
+def bump_twice(ref at: int):
+    bump(ref at)
+    bump(ref at)
 
 def main(stdout: Stdout):
     mut at = 0
     mut lists = [[1], [2], [3]]
     lists[at].append(10)
-    bump(mut at)
+    bump(ref at)
     lists[at].append(20)
-    bump_twice(mut at)
+    bump_twice(ref at)
     lists[at - 1].append(30)
     stdout.print(at, lists)
 
     mut i = 0
     mut numbers = [5, 6, 7]
     numbers[i] = 50
-    bump(mut i)
+    bump(ref i)
     numbers[i] = 60
     stdout.print(i, numbers, numbers[i])
 
     mut j = 0
     mut units = [Unit([1]), Unit([2])]
     units[j].tags.append(10)
-    bump(mut j)
+    bump(ref j)
     units[j].tags.append(20)
     stdout.print(j, units[0].tags, units[1].tags)
 
@@ -1248,17 +1248,17 @@ def main(stdout: Stdout):
     for round in range(3):
         mut k = round
         items[k] = items[k] + 10
-        bump(mut k)
+        bump(ref k)
         items[k] = items[k] + 100
     stdout.print(items)
 
     mut w = 0
     while w < items.len():
         items[w] = 0
-        bump(mut w)
+        bump(ref w)
         if w < items.len():
             items[w] = 7
-        bump(mut w)
+        bump(ref w)
     stdout.print(items)
 ",
     )
@@ -1273,13 +1273,13 @@ fn a_place_is_found_again_after_a_call_changes_its_index() -> std::io::Result<()
     }
     let dir = folder("place_index_given_mut")?;
     let program = dir.join("place.fen");
-    let parts = "struct Unit:\n    hp: int\n\n    def stepped(mut self, mut at: int):\n        at += 1\n        self.hp += at\n\n\
-                 def step(mut at: int):\n    at += 1\n\n";
+    let parts = "struct Unit:\n    hp: int\n\n    def stepped(ref self, ref at: int):\n        at += 1\n        self.hp += at\n\n\
+                 def step(ref at: int):\n    at += 1\n\n";
     std::fs::write(
         &program,
         format!(
             "{parts}def main(stdout: Stdout):\n    mut at = 0\n    mut units = [Unit(1), Unit(2), Unit(3)]\n    \
-             units[at].hp += 10\n    step(mut at)\n    units[at].hp += 10\n    held = at\n    units[held].stepped(mut at)\n    \
+             units[at].hp += 10\n    step(ref at)\n    units[at].hp += 10\n    held = at\n    units[held].stepped(ref at)\n    \
              stdout.print(at, units[0].hp, units[1].hp, units[2].hp)\n"
         ),
     )?;
@@ -1287,7 +1287,7 @@ fn a_place_is_found_again_after_a_call_changes_its_index() -> std::io::Result<()
     std::fs::write(
         &refused,
         format!(
-            "{parts}def main(stdout: Stdout):\n    mut at = 0\n    mut units = [Unit(1)]\n    units[at].stepped(mut at)\n    \
+            "{parts}def main(stdout: Stdout):\n    mut at = 0\n    mut units = [Unit(1)]\n    units[at].stepped(ref at)\n    \
              stdout.print(at, units[0].hp)\n"
         ),
     )?;
@@ -1316,20 +1316,20 @@ fn mut_arguments_to_different_fields_both_change_and_overlapping_ones_dont_build
         return Ok(());
     }
     let parts = "struct Spot:\n    x = 0\n\nstruct Unit:\n    position = Spot()\n    home = Spot()\n\n\
-                 def bump(mut first: Spot, mut second: Spot):\n    first.x += 1\n    second.x += 10\n\n";
+                 def bump(ref first: Spot, ref second: Spot):\n    first.x += 1\n    second.x += 10\n\n";
     let dir = folder("overlapping_mut")?;
     let (apart, together) = (dir.join("apart.fen"), dir.join("together.fen"));
     std::fs::write(
         &apart,
         format!(
-            "{parts}def main(stdout: Stdout):\n    mut unit = Unit()\n    bump(mut unit.position, mut unit.home)\n    \
+            "{parts}def main(stdout: Stdout):\n    mut unit = Unit()\n    bump(ref unit.position, ref unit.home)\n    \
              stdout.print(unit.position.x, unit.home.x)\n"
         ),
     )?;
     std::fs::write(
         &together,
         format!(
-            "{parts}def main(stdout: Stdout):\n    mut unit = Unit()\n    bump(mut unit.position, mut unit.position)\n    \
+            "{parts}def main(stdout: Stdout):\n    mut unit = Unit()\n    bump(ref unit.position, ref unit.position)\n    \
              stdout.print(unit.position.x)\n"
         ),
     )?;
@@ -1371,7 +1371,7 @@ struct Crowd:
     def size(self) -> int:
         self.numbers.len()
 
-    def step(mut self):
+    def step(ref self):
         self.numbers = [number - self.by for number in self.numbers]
 
 struct Outer:
@@ -1380,7 +1380,7 @@ struct Outer:
 struct Ruled:
     numbers: list[int] where numbers.len() > 0
 
-def doubled(mut numbers: list[int]):
+def doubled(ref numbers: list[int]):
     numbers = [number * 2 for number in numbers]
 
 def main(stdout: Stdout):
@@ -1390,7 +1390,7 @@ def main(stdout: Stdout):
     other = numbers
     numbers = [number + 1 for number in numbers]
     stdout.print(numbers, other)
-    doubled(mut numbers)
+    doubled(ref numbers)
     stdout.print(numbers, other)
 
     mut words = ["a", "é", "a much longer word than fits in a header"]
@@ -1504,7 +1504,7 @@ struct Box:
     items: list[int]
     next: list[Box]
 
-def grow(mut units: list[Unit], by: int):
+def grow(ref units: list[Unit], by: int):
     for at in range(units.len()):
         units[at].tags.append(by)
 
@@ -1529,12 +1529,12 @@ def main(stdout: Stdout):
     at = 1
     units[at].tags.append(at)
     stdout.print(units)
-    grow(mut units, 5)
+    grow(ref units, 5)
     stdout.print(units, snapshot)
     # A caller's copy stays as it was.
     mut mine = copy(units)
     kept = mine
-    grow(mut mine, 6)
+    grow(ref mine, 6)
     stdout.print(mine[0].tags, kept[0].tags)
     # Items that are blocks of their own.
     mut boxes = [Box([1], []), Box([2], [])]
@@ -1660,11 +1660,11 @@ fn a_strings_length_is_read_again_when_it_changes_beside_a_field() -> std::io::R
     at = 0
     seen = 0
 
-    def grow(mut self, more: str):
+    def grow(ref self, more: str):
         self.text += more
         self.at += 1
 
-    def read(mut self) -> int:
+    def read(ref self) -> int:
         mut total = 0
         while self.at < self.text.len():
             if self.text[self.at] == "x":
@@ -1673,7 +1673,7 @@ fn a_strings_length_is_read_again_when_it_changes_beside_a_field() -> std::io::R
             self.seen = self.text.len()
         total
 
-    def read_growing(mut self) -> int:
+    def read_growing(ref self) -> int:
         mut total = 0
         while self.at < self.text.len() and self.text.len() < 400:
             if self.text[self.at] == "a":
@@ -1682,7 +1682,7 @@ fn a_strings_length_is_read_again_when_it_changes_beside_a_field() -> std::io::R
             total += self.text.len()
         total
 
-    def read_replacing(mut self) -> int:
+    def read_replacing(ref self) -> int:
         mut total = 0
         while self.at < self.text.len():
             if self.at == 2:
@@ -1703,7 +1703,7 @@ def main(stdout: Stdout):
         four.grow("é" if round % 7 == 0 else "ab")
         stdout.print(four.text.len(), four.text[four.at - 1], four.at)
     mut readers = [Reader(text="xx long enough to have a block of its own"), Reader(text="x")]
-    for mut reader in readers:
+    for ref reader in readers:
         reader.grow("x")
         stdout.print(reader.read(), reader.at, reader.seen)
 "#;
@@ -1859,28 +1859,28 @@ enum Token:
 def total(units: list[Unit]) -> int:
     sum(unit.hp for unit in units)
 
-def by_fail(mut units: list[Unit]) -> int:
-    for mut unit in units:
+def by_fail(ref units: list[Unit]) -> int:
+    for ref unit in units:
         unit.tags.append(9)
         unit.hp += 1
         if unit.hp == 2:
             fail Bad("stop")
     0
 
-def by_return(mut units: list[Unit]) -> int:
-    for mut unit in units:
+def by_return(ref units: list[Unit]) -> int:
+    for ref unit in units:
         unit.tags.append(8)
         if unit.hp == 1:
             return unit.tags.len()
     -1
 
-def grow(mut units: list[Unit], by: int):
-    for mut unit in units:
+def grow(ref units: list[Unit], by: int):
+    for ref unit in units:
         unit.tags.append(by)
         unit.name += "!"
 
-def step(mut world: World):
-    for mut unit in world.units:
+def step(ref world: World):
+    for ref unit in world.units:
         world.log.append(unit.hp)
         unit.tags.append(world.turn)
     world.turn += 1
@@ -1895,16 +1895,16 @@ def main(stdout: Stdout):
     kept = copy(units)
     item = units[0]
     tags = units[0].tags
-    for mut unit in units:
+    for ref unit in units:
         unit.tags.append(unit.hp)
     stdout.print(units, shared, kept, item, tags)
     # Ways out.
     mut a = make()
-    stdout.print(by_fail(mut a) else -1, a)
+    stdout.print(by_fail(ref a) else -1, a)
     mut b = make()
-    stdout.print(by_return(mut b), b)
+    stdout.print(by_return(ref b), b)
     mut c = make()
-    for mut unit in c:
+    for ref unit in c:
         if unit.hp == 0:
             continue
         unit.tags.append(4)
@@ -1914,7 +1914,7 @@ def main(stdout: Stdout):
     stdout.print(c)
     # The list read in the body sees what was written back so far.
     mut d = make()
-    for mut unit in d:
+    for ref unit in d:
         unit.tags.append(d[0].tags.len())
         unit.hp += d.len() + total(d)
     stdout.print(d)
@@ -1922,46 +1922,46 @@ def main(stdout: Stdout):
     mut e = make()
     mut seen: list[Unit] = []
     mut held: list[list[int]] = []
-    for mut unit in e:
+    for ref unit in e:
         seen.append(unit)
         held.append(unit.tags)
         unit.hp += 1
     stdout.print(e, seen, held)
     # Replaced whole, and given away.
     mut f = make()
-    for mut unit in f:
+    for ref unit in f:
         unit = Unit([7], "whole new value long enough not to be inline", unit.hp)
     stdout.print(f)
     # Through a function, and a field.
     mut g = make()
-    grow(mut g, 6)
-    grow(mut g, 7)
+    grow(ref g, 6)
+    grow(ref g, 7)
     stdout.print(g)
     mut w = World(make(), [], 3)
-    step(mut w)
+    step(ref w)
     other = w
-    step(mut w)
+    step(ref w)
     stdout.print(w, other)
     # Nested.
     mut grid = [[1, 2], [3], []]
-    for mut row in grid:
+    for ref row in grid:
         row.append(row.len())
-        for mut cell in row:
+        for ref cell in row:
             cell *= 2
     stdout.print(grid)
     # Strings and enums as items.
     mut words = ["a", "a string long enough not to be held inline"]
-    for mut word in words:
+    for ref word in words:
         word += "!"
     stdout.print(words)
     mut lists = [[1], [2, 3]]
     before = lists[1]
-    for mut one in lists:
+    for ref one in lists:
         one.append(9)
     stdout.print(lists, before)
     # Emptied in the body, then grown.
     mut h = make()
-    for mut unit in h:
+    for ref unit in h:
         unit.tags = []
         unit.tags.append(1)
     stdout.print(h)
@@ -1977,7 +1977,7 @@ fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
     same_as_the_jit("for_mut_items", FOR_MUT_ITEMS)?;
     let counts = counts_of(
         "for_mut_counts",
-        "struct Unit:\n    tags: list[int]\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit([1, 2, 3], 0), Unit([1, 2, 3], 1)]\n    for round in range(1000):\n        for mut unit in units:\n            unit.tags.append(round)\n            if round % 2 == 0:\n                unit.hp += 1\n    stdout.print(units[0].tags.len())\n",
+        "struct Unit:\n    tags: list[int]\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit([1, 2, 3], 0), Unit([1, 2, 3], 1)]\n    for round in range(1000):\n        for ref unit in units:\n            unit.tags.append(round)\n            if round % 2 == 0:\n                unit.hp += 1\n    stdout.print(units[0].tags.len())\n",
     )?;
     assert!(counts.starts_with("copies 0 "), "{counts}");
     Ok(())
@@ -2209,7 +2209,7 @@ fn lists_keep_value_semantics_like_the_jit() -> std::io::Result<()> {
     copy[0] = 99
     copy
 
-def grown(mut items: list[int]):
+def grown(ref items: list[int]):
     items.append(7)
     items[0] = 5
 
@@ -2235,7 +2235,7 @@ def main(stdout: Stdout):
     show(d, stdout)
     mut e = [1]
     f = e
-    grown(mut e)
+    grown(ref e)
     show(e, stdout)
     show(f, stdout)
     mut g = same(c)
@@ -2425,7 +2425,7 @@ shared Log:
     count = 0
     note = \"\"
 
-    def add(mut self, line: str):
+    def add(ref self, line: str):
         self.lines.append(line)
         self.count += 1
         self.note = line + \" was last\"
@@ -2465,7 +2465,7 @@ def main(stdout: Stdout):
         log.add(\"in a loop\")
     stdout.print(first.seen(), logs[1].seen())
     mut inside = 0
-    with first, logs[1] as mut a, b:
+    with first, logs[1] as ref a, b:
         a.count = 100
         a.lines.append(\"inside with\")
         inside = b.count
@@ -2478,11 +2478,11 @@ def main(stdout: Stdout):
 const TWO_CELLS: &str = r"shared Account:
     total = 0
 
-    def add(mut self, amount: int):
+    def add(ref self, amount: int):
         self.total += amount
 
 def transfer(source: Account, target: Account, amount: int) -> bool:
-    with source, target as mut x, mut y:
+    with source, target as ref x, ref y:
         if x.total < amount: return False
         x.total -= amount
         y.add(amount)
@@ -2497,14 +2497,14 @@ def main(stdout: Stdout):
 
 /// Each way a `with` can come to take one cell twice, all after printing something.
 const TAKEN_TWICE: [(&str, &str); 5] = [
-    ("spelled", "    with one, one as mut x, mut y:\n        x.total = y.total + 1\n"),
+    ("spelled", "    with one, one as ref x, ref y:\n        x.total = y.total + 1\n"),
     (
         "reading",
         "    mut seen = 0\n    with one, one as x, y:\n        seen = x.total + y.total\n    stdout.print(seen)\n",
     ),
-    ("named", "    other = one\n    with one, other as mut x, y:\n        x.total = y.total + 1\n"),
+    ("named", "    other = one\n    with one, other as ref x, y:\n        x.total = y.total + 1\n"),
     ("passed", "    both(one, one)\n"),
-    ("held", "    with Holder(box=one).box, one as mut x, y:\n        x.total = y.total + 1\n"),
+    ("held", "    with Holder(box=one).box, one as ref x, y:\n        x.total = y.total + 1\n"),
 ];
 
 const TAKING: &str = r#"shared Account:
@@ -2514,13 +2514,13 @@ struct Holder:
     box: Account
 
 def both(a: Account, b: Account):
-    with a, b as mut x, mut y:
+    with a, b as ref x, ref y:
         x.total = y.total + 1
 
 def main(stdout: Stdout):
     one = Account(total=10)
     two = Account(total=20)
-    with one, two as mut x, y:
+    with one, two as ref x, y:
         x.total = y.total + 1
     stdout.print("before", one.total)
 "#;
@@ -2529,7 +2529,7 @@ def main(stdout: Stdout):
 /// a closure capturing the handle, called out of a list. The checker refuses the rest.
 const TAKEN_AGAIN: [(&str, &str); 1] = [(
     "closure_in_list",
-    "    def inner() -> int:\n        one.total\n    readers = [inner]\n    with one as mut x:\n        x.total = readers[0]()\n",
+    "    def inner() -> int:\n        one.total\n    readers = [inner]\n    with one as ref x:\n        x.total = readers[0]()\n",
 )];
 
 const LOCK_HELD: &str = r#"shared Box:
@@ -2589,7 +2589,7 @@ fn a_comprehension_replacing_a_list_in_a_cell_makes_no_second_list() -> std::io:
     }
     same_as_the_interpreter_in_both_builds(
         "cell_list_replaced",
-        "shared Box:\n    items = [1, 2, 3]\n\n    def doubled(mut self):\n        self.items = [n * 2 for n in self.items]\n\ndef main(stdout: Stdout):\n    one = Box()\n    one.doubled()\n    with one as mut x:\n        x.items = [n + 1 for n in x.items]\n    stdout.print(one.items)\n",
+        "shared Box:\n    items = [1, 2, 3]\n\n    def doubled(ref self):\n        self.items = [n * 2 for n in self.items]\n\ndef main(stdout: Stdout):\n    one = Box()\n    one.doubled()\n    with one as ref x:\n        x.items = [n + 1 for n in x.items]\n    stdout.print(one.items)\n",
     )
 }
 
@@ -2659,7 +2659,7 @@ def main(stdout: Stdout):
     stdout.print(Either.One(a) == .One(b), Either.One(a) == .One(c))
     maybe: Account? = a
     stdout.print(maybe == b, maybe == c)
-    with b as mut held:
+    with b as ref held:
         held.total = 2
     stdout.print(a == b, a == c)
 ";
@@ -2724,7 +2724,7 @@ fn changing_an_item_doesnt_show_through_a_copy() -> std::io::Result<()> {
 struct Holder:
     packets: list[Packet]
 
-def bump(mut holder: Holder, at: int):
+def bump(ref holder: Holder, at: int):
     holder.packets[at].id = holder.packets[at].id + 1
     holder.packets[at].data[0] = 50
 
@@ -2736,7 +2736,7 @@ def main(stdout: Stdout):
     stdout.print(one[0].id, two[0].id, a.id)
     mut holder = Holder(packets=one)
     keep = holder
-    bump(mut holder, 1)
+    bump(ref holder, 1)
     stdout.print(holder.packets[1].id, keep.packets[1].id, one[1].id, two[1].id)
     stdout.print(holder.packets[1].data[0], keep.packets[1].data[0], two[1].data[0])
     mut list_only = copy(two)
@@ -2756,7 +2756,7 @@ def main(stdout: Stdout):
     stdout.print(nested.packets[0].data[1], other.packets[0].data[1], kept.packets[0].data[1])
     mut walked = [1, 2, 3]
     before = walked
-    for mut item in walked:
+    for ref item in walked:
         item = item * 2
     stdout.print(walked[0], walked[2], before[0], before[2])
     mut grows = [1, 2]
@@ -2766,7 +2766,7 @@ def main(stdout: Stdout):
     stdout.print(grows[0], grows[1])
     mut points = [Packet(id=1, data=[1]), Packet(id=2, data=[2])]
     seen = points
-    for mut point in points:
+    for ref point in points:
         point.id = point.id + 1
     stdout.print(points[0].id, points[1].id, seen[0].id, seen[1].id)
 ",
@@ -2795,7 +2795,7 @@ def moved(p: Point, by: float) -> Point:
     q.x = q.x + by
     q
 
-def nudge(mut p: Point):
+def nudge(ref p: Point):
     p.y = p.y + 1.0
     p.on = not p.on
 
@@ -2807,7 +2807,7 @@ def main(stdout: Stdout):
     b = moved(a, 0.5)
     stdout.print(a.x, b.x, a.on)
     mut c = copy(b)
-    nudge(mut c)
+    nudge(ref c)
     stdout.print(b.y, c.y, b.on, c.on)
     mut line = Line(start=a, end=c, weight=3)
     line.end.x = 9.5
@@ -2833,21 +2833,21 @@ const OWN_TEXT_INSIDE: &str = "\
 struct Tag:
     name: str
 
-    def str(self, mut out: StrWriter):
+    def str(self, ref out: StrWriter):
         out.write(\"<\" + self.name + \">\")
 
 struct Pair:
     x = 0
     y = 0
 
-    def str(self, mut out: StrWriter):
+    def str(self, ref out: StrWriter):
         out.write(f\"{self.x}/{self.y}\")
 
 enum Light:
     Red
     Green(level: int)
 
-    def str(self, mut out: StrWriter):
+    def str(self, ref out: StrWriter):
         out.write(\"light\")
 
 struct Holder:
@@ -2993,7 +2993,7 @@ fn an_earlier_operand_keeps_its_value_when_a_later_one_changes_it() -> std::io::
     items: list[int]
     count: int
 
-    def grow(mut self) -> int:
+    def grow(ref self) -> int:
         self.items.append(9)
         self.count = self.count + 1
         self.count
@@ -3005,17 +3005,17 @@ struct Pair:
 def show(a: list[int], b: int) -> str:
     f"{a} {b}"
 
-def take(mut a: list[int]) -> int:
+def take(ref a: list[int]) -> int:
     a.pop()
 
 def pair(a: int, b: int) -> str:
     f"{a} {b}"
 
-def bump(mut a: int) -> int:
+def bump(ref a: int) -> int:
     a = a + 1
     a
 
-def through(called: (list[int], int) -> str, mut items: list[int]) -> str:
+def through(called: (list[int], int) -> str, ref items: list[int]) -> str:
     called(items, items.pop())
 
 def main(stdout: Stdout):
@@ -3025,14 +3025,14 @@ def main(stdout: Stdout):
     mut ys = [1, 2, 3]
     stdout.print(show(ys, ys.pop()), ys)
     mut zs = [1, 2, 3]
-    stdout.print(show(zs, take(mut zs)), zs)
+    stdout.print(show(zs, take(ref zs)), zs)
     mut d = {1: 2, 3: 4}
     stdout.print(d, d.pop(1), d)
     mut e = {1: 2, 3: 4}
     stdout.print(e.len(), e.pop(1), e.len())
     mut n = 1
-    stdout.print(pair(n, bump(mut n)), n)
-    stdout.print(n, bump(mut n), n)
+    stdout.print(pair(n, bump(ref n)), n)
+    stdout.print(n, bump(ref n), n)
     mut b = Box(items=[1], count=0)
     stdout.print(b.count, b.grow(), b.count)
     stdout.print(b.items, b.grow(), b.items)
@@ -3052,7 +3052,7 @@ def main(stdout: Stdout):
     mut x = [1, 2, 3]
     stdout.print(x[:x.pop()], x)
     mut f = 2
-    stdout.print(f + bump(mut f), f)
+    stdout.print(f + bump(ref f), f)
     mut i = [1]
     stdout.print(Pair(first=i, second=i.pop()), i)
     mut j = [1]
@@ -3060,7 +3060,7 @@ def main(stdout: Stdout):
     mut m = [1, 2]
     stdout.print([m.pop(), m.len(), m.pop(), m.len()], m)
     mut o = [1, 2]
-    stdout.print(through((a, b) => show(a, b), mut o), o)
+    stdout.print(through((a, b) => show(a, b), ref o), o)
     mut t = {1: 1, 2: 2}
     stdout.print(t.get(t.pop(2) - 1), t.get(t.pop(1)), t)
     mut aa = "a"
@@ -3514,18 +3514,18 @@ fn what_a_field_or_an_items_field_holds_changes_without_being_copied() -> std::i
     }
     let counts = counts_of(
         "field",
-        "struct Counter:\n    counts: dict[int, int]\n\n    def bump(mut self, key: int):\n        self.counts[key] = (self.counts.get(key) else 0) + 1\n\ndef main(stdout: Stdout):\n    mut counter = Counter(counts={})\n    for i in range(1000):\n        counter.bump(i % 64)\n    stdout.print(counter.counts[0])\n",
+        "struct Counter:\n    counts: dict[int, int]\n\n    def bump(ref self, key: int):\n        self.counts[key] = (self.counts.get(key) else 0) + 1\n\ndef main(stdout: Stdout):\n    mut counter = Counter(counts={})\n    for i in range(1000):\n        counter.bump(i % 64)\n    stdout.print(counter.counts[0])\n",
     )?;
     assert!(counts.starts_with("copies 0 "), "{counts}");
     let counts = counts_of(
         "items",
-        "struct Var:\n    value: int\n    links: list[int]\n\nstruct Holder:\n    vars: list[Var]\n\n    def add(mut self, value: int):\n        self.vars.append(Var(value=value, links=[]))\n\n    def link(mut self, at: int, other: int):\n        self.vars[at].links.append(other)\n\ndef main(stdout: Stdout):\n    mut holder = Holder(vars=[])\n    for i in range(100):\n        holder.add(i)\n    for i in range(1000):\n        holder.link(i % 100, i)\n    stdout.print(holder.vars[5].links.len())\n",
+        "struct Var:\n    value: int\n    links: list[int]\n\nstruct Holder:\n    vars: list[Var]\n\n    def add(ref self, value: int):\n        self.vars.append(Var(value=value, links=[]))\n\n    def link(ref self, at: int, other: int):\n        self.vars[at].links.append(other)\n\ndef main(stdout: Stdout):\n    mut holder = Holder(vars=[])\n    for i in range(100):\n        holder.add(i)\n    for i in range(1000):\n        holder.link(i % 100, i)\n    stdout.print(holder.vars[5].links.len())\n",
     )?;
     assert!(counts.starts_with("copies 0 "), "{counts}");
     // A method written in Fennec changing a field: `self.inner.add(x)` and std's `extend`.
     let counts = counts_of(
         "methods",
-        "struct Inner:\n    items: list[int]\n\n    def add(mut self, item: int):\n        self.items.append(item)\n\nstruct Outer:\n    inner: Inner\n    items: list[int]\n\n    def push(mut self, item: int):\n        self.inner.add(item)\n\n    def grow(mut self, more: list[int]):\n        self.items.extend(more)\n\ndef main(stdout: Stdout):\n    mut outer = Outer(inner=Inner(items=[]), items=[])\n    for i in range(100):\n        outer.push(i)\n    for i in range(100):\n        outer.grow([i])\n    stdout.print(outer.inner.items.len(), outer.items.len())\n",
+        "struct Inner:\n    items: list[int]\n\n    def add(ref self, item: int):\n        self.items.append(item)\n\nstruct Outer:\n    inner: Inner\n    items: list[int]\n\n    def push(ref self, item: int):\n        self.inner.add(item)\n\n    def grow(ref self, more: list[int]):\n        self.items.extend(more)\n\ndef main(stdout: Stdout):\n    mut outer = Outer(inner=Inner(items=[]), items=[])\n    for i in range(100):\n        outer.push(i)\n    for i in range(100):\n        outer.grow([i])\n    stdout.print(outer.inner.items.len(), outer.items.len())\n",
     )?;
     assert!(counts.starts_with("copies 0 "), "{counts}");
     Ok(())
@@ -3678,10 +3678,10 @@ fn an_index_is_checked_again_once_its_list_changes() -> std::io::Result<()> {
     let source = r"struct Bag:
     items: list[int]
 
-    def drop_last(mut self):
+    def drop_last(ref self):
         self.items.pop()
 
-    def swap_in(mut self):
+    def swap_in(ref self):
         self.items = [7]
 
 def main(stdout: Stdout):
@@ -3718,17 +3718,17 @@ fn pieces_joined_once_match_the_jit() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = r#"def add(n: int, mut out: list[str]):
+    let source = r#"def add(n: int, ref out: list[str]):
     if n > 0:
         out.append(f"<{n}:")
-        add(n - 1, mut out)
+        add(n - 1, ref out)
         out.append(str(n))
         out.append(">")
 
 def shown(items: list[str]) -> str:
     "-".join(items)
 
-def put(mut out: list[str], more: list[str]):
+def put(ref out: list[str], more: list[str]):
     for item in more:
         out.append(item)
 
@@ -3736,12 +3736,12 @@ def put(mut out: list[str], more: list[str]):
 def gathered(rows: list[list[str]]) -> list[str]:
     mut cells: list[str] = []
     for row in rows:
-        put(mut cells, row)
+        put(ref cells, row)
     cells
 
 def main(stdout: Stdout):
     mut out = ["start "]
-    add(3, mut out)
+    add(3, ref out)
     stdout.print("".join(out))
     mut empty: list[str] = []
     stdout.print("".join(empty).len())
@@ -4337,7 +4337,7 @@ fn a_lean_runtime_leaves_the_interpreter_out() -> std::io::Result<()> {
 struct Tag:
     name: str
 
-    def str(self, mut out: StrWriter):
+    def str(self, ref out: StrWriter):
         out.write(\"<\" + self.name + \">\")
 
 def main(stdout: Stdout, args: Args, process: Process):
@@ -4919,7 +4919,7 @@ struct Shelf:
     def weight_of(self, at: int) -> int:
         self.items[at].weight
 
-    def names(mut self, mut into: list[str]):
+    def names(ref self, ref into: list[str]):
         for at in range(self.items.len()):
             item = self.items[at]
             if self.weight_of(at) > 1:
@@ -4930,7 +4930,7 @@ struct Shelf:
     def first_tags(self) -> list[str]:
         self.items[0].tags
 
-    def relabel(mut self):
+    def relabel(ref self):
         tags = self.items[0].tags
         self.items[0] = Item(name="new", tags=["x"], weight=9)
         self.log.append(tags[0])
@@ -4945,7 +4945,7 @@ def size(tree: Tree) -> int:
 def main(stdout: Stdout):
     mut shelf = Shelf(items=[Item(name="fox", tags=["a", "b"], weight=2), Item(name="kit", tags=["c"], weight=1)], log=[])
     mut seen: list[str] = []
-    shelf.names(mut seen)
+    shelf.names(ref seen)
     kept = shelf.first_tags()
     shelf.relabel()
     stdout.print(seen, kept, shelf.items[0].name, shelf.log)
@@ -5664,12 +5664,12 @@ fn a_method_checks_self_once_and_still_copies_a_shared_one() -> std::io::Result<
     n: int
     log: list[int]
 
-    def bump(mut self):
+    def bump(ref self):
         self.n += 1
         self.log.append(self.n)
         self.n += 1
 
-    def keep(mut self, mut into: list[Counter]):
+    def keep(ref self, ref into: list[Counter]):
         self.n += 10
         into.append(self)
         self.n += 10
@@ -5681,7 +5681,7 @@ def main(stdout: Stdout):
     a.bump()
     stdout.print(a.n, b.n, a.log, b.log)
     mut kept: list[Counter] = []
-    a.keep(mut kept)
+    a.keep(ref kept)
     stdout.print(a.n, kept[0].n)
 ",
     )
@@ -5705,15 +5705,15 @@ struct Box:
     saved: list[int]
     packets: list[Packet]
 
-    def keep(mut self):
+    def keep(ref self):
         self.saved = self.items
 
-    def poke(mut self):
+    def poke(ref self):
         self.items[0] = 1
         self.keep()
         self.items[0] = 99
 
-    def touch(mut self, at: int):
+    def touch(ref self, at: int):
         self.packets[at].a2[0] = 5
         self.packets[at].link = 6
 
@@ -6139,7 +6139,7 @@ def describe(token: Token) -> str:
         case .Many(items, label):
             f"{label}: {items.len()} items, first {items[0]}"
 
-def replace(mut token: Token, text: str):
+def replace(ref token: Token, text: str):
     token = .Word(text)
 
 def pick(at: int) -> Token?:
@@ -6168,7 +6168,7 @@ def main(stdout: Stdout):
     a = .Num(1)
     stdout.print(describe(a), describe(b))
     mut c = copy(b)
-    replace(mut c, "changed")
+    replace(ref c, "changed")
     stdout.print(describe(b), describe(c))
     # Reassigning in a loop lets go of what it held.
     mut last = Token.Blank
@@ -6292,7 +6292,7 @@ struct Tree:
     label: str
     children: list[Tree]
 
-    def add(mut self, label: str):
+    def add(ref self, label: str):
         self.children.append(Tree(label, []))
 
 struct Folder:
@@ -6471,12 +6471,12 @@ def describe(token: Token) -> str:
 def main(stdout: Stdout):
     long = "a string long enough that it can't be held inline"
     mut tokens = [Token.Word(long), Token.Blank, Token.Many([1, 2], long), Token.Word("short")]
-    for mut item in parallel(tokens):
+    for ref item in parallel(tokens):
         item = .Word("changed, and long enough that it can't be held inline")
     stdout.print(tokens)
     stdout.print([describe(item) for item in parallel(tokens)])
     mut more = [Token.Word(long + "!") for at in range(200)]
-    for mut item in parallel(more):
+    for ref item in parallel(more):
         if describe(item).len() > 10:
             item = .Blank
     stdout.print(more[0], more[199], sum(describe(item).len() for item in parallel(more)))
@@ -6496,25 +6496,25 @@ fn a_value_passed_both_ways_matches_the_jit() -> std::io::Result<()> {
     label: str
     count: int
 
-def both(items: list[int], mut others: list[int]) -> int:
+def both(items: list[int], ref others: list[int]) -> int:
     others.append(9)
     others[0] = 7
     items.len() * 10 + items[0]
 
-def bags(bag: Bag, mut other: Bag) -> str:
+def bags(bag: Bag, ref other: Bag) -> str:
     other.count = 5
     other.label = "a label long enough to be held in a block"
     f"{bag.label} {bag.count}"
 
 def main(stdout: Stdout):
     mut twice = [1, 2]
-    stdout.print(both(copy(twice), mut twice), twice)
+    stdout.print(both(copy(twice), ref twice), twice)
     mut bag = Bag(label="short", count=1)
-    stdout.print(bags(copy(bag), mut bag), bag)
+    stdout.print(bags(copy(bag), ref bag), bag)
     kept = twice
-    stdout.print(both(kept, mut twice), twice, kept)
+    stdout.print(both(kept, ref twice), twice, kept)
     held = bag
-    stdout.print(bags(held, mut bag), bag, held)
+    stdout.print(bags(held, ref bag), bag, held)
 "#,
     )
 }
@@ -6537,16 +6537,16 @@ enum Token:
     Blank
     Word(text: str)
 
-def rename(mut person: Person, name: str):
+def rename(ref person: Person, name: str):
     person = Person(name, 2)
 
-def set_person(mut person: Person, other: Person):
+def set_person(ref person: Person, other: Person):
     person = other
 
-def set_token(mut token: Token, other: Token):
+def set_token(ref token: Token, other: Token):
     token = other
 
-def retext(mut token: Token, text: str):
+def retext(ref token: Token, text: str):
     token = .Word(text)
 
 def main(stdout: Stdout):
@@ -6554,16 +6554,16 @@ def main(stdout: Stdout):
     mut total = 0
     for at in range(2000):
         mut person = Person(long, 1)
-        rename(mut person, long + "!")
+        rename(ref person, long + "!")
         keep = Person(long + "?", 3)
         total += person.name.len()
-        set_person(mut person, keep)
+        set_person(ref person, keep)
         total += person.name.len() + keep.name.len()
         mut token = Token.Word(long)
-        retext(mut token, long + "!")
+        retext(ref token, long + "!")
         other = Token.Word(long + "?")
         same = token == other
-        set_token(mut token, other)
+        set_token(ref token, other)
         mut people = [Person(long + "a", 1), Person(long + "b", 2), Person(long + "c", 3)]
         gone = people.pop()
         first = people.pop(0)
@@ -6821,7 +6821,7 @@ struct Plain:
 struct Shown:
     x: int
 
-    def str(self, mut out: StrWriter):
+    def str(self, ref out: StrWriter):
         out.write(\"its own text\")
 
 enum Light:
@@ -6965,7 +6965,7 @@ fn a_loop_tests_what_a_path_through_its_body_gave_a_name() -> std::io::Result<()
     if !ready() {
         return Ok(());
     }
-    let source = r#"def fill(mut slot: int?):
+    let source = r#"def fill(ref slot: int?):
     slot = 7
 
 def main(stdout: Stdout):
@@ -7005,7 +7005,7 @@ def main(stdout: Stdout):
     mut passed: int? = None
     for at in range(2):
         stdout.print(passed is None, at)
-        fill(mut passed)
+        fill(ref passed)
     mut shown: int? = None
     for at in range(2):
         def show(stdout: Stdout):
@@ -7031,10 +7031,10 @@ fn a_loop_tests_a_name_its_body_gave_none() -> std::io::Result<()> {
     let source = r#"struct Held:
     x: int?
 
-    def clear(mut self):
+    def clear(ref self):
         self.x = None
 
-def clear(mut slot: int?):
+def clear(ref slot: int?):
     slot = None
 
 def main(stdout: Stdout):
@@ -7088,7 +7088,7 @@ def main(stdout: Stdout):
     mut passed: int? = 1
     for at in range(2):
         stdout.print(passed is None, at)
-        clear(mut passed)
+        clear(ref passed)
     mut field = Held(x=1)
     for at in range(2):
         stdout.print(field.x is None, at)
@@ -7349,13 +7349,13 @@ struct Words:
     at = 0
     place = 0
 
-    def next(mut self) -> str fails ParseError:
+    def next(ref self) -> str fails ParseError:
         if self.at >= self.parts.len():
             fail ParseError(message="out of words", line=0, column=self.at)
         self.at += 1
         self.parts[self.at - 1]
 
-    def int(mut self) -> int fails ParseError:
+    def int(ref self) -> int fails ParseError:
         word = self.next()?
         match int(word):
             case Ok(n):
@@ -7363,7 +7363,7 @@ struct Words:
             case Err(_):
                 fail ParseError(message=f"`{word}` should be an int", line=0, column=self.at)
 
-    def float(mut self) -> float fails ParseError:
+    def float(ref self) -> float fails ParseError:
         word = self.next()?
         match float(word):
             case Ok(x):
@@ -7371,13 +7371,13 @@ struct Words:
             case Err(_):
                 fail ParseError(message=f"`{word}` should be a float", line=0, column=self.at)
 
-    def bool(mut self) -> bool fails ParseError:
+    def bool(ref self) -> bool fails ParseError:
         self.next()? == "yes"
 
-    def text(mut self) -> str fails ParseError:
+    def text(ref self) -> str fails ParseError:
         self.next()?
 
-    def bytes(mut self) -> bytes fails ParseError:
+    def bytes(ref self) -> bytes fails ParseError:
         self.next()?.encode()
 
     def at_item(self, at: int, message: str) -> ParseError:
@@ -7386,46 +7386,46 @@ struct Words:
     def here(self, message: str) -> ParseError:
         ParseError(message=message, line=0, column=0)
 
-    def saw_id(mut self, kind: str, position: int):
+    def saw_id(ref self, kind: str, position: int):
         pass
 
-    def saw_table(mut self, kind: str, count: int):
+    def saw_table(ref self, kind: str, count: int):
         pass
 
-    def tag(mut self, kind: str) -> int:
+    def tag(ref self, kind: str) -> int:
         0
 
     def missing_as_none(self) -> bool:
         True
 
-    def none(mut self) -> bool fails ParseError:
+    def none(ref self) -> bool fails ParseError:
         if self.at < self.parts.len() and self.parts[self.at] == "-":
             self.at += 1
             return True
         False
 
-    def value[T: Deserializable](mut self) -> T fails ParseError:
-        T.deserialize(mut self)?
+    def value[T: Deserializable](ref self) -> T fails ParseError:
+        T.deserialize(ref self)?
 
-    def sequence[T: Deserializable](mut self) -> list[T] fails ParseError:
+    def sequence[T: Deserializable](ref self) -> list[T] fails ParseError:
         mut found = list[T]()
         for _ in range(self.int()?):
-            found.append(T.deserialize(mut self)?)
+            found.append(T.deserialize(ref self)?)
         found
 
-    def map[K: Deserializable, V: Deserializable](mut self) -> list[(K, V)] fails ParseError:
+    def map[K: Deserializable, V: Deserializable](ref self) -> list[(K, V)] fails ParseError:
         mut found = list[(K, V)]()
         for _ in range(self.int()?):
-            key = K.deserialize(mut self)?
-            found.append((key, V.deserialize(mut self)?))
+            key = K.deserialize(ref self)?
+            found.append((key, V.deserialize(ref self)?))
         found
 
-    def record(mut self, name: str) fails ParseError:
+    def record(ref self, name: str) fails ParseError:
         word = self.next()?
         if word != name:
             fail ParseError(message=f"`{word}` should be a {name}", line=0, column=self.at)
 
-    def next_field(mut self, fields: list[(str, str)]) -> bool fails ParseError:
+    def next_field(ref self, fields: list[(str, str)]) -> bool fails ParseError:
         word = self.next()?
         if word == "end":
             return False
@@ -7446,7 +7446,7 @@ struct Words:
     def rule(self, message: str) -> ParseError:
         ParseError(message=f"in the text, {message}", line=0, column=self.at)
 
-    def case(mut self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+    def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
         word = self.next()?
         mut at = 0
         for case, _ in cases:
@@ -7455,14 +7455,14 @@ struct Words:
             at += 1
         fail ParseError(message=f"no case `{word}` in {name}", line=0, column=self.at)
 
-    def end_case(mut self) fails ParseError:
+    def end_case(ref self) fails ParseError:
         _ = self.next()?
 
 enum Order:
     Hold
     Move(x: int)
 
-    def str(self, mut out: StrWriter):
+    def str(self, ref out: StrWriter):
         match self:
             case .Hold:
                 out.write("Hold")
@@ -7671,16 +7671,16 @@ def longest(words: list[str]) -> str:
 def shortest(words: list[str]) -> str:
     min(words, key=word => word.len())
 
-def gone(mut values: list[int]):
+def gone(ref values: list[int]):
     values.remove(9)
 
 def main(stdout: Stdout):
     mut values = [1, 9, 2]
     stdout.print(top(values), smallest(values))
     stdout.print(longest(["a", "bcd"]), shortest(["a", "bcd"]))
-    gone(mut values)
+    gone(ref values)
     stdout.print(values)
-    gone(mut values)
+    gone(ref values)
     stdout.print("never")
 "#,
     )

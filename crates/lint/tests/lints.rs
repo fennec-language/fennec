@@ -219,18 +219,12 @@ fn a_parameter_nothing_reads_goes_with_its_arguments() {
         fixed_params(source),
         "def damage(power: int, bonus: int = 1) -> int:\n    power * 2 + bonus\n\ndef main(stdout: Stdout):\n    stdout.print(damage(3), damage(power=4, bonus=2))\n"
     );
-    // What comes after it starts at `ref` or `mut`, not at its value.
-    for word in ["ref", "mut"] {
-        let source = format!(
-            "def f(unused: int, {word} items: list[int]):\n    items.append(1)\n\ndef g():\n    mut xs = [1]\n    f(2, {word} xs)\n"
-        );
-        assert_eq!(
-            fixed_params(&source),
-            format!(
-                "def f({word} items: list[int]):\n    items.append(1)\n\ndef g():\n    mut xs = [1]\n    f({word} xs)\n"
-            )
-        );
-    }
+    // What comes after it starts at `ref`, not at its value.
+    let source = "def f(unused: int, ref items: list[int]):\n    items.append(1)\n\ndef g():\n    mut xs = [1]\n    f(2, ref xs)\n";
+    assert_eq!(
+        fixed_params(source),
+        "def f(ref items: list[int]):\n    items.append(1)\n\ndef g():\n    mut xs = [1]\n    f(ref xs)\n"
+    );
     let last = "def f(n: int, unused: int) -> int:\n    n\n\ndef g() -> int:\n    f(1, 2)\n";
     assert_eq!(fixed_params(last), "def f(n: int) -> int:\n    n\n\ndef g() -> int:\n    f(1)\n");
     let held = "def f(n: int, unused: int) -> int:\n    n\n\ndef g(h: (int, int) -> int) -> int:\n    h(1, 2)\n\ndef k() -> int:\n    g(f)\n";
@@ -796,8 +790,8 @@ fn mut_on_a_local_nothing_changes_goes() {
         "def f() -> int:\n    mut xs = [1]\n    xs.append(2)\n    xs.len()\n",
         "def f() -> int:\n    mut xs = [1]\n    xs[0] = 2\n    xs[0]\n",
         "def f(p: P) -> int:\n    mut q = p\n    q.pos.x = 1\n    q.pos.x\n",
-        "def f() -> int:\n    mut xs = [1]\n    g(mut xs)\n    xs[0]\n",
-        "def f() -> int:\n    mut xs = [1]\n    for mut x in xs:\n        x += 1\n    xs[0]\n",
+        "def f() -> int:\n    mut xs = [1]\n    g(ref xs)\n    xs[0]\n",
+        "def f() -> int:\n    mut xs = [1]\n    for ref x in xs:\n        x += 1\n    xs[0]\n",
         "def f() -> int:\n    mut n = 0\n    def bump():\n        n += 1\n    bump()\n    n\n",
         "def f() -> int:\n    mut n = 0\n    m, n = pair()\n    m + n\n",
         "def f() -> int:\n    mut w = W(xs=[1])\n    mut part = w.xs\n    mut deeper = part\n    deeper[0] = 2\n    w.xs[0]\n",
@@ -900,7 +894,7 @@ fn a_counted_while_is_a_for() {
         ),
         (
             "the limit moves",
-            "def f(mut n: int):\n    mut i = 0\n    while i < n:\n        n -= 1\n        i += 1\n",
+            "def f(ref n: int):\n    mut i = 0\n    while i < n:\n        n -= 1\n        i += 1\n",
         ),
         (
             "it moves elsewhere too",
@@ -920,7 +914,7 @@ fn an_index_that_only_indexes_is_an_item() {
         ("it's used for more", "def f(xs: list[int]):\n    for i in range(xs.len()):\n        g(i, xs[i])\n"),
         (
             "it writes the list",
-            "def f(mut xs: list[int]):\n    for i in range(xs.len()):\n        xs[i] = xs[i] + 1\n",
+            "def f(ref xs: list[int]):\n    for i in range(xs.len()):\n        xs[i] = xs[i] + 1\n",
         ),
         (
             "a dict's keys aren't its items",
@@ -1018,9 +1012,9 @@ fn a_copy_that_changes_nothing_goes() {
 fn a_copy_that_saves_a_change_from_showing_or_names_no_place_stays() {
     for kept in [
         // Without it, `ys` would share `xs`, and changing `xs` would copy it then.
-        "def f(mut xs: list[int]) -> int:\n    ys = copy(xs)\n    xs.append(1)\n    ys.len()\n",
+        "def f(ref xs: list[int]) -> int:\n    ys = copy(xs)\n    xs.append(1)\n    ys.len()\n",
         // Without it, `ys` would name `xs`, so changing `ys` would change the caller's list.
-        "def f(mut xs: list[int]):\n    mut ys = copy(xs)\n    ys.append(1)\n",
+        "def f(ref xs: list[int]):\n    mut ys = copy(xs)\n    ys.append(1)\n",
         // A program's own `copy` isn't the builtin.
         "def copy(n: int) -> int:\n    n + 1\n\ndef f() -> int:\n    copy(7)\n",
     ] {

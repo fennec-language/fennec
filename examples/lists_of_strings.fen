@@ -48,7 +48,7 @@ def main(stdout: Stdout):
     parts = "a,b,c".split(",")
     stdout.print(parts, parts[1], sorted(parts, key=(each_part) => each_part == "b"))
 
-    trees = [Tree.Leaf, Tree.Node(left=Tree.Leaf, value=1, right=Tree.Leaf)]
+    trees = [Tree.Leaf, Tree.Node(left=.Leaf, value=1, right=.Leaf)]
     stdout.print(depth(trees[0]), depth(trees[1]), trees.len())
     mut grown = copy(trees)
     grown.append(Tree.Node(left=trees[1], value=2, right=trees[1]))

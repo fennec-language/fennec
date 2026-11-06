@@ -6,7 +6,7 @@ enum Light:
     Green
 
     def default() -> Light:
-        Light.Red
+        .Red
 
 enum Coin:
     Heads

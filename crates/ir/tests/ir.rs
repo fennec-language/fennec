@@ -481,7 +481,7 @@ fn a_leading_dot_case_takes_its_enum_from_the_typed_tree() {
         case .Name(text):
             .Name(text)
         case .Eof:
-            ExprKind.Negative(0)
+            .Negative(0)
 "
     );
     assert_eq!(
@@ -2357,9 +2357,8 @@ fn every_example_kit_lowers_to_valid_ir() {
     assert!(kits >= 6, "only {kits} kits");
 }
 
-/// Examples that use what lowering doesn't take yet: a result failing with one of several errors
-/// waits on its layout, which the LLVM lane builds.
-const NOT_LOWERED_YET: &[&str] = &["fails_several.fen"];
+/// Examples that use what lowering doesn't take yet.
+const NOT_LOWERED_YET: &[&str] = &[];
 
 #[test]
 fn every_example_lowers_to_valid_ir() {

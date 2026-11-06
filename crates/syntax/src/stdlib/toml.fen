@@ -1,5 +1,5 @@
 from std.collections import Id
-from std.intrinsics import stop, text_byte, text_of_code, text_part, text_size, type_name
+from std.intrinsics import new_tag, stop, text_byte, text_of_code, text_part, text_size, type_name
 from std.json import _IdsSeen, _article, _base64, _escaped, _float_text, _from_base64, _tables_in
 
 ## How deeply arrays and inline tables may nest, so bad input can't overflow the stack.
@@ -743,6 +743,7 @@ struct TomlReader:
     _place = 0
     _in_key = False
     _ids = _IdsSeen()
+    _tags: dict[str, int] = {}
 
     def _where(self) -> str:
         if self._path.len() == 0: return "the text"
@@ -952,6 +953,13 @@ struct TomlReader:
     def saw_table(mut self, kind: str, count: int):
         self._ids.table(kind, self._where(), count)
 
+    def tag(mut self, kind: str) -> int:
+        found = self._tags.get(kind) else 0
+        if found > 0: return found
+        made = new_tag()
+        self._tags[kind] = made
+        made
+
     def at_item(self, at: int, message: str) -> ParseError:
         ParseError(message=f"`{self._dotted()}[{at}]` {message}", line=0, column=0)
 
@@ -1022,7 +1030,7 @@ struct TomlWriter:
     _wraps = list[str]()
     _after_case = False
     ## Where each `Id` is in its `Table`, as `JsonWriter` keeps it.
-    _id_tables: dict[str, dict[int, int]] = {}
+    _id_tables: dict[str, dict[(int, int), int]] = {}
     _found = False
     _wants_tables = False
     _optional = False
@@ -1097,18 +1105,18 @@ struct TomlWriter:
         self._tables.append(_Table())
         self._wraps.append(case)
 
-    def table[T: Serializable](mut self, kind: str, ids: list[Id[T]], items: list[T]):
+    def table[T: Serializable](mut self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
         self.sequence(items)
 
-    def id(mut self, kind: str, key: int):
+    def id(mut self, kind: str, key: int, tag: int):
         optional = self._optional
         self._optional = False
         if not self._found:
             self._wants_tables = True
             self._done = .Int(n=0)
             return
-        positions = self._id_tables.get(kind) else dict[int, int]()
-        position = positions.get(key) else -1
+        positions = self._id_tables.get(kind) else dict[(int, int), int]()
+        position = positions.get((key, tag)) else -1
         if position < 0 and optional:
             stop(
                 "TOML has no None, so an optional Id whose item has gone can't be saved; leave it out",

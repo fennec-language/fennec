@@ -347,6 +347,7 @@ export! {
     #[cfg(not(feature = "lean"))]
     fennec_case_of(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => objects::case_of(a0, a1, a2, a3);
     fennec_alloc(a0: i64) -> i64 => heap::alloc(a0);
+    fennec_new_tag() -> i64 => heap::new_tag();
     fennec_free(a0: i64) => heap::free(a0);
     fennec_retain_shared(a0: i64, a1: i64) => threads::retain_shared(a0, a1);
     fennec_release_shared(a0: i64, a1: i64) => threads::release_shared(a0, a1);

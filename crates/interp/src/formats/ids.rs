@@ -78,7 +78,7 @@ impl Interp<'_> {
         if let Some(twice) = found.twice("the value") {
             return Err(twice);
         }
-        let mut positions: HashMap<(usize, u32), Option<i64>> = HashMap::new();
+        let mut positions: HashMap<Id, Option<i64>> = HashMap::new();
         for (kind, at, optional, id) in &found.ids {
             let shown = kind.as_deref().unwrap_or("?");
             let Some((_, table_at, table)) = found.table_for(kind.as_ref()) else {
@@ -89,13 +89,14 @@ impl Interp<'_> {
             };
             let position = table.entries().position(|(held, _)| held == *id);
             if position.is_none() && !optional {
-                return Err(format!(
-                    "{} is an Id of something that's been taken out of {}",
-                    place(at, "the value"),
-                    place(table_at, "the value")
-                ));
+                let (at, table_at) = (place(at, "the value"), place(table_at, "the value"));
+                return Err(if id.tag == table.tag {
+                    format!("{at} is an Id of something that's been taken out of {table_at}")
+                } else {
+                    format!("{at} is an Id from another `Table[{shown}]` than {table_at}")
+                });
             }
-            positions.insert((id.slot, id.generation), position.and_then(|at| i64::try_from(at).ok()));
+            positions.insert(*id, position.and_then(|at| i64::try_from(at).ok()));
         }
         Ok(as_saved(value, &positions))
     }
@@ -123,7 +124,7 @@ impl Interp<'_> {
                 ));
             };
             let count = table.entries().count();
-            if id.slot >= count {
+            if id.at() >= count {
                 let items = match count {
                     0 => "nothing".to_owned(),
                     1 => "only 1".to_owned(),
@@ -227,9 +228,9 @@ fn named(name: &str) -> TypeExpr {
 }
 
 /// `value` with each `Table` as the list of its items and each `Id` as where its item is.
-fn as_saved(value: &Value, positions: &HashMap<(usize, u32), Option<i64>>) -> Value {
+fn as_saved(value: &Value, positions: &HashMap<Id, Option<i64>>) -> Value {
     match value {
-        Value::Id(id) => match positions.get(&(id.slot, id.generation)) {
+        Value::Id(id) => match positions.get(id) {
             Some(Some(position)) => Value::Int(*position),
             _ => Value::None,
         },

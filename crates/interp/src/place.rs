@@ -481,9 +481,10 @@ fn slot<'v>(value: &'v mut Value, step: &Step, span: Span) -> Result<&'v mut Val
         (Value::Dict(pairs), Step::Index(key)) => Rc::make_mut(pairs).get_mut(key).ok_or_else(|| {
             Diagnostic::new(format!("the dict has no key {}", crate::format::repr(key)), span)
         }),
-        (Value::Table(map), Step::Index(Value::Id(id))) => Rc::make_mut(map)
-            .get_mut(*id)
-            .ok_or_else(|| Diagnostic::new("this Id refers to something that's been removed", span)),
+        (Value::Table(map), Step::Index(Value::Id(id))) => {
+            let missing = map.missing(*id);
+            Rc::make_mut(map).get_mut(*id).ok_or_else(|| Diagnostic::new(missing, span))
+        }
         (value, _) => Err(Diagnostic::new(format!("can't change part of a {}", value.type_name()), span)),
     }
 }

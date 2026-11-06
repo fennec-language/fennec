@@ -1,4 +1,4 @@
-# `id in map`: whether an `Id` still names something. An `Id` from a slot that's been used again doesn't.
+# `id in map`: whether an `Id` still names something. An `Id` from a slot that's been used again doesn't, nor does one from another `Table`.
 from std.collections import Table
 
 struct Unit:
@@ -13,3 +13,6 @@ def main(stdout: Stdout):
     stdout.print(first in units, second in units, first not in units, gone is None)
     third = units.add(Unit(health=3))
     stdout.print(first in units, third in units)
+    mut others = Table[Unit]()
+    stranger = others.add(Unit(health=4))
+    stdout.print(stranger in units, units.get(stranger) is None, stranger in others)

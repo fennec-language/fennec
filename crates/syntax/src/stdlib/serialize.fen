@@ -40,12 +40,12 @@ interface Serializer:
     ## Starts an enum's case with `count` fields of data, which follow as a struct's do.
     def case_record(mut self, name: str, case: str, count: int)
 
-    ## A `Table` of items of the type named `kind`: each item in order, with its `Id`.
-    def table[T: Serializable](mut self, kind: str, ids: list[Id[T]], items: list[T])
+    ## A `Table` of items of the type named `kind`, with its tag: each item in order, with its `Id`.
+    def table[T: Serializable](mut self, kind: str, tag: int, ids: list[Id[T]], items: list[T])
 
-    ## An `Id` into the `Table` of `kind`, by its `id_key`, which is written as where its item is
-    ## in that `Table`.
-    def id(mut self, kind: str, key: int)
+    ## An `Id` into a `Table` of `kind`, by its `id_key` and its `Table`'s tag, which is written as
+    ## where its item is in that `Table`.
+    def id(mut self, kind: str, key: int, tag: int)
 
     ## An optional's value, which is there. An `Id` in one whose item has gone is written as
     ## a missing value rather than failing.
@@ -104,6 +104,10 @@ interface Deserializer:
 
     ## Takes note of a `Table` read, by the name of its items' type and how many it has.
     def saw_table(mut self, kind: str, count: int)
+
+    ## The tag this read gives the `Table` of `kind` it makes, and every `Id` into it: new for
+    ## each read, so they find their items there and in no other `Table`.
+    def tag(mut self, kind: str) -> int
 
     ## Which of `cases` comes next, as a place in it: each its name and whether it has data. One
     ## with data then reads its fields as a struct's, and `end_case` finishes it.

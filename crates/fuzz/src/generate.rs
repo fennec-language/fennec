@@ -37,7 +37,7 @@ const HEADER: &str = "struct Point:
     def total(self) -> int:
         self.x + self.y
 
-    def moved(mut self, by: int):
+    def moved(ref self, by: int):
         self.x += by
 
 enum Shape:

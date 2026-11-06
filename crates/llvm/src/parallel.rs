@@ -650,10 +650,10 @@ def main(stdout: Stdout):
     #[test]
     fn only_what_a_range_can_reach_pays_for_threads() -> Result<(), String> {
         let source = "\
-def plain(n: int, mut held: list[str]) -> int:
+def plain(n: int, ref held: list[str]) -> int:
     held.append(str(n))
     if n > 0:
-        return plain(n - 1, mut held)
+        return plain(n - 1, ref held)
     n ** 2
 
 def in_a_range(n: int) -> int:
@@ -663,7 +663,7 @@ def in_a_range(n: int) -> int:
 
 def main(stdout: Stdout):
     mut held = [\"a\"]
-    stdout.print(plain(3, mut held), sum(in_a_range(n) for n in parallel([1, 2])))
+    stdout.print(plain(3, ref held), sum(in_a_range(n) for n in parallel([1, 2])))
 ";
         let plain = text_of(source, "plain")?;
         assert!(plain.contains("@fennec_stack_limit_main"), "{plain}");
@@ -682,13 +682,13 @@ def main(stdout: Stdout):
     #[test]
     fn a_for_mut_over_parallel_makes_the_list_its_own_and_puts_items_back_in_place() -> Result<(), String> {
         let source = "\
-def grow(mut xs: list[int], by: int):
-    for mut x in parallel(xs):
+def grow(ref xs: list[int], by: int):
+    for ref x in parallel(xs):
         x += by
 
 def main(stdout: Stdout):
     mut xs = [1, 2]
-    grow(mut xs, 3)
+    grow(ref xs, 3)
     stdout.print(xs)
 ";
         let text = texts(source)?;

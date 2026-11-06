@@ -207,7 +207,7 @@ fn names_for(stmts: &[Stmt], found: &mut Vec<(String, String)>) {
 }
 
 /// The locals a body may change: given a new value, written into, called a method on, or passed
-/// as `mut`, directly or through a `mut` name for part of them. Any method call counts, since
+/// as `ref`, directly or through a `mut` name for part of them. Any method call counts, since
 /// which ones change their value isn't known here.
 pub(crate) fn changed(body: &[Stmt]) -> HashSet<String> {
     changed_in(body, body)
@@ -341,7 +341,7 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     found
 }
 
-/// What `for mut` changes when it loops over `parallel(xs)`: `xs`.
+/// What `for ref` changes when it loops over `parallel(xs)`: `xs`.
 fn parallel_items(iter: &Expr) -> &Expr {
     match &iter.kind {
         ExprKind::Call { callee, args } if matches!(&callee.kind, ExprKind::Name(name) if name == "parallel") => {

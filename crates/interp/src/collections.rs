@@ -326,7 +326,7 @@ impl Interp<'_> {
             ("modify", [Value::Id(id), change]) => {
                 let Some(current) = map.remove(*id) else { return Ok(Value::Bool(false)) };
                 let changed = self.call_changing(change, current, span)?;
-                if let Some(slot) = map.slots.get_mut(id.slot) {
+                if let Some(slot) = map.slots.get_mut(id.at()) {
                     slot.value = Some(changed);
                 }
                 Ok(Value::Bool(true))

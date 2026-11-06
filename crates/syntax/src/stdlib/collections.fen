@@ -1,4 +1,4 @@
-from std.intrinsics import id_at, id_key, type_name
+from std.intrinsics import id_at, id_key, id_tag, table_tag, table_tagged, type_name
 
 ## A double-ended queue: adding or removing at either end is quick however long it gets.
 ## For breadth-first searches, event queues and undo histories.
@@ -1082,13 +1082,14 @@ extend Grid[T: Deserializable]:
 ## finds nothing can't be saved, unless it's optional, and then it's saved as missing.
 extend Id[T]:
     def serialize(self, mut out: Serializer):
-        out.id(type_name[T](), id_key(self))
+        out.id(type_name[T](), id_key(self), id_tag(self))
 
     def deserialize(mut src: Deserializer) -> Id[T] fails ParseError:
         position = src.value[int]()?
         if position < 0: fail src.here("is out of range")
-        src.saw_id(type_name[T](), position)
-        id_at[T](position)
+        kind = type_name[T]()
+        src.saw_id(kind, position)
+        id_at[T](position, src.tag(kind))
 
 extend Table[T: Serializable]:
     def serialize(self, mut out: Serializer):
@@ -1097,13 +1098,14 @@ extend Table[T: Serializable]:
         for id, item in self.items():
             ids.append(id)
             items.append(item)
-        out.table(type_name[T](), ids, items)
+        out.table(type_name[T](), table_tag(self), ids, items)
 
 extend Table[T: Deserializable]:
     def deserialize(mut src: Deserializer) -> Table[T] fails ParseError:
         items = src.value[list[T]]()?
-        mut table = Table[T]()
+        kind = type_name[T]()
+        mut table = table_tagged[T](src.tag(kind))
         for item in items:
             _ = table.add(item)
-        src.saw_table(type_name[T](), items.len())
+        src.saw_table(kind, items.len())
         table

@@ -29,9 +29,9 @@ def main(stdout: Stdout):
     ash.position.x = 10.0
     stdout.print(ash.position)
 
-    healed = replace(ash, health=50)
+    healed = copy(ash, health=50)
     stdout.print(healed.health, ash.health)
 
     velocity = Vec3(x=1.0, y=2.0, z=0.0)
     stdout.print(ash.position + velocity * 2.0)
-    stdout.print(ash == twin, twin == replace(twin))
+    stdout.print(ash == twin, twin == copy(twin))

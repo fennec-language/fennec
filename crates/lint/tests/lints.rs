@@ -438,9 +438,7 @@ fn a_pub_item_says_what_it_is_for() {
     let missing = |source: &str| all_rules(source).iter().filter(|rule| **rule == "missing-doc").count();
     for source in [
         "pub def spawn() -> int:\n    1\n",
-        "pub struct Unit:\n    size: int\n",
         "pub enum Mood:\n    Calm\n",
-        "pub error Lost:\n    reason: str\n",
         "pub interface Named:\n    def name(self) -> str\n",
         "pub type Size = int\n",
         "pub LIMIT = 8\n",
@@ -450,7 +448,11 @@ fn a_pub_item_says_what_it_is_for() {
     ] {
         assert_eq!(missing(source), 1, "{source}");
     }
-    let inside = "## A unit.\npub struct Unit:\n    pub size: int\n\n    pub def grown(self) -> int:\n        self.size + 1\n";
+    // A `pub` type shows its fields, apart from `_name` ones, and each needs a doc too.
+    for source in ["pub struct Unit:\n    size: int\n", "pub error Lost:\n    reason: str\n"] {
+        assert_eq!(missing(source), 2, "{source}");
+    }
+    let inside = "## A unit.\npub struct Unit:\n    size: int\n    _hidden = 0\n\n    pub def grown(self) -> int:\n        self.size + 1\n";
     assert_eq!(missing(inside), 2, "its field and its method");
 }
 
@@ -462,7 +464,7 @@ fn a_private_item_or_one_with_a_doc_says_nothing() {
         "## Spawns one.\npub def spawn() -> int:\n    1\n",
         "## Spawns one.\n## It's always the same one.\npub def spawn() -> int:\n    1\n",
         "## Spawns one.\n@inline\npub def spawn() -> int:\n    1\n",
-        "## A unit.\npub struct Unit:\n    ## How big it is.\n    pub size: int\n\n    ## How big it would be.\n    pub def grown(self) -> int:\n        self.size + 1\n",
+        "## A unit.\npub struct Unit:\n    ## How big it is.\n    size: int\n\n    ## How big it would be.\n    pub def grown(self) -> int:\n        self.size + 1\n",
         // `pub` inside text says nothing.
         "def spawn() -> str:\n    \"pub def\"\n",
     ] {

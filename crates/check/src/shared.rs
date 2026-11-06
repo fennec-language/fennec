@@ -13,7 +13,7 @@ use crate::stmt::Flow;
 use crate::types::{Type, a};
 
 /// Whether a type is a capability, through which all I/O goes.
-fn is_capability(name: &str) -> bool {
+pub(crate) fn is_capability(name: &str) -> bool {
     matches!(name, "Stdout" | "Fs" | "Clock" | "Args" | "Stdin" | "Process" | "Entropy")
 }
 

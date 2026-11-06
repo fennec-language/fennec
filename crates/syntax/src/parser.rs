@@ -126,11 +126,14 @@ impl Parser {
         self.eat(&Tok::P(punct))
     }
 
-    /// Skips `pub` before a declaration or field. It matters only between kits.
-    fn eat_pub(&mut self) {
+    /// Skips `pub` before a declaration or field, giving back the span from it to what follows,
+    /// for a fix that removes it. It matters only between kits.
+    fn eat_pub(&mut self) -> Option<Span> {
         if self.at_soft("pub") && matches!(self.peek_at(1), Tok::Name(_) | Tok::Kw(_)) {
-            self.advance();
+            let start = self.advance().span.start;
+            return Some(Span { start, end: self.span().start });
         }
+        None
     }
 
     fn eat_kw(&mut self, kw: Kw) -> bool {
@@ -253,12 +256,12 @@ impl Parser {
             }
             return Ok(Item::Function(FnDef { annotations, ..self.def()? }));
         }
-        // `pub`, `export` and `noalloc` are accepted. Inside a kit everything is visible, and
-        // allocation checks come later.
+        // `pub` and `export` are accepted. Inside a kit everything is visible.
         self.eat_pub();
         self.eat_kw(Kw::Export);
-        if self.eat_kw(Kw::Noalloc) && !self.at_kw(Kw::Def) {
-            return Err(Diagnostic::new("`noalloc` goes right before `def`", self.span()));
+        if self.at_kw(Kw::Noalloc) {
+            return Err(Diagnostic::new("`noalloc` is written `@hot` now", self.span())
+                .with_help("write `@hot` on the line above the `def`: the function and what it calls may not allocate or copy"));
         }
         match self.peek().clone() {
             Tok::Kw(Kw::Def) => Ok(Item::Function(self.def()?)),
@@ -336,12 +339,13 @@ impl Parser {
         };
         while !self.eat(&Tok::Dedent) && !self.at(&Tok::Eof) {
             // Enum cases come with their enum and have no `pub` of their own.
+            let mut written = None;
             if !is_enum || matches!(self.peek_at(1), Tok::Kw(Kw::Def)) {
-                self.eat_pub();
+                written = self.eat_pub();
             }
             let annotations = if is_enum { Vec::new() } else { self.annotations()? };
             if !annotations.is_empty() {
-                self.eat_pub();
+                written = self.eat_pub().or(written);
             }
             if self.at_kw(Kw::Def) {
                 def.methods.push(FnDef { annotations, ..self.def()? });
@@ -357,6 +361,9 @@ impl Parser {
             {
                 def.cases.push(self.case()?);
             } else {
+                if let Some(written) = written {
+                    return Err(public_field(written));
+                }
                 let field = self.field(true)?;
                 def.fields.push(Field { annotations, ..field });
                 self.end_line()?;
@@ -822,4 +829,13 @@ fn describe(tok: &Tok) -> String {
         Tok::Dedent => "the end of the block".to_owned(),
         Tok::Eof => "the end of the file".to_owned(),
     }
+}
+
+/// `pub` on a field, which goes on top-level things only: a `pub struct`'s fields are its API,
+/// and `_name` hides one.
+fn public_field(written: Span) -> Diagnostic {
+    let at = Span { start: written.start, end: written.start + 3 };
+    Diagnostic::new("a field has no `pub` of its own", at)
+        .with_help("a `pub struct`'s fields are what other kits see, and `_name` hides one from them")
+        .with_fix(written, "")
 }

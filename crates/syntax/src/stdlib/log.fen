@@ -70,7 +70,7 @@ struct Log:
     def with_fields(self, fields: dict[str, str]) -> Log:
         mut all_fields = {name: value for name, value in self.fields.items()}
         all_fields.update(fields)
-        replace(self, fields=all_fields)
+        copy(self, fields=all_fields)
 
     def write(self, level: LogLevel, message: str, fields: dict[str, str]?):
         if not self.enabled(level): return

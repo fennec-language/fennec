@@ -154,7 +154,7 @@ struct Cli:
     ## This `Cli` with one more argument. Two with the same name is a mistake in the program.
     def _with(self, taken: CliArg) -> Cli:
         assert all(each.name != taken.name for each in self.takes)
-        replace(self, takes=self.takes + [taken])
+        copy(self, takes=self.takes + [taken])
 
     def _named(self, name: str) -> CliArg:
         for taken in self.takes:

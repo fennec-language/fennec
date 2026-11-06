@@ -624,6 +624,8 @@ impl Layouts {
             }
             Type::Bytes if self.native_buffers => Ty::Bytes,
             Type::Iterator(_) if self.native_buffers => Ty::Gen,
+            // `None` itself, as a tuple can hold: an optional that's never anything else.
+            Type::None if self.native_buffers => Ty::Maybe(Block::Bytes),
             Type::Named(name) => match (Cap::named(name), self.id(name)) {
                 (Some(cap), _) => Ty::Cap(cap),
                 (None, Some(id)) if self.get(id).is_some_and(|layout| layout.boxed) => Ty::Boxed(id),
@@ -698,6 +700,7 @@ fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type)
         }
         Type::Bytes if layouts.native_buffers => Ty::Bytes,
         Type::Iterator(_) if layouts.native_buffers => Ty::Gen,
+        Type::None if layouts.native_buffers => Ty::Maybe(Block::Bytes),
         Type::Named(name) => match (reserved.get(name), layouts.id(name)) {
             (Some(id), _) => Ty::Boxed(*id),
             (None, Some(id)) => Ty::Struct(id),
@@ -729,6 +732,7 @@ fn set_ty(layouts: &Layouts, item: &Type) -> Ty {
 fn key_word(layouts: &Layouts, key: &Type) -> Option<Word> {
     match key {
         Type::Int => Some(Word::Int),
+        Type::Float if layouts.native_buffers => Some(Word::Float),
         // A string key is held in the entry as its header, when strings are headers.
         Type::Str if layouts.text_headers() => Some(Word::Text),
         Type::Str => Some(Word::Str),

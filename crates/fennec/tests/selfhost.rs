@@ -63,6 +63,8 @@ const LEX_CASES: &[(&str, &str)] = &[
 const PARSE_CASES: &[(&str, &str)] = &[
     ("top_level_statement", "x = 1\n"),
     ("noalloc_struct", "noalloc struct A:\n    x: int\n"),
+    ("noalloc_def", "noalloc def f():\n    pass\n"),
+    ("pub_field", "struct A:\n    pub x: int\n"),
     ("missing_block", "def f():\nx\n"),
     ("needs_else", "def f():\n    a if b\n"),
     ("field_needs_type", "struct A:\n    x\n"),
@@ -142,7 +144,8 @@ enum Shape2:
 error Oops:
     reason: str
 
-noalloc def step(ref world: World, dt: float) -> (int, str)?:
+@hot
+def step(ref world: World, dt: float) -> (int, str)?:
     for ref enemy in world.enemies:
         enemy.x += enemy.v * dt
     for a, b in pairs: pass

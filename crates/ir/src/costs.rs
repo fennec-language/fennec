@@ -125,6 +125,56 @@ pub fn costs(program: &Program) -> Vec<Finding> {
 
 /// Whether a function is the program's rather than the standard library's. A copy of a generic
 /// is the program's where the generic is.
+/// What `@hot` functions reach by calling, which has to be shown not to allocate or copy.
+#[derive(Debug, Default)]
+pub struct HotReach {
+    /// Each function reached, itself included, by its name here, with the `@hot` one it's
+    /// reached from, by its key.
+    pub reached: Vec<(String, String)>,
+    /// Each call to a function that isn't lowered, so can't be shown to cost nothing: where the
+    /// call is, the function it calls, and the `@hot` one it's reached from.
+    pub unlowered: Vec<(Span, String, String)>,
+}
+
+/// The functions each `@hot` function reaches by calling, which `hot` names by key: `name` or
+/// `Type.name`. Every copy of a generic function counts.
+pub fn reached_from_hot(program: &Program, hot: &[String]) -> HotReach {
+    let by_name: HashMap<&str, &Function> = program.functions.iter().map(|f| (f.name.as_str(), f)).collect();
+    let unlowered: HashSet<&str> =
+        program.not_lowered.iter().map(|missing| missing.function.as_str()).collect();
+    let mut waiting: Vec<(&str, &str)> = program
+        .functions
+        .iter()
+        .filter_map(|function| {
+            let key = key_of(&function.name);
+            hot.iter().any(|hot| hot == key).then_some((function.name.as_str(), key))
+        })
+        .collect();
+    let mut found = HotReach::default();
+    let mut seen = HashSet::new();
+    while let Some((name, root)) = waiting.pop() {
+        if !seen.insert(name) {
+            continue;
+        }
+        found.reached.push((name.to_owned(), root.to_owned()));
+        let Some(function) = by_name.get(name) else { continue };
+        for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+            let InstKind::Call { function: callee, .. } = &inst.kind else { continue };
+            if by_name.contains_key(callee.as_str()) {
+                waiting.push((callee.as_str(), root));
+            } else if unlowered.contains(callee.as_str()) {
+                found.unlowered.push((inst.span, callee.clone(), root.to_owned()));
+            }
+        }
+    }
+    found
+}
+
+/// A function's key, without the types a generic one's copy was made for: `f` for `f[int]`.
+pub(crate) fn key_of(name: &str) -> &str {
+    name.split_once('[').map_or(name, |(key, _)| key)
+}
+
 fn is_own(function: &Function) -> bool {
     !function.blocks.iter().flat_map(|block| &block.insts).any(|inst| inst.span.in_prelude())
 }

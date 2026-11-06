@@ -133,3 +133,11 @@ pub fn costs(findings: &[fennec_ir::Finding]) -> Vec<Lint> {
 pub fn implicit_copies(findings: &[fennec_ir::Finding]) -> Vec<Diagnostic> {
     costs::implicit(findings)
 }
+
+/// Each cost in a `@hot` function, or in one it calls, as a compile error, and each call it can't
+/// see into. A hot path may not allocate or copy, and a copy `implicit_copies` reports already
+/// isn't said twice.
+#[must_use]
+pub fn hot_costs(findings: &[fennec_ir::Finding], reach: &fennec_ir::HotReach) -> Vec<Diagnostic> {
+    costs::hot(findings, reach)
+}

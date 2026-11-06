@@ -36,6 +36,16 @@ pub(super) struct Table {
     place_in: usize,
 }
 
+/// What taking an owner off a block found.
+pub(super) enum Released {
+    /// That was its last owner, and here it is, out of the table.
+    Gone(Box<[u64]>),
+    /// It has owners left.
+    Held,
+    /// No block of this table's is there.
+    Missing,
+}
+
 /// An address's region, page in it, and place in the page. A 32-bit address space is one
 /// region.
 fn split(address: usize) -> (usize, usize, usize) {
@@ -143,6 +153,34 @@ impl Table {
             }
             *slot = Some(block);
         }
+    }
+
+    /// Takes one owner off the block at `address`, and takes the block out when that was its last,
+    /// in one look.
+    pub(super) fn release_one(&mut self, address: usize) -> Released {
+        let Some(slot) = slot_mut(&mut self.regions, address) else { return self.release_short(address) };
+        let Some(count) = slot.as_mut().and_then(|block| block.first_mut()) else { return Released::Missing };
+        if *count > 1 {
+            *count -= 1;
+            return Released::Held;
+        }
+        self.len -= 1;
+        slot.take().map_or(Released::Missing, Released::Gone)
+    }
+
+    /// `release_one`, for a block too short to have a place of its own.
+    #[cold]
+    #[inline(never)]
+    fn release_short(&mut self, address: usize) -> Released {
+        let Some(count) = self.short.get_mut(&address).and_then(|block| block.first_mut()) else {
+            return Released::Missing;
+        };
+        if *count > 1 {
+            *count -= 1;
+            return Released::Held;
+        }
+        self.len -= 1;
+        self.short.remove(&address).map_or(Released::Missing, Released::Gone)
     }
 
     /// Says which block the heap's keeping a place in, or 0 for none.

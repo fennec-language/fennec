@@ -210,8 +210,8 @@ struct Planner:
 
     def add_propagate(ref self, at: int, mark: int):
         mut todo = [at]
-        while todo.len() > 0:
-            next = todo.pop()
+        while True:
+            next = todo.pop() else break
             self.recalculate(next)
             self.consuming(self.constraints[next].output(), ref todo)
 
@@ -227,8 +227,8 @@ struct Planner:
         self.variables[place].stay = True
         mut unsatisfied = []
         mut todo = [place]
-        while todo.len() > 0:
-            next = todo.pop()
+        while True:
+            next = todo.pop() else break
             determining = self.variables[next].determined_by
             for other in self.variables[next].constraints:
                 if not self.constraints[other].satisfied():
@@ -243,8 +243,8 @@ struct Planner:
         mark = self.new_mark()
         mut plan = []
         mut todo = sources
-        while todo.len() > 0:
-            next = todo.pop()
+        while True:
+            next = todo.pop() else break
             out = self.constraints[next].output()
             if self.variables[out].mark != mark and self.inputs_known(next, mark):
                 plan.append(next)

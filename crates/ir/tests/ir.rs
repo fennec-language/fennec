@@ -1835,7 +1835,7 @@ def kept(ref xs: list[int], ys: list[int]) -> int:
     show(xs, ys.len()) + show(ys, xs.len())
 
 def changed(ref xs: list[int]) -> int:
-    show(xs, xs.pop())
+    show(xs, xs.pop(0))
 ",
     )
     .unwrap();

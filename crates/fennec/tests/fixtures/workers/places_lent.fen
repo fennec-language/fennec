@@ -36,7 +36,7 @@ def builtin_places(captured: list[Unit], at: int) -> int:
     copy_of[at % 2].tags.append(copy_of[0].hp)
     copy_of[at % 2].tags.append(copy_of[at % 2].tags.len())
     copy_of[at % 2].inner.tags.extend(copy_of[1].tags)
-    got = copy_of[at % 2].tags.pop()
+    got = copy_of[at % 2].tags.pop() else 0
     copy_of[at % 2].tags.insert(0, got)
     copy_of[1 - at % 2].tags.pop()
     copy_of[at % 2].tags.len() * 7 + copy_of[at % 2].inner.tags.len() + copy_of[1 - at % 2].tags.len() + got

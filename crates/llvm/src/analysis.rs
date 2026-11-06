@@ -515,6 +515,7 @@ fn analyze(
     find_reservations(function, &stepped, &mut known);
     find_slice_keys(function, &mut known);
     find_unmade_enumerates(function, &mut known);
+    find_counts_inside(function, &mut known);
     known
 }
 
@@ -1470,6 +1471,58 @@ fn reads_local(inst: &InstKind, local: LocalId) -> bool {
     found
 }
 
+/// A loop's own count, as the index a `for` over a list reads each item at: short of the limit
+/// wherever the body reads it, as a copy of it is. Only when every index it's used as is in the
+/// body, before anything steps it there, since past the loop it has reached the limit; and only
+/// into lists read as lists, since a `Table`'s walk, a string and the like check for themselves.
+fn find_counts_inside(function: &Function, known: &mut Analysis) {
+    for count in function.counts.iter().filter(|count| !count.down) {
+        let held = Operand::Local(count.count);
+        let header = function.blocks.iter().position(|block| {
+            let Terminator::Branch { cond: Operand::Local(cond), .. } = &block.end else { return false };
+            block.insts.iter().any(|inst| {
+                matches!(&inst.kind, InstKind::Binary { dest, op: BinOp::Lt, lhs, rhs: Operand::Local(stop) }
+                    if dest == cond && *lhs == held && *stop == count.stop)
+            })
+        });
+        let Some(header) = header else { continue };
+        let Some(Terminator::Branch { then, .. }) = function.blocks.get(header).map(|block| &block.end)
+        else {
+            continue;
+        };
+        let body = loop_blocks(function, header, then.0);
+        let indexes_in_body = function.blocks.iter().enumerate().all(|(at, block)| {
+            let mut stepped = false;
+            block.insts.iter().all(|inst| {
+                let (indexes, list_read) = match &inst.kind {
+                    InstKind::GetIndex { dest, object, index } => (
+                        *index == held,
+                        matches!(function.type_of(object), Some(Type::List(_)))
+                            && !known.walk_items.contains_key(&dest.0),
+                    ),
+                    InstKind::SetIndex { object, path, index, .. } => (
+                        *index == held,
+                        path.is_empty()
+                            && matches!(function.type_of(&Operand::Local(*object)), Some(Type::List(_))),
+                    ),
+                    _ => (false, true),
+                };
+                let fine = !indexes || (list_read && body.contains(&at) && !stepped);
+                visit(&inst.kind, |_| {}, |local| stepped |= local == count.count);
+                fine
+            })
+        });
+        let places_in_body = function
+            .places
+            .iter()
+            .flat_map(|place| &place.steps)
+            .all(|step| !matches!(step, PlaceStep::Item(index) if *index == held));
+        if indexes_in_body && places_in_body {
+            known.below.insert(count.count.0, count.stop);
+        }
+    }
+}
+
 /// The blocks of a loop: its body, and what that reaches without going back through its test.
 fn loop_blocks(function: &Function, header: usize, body: usize) -> HashSet<usize> {
     let mut found = HashSet::new();
@@ -1666,11 +1719,13 @@ impl Analysis {
         }
     }
 
-    /// Whether `list[index]` can't be out of range.
+    /// Whether `list[index]` can't be out of range. A copy standing for the list a loop goes
+    /// through has its length, since the loop changes only the item it's on.
     pub(crate) fn inside(&self, list: LocalId, index: &Operand) -> bool {
         let Operand::Local(index) = index else { return false };
         let Some(limit) = self.below.get(&index.0) else { return false };
-        self.length_of.get(&limit.0) == Some(&list.0)
+        let Some(&measured) = self.length_of.get(&limit.0) else { return false };
+        measured == list.0 || self.aliases.get(&measured) == Some(&list)
     }
 
     /// Whether reading `from` is the only thing that ever reads what it holds, so a copy can

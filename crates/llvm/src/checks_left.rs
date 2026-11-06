@@ -4,7 +4,8 @@
 //!
 //! LLVM drops a check on a constant it can see the answer to, as `x // 2` or `x << 3`, and
 //! those aren't here. It can drop others too, from what it learns while optimizing; those are
-//! still here, since nothing promises it will.
+//! still here, since nothing promises it will. Emit also checks an index into a list once until
+//! the list or the index changes, so `xs[at]` read twice keeps one check; both are here.
 
 use fennec_check::Type;
 use fennec_ir::{Function, InstKind, LocalId, Operand, PlaceStep, Program};
@@ -229,12 +230,51 @@ mod tests {
         Ok(())
     }
 
+    /// The index checks emit writes for lists are the ones reported, for loops over their items and
+    /// over their positions, and an index from anywhere.
+    #[test]
+    fn the_index_checks_reported_are_the_ones_emitted() -> Result<(), String> {
+        for body in [
+            "def go(xs: list[float]) -> float:\n    mut sum = 0.0\n    for x in xs:\n        sum += x\n    sum\n",
+            "struct Unit:\n    hp: int\n\ndef go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.hp -= 1\n",
+            "def go(xs: list[int], at: int) -> int:\n    mut total = xs[at]\n    for i in range(xs.len()):\n        total += xs[i] - xs[-1]\n    total\n",
+        ] {
+            let program = lowered(body)?;
+            let reported = checks_left(&program)
+                .iter()
+                .filter(|check| check.function == "go" && check.what == CheckKind::Bounds)
+                .count();
+            let (units, _, _) = crate::emit(&program)?;
+            let text = &units.iter().find(|unit| unit.function == "go").ok_or("`go` isn't emitted")?.text;
+            let emitted = text.matches("call void @fennec_out_of_range(").count();
+            assert_eq!(reported, emitted, "{body}\n{text}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn a_loop_over_a_list_s_positions_keeps_only_its_sum_s_check() -> Result<(), String> {
         let found = kept(
             "def go(xs: list[int]) -> int:\n    mut total = 0\n    for i in range(xs.len()):\n        total += xs[i]\n    total\n",
         )?;
         assert_eq!(found, [(CheckKind::Overflow, "total += xs[i]".to_owned())]);
+        Ok(())
+    }
+
+    /// A `for` over a list reads each item at its own count, which is short of the list's length
+    /// while the body runs: no item it reads or writes back keeps a check, from a parameter, a
+    /// field or a `for ref`.
+    #[test]
+    fn a_loop_over_a_list_s_items_keeps_no_index_check() -> Result<(), String> {
+        for body in [
+            "def go(xs: list[float]) -> float:\n    mut sum = 0.0\n    for x in xs:\n        sum += x\n    sum\n",
+            "struct Unit:\n    hp: int\n\ndef go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.hp -= 1\n",
+            "struct World:\n    xs: list[float]\n\ndef go(world: World) -> float:\n    mut sum = 0.0\n    for x in world.xs:\n        sum += x\n    sum\n",
+            "def go(xs: list[float]) -> float:\n    mut best = 0.0\n    for x in xs:\n        if x > 9.0:\n            break\n        best = x\n    best\n",
+        ] {
+            let found = kept(body)?;
+            assert!(!found.iter().any(|(what, _)| *what == CheckKind::Bounds), "{body}{found:?}");
+        }
         Ok(())
     }
 

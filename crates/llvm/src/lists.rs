@@ -1220,9 +1220,11 @@ impl Emit<'_, '_, '_> {
         // A pair from an `enumerate` never made isn't made either: where it points in the list
         // is checked, and kept for its parts.
         if let Some((list, _)) = self.known.pairs.get(&dest.0).cloned() {
+            // The pairs have the list's length, so an index known inside them is inside it.
+            let inside = matches!(object, Operand::Local(pairs) if self.known.inside(*pairs, index));
             let (list, _) = self.operand(&Operand::Local(list))?;
             let (index, _) = self.operand(index)?;
-            let position = self.position(&list, &index, span);
+            let position = if inside { index } else { self.position(&list, &index, span) };
             let slot = self.place_for(&Kind::Int);
             self.line(&format!("store i64 {position}, ptr {slot}"));
             self.pair_slots.insert(dest.0, slot);

@@ -3317,6 +3317,127 @@ def main(stdout: Stdout):
     )
 }
 
+/// A generator that fails: what asks for its next item gets the failure, by whichever error.
+#[test]
+fn generators_that_fail_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "failing_generators",
+        r#"error TooBig:
+    at: int
+
+error Named:
+    who: str
+
+def checked(limit: int) -> Iterator[int]:
+    for n in range(5):
+        if n >= limit: fail TooBig(at=n)
+        yield n
+
+def named(limit: int) -> Iterator[str]:
+    for n in range(5):
+        if n >= limit: fail Named(who=f"a long name for number {n} in a block")
+        yield str(n)
+
+def either(limit: int) -> Iterator[int]:
+    if limit == 0: fail Named(who="none")
+    for n in range(limit):
+        if n == 2: fail TooBig(at=n)
+        yield n
+
+def total(limit: int) -> int:
+    sum(n for n in checked(limit)?)
+
+def joined(limit: int) -> str:
+    mut out = ""
+    for word in named(limit)?:
+        out = out + word
+    out
+
+def looped(limit: int) -> int:
+    mut count = 0
+    for n in either(limit)?:
+        count = count + n + 1
+    count
+
+def main(stdout: Stdout):
+    stdout.print(total(9), total(2))
+    match total(2):
+        case Ok(found):
+            stdout.print(found)
+        case TooBig(at):
+            stdout.print("too big", at)
+    stdout.print(joined(3), joined(9))
+    match joined(1):
+        case Named(who):
+            stdout.print(who)
+        case Ok(text):
+            stdout.print(text)
+    for limit in [0, 1, 2, 3]:
+        stdout.print(limit, looped(limit))
+"#,
+    )
+}
+
+/// A generator made for a loop goes when the loop does, letting go of what it's holding right
+/// then, while one with a name lasts as long as the name, and returning out of the loop lets go
+/// of it before the caller goes on. A `shared` type's `del` doesn't run yet, so nothing prints
+/// when the door goes; when it does, this shows each door closing at the right moment.
+#[test]
+fn a_generator_left_partway_closes_as_the_interpreter_does() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter(
+        "generator_left",
+        r#"shared Door:
+    out: Stdout
+    name: str
+
+    def del(self):
+        self.out.print(f"closing {self.name}")
+
+def holding(out: Stdout, name: str) -> Iterator[int]:
+    door = Door(out=out, name=name)
+    yield 1
+    yield 2
+
+def leaves_early(out: Stdout):
+    for n in holding(out, "made for the loop"):
+        out.print("got", n)
+        break
+    out.print("left the loop")
+
+def named(out: Stdout):
+    kept = holding(out, "with a name")
+    for n in kept:
+        out.print("got", n)
+        break
+    out.print("left the second loop")
+
+def finishes(out: Stdout):
+    for n in holding(out, "run to its end"):
+        out.print("got", n)
+    out.print("left the third loop")
+
+def returns_from_it(out: Stdout) -> int:
+    for n in holding(out, "returned from"):
+        return n
+    0
+
+def main(stdout: Stdout):
+    leaves_early(stdout)
+    stdout.print("next")
+    named(stdout)
+    stdout.print("next")
+    finishes(stdout)
+    stdout.print(returns_from_it(stdout))
+"#,
+    )
+}
+
 #[test]
 fn generators_and_results_match_the_jit() -> std::io::Result<()> {
     if !ready() {

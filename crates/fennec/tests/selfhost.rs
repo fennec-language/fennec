@@ -1,12 +1,13 @@
 //! The self-hosted front end in `selfhost/` lexes and parses every example, every error
 //! example, the standard library's Fennec sources and its own source exactly as the Rust front
-//! end does, with the interpreter and with the JIT.
+//! end does, built through LLVM and on the JIT.
 
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 /// Small sources that reach the lexer's error paths and edge cases.
 const LEX_CASES: &[(&str, &str)] = &[
@@ -296,9 +297,60 @@ fn corpus(work: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+/// The self-hosted front end built through LLVM, once a run, as one executable. `fennec build
+/// --llvm` fails on a function LLVM doesn't take, so this keeps selfhost native. `None` where
+/// LLVM's tools or the runtime library aren't here, as under coverage.
+fn built() -> Result<Option<PathBuf>, String> {
+    static BUILT: OnceLock<Result<Option<PathBuf>, String>> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let ready = fennec_llvm::Tools::find().is_ok()
+                && crate::executables::runtime_built()
+                && crate::executables::runtime_beside_fennec();
+            if !ready {
+                return Ok(None);
+            }
+            let folder = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-llvm");
+            fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
+            let program = folder.join(format!("selfhost{}", std::env::consts::EXE_SUFFIX));
+            let output = crate::executables::fennec_command()
+                .args(["build", "--llvm", "--release"])
+                .arg(repo().join("selfhost"))
+                .arg("-o")
+                .arg(&program)
+                .output()
+                .map_err(|err| err.to_string())?;
+            if !output.status.success() {
+                return Err(format!(
+                    "the self-hosted front end doesn't build through LLVM:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            Ok(Some(program))
+        })
+        .clone()
+}
+
+/// The self-hosted front end as LLVM builds it, or `fennec run` where LLVM isn't here.
+fn on_llvm() -> Result<Command, String> {
+    if let Some(program) = built()? {
+        return Ok(Command::new(program));
+    }
+    let mut command = crate::executables::fennec_command();
+    command.arg("run").arg(repo().join("selfhost"));
+    Ok(command)
+}
+
+/// The self-hosted front end on the JIT.
+fn on_the_jit() -> Command {
+    let mut command = crate::executables::fennec_command();
+    command.args(["run", "--jit"]).arg(repo().join("selfhost"));
+    command
+}
+
 /// Runs the self-hosted front end on every file in `corpus` with `mode`, returning what it
 /// printed. It reads its work from standard input.
-fn selfhost(work: &Path, mode: &str, corpus: &[PathBuf], engine: &[&str]) -> Result<String, String> {
+fn selfhost(work: &Path, mode: &str, corpus: &[PathBuf], mut command: Command) -> Result<String, String> {
     let mut inputs = String::new();
     if mode == "check" {
         let library = corpus.iter().filter(|path| {
@@ -311,10 +363,7 @@ fn selfhost(work: &Path, mode: &str, corpus: &[PathBuf], engine: &[&str]) -> Res
     for path in corpus {
         let _ = writeln!(inputs, "{mode} {}", path.display());
     }
-    let mut child = crate::executables::fennec_command()
-        .arg("run")
-        .args(engine)
-        .arg(repo().join("selfhost"))
+    let mut child = command
         .current_dir(work)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -354,8 +403,8 @@ fn compare(mode: &str, rust_dump: fn(&str) -> String) -> Result<(), String> {
     let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("selfhost-{mode}"));
     fs::create_dir_all(&work).map_err(|err| err.to_string())?;
     let corpus = corpus(&work).map_err(|err| err.to_string())?;
-    let interpreted = selfhost(&work, mode, &corpus, &[])?;
-    let dumps = dumps(&interpreted);
+    let native = selfhost(&work, mode, &corpus, on_llvm()?)?;
+    let dumps = dumps(&native);
     if dumps.len() != corpus.len() {
         return Err(format!("the self-hosted front end dumped {} of {} files", dumps.len(), corpus.len()));
     }
@@ -381,11 +430,11 @@ fn compare(mode: &str, rust_dump: fn(&str) -> String) -> Result<(), String> {
         let _ = write!(report, "\n\n{}", mirror_hint(mode));
         return Err(report);
     }
-    let native = selfhost(&work, mode, &corpus, &["--jit"])?;
-    if native != interpreted {
-        let (ours, theirs) = first_difference(&native, &interpreted);
+    let jitted = selfhost(&work, mode, &corpus, on_the_jit())?;
+    if jitted != native {
+        let (ours, theirs) = first_difference(&jitted, &native);
         return Err(format!(
-            "the JIT and the interpreter disagree on the self-hosted {mode}: the JIT printed\n  {ours}\nwhere the interpreter printed\n  {theirs}\nThat's a bug in an engine, not in selfhost/."
+            "the JIT and LLVM disagree on the self-hosted {mode}: the JIT printed\n  {ours}\nwhere LLVM's build printed\n  {theirs}\nThat's a bug in an engine, not in selfhost/."
         ));
     }
     Ok(())

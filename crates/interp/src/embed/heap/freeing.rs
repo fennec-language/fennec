@@ -153,10 +153,10 @@ fn free_block(state: &mut State, address: u64) {
 fn next_to_free(
     state: &mut State,
     pending: &mut Vec<u64>,
-    taken: &mut Vec<(u64, Box<[u64]>)>,
+    taken: &mut Vec<Box<[u64]>>,
 ) -> Option<(u64, Box<[u64]>)> {
-    if let Some(next) = taken.pop() {
-        return Some(next);
+    if let Some(block) = taken.pop() {
+        return Some((u64::try_from(block.as_ptr().addr()).unwrap_or(0), block));
     }
     while let Some(address) = pending.pop() {
         if crate::embed::threads::held_elsewhere(address) {
@@ -197,12 +197,7 @@ fn forget_text(state: &mut State, address: u64) {
 /// Frees what a block with no plan holds: a cell's value, or the blocks a list, dict or
 /// unplanned struct refers to.
 #[inline(never)]
-fn free_unplanned(
-    state: &mut State,
-    block: &[u64],
-    pending: &mut Vec<u64>,
-    taken: &mut Vec<(u64, Box<[u64]>)>,
-) {
+fn free_unplanned(state: &mut State, block: &[u64], pending: &mut Vec<u64>, taken: &mut Vec<Box<[u64]>>) {
     if shape_word(block) == Some(CELL_SHAPE) {
         let number = block.get(2).and_then(|number| usize::try_from(*number).ok());
         if let Some(number) = number {
@@ -220,12 +215,7 @@ fn free_unplanned(
 /// Gives up the owner a block holds of each block it refers to, queueing those it was the last
 /// owner of to be freed: taken out of the table at once when this thread alone counts them and
 /// holds every block it can reach.
-fn release_children(
-    state: &mut State,
-    block: &[u64],
-    pending: &mut Vec<u64>,
-    taken: &mut Vec<(u64, Box<[u64]>)>,
-) {
+fn release_children(state: &mut State, block: &[u64], pending: &mut Vec<u64>, taken: &mut Vec<Box<[u64]>>) {
     let mut found = std::mem::take(&mut state.heap.found);
     children_into(state, block, &mut found);
     let direct = !crate::embed::threads::counted_elsewhere() && state.heap.holds_all();
@@ -233,7 +223,7 @@ fn release_children(
         if direct {
             match state.heap.blocks.release_one(usize::try_from(child).unwrap_or(usize::MAX)) {
                 Released::Gone(block) => {
-                    taken.push((child, block));
+                    taken.push(block);
                     continue;
                 }
                 Released::Held => continue,
@@ -259,7 +249,7 @@ fn release_planned(
     heap: &mut Heap,
     block: &[u64],
     pending: &mut Vec<u64>,
-    taken: &mut Vec<(u64, Box<[u64]>)>,
+    taken: &mut Vec<Box<[u64]>>,
 ) -> bool {
     let Heap { plans, blocks, lent, lent_owners, .. } = heap;
     let freeing = &mut Freeing { pending, taken, direct: !crate::embed::threads::counted_elsewhere() };
@@ -296,7 +286,7 @@ fn release_planned(
 /// out of the table already when this thread alone counts them.
 struct Freeing<'f> {
     pending: &'f mut Vec<u64>,
-    taken: &'f mut Vec<(u64, Box<[u64]>)>,
+    taken: &'f mut Vec<Box<[u64]>>,
     /// Whether no block can be counted by another thread, so one with no owner left is this
     /// thread's to take out at once.
     direct: bool,
@@ -334,7 +324,7 @@ fn release_planned_child(
     let at = usize::try_from(child).unwrap_or(usize::MAX);
     if freeing.direct {
         match blocks.release_one(at) {
-            Released::Gone(block) => return freeing.taken.push((child, block)),
+            Released::Gone(block) => return freeing.taken.push(block),
             Released::Held => return,
             Released::Missing => {}
         }

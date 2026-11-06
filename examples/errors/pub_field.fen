@@ -1,0 +1,7 @@
+# `pub` goes on top-level things only: a `pub struct`'s fields are its API, and `_name` hides one.
+pub struct Account:
+    pub owner: str
+    _balance = 0
+
+def main(stdout: Stdout):
+    stdout.print(Account(owner="Ash").owner)

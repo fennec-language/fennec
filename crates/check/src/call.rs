@@ -278,6 +278,8 @@ impl FnCx<'_> {
         let mut left_out = Vec::new();
         for (param, given) in params.iter().zip(given) {
             if let (false, Some(default)) = (given, &param.default) {
+                // What's written in for it is typed here, as lowering reads its type.
+                self.record(default.span, &param.ty);
                 left_out.push((param.name.clone(), plain_default(default)));
             } else if !given && !unmatched_args {
                 let message = format!("`{function}` is missing its `{}` argument", param.name);

@@ -8,6 +8,7 @@
 mod cache;
 mod changes;
 mod functions;
+mod locals;
 mod reach;
 mod reached;
 mod snapshot;

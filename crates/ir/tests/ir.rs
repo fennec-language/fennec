@@ -1017,6 +1017,24 @@ def f() -> P:
     assert!(text.contains("= make P(1, 2.5, _0)"), "{text}");
 }
 
+/// Each argument a call leaves out is written in with its own type: a `Duration` and an `int`
+/// left out of one call don't take each other's.
+#[test]
+fn arguments_left_out_get_their_defaults_with_their_types() {
+    let source = "from std.time import Duration
+
+def wait(label: str, timeout=30s, tries=3) -> int:
+    label.len() + tries
+
+def f() -> int:
+    wait(\"a\") + wait(\"b\", tries=1)
+";
+    let program = lowered(source).unwrap();
+    assert_eq!(program.not_lowered, [], "{program}");
+    let text = printed(source, "f").unwrap();
+    assert!(text.contains("call wait(\"a\", "), "{text}");
+}
+
 #[test]
 fn literal_constants_are_written_out_and_others_are_functions() {
     let source = "LIMIT = -2

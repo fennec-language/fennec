@@ -205,6 +205,13 @@ pub fn builtin_method_changes(ty: &Type, name: &str) -> Option<bool> {
     builtins::method(ty, name).map(|method| method.changes)
 }
 
+/// The types a method the engines provide on a type takes, after the value it's called on:
+/// `dict.get` on a `dict[int | str, int]` takes an `int | str`. `None` when the type has no
+/// such method.
+pub fn builtin_method_params(ty: &Type, name: &str) -> Option<Vec<Type>> {
+    builtins::method(ty, name).map(|method| method.params)
+}
+
 /// Checks a parsed module, then writes into it the enum of each leading-dot case whose name
 /// more than one enum has, as the type expected where it's written decided: `.Int(value)`
 /// given back as an `ExprKind` becomes `ExprKind.Int(value)`. A `sum` of floats gets its

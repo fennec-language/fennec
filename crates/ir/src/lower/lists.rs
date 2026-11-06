@@ -274,8 +274,14 @@ impl Lowering<'_> {
         {
             return Err(super::operators::OWN_EQUALITY.to_owned());
         }
-        let item = self.expr(item)?;
-        let (item, items) = self.both(item, |lowering| lowering.expr(items), span)?;
+        let mut item_at = self.expr(item)?;
+        // A member sought among a union's values is made one of them.
+        if let Some(Type::List(held) | Type::Set(held) | Type::Dict(held, _)) = self.type_at(items.span)
+            && let Type::Union(_) = *held
+        {
+            item_at = self.coerce(item_at, &held, item.span)?;
+        }
+        let (item, items) = self.both(item_at, |lowering| lowering.expr(items), span)?;
         let dest = self.temporary(Type::Bool);
         let name = format!("{owner}.contains");
         let args = vec![items.clone(), item.clone()];

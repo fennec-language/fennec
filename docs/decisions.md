@@ -1151,7 +1151,7 @@ lines = (line.strip() for line in source)
 rows = (parse(line) for line in lines if line != "")
 total = sum(row.amount for row in rows)
 ```
-- It's a handle: `b = a` is two names for one generator. A second use is a compile error where that can be proved. Otherwise it fails at run time with `this generator has already been used`, never quietly giving nothing.
+- It's a handle: `b = a` is two names for one generator. A second use is a compile error where that can be proved. Otherwise it fails at run time with `this generator has already been used`, never quietly giving nothing. Built: a second use on every way on from the first is the compile error, by any of its names; a use in only some branches, or in a loop's body, is left to the run.
 - A chain of stages is fused into one loop where possible. `map` can come later, and `filter` isn't added for now.
 - It isn't a list: `gen()[0]` and `gen().len()` are compile errors. `list(gen())` keeps the items.
 - What it sees is fixed when it's made, as with a nested `def`. `(x * k for x in xs)` works out `xs` at once and copies `k`.

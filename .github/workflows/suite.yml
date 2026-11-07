@@ -36,15 +36,17 @@ jobs:
         run: |
           for p in hello_fen hello_rs; do echo "== $p"; readelf -d $p | grep -E "NEEDED|FLAGS"; ldd $p; echo "relocations: $(readelf -r $p | wc -l)"; echo "dynamic symbols: $(readelf --dyn-syms $p | wc -l)"; done
       - run: sudo apt-get install -y -qq valgrind || true
-      - name: The same hello-world on the system allocator
+      - name: The same hello-world with mimalloc reading options through getenv
+        env:
+          CFLAGS: "-DMI_DEFAULT_ARENA_RESERVE=65536 -DMI_USE_ENVIRON=0"
         run: |
-          cargo rustc --release --locked -p fennec-runtime --features lean,probe_sys --target-dir target/sys --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
+          cargo rustc --release --locked -p fennec-runtime --features lean --target-dir target/env --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
           cp target/release/libfennec_runtime_lean.a keep.a && cp target/release/libfennec_runtime_lean.bc keep.bc
-          cp target/sys/release/libfennec_runtime.a target/release/libfennec_runtime_lean.a
-          cp "$(find target/sys/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime_lean.bc
+          cp target/env/release/libfennec_runtime.a target/release/libfennec_runtime_lean.a
+          cp "$(find target/env/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime_lean.bc
           ./target/release/fennec build --llvm --release bench/startup/empty.fen -o hello_sys
           cp keep.a target/release/libfennec_runtime_lean.a && cp keep.bc target/release/libfennec_runtime_lean.bc
-          ls -l hello_fen hello_sys
+          MIMALLOC_VERBOSE=1 ./hello_sys 2>&1 | grep -E "arena_reserve|purge_delay"
       - name: Wall time and page faults, taking turns
         run: |
           python3 - <<'TIME'

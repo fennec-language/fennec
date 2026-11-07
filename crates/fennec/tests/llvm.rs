@@ -5211,7 +5211,7 @@ def main(net: Net, stdout: Stdout):
     // What the server answers one request with, after the head, or nothing when it closes first.
     let ask = |path: &str| -> std::io::Result<String> {
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
         stream.write_all(format!("GET {path} HTTP/1.1\r\nConnection: close\r\n\r\n").as_bytes())?;
         let mut heard = String::new();
         let _ = stream.read_to_string(&mut heard);

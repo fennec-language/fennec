@@ -23,6 +23,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{ErrorKind, Read as _, Write as _};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -35,6 +36,15 @@ use super::parallel::{Latch, Pool};
 
 /// A connection task's stack. Only the pages a task touches take memory.
 const STACK: usize = 1024 * 1024;
+
+/// A range's stack, when it runs as a parked task: as big as a worker's, since a range runs the
+/// same native code. Only the pages it touches take memory, and a few are kept for the next.
+const RANGE_STACK: usize = 64 << 20;
+const RANGE_STACKS_KEPT: usize = 8;
+
+/// What a task parks with to let the others on its thread run, and be resumed after them: a lock
+/// that's taken, or a test of tasks taking turns.
+pub(in crate::embed) const YIELD: u64 = u64::MAX;
 
 /// What a parked wait is woken with.
 const READY: u64 = 0;
@@ -378,6 +388,11 @@ pub(in crate::embed) struct Io {
     /// Which server each task serves a connection of.
     owners: HashMap<TaskId, u64>,
     servers: HashMap<u64, Here>,
+    /// Ranges of `parallel` calls whose bodies may wait, each a parked task with its own accounts
+    /// (see `threads::Accounts`). Task numbers are never given twice on a thread, so these and
+    /// the connections' tasks share `ready` and `waiting`.
+    ranges: Scheduler,
+    accounts: HashMap<TaskId, super::threads::Accounts>,
 }
 
 impl Io {
@@ -394,6 +409,28 @@ impl Io {
             ready: VecDeque::new(),
             owners: HashMap::new(),
             servers: HashMap::new(),
+            ranges: Scheduler::keeping(RANGE_STACK, RANGE_STACKS_KEPT),
+            accounts: HashMap::new(),
+        }
+    }
+
+    /// Starts a range as a parked task on this worker, so it can park when it waits. If there's no
+    /// stack for it, it runs here and now, as a range whose body can't wait does.
+    pub(in crate::embed) fn start_range(&mut self, range: Box<dyn FnOnce() -> i64>) {
+        // The task runs it from its first resume, so it's kept here until then in case it can't.
+        let range = Rc::new(Cell::new(Some(range)));
+        let held = Rc::clone(&range);
+        let made = self.ranges.spawn(move || held.take().map_or(0, |range| range()));
+        match made {
+            Ok(task) => {
+                self.accounts.insert(task, super::threads::Accounts::default());
+                self.ready.push_back((task, Wake::Ready(READY)));
+            }
+            Err(_) => {
+                if let Some(range) = range.take() {
+                    range();
+                }
+            }
         }
     }
 
@@ -452,13 +489,21 @@ impl Io {
         }
     }
 
-    /// Runs every task that's ready until each parks or ends.
+    /// Runs each task that was ready when it was called until it parks or ends. One that parks to
+    /// let others run goes after them, for the next call: the worker takes a job between, and
+    /// tasks take turns.
     pub(in crate::embed) fn run_ready(&mut self) {
         if self.ready.is_empty() {
             return;
         }
-        while let Some((task, wake)) = self.ready.pop_front() {
+        for _ in 0..self.ready.len() {
+            let Some((task, wake)) = self.ready.pop_front() else { break };
+            if self.accounts.contains_key(&task) {
+                self.resume_range(task, wake);
+                continue;
+            }
             match self.scheduler.resume(task, wake) {
+                Step::Parked(YIELD) => self.ready.push_back((task, Wake::Ready(READY))),
                 Step::Parked(token) => {
                     let token = usize::try_from(token).unwrap_or(usize::MAX);
                     let (interest, deadline) = PARKING.take().unwrap_or((Interest::READABLE, None));
@@ -480,6 +525,30 @@ impl Io {
         }
         // What the tasks that just ran printed comes out before this worker goes on.
         super::write_kept_output();
+    }
+
+    /// Resumes a range's task with its own accounts in the thread's runtime, and puts them back
+    /// after. A range sees to its own failure, which its call keeps.
+    fn resume_range(&mut self, task: TaskId, wake: Wake) {
+        let Some(mut accounts) = self.accounts.remove(&task) else { return };
+        super::threads::swap_accounts(&mut accounts);
+        let step = self.ranges.resume(task, wake);
+        super::threads::swap_accounts(&mut accounts);
+        match step {
+            Step::Parked(YIELD) => {
+                self.accounts.insert(task, accounts);
+                self.ready.push_back((task, Wake::Ready(READY)));
+            }
+            Step::Parked(token) => {
+                self.accounts.insert(task, accounts);
+                let token = usize::try_from(token).unwrap_or(usize::MAX);
+                let (interest, deadline) = PARKING.take().unwrap_or((Interest::READABLE, None));
+                self.waiting.insert(token, (task, interest, deadline));
+            }
+            Step::Done(_) | Step::Unknown => {
+                debug_assert!(accounts.is_empty(), "a range ended with what it made not handed over");
+            }
+        }
     }
 
     /// Notes that a task ended, failed or not.
@@ -576,6 +645,17 @@ impl Io {
             }
         }
     }
+}
+
+/// Lets the other tasks on this thread run, when this is a task and the runtime's state isn't
+/// borrowed: it's resumed after them. Gives back whether it did. Tests make ranges take turns
+/// with it; a lock that's taken will wait this way too.
+#[cfg(test)]
+pub(in crate::embed) fn yield_task() -> bool {
+    if fennec_parked::stack_low().is_none() || super::state_is_borrowed() {
+        return false;
+    }
+    fennec_parked::park(YIELD).is_some()
 }
 
 /// A server that's running: stop it to have its workers cancel their tasks and finish.

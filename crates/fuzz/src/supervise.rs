@@ -16,8 +16,12 @@ pub(crate) const WRONG: u8 = 3;
 /// How a run says a panic ended it.
 pub(crate) const PANICKED: u8 = 4;
 
-/// How long one input may take before it counts as stuck, unless its target says otherwise.
+/// How much CPU time one input may take before it counts as stuck, unless its target says
+/// otherwise. It's CPU time, not time on the clock, so a busy machine doesn't make an input stuck.
 pub(crate) const STUCK: Duration = Duration::from_secs(10);
+/// How many times its CPU time a process may go on the clock before it counts as stuck anyway:
+/// one waiting on something forever uses no CPU time at all.
+const WAITING_TIMES: u32 = 30;
 /// The most memory a worker may hold.
 const MOST_KILOBYTES: u64 = 4 * 1024 * 1024;
 
@@ -82,29 +86,61 @@ pub(crate) fn kilobytes(id: u32) -> Option<u64> {
     String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
-/// Waits for a process, stopping it if it goes `stuck` without `moved` saying it's making
-/// progress, or if it holds too much memory. Reaching `deadline` stops it too, which isn't a
-/// failure. Gives back how it went wrong, if it did.
+/// How much CPU time a process has used, where that can be asked.
+pub(crate) fn cpu_time(id: u32) -> Option<Duration> {
+    let output = Command::new("ps").args(["-o", "time=", "-p", &id.to_string()]).output().ok()?;
+    cpu_time_in(String::from_utf8_lossy(&output.stdout).trim())
+}
+
+/// The CPU time `ps` writes as `[days-][hours:]minutes:seconds`, the seconds with or without a
+/// fraction: `0:01.25` on macOS, `00:00:01` on Linux.
+fn cpu_time_in(written: &str) -> Option<Duration> {
+    let (days, clock) = match written.split_once('-') {
+        Some((days, clock)) => (days.parse::<u64>().ok()?, clock),
+        None => (0, written),
+    };
+    let mut parts = clock.rsplit(':');
+    let seconds = Duration::try_from_secs_f64(parts.next()?.parse().ok()?).ok()?;
+    let mut whole = 0_u64;
+    for (part, scale) in parts.zip([60, 3600]) {
+        whole += part.parse::<u64>().ok()? * scale;
+    }
+    Some(seconds + Duration::from_secs(whole + days * 86_400))
+}
+
+/// Waits for a process, stopping it if it uses `stuck` CPU time without `moved` saying it's
+/// making progress, or if it holds too much memory. Where CPU time can't be asked, `stuck` is
+/// time on the clock. Reaching `deadline` stops it too, which isn't a failure. Gives back how it
+/// went wrong, if it did.
 pub(crate) fn watch(
     child: &mut Child,
     stuck: Duration,
     deadline: Option<Instant>,
     mut moved: impl FnMut() -> bool,
 ) -> Option<Failure> {
-    let mut since = Instant::now();
+    // When it last made progress, and the CPU time it had used by then.
+    let mut since = (Instant::now(), Duration::ZERO);
+    // The CPU time it's used, as last asked, if it can be.
+    let mut used = None;
     let mut checks = 0_u32;
     loop {
         if let Ok(Some(status)) = child.try_wait() {
             return failure_of(status);
         }
         if moved() {
-            since = Instant::now();
+            since = (Instant::now(), used.unwrap_or_default());
         }
         checks += 1;
-        let too_big =
-            checks.is_multiple_of(10) && kilobytes(child.id()).is_some_and(|held| held > MOST_KILOBYTES);
+        let mut too_big = false;
+        if checks.is_multiple_of(10) {
+            too_big = kilobytes(child.id()).is_some_and(|held| held > MOST_KILOBYTES);
+            used = cpu_time(child.id()).or(used);
+        }
+        let on_the_clock = since.0.elapsed();
+        let busy = used.map_or(on_the_clock, |used| used.saturating_sub(since.1));
+        let is_stuck = busy > stuck || on_the_clock > stuck * WAITING_TIMES;
         let out_of_time = deadline.is_some_and(|deadline| Instant::now() >= deadline);
-        if too_big || out_of_time || since.elapsed() > stuck {
+        if too_big || out_of_time || is_stuck {
             let _ = child.kill();
             let _ = child.wait();
             return match (too_big, out_of_time) {
@@ -173,5 +209,32 @@ impl Run<'_> {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|err| format!("couldn't start a worker: {err}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Duration, Failure, cpu_time_in, watch};
+
+    #[test]
+    fn cpu_time_reads_as_ps_writes_it() {
+        assert_eq!(cpu_time_in("0:01.25"), Some(Duration::from_millis(1250)));
+        assert_eq!(cpu_time_in("00:00:07"), Some(Duration::from_secs(7)));
+        assert_eq!(cpu_time_in("01:02:03"), Some(Duration::from_secs(3723)));
+        assert_eq!(cpu_time_in("2-00:00:01"), Some(Duration::from_secs(2 * 86_400 + 1)));
+        assert_eq!(cpu_time_in(""), None);
+        assert_eq!(cpu_time_in("NaN"), None);
+    }
+
+    /// A process that only waits isn't stuck however long it takes on the clock, and one that
+    /// keeps the CPU busy is.
+    #[cfg(unix)]
+    #[test]
+    fn stuck_counts_cpu_time() {
+        let start = |script: &str| std::process::Command::new("sh").args(["-c", script]).spawn().unwrap();
+        let mut waits = start("sleep 1");
+        assert_eq!(watch(&mut waits, Duration::from_millis(500), None, || false), None);
+        let mut spins = start("while :; do :; done");
+        assert_eq!(watch(&mut spins, Duration::from_millis(500), None, || false), Some(Failure::Stuck));
     }
 }

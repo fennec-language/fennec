@@ -118,7 +118,8 @@ struct Options {
     /// however long the machine takes, so it finds the same thing on a busy machine.
     seconds: Option<u64>,
     inputs: u64,
-    /// How long one input may take before it counts as stuck, in place of each target's own.
+    /// How much CPU time one input may take before it counts as stuck, in place of each target's
+    /// own.
     stuck: Option<u64>,
     found: PathBuf,
     names: Vec<String>,

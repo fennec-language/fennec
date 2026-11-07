@@ -435,10 +435,13 @@ impl FnCx<'_> {
                     }
                 }
                 Some("cwd") if named.contains(&"cwd") => {
-                    if !matches!(self.checker.settled(&ty), Type::Str) && !self.checker.fits(&Type::named("Path"), &ty) {
+                    if !matches!(self.checker.settled(&ty), Type::Str)
+                        && !self.checker.fits(&Type::named("Path"), &ty)
+                    {
                         self.error(
-                            mismatch("`cwd`", &Type::Str, &ty, arg.value.span)
-                                .with_help("`cwd=` is the folder the program runs in, as a `Path` or a `str`"),
+                            mismatch("`cwd`", &Type::Str, &ty, arg.value.span).with_help(
+                                "`cwd=` is the folder the program runs in, as a `Path` or a `str`",
+                            ),
                         );
                     }
                 }

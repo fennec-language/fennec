@@ -143,13 +143,13 @@ fn named_fix(sources: &Sources, span: Span, variant: &str, names: &[String]) -> 
     if parts.len() > names.len() {
         return None;
     }
-    let mut named = Vec::new();
-    for ((from, to), name) in parts.iter().zip(names) {
+    let mut rewritten = Vec::new();
+    for ((from, to), field) in parts.iter().zip(names) {
         let part = text.get(usize::try_from(*from).ok()?..usize::try_from(*to).ok()?)?;
         if part != "_" {
-            named.push(format!("{name}={part}"));
+            rewritten.push(format!("{field}={part}"));
         }
     }
     let from = lexed.tokens.get(open)?.span.end;
-    Some(Edit { span: Span { start: base + from, end: base + close }, text: named.join(", ") })
+    Some(Edit { span: Span { start: base + from, end: base + close }, text: rewritten.join(", ") })
 }

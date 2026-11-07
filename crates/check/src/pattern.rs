@@ -120,54 +120,58 @@ impl FnCx<'_> {
                     self.bind_pattern(arg, &inner, span);
                 }
             }
-            Pattern::Variant { name, dotted, args, fields: named } => {
+            Pattern::Variant { dotted, .. } => {
                 let target = if matches!(subject, Type::Result(..)) && !dotted { &error } else { &value };
-                let owner = self.variant_owner(name, *dotted, target, span);
-                let names = owner.as_ref().map(|(owner, case)| self.field_names(owner, case.as_deref()));
-                let types = owner.as_ref().map(|(owner, case)| self.case_fields(owner, case.as_deref()));
-                if let Some((owner, _)) = &owner
-                    && named.is_empty()
-                    && !args.is_empty()
-                {
-                    self.positional_elsewhere(owner, name, names.as_deref().unwrap_or_default(), span);
-                }
-                if let Some(names) = &names
-                    && named.is_empty()
-                    && args.len() > names.len()
-                {
-                    let message = format!(
-                        "this pattern has {} parts, but the value has {} fields",
-                        args.len(),
-                        names.len()
-                    );
-                    self.error(Diagnostic::new(message, span));
-                }
-                // Where each part goes among the fields: by position, or by the name it's given.
-                let places: Vec<Option<usize>> = if named.is_empty() {
-                    (0..args.len()).map(Some).collect()
-                } else {
-                    named.iter().map(|field| self.named_place(name, field, names.as_deref(), span)).collect()
-                };
-                if !named.is_empty()
-                    && let Some(names) = &names
-                {
-                    self.checker.named_patterns.insert((span.start, span.end, name.clone()), names.clone());
-                }
-                let types = types.unwrap_or_default();
-                // A struct's or error's `_` fields can't be read from outside it, here either.
-                let private = self.checker.program.type_info(name).is_some_and(|_| !dotted);
-                for (arg, place) in args.iter().zip(places) {
-                    if private
-                        && let Some(field) =
-                            place.and_then(|at| names.as_ref().and_then(|names| names.get(at)))
-                        && !matches!(arg, Pattern::Wildcard)
-                    {
-                        self.private_member(name, &field.clone(), span);
-                    }
-                    let field = place.and_then(|at| types.get(at)).cloned().unwrap_or(Type::Unknown);
-                    self.bind_pattern(arg, &field, span);
-                }
+                self.bind_variant(pattern, target, span);
             }
+        }
+    }
+
+    /// `.Circle(r)`, `IoError(reason=why)` or `Point(x, _)`: each part bound to its field, found by
+    /// position or by the name it's given.
+    fn bind_variant(&mut self, pattern: &Pattern, target: &Type, span: Span) {
+        let Pattern::Variant { name, dotted, args, fields: given } = pattern else { return };
+        let dotted = *dotted;
+        let owner = self.variant_owner(name, dotted, target, span);
+        let fields = owner.as_ref().map(|(owner, case)| self.field_names(owner, case.as_deref()));
+        let types = owner.as_ref().map(|(owner, case)| self.case_fields(owner, case.as_deref()));
+        if let Some((owner, _)) = &owner
+            && given.is_empty()
+            && !args.is_empty()
+        {
+            self.positional_elsewhere(owner, name, fields.as_deref().unwrap_or_default(), span);
+        }
+        if let Some(fields) = &fields
+            && given.is_empty()
+            && args.len() > fields.len()
+        {
+            let message =
+                format!("this pattern has {} parts, but the value has {} fields", args.len(), fields.len());
+            self.error(Diagnostic::new(message, span));
+        }
+        // Where each part goes among the fields: by position, or by the name it's given.
+        let places: Vec<Option<usize>> = if given.is_empty() {
+            (0..args.len()).map(Some).collect()
+        } else {
+            given.iter().map(|field| self.named_place(name, field, fields.as_deref(), span)).collect()
+        };
+        if !given.is_empty()
+            && let Some(fields) = &fields
+        {
+            self.checker.named_patterns.insert((span.start, span.end, name.to_owned()), fields.clone());
+        }
+        let types = types.unwrap_or_default();
+        // A struct's or error's `_` fields can't be read from outside it, here either.
+        let private = self.checker.program.type_info(name).is_some_and(|_| !dotted);
+        for (arg, place) in args.iter().zip(places) {
+            if private
+                && let Some(field) = place.and_then(|at| fields.as_ref().and_then(|fields| fields.get(at)))
+                && !matches!(arg, Pattern::Wildcard)
+            {
+                self.private_member(name, &field.clone(), span);
+            }
+            let field = place.and_then(|at| types.get(at)).cloned().unwrap_or(Type::Unknown);
+            self.bind_pattern(arg, &field, span);
         }
     }
 

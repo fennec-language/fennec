@@ -11,3 +11,9 @@ extend dict[K: Hashable, V]:
         if key in self: return self[key]
         self[key] = default
         default
+
+    ## Takes `key` out, giving back its value, or `None` when it isn't there: `pop` for a key that
+    ## may be missing, as `get` is to `self[key]`.
+    def remove(ref self, key: K) -> V?:
+        if key not in self: return None
+        self.pop(key)

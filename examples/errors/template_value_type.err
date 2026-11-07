@@ -1,0 +1,5 @@
+error: this holds an int | str, not a float
+ --> examples/errors/template_value_type.fen:8:61
+  |
+8 |     stdout.print(count(t"select * from items where price < {price}"))
+  |                                                             ^^^^^

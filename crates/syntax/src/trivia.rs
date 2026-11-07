@@ -48,7 +48,7 @@ fn kind(tok: &Tok) -> TokenKind {
         Tok::Name(_) => TokenKind::Name,
         Tok::Int(_) | Tok::Float(_) | Tok::Duration(_) => TokenKind::Number,
         Tok::Str(_) => TokenKind::Str,
-        Tok::FStr(_) => TokenKind::FStr,
+        Tok::FStr(_) | Tok::TStr(_) => TokenKind::FStr,
         Tok::Kw(_) => TokenKind::Keyword,
         Tok::P(_) => TokenKind::Punct,
         Tok::Newline => TokenKind::Newline,

@@ -1,0 +1,35 @@
+## What a template string builds: `t"select * from users where name = {name}"` is a
+## `Template` holding the text between each `{}` and each value apart, never joined, as in
+## Python's PEP 750. Code that takes one, like a database's query, decides what each value
+## becomes, so a value can't change what the text means.
+##
+## There's always one more string than values: the text before each value, then the text after
+## the last. The text is `LiteralStr`s, which only text written in the source is, so a
+## `Template` can't be built from text made while the program runs.
+export struct Template[T]:
+    strings: list[LiteralStr]
+    values: list[T]
+    ## Each value's expression as it's written in the `{}`, like `name`.
+    expressions: list[str]
+    ## What's after a `:` in each `{}`, or `""`, like `.2f` in `{price:.2f}`.
+    format_specs: list[str]
+
+    ## Each value with how it was written.
+    def interpolations(self) -> list[Interpolation[T]]:
+        mut made = []
+        for at, value in enumerate(self.values):
+            expression = self.expressions[at]
+            made.append(
+                Interpolation(
+                    value=value,
+                    expression=expression,
+                    format_spec=self.format_specs[at],
+                ),
+            )
+        made
+
+## One `{}` of a template string: its value, its expression as written, and its format spec.
+export struct Interpolation[T]:
+    value: T
+    expression: str
+    format_spec: str

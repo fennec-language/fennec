@@ -403,7 +403,7 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
 impl Checked {
     /// The signatures, holding the type of every expression too, for compilers to use.
     fn into_signatures(self) -> Signatures {
-        Signatures { types: self.types, ..self.signatures }
+        Signatures { types: self.types, ..self.signatures }.without_literal()
     }
 
     /// Writes into `module`, a copy of the one checked, what `check_and_resolve` would, and gives
@@ -564,6 +564,27 @@ pub struct Enum {
 }
 
 impl Signatures {
+    /// The signatures with each `LiteralStr` written as the `str` it is to the engines: it's a
+    /// rule about where a value came from, checked already, not a type of its own when it runs.
+    fn without_literal(mut self) -> Signatures {
+        let plain = |ty: &mut Type| *ty = ty.without_literal();
+        for signature in self.functions.values_mut() {
+            signature.params.iter_mut().for_each(|param| plain(&mut param.ty));
+            plain(&mut signature.returns);
+        }
+        for each in self.structs.values_mut().chain(self.errors.values_mut()) {
+            each.fields.iter_mut().for_each(|(_, ty)| plain(ty));
+        }
+        for each in self.enums.values_mut() {
+            each.cases.iter_mut().flat_map(|(_, fields)| fields).for_each(|(_, ty)| plain(ty));
+        }
+        self.locals.values_mut().for_each(plain);
+        for body in self.types.functions.values_mut() {
+            body.exprs.values_mut().chain(body.names.values_mut()).for_each(plain);
+        }
+        self
+    }
+
     /// Whether `==` on values of this type calls a type's own `def ==`: its own, or one of a
     /// type it holds, in a field, an enum case or a collection.
     pub fn own_equality(&self, ty: &Type) -> bool {

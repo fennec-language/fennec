@@ -846,11 +846,12 @@ pub extern "C" fn int_power(a: i64, b: i64, start: i64, end: i64) -> i64 {
 /// The powers a program takes most, squares, square roots and reciprocals, are worked out
 /// directly: each is exact in IEEE 754, which `pow` only comes within a bit of, and several times
 /// quicker. They're chosen here, as the program runs, so `x ** 2.0` and `x ** two` give the same
-/// bits. Each keeps what `pow` gives at -0, at infinity and for NaN.
+/// bits. Each keeps what `pow` gives at -0, at infinity and for NaN. The exponent is matched by its
+/// bits, exactly.
 pub extern "C" fn float_power(a: f64, b: f64) -> f64 {
-    if b == 2.0 {
+    if b.to_bits() == (2.0_f64).to_bits() {
         a * a
-    } else if b == 0.5 {
+    } else if b.to_bits() == (0.5_f64).to_bits() {
         // `sqrt(-0)` is -0 and `sqrt(-inf)` is NaN, where `pow` gives +0 and +inf.
         if a == 0.0 {
             0.0
@@ -859,12 +860,12 @@ pub extern "C" fn float_power(a: f64, b: f64) -> f64 {
         } else {
             a.sqrt()
         }
-    } else if b == 1.0 {
+    } else if b.to_bits() == (1.0_f64).to_bits() {
         a
     } else if b == 0.0 {
         // Even of NaN, as `pow` has it.
         1.0
-    } else if b == -1.0 {
+    } else if b.to_bits() == (-1.0_f64).to_bits() {
         1.0 / a
     } else {
         libm::pow(a, b)

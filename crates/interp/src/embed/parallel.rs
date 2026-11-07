@@ -78,7 +78,7 @@ struct Run {
     /// What the ranges printed on workers, each range's whole, as they finish.
     printed: Mutex<Vec<u8>>,
     /// Says when the last range on the pool has finished, to the calling thread waiting for it.
-    done: pool::Latch,
+    done: Latch,
     /// A reduction's result, when its ranges ran on the pool: None if it failed.
     reduced: Mutex<Option<i64>>,
 }
@@ -127,7 +127,7 @@ impl Run {
             made: Mutex::new(Vec::new()),
             owners: Mutex::new(HashMap::new()),
             printed: Mutex::new(Vec::new()),
-            done: pool::Latch::one(),
+            done: Latch::one(),
             reduced: Mutex::new(None),
         }
     }
@@ -214,14 +214,14 @@ impl Run {
     }
 
     /// Starts a loop's or a comprehension's ranges on the pool, from the calling thread.
-    fn each_on_start(self: &Arc<Self>, pool: &'static pool::Pool, length: usize, leaf: Leaf) {
+    fn each_on_start(self: &Arc<Self>, pool: &'static Pool, length: usize, leaf: Leaf) {
         let run = Arc::clone(self);
         pool.push(Box::new(move || run.each_on(pool, (0, length), leaf)));
     }
 
     /// Runs one range of a call on the pool: halving it as `each` does, it hands each right half
     /// to the pool and goes on with the left, so the ranges are the same as on one thread.
-    fn each_on(self: &Arc<Self>, pool: &'static pool::Pool, (from, mut to): (usize, usize), leaf: Leaf) {
+    fn each_on(self: &Arc<Self>, pool: &'static Pool, (from, mut to): (usize, usize), leaf: Leaf) {
         while to - from > self.chunk && from <= self.stop.load(Ordering::Relaxed) {
             let middle = from + (to - from) / 2;
             self.done.more();
@@ -246,7 +246,7 @@ impl Run {
     /// as on one thread.
     fn reduce_on(
         self: &Arc<Self>,
-        pool: &'static pool::Pool,
+        pool: &'static Pool,
         (from, mut to): (usize, usize),
         mut up: Option<(Arc<Node>, usize)>,
         steps: (ReduceBody, Combine, i64),
@@ -388,7 +388,7 @@ fn alone(mut run: Arc<Run>) -> Run {
 /// with the call's ranges to finish.
 fn reduce_on_pool(
     run: Run,
-    pool: &'static pool::Pool,
+    pool: &'static Pool,
     length: usize,
     steps: (ReduceBody, Combine, i64),
 ) -> (Option<i64>, Run) {
@@ -528,6 +528,12 @@ mod stream;
 
 pub use stream::{parallel_stream, stream_end, stream_next};
 
+#[cfg(test)]
+pub(in crate::embed) use pool::with_setup;
+#[cfg(not(any(test, feature = "threads")))]
+use pool::{Latch, Pool};
+#[cfg(any(test, feature = "threads"))]
+pub(in crate::embed) use pool::{Latch, Pool, for_server};
 #[cfg(any(test, feature = "threads"))]
 pub use pool::{has_worker_setup, run_worker_setup};
 pub use pool::{set_worker_setup, stack_limit};

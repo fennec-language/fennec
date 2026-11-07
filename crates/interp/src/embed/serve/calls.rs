@@ -8,7 +8,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::num::NonZero;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -66,23 +65,16 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
         CONNS.with_borrow_mut(|conns| conns.remove(&handle));
         result
     });
-    let wanted = std::env::var("FENNEC_THREADS").ok().and_then(|threads| threads.trim().parse().ok());
-    let workers = wanted
-        .filter(|workers| *workers > 0)
-        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, NonZero::get));
-    let setup: Arc<dyn Fn() + Send + Sync> = Arc::new(super::super::parallel::run_worker_setup);
+    let Some(pool) = super::super::parallel::for_server() else {
+        return fail("couldn't serve: this program has no workers to serve on".to_owned());
+    };
     let started = |stopper| STOPPERS.lock().unwrap_or_else(PoisonError::into_inner).push(stopper);
     super::super::write_kept_output();
     let lent = threads::lend();
-    let outcome = super::serve(listener, workers, &setup, Some(&lent), &handler, started);
+    let finished = super::serve(listener, pool, Some(&lent), &handler, started);
     threads::take_back(lent);
-    match outcome {
-        Ok(finished) => {
-            threads::settle(finished.owners);
-            0
-        }
-        Err(error) => fail(format!("couldn't serve: {error}")),
-    }
+    threads::settle(finished.owners);
+    0
 }
 
 /// Runs `call` on a served connection taken out of the table, so nothing stays borrowed while

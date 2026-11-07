@@ -23,13 +23,15 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{ErrorKind, Read as _, Write as _};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use fennec_parked::{Scheduler, Step, TaskId, Wake};
 use mio::net::{TcpListener, TcpStream};
-use mio::{Events, Interest, Poll, Registry, Token, Waker};
+use mio::{Events, Interest, Poll, Registry, Token};
+
+use super::parallel::{Latch, Pool};
 
 /// A connection task's stack. Only the pages a task touches take memory.
 const STACK: usize = 1024 * 1024;
@@ -38,9 +40,12 @@ const STACK: usize = 1024 * 1024;
 const READY: u64 = 0;
 const TIMED_OUT: u64 = 1;
 
-/// The listener's and the waker's tokens; connections count up from 0.
-const LISTENER: Token = Token(usize::MAX - 1);
-const WAKER: Token = Token(usize::MAX - 2);
+/// The workers' wakers' token, and the listeners' below it, one for each of up to `SERVERS`
+/// servers running at once; connections count up from 0, below them all.
+pub(in crate::embed) const WAKER: Token = Token(usize::MAX - 2);
+const LISTENERS: usize = usize::MAX - 3;
+const SERVERS: u64 = 4096;
+const CONNECTIONS: usize = LISTENERS - 4096;
 
 /// Waits that blocked their thread because they couldn't park, for `FENNEC_COUNTS`.
 static BLOCKED_WAITS: AtomicU64 = AtomicU64::new(0);
@@ -148,7 +153,7 @@ impl Conn {
     /// Takes a connection, registering it with this thread's poll when this is an I/O worker.
     pub fn new(mut stream: TcpStream) -> Conn {
         let token = Token(NEXT_TOKEN.get());
-        NEXT_TOKEN.set(token.0.wrapping_add(1) % WAKER.0);
+        NEXT_TOKEN.set(token.0.wrapping_add(1) % CONNECTIONS);
         let registered = REGISTRY.with_borrow(|registry| {
             registry.as_ref().is_some_and(|registry| {
                 registry.register(&mut stream, token, Interest::READABLE | Interest::WRITABLE).is_ok()
@@ -307,23 +312,6 @@ fn warn_once(call: &'static str) {
 /// which ends only that connection.
 pub type Handler = Arc<dyn Fn(Conn) -> i64 + Send + Sync>;
 
-/// Connections handed to a worker, and how to wake it to take them.
-struct Inbox {
-    new: Mutex<Vec<TcpStream>>,
-    waker: Waker,
-}
-
-impl Inbox {
-    fn give(&self, stream: TcpStream) {
-        self.new.lock().unwrap_or_else(PoisonError::into_inner).push(stream);
-        let _ = self.waker.wake();
-    }
-
-    fn take(&self) -> Vec<TcpStream> {
-        std::mem::take(&mut *self.new.lock().unwrap_or_else(PoisonError::into_inner))
-    }
-}
-
 /// What a server's run came to.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Served {
@@ -334,56 +322,141 @@ pub struct Served {
     pub owners: HashMap<u64, i64>,
 }
 
-/// One I/O worker: its poll, its tasks, and which task waits on which connection.
-struct Worker {
+impl Served {
+    fn add(&mut self, theirs: Served) {
+        self.connections += theirs.connections;
+        self.failed += theirs.failed;
+        for (address, by) in theirs.owners {
+            *self.owners.entry(address).or_default() += by;
+        }
+    }
+}
+
+/// Numbers servers apart, for their listeners' tokens and their tasks.
+static NEXT_SERVER: AtomicU64 = AtomicU64::new(0);
+
+/// One server, shared by every worker serving it.
+struct Server {
+    id: u64,
+    handler: Handler,
+    /// What the thread serving it lends its tasks.
+    lent: Option<Arc<super::table::Table>>,
+    /// Which worker the next connection goes to, in turn.
+    next: AtomicUsize,
+    /// What each worker served, added in as it leaves, and the count of those still serving.
+    total: Mutex<Served>,
+    left: Latch,
+}
+
+impl Server {
+    /// Its listener's token: counting down from below the waker's, which connections' never reach.
+    fn token(&self) -> Token {
+        Token(LISTENERS - usize::try_from(self.id % SERVERS).unwrap_or(0))
+    }
+}
+
+/// What a worker keeps of a server it serves.
+struct Here {
+    server: Arc<Server>,
+    /// Its listener, on the one worker that accepts for it.
+    listener: Option<TcpListener>,
+    tasks: HashSet<TaskId>,
+    served: Served,
+}
+
+/// What a pool worker serves: its poll, its tasks, which task waits on which connection, and the
+/// servers it's part of. It's the worker's own, so its tasks and what they make stay on it.
+pub(in crate::embed) struct Io {
     poll: Poll,
-    inbox: Arc<Inbox>,
+    events: Events,
+    pool: &'static Pool,
+    at: usize,
     scheduler: Scheduler,
     /// The task parked on each connection's token, and when its wait gives up.
     waiting: HashMap<usize, (TaskId, Interest, Option<Instant>)>,
     ready: VecDeque<(TaskId, Wake)>,
-    served: Served,
+    /// Which server each task serves a connection of.
+    owners: HashMap<TaskId, u64>,
+    servers: HashMap<u64, Here>,
 }
 
-/// A worker's poll and inbox, made before its thread starts so others can hand it connections.
-struct Waiting {
-    poll: Poll,
-    inbox: Arc<Inbox>,
-}
-
-impl Waiting {
-    fn new() -> std::io::Result<Waiting> {
-        let poll = Poll::new()?;
-        let waker = Waker::new(poll.registry(), WAKER)?;
-        Ok(Waiting { poll, inbox: Arc::new(Inbox { new: Mutex::new(Vec::new()), waker }) })
-    }
-}
-
-impl Worker {
-    /// The worker, made on its own thread, since its tasks stay there.
-    fn new(waiting: Waiting) -> Worker {
-        Worker {
-            poll: waiting.poll,
-            inbox: waiting.inbox,
+impl Io {
+    /// A worker's, on its own thread, with the poll its waker was made with.
+    pub(in crate::embed) fn new(poll: Poll, workers: &'static Pool, at: usize) -> Io {
+        REGISTRY.set(poll.registry().try_clone().ok());
+        Io {
+            poll,
+            events: Events::with_capacity(1024),
+            pool: workers,
+            at,
             scheduler: Scheduler::new(STACK),
             waiting: HashMap::new(),
             ready: VecDeque::new(),
-            served: Served::default(),
+            owners: HashMap::new(),
+            servers: HashMap::new(),
         }
     }
 
-    /// Makes a task for a connection, ready to start.
-    fn take(&mut self, stream: TcpStream, handler: &Handler) {
-        let handler = Arc::clone(handler);
+    /// Whether it serves anything, so its poll has to be looked at between jobs.
+    pub(in crate::embed) fn active(&self) -> bool {
+        !self.servers.is_empty()
+    }
+
+    /// Whether a task is ready to run.
+    pub(in crate::embed) fn has_ready(&self) -> bool {
+        !self.ready.is_empty()
+    }
+
+    /// Joins a server: its tasks can read what's lent, and the worker given its listener accepts.
+    fn join(&mut self, server: Arc<Server>, mut listener: Option<TcpListener>) {
+        super::threads::serving_starts(server.lent.clone());
+        if let Some(listener) = &mut listener
+            && self.poll.registry().register(listener, server.token(), Interest::READABLE).is_err()
+        {
+            // Nothing accepts, so nothing's served: it stops only when it's stopped.
+            return;
+        }
+        let id = server.id;
+        self.servers.insert(id, Here { server, listener, tasks: HashSet::new(), served: Served::default() });
+    }
+
+    /// Leaves a server: its tasks here are cancelled, each told, ending and closing its
+    /// connection, and what this worker served goes into the server's total.
+    fn leave(&mut self, id: u64) {
+        let Some(mut here) = self.servers.remove(&id) else { return };
+        self.waiting.retain(|_, (task, ..)| !here.tasks.contains(task));
+        self.ready.retain(|(task, _)| !here.tasks.contains(task));
+        for task in here.tasks.drain() {
+            self.owners.remove(&task);
+            let _ = self.scheduler.cancel(task);
+        }
+        if let Some(listener) = &mut here.listener {
+            let _ = self.poll.registry().deregister(listener);
+        }
+        let (owners, _) = super::threads::serving_ends();
+        here.served.owners.extend(owners);
+        here.server.total.lock().unwrap_or_else(PoisonError::into_inner).add(here.served);
+        here.server.left.finished();
+    }
+
+    /// Makes a task for a connection of the server `id`, ready to start.
+    fn take(&mut self, stream: TcpStream, id: u64) {
+        let Some(here) = self.servers.get_mut(&id) else { return };
+        let handler = Arc::clone(&here.server.handler);
         let made = self.scheduler.spawn(move || handler(Conn::new(stream)));
         if let Ok(task) = made {
-            self.served.connections += 1;
+            here.served.connections += 1;
+            here.tasks.insert(task);
+            self.owners.insert(task, id);
             self.ready.push_back((task, Wake::Ready(READY)));
         }
     }
 
     /// Runs every task that's ready until each parks or ends.
-    fn run_ready(&mut self) {
+    pub(in crate::embed) fn run_ready(&mut self) {
+        if self.ready.is_empty() {
+            return;
+        }
         while let Some((task, wake)) = self.ready.pop_front() {
             match self.scheduler.resume(task, wake) {
                 Step::Parked(token) => {
@@ -391,13 +464,13 @@ impl Worker {
                     let (interest, deadline) = PARKING.take().unwrap_or((Interest::READABLE, None));
                     self.waiting.insert(token, (task, interest, deadline));
                 }
-                Step::Done(0) | Step::Unknown => {}
+                Step::Done(0) | Step::Unknown => self.ended(task, false),
                 Step::Done(_) => {
-                    self.served.failed += 1;
+                    self.ended(task, true);
                     // A failure ends only its connection, which says why, and the runtime's record
-                    // of it goes.
-                    // A task that failed holding a lock leaves what it guards half changed, and others waiting
-                    // for it, so the program ends rather than only this task.
+                    // of it goes. A task that failed holding a lock leaves what it guards half
+                    // changed, and others waiting for it, so the program ends rather than only
+                    // this task.
                     if super::threads::holds_locks() {
                         super::aot::stop_for_failure();
                     }
@@ -405,20 +478,75 @@ impl Worker {
                 }
             }
         }
+        // What the tasks that just ran printed comes out before this worker goes on.
+        super::write_kept_output();
+    }
+
+    /// Notes that a task ended, failed or not.
+    fn ended(&mut self, task: TaskId, failed: bool) {
+        let Some(id) = self.owners.remove(&task) else { return };
+        if let Some(here) = self.servers.get_mut(&id) {
+            here.tasks.remove(&task);
+            here.served.failed += u64::from(failed);
+        }
     }
 
     /// How long until the soonest wait gives up.
-    fn timeout(&self) -> Option<Duration> {
+    pub(in crate::embed) fn timeout(&self) -> Option<Duration> {
         let soonest = self.waiting.values().filter_map(|(_, _, deadline)| *deadline).min()?;
         Some(soonest.saturating_duration_since(Instant::now()))
+    }
+
+    /// Looks at the poll without waiting, when this worker serves anything.
+    pub(in crate::embed) fn poll_now(&mut self) {
+        if self.active() {
+            self.poll(Some(Duration::ZERO));
+        }
+    }
+
+    /// Waits on the poll up to `timeout`, or until its waker is woken: then accepts what's
+    /// waiting on its listeners, and wakes the tasks whose sockets are ready or whose waits
+    /// have timed out.
+    pub(in crate::embed) fn poll(&mut self, timeout: Option<Duration>) {
+        if self.poll.poll(&mut self.events, timeout).is_err() {
+            // Interrupted, or the poll's gone wrong: either way, the next turn looks again.
+            return;
+        }
+        let listening: Vec<u64> = self
+            .servers
+            .iter()
+            .filter(|(_, here)| here.listener.is_some())
+            .filter(|(_, here)| self.events.iter().any(|event| event.token() == here.server.token()))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in listening {
+            self.accept(id);
+        }
+        self.wake();
+    }
+
+    /// Takes every connection waiting on the server `id`'s listener, handing them out in turn
+    /// to the pool's workers, this one among them.
+    fn accept(&mut self, id: u64) {
+        let workers = self.pool.threads().max(1);
+        loop {
+            let Some(here) = self.servers.get(&id) else { return };
+            let Some(Ok((stream, _))) = here.listener.as_ref().map(TcpListener::accept) else { return };
+            let to = here.server.next.fetch_add(1, Ordering::Relaxed) % workers;
+            if to == self.at {
+                self.take(stream, id);
+            } else {
+                self.pool.run_on(to, Box::new(move |io: &mut Io| io.take(stream, id)));
+            }
+        }
     }
 
     /// Wakes the tasks whose sockets are ready for what they wait for, and those whose waits
     /// have timed out. An event for something else, like a socket ready to write to while its
     /// task waits to read, leaves the task parked: woken, it would only find it would block
     /// and wait again.
-    fn wake(&mut self, events: &Events) {
-        for event in events {
+    fn wake(&mut self) {
+        for event in &self.events {
             let token = event.token().0;
             let wanted = self.waiting.get(&token).is_some_and(|(_, interest, _)| {
                 let gone = event.is_error() || event.is_read_closed() || event.is_write_closed();
@@ -448,129 +576,52 @@ impl Worker {
             }
         }
     }
-
-    /// Runs this worker until `stop` is set, accepting from `listener` when it's given one and
-    /// handing connections out in turn to `others` and itself.
-    fn run(
-        mut self,
-        listener: Option<TcpListener>,
-        others: &[Arc<Inbox>],
-        handler: &Handler,
-        stop: &AtomicBool,
-    ) -> std::io::Result<Served> {
-        REGISTRY.set(Some(self.poll.registry().try_clone()?));
-        let mut listener = listener;
-        if let Some(listener) = &mut listener {
-            self.poll.registry().register(listener, LISTENER, Interest::READABLE)?;
-        }
-        let mut events = Events::with_capacity(1024);
-        let mut turn = 0;
-        while !stop.load(Ordering::Acquire) {
-            for stream in self.inbox.take() {
-                self.take(stream, handler);
-            }
-            self.run_ready();
-            // What the tasks that just ran printed comes out before this worker waits.
-            super::write_kept_output();
-            let waited = self.poll.poll(&mut events, self.timeout());
-            if let Err(error) = waited
-                && error.kind() != ErrorKind::Interrupted
-            {
-                return Err(error);
-            }
-            if let Some(listener) = &listener
-                && events.iter().any(|event| event.token() == LISTENER)
-            {
-                while let Ok((stream, _)) = listener.accept() {
-                    turn = (turn + 1) % (others.len() + 1);
-                    match others.get(turn) {
-                        Some(inbox) => inbox.give(stream),
-                        None => self.take(stream, handler),
-                    }
-                }
-            }
-            self.wake(&events);
-        }
-        // Stopping cancels what's left: each task is told, ends, and closes its connection.
-        let served = std::mem::take(&mut self.served);
-        self.waiting.clear();
-        drop(self.scheduler);
-        REGISTRY.set(None);
-        Ok(served)
-    }
 }
 
 /// A server that's running: stop it to have its workers cancel their tasks and finish.
 pub struct Stopper {
-    stop: Arc<AtomicBool>,
-    wakers: Vec<Arc<Inbox>>,
+    server: Arc<Server>,
+    pool: &'static Pool,
 }
 
 impl Stopper {
     pub fn stop(&self) {
-        self.stop.store(true, Ordering::Release);
-        for inbox in &self.wakers {
-            let _ = inbox.waker.wake();
+        let id = self.server.id;
+        for at in 0..self.pool.threads() {
+            self.pool.run_on(at, Box::new(move |io: &mut Io| io.leave(id)));
         }
     }
 }
 
-/// Serves `listener` on `workers` I/O workers of their own, running `handler` on each connection as
-/// a parked task, while this thread waits. Each worker runs `setup` first, to start a runtime of its
-/// own, and can read what's `lent`. `started` is given a `Stopper` once the server is running, and
-/// the server runs until it's stopped.
+/// Serves `listener` on `pool`'s workers, running `handler` on each connection as a parked task,
+/// while this thread waits. The workers' tasks can read what's `lent`. `started` is given a
+/// `Stopper` once the server is running, and the server runs until it's stopped.
 pub(super) fn serve(
     listener: TcpListener,
-    workers: usize,
-    setup: &Arc<dyn Fn() + Send + Sync>,
+    pool: &'static Pool,
     lent: Option<&Arc<super::table::Table>>,
     handler: &Handler,
     started: impl FnOnce(Stopper),
-) -> std::io::Result<Served> {
-    let stop = Arc::new(AtomicBool::new(false));
-    let first = Waiting::new()?;
-    let mut others = Vec::new();
-    for _ in 1..workers.max(1) {
-        others.push(Waiting::new()?);
+) -> Served {
+    let workers = pool.threads();
+    let server = Arc::new(Server {
+        id: NEXT_SERVER.fetch_add(1, Ordering::Relaxed),
+        handler: Arc::clone(handler),
+        lent: lent.cloned(),
+        next: AtomicUsize::new(0),
+        total: Mutex::new(Served::default()),
+        left: Latch::of(workers),
+    });
+    // The worker that accepts joins last, so every other worker has joined before it hands one
+    // a connection: each worker takes what it's given in turn.
+    let mut listener = Some(listener);
+    for at in (1..workers).chain([0]) {
+        let (joining, given) = (Arc::clone(&server), if at == 0 { listener.take() } else { None });
+        pool.run_on(at, Box::new(move |io: &mut Io| io.join(joining, given)));
     }
-    let inboxes: Vec<Arc<Inbox>> = others.iter().map(|worker| Arc::clone(&worker.inbox)).collect();
-    let mut wakers = inboxes.clone();
-    wakers.push(Arc::clone(&first.inbox));
-    started(Stopper { stop: Arc::clone(&stop), wakers });
-    let mut starting = vec![(first, Some(listener))];
-    starting.extend(others.into_iter().map(|waiting| (waiting, None)));
-    let threads: Vec<_> = starting
-        .into_iter()
-        .map(|(waiting, listener)| {
-            let (setup, handler, stop) = (Arc::clone(setup), Arc::clone(handler), Arc::clone(&stop));
-            let (inboxes, lent) = (inboxes.clone(), lent.cloned());
-            std::thread::spawn(move || {
-                super::threads::take_index();
-                setup();
-                super::threads::serving_starts(lent);
-                let served = Worker::new(waiting).run(listener, &inboxes, &handler, &stop);
-                let (owners, _) = super::threads::range_ends();
-                super::finish();
-                served.map(|served| Served { owners: owners.into_iter().collect(), ..served })
-            })
-        })
-        .collect();
-    let mut served = Served::default();
-    let mut failed = None;
-    for thread in threads {
-        match thread.join() {
-            Ok(Ok(theirs)) => {
-                served.connections += theirs.connections;
-                served.failed += theirs.failed;
-                for (address, by) in theirs.owners {
-                    *served.owners.entry(address).or_default() += by;
-                }
-            }
-            Ok(Err(error)) => failed = Some(error),
-            Err(_) => failed = Some(std::io::Error::other("a server's worker stopped")),
-        }
-    }
-    failed.map_or(Ok(served), Err)
+    started(Stopper { server: Arc::clone(&server), pool });
+    server.left.wait();
+    std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
 mod calls;

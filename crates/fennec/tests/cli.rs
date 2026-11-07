@@ -411,7 +411,7 @@ def main(stdout: Stdout, fs: Fs):
 const PROGRAM_WITH_FILES: &str = r#"from std.path import Path
 
 def main(stdout: Stdout, fs: Fs):
-    slots = Path("saves") / "slots"
+    slots = Path(text="saves") / "slots"
     stdout.print(fs.make_dir(slots), fs.make_dir(slots), fs.exists(slots))
     fs.write_text(slots / "b.txt", "bee")?
     fs.write_text("saves/slots/a.txt", "ay")?
@@ -1442,6 +1442,26 @@ fn fix_names_the_fields_a_pattern_matches_in_another_kits_type() {
     assert!(written.contains("case Err(IoError(reason=why)):"), "{written}");
     assert!(written.contains("case Err(IoError()):"), "{written}");
     assert_eq!(text(&ran.stdout), "True\nfailed\n", "{}", text(&ran.stderr));
+}
+
+/// `fennec fix` names the fields of another kit's type built by position.
+#[test]
+fn fix_names_the_fields_another_kits_type_is_built_with() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-named-build", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("build.fen");
+    std::fs::write(&program, "from std.path import Path\n\ndef main(stdout: Stdout):\n    stdout.print(Path(\"a\") / \"b\", ParseError(\"bad\", 1, column=2).line)\n").unwrap();
+    let path = program.to_string_lossy().into_owned();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    let ran = fennec(&["run", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert!(
+        written.contains("Path(text=\"a\") / \"b\", ParseError(message=\"bad\", line=1, column=2)"),
+        "{written}"
+    );
+    assert_eq!(text(&ran.stdout), "Path(text=\"a/b\") 1\n", "{}", text(&ran.stderr));
 }
 
 /// Enums with a case in common, which only the expected type can tell apart, and an error.

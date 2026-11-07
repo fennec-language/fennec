@@ -42,7 +42,7 @@ fn removing_from_an_id_map_might_find_nothing() {
 fn builtins_give_back_their_types() {
     plus_one("", "ignore([1].index(1), 'fine')", "can't use `+` on nothing and an int");
     plus_one("", "Ok(1)", "this is the result of something that can fail");
-    plus_one("", "Err(IoError('x'))", "this is the result of something that can fail");
+    plus_one("", "Err(IoError(reason='x'))", "this is the result of something that can fail");
     plus_one("", "list(set([1.5]))[0]", "can't mix int and float in `+`");
     assert_eq!(in_main("stdout.print(list(set())[0] + 1)"), Vec::<String>::new());
 }
@@ -135,7 +135,7 @@ fn plus_one_imported(setup: &str, expression: &str, expected: &str) {
 
 #[test]
 fn standard_library_methods_give_back_their_types() {
-    let setup = "mut rng = Random(seed=1)\nword = Regex(r'\\w+')\nmut queue = Deque()";
+    let setup = "mut rng = Random(seed=1)\nword = Regex(pattern=r'\\w+')\nmut queue = Deque()";
     plus_one_imported(setup, "rng.randint(1, 6) / 2", "can't mix int and float in `+`");
     plus_one_imported(setup, "rng.random()", "can't mix int and float in `+`");
     plus_one_imported(setup, "random_int(1, 2, 3, 4)", "can't use `+` on a tuple and an int");
@@ -191,7 +191,7 @@ fn every_modules_names_have_to_be_imported() {
     let program = "
         position = Vec3(x=1.0)
         mut pool = Table[int]()
-        stdout.print(sqrt(2.0), PI, floor(1.5), Path('a'), SoaList[int]())
+        stdout.print(sqrt(2.0), PI, floor(1.5), Path(text='a'), SoaList[int]())
     ";
     assert_eq!(
         in_main(program),
@@ -238,7 +238,7 @@ fn capabilities_and_errors_need_no_import() {
                 case IoError(reason=reason): reason
 
         def main(stdout: Stdout, fs: Fs, clock: Clock):
-            stdout.print(read(fs, 'a.txt'), InvalidValue('no'), ParseError('no', 1, 1), clock.now())
+            stdout.print(read(fs, 'a.txt'), InvalidValue(message='no'), ParseError(message='no', line=1, column=1), clock.now())
     ";
     assert_eq!(problems(program), Vec::<String>::new());
 }
@@ -351,20 +351,23 @@ fn arguments_and_input_are_text() {
 
 #[test]
 fn a_regex_search_might_find_nothing() {
-    let program = "stdout.print(Regex(r'a').search('b').text)";
-    assert_eq!(in_main_after(IMPORTS, program), ["this might be None @ Regex(r\"a\").search(\"b\").text"]);
+    let program = "stdout.print(Regex(pattern=r'a').search('b').text)";
+    assert_eq!(
+        in_main_after(IMPORTS, program),
+        ["this might be None @ Regex(pattern=r\"a\").search(\"b\").text"]
+    );
 }
 
 #[test]
 fn patterns_written_in_the_program_are_checked() {
     assert_eq!(
-        in_main_after(IMPORTS, "stdout.print(Regex(r'(a'))"),
+        in_main_after(IMPORTS, "stdout.print(Regex(pattern=r'(a'))"),
         ["this pattern isn't valid: this `(` is never closed @ r\"(a\""]
     );
     // A pattern made while the program runs might not be valid, so making it can fail.
     assert_eq!(
-        in_main_after(IMPORTS, "stdout.print(Regex('(' + 'a').search('a'))"),
-        ["this is the result of something that can fail @ Regex(\"(\" + \"a\")"]
+        in_main_after(IMPORTS, "stdout.print(Regex(pattern='(' + 'a').search('a'))"),
+        ["this is the result of something that can fail @ Regex(pattern=\"(\" + \"a\")"]
     );
 }
 

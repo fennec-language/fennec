@@ -122,9 +122,9 @@ fn json_and_toml_are_called_the_right_way() {
 #[test]
 fn paths_have_their_methods() {
     let program = "
-        p = Path('saves') / 'slot1.json'
+        p = Path(text='saves') / 'slot1.json'
         stdout.print(p.name() + 1, p.parent().text, p.extension(), p.stem(), p.normalize())
-        stdout.print(p.join(1), Path(1), p.size())
+        stdout.print(p.join(1), Path(text=1), p.size())
     ";
     assert_eq!(
         with_imports("from std.path import Path", program),
@@ -140,13 +140,13 @@ fn paths_have_their_methods() {
 #[test]
 fn modules_are_imported_whole() {
     let program = "
-        stdout.print(json.dumps(json.loads[int]('1')?), toml.dumps({'a': 1}), path.Path('a').name())
+        stdout.print(json.dumps(json.loads[int]('1')?), toml.dumps({'a': 1}), path.Path(text='a').name())
         stdout.print(math.sqrt(2.0) + math.PI)
     ";
     let imports = "from std import json, toml, path, math";
     assert_eq!(with_imports(imports, program), Vec::<String>::new());
     let program = "
-        stdout.print(json.parse('1'), json, json.dumps(1) + 1, path.Path(1))
+        stdout.print(json.parse('1'), json, json.dumps(1) + 1, path.Path(text=1))
     ";
     assert_eq!(
         with_imports("from std import json, path", program),

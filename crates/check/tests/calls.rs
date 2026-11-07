@@ -321,9 +321,9 @@ fn builtin_types_are_built_the_right_way() {
     let program = "
         a = Table[Enemy]()
         b = SoaList[Enemy]()
-        c = Path('/tmp')
+        c = Path(text='/tmp')
         d = Table(1)
-        e = Path(1)
+        e = Path(text=1)
         f = Id()
     ";
     let imports =
@@ -334,6 +334,41 @@ fn builtin_types_are_built_the_right_way() {
             "`Table` was called with the wrong arguments @ Table(1)",
             "`text` should be a str, but this is an int @ 1",
             "`Id` was called with the wrong arguments @ Id()",
+        ]
+    );
+}
+
+/// Another kit's type is built with its fields named, so a field added to it with a default,
+/// anywhere among its fields, never breaks the call. A kit's own types still take them by
+/// position.
+#[test]
+fn another_kits_type_is_built_with_its_fields_named() {
+    let program = "
+from std.path import Path
+
+struct Mine:
+    a: int
+    b: str
+
+def main(stdout: Stdout):
+    stdout.print(Path('assets'), Path(text='assets'), Mine(1, 'b'), ParseError('bad', 1, column=2))
+";
+    let found: Vec<String> = problems(program)
+        .iter()
+        .map(|problem| problem.split(" @ ").next().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(
+        found,
+        [
+            "`Path` comes from another kit, so it's built with its fields named",
+            "`ParseError` comes from another kit, so it's built with its fields named",
+        ]
+    );
+    assert_eq!(
+        helps(program),
+        [
+            "write `Path(text=...)`, and a field added to it never breaks this; `fennec fix` adds the names",
+            "write `ParseError(message=..., line=..., column=...)`, and a field added to it never breaks this; `fennec fix` adds the names",
         ]
     );
 }

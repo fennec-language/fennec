@@ -1,0 +1,7 @@
+error: `Path` comes from another kit, so it's built with its fields named
+ --> examples/errors/positional_build.fen:5:18
+  |
+5 |     stdout.print(Path("assets") / "fox.png")
+  |                  ^^^^^^^^^^^^^^
+  |
+  = help: write `Path(text=...)`, and a field added to it never breaks this; `fennec fix` adds the names

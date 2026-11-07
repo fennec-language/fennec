@@ -1047,7 +1047,10 @@ impl FnCx<'_> {
         if !elsewhere || span.in_prelude() || args.iter().all(|arg| arg.name.is_some()) {
             return;
         }
-        let each: Vec<String> = fields.iter().map(|field| format!("{}=...", field.name)).collect();
+        // The fields it needs, or the first, when every field has a default.
+        let needed: Vec<&Field> = fields.iter().filter(|field| field.default.is_none()).collect();
+        let shown = if needed.is_empty() { fields.iter().take(1).collect() } else { needed };
+        let each: Vec<String> = shown.iter().map(|field| format!("{}=...", field.name)).collect();
         let message = format!("`{display}` comes from another kit, so it's built with its fields named");
         let help = format!(
             "write `{display}({})`, and a field added to it never breaks this; `fennec fix` adds the names",

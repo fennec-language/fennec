@@ -219,7 +219,7 @@ export def best(scores: list[Score]) -> int:
 - A `_name` field or method of a `struct` or `shared` is hidden from everything but its type's own methods. Tests get no special access. Built.
 - A top-level name never starts with `_`, since it's already private to its kit. That's a compile error, and `fennec fix` renames it everywhere. The standard library follows the same rule. Built.
 - Other kits match an exported type's fields by name: `case IoError(reason=r)`, `case Point(x=a, y=_)`, or `case IoError()` to match it without reading a field. Matching another kit's type by position is a compile error, and `fennec fix` adds the names. A kit's own code can still match by position, and cases with no fields, like `.Wait`, are unchanged. Built for the standard library's types.
-- Other kits build an exported type with named arguments only. Not built yet.
+- Other kits build an exported type with its fields named, as in `Path(text="assets")`, and `fennec fix` adds the names. A kit's own code can still give them by position. Built for the standard library's types.
 - The automatic constructor sets the public fields, and `_` fields take their defaults. A `_` field with no default needs a named constructor, and a type nobody can build is a compile error. Not built yet.
 - So a kit can add a field with a default to a type it exports, and no other kit's code that builds or matches it breaks.
 

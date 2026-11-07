@@ -1,0 +1,5 @@
+# Another kit's type is built with its fields named, so a field it adds never breaks this.
+from std.path import Path
+
+def main(stdout: Stdout):
+    stdout.print(Path("assets") / "fox.png")

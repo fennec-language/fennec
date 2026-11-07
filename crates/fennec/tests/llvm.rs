@@ -2348,7 +2348,7 @@ def main(stdout: Stdout):
     bag.numbers.sort()
     stdout.print(bag)
     stdout.print(name(True), name(False))
-    mut random = Random(7)
+    mut random = Random(seed=7)
     stdout.print(random.choice([1, 2, 3, 4]), random.choice(["a", "b", "a string long enough to be a block"]), random.choice([1.5, 2.5]))
     stdout.print(random.choice([(1, "one"), (2, "two")]))
 "#,
@@ -3814,18 +3814,18 @@ fn regexes_match_the_jit() -> std::io::Result<()> {
         r#"from std.re import Regex, is_regex
 
 def main(stdout: Stdout):
-    words = Regex(r"(\w)(\w*)")
+    words = Regex(pattern=r"(\w)(\w*)")
     for found in words.find_all("fox and éclair"):
         stdout.print(found.text, found.start, found.end, found.groups.len(), found.groups[0], found.groups[1])
-    optional = Regex(r"a(x)?b")
+    optional = Regex(pattern=r"a(x)?b")
     for found in optional.find_all("ab axb"):
         stdout.print(found.text, found.groups[0] is None)
-    stdout.print(words.replace("fox den", r"\2\1"), Regex(" +").split("a  b c").len())
+    stdout.print(words.replace("fox den", r"\2\1"), Regex(pattern=" +").split("a  b c").len())
     stdout.print(is_regex("("), is_regex("a+"))
-    first = Regex(r"\d+").search("ab 42 7")
+    first = Regex(pattern=r"\d+").search("ab 42 7")
     if first is not None:
         stdout.print(first.text, first.start)
-    stdout.print(Regex(r"\d+").match("ab 42") is None)
+    stdout.print(Regex(pattern=r"\d+").match("ab 42") is None)
 "#,
     )
 }
@@ -9415,7 +9415,7 @@ def main(stdout: Stdout):
     stdout.print(int("12") else 0, int("x") else -1, float("0.5") else 0.0, float("y") else -1.5)
     stdout.print(add("1", b="2") else -1, add("1", b="two") else -1)
     for pattern in ["[0-9]+", "[0-9+"]:
-        match Regex(pattern):
+        match Regex(pattern=pattern):
             case Ok(regex):
                 stdout.print(regex.pattern)
             case Err(error):

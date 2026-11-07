@@ -459,6 +459,40 @@ jobs:
           path: found
           if-no-files-found: ignore
 
+  # The LLVM tests with native blocks on: values of a boxed enum only generated code meets, which
+  # it makes and frees itself, outside the runtime's table. Every program the tests build is
+  # instrumented by AddressSanitizer, and native blocks go through the system's allocator, which
+  # it watches, so one used after it's freed, or freed twice, stops its test. The runtime library
+  # isn't instrumented here, since the tests build their own; the `asan` job covers it.
+  native-blocks:
+    name: LLVM tests with native blocks, under AddressSanitizer
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      FENNEC_EXPECT_LLVM: 1
+      FENNEC_NATIVE_BLOCKS: 1
+      FENNEC_SANITIZE: address
+      ASAN_OPTIONS: detect_leaks=0:exitcode=86
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install LLVM's tools
+        run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build the runtime libraries
+        run: |
+          cargo build --locked -p fennec-runtime
+          for features in threads lean lean,threads; do
+            dir="target/$(echo "$features" | tr , -)"
+            name="fennec_runtime_$(echo "$features" | tr , _)"
+            cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
+            cp "$dir/debug/libfennec_runtime.a" "target/debug/lib$name.a"
+          done
+      - run: cargo test --locked -p fennec --test fennec 'llvm::'
+
   # Programs built with no interpreter in their runtime, as `fennec build` builds every program
   # whose code doesn't cross into it: nothing but what's listed may still need it, which fails at
   # link when this job asks for the lean runtime for all of them, and everything else prints
@@ -681,7 +715,7 @@ jobs:
   ok:
     name: CI passed
     if: always()
-    needs: [changes, lint, test, x86-mac, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, lean-runtime, asan, parked-sanitizers]
+    needs: [changes, lint, test, x86-mac, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, lean-runtime, asan, native-blocks, parked-sanitizers]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

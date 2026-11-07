@@ -30,7 +30,7 @@ const pillars = [
     title: 'Runs near native speed',
     number: `${x86.time}%`,
     caption: 'of hand-written C-class twins, across the suite',
-    body: `Release builds on x86-64 Linux in CI, and ${arm.time}% on Arm macOS, with overflow checks on both sides and no garbage collector. The goal is 110% on every kernel, and some aren't there yet.`,
+    body: `Release builds on x86-64 Linux in CI, and ${arm.time}% on Arm macOS, with overflow checks on both sides and no garbage collector. That's kernel time, the work itself: startup is still being cut. The goal is 110% on every kernel, and some aren't there yet.`,
   },
   {
     title: 'Fully safe',
@@ -182,7 +182,7 @@ back = json.loads[World](text)?`,
           <div class="range" role="img" aria-label={`${x86.time} percent of the hand-written twins' speed`}>
             <span class="range-fill" style={`left: 0; width: ${Math.min(x86.time, 100)}%`}></span>
           </div>
-          <span class="range-note">Release builds in CI on x86-64 Linux · {arm.time}% on Arm macOS · the goal is 110%</span>
+          <span class="range-note">Release builds in CI on x86-64 Linux · {arm.time}% on Arm macOS · kernel time, while startup is still being cut · the goal is 110%</span>
         </div>
       </div>
     </div>

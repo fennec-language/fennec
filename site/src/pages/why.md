@@ -14,7 +14,7 @@ Builds that take minutes break your focus. Build setups that need pages of confi
 
 **Fast iteration while you work.** When you change a line, you should see the result in moments. Fennec compiles a function at a time and caches each one by its content, so a change costs only what it touches.
 
-**What you run is what ships.** There's one optimizing backend, LLVM, so the program you try while you work is the one you ship, with no garbage collector. Whole-program optimization is the only extra step, and it comes with `--release`. In CI, release builds run at about the speed of hand-written native code.
+**What you run is what ships.** There's one optimizing backend, LLVM, so the program you try while you work is the one you ship, with no garbage collector. Whole-program optimization is the only extra step, and it comes with `--release`. In CI, release builds run at about the speed of hand-written native code, measured on the work itself. Startup is still being cut.
 
 **Code that reads like Python.** If you can read Python, you can read Fennec: indentation, `def`, comprehensions and f-strings, with types checked before anything runs.
 

@@ -26,7 +26,7 @@ const ms = (value: number) => value.toLocaleString('en-US', { minimumFractionDig
   <section class="wrap">
     <h2>Speed against the twin</h2>
     <p class="note">
-      100% means as fast as the twin. Across the suite, release builds run at {x86.time}% of the twins' speed on {x86.label}, and {arm.time}% on {arm.label}. That's the geometric mean of each kernel's best time. The goal is {targets.release}% on every kernel, and {atGoal} of {kernels.length} are there on both machines. The twins are built fully optimized, with overflow checks, as Fennec always has.
+      100% means as fast as the twin. Across the suite, release builds run at {x86.time}% of the twins' speed on {x86.label}, and {arm.time}% on {arm.label}. That's kernel time, the work itself, as the geometric mean of each kernel's best of ten runs. Startup is still being cut, so whole runs are slower than this. The goal is {targets.release}% on every kernel, and {atGoal} of {kernels.length} are there on both machines. The twins are built fully optimized, with overflow checks, as Fennec always has.
     </p>
     <div class="table">
       <div class="tr th">

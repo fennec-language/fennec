@@ -2891,6 +2891,52 @@ def main(stdout: Stdout):
     )
 }
 
+/// An f-string made in one go from its pieces where they are: strings inline and in blocks,
+/// ASCII or not, ints at their ends, floats short and long, formats, values written out, and
+/// results that fit in a header and that don't, on both sides of 23 bytes.
+#[test]
+fn f_strings_made_in_one_go_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit("f_strings_in_one_go", F_STRINGS_IN_ONE_GO)
+}
+
+const F_STRINGS_IN_ONE_GO: &str = r#"struct Point:
+    x: int
+    y: int
+
+enum Shape:
+    Dot
+    Box(side: float)
+
+def main(stdout: Stdout):
+    short = "fóx"
+    long = "a string long enough that it can't be held inline, ünïcode too"
+    empty = ""
+    n = -9223372036854775807 - 1
+    big = 123456789012345678
+    tiny = 2.2250738585072014e-308
+    stdout.print(f"{short}")
+    stdout.print(f"{long}")
+    stdout.print(f"[{empty}]")
+    stdout.print(f"{n}|{big}|{0}")
+    stdout.print(f"{tiny}|{1.5}|{-0.0}|{1e300}")
+    stdout.print(f"{True} {False}")
+    stdout.print(f"{Point(x=1, y=2)} {Shape.Dot} {Shape.Box(side=2.5)}")
+    stdout.print(f"{[1, 2, 3]}")
+    stdout.print(f"{n:,}|{1.25:.3f}|{big:,}")
+    stdout.print(f"{short}{short}{short}{short}{short}{short}{short}{short}")
+    stdout.print(f"ünï{short}çø{long}{n}")
+    stdout.print(f"exactly twenty-three!{short}"[0:5])
+    stdout.print(f"{short} is {short.len()} chars")
+    mut total = 0
+    for i in range(1000):
+        line = f"{i}: {short}-{long}" if i % 2 == 0 else f"{i}{i}"
+        total += line.len()
+    stdout.print(total)
+"#;
+
 #[test]
 fn structs_tuples_and_formats_match_the_jit() -> std::io::Result<()> {
     if !ready() {

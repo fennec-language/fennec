@@ -465,10 +465,18 @@ impl<'p> Module<'_, 'p> {
             pair_slots: HashMap::new(),
             walks: HashMap::new(),
             saving: crate::rollback::saving_handles(function),
+            saving_slots: HashMap::new(),
+            wrote_prop: false,
+            leave_after_rollback: None,
         };
+        // A function with `lock ... as ref` blocks leaves on every failure through `prop`, where
+        // a crash puts back what the blocks it's inside changed.
+        let leave_after_rollback = (!emit.saving.is_empty() && emit.failed != "unreachable")
+            .then(|| std::mem::replace(&mut emit.failed, "br label %prop".to_owned()));
+        emit.leave_after_rollback = leave_after_rollback;
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
-            (emit.allocas, emit.out, emit.cold, emit.failed, emit.needs_prop);
+            (emit.allocas, emit.out, emit.cold, emit.failed, emit.needs_prop && !emit.wrote_prop);
         // Leaving a function that says it can't fail would be undefined, so it's refused here.
         if failed == "unreachable" && (needs_prop || emit.leaves.get()) {
             return Err(format!(
@@ -537,7 +545,15 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) at: (usize, usize),
     /// The handles of the `lock ... as ref` blocks whose changes are saved, for a crash to put
     /// back, by local.
-    pub(crate) saving: HashSet<usize>,
+    pub(crate) saving: Vec<usize>,
+    /// For each of those handles, a flag that's set while its lock is held, for a crash to know
+    /// which to put back.
+    pub(crate) saving_slots: HashMap<usize, String>,
+    /// Whether the way out on a failure, `prop`, is written already, with what a crash puts back.
+    wrote_prop: bool,
+    /// How the function leaves on a failure once `prop` has put back what it changed, when every
+    /// failure goes through `prop`.
+    leave_after_rollback: Option<String>,
     /// What the next way out on a failure is for, when what writes it says.
     check_kind: Option<(Span, Option<CheckKind>)>,
     /// Items of lists, by field path and index, known to be inside their lists here.
@@ -807,6 +823,13 @@ impl Emit<'_, '_, '_> {
             }
             self.terminator(&block.end)?;
         }
+        // A crash inside a `lock ... as ref` block puts back what it changed before leaving.
+        if let Some(leave) = self.leave_after_rollback.clone() {
+            self.start_block("prop");
+            self.roll_back_on_crash()?;
+            self.line(&leave);
+            self.wrote_prop = true;
+        }
         Ok(())
     }
 
@@ -814,6 +837,14 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn place_for(&mut self, kind: &Kind) -> String {
         let (at, text) = (self.label("%place"), self.text_of(kind));
         let _ = writeln!(self.allocas, "  {at} = alloca {text}");
+        at
+    }
+
+    /// A new flag on this function's stack, clear when the function starts.
+    pub(crate) fn flag_slot(&mut self) -> String {
+        let at = self.label("%place");
+        let _ = writeln!(self.allocas, "  {at} = alloca i1");
+        let _ = writeln!(self.allocas, "  store i1 false, ptr {at}");
         at
     }
 

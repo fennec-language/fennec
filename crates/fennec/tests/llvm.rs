@@ -5161,6 +5161,73 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// A crash inside `lock ... as ref` puts back everything the block changed, then gives back the
+/// lock: here a handler counts, keeps its path and appends it, then crashes on `/crash`. The server
+/// keeps serving, and the next request sees the value as it was before the crash: no `/crash` in
+/// it, and a negative count put back as it was.
+#[test]
+fn a_crash_in_a_lock_puts_back_what_it_changed() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"from std.net import Request, Response
+
+struct Tally:
+    names: list[str]
+    count = -10
+    last = ""
+
+def respond(request: Request, tally: shared Tally) -> Response:
+    lock tally as ref held:
+        held.count += 1
+        held.last = request.path
+        held.names.append(request.path)
+        if request.path == "/crash":
+            empty: list[int] = []
+            held.count += empty[3]
+    lock tally as current:
+        Response(status=200, body=f"{current.count} {current.last} {current.names}".encode())
+
+def main(net: Net, stdout: Stdout):
+    shared tally = Tally(names=[])
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve((request) => respond(request, tally), timeout=10s)
+"#;
+    let dir = folder("lock_rollback")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?,
+    );
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    // What the server answers one request with, after the head, or nothing when it closes first.
+    let ask = |path: &str| -> std::io::Result<String> {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
+        stream.write_all(format!("GET {path} HTTP/1.1\r\nConnection: close\r\n\r\n").as_bytes())?;
+        let mut heard = String::new();
+        let _ = stream.read_to_string(&mut heard);
+        Ok(heard.split("\r\n\r\n").nth(1).unwrap_or_default().to_owned())
+    };
+    let answers: Vec<String> =
+        ["/a", "/crash", "/b", "/crash", "/c"].into_iter().map(ask).collect::<std::io::Result<_>>()?;
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        answers,
+        ["-9 /a [\"/a\"]", "", "-8 /b [\"/a\", \"/b\"]", "", "-7 /c [\"/a\", \"/b\", \"/c\"]"]
+    );
+    Ok(())
+}
+
 /// The server `http_requests_go_through_native_code` asks: it answers three requests with the
 /// first line of each, and a 200 only for `/a`. It starts once the program is built, and gives up
 /// a minute later, so a program that stops asking fails the test rather than leaving it waiting.

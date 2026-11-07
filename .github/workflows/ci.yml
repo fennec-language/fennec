@@ -100,7 +100,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   test:
-    name: Test (${{ matrix.os }})
+    name: Test (${{ matrix.os }}${{ matrix.part == 'llvm' && ', llvm::' || '' }})
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     # A merge group leaves out macOS. GitHub's macOS runners are short, and a job no runner
@@ -111,9 +111,19 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(github.event_name == 'merge_group' && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]') }}
+        # Windows runs its tests at half the speed of the others, so its `llvm::` tests, a third
+        # of the main test binary's and each building a program, take a job of their own.
+        part: [main, llvm]
+        exclude:
+          - os: ubuntu-latest
+            part: llvm
+          - os: ubuntu-24.04-arm
+            part: llvm
+          - os: macos-latest
+            part: llvm
     runs-on: ${{ matrix.os }}
-    # Windows' tests take about 13 minutes, and a build with no cache there 10 more. A job that
-    # runs out of time saves no cache, so the limit leaves room for a cold one.
+    # Windows' tests took 20 minutes in one job, and a build with no cache there takes 10 more. A
+    # job that runs out of time saves no cache, so the limit leaves room for a cold one.
     timeout-minutes: 35
     # LLVM is the main backend, so on Linux and Windows its tests have to run: with LLVM's tools
     # from the toolchain's own `llvm-tools`, the LLVM rustc uses, a missing tool or runtime
@@ -135,9 +145,11 @@ jobs:
       # A failing or stopped run still saves what it built. Otherwise a red main saves nothing, and
       # every run after it builds from nothing: after Windows' key changed, each of its runs did,
       # until they ran out of time.
+      # The `llvm::` job builds only the main test binary, so it keeps a cache of its own.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-on-failure: true
+          key: ${{ matrix.part == 'llvm' && 'llvm' || '' }}
       # `fennec run` builds through LLVM where it can, linking the runtime library beside
       # `fennec`, so it's built first and the tests take the path users get.
       - name: Build the runtime library
@@ -162,11 +174,22 @@ jobs:
         run: |
           .github/scripts/windows.sh folder target/debug/llvm
           echo "FENNEC_LLVM_BIN=$(cygpath -w "$PWD/target/debug/llvm/bin")" >> "$GITHUB_ENV"
-      - run: cargo test --locked
+      - name: Run cargo test --locked
+        if: runner.os != 'Windows'
+        run: cargo test --locked
+      # Between them, Windows' two jobs run every test once: no test outside `fennec`'s main test
+      # binary has `llvm::` in its name.
+      - name: Run every test but the LLVM ones
+        if: runner.os == 'Windows' && matrix.part == 'main'
+        run: cargo test --locked -- --skip 'llvm::'
+      - name: Run the LLVM tests
+        if: matrix.part == 'llvm'
+        run: cargo test --locked -p fennec --test fennec 'llvm::'
       # Which tests passed. A pull request reads its own results, then the shared ones, and
       # keeps its own apart: GitHub never shows one pull request's cache to another run, so
       # none can plant a false pass. Only a full run on main writes the shared results.
       - name: Restore test results
+        if: matrix.part == 'main'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fennec-home
@@ -175,6 +198,7 @@ jobs:
             fennec-tests-${{ github.event.pull_request.number || 'shared' }}-${{ runner.os }}-${{ runner.arch }}-
             fennec-tests-shared-${{ runner.os }}-${{ runner.arch }}-
       - name: Run every example and kit through the fennec command
+        if: matrix.part == 'main'
         shell: bash
         env:
           FENNEC_HOME: ${{ runner.temp }}/fennec-home
@@ -209,7 +233,7 @@ jobs:
             fennec test "${all[@]}" "$kit" > /dev/null
           done
       - name: Save test results
-        if: github.event_name != 'merge_group'
+        if: matrix.part == 'main' && github.event_name != 'merge_group'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fennec-home

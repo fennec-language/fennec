@@ -12,8 +12,8 @@ def same_name(first: str, second: str) -> bool:
 ## How many letters text has, by Unicode's categories.
 def letters(text: str) -> int:
     mut count = 0
-    for c in text:
-        if unicode.category(c).startswith("L"):
+    for character in text:
+        if unicode.category(character).startswith("L"):
             count += 1
     count
 
@@ -32,7 +32,7 @@ test "case folds the full way"():
     assert same_name("Ångström", second="ångström")
 
 test "categories"():
-    for c, category in [
+    for character, category in [
         ("A", "Lu"),
         ("a", "Ll"),
         ("5", "Nd"),
@@ -40,7 +40,7 @@ test "categories"():
         ("é", "Ll"),
         ("😀", "So"),
     ]:
-        assert unicode.category(c) == category
+        assert unicode.category(character) == category
     assert letters("Fox 🦊 été!") == 6
 
 def main(stdout: Stdout):

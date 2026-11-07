@@ -410,14 +410,14 @@ def grown(ref xs: list[int]):
     xs.append(99)
 
 def shrunk(ref xs: list[int]):
-    xs.pop()
+    _ = xs.pop()
 
 def replaced(ref xs: list[int]):
     xs = [7]
 
 def emptied(ref xs: list[int]):
     while xs.len() > 0:
-        xs.pop()
+        _ = xs.pop()
 
 def retext(ref text: str, by: str):
     text = by
@@ -758,7 +758,7 @@ fn what_a_mut_argument_changes_fails_as_it_should() -> std::io::Result<()> {
         (
             "given_mut_fails_1",
             r"def shrunk(ref xs: list[int]):
-    xs.pop()
+    _ = xs.pop()
 
 def main(stdout: Stdout):
     mut xs = [1, 2, 3]
@@ -989,8 +989,8 @@ def swap_ends(ref a: list[int], ref b: list[int]):
     b.append(a.len())
 
 def try_all(ref units: list[Unit]) -> int fails Bad:
-    units[0].tried(1)?
-    units[1].tried(-1)?
+    _ = units[0].tried(1)?
+    _ = units[1].tried(-1)?
     units[0].tried(2)?
 
 def main(stdout: Stdout):
@@ -1060,7 +1060,7 @@ def main(stdout: Stdout):
     lists[1].tags.extend(lists[1].tags)
     lists[2].inner.tags.append(lists[1].tags.pop() else 0)
     lists[2].tags.insert(0, lists[0].tags[0])
-    lists[0].tags.pop()
+    _ = lists[0].tags.pop()
     show(stdout, lists)
     mut pick = 0
     mut chosen = [[1], [2]]
@@ -1071,7 +1071,7 @@ def main(stdout: Stdout):
     stdout.print(chosen, copied_chosen)
     mut tables = [{"a": 1}, {"b": 2}]
     tables[0]["c"] = tables[1]["b"]
-    tables[1].pop("b")
+    _ = tables[1].pop("b")
     stdout.print(tables)
 
     # What a call keeps stays what it was, and the place goes on from there.
@@ -2213,10 +2213,10 @@ fn a_value_nothing_keeps_matches_the_jit() -> std::io::Result<()> {
 
 def main(stdout: Stdout):
     scores = [3, 1, 2]
-    sorted(scores)
-    str(42)
-    "a,b".split(",")
-    doubled(scores)
+    _ = sorted(scores)
+    _ = str(42)
+    _ = "a,b".split(",")
+    _ = doubled(scores)
     stdout.print(scores, sorted(scores))
 "#,
     )
@@ -3227,8 +3227,8 @@ def main(stdout: Stdout):
     mut map = Table[str]()
     first = map.add(\"a\")
     second = map.add(\"b\")
-    map.add(\"c\")
-    map.remove(second)
+    _ = map.add(\"c\")
+    _ = map.remove(second)
     stdout.print(map)
     stdout.print([first])
 ";
@@ -4255,7 +4255,7 @@ def main(stdout: Stdout):
     mut xs = [1, 2, 3]
     mut at = -1
     stdout.print(xs[at], xs[at])
-    xs.pop()
+    _ = xs.pop()
     stdout.print(xs[at])
     mut bag = Bag(items=[1, 2, 3])
     at = 2
@@ -6013,9 +6013,9 @@ def main(stdout: Stdout):
     ash = world.units.add(Unit(name="ash"))
     gone = world.units.add(Unit(name="gone"))
     vex = world.units.add(Unit(name="vex", target=ash))
-    world.units.remove(gone)
+    _ = world.units.remove(gone)
     kit = world.units.add(Unit(name="kit", target=vex))
-    world.units.remove(ash)
+    _ = world.units.remove(ash)
     world.selected = [vex, kit]
     world.last = ash
     # By position: the items in order, and the Id whose item has gone saved as missing.
@@ -6560,25 +6560,25 @@ def main(stdout: Stdout):
         ids.append(names.add(Named(f"name {at} long enough not to be held inline")))
     stdout.print(ids)
     # Free from high to low, low to high, and in between.
-    names.remove(ids[6])
-    names.remove(ids[2])
-    names.remove(ids[4])
+    _ = names.remove(ids[6])
+    _ = names.remove(ids[2])
+    _ = names.remove(ids[4])
     first = names.add(Named("a"))
     second = names.add(Named("b"))
-    names.remove(ids[0])
+    _ = names.remove(ids[0])
     third = names.add(Named("c"))
     fourth = names.add(Named("d"))
     fifth = names.add(Named("e"))
     stdout.print(first, second, third, fourth, fifth, names.len())
     stdout.print(names.get(ids[2]) is None, names[first], names[fifth])
     # A stale `Id` frees nothing, so it can't move where to look.
-    names.remove(ids[2])
+    _ = names.remove(ids[2])
     sixth = names.add(Named("f"))
     stdout.print(sixth, names.values())
     # A copy keeps looking from where it was, apart from the original.
     mut copied = copy(names)
-    copied.remove(ids[1])
-    names.remove(ids[3])
+    _ = copied.remove(ids[1])
+    _ = names.remove(ids[3])
     stdout.print(copied.add(Named("g")), names.add(Named("h")), copied.values(), names.values())
 "#,
     )
@@ -6607,7 +6607,7 @@ def main(stdout: Stdout):
     stdout.print(reversed((1, 2)), reversed((1, 2, 3, 4)), reversed(("a", "a long string in a block")))
     mut names = Table[str]()
     first = names.add("ash")
-    names.add("kit")
+    _ = names.add("kit")
     third = names.add("a long name that sits in its own block")
     copied = names
     names.remove_where(name => name.startswith("k"))
@@ -6624,8 +6624,8 @@ def main(stdout: Stdout):
     units.remove_where(unit => unit.hp < 5)
     stdout.print(units.values(), units.get(weak), units[strong].name)
     mut numbers = Table[int]()
-    numbers.add(1)
-    numbers.add(2)
+    _ = numbers.add(1)
+    _ = numbers.add(2)
     numbers.remove_where(n => n % 2 == 0)
     stdout.print(numbers.values(), numbers.len())
     numbers.clear()
@@ -6633,7 +6633,7 @@ def main(stdout: Stdout):
     gone = numbers.add(5)
     stdout.print(numbers.values(), numbers.len(), numbers[gone])
     mut cleared = copy(names)
-    cleared.add("again")
+    _ = cleared.add("again")
     cleared.clear()
     stdout.print(cleared.len(), names.len(), cleared.values())
     ignore(numbers.remove(gone), "it's fine if it's gone")
@@ -6677,11 +6677,11 @@ def main(stdout: Stdout):
     kept = world
     stdout.print(world.enemies.modify(far, foe => foe.take_damage(25)))
     stdout.print(world.enemies[far], kept.enemies[far])
-    world.enemies.remove(near)
+    _ = world.enemies.remove(near)
     stdout.print(world.enemies.modify(near, foe => foe.take_damage(1)), world.enemies.len())
     mut numbers = Table[int]()
     one = numbers.add(1)
-    numbers.modify(one, n => n * 5)
+    _ = numbers.modify(one, n => n * 5)
     stdout.print(numbers[one])
     mut nodes = Table[Node]()
     root = nodes.add(Node(value=1, children=[]))
@@ -6727,34 +6727,34 @@ def main(stdout: Stdout):
     mut numbers = Table[int]()
     ids = [numbers.add(n) for n in range(8)]
     stdout.print(total(numbers))
-    numbers.remove(ids[0])
-    numbers.remove(ids[3])
-    numbers.remove(ids[4])
-    numbers.remove(ids[7])
+    _ = numbers.remove(ids[0])
+    _ = numbers.remove(ids[3])
+    _ = numbers.remove(ids[4])
+    _ = numbers.remove(ids[7])
     stdout.print(total(numbers), numbers.len())
-    numbers.add(100)
+    _ = numbers.add(100)
     stdout.print(total(numbers), numbers.len())
 
     mut units = Table[Unit]()
     first = units.add(Unit("first", [1]))
-    units.add(Unit("second is a much longer name than fits", [2, 3]))
+    _ = units.add(Unit("second is a much longer name than fits", [2, 3]))
     last = units.add(Unit("é", []))
     stdout.print(named(units))
-    units.remove(first)
-    units.remove(last)
+    _ = units.remove(first)
+    _ = units.remove(last)
     stdout.print(named(units))
 
     mut points = Table[Point]()
     gone = points.add(Point(0, 0.5))
-    points.add(Point(1, 1.5))
-    points.add(Point(2, 2.5))
-    points.remove(gone)
+    _ = points.add(Point(1, 1.5))
+    _ = points.add(Point(2, 2.5))
+    _ = points.remove(gone)
     for id, point in points.items():
         stdout.print(point.x, point.y, points[id].x)
 
     mut words = Table[str]()
-    words.add("a")
-    words.add("a word too long to fit in a header")
+    _ = words.add("a")
+    _ = words.add("a word too long to fit in a header")
     for word in words.values():
         stdout.print(word)
 
@@ -6763,7 +6763,7 @@ def main(stdout: Stdout):
     for id, number in empty.items():
         stdout.print(number)
     only = empty.add(1)
-    empty.remove(only)
+    _ = empty.remove(only)
     for number in empty.values():
         stdout.print(number)
     stdout.print(total(empty))
@@ -6785,14 +6785,14 @@ def main(stdout: Stdout):
     mut changing = Table[int]()
     kept = [changing.add(n) for n in range(3)]
     before = changing.items()
-    changing.remove(kept[1])
+    _ = changing.remove(kept[1])
     for id, number in before:
         stdout.print(number)
     # Changed between rounds of an outer loop.
     for round in range(3):
         for number in changing.values():
             stdout.print(round, number)
-        changing.add(round * 100)
+        _ = changing.add(round * 100)
 "#;
 
 #[test]
@@ -6808,7 +6808,7 @@ fn walking_a_map_makes_no_list() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut numbers = Table[int]()\n    for n in range(1000):\n        numbers.add(n)\n    mut found = 0\n    for round in range(100):\n        for id, number in numbers.items():\n            found += number\n        for number in numbers.values():\n            found += number\n    stdout.print(found)\n";
+    let source = "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut numbers = Table[int]()\n    for n in range(1000):\n        _ = numbers.add(n)\n    mut found = 0\n    for round in range(100):\n        for id, number in numbers.items():\n            found += number\n        for number in numbers.values():\n            found += number\n    stdout.print(found)\n";
     let counts = counts_of("walking_no_list", source)?;
     assert!(count(&counts, "allocations") < Some(40), "{counts}");
     Ok(())
@@ -6848,7 +6848,7 @@ def main(stdout: Stdout):
     a = world.enemies.add(Enemy(name="ash", hp=5, x=0.0))
     b = world.enemies.add(Enemy(name="bo", hp=-1, x=1.0))
     c = world.enemies.add(Enemy(name="cy", hp=2, x=2.0))
-    world.enemies.remove(b)
+    _ = world.enemies.remove(b)
     d = world.enemies.add(Enemy(name="di", hp=9, x=3.0))
     for _ in range(3):
         step(ref world, 0.5)
@@ -6893,7 +6893,7 @@ def step(ref enemies: Table[Enemy], dt: float):
 def main(stdout: Stdout):
     mut enemies = Table[Enemy]()
     for n in range(1000):
-        enemies.add(Enemy(hp=n, x=0.0))
+        _ = enemies.add(Enemy(hp=n, x=0.0))
     mut total = 0
     for round in range(100):
         step(ref enemies, 0.5)
@@ -6935,7 +6935,7 @@ def step(ref world: World, dt: float):
 def main(stdout: Stdout):
     mut world = World()
     for n in range(1000):
-        world.enemies.add(Enemy(hp=n, x=0.0))
+        _ = world.enemies.add(Enemy(hp=n, x=0.0))
     mut total = 0
     for round in range(100):
         step(ref world, 0.5)
@@ -6983,7 +6983,7 @@ def main(stdout: Stdout):
     )?;
     same_message_as_the_jit(
         "stale",
-        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut names = Table[str]()\n    fox = names.add(\"fox\")\n    names.remove(fox)\n    stdout.print(names[fox])\n",
+        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut names = Table[str]()\n    fox = names.add(\"fox\")\n    _ = names.remove(fox)\n    stdout.print(names[fox])\n",
     )
 }
 
@@ -7015,11 +7015,11 @@ def main(stdout: Stdout):
     )?;
     same_message_as_the_jit(
         "other_table_stop",
-        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    stdout.print(ours[kit])\n",
+        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    _ = ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    stdout.print(ours[kit])\n",
     )?;
     same_message_as_the_jit(
         "other_table_store",
-        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    ours[kit] = \"den\"\n    stdout.print(ours.len())\n",
+        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    _ = ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    ours[kit] = \"den\"\n    stdout.print(ours.len())\n",
     )?;
     // Saved, an `Id` has to be from the `Table` saved with it.
     same_message_as_the_jit(
@@ -7373,7 +7373,7 @@ def main(stdout: Stdout):
     mut xs = [Packet(a2=[0], link=0), Packet(a2=[0], link=0), shared]
     mut at = 1
     xs[at].a2[0] = 2
-    xs.pop(0)
+    _ = xs.pop(0)
     xs[at].a2[0] = 3
     stdout.print(shared.a2, xs[0].a2, xs[1].a2)
 ";
@@ -7502,8 +7502,8 @@ fn strings_let_go_of_match_the_jit() -> std::io::Result<()> {
         "strings_let_go_of",
         r#"def main(stdout: Stdout):
     mut parts = ["a", "a much longer string than a header holds", "b", "c"]
-    parts.pop()
-    parts.pop(0)
+    _ = parts.pop()
+    _ = parts.pop(0)
     parts.remove_where((s) => s.len() > 10)
     stdout.print(parts)
     names: dict[str, str] = {"one": "uno", "long": "a value longer than twenty-three bytes"}
@@ -8172,7 +8172,7 @@ def main(stdout: Stdout):
     key: int | str = "owl"
     stdout.print(counts.get(key) else 7)
     stdout.print("fox" in counts, 5 in counts, "owl" not in counts)
-    counts.pop("fox")
+    _ = counts.pop("fox")
     stdout.print(counts.len(), counts)
     mut shapes: list[Shape] = []
     shapes.append(Circle(radius=1.0))
@@ -8459,8 +8459,8 @@ def main(stdout: Stdout):
     first = squad.units.pop()
     stdout.print(first.name if first is not None else "none", squad.units.pop() is None)
     stdout.print(squad.rows[1].pop(), squad.rows[picked(1)].pop(), squad.rows[picked(1)].pop())
-    squad.rows[0].pop()
-    squad.rows[0].pop()
+    _ = squad.rows[0].pop()
+    _ = squad.rows[0].pop()
     stdout.print(squad.rows)
 "#,
     )
@@ -8514,11 +8514,11 @@ def main(stdout: Stdout):
         mut people = [Person(long + "a", 1), Person(long + "b", 2), Person(long + "c", 3)]
         gone = people.pop() else return
         first = people.pop(0)
-        people.pop()
+        _ = people.pop()
         mut tokens = [Token.Word(long + "a"), Token.Blank, Token.Word(long + "b"), Token.Word(long + "c")]
         last = tokens.pop() else return
         early = tokens.pop(0)
-        tokens.pop(0)
+        _ = tokens.pop(0)
         tokens.remove_where((item) => item == .Blank)
         total += gone.name.len() + first.name.len() + people.len() + tokens.len()
         if same or last == early:
@@ -9742,7 +9742,7 @@ fn small_calls_fail_like_the_jit() -> std::io::Result<()> {
         "max_of_nothing",
         "def main(stdout: Stdout):
     mut none = [1]
-    none.pop()
+    _ = none.pop()
     stdout.print(max(none))
 ",
     )?;
@@ -9925,7 +9925,7 @@ fn a_failure_passed_up_fails_a_test_through_llvm() -> std::io::Result<()> {
     let dir = folder("test_passed_up")?;
     let program = dir.join("up.fen");
     for (name, body) in [
-        ("passed_up", "(fs: Fs):\n    fs.read_text(\"gone\")?\n"),
+        ("passed_up", "(fs: Fs):\n    _ = fs.read_text(\"gone\")?\n"),
         ("fails", ":\n    fail Oops(\"broken\")\n"),
         ("fails_inside", ":\n    for _ in range(1):\n        if True:\n            fail Oops(\"broken\")\n"),
         // The function it makes of this gives back a result it can't see from the statements.

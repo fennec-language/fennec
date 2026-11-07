@@ -47,7 +47,7 @@ export def attack(ref world: World, target: Id[Enemy]):
 def main(stdout: Stdout):
     mut world = World()
     fox = world.enemies.add(Enemy(name="fox"))
-    world.enemies.add(Enemy(name="owl", health=5))
+    _ = world.enemies.add(Enemy(name="owl", health=5))
     attack(ref world, fox)?
 
     alive = [enemy for enemy in world.enemies if enemy.health > 0]

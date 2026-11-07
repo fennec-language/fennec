@@ -113,7 +113,7 @@ fn anything_later_reading_it_keeps_the_change() {
         "mut unit = find(units, 0)\nunit.health = 1\nstdout.print(unit.tags)\n",
         // A call whose result is used reads what it's called on.
         "mut unit = find(units, 0)\nstdout.print(unit.healed())\n",
-        "mut unit = find(units, 0)\nunit.healed()\n",
+        "mut unit = find(units, 0)\n_ = unit.healed()\n",
         // Passing it on, even as `mut`, is up to what it's passed to.
         "mut unit = find(units, 0)\ngrow(ref unit)\n",
     ] {

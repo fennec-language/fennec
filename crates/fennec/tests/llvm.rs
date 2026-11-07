@@ -3025,6 +3025,8 @@ def main(stdout: Stdout):
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.
+/// A whole line that's a `?` on a method giving back nothing fails the block too, and an
+/// `else:` written in at two places keeps each copy's `_ = ...` apart.
 #[test]
 fn with_sources_lend_to_their_callers_blocks_natively() -> std::io::Result<()> {
     if !ready() {
@@ -3059,6 +3061,23 @@ def check(n: int) -> int fails DbError:
     if n == 3: fail DbError(why=\"three\")
     n
 
+struct Probe:
+    held: int
+
+    def poke(self) fails DbError:
+        if self.held > 5: fail DbError(why=\"big\")
+
+def probe(held: int, ref log: Log) -> with Probe fails DbError:
+    lend Probe(held=held) else:
+        _ = log.lines.len()
+        log.lines.append(f\"probe {held} failed\")
+
+def poked(held: int, ref log: Log) fails DbError:
+    with probe(held, ref log)? as box:
+        box.poke()?
+        log.lines.append(f\"poked {held}\")
+        box.poke()?
+
 def first_big(db: Db, ref log: Log, limit: int) -> int fails DbError:
     with db.session(\"ana\", ref log)? as session:
         with scoped(ref log, session) as size:
@@ -3082,6 +3101,10 @@ def main(stdout: Stdout):
     stdout.print(first_big(db, ref log, limit=5) else -9)
     stdout.print(first_big(db, ref log, limit=50) else -9)
     stdout.print(count(db, ref log) else -9)
+    for held in [1, 9]:
+        match poked(held, ref log):
+            case Ok(_): stdout.print(\"poked\")
+            case Err(error): stdout.print(error.why)
     for line in log.lines:
         stdout.print(line)
 ";

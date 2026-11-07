@@ -1265,6 +1265,9 @@ fn only_looks(inst: &InstKind, local: LocalId) -> bool {
                         | "intrinsics.text_byte"
                         | "intrinsics.text_size"
                         | "intrinsics.text_part"
+                        | "intrinsics.text_plain_end"
+                        | "intrinsics.text_escape_at"
+                        | "intrinsics.bytes_text"
                 )
         }
         _ => false,

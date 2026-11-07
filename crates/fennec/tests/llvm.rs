@@ -2199,6 +2199,29 @@ fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// An int's text is written natively, digit pairs from the last: every length of digits, both
+/// ends of `int`, signs, and appended to a growing string, in `str` and in an f-string.
+#[test]
+fn an_ints_text_of_every_length_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "int_text",
+        r#"def main(stdout: Stdout):
+    mut power = 1
+    mut out = ""
+    for _ in range(19):
+        stdout.print(str(power - 1), str(power), str(power + 1), str(-power), f"[{power * 3}]")
+        out += str(power) + ","
+        power *= 10
+    biggest = 9223372036854775807
+    stdout.print(str(biggest), str(-biggest - 1), f"{-biggest - 1}", str(0), str(-0))
+    stdout.print(out, out.len())
+"#,
+    )
+}
+
 /// A builtin's value nothing keeps is still made and let go of natively, each on a line of its own,
 /// with what's printed after the same.
 #[test]

@@ -239,8 +239,9 @@ enum Pattern:
     Wildcard
     Bind(name: str)
     Literal(expr: Expr)
-    ## `.Circle(radius)` (`dotted`), or `NotFound(path)`, `Ok(value)`, `Err(error)`.
-    Variant(name: str, dotted: bool, args: list[Pattern])
+    ## `.Circle(radius)` (`dotted`), or `NotFound(path)`, `Ok(value)`, `Err(error)`. Written
+    ## by name, as `IoError(reason=r)`, `fields` names each of `args`.
+    Variant(name: str, dotted: bool, args: list[Pattern], fields: list[str])
     Tuple(items: list[Pattern])
     ## `.Int(_) | .Float(_)`: any of the alternatives, each binding the same names.
     Or(alternatives: list[Pattern])

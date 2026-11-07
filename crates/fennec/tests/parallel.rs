@@ -467,6 +467,21 @@ fn workers_take_turns_at_shared_values_holding_blocks() -> std::io::Result<()> {
     Ok(())
 }
 
+/// What a read lock's method makes holding a `shared` value's strings, a list made under it among
+/// them, is the reader's own once the lock is let go: each string prints, and isn't blank.
+#[test]
+fn what_a_read_lock_gives_back_holds_strings_the_reader_can_print() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-read-out-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/shared_read_out.fen");
+    matches_the_interpreter_on_workers(&dir, "shared_read_out", source)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 #[test]
 fn a_worker_failing_under_a_lock_ends_the_program() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {

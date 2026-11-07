@@ -70,6 +70,30 @@ impl Interp<'_> {
         }
     }
 
+    /// The capability methods that take named arguments: waiting on the network takes
+    /// `timeout=`, and `process.run` takes `cwd=`, `env=` and `input=`, which go on the method's
+    /// name, sorted, with their values last, as native code has them: `run.cwd.input`. The
+    /// arguments come back for any other method.
+    fn with_named(
+        &mut self,
+        receiver: &Value,
+        method: &str,
+        args: Vec<CallArg>,
+        span: Span,
+    ) -> Result<Result<Value, Diagnostic>, Vec<CallArg>> {
+        let is_process = match receiver {
+            Value::Capability(Capability::Net) => return Ok(self.net_method(method, args, span)),
+            Value::Capability(capability) => *capability == Capability::Process,
+            Value::Limited(limited) => limited.capability == Capability::Process,
+            _ => false,
+        };
+        if !is_process || method != "run" || args.iter().all(|arg| arg.name.is_none()) {
+            return Err(args);
+        }
+        let (method, args) = crate::stdlib::process::options_on_name(method, args);
+        Ok(self.read_method(receiver, &method, args, span))
+    }
+
     /// Methods that only read their receiver.
     pub(crate) fn read_method(
         &mut self,
@@ -84,11 +108,10 @@ impl Interp<'_> {
                 span,
             ));
         }
-        // Waiting on the network takes `timeout=`.
-        if let Value::Capability(Capability::Net) = receiver {
-            return self.net_method(method, args, span);
-        }
-        let args = plain(args, method, span)?;
+        let args = match self.with_named(receiver, method, args, span) {
+            Ok(done) => return done,
+            Err(args) => plain(args, method, span)?,
+        };
         match (receiver, method, args.as_slice()) {
             (Value::Int(n), "abs", []) => {
                 return n

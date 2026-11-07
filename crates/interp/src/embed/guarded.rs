@@ -145,7 +145,6 @@ fn copied(state: &mut State, address: u64) -> Result<u64, Diagnostic> {
 enum Copying {
     /// Those any thread that could read the value finds.
     ForReaders,
-    #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only launched tasks use it"))]
     /// Only the string literals every thread can read: for a task on another thread, which runs
     /// beside this one, so can't read its table.
     ForTask,
@@ -154,7 +153,6 @@ enum Copying {
 /// A copy of `address` and all it holds, in a table of its own, for a task to take as its own: as a
 /// value crossing a lock's edge, keeping nothing of this thread's but `shared` handles and the string
 /// literals every thread can read. Gives back the copy's address and the table.
-#[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only launched tasks use it"))]
 pub(super) fn copied_for_task(state: &mut State, address: u64) -> Result<(u64, Box<Table>), Diagnostic> {
     state.heap.enter_table(Box::new(Table::hashed()), GUARDED_OWNER << OWNER_SHIFT);
     let copy = copied_as(state, address, Copying::ForTask);

@@ -490,7 +490,6 @@ impl Heap {
     /// Takes over blocks, as this thread's own and as made since it last handed any over: what a
     /// launched task was given to start with, or left when it ended, for whoever runs next to hand
     /// over in turn.
-    #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only launched tasks use it"))]
     pub(crate) fn adopt_made(&mut self, blocks: impl IntoIterator<Item = Box<[u64]>>) {
         let counts = self.counts;
         for mut block in blocks {

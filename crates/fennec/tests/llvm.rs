@@ -5068,6 +5068,33 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A known difference: native code writes a field holding a union tagged with its member, as
+/// the language says, where the JIT's JSON writer, which a plain `fennec build` uses too, leaves
+/// the tag out. The JIT is on its way out, so its side isn't being fixed.
+#[test]
+fn native_json_tags_a_union_where_the_jit_does_not() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let ((ours, _, _), (jit, _, _)) = both(
+        "native_json_union_tags",
+        r"from std import json
+
+struct Circle:
+    radius: float
+
+struct Scene:
+    main: Circle | int
+
+def main(stdout: Stdout):
+    stdout.print(json.dumps(Scene(main=Circle(radius=1.5))))
+",
+    )?;
+    assert_eq!(ours, "{\"main\": {\"Circle\": {\"radius\": 1.5}}}\n");
+    assert_eq!(jit, "{\"main\": {\"radius\": 1.5}}\n");
+    Ok(())
+}
+
 /// `bytes` are written as standard base64 natively, padded with `=`, and read back; text that
 /// isn't base64 says so.
 #[test]

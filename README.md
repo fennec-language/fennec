@@ -43,6 +43,14 @@ total_health = sum(enemy.health for enemy in alive)
 
 ## Try it
 
+Once a release is out, this installs the newest one for macOS or Linux into `~/.fennec`, checked against the release's checksums. `FENNEC_VERSION=v0.1.0` in front of `sh` picks a version.
+
+```bash
+curl -fsSL https://fennec-lang.dev/install.sh | sh
+```
+
+Until then, run it from this repository with Cargo:
+
 Fennec runs most of the language on the website: structs, enums, `match`, errors with `fail` and `?`, optional values, comprehensions, generators, `with`, operators, tests and property tests. `fennec run` and `fennec test` type-check a program first and report every mistake they find; the interpreter still checks what the type checker can't yet.
 
 ```bash

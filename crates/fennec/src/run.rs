@@ -57,12 +57,13 @@ pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode 
     };
     let flushed = out.flush();
     match (result, flushed) {
-        (Ok(()), Ok(())) => ExitCode::SUCCESS,
+        // The int `main` gave back, if it gave one.
+        (Ok(code), Ok(())) => ExitCode::from(code),
         (Err(diagnostic), _) => {
             eprint!("{}", rendered(&program, path, &diagnostic));
             ExitCode::FAILURE
         }
-        (Ok(()), Err(err)) => {
+        (Ok(_), Err(err)) => {
             eprintln!("error: couldn't write output: {err}");
             ExitCode::FAILURE
         }
@@ -231,7 +232,7 @@ fn native(
     (path, noted): (&str, bool),
     out: &mut dyn Write,
     inputs: impl Fn() -> Inputs,
-) -> Result<(), fennec_syntax::Diagnostic> {
+) -> Result<u8, fennec_syntax::Diagnostic> {
     // Machine code is reused from the cache in `~/.fennec`, unless `FENNEC_NO_CACHE` is set.
     let ran = match &cache() {
         // A program's machine code is kept together, under its absolute path.
@@ -242,7 +243,8 @@ fn native(
         None => fennec_jit::run_with_inputs(module, out, inputs()),
     };
     match ran {
-        Ok(()) => Ok(()),
+        // What native code gave back from `main` is kept by the runtime.
+        Ok(()) => Ok(fennec_interp::embed::take_exit_code()),
         Err(fennec_jit::JitError::Failed(diagnostic)) => Err(diagnostic),
         Err(fennec_jit::JitError::Unsupported(diagnostic)) => {
             if noted {
@@ -253,14 +255,16 @@ fn native(
     }
 }
 
+/// Runs a program in the interpreter, giving back its exit code.
 fn interpret(
     module: &fennec_syntax::Module,
     out: &mut dyn Write,
     inputs: Inputs,
-) -> Result<(), fennec_syntax::Diagnostic> {
+) -> Result<u8, fennec_syntax::Diagnostic> {
     let mut interp = fennec_interp::Interp::new(out)?;
     interp.give(inputs);
-    interp.run_program(module)
+    interp.run_program(module)?;
+    Ok(interp.exit_code())
 }
 
 /// Type-checks a program before it runs, printing every problem found, and names the enum

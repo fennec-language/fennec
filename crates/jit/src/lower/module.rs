@@ -103,6 +103,19 @@ pub(super) fn define_entry(
         let end = b.ins().iconst(types::I64, i64::from(span.end));
         b.ins().call(check, &[result, start, end]);
     }
+    // An int `main` gives back is the program's exit code, which the runtime keeps from a
+    // temporary holding it.
+    if let (Ty::Int, Some(code), Some(held), Some(check)) =
+        (ret, result, shared.helpers.get(&Helper::Int), shared.helpers.get(&Helper::MainResult))
+    {
+        let (held, check) =
+            (module.declare_func_in_func(*held, b.func), module.declare_func_in_func(*check, b.func));
+        let temp = b.ins().call(held, &[code]);
+        let temp = b.inst_results(temp).first().copied().unwrap_or(code);
+        let start = b.ins().iconst(types::I64, i64::from(span.start));
+        let end = b.ins().iconst(types::I64, i64::from(span.end));
+        b.ins().call(check, &[temp, start, end]);
+    }
     b.ins().set_pinned_reg(saved);
     b.ins().return_(&[]);
     let config = module.target_config();

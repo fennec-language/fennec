@@ -217,6 +217,7 @@ export! {
     fennec_leaving() -> i8 => eval::leaving();
     fennec_left() -> i64 => eval::left();
     fennec_main_result(a0: i64, a1: i64, a2: i64) => temps::main_result(a0, a1, a2);
+    fennec_main_exit(a0: i64) => temps::main_exit(a0);
     #[cfg(not(feature = "lean"))]
     fennec_matches(a0: i64, a1: i64, a2: i64, a3: i64) -> i8 => eval::matches(a0, a1, a2, a3);
     #[cfg(not(feature = "lean"))]

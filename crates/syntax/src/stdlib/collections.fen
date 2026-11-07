@@ -2,7 +2,7 @@ from std.intrinsics import id_at, id_key, id_of_key, id_tag, table_of_slots, tab
 
 ## A double-ended queue: adding or removing at either end is quick however long it gets.
 ## For breadth-first searches, event queues and undo histories.
-struct Deque[T]:
+export struct Deque[T]:
     ## The items sit in a ring that starts at `head`. Slots outside it hold stale items.
     slots: list[T] = []
     head = 0
@@ -101,7 +101,7 @@ extend Deque[T: Eq]:
 ## A binary min-heap: `pop` gives back the smallest item. Items are compared with `<`, so
 ## they can be numbers, strings, tuples, or structs with `def <`. For the largest first,
 ## push negated numbers, or use a `PriorityQueue` with negated priorities.
-struct Heap[T: Ordered]:
+export struct Heap[T: Ordered]:
     items: list[T] = []
 
     ## A heap holding `items`.
@@ -160,7 +160,7 @@ struct Heap[T: Ordered]:
 
 ## A queue where items come out lowest priority first, and items with the same priority
 ## come out in the order they went in. For highest first, negate the priorities.
-struct PriorityQueue[T, P: Ordered]:
+export struct PriorityQueue[T, P: Ordered]:
     ## Each item's priority and the order it was pushed in, smallest first. Items wait in
     ## `waiting` by that order, so they needn't have an order themselves.
     heap: Heap[(P, int)] = Heap()
@@ -191,7 +191,7 @@ struct PriorityQueue[T, P: Ordered]:
         self.waiting[order]
 
 ## Counts how many times each item appears. Items keep the order they were first counted in.
-struct Counter[T: Hashable]:
+export struct Counter[T: Hashable]:
     counts: dict[T, int] = {}
 
     ## A counter of `items`.
@@ -256,7 +256,7 @@ struct Counter[T: Hashable]:
 ## the layout written by hand as compressed sparse rows. Lists are added whole at the end
 ## and read back by position. They can't grow in the middle, which is the price of being
 ## dense.
-struct Packed[T]:
+export struct Packed[T]:
     _items: list[T] = []
     ## Where each list starts in `_items`, and one more for where the last one ends.
     _starts: list[int] = [0]
@@ -323,12 +323,12 @@ struct Packed[T]:
             yield list(self[at])
 
 ## Moving a node under itself or one of its descendants.
-error TreeCycle:
+export error TreeCycle:
     message: str
 
 ## A node of a `Tree`: its value and its links. `tree[id]` gives the value, so programs only
 ## name this type to write the type of an ID: `type NodeId = Id[TreeNode[Node]]`.
-struct TreeNode[T]:
+export struct TreeNode[T]:
     value: T
     parent: Id[TreeNode[T]]? = None
     children: list[Id[TreeNode[T]]] = []
@@ -336,7 +336,7 @@ struct TreeNode[T]:
 ## Values with parents and children, kept in sync. Nodes are reached by the IDs `add` gives
 ## back, so a tree holds no references, and copying one gives an independent tree. An ID of
 ## a removed node stops the program, like an index out of range.
-struct Tree[T]:
+export struct Tree[T]:
     _nodes: Table[TreeNode[T]] = Table[TreeNode[T]]()
     _roots: list[Id[TreeNode[T]]] = []
 
@@ -439,7 +439,7 @@ struct Tree[T]:
 
 ## One node of a `SortedMap`'s B-tree: keys in order, their values, and for a node that isn't
 ## a leaf, the children between and around them.
-struct _SortedNode[K, V]:
+struct SortedNode[K, V]:
     keys: list[K] = []
     values: list[V] = []
     children: list[int] = []
@@ -448,8 +448,8 @@ struct _SortedNode[K, V]:
 ## take time that grows with the log of the size, and walking the keys gives them in order.
 ## Keys are compared with `<`. Its nodes live in a list, reached by position, so the map is
 ## a plain value: copying one gives an independent map.
-struct SortedMap[K: Ordered, V]:
-    _nodes: list[_SortedNode[K, V]] = []
+export struct SortedMap[K: Ordered, V]:
+    _nodes: list[SortedNode[K, V]] = []
     _root = -1
     _count = 0
     ## Nodes that were merged away, to be used again.
@@ -494,12 +494,12 @@ struct SortedMap[K: Ordered, V]:
     ## Gives `key` the value `value`, replacing any it had.
     def set(ref self, key: K, value: V):
         if self._root < 0:
-            self._root = self._new_node(_SortedNode(keys=[key], values=[value]))
+            self._root = self._new_node(SortedNode(keys=[key], values=[value]))
             self._count = 1
             return
         if self._nodes[self._root].keys.len() == SortedMap._most():
             old = self._root
-            self._root = self._new_node(_SortedNode(children=[old]))
+            self._root = self._new_node(SortedNode(children=[old]))
             self._split(self._root, 0)
         mut at = self._root
         while True:
@@ -687,7 +687,7 @@ struct SortedMap[K: Ordered, V]:
             at = node.children[i]
         (-1, -1)
 
-    def _new_node(ref self, node: _SortedNode[K, V]) -> int:
+    def _new_node(ref self, node: SortedNode[K, V]) -> int:
         at = self._free.pop() else:
             self._nodes.append(node)
             return self._nodes.len() - 1
@@ -695,7 +695,7 @@ struct SortedMap[K: Ordered, V]:
         at
 
     def _release(ref self, at: int):
-        self._nodes[at] = _SortedNode()
+        self._nodes[at] = SortedNode()
         self._free.append(at)
 
     ## Splits the full child `i` of `parent` in two, moving its middle key up into `parent`.
@@ -703,7 +703,7 @@ struct SortedMap[K: Ordered, V]:
         child = self._nodes[parent].children[i]
         full = self._nodes[child]
         half = SortedMap._degree()
-        right = _SortedNode(
+        right = SortedNode(
             keys=full.keys[half:],
             values=full.values[half:],
             children=full.children[half:] if full.children.len() > 0 else [],
@@ -821,7 +821,7 @@ extend SortedMap[K: Ordered, V: Eq]:
 ## Items kept in order, each once: a `SortedMap` with no values, so finding, adding and
 ## removing an item take time that grows with the log of the size. Items are compared with
 ## `<`, and copying a set gives an independent set.
-struct SortedSet[T: Ordered]:
+export struct SortedSet[T: Ordered]:
     _items: SortedMap[T, bool] = SortedMap[T, bool]()
 
     ## Equal when they hold the same items.
@@ -926,7 +926,7 @@ struct SortedSet[T: Ordered]:
 ## images. A cell is reached by its column and row, `grid[(x, y)]`, from `(0, 0)` at the top
 ## left. A position outside the grid stops the program, like an index out of range; `get`
 ## gives None for one instead. The cells are stored row by row in one list.
-struct Grid[T]:
+export struct Grid[T]:
     width: int
     height: int
     _cells: list[T] = []

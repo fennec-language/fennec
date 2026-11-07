@@ -1,6 +1,6 @@
 from std import math
 
-struct Vec3:
+export struct Vec3:
     x = 0.0
     y = 0.0
     z = 0.0
@@ -27,5 +27,5 @@ struct Vec3:
         (self - other).length()
 
 ## The value `amount` of the way from `start` to `end`: `lerp(0.0, 10.0, 0.5)` is `5.0`.
-def lerp(start: float, end: float, amount: float) -> float:
+export def lerp(start: float, end: float, amount: float) -> float:
     start + (end - start) * amount

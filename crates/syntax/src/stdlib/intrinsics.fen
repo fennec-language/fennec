@@ -4,200 +4,200 @@
 from std.collections import Id, Table
 
 @intrinsic
-def int_add(a: int, b: int) -> int
+export def int_add(a: int, b: int) -> int
 
 @intrinsic
-def int_sub(a: int, b: int) -> int
+export def int_sub(a: int, b: int) -> int
 
 @intrinsic
-def int_mul(a: int, b: int) -> int
+export def int_mul(a: int, b: int) -> int
 
 @intrinsic
-def int_floordiv(a: int, b: int) -> int
+export def int_floordiv(a: int, b: int) -> int
 
 @intrinsic
-def int_rem(a: int, b: int) -> int
+export def int_rem(a: int, b: int) -> int
 
 @intrinsic
-def int_neg(a: int) -> int
+export def int_neg(a: int) -> int
 
 @intrinsic
-def int_eq(a: int, b: int) -> bool
+export def int_eq(a: int, b: int) -> bool
 
 @intrinsic
-def int_lt(a: int, b: int) -> bool
+export def int_lt(a: int, b: int) -> bool
 
 @intrinsic
-def int_and(a: int, b: int) -> int
+export def int_and(a: int, b: int) -> int
 
 @intrinsic
-def int_or(a: int, b: int) -> int
+export def int_or(a: int, b: int) -> int
 
 @intrinsic
-def int_xor(a: int, b: int) -> int
+export def int_xor(a: int, b: int) -> int
 
 @intrinsic
-def int_not(a: int) -> int
+export def int_not(a: int) -> int
 
 @intrinsic
-def int_shl(a: int, by: int) -> int
+export def int_shl(a: int, by: int) -> int
 
 @intrinsic
-def int_shr(a: int, by: int) -> int
+export def int_shr(a: int, by: int) -> int
 
 @intrinsic
-def int_wrapping_add(a: int, b: int) -> int
+export def int_wrapping_add(a: int, b: int) -> int
 
 @intrinsic
-def int_wrapping_sub(a: int, b: int) -> int
+export def int_wrapping_sub(a: int, b: int) -> int
 
 @intrinsic
-def int_wrapping_mul(a: int, b: int) -> int
+export def int_wrapping_mul(a: int, b: int) -> int
 
 @intrinsic
-def int_to_float(a: int) -> float
+export def int_to_float(a: int) -> float
 
 @intrinsic
-def int_hash(a: int) -> int
+export def int_hash(a: int) -> int
 
 @intrinsic
-def float_add(a: float, b: float) -> float
+export def float_add(a: float, b: float) -> float
 
 @intrinsic
-def float_sub(a: float, b: float) -> float
+export def float_sub(a: float, b: float) -> float
 
 @intrinsic
-def float_mul(a: float, b: float) -> float
+export def float_mul(a: float, b: float) -> float
 
 @intrinsic
-def float_div(a: float, b: float) -> float
+export def float_div(a: float, b: float) -> float
 
 @intrinsic
-def float_neg(a: float) -> float
+export def float_neg(a: float) -> float
 
 @intrinsic
-def float_eq(a: float, b: float) -> bool
+export def float_eq(a: float, b: float) -> bool
 
 @intrinsic
-def float_lt(a: float, b: float) -> bool
+export def float_lt(a: float, b: float) -> bool
 
 @intrinsic
-def float_to_int(a: float) -> int
+export def float_to_int(a: float) -> int
 
 @intrinsic
-def float_bits(a: float) -> int
+export def float_bits(a: float) -> int
 
 ## The float with these bits, as `float_bits` gives them.
 @intrinsic
-def float_of_bits(bits: int) -> float
+export def float_of_bits(bits: int) -> float
 
 ## The byte at a place in a text's bytes, or -1 past its end.
 @intrinsic
-def text_byte(text: str, at: int) -> int
+export def text_byte(text: str, at: int) -> int
 
 ## How many bytes a text has.
 @intrinsic
-def text_size(text: str) -> int
+export def text_size(text: str) -> int
 
 ## The part of a text between two places in its bytes, each where a character starts or at its end.
 @intrinsic
-def text_part(text: str, start: int, end: int) -> str
+export def text_part(text: str, start: int, end: int) -> str
 
 ## The character with a code, which has to be one.
 @intrinsic
-def text_of_code(code: int) -> str
+export def text_of_code(code: int) -> str
 
 ## A type's name as it's written. Only native code has types as it runs.
 @intrinsic
-def type_name[T]() -> str
+export def type_name[T]() -> str
 
 ## The text in bytes `start` up to `end` of `data`, made straight from them, or the empty text when
 ## they aren't UTF-8, which bytes that are there never decode to. Both places have to be inside it.
 @intrinsic
-def bytes_text(data: bytes, start: int, end: int) -> str
+export def bytes_text(data: bytes, start: int, end: int) -> str
 
 ## From byte `at` of a text, the first that's `"`, `\` or a control character, or the text's
 ## size: where a JSON reader has to look closer.
 @intrinsic
-def text_plain_end(text: str, at: int) -> int
+export def text_plain_end(text: str, at: int) -> int
 
 ## From byte `at` of a text, the first JSON writes escaped, or that starts a character it might:
 ## `"`, `\`, a control character, DEL or 194. Or the text's size.
 @intrinsic
-def text_escape_at(text: str, at: int) -> int
+export def text_escape_at(text: str, at: int) -> int
 
 ## A byte builder, which a binary format writes into in place: empty, with room to grow. Only std
 ## writes into one, with the intrinsics below, and copies it to its exact size, `data[0:data.len()]`,
 ## before anything else sees it.
 @intrinsic
-def bytes_builder() -> bytes
+export def bytes_builder() -> bytes
 
 ## Adds a byte, from 0 to 255, at a builder's end.
 @intrinsic
-def bytes_push(ref data: bytes, byte: int)
+export def bytes_push(ref data: bytes, byte: int)
 
 ## Adds a whole word at a builder's end, low byte first.
 @intrinsic
-def bytes_push_word(ref data: bytes, bits: int)
+export def bytes_push_word(ref data: bytes, bits: int)
 
 ## Adds a text's bytes at a builder's end.
 @intrinsic
-def bytes_push_text(ref data: bytes, text: str)
+export def bytes_push_text(ref data: bytes, text: str)
 
 ## Adds bytes at a builder's end.
 @intrinsic
-def bytes_push_bytes(ref data: bytes, more: bytes)
+export def bytes_push_bytes(ref data: bytes, more: bytes)
 
 ## Writes byte `at` of a builder again, which has to be one it holds.
 @intrinsic
-def bytes_set(ref data: bytes, at: int, byte: int)
+export def bytes_set(ref data: bytes, at: int, byte: int)
 
 ## A number for a type's shape: its fields in order, with their names and types, and its cases.
 ## It changes when any of them does, so a format that saves no names can refuse to read data
 ## written for another shape. Only native code has types as it runs.
 @intrinsic
-def shape_hash[T]() -> int
+export def shape_hash[T]() -> int
 
 ## A number that's the same for equal `Id`s and differs for others, to look one up by.
 @intrinsic
-def id_key[T](id: Id[T]) -> int
+export def id_key[T](id: Id[T]) -> int
 
 ## The `Id` of the item at `position` in a `Table` with the tag `tag` that nothing's been taken
 ## out of.
 @intrinsic
-def id_at[T](position: int, tag: int) -> Id[T]
+export def id_at[T](position: int, tag: int) -> Id[T]
 
 ## The tag of the `Table` an `Id` is from.
 @intrinsic
-def id_tag[T](id: Id[T]) -> int
+export def id_tag[T](id: Id[T]) -> int
 
 ## A `Table`'s tag, which its `Id`s have and no other `Table`'s do.
 @intrinsic
-def table_tag[T](table: Table[T]) -> int
+export def table_tag[T](table: Table[T]) -> int
 
 ## A tag no `Table` has had.
 @intrinsic
-def new_tag() -> int
+export def new_tag() -> int
 
 ## An empty `Table` with the tag `tag`.
 @intrinsic
-def table_tagged[T](tag: int) -> Table[T]
+export def table_tagged[T](tag: int) -> Table[T]
 
 ## Each slot of a `Table` as it holds it: its generation where it has an item, and `-1` less
 ## the generation where the item was taken out.
 @intrinsic
-def table_slots[T](table: Table[T]) -> list[int]
+export def table_slots[T](table: Table[T]) -> list[int]
 
 ## A `Table` of a tag with these slots, as `table_slots` gives them, holding `items` in its slots
 ## in use, in order. There have to be as many items as slots in use, each generation has to fit
 ## in 32 bits, and a load checks both first.
 @intrinsic
-def table_of_slots[T](tag: int, slots: list[int], items: list[T]) -> Table[T]
+export def table_of_slots[T](tag: int, slots: list[int], items: list[T]) -> Table[T]
 
 ## The `Id` of a slot and generation in one number, as `id_key` gives it, into a `Table` of a tag.
 @intrinsic
-def id_of_key[T](key: int, tag: int) -> Id[T]
+export def id_of_key[T](key: int, tag: int) -> Id[T]
 
 ## Ends the program, saying `message`, as a failed `assert` does.
 @intrinsic
-def stop(message: str)
+export def stop(message: str)

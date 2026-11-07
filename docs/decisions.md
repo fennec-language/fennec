@@ -324,7 +324,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 *Why:* Twice the SIMD throughput for game math, as glam, GLSL and GPUs have it, while `float` stays accurate everywhere else.
 
 **Float functions give the same bits on every platform.** `sin`, `cos`, `tan`, `acos`, `exp`, `log` and `**` are computed by one pure-Rust library, `libm`, in every engine, on arm64, x86-64, Windows and WebAssembly alike. Native code calls the runtime for them, never a platform intrinsic, and never fuses `a*b+c`. Built.
-*Why:* Each platform's own C library rounds some results differently in the last bit, as `cos(-0.65)` does in WebAssembly and `cos(-0.1)` on x86-64 macOS, and replays and lockstep multiplayer need every machine to agree. It costs a little speed in a loop of nothing but these functions, mostly in `**`. Chris decided this on 2026-11-07.
+*Why:* Each platform's own C library rounds some results differently in the last bit, as `cos(-0.65)` does in WebAssembly and `cos(-0.1)` on x86-64 macOS, and replays and lockstep multiplayer need every machine to agree. It costs a little speed in a loop of nothing but these functions, mostly in `**`. The coordinator decided this on 2026-11-07.
 
 **The compiler tells LLVM that names don't alias.** Exclusive `ref` access proves no two names point at the same memory, so every function gets that guarantee for free. Fortran's speed comes from the same guarantee.
 

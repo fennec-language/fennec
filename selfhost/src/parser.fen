@@ -622,6 +622,13 @@ struct Parser:
     ## One type with no `|` around it, unless it's in parentheses, as in `(Circle | Square)?`.
     def member_type(ref self) -> TypeExpr:
         start = self.span()
+        # `shared Scores`: a value many tasks can reach, each inside a `lock`. A `?` after it
+        # makes the shared value optional: `shared Scores?` is `(shared Scores)?`.
+        if self.at_soft("shared") and (is_name(self.peek_at(1)) or self.peek_at(1) == .Punct("(")):
+            self.advance()
+            held = self.member_type()?
+            span = start.to(self.prev_span())
+            return TypeExpr(name="shared", args=[copy(held, optional=False)], optional=held.optional, span=span)
         mut args = []
         mut name = ""
         size = array_size(self.peek())

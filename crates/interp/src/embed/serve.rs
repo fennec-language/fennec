@@ -551,6 +551,13 @@ impl Io {
         }
     }
 
+    /// Makes the task parked on `token` ready, for a wait that finished on another thread.
+    fn wake_token(&mut self, token: Token) {
+        if let Some((task, ..)) = self.waiting.remove(&token.0) {
+            self.ready.push_back((task, Wake::Ready(READY)));
+        }
+    }
+
     /// Notes that a task ended, failed or not.
     fn ended(&mut self, task: TaskId, failed: bool) {
         let Some(id) = self.owners.remove(&task) else { return };
@@ -645,6 +652,123 @@ impl Io {
             }
         }
     }
+}
+
+/// Whether a wait here can park its task: it's a task on a worker, whose poll it can register with,
+/// and the runtime's state isn't borrowed. Otherwise a wait blocks its thread.
+pub(crate) fn can_park() -> bool {
+    fennec_parked::stack_low().is_some()
+        && !super::state_is_borrowed()
+        && REGISTRY.with_borrow(Option::is_some)
+        && super::parallel::here().is_some()
+}
+
+/// What waiting for a socket came to, for a wait that parked.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Parked {
+    Ready,
+    TimedOut,
+    Cancelled,
+}
+
+/// Parks this task until the socket `fd` may be ready for `interest`, or `deadline` passes: it's
+/// registered with the worker's poll for the wait, under a token of its own, and taken off after.
+/// Only for a task that `can_park`.
+#[cfg(unix)]
+pub(crate) fn park_on_fd(fd: std::os::fd::RawFd, interest: Interest, deadline: Option<Instant>) -> Parked {
+    let token = Token(NEXT_TOKEN.get());
+    NEXT_TOKEN.set(token.0.wrapping_add(1) % CONNECTIONS);
+    let mut source = mio::unix::SourceFd(&fd);
+    let registered = REGISTRY.with_borrow(|registry| {
+        registry.as_ref().is_some_and(|registry| registry.register(&mut source, token, interest).is_ok())
+    });
+    if !registered {
+        return Parked::Ready;
+    }
+    PARKING.set(Some((interest, deadline)));
+    let woken = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
+    REGISTRY.with_borrow(|registry| registry.as_ref().map(|registry| registry.deregister(&mut source)));
+    match woken {
+        Some(Wake::Ready(TIMED_OUT)) => Parked::TimedOut,
+        Some(Wake::Cancelled) => Parked::Cancelled,
+        _ => Parked::Ready,
+    }
+}
+
+/// Work the operating system can't be asked to say is ready for, run off this task's thread,
+/// a DNS lookup and a connect among them.
+type OffThread = Box<dyn FnOnce() + Send>;
+
+/// How many threads run blocking work for parked tasks. A few, as each holds only a lookup or a
+/// connect, and more of them waiting at once wait their turn.
+const OFF_THREADS: usize = 8;
+
+/// The threads that run blocking work for parked tasks, started on first use.
+fn off_threads() -> Option<&'static Mutex<std::sync::mpsc::Sender<OffThread>>> {
+    static SENDER: std::sync::OnceLock<Option<Mutex<std::sync::mpsc::Sender<OffThread>>>> =
+        std::sync::OnceLock::new();
+    SENDER
+        .get_or_init(|| {
+            let (sender, receiver) = std::sync::mpsc::channel::<OffThread>();
+            let receiver = Arc::new(Mutex::new(receiver));
+            for at in 0..OFF_THREADS {
+                let receiver = Arc::clone(&receiver);
+                let started =
+                    std::thread::Builder::new().name(format!("fennec-blocking-{at}")).spawn(move || {
+                        loop {
+                            let next = receiver.lock().unwrap_or_else(PoisonError::into_inner).recv();
+                            let Ok(work) = next else { return };
+                            work();
+                        }
+                    });
+                if started.is_err() && at == 0 {
+                    return None;
+                }
+            }
+            Some(Mutex::new(sender))
+        })
+        .as_ref()
+}
+
+/// Runs `work`, which blocks its thread, so that this task parks rather than holding its worker:
+/// on one of the blocking threads, which hands its result back and wakes the task through its
+/// worker's mail. Anywhere a wait can't park, it runs here.
+pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+    let (Some((pool, at)), Some(sender)) = (super::parallel::here(), off_threads()) else { return work() };
+    if !can_park() {
+        return work();
+    }
+    let token = Token(NEXT_TOKEN.get());
+    NEXT_TOKEN.set(token.0.wrapping_add(1) % CONNECTIONS);
+    let result: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
+    let given = Arc::clone(&result);
+    let job: OffThread = Box::new(move || {
+        let done = work();
+        *given.lock().unwrap_or_else(PoisonError::into_inner) = Some(done);
+        // The worker takes its mail only after this task has parked, on that same thread.
+        pool.run_on(at, Box::new(move |io: &mut Io| io.wake_token(token)));
+    });
+    let sent = sender.lock().unwrap_or_else(PoisonError::into_inner).send(job);
+    match sent {
+        Ok(()) => {
+            PARKING.set(Some((Interest::READABLE, None)));
+            let _ = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
+        }
+        // No thread left to run it, so it runs here: its wake finds nothing parked.
+        Err(std::sync::mpsc::SendError(job)) => job(),
+    }
+    loop {
+        if let Some(done) = result.lock().unwrap_or_else(PoisonError::into_inner).take() {
+            return done;
+        }
+        // Cancelled before it finished: the work runs to its end, and this waits for it.
+        let _ = yield_task_always();
+    }
+}
+
+/// Lets the other tasks on this thread run, if this is a task, and gives back whether it did.
+fn yield_task_always() -> bool {
+    fennec_parked::stack_low().is_some() && fennec_parked::park(YIELD).is_some()
 }
 
 /// Lets the other tasks on this thread run, when this is a task and the runtime's state isn't

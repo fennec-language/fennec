@@ -1,36 +1,38 @@
 ---
 layout: ../layouts/Doc.astro
 title: Standard library
-description: Fennec's batteries-included standard library, from files and JSON to HTTP, SQL and game math.
+description: Fennec's batteries-included standard library, from files and JSON to HTTP, collections and game math.
 ---
 
 # Standard library
 
 <p class="lede">Fennec comes with batteries included, like Python. Where Python has a module for something, Fennec's usually has the same name.</p>
 
-> **Partly built.** `math`, `game`, `layout`, `path`, `json`, `toml`, `pack`, `csv`, `base64`, `compress`, `collections`, `random`, `time`, `string`, `re`, `unicode`, `log`, `cli`, `net`, `url`, `process`, `crypto` and `uuid` work today, along with `Fs`, `Clock`, `Args`, `Stdin`, `Env`, `Entropy` and `Net`. Everything else below is planned, and the built modules don't have everything listed yet. See the [roadmap](/roadmap/).
+> **Partly built.** `math`, `layout`, `path`, `fs`, `json`, `toml`, `pack`, `csv`, `base64`, `compress`, `collections`, `random`, `time`, `string`, `re`, `unicode`, `log`, `cli`, `net`, `url`, `process`, `crypto` and `uuid` work today, along with the `Stdout`, `Stdin`, `Args`, `Fs`, `Clock`, `Env`, `Entropy`, `Process` and `Net` capabilities. Anything marked planned below isn't built yet. See the [roadmap](/roadmap/).
 
 ## What's in it
 
 | Area | Modules |
 | --- | --- |
-| Basics | `math`, `random`, `time`, `datetime`, `string`, `re`, `unicode` |
-| Collections | `collections`: `Deque`, `Counter`, `Heap`, `PriorityQueue`, `Tree`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Table` and its `Id`s; later `Graph` |
-| Files and the OS | `fs`, `path`, `env`, `process`, `cli` |
+| Basics | `math`, `random`, `time`, `string`, `re`, `unicode` |
+| Collections | `collections`: `Table` and its `Id`s, `Tree`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Deque`, `Heap`, `PriorityQueue` and `Counter`. Planned: `Graph` |
+| Files and the OS | `fs`, `path`, `process`, `cli`, and environment variables through `Env` |
 | Data formats | `json`, `toml`, `pack`, `csv`, `base64`, `compress` |
-| Networking | `net`: TCP, UDP, TLS, and an HTTP client and server today; WebSocket planned. `url` |
+| Networking | `net`: TCP, UDP, an HTTP client with TLS, and an HTTP server. `url`. Planned: WebSocket |
 | Security | `crypto`: BLAKE3 and SHA-256 hashes, HMAC and comparing secrets; `uuid`. Secure random bytes come from the `Entropy` capability |
-| Storage | `sql`: one interface, with drivers as first-party kits |
-| Diagnostics | `log`, `profile`, `test` |
-| Games | `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` in `math` today, checked against glam; `simd`, `layout`; later `audio` and `gpu` |
+| Diagnostics | `log` |
+| Games | `math`: `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4`, checked bit for bit against a widely used native math library. `layout` for lists stored a field at a time. Planned: `Simd`, and `audio` and `gpu` as kits |
+| Storage | Planned: `sql`, one interface, with drivers as first-party kits |
 
 ## Importing what you use
 
 A module's names exist only once it's imported, as in Python, so a file's imports show everything it uses:
 
 ```fennec
-from std.math import Vec3, sqrt   # Vec3 and sqrt by name
-from std import json             # the whole module, as json.loads(...)
+# Vec3 and sqrt by name
+from std.math import Vec3, sqrt
+# the whole module, as json.loads(...)
+from std import json
 ```
 
 Using a name without its import is an error that says which import to add. Capabilities like `Stdout`, `Fs` and `Clock` need no import, and nor do the errors standard operations fail with, like `IoError`.
@@ -52,18 +54,41 @@ def main(stdout: Stdout):
     stdout.print(loaded)
 ```
 
-This works for JSON, TOML and `std.pack` today. A format is a type with a `Serializer`'s methods, so one `serialize` serves every format. A `Table` is saved as a list of its items in order, with each `Id` as where its item is in that list, and loading makes a new `Table` whose `Id`s find the same items. CSV reads and writes rows of text with `csv.loads` and `csv.dumps`, and reading it into structs is planned.
+This works for JSON, TOML and `std.pack`. One `serialize` and `deserialize` serve every format. A `Table` is saved as a list of its items in order, with each `Id` as where its item is in that list, and loading makes a new `Table` whose `Id`s find the same items. CSV reads and writes rows of text with `csv.loads` and `csv.dumps`, and reading it into structs is planned.
 
 `std.pack` is the default binary format, written in plain Fennec: no field names on the wire, and a number for the layout's shape, so loading into a type of another shape fails at once. **Planned:** `where` ranges that shrink values, delta encoding and opt-in quantization.
+
+## A web server is a function
+
+`std.net`'s HTTP server answers each request with a plain function, and gives each connection its own task:
+
+```fennec
+from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    match request.path:
+        case "/hello":
+            name = request.query.get("name") else "you"
+            Response(status=200, body=f"hello, {name}".encode())
+        case _:
+            Response(status=404, body="nothing here".encode())
+
+def main(net: Net):
+    with net.listen(8080)? as server:
+        server.serve(respond)
+```
+
+Every call that waits takes `timeout=`, and connecting and HTTP requests stop after 30 seconds unless told otherwise.
 
 ## Built the same way as your code
 
 - **I/O goes through capabilities.** `fs.read_text(path)` needs an `Fs`, so even the standard library can't reach the outside world unexpectedly. `Net` works the same way, and tests get fakes of each.
-- **Errors are typed,** with the same `error`, `fail` and `?` as everywhere else.
+- **Failures are typed,** with the same `error`, `fail` and `?` as everywhere else.
 - **You only pay for what you use.** Only what your program reaches gets compiled.
+- **No special powers.** The standard library uses only what any program can, and it's written in Fennec wherever it can be.
 
 ## Stable and next
 
 **Planned:** new modules start in `std.next`, where they can still change, and graduate once they've settled. That way a module never gets stuck with an early mistake.
 
-The standard library is written in Fennec wherever possible, and only its OS layer calls C. Windows, input, image formats, machine learning and database drivers come as first-party kits rather than `std`.
+Windows, input, audio, image formats, machine learning and database drivers come as first-party kits rather than `std`. Where one needs a C library, the Fennec project wraps it behind a safe API.

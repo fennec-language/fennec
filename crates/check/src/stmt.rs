@@ -64,6 +64,14 @@ impl FnCx<'_> {
                 let ty = self.expr(expr);
                 if always_leaves(expr) { Flow::exit() } else { Flow { ty, exits: false } }
             }
+            StmtKind::Assign { target, value, ty: Some(written), .. }
+                if written.name == crate::lock::SHARED && written.args.is_empty() =>
+            {
+                if let ExprKind::Name(name) = &target.kind {
+                    self.shared_declaration(name, value, target.span);
+                }
+                Flow::unit()
+            }
             StmtKind::Assign { target, op, value, declare_mut, ty } => {
                 self.note_arrow(target, value);
                 self.assign(target, *op, value, *declare_mut, ty.as_ref());
@@ -94,7 +102,8 @@ impl FnCx<'_> {
                 self.condition(cond, "assert");
                 Flow::unit()
             }
-            StmtKind::With { value, names, body } => self.with_block(value, names, body, used),
+            StmtKind::With { value, names, body, lock: true } => self.lock_block(value, names, body, used),
+            StmtKind::With { value, names, body, .. } => self.with_block(value, names, body, used),
             StmtKind::Def(def) => {
                 self.nested(def);
                 Flow::unit()

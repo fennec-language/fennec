@@ -18,7 +18,7 @@ The audit scales with what a kit can touch:
 
 - **Pure**, with no capabilities and no C: checked automatically.
 - **Capability**, using `Fs`, `Net` and the like: checked automatically and reviewed by AI, with its capabilities shown on its page. Adding a capability takes the author's own passkey tap.
-- **Native**, with C code: audited by a person, and first-party kits only for now.
+- **Native**, wrapping a C library behind a safe API: first-party kits only, each audited by a person.
 
 ## Publishing
 
@@ -28,7 +28,7 @@ Accounts use passkeys only, with no passwords and no recovery by email.
 
 ## Updates and private code
 
-Nothing about a dependency changes without `fennec update`, which shows what changed and asks you before a dependency gets a new capability. Private kits come from git, pinned to an exact commit, or from a local path. One that contains C needs your approval, and a kit that depends on them can't be published to the Den.
+Nothing about a dependency changes without `fennec update`, which shows what changed and asks you before a dependency gets a new capability. Private kits come from git, pinned to an exact commit, or from a local path. A kit that depends on them can't be published to the Den.
 
 ## Known gap
 

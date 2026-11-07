@@ -70,6 +70,11 @@ const PARSE_CASES: &[(&str, &str)] = &[
     ("default_field_first", "struct P:\n    a = 1\n    b: int\n"),
     ("default_case_field_first", "enum E:\n    C(x = 1, y: int)\n"),
     ("default_param_first", "def f(x = 1, y: int):\n    pass\n"),
+    (
+        "lock",
+        "def f(a: shared A, b: shared B?):\n    shared c = A()\n    lock a, c as ref x, y:\n        pass\n",
+    ),
+    ("lock_needs_names", "def f(a: shared A):\n    lock a:\n        pass\n"),
     ("named_pattern", "def f(p: P):\n    match p:\n        case P(y=b, x=_): b\n        case .Q(): 1\n"),
     ("named_pattern_mixed", "def f(p: P):\n    match p:\n        case P(x=a, b): a\n"),
     ("named_pattern_twice", "def f(p: P):\n    match p:\n        case P(x=a, x=b): a\n"),

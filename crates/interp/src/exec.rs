@@ -115,7 +115,7 @@ impl Interp<'_> {
                 self.assert(expr)?;
                 Ok(Flow::Normal(Value::Unit))
             }
-            StmtKind::With { value, names, body } => self.with_block(value, names, body),
+            StmtKind::With { value, names, body, .. } => self.with_block(value, names, body),
             StmtKind::Def(def) => {
                 let function = Value::Function(Rc::new(callable(def, self.frame.visible())));
                 self.frame.declare(&def.name, function, false);

@@ -173,7 +173,9 @@ enum StmtKind:
     Assert(value: Expr)
     ## `with value as name:`, or `with a, b as ref x, ref y:`, whose `value` is the tuple of
     ## what it holds and which names each one.
-    With(value: Expr, names: list[WithName], body: list[Stmt])
+    ## With `lock`, `lock value as ref name:`, which reaches a `shared` value: `name` is what it
+    ## holds, for the block.
+    With(value: Expr, names: list[WithName], body: list[Stmt], lock: bool)
     Def(function: FnDef)
     Break
     Continue

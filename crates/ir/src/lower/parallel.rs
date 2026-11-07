@@ -70,22 +70,6 @@ fn liftable(body: &[Stmt]) -> bool {
     }) && !tries(body)
 }
 
-/// Whether a server's task can be lifted from a body: it can end by failing, which ends only the
-/// task, but not by leaving the loop or the function.
-fn leaves_only_by_failing(body: &[Stmt]) -> bool {
-    body.iter().all(|stmt| match &stmt.kind {
-        StmtKind::Break | StmtKind::Continue | StmtKind::Return(_) | StmtKind::Yield(_) => false,
-        StmtKind::If { branches, otherwise } => {
-            branches.iter().all(|(_, block)| leaves_only_by_failing(block))
-                && otherwise.as_deref().is_none_or(leaves_only_by_failing)
-        }
-        StmtKind::With { body, .. } => leaves_only_by_failing(body),
-        // A loop's own `break` and `continue` stay in it.
-        StmtKind::While { body, .. } | StmtKind::For { body, .. } => no_returning(body),
-        _ => true,
-    })
-}
-
 /// Whether nothing in a body leaves the function it's in, other than by failing.
 fn no_returning(body: &[Stmt]) -> bool {
     body.iter().all(|stmt| match &stmt.kind {
@@ -143,6 +127,12 @@ const FROM: &str = "\0parallel.from";
 const TO: &str = "\0parallel.to";
 const OUT: &str = "\0parallel.out";
 
+/// What a server's round gives back, for the runtime: it ended normally or by `continue`, so the
+/// server goes on.
+const ROUND_ON: i64 = 0;
+/// It ended by `break`: the server takes no more connections, and lets the running rounds finish.
+const ROUND_BREAK: i64 = 3;
+
 impl Lowering<'_> {
     /// `for x in parallel(xs)` over a list, lifted, when the backend asks for it and the body
     /// can be. `None` when it's lowered as an ordinary loop.
@@ -187,12 +177,16 @@ impl Lowering<'_> {
         body: &[Stmt],
         span: Span,
     ) -> Option<Lowered<()>> {
-        let (true, [name], Some(server)) =
-            (self.context.options.outline_parallel, names, parallel_items(iter))
-        else {
+        let (true, false, [name], Some(server)) = (
+            self.context.options.outline_parallel,
+            self.context.options.serve_in_order,
+            names,
+            parallel_items(iter),
+        ) else {
             return None;
         };
-        if self.type_at(server.span)? != Type::Named("Server".to_owned()) || !leaves_only_by_failing(body) {
+        // A round's `continue` and `break` give back their codes; only `return` can't leave it.
+        if self.type_at(server.span)? != Type::Named("Server".to_owned()) || !no_returning(body) {
             return None;
         }
         if self.writes_outside(body, name) {
@@ -214,10 +208,12 @@ impl Lowering<'_> {
         });
         let captures = self.captures(names, &[name]);
         let connection = Type::Named("Connection".to_owned());
-        // A body with `?` makes its enclosing function fail with what it can fail with.
+        // A round gives back how it ended, as the runtime reads it: `ROUND_ON` when it ended
+        // normally or by `continue`, and `ROUND_BREAK` by `break`. A body with `?` makes its
+        // enclosing function fail with what it can fail with.
         let returns = match &self.returns {
-            Type::Result(_, error) => Type::Result(Box::new(Type::Unit), error.clone()),
-            _ => Type::Unit,
+            Type::Result(_, error) => Type::Result(Box::new(Type::Int), error.clone()),
+            _ => Type::Int,
         };
         let inner = format!("{}.task@{}", self.name, span.start);
         let instance =
@@ -228,14 +224,24 @@ impl Lowering<'_> {
         }
         lifted.declare(name, connection.clone());
         lifted.scopes.push(HashMap::new());
+        // `continue` and `break` leave the round, each with its code.
+        let (goes_on, breaks) = (lifted.new_block(), lifted.new_block());
+        lifted.loops.push(super::Loop { next: goes_on, exit: breaks, depth: lifted.leaving.len() });
         lifted.stmts(body, Tail::Drop)?;
-        lifted.end_function(span)?;
+        if lifted.is_open() {
+            lifted.finish(crate::Terminator::Jump(goes_on));
+        }
+        lifted.loops.pop();
+        for (block, code) in [(goes_on, ROUND_ON), (breaks, ROUND_BREAK)] {
+            lifted.current = block;
+            lifted.give_back_code(code, span)?;
+        }
         self.lifted.extend(lifted.finished(captures.len() + 1, Vec::new()));
 
         let key = format!("{}.serve@{}", self.name, span.start);
         let instance =
             FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
-        let mut task = Lowering::new(&instance, self.context, self.body, Type::Unit);
+        let mut task = Lowering::new(&instance, self.context, self.body, Type::Int);
         let mut args = Vec::with_capacity(captures.len() + 1);
         for (captured, local) in &captures {
             args.push(Operand::Local(task.declare(captured, self.local_type(*local))));
@@ -257,21 +263,35 @@ impl Lowering<'_> {
         let fields = vec![Operand::Local(handle), Operand::Local(peer)];
         task.emit(InstKind::Make { dest: made, type_name: "Connection".to_owned(), fields }, span);
         args.push(Operand::Local(made));
-        let passes_up = returns != Type::Unit;
-        let dest = passes_up.then(|| task.temporary(returns.clone()));
-        task.emit(InstKind::Call { dest, function: inner, args }, span);
-        if let (Some(result), Type::Result(_, error)) = (dest, &returns) {
+        let result = task.temporary(returns.clone());
+        task.emit(InstKind::Call { dest: Some(result), function: inner, args }, span);
+        let code = if let Type::Result(_, error) = &returns {
             task.stop_task_on_failure(result, error, span);
-        }
-        task.end_function(span)?;
+            let code = task.temporary(Type::Int);
+            task.emit(InstKind::GetOk { dest: code, value: Operand::Local(result) }, span);
+            code
+        } else {
+            result
+        };
+        task.leave(Some(Operand::Local(code)), span)?;
         self.lifted.extend(task.finished(captures.len() + 1, Vec::new()));
 
-        let arrow = Type::Arrow(vec![Type::Int], Box::new(Type::Unit));
+        let arrow = Type::Arrow(vec![Type::Int], Box::new(Type::Int));
         let closure = self.make_closure(key, &captures, arrow, span);
         let args = vec![server, Operand::Local(closure)];
         let call = InstKind::Builtin { dest: None, name: "parallel.serve".to_owned(), args, changes: false };
         self.emit(call, span);
         Ok(())
+    }
+
+    /// Leaves a round's body with `code`, as success when the body can fail.
+    fn give_back_code(&mut self, code: i64, span: Span) -> Lowered<()> {
+        if matches!(self.returns, Type::Result(..)) {
+            let dest = self.temporary(self.returns.clone());
+            self.emit(InstKind::MakeOk { dest, value: Some(Operand::Int(code)) }, span);
+            return self.leave(Some(Operand::Local(dest)), span);
+        }
+        self.leave(Some(Operand::Int(code)), span)
     }
 
     /// What a server's task does with a failure its body passed up: ends only itself, saying what

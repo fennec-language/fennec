@@ -287,7 +287,7 @@ fn takeable<'t>(
 ) -> Vec<&'t TestDef> {
     let answer = trimmed_for(module, tests).map_or_else(
         || Err("a test's inputs aren't ready".to_owned()),
-        |trimmed| crate::aot::takes(&trimmed),
+        |trimmed| crate::aot::tests_take(&trimmed),
     );
     match answer {
         Ok(()) => tests.to_vec(),

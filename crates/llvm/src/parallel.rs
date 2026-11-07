@@ -252,8 +252,8 @@ fn task_shim() -> String {
         "define internal i64 {running}(i64 %env, i64 %conn) noinline #0 {{\nentry:\n  \
          %closure = inttoptr i64 %env to ptr\n  %code_at = getelementptr inbounds i8, ptr %closure, i64 {CODE}\n  \
          %code = load ptr, ptr %code_at\n  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n  \
-         call swiftcc void %code(ptr %closure, i64 %conn, ptr swifterror %failed)\n  \
-         %held = load ptr, ptr %failed\n  %bad = icmp ne ptr %held, null\n  %result = zext i1 %bad to i64\n  \
+         %ended = call swiftcc i64 %code(ptr %closure, i64 %conn, ptr swifterror %failed)\n  \
+         %held = load ptr, ptr %failed\n  %bad = icmp ne ptr %held, null\n  %result = select i1 %bad, i64 1, i64 %ended\n  \
          ret i64 %result\n}}\n\n\
          define internal i64 {name}(i64 %env, i64 %conn, i64 %thread) #0 {{\n{READY}  \
          %task_limit = call i64 @fennec_aot_stack_limit()\n  store i64 %task_limit, ptr @fennec_stack_limit\n  \

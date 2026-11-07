@@ -3025,6 +3025,8 @@ def main(stdout: Stdout):
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.
+/// A whole line that's a `?` on a method giving back nothing fails the block too, and an
+/// `else:` written in at two places keeps each copy's `_ = ...` apart.
 #[test]
 fn with_sources_lend_to_their_callers_blocks_natively() -> std::io::Result<()> {
     if !ready() {
@@ -3059,6 +3061,23 @@ def check(n: int) -> int fails DbError:
     if n == 3: fail DbError(why=\"three\")
     n
 
+struct Probe:
+    held: int
+
+    def poke(self) fails DbError:
+        if self.held > 5: fail DbError(why=\"big\")
+
+def probe(held: int, ref log: Log) -> with Probe fails DbError:
+    lend Probe(held=held) else:
+        _ = log.lines.len()
+        log.lines.append(f\"probe {held} failed\")
+
+def poked(held: int, ref log: Log) fails DbError:
+    with probe(held, ref log)? as box:
+        box.poke()?
+        log.lines.append(f\"poked {held}\")
+        box.poke()?
+
 def first_big(db: Db, ref log: Log, limit: int) -> int fails DbError:
     with db.session(\"ana\", ref log)? as session:
         with scoped(ref log, session) as size:
@@ -3082,6 +3101,10 @@ def main(stdout: Stdout):
     stdout.print(first_big(db, ref log, limit=5) else -9)
     stdout.print(first_big(db, ref log, limit=50) else -9)
     stdout.print(count(db, ref log) else -9)
+    for held in [1, 9]:
+        match poked(held, ref log):
+            case Ok(_): stdout.print(\"poked\")
+            case Err(error): stdout.print(error.why)
     for line in log.lines:
         stdout.print(line)
 ";
@@ -5682,6 +5705,77 @@ def main(net: Net, stdout: Stdout):
     );
     let most = most.load(std::sync::atomic::Ordering::SeqCst);
     assert!(most > 2, "the server held at most {most} connections at once, from 2 threads");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A server's round that ends by `continue` closes its connection with no answer, and one that
+/// ends by `break` stops the server: it takes no more connections, the running rounds finish, and
+/// the loop ends normally, so what follows it runs.
+#[test]
+fn a_servers_rounds_continue_and_break_natively() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("rounds-continue-break")?;
+    let program = dir.join("rounds.fen");
+    std::fs::write(
+        &program,
+        "from std.net import NetError
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            if line == \"skip\":
+                continue
+            if line == \"stop\":
+                break
+            conn.write(f\"{line}\\n\")?
+    stdout.print(\"served\")
+",
+    )?;
+    let executable = dir.join("rounds");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "2")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?,
+    );
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    // What the server answers a line with, or nothing when it closes first.
+    let ask = |line: &str| -> std::io::Result<String> {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
+        stream.write_all(format!("{line}\n").as_bytes())?;
+        let mut back = String::new();
+        let _ = std::io::BufReader::new(stream).read_line(&mut back);
+        Ok(back)
+    };
+    let answers: Vec<String> =
+        ["a", "skip", "b", "stop"].into_iter().map(ask).collect::<std::io::Result<_>>()?;
+    assert_eq!(answers, ["a\n", "", "b\n", ""]);
+    // After `break`, the loop ends, and the program goes on to its end and stops by itself.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let ended = loop {
+        if let Some(status) = server.0.try_wait()? {
+            break status;
+        }
+        assert!(std::time::Instant::now() < deadline, "the server went on after `break`");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert!(ended.success(), "{ended}");
+    drop(server);
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

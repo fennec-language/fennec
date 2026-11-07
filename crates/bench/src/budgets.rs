@@ -36,6 +36,10 @@ const FORMAT: Budget = Budget { name: "format one file", limit: Duration::from_m
 /// the time it takes.
 const LINT: Budget = Budget { name: "lint one file", limit: Duration::from_millis(50), enforced: false };
 const CHECK: Budget = Budget { name: "edit to checked", limit: Duration::from_millis(100), enforced: true };
+/// After an edit is checked, going to a definition in the file: answered from the files the edit
+/// reached, not all of a big kit checked again.
+const DEFINITION: Budget =
+    Budget { name: "then a definition", limit: Duration::from_millis(100), enforced: true };
 const VERDICT: Budget =
     Budget { name: "edit to verdict, one function", limit: Duration::from_secs(1), enforced: true };
 /// How many instructions CI's slower machines run in a second. An old verdict ran 6,658 million of
@@ -202,10 +206,11 @@ fn table(measured: &[Measured], size: &str) -> String {
 
 fn measure(kit: &Kit, runs: usize) -> Result<Vec<Measured>, String> {
     kit.timed(&["fmt"])?;
-    let (check_warm, check_cold) = edit_to_checked(kit, runs)?;
+    let (check_warm, check_cold, definition) = edit_to_checked(kit, runs)?;
     let counted = kit.counted_edit();
     let check = Measured { budget: CHECK, warm: check_warm, cold: Some(check_cold), counted };
-    let mut measured = vec![check, kit.format(runs)?, kit.lint(runs)?];
+    let definition = Measured { budget: DEFINITION, warm: definition, cold: None, counted: None };
+    let mut measured = vec![check, definition, kit.format(runs)?, kit.lint(runs)?];
     measured.push(kit.verdict(runs)?);
     let mut run = kit.repeated(RUN, &["run"], runs)?;
     run.counted = kit.counted(&["run"], MOST_RUN_INSTRUCTIONS);
@@ -465,6 +470,23 @@ impl Editor {
         fennec_lsp::write(&mut self.input, message).map_err(|err| err.to_string())
     }
 
+    /// Sends a request, and waits for its answer.
+    fn answered(&mut self, id: usize, method: &str, params: Json) -> Result<Duration, String> {
+        let start = Instant::now();
+        self.send(&Json::object([
+            ("id", Json::number(id)),
+            ("method", Json::string(method)),
+            ("params", params),
+        ]))?;
+        loop {
+            let message = fennec_lsp::read(&mut self.output).map_err(|err| err.to_string())?;
+            let message = message.ok_or("the language server stopped")?;
+            if message.get("id") == Some(&Json::number(id)) {
+                return Ok(start.elapsed());
+            }
+        }
+    }
+
     /// Sends a notification, then waits until the server has finished with it: it answers
     /// messages in order, so that's when a request sent after it comes back.
     fn settled(&mut self, method: &str, params: Json) -> Result<Duration, String> {
@@ -482,8 +504,8 @@ impl Editor {
 }
 
 /// From sending a document's new text to having all of the program's diagnostics, warm and
-/// cold.
-fn edit_to_checked(kit: &Kit, runs: usize) -> Result<(Duration, Duration), String> {
+/// cold, and then from asking where a name in the edited line is declared to the answer.
+fn edit_to_checked(kit: &Kit, runs: usize) -> Result<(Duration, Duration, Duration), String> {
     let mut child = kit
         .command(&["lsp"])
         .stdin(Stdio::piped())
@@ -506,6 +528,7 @@ fn edit_to_checked(kit: &Kit, runs: usize) -> Result<(Duration, Duration), Strin
     ]);
     let cold = editor.settled("textDocument/didOpen", Json::object([("textDocument", document)]))?;
     let mut times = Vec::with_capacity(runs);
+    let mut definitions = Vec::with_capacity(runs);
     for run in 1..=runs {
         let edited = text.replace(EDITED_LINE, &format!("    y = x + 300 + {run}\n"));
         let document =
@@ -513,12 +536,18 @@ fn edit_to_checked(kit: &Kit, runs: usize) -> Result<(Duration, Duration), Strin
         let changes = Json::Array(vec![Json::object([("text", Json::string(edited))])]);
         let params = Json::object([("textDocument", document), ("contentChanges", changes)]);
         times.push(editor.settled("textDocument/didChange", params)?);
+        let line =
+            text.get(..text.find(EDITED_LINE).unwrap_or(0)).map_or(0, |before| before.matches('\n').count());
+        let place = Json::object([("line", Json::number(line)), ("character", Json::number(8))]);
+        let document = Json::object([("uri", Json::string(uri.as_str()))]);
+        let params = Json::object([("textDocument", document), ("position", place)]);
+        definitions.push(editor.answered(100 + run, "textDocument/definition", params)?);
     }
     editor.send(&Json::object([("id", Json::number(2)), ("method", Json::string("shutdown"))]))?;
     editor.send(&Json::object([("method", Json::string("exit"))]))?;
     drop(editor.input);
     let _ = editor.child.wait();
-    Ok((median(times), cold))
+    Ok((median(times), cold, median(definitions)))
 }
 
 #[cfg(test)]

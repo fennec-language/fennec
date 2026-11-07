@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Generic, Module, Span};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Generic, Module, Span, Stmt};
 
 use crate::effects::{self, Effects};
 use crate::function::{Binding, FnCx};
@@ -79,7 +79,15 @@ pub(crate) struct Checker {
 const REVISITS: usize = 16;
 
 /// The program's declarations, with the standard library's modules added first.
+#[cfg(test)]
 fn with_library<'m>(library: impl IntoIterator<Item = &'m Module>, module: &Module) -> Program {
+    let mut program = library_alone(library);
+    program.add(module, false);
+    program
+}
+
+/// The standard library's declarations, which a program's are added to.
+fn library_alone<'m>(library: impl IntoIterator<Item = &'m Module>) -> Program {
     let mut program = Program::default();
     for prelude in library {
         program.add(prelude, true);
@@ -90,13 +98,20 @@ fn with_library<'m>(library: impl IntoIterator<Item = &'m Module>, module: &Modu
     // it too.
     program.std_functions.clear();
     program.imported_types.clear();
-    program.add(module, false);
     program
+}
+
+/// The standard library's declarations, worked out once and copied for each program: they're
+/// the same every time.
+fn library() -> &'static Program {
+    static LIBRARY: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
+    LIBRARY.get_or_init(|| library_alone(fennec_syntax::prelude_modules().unwrap_or_default()))
 }
 
 impl Checker {
     pub(crate) fn new(module: &Module) -> Self {
-        let mut program = with_library(fennec_syntax::prelude_modules().unwrap_or_default(), module);
+        let mut program = library().clone();
+        program.add(module, false);
         let mut diagnostics = std::mem::take(&mut program.problems);
         diagnostics.extend(crate::imports::unimported(module, &program));
         Checker {
@@ -259,7 +274,7 @@ impl Checker {
 
     /// A test with no inputs has a signature like a function's, under its key in the typed
     /// tree, so a compiler can treat it as one. It gives back nothing, or an error.
-    pub(crate) fn record_test(&mut self, key: String, body: &[fennec_syntax::Stmt]) {
+    pub(crate) fn record_test(&mut self, key: String, body: &[Stmt]) {
         let effects = effects::of_body(body);
         let signature = Signature {
             params: Vec::new(),
@@ -352,8 +367,9 @@ impl Checker {
             .filter(|(_, entry)| !entry.prelude)
             .map(|(key, _)| key.clone())
             .collect();
+        let mut settled = crate::loops::Settled::default();
         for (key, entry) in self.program.functions.iter().filter(|(_, entry)| !entry.prelude) {
-            problems.extend(crate::loops::check_function(self, key, &entry.def));
+            problems.extend(crate::loops::check_function(self, &mut settled, key, &entry.def));
             problems.extend(crate::loops::check_arguments(&entry.def.body));
             problems.extend(crate::once::check_function(self, key, &entry.def));
         }
@@ -366,14 +382,18 @@ impl Checker {
                 let Some(def) = self.program.functions.get(&key).map(|entry| entry.def.clone()) else {
                     continue;
                 };
-                problems.extend(crate::lost::check_body(self, &key, &def.body));
+                let counted = crate::lost::counted(self, &key, &def.body);
+                problems.extend(crate::lost::check_body(self, &key, &def.body, &counted));
             }
-            for test in self.program.tests.clone() {
-                problems.extend(crate::lost::check_body(
-                    self,
-                    &format!("test \"{}\"", test.name),
-                    &test.body,
-                ));
+            let tests: Vec<(String, Vec<Stmt>)> = self
+                .program
+                .tests
+                .iter()
+                .map(|test| (format!("test \"{}\"", test.name), test.body.clone()))
+                .collect();
+            for (key, stmts) in tests {
+                let counted = crate::lost::counted(self, &key, &stmts);
+                problems.extend(crate::lost::check_body(self, &key, &stmts, &counted));
             }
         }
         self.diagnostics.extend(problems);
@@ -416,14 +436,15 @@ impl Checker {
         if let Some(State::Done(signature)) = self.states.get(key) {
             self.previous.insert(key.to_owned(), known_errors(signature.clone()));
         }
-        let entry = FnEntry { def: def.clone(), owner: None, prelude, inherited, extension: Vec::new() };
+        let entry =
+            FnEntry { def: def.clone().into(), owner: None, prelude, inherited, extension: Vec::new() };
         self.program.functions.insert(key.to_owned(), entry);
         self.check_with(key, captured);
     }
 
     /// Whether a body ends in a call made for what it changes: one that takes something `mut`,
     /// or a method that changes what it's called on, like `board.add(score)`.
-    fn ends_in_change(&self, key: &str, body: &[fennec_syntax::Stmt]) -> bool {
+    fn ends_in_change(&self, key: &str, body: &[Stmt]) -> bool {
         let Some(fennec_syntax::StmtKind::Expr(last)) = body.last().map(|stmt| &stmt.kind) else {
             return false;
         };
@@ -796,7 +817,7 @@ impl Checker {
 
     /// Every enum's cases, with the types of their fields, and every error's that has cases.
     fn enums(&mut self) -> BTreeMap<String, crate::Enum> {
-        let enums: Vec<fennec_syntax::TypeDef> = self
+        let enums: Vec<std::sync::Arc<fennec_syntax::TypeDef>> = self
             .program
             .types
             .values()
@@ -818,7 +839,7 @@ impl Checker {
                     .collect();
                 cases.push((case.name.clone(), fields));
             }
-            found.insert(def.name, crate::Enum { cases, rules });
+            found.insert(def.name.clone(), crate::Enum { cases, rules });
         }
         found
     }

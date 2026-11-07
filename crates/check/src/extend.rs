@@ -107,7 +107,7 @@ impl Program {
         }
         let owner = Some(type_name.to_owned());
         let entry = FnEntry {
-            def: method.clone(),
+            def: method.clone().into(),
             owner,
             prelude,
             inherited: Vec::new(),

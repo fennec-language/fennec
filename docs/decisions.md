@@ -44,7 +44,7 @@ for ref unit in units:
 - There's no inline `ref x = place` for now. One change is a direct write, `units[unit_id].health -= 1`, and several are a method, `units[unit_id].take_hit(damage, now)`. Adding it later would break nothing.
 - During the rename, the old `mut x = place` that made a link is a compile error, so nothing silently changes meaning.
 
-None of this is built yet, so the compiler still takes `mut` in these places. This replaces the rule that `mut x = place` edits a place, along with `mut a, b = xs.pair(i, j)`.
+Built: the compiler takes `ref` in these places, and `fennec fix --mut-to-ref` rewrites the old `mut` forms. This replaces the rule that `mut x = place` edits a place, along with `mut a, b = xs.pair(i, j)`.
 *Why:* `mut` was doing two opposite jobs with one word. `mut unit = units[unit_id]` was a link and `mut unit = find(units, unit_id)` was a copy, and a write to the second was silently lost. Now a line says which it is.
 
 **A loop can change items, but not how many there are.** There are four forms, and `ids()` and `values()` go away:
@@ -580,7 +580,7 @@ def report(shapes: list[Shape], stdout: Stdout):
 - Members are concrete types, not type parameters; generic code uses an enum, like `enum Either[L, R]`. A union refers to itself only through a collection, as in `type Json = str | int | float | bool | list[Json] | dict[str, Json]`, and direct recursion is an error.
 - A union mixes types that already exist, and an enum defines new cases. A union may have an enum type as a member.
 - A literal assigned to a union takes its default type: `3` is an `int`.
-- Built in the checker and the interpreter: writing unions, `is` and `match` with their narrowing and exhaustiveness, methods every member has, equality and hashing, and the mistakes above. A union is a dict key or set item when each type in it can be one, and it fits an interface every type in it fits. IR lowers unions; not built yet: the inline layout in native code (LLVM hands a function using one to the JIT, which hands it to the interpreter), and JSON's tags.
+- Built in the checker, the interpreter and native code: writing unions, `is` and `match` with their narrowing and exhaustiveness, methods every member has, equality and hashing, and the mistakes above. A union is a dict key or set item when each type in it can be one, and it fits an interface every type in it fits. Native code holds a union in place, as an enum with a case for each member.
 - JSON always writes a union tagged with its member's type name, `{"Circle": {...}}` or `{"Tile": "Grass"}`, so loading is never ambiguous. The tag is the full name only when two members share a short name. Built for fields: one holding a union, as it is, in a list, a dict's values or an optional, saves tagged in JSON and TOML, and by where the member is among the union's in pack, and the JIT still writes it untagged. A member has to be a type's name alone, like `Circle` or `int`, so a union with `list[int]` in it isn't saved yet, nor is one in a set or a dict's keys, and a recursive union like `Json` isn't either.
 
 *Why:* Mixed lists stay fast and unboxed, and they read like a Python type hint. Unions add nothing new to learn beyond `is` and `match`.
@@ -694,6 +694,8 @@ struct Ring[T]:
 ```
 A `Ring[int]` saves as `[3, 4, 5]` in JSON, not as its buffer and `_start`.
 
+**A `Table` saves as a list of its items in order, and an `Id` as where its item is in that list.** Loading makes a new `Table`, and every `Id` loaded with it finds its item there. An `Id` has to be in a `Table` saved with it, one `Table` of each type. In `std.pack`, `exact=True` saves a `Table` slot for slot instead, with the slots taken out and their generations, so a replay's later `add`s hand out the same `Id`s. Built in JSON and `std.pack`.
+
 **A type is serializable when all its fields are.** Otherwise it's a compile error naming the full path, with two fixes: `@skip` the field, or write the two methods.
 ```
 error: `Character` can't be saved: `Character.inventory.on_change` is a function
@@ -802,7 +804,7 @@ def play(ref conn: Connection, ref world: World) fails NetError:
 
 **First-party kits, not `std`:** `fennec/ml`, database drivers, windowing and input for games, and image formats.
 
-**Names live in their modules.** A standard library module provides nothing until it's imported: `from std.math import Vec3, sqrt`, or `from std import math` and then `math.Vec3` and `math.sqrt(x)`. That's every module so far: `math`, `game`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re`. Using a name without its import is reported with the import to add.
+**Names live in their modules.** A standard library module provides nothing until it's imported: `from std.math import Vec3, sqrt`, or `from std import math` and then `math.Vec3` and `math.sqrt(x)`. That's every module so far: `math`, `game`, `layout`, `path`, `json`, `toml`, `pack`, `csv`, `collections`, `random`, `time`, `re`, `log`, `cli`, `net`, `process` and `crypto`. Using a name without its import is reported with the import to add.
 *Why:* A file's imports show everything it uses from the standard library, as in Python.
 
 **What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs`, `Clock`, `Entropy`, `Args` and `Stdin`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the global functions, like `sum`, `range` and `sorted`.
@@ -905,7 +907,7 @@ import game.world.physics as physics
 **Two modules can have functions with the same name.** Without an import, `loads` doesn't exist, and the error says which modules have it.
 *Why:* `std.json` and `std.toml` both have `loads` and `dumps`, as in Python, so the name alone can't say which format is meant.
 
-**JSON and TOML read into plain values.** Objects and tables become dicts in the order written, arrays become lists, and TOML's dates and times stay strings as written. The checker doesn't know the shape of text it hasn't seen, so the values' types are unknown and checked as they're used. Writing takes dicts, lists, tuples and structs. Typed reading, `loads[Settings](text)`, comes later.
+**JSON and TOML read into plain values.** Objects and tables become dicts in the order written, arrays become lists, and TOML's dates and times stay strings as written. The checker doesn't know the shape of text it hasn't seen, so the values' types are unknown and checked as they're used. Writing takes dicts, lists, tuples and structs. Typed reading, `loads[Settings](text)`, gives a struct, checked as it loads.
 
 **Bad text fails with `ParseError`.** It has the `message`, `line` and `column`, and the message says the line and column too. A value a format can't hold, like a set in JSON or `None` in TOML, stops the program, like overflow.
 *Why:* Bad input is expected and has to be handled. Writing a set as JSON is a mistake in the program.
@@ -1432,7 +1434,7 @@ tools = { path = "../tools" }
 **There's one backend: LLVM, with per-function `-O3` and a function-level cache.** `fennec run` makes real binaries in the store. Whole-program work happens only in `--release`. There's no hot reload in the plan, and no tiering.
 *Why:* What people run is what ships, so a first benchmark shows real speed. The cache is what makes it fast to edit, and one backend is less to maintain and keep in agreement.
 
-**LLVM becomes the default backend once about 90% of examples build natively.** The interpreter is then out of `fennec run` and `fennec build`, and refusing to build and building natively stay the only two outcomes. Removing Cranelift also requires a native `fennec test` harness and Windows linking. Until then, `fennec run` uses the cached LLVM build, with a one-line note and then the JIT where LLVM can't build the program, and the interpreter for what the JIT can't compile. `fennec test` still uses the JIT's compiler, Cranelift. Since every program in the repository built natively, `fennec build` always makes a native program through LLVM, with no way back to the JIT's compiler. This replaces the rule that Cranelift is removed when LLVM wins across the benchmark suite, edits stay well under a second, and CI's rebuild comparison stays clean.
+**LLVM is the default backend.** `fennec run` and `fennec test` use the cached LLVM build, with a one-line note and then the JIT where LLVM can't build the program, and the interpreter for what the JIT can't compile. Once the interpreter is out, refusing to build and building natively are the only two outcomes. Removing Cranelift also requires Windows linking. Since every program in the repository built natively, `fennec build` always makes a native program through LLVM, with no way back to the JIT's compiler. This replaces the rule that Cranelift is removed when LLVM wins across the benchmark suite, edits stay well under a second, and CI's rebuild comparison stays clean.
 
 **Fennec has no REPL.** Running a small file is already quick, and one can come back as a pure addition if people ask.
 *Why:* This is a compiled language written mostly by AI, and it needs to be readable, fast to build and fast to run.

@@ -26,6 +26,12 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{nanos} = call i64 @fennec_clock_now()"));
                 self.instant_into(dest.ok_or("no result")?, &nanos)?;
             }
+            ("Clock.time", []) => {
+                self.declare("declare i64 @fennec_clock_time() nounwind");
+                let nanos = self.temp();
+                self.line(&format!("{nanos} = call i64 @fennec_clock_time()"));
+                self.instant_into(dest.ok_or("no result")?, &nanos)?;
+            }
             ("Clock.sleep", [duration]) => {
                 let (base, kind) = self.operand(duration)?;
                 let (offset, held) = self.field(&kind, "nanos")?;
@@ -54,7 +60,7 @@ impl Emit<'_, '_, '_> {
         Ok(true)
     }
 
-    /// Makes `dest`, an `Instant`, holding `nanos`.
+    /// Makes `dest`, an `Instant` or a `Time`, holding `nanos`.
     fn instant_into(&mut self, dest: LocalId, nanos: &str) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();
         let (offset, held) = self.field(&kind, "nanos")?;
@@ -72,7 +78,7 @@ impl Emit<'_, '_, '_> {
                 self.store_field(&held, nanos, &at, FIELD_ACCESS);
                 self.assign(dest, &block)
             }
-            other => Err(format!("`clock.now()` gives a {other:?}")),
+            other => Err(format!("the clock gives a {other:?}")),
         }
     }
 

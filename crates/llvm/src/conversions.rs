@@ -207,6 +207,8 @@ impl Emit<'_, '_, '_> {
             ("main.result", [result], [Some(Kind::Boxed(_) | Kind::Enum(_))]) => {
                 self.main_result(result, span)
             }
+            // An int `main` gives back is the program's exit code.
+            ("main.result", [code], [Some(Kind::Int)]) => self.main_exit(code),
             ("enumerate", [text], [Some(Kind::Str)]) => dest.and_then(|dest| {
                 let (text, _) = self.operand(text)?;
                 self.on_blocks([&text], |emit, [block]| {
@@ -462,6 +464,23 @@ impl Emit<'_, '_, '_> {
         self.leave_if_failed();
         self.line(&format!("br label %{fine}"));
         self.start_block(&fine);
+        // An int in its `Ok` is the program's exit code.
+        let (_, given) = self.case_of(&kind, "Ok")?;
+        if let Some((_, offset, Some(Kind::Int))) = given.first() {
+            let at = self.offset(&fields, *offset);
+            let access = if matches!(kind, Kind::Boxed(_)) { crate::emit::FIELD_ACCESS } else { "" };
+            let code = self.load_field(&Kind::Int, &at, access);
+            self.declare("declare void @fennec_main_exit(i64) nounwind");
+            self.line(&format!("call void @fennec_main_exit(i64 {code})"));
+        }
+        Ok(())
+    }
+
+    /// Hands the int `main` gave back to the runtime, which exits with it.
+    fn main_exit(&mut self, code: &Operand) -> Result<(), String> {
+        let (code, _) = self.operand(code)?;
+        self.declare("declare void @fennec_main_exit(i64) nounwind");
+        self.line(&format!("call void @fennec_main_exit(i64 {code})"));
         Ok(())
     }
 

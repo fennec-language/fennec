@@ -1,0 +1,8 @@
+# Fields with defaults come after the ones without, as parameters do, so a field added with a
+# default at the end never changes what a call means.
+struct Enemy:
+    health = 100
+    name: str
+
+def main(stdout: Stdout):
+    stdout.print(Enemy(name="fox").health)

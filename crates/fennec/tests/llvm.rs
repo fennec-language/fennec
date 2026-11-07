@@ -3903,6 +3903,35 @@ def main(stdout: Stdout):
     )
 }
 
+/// `list`, `sorted`, `set`, `min` and `max` of a type with an `iter` of its own take what it
+/// gives, as a `for` loop does: the program's own type, and the standard library's, which write
+/// themselves with `list(self)`.
+#[test]
+fn what_takes_every_item_takes_a_types_own_iter_as_the_jit_does() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "own_iter_items",
+        r"from std.collections import Deque, SortedSet
+
+struct Countdown:
+    start: int
+
+    def iter(self) -> Iterator[int]:
+        mut at = self.start
+        while at > 0:
+            yield at
+            at -= 1
+
+def main(stdout: Stdout):
+    down = Countdown(start=4)
+    stdout.print(list(down), sorted(down), set(down) == {1, 2, 3, 4}, min(down), max(down))
+    stdout.print(list(Countdown(start=0)), str(Deque.of([1, 2, 3])), str(SortedSet.of([3, 1, 2])))
+",
+    )
+}
+
 #[test]
 fn generators_and_results_match_the_jit() -> std::io::Result<()> {
     if !ready() {

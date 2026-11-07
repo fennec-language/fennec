@@ -79,7 +79,7 @@ impl Emit<'_, '_, '_> {
         self.take_word(&word, write, span);
         self.entered(&cell, write, &plain.to_string());
         if self.saves_changes(handle) {
-            self.rollback_begin(&cell);
+            self.rollback_begin(handle, &cell);
         }
         Ok(())
     }
@@ -192,13 +192,21 @@ impl Emit<'_, '_, '_> {
         let (word, cell, plain) = self.lock_word(handle)?;
         // A `lock ... as ref` block ending normally keeps what it changed.
         if self.saves_changes(handle) {
-            self.rollback_kept();
+            self.rollback_kept(handle);
         }
-        self.give_back_word(&word, &cell, &plain.to_string());
+        self.give_back_word(&word, &cell, &plain.to_string(), false);
         Ok(())
     }
 
-    fn give_back_word(&mut self, word: &str, cell: &str, plain: &str) {
+    /// Gives a lock's word back from where a crash leaves the function, with its failure already
+    /// set, so leaving the value's table can't send it back there.
+    pub(crate) fn give_back_on_crash(&mut self, handle: &Operand) -> Result<(), String> {
+        let (word, cell, plain) = self.lock_word(handle)?;
+        self.give_back_word(&word, &cell, &plain.to_string(), true);
+        Ok(())
+    }
+
+    fn give_back_word(&mut self, word: &str, cell: &str, plain: &str, on_crash: bool) {
         if !self.module.threads {
             self.line(&format!("store i64 0, ptr {word}"));
             return;
@@ -213,7 +221,9 @@ impl Emit<'_, '_, '_> {
             let (wide, me) = (emit.temp(), emit.temp());
             emit.line(&format!("{wide} = zext i1 {writer} to i64"));
             emit.line(&format!("{me} = call i64 @fennec_shared_leave(ptr {cell}, i64 {wide})"));
-            emit.leave_if_failed();
+            if !on_crash {
+                emit.leave_if_failed();
+            }
             emit.line(&format!("store i64 {me}, ptr @fennec_thread"));
         });
         let (free, read, done) =
@@ -255,7 +265,7 @@ impl Emit<'_, '_, '_> {
         for (handle, _) in handles {
             if self.saves_changes(handle) {
                 let (cell, _) = self.operand(handle)?;
-                self.rollback_begin(&cell);
+                self.rollback_begin(handle, &cell);
             }
         }
         Ok(())
@@ -265,9 +275,9 @@ impl Emit<'_, '_, '_> {
     /// tables a thread holds are a stack.
     pub(crate) fn unlock_all(&mut self, handles: &[Operand]) -> Result<(), String> {
         // Each `lock ... as ref` among them ending normally keeps what it changed.
-        for handle in handles {
+        for handle in handles.iter().rev() {
             if self.saves_changes(handle) {
-                self.rollback_kept();
+                self.rollback_kept(handle);
             }
         }
         let mut held = Vec::with_capacity(handles.len());
@@ -282,7 +292,7 @@ impl Emit<'_, '_, '_> {
             }
         }
         for (word, cell, _, plain) in held.iter().rev() {
-            self.give_back_word(word, cell, plain);
+            self.give_back_word(word, cell, plain, false);
         }
         Ok(())
     }

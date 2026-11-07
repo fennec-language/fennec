@@ -1353,9 +1353,19 @@ impl Emit<'_, '_, '_> {
             return self.assign(dest, &found);
         }
         let (a, kind) = self.operand(lhs)?;
-        let (b, _) = self.operand(rhs)?;
+        let (mut b, mut b_kind) = self.operand(rhs)?;
+        // `None` beside an optional string is that string's `None`: a header all zero.
+        if *rhs == Operand::None && kind == Kind::MaybeText {
+            (b, b_kind) = ("zeroinitializer".to_owned(), Kind::MaybeText);
+        }
+        let optional = (kind == Kind::MaybeText, b_kind == Kind::MaybeText);
         let value = match kind {
             Kind::Int => self.int_binary(dest, op, (&a, &b), rhs, span)?,
+            Kind::Str | Kind::MaybeText
+                if matches!(op, BinOp::Eq | BinOp::NotEq) && (optional.0 || optional.1) =>
+            {
+                self.maybe_text_binary(op, (&a, optional.0), (&b, optional.1))
+            }
             Kind::Float => self.float_binary(op, (&a, &b), rhs, span)?,
             Kind::Bool => {
                 let cc = match op {

@@ -49,11 +49,13 @@ mod json;
 mod kinds;
 mod lists;
 mod locks;
+mod native;
 mod parallel;
 mod random;
 mod regex;
 mod text;
 mod uniqueness;
+mod waits;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -67,6 +69,7 @@ pub use emit::{Cpu, Unit, emit, emit_for, emit_traced, emit_tracing_costs};
 pub use entry::{Image, entry, tests_entry};
 pub use fennec_layout::Layouts;
 pub use parallel::{uses_parallel, uses_tls};
+pub use waits::{Waits, Why, may_wait};
 
 /// What functions' text leaves to the module made fresh each build.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -84,6 +87,9 @@ pub struct Shared {
     pub elements: BTreeMap<String, ListItem>,
     /// Each boxed type's symbol for its shape's number, and its layout's number.
     pub shapes: BTreeMap<String, u32>,
+    /// The boxed types whose blocks generated code makes and frees itself, outside the runtime's
+    /// table: see `native`.
+    pub native: BTreeSet<u32>,
     /// Each kind of dict's symbol for its shape's number, and what it holds.
     pub dicts: BTreeMap<String, (Word, Word)>,
     /// Whether each function sets a flag saying it ran, for a test to say what it ran. A function

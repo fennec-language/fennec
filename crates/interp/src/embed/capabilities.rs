@@ -4,7 +4,7 @@
 //! carries a capability as its block's address, and the runtime reads from the block what the
 //! capability may do, so passing one through native code can't widen it.
 //!
-//! A kind on its own, 0 to 7, still means that plain capability where one is taken: no
+//! A kind on its own, 0 to 8, still means that plain capability where one is taken: no
 //! block's address is that small.
 
 use std::rc::Rc;
@@ -23,7 +23,7 @@ use crate::value::{Capability, Value};
 const WORDS: usize = 4;
 
 /// The kinds a capability word can be on its own, below any block's address.
-const KINDS: i64 = 8;
+const KINDS: i64 = 9;
 
 /// The kind native code numbers a capability by, the inverse of `super::capability`.
 fn kind_of(capability: Capability) -> i64 {
@@ -36,6 +36,7 @@ fn kind_of(capability: Capability) -> i64 {
         Capability::Process => 5,
         Capability::Entropy => 6,
         Capability::Net => 7,
+        Capability::Env => 8,
     }
 }
 
@@ -323,6 +324,8 @@ fn native_method(
                 .map_err(|_| Diagnostic::new("the operating system gave too few bytes", at))?;
             Ok(Value::Int(i64::from_le_bytes(word)))
         }
+        (Capability::Env, "get", [Value::Str(name)]) => Ok(crate::env::variable(name)),
+        (Capability::Env, "all", []) => Ok(crate::env::variables()),
         _ => Err(crate::methods::no_method(&Value::Capability(capability), method, at)),
     }
 }

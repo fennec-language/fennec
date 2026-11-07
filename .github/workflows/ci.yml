@@ -112,7 +112,9 @@ jobs:
       matrix:
         os: ${{ fromJSON(github.event_name == 'merge_group' && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    # Windows' tests take about 13 minutes, and a build with no cache there 10 more. A job that
+    # runs out of time saves no cache, so the limit leaves room for a cold one.
+    timeout-minutes: 35
     # LLVM is the main backend, so on Linux and Windows its tests have to run: with LLVM's tools
     # from the toolchain's own `llvm-tools`, the LLVM rustc uses, a missing tool or runtime
     # library fails them instead of skipping them.

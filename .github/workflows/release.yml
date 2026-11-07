@@ -45,8 +45,6 @@ jobs:
       - name: Install musl's C compiler
         run: sudo apt-get install -y -q musl-tools
       - run: .github/scripts/musl-runtime.sh musl
-      # musl's own notice, which a program linked with it carries.
-      - run: cp /usr/share/doc/musl/copyright musl/musl-copyright.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: musl-${{ matrix.target }}
@@ -176,9 +174,10 @@ jobs:
             cp "$TOOLCHAIN"/lib/libLLVM* "$name/llvm/lib/"
           fi
           # On Linux, what a release build links a program with to make one that runs on its own.
+          # Its programs hold musl's notices themselves, and the archive has them too.
           if [ -d musl ]; then
-            mv musl/musl-copyright.txt "$name/licenses/"
             cp -R musl "$name/musl"
+            cp licenses/musl.txt "$name/licenses/"
           fi
           licenses="$TOOLCHAIN/share/doc/rust/licenses"
           cp "$licenses/Apache-2.0.txt" "$licenses/LLVM-exception.txt" "$licenses/NCSA.txt" "$name/licenses/"
@@ -221,6 +220,7 @@ jobs:
               ! grep -q 'ld-linux' "$program" || { echo "$program asks for the system's loader"; exit 1; }
             done
             [ "$(env -i ./hello_release)" = "$(cat "$source/hello.out")" ]
+            try "$fennec" notices hello_release | grep -q 'Rich Felker'
           fi
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         if: startsWith(github.ref, 'refs/tags/v')

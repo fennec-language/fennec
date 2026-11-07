@@ -623,6 +623,7 @@ jobs:
           for example in $examples; do
             ./target/debug/fennec build --release "examples/$example.fen" -o "empty/$example"
           done
+          ./target/debug/fennec notices empty/hello | grep -q 'Rich Felker'
           printf 'FROM scratch\nCOPY . /\n' > empty/Dockerfile
           docker build -q -t fennec-empty empty
           for example in $examples; do

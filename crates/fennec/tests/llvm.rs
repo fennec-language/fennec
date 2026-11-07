@@ -6002,6 +6002,11 @@ fn a_release_build_on_linux_needs_nothing_from_the_machine() -> std::io::Result<
         .env("FENNEC_HOME", dir.join("home"))
         .output()?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    // It holds musl's notices, which its license asks to go with every copy.
+    let notices =
+        crate::executables::fennec_command().args(["notices", "main"]).current_dir(&dir).output()?;
+    let notices = String::from_utf8_lossy(&notices.stdout);
+    assert!(notices.starts_with("musl libc") && notices.contains("Rich Felker"), "{notices}");
     let program = std::fs::read(dir.join("main"))?;
     // The kinds of segment that ask for a loader and for shared libraries.
     let (interp, dynamic) = (3, 2);

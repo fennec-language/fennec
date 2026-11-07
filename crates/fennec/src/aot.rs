@@ -469,6 +469,10 @@ fn link_objects(
         std::fs::write(&path, object).map_err(|err| format!("couldn't write an object file: {err}"))?;
         paths.push(path);
     }
+    // A program linked on its own holds the notices musl's license asks to go with it.
+    if statically {
+        paths.push(crate::notices::object(&work)?);
+    }
     let started = Instant::now();
     let runtime = if runtime_in { c_parts(&runtime, &work)? } else { runtime };
     let linked = if statically {
@@ -545,6 +549,8 @@ fn static_linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command 
         .arg(musl.join("crtend.o"))
         .arg(musl.join("crtn.o"))
         .args(["-Wl,--gc-sections", "-Wl,--eh-frame-hdr"])
+        // Nothing reads the notices, so dropping what's unused would drop them too.
+        .arg(format!("-Wl,--undefined={}", crate::notices::SYMBOL))
         .arg("-o")
         .arg(output);
     command

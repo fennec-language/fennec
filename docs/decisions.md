@@ -224,9 +224,6 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 
 **The compiler chooses the layout.** It can reorder fields, pack enums, and in a hot loop store a list of structs as one array per field. None of this can change what a program does, because nothing can observe where a value sits in memory. Printing and `{x=}` always show the struct as written.
 
-**Structs in `extern` modules use C's layout exactly.**
-*Why:* C interop must be predictable.
-
 ## Allocation
 
 **The compiler and runtime choose allocation, and code never names an allocator.** mimalloc is the invisible last step, for what the compiler can't place itself. It's vendored (it's MIT-licensed) and later ported to Fennec. It keeps per-thread lists of free blocks for each size, so allocating and freeing take a few instructions.
@@ -256,7 +253,7 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 - `a.approx(b, within=...)` compares computed values with a tolerance. It isn't used for keys, because "close to" isn't transitive.
 - `x != x` no longer finds NaN. Write `x.is_nan()`.
 
-This replaces IEEE comparison operators, and the rule that a struct with a float field can't be a dict key. `==`, hashing and sorting are built, and `<` on a NaN isn't yet. A "never NaN" analysis is planned, so a comparison of values that can't be NaN costs what IEEE's does.
+This replaces IEEE comparison operators, and the rule that a struct with a float field can't be a dict key. Built: `==`, hashing, sorting and `<` all follow it. A "never NaN" analysis is planned, so a comparison of values that can't be NaN costs what IEEE's does.
 *Why:* Floats compare, sort, hash and key consistently. Measured with LLVM, every benchmark kernel stayed within ±0.4% of IEEE's instruction count once comparisons against a constant compile to one comparison, and vectorizing was unchanged.
 
 **Floats give the same results on every platform.** There are no fused operations and no fast-math outside an opt-in, and `sin`, `cos` and the rest are in the stdlib rather than the platform's math library. `@fast_math` on a function opts out. This replaces `with fast_math():`.
@@ -339,7 +336,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 ## Functions and types
 
-**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose. Not built yet: `sorted(scores)` alone on a line still compiles.
+**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose. Built.
 ```fennec
 sorted(scores)       # error: the result is ignored
 _ = sorted(scores)   # fine
@@ -409,12 +406,12 @@ if result is Err(NotFound):
 - `?` is required wherever a failure passes up, including in `with` and `for`.
 - `if x is Err(...)` and `if x is None:` narrow `x`. `match` handles several cases.
 - Checking an error and then ignoring it is a compile error.
-- `xs[i]` out of range is a bug that stops the program. `xs.get(i)` returns an optional, for when it might not be there. Not built yet: a list has no `get`.
+- `xs[i]` out of range is a bug that stops the program. `xs.get(i)` returns an optional, for when it might not be there. Built.
 
 This replaces the earlier rules that errors are inferred and `fails` is optional.
 *Why:* A reader sees at a glance how a function can fail and every line where it can leave. Swallowed errors are how reliable-looking programs go wrong.
 
-**There's no `exit()`.** `fail` out of `main` prints the failure to stderr and exits with code 1, and `main` may return an `int` as the exit code. Nothing else can end the process. Built, apart from returning an exit code.
+**There's no `exit()`.** `fail` out of `main` prints the failure to stderr and exits with code 1, and `main` may return an `int` as the exit code. Nothing else can end the process. Built.
 *Why:* A program ends in one visible place, and no library can stop the process behind its caller's back.
 
 **`?` only ever passes a failure up, and there's no `?.`.** `rows = load(path)?.rows` passes the failure up, then reads `.rows`.
@@ -677,7 +674,7 @@ There are no moves. A resource that has to live a long time, like a pooled datab
 
 **The value after `with` must be a plain value.** An error from opening it is dealt with first: `with fs.open(path)? as file:`.
 
-**`with` lends you something for the length of a block, and it can't escape.** What a `with` gives can't be returned, stored outside the block or put in a `shared`. A second name for it inside the block is fine, and a struct holding something borrowed is borrowed too, so wrappers work. Not built yet.
+**`with` lends you something for the length of a block, and it can't escape.** What a `with` gives can't be returned, stored outside the block or put in a `shared`. A second name for it inside the block is fine, and a struct holding something borrowed is borrowed too, so wrappers work. Built for sources a program writes.
 *Why:* A file, socket or transaction then closes exactly once, at a line you can see, and nobody can use it after.
 
 **There's no `def del` and no destructor.** Everything that needs cleanup is opened with `with`. This replaces `def del` on `shared` types, and the standard library's `Connection` closing when its last owner goes away. `fennec fix` rewrites existing code. Not built yet.
@@ -997,13 +994,13 @@ A big program that wants walls between its own parts splits into local kits in o
 **Four questions, each with its own words:** `mut` and `ref` say whether something can change; `shared` and `lock` say who's touching it; `with` says when it goes back; `launch` and channels say who talks to whom.
 *Why:* Each question gets one answer you can see in the code, and every borrow lives in a block, so there are no lifetimes to write.
 
-**`shared T` is a type, and it's the only way tasks reach the same value.** It works on any type, and goes in fields and collections: `dict[str, shared Room]`. Making one from a plain value is written out, as `shared rooms = dict[str, Room]()`, and a plain value never becomes `shared` at a call. This replaces `shared Name:` declarations, whose methods locked automatically. Not built yet.
+**`shared T` is a type, and it's the only way tasks reach the same value.** It works on any type, and goes in fields and collections: `dict[str, shared Room]`. Making one from a plain value is written out, as `shared rooms = dict[str, Room]()`, and a plain value never becomes `shared` at a call. This replaces `shared Name:` declarations, whose methods locked automatically, which still compile until `fennec fix` rewrites them. Built.
 *Why:* Sharing then shows up in types and signatures, and a search for `shared` finds every place it happens.
 
 **There's no top-level shared state.** A `shared` value is made in a function, usually `main`, and passed to whoever needs it, like a capability.
 *Why:* A function's signature then says what shared state it can touch, so nobody has to read its body to find out.
 
-**A `shared` value is reached only inside `lock`.** `lock x as s:` reads, and many tasks can read at once. `lock x as ref s:` changes it, one task at a time. Any way out of the block releases it. `fail` and `return` keep the changes made so far, and only a crash undoes them. There's no upgrading a read to a write. This replaces `with x as ref y:` for locking. Not built yet.
+**A `shared` value is reached only inside `lock`.** `lock x as s:` reads, and many tasks can read at once. `lock x as ref s:` changes it, one task at a time. Any way out of the block releases it. `fail` and `return` keep the changes made so far, and only a crash undoes them. There's no upgrading a read to a write. This replaces `with x as ref y:` for locking. Built, apart from a `lock` inside another, which is refused for now: take them together in one.
 ```fennec
 def record(scores: shared Scores, name: str, points: int):
     lock scores as ref current:
@@ -1039,11 +1036,11 @@ with launch((inbox) => audio(inbox, speakers), stop_after=5s) as sounds:
 **A task's failure comes out where its `with launch` ends, and a crash comes out as `Crashed`.** A crash ends only its own task, and the HTTP server answers that request with a 500.
 *Why:* A parent, like a pool's keeper, has to see a child die to replace it, and one bad request shouldn't stop a server.
 
-**A crash inside `lock x as ref s:` rolls back the block's writes.** The compiler saves the old value before each write, and on a crash the runtime puts them back in reverse order, then releases the lock. Only crashes roll back, so `fail` and `return` keep their changes. The compiler skips the saves where it proves the block can't crash, and values taken out are freed when the block ends. There's no new syntax, no new failure type and no poisoned lock. This replaces the rule that a crash while holding a `ref` lock stops the program. Not built yet.
+**A crash inside `lock x as ref s:` rolls back the block's writes.** The compiler saves the old value before each write, and on a crash the runtime puts them back in reverse order, then releases the lock. Only crashes roll back, so `fail` and `return` keep their changes. The compiler skips the saves where it proves the block can't crash, and values taken out are freed when the block ends. There's no new syntax, no new failure type and no poisoned lock. This replaces the rule that a crash while holding a `ref` lock stops the program. Built.
 *Why:* Nobody ever sees a half-change, and one crashing task no longer takes everything else down with it.
 The build lanes make this one general piece that undoes the writes in a block. Other uses wait until a real program asks for them, like a failing function leaving its `ref` arguments unchanged, or undo in a game.
 
-**Channels are bounded.** `send` waits when one is full, and both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. Sending to a closed channel fails at once. A channel you set up yourself is `with Channel[Job](size=64) as jobs:`. Built.
+**Channels are bounded.** `send` waits when one is full, and both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. Sending to a closed channel fails at once. A channel you set up yourself is `with Channel[Job](size=64) as jobs:`. The runtime's half is built, but the language doesn't have `Channel` yet.
 *Why:* A bounded buffer pushes back instead of growing without limit, and saying why a receive stopped lets the task decide what to do.
 
 **Dev builds stop with a report when tasks are waiting only on each other.**
@@ -1064,7 +1061,7 @@ The build lanes make this one general piece that undoes the writes in a block. O
 **There's one scheduler, with I/O multiplexed by the OS.** Code looks blocking, and a task that waits parks and frees its core.
 *Why:* Thousands of parked tasks cost almost nothing, and nobody has to manage a pool or color functions `async`.
 
-**`?` means the same inside `parallel` as anywhere else.** A failure in one round passes up out of the loop once the other rounds stop, for any source, with no special case for servers. To let one piece fail alone, handle it in the body, with `match` or `else: continue`. `break` stops new rounds from starting and lets the running ones finish, and a failure passing up cuts them short, like a failed `launch`. Each connection a server lends closes when its round ends, however it ends. `server.serve(handler)` turns a handler's failure into a 500, in plain Fennec. Built for the failure passing up; the rest isn't built yet. This replaces the pick that `?` inside `parallel` ends only that task.
+**`?` means the same inside `parallel` as anywhere else.** A failure in one round passes up out of the loop once the other rounds stop, for any source, with no special case for servers. To let one piece fail alone, handle it in the body, with `match` or `else: continue`. `break` stops new rounds from starting and lets the running ones finish, and a failure passing up cuts them short, like a failed `launch`. Each connection a server lends closes when its round ends, however it ends. `server.serve(handler)` turns a handler's failure into a 500, in plain Fennec. Built, servers included, apart from `server.serve(handler)`, whose handler can't fail yet. This replaces the pick that `?` inside `parallel` ends only that task.
 *Why:* One meaning for `?` is easier to read than a special case, and whoever writes the body decides what a failure there should do.
 
 **A crash in a server task stays in that task.** A runtime failure in a task of `parallel(server)` ends that task and closes its connection, and the server goes on, as under `std.net`. A crash inside a `ref` lock rolls back that lock's writes first, as under Concurrency.
@@ -1404,10 +1401,10 @@ These are default lints, and the Den requires them.
 **An existing AI model reviews each release's diff,** and its findings are shown. There's no custom fine-tuned model.
 
 **Kits have three tiers, so the audit scales with what a kit can touch.**
-- **Pure** (no capabilities, no `extern`): automatic.
+- **Pure** (no capabilities and no C): automatic.
 - **Capability** (`Fs`, `Net` and so on): automatic plus AI review, with capabilities shown on the page. A newly added capability needs the author's own passkey tap at publish. Consumers' approval of an update that asks for more is unchanged.
 - **Process** (`Process`): reviewed like native code, and flagged prominently on the kit's page.
-- **Native** (`extern`, C code): human audit, first-party kits only in v1. Verified third-party authors are the later path, if there's a real need.
+- **Native** (a binding to C in the runtime): human audit, and first-party kits only.
 
 *Why:* Most kits can't touch anything, so they need no human, and the people's time goes to the few kits that could do harm.
 
@@ -1481,7 +1478,6 @@ Narrowing chains, so `net.client().hosts(["api.example.com"])` can only connect 
 physics = { git = "https://git.example.com/studio/physics", commit = "3f9c2a1e7b4d" }
 tools = { path = "../tools" }
 ```
-- A git or path dependency may contain `extern`, but adding or updating one that does shows a clear notice, "this dependency contains C code", and needs your approval.
 - A kit with git or path dependencies can't be published to the Den, so they never spread into other people's trees.
 - Capabilities are enforced as for any other code.
 
@@ -1616,7 +1612,7 @@ def main(stdout: Stdout, gpu: Gpu):
 
 *Why:* A kernel that's just a function is tested on the CPU with `fennec test`, debugged like any code, and run by the interpreter too. A separate shader language means separate tools.
 
-**Kernels compile through two small in-house backends:** SPIR-V for Vulkan (Windows, Linux, Android) and Metal Shading Language source for Metal (macOS, iOS). No third-party translator is involved. Release builds compile kernels ahead of time and embed them; the JIT compiles each one when it first runs and caches it by content. WGSL for WebGPU can come later. `std.gpu` reaches Vulkan and Metal through `extern`, which only the standard library's OS layer may do.
+**Kernels compile through two small in-house backends:** SPIR-V for Vulkan (Windows, Linux, Android) and Metal Shading Language source for Metal (macOS, iOS). No third-party translator is involved. Release builds compile kernels ahead of time and embed them; the JIT compiles each one when it first runs and caches it by content. WGSL for WebGPU can come later. `std.gpu` reaches Vulkan and Metal through the runtime's binding to C, the one way any C is reached.
 
 **GPU floats are the same on the same device, not across vendors.** `sqrt`, `exp` and division can differ in the last bit between GPU makers. `gpu.run(..., exact=True)` turns off contraction and uses Fennec's own math functions for results identical across vendors, at some cost in speed. Lockstep game simulation stays on the CPU.
 
@@ -1627,8 +1623,6 @@ def main(stdout: Stdout, gpu: Gpu):
 **C is called only through the standard library and first-party kits.** Their binding to C sits in reviewed runtime code, and Fennec programs see only a safe API, like `with Window.open(...)? as window:`. A program or a third-party kit can't call C itself. Not built yet. This replaces `extern "C":` blocks and `unsafe` in Fennec code, and C in your own app or in git and path dependencies.
 *Why:* "No `unsafe` in Fennec" stays true for every program, and games still get libraries like SDL and Vulkan.
 
-The entries below describe the earlier plan, which had `unsafe`, `def del` and `extern` blocks in Fennec code.
-
 **If it can be Fennec, it is Fennec.** Libraries are ported to Fennec wherever possible. C is called only for what can't be ported: the operating system's own APIs, GPU drivers, and closed platform or console SDKs.
 - **A port is tested against the original:** the C library is the oracle, giving the same outputs for the same inputs, and fuzz tests compare them continuously.
 - **A port is benchmarked against the original:** CI fails if it's more than 3% slower.
@@ -1636,73 +1630,24 @@ The entries below describe the earlier plan, which had `unsafe`, `def del` and `
 
 *Why:* Ported code is memory-safe, bound by capabilities, and runs in wasm and the playground. A C binding is none of those.
 
-**A C callback is a plain top-level function that gets an `Id` through user data.** C never holds a closure or a place.
-*Why:* C can call back at any time, so anything it keeps has to be safe to keep. A stale `Id` finds nothing, and a top-level function captures nothing.
-
-**C is declared in an `extern "C":` block.** A file with one is an extern module, the only kind of file where pointers and `unsafe` may appear.
-```fennec
-extern "C":
-    struct Sqlite3:
-        _opaque: u8
-
-    def sqlite3_open(path: ptr[u8], db: ptr[owned ptr[Sqlite3]?]) -> i32
-    def sqlite3_close(db: owned ptr[Sqlite3]) -> i32
-
-export struct Database:
-    handle: owned ptr[Sqlite3]
-
-    def del(self):
-        unsafe("handle came from sqlite3_open and is closed only here"):
-            sqlite3_close(self.handle)
-```
-
-**Every call into C is inside `unsafe("reason")`.** The reason is required and says which rule the code relies on.
-
-**A small, fixed set of types crosses the boundary:** numbers with explicit widths (`i8` to `i64`, `u8` to `u64`, `f32`, `f64`), `bool`, `extern` structs (in C's layout exactly), `ptr[T]` and `CString`, which owns its bytes and ends them with the zero byte C expects. Fennec's `str`, `list` and other structs are converted explicitly. Passing Fennec functions to C as callbacks comes later.
-
-**Pointers are as safe as the compiler can make them.**
-- `ptr[T]` is never null. Anything C may return as null is `ptr[T]?`, and the checker makes you handle `None`.
-- An `owned ptr` must be used up exactly once, either moved into a struct whose `def del` releases it or passed to a C function that takes `owned`. Dropping one, copying one or losing one on any path is a compile error naming the path.
-- A pointer into a Fennec value, such as a `CString`'s, is usable only inside the `unsafe` block where it was taken.
-- Reading, writing or offsetting through a pointer happens only inside `unsafe`.
-- Exported signatures never contain pointers, so other files and kits see only a safe API.
-
-**Declarations are checked against the real headers.** When building, every `extern` struct's size and field offsets, and every function's signature, are compared with the C headers, and a mismatch fails the build. `fennec bindgen header.h` writes the `extern` block from the headers in the first place, and the generated file is checked in.
-*Why:* A wrong signature corrupts memory silently, and it's the mistake AI-written bindings make most.
-
-**Native code is caught misbehaving early.** Development builds track every owned pointer and stop on a double free or a use after free. Native kits run their tests under AddressSanitizer, UndefinedBehaviorSanitizer and LeakSanitizer, and the Den fuzzes every `extern` wrapper.
-
-**When the program stops itself,** as on overflow, `def del` still runs for every value holding an `owned ptr`, so C resources are closed. Only a crash inside C skips it.
+**A C callback reaches Fennec through an `Id`.** C never holds a closure or a place.
+*Why:* C can call back at any time, so anything it keeps has to be safe to keep, and a stale `Id` finds nothing.
 
 **No C is called inside `parallel` bodies.**
 *Why:* Most C libraries aren't safe to call from several threads at once.
 
-**`fennec audit --unsafe` lists every `unsafe` block in the dependency tree,** with its reason, and the Den shows each kit's count.
-
-**Libraries are named in `kit.toml`:**
-```toml
-[native]
-libraries = ["sqlite3"]
-```
-The JIT loads them when the program runs, and release builds link them. The C standard library is always available.
-
-**In v1, raw C is allowed only in the standard library's OS layer, first-party `fennec/` kits, your own app and git or path dependencies you approve.** An app can use `extern` in its own code, which isn't publishing; a game engine needs that for Metal and Vulkan. No third-party native kits go on the Den in v1, even from verified authors, until there's a real need. Verified authors are the later path.
-*Why:* Native code is the one place Fennec's guarantees stop, since C can ignore capabilities and corrupt memory.
+**Every first-party native kit has a plan to become pure Fennec,** with differential tests against the original C, and its runtime binding runs its tests under AddressSanitizer, UndefinedBehaviorSanitizer and LeakSanitizer.
 
 **There's no C compiled to wasm in v1.** It can be reconsidered later if the ecosystem needs it.
 
-**Every first-party native kit has a plan to become pure Fennec,** with differential tests against the original C.
-
-**An app allows each native kit by name:** `sqlite = { version = "1.2", native = true }`. A native kit's API still takes the capabilities it uses, `sqlite.open(fs, path)`, so its signatures stay honest.
-
-**Until it's removed, the interpreter calls only the standard library's own OS layer, never a kit's `extern` functions.** The playground, the sandbox and compile-time evaluation can't run native kits; the error points to `fennec run`, which runs native code. Native kits' differential tests compare the JIT with release builds.
+This replaces the earlier plan for C in Fennec code: `extern "C":` blocks, `unsafe("reason")`, pointer types, `def del` releasing owned pointers, `fennec audit --unsafe`, a `[native]` table in `kit.toml`, and apps or path dependencies calling C themselves.
 
 ## Sandboxing
 
 **No program runs scripts inside itself.** A program can't load and run sandboxed code at run time. Sandboxes exist only for tools, like Den tests and MCP snippets. This removes the earlier idea of a host running sandboxed scripts.
 *Why:* A script loaded at run time is code the compiler never saw, which is the open set Fennec has already ruled out.
 
-**Capabilities are the sandbox's policy in every engine.** Sandboxed code can do only what the capabilities passed to its `main` allow, and it can't use `extern` or `unsafe`. A tool can show what a snippet asks for before running it: "this snippet wants `Net` and read access to `data/`".
+**Capabilities are the sandbox's policy in every engine.** Sandboxed code can do only what the capabilities passed to its `main` allow, and it can't call C. A tool can show what a snippet asks for before running it: "this snippet wants `Net` and read access to `data/`".
 *Why:* That makes Fennec a good language for AI agents to write tool code in: typed, with every power declared up front.
 
 **Until it's removed, the interpreter runs untrusted code for those tools, with limits.** After that, the playground, Den tests and agents' snippets are all compiled to WebAssembly by the server build and run in Wasmtime, with fuel and memory limits and no files or network unless granted. Not built yet. It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs the playground and AI-written snippets, where starting instantly and being easy to sandbox matter more than speed. In the browser it runs as wasm, so the browser sandboxes it again.

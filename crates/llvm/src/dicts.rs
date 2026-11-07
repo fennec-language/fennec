@@ -59,14 +59,21 @@ impl Emit<'_, '_, '_> {
         Kind::from_ty(self.module.layouts, word_ty(word))
     }
 
-    /// A new empty dict with room for `room` keys.
-    fn new_dict(&mut self, key: Word, value: Word, room: &str) -> String {
+    /// The number of the shape of a dict with these keys and values, which the runtime sets.
+    pub(crate) fn dict_shape(&mut self, key: Word, value: Word) -> String {
         let symbol = format!("d_{key:?}_{value:?}");
         self.module.shared.dicts.insert(symbol.clone(), (key, value));
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
-        self.declare("declare ptr @fennec_dict_new(i64, i64) nounwind");
-        let (shape, dict) = (self.temp(), self.temp());
+        let shape = self.temp();
         self.line(&format!("{shape} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
+        shape
+    }
+
+    /// A new empty dict with room for `room` keys.
+    fn new_dict(&mut self, key: Word, value: Word, room: &str) -> String {
+        let shape = self.dict_shape(key, value);
+        self.declare("declare ptr @fennec_dict_new(i64, i64) nounwind");
+        let dict = self.temp();
         self.line(&format!("{dict} = call ptr @fennec_dict_new(i64 {shape}, i64 {room})"));
         dict
     }

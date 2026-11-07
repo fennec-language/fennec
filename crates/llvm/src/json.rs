@@ -3,6 +3,7 @@
 //! goes by way of a block of its layout's shape made for the crossing.
 
 use fennec_check::Type;
+use fennec_interp::embed::dicts::Word;
 use fennec_ir::{LocalId, Operand};
 use fennec_syntax::Span;
 
@@ -229,6 +230,22 @@ impl Emit<'_, '_, '_> {
             }
             Kind::Bytes => {
                 let shape = fennec_interp::embed::heap::BYTES_SHAPE;
+                self.declare("declare ptr @fennec_box_from_value(i64, i64, i64, i64) nounwind");
+                self.line(&format!(
+                    "{value} = call ptr @fennec_box_from_value(i64 {handle}, i64 {shape}, i64 {from}, i64 {to})"
+                ));
+            }
+            // The runtime writes a dict of the shape for its keys and values. A plain key it
+            // finds by its type's name, which a tuple doesn't have.
+            Kind::Dict(key, held) => {
+                if let Word::Plain(layout) = key
+                    && self.module.layouts.get(*layout).is_some_and(|layout| layout.name.starts_with('('))
+                {
+                    return Err(format!(
+                        "it reads JSON into a {kind:?}, which this backend doesn't take yet"
+                    ));
+                }
+                let shape = self.dict_shape(*key, *held);
                 self.declare("declare ptr @fennec_box_from_value(i64, i64, i64, i64) nounwind");
                 self.line(&format!(
                     "{value} = call ptr @fennec_box_from_value(i64 {handle}, i64 {shape}, i64 {from}, i64 {to})"

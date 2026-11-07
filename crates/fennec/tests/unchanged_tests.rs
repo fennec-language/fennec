@@ -503,6 +503,8 @@ fn kept_ran(
 
 /// Every example with tests says the same whichever way its tests run. And a wrong "unchanged" is
 /// a test skipped that should have run, so everything the JIT says a test ran, LLVM has to say too.
+/// The examples are tested on every core, up to 8, each worker with a Fennec home of its own: one
+/// at a time took 34 seconds.
 #[test]
 fn every_example_tested_through_llvm_says_and_traces_what_it_does_on_the_jit() {
     if !llvm_here() {
@@ -511,36 +513,55 @@ fn every_example_tested_through_llvm_says_and_traces_what_it_does_on_the_jit() {
     let home = std::env::temp_dir().join(format!("fennec-unchanged-llvm-examples-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
-    let (mut programs, mut compared, mut traced) = (0, 0, 0);
+    let mut paths = Vec::new();
     for entry in std::fs::read_dir(&examples).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().is_none_or(|ext| ext != "fen") {
             continue;
         }
         let source = std::fs::read_to_string(&path).unwrap();
-        if !source.lines().any(|line| line.trim_start().starts_with("test \"")) {
-            continue;
+        if source.lines().any(|line| line.trim_start().starts_with("test \"")) {
+            paths.push(path);
         }
-        programs += 1;
-        let on_the_jit = tested(&path, &["--all", "--jit"], &home).unwrap();
-        let jit = kept_ran(&home, &path).unwrap();
-        let through_llvm = tested(&path, &["--all"], &home).unwrap();
-        let llvm = kept_ran(&home, &path).unwrap();
-        assert_eq!(through_llvm, on_the_jit, "{} says something else through LLVM", path.display());
+    }
+    paths.sort();
+    // For each, how many of its tests were compared and traced, and what differed.
+    let found = crate::executables::at_once(&paths, |worker, path| {
+        let home = home.join(format!("worker-{worker}"));
+        let on_the_jit = tested(path, &["--all", "--jit"], &home)?;
+        let jit = kept_ran(&home, path)?;
+        let through_llvm = tested(path, &["--all"], &home)?;
+        let llvm = kept_ran(&home, path)?;
+        let mut wrong = Vec::new();
+        if through_llvm != on_the_jit {
+            let shown = path.display();
+            wrong.push(format!(
+                "{shown} says something else through LLVM:\n  {through_llvm:?}\non the JIT:\n  {on_the_jit:?}"
+            ));
+        }
+        let (mut compared, mut traced) = (0, 0);
         for (test, ran) in &jit {
             let Some(ran) = ran else { continue };
             compared += 1;
             let Some(Some(ran_through_llvm)) = llvm.get(test) else { continue };
             traced += 1;
             let missing: Vec<_> = ran.iter().filter(|name| !ran_through_llvm.contains(name)).collect();
-            assert!(
-                missing.is_empty(),
-                "{}: `{test}` ran {missing:?} on the JIT, and LLVM doesn't say so",
-                path.display()
-            );
+            if !missing.is_empty() {
+                wrong.push(format!(
+                    "{}: `{test}` ran {missing:?} on the JIT, and LLVM doesn't say so",
+                    path.display()
+                ));
+            }
         }
-    }
+        Ok((compared, traced, wrong))
+    })
+    .unwrap();
+    let programs = paths.len();
+    let compared: usize = found.iter().map(|(compared, _, _)| compared).sum();
+    let traced: usize = found.iter().map(|(_, traced, _)| traced).sum();
+    let wrong: Vec<String> = found.into_iter().flat_map(|(_, _, wrong)| wrong).collect();
     println!("{programs} examples, {traced} of {compared} tests' traces compared");
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     assert!(programs > 20, "only {programs} examples have tests");
     assert!(traced > 20, "only {traced} of {compared} tests were compared");
     std::fs::remove_dir_all(&home).unwrap();

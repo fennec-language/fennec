@@ -271,7 +271,7 @@ This replaces IEEE comparison operators, and the rule that a struct with a float
 **Secure randomness is a capability, `Entropy`,** handed to `main` like the others. `entropy.bytes(n)` gives `n` secure random bytes from the operating system, and `entropy.seed()` gives an unpredictable seed for `Random(seed=...)`. Tests receive a fake `Entropy` with fixed output, so they stay repeatable. Hashing, HMAC and other pure cryptography need no capability, since they read nothing from outside.
 *Why:* Randomness comes in through a capability, like every source of nondeterminism, and `Random` stays a plain seeded value.
 
-**Any run can be recorded and replayed exactly.** Every source of nondeterminism comes in through a capability: time, randomness, files, the network and input. So the runtime can record exactly what came through and replay the run bit for bit with `fennec replay`. The order tasks reach a `shared` value or a channel is the one source outside this, and how replay records it is still open.
+**Any run can be recorded and replayed exactly.** Every source of nondeterminism comes in through a capability: time, randomness, files, the network and input. So the runtime can record exactly what came through and replay the run bit for bit with `fennec replay`. It comes in two steps. First, a recorded run logs every outside input at the standard library's boundary, which covers programs with one task. Later, it also logs the order locks are taken and channel messages arrive, for programs with many tasks. Normal runs pay nothing, and since floats give the same bits on every platform, a replay holds across machines. Not built yet.
 *Why:* A player's crash report becomes a replay file that runs again exactly. The determinism rules above make it almost free.
 
 ## Speed
@@ -1040,7 +1040,7 @@ with launch((inbox) => audio(inbox, speakers), stop_after=5s) as sounds:
 *Why:* Nobody ever sees a half-change, and one crashing task no longer takes everything else down with it.
 The build lanes make this one general piece that undoes the writes in a block. Other uses wait until a real program asks for them, like a failing function leaving its `ref` arguments unchanged, or undo in a game.
 
-**Channels are bounded.** `send` waits when one is full, and both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. Sending to a closed channel fails at once. A channel you set up yourself is `with Channel[Job](size=64) as jobs:`. Not built yet.
+**Channels are bounded.** `send` waits when one is full, and both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. Sending to a closed channel fails at once. A channel you set up yourself is `with Channel[Job](size=64) as jobs:`. Built.
 *Why:* A bounded buffer pushes back instead of growing without limit, and saying why a receive stopped lets the task decide what to do.
 
 **Dev builds stop with a report when tasks are waiting only on each other.**
@@ -1052,7 +1052,8 @@ The build lanes make this one general piece that undoes the writes in a block. O
 **Not in the language: `del`, destructors, moves, lifetimes, `unsafe` and global state.** Left for when real programs need them: `select`, handles that move between tasks, and results returned from tasks.
 *Why:* Each would bring back a hidden moment or a hidden owner that the rules above keep visible.
 
-**Event channels will be added, for many listeners,** each reading at its own pace. A function value is for one answer now, and a channel is for many parties later. The exact API isn't decided yet.
+**One `Channel[T]` serves one receiver or every listener.** By default it delivers each message to one receiver, as a work queue. `to=.Every` gives every listener every message, and receiving reads the same either way, `for msg in ch`. With `.Every`, `send` never waits, and a listener that falls behind fails loudly, unless it asked for `when_behind=.DropOldest`. There's no separate events type. Not built yet. This replaces the plan for separate event channels.
+*Why:* One type with one way to receive is less to learn, `send` never stalling keeps a slow listener from holding up the rest, and nothing is lost silently.
 
 **A long-running loop should never wait on another.** It takes what's waiting, does its work and publishes. Waiting belongs to simple consumers at the end of a one-way chain.
 *Why:* Deadlock needs someone waiting, so two loops that never wait can't deadlock.
@@ -1729,9 +1730,7 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 - Whether a generator written right inside `sum` and the like can still change the names around it, now that comprehensions make new things.
 - How `fennec fix` handles the changes it can't make for you, since every breaking change is meant to ship with its own fix.
 - What takes over the sandbox and the test reference from the interpreter. Entries under Engines, Sandboxing, For AI and Kits on the Den still give them to it.
-- The exact API of event channels.
 - The API of `Graph`.
-- How replay records the order tasks reach a `shared` value or a channel.
 - Whether kits can define their own annotations, like `@get("/todos/{id}")` on a plain function, so a router can build its table at compile time.
 - SQLite: whether and how Fennec includes it. Porting it isn't realistic.
 - Whether independent writes, not just reads, should overlap automatically.

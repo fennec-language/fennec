@@ -34,7 +34,7 @@ struct Limits:
 
 ## `value` as bytes, which `loads` reads back into the same type. With `exact`, its `Table`s are
 ## saved slot for slot.
-def dumps[T: Serializable](value: T, exact: bool = False) -> bytes:
+def dumps[T: Serializable](value: T, exact = False) -> bytes:
     mut out = PackWriter(_exact=exact)
     out._header(shape_hash[T]())
     value.serialize(ref out)
@@ -87,8 +87,8 @@ struct PackWriter:
     ## Where each `Id` is in its `Table`, by the name of its type and then its `id_key` and tag,
     ## and each `Table`'s tag, once what's written has been gone through. Until then an `Id` asks
     ## for them.
-    _tables: dict[str, dict[(int, int), int]] = {}
-    _tags: dict[str, int] = {}
+    _tables = dict[str, dict[(int, int), int]]()
+    _tags = dict[str, int]()
     _found = False
     _wants_tables = False
     ## Whether what's being written is in an optional, and where its byte that says it's there is,
@@ -235,7 +235,7 @@ struct PackReader:
     ## Each `Id` and `Table` read, checked once everything has been.
     _ids = _IdsSeen(_whole="the data")
     ## The tag each `Table` of a type gets, new for each load.
-    _tags: dict[str, int] = {}
+    _tags = dict[str, int]()
     ## Whether to keep track of where it is, for a message, and where.
     _explain = False
     _path = list[str]()

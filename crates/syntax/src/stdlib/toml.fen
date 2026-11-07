@@ -743,7 +743,7 @@ struct TomlReader:
     _place = 0
     _in_key = False
     _ids = _IdsSeen()
-    _tags: dict[str, int] = {}
+    _tags = dict[str, int]()
 
     def _where(self) -> str:
         if self._path.len() == 0: return "the text"
@@ -1074,7 +1074,7 @@ struct TomlWriter:
     ## The member each union being written is, innermost last.
     _members = list[str]()
     ## Where each `Id` is in its `Table`, as `JsonWriter` keeps it.
-    _id_tables: dict[str, dict[(int, int), int]] = {}
+    _id_tables = dict[str, dict[(int, int), int]]()
     _found = False
     _wants_tables = False
     _optional = False

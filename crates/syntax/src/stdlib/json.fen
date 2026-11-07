@@ -225,7 +225,7 @@ struct JsonWriter:
     _first = True
     ## Where each `Id` is in its `Table`, by the name of its type and its `id_key`, once
     ## `_TableFinder` has been through what's written. Until then an `Id` asks for it.
-    _tables: dict[str, dict[(int, int), int]] = {}
+    _tables = dict[str, dict[(int, int), int]]()
     _found = False
     _wants_tables = False
     _optional = False
@@ -427,7 +427,7 @@ struct JsonWriter:
 ## `value` as JSON text, through its own `def serialize`.
 ## Native code runs `json.dumps` through this. Its options' defaults are `None` and `-1`, since the
 ## default a call leaves out is written into the program calling it, which may not import `JsonNames`.
-def native_dumps[T: Serializable](value: T, names: JsonNames? = None, indent: int = -1) -> str:
+def native_dumps[T: Serializable](value: T, names: JsonNames? = None, indent = -1) -> str:
     spelled = names else JsonNames.snake_case
     mut out = JsonWriter(_names=spelled, _indent=indent)
     value.serialize(ref out)
@@ -541,10 +541,10 @@ struct _IdsSeen:
 ## Goes through what's being saved for its `Table`s and `Id`s, writing nothing, so each `Id` can
 ## be written as where its item is, and one that can't be is said with where it is.
 struct _TableFinder:
-    _positions: dict[str, dict[(int, int), int]] = {}
-    _where: dict[str, str] = {}
+    _positions = dict[str, dict[(int, int), int]]()
+    _where = dict[str, str]()
     _ids = list[(str, int, int, bool, str)]()
-    _tags: dict[str, int] = {}
+    _tags = dict[str, int]()
     _path = list[str]()
     _problem = ""
     _optional = False
@@ -718,7 +718,7 @@ struct JsonReader:
     _hint = 0
     _hints = list[int]()
     _ids = _IdsSeen()
-    _tags: dict[str, int] = {}
+    _tags = dict[str, int]()
 
     def _space(ref self) -> int:
         mut at = self._at

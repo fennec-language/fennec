@@ -761,6 +761,12 @@ pub(crate) fn unzlib(data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// The low 32 bits of a length, which is all gzip keeps of it. It goes through `u64`, so it's
+/// right where a `usize` is 32 bits, as in the playground's wasm32, and where it's 64.
+fn length_word(size: usize) -> u32 {
+    u32::try_from(u64::try_from(size).unwrap_or(u64::MAX) & 0xFFFF_FFFF).unwrap_or(0)
+}
+
 pub(crate) fn gzip(data: &[u8], level: u8) -> Vec<u8> {
     let extra = match level {
         0 | 1 => 4,
@@ -771,7 +777,7 @@ pub(crate) fn gzip(data: &[u8], level: u8) -> Vec<u8> {
     let mut out = vec![0x1F, 0x8B, 8, 0, 0, 0, 0, 0, extra, 255];
     out.extend(deflate(data, level));
     out.extend_from_slice(&crc32(data).to_le_bytes());
-    out.extend_from_slice(&u32::try_from(data.len() % (1 << 32)).unwrap_or(0).to_le_bytes());
+    out.extend_from_slice(&length_word(data.len()).to_le_bytes());
     out
 }
 
@@ -818,7 +824,7 @@ pub(crate) fn gunzip(data: &[u8]) -> Result<Vec<u8>, String> {
         if u32::from_le_bytes(sum) != crc32(&held) {
             return Err("its check doesn't match what it holds".to_owned());
         }
-        if u32::from_le_bytes(size) != u32::try_from(held.len() % (1 << 32)).unwrap_or(0) {
+        if u32::from_le_bytes(size) != length_word(held.len()) {
             return Err("its length doesn't match what it holds".to_owned());
         }
         out.extend(held);

@@ -458,5 +458,7 @@ pub(super) fn free_table(state: &mut State, cell: u64) {
     }
 }
 
+pub mod rollback;
+
 #[cfg(test)]
 mod tests;

@@ -14,6 +14,7 @@
     reason = "exporting the runtime's functions under fixed names, for linked executables"
 )]
 
+use fennec_interp::embed::guarded::rollback;
 use fennec_interp::embed::{
     aot, bytes, capabilities, checks, dicts, eval, guarded, heap, io, json, lists, names, numbers, objects,
     parallel, regex, serve, strings, temps, text, threads,
@@ -219,6 +220,13 @@ export! {
     fennec_no_match(a0: i64, a1: i64, a2: i64) => eval::no_match(a0, a1, a2);
     fennec_lock_note(a0: u64) -> i64 => threads::lock_note(a0);
     fennec_lock_forget(a0: u64) => threads::lock_forget(a0);
+    fennec_lock_begin(a0: i64) => rollback::begin(a0);
+    fennec_lock_save(a0: i64, a1: i64, a2: i64, a3: i64) => rollback::save(a0, a1, a2, a3);
+    fennec_lock_save_text(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) => rollback::save_text(a0, a1, a2, a3, a4);
+    fennec_lock_save_ref(a0: i64, a1: i64, a2: i64) => rollback::save_ref(a0, a1, a2);
+    fennec_lock_kept() => rollback::kept();
+    fennec_lock_undo() => rollback::undo();
+    fennec_lock_undo_word(a0: i64, a1: i64, a2: i64) -> i64 => rollback::undo_word(a0, a1, a2);
     fennec_print_int(a0: i64) => io::print_int(a0);
     fennec_print_float(a0: f64) => io::print_float(a0);
     fennec_print_bool(a0: i8) => io::print_bool(a0);

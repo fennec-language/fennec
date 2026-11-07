@@ -129,3 +129,57 @@ fn a_cleanup_that_outlasts_the_grace_is_stopped_hard() {
     assert_eq!(HARD.load(Ordering::SeqCst), 1, "its wait was cut short after the grace");
     finish();
 }
+
+/// A pool of one worker, for tasks that must share it.
+fn one_worker() -> &'static Pool {
+    static POOL: std::sync::OnceLock<&'static Pool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let setup: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
+            let _ = start(&fennec_syntax::Module { items: Vec::new() }, tables(), crate::Inputs::default());
+        });
+        crate::embed::parallel::with_setup(1, &setup)
+    })
+}
+
+/// The order things happened in, across tasks.
+static SEQUENCE: AtomicI64 = AtomicI64::new(1);
+static CLEANUP_ENDED_AT: AtomicI64 = AtomicI64::new(0);
+static OTHER_CUT_AT: AtomicI64 = AtomicI64::new(0);
+
+/// Cleans up for 300 ms within its grace.
+extern "C" fn cleans_up_a_while(_env: i64, _thread: i64) -> i64 {
+    crash("the block crashed");
+    let held = crash_hold();
+    clock_sleep(3 * SECONDS / 10);
+    CLEANUP_ENDED_AT.store(SEQUENCE.fetch_add(1, Ordering::SeqCst), Ordering::SeqCst);
+    crash_resume(held);
+    0
+}
+
+extern "C" fn sleeps_until_cut(_env: i64, _thread: i64) -> i64 {
+    clock_sleep(10 * SECONDS);
+    OTHER_CUT_AT.store(SEQUENCE.fetch_add(1, Ordering::SeqCst), Ordering::SeqCst);
+    0
+}
+
+/// A cleanup waiting within its grace parks, rather than spin, so another task on its worker that's
+/// stopped meanwhile is cut short while the cleanup still waits.
+#[test]
+fn a_cleanup_waiting_in_its_grace_leaves_its_worker_to_other_tasks() {
+    begin();
+    let cleaning = launch_on(one_worker(), cleans_up_a_while, 0);
+    let other = launch_on(one_worker(), sleeps_until_cut, 0);
+    // The cleaning task's stopped first, from another thread, so its cleanup's in its grace when
+    // the other's stopped.
+    let first = std::thread::spawn(move || {
+        let mut failure = 0;
+        launch_end(cleaning, SECONDS / 100, 0, &mut failure)
+    });
+    let mut failure = 0;
+    assert_eq!(launch_end(other, SECONDS / 20, 0, &mut failure), 0);
+    assert_eq!(first.join().unwrap(), 0);
+    let (cut, ended) = (OTHER_CUT_AT.load(Ordering::SeqCst), CLEANUP_ENDED_AT.load(Ordering::SeqCst));
+    assert!(cut > 0 && ended > 0);
+    assert!(cut < ended, "the other task was cut short while the cleanup still waited");
+    finish();
+}

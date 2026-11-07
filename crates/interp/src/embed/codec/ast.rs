@@ -174,11 +174,12 @@ impl Encode for StmtKind {
             StmtKind::Fail(value) => (6, value).encode_tagged(to),
             StmtKind::Yield(value) => (7, value).encode_tagged(to),
             StmtKind::Assert(value) => (8, value).encode_tagged(to),
-            StmtKind::With { value, names, body } => {
+            StmtKind::With { value, names, body, lock } => {
                 to.tag(9);
                 value.encode(to);
                 names.encode(to);
                 body.encode(to);
+                lock.encode(to);
             }
             StmtKind::Def(def) => (10, def).encode_tagged(to),
             StmtKind::Break => to.tag(11),
@@ -216,6 +217,7 @@ impl Decode for StmtKind {
                 value: Decode::decode(r)?,
                 names: Decode::decode(r)?,
                 body: Decode::decode(r)?,
+                lock: Decode::decode(r)?,
             },
             10 => StmtKind::Def(Decode::decode(r)?),
             11 => StmtKind::Break,

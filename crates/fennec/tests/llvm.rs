@@ -2882,6 +2882,51 @@ fn every_name_for_a_shared_value_sees_it_change() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `shared T` on a plain struct and a list, kept in a dict and a struct's fields, and reached only
+/// in a `lock`: two locked together for a transfer, one locked to read. It builds natively.
+#[test]
+fn shared_values_reached_in_locks_build_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("shared_locks", SHARED_LOCKS)
+}
+
+const SHARED_LOCKS: &str = "struct Account:
+    owner: str
+    balance = 0
+
+struct Bank:
+    accounts: dict[str, shared Account]
+    audit: shared list[str]
+
+def transfer(bank: Bank, from_id: str, to_id: str, amount: int) -> bool:
+    source = bank.accounts[from_id]
+    target = bank.accounts[to_id]
+    lock source, target as ref payer, ref payee:
+        if payer.balance < amount:
+            return False
+        payer.balance -= amount
+        payee.balance += amount
+    lock bank.audit as ref log:
+        log.append(f\"{from_id} -> {to_id}: {amount}\")
+    True
+
+def balance(account: shared Account) -> int:
+    lock account as current:
+        current.balance
+
+def main(stdout: Stdout):
+    shared ana = Account(owner=\"ana\", balance=10)
+    shared bo = Account(owner=\"bo\")
+    shared log = list[str]()
+    bank = Bank(accounts={\"ana\": ana, \"bo\": bo}, audit=log)
+    stdout.print(transfer(bank, from_id=\"ana\", to_id=\"bo\", amount=4), transfer(bank, from_id=\"bo\", to_id=\"ana\", amount=9))
+    stdout.print(balance(ana), balance(bo))
+    lock log as lines:
+        stdout.print(lines)
+";
+
 /// Changing an item in place is only safe once the list is alone: another copy of the list
 /// mustn't see it, however the item's own count reads.
 #[test]

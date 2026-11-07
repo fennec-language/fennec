@@ -23,8 +23,8 @@ It does the three steps below in order, and stops at the first that fails, with 
    commit, and run it again.
 2. It runs the gate, `.github/scripts/gate.sh`. That checks formatting, runs clippy, every test and
    every example and kit, and runs the JIT as x86-64 under Rosetta. It stops at the first failure and
-   prints that step's output. A test program that runs more than a minute or holds more than 4 GB is
-   stopped, and the gate says which. It takes four to five minutes when the build is warm.
+   prints that step's output. A test program that uses more than a minute of CPU, runs for ten minutes or holds
+   more than 4 GB is stopped, and the gate says which. A busy machine can't stop one that isn't stuck. It takes four to five minutes when the build is warm.
 3. It pushes your branch, checks that origin has this very commit, and opens the pull request to
    `main`. The coordinator merges it.
 

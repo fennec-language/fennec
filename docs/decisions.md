@@ -926,7 +926,7 @@ import game.world.physics as physics
 - A top-level `_name` (function, type or constant) is a compile error, and `fennec fix` renames it. Top-level names are already private to the kit. The standard library follows the same rule, with no exemption.
 - Enum cases, methods and interface methods come with their type and have no `export` of their own.
 - Other kits match an exported type's fields by name: `case IoError(reason=r)`, `case Point(x=a, y=_)`, or `case IoError()` to match the type without reading a field. Matching another kit's type by position is a compile error, and `fennec fix` adds the names. A kit's own code keeps positional patterns. Cases with no fields, like `.Wait`, are unchanged.
-- Other kits build an exported type with named arguments only.
+- Fields with defaults come after the ones without, as parameters with defaults do; a field without one after a field with one is a compile error.
 - The automatic constructor sets the public fields, and `_` fields take their defaults. A `_` field with no default needs a named constructor. A type nobody can build is an error.
 - Writes from another kit still run the field's `where` rules.
 - An exported signature can't mention anything that isn't exported.
@@ -935,7 +935,7 @@ import game.world.physics as physics
 **A kit's API is checked against its last published version,** cached from the Den. When a change would break other kits, `fennec check` says so at once, in the editor: "`load` can now also fail with `ParseError` (since v1.2.0). This is a breaking change: handle or wrap it, or release v2.0." `fennec publish` refuses a version number that undersells the change. Adding an error case is a breaking change; removing one isn't.
 
 A big program that wants walls between its own parts splits into local kits in one workspace.
-*Why:* One rule covers every field, and `export` appears only where API stability matters, never in apps. Go's capitalization rule would clash with lowercase built-ins and capitalized user types. Named arguments and named patterns across kits mean a library adding a field with a default never breaks anyone who builds or matches its type.
+*Why:* One rule covers every field, and `export` appears only where API stability matters, never in apps. Go's capitalization rule would clash with lowercase built-ins and capitalized user types. What keeps a library free to add a field with a default is two rules together: defaults come last, so the new field goes at the end, where no value given by position can land in it, and the API checker flags any other change to an exported type as breaking. Named patterns across kits mean the new field never breaks a `match` either. A rule that other kits build an exported type by name only was considered and dropped: these two already cover it, and `Path("assets")` stays short.
 
 ## Files and kits
 

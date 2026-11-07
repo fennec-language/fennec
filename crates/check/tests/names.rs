@@ -405,8 +405,8 @@ fn a_private_field_with_no_default_needs_a_named_constructor() {
         Account(_id=id, owner=owner)
 
 struct Counter:
-    _count = 0
     step: int
+    _count = 0
 
 ";
     let in_main = |body: &str| problems(&format!("{account}def main(stdout: Stdout):\n{body}"));

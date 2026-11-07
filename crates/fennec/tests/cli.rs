@@ -232,7 +232,7 @@ fn test_shrinks_and_replays_property_failures() {
             "it failed for outer = Outer(inner=Inner(rows=[[], []])); the left side is 2 and the right side is 2",
             "it failed for pair = (False, 740)",
             "it failed for pair = (-936, 676); the left side is -936 and the right side is None",
-            "it failed for box = Box(label=\"box\", size=725); the left side is 725 and the right side is 3",
+            "it failed for box = Box(size=725, label=\"box\"); the left side is 725 and the right side is 3",
             "it failed for coin = Coin.Tails(times=1); the left side is Coin.Tails(times=1) and the right \
              side is Coin.Heads",
             "it failed for n = 942",

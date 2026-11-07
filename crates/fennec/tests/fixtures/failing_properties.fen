@@ -6,8 +6,8 @@ error Oops:
     reason: str
 
 struct Box:
-    label = "box"
     size: int
+    label = "box"
 
 struct Inner:
     rows: list[list[int]]

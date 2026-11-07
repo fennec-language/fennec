@@ -5788,9 +5788,9 @@ enum Event:
 
 struct Scene:
     main: Circle | Square
-    count: int | str = 3
     shapes: list[Circle | Square | int]
     named: dict[str, Circle | Square]
+    count: int | str = 3
 
 struct Log:
     events: list[Event]
@@ -5835,7 +5835,7 @@ fn fields_holding_unions_are_saved_tagged_in_every_format() -> std::io::Result<(
     let printed = printed_by("union_fields", UNION_FIELDS)?;
     assert_eq!(
         printed,
-        "{\"main\": {\"Square\": {\"side\": 2.0}}, \"count\": {\"str\": \"many\"}, \"shapes\": [{\"Circle\": {\"radius\": 1.5}}, {\"int\": 7}], \"named\": {\"a\": {\"Circle\": {\"radius\": 2.0}}}}\nTrue\n[main.Square]\nside = 2.0\n\n[count]\nstr = \"many\"\n\n[[shapes]]\n\n[shapes.Circle]\nradius = 1.5\n\n[[shapes]]\nint = 7\n\n[named.a.Circle]\nradius = 2.0\n\nTrue\nTrue\n{\"events\": [{\"Spawn\": {\"what\": {\"Circle\": {\"radius\": 0.5}}}}, \"Quit\"], \"picked\": {\"int\": 4}}\nTrue\nTrue\nTrue\n3\n`main` is \"Triangle\", which is none of `Circle | Square`\n`main` is \"radius\", which is none of `Circle | Square`\n`picked` is \"str\", which is none of `Circle | int`\n"
+        "{\"main\": {\"Square\": {\"side\": 2.0}}, \"shapes\": [{\"Circle\": {\"radius\": 1.5}}, {\"int\": 7}], \"named\": {\"a\": {\"Circle\": {\"radius\": 2.0}}}, \"count\": {\"str\": \"many\"}}\nTrue\n[main.Square]\nside = 2.0\n\n[[shapes]]\n\n[shapes.Circle]\nradius = 1.5\n\n[[shapes]]\nint = 7\n\n[named.a.Circle]\nradius = 2.0\n\n[count]\nstr = \"many\"\n\nTrue\nTrue\n{\"events\": [{\"Spawn\": {\"what\": {\"Circle\": {\"radius\": 0.5}}}}, \"Quit\"], \"picked\": {\"int\": 4}}\nTrue\nTrue\nTrue\n3\n`main` is \"Triangle\", which is none of `Circle | Square`\n`main` is \"radius\", which is none of `Circle | Square`\n`picked` is \"str\", which is none of `Circle | int`\n"
     );
     Ok(())
 }
@@ -9346,9 +9346,9 @@ struct Pair[T]:
 
 struct Unit:
     name: str
+    pet: str?
     @serialize(name="hp")
     health = 10 where health >= 0
-    pet: str?
     pace = 0.0
     ready = False
     tags = list[str]()

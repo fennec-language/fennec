@@ -310,6 +310,7 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
         || !checked.array_zeros.is_empty()
         || !checked.optional_steps.is_empty()
         || !checked.std_names.is_empty()
+        || !checked.field_args.is_empty()
     {
         fennec_syntax::visit::exprs_mut(module, &mut |expr| {
             let span = (expr.span.start, expr.span.end);
@@ -324,6 +325,13 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
             }
             if let Some(function) = checked.std_names.get(&span) {
                 expr.kind = fennec_syntax::ExprKind::Name(function.clone());
+            }
+            if let fennec_syntax::ExprKind::Call { args, .. } = &mut expr.kind {
+                for arg in args.iter_mut().filter(|arg| arg.name.is_none()) {
+                    if let Some(field) = checked.field_args.get(&(arg.value.span.start, arg.value.span.end)) {
+                        arg.name = Some(field.clone());
+                    }
+                }
             }
             if checked.failing_steps.contains(&span) {
                 fennec_syntax::visit::none_on_failure(expr);
@@ -381,6 +389,8 @@ pub struct Checked {
     generator_types: BTreeMap<(u32, u32), String>,
     /// What each name for a standard library function written in Fennec means.
     std_names: BTreeMap<(u32, u32), String>,
+    /// The field each value given by position goes to, where that isn't the one at its place.
+    field_args: BTreeMap<(u32, u32), String>,
     /// The fields, in order, of each pattern written with them by name.
     named_patterns: BTreeMap<(u32, u32, String), Vec<String>>,
     /// The format calls native code can make in Fennec, by the call's span.

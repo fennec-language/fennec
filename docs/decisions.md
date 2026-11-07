@@ -253,7 +253,7 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 - `a.approx(b, within=...)` compares computed values with a tolerance. It isn't used for keys, because "close to" isn't transitive.
 - `x != x` no longer finds NaN. Write `x.is_nan()`.
 
-This replaces IEEE comparison operators, and the rule that a struct with a float field can't be a dict key.
+This replaces IEEE comparison operators, and the rule that a struct with a float field can't be a dict key. `==`, hashing and sorting are built, and `<` on a NaN isn't yet. A "never NaN" analysis is planned, so a comparison of values that can't be NaN costs what IEEE's does.
 *Why:* Floats compare, sort, hash and key consistently. Measured with LLVM, every benchmark kernel stayed within ±0.4% of IEEE's instruction count once comparisons against a constant compile to one comparison, and vectorizing was unchanged.
 
 **Floats give the same results on every platform.** There are no fused operations and no fast-math outside an opt-in, and `sin`, `cos` and the rest are in the stdlib rather than the platform's math library. `@fast_math` on a function opts out. This replaces `with fast_math():`.
@@ -271,7 +271,7 @@ This replaces IEEE comparison operators, and the rule that a struct with a float
 **Secure randomness is a capability, `Entropy`,** handed to `main` like the others. `entropy.bytes(n)` gives `n` secure random bytes from the operating system, and `entropy.seed()` gives an unpredictable seed for `Random(seed=...)`. Tests receive a fake `Entropy` with fixed output, so they stay repeatable. Hashing, HMAC and other pure cryptography need no capability, since they read nothing from outside.
 *Why:* Randomness comes in through a capability, like every source of nondeterminism, and `Random` stays a plain seeded value.
 
-**Any run can be recorded and replayed exactly.** Every source of nondeterminism comes in through a capability: time, randomness, files, the network and input. So the runtime can record exactly what came through and replay the run bit for bit with `fennec replay`. The order tasks reach a `shared` value or a channel is the one source outside this, and how replay records it is still open.
+**Any run can be recorded and replayed exactly.** Every source of nondeterminism comes in through a capability: time, randomness, files, the network and input. So the runtime can record exactly what came through and replay the run bit for bit with `fennec replay`. It comes in two steps. First, a recorded run logs every outside input at the standard library's boundary, which covers programs with one task. Later, it also logs the order locks are taken and channel messages arrive, for programs with many tasks. Normal runs pay nothing, and since floats give the same bits on every platform, a replay holds across machines. Not built yet.
 *Why:* A player's crash report becomes a replay file that runs again exactly. The determinism rules above make it almost free.
 
 ## Speed
@@ -327,6 +327,9 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 *Why:* Each platform's own C library rounds some results differently in the last bit, as `cos(-0.65)` does in WebAssembly and `cos(-0.1)` on x86-64 macOS, and replays and lockstep multiplayer need every machine to agree. It costs a little speed in a loop of nothing but these functions, mostly in `**`. The coordinator decided this on 2026-11-07.
 
 **The compiler tells LLVM that names don't alias.** Exclusive `ref` access proves no two names point at the same memory, so every function gets that guarantee for free. Fortran's speed comes from the same guarantee.
+
+**Dividing by zero stops the program, for floats as for ints.** `x / 0.0` stops, as Python's `ZeroDivisionError` does. The compiler removes the check where it proves the divisor isn't zero, and `@hot` allows a leftover float divide check as it allows overflow checks. There's no special method for now. Built, apart from what `@hot` allows.
+*Why:* A silent infinity spreads through later results and hides the bug, and we're a safe language.
 
 **Integer overflow is checked in release builds too.** Wrapping is opt-in: `x.wrapping_add(y)`.
 *Why:* A program that compiles should do what it says. The check costs about 1–2%, and the benchmark suite measures it.
@@ -408,6 +411,9 @@ if result is Err(NotFound):
 This replaces the earlier rules that errors are inferred and `fails` is optional.
 *Why:* A reader sees at a glance how a function can fail and every line where it can leave. Swallowed errors are how reliable-looking programs go wrong.
 
+**There's no `exit()`.** `fail` out of `main` prints the failure to stderr and exits with code 1, and `main` may return an `int` as the exit code. Nothing else can end the process. Built, apart from returning an exit code.
+*Why:* A program ends in one visible place, and no library can stop the process behind its caller's back.
+
 **`?` only ever passes a failure up, and there's no `?.`.** `rows = load(path)?.rows` passes the failure up, then reads `.rows`.
 This replaces optional chaining with `?.`.
 *Why:* Every `?` marks a place the function can leave, and a reader can see that without knowing any types.
@@ -428,7 +434,7 @@ unit = units.get(unit_id) else fail ApiError.NotFound
 
 *Why:* Each spelling says what the writer meant. `?` means this line can leave the function. `else` means missing or failed is fine here, so use this instead, or leave, which the line says. `[]` means it must be there, so a missing value is a bug that stops with an error naming the step and the key.
 
-**`where` rules run on every write to a guarded field,** and on defaults at compile time: `health = 100 where health >= 0`. A rule looks only at its own field. An invariant across several fields goes in a named constructor or a method. Writes after construction aren't checked today, which is a bug.
+**`where` rules run on every write to a guarded field,** and on defaults at compile time: `health = 100 where health >= 0`. A rule looks only at its own field. An invariant across several fields goes in a named constructor or a method. A broken rule stops the program in code, and a load that breaks one fails cleanly. Both are built, writes after construction included.
 *Why:* A rule that only holds at construction promises something it doesn't deliver. Checking one field keeps each write's cost obvious.
 
 **Every `def` writes its return type. Arrow functions never do. No `->` means the function returns nothing.**
@@ -865,7 +871,7 @@ def echo(conn: Connection) fails NetError:
 ```
 - **TCP:** `net.connect(host, port)` gives a `Connection`, and `net.listen(port)` gives a server whose items are connections. Both are used in a `with` block, which closes them. A connection has `read(n)`, which gives up to `n` bytes and empty bytes at the end, `read_line()`, which gives `None` at the end, `lines()`, `write(data)`, taking `bytes` or `str`, and `peer`, the other side's address.
 - **UDP:** `net.udp(port=9001)` gives a socket whose items are `Packet(data, sender)`, and `send_to(data, address)` answers.
-- **A failing connection ends only its own task.** A `NetError` is a value its task handles, as in `main` above. A runtime failure, like overflow, ends that task and closes its connection, and the server goes on. This is the containment recorded under Concurrency.
+- **A failing connection is handled in its own round,** as in `main` above, since a failure that passes up ends the loop. A crash, like overflow, ends only that task and closes its connection, and the server goes on. This is the containment recorded under Concurrency.
 - **Shared state** between connections is a `shared` value made in `main` and passed down, and one task hands work to another through a channel, as under Concurrency.
 
 **The HTTP client is `net.get`, `net.post` and `net.request`.**
@@ -1034,7 +1040,7 @@ with launch((inbox) => audio(inbox, speakers), stop_after=5s) as sounds:
 *Why:* Nobody ever sees a half-change, and one crashing task no longer takes everything else down with it.
 The build lanes make this one general piece that undoes the writes in a block. Other uses wait until a real program asks for them, like a failing function leaving its `ref` arguments unchanged, or undo in a game.
 
-**Channels are bounded.** `send` waits when one is full, and both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. Sending to a closed channel fails at once. A channel you set up yourself is `with Channel[Job](size=64) as jobs:`. Not built yet.
+**Channels are bounded.** `send` waits when one is full, and both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. Sending to a closed channel fails at once. A channel you set up yourself is `with Channel[Job](size=64) as jobs:`. Built.
 *Why:* A bounded buffer pushes back instead of growing without limit, and saying why a receive stopped lets the task decide what to do.
 
 **Dev builds stop with a report when tasks are waiting only on each other.**
@@ -1046,7 +1052,8 @@ The build lanes make this one general piece that undoes the writes in a block. O
 **Not in the language: `del`, destructors, moves, lifetimes, `unsafe` and global state.** Left for when real programs need them: `select`, handles that move between tasks, and results returned from tasks.
 *Why:* Each would bring back a hidden moment or a hidden owner that the rules above keep visible.
 
-**Event channels will be added, for many listeners,** each reading at its own pace. A function value is for one answer now, and a channel is for many parties later. The exact API isn't decided yet.
+**One `Channel[T]` serves one receiver or every listener.** By default it delivers each message to one receiver, as a work queue. `to=.Every` gives every listener every message, and receiving reads the same either way, `for msg in ch`. With `.Every`, `send` never waits, and a listener that falls behind fails loudly, unless it asked for `when_behind=.DropOldest`. There's no separate events type. Not built yet. This replaces the plan for separate event channels.
+*Why:* One type with one way to receive is less to learn, `send` never stalling keeps a slow listener from holding up the rest, and nothing is lost silently.
 
 **A long-running loop should never wait on another.** It takes what's waiting, does its work and publishes. Waiting belongs to simple consumers at the end of a one-way chain.
 *Why:* Deadlock needs someone waiting, so two loops that never wait can't deadlock.
@@ -1054,7 +1061,10 @@ The build lanes make this one general piece that undoes the writes in a block. O
 **There's one scheduler, with I/O multiplexed by the OS.** Code looks blocking, and a task that waits parks and frees its core.
 *Why:* Thousands of parked tasks cost almost nothing, and nobody has to manage a pool or color functions `async`.
 
-**A failure in a server task stays in that task.** A runtime failure in a task of `parallel(server)` ends that task and closes its connection, and the server goes on, as under `std.net`. A crash inside a `ref` lock rolls back that lock's writes first, as under Concurrency.
+**`?` means the same inside `parallel` as anywhere else.** A failure in one round passes up out of the loop once the other rounds stop, for any source, with no special case for servers. To let one piece fail alone, handle it in the body, with `match` or `else: continue`. `break` stops new rounds from starting and lets the running ones finish, and a failure passing up cuts them short, like a failed `launch`. Each connection a server lends closes when its round ends, however it ends. `server.serve(handler)` turns a handler's failure into a 500, in plain Fennec. Built for the failure passing up; the rest isn't built yet. This replaces the pick that `?` inside `parallel` ends only that task.
+*Why:* One meaning for `?` is easier to read than a special case, and whoever writes the body decides what a failure there should do.
+
+**A crash in a server task stays in that task.** A runtime failure in a task of `parallel(server)` ends that task and closes its connection, and the server goes on, as under `std.net`. A crash inside a `ref` lock rolls back that lock's writes first, as under Concurrency.
 *Why:* One bad index in one request shouldn't drop every connection. Tasks don't share state a failure could corrupt, which makes containment unusually safe here.
 
 **Reference counts are biased for values that cross tasks.** The thread that owns a block counts cheaply, and other threads count atomically. Programs with no tasks compile the check away.
@@ -1713,7 +1723,6 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 ## Still open
 
 - How an `Id` is used across servers, which is expected at the simulation level.
-- How an `Id`'s tag and generation behave across a restart, which decides what a saved `Id` means.
 - How `std.pack` data evolves: a lock file of past layouts with automatic migration rules, as Avro does. It comes later and adds to v1 without breaking it.
 - How `items()` works with `ref` on a user type, and whether `enumerate` stays beside it.
 - Whether `values()` and `keys()` also go from `dict`, where a plain `for` gives keys.
@@ -1721,14 +1730,10 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 - Whether a generator written right inside `sum` and the like can still change the names around it, now that comprehensions make new things.
 - How `fennec fix` handles the changes it can't make for you, since every breaking change is meant to ship with its own fix.
 - What takes over the sandbox and the test reference from the interpreter. Entries under Engines, Sandboxing, For AI and Kits on the Den still give them to it.
-- The exact API of event channels.
 - The API of `Graph`.
-- How replay records the order tasks reach a `shared` value or a channel.
-- How the interpreter runs a `parallel` loop over a server's connections. It runs `parallel` loops in order, which would serve one client at a time. Until it can switch tasks at a blocking call, such a program runs only in the native engines.
 - Whether kits can define their own annotations, like `@get("/todos/{id}")` on a plain function, so a router can build its table at compile time.
 - SQLite: whether and how Fennec includes it. Porting it isn't realistic.
 - Whether independent writes, not just reads, should overlap automatically.
-- The exact syntax for property tests.
 - The syntax for units of measure.
 - The file extension (currently `.fen`).
 - Whether files of a kit may reuse a top-level name, reached through `import` by their module's name.

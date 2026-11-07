@@ -16,7 +16,9 @@ pub(super) fn definitions(modules: &[&Module], signatures: &Signatures) -> Vec<S
         Item::Struct(def) if def.generics.is_empty() => Some(def),
         _ => None,
     });
-    defs.filter(|def| seen.insert(def.name.as_str()))
+    // A capability std declares, like `Fs` in `fs.fen`, is still a capability, never a struct.
+    defs.filter(|def| !super::CAPABILITIES.contains(&def.name.as_str()))
+        .filter(|def| seen.insert(def.name.as_str()))
         .filter_map(|def| {
             let found = signatures.structure(&def.name)?;
             // One the standard library ships is a resource, with no lock: a struct like any other.

@@ -82,8 +82,9 @@ impl Interp<'_> {
                 };
             }
             // A capability declared in std, like `Fs` in `fs.fen`, has methods written in Fennec
-            // as well as its builtin ones, as `Connection` does.
-            Value::Capability(_) => {
+            // as well as its builtin ones, as `Connection` does. A narrowed one has them too, and
+            // its builtin ones are still narrowed when they run.
+            Value::Capability(_) | Value::Limited(_) => {
                 // Nothing imports the module a capability given to `main` is declared in.
                 let name = receiver.type_name();
                 self.load_std_providing(&name)?;

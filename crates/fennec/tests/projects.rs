@@ -70,6 +70,11 @@ fn on_big_stack(test: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Kits the JIT doesn't take yet, with why. `fennec run --jit` runs them in the interpreter, and
+/// `every_program_builds_natively` checks them as native code. A listed kit the JIT takes fails
+/// below, so the list only ever shrinks.
+const NOT_JIT_YET: &[(&str, &str)] = &[("notes_api", "`Notes` is `shared`")];
+
 #[test]
 fn projects_print_their_expected_output_in_every_engine() {
     on_big_stack(|| {
@@ -82,11 +87,13 @@ fn projects_print_their_expected_output_in_every_engine() {
             let actual =
                 run(&dir.join(&name), &shown_as).unwrap_or_else(|err| panic!("{name} failed:\n{err}"));
             assert_eq!(actual, expected, "{name} printed something different");
-            assert_eq!(
-                run_jit(&dir.join(&name), &shown_as),
-                Ok(expected),
-                "{name} ran differently as native code"
-            );
+            let on_jit = run_jit(&dir.join(&name), &shown_as);
+            if let Some((_, why)) = NOT_JIT_YET.iter().find(|(kit, _)| *kit == name) {
+                let said = on_jit.expect_err(&format!("{name} runs on the JIT now; take it off NOT_JIT_YET"));
+                assert!(said.contains(why), "{name} isn't taken by the JIT for a new reason: {said}");
+            } else {
+                assert_eq!(on_jit, Ok(expected), "{name} ran differently as native code");
+            }
 
             let program = load(&dir.join(&name), &shown_as, Entry::Everything).unwrap();
             let mut out = std::io::sink();

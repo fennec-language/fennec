@@ -309,6 +309,19 @@ fn leaving_on_every_path_is_giving_something_back() {
 }
 
 #[test]
+fn a_last_line_after_leaving_on_every_path_still_takes_the_return_type() {
+    let fine = "
+        def load(n: int) -> list[str]:
+            if n > 0:
+                return [\"a\"]
+            else:
+                return [\"b\"]
+            []
+    ";
+    assert_eq!(problems_as_written(fine), Vec::<String>::new());
+}
+
+#[test]
 fn a_bare_return_cant_stand_for_a_value() {
     let problems = problems_as_written(
         "

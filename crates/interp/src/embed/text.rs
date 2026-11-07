@@ -186,7 +186,9 @@ pub extern "C" fn int_header(n: i64) -> Text {
     }
     let length = count + usize::from(n < 0);
     let mut packed = [0_u8; 24];
-    if n < 0 && let Some(sign) = packed.first_mut() {
+    if n < 0
+        && let Some(sign) = packed.first_mut()
+    {
         *sign = b'-';
     }
     for digit in packed.iter_mut().take(length).rev().take(count) {
@@ -471,7 +473,8 @@ mod tests {
             let bits = next();
             let spread = f64::from_bits(bits);
             let decimal = f64::from(u32::try_from(bits % 100_000_000).unwrap())
-                / [1.0, 10.0, 100.0, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9][usize::try_from(bits >> 60).unwrap() % 10];
+                / [1.0, 10.0, 100.0, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9]
+                    [usize::try_from(bits >> 60).unwrap() % 10];
             for x in [spread, decimal, -decimal, decimal * 1e6, decimal / 1e3] {
                 assert_eq!(text_of(super::float_header(x).words), crate::format::float(x), "{x:e}");
             }

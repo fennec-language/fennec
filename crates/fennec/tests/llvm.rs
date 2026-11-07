@@ -5662,8 +5662,8 @@ def main(net: Net, stdout: Stdout) fails NetError:
     printed.read_line(&mut port)?;
     let port: u16 = port.trim().parse().unwrap_or(0);
     let (mut answered, mut closed) = (0, 0);
-    for request in 1..=30 {
-        let line = if request % 10 == 0 { "crash".to_owned() } else { format!("request {request}") };
+    for request in 1_u32..=30 {
+        let line = if request.is_multiple_of(10) { "crash".to_owned() } else { format!("request {request}") };
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
         stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
         stream.write_all(format!("{line}\n").as_bytes())?;

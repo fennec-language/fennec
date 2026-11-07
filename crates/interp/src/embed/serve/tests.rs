@@ -454,7 +454,7 @@ fn crashes_every_tenth() -> Handler {
     Arc::new(move |mut conn: Conn| {
         let n = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let Ok(Some(mut line)) = conn.read_line(None) else { return 1 };
-        if n % 10 == 0 {
+        if n.is_multiple_of(10) {
             return 1;
         }
         line.push(b'\n');

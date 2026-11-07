@@ -78,6 +78,9 @@ impl Emit<'_, '_, '_> {
         let write = if write { "true" } else { "false" };
         self.take_word(&word, write, span);
         self.entered(&cell, write, &plain.to_string());
+        if self.saves_changes(handle) {
+            self.rollback_begin(&cell);
+        }
         Ok(())
     }
 
@@ -187,6 +190,10 @@ impl Emit<'_, '_, '_> {
 
     pub(crate) fn unlock(&mut self, handle: &Operand) -> Result<(), String> {
         let (word, cell, plain) = self.lock_word(handle)?;
+        // A `lock ... as ref` block ending normally keeps what it changed.
+        if self.saves_changes(handle) {
+            self.rollback_kept();
+        }
         self.give_back_word(&word, &cell, &plain.to_string());
         Ok(())
     }
@@ -245,12 +252,24 @@ impl Emit<'_, '_, '_> {
             self.take_word(word, write, span);
             self.entered(cell, write, plain);
         }
+        for (handle, _) in handles {
+            if self.saves_changes(handle) {
+                let (cell, _) = self.operand(handle)?;
+                self.rollback_begin(&cell);
+            }
+        }
         Ok(())
     }
 
     /// Giving back several `shared` values' locks, in the opposite order from taking them, as the
     /// tables a thread holds are a stack.
     pub(crate) fn unlock_all(&mut self, handles: &[Operand]) -> Result<(), String> {
+        // Each `lock ... as ref` among them ending normally keeps what it changed.
+        for handle in handles {
+            if self.saves_changes(handle) {
+                self.rollback_kept();
+            }
+        }
         let mut held = Vec::with_capacity(handles.len());
         for handle in handles {
             let (word, cell, plain) = self.lock_word(handle)?;

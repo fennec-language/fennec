@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use std::process::Command;
 
 use fennec_interp::{PROPERTY_CASES, TestOutcome, property_seed};
-use fennec_syntax::{Diagnostic, ExprKind, FnDef, Item, Module, Span, Stmt, StmtKind, TestDef};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Item, Module, Span, Stmt, StmtKind, TestDef};
 
 use crate::test_inputs::{Inputs, PREFIX};
 
@@ -163,9 +163,26 @@ fn passes_failures_up(test: &TestDef) -> bool {
     let mut found = fails_or_gives_back(&test.body);
     let mut body = test.body.clone();
     fennec_syntax::visit::in_stmts(&mut body, &mut |inner| {
+        // A type made with its type arguments, like `SortedMap[int, str?]()`, writes them as an
+        // expression, where `str?` reads as a `?`. They're taken out before they're looked in.
+        if let ExprKind::Call { callee, .. } = &mut inner.kind
+            && let ExprKind::Index { object, index } = &mut callee.kind
+            && matches!(object.kind, ExprKind::Name(_))
+            && reads_as_types(index)
+        {
+            index.kind = ExprKind::None;
+        }
         found |= matches!(inner.kind, ExprKind::Try { .. });
     });
     found
+}
+
+/// Whether what's in the brackets of `Name[...]` reads as type arguments, each of them a type.
+fn reads_as_types(index: &Expr) -> bool {
+    match &index.kind {
+        ExprKind::Tuple(items) => items.iter().all(|item| item.as_type().is_some()),
+        _ => index.as_type().is_some(),
+    }
 }
 
 /// The function named `test:` and the rest of the name, for a name written with `PREFIX`.

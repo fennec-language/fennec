@@ -114,7 +114,6 @@ fn is_type_name(expr: &Expr) -> bool {
         "std",
         "string",
         "compress",
-    const MODULES: [&str; 21] = [
         "unicode",
         "base64",
         "url",

@@ -1509,6 +1509,7 @@ Every build and the language server share one build engine and store, described 
 
 **There's one content store per machine,** `~/.fennec/cache`. Results are named by their hash and written by atomic rename, so readers never see half an entry and the normal path takes no locks; a lock is taken only during eviction. It has a size cap.
 - There are no `target` folders, and no build folder inside a project. `fennec run` makes its binary in the store.
+- Built: the store, its format and what's in it are in `docs/store.md`, and a test holds that running, testing, checking, linting, formatting and building leave a kit's folder as it was. Keeping built programs under a build's root hash is next.
 
 **Work runs in parallel on every core,** one function at a time per core.
 

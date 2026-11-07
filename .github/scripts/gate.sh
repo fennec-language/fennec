@@ -70,6 +70,12 @@ started=$SECONDS
 step "format" cargo fmt --check || exit 1
 step "build the command and the runtimes" runtime || exit 1
 step "clippy" cargo clippy --all-targets --locked -- -D warnings || exit 1
+# The playground builds for wasm32, where a usize is 32 bits, as CI's website job does.
+if rustup target list --installed 2>/dev/null | grep -qx wasm32-unknown-unknown; then
+  step "clippy for the playground's wasm32" cargo clippy --target wasm32-unknown-unknown -p fennec-wasm --locked -- -D warnings || exit 1
+else
+  echo "skipped clippy for wasm32: run \`rustup target add wasm32-unknown-unknown\` to check it"
+fi
 step "tests" watched cargo test --locked || exit 1
 step "examples and kits" watched examples || exit 1
 step "the JIT as x86-64 under Rosetta" watched x86 || exit 1

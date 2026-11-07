@@ -94,6 +94,7 @@ impl Interp<'_> {
             Value::Capability(Capability::Stdin) => self.stdin_method(method, &args, span),
             Value::Capability(Capability::Process) => self.process_method(method, &args, span),
             Value::Capability(Capability::Entropy) => self.entropy_method(method, &args, span),
+            Value::Capability(Capability::Env) => self.env_method(method, &args, span),
             Value::Limited(limited) => self.limited_method(&Rc::clone(limited), method, &args, span),
             Value::Buffer(buffer) => crate::buffer::read(buffer, method, &args, span),
             // The bytes share the string's memory: nothing is copied.

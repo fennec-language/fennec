@@ -266,6 +266,10 @@ fn named_method(type_name: &str, name: &str) -> Option<Method> {
         ("Stdin", "lines") => reads(&[], Type::list(Type::Str)),
         ("Clock", "sleep") => reads(&[Type::named("Duration")], Type::Unit),
         ("Entropy", "bytes") => reads(&[Type::Int], Type::Bytes),
+        ("Env", "get") => reads(&[Type::Str], Type::optional(Type::Str)),
+        ("Env", "all") => reads(&[], Type::Dict(Box::new(Type::Str), Box::new(Type::Str))),
+        // Only a test's fake `Env` is set.
+        ("Env", "set") => reads(&[Type::Str, Type::Str], Type::Unit),
         _ => return stdlib::method(type_name, name),
     })
 }
@@ -301,6 +305,10 @@ impl FnCx<'_> {
         }
         if matches!(name, "script" | "requests") && *ty == Type::named("Net") && !self.in_a_test() {
             let help = "only a test's own body can script or read the fake `Net` it received";
+            return self.unusable(no_method(ty, name, span).with_help(help), args);
+        }
+        if name == "set" && *ty == Type::named("Env") && !self.in_a_test() {
+            let help = "only a test's own body can set what the fake `Env` it received holds";
             return self.unusable(no_method(ty, name, span).with_help(help), args);
         }
         // Only a test's fake `Process` is scripted, and says what ran.

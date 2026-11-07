@@ -40,7 +40,7 @@ def built_in_types() -> list[str]:
     [
         "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "array", "SoaList",
         "Iterator", "set", "dict", "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin",
-        "Process", "Entropy", "Net", "Result", "->",
+        "Process", "Entropy", "Net", "Env", "Result", "->",
     ]
 
 ## Every declaration in a program, keyed the way the signature table is: `name` for a

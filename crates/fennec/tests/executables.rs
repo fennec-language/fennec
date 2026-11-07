@@ -3,9 +3,129 @@
 //! `.out` file is `llvm.rs`'s `the_examples_it_takes_print_what_they_should`.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+/// How long a test program gets to run. One that's still going was waiting for something that
+/// never came, like a request a busy machine lost, so the test fails in a minute instead of
+/// hanging the run for hours.
+pub(crate) const PROGRAM_DEADLINE: Duration = Duration::from_secs(60);
+
+/// How long `fennec` itself gets: a build, or a run in the interpreter, which is slower.
+pub(crate) const FENNEC_DEADLINE: Duration = Duration::from_secs(180);
+
+/// Running a command with a deadline, as every program a test starts runs.
+pub(crate) trait Within {
+    /// What `output()` gives, once the program ends within `PROGRAM_DEADLINE`. One still running
+    /// then is killed, and that's a `TimedOut` error.
+    fn output_within(&mut self) -> std::io::Result<Output>;
+    /// The same with a deadline of its own.
+    fn output_before(&mut self, deadline: Duration) -> std::io::Result<Output>;
+    /// The same with `input` as its standard input.
+    fn output_given(&mut self, input: &[u8], deadline: Duration) -> std::io::Result<Output>;
+}
+
+impl Within for Command {
+    fn output_within(&mut self) -> std::io::Result<Output> {
+        self.output_before(PROGRAM_DEADLINE)
+    }
+
+    fn output_before(&mut self, deadline: Duration) -> std::io::Result<Output> {
+        let child = self.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        finished_before(child, deadline)
+    }
+
+    fn output_given(&mut self, input: &[u8], deadline: Duration) -> std::io::Result<Output> {
+        let mut child = self.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        let mut stdin = child.stdin.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+        let input = input.to_vec();
+        // Written from a thread of its own, so a program that never reads it can't hold this up.
+        std::thread::spawn(move || std::io::Write::write_all(&mut stdin, &input));
+        finished_before(child, deadline)
+    }
+}
+
+/// What `child` printed and how it ended, once it ends within `deadline`. Both pipes are read
+/// while it runs, so a program printing a lot isn't stopped by a full one.
+fn finished_before(mut child: Child, deadline: Duration) -> std::io::Result<Output> {
+    fn read_all(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut all = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut all);
+            }
+            all
+        })
+    }
+    let stdout = read_all(child.stdout.take());
+    let stderr = read_all(child.stderr.take());
+    let status = wait_before(&mut child, deadline)?;
+    let joined = |reader: std::thread::JoinHandle<Vec<u8>>| reader.join().unwrap_or_default();
+    Ok(Output { status, stdout: joined(stdout), stderr: joined(stderr) })
+}
+
+/// How `child` ended, once it ends within `deadline`. One still running then is killed.
+pub(crate) fn wait_before(
+    child: &mut Child,
+    deadline: Duration,
+) -> std::io::Result<std::process::ExitStatus> {
+    let until = Instant::now() + deadline;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if Instant::now() > until {
+            child.kill()?;
+            child.wait()?;
+            let why = format!("a test's program was still running after {}s", deadline.as_secs());
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, why));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// A program that never ends is killed at its deadline, and the test hears why.
+#[test]
+fn a_program_past_its_deadline_is_killed() {
+    let started = Instant::now();
+    let ran = Command::new("sleep").arg("600").output_before(Duration::from_secs(1));
+    assert_eq!(ran.map_err(|error| error.kind()).err(), Some(std::io::ErrorKind::TimedOut));
+    assert!(started.elapsed() < Duration::from_secs(30));
+}
+
+/// A program a test started and talks to, like a server, killed once the test ends however it
+/// ends, so a failed test never leaves one running.
+pub(crate) struct Running(pub(crate) Child);
+
+impl Running {
+    /// The first line it prints, like the port a server listens on, within `PROGRAM_DEADLINE`.
+    /// The rest of what it prints is read and dropped, so it never waits on a full pipe.
+    pub(crate) fn first_line(&mut self) -> std::io::Result<String> {
+        use std::io::BufRead;
+        let stdout = self.0.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+        let (says, said) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut lines = std::io::BufReader::new(stdout).lines();
+            let _ = says.send(lines.next());
+            lines.for_each(drop);
+        });
+        match said.recv_timeout(PROGRAM_DEADLINE) {
+            Ok(Some(line)) => line,
+            Ok(None) => Err(std::io::ErrorKind::UnexpectedEof.into()),
+            Err(_) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "it printed nothing")),
+        }
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
 
 /// A `fennec` to start, with the runtime library built first. `fennec run` links against that
 /// library, and one left from before a rebase links without a word and gets things wrong: a
@@ -110,12 +230,13 @@ fn programs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 /// when it doesn't build.
 fn build(path: &Path, work: &Path) -> std::io::Result<Result<PathBuf, Output>> {
     let executable = work.join(path.file_stem().unwrap_or_default());
-    let built = fennec_command().arg("build").arg(path).arg("-o").arg(&executable).output()?;
+    let built =
+        fennec_command().arg("build").arg(path).arg("-o").arg(&executable).output_before(FENNEC_DEADLINE)?;
     Ok(if built.status.success() { Ok(executable) } else { Err(built) })
 }
 
 fn run(executable: &Path) -> std::io::Result<Output> {
-    Command::new(executable).output()
+    Command::new(executable).output_within()
 }
 
 /// How many builds the examples' tests run at once: one per core, up to 8. One at a time, LLVM's
@@ -202,7 +323,8 @@ fn failing_examples_fail_the_same_way_as_executables() {
         let ran = run(&executable)?;
         // `fennec run` runs an executable itself where LLVM builds the program, so the
         // interpreter is what an executable's failure is held to.
-        let interpreted = fennec_command().args(["run", "--interp"]).arg(path).output()?;
+        let interpreted =
+            fennec_command().args(["run", "--interp"]).arg(path).output_before(FENNEC_DEADLINE)?;
         let (ours, theirs) =
             (String::from_utf8_lossy(&ran.stderr), String::from_utf8_lossy(&interpreted.stderr));
         let differs = if ran.status.success() {

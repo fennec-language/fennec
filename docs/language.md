@@ -389,7 +389,7 @@ stream = fs.open(filename) else:
 - `.Case` is required when the type is known, in values and in `case` patterns; `fennec fix` writes it. Built.
 - `fails A | B` combines failures from different places: `?` passes any of them up as it is, and a function type can say it too, as in `(str) -> int fails ParseError | RangeError`. Built.
 - An `else:` block must leave: it ends with `return`, `fail`, `continue` or `break`. Built.
-- Taking from an empty collection gives `None`: `list.pop()` returns `T?`, as a queue's `pop` does, so draining one reads `next = todo.pop() else break`. `pop(at)` fails on a position that isn't there, like `items[at]`. A dict's `pop(key)` fails on a key that isn't there, like `ages[key]`, and `remove(key)` gives `V?` instead: the value, or `None`, so `if ages.remove(name) is None:` asks whether it was there. Built.
+- Taking from an empty collection gives `None`: `list.pop()` returns `T?`, as a queue's `pop` does, so draining one reads `next = todo.pop() else break`. `pop(at)` fails on a position that isn't there, like `items[at]`. A dict's `pop(key)` fails on a key that isn't there, like `ages[key]`, and `remove(key)` gives `V?` instead: the value, or `None`, so `if ages.remove(name) is None:` asks whether it was there. `items.get(at)` gives `T?` for a position that may not be there, counting from the end when it's negative as `items[at]` does. Built.
 
 ## Visibility
 

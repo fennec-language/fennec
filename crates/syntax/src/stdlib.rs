@@ -51,6 +51,7 @@ modules! {
     string,
     time,
     toml,
+    unicode,
     url,
     uuid,
 }

@@ -39,6 +39,8 @@ mod scope;
 mod stdlib;
 mod testing;
 mod types;
+mod unicode;
+mod unicode_tables;
 mod value;
 
 pub use constants::{Baked, bake_constants};

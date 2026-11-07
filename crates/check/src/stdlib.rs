@@ -57,6 +57,7 @@ modules! {
     random,
     re,
     toml,
+    unicode,
 }
 
 /// The module function of this full name, like `json.loads`, and its module.

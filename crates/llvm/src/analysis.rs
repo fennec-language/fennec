@@ -2746,6 +2746,7 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
         || is_socket_method(name)
         || name.starts_with("crypto.")
         || name.starts_with("compress.")
+        || name.starts_with("unicode.")
         || name.starts_with("json.")
         || name.starts_with("toml.")
         || matches!(

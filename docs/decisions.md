@@ -303,7 +303,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 **Layout is free to change.** As described under Layout, the compiler can reorder fields, pack enums and split lists of structs into one array per field, because no reference can depend on where a value lives. Languages with references can't change layouts behind the programmer's back.
 
-**Functions without capabilities have no side effects.** A `shared` handle in a signature acts like a capability. A function that isn't passed either can't do I/O or change anything outside itself, so the compiler can merge repeated calls, move them out of loops and vectorize loops more aggressively.
+**Functions without capabilities have no side effects.** A `shared` value in a signature acts like a capability. A function that isn't passed either can't do I/O or change anything outside itself, so the compiler can merge repeated calls, move them out of loops and vectorize loops more aggressively.
 *Why:* In most languages the compiler has to assume any call might do anything.
 
 **There's no unwinding.** Errors are values, and a runtime failure such as overflow ends the program. Containing one to a single server task is the intent, under Concurrency. With no unwinding machinery, code is smaller and inlines better.
@@ -634,14 +634,14 @@ This reverses the decision that a directly called nested function can change out
 
 **A lifetime is a block.** `with` is how ownership and lifetime are spelled. Any exit closes the block, inner blocks first, and you can see the order in the indentation.
 ```fennec
-with db.transaction() as mut tx, fs.open(path)? as file:
+with db.transaction()? as tx, fs.open(path)? as file:
     tx.insert(parse(file)?)?
     tx.commit()?
 ```
-A long-lived thing, like a file opened in one function and closed in another, is an owned value that moves, and closes when its last owner goes away.
+There are no moves. A resource that has to live a long time, like a pooled database connection, lives inside one keeper task's `with`, and everyone else sends it messages. This replaces the rule that a long-lived resource is an owned value that moves and closes when its last owner goes away.
 *Why:* If everything temporary lives inside a block, there's nothing for lifetime annotations to describe.
 
-**`with` is only for real lifecycles:** things that begin and have to end, like files, transactions, locks and tasks. A `with` block's last line is its value.
+**`with` is only for real lifecycles:** things that begin and have to end, like files, connections, transactions and tasks. A `with` block's last line is its value. `with` never locks: that's `lock`, under Concurrency.
 *Why:* Every `with` then means the same thing, so a reader knows something gets closed at the end of the block. Claims about a function, like `@hot`, go on the function.
 
 **Names don't leak out of blocks, and reusing a name still in scope is a compile error.** There's no `const` or `let`: `a = 5` is immutable and `mut a = 5` isn't.
@@ -651,19 +651,36 @@ A long-lived thing, like a file opened in one function and closed in another, is
 
 **The value after `with` must be a plain value.** An error from opening it is dealt with first: `with fs.open(path)? as file:`.
 
-**`def del` can't fail.** It does best-effort cleanup, such as closing, rolling back or freeing, and its signature can't have `fails`. Nothing can make an error disappear, unlike Python's `__exit__`.
+**`with` lends you something for the length of a block, and it can't escape.** What a `with` gives can't be returned, stored outside the block or put in a `shared`. A second name for it inside the block is fine, and a struct holding something borrowed is borrowed too, so wrappers work. Not built yet.
+*Why:* A file, socket or transaction then closes exactly once, at a line you can see, and nobody can use it after.
 
-**Finishing that can fail is an explicit method,** called and checked:
+**There's no `def del` and no destructor.** Everything that needs cleanup is opened with `with`. This replaces `def del` on `shared` types, and the standard library's `Connection` closing when its last owner goes away. `fennec fix` rewrites existing code. Not built yet.
+*Why:* A destructor runs at a moment no line shows, and has nowhere to report a failure. Memory frees itself, so only real resources need cleanup, and `with` shows where.
+
+**A `with` source is a function returning `-> with T`, with exactly one `lend`.** Setup goes above it and cleanup below. `lend x else:` runs when the caller's block fails, and a failure there is reported with the caller's. `return`, `break` and `continue` in the caller count as success. Not built yet.
 ```fennec
-with db.transaction() as mut tx:
-    tx.insert(player)?
-    tx.insert(inventory)?
-    tx.commit()?
-# not committed? `del` rolls back
+def transaction(self) -> with Transaction fails DbError:
+    with self._pool.take()? as conn:
+        conn.begin()?
+        lend Transaction(_conn=conn) else:
+            conn.rollback()
 ```
+*Why:* One `lend` makes every source read the same way, open, lend, close, and a user's `with` source can do anything the standard library's can.
 
-**A type can require its finish.** For a type like a buffered writer, cleaning up on the success path without calling its finishing method is a compile error: "`writer` was cleaned up without `close()`, so unflushed data would be lost". On error paths, best-effort cleanup is enough. How a type marks this is still open.
+**Nothing after `lend` may fail on the success path.** Finishing that can fail is a method the caller calls and checks, like `tx.commit()?`.
+*Why:* A cleanup failure after the caller's block has succeeded has nowhere to go, so it would be lost.
+
+**A type can require its finish, and wrappers inherit it.** For a type like a buffered writer or a transaction, ending the block on the success path without calling its finishing method is a compile error: "`tx` ended without `commit()`". A type holding one requires finishing too. How a type marks this is still open.
 *Why:* Cleanup that fails with nowhere to report the error silently loses data.
+
+**A source can't `lend` while it holds a lock it took.** Opening a file inside a lock is fine.
+*Why:* The caller's block would run under a lock it can't see, and could wait in it.
+
+**A generator can `lend` each item, closed when that round of the loop ends.** `def clients(server: Server) -> Iterator[with Connection]:` is how `for conn in parallel(server)` works, and each item belongs to its own round's task. Not built yet.
+*Why:* Then a server loop is plain Fennec that any kit could write, not something only the standard library can do.
+
+**Tasks started inside a `with` may borrow what it lent.** From many tasks at once, only its read-only methods, like a server's `accept`. `with conn.split() as reader, writer:` gives a connection's two sides, for one task reading while another writes.
+*Why:* Those tasks always end before the block does, so the borrow can't outlive the resource.
 
 ## Standard library
 
@@ -703,7 +720,7 @@ error: `Character` can't be saved: `Character.inventory.on_change` is a function
    = fix: `@skip` the field `on_change`, with a default
    = fix: write `def serialize` and `def deserialize` for `Inventory`
 ```
-A `shared` handle, a function value, a `Secret[str]` and an `Instant` are the values that can't be saved.
+A `shared` value, a function value, a `Secret[str]` and an `Instant` are the values that can't be saved.
 *Why:* The name matches `@serialize`, and never collides with game words like `save` and `load`. Collections reach their natural shapes through the same public protocol any type can use, which replaces the idea that `std` collections map to those shapes inside `std`.
 
 **Structs mirror the wire format.** In JSON:
@@ -834,7 +851,7 @@ def echo(ref conn: Connection) fails NetError:
 - **TCP:** `net.connect(host, port)` gives a `Connection`, and `net.listen(port)` gives a server whose items are connections. Both are used in a `with` block, which closes them. A connection has `read(n)`, which gives up to `n` bytes and empty bytes at the end, `read_line()`, which gives `None` at the end, `lines()`, `write(data)`, taking `bytes` or `str`, and `peer`, the other side's address.
 - **UDP:** `net.udp(port=9001)` gives a socket whose items are `Packet(data, sender)`, and `send_to(data, address)` answers.
 - **A failing connection ends only its own task.** A `NetError` is a value its task handles, as in `main` above. A runtime failure, like overflow, ends that task and closes its connection, and the server goes on. This is the containment recorded under Concurrency.
-- **Shared state** between connections is a `shared` handle, like a game's world, and one task hands work to another through a `Channel`, as under Concurrency.
+- **Shared state** between connections is a `shared` value made in `main` and passed down, and one task hands work to another through a channel, as under Concurrency.
 
 **The HTTP client is `net.get`, `net.post` and `net.request`.**
 ```fennec
@@ -921,8 +938,8 @@ import game.world.physics as physics
 
 ## Visibility
 
-**`export` marks what other kits can use, and goes on top-level things only.** It goes on each `def`, `struct`, `shared`, `enum`, `error`, `interface`, `type` alias and re-exported `import` that other kits may use. There's no field- or method-level `export`. It was spelled `pub`, and `fennec fix` rewrites `pub` as `export`, dropping it from methods.
-- `_name` makes a field or method private to its type, on a `struct` or `shared`. Only the type's own methods can use it, in its own kit too. Tests get no special access.
+**`export` marks what other kits can use, and goes on top-level things only.** It goes on each `def`, `struct`, `enum`, `error`, `interface`, `type` alias and re-exported `import` that other kits may use. There's no field- or method-level `export`. It was spelled `pub`, and `fennec fix` rewrites `pub` as `export`, dropping it from methods.
+- `_name` makes a field or method private to its type. Only the type's own methods can use it, in its own kit too. Tests get no special access.
 - A top-level `_name` (function, type or constant) is a compile error, and `fennec fix` renames it. Top-level names are already private to the kit. The standard library follows the same rule, with no exemption.
 - Enum cases, methods and interface methods come with their type and have no `export` of their own.
 - Other kits match an exported type's fields by name: `case IoError(reason=r)`, `case Point(x=a, y=_)`, or `case IoError()` to match the type without reading a field. Matching another kit's type by position is a compile error, and `fennec fix` adds the names. A kit's own code keeps positional patterns. Cases with no fields, like `.Wait`, are unchanged.
@@ -953,64 +970,62 @@ A big program that wants walls between its own parts splits into local kits in o
 
 ## Concurrency
 
-**`shared Name:` is the only reference type.** It's a counted handle whose methods lock automatically: `ref self` writes and `self` reads.
+**Four questions, each with its own words:** `mut` and `ref` say whether something can change; `shared` and `lock` say who's touching it; `with` says when it goes back; `launch` and channels say who talks to whom.
+*Why:* Each question gets one answer you can see in the code, and every borrow lives in a block, so there are no lifetimes to write.
+
+**`shared T` is a type, and it's the only way tasks reach the same value.** It works on any type, and goes in fields and collections: `dict[str, shared Room]`. Making one from a plain value is written out, as `shared rooms = dict[str, Room]()`, and a plain value never becomes `shared` at a call. This replaces `shared Name:` declarations, whose methods locked automatically. Not built yet.
+*Why:* Sharing then shows up in types and signatures, and a search for `shared` finds every place it happens.
+
+**There's no top-level shared state.** A `shared` value is made in a function, usually `main`, and passed to whoever needs it, like a capability.
+*Why:* A function's signature then says what shared state it can touch, so nobody has to read its body to find out.
+
+**A `shared` value is reached only inside `lock`.** `lock x as s:` reads, and many tasks can read at once. `lock x as ref s:` changes it, one task at a time. Any way out of the block releases it, and a lock isn't a transaction, so nothing is undone. There's no upgrading a read to a write. This replaces `with x as ref y:` for locking. Not built yet.
 ```fennec
-shared Cache:
-    _pages = dict[str, Page]()
-
-    def get(self, key: str) -> Page?:
-        return self._pages.get(key)
-
-    def set(ref self, key: str, page: Page):
-        self._pages[key] = page
+def record(scores: shared Scores, name: str, points: int):
+    lock scores as ref current:
+        current.best[name] = points
 ```
-Calling `cache.set(key, page)` takes the lock for the call. To change several handles together, `with` locks them all, always in the same order:
+*Why:* The block shows exactly how long the lock is held, and code can't touch the value without it.
+
+**Nothing waits inside a lock.** No channel receive, pool take, network call, `parallel`, or end of a `with launch`. Printing and local files are fine. This replaces the rule that I/O inside a lock only makes it slow: network calls now count as waiting.
+*Why:* A lock held while waiting on another task, or on a stalled client, can freeze every task, so the rule is to wait first, then lock.
+
+**Lock deadlocks can't compile.** Lock order is checked across the whole program, keyed by where each `shared` value is made. Values the compiler can't tell apart, like two accounts from one dict, are locked together in one `lock` statement, never one inside the other, and locking the same value twice there fails rather than stopping the program. Interfaces and function values are traced across the whole program, with no annotations, and an error names the implementation that takes the lock.
+*Why:* Every program is compiled whole from source, so the compiler can see every lock any call might take, and nobody writes lock annotations.
+
+**A `shared` value holds plain values and other `shared` values, never something borrowed from a `with`.** It can't hold one of its own type or form a cycle of types, directly or through other types and channels, so trees use `Table` and `Id`s. It can't store a function that captures a `shared` value. It's freed when its last holder lets go, with no cleanup code.
+*Why:* With no cycles nothing can leak, and with no resources inside, freeing it is only giving memory back.
+
+**`with launch(...)` runs a task until its block ends.** The arrow is the call you'd write anyway, and `launch`'s own options, `stop_after=` and `inbox_size=`, sit outside it. A parameter typed `Inbox[T]` makes `launch` create the channel, giving the task the receiving end and you the sending end. A task with no messages takes none: `with launch(() => autosave(rooms, fs, clock)):`. `launch` is only ever written as `with launch(...)`. This replaces `with launch(physics_loop) as physics:`, where the first parameter was the inbox. Not built yet.
 ```fennec
-shared Account:
-    total = 0
-
-def transfer(a: Account, b: Account, amount: int):
-    with a, b as mut x, mut y:            # both locked for the block
-        x.total -= amount
-        y.total += amount
+with launch((inbox) => audio(inbox, speakers), stop_after=5s) as sounds:
+    sounds.send(.Play(name="jump", volume=0.8))?
 ```
-- `a = cache` gives a second name for the same cell. Fields are private with `_name`.
-- It can hold another `shared`, but never in a cycle, which is a compile error. There's no `weak` and no cycle collector.
-- `with a, b as mut x, mut y:` takes several at once, in a fixed order.
-- There's no module-level `shared`. A handle in a signature acts like a capability, so what a function can reach is in its parameters.
+*Why:* `launch`'s options can never collide with the function's arguments, and the inbox is in the task's signature, not a convention about its first parameter.
 
-*Why:* Some things really are shared, like a cache or a server's stats. Holding the lock for every access rules out data races, and a method call can't forget to take it. Plain structs pay nothing for it, and a search for `shared` finds every shared resource in a program.
+**An inbox's enum is its protocol.** You can only send real cases, and the task's `match` must handle every one.
+*Why:* A typed message is checked at both ends at compile time.
 
-**Lock bodies can't deadlock.**
-- They can do I/O, and can leave early with `?`, `fail`, `return`, `break` or `continue`. The lock is released on the way out, as in Rust, Go and Python. A lock isn't a transaction, so nothing is undone.
-- They can't receive on a channel, since the sender may be waiting on the same lock.
-- Locks never nest out of order: a lock body takes only the locks of `shared` values its locked ones hold.
-- A `shared` type's `del` may do I/O.
-- `try_with` exists but isn't the default.
+**`TaskGroup` holds tasks whose number is known only at run time.** It's in `std.concurrent`, written in plain Fennec, and stops them all when its block ends.
+*Why:* Every task still belongs to a block you can see, whether it's one or a thousand.
 
-*Why:* I/O under a lock only makes it slow, which a profile shows, but waiting on a channel under one can wait forever. A "busy" error from a try-lock passes single-threaded tests and then fails under load, so waiting is what the short form does.
+**Stopping a task drains it, then cuts it short.** When a `with launch` block ends normally, the task's inbox closes and the task finishes what's in it. If it's still running after `stop_after`, every wait it's in is cut short, socket and stdin reads included. A block that failed cuts them short at once.
+*Why:* A normal end never loses queued work, which would make tests flaky, and a stuck task can't hang its parent forever.
 
-**`with launch(physics_loop) as physics:` runs a long-lived task.** `launch` creates a channel, passes one end to the function, runs it, and hands back the other end. The block's end stops it.
-```fennec
-def physics_loop(inbox: Channel[Cmd]):
-    mut sim = Sim()
-    while sim.running:
-        for cmd in inbox.pending():
-            apply(ref sim, cmd)
-        step(ref sim)
+**A task's failure comes out where its `with launch` ends, and a crash comes out as `Crashed`.** A crash while holding a `ref` lock stops the whole program.
+*Why:* A parent, like a pool's keeper, has to see a child die to replace it, and no task may go on with half-changed shared data.
 
-with launch(physics_loop) as physics:
-    physics.send(Cmd.Push(id, force))
-```
-There's no `with tasks()`.
-*Why:* One word, no setup, and no way to leak a task.
+**Channels are bounded.** `send` waits when one is full, and both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. Sending to a closed channel fails at once. A channel you set up yourself is `with Channel[Job](size=64) as jobs:`. Not built yet.
+*Why:* A bounded buffer pushes back instead of growing without limit, and saying why a receive stopped lets the task decide what to do.
 
-**Channels are bounded ring buffers.** They have `send`, `pending()`, which takes what's waiting without blocking, and `for x in ch`, which waits. What a full channel does is set when it's made, with `when_full=`: `.Wait`, the default, `.DropOldest` or `.Fail`.
-```fennec
-commands = Channel[Cmd](size=1024)
-latest = Channel[Snapshot](size=1, when_full=.DropOldest)
-```
-*Why:* A bounded buffer pushes back instead of growing without limit, and a one-slot channel is how a renderer always gets the newest frame.
+**Dev builds stop with a report when tasks are waiting only on each other.**
+*Why:* Lock deadlocks can't compile, but two tasks sending into each other's full inboxes can't be ruled out at compile time, so it has to show up loudly in testing.
+
+**Pools are keeper tasks, written in plain Fennec in `std.concurrent`.** Each pooled resource lives inside one keeper task's `with`, and the pool keeps only the keepers' inboxes. A failed block resets the resource it used, and a crashed job's resource is replaced, so the pool heals itself. Libraries hand out what users need, like `with db.transaction()? as tx:`. Not built yet.
+*Why:* No resource ever leaves its keeper's block, so nothing can leak or be used twice, and the pool needs no powers a user's code lacks.
+
+**Not in the language: `del`, destructors, moves, lifetimes, `unsafe` and global state.** Left for when real programs need them: `select`, handles that move between tasks, and results returned from tasks.
+*Why:* Each would bring back a hidden moment or a hidden owner that the rules above keep visible.
 
 **Event channels will be added, for many listeners,** each reading at its own pace. A function value is for one answer now, and a channel is for many parties later. The exact API isn't decided yet.
 
@@ -1020,7 +1035,7 @@ latest = Channel[Snapshot](size=1, when_full=.DropOldest)
 **There's one scheduler, with I/O multiplexed by the OS.** Code looks blocking, and a task that waits parks and frees its core.
 *Why:* Thousands of parked tasks cost almost nothing, and nobody has to manage a pool or color functions `async`.
 
-**A failure in a server task stays in that task.** A runtime failure in a task of `parallel(server)` ends that task and closes its connection, and the server goes on, as under `std.net`.
+**A failure in a server task stays in that task.** A runtime failure in a task of `parallel(server)` ends that task and closes its connection, and the server goes on, as under `std.net`. The one exception is a crash while holding a `ref` lock, which stops the program.
 *Why:* One bad index in one request shouldn't drop every connection. Tasks don't share state a failure could corrupt, which makes containment unusually safe here.
 
 **Reference counts are biased for values that cross tasks.** The thread that owns a block counts cheaply, and other threads count atomically. Programs with no tasks compile the check away.
@@ -1042,7 +1057,7 @@ with net.listen(8080) as server:
         handle(conn, app)
 ```
 - Each iteration can change only its own element. It can read anything around it, but can't change outer `mut` names.
-- A body may use capabilities and `shared` handles. Results are deterministic when it uses neither. This replaces the earlier rule that a body can't use capabilities.
+- A body may use capabilities and `shared` values. Results are deterministic when it uses neither. This replaces the earlier rule that a body can't use capabilities.
 - Work over data runs on a work-stealing thread pool, and reading outer values changes no reference counts.
 - The interpreter runs the loop in order, which is a correct implementation of a deterministic body, and the playground needs no threads.
 
@@ -1093,7 +1108,7 @@ for line in (render(x) for x in parallel(xs)):
 Tests comparing against the interpreter sort output from parallel bodies, and heavy printing from many threads shares one output. Those are the accepted costs.
 *Why:* Position order would let one long-lived connection hold back every later connection's logs, for hours and in memory with no limit. Having one rule for lists and another for connections would be worse, since the same loop would print differently by what it runs over.
 
-**A value crosses a channel like it goes anywhere else.** It's moved at its last use, and otherwise costs one count bump. Any write copies first, so neither side sees the other's changes. `shared` handles can cross too. This replaces the earlier rule that only values with a single owner cross a channel.
+**A value crosses a channel like it goes anywhere else.** It's moved at its last use, and otherwise costs one count bump. Any write copies first, so neither side sees the other's changes. `shared` values can cross too. This replaces the earlier rule that only values with a single owner cross a channel.
 *Why:* Biased counts make it safe, so the restriction no longer buys anything.
 
 ## Syntax
@@ -1373,7 +1388,7 @@ These are default lints, and the Den requires them.
 ## Security goal
 
 **The goal is near-zero CVEs, and it's public policy.** True zero isn't possible: the compiler, the runtime and the C that can't be ported can all have bugs. What Fennec can do is remove the usual causes:
-- **Memory bugs are impossible in safe code.** `unsafe` exists only for C, in extern modules, and that will never change. The standard library's internals are private to the compiler, not a second kind of `unsafe`.
+- **Memory bugs are impossible.** Fennec has no `unsafe`, and how C is called without it is still open. The standard library's internals are private to the compiler, not a second kind of `unsafe`.
 - **C is ported rather than linked,** so less C runs at all.
 - **A batteries-included standard library** keeps dependency trees shallow.
 - **Capabilities limit the blast radius** of any bug: code can reach only what it was handed.
@@ -1555,6 +1570,8 @@ def main(stdout: Stdout, gpu: Gpu):
 
 ## Native code
 
+Fennec has no `unsafe` and no `def del`, since 2026-11-07, so the entries below that use them describe the earlier plan. How C is called without them is still open.
+
 **If it can be Fennec, it is Fennec.** Libraries are ported to Fennec wherever possible. C is called only for what can't be ported: the operating system's own APIs, GPU drivers, and closed platform or console SDKs.
 - **A port is tested against the original:** the C library is the oracle, giving the same outputs for the same inputs, and fuzz tests compare them continuously.
 - **A port is benchmarked against the original:** CI fails if it's more than 3% slower.
@@ -1670,10 +1687,11 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 - How an `Id` is used across servers, which is expected at the simulation level.
 - How an `Id`'s tag and generation behave across a restart, which decides what a saved `Id` means.
 - How `std.pack` data evolves: a lock file of past layouts with automatic migration rules, as Avro does. It comes later and adds to v1 without breaking it.
-- How a type marks that its finishing method must be called.
+- How a type marks that its finishing method must be called. The pick is to infer it from a `lend` whose cleanup can fail, with no marker.
+- What a wait cut short by a stop gives the task. The pick is that it ends the task quietly, with no failure reported.
+- How C is called with no `unsafe` and no `def del`.
 - Whether the `ref` form of `def []` counts as returning a `ref`, which is otherwise refused.
 - How a task changes an item from a stream. `for ref conn in parallel(server):` is written here, but `for ref` needs positions, and a plain name can't be handed to a `ref`.
-- How `shared` fits: `ref self` needs a `mut` source, but a handle's name isn't `mut`, and `with a, b as mut x, mut y:` makes `mut` names that link to something else.
 - How `items()` works with `ref` on a user type, and whether `enumerate` stays beside it.
 - Whether `values()` and `keys()` also go from `dict`, where a plain `for` gives keys.
 - What replaces `xs.pair(i, j)`, and whether `f(ref xs[i], ref xs[j])` is always refused.

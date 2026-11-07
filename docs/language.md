@@ -30,26 +30,27 @@ There's no inline `ref`.
 ## What you can declare
 
 ```fennec
-struct Unit:               # a value
+# a value
+struct Unit:
     name: str
     health = 100 where health >= 0
 
-enum Action:               # a value with cases
+# a value with cases
+enum Action:
     Wait
     Attack(target_id: Id[Unit])
 
-error SellError:           # a failure with cases
+# a failure with cases
+error SellError:
     NotFound(item: Item)
     OutOfStock(item: Item)
 
-shared Game:               # one thing, with a lock, no cycles
-    players: list[Player]
-
-interface Shape:           # what a type can do
+# what a type can do
+interface Shape:
     def area(self) -> float
 ```
 
-There are no classes and no handle keyword. Nearly everything you write is a `struct`.
+There are no classes and no handle keyword. Nearly everything you write is a `struct`, and `shared` is a type, not something you declare.
 
 ## Mistakes the compiler stops
 
@@ -121,33 +122,140 @@ units[unit_id].health -= 1                         # sure: stops loudly if wrong
 
 Tables are for large, flat data. An `Id` is an index, a generation and a tag for its table, so it finds the right thing or nothing.
 
-## `shared`: the class-like option
+## Sharing, resources and tasks
+
+Not built yet. Today's `shared Name:` declarations, `with x as ref y:` and `def del` still compile, and `fennec fix` rewrites them when this lands.
+
+Four questions, each with its own words:
+
+| Question | Words |
+|---|---|
+| Can it change? | `mut`, `ref` |
+| Who's touching it? | `shared`, `lock` |
+| When does it go back? | `with` |
+| Who talks to whom? | `launch`, channels |
+
+Every borrow lives in a block you can see, so there are no lifetimes to write. A typical game uses none of this beyond `with`: its main loop owns the world and passes `ref world` down.
+
+### `shared` and `lock`
 
 ```fennec
-shared Game:
-    players: list[Player]
+struct Scores:
+    best = dict[str, int]()
 
-    def add(ref self, name: str):
-        self.players.append(Player(name=name))
+def record(scores: shared Scores, name: str, points: int):
+    # one task at a time can change it
+    lock scores as ref current:
+        current.best[name] = points
 
-    def top_scores(self) -> list[str]:
-        [player.name for player in self.players if player.score > 50]
+def best_of(scores: shared Scores, name: str) -> int:
+    # many tasks can read it at once
+    lock scores as current:
+        return current.best.get(name) else 0
 
-game = Game(players=[])     # no `mut` needed
-same_game = game            # a second name for the same game
-game.add("Chris")           # takes the lock for the call
+def main(stdout: Stdout):
+    shared scores = Scores()
+    record(scores, "Ana", points=10)
 ```
 
-- A `shared` value can always change, through its `ref self` methods, so its names don't need `mut`. `self` methods only read.
-- Writing a field needs a `ref self` method or `with game as ref current:`, so the code shows how long it holds the lock.
-- A value leaving a `shared` is your own copy, and one going in is the `shared` value's own. So `names = game.names` costs a copy, and using `current.names` inside `with` doesn't.
-- It can hold another `shared` type, but never in a cycle. That's a compile error. Locks are taken outer type first, so nesting can't deadlock. Built.
-- `def del` is allowed here and refused on a `struct`, which is a compile error. It runs when the last owner goes away. Built, apart from std's `Connection`, which is still a `struct` with `del` until it becomes `shared`.
-- To use two together, take both at once: `with savings as ref source, checking as ref destination:`. Taking the same value twice stops the program, like an index out of range.
-- `Connection`, files, channels and `Stdout` are `shared` types that ship with Fennec. They manage their own read and write sides, and `with` on one only closes it at the end of the block. A `shared` type the standard library declares works this way: it takes no lock, and `with` runs its `del` at the end of the block. Built; the standard library's types switch to `shared` next, and running `del` when the last owner goes away is still to build.
-- A lock body can do I/O, which only makes it slow, and can leave early with `?`, `fail`, `return`, `break` or `continue`. The lock is released on the way out, and nothing is undone. A `del` may do I/O. It can't wait on a channel, since that can deadlock. Built, apart from channels, which aren't built yet.
+- `shared T` is a type, so it goes in fields and collections too: `dict[str, shared Room]`. It works on any type, and there's no `shared Name:` declaration.
+- A `shared` value is made in a function, usually `main`, and passed to whoever needs it, like a capability. There's no top-level shared state, so a function's signature says what shared state it touches.
+- Making one from a plain value is written out, as `shared scores = Scores()`. A plain value never becomes `shared` at a call.
+- It's reached only inside `lock x as s:`, to read, or `lock x as ref s:`, to change. Any way out of the block releases it, `?`, `fail` and `return` included. A lock isn't a transaction, so nothing is undone.
+- **No waiting inside a lock:** no channel receives, pool takes, network calls, `parallel`, or the end of a `with launch`. Printing and local files are fine. Wait first, then lock.
+- **Deadlocks can't compile.** Lock order is checked across the whole program, by where each `shared` value is made. Two values the compiler can't tell apart, like two accounts from one dict, are locked together in one statement: `lock accounts[from_id], accounts[to_id] as ref source, ref target:`. Locking the same value twice that way fails, rather than stopping the program.
+- Interfaces and function values are traced across the whole program, which is always compiled together, so nothing needs a `locks` annotation. An error names the implementation that takes the lock.
+- A `shared` value holds plain values and other `shared` values, never something borrowed from a `with`. It never holds one of its own type, and never forms a cycle, so a tree uses a `Table` and `Id`s. It can't store a function that captures a `shared` value.
+- Its memory is freed when the last holder lets go, with no cleanup code.
 
-A typical game doesn't use `shared`: its main loop owns the world and passes `ref world` down.
+### `with` and `lend`
+
+```fennec
+with fs.open("save.dat")? as file, net.connect(host)? as conn:
+    data = file.read_text()?
+    conn.write_line(data)?
+# both are closed here, however the block ends
+```
+
+- `with` lends you something for the length of a block, then takes it back. It's the only way to open files, sockets, servers and transactions.
+- What it lends can't escape the block: it can't be returned, stored outside it or put in a `shared`. A second name for it inside the block is fine.
+- A struct holding something borrowed is borrowed too, so a wrapper like `LineProtocol(conn=conn)` works inside the block and can't leak out.
+- `with conn.split() as reader, writer:` gives a connection's read and write sides, for one task reading while another writes.
+- `with` never locks.
+
+Writing your own takes `-> with T` and one `lend`. Setup goes above it and cleanup below:
+
+```fennec
+def transaction(self) -> with Transaction fails DbError:
+    with self._pool.take()? as conn:
+        conn.begin()?
+        # the caller's block runs here, with the transaction lent to it
+        lend Transaction(_conn=conn) else:
+            # the caller's block failed
+            conn.rollback()
+
+with db.transaction()? as tx:
+    tx.insert(order)?
+    tx.commit()?
+```
+
+- `lend x else:` runs when the caller's block fails, and a failure there is reported with the caller's. `return`, `break` and `continue` in the caller count as success.
+- Nothing after `lend` may fail on the success path. A type can require its caller to finish it, like `tx.commit()?`, and a wrapper around such a type requires finishing too.
+- A source can't `lend` while it holds a lock it took. Opening a file inside a lock is fine.
+- A generator can `lend` each item, closed when that round of the loop ends: `def clients(server: Server) -> Iterator[with Connection]:`. That's how `for conn in parallel(server)` works, with each connection belonging to its own round's task.
+- Tasks started inside a `with` may borrow what it lent, since they always end first. From many tasks at once, only its read-only methods, like a server's `accept`.
+
+### `launch` and channels
+
+```fennec
+enum Sound:
+    Play(name: str, volume: float)
+    StopAll
+
+def audio(inbox: Inbox[Sound], speakers: Speakers):
+    for sound in inbox:
+        match sound:
+            case .Play(name, volume):
+                speakers.play(name, volume=volume)
+            case .StopAll:
+                speakers.stop_all()
+
+def main(speakers: Speakers, input: Input):
+    with launch((inbox) => audio(inbox, speakers), stop_after=5s) as sounds:
+        for frame in input.frames():
+            if frame.jumped:
+                sounds.send(.Play(name="jump", volume=0.8))?
+```
+
+- `launch` runs a function alongside you until its `with` block ends, so no task outlives the code that started it. It's only ever written as `with launch(...)`.
+- The arrow is the call you'd write anyway. `launch`'s own options, `stop_after=` and `inbox_size=`, sit outside it.
+- A parameter typed `Inbox[T]` makes `launch` create the channel: the task gets the receiving end and you get the sending end, as `sounds`. The enum is the protocol, so you can only send real cases and the task must handle each one. A task with no messages takes no inbox: `with launch(() => autosave(rooms, fs, clock)):`.
+- `TaskGroup`, from `std.concurrent`, holds a number of tasks known only at run time, and stops them all when its block ends.
+- Channels are always bounded, and `send` waits when one is full. Both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. A channel you set up yourself is `with Channel[Job](size=64) as jobs:`.
+- Dev builds stop with a report when tasks are waiting only on each other, since a hang through channels alone can't be ruled out at compile time.
+
+### Pools
+
+```fennec
+with Database.open(net, url, pool_size=10)? as db:
+    for request in parallel(server):
+        with db.transaction()? as tx:
+            tx.insert(order)?
+            tx.commit()?
+```
+
+- Pools in `std.concurrent` are written in plain Fennec. Each connection lives inside one keeper task's `with`, and the pool keeps only the keepers' inboxes, so nothing can leak or be used twice.
+- A failed block resets the connection it used. A crashed job's connection is replaced, so the pool heals itself and never shrinks.
+- Libraries hand out what users need, like `with db.transaction() as tx:`, so keepers stay inside the library.
+
+### When tasks stop or crash
+
+- When a `with launch` block ends normally, the task's inbox closes and the task drains it. If it's still running after `stop_after`, every wait it's in is cut short, socket and stdin reads included. A block that failed cuts them short at once.
+- A task's failure comes out where its `with launch` block ends, and a crash comes out as `Crashed`.
+- A crash while holding a `ref` lock stops the whole program, so no half-changed shared data survives.
+- Sending to a closed channel fails cleanly, and never waits.
+
+Not in the language: `del`, destructors, moves, lifetimes, `unsafe` and global state. Left for when real programs need them: `select`, handles that move between tasks, and results returned from tasks.
 
 ## Unions
 
@@ -247,24 +355,69 @@ A function reaches outside itself only through what's in its signature, so there
 
 ## A whole program
 
+A chat server, not built yet: rooms that every connection shares, a database transaction for each message, and an autosave task.
+
 ```fennec
-struct LineProtocol:
-    connection: Connection
+from std import json
+from std.db import Database, DbError
 
-    def messages(self) -> Iterator[Message] fails NetError:
-        for line in self.connection.lines()?:
-            message = parse_message(line) else continue
-            yield message
+struct Room:
+    messages = list[str]()
 
-def main(net: Net, stdout: Stdout):
-    with net.listen(9000)? as server:
-        for connection in parallel(server):
-            protocol = LineProtocol(connection=connection)
-            for message in protocol.messages()?:
-                stdout.print(message.text)
+struct Message:
+    room: str
+    author: str
+    text: str
+
+def join(rooms: shared dict[str, Room], room_name: str, user: str):
+    lock rooms as ref current:
+        if room_name not in current:
+            current[room_name] = Room()
+        current[room_name].messages.append(f"{user} joined")
+
+def say(rooms: shared dict[str, Room], room_name: str, user: str, text: str):
+    lock rooms as ref current:
+        current[room_name].messages.append(f"{user}: {text}")
+
+def recent(rooms: shared dict[str, Room], room_name: str) -> list[str]:
+    lock rooms as current:
+        return current[room_name].messages[-20:]
+
+def serve(conn: Connection, rooms: shared dict[str, Room], db: Database) fails NetError | DbError:
+    user = conn.read_line()? else return
+    room_name = conn.read_line()? else return
+    join(rooms, room_name, user=user)
+    for line in conn.lines()?:
+        say(rooms, room_name, user=user, text=line)
+        with db.transaction()? as tx:
+            tx.insert(Message(room=room_name, author=user, text=line))?
+            tx.commit()?
+        # the network write waits, so it happens after the lock is released
+        for message in recent(rooms, room_name):
+            conn.write_line(message)?
+
+def autosave(rooms: shared dict[str, Room], fs: Fs, clock: Clock) fails IoError:
+    while True:
+        clock.sleep(30s)
+        lock rooms as current:
+            # your own copy, so the lock ends before the file is written
+            snapshot = current
+        fs.write_text("rooms.json", json.dumps(snapshot))?
+
+def main(net: Net, fs: Fs, clock: Clock):
+    shared rooms = dict[str, Room]()
+    with Database.open(net, "postgres://localhost/chat", pool_size=10)? as db:
+        with launch(() => autosave(rooms, fs, clock), stop_after=5s):
+            with net.listen(9000)? as server:
+                # each connection gets its own task, and closes when its round ends
+                for conn in parallel(server):
+                    serve(conn, rooms, db)?
 ```
 
-Each connection gets its own task, and a failure ends only that task. The wrapper is a plain value, and connections close when their last owner goes away.
+- `rooms` is made in `main` and passed down, so every function that touches it says so.
+- Nothing waits inside a lock: `recent` copies the messages out, and the writes to the client happen after.
+- A failure in one connection's task ends only that task. When `main`'s block ends, the autosave task is stopped, the server and every connection close, and the pool closes its connections.
+- There's no lifetime, move, destructor or `async` anywhere in it.
 
 ## Building
 
@@ -284,7 +437,8 @@ Each connection gets its own task, and a failure ends only that task. The wrappe
 | Float order | Keep one order, and measure x86 before calling it settled |
 | `x / 0.0` | Keep stopping the program |
 | `where` | A broken rule always stops the program |
-| A shared method calling another | Refuse calls into a `shared` passed as a parameter |
 | `?` inside `parallel` | It ends only that task |
 | A scoped `ref` | Possibly `with units[target_id] as ref target:` |
-| Closing written files | Automatic close can't report failure, so writers get an explicit `close()?` |
+| Closing written files | A written file is a type its caller must finish, with `close()?` |
+| How a type says it must be finished | Inferred from a `lend` whose cleanup can fail, with no marker |
+| A wait cut short by a stop | Ends the task quietly, with no failure reported |

@@ -179,8 +179,7 @@ fn has_both(checker: &Checker, name: &str) -> bool {
 }
 
 /// One field to read: its type as it's written, and whether it holds an optional already.
-/// One that holds a union is saved as what `Unions` makes for its type, and for its type made
-/// optional.
+/// One that holds a union is saved as what `Unions` makes for its type.
 struct Read<'f> {
     field: &'f Field,
     ty: String,
@@ -188,7 +187,6 @@ struct Read<'f> {
     or_none: String,
     optional: bool,
     union: Option<Changed>,
-    union_or_none: Option<Changed>,
 }
 
 impl Read<'_> {
@@ -200,14 +198,13 @@ impl Read<'_> {
         }
     }
 
-    /// Reads the field's value, or, with `or_none`, its value or a missing one.
-    fn read(&self, or_none: bool) -> String {
-        let changed = if or_none { &self.union_or_none } else { &self.union };
-        match changed {
+    /// Reads the field's value.
+    fn read(&self) -> String {
+        match &self.union {
             Some(changed) => {
                 format!("loaded_union__{}(src__.value[{}]()?)", changed.helper, changed.saved_as)
             }
-            None => format!("src__.value[{}]()?", if or_none { &self.or_none } else { &self.ty }),
+            None => format!("src__.value[{}]()?", self.ty),
         }
     }
 }
@@ -357,10 +354,8 @@ fn reads<'f>(
         } else {
             let optional = matches!(ty, Type::Optional(_));
             let union = unions.change(&ty);
-            let union_or_none =
-                if union.is_some() && !optional { unions.change(&Type::optional(ty.clone())) } else { None };
             let or_none = Type::optional(ty.clone()).source()?;
-            saved.push(Read { field, ty: ty.source()?, or_none, optional, union, union_or_none });
+            saved.push(Read { field, ty: ty.source()?, or_none, optional, union });
         }
     }
     Some((saved, left_out))
@@ -475,16 +470,16 @@ fn load_fields(out: &mut String, indent: &str, list: &str, (fields, left_out): &
         let name = &read.field.name;
         let _ = writeln!(out, "{indent}        case {at}:");
         if read.optional {
-            let _ = writeln!(out, "{indent}            read_{name} = {}", read.read(false));
+            let _ = writeln!(out, "{indent}            read_{name} = {}", read.read());
             continue;
         }
         // A format with a missing value, like JSON's `null`, may give one for any field, which
-        // then takes its default. One with none reads what the field holds.
+        // then takes its default. One with none reads what the field holds. Either way the value
+        // is read as what the field holds, never wrapped as an optional on the way.
         let _ = writeln!(
             out,
-            "{indent}            if src__.missing_as_none():\n{indent}                read_{name} = {}\n{indent}            else:\n{indent}                read_{name} = {}",
-            read.read(true),
-            read.read(false)
+            "{indent}            if src__.none_next() and src__.none()?:\n{indent}                read_{name} = None\n{indent}            else:\n{indent}                read_{name} = {}",
+            read.read()
         );
     }
     let _ = writeln!(out, "{indent}        case _:\n{indent}            pass");
@@ -545,7 +540,7 @@ fn load_in_order(
     let (reads, left_out) = fields;
     let _ = writeln!(out, "{indent}if src__.ordered(\"{name}\")?:");
     for read in reads {
-        let _ = writeln!(out, "{indent}    in_{} = {}", read.field.name, read.read(false));
+        let _ = writeln!(out, "{indent}    in_{} = {}", read.field.name, read.read());
     }
     let _ = writeln!(out, "{indent}    src__.end_ordered()");
     if make != "Self" {

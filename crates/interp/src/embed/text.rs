@@ -196,6 +196,35 @@ pub(super) fn decimal(n: i64, digits: &mut [u8; 20]) -> &[u8] {
     digits.get(at..).unwrap_or_default()
 }
 
+/// The few bytes a float's text takes, written where they're kept.
+#[derive(Default)]
+struct Digits {
+    bytes: [u8; INLINE_BYTES],
+    length: usize,
+}
+
+impl std::fmt::Write for Digits {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        let end = self.length + text.len();
+        self.bytes.get_mut(self.length..end).ok_or(std::fmt::Error)?.copy_from_slice(text.as_bytes());
+        self.length = end;
+        Ok(())
+    }
+}
+
+/// A float's text as `format::float` writes it, inline, when it's written with no exponent and
+/// fits; `None` for the rest.
+#[expect(clippy::float_cmp, reason = "checking for a whole number is an exact comparison")]
+fn plain_float(x: f64) -> Option<[u64; 3]> {
+    use std::fmt::Write as _;
+    if !x.is_finite() || (x != 0.0 && !(1e-4..1e16).contains(&x.abs())) {
+        return None;
+    }
+    let mut digits = Digits::default();
+    if x == x.trunc() { write!(digits, "{x}.0") } else { write!(digits, "{x}") }.ok()?;
+    Some(inline(digits.bytes.get(..digits.length)?))
+}
+
 /// `fennec_code_header(code)`: the character with a code as a header. A number that isn't a
 /// character's code gives the replacement character, which `std.json` never asks for.
 pub extern "C" fn code_header(code: i64) -> Text {
@@ -204,8 +233,12 @@ pub extern "C" fn code_header(code: i64) -> Text {
 }
 
 /// `fennec_float_header(x)`: a float's text as it prints, as a header, inline unless it's the
-/// longest there is.
+/// longest there is. One written with no exponent, as most are, is made in place, with no text
+/// made on the way.
 pub extern "C" fn float_header(x: f64) -> Text {
+    if let Some(words) = plain_float(x) {
+        return Text { words };
+    }
     let text = crate::format::display(&crate::value::Value::Float(x));
     if text.len() <= INLINE_BYTES {
         return Text { words: inline(text.as_bytes()) };
@@ -287,6 +320,31 @@ mod tests {
         assert_eq!(words[1], 24);
         heap::free(i64::try_from(words[0]).unwrap());
         assert_eq!(live(), before);
+        finish();
+    }
+
+    #[test]
+    fn a_float_made_in_place_is_written_as_it_prints() {
+        begin();
+        for x in [
+            0.0,
+            -0.0,
+            1.0,
+            -2.25,
+            0.1,
+            1e-4,
+            -0.000_123_456_789_012_345_67,
+            1e15,
+            9_999_999_999_999_998.0,
+            123_456.789,
+            1e16,
+            9.9e-5,
+            f64::MIN_POSITIVE,
+            f64::NAN,
+            f64::INFINITY,
+        ] {
+            assert_eq!(text_of(super::float_header(x).words), crate::format::float(x), "{x:e}");
+        }
         finish();
     }
 

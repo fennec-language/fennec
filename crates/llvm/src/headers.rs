@@ -999,25 +999,12 @@ done:
         if name == "intrinsics.text_size" {
             return self.assign(dest, &length);
         }
-        let bytes = self.header_bytes(&text);
         let (first, _) = self.operand(args.get(1).ok_or("no argument")?)?;
         if name == "intrinsics.text_byte" {
-            let inside = self.temp();
-            self.line(&format!("{inside} = icmp ult i64 {first}, {length}"));
-            let (read, joined) = (self.label("byte_read"), self.label("byte_done"));
-            let before = self.current.clone();
-            self.line(&format!("br i1 {inside}, label %{read}, label %{joined}, !prof !8"));
-            self.start_block(&read);
-            let (at, byte, wide) = (self.temp(), self.temp(), self.temp());
-            self.line(&format!("{at} = getelementptr inbounds i8, ptr {bytes}, i64 {first}"));
-            self.line(&format!("{byte} = load i8, ptr {at}"));
-            self.line(&format!("{wide} = zext i8 {byte} to i64"));
-            self.line(&format!("br label %{joined}"));
-            self.start_block(&joined);
-            let found = self.temp();
-            self.line(&format!("{found} = phi i64 [ {wide}, %{read} ], [ -1, %{before} ]"));
+            let found = self.header_byte(&text, &length, &first);
             return self.assign(dest, &found);
         }
+        let bytes = self.header_bytes(&text);
         let (last, _) = self.operand(args.get(2).ok_or("no argument")?)?;
         let (ordered, within, size, short, ok, quick) =
             (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
@@ -1054,6 +1041,58 @@ done:
         let result = self.temp();
         self.line(&format!("{result} = phi {HEADER} [ {piece}, %{fast_end} ], [ {other}, %{slow_end} ]"));
         self.assign(dest, &result)
+    }
+
+    /// `text_byte(text, at)`: the byte at `at`, or -1 past the end. An inline text's byte is
+    /// shifted out of the header's words, so nothing is stored to read it; a block's is loaded.
+    fn header_byte(&mut self, text: &str, length: &str, at: &str) -> String {
+        let inside = self.temp();
+        self.line(&format!("{inside} = icmp ult i64 {at}, {length}"));
+        let (read, in_block, inline, joined) = (
+            self.label("byte_read"),
+            self.label("byte_in_block"),
+            self.label("byte_inline"),
+            self.label("byte_done"),
+        );
+        let before = self.current.clone();
+        self.line(&format!("br i1 {inside}, label %{read}, label %{joined}, !prof !8"));
+        self.start_block(&read);
+        let held = self.header_in_block(text);
+        self.line(&format!("br i1 {held}, label %{in_block}, label %{inline}"));
+        self.start_block(&in_block);
+        let first = self.header_word(text, 0);
+        let (block, place, byte, from_block) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
+        self.line(&format!(
+            "{place} = getelementptr inbounds i8, ptr {block}, i64 {}",
+            crate::emit::TEXT_START
+        ));
+        let at_byte = self.temp();
+        self.line(&format!("{at_byte} = getelementptr inbounds i8, ptr {place}, i64 {at}"));
+        self.line(&format!("{byte} = load i8, ptr {at_byte}"));
+        self.line(&format!("{from_block} = zext i8 {byte} to i64"));
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&inline);
+        let words = [0, 1, 2].map(|at| self.header_word(text, at));
+        let (index, is_first, is_second, later, word) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{index} = lshr i64 {at}, 3"));
+        self.line(&format!("{is_first} = icmp eq i64 {index}, 0"));
+        self.line(&format!("{is_second} = icmp eq i64 {index}, 1"));
+        self.line(&format!("{later} = select i1 {is_second}, i64 {}, i64 {}", words[1], words[2]));
+        self.line(&format!("{word} = select i1 {is_first}, i64 {}, i64 {later}", words[0]));
+        let (low, shift, moved, from_inline) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{low} = and i64 {at}, 7"));
+        self.line(&format!("{shift} = shl i64 {low}, 3"));
+        self.line(&format!("{moved} = lshr i64 {word}, {shift}"));
+        self.line(&format!("{from_inline} = and i64 {moved}, 255"));
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        let found = self.temp();
+        self.line(&format!(
+            "{found} = phi i64 [ {from_block}, %{in_block} ], [ {from_inline}, %{inline} ], [ -1, %{before} ]"
+        ));
+        found
     }
 
     /// `bytes_text(data, start, end)`: the text in those bytes of `data`, which a format has

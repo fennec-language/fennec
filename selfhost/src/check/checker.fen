@@ -119,33 +119,121 @@ struct Checker:
             case Ok(_): pass
             case Err(problem): self.diagnostics.append(problem)
 
-    ## The types written inside a body: typed names, and the bodies of nested functions.
+    ## The types written inside a body: typed names, the types a call gives in brackets, and
+    ## the bodies of nested functions.
     def check_body(ref self, stmts: list[Stmt], generics: list[Generic]):
         names = generic_names(generics)
         for stmt in stmts:
             match stmt.kind:
-                case .Expr(expr): self.check_arms(expr, generics)
-                case .Assign(_, _, value, _, ty):
+                case .Expr(expr): self.check_expr(expr, generics)
+                case .Assign(target, _, value, _, ty):
                     self.check_written(ty, names)
-                    self.check_arms(value, generics)
+                    self.check_expr(target, generics)
+                    self.check_expr(value, generics)
                 case .If(branches, otherwise):
-                    for _, body in branches:
+                    for cond, body in branches:
+                        self.check_expr(cond, generics)
                         self.check_body(body, generics)
                     if otherwise is not None:
                         self.check_body(otherwise, generics)
-                case .While(_, body): self.check_body(body, generics)
-                case .For(_, _, _, body): self.check_body(body, generics)
-                case .With(_, _, body): self.check_body(body, generics)
+                case .While(cond, body):
+                    self.check_expr(cond, generics)
+                    self.check_body(body, generics)
+                case .For(_, _, iter, body):
+                    self.check_expr(iter, generics)
+                    self.check_body(body, generics)
+                case .With(value, _, body):
+                    self.check_expr(value, generics)
+                    self.check_body(body, generics)
+                case .Return(value):
+                    if value is not None:
+                        self.check_expr(value, generics)
+                case .Fail(value): self.check_expr(value, generics)
+                case .Yield(value): self.check_expr(value, generics)
+                case .Assert(value): self.check_expr(value, generics)
                 case .Def(function): self.check_function(function, generics + function.generics)
                 case _: pass
 
-    ## The bodies of a `match`'s arms, when `expr` is one.
-    def check_arms(ref self, expr: Expr, generics: list[Generic]):
+    ## The types a call gives in brackets anywhere in `expr`, like `Draft` in
+    ## `json.loads[Draft](text)` or `Token` in `list[Token]()`, and the bodies of its `match`es.
+    def check_expr(ref self, expr: Expr, generics: list[Generic]):
         match expr.kind:
-            case .Match(_, arms):
+            case .Call(callee, args):
+                match callee.kind:
+                    case .Index(object, index):
+                        if self.takes_types(object):
+                            for written in bracket_types(index):
+                                self.check_written(written, generic_names(generics))
+                        self.check_expr(object, generics)
+                        self.check_expr(index, generics)
+                    case _: self.check_expr(callee, generics)
+                for arg in args:
+                    self.check_expr(arg.value, generics)
+            case .FStr(parts):
+                for part in parts:
+                    match part:
+                        case .Code(code, _): self.check_expr(code, generics)
+                        case _: pass
+            case .List(items): self.check_exprs(items, generics)
+            case .Tuple(items): self.check_exprs(items, generics)
+            case .Set(items): self.check_exprs(items, generics)
+            case .Dict(pairs):
+                for key, value in pairs:
+                    self.check_expr(key, generics)
+                    self.check_expr(value, generics)
+            case .Comprehension(_, elem, value, _, iter, cond):
+                self.check_expr(elem, generics)
+                if value is not None:
+                    self.check_expr(value, generics)
+                self.check_expr(iter, generics)
+                if cond is not None:
+                    self.check_expr(cond, generics)
+            case .Unary(_, operand): self.check_expr(operand, generics)
+            case .Binary(_, lhs, rhs):
+                self.check_expr(lhs, generics)
+                self.check_expr(rhs, generics)
+            case .Cond(then, cond, otherwise):
+                self.check_expr(then, generics)
+                self.check_expr(cond, generics)
+                self.check_expr(otherwise, generics)
+            case .Else(value, default):
+                self.check_expr(value, generics)
+                self.check_expr(default, generics)
+            case .Try(value, context):
+                self.check_expr(value, generics)
+                if context is not None:
+                    self.check_expr(context, generics)
+            case .Attr(object, _, _): self.check_expr(object, generics)
+            case .Index(object, index):
+                self.check_expr(object, generics)
+                self.check_expr(index, generics)
+            case .Slice(object, start, end):
+                self.check_expr(object, generics)
+                if start is not None:
+                    self.check_expr(start, generics)
+                if end is not None:
+                    self.check_expr(end, generics)
+            case .Lambda(_, body): self.check_expr(body, generics)
+            case .Match(subject, arms):
+                self.check_expr(subject, generics)
                 for arm in arms:
+                    if arm.guard is not None:
+                        self.check_expr(arm.guard, generics)
                     self.check_body(arm.body, generics)
             case _: pass
+
+    def check_exprs(ref self, exprs: list[Expr], generics: list[Generic]):
+        for expr in exprs:
+            self.check_expr(expr, generics)
+
+    ## Whether a call on `object[...]` takes the types in its brackets, as the Rust checker
+    ## reads them: a type, `list`, `dict` or `set`, a function, or a method or module function.
+    def takes_types(self, object: Expr) -> bool:
+        match object.kind:
+            case .Name(name):
+                name in ["list", "dict", "set"] or name[0] >= "A" and name[0] <= "Z" or name in self.program.functions
+            case .Attr(_, _, _): True
+            case _: False
 
 def generic_names(generics: list[Generic]) -> list[str]:
     [generic.name for generic in generics]
@@ -157,6 +245,20 @@ def sorted_diagnostics(diagnostics: list[Diagnostic]) -> list[Diagnostic]:
         if unique.len() == 0 or unique[-1] != diagnostic:
             unique.append(diagnostic)
     unique
+
+## The types written in a call's brackets, like `str, int` in `f[str, int]`, or none if what's
+## there isn't all types.
+def bracket_types(index: Expr) -> list[TypeExpr]:
+    match index.kind:
+        # `f[str, int]` has two types; `f[(int, int)]` has one, a tuple, whose span starts at
+        # its `(` rather than at its first item.
+        case .Tuple(items) if items.len() > 0 and items[0].span.start == index.span.start:
+            return as_types(items, sizes=False) else []
+        case _: pass
+    one = as_type(index)
+    if one is None:
+        return []
+    [one]
 
 ## The type a default makes with its type arguments, like `list[Token]` for `list[Token]()`.
 def made_type(default: Expr) -> TypeExpr?:

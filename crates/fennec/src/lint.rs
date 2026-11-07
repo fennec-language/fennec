@@ -100,6 +100,81 @@ fn checked(path: &str, json: bool) -> ExitCode {
     rejected(&program, &diagnostics, json)
 }
 
+/// Every lint the linter finds in a program, in the order they're written.
+fn lints_of(program: &fennec_kit::Program) -> Vec<fennec_lint::Lint> {
+    let mut found = fennec_lint::lint(&program.module, &program.sources);
+    found.extend(fennec_lint::needless_copies(&program.module, &program.sources));
+    found.extend(fennec_lint::needless_conversions(&program.module, &program.sources));
+    found.extend(fennec_lint::double_lookups(&program.module, &program.sources));
+    found.extend(fennec_lint::self_compares(&program.module, &program.sources));
+    if program.manifest.is_some() {
+        found.extend(fennec_lint::kit_lints(&program.module));
+    }
+    found.sort_by_key(|lint| (lint.diagnostic.span.start, lint.rule));
+    found
+}
+
+/// The lint errors in all of the program at `path`, rendered as `fennec lint` shows them, with a
+/// line counting them: nothing when there are none, or when it doesn't load or check, which
+/// whatever's running reports itself.
+pub(crate) fn errors_shown(path: &str) -> String {
+    let overlay = fennec_kit::Overlay::new();
+    let Ok(program) =
+        fennec_kit::load_with(std::path::Path::new(path), path, fennec_kit::Entry::Everything, &overlay)
+    else {
+        return String::new();
+    };
+    let errors: Vec<fennec_lint::Lint> =
+        lints_of(&program).into_iter().filter(|lint| lint.severity == fennec_lint::Severity::Error).collect();
+    if errors.is_empty() {
+        return String::new();
+    }
+    let diagnostics: Vec<_> = errors.iter().map(|lint| lint.diagnostic.clone()).collect();
+    let fixable = errors.iter().filter(|lint| !lint.diagnostic.fixes.is_empty()).count();
+    format!(
+        "{}{} lints, {fixable} of which `fennec fix` can fix\n",
+        program.sources.render_all(&diagnostics),
+        errors.len()
+    )
+}
+
+/// The lint errors in the program at `path`, as `errors_shown` gives them, from the cache when
+/// its files haven't changed since they were last linted, so a run of unchanged code doesn't lint
+/// it again.
+pub(crate) fn errors_remembered(path: &str) -> String {
+    let Some(cache) = crate::run::cache() else { return errors_shown(path) };
+    let Some(key) = files_key(path, &cache) else { return errors_shown(path) };
+    let name = crate::run::passed_name(path);
+    if let Some(kept) = cache.read("linted", &name)
+        && let Some(shown) = kept.strip_prefix(key.as_bytes()).and_then(|rest| rest.strip_prefix(b"\n"))
+    {
+        return String::from_utf8_lossy(shown).into_owned();
+    }
+    let shown = errors_shown(path);
+    // A cache that can't be written only means linting it again next time.
+    let _ = cache.write("linted", &name, format!("{key}\n{shown}").as_bytes());
+    shown
+}
+
+/// What the files of the program at `path` hold, as a hash: a kit's files by their sizes and when
+/// they changed where those say they're as last seen, or a single file's text.
+fn files_key(path: &str, cache: &fennec_build::Cache) -> Option<String> {
+    let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec lints 2026-11-07");
+    hasher.update(env!("FENNEC_BUILD").as_bytes());
+    match crate::image::files_now(path, cache) {
+        Some(files) => {
+            for file in files {
+                hasher.update(file.module.as_bytes());
+                hasher.update(file.text.to_hex().as_bytes());
+            }
+        }
+        None => {
+            hasher.update(&std::fs::read(path).ok()?);
+        }
+    }
+    Some(hasher.finalize().to_hex())
+}
+
 fn linted(path: &str, json: bool) -> ExitCode {
     let Some(program) = loaded(path, json) else { return ExitCode::FAILURE };
     // Lowering takes the module with what checking works out written in, and the linter the
@@ -114,15 +189,7 @@ fn linted(path: &str, json: bool) -> ExitCode {
     if let Some((run, diagnostics)) = what_a_run_rejects(path, &program) {
         return rejected(&run, &diagnostics, json);
     }
-    let mut found = fennec_lint::lint(&program.module, &program.sources);
-    found.extend(fennec_lint::needless_copies(&program.module, &program.sources));
-    found.extend(fennec_lint::needless_conversions(&program.module, &program.sources));
-    found.extend(fennec_lint::double_lookups(&program.module, &program.sources));
-    found.extend(fennec_lint::self_compares(&program.module, &program.sources));
-    if program.manifest.is_some() {
-        found.extend(fennec_lint::kit_lints(&program.module));
-    }
-    found.sort_by_key(|lint| (lint.diagnostic.span.start, lint.rule));
+    let found = lints_of(&program);
     let costs = fennec_ir::costs(&fennec_ir::lower(&resolved, &signatures));
     let copies = fennec_lint::implicit_copies(&costs);
     if !copies.is_empty() {

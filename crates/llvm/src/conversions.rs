@@ -102,6 +102,12 @@ impl Emit<'_, '_, '_> {
             ("math.acos", [value], [Some(Kind::Float | Kind::Int)]) => {
                 dest.and_then(|dest| self.turned(dest, "fennec_acos", value))
             }
+            ("math.exp", [value], [Some(Kind::Float | Kind::Int)]) => {
+                dest.and_then(|dest| self.turned(dest, "fennec_exp", value))
+            }
+            ("math.log", [value], [Some(Kind::Float | Kind::Int)]) => {
+                dest.and_then(|dest| self.turned(dest, "fennec_log", value))
+            }
             ("int", [value], [Some(Kind::Int)]) | ("float", [value], [Some(Kind::Float)]) => {
                 dest.and_then(|dest| self.copy(dest, value))
             }
@@ -484,8 +490,8 @@ impl Emit<'_, '_, '_> {
         })
     }
 
-    /// `math.sin`, `math.cos`, `math.tan` and `math.acos`, by the runtime, so they round as the
-    /// interpreter's do.
+    /// `math.sin`, `math.cos`, `math.tan`, `math.acos`, `math.exp` and `math.log`, by the runtime,
+    /// which computes them as the interpreter does, so they're the same bits on every platform.
     fn turned(&mut self, dest: LocalId, function: &str, value: &Operand) -> Result<(), String> {
         let (value, kind) = self.operand(value)?;
         let angle = if kind == Kind::Int {

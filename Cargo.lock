@@ -422,6 +422,7 @@ dependencies = [
  "fennec-re",
  "fennec-syntax",
  "getrandom 0.4.3",
+ "libm",
  "mio",
  "rustls",
  "rustls-platform-verifier",

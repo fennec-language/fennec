@@ -19,14 +19,21 @@ fn every_kept_input_runs_clean() {
         let target = folder.file_name().unwrap().to_string_lossy().into_owned();
         for input in std::fs::read_dir(&folder).unwrap() {
             let input = input.unwrap().path();
-            let status = fuzz().args(["one", &target]).arg(&input).status().unwrap();
-            assert!(status.success(), "{}: {status}", input.display());
+            let output = fuzz().args(["one", &target]).arg(&input).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}: {}\n{}{}",
+                input.display(),
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
         }
     }
 }
 
 /// Every target runs the same hundred inputs, however busy the machine is: the run has no time
-/// limit, and an input counts as stuck only after two minutes, far longer than any takes.
+/// limit, and an input counts as stuck only after two minutes of CPU time, far more than any takes.
 #[test]
 fn a_short_run_of_every_target_finds_nothing() {
     let dir = std::env::temp_dir().join(format!("fennec-fuzz-short-{}", std::process::id()));

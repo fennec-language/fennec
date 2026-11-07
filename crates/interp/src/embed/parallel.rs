@@ -81,6 +81,8 @@ struct Run {
     done: Latch,
     /// A reduction's result, when its ranges ran on the pool: None if it failed.
     reduced: Mutex<Option<i64>>,
+    /// Whether its body may wait, so each range on the pool runs as a parked task.
+    waiting: bool,
 }
 
 /// What a loop's or a comprehension's range runs: copied into each job, so it owns what it uses.
@@ -129,7 +131,15 @@ impl Run {
             printed: Mutex::new(Vec::new()),
             done: Latch::one(),
             reduced: Mutex::new(None),
+            waiting: false,
         }
+    }
+
+    /// The same call, for a body that may wait or not. A loop's or a comprehension's ranges are
+    /// then an item each; a reduction's leaves stay as its length gives them.
+    fn waiting(mut self, waiting: bool) -> Run {
+        self.waiting = waiting;
+        self
     }
 
     /// Notes that the range starting at `from` failed, with the failure in this thread's
@@ -229,6 +239,22 @@ impl Run {
             pool.push(Box::new(move || run.each_on(pool, (middle, to), leaf)));
             to = middle;
         }
+        if self.waiting {
+            // A body that may wait runs as a parked task, which ends the range when it's done.
+            let run = Arc::clone(self);
+            pool::as_task(move || {
+                run.leaf_on((from, to), leaf);
+                run.done.finished();
+                0
+            });
+            return;
+        }
+        self.leaf_on((from, to), leaf);
+        self.done.finished();
+    }
+
+    /// Runs one range of a loop or a comprehension on this thread, as it was split.
+    fn leaf_on(&self, (from, to): (usize, usize), leaf: Leaf) {
         if from <= self.stop.load(Ordering::Relaxed) && from < to {
             let since = self.range_starts();
             let failed = leaf.run(from, to, i64::from(super::threads::index())) != 0;
@@ -237,7 +263,6 @@ impl Run {
                 self.failed(from);
             }
         }
-        self.done.finished();
     }
 
     /// Runs one range of a reduction on the pool: halving it as `reduce` does, it hands each
@@ -258,6 +283,15 @@ impl Run {
             pool.push(Box::new(move || run.reduce_on(pool, (middle, to), right, steps)));
             up = Some((node, 0));
             to = middle;
+        }
+        if self.waiting {
+            let run = Arc::clone(self);
+            pool::as_task(move || {
+                let partial = run.reduce((from, to), steps);
+                run.reduced_up(up, partial, steps);
+                0
+            });
+            return;
         }
         let partial = self.reduce((from, to), steps);
         self.reduced_up(up, partial, steps);
@@ -352,16 +386,22 @@ fn counted() {
 /// `fennec_parallel_for(list, body, env)`: `for x in parallel(list)` and `for mut x in
 /// parallel(list)`. Gives back 0, or 1 when the body failed.
 pub extern "C" fn parallel_for(list: i64, body: Body, env: i64) -> i64 {
+    run_for(list, body, env, false)
+}
+
+fn run_for(list: i64, body: Body, env: i64, waiting: bool) -> i64 {
     counted();
     let Some((length, words)) = with(|state| extent(state, list)) else { return 0 };
-    let run = Run::new(chunk(words));
+    let run = Run::new(if waiting { 1 } else { chunk(words) }).waiting(waiting);
     run_each(run, length, words, Leaf::For(body, env))
 }
 
 /// Runs a loop's or a comprehension's ranges, on the pool when it's worth it, then passes the
-/// failure up: 1 if there was one, else 0.
+/// failure up: 1 if there was one, else 0. A body that may wait goes to the pool however few its
+/// items, as what it waits for is what takes the time.
 fn run_each(run: Run, length: usize, words: usize, leaf: Leaf) -> i64 {
-    let Some(pool) = pool::for_call(length * words) else {
+    let pool = if run.waiting { pool::for_waiting() } else { pool::for_call(length * words) };
+    let Some(pool) = pool else {
         run.each((0, length), &|from, to, thread| leaf.run(from, to, thread));
         return run.finish();
     };
@@ -407,10 +447,14 @@ fn reduce_on_pool(
 /// The result is a new list owned once of the element numbered `element`, with each item
 /// at its position. On a failure it's 0.
 pub extern "C" fn parallel_map(list: i64, body: MapBody, env: i64, element: i64) -> i64 {
+    run_map(list, body, env, element, false)
+}
+
+fn run_map(list: i64, body: MapBody, env: i64, element: i64, waiting: bool) -> i64 {
     counted();
     let Some((length, words)) = with(|state| extent(state, list)) else { return 0 };
     let out = super::lists::new(element, number(length));
-    let run = Run::new(chunk(words));
+    let run = Run::new(if waiting { 1 } else { chunk(words) }).waiting(waiting);
     if run_each(run, length, words, Leaf::Map(body, env, out)) != 0 {
         super::heap::free(out);
         return 0;
@@ -429,6 +473,15 @@ pub extern "C" fn parallel_reduce(
     env: i64,
     result: &mut i64,
 ) -> i64 {
+    run_reduce(list, (body, combine, env), result, false)
+}
+
+fn run_reduce(
+    list: i64,
+    (body, combine, env): (ReduceBody, Combine, i64),
+    result: &mut i64,
+    waiting: bool,
+) -> i64 {
     counted();
     let Some((length, words)) = with(|state| extent(state, list)) else { return 0 };
     if length == 0 {
@@ -436,9 +489,10 @@ pub extern "C" fn parallel_reduce(
     }
     // A reduction's leaves depend on the length alone, so the interpreter, which doesn't know
     // native items' sizes, combines in the same order.
-    let run = Run::new(crate::builtins::REDUCE_LEAF);
+    let run = Run::new(crate::builtins::REDUCE_LEAF).waiting(waiting);
     let steps = (body, combine, env);
-    let Some(pool) = pool::for_call(length * words) else {
+    let pool = if waiting { pool::for_waiting() } else { pool::for_call(length * words) };
+    let Some(pool) = pool else {
         if let Some(reduced) = run.reduce((0, length), steps) {
             *result = reduced;
         }
@@ -452,17 +506,19 @@ pub extern "C" fn parallel_reduce(
 }
 
 // The `_waiting` entry points are for a body that may wait: a network call, a lock, a sleep, a
-// blocking read. For now they run as the others do. The scheduler will park a waiting range
-// here rather than its thread.
+// blocking read. On the pool, each range runs as a parked task on its worker, with accounts of its
+// own (see `threads::Accounts`), so a wait can park it and let the worker run other ranges.
+// A loop's or a comprehension's ranges are an item each, since waiting is what takes the time.
+// A reduction keeps the leaves its length gives, so it combines as it does anywhere else.
 
 /// `fennec_parallel_for_waiting`: `parallel_for`, for a body that may wait.
 pub extern "C" fn parallel_for_waiting(list: i64, body: Body, env: i64) -> i64 {
-    parallel_for(list, body, env)
+    run_for(list, body, env, true)
 }
 
 /// `fennec_parallel_map_waiting`: `parallel_map`, for a body that may wait.
 pub extern "C" fn parallel_map_waiting(list: i64, body: MapBody, env: i64, element: i64) -> i64 {
-    parallel_map(list, body, env, element)
+    run_map(list, body, env, element, true)
 }
 
 /// `fennec_parallel_reduce_waiting`: `parallel_reduce`, for a body that may wait.
@@ -473,7 +529,7 @@ pub extern "C" fn parallel_reduce_waiting(
     env: i64,
     result: &mut i64,
 ) -> i64 {
-    parallel_reduce(list, body, combine, env, result)
+    run_reduce(list, (body, combine, env), result, true)
 }
 
 /// `fennec_parallel_stream_waiting`: `parallel_stream`, for a body that may wait.
@@ -535,6 +591,15 @@ mod pool {
 
     pub(super) fn for_call(_words: usize) -> Option<&'static Pool> {
         None
+    }
+
+    pub(super) fn for_waiting() -> Option<&'static Pool> {
+        None
+    }
+
+    /// Without threads, a range runs where it's made.
+    pub(super) fn as_task(range: impl FnOnce() -> i64 + 'static) {
+        let _ = range();
     }
 
     pub(super) fn install(_call: &super::Run, start: impl FnOnce(), _done: &Latch) {
@@ -689,6 +754,71 @@ mod tests {
         begin();
         let list = lists::new(0, ITEMS);
         assert_eq!(super::parallel_for(list, fails_twice, 0), 1);
+        heap::free(list);
+        let (_, failure, _) = finish();
+        assert!(failure.is_some_and(|failure| failure.message.ends_with("at 70000")));
+    }
+
+    /// What each range of the turn-taking loop made, by where it starts: a string, and the string
+    /// joined to itself after other ranges had their turns.
+    static TOOK_TURNS: Mutex<Vec<(i64, i64, i64)>> = Mutex::new(Vec::new());
+
+    /// Runs as a parked task: makes a string, lets the other ranges on its worker run, and joins the
+    /// string to itself, which reads it through this worker's runtime. That only works if another
+    /// range ending meanwhile didn't hand this one's string over.
+    extern "C" fn takes_turns(_env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
+        assert!(fennec_parked::stack_low().is_some(), "range {from} isn't a parked task");
+        let made = with(|state| heap::text_address(state, &format!("range {from}")));
+        assert!(super::super::serve::yield_task());
+        let joined = strings::concat(made, made);
+        assert!(super::super::serve::yield_task());
+        TOOK_TURNS.lock().unwrap().push((from, made, joined));
+        0
+    }
+
+    #[test]
+    fn a_body_that_may_wait_runs_each_item_as_a_parked_task_keeping_what_it_made_its_own() {
+        begin();
+        let before = with(|state| state.heap.live());
+        let list = lists::new(0, 64);
+        assert_eq!(super::parallel_for_waiting(list, takes_turns, 0), 0);
+        heap::free(list);
+        let mut took = std::mem::take(&mut *TOOK_TURNS.lock().unwrap());
+        took.sort_unstable();
+        // An item each, every one a task, and all of them read back here, where they were adopted.
+        assert_eq!(took.iter().map(|(from, ..)| *from).collect::<Vec<_>>(), (0..64).collect::<Vec<_>>());
+        for (from, made, joined) in took {
+            let text = format!("range {from}");
+            assert_eq!(
+                with(|state| Some(heap::read_block(state, made.cast_unsigned()))).unwrap(),
+                Value::str(&text)
+            );
+            let twice = with(|state| Some(heap::read_block(state, joined.cast_unsigned()))).unwrap();
+            assert_eq!(twice, Value::str(&text.repeat(2)));
+            heap::free(made);
+            heap::free(joined);
+        }
+        assert_eq!(with(|state| state.heap.live()), before);
+        finish();
+    }
+
+    #[test]
+    fn a_reduction_that_may_wait_comes_to_the_same_bits() {
+        begin();
+        let list = lists::new(0, ITEMS);
+        let (mut plain, mut waiting) = (0, 0);
+        assert_eq!(super::parallel_reduce(list, harmonic, add, 0, &mut plain), 0);
+        assert_eq!(super::parallel_reduce_waiting(list, harmonic, add, 0, &mut waiting), 0);
+        assert_eq!(plain, waiting);
+        heap::free(list);
+        finish();
+    }
+
+    #[test]
+    fn of_several_failures_in_a_loop_that_may_wait_the_lowest_range_s_is_passed_up() {
+        begin();
+        let list = lists::new(0, ITEMS);
+        assert_eq!(super::parallel_for_waiting(list, fails_twice, 0), 1);
         heap::free(list);
         let (_, failure, _) = finish();
         assert!(failure.is_some_and(|failure| failure.message.ends_with("at 70000")));

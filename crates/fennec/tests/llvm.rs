@@ -6468,6 +6468,49 @@ fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A finished program goes in the store under its build's root hash, with its functions' hashes
+/// beside it, so building it again unchanged compiles and links nothing and gives the same bytes. A
+/// change to the program, or a release build of it, is a build of its own. See `docs/store.md`.
+#[test]
+fn an_unchanged_build_takes_its_program_from_the_store() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("stored")?;
+    let home = dir.join("home");
+    let source = "def main(stdout: Stdout):\n    stdout.print(\"stored\")\n";
+    std::fs::write(dir.join("main.fen"), source)?;
+    let build = |args: &[&str]| -> std::io::Result<(String, Vec<u8>)> {
+        let output = crate::executables::fennec_command()
+            .args(args)
+            .current_dir(&dir)
+            .env("FENNEC_HOME", &home)
+            .env_remove("FENNEC_NO_CACHE")
+            .output()?;
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        Ok((String::from_utf8_lossy(&output.stdout).into_owned(), std::fs::read(dir.join("built"))?))
+    };
+    let (first, program) = build(&["build", "main.fen", "-o", "built"])?;
+    let (again, same) = build(&["build", "main.fen", "-o", "built"])?;
+    assert!(first.contains("compiled 1 of 1"), "{first}");
+    assert!(again.contains("compiled 0 of 1") && again.contains("linked in 0 ms"), "{again}");
+    assert_eq!(program, same, "the program from the store is the one built");
+    let ran = Command::new(dir.join("built")).output()?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "stored\n");
+    let stored: Vec<String> =
+        std::fs::read_dir(home.join("cache").join(env!("CARGO_PKG_VERSION")).join("programs"))?
+            .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+            .collect::<Result<_, _>>()?;
+    assert_eq!(stored.len(), 2, "the program and its functions' hashes: {stored:?}");
+    std::fs::write(dir.join("main.fen"), source.replace("stored", "changed"))?;
+    let (changed, _) = build(&["build", "main.fen", "-o", "built"])?;
+    assert!(changed.contains("compiled 1 of 1"), "a changed program is built: {changed}");
+    let (released, _) = build(&["build", "--release", "main.fen", "-o", "built"])?;
+    assert!(!released.contains("linked in 0 ms"), "a release build is a build of its own: {released}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 #[test]
 fn a_release_build_optimized_as_a_whole_matches_the_jit() -> std::io::Result<()> {
     if !ready() {

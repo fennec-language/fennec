@@ -15,7 +15,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | Area | Modules |
 | --- | --- |
 | Basics | `math`, `random`, `time`, `string`, `re`, `unicode` |
-| Collections | `collections`: `Table` and its `Id`s, `Tree`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Deque`, `Heap`, `PriorityQueue` and `Counter`. Planned: `Graph` |
+| Collections | `collections`: `Table` and its `Id`s, `Tree`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Deque`, `Heap`, `PriorityQueue`, `Counter` and `Graph` |
 | Files and the OS | `fs`, `path`, `process`, `cli`, and environment variables through `Env` |
 | Data formats | `json`, `toml`, `pack`, `csv`, `base64`, `compress` |
 | Networking | `net`: TCP, UDP, an HTTP client with TLS, and an HTTP server. `url`. Planned: WebSocket |

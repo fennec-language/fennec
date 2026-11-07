@@ -195,11 +195,10 @@ pub(crate) fn tests_executable(
         }
         .to_bytes()
     };
-    let Compiled { objects, runtime, tls, .. } =
-        compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
-            fennec_llvm::tests_entry(lowered, shared, image, bytes, tests)
-        })?;
-    link_objects(&objects, output, runtime, false, tls, false)?;
+    let compiled = compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
+        fennec_llvm::tests_entry(lowered, shared, image, bytes, tests)
+    })?;
+    finish(&compiled, output, false, false)?;
     Ok(emitted.shared.ran.iter().cloned().collect())
 }
 
@@ -222,11 +221,10 @@ pub(crate) fn tracing_executable(
         }
         .to_bytes()
     };
-    let Compiled { objects, runtime, tls, .. } =
-        compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
-            fennec_llvm::entry(lowered, shared, image, bytes)
-        })?;
-    link_objects(&objects, output, runtime, false, tls, false)?;
+    let compiled = compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
+        fennec_llvm::entry(lowered, shared, image, bytes)
+    })?;
+    finish(&compiled, output, false, false)?;
     Ok((emitted.shared.sites, emitted.lowered))
 }
 
@@ -279,15 +277,111 @@ pub(crate) fn executable(
     release: bool,
 ) -> Result<Built, String> {
     let started = Instant::now();
-    let Compiled { objects, total, fresh, runtime, tls } = llvm_objects(program, release)?;
+    let built = llvm_objects(program, release)?;
     let compiled = started.elapsed();
     let statically = release && links_statically();
     // A release built with the runtime's bitcode has its Rust inside already.
-    let runtime_in = release && runtime_bitcode(runtime, statically).is_some();
+    let runtime_in = release && runtime_bitcode(built.runtime, statically).is_some();
     // A missing runtime with threads fails here, so `fennec run` says so rather than quietly
     // taking another way.
-    let linked = link_objects(&objects, output, runtime, runtime_in, tls, statically)?;
-    Ok(Built { total, fresh, compiled, linked })
+    let linked = finish(&built, output, runtime_in, statically)?;
+    Ok(Built { total: built.total, fresh: built.fresh, compiled, linked })
+}
+
+/// Puts the finished program at `output`: the one in the store under its root hash, or else the
+/// objects linked, which then go in the store under it, with the list of its functions' hashes
+/// beside them. Gives back how long linking took, which is nothing for a stored one.
+fn finish(
+    compiled: &Compiled,
+    output: &Path,
+    runtime_in: bool,
+    statically: bool,
+) -> Result<std::time::Duration, String> {
+    let written = |bytes: &[u8]| -> Result<(), String> {
+        std::fs::write(output, bytes).map_err(|err| format!("couldn't write {}: {err}", output.display()))?;
+        executable_mode(output)
+    };
+    if let Some(Stored { program: Some(bytes), .. }) = &compiled.stored {
+        written(bytes)?;
+        return Ok(std::time::Duration::ZERO);
+    }
+    let linked =
+        link_objects(&compiled.objects, output, compiled.runtime, runtime_in, compiled.tls, statically)?;
+    if let Some(Stored { cache, root, functions, .. }) = &compiled.stored
+        && let Ok(bytes) = std::fs::read(output)
+    {
+        // A store that can't be written only means linking it again next time.
+        let _ = cache.write(PROGRAMS, &format!("{root}.functions"), functions.as_bytes());
+        let _ = cache.write(PROGRAMS, root, &bytes);
+    }
+    Ok(linked)
+}
+
+/// Lets a program written to `path` run.
+fn executable_mode(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|err| format!("couldn't make {} runnable: {err}", path.display()))?;
+    }
+    let _ = path;
+    Ok(())
+}
+
+/// The store's kind for finished programs, each named by its build's root hash.
+const PROGRAMS: &str = "programs";
+
+/// A build's place in the store: its root hash, the program kept under it when there is one, and
+/// the list of its functions' hashes to keep beside a program it links.
+struct Stored {
+    cache: fennec_build::Cache,
+    root: String,
+    functions: String,
+    program: Option<Vec<u8>>,
+}
+
+/// A build's root hash: one hash of everything its program depends on. That's each function's
+/// text and the entry's, as LLVM reads them, which hold everything from the program's sources and
+/// the standard library that it reaches; the build of `fennec`; the target and the CPU it's built
+/// for; whether it's a release build and a static one; and the runtime library linked in, by its
+/// size and when it was built, since hashing it whole would cost every run. See `docs/store.md`.
+fn root_hash(
+    units: &[fennec_llvm::Unit],
+    entry: &str,
+    runtime: Runtime,
+    (release, statically): (bool, bool),
+) -> (String, String) {
+    let functions: Vec<String> =
+        units.iter().map(|unit| fennec_blake3::hash(unit.text.as_bytes()).to_hex()).collect();
+    let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec build root 2026-11-07");
+    let baseline = BASELINE.load(std::sync::atomic::Ordering::Relaxed);
+    let target = format!(
+        "{}\n{}\n{}\n{}\n{release}\n{statically}\n{baseline}\n",
+        env!("FENNEC_BUILD"),
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::ARCH,
+        std::env::consts::OS
+    );
+    hasher.update(target.as_bytes());
+    let library = runtime_library(runtime, statically)
+        .ok()
+        .into_iter()
+        .chain(release.then(|| runtime_bitcode(runtime, statically)).flatten());
+    for path in library {
+        let metadata = std::fs::metadata(&path).ok();
+        let changed = metadata
+            .as_ref()
+            .and_then(|found| found.modified().ok())
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok());
+        let size = metadata.map_or(0, |found| found.len());
+        hasher.update(format!("{}\n{size}\n{changed:?}\n", path.display()).as_bytes());
+    }
+    for function in &functions {
+        hasher.update(function.as_bytes());
+    }
+    hasher.update(fennec_blake3::hash(entry.as_bytes()).to_hex().as_bytes());
+    (hasher.finalize().to_hex(), functions.join("\n"))
 }
 
 /// What compiling a program with LLVM gives.
@@ -301,6 +395,8 @@ struct Compiled {
     runtime: Runtime,
     /// Whether the program makes requests, so it links what TLS needs.
     tls: bool,
+    /// Its place in the store, when there's one to use.
+    stored: Option<Stored>,
 }
 
 /// A trimmed program LLVM has text for.
@@ -429,6 +525,15 @@ fn compile_emitted(
         .as_deref()
         .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
         .map(fennec_build::Cache::new);
+    // A build that's been made before is in the store whole, under its root hash.
+    let stored = cache.clone().map(|cache| {
+        let (root, functions) = root_hash(units, &entry, runtime, (release, statically));
+        let program = cache.read(PROGRAMS, &root);
+        Stored { cache, root, functions, program }
+    });
+    if stored.as_ref().is_some_and(|stored| stored.program.is_some()) {
+        return Ok(Compiled { objects: Vec::new(), total: units.len(), fresh: 0, runtime, tls, stored });
+    }
     let work = crate::own_temp("llvm");
     let built = if release {
         fennec_llvm::compile_whole(
@@ -446,7 +551,7 @@ fn compile_emitted(
         let _ = std::fs::remove_dir_all(&work);
     }
     let built = built?;
-    Ok(Compiled { objects: built.objects, total: units.len(), fresh: built.compiled, runtime, tls })
+    Ok(Compiled { objects: built.objects, total: units.len(), fresh: built.compiled, runtime, tls, stored })
 }
 
 /// Links object files with the runtime library, giving back how long linking took. When the

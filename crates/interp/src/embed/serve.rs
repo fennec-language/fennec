@@ -49,6 +49,9 @@ pub(in crate::embed) const YIELD: u64 = u64::MAX;
 /// What a parked wait is woken with.
 const READY: u64 = 0;
 const TIMED_OUT: u64 = 1;
+/// A launched task's wait, woken by its stop. Not `Wake::Cancelled`, after which every wait a task
+/// comes to ends at once: a cleanup in its grace has to be able to wait.
+const STOPPED: u64 = 2;
 
 /// The workers' wakers' token, and the listeners' below it, one for each of up to `SERVERS`
 /// servers running at once; connections count up from 0, below them all.
@@ -342,6 +345,14 @@ impl Served {
     }
 }
 
+/// What a round of `for conn in parallel(server)` gives back when it failed, passing its failure up
+/// out of the loop, which stops the server and cuts the other rounds short. 0 is a round that ended
+/// normally, by `continue` too, and 1 one that crashed, which ends only itself.
+pub(in crate::embed) const ROUND_FAILED: i64 = 2;
+/// What a round gives back at a `break`: the server takes no more connections, and the rounds
+/// running finish.
+pub(in crate::embed) const ROUND_BROKE: i64 = 3;
+
 /// Numbers servers apart, for their listeners' tokens and their tasks.
 static NEXT_SERVER: AtomicU64 = AtomicU64::new(0);
 
@@ -372,6 +383,9 @@ struct Here {
     listener: Option<TcpListener>,
     tasks: HashSet<TaskId>,
     served: Served,
+    /// Whether a round's `break` has stopped it taking connections, for it to be left once the
+    /// rounds running finish.
+    draining: bool,
 }
 
 /// What a pool worker serves: its poll, its tasks, which task waits on which connection, and the
@@ -449,7 +463,7 @@ impl Io {
         let token = self.waiting.iter().find(|(_, (parked, ..))| *parked == task).map(|(token, _)| *token);
         if let Some(token) = token {
             self.waiting.remove(&token);
-            self.ready.push_back((task, Wake::Cancelled));
+            self.ready.push_back((task, Wake::Ready(STOPPED)));
         }
     }
 
@@ -474,7 +488,9 @@ impl Io {
             return;
         }
         let id = server.id;
-        self.servers.insert(id, Here { server, listener, tasks: HashSet::new(), served: Served::default() });
+        let here =
+            Here { server, listener, tasks: HashSet::new(), served: Served::default(), draining: false };
+        self.servers.insert(id, here);
     }
 
     /// Leaves a server: its tasks here are cancelled, each told, ending and closing its
@@ -486,6 +502,8 @@ impl Io {
         for task in here.tasks.drain() {
             self.owners.remove(&task);
             let _ = self.scheduler.cancel(task);
+            // A round cut short ends quietly, however it ended.
+            super::clear_failure();
         }
         if let Some(listener) = &mut here.listener {
             let _ = self.poll.registry().deregister(listener);
@@ -529,9 +547,25 @@ impl Io {
                     let (interest, deadline) = PARKING.take().unwrap_or((Interest::READABLE, None));
                     self.waiting.insert(token, (task, interest, deadline));
                 }
-                Step::Done(0) | Step::Unknown => self.ended(task, false),
+                Step::Done(0) | Step::Unknown => {
+                    let _ = self.ended(task, false);
+                }
+                Step::Done(ROUND_BROKE) => {
+                    if let Some(id) = self.ended(task, false) {
+                        self.for_every_worker(move |io| io.drain(id));
+                    }
+                }
+                Step::Done(ROUND_FAILED) => {
+                    // Its failure passes up, out of the loop, which it's the code serving's to say.
+                    // The other rounds are cut short.
+                    if let Some(id) = self.ended(task, true) {
+                        self.for_every_worker(move |io| io.leave(id));
+                    }
+                    super::clear_failure();
+                }
                 Step::Done(_) => {
-                    self.ended(task, true);
+                    // A crash ends only its round's task, and the server goes on.
+                    let _ = self.ended(task, true);
                     // A failure ends only its connection, which says why, and the runtime's record
                     // of it goes. A task that failed holding a lock leaves what it guards half
                     // changed, and others waiting for it, so the program ends rather than only
@@ -578,12 +612,38 @@ impl Io {
         }
     }
 
-    /// Notes that a task ended, failed or not.
-    fn ended(&mut self, task: TaskId, failed: bool) {
-        let Some(id) = self.owners.remove(&task) else { return };
-        if let Some(here) = self.servers.get_mut(&id) {
-            here.tasks.remove(&task);
-            here.served.failed += u64::from(failed);
+    /// Notes that a task ended, failed or not, giving back the server it served a round of. A
+    /// server that's draining is left once its last round here has ended.
+    fn ended(&mut self, task: TaskId, failed: bool) -> Option<u64> {
+        let id = self.owners.remove(&task)?;
+        let here = self.servers.get_mut(&id)?;
+        here.tasks.remove(&task);
+        here.served.failed += u64::from(failed);
+        if here.draining && here.tasks.is_empty() {
+            self.leave(id);
+        }
+        Some(id)
+    }
+
+    /// Sends every worker, this one among them, `job` for when it next reads its mail.
+    fn for_every_worker(&self, job: impl Fn(&mut Io) + Send + Sync + 'static) {
+        let job = Arc::new(job);
+        for at in 0..self.pool.threads() {
+            let job = Arc::clone(&job);
+            self.pool.run_on(at, Box::new(move |io: &mut Io| job(io)));
+        }
+    }
+
+    /// Stops a server taking connections, after a round's `break`: its listener goes, and its
+    /// rounds here finish, after which it's left.
+    fn drain(&mut self, id: u64) {
+        let Some(here) = self.servers.get_mut(&id) else { return };
+        here.draining = true;
+        if let Some(mut listener) = here.listener.take() {
+            let _ = self.poll.registry().deregister(&mut listener);
+        }
+        if here.tasks.is_empty() {
+            self.leave(id);
         }
     }
 
@@ -740,7 +800,7 @@ fn park_on_token(token: Token, deadline: Option<Instant>, stoppable: bool) -> Pa
     }
     match woken {
         Some(Wake::Ready(TIMED_OUT)) => Parked::TimedOut,
-        Some(Wake::Cancelled) => Parked::Cancelled,
+        Some(Wake::Cancelled | Wake::Ready(STOPPED)) => Parked::Cancelled,
         _ => Parked::Ready,
     }
 }
@@ -748,10 +808,15 @@ fn park_on_token(token: Token, deadline: Option<Instant>, stoppable: bool) -> Pa
 fn parked_as(woken: Option<Wake>) -> Parked {
     match woken {
         Some(Wake::Ready(TIMED_OUT)) => Parked::TimedOut,
-        Some(Wake::Cancelled) => {
-            cut_short();
-            Parked::Cancelled
+        // A stop cuts the wait short, unless it's a cleanup's in its grace, which looks again.
+        Some(Wake::Ready(STOPPED)) => {
+            if cut_short() {
+                Parked::Cancelled
+            } else {
+                Parked::Ready
+            }
         }
+        Some(Wake::Cancelled) => Parked::Cancelled,
         _ => Parked::Ready,
     }
 }
@@ -910,7 +975,7 @@ pub(super) fn serve(
 mod calls;
 
 pub(super) use calls::served_call;
-pub use calls::{ConnBody, net_serve, stop_servers};
+pub use calls::{ConnBody, net_serve, net_serve_failure, stop_servers};
 
 #[cfg(test)]
 mod tests;

@@ -13,7 +13,7 @@ test "sorted maps with the same items are equal, however they were built":
     assert up != down
     down[5] = "5"
     assert up == down
-    down.remove(5)
+    _ = down.remove(5)
     assert up != down
     assert SortedMap[int, str]() == SortedMap[int, str]()
 
@@ -31,7 +31,7 @@ test "deques with the same items are equal, whatever room they have":
     for n in range(10):
         grown.append(n)
     for _ in range(7):
-        grown.popleft()
+        _ = grown.popleft()
     assert grown == Deque.of([7, 8, 9])
     grown.appendleft(6)
     assert grown != Deque.of([7, 8, 9])

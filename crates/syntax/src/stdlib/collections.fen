@@ -1033,6 +1033,191 @@ export struct Grid[T]:
 ## The collections save in their natural shape, so what's written doesn't change when how they're
 ## stored does: a `SortedMap` as an object, or as `[key, value]` pairs when its keys aren't text
 ## or ints, a `SortedSet` or a `Deque` as an array, and a `Grid` as an array of rows.
+## A node `shortest_path` has reached, and what it cost to: the cheapest comes out of its heap
+## first.
+struct Reached:
+    cost: float
+    place: int
+
+    def <(self, other: Reached) -> bool:
+        self.cost < other.cost
+
+## An edge of a `Graph`: the node it starts at, the node it ends at, and its value.
+export struct Edge[N, E]:
+    ## The node it starts at.
+    from_id: Id[N]
+    ## The node it ends at.
+    to_id: Id[N]
+    ## What the edge holds: a weight, a label or anything else.
+    value: E
+
+## Nodes and the directed edges between them, reached by the IDs `add_node` gives back, as a
+## `Table`'s are: a graph holds no references, and copying one gives an independent graph. A
+## node's edges out and in are linked through flat lists by its place, so adding one never
+## searches and walking them never allocates. An ID from another graph stops the program, like
+## an index out of range.
+export struct Graph[N, E]:
+    _nodes: Table[N] = Table[N]()
+    _ids: list[Id[N]] = []
+    ## For each edge: where it starts and ends, its value, and the next edge out of and into the
+    ## same nodes, or -1.
+    _starts: list[int] = []
+    _ends: list[int] = []
+    _values: list[E] = []
+    _next_out: list[int] = []
+    _next_in: list[int] = []
+    ## For each node: its first and last edges out and in, or -1.
+    _first_out: list[int] = []
+    _last_out: list[int] = []
+    _first_in: list[int] = []
+    _last_in: list[int] = []
+
+    ## How many nodes it has.
+    def len(self) -> int:
+        self._ids.len()
+
+    ## How many edges it has.
+    def edge_count(self) -> int:
+        self._starts.len()
+
+    ## Adds a node with no edges, giving back its ID.
+    def add_node(ref self, node: N) -> Id[N]:
+        id = self._nodes.add(node)
+        self._ids.append(id)
+        self._first_out.append(-1)
+        self._last_out.append(-1)
+        self._first_in.append(-1)
+        self._last_in.append(-1)
+        id
+
+    def [](self, id: Id[N]) -> N:
+        self._nodes[id]
+
+    def []=(ref self, id: Id[N], node: N):
+        self._nodes[id] = node
+
+    ## Every node's ID, in the order they were added.
+    def nodes(self) -> list[Id[N]]:
+        self._ids
+
+    ## Adds an edge from one node to another, holding `edge`. Two nodes can have several edges
+    ## between them, and a node can have one to itself.
+    def add_edge(ref self, from_id: Id[N], to_id: Id[N], edge: E):
+        start = self._place(from_id)
+        end = self._place(to_id)
+        at = self._starts.len()
+        self._starts.append(start)
+        self._ends.append(end)
+        self._values.append(edge)
+        self._next_out.append(-1)
+        self._next_in.append(-1)
+        if self._last_out[start] < 0:
+            self._first_out[start] = at
+        else:
+            self._next_out[self._last_out[start]] = at
+        self._last_out[start] = at
+        if self._last_in[end] < 0:
+            self._first_in[end] = at
+        else:
+            self._next_in[self._last_in[end]] = at
+        self._last_in[end] = at
+
+    ## The edges starting at a node, in the order they were added.
+    def edges_from(self, id: Id[N]) -> list[Edge[N, E]]:
+        mut found = list[Edge[N, E]]()
+        mut at = self._first_out[self._place(id)]
+        while at >= 0:
+            found.append(self._edge(at))
+            at = self._next_out[at]
+        found
+
+    ## The edges ending at a node, in the order they were added.
+    def edges_to(self, id: Id[N]) -> list[Edge[N, E]]:
+        mut found = list[Edge[N, E]]()
+        mut at = self._first_in[self._place(id)]
+        while at >= 0:
+            found.append(self._edge(at))
+            at = self._next_in[at]
+        found
+
+    ## Every node, each before every node its edges lead to, or None when edges go round in a
+    ## cycle and there's no such order. Nodes with no edges in come first, in the order they were
+    ## added, then each node as soon as everything before it is in.
+    def topological_order(self) -> list[Id[N]]?:
+        count = self._ids.len()
+        mut waiting = [0 for _ in range(count)]
+        for end in self._ends:
+            waiting[end] += 1
+        mut ready = list[int]()
+        for place in range(count):
+            if waiting[place] == 0:
+                ready.append(place)
+        mut next = 0
+        while next < ready.len():
+            place = ready[next]
+            next += 1
+            mut at = self._first_out[place]
+            while at >= 0:
+                end = self._ends[at]
+                waiting[end] -= 1
+                if waiting[end] == 0:
+                    ready.append(end)
+                at = self._next_out[at]
+        if ready.len() < count: return None
+        [self._ids[place] for place in ready]
+
+    ## The cheapest way from one node to another, by `cost` of each edge, as the nodes along it,
+    ## both ends included, or None when no edges lead there. Costs can't be below zero: a
+    ## negative one stops the program.
+    def shortest_path(self, from_id: Id[N], to_id: Id[N], cost: (E) -> float) -> list[Id[N]]?:
+        start = self._place(from_id)
+        end = self._place(to_id)
+        count = self._ids.len()
+        mut best = [-1.0 for _ in range(count)]
+        mut came_from = [-1 for _ in range(count)]
+        mut done = [False for _ in range(count)]
+        mut waiting = Heap[Reached]()
+        best[start] = 0.0
+        waiting.push(Reached(cost=0.0, place=start))
+        while True:
+            reached = waiting.pop() else break
+            place = reached.place
+            if done[place]: continue
+            done[place] = True
+            if place == end: break
+            mut at = self._first_out[place]
+            while at >= 0:
+                step = cost(self._values[at])
+                # A cost below zero would make a path found already cheaper later.
+                assert step >= 0.0
+                next = self._ends[at]
+                total = reached.cost + step
+                if not done[next] and (best[next] < 0.0 or total < best[next]):
+                    best[next] = total
+                    came_from[next] = place
+                    waiting.push(Reached(cost=total, place=next))
+                at = self._next_out[at]
+        if not done[end]: return None
+        mut path = [self._ids[end]]
+        mut at = end
+        while at != start:
+            at = came_from[at]
+            path.append(self._ids[at])
+        reversed(path)
+
+    def _edge(self, at: int) -> Edge[N, E]:
+        Edge(
+            from_id=self._ids[self._starts[at]],
+            to_id=self._ids[self._ends[at]],
+            value=self._values[at],
+        )
+
+    ## Where a node is in the graph's own lists: its slot in the `Table`, since nothing's ever
+    ## taken out of it. An ID from another graph stops the program.
+    def _place(self, id: Id[N]) -> int:
+        assert id_tag(id) == table_tag(self._nodes)
+        id_key(id) >> 32
+
 extend SortedMap[K: Ordered & Serializable, V: Serializable]:
     def serialize(self, ref out: Serializer):
         out.map(self.items())

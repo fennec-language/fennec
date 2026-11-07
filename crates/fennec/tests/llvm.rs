@@ -410,14 +410,14 @@ def grown(ref xs: list[int]):
     xs.append(99)
 
 def shrunk(ref xs: list[int]):
-    xs.pop()
+    _ = xs.pop()
 
 def replaced(ref xs: list[int]):
     xs = [7]
 
 def emptied(ref xs: list[int]):
     while xs.len() > 0:
-        xs.pop()
+        _ = xs.pop()
 
 def retext(ref text: str, by: str):
     text = by
@@ -758,7 +758,7 @@ fn what_a_mut_argument_changes_fails_as_it_should() -> std::io::Result<()> {
         (
             "given_mut_fails_1",
             r"def shrunk(ref xs: list[int]):
-    xs.pop()
+    _ = xs.pop()
 
 def main(stdout: Stdout):
     mut xs = [1, 2, 3]
@@ -989,8 +989,8 @@ def swap_ends(ref a: list[int], ref b: list[int]):
     b.append(a.len())
 
 def try_all(ref units: list[Unit]) -> int fails Bad:
-    units[0].tried(1)?
-    units[1].tried(-1)?
+    _ = units[0].tried(1)?
+    _ = units[1].tried(-1)?
     units[0].tried(2)?
 
 def main(stdout: Stdout):
@@ -1060,7 +1060,7 @@ def main(stdout: Stdout):
     lists[1].tags.extend(lists[1].tags)
     lists[2].inner.tags.append(lists[1].tags.pop() else 0)
     lists[2].tags.insert(0, lists[0].tags[0])
-    lists[0].tags.pop()
+    _ = lists[0].tags.pop()
     show(stdout, lists)
     mut pick = 0
     mut chosen = [[1], [2]]
@@ -1071,7 +1071,7 @@ def main(stdout: Stdout):
     stdout.print(chosen, copied_chosen)
     mut tables = [{"a": 1}, {"b": 2}]
     tables[0]["c"] = tables[1]["b"]
-    tables[1].pop("b")
+    _ = tables[1].pop("b")
     stdout.print(tables)
 
     # What a call keeps stays what it was, and the place goes on from there.
@@ -2236,10 +2236,10 @@ fn a_value_nothing_keeps_matches_the_jit() -> std::io::Result<()> {
 
 def main(stdout: Stdout):
     scores = [3, 1, 2]
-    sorted(scores)
-    str(42)
-    "a,b".split(",")
-    doubled(scores)
+    _ = sorted(scores)
+    _ = str(42)
+    _ = "a,b".split(",")
+    _ = doubled(scores)
     stdout.print(scores, sorted(scores))
 "#,
     )
@@ -2938,6 +2938,55 @@ fn shared_values_reached_in_locks_build_natively() -> std::io::Result<()> {
     same_as_the_interpreter_in_both_builds("shared_locks", SHARED_LOCKS)
 }
 
+/// A `lock ... as ref` block's changes are saved for a crash to put back, and kept when it ends
+/// normally: an int, a string and a list changed, two values locked together, a `return` from
+/// inside, and appends in a loop. What's printed after is the interpreter's.
+#[test]
+fn changes_in_a_lock_to_write_are_kept_as_the_interpreter_keeps_them() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "lock_saves",
+        r#"struct Account:
+    owner: str
+    log: list[int]
+    balance = 0
+
+def pay(account: shared Account, amount: int, name: str):
+    lock account as ref payer:
+        payer.balance -= amount
+        payer.owner = name
+        payer.log.append(amount)
+
+def swap(a: shared Account, b: shared Account) -> bool:
+    lock a, b as ref first, ref second:
+        if first.balance == second.balance:
+            return False
+        held = first.owner
+        first.owner = second.owner
+        second.owner = held
+    True
+
+def fill(account: shared Account, count: int):
+    lock account as ref held:
+        for n in range(count):
+            held.log.append(n)
+            held.balance += n
+
+def main(stdout: Stdout):
+    shared ana = Account(owner="ana", log=[], balance=10)
+    shared bo = Account(owner="a name long enough to live in a block", log=[1])
+    pay(ana, amount=4, name="bo")
+    stdout.print(swap(ana, b=bo))
+    fill(bo, count=100)
+    lock ana, bo as first, second:
+        stdout.print(first.balance, first.owner, first.log)
+        stdout.print(second.balance, second.owner, second.log.len())
+"#,
+    )
+}
+
 const SHARED_LOCKS: &str = "struct Account:
     owner: str
     balance = 0
@@ -3035,6 +3084,71 @@ def main(stdout: Stdout):
     stdout.print(count(db, ref log) else -9)
     for line in log.lines:
         stdout.print(line)
+";
+
+/// What a `with` source lends is the block's to use, `ref self` methods included, with or without
+/// `as ref`: lent by name, the block's changes are what the source's cleanup sees. A `shared`
+/// handle lent the same way takes its methods with no `mut`.
+#[test]
+fn lent_values_take_ref_self_calls_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("lent_structs", LENT_STRUCTS)?;
+    same_as_the_interpreter_in_both_builds("lent_handles", LENT_HANDLES)
+}
+
+const LENT_STRUCTS: &str = "struct Sink:
+    parts = list[str]()
+
+    def write(ref self, text: str):
+        self.parts.append(text)
+
+def sink(stdout: Stdout) -> with Sink:
+    mut held = Sink()
+    lend held
+    stdout.print(\"after the block:\", held.parts)
+
+def made(stdout: Stdout) -> with Sink:
+    lend Sink(parts=[\"start\"])
+    stdout.print(\"made\")
+
+def main(stdout: Stdout):
+    with sink(stdout) as out:
+        out.write(\"a\")
+    with sink(stdout) as ref out:
+        out.write(\"b\")
+    with made(stdout) as other:
+        other.write(\"c\")
+        stdout.print(other.parts)
+";
+
+const LENT_HANDLES: &str = "error WriteError:
+    why: str
+
+shared File:
+    lines: list[str]
+
+    def write_line(ref self, line: str) fails WriteError:
+        if line == \"\": fail WriteError(why=\"empty\")
+        self.lines.append(line)
+
+    def written(self) -> int:
+        self.lines.len()
+
+def create(name: str, stdout: Stdout) -> with File fails WriteError:
+    file = File(lines=[])
+    lend file
+    stdout.print(\"closing\", name, file.written())
+
+def save(stdout: Stdout) -> int fails WriteError:
+    with create(\"notes\", stdout)? as file:
+        file.write_line(\"fox\")?
+        file.write_line(\"den\")?
+    1
+
+def main(stdout: Stdout):
+    stdout.print(save(stdout) else -1)
 ";
 
 /// Changing an item in place is only safe once the list is alone: another copy of the list
@@ -3314,8 +3428,8 @@ def main(stdout: Stdout):
     mut map = Table[str]()
     first = map.add(\"a\")
     second = map.add(\"b\")
-    map.add(\"c\")
-    map.remove(second)
+    _ = map.add(\"c\")
+    _ = map.remove(second)
     stdout.print(map)
     stdout.print([first])
 ";
@@ -3903,6 +4017,35 @@ def main(stdout: Stdout):
     )
 }
 
+/// `list`, `sorted`, `set`, `min` and `max` of a type with an `iter` of its own take what it
+/// gives, as a `for` loop does: the program's own type, and the standard library's, which write
+/// themselves with `list(self)`.
+#[test]
+fn what_takes_every_item_takes_a_types_own_iter_as_the_jit_does() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "own_iter_items",
+        r"from std.collections import Deque, SortedSet
+
+struct Countdown:
+    start: int
+
+    def iter(self) -> Iterator[int]:
+        mut at = self.start
+        while at > 0:
+            yield at
+            at -= 1
+
+def main(stdout: Stdout):
+    down = Countdown(start=4)
+    stdout.print(list(down), sorted(down), set(down) == {1, 2, 3, 4}, min(down), max(down))
+    stdout.print(list(Countdown(start=0)), str(Deque.of([1, 2, 3])), str(SortedSet.of([3, 1, 2])))
+",
+    )
+}
+
 #[test]
 fn generators_and_results_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -4342,7 +4485,7 @@ def main(stdout: Stdout):
     mut xs = [1, 2, 3]
     mut at = -1
     stdout.print(xs[at], xs[at])
-    xs.pop()
+    _ = xs.pop()
     stdout.print(xs[at])
     mut bag = Bag(items=[1, 2, 3])
     at = 2
@@ -5476,6 +5619,72 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// A built server whose rounds crash on purpose, for every tenth request: each crash ends only its
+/// own round, closing its connection, and the server answers the other nine.
+#[test]
+fn a_server_whose_rounds_crash_answers_the_rest_natively() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("crashing-rounds")?;
+    let program = dir.join("crashing.fen");
+    std::fs::write(
+        &program,
+        "from std.net import NetError
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            if line == \"crash\":
+                nothing: list[int] = []
+                stdout.print(nothing[3])
+            conn.write(f\"{line}\\n\")?
+",
+    )?;
+    let executable = dir.join("crashing");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Command::new(&executable)
+        .env("FENNEC_THREADS", "2")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let mut printed = std::io::BufReader::new(server.stdout.take().expect("its output"));
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().unwrap_or(0);
+    let (mut answered, mut closed) = (0, 0);
+    for request in 1_u32..=30 {
+        let line = if request.is_multiple_of(10) { "crash".to_owned() } else { format!("request {request}") };
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        stream.write_all(format!("{line}\n").as_bytes())?;
+        let mut back = String::new();
+        let read = std::io::BufReader::new(stream).read_line(&mut back).unwrap_or(0);
+        if read == 0 {
+            closed += 1;
+        } else {
+            assert_eq!(back, format!("{line}\n"));
+            answered += 1;
+        }
+    }
+    server.kill()?;
+    let ended = server.wait_with_output()?;
+    let errors = String::from_utf8_lossy(&ended.stderr);
+    assert_eq!((answered, closed), (27, 3), "{errors}");
+    assert_eq!(errors.matches("error:").count(), 3, "each crash says why: {errors}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// With nothing asked, a program that uses `parallel` is built with the runtime that runs it on
 /// every core, and prints what it should; `FENNEC_THREADS_RUNTIME=0` keeps it on one thread.
 #[test]
@@ -6133,9 +6342,9 @@ def main(stdout: Stdout):
     ash = world.units.add(Unit(name="ash"))
     gone = world.units.add(Unit(name="gone"))
     vex = world.units.add(Unit(name="vex", target=ash))
-    world.units.remove(gone)
+    _ = world.units.remove(gone)
     kit = world.units.add(Unit(name="kit", target=vex))
-    world.units.remove(ash)
+    _ = world.units.remove(ash)
     world.selected = [vex, kit]
     world.last = ash
     # By position: the items in order, and the Id whose item has gone saved as missing.
@@ -6325,6 +6534,49 @@ fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A finished program goes in the store under its build's root hash, with its functions' hashes
+/// beside it, so building it again unchanged compiles and links nothing and gives the same bytes. A
+/// change to the program, or a release build of it, is a build of its own. See `docs/store.md`.
+#[test]
+fn an_unchanged_build_takes_its_program_from_the_store() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("stored")?;
+    let home = dir.join("home");
+    let source = "def main(stdout: Stdout):\n    stdout.print(\"stored\")\n";
+    std::fs::write(dir.join("main.fen"), source)?;
+    let build = |args: &[&str]| -> std::io::Result<(String, Vec<u8>)> {
+        let output = crate::executables::fennec_command()
+            .args(args)
+            .current_dir(&dir)
+            .env("FENNEC_HOME", &home)
+            .env_remove("FENNEC_NO_CACHE")
+            .output()?;
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        Ok((String::from_utf8_lossy(&output.stdout).into_owned(), std::fs::read(dir.join("built"))?))
+    };
+    let (first, program) = build(&["build", "main.fen", "-o", "built"])?;
+    let (again, same) = build(&["build", "main.fen", "-o", "built"])?;
+    assert!(first.contains("compiled 1 of 1"), "{first}");
+    assert!(again.contains("compiled 0 of 1") && again.contains("linked in 0 ms"), "{again}");
+    assert_eq!(program, same, "the program from the store is the one built");
+    let ran = Command::new(dir.join("built")).output()?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "stored\n");
+    let stored: Vec<String> =
+        std::fs::read_dir(home.join("cache").join(env!("CARGO_PKG_VERSION")).join("programs"))?
+            .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+            .collect::<Result<_, _>>()?;
+    assert_eq!(stored.len(), 2, "the program and its functions' hashes: {stored:?}");
+    std::fs::write(dir.join("main.fen"), source.replace("stored", "changed"))?;
+    let (changed, _) = build(&["build", "main.fen", "-o", "built"])?;
+    assert!(changed.contains("compiled 1 of 1"), "a changed program is built: {changed}");
+    let (released, _) = build(&["build", "--release", "main.fen", "-o", "built"])?;
+    assert!(!released.contains("linked in 0 ms"), "a release build is a build of its own: {released}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 #[test]
 fn a_release_build_optimized_as_a_whole_matches_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -6334,6 +6586,88 @@ fn a_release_build_optimized_as_a_whole_matches_the_jit() -> std::io::Result<()>
     let (ours, jit) = both_built("release", source, &["--llvm", "--release"])?;
     assert_eq!((ours.0, ours.2), (jit.0, jit.2));
     assert_eq!(ours.1.lines().next(), jit.1.lines().next());
+    Ok(())
+}
+
+/// Floats have one equality, order and hash everywhere: `0.0` is `-0.0`, and NaN comes after
+/// everything and is the same as any other NaN, whatever its sign. So this is held to what that
+/// decision says, on LLVM and the interpreter both. The JIT's `==` and keys don't follow it yet.
+#[test]
+fn floats_compare_and_hash_as_decided() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"struct Pair:
+    x: float
+    y: float
+
+def same(a: float, b: float) -> bool:
+    a == b
+
+def different(a: float, b: float) -> bool:
+    a != b
+
+def less(a: float, b: float) -> bool:
+    a < b
+
+def most(a: float, b: float) -> bool:
+    a <= b
+
+def more(a: float, b: float) -> bool:
+    a > b
+
+def least(a: float, b: float) -> bool:
+    a >= b
+
+def main(stdout: Stdout):
+    zero = 0.0
+    minus = -zero
+    nan = 1e300 * 1e300 - 1e300 * 1e300
+    other = -nan
+    one = 1.0
+    stdout.print(same(zero, b=minus), same(nan, b=nan), same(nan, b=other), same(nan, b=one), same(one, b=one))
+    stdout.print(different(zero, b=minus), different(nan, b=other), different(nan, b=one))
+    stdout.print(less(minus, b=zero), less(zero, b=minus), less(one, b=nan), less(nan, b=one), less(nan, b=other))
+    stdout.print(most(minus, b=zero), most(nan, b=other), most(nan, b=one), most(one, b=nan))
+    stdout.print(more(nan, b=one), more(one, b=nan), more(nan, b=other), more(zero, b=minus))
+    stdout.print(least(nan, b=one), least(one, b=nan), least(nan, b=other), least(minus, b=zero))
+    stdout.print(zero == -0.0, nan == 1.0, 1.0 == nan, nan != 1.0, 1.0 != nan)
+    stdout.print(nan < 1.0, 1.0 < nan, nan <= 1.0, 1.0 <= nan, nan > 1.0, 1.0 > nan, nan >= 1.0, 1.0 >= nan)
+    stdout.print(Pair(x=zero, y=nan) == Pair(x=minus, y=other), Pair(x=1.0, y=nan) == Pair(x=1.0, y=2.0))
+    stdout.print((zero, 1.0) < (minus, 2.0), (zero, 2.0) < (minus, 1.0))
+    stdout.print((zero, nan) == (minus, other), (nan, 1.0) > (1.0, 1.0))
+    stdout.print(zero in [minus], other in [nan])
+    stdout.print(max([1.0, nan, 2.0]) == nan, min([other, 1.0, nan]), max(other, 1.0) == nan, min(zero, 1.0))
+    stdout.print(sorted([nan, 2.0, other, 1.0])[:2], sorted([(nan, 1), (1.0, 2)])[0])
+";
+    let dir = folder("floats_ordered_as_decided")?;
+    let program = dir.join("floats.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("floats"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    let interpreted = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours, interpreted);
+    assert_eq!(
+        ours.0,
+        "True True True False True
+False False True
+False False True False False
+True True False True
+True False False False
+True False True True
+True False False True True
+False True False True True False True False
+True False
+True False
+True True
+True True
+True 1.0 True 0.0
+[1.0, 2.0] (1.0, 2)
+"
+    );
     Ok(())
 }
 
@@ -6680,25 +7014,25 @@ def main(stdout: Stdout):
         ids.append(names.add(Named(f"name {at} long enough not to be held inline")))
     stdout.print(ids)
     # Free from high to low, low to high, and in between.
-    names.remove(ids[6])
-    names.remove(ids[2])
-    names.remove(ids[4])
+    _ = names.remove(ids[6])
+    _ = names.remove(ids[2])
+    _ = names.remove(ids[4])
     first = names.add(Named("a"))
     second = names.add(Named("b"))
-    names.remove(ids[0])
+    _ = names.remove(ids[0])
     third = names.add(Named("c"))
     fourth = names.add(Named("d"))
     fifth = names.add(Named("e"))
     stdout.print(first, second, third, fourth, fifth, names.len())
     stdout.print(names.get(ids[2]) is None, names[first], names[fifth])
     # A stale `Id` frees nothing, so it can't move where to look.
-    names.remove(ids[2])
+    _ = names.remove(ids[2])
     sixth = names.add(Named("f"))
     stdout.print(sixth, names.values())
     # A copy keeps looking from where it was, apart from the original.
     mut copied = copy(names)
-    copied.remove(ids[1])
-    names.remove(ids[3])
+    _ = copied.remove(ids[1])
+    _ = names.remove(ids[3])
     stdout.print(copied.add(Named("g")), names.add(Named("h")), copied.values(), names.values())
 "#,
     )
@@ -6727,7 +7061,7 @@ def main(stdout: Stdout):
     stdout.print(reversed((1, 2)), reversed((1, 2, 3, 4)), reversed(("a", "a long string in a block")))
     mut names = Table[str]()
     first = names.add("ash")
-    names.add("kit")
+    _ = names.add("kit")
     third = names.add("a long name that sits in its own block")
     copied = names
     names.remove_where(name => name.startswith("k"))
@@ -6744,8 +7078,8 @@ def main(stdout: Stdout):
     units.remove_where(unit => unit.hp < 5)
     stdout.print(units.values(), units.get(weak), units[strong].name)
     mut numbers = Table[int]()
-    numbers.add(1)
-    numbers.add(2)
+    _ = numbers.add(1)
+    _ = numbers.add(2)
     numbers.remove_where(n => n % 2 == 0)
     stdout.print(numbers.values(), numbers.len())
     numbers.clear()
@@ -6753,7 +7087,7 @@ def main(stdout: Stdout):
     gone = numbers.add(5)
     stdout.print(numbers.values(), numbers.len(), numbers[gone])
     mut cleared = copy(names)
-    cleared.add("again")
+    _ = cleared.add("again")
     cleared.clear()
     stdout.print(cleared.len(), names.len(), cleared.values())
     ignore(numbers.remove(gone), "it's fine if it's gone")
@@ -6797,11 +7131,11 @@ def main(stdout: Stdout):
     kept = world
     stdout.print(world.enemies.modify(far, foe => foe.take_damage(25)))
     stdout.print(world.enemies[far], kept.enemies[far])
-    world.enemies.remove(near)
+    _ = world.enemies.remove(near)
     stdout.print(world.enemies.modify(near, foe => foe.take_damage(1)), world.enemies.len())
     mut numbers = Table[int]()
     one = numbers.add(1)
-    numbers.modify(one, n => n * 5)
+    _ = numbers.modify(one, n => n * 5)
     stdout.print(numbers[one])
     mut nodes = Table[Node]()
     root = nodes.add(Node(value=1, children=[]))
@@ -6847,34 +7181,34 @@ def main(stdout: Stdout):
     mut numbers = Table[int]()
     ids = [numbers.add(n) for n in range(8)]
     stdout.print(total(numbers))
-    numbers.remove(ids[0])
-    numbers.remove(ids[3])
-    numbers.remove(ids[4])
-    numbers.remove(ids[7])
+    _ = numbers.remove(ids[0])
+    _ = numbers.remove(ids[3])
+    _ = numbers.remove(ids[4])
+    _ = numbers.remove(ids[7])
     stdout.print(total(numbers), numbers.len())
-    numbers.add(100)
+    _ = numbers.add(100)
     stdout.print(total(numbers), numbers.len())
 
     mut units = Table[Unit]()
     first = units.add(Unit("first", [1]))
-    units.add(Unit("second is a much longer name than fits", [2, 3]))
+    _ = units.add(Unit("second is a much longer name than fits", [2, 3]))
     last = units.add(Unit("é", []))
     stdout.print(named(units))
-    units.remove(first)
-    units.remove(last)
+    _ = units.remove(first)
+    _ = units.remove(last)
     stdout.print(named(units))
 
     mut points = Table[Point]()
     gone = points.add(Point(0, 0.5))
-    points.add(Point(1, 1.5))
-    points.add(Point(2, 2.5))
-    points.remove(gone)
+    _ = points.add(Point(1, 1.5))
+    _ = points.add(Point(2, 2.5))
+    _ = points.remove(gone)
     for id, point in points.items():
         stdout.print(point.x, point.y, points[id].x)
 
     mut words = Table[str]()
-    words.add("a")
-    words.add("a word too long to fit in a header")
+    _ = words.add("a")
+    _ = words.add("a word too long to fit in a header")
     for word in words.values():
         stdout.print(word)
 
@@ -6883,7 +7217,7 @@ def main(stdout: Stdout):
     for id, number in empty.items():
         stdout.print(number)
     only = empty.add(1)
-    empty.remove(only)
+    _ = empty.remove(only)
     for number in empty.values():
         stdout.print(number)
     stdout.print(total(empty))
@@ -6905,14 +7239,14 @@ def main(stdout: Stdout):
     mut changing = Table[int]()
     kept = [changing.add(n) for n in range(3)]
     before = changing.items()
-    changing.remove(kept[1])
+    _ = changing.remove(kept[1])
     for id, number in before:
         stdout.print(number)
     # Changed between rounds of an outer loop.
     for round in range(3):
         for number in changing.values():
             stdout.print(round, number)
-        changing.add(round * 100)
+        _ = changing.add(round * 100)
 "#;
 
 #[test]
@@ -6928,7 +7262,7 @@ fn walking_a_map_makes_no_list() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut numbers = Table[int]()\n    for n in range(1000):\n        numbers.add(n)\n    mut found = 0\n    for round in range(100):\n        for id, number in numbers.items():\n            found += number\n        for number in numbers.values():\n            found += number\n    stdout.print(found)\n";
+    let source = "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut numbers = Table[int]()\n    for n in range(1000):\n        _ = numbers.add(n)\n    mut found = 0\n    for round in range(100):\n        for id, number in numbers.items():\n            found += number\n        for number in numbers.values():\n            found += number\n    stdout.print(found)\n";
     let counts = counts_of("walking_no_list", source)?;
     assert!(count(&counts, "allocations") < Some(40), "{counts}");
     Ok(())
@@ -6968,7 +7302,7 @@ def main(stdout: Stdout):
     a = world.enemies.add(Enemy(name="ash", hp=5, x=0.0))
     b = world.enemies.add(Enemy(name="bo", hp=-1, x=1.0))
     c = world.enemies.add(Enemy(name="cy", hp=2, x=2.0))
-    world.enemies.remove(b)
+    _ = world.enemies.remove(b)
     d = world.enemies.add(Enemy(name="di", hp=9, x=3.0))
     for _ in range(3):
         step(ref world, 0.5)
@@ -7013,7 +7347,7 @@ def step(ref enemies: Table[Enemy], dt: float):
 def main(stdout: Stdout):
     mut enemies = Table[Enemy]()
     for n in range(1000):
-        enemies.add(Enemy(hp=n, x=0.0))
+        _ = enemies.add(Enemy(hp=n, x=0.0))
     mut total = 0
     for round in range(100):
         step(ref enemies, 0.5)
@@ -7055,7 +7389,7 @@ def step(ref world: World, dt: float):
 def main(stdout: Stdout):
     mut world = World()
     for n in range(1000):
-        world.enemies.add(Enemy(hp=n, x=0.0))
+        _ = world.enemies.add(Enemy(hp=n, x=0.0))
     mut total = 0
     for round in range(100):
         step(ref world, 0.5)
@@ -7103,7 +7437,7 @@ def main(stdout: Stdout):
     )?;
     same_message_as_the_jit(
         "stale",
-        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut names = Table[str]()\n    fox = names.add(\"fox\")\n    names.remove(fox)\n    stdout.print(names[fox])\n",
+        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut names = Table[str]()\n    fox = names.add(\"fox\")\n    _ = names.remove(fox)\n    stdout.print(names[fox])\n",
     )
 }
 
@@ -7135,11 +7469,11 @@ def main(stdout: Stdout):
     )?;
     same_message_as_the_jit(
         "other_table_stop",
-        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    stdout.print(ours[kit])\n",
+        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    _ = ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    stdout.print(ours[kit])\n",
     )?;
     same_message_as_the_jit(
         "other_table_store",
-        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    ours[kit] = \"den\"\n    stdout.print(ours.len())\n",
+        "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    _ = ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    ours[kit] = \"den\"\n    stdout.print(ours.len())\n",
     )?;
     // Saved, an `Id` has to be from the `Table` saved with it.
     same_message_as_the_jit(
@@ -7154,7 +7488,7 @@ struct World:
 def main(stdout: Stdout):
     mut world = World()
     mut elsewhere = Table[str]()
-    world.units.add("ash")
+    _ = world.units.add("ash")
     world.selected = [elsewhere.add("vex")]
     stdout.print(json.dumps(world))
 "#,
@@ -7493,7 +7827,7 @@ def main(stdout: Stdout):
     mut xs = [Packet(a2=[0], link=0), Packet(a2=[0], link=0), shared]
     mut at = 1
     xs[at].a2[0] = 2
-    xs.pop(0)
+    _ = xs.pop(0)
     xs[at].a2[0] = 3
     stdout.print(shared.a2, xs[0].a2, xs[1].a2)
 ";
@@ -7622,8 +7956,8 @@ fn strings_let_go_of_match_the_jit() -> std::io::Result<()> {
         "strings_let_go_of",
         r#"def main(stdout: Stdout):
     mut parts = ["a", "a much longer string than a header holds", "b", "c"]
-    parts.pop()
-    parts.pop(0)
+    _ = parts.pop()
+    _ = parts.pop(0)
     parts.remove_where((s) => s.len() > 10)
     stdout.print(parts)
     names: dict[str, str] = {"one": "uno", "long": "a value longer than twenty-three bytes"}
@@ -8292,7 +8626,7 @@ def main(stdout: Stdout):
     key: int | str = "owl"
     stdout.print(counts.get(key) else 7)
     stdout.print("fox" in counts, 5 in counts, "owl" not in counts)
-    counts.pop("fox")
+    _ = counts.pop("fox")
     stdout.print(counts.len(), counts)
     mut shapes: list[Shape] = []
     shapes.append(Circle(radius=1.0))
@@ -8579,8 +8913,8 @@ def main(stdout: Stdout):
     first = squad.units.pop()
     stdout.print(first.name if first is not None else "none", squad.units.pop() is None)
     stdout.print(squad.rows[1].pop(), squad.rows[picked(1)].pop(), squad.rows[picked(1)].pop())
-    squad.rows[0].pop()
-    squad.rows[0].pop()
+    _ = squad.rows[0].pop()
+    _ = squad.rows[0].pop()
     stdout.print(squad.rows)
 "#,
     )
@@ -8634,11 +8968,11 @@ def main(stdout: Stdout):
         mut people = [Person(long + "a", 1), Person(long + "b", 2), Person(long + "c", 3)]
         gone = people.pop() else return
         first = people.pop(0)
-        people.pop()
+        _ = people.pop()
         mut tokens = [Token.Word(long + "a"), Token.Blank, Token.Word(long + "b"), Token.Word(long + "c")]
         last = tokens.pop() else return
         early = tokens.pop(0)
-        tokens.pop(0)
+        _ = tokens.pop(0)
         tokens.remove_where((item) => item == .Blank)
         total += gone.name.len() + first.name.len() + people.len() + tokens.len()
         if same or last == early:
@@ -9884,7 +10218,7 @@ fn small_calls_fail_like_the_jit() -> std::io::Result<()> {
         "max_of_nothing",
         "def main(stdout: Stdout):
     mut none = [1]
-    none.pop()
+    _ = none.pop()
     stdout.print(max(none))
 ",
     )?;
@@ -10067,7 +10401,7 @@ fn a_failure_passed_up_fails_a_test_through_llvm() -> std::io::Result<()> {
     let dir = folder("test_passed_up")?;
     let program = dir.join("up.fen");
     for (name, body) in [
-        ("passed_up", "(fs: Fs):\n    fs.read_text(\"gone\")?\n"),
+        ("passed_up", "(fs: Fs):\n    _ = fs.read_text(\"gone\")?\n"),
         ("fails", ":\n    fail Oops(\"broken\")\n"),
         ("fails_inside", ":\n    for _ in range(1):\n        if True:\n            fail Oops(\"broken\")\n"),
         // The function it makes of this gives back a result it can't see from the statements.

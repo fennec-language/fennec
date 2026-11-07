@@ -1,0 +1,61 @@
+# A `Graph` holds nodes and the directed edges between them by `Id`s, as a `Table` does, with no
+# references: here, which modules import which, and a map of roads with their lengths.
+from std.collections import Graph
+
+def main(stdout: Stdout):
+    mut imports = Graph[str, str]()
+    main_id = imports.add_node("main")
+    api = imports.add_node("api")
+    notes = imports.add_node("notes")
+    json = imports.add_node("json")
+    imports.add_edge(from_id=main_id, to_id=api, edge="respond")
+    imports.add_edge(from_id=main_id, to_id=notes, edge="Notes")
+    imports.add_edge(from_id=api, to_id=notes, edge="Note")
+    imports.add_edge(from_id=api, to_id=json, edge="dumps")
+    imports.add_edge(from_id=notes, to_id=json, edge="loads")
+    stdout.print(imports.len(), "modules,", imports.edge_count(), "imports")
+    stdout.print("api uses", [imports[edge.to_id] for edge in imports.edges_from(api)])
+    stdout.print("json is used by", [imports[edge.from_id] for edge in imports.edges_to(json)])
+    order = imports.topological_order() else []
+    stdout.print("in order:", [imports[id] for id in order])
+    imports.add_edge(from_id=json, to_id=main_id, edge="cycle")
+    stdout.print("with a cycle:", imports.topological_order() is None)
+
+    mut roads = Graph[str, float]()
+    den = roads.add_node("den")
+    river = roads.add_node("river")
+    wood = roads.add_node("wood")
+    hill = roads.add_node("hill")
+    alone = roads.add_node("alone")
+    roads.add_edge(from_id=den, to_id=river, edge=4.0)
+    roads.add_edge(from_id=den, to_id=wood, edge=1.0)
+    roads.add_edge(from_id=wood, to_id=river, edge=2.0)
+    roads.add_edge(from_id=river, to_id=hill, edge=5.0)
+    roads.add_edge(from_id=wood, to_id=hill, edge=9.0)
+    path = roads.shortest_path(from_id=den, to_id=hill, cost=length => length) else []
+    stdout.print("den to hill:", [roads[id] for id in path])
+    stdout.print(
+        "den to alone:",
+        roads.shortest_path(from_id=den, to_id=alone, cost=length => length) is None,
+    )
+    home = roads.shortest_path(from_id=den, to_id=den, cost=length => length) else []
+    stdout.print("den to den:", [roads[id] for id in home])
+
+test "the order puts each node before every node it leads to"():
+    mut graph = Graph[int, bool]()
+    ids = [graph.add_node(at) for at in range(50)]
+    for at in range(49):
+        graph.add_edge(from_id=ids[at + 1], to_id=ids[at], edge=True)
+    order = graph.topological_order() else []
+    assert [graph[id] for id in order] == [49 - at for at in range(50)]
+
+test "a path takes the cheapest way, not the fewest edges"():
+    mut graph = Graph[str, float]()
+    start = graph.add_node("start")
+    middle = graph.add_node("middle")
+    end = graph.add_node("end")
+    graph.add_edge(from_id=start, to_id=end, edge=10.0)
+    graph.add_edge(from_id=start, to_id=middle, edge=1.0)
+    graph.add_edge(from_id=middle, to_id=end, edge=1.0)
+    path = graph.shortest_path(from_id=start, to_id=end, cost=length => length) else []
+    assert [graph[id] for id in path] == ["start", "middle", "end"]

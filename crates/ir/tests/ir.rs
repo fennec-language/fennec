@@ -1748,7 +1748,7 @@ def f() -> int:
     mut map = Table[Enemy]()
     one = map.add(Enemy(2))
     map[one] = Enemy(3)
-    map.modify(one, e => e.hit())
+    _ = map.modify(one, e => e.hit())
     for ref enemy in map:
         enemy.hit()
     map[one].health
@@ -1763,15 +1763,17 @@ def f() -> int:
   local _4 one: Id[Enemy]
   local _5: Enemy
   local _6: (Enemy) -> nothing
-  local _7: int
-  local _8: int
-  local _9: bool
-  local _10: bool
-  local _11: Enemy
-  local _12 enemy: Enemy
-  local _13: Id[Enemy]
-  local _14: Enemy
-  local _15: int
+  local _7: bool
+  local _8 _'0: bool
+  local _9: int
+  local _10: int
+  local _11: bool
+  local _12: bool
+  local _13: Enemy
+  local _14 enemy: Enemy
+  local _15: Id[Enemy]
+  local _16: Enemy
+  local _17: int
   bb0:
     _0 = builtin Table()
     _1 = _0
@@ -1780,33 +1782,34 @@ def f() -> int:
     _4 = _3
     _5 = make Enemy(3)
     _1[_4] = _5
-    _6 = closure f.arrow@232[]
-    builtin Table.modify(ref _1, _4, _6)
-    _7 = builtin Table.slots(_1)
-    _8 = 0
+    _6 = closure f.arrow@236[]
+    _7 = builtin Table.modify(ref _1, _4, _6)
+    _8 = _7
+    _9 = builtin Table.slots(_1)
+    _10 = 0
     jump bb1
   bb1:
-    _9 = _8 < _7
-    branch _9 bb2 bb4
+    _11 = _10 < _9
+    branch _11 bb2 bb4
   bb2:
-    _10 = builtin Table.slot_live(_1, _8)
-    branch _10 bb3 bb5
+    _12 = builtin Table.slot_live(_1, _10)
+    branch _12 bb3 bb5
   bb3:
-    _11 = builtin Table.at_slot(_1, _8)
-    _12 = _11
-    _13 = builtin Table.slot_id(_1, _8)
-    call Enemy.hit(_12)
+    _13 = builtin Table.at_slot(_1, _10)
+    _14 = _13
+    _15 = builtin Table.slot_id(_1, _10)
+    call Enemy.hit(_14)
     jump bb6
   bb4:
-    _14 = _1[_4]
-    _15 = _14.health
-    return _15
+    _16 = _1[_4]
+    _17 = _16.health
+    return _17
   bb5:
-    _8 = _8 + 1
+    _10 = _10 + 1
     jump bb1
   bb6:
-    _1[_13] = _12
-    _8 = _8 + 1
+    _1[_15] = _14
+    _10 = _10 + 1
     jump bb1
 "
     );
@@ -2723,7 +2726,7 @@ fn a_yield_method_unpacking_a_tuple_fuses() {
         mut trail = copy(self.items)
         while trail.len() > 0:
             first, second = trail[-1]
-            trail.pop()
+            _ = trail.pop()
             yield first + second
 
 def total(pairs: Pairs) -> int:

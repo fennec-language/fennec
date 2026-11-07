@@ -14,7 +14,7 @@ def main(stdout: Stdout):
     for round in range(4):
         mut at = round
         while at < ids.len():
-            units.remove(ids[at])
+            _ = units.remove(ids[at])
             at += 5
         at = round
         while at < ids.len():

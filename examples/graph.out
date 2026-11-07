@@ -1,0 +1,8 @@
+4 modules, 5 imports
+api uses ["notes", "json"]
+json is used by ["api", "notes"]
+in order: ["main", "api", "notes", "json"]
+with a cycle: True
+den to hill: ["den", "wood", "river", "hill"]
+den to alone: True
+den to den: ["den"]

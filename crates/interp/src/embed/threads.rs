@@ -21,6 +21,8 @@
 use std::collections::HashMap;
 #[cfg(any(test, feature = "threads"))]
 use std::sync::Arc;
+#[cfg(any(test, feature = "threads"))]
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Mutex, PoisonError};
 
@@ -40,14 +42,34 @@ thread_local! {
 
 #[cfg(any(test, feature = "threads"))]
 thread_local! {
-    /// What says the launched task running on this thread is to stop, if one is.
-    static STOP: std::cell::RefCell<Option<Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) };
+    /// How far the launched task running on this thread has been told to stop, if one is: see
+    /// `STOPPING` and `STOPPED_HARD`.
+    static STOP: std::cell::RefCell<Option<Arc<AtomicU8>>> = const { std::cell::RefCell::new(None) };
+    /// How many crashes' cleanups the task running on this thread is in.
+    static CLEANING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Whether the task running on this thread was launched and is to stop: its waits are cut short.
+/// A launched task's stop: each of its waits is cut short, unless it's cleaning up after a crash.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) const STOPPING: u8 = 1;
+/// A launched task's stop once its cleanup has had its grace: every wait is cut short.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) const STOPPED_HARD: u8 = 2;
+
+/// Whether the task running on this thread was launched and is to stop now: its waits are cut short.
+/// A cleanup after a crash may still wait, until it's stopped hard.
 #[cfg(any(test, feature = "threads"))]
 pub(crate) fn stopped() -> bool {
-    STOP.with_borrow(|stop| stop.as_ref().is_some_and(|stop| stop.load(Ordering::Acquire)))
+    let level = STOP.with_borrow(|stop| stop.as_ref().map_or(0, |stop| stop.load(Ordering::Acquire)));
+    level >= STOPPED_HARD || (level >= STOPPING && CLEANING.get() == 0)
+}
+
+/// The task running on this thread starts cleaning up after a crash, or ends doing so.
+pub(crate) fn cleaning(starts: bool) {
+    #[cfg(any(test, feature = "threads"))]
+    CLEANING.set(if starts { CLEANING.get() + 1 } else { CLEANING.get().saturating_sub(1) });
+    #[cfg(not(any(test, feature = "threads")))]
+    let _ = starts;
 }
 
 thread_local! {
@@ -201,15 +223,18 @@ pub(crate) struct Accounts {
     /// Whether the heap serves, which a range never does: a range parked on a worker that serves
     /// hands what it makes over, as one that isn't parked does.
     serving: bool,
-    /// For a launched task, set when it's to stop: each wait it's in, or comes to, is cut short.
-    stop: Option<Arc<AtomicBool>>,
+    /// For a launched task, how far it's been told to stop: each wait it's in, or comes to, is cut
+    /// short.
+    stop: Option<Arc<AtomicU8>>,
+    /// How many crashes' cleanups it's in.
+    cleaning: usize,
 }
 
 #[cfg(any(test, feature = "threads"))]
 impl Accounts {
     /// A launched task's, reading what's `lent` to the code that launched it, if anything, and
     /// stopping when `stop` is set.
-    pub(in crate::embed) fn for_task(lent: Option<Arc<Table>>, stop: Arc<AtomicBool>) -> Accounts {
+    pub(in crate::embed) fn for_task(lent: Option<Arc<Table>>, stop: Arc<AtomicU8>) -> Accounts {
         Accounts { lent, stop: Some(stop), ..Accounts::default() }
     }
 
@@ -236,6 +261,7 @@ pub(crate) fn swap_accounts(accounts: &mut Accounts) {
         std::mem::swap(&mut state.heap.serving, &mut accounts.serving);
         std::mem::swap(&mut *state.output.0.borrow_mut(), &mut accounts.printed);
         STOP.with_borrow_mut(|stop| std::mem::swap(stop, &mut accounts.stop));
+        accounts.cleaning = CLEANING.replace(accounts.cleaning);
         if !same {
             state.heap.texts.get_mut().clear();
             state.heap.set_cursor(super::heap::Cursor::default());

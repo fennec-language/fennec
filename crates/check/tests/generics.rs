@@ -230,6 +230,32 @@ fn generic_types_fill_in_their_parameters() {
 }
 
 #[test]
+fn a_generic_type_built_where_one_is_expected_takes_its_types_from_there() {
+    let program = "
+        struct Box[T]:
+            value: T
+
+        struct Held[T]:
+            items: list[Box[T]]
+            plain: list[T]
+
+        def show(box: Box[int | str]) -> int:
+            1
+
+        def count(held: Held[int | str]) -> int:
+            held.items.len()
+
+        def main(stdout: Stdout):
+            name = 'x'
+            kept: Box[int | str] = Box(value=4)
+            stdout.print(show(Box(value=3)), show(Box(value=name)), show(kept))
+            stdout.print(count(Held(items=[Box(value=1), Box(value=name)], plain=[name, 2])))
+            stdout.print(show(Box(value=1.5)))
+    ";
+    assert_eq!(problems(program), ["`value` should be an int | str, but this is a float @ 1.5"]);
+}
+
+#[test]
 fn generic_types_need_their_types_written() {
     let program = "
         struct Stack[T]:

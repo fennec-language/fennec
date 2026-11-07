@@ -41,6 +41,14 @@ impl FnCx<'_> {
             ExprKind::Match { subject, arms } => {
                 self.match_expr(subject, arms, expr.span, Some(expected.clone()))
             }
+            // `Box(value=1)` where a `Box[int | str]` goes: a generic type built where one of it
+            // is expected takes its types from there, so each field is checked against them.
+            ExprKind::Call { callee, args }
+                if let ExprKind::Name(name) = &callee.kind
+                    && let Some(types) = self.expected_generics(name, expected) =>
+            {
+                self.construct_with(name, (args, &types), expr.span)
+            }
             // `step: (int) -> int = n => n + 1`: an arrow takes its parameters' types from the
             // function type expected of it.
             ExprKind::Lambda { params, body }
@@ -85,11 +93,30 @@ impl FnCx<'_> {
         }
     }
 
+    /// The types for a generic struct's parameters, where `name` builds one and `expected` is
+    /// one of the same struct, like `Box[int | str]` where `Box(value=1)` goes.
+    fn expected_generics(&mut self, name: &str, expected: &Type) -> Option<Vec<Type>> {
+        if self.lookup(name).is_some() || self.checker.program.functions.contains_key(name) {
+            return None;
+        }
+        let Type::Generic(wanted, types) = self.checker.settled(expected).without_none() else {
+            return None;
+        };
+        let info = self.checker.program.type_info(name)?;
+        let fits = wanted == name
+            && info.kind == TypeKind::Struct
+            && info.def.cases.is_empty()
+            && info.def.generics.len() == types.len();
+        fits.then_some(types)
+    }
+
     /// A list, set or dict written where one holding a union goes: each item is checked as a
-    /// member, as `[Circle(...), Square(...)]` is where a `list[Shape]` goes.
+    /// member, as `[Circle(...), Square(...)]` is where a `list[Shape]` goes. So is one holding
+    /// a generic type, so `[Box(value=1)]` where a `list[Box[int | str]]` goes builds each
+    /// item as one.
     fn union_literal(&mut self, expr: &Expr, expected: &Type) -> Option<Type> {
         let union = |checker: &mut crate::checker::Checker, ty: &Type| {
-            matches!(checker.settled(ty).without_none(), Type::Union(_))
+            matches!(checker.settled(ty).without_none(), Type::Union(_) | Type::Generic(..))
         };
         match (&expr.kind, self.checker.settled(expected).without_none()) {
             (ExprKind::List(items), Type::List(item)) if union(self.checker, &item) => {

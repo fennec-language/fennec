@@ -790,7 +790,7 @@ impl FnCx<'_> {
 
     /// Builds a value, with the types for the type's parameters that are written in
     /// brackets, as in `Deque[int]()`. The others are worked out from the fields given.
-    fn construct_with(&mut self, type_name: &str, given: (&[Arg], &[Type]), span: Span) -> Type {
+    pub(crate) fn construct_with(&mut self, type_name: &str, given: (&[Arg], &[Type]), span: Span) -> Type {
         let (args, types) = given;
         let Some(info) = self.checker.program.type_info(type_name) else {
             return self.construct_builtin(type_name, None, args, span);

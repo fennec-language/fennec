@@ -586,8 +586,14 @@ fn a_swap_names_the_type_as_its_written() {
         def both(a: list[int], b: list[int]):\n    pass\n\ndef main():\n    swap(x, y)\n    both(x, y)\n";
     let said: Vec<String> =
         found(program).unwrap().iter().map(|lint| lint.diagnostic.message.clone()).collect();
-    assert!(said.iter().any(|said| said.contains("`a` and `b` both take `shared Account`, so swapping")), "{said:?}");
-    assert!(said.iter().any(|said| said.contains("`a` and `b` both take `list[int]`, so swapping")), "{said:?}");
+    assert!(
+        said.iter().any(|said| said.contains("`a` and `b` both take `shared Account`, so swapping")),
+        "{said:?}"
+    );
+    assert!(
+        said.iter().any(|said| said.contains("`a` and `b` both take `list[int]`, so swapping")),
+        "{said:?}"
+    );
 }
 
 #[test]

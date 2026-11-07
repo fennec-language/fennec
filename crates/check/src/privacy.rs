@@ -3,7 +3,7 @@
 //! outside can't forge a value with a `_` field set to whatever it likes, which capabilities
 //! like a network connection rely on.
 
-use fennec_syntax::{Arg, Diagnostic, Edit, Field, Item, Module, Sources, Span, TokenKind};
+use fennec_syntax::{Arg, Diagnostic, Edit, Field, Item, Module, Sources, Span, TokenKind, TypeDef};
 
 use crate::function::FnCx;
 
@@ -32,6 +32,43 @@ pub(crate) fn top_level_underscores(module: &Module) -> Vec<Diagnostic> {
         }
     }
     found
+}
+
+/// Reports each `struct` or `shared` nothing can build: one with a `_` field that has no
+/// default, which its automatic constructor can't set from outside it, and no named constructor,
+/// a method without `self` that gives one back, to set it.
+pub(crate) fn unbuildable(module: &Module) -> Vec<Diagnostic> {
+    let mut found = Vec::new();
+    for item in &module.items {
+        let Item::Struct(def) = item else { continue };
+        let Some(hidden) =
+            def.fields.iter().find(|field| field.name.starts_with('_') && field.default.is_none())
+        else {
+            continue;
+        };
+        if def.span.in_prelude() || !named_constructors(def).is_empty() {
+            continue;
+        }
+        let (name, field) = (&def.name, &hidden.name);
+        let message = format!(
+            "nothing can build `{name}`: `{field}` has no default, and `{name}` has no named constructor"
+        );
+        let help = format!(
+            "only `{name}`'s own methods can set `{field}`: give it a default, or add a method that builds one, like `def new(...) -> {name}:`"
+        );
+        found.push(Diagnostic::new(message, def.span).with_help(help));
+    }
+    found
+}
+
+/// A type's named constructors: its methods without `self` that give back one of it.
+pub(crate) fn named_constructors(def: &TypeDef) -> Vec<&str> {
+    def.methods
+        .iter()
+        .filter(|method| !method.takes_self())
+        .filter(|method| method.ret.as_ref().is_some_and(|ret| ret.name == def.name || ret.name == "Self"))
+        .map(|method| method.name.as_str())
+        .collect()
 }
 
 /// Gives each top-level `_name` error its fix, which renames the name everywhere it's written
@@ -112,7 +149,7 @@ impl FnCx<'_> {
     /// Whether the code being checked is inside `owner`: one of the methods written in its own
     /// declaration, or a function nested in one. A method an `extend` adds is outside it, or
     /// any program could extend a type to reach what it hides.
-    fn inside(&self, owner: &str) -> bool {
+    pub(crate) fn inside(&self, owner: &str) -> bool {
         let Some(rest) = self.key.strip_prefix(owner).and_then(|rest| rest.strip_prefix('.')) else {
             return false;
         };
@@ -146,13 +183,14 @@ impl FnCx<'_> {
     /// Reports arguments that set `owner`'s `_` fields when it's made from outside it, by name
     /// or by position.
     pub(crate) fn private_fields_given(&mut self, owner: &str, fields: &[Field], args: &[Arg]) {
-        let mut next = 0;
+        // From outside, values given by position go to the public fields alone.
+        let outside = !self.inside(owner);
+        let mut settable = fields.iter().filter(|field| !(outside && field.name.starts_with('_')));
         for arg in args {
             let field = if let Some(name) = &arg.name {
                 fields.iter().find(|field| &field.name == name)
             } else {
-                next += 1;
-                fields.get(next - 1)
+                settable.next()
             };
             if let Some(field) = field {
                 self.private_member(owner, &field.name, arg.value.span);

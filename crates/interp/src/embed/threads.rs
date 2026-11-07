@@ -146,6 +146,34 @@ pub(super) fn serving_starts(lent: Option<Arc<Table>>) {
     });
 }
 
+/// A server's state on a worker, set aside while the worker runs a job from the pool.
+#[cfg(any(test, feature = "threads"))]
+pub(super) struct Serving {
+    lent: Option<Arc<Table>>,
+}
+
+/// Starts a job from the pool on a worker. While the worker serves, the job hands what it makes
+/// over as any range's does, and lends and takes back blocks of its own, so the server's are set
+/// aside until it ends.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn job_starts() -> Option<Serving> {
+    super::with(|state| {
+        let serving = std::mem::replace(&mut state.heap.serving, false);
+        serving.then(|| Serving { lent: state.heap.lent.take() })
+    })
+}
+
+/// Ends a job from the pool on a worker, giving a server's state back.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn job_ends(serving: Option<Serving>) {
+    if let Some(Serving { lent }) = serving {
+        super::with(|state| {
+            state.heap.serving = true;
+            state.heap.lent = lent;
+        });
+    }
+}
+
 /// What a range running as a parked task keeps of its own in its thread's runtime: swapped in each
 /// time it's resumed, and out each time it parks or ends. Tasks taking turns on one thread then
 /// never mix what they made, the blocks lent to them, how they changed those blocks' owners, or
@@ -158,6 +186,9 @@ pub(crate) struct Accounts {
     lent: Option<Arc<Table>>,
     lent_owners: HashMap<u64, i64, std::hash::BuildHasherDefault<super::heap::AddressHasher>>,
     printed: Vec<u8>,
+    /// Whether the heap serves, which a range never does: a range parked on a worker that serves
+    /// hands what it makes over, as one that isn't parked does.
+    serving: bool,
 }
 
 #[cfg(any(test, feature = "threads"))]
@@ -182,6 +213,7 @@ pub(crate) fn swap_accounts(accounts: &mut Accounts) {
         };
         std::mem::swap(&mut state.heap.lent, &mut accounts.lent);
         std::mem::swap(&mut state.heap.lent_owners, &mut accounts.lent_owners);
+        std::mem::swap(&mut state.heap.serving, &mut accounts.serving);
         std::mem::swap(&mut *state.output.0.borrow_mut(), &mut accounts.printed);
         if !same {
             state.heap.texts.get_mut().clear();

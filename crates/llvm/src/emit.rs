@@ -123,6 +123,18 @@ pub(crate) fn emit_with(
     // Every module of a program agrees, since what it declares has to match what's defined.
     let threads = crate::parallel::uses_parallel(program);
     shared.native = crate::native::native_types(program, &layouts);
+    let waits = crate::waits::may_wait(program, true);
+    let closures =
+        program.functions.iter().flat_map(|function| &function.blocks).flat_map(|block| &block.insts);
+    shared.waiting_closures = closures
+        .filter_map(|inst| match &inst.kind {
+            InstKind::MakeClosure { function, .. } if waits.marked.contains_key(function) => {
+                Some(function.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    shared.waiting = waits.marked.into_keys().collect();
     // Every function it can't take yet is named, not just the first.
     let mut refused = Vec::new();
     for function in program.functions.iter().chain(&program.constants) {

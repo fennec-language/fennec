@@ -87,9 +87,10 @@ fn waits(name: &str) -> Option<bool> {
         "Net.request",
         "Net.script",
     ];
-    if network.iter().any(|prefix| name.starts_with(prefix))
-        || name == "Clock.sleep"
-        || name.starts_with("parallel.")
+    // A `parallel` call waits for its ranges, or for connections; what helps a range put its
+    // items back or take what it owns doesn't.
+    let runs = ["parallel.for", "parallel.map", "parallel.sum", "parallel.serve"];
+    if network.iter().any(|prefix| name.starts_with(prefix)) || name == "Clock.sleep" || runs.contains(&name)
     {
         return Some(false);
     }

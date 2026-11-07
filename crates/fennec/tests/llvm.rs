@@ -1471,6 +1471,47 @@ fn a_comprehension_replacing_its_source_says_what_a_new_list_would() -> std::io:
     same_as_the_interpreter_in_both_builds("replacing_its_source", REPLACING_ITS_SOURCE)
 }
 
+/// A list a counted loop fills once a turn, with room made for every turn and nothing else in
+/// the loop touching it, is filled with no room check. Every way that rule can fail keeps the
+/// check: the list shared or read in the loop, a count starting below 0 or from a variable,
+/// two appends a turn, and a loop inside another that makes the list each time round.
+#[test]
+fn lists_filled_within_their_room_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit("filled_within_room", FILLED_WITHIN_ROOM)
+}
+
+const FILLED_WITHIN_ROOM: &str = r#"def main(stdout: Stdout):
+    mut total = 0
+    for round in range(3):
+        numbers = [i * 2 + round for i in range(1000)]
+        names = [f"n{i}" for i in range(50)]
+        total += numbers[999] + numbers.len() + names[49].len()
+    stdout.print(total)
+    mut shared = []
+    mut seen = []
+    for i in range(6):
+        shared.append(i)
+        seen = shared
+    stdout.print(shared, seen)
+    below = [i for i in range(-3, 3)]
+    stdout.print(below)
+    start = 2
+    from_variable = [i for i in range(start, 8)]
+    stdout.print(from_variable)
+    mut twice = []
+    for i in range(4):
+        twice.append(i)
+        twice.append(i * 10)
+    stdout.print(twice)
+    mut read = []
+    for i in range(5):
+        read.append(read.len() + i)
+    stdout.print(read)
+"#;
+
 #[test]
 fn a_comprehension_replacing_its_source_makes_no_second_list() -> std::io::Result<()> {
     if !ready() {

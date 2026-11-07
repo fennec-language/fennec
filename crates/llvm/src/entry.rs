@@ -103,6 +103,10 @@ fn start_of(
         out += crate::parallel::MAIN_THREAD_GLOBALS;
     }
     out += "@fennec_ascii = dso_local global ptr null\n";
+    // Whether this run counts what it allocates, for native blocks to say what they made.
+    if !shared.native.is_empty() {
+        out += "@fennec_counting_native = dso_local global i64 0\n";
+    }
     for (symbol, start) in &shared.starts {
         let _ = writeln!(out, "@\"{symbol}\" = dso_local constant i64 {start}");
     }
@@ -116,7 +120,7 @@ fn start_of(
     let shown: Vec<String> = words.iter().map(|word| format!("i64 {word}")).collect();
     let count = words.len();
     let _ = writeln!(out, "@fennec_image = private constant [{count} x i64] [{}]\n", shown.join(", "));
-    out += "declare void @fennec_aot_image(i64)\ndeclare i64 @fennec_aot_failed_flag()\ndeclare i64 @fennec_aot_literal(i64)\ndeclare i64 @fennec_aot_ascii()\n\n";
+    out += "declare void @fennec_aot_image(i64)\ndeclare i64 @fennec_aot_failed_flag()\ndeclare i64 @fennec_aot_literal(i64)\ndeclare i64 @fennec_aot_ascii()\ndeclare i64 @fennec_counting()\n\n";
     Ok((out, count))
 }
 
@@ -130,6 +134,10 @@ fn setup(out: &mut String, program: &Program, shared: &Shared, image: &Image) ->
     if let Some(main_thread) = main_thread {
         // Filled in as soon as it's all set, before anything reads them.
         *out += main_thread;
+    }
+    if !shared.native.is_empty() {
+        *out +=
+            "  %counting = call i64 @fennec_counting()\n  store i64 %counting, ptr @fennec_counting_native\n";
     }
     for (number, symbol) in shared.literals.keys().enumerate() {
         let _ = writeln!(

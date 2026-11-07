@@ -66,7 +66,7 @@ crossbeam-deque = { version = "=0.8.8", default-features = false, features = ["s
 corosensei = { version = "=0.3.4", default-features = false, features = ["default-stack"] }
 # Waiting on many sockets at once, for `parallel(server)`: epoll, kqueue and IOCP behind one
 # API, the event loop under Tokio, without its logging. Under MIT.
-mio = { version = "=1.2.4", default-features = false, features = ["net", "os-poll"] }
+mio = { version = "=1.2.4", default-features = false, features = ["net", "os-ext", "os-poll"] }
 cranelift-codegen = "=0.137.0"
 cranelift-frontend = "=0.137.0"
 cranelift-jit = "=0.137.0"

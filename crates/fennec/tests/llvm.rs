@@ -5214,6 +5214,80 @@ fn a_build_leaves_the_interpreter_out_unless_the_program_needs_it() -> std::io::
     Ok(())
 }
 
+/// A server on this machine that answers each connection with a line 300 ms after it's made, as a
+/// slow web service would, and counts the most connections it held open at once.
+fn slow_server() -> std::io::Result<(u16, std::sync::Arc<std::sync::atomic::AtomicUsize>)> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let (open, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let seen = Arc::clone(&most);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let (open, most) = (Arc::clone(&open), Arc::clone(&most));
+            std::thread::spawn(move || {
+                let now = open.fetch_add(1, Ordering::SeqCst) + 1;
+                most.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                open.fetch_sub(1, Ordering::SeqCst);
+                let _ = std::io::Write::write_all(&mut &stream, b"pong\n");
+            });
+        }
+    });
+    Ok((port, seen))
+}
+
+/// A native `parallel` over more fetches than threads: each item parks while it connects and while
+/// its line is on the way, so two threads hold more than two connections open at once, which
+/// blocking waits never could.
+#[test]
+fn fetches_in_parallel_wait_at_once_on_a_few_threads() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let (port, most) = slow_server()?;
+    let dir = folder("parallel-fetches")?;
+    let program = dir.join("fetches.fen");
+    std::fs::write(
+        &program,
+        format!(
+            "from std.net import NetError
+
+def fetch(net: Net, port: int) -> str fails NetError:
+    conn = net.connect(\"127.0.0.1\", port)?
+    line = conn.read_line()? else \"nothing\"
+    conn.close()
+    line
+
+def main(net: Net, stdout: Stdout):
+    items = [i for i in range(16)]
+    lines = [fetch(net, {port}).expect(\"it answers\") for i in parallel(items)]
+    stdout.print(lines.len(), lines[0], lines[15])
+"
+        ),
+    )?;
+    let executable = dir.join("fetches");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).env("FENNEC_THREADS", "2").output_within()?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "16 pong pong\n",
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    let most = most.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(most > 2, "the server held at most {most} connections at once, from 2 threads");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// With nothing asked, a program that uses `parallel` is built with the runtime that runs it on
 /// every core, and prints what it should; `FENNEC_THREADS_RUNTIME=0` keeps it on one thread.
 #[test]

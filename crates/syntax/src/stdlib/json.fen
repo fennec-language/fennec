@@ -317,8 +317,7 @@ struct JsonWriter:
     def _close(ref self, closing: str):
         self._depth -= 1
         if self._indent >= 0 and not self._first:
-            self._text += "\n"
-            self._text += " " * (self._indent * self._depth)
+            self._new_line()
         self._text += closing
         self._first = False
 
@@ -330,8 +329,13 @@ struct JsonWriter:
         else:
             self._text += ","
         if self._indent >= 0:
-            self._text += "\n"
-            self._text += " " * (self._indent * self._depth)
+            self._new_line()
+
+    ## A new line, indented as deep as what's being written, for output written with `indent`.
+    ## It's apart so that output on one line, as most is, has none of its work.
+    def _new_line(ref self):
+        self._text += "\n"
+        self._text += " " * (self._indent * self._depth)
 
     def sequence[T: Serializable](ref self, items: list[T]):
         self._open("[")

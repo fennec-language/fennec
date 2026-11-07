@@ -842,7 +842,7 @@ def play(ref conn: Connection, ref world: World) fails NetError:
 
 **`std.process`, `std.crypto`, `std.log`, `std.cli` and `std.csv` are in `std` too.**
 
-**`std.crypto` holds hashing, including BLAKE3, so there's no separate `std.hash`.**
+**`std.crypto` holds hashing, including BLAKE3, so there's no separate `std.hash`.** `blake3` and the other hashes take any iterable of bytes, so a file or a stream hashes without being read into one block first. Not built yet: today they take text or `bytes`.
 
 **First-party kits, not `std`:** `fennec/ml`, database drivers, windowing and input for games, and image formats.
 
@@ -957,7 +957,7 @@ import game.world.physics as physics
 **`Path` is a struct written in Fennec.** Its methods only look at its text: `join` (also `/`), `parent`, `name`, `stem`, `extension` and `normalize`. `extension` has no dot: `"png"`, not `".png"`. `fs` methods take a `Path` or a `str`.
 *Why:* Path handling needs nothing the language can't already do, and code written in Fennec is checked and compiled like everyone else's.
 
-**Files and folders go through `fs`.** The `Fs` capability has `read_text`, `write_text`, `exists`, `list_dir`, `make_dir`, `remove` and `metadata`, and each takes a `Path` or a `str`. `list_dir` gives the folder's `Path`s sorted by name. `make_dir` makes any missing parent folders too, and succeeds if the folder is already there. `remove` removes a file, or a folder only if it's empty. `metadata` gives a `Metadata` from `std.fs`, with `size`, `is_file` and `is_dir`. `read_bytes` and `write_bytes` read and write `bytes`. Every failure is an `IoError`.
+**Files and folders go through `fs`.** The `Fs` capability has `read_text`, `write_text`, `exists`, `list_dir`, `make_dir`, `remove` and `metadata`, and each takes a `Path` or a `str`. `list_dir` gives the folder's `Path`s sorted by name. `make_dir` makes any missing parent folders too, and succeeds if the folder is already there. `remove` removes a file, or a folder only if it's empty. `metadata` gives a `Metadata` from `std.fs`, with `size`, `is_file` and `is_dir`. `read_bytes` and `write_bytes` read and write `bytes`. Every failure is an `IoError`. `fs.create(path)` writes a new file and puts it in place at the end of its `with` block, syncing it to disk before the rename by default, and `file.sync()?` syncs at any other point. Not built yet.
 *Why:* Sorting makes a listing the same on every system, so programs and their tests behave the same everywhere. Making the parents and accepting a folder that's already there is what code almost always wants, like Python's `os.makedirs(path, exist_ok=True)`. Removing only empty folders keeps a wrong path from deleting a whole tree; a recursive remove can come later, under its own name.
 
 ## Visibility
@@ -1233,6 +1233,9 @@ struct Ring:
 
 *Why:* A loop shouldn't copy a collection before it starts, and a `break` should stop the work. A `for` that quietly lost its changes was the bug this replaces.
 
+**`t"..."` makes a `Template`, and injection can't be written.** It's Python 3.14's t-string: a `std` `Template` holding the literal pieces and the values separately, with the values' type coming from where it goes, as in `Template[SqlValue]`. A `str` is never a `Template`, and `db.query`, `html.render` and `process.run` take Templates, so text joined from strings never reaches a database, a page or a shell. There are no per-library string prefixes. Not built yet. This replaces the proposal of `sql"..."` templates and separate escaping types.
+*Why:* One form covers every kind of injection, it's what Python people already learn, and the type stops the mistake before it compiles.
+
 **Raw strings are `r"..."`.** Backslashes stay as written, so a pattern reads `r"\d+"`. A raw string can't contain `"`.
 *Why:* Regular expressions are unreadable with every backslash doubled. Python has the same strings, so people and AI already write them.
 
@@ -1352,7 +1355,7 @@ bench "collide 10k bullets":
 
 ## For AI
 
-**The toolchain ships an MCP server.** Through it, an AI agent can search by type, read docs, run `fennec check` and run snippets in the sandboxed interpreter.
+**The toolchain ships an MCP server.** Through it, an AI agent can search by type, read docs, run `fennec check` and run snippets in the sandbox, under Sandboxing.
 *Why:* AI's most common failure is calling functions that don't exist. Ground truth from the compiler and the Den replaces guessing.
 
 **Diagnostics are structured.** `fennec check --json` gives every error and lint with its location and any fix as an edit a tool can apply.
@@ -1393,7 +1396,7 @@ These are default lints, and the Den requires them.
 
 **The Den keeps every kit's source permanently.** Installing never touches the git host. Versions are immutable: a bad one can be yanked, never deleted or replaced. Because everything is keyed by its hash, anyone can mirror the Den, and the hashes in `kit.lock` prove a mirror served the real thing.
 
-**The Den checks for itself.** It re-runs formatting and lints, and runs the kit's tests, in the interpreter compiled to wasm, with fake capabilities and a limit on how much work a run may do. Kits have no build scripts, so nothing else ever runs. Native kits, which in v1 only the Fennec project can publish, also run in real CI under sanitizers. The kit's page shows a diff of its capabilities and API against the previous version.
+**The Den checks for itself.** It re-runs formatting and lints, and runs the kit's tests, compiled to WebAssembly and run in Wasmtime, with fake capabilities and a limit on how much work a run may do. Kits have no build scripts, so nothing else ever runs. Native kits, which in v1 only the Fennec project can publish, also run in real CI under sanitizers. The kit's page shows a diff of its capabilities and API against the previous version.
 
 **An existing AI model reviews each release's diff,** and its findings are shown. There's no custom fine-tuned model.
 
@@ -1699,7 +1702,7 @@ The JIT loads them when the program runs, and release builds link them. The C st
 **Capabilities are the sandbox's policy in every engine.** Sandboxed code can do only what the capabilities passed to its `main` allow, and it can't use `extern` or `unsafe`. A tool can show what a snippet asks for before running it: "this snippet wants `Net` and read access to `data/`".
 *Why:* That makes Fennec a good language for AI agents to write tool code in: typed, with every power declared up front.
 
-**Until it's removed, the interpreter runs untrusted code for those tools, with limits.** After that, the playground is compiled to WebAssembly on a server, and what runs Den tests and MCP snippets is still open. It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs the playground and AI-written snippets, where starting instantly and being easy to sandbox matter more than speed. In the browser it runs as wasm, so the browser sandboxes it again.
+**Until it's removed, the interpreter runs untrusted code for those tools, with limits.** After that, the playground, Den tests and agents' snippets are all compiled to WebAssembly by the server build and run in Wasmtime, with fuel and memory limits and no files or network unless granted. Not built yet. It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs the playground and AI-written snippets, where starting instantly and being easy to sandbox matter more than speed. In the browser it runs as wasm, so the browser sandboxes it again.
 
 **Untrusted code that needs native speed is compiled to WebAssembly and run in Wasmtime.** The development and release backends can both target wasm. Wasmtime already provides fuel, interruption and memory limits.
 *Why:* Wasmtime's sandbox is heavily hardened. Making our own JIT a security boundary would mean any compiler bug is an escape.
@@ -1737,12 +1740,9 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 
 - How an `Id` is used across servers, which is expected at the simulation level.
 - How `std.pack` data evolves: a lock file of past layouts with automatic migration rules, as Avro does. It comes later and adds to v1 without breaking it.
-- What runs Den tests and MCP snippets once the interpreter is removed. Entries under For AI and Kits on the Den still give that to the interpreter.
 - Whether kits can define their own annotations, like `@get("/todos/{id}")` on a plain function, so a router can build its table at compile time.
 - SQLite: whether and how Fennec includes it. Porting it isn't realistic.
 - Whether independent writes, not just reads, should overlap automatically.
 - The syntax for units of measure.
 - The file extension (currently `.fen`).
-- These security proposals:
-  - Types that make injection impossible: `sql"..."` templates, `Path`, argument lists for commands, escaping HTML templates.
-  - `Secret[str]`, which can't be printed or logged.
+- `Secret[str]`, which can't be printed or logged.

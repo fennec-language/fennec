@@ -185,7 +185,9 @@ impl Pool {
                 io.start_range(range);
             }
             if let Some(job) = self.find(at) {
+                let serving = super::super::threads::job_starts();
                 job();
+                super::super::threads::job_ends(serving);
                 for range in STARTING.take() {
                     io.start_range(range);
                 }

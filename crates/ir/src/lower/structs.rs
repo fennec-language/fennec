@@ -278,6 +278,11 @@ impl Lowering<'_> {
             return self.function_value(&key, expr);
         }
         if let Some(member) = self.std_member(expr) {
+            // A constant the standard library writes in Fennec, like `string.DIGITS`, reads as
+            // it does when imported by name.
+            if self.context.constants.contains_key(member.as_str()) {
+                return self.read_constant(&member, expr);
+            }
             return self.std_value(member, expr);
         }
         if let ExprKind::Name(owner) = &object.kind

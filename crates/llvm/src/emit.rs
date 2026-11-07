@@ -1877,7 +1877,10 @@ impl Emit<'_, '_, '_> {
             {
                 self.std_call(dest, name, args, span)
             }
-            pure if pure.starts_with("crypto.") || pure.starts_with("unicode.") => {
+            pure if pure.starts_with("crypto.")
+                || pure.starts_with("compress.")
+                || pure.starts_with("unicode.") =>
+            {
                 self.crypto_call(dest, name, args, span)
             }
             "error.with_cause" => {

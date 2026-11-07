@@ -117,7 +117,12 @@ impl Interp<'_> {
         span: Span,
     ) -> Result<Value, Diagnostic> {
         if let Some(member) = self.module_member(object, name, span) {
-            return self.lookup(&member?, span);
+            let member = member?;
+            // A constant the standard library writes in Fennec, like `string.DIGITS`.
+            if let Some(value) = self.constant(&member, span) {
+                return value;
+            }
+            return self.lookup(&member, span);
         }
         let value = self.eval(object)?;
         self.attr(value, name, optional, span)

@@ -110,8 +110,11 @@ fn values_in(stmts: &[Stmt], found: &mut Vec<Expr>) {
 /// are what `import_as.fen` imports modules as. `fs` isn't here, since it's also the name a
 /// program gives its `Fs`.
 fn is_type_name(expr: &Expr) -> bool {
-    const MODULES: [&str; 21] = [
+    const MODULES: [&str; 23] = [
         "std",
+        "string",
+        "compress",
+    const MODULES: [&str; 21] = [
         "unicode",
         "base64",
         "url",

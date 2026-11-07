@@ -342,3 +342,24 @@ export struct Time:
             "January", "February", "March", "April", "May", "June", "July", "August", "September",
             "October", "November", "December",
         ][month - 1]
+
+## A `Time` saves as its RFC 3339 text, as APIs and files write a time, and a `Duration` as its
+## nanoseconds. An `Instant` is a reading of a clock that only measures, so it doesn't save.
+extend Time:
+    def serialize(self, ref out: Serializer):
+        out.text(self.iso())
+
+    def deserialize(ref src: Deserializer) -> Time fails ParseError:
+        text = src.text()?
+        match Time.parse(text):
+            case Ok(found):
+                found
+            case Err(_):
+                fail src.here(f"is `{text}`, which isn't an RFC 3339 time")
+
+extend Duration:
+    def serialize(self, ref out: Serializer):
+        out.int(self.nanos)
+
+    def deserialize(ref src: Deserializer) -> Duration fails ParseError:
+        Duration(nanos=src.int()?)

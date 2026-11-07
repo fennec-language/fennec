@@ -95,6 +95,11 @@ impl Lowering<'_> {
             let lhs = self.as_type(lhs, &right, span)?;
             return Ok((lhs, rhs));
         }
+        // A value compared with an optional of its type, as in `"kit" == found`, is compared as
+        // that optional, as it is when it's on the right.
+        if matches!(&right, Type::Optional(inner) if **inner == left) {
+            return Ok((self.as_type(lhs, &right, span)?, rhs));
+        }
         let rhs = self.as_type(rhs, &left, span)?;
         Ok((lhs, rhs))
     }

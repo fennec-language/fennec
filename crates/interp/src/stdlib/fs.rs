@@ -121,6 +121,9 @@ fn finish_writing(out: &mut BufWriter<std::fs::File>, temporary: &Path, target: 
             out.get_ref().sync_all()?;
         }
         std::fs::rename(temporary, target)?;
+        // Windows has no handle to a folder to sync, and its renames are written through by
+        // the file system.
+        #[cfg(unix)]
         if durable {
             sync_folder(target)?;
         }
@@ -132,19 +135,11 @@ fn finish_writing(out: &mut BufWriter<std::fs::File>, temporary: &Path, target: 
     done.map_err(|err| err.to_string())
 }
 
-/// Puts a rename in `path`'s folder on the disk. Windows has no handle to a folder to sync, and
-/// its renames are written through by the file system.
+/// Puts a rename in `path`'s folder on the disk.
+#[cfg(unix)]
 fn sync_folder(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        let folder = path.parent().filter(|folder| !folder.as_os_str().is_empty()).unwrap_or(Path::new("."));
-        std::fs::File::open(folder)?.sync_all()?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
-    Ok(())
+    let folder = path.parent().filter(|folder| !folder.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    std::fs::File::open(folder)?.sync_all()
 }
 
 /// What puts a fake file's bytes into a test's fake file system, by its path.

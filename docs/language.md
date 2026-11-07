@@ -260,6 +260,8 @@ with fs.create("save.dat")? as file:
     file.write_text(data)?
 ```
 
+`fs.create` syncs the file to disk before putting it in place, and `file.sync()?` syncs at any other point. Not built yet.
+
 - Code after `lend` runs when the caller's block succeeds, and it may fail. That failure becomes the `with` statement's failure. `return`, `break` and `continue` in the caller count as success, so an early `return` still runs the cleanup, and a failing cleanup makes the function fail. Built.
 - `lend x else:` runs when the caller's block fails or crashes, and the block's own failure is the one that passes up. If the cleanup in `else:` fails too, its failure is attached to the block's as a note. With several handles, every one runs its cleanup, innermost first. Running `else:` for a failed block is built. Running it on a crash, the note, and several handles in one `with` aren't built yet: today a failing `else:` replaces the block's failure.
 - There's nothing for the caller to finish by hand, like a `commit()` or a `close()`, and nothing to forget.
@@ -450,9 +452,42 @@ Loading is safe on untrusted input:
 - Unknown fields are refused unless `extra=` says otherwise: `json.loads[Settings](text, extra=.ignore)`. Built for JSON. TOML always refuses them, and doesn't take `extra=` yet. `std.pack` saves no field names, and refuses data packed from a different type.
 - Untrusted input has depth and size limits. `std.pack` limits nesting, each string's length and the total it reads, before allocating anything. Built. JSON and TOML limit nesting to 500 deep, and don't limit size, string length or collection length yet.
 
+## Templates
+
+Not built yet.
+
+```fennec
+# the literal pieces and the values stay apart
+rows = db.query(t"select name from players where team = {team} and score > {least}")?
+page = html.render(t"<p>Hello, {visitor.name}</p>")
+result = process.run(t"git log --author={author}")?
+```
+
+- `t"..."` makes a `std` `Template`, as Python 3.14's t-strings do. It holds the literal pieces and the values separately, and the values' type comes from where it goes, as in `Template[SqlValue]`.
+- A `str` is never a `Template`, so `db.query`, `html.render` and `process.run` can't be handed text built by joining strings, and SQL, HTML and shell injection can't be written. There are no per-library string prefixes.
+- `LiteralStr` is a string that came from the source code, as Python's `typing.LiteralString` is. Only a string literal, or literals joined with `+`, makes one. It goes anywhere a `str` goes, but a `str` is never a `LiteralStr`. A `Template`'s text pieces are `LiteralStr`, so building one from text read while the program runs is a compile error, and any function may ask for one. It's for strings only.
+
+```fennec
+def order_column(sort_by: SortBy) -> LiteralStr:
+    # user input picks between literals, so the result is still a LiteralStr
+    match sort_by:
+        case .Name:
+            "name"
+        case .Score:
+            "score"
+
+def order_from(request: Request) -> LiteralStr:
+    # a compile error: text read while the program runs is a str, never a LiteralStr
+    request.query["sort"]
+```
+
 ## Calling C
 
 C is called only through the standard library and first-party kits, whose binding to C sits in reviewed runtime code. A program sees a safe API, like `with Window.open(...)? as window:`, and can't call C itself, so there's no `unsafe` in Fennec. Not built yet.
+
+## Untrusted code
+
+Den tests and agents' snippets are compiled to WebAssembly by the server build and run in Wasmtime, with fuel and memory limits and no files or network unless they're granted. No program runs untrusted code inside itself. Not built yet.
 
 ## Capabilities
 

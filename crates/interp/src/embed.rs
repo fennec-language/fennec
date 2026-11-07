@@ -48,16 +48,31 @@ pub mod serve {
     /// What runs each served connection (see the `threads` version).
     pub type ConnBody = extern "C" fn(env: i64, conn: i64, thread: i64) -> i64;
 
+    thread_local! {
+        /// The failure's value a round handed over, then the one the loop passed up.
+        static FAILED_WITH: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Each round in turn: 1 is a crash, ending only itself; 2 a failure, passing up out of the
+    /// loop; 3 a `break`.
     pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
         super::write_kept_output();
         while let Ok(conn) = crate::stdlib::net::accepted(server) {
-            if body(env, conn, 0) != 0 {
-                super::report_failure();
-            }
+            let how = body(env, conn, 0);
             super::write_kept_output();
             crate::stdlib::net::closed(conn);
+            match how {
+                0 => {}
+                2 => return 2,
+                3 => break,
+                _ => super::report_failure(),
+            }
         }
         0
+    }
+
+    pub extern "C" fn net_serve_failure() -> i64 {
+        FAILED_WITH.take()
     }
 
     /// A launched task's function (see the `threads` version).
@@ -73,7 +88,10 @@ pub mod serve {
         0
     }
 
-    pub extern "C" fn task_failed(_failure: i64) {}
+    /// Only a server's round, as there are no tasks.
+    pub extern "C" fn task_failed(failure: i64) {
+        FAILED_WITH.set(failure);
+    }
 
     pub(super) fn served_call(
         _handle: i64,
@@ -523,6 +541,13 @@ fn state_is_borrowed() -> bool {
 
 /// Says what this thread's runtime holds as a failure and forgets it, as a server does for a
 /// connection's task that failed, which ends only that task.
+/// Forgets this thread's failure, for a task whose failure is no one's to report.
+#[cfg(any(test, feature = "threads"))]
+fn clear_failure() {
+    with(|state| state.failure = None);
+    set_failed(0);
+}
+
 fn report_failure() {
     let failure = with(|state| state.failure.take());
     set_failed(0);

@@ -394,7 +394,7 @@ fn a_parallel_loop_cant_change_names_outside_it() {
 
 #[test]
 fn a_plain_name_read_from_a_place_says_where_to_write() {
-    let types = "struct Stats:\n    mana = 1\n\nstruct Unit:\n    health = 1\n    stats: Stats\n\n    def heal(ref self):\n        self.health += 1\n";
+    let types = "struct Stats:\n    mana = 1\n\nstruct Unit:\n    stats: Stats\n    health = 1\n\n    def heal(ref self):\n        self.health += 1\n";
     let start = "mut units = [Unit(stats=Stats())]\nat = 0\n";
     let help = |body: &str| {
         let lines = format!("{start}{body}").trim_end().replace('\n', "\n    ");

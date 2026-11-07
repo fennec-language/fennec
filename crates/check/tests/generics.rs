@@ -784,8 +784,8 @@ const SAVED: &str = "struct Spot:
 
 struct Holder:
     spot: Spot
-    spots = list[Spot]()
     label: str?
+    spots = list[Spot]()
 
 struct Listener:
     on_change: (int) -> int

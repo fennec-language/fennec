@@ -232,6 +232,6 @@ fn a_shared_handle_is_never_copied_and_making_one_allocates() {
 fn a_name_for_one_field_holds_only_that_field() {
     let source = "struct Unit:\n    team: str\n    items: list[int]\n\nstruct World:\n    units: list[Unit]\n\n\
                   def f(ref world: World) -> int:\n    unit = world.units[0]\n    team = unit.team\n    \
-                  world.units[0].items.pop(0)\n    team.len()\n";
+                  _ = world.units[0].items.pop(0)\n    team.len()\n";
     assert_eq!(copies(source).unwrap(), Vec::<String>::new());
 }

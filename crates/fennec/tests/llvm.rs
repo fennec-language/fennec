@@ -7034,7 +7034,7 @@ struct World:
 def main(stdout: Stdout):
     mut world = World()
     mut elsewhere = Table[str]()
-    world.units.add("ash")
+    _ = world.units.add("ash")
     world.selected = [elsewhere.add("vex")]
     stdout.print(json.dumps(world))
 "#,

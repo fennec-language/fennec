@@ -21,7 +21,19 @@ impl Interp<'_> {
         args: &[Arg],
         span: Span,
     ) -> Result<Value, Diagnostic> {
+        let wanted = self.json_type.take();
         let receiver = self.eval(object)?;
+        // `response.json[T]()`: the body read as the `T` the call names.
+        if let (Some(ty), "json", Value::Instance(response)) = (&wanted, method, &receiver)
+            && response.type_name.as_ref() == "Response"
+            && args.is_empty()
+        {
+            let body = match response.field("body") {
+                Some(Value::Bytes(body)) => String::from_utf8_lossy(body).into_owned(),
+                _ => String::new(),
+            };
+            return self.typed_loads("json.loads", ty, vec![CallArg::plain(Value::str(&body), span)], span);
+        }
         match &receiver {
             Value::None if optional => return Ok(Value::None),
             Value::None if self.built_in_method(&Value::None, method).is_none() => {

@@ -3,6 +3,7 @@
 # prints as RFC 3339 text, which `Time.parse` reads back, and `format` lays it out with
 # `strftime`'s directives. In a test, the clock is a fake that starts at 2000-01-01T00:00:00Z
 # and moves on only as the test sleeps.
+from std import json
 from std.time import Duration, Time
 
 ## When a task done at `done` is due again, `every` later, as a date to show.
@@ -92,6 +93,22 @@ test "a test's clock starts in 2000 and moves only as it sleeps"(clock: Clock):
     assert str(clock.time()) == "2000-01-01T00:00:00Z"
     clock.sleep(1500ms)
     assert str(clock.time()) == "2000-01-01T00:00:01.5Z"
+
+## When something happened and how long it went on, as an API might send it.
+struct Visit:
+    at: Time
+    stayed: Duration
+
+test "a time saves as RFC 3339 text and a duration as its nanoseconds"():
+    visit = Visit(at=Time.utc(year=2026, month=11, day=6, hour=21)?, stayed=1h30min)
+    text = json.dumps(visit)
+    assert text == "{\"at\": \"2026-11-06T21:00:00Z\", \"stayed\": 5400000000000}"
+    assert json.loads[Visit](text)? == visit
+    match json.loads[Visit]("{\"at\": \"yesterday\", \"stayed\": 0}"):
+        case Err(problem):
+            assert problem.message == "`at` is `yesterday`, which isn't an RFC 3339 time"
+        case Ok(_):
+            assert False
 
 def main(stdout: Stdout, clock: Clock):
     moment = Time.utc(year=2026, month=11, day=6, hour=21, minute=55, second=56) else Time()

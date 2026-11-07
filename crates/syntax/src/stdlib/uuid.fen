@@ -99,3 +99,16 @@ def stamped(high: int, low: int, version: int) -> Uuid:
     with_version = (high & ~(15 << 12)) | (version << 12)
     with_variant = (low & ((1 << 62) - 1)) | (1 << 63)
     Uuid(high=with_version, low=with_variant)
+
+## A `Uuid` saves as its text, as APIs and files write one.
+extend Uuid:
+    def serialize(self, ref out: Serializer):
+        out.text(str(self))
+
+    def deserialize(ref src: Deserializer) -> Uuid fails ParseError:
+        text = src.text()?
+        match Uuid.parse(text):
+            case Ok(found):
+                found
+            case Err(_):
+                fail src.here(f"is `{text}`, which isn't a UUID")

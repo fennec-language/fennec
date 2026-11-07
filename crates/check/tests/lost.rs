@@ -8,10 +8,10 @@ const UNIT: &str = "struct Unit:
     health = 10
     tags = list[str]()
 
-    def heal(mut self):
+    def heal(ref self):
         self.health += 1
 
-    def healed(mut self) -> int:
+    def healed(ref self) -> int:
         self.health += 1
         self.health
 
@@ -27,28 +27,24 @@ fn indented(body: &str) -> String {
 
 fn after_units(body: &str) -> Vec<String> {
     let indented = indented(body);
-    problems(&format!("{UNIT}def run(mut units: list[Unit], stdout: Stdout) -> int:\n{indented}    0\n"))
+    problems(&format!("{UNIT}def run(ref units: list[Unit], stdout: Stdout) -> int:\n{indented}    0\n"))
 }
 
 #[test]
 fn a_change_to_a_copy_nothing_reads_is_lost() {
     assert_eq!(
         after_units("mut unit = find(units, 0)\nunit.health = 1\n"),
-        [
-            "this change to `unit` is lost: `unit` is a copy of what `find` gave back, so nothing else changes @ unit.health = 1"
-        ]
+        ["this changes your own copy of what `find` gave back, and nothing reads it @ unit.health = 1"]
     );
     assert_eq!(
         after_units("mut unit = find(units, 0)\nunit.tags.append(\"x\")\n"),
         [
-            "this change to `unit` is lost: `unit` is a copy of what `find` gave back, so nothing else changes @ unit.tags.append(\"x\")"
+            "this changes your own copy of what `find` gave back, and nothing reads it @ unit.tags.append(\"x\")"
         ]
     );
     assert_eq!(
         after_units("mut unit = find(units, 0)\nunit.heal()\n"),
-        [
-            "this change to `unit` is lost: `unit` is a copy of what `find` gave back, so nothing else changes @ unit.heal()"
-        ]
+        ["this changes your own copy of what `find` gave back, and nothing reads it @ unit.heal()"]
     );
     assert_eq!(
         in_main("mut total = 0\ntotal += 1\n"),
@@ -71,11 +67,9 @@ fn a_copy_of_a_table_slot_says_so() {
     );
     assert_eq!(
         problems(&text),
-        [
-            "this change to `unit` is lost: `unit` is a copy of what's in `by_name`, so `by_name` doesn't change @ unit.health = 1"
-        ]
+        ["this changes your own copy of what's in `by_name`, and nothing reads it @ unit.health = 1"]
     );
-    assert_eq!(helps(&text), ["write `unit` back into `by_name`, or take out the change"]);
+    assert_eq!(helps(&text), ["to change `by_name`, write to it there, or take out the change"]);
     // What a type makes isn't a copy of anything.
     assert_eq!(
         problems(&format!("{UNIT}def run():\n    mut unit = Unit()\n    unit.health = 1\n")),
@@ -121,10 +115,10 @@ fn anything_later_reading_it_keeps_the_change() {
         "mut unit = find(units, 0)\nstdout.print(unit.healed())\n",
         "mut unit = find(units, 0)\nunit.healed()\n",
         // Passing it on, even as `mut`, is up to what it's passed to.
-        "mut unit = find(units, 0)\ngrow(mut unit)\n",
+        "mut unit = find(units, 0)\ngrow(ref unit)\n",
     ] {
         let text = format!(
-            "{UNIT}def grow(mut unit: Unit):\n    unit.health += 1\n\ndef run(mut units: list[Unit], stdout: Stdout) -> int:\n{}    0\n",
+            "{UNIT}def grow(ref unit: Unit):\n    unit.health += 1\n\ndef run(ref units: list[Unit], stdout: Stdout) -> int:\n{}    0\n",
             indented(body)
         );
         assert_eq!(problems(&text), NONE, "{body}");
@@ -168,11 +162,9 @@ fn a_loop_keeps_a_change_a_later_time_round_reads() {
 #[test]
 fn what_a_change_reaches_outside_isnt_lost() {
     // A `mut` parameter is the caller's to read.
-    assert_eq!(problems(&format!("{UNIT}def run(mut unit: Unit):\n    unit.health = 1\n")), NONE);
-    // A name for a place is the place.
-    assert_eq!(after_units("mut unit = units[0]\nunit.health = 1\n"), NONE);
+    assert_eq!(problems(&format!("{UNIT}def run(ref unit: Unit):\n    unit.health = 1\n")), NONE);
     // A `for mut` writes its item back.
-    assert_eq!(after_units("for mut unit in units:\n    unit.health = 1\n"), NONE);
+    assert_eq!(after_units("for ref unit in units:\n    unit.health = 1\n"), NONE);
     // A nested function can read it whenever it's called.
     assert_eq!(
         after_units(
@@ -185,21 +177,42 @@ fn what_a_change_reaches_outside_isnt_lost() {
 #[test]
 fn a_local_that_does_more_than_hold_isnt_lost() {
     // Through a capability, a method can do what no read shows.
-    let logger = "struct Logger:\n    out: Stdout\n    lines = 0\n\n    def log(mut self):\n        self.lines += 1\n        self.out.print(self.lines)\n\n";
+    let logger = "struct Logger:\n    out: Stdout\n    lines = 0\n\n    def log(ref self):\n        self.lines += 1\n        self.out.print(self.lines)\n\n";
     assert_eq!(
         problems(&format!(
             "{logger}def main(stdout: Stdout):\n    mut logs = Logger(out=stdout)\n    logs.log()\n"
         )),
         NONE
     );
-    let given = "struct Tally:\n    lines = 0\n\n    def show(mut self, out: Stdout):\n        self.lines += 1\n        out.print(self.lines)\n\n";
+    let given = "struct Tally:\n    lines = 0\n\n    def show(ref self, out: Stdout):\n        self.lines += 1\n        out.print(self.lines)\n\n";
     assert_eq!(
         problems(&format!(
             "{given}def main(stdout: Stdout):\n    mut tally = Tally()\n    tally.show(stdout)\n"
         )),
         NONE
     );
-    let handle = "shared Account:\n    total = 0\n\n    def add(mut self, amount: int):\n        self.total += amount\n\n\
+    let handle = "shared Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n\
                   def main(stdout: Stdout):\n    mut held = Account()\n    held.add(1)\n";
     assert_eq!(problems(handle), NONE);
+}
+
+#[test]
+fn a_mut_name_read_from_a_place_is_your_own_copy() {
+    assert_eq!(
+        after_units("mut target = units[0]\ntarget.health -= 10\n"),
+        ["this changes your own copy of what's in `units`, and nothing reads it @ target.health -= 10"]
+    );
+    // Read, it's what the language page calls the one silent mistake left: yours, and allowed.
+    assert_eq!(
+        after_units("mut target = units[0]\ntarget.health -= 10\nstdout.print(target.health)\n"),
+        NONE
+    );
+    // What it came from can be used beside it, since they're apart.
+    assert_eq!(
+        after_units(
+            "mut target = units[0]\ntarget.health -= 10\nunits[0].health += 1\nstdout.print(target.health, units)\n"
+        ),
+        NONE
+    );
+    assert_eq!(after_units("mut first = units\nfirst.append(Unit())\nstdout.print(first, units)\n"), NONE);
 }

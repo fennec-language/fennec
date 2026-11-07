@@ -1,8 +1,8 @@
-error: `names` changes while a loop goes over it
+error: you can't change `names` while looping over it
  --> examples/errors/loop_changes.fen:4:9
   |
 4 |         names.append(name.upper())
   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = help: loop over `copy(names)`, or collect the changes and make them after the loop
+  = help: use `for ref`, or loop over indexes
   = note: the loop is at examples/errors/loop_changes.fen:3:17

@@ -1,5 +1,5 @@
 //! Reading a parsed value into the type a program asks for, as in `json.loads[Settings](text)`.
-//! An `Id`, an `IdMap` and an enum case read back as `dump` wrote them, and a generic struct
+//! An `Id`, a `Table` and an enum case read back as `dump` wrote them, and a generic struct
 //! reads its fields with its type arguments filled in.
 //! A struct's field takes the type written for it, or else the shape of its default, which
 //! the type checker makes sure shows the field's type. An int is read as a float where a
@@ -12,7 +12,7 @@ use fennec_syntax::{Field, Span, TypeExpr};
 use crate::call::CallArg;
 use crate::interp::{Interp, TypeKind};
 use crate::ops::to_float;
-use crate::value::{Id, IdMap, Slot, Value};
+use crate::value::{Id, Slot, Table, Value};
 
 /// Why a value read doesn't fit the type wanted.
 type Misfit = String;
@@ -54,6 +54,9 @@ impl Interp<'_> {
             | ("bool", value @ Value::Bool(_))
             | ("None", value @ Value::None) => Ok(value),
             ("float", Value::Int(n)) => Ok(Value::Float(to_float(n))),
+            ("bytes", Value::Str(text)) => super::base64::decode(&text)
+                .map(|data| Value::Bytes(data.into()))
+                .ok_or_else(|| format!("{} should be bytes, written in base64", place(at))),
             ("list", Value::List(items)) => {
                 let item = arg(0)?;
                 let mut read = Vec::new();
@@ -96,8 +99,19 @@ impl Interp<'_> {
                 }
                 Ok(Value::Tuple(Rc::new(read)))
             }
-            ("Id", Value::Dict(pairs)) => id_of(&pairs, at).map(Value::Id),
-            ("IdMap", Value::Dict(pairs)) => self.decode_id_map(&pairs, &arg(0)?, at, span),
+            ("Id", Value::Int(position)) => {
+                let tag = self.load_tag(&written(&arg(0)?));
+                u32::try_from(position)
+                    .map(|slot| Value::Id(Id { slot, generation: 0, tag }))
+                    .map_err(|_| format!("{} is out of range", place(at)))
+            }
+            ("Table", Value::List(items)) => self.decode_table(&items, &arg(0)?, at, span),
+            (name, value)
+                if self.saves_plain(name)
+                    && let Some(found) = self.read_plain(name, &value, at, span) =>
+            {
+                found
+            }
             (name, value) if self.has_shape(name) => {
                 let read = self.decode(value, &Self::shape_of(ty), at, span)?;
                 self.build_shaped(name, read, at, span)
@@ -108,31 +122,27 @@ impl Interp<'_> {
         }
     }
 
-    /// An `IdMap` from its slots: each one's generation, and its value unless it's free.
-    fn decode_id_map(
+    /// The tag a load gives the `Table` of `kind` it reads, and its `Id`s: new for each load.
+    /// A new `Table` of `items`, read in order, with the tag this load gives its type.
+    fn decode_table(
         &mut self,
-        pairs: &[(Value, Value)],
+        items: &[Value],
         item: &TypeExpr,
         at: &str,
         span: Span,
     ) -> Result<Value, Misfit> {
-        let Some(Value::List(written)) = entry(pairs, "slots") else {
-            return Err(format!("{} should be an IdMap, with its `slots`", place(at)));
-        };
         let mut slots = Vec::new();
-        for (n, slot) in written.iter().enumerate() {
-            let here = inside(&inside(at, "slots"), &format!("[{n}]"));
-            let Value::Dict(slot) = slot else {
-                return Err(format!("{} should be a slot, with its `generation`", place(&here)));
-            };
-            let generation = number(entry(slot, "generation"), &inside(&here, "generation"))?;
-            let value = match entry(slot, "value") {
-                Some(value) => Some(self.decode(value.clone(), item, &inside(&here, "value"), span)?),
-                None => None,
-            };
-            slots.push(Slot { generation, value });
+        for (n, held) in items.iter().enumerate() {
+            let value = self.decode(held.clone(), item, &inside(at, &format!("[{n}]")), span)?;
+            slots.push(Slot { generation: 0, value: Some(value) });
         }
-        Ok(Value::IdMap(Rc::new(IdMap::new(slots))))
+        self.tables_read.push(at.to_owned());
+        let tag = self.load_tag(&written(item));
+        Ok(Value::Table(Rc::new(Table::tagged(slots, tag))))
+    }
+
+    fn load_tag(&mut self, kind: &str) -> u64 {
+        *self.load_tags.entry(kind.to_owned()).or_insert_with(crate::value::new_tag)
     }
 
     fn is_struct(&self, name: &str) -> bool {
@@ -353,36 +363,6 @@ pub(super) fn substituted(ty: &TypeExpr, given: &[(String, TypeExpr)]) -> TypeEx
         return TypeExpr { optional: ty.optional || filled.optional, ..filled.clone() };
     }
     TypeExpr { args: ty.args.iter().map(|arg| substituted(arg, given)).collect(), ..ty.clone() }
-}
-
-/// The value of `name` in an object, if it has one.
-fn entry<'p>(pairs: &'p [(Value, Value)], name: &str) -> Option<&'p Value> {
-    pairs.iter().find(|(key, _)| matches!(key, Value::Str(key) if **key == *name)).map(|(_, value)| value)
-}
-
-/// A slot's generation, or an `Id`'s, which is a whole number that isn't negative.
-fn number<N: TryFrom<i64>>(value: Option<&Value>, at: &str) -> Result<N, Misfit> {
-    match value {
-        Some(Value::Int(n)) => N::try_from(*n).map_err(|_| format!("{} is out of range", place(at))),
-        Some(other) => Err(misfit(at, "int", other)),
-        None => Err(format!("{} is missing", place(at))),
-    }
-}
-
-/// An `Id` from its slot and generation.
-fn id_of(pairs: &[(Value, Value)], at: &str) -> Result<Id, Misfit> {
-    for (key, _) in pairs {
-        if !matches!(key, Value::Str(key) if **key == *"slot" || **key == *"generation") {
-            return Err(format!(
-                "an Id has only `slot` and `generation`, but {} has {}",
-                place(at),
-                crate::format::repr(key)
-            ));
-        }
-    }
-    let slot = number(entry(pairs, "slot"), &inside(at, "slot"))?;
-    let generation = number(entry(pairs, "generation"), &inside(at, "generation"))?;
-    Ok(Id { slot, generation })
 }
 
 fn misfit(at: &str, wanted: &str, value: &Value) -> Misfit {

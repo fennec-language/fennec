@@ -40,10 +40,10 @@ fn str_problem(type_name: &str, method: &FnDef) -> Option<Diagnostic> {
     };
     (!writes || method.ret.is_some()).then(|| {
         Diagnostic::new(
-            format!("`{type_name}`'s `def str` writes into `mut out: StrWriter` and gives back nothing"),
+            format!("`{type_name}`'s `def str` writes into `ref out: StrWriter` and gives back nothing"),
             method.span,
         )
-        .with_help("write `def str(self, mut out: StrWriter)`, and add its text with `out.write(...)`")
+        .with_help("write `def str(self, ref out: StrWriter)`, and add its text with `out.write(...)`")
     })
 }
 
@@ -59,8 +59,8 @@ fn takes_int(method: &FnDef, at: usize) -> bool {
 fn mut_index_problem(type_name: &str, method: &FnDef) -> Option<Diagnostic> {
     if method.params.len() != 2 || !takes_int(method, 1) || method.ret.is_none() {
         let message =
-            format!("`{type_name}`'s `mut` form of `def []` takes a position and gives back its item");
-        let help = "write `def [](mut self, i: int) -> Item`";
+            format!("`{type_name}`'s `ref` form of `def []` takes a position and gives back its item");
+        let help = "write `def [](ref self, i: int) -> Item`";
         return Some(Diagnostic::new(message, method.span).with_help(help));
     }
     let mut returned = Vec::new();
@@ -68,7 +68,7 @@ fn mut_index_problem(type_name: &str, method: &FnDef) -> Option<Diagnostic> {
     let ends_in_return = matches!(method.body.last().map(|stmt| &stmt.kind), Some(StmtKind::Return(Some(_))));
     let not_a_place = returned.iter().find(|value| !is_place_in_self(value)).map(|value| value.span);
     let at = not_a_place.or((!ends_in_return).then_some(method.span))?;
-    let message = format!("`{type_name}`'s `mut` form of `def []` gives back a place in `self`");
+    let message = format!("`{type_name}`'s `ref` form of `def []` gives back a place in `self`");
     let help = "end it with `return` and a field or item of `self`, like `return self._items[i]`";
     Some(Diagnostic::new(message, at).with_help(help))
 }

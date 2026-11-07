@@ -68,7 +68,7 @@ fn nothing_changes_a_constant() {
             KEYWORDS.add('while')
             LIMIT = 11
             LIMIT += 1
-            for mut word in KEYWORDS:
+            for ref word in KEYWORDS:
                 pass
             limit: int = 3
             mut copy = KEYWORDS

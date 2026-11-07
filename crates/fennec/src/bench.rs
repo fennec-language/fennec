@@ -74,7 +74,7 @@ fn measure_all(path: &str, names: &[String]) -> Result<(), String> {
     let fennec = std::env::current_exe().map_err(|err| format!("error: can't find fennec: {err}\n"))?;
     let cache = crate::run::cache();
     let previous = cache.as_ref().map_or_else(Vec::new, |cache| last_run(cache, path));
-    let folder = std::env::temp_dir().join(format!("fennec-bench-{}", std::process::id()));
+    let folder = crate::own_temp("bench");
     let counter = std::fs::create_dir_all(&folder).ok().and_then(|()| Counter::find(&folder));
     let measured = measure_each(&fennec, path, names, counter.as_ref(), &previous);
     let _ = std::fs::remove_dir_all(&folder);

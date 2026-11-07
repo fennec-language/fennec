@@ -195,7 +195,7 @@ fn generic_types_fill_in_their_parameters() {
         struct Stack[T]:
             items = list[T]()
 
-            def push(mut self, item: T):
+            def push(ref self, item: T):
                 self.items.append(item)
 
             def top(self) -> T?:
@@ -346,7 +346,7 @@ fn a_test_receives_capabilities_by_type() {
             assert text == \"\"
     ";
     assert_eq!(problems(fine), Vec::<String>::new());
-    let fix = "a test can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock`, `process: Process`, `entropy: Entropy` and `net: Net`";
+    let fix = "a test can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock`, `process: Process`, `entropy: Entropy`, `net: Net` and `env: Env`";
     for (written, name) in
         [("args: Args", "args"), ("n: int", "n"), ("out: Stdout = 1", "out"), ("self", "self")]
     {
@@ -430,16 +430,16 @@ fn a_program_cant_extend_dict_or_set() {
 }
 
 const SOURCE: &str = "interface Source:
-    def field[T](mut self, at: int) -> T?
+    def field[T](ref self, at: int) -> T?
 
 struct Fake:
     n = 0
 
-    def field[T](mut self, at: int) -> T?:
+    def field[T](ref self, at: int) -> T?:
         self.n += at
         None
 
-def read[S: Source](mut src: S) -> int:
+def read[S: Source](ref src: S) -> int:
     src.field[int](0) else 7
 
 ";
@@ -449,7 +449,7 @@ fn a_method_takes_its_own_types_in_brackets() {
     let text = format!(
         "{SOURCE}struct Pair[A]:\n    first: A\n\n    def with_second[B](self, second: B) -> (A, B):\n        \
          (self.first, second)\n\ndef main(stdout: Stdout):\n    mut fake = Fake()\n    \
-         stdout.print(read(mut fake), fake.field[str](2) else \"none\", Pair(first=1).with_second[str](\"two\"))\n"
+         stdout.print(read(ref fake), fake.field[str](2) else \"none\", Pair(first=1).with_second[str](\"two\"))\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
     let text = format!(
@@ -468,13 +468,13 @@ fn a_method_takes_its_own_types_in_brackets() {
 #[test]
 fn an_interfaces_generic_method_needs_a_generic_method_to_fit() {
     let text = format!(
-        "{SOURCE}struct Plain:\n    n = 0\n\n    def field(mut self, at: int) -> int?:\n        None\n\n\
-         def main(stdout: Stdout):\n    mut plain = Plain()\n    stdout.print(read(mut plain))\n"
+        "{SOURCE}struct Plain:\n    n = 0\n\n    def field(ref self, at: int) -> int?:\n        None\n\n\
+         def main(stdout: Stdout):\n    mut plain = Plain()\n    stdout.print(read(ref plain))\n"
     );
     assert_eq!(
         problems(&text),
         [
-            "`Plain` isn't a `Source`: it has no `field[T](mut self, at: int) -> T?`. Its `field` returns an int? @ read(mut plain)"
+            "`Plain` isn't a `Source`: it has no `field[T](ref self, at: int) -> T?`. Its `field` returns an int? @ read(ref plain)"
         ]
     );
 }
@@ -614,41 +614,41 @@ fn a_programs_own_interface_can_be_named_like_a_library_interface() {
 }
 
 const READS: &str =
-    "error Bad:\n    message: str\n\ninterface Reads:\n    def next(mut self) -> int fails Bad\n\n";
+    "error Bad:\n    message: str\n\ninterface Reads:\n    def next(ref self) -> int fails Bad\n\n";
 
 #[test]
 fn a_method_of_an_interface_can_say_how_it_fails() {
-    let fits = "struct Counter:\n    at = 0\n\n    def next(mut self) -> int fails Bad:\n        self.at += 1\n        self.at\n\n";
+    let fits = "struct Counter:\n    at = 0\n\n    def next(ref self) -> int fails Bad:\n        self.at += 1\n        self.at\n\n";
     let text = format!(
-        "{READS}{fits}def two(mut source: Reads) -> int fails Bad:\n    source.next()? + source.next()?\n\n\
-         def main(stdout: Stdout):\n    mut counter = Counter()\n    stdout.print(two(mut counter) else 0)\n"
+        "{READS}{fits}def two(ref source: Reads) -> int fails Bad:\n    source.next()? + source.next()?\n\n\
+         def main(stdout: Stdout):\n    mut counter = Counter()\n    stdout.print(two(ref counter) else 0)\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
     // What it gives back is a result, so `?` or `else` has to say what happens.
-    let text = format!("{READS}{fits}def one(mut source: Reads) -> int:\n    source.next()\n");
+    let text = format!("{READS}{fits}def one(ref source: Reads) -> int:\n    source.next()\n");
     assert_eq!(problems(&text).len(), 1, "{:?}", problems(&text));
-    let text = "interface Reads:\n    def next(mut self) -> int fails Nope\n";
+    let text = "interface Reads:\n    def next(ref self) -> int fails Nope\n";
     assert_eq!(problems(text), ["`Nope` isn't a type @ Nope"]);
 }
 
 #[test]
 fn a_type_has_to_fail_as_its_interfaces_method_says() {
     let text = format!(
-        "{READS}struct Sure:\n    def next(mut self) -> int:\n        1\n\n\
-         def two(mut source: Reads) -> int fails Bad:\n    source.next()?\n\n\
-         def main(stdout: Stdout):\n    mut sure = Sure()\n    stdout.print(two(mut sure) else 0)\n"
+        "{READS}struct Sure:\n    def next(ref self) -> int:\n        1\n\n\
+         def two(ref source: Reads) -> int fails Bad:\n    source.next()?\n\n\
+         def main(stdout: Stdout):\n    mut sure = Sure()\n    stdout.print(two(ref sure) else 0)\n"
     );
     let found = problems(&text);
     assert_eq!(found.len(), 1, "{found:?}");
-    assert!(found.iter().all(|problem| problem.contains("`next(mut self) -> int fails Bad`")), "{found:?}");
+    assert!(found.iter().all(|problem| problem.contains("`next(ref self) -> int fails Bad`")), "{found:?}");
 }
 
 #[test]
 fn self_reaches_an_extension_and_a_matchs_arms() {
     let text = "struct Point:\n    x = 1\n\nextend Point:\n    def again(self) -> Self:\n        Self(x=self.x)\n\n\
                 enum Shape:\n    Dot\n    Line(length: int)\n\n    def same(self) -> Self:\n        match self:\n            \
-                case .Line(length):\n                made: Self = Self.Line(length=length)\n                made\n            \
-                case .Dot:\n                Self.Dot\n\n\
+                case .Line(length):\n                made = Self.Line(length=length)\n                made\n            \
+                case .Dot:\n                dot = Self.Dot\n                dot\n\n\
                 def main(stdout: Stdout):\n    stdout.print(Point().again().x, Shape.Dot.same())\n";
     assert_eq!(problems(text), Vec::<String>::new());
     // An extension's `Self` is its type, so it doesn't fit what's another.
@@ -723,4 +723,177 @@ def build[T: Made]() -> T:
         format!("{source}\ndef main(stdout: Stdout):\n    stdout.print(build[Pile[Rock]]().items.len())\n");
     let found = problems(&misfits);
     assert!(found.iter().any(|problem| problem.contains("isn't a `Made`")), "{found:?}");
+}
+
+#[test]
+fn a_method_that_changes_its_value_doesnt_fit_an_interfaces_self() {
+    let source = "interface Source:\n    def next(self) -> int\n\n\
+                  struct Count:\n    left = 2\n\n    def next(ref self) -> int:\n        self.left -= 1\n        self.left\n\n\
+                  def two(source: Source) -> int:\n    source.next() + source.next()\n\n\
+                  def main(stdout: Stdout):\n    counter = Count()\n    stdout.print(two(counter))\n";
+    let found = problems(source);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("it has no `next(self) -> int`. Its `next` changes `self`"), "{found:?}");
+    let helped = helps(source);
+    assert!(
+        helped.iter().any(|help| help.contains("write `ref self` in the interface's `next`")),
+        "{helped:?}"
+    );
+}
+
+#[test]
+fn an_interfaces_mut_self_fits_a_method_that_changes_it_or_one_that_doesnt() {
+    let empty: [&str; 0] = [];
+    let source = "interface Source:\n    def next(ref self) -> int\n\n\
+                  struct Count:\n    left = 2\n\n    def next(ref self) -> int:\n        self.left -= 1\n        self.left\n\n\
+                  struct Fixed:\n    held = 7\n\n    def next(self) -> int:\n        self.held\n\n\
+                  def two(ref source: Source) -> int:\n    source.next() + source.next()\n\n\
+                  def main(stdout: Stdout):\n    mut counter = Count()\n    mut fixed = Fixed()\n    \
+                  stdout.print(two(ref counter), counter.left, two(ref fixed))\n";
+    assert_eq!(problems(source), empty);
+}
+
+#[test]
+fn a_function_with_no_self_has_its_first_parameter_compared_too() {
+    let source = "interface Made:\n    def make(size: int) -> Self\n\n\
+                  struct Part:\n    size = 1\n\n    def make(size: str) -> Self:\n        Self(size=size.len())\n\n\
+                  def build[T: Made]() -> T:\n    T.make(1)\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(build[Part]().size)\n";
+    let found = problems(source);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("takes other arguments"), "{found:?}");
+}
+
+#[test]
+fn what_might_be_missing_can_be_saved_when_what_it_holds_can() {
+    let empty: [&str; 0] = [];
+    let types = "struct Plain:\n    work: (int) -> int\n\ndef plains() -> list[Plain]:\n    []\n\ndef saved[T: Serializable](x: T) -> int:\n    1\n\ndef loaded[T: Deserializable]() -> int:\n    1\n";
+    let body =
+        "words: list[str?] = [None]\nstdout.print(saved(words), loaded[int?](), loaded[list[str?]]())\n";
+    assert_eq!(crate::in_main_after(types, body), empty);
+    let found = crate::in_main_after(types, "plains: list[Plain?] = [None]\nstdout.print(saved(plains))\n");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("isn't a `Serializable`"), "{found:?}");
+    let found = crate::in_main_after(types, "stdout.print(saved(plains()))\n");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("isn't a `Serializable`"), "{found:?}");
+}
+
+const SAVED: &str = "struct Spot:
+    x = 0
+
+struct Holder:
+    spot: Spot
+    label: str?
+    spots = list[Spot]()
+
+struct Listener:
+    on_change: (int) -> int
+    size = 1
+
+struct Inventory:
+    listener: Listener
+    items = list[int]()
+
+struct Character:
+    inventory: Inventory
+
+shared Cell:
+    count = 0
+
+struct Celled:
+    cell: Cell
+
+struct Quiet:
+    @skip
+    cell: Cell? = None
+    size = 1
+
+def saved[T: Serializable](x: T) -> int:
+    1
+
+def loaded[T: Deserializable]() -> int:
+    1
+";
+
+#[test]
+fn a_type_saves_and_loads_when_all_its_fields_can() {
+    let empty: [&str; 0] = [];
+    let body = "stdout.print(loaded[Spot](), loaded[Holder](), loaded[list[Holder]](), loaded[Quiet]())\n";
+    assert_eq!(crate::in_main_after(SAVED, body), empty);
+}
+
+#[test]
+fn what_cant_be_saved_names_where_it_is_and_the_fixes() {
+    let found = crate::in_main_after(SAVED, "stdout.print(loaded[Character]())\n");
+    assert_eq!(
+        found,
+        [
+            "`Character` isn't a `Deserializable`: `Character.inventory.listener.on_change` is a function, which can't be saved @ loaded[Character]()"
+        ]
+    );
+    let helped =
+        helps(&format!("{SAVED}\ndef main(stdout: Stdout):\n    stdout.print(loaded[Character]())\n"));
+    assert_eq!(
+        helped,
+        [
+            "`@skip` the field `on_change`, with a default, or write `def serialize` and `def deserialize` for `Listener`"
+        ]
+    );
+    let found = crate::in_main_after(SAVED, "stdout.print(loaded[Celled]())\n");
+    assert_eq!(
+        found,
+        [
+            "`Celled` isn't a `Deserializable`: `Celled.cell` is `shared`, which can't be saved @ loaded[Celled]()"
+        ]
+    );
+    // A collection that can't be saved says which field of what it holds is why.
+    let found = crate::in_main_after(SAVED, "stdout.print(loaded[list[Celled]]())\n");
+    assert_eq!(
+        found,
+        [
+            "a list[Celled] isn't a `Deserializable`: `Celled.cell` is `shared`, which can't be saved @ loaded[list[Celled]]()"
+        ]
+    );
+}
+
+/// A union is saved tagged with its member, so each member has to be told apart by its type's
+/// name, and a set's items and a dict's keys can't hold one.
+#[test]
+fn a_union_saves_when_its_members_are_named_types() {
+    let types = "struct Circle:\n    r = 1.0\n\nstruct Scene:\n    main: Circle | int\n    all: list[Circle | str]\n    named: dict[str, Circle | int]\n    picked: (Circle | int)? = None\n\nstruct Mixed:\n    held: list[int] | str\n\nstruct Keyed:\n    by: dict[int | str, int]\n\ndef loaded[T: Deserializable]() -> int:\n    1\n";
+    let empty: [&str; 0] = [];
+    assert_eq!(crate::in_main_after(types, "stdout.print(loaded[Scene]())\n"), empty);
+    assert_eq!(
+        crate::in_main_after(types, "stdout.print(loaded[Mixed]())\n"),
+        [
+            "`Mixed` isn't a `Deserializable`: `Mixed.held` is a list[int] | str, which can't be saved @ loaded[Mixed]()"
+        ]
+    );
+    assert_eq!(
+        crate::in_main_after(types, "stdout.print(loaded[Keyed]())\n"),
+        [
+            "`Keyed` isn't a `Deserializable`: `Keyed.by` is a dict[int | str, int], which can't be saved @ loaded[Keyed]()"
+        ]
+    );
+}
+
+#[test]
+fn a_type_writes_both_or_neither() {
+    let one =
+        "struct Spot:\n    x = 0\n\n    def serialize(self, ref out: Serializer):\n        out.int(self.x)\n";
+    assert_eq!(problems(one), ["`Spot` writes `def serialize` but not `def deserialize` @ struct Spot"]);
+    let other = "struct Spot:\n    x = 0\n\n    def deserialize(ref src: Deserializer) -> Self fails ParseError:\n        Spot(x=src.int()?)\n";
+    assert_eq!(problems(other), ["`Spot` writes `def deserialize` but not `def serialize` @ struct Spot"]);
+    let empty: [&str; 0] = [];
+    let both = "struct Spot:\n    x = 0\n\n    def serialize(self, ref out: Serializer):\n        out.int(self.x)\n\n    def deserialize(ref src: Deserializer) -> Self fails ParseError:\n        Spot(x=src.int()?)\n";
+    assert_eq!(problems(both), empty);
+}
+
+#[test]
+fn a_program_that_doesnt_save_isnt_given_the_methods() {
+    let source = "struct Spot:\n    x = 0\n\ndef main(stdout: Stdout):\n    stdout.print(Spot().x)\n";
+    let signatures = crate::check(source).unwrap();
+    assert!(signatures.get("Spot.serialize").is_none());
+    assert!(signatures.get("Spot.deserialize").is_none());
 }

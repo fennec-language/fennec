@@ -36,6 +36,10 @@ fn statement(stmt: &Stmt, effects: &mut Effects) {
             effects.yields = true;
             expression(expr, effects);
         }
+        StmtKind::Lend { value, otherwise } => {
+            expression(value, effects);
+            block(otherwise, effects);
+        }
         StmtKind::Assign { target, value, .. } => {
             expression(target, effects);
             expression(value, effects);
@@ -59,6 +63,17 @@ fn statement(stmt: &Stmt, effects: &mut Effects) {
 }
 
 fn expression(expr: &Expr, effects: &mut Effects) {
+    // `loaded[int?]()` or `array[str?, 3]()`: that `?` is part of a type, not a failure passed up.
+    if let ExprKind::Call { callee, args } = &expr.kind
+        && let ExprKind::Index { object, index } = &callee.kind
+        && (index.as_type().is_some() || callee.as_type().is_some())
+    {
+        expression(object, effects);
+        for arg in args {
+            expression(&arg.value, effects);
+        }
+        return;
+    }
     for inner in children(expr) {
         expression(inner, effects);
     }

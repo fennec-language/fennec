@@ -248,7 +248,7 @@ fn match_over_an_enum_covers_every_case() {
         def f(light: Light):
             match light:
                 case .Purple: 1
-                case Red: 2
+                case .Red: 2
                 case _: 3
     ";
     assert_eq!(
@@ -301,6 +301,76 @@ fn match_binds_the_fields_of_each_case() {
             "can't mix int and float in `+` @ value + 1.5",
         ]
     );
+}
+
+/// A pattern can name the fields it matches, in any order and leaving any out: each name gets
+/// its field's type. Another kit's type is matched that way only, so a field added to it with a
+/// default never breaks a `match`. A kit's own types still match by position.
+#[test]
+fn a_pattern_names_the_fields_it_matches() {
+    let fields = |source: &str| -> Vec<String> {
+        problems(source)
+            .iter()
+            .map(|problem| problem.split(" @ ").next().unwrap_or_default().to_owned())
+            .collect()
+    };
+    let program = "
+struct Point:
+    x: int
+    y: str
+
+enum Shape:
+    Circle(radius: float)
+    Rect(width: float, height: int)
+
+def area(shape: Shape) -> float:
+    match shape:
+        case .Rect(height=h, width=w): w * h
+        case .Circle(radius=r): r * r
+
+def label(point: Point) -> str:
+    match point:
+        case Point(y=name): name
+        case Point(x, y): y
+
+def read(fs: Fs) -> str:
+    match fs.read_text(\"a\"):
+        case Ok(text): text
+        case Err(IoError(reason=why)): why
+";
+    assert_eq!(fields(program), ["can't mix int and float in `*`"]);
+    let unknown = "
+struct Point:
+    x: int
+
+def f(point: Point) -> int:
+    match point:
+        case Point(z=a): a
+";
+    assert_eq!(fields(unknown), ["`Point` has no field `z`: it has `x`"]);
+    let positional = "
+def read(fs: Fs) -> str:
+    match fs.read_text(\"a\"):
+        case Ok(text): text
+        case Err(IoError(why)): why
+";
+    assert_eq!(
+        fields(positional),
+        ["`IoError` comes from another kit, so this pattern names the fields it reads"]
+    );
+    assert_eq!(
+        helps(positional),
+        [
+            "write `IoError(reason=...)`, or `IoError()` to read none, and a field added to it never breaks this; `fennec fix` adds the names"
+        ]
+    );
+    let none_read = "
+def read(fs: Fs) -> str:
+    match fs.read_text(\"a\"):
+        case Ok(text): text
+        case Err(IoError()): \"failed\"
+";
+    assert_eq!(fields(none_read), Vec::<String>::new());
 }
 
 #[test]
@@ -385,7 +455,7 @@ fn match_cases_bind_typed_values() {
 
         def b(shape: Shape, other: T):
             match shape:
-                case Circle(r): r + 1
+                case .Circle(r): r + 1
             match other:
                 case .Circle(dotted): dotted + 1
                 case Circle(plain): plain + 1
@@ -426,25 +496,25 @@ fn a_list_written_where_a_list_of_optionals_goes_is_one() {
 #[test]
 fn what_a_mut_parameter_can_make_none_is_checked_again() {
     let program = "
-        def cleared(mut value: int?):
+        def cleared(ref value: int?):
             value = None
 
         def f(n: int?) -> int:
             mut held = n
             if held is not None:
-                cleared(mut held)
+                cleared(ref held)
                 return held + 1
             0
     ";
     assert_eq!(problems(program), ["this might be None @ held"]);
     let keeps_what_it_knows = "
-        def bumped(mut value: int):
+        def bumped(ref value: int):
             value += 1
 
         def f(n: int?) -> int:
             mut held = n
             if held is not None:
-                bumped(mut held)
+                bumped(ref held)
                 return held + 1
             0
     ";
@@ -469,7 +539,7 @@ fn a_loop_sees_what_its_body_changes() {
             "mut x: int? = 5\nfor n in names:\n    match n:\n        case 'a':\n            use(x + 1)\n        case _:\n            x = None\n",
             "x",
         ),
-        ("mut x: int? = 5\nfor n in names:\n    use(x + 1)\n    clear(mut x)\n", "x"),
+        ("mut x: int? = 5\nfor n in names:\n    use(x + 1)\n    clear(ref x)\n", "x"),
         // It never holds None, but the loop's first look at it doesn't know that.
         ("mut x: int? = 5\nfor n in names:\n    x = x + 1\n", "x"),
         (
@@ -507,7 +577,7 @@ fn in_a_loop_function(body: &str) -> String {
         "struct Held:
     x: int?
 
-    def clear(mut self):
+    def clear(ref self):
         self.x = None
 
     def show(self) -> int:
@@ -516,7 +586,7 @@ fn in_a_loop_function(body: &str) -> String {
 def use(n: int):
     pass
 
-def clear(mut slot: int?):
+def clear(ref slot: int?):
     slot = None
 
 def run(names: list[str]):

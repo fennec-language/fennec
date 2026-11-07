@@ -62,8 +62,20 @@ pub fn park(request: Request) -> Option<Wake> {
     current::suspend(request)
 }
 
+/// The lowest address of the running task's stack, for what checks how far its stack has grown.
+/// With no task running on this thread, `None`.
+pub fn stack_low() -> Option<usize> {
+    current::stack_low()
+}
+
+/// How big the running task's stack is. With no task running on this thread, `None`.
+pub fn stack_size() -> Option<usize> {
+    current::stack_size()
+}
+
 struct Task {
-    coroutine: Coroutine<Wake, Request, i64, DefaultStack>,
+    /// Taken out only once the task has ended, for its stack to be used again.
+    coroutine: Option<Coroutine<Wake, Request, i64, DefaultStack>>,
     stack: current::Bounds,
     cancelled: bool,
 }
@@ -71,28 +83,51 @@ struct Task {
 impl Drop for Task {
     /// A task that started and hasn't ended still has a stack in use, which nothing may drop.
     fn drop(&mut self) {
-        if self.coroutine.started() && !self.coroutine.done() {
+        if self.coroutine.as_ref().is_some_and(|coroutine| coroutine.started() && !coroutine.done()) {
             current::stop("a parked task was dropped before it ended");
         }
     }
 }
 
+/// How many stacks of tasks that have ended a scheduler keeps for its next tasks, unless it's
+/// told otherwise. Each keeps the pages its task touched, so they're few.
+const SPARE_STACKS: usize = 64;
+
 /// A thread's tasks.
 pub struct Scheduler {
     stack_bytes: usize,
     tasks: HashMap<TaskId, Task>,
+    /// Stacks of tasks that have ended, for new tasks: making a stack maps it, with its guard
+    /// page, which costs a few system calls, and a thread that makes many short tasks pays that
+    /// for each.
+    spare: Vec<DefaultStack>,
+    most_spare: usize,
 }
 
 impl Scheduler {
     /// A scheduler whose tasks each get a stack of `stack_bytes`, plus a guard page. A stack
     /// takes memory only for the pages a task touches.
     pub fn new(stack_bytes: usize) -> Scheduler {
-        Scheduler { stack_bytes, tasks: HashMap::new() }
+        Scheduler::keeping(stack_bytes, SPARE_STACKS)
     }
 
-    /// Makes a task that runs `body` on its own stack, from its first resume.
+    /// A scheduler that keeps at most `most_spare` stacks of ended tasks for its next ones.
+    pub fn keeping(stack_bytes: usize, most_spare: usize) -> Scheduler {
+        Scheduler { stack_bytes, tasks: HashMap::new(), spare: Vec::new(), most_spare }
+    }
+
+    /// How many stacks it keeps for its next tasks now.
+    pub fn spare_stacks(&self) -> usize {
+        self.spare.len()
+    }
+
+    /// Makes a task that runs `body` on its own stack, from its first resume: one an ended task
+    /// left, or a new one.
     pub fn spawn(&mut self, body: impl FnOnce() -> i64 + 'static) -> std::io::Result<TaskId> {
-        let stack = DefaultStack::new(self.stack_bytes)?;
+        let stack = match self.spare.pop() {
+            Some(stack) => stack,
+            None => DefaultStack::new(self.stack_bytes)?,
+        };
         let bounds = current::Bounds { low: stack.limit().get(), high: stack.base().get() };
         let task = NEXT.get();
         NEXT.set(task + 1);
@@ -106,7 +141,7 @@ impl Scheduler {
                 Err(_) => current::stop("a parked task panicked"),
             }
         });
-        self.tasks.insert(task, Task { coroutine, stack: bounds, cancelled: false });
+        self.tasks.insert(task, Task { coroutine: Some(coroutine), stack: bounds, cancelled: false });
         Ok(task)
     }
 
@@ -114,17 +149,26 @@ impl Scheduler {
     /// cancels it.
     pub fn resume(&mut self, task: TaskId, wake: Wake) -> Step {
         let Some(mut running) = self.tasks.remove(&task) else { return Step::Unknown };
+        let Some(coroutine) = running.coroutine.as_mut() else { return Step::Unknown };
         running.cancelled |= wake == Wake::Cancelled;
         let result = {
             let _running = current::Running::start(task, running.stack, running.cancelled);
-            running.coroutine.resume(wake)
+            coroutine.resume(wake)
         };
         match result {
             CoroutineResult::Yield(request) => {
                 self.tasks.insert(task, running);
                 Step::Parked(request)
             }
-            CoroutineResult::Return(result) => Step::Done(result),
+            CoroutineResult::Return(result) => {
+                // It's ended, so nothing's on its stack any more, and its stack can be used again.
+                if self.spare.len() < self.most_spare
+                    && let Some(ended) = running.coroutine.take()
+                {
+                    self.spare.push(ended.into_stack());
+                }
+                Step::Done(result)
+            }
         }
     }
 

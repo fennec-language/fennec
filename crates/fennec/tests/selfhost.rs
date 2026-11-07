@@ -1,12 +1,13 @@
 //! The self-hosted front end in `selfhost/` lexes and parses every example, every error
 //! example, the standard library's Fennec sources and its own source exactly as the Rust front
-//! end does, with the interpreter and with the JIT.
+//! end does, built through LLVM and on the JIT.
 
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 /// Small sources that reach the lexer's error paths and edge cases.
 const LEX_CASES: &[(&str, &str)] = &[
@@ -62,11 +63,32 @@ const LEX_CASES: &[(&str, &str)] = &[
 const PARSE_CASES: &[(&str, &str)] = &[
     ("top_level_statement", "x = 1\n"),
     ("noalloc_struct", "noalloc struct A:\n    x: int\n"),
+    ("noalloc_def", "noalloc def f():\n    pass\n"),
+    ("pub_field", "struct A:\n    pub x: int\n"),
+    ("export_field", "export struct A:\n    export x: int\n"),
+    ("pub_def", "pub def f():\n    pass\n\nstruct A:\n    pub def g(self):\n        pass\n"),
+    ("default_field_first", "struct P:\n    a = 1\n    b: int\n"),
+    ("default_case_field_first", "enum E:\n    C(x = 1, y: int)\n"),
+    ("default_param_first", "def f(x = 1, y: int):\n    pass\n"),
+    (
+        "lock",
+        "def f(a: shared A, b: shared B?):\n    shared c = A()\n    lock a, c as ref x, y:\n        pass\n",
+    ),
+    ("lend", "def f(a: int) -> with int:\n    lend a + 1 else:\n        pass\n    lend f\"{a}\"\n"),
+    ("lock_needs_names", "def f(a: shared A):\n    lock a:\n        pass\n"),
+    ("named_pattern", "def f(p: P):\n    match p:\n        case P(y=b, x=_): b\n        case .Q(): 1\n"),
+    ("named_pattern_mixed", "def f(p: P):\n    match p:\n        case P(x=a, b): a\n"),
+    ("named_pattern_twice", "def f(p: P):\n    match p:\n        case P(x=a, x=b): a\n"),
     ("missing_block", "def f():\nx\n"),
     ("needs_else", "def f():\n    a if b\n"),
     ("field_needs_type", "struct A:\n    x\n"),
     ("param_needs_type", "def f(x):\n    pass\n"),
     ("mut_needs_name", "def f():\n    mut a.b = 1\n"),
+    (
+        "ref_in_each_place",
+        "def f(ref self, ref x: int):\n    for ref y in x:\n        pass\n    g(ref x)\n    with a as ref b:\n        pass\n",
+    ),
+    ("no_inline_ref", "def f():\n    ref a = 1\n"),
     ("not_assignable", "def f():\n    f() = 1\n"),
     ("tuple_augmented", "def f():\n    a, b += 1\n"),
     ("optional_attr_assigned", "def f():\n    a?.b = 1\n"),
@@ -104,7 +126,7 @@ const PARSE_CASES: &[(&str, &str)] = &[
     (
         "everything",
         "import std.math
-from std.game import Id, IdMap
+from std.collections import Id, Table
 export type Grid = list[list[int?]]
 type Pair = (int, str)
 
@@ -121,7 +143,7 @@ struct Box[T, U: Shape]:
         self
     def [](self, at: int):
         self.items[at]
-    def []=(mut self, at: int, value: T):
+    def []=(ref self, at: int, value: T):
         self.items[at] = value
     def ==(self, other: Box):
         True
@@ -136,8 +158,9 @@ enum Shape2:
 error Oops:
     reason: str
 
-noalloc def step(mut world: World, dt: float) -> (int, str)?:
-    for mut enemy in world.enemies:
+@hot
+def step(ref world: World, dt: float) -> (int, str)?:
+    for ref enemy in world.enemies:
         enemy.x += enemy.v * dt
     for a, b in pairs: pass
     while not done and (x < y <= z or x is not None):
@@ -148,7 +171,7 @@ noalloc def step(mut world: World, dt: float) -> (int, str)?:
     if a: b
     elif c: d
     else: e
-    with arena() as mut scratch:
+    with arena() as ref scratch:
         continue
     with lock():
         pass
@@ -170,7 +193,7 @@ noalloc def step(mut world: World, dt: float) -> (int, str)?:
     o = x => x + 1
     p = (a, b) => a * b
     q = () => 0
-    r = f(mut x, y=2) if False else g(-1 % 2 // 3)
+    r = f(ref x, y=2) if False else g(-1 % 2 // 3)
     t = 3 in xs and 4 not in ys or not True
     u = .Circle(radius=2.0).area()
     match = 1
@@ -203,6 +226,12 @@ test \"any list\" for items: list[int], n: int:
 /// Small programs that reach the checker's errors about written types, and the places
 /// types are written.
 const CHECK_CASES: &[(&str, &str)] = &[
+    (
+        "call_type_arguments",
+        "from std import json\n\ndef read(text: str) -> int:\n    found = json.loads[Draft](text) else 0\n    \
+         made = list[Tokn]()\n    if made.len() == 0 and parsed[Mising](text):\n        return 1\n    \
+         [x for x in f[Wrong](1)].len() + found\n",
+    ),
     (
         "unknown_types",
         "def f(a: lsit[int], b: String, c: f64, d: i32, e: boolean, g: List[int], h: Optional) -> Strng:\n    pass\n",
@@ -265,6 +294,20 @@ fn sources_under(dir: &Path) -> io::Result<Vec<PathBuf>> {
 /// Under mutation testing, one in this many of the repository's files is compared.
 const MUTANTS_SAMPLE: usize = 8;
 
+/// The JIT runs one in this many of the corpus's files, with the whole standard library. LLVM's
+/// build runs every file. Each dump has to match Rust's front end. The JIT takes about fifty
+/// times as long as LLVM's build, so on every file the checker's test alone took over a minute.
+const JIT_SAMPLE: usize = 8;
+
+/// The JIT checks one in this many files. It takes 16 seconds just to check the standard
+/// library's sources first, as selfhost's checker still crosses into the interpreter there.
+const JIT_CHECK_SAMPLE: usize = 32;
+
+/// Whether a corpus file is one of the standard library's sources, written as `prelude_*.fen`.
+fn in_the_library(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("prelude_"))
+}
+
 /// Every file the two front ends are compared on. Sources that don't live in files, like the
 /// standard library's, are written into `work`.
 fn corpus(work: &Path) -> io::Result<Vec<PathBuf>> {
@@ -291,25 +334,77 @@ fn corpus(work: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// Runs the self-hosted front end on every file in `corpus` with `mode`, returning what it
-/// printed. It reads its work from standard input.
-fn selfhost(work: &Path, mode: &str, corpus: &[PathBuf], engine: &[&str]) -> Result<String, String> {
+/// The self-hosted front end built through LLVM, once a run, as one executable. `fennec build
+/// --llvm` fails on a function LLVM doesn't take, so this keeps selfhost native. `None` where
+/// LLVM's tools or the runtime library aren't here, as under coverage.
+fn built() -> Result<Option<PathBuf>, String> {
+    static BUILT: OnceLock<Result<Option<PathBuf>, String>> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let ready = fennec_llvm::Tools::find().is_ok()
+                && crate::executables::runtime_built()
+                && crate::executables::runtime_beside_fennec();
+            if !ready {
+                return Ok(None);
+            }
+            let folder = Path::new(env!("CARGO_TARGET_TMPDIR")).join("selfhost-llvm");
+            fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
+            let program = folder.join(format!("selfhost{}", std::env::consts::EXE_SUFFIX));
+            let output = crate::executables::fennec_command()
+                .args(["build", "--llvm", "--release"])
+                .arg(repo().join("selfhost"))
+                .arg("-o")
+                .arg(&program)
+                .output()
+                .map_err(|err| err.to_string())?;
+            if !output.status.success() {
+                return Err(format!(
+                    "the self-hosted front end doesn't build through LLVM:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            Ok(Some(program))
+        })
+        .clone()
+}
+
+/// The self-hosted front end as LLVM builds it, or `fennec run` where LLVM isn't here.
+fn on_llvm() -> Result<Command, String> {
+    if let Some(program) = built()? {
+        return Ok(Command::new(program));
+    }
+    let mut command = crate::executables::fennec_command();
+    command.arg("run").arg(repo().join("selfhost"));
+    Ok(command)
+}
+
+/// The self-hosted front end on the JIT.
+fn on_the_jit() -> Command {
+    let mut command = crate::executables::fennec_command();
+    command.args(["run", "--jit"]).arg(repo().join("selfhost"));
+    command
+}
+
+/// Runs the self-hosted front end with `mode` on each file in `files`, returning what it printed.
+/// The checker is given the standard library's sources in `corpus` first. It reads its work
+/// from standard input.
+fn selfhost(
+    work: &Path,
+    mode: &str,
+    corpus: &[PathBuf],
+    files: &[&PathBuf],
+    mut command: Command,
+) -> Result<String, String> {
     let mut inputs = String::new();
     if mode == "check" {
-        let library = corpus.iter().filter(|path| {
-            path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("prelude_"))
-        });
-        for path in library {
+        for path in corpus.iter().filter(|path| in_the_library(path)) {
             let _ = writeln!(inputs, "std {}", path.display());
         }
     }
-    for path in corpus {
+    for path in files {
         let _ = writeln!(inputs, "{mode} {}", path.display());
     }
-    let mut child = crate::executables::fennec_command()
-        .arg("run")
-        .args(engine)
-        .arg(repo().join("selfhost"))
+    let mut child = command
         .current_dir(work)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -343,47 +438,139 @@ fn dumps(output: &str) -> Vec<(String, String)> {
     dumps
 }
 
-/// Runs the self-hosted front end over the corpus with both engines, and checks each file's
-/// dump against `rust_dump`. Returns a report of what differs.
-fn compare(mode: &str, rust_dump: fn(&str) -> String) -> Result<(), String> {
-    let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("selfhost-{mode}"));
+/// The corpus, written into a folder of `test`'s own, as tests run at once.
+fn corpus_for(test: &str) -> Result<(PathBuf, Vec<PathBuf>), String> {
+    let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("selfhost-{test}"));
     fs::create_dir_all(&work).map_err(|err| err.to_string())?;
     let corpus = corpus(&work).map_err(|err| err.to_string())?;
-    let interpreted = selfhost(&work, mode, &corpus, &[])?;
-    let dumps = dumps(&interpreted);
-    if dumps.len() != corpus.len() {
-        return Err(format!("the self-hosted front end dumped {} of {} files", dumps.len(), corpus.len()));
+    Ok((work, corpus))
+}
+
+/// Checks LLVM's build of the self-hosted front end on every file in the corpus against
+/// `rust_dump`, and, alongside, the JIT on a sample. Returns a report of what differs.
+fn compare(mode: &str, rust_dump: fn(&str) -> String) -> Result<(), String> {
+    let (work, corpus) = corpus_for(mode)?;
+    let (native, jitted) = std::thread::scope(|scope| {
+        let jit = scope.spawn(|| on_the_jit_against_rust(&work, mode, &corpus, rust_dump));
+        let native = on_llvm_against_rust(&work, mode, &corpus, rust_dump);
+        (native, jit.join().unwrap_or_else(|_| Err("running the JIT panicked".to_owned())))
+    });
+    native.and(jitted)
+}
+
+/// Checks LLVM's build of the self-hosted front end on every file in `corpus` against
+/// `rust_dump`. Returns a report of what differs. Where LLVM can't build it, as under coverage,
+/// what runs it is the JIT, so it's the JIT's sample instead: on every file, the JIT took minutes
+/// there, and the JIT's own check would run the same again.
+fn on_llvm_against_rust(
+    work: &Path,
+    mode: &str,
+    corpus: &[PathBuf],
+    rust_dump: fn(&str) -> String,
+) -> Result<(), String> {
+    if built()?.is_none() {
+        return jit_sample_against_rust(work, mode, corpus, rust_dump);
     }
+    let every: Vec<&PathBuf> = corpus.iter().collect();
+    against_rust(work, mode, corpus, &every, on_llvm()?, rust_dump).map_err(|first| {
+        format!("the self-hosted {mode} differ from Rust's for {first}\n\n{}", mirror_hint(mode))
+    })
+}
+
+/// Checks the self-hosted front end on the JIT, on a sample of the files in `corpus`, against
+/// `rust_dump`. LLVM's build is checked on all of them, so this needs none of its own. Where LLVM
+/// can't build it, `on_llvm_against_rust` has checked this sample already, and this does nothing.
+/// Returns a report of what differs.
+fn on_the_jit_against_rust(
+    work: &Path,
+    mode: &str,
+    corpus: &[PathBuf],
+    rust_dump: fn(&str) -> String,
+) -> Result<(), String> {
+    if built()?.is_none() {
+        return Ok(());
+    }
+    jit_sample_against_rust(work, mode, corpus, rust_dump)
+}
+
+/// The JIT's check of its sample of `corpus` against `rust_dump`.
+fn jit_sample_against_rust(
+    work: &Path,
+    mode: &str,
+    corpus: &[PathBuf],
+    rust_dump: fn(&str) -> String,
+) -> Result<(), String> {
+    let files: Vec<&PathBuf> =
+        corpus.iter().step_by(if mode == "check" { JIT_CHECK_SAMPLE } else { JIT_SAMPLE }).collect();
+    against_rust(work, mode, corpus, &files, on_the_jit(), rust_dump).map_err(|first| {
+        format!(
+            "on the JIT, the self-hosted {mode} differ from Rust's for {first}\n\nWhere LLVM's build matches Rust's, that's a bug in the JIT, not in selfhost/."
+        )
+    })
+}
+
+/// Runs `command`, the self-hosted front end, on each of `files`, and checks each file's dump
+/// against `rust_dump`. What differs comes back as the first file's difference, then a list
+/// of the others.
+fn against_rust(
+    work: &Path,
+    mode: &str,
+    corpus: &[PathBuf],
+    files: &[&PathBuf],
+    command: Command,
+    rust_dump: fn(&str) -> String,
+) -> Result<(), String> {
+    let printed = dumps(&selfhost(work, mode, corpus, files, command)?);
+    if printed.len() != files.len() {
+        return Err(format!("every file: it dumped only {} of {}", printed.len(), files.len()));
+    }
+    let expected = rust_dumps(files, rust_dump)?;
     let mut first = None;
     let mut others = Vec::new();
-    for (path, (shown, dump)) in corpus.iter().zip(&dumps) {
-        let source = fs::read_to_string(path).map_err(|err| err.to_string())?;
-        let expected = rust_dump(&source);
-        if *dump == expected {
+    for ((shown, dump), (source, expected)) in printed.iter().zip(&expected) {
+        if dump == expected {
             continue;
         }
-        let shown = short(shown, &work);
+        let shown = short(shown, work);
         match first {
-            None => first = Some(difference(&shown, &source, dump, &expected)),
+            None => first = Some(difference(&shown, source, dump, expected)),
             Some(_) => others.push(shown),
         }
     }
-    if let Some(first) = first {
-        let mut report = format!("the self-hosted {mode} differ from Rust's for {first}");
-        if !others.is_empty() {
-            let _ = write!(report, "\n\nThey also differ for:\n  {}", others.join("\n  "));
+    match first {
+        None => Ok(()),
+        Some(first) if others.is_empty() => Err(first),
+        Some(first) => Err(format!("{first}\n\nThey also differ for:\n  {}", others.join("\n  "))),
+    }
+}
+
+/// Each file's source and what `rust_dump` makes of it, in order, worked out on every core: on
+/// one, the checker's took 16 seconds.
+fn rust_dumps(files: &[&PathBuf], rust_dump: fn(&str) -> String) -> Result<Vec<(String, String)>, String> {
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let share = files.len().div_ceil(cores).max(1);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = files
+            .chunks(share)
+            .map(|paths| {
+                scope.spawn(move || {
+                    paths
+                        .iter()
+                        .map(|path| {
+                            let source = fs::read_to_string(path).map_err(|err| err.to_string())?;
+                            let dump = rust_dump(&source);
+                            Ok((source, dump))
+                        })
+                        .collect::<Result<Vec<_>, String>>()
+                })
+            })
+            .collect();
+        let mut all = Vec::with_capacity(files.len());
+        for worker in workers {
+            all.extend(worker.join().map_err(|_| "working out Rust's dumps panicked".to_owned())??);
         }
-        let _ = write!(report, "\n\n{}", mirror_hint(mode));
-        return Err(report);
-    }
-    let native = selfhost(&work, mode, &corpus, &["--jit"])?;
-    if native != interpreted {
-        let (ours, theirs) = first_difference(&native, &interpreted);
-        return Err(format!(
-            "the JIT and the interpreter disagree on the self-hosted {mode}: the JIT printed\n  {ours}\nwhere the interpreter printed\n  {theirs}\nThat's a bug in an engine, not in selfhost/."
-        ));
-    }
-    Ok(())
+        Ok(all)
+    })
 }
 
 /// A corpus file's path as a report shows it: from the repository's root, or marked as one
@@ -502,9 +689,21 @@ fn selfhost_parser_matches_the_rust_parser() {
     }
 }
 
+/// The checker's JIT run is a test of its own, as it takes longest: see `JIT_CHECK_SAMPLE`.
 #[test]
 fn selfhost_checker_matches_the_rust_checker() {
-    if let Err(difference) = compare("check", checked) {
+    let compared =
+        corpus_for("check").and_then(|(work, corpus)| on_llvm_against_rust(&work, "check", &corpus, checked));
+    if let Err(difference) = compared {
+        panic!("{difference}");
+    }
+}
+
+#[test]
+fn selfhost_checker_on_the_jit_matches_the_rust_checker() {
+    let compared = corpus_for("check-jit")
+        .and_then(|(work, corpus)| on_the_jit_against_rust(&work, "check", &corpus, checked));
+    if let Err(difference) = compared {
         panic!("{difference}");
     }
 }

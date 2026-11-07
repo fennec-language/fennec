@@ -13,11 +13,11 @@ struct Reader:
     text: str
     at = 0
 
-    def skip_space(mut self):
+    def skip_space(ref self):
         while self.at < self.text.len() and self.text[self.at] == " ":
             self.at += 1
 
-    def expect_text(mut self) -> str:
+    def expect_text(ref self) -> str:
         self.at += 1
         start = self.at
         while self.text[self.at] != "\"":
@@ -26,14 +26,14 @@ struct Reader:
         self.at += 1
         found
 
-    def number(mut self) -> int:
+    def number(ref self) -> int:
         mut value = 0
         while self.at < self.text.len() and self.text[self.at].isdigit():
             value = value * 10 + self.text[self.at].code() - 48
             self.at += 1
         value
 
-    def items(mut self) -> Json:
+    def items(ref self) -> Json:
         self.at += 1
         mut values = []
         self.skip_space()
@@ -44,9 +44,9 @@ struct Reader:
                 self.at += 1
                 self.skip_space()
         self.at += 1
-        Json.Items(values=values)
+        .Items(values=values)
 
-    def fields(mut self) -> Json:
+    def fields(ref self) -> Json:
         self.at += 1
         mut names = []
         mut values = []
@@ -61,26 +61,26 @@ struct Reader:
                 self.at += 1
                 self.skip_space()
         self.at += 1
-        Json.Fields(names=names, values=values)
+        .Fields(names=names, values=values)
 
-    def value(mut self) -> Json:
+    def value(ref self) -> Json:
         self.skip_space()
         first = self.text[self.at]
         if first == "{": return self.fields()
         if first == "[": return self.items()
-        if first == "\"": return Json.Text(value=self.expect_text())
+        if first == "\"": return .Text(value=self.expect_text())
         if first == "t":
             self.at += 4
-            return Json.Flag(value=True)
+            return .Flag(value=True)
         if first == "f":
             self.at += 5
-            return Json.Flag(value=False)
+            return .Flag(value=False)
         if first == "n":
             self.at += 4
-            return Json.Null
-        Json.Number(value=self.number())
+            return .Null
+        .Number(value=self.number())
 
-def printed(value: Json, mut out: list[str]):
+def printed(value: Json, ref out: list[str]):
     match value:
         case .Null:
             out.append("null")
@@ -95,7 +95,7 @@ def printed(value: Json, mut out: list[str]):
             for at, item in enumerate(values):
                 if at > 0:
                     out.append(",")
-                printed(item, mut out)
+                printed(item, ref out)
             out.append("]")
         case .Fields(names, values):
             out.append("{")
@@ -103,7 +103,7 @@ def printed(value: Json, mut out: list[str]):
                 if at > 0:
                     out.append(",")
                 out.append(f"\"{name}\":")
-                printed(values[at], mut out)
+                printed(values[at], ref out)
             out.append("}")
 
 def document(records: int) -> str:
@@ -128,6 +128,6 @@ def main(stdout: Stdout):
         mut reader = Reader(text=text)
         value = reader.value()
         mut out = []
-        printed(value, mut out)
+        printed(value, ref out)
         total += "".join(out).len()
     stdout.print(text.len(), total)

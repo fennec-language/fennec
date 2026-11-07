@@ -1,13 +1,13 @@
 # A type's own `def []` and `def []=` act as places: changing part of an item reads it,
 # changes it, and writes it back, however deep it's nested.
 
-from std.game import IdMap
+from std.collections import Table
 
 struct Part:
     name: str
     x = 0.0
 
-    def shift(mut self, by: float):
+    def shift(ref self, by: float):
         self.x += by
 
 struct Shelf:
@@ -17,7 +17,7 @@ struct Shelf:
     def [](self, at: int) -> Part:
         self.parts[at]
 
-    def []=(mut self, at: int, part: Part):
+    def []=(ref self, at: int, part: Part):
         self.parts[at] = part
         self.writes += 1
 
@@ -27,7 +27,7 @@ struct Numbers:
     def [](self, at: int) -> int:
         self.values[at]
 
-    def []=(mut self, at: int, value: int):
+    def []=(ref self, at: int, value: int):
         self.values[at] = value
 
 struct Room:
@@ -36,7 +36,7 @@ struct Room:
     def [](self, name: str) -> Shelf:
         self.shelf
 
-    def []=(mut self, name: str, shelf: Shelf):
+    def []=(ref self, name: str, shelf: Shelf):
         self.shelf = shelf
 
 struct Store:
@@ -65,12 +65,12 @@ def main(stdout: Stdout):
     store.rooms[0]["back"][0].shift(1.0)
     stdout.print(store.rooms[0].shelf.parts, room.shelf.parts)
 
-    # Reached through a dict or an IdMap.
+    # Reached through a dict or a Table.
     mut by_name = {"main": shelf}
     by_name["main"][0].x = 20.0
     stdout.print(by_name["main"].parts, shelf.parts)
 
-    mut shelves = IdMap[Shelf]()
-    id = shelves.insert(shelf)
+    mut shelves = Table[Shelf]()
+    id = shelves.add(shelf)
     shelves[id][0].x = 30.0
     stdout.print(shelves[id].parts, shelf.parts)

@@ -9,16 +9,19 @@ use fennec_layout::{Block, Layouts, ListItem, Ty, Written};
 
 const WORD: u32 = 8;
 
-/// The name a tuple, optional or result goes by, laid out as a struct or enum of that name, so
-/// that where one fits in memory, and what it holds on to, works as for any other type.
+/// The name a tuple, optional, result or union goes by, laid out as a struct or enum of that
+/// name, so that where one fits in memory, and what it holds on to, works as for any other type.
 pub(crate) fn canon(ty: &Type) -> Type {
     match ty {
-        Type::Tuple(_) | Type::Generic(..) => Type::Named(ty.to_string()),
+        // An array kept in place is a struct with a field for each item, named by its position.
+        Type::Tuple(_) | Type::Generic(..) | Type::Errors(_) | Type::Array(..) | Type::Union(_) => {
+            Type::Named(ty.to_string())
+        }
         Type::Optional(inner) => Type::Named(format!("Option[{inner}]")),
         Type::Result(value, error) => Type::Named(format!("Result[{value}, {error}]")),
         // Every `Id` looks the same whatever it's of.
         Type::Id(_) => Type::Named("Id".to_owned()),
-        Type::IdMap(item) => Type::Named(format!("IdMap[{item}]")),
+        Type::Table(item) => Type::Named(format!("Table[{item}]")),
         Type::List(item) => Type::List(Box::new(canon(item))),
         Type::Set(item) => Type::Set(Box::new(canon(item))),
         Type::Dict(key, value) => Type::Dict(Box::new(canon(key)), Box::new(canon(value))),
@@ -63,21 +66,44 @@ pub(crate) fn define_named(ty: &Type, layouts: Option<&Layouts>, out: &mut BTree
             let cases = vec![("Ok".to_owned(), ok), ("Err".to_owned(), vec![field("error", error)])];
             out.insert(format!("Result[{value}, {error}]"), Written::Enum(cases));
         }
+        // A union: a case for each member, by its place among them, holding the member. It's kept
+        // in place like a plain enum, the case's number first, sized for its largest member.
+        Type::Union(members) => {
+            for member in members {
+                define_named(member, layouts, out);
+            }
+            let cases =
+                members.iter().map(|member| (member.to_string(), vec![field("value", member)])).collect();
+            out.insert(ty.to_string(), Written::Enum(cases));
+        }
+        // One of several errors: a case for each, named for its type.
+        Type::Errors(names) => {
+            let held = |name: &String| (name.clone(), vec![field("error", &Type::Named(name.clone()))]);
+            out.insert(ty.to_string(), Written::Enum(names.iter().map(held).collect()));
+        }
         Type::Id(_) => {
             out.insert(
                 "Id".to_owned(),
-                Written::Struct(vec![field("slot", &Type::Int), field("generation", &Type::Int)]),
+                // Its slot in the high 32 bits of `key` and its generation in the low 32, so an
+                // `Id` is two words, as the interpreter's is.
+                Written::Struct(vec![field("key", &Type::Int), field("tag", &Type::Int)]),
             );
         }
-        Type::IdMap(item) => {
+        Type::Table(item) => {
             define_named(item, layouts, out);
             let fields = vec![
                 field("items", &Type::List(item.clone())),
                 field("generations", &Type::List(Box::new(Type::Int))),
                 field("live", &Type::Int),
                 field("free_from", &Type::Int),
+                field("tag", &Type::Int),
             ];
-            out.insert(format!("IdMap[{item}]"), Written::Struct(fields));
+            out.insert(format!("Table[{item}]"), Written::Struct(fields));
+        }
+        Type::Array(item, size) => {
+            define_named(item, layouts, out);
+            let fields = (0..*size).map(|at| field(&at.to_string(), item)).collect();
+            out.insert(ty.to_string(), Written::Struct(fields));
         }
         Type::List(item) | Type::Set(item) => define_named(item, layouts, out),
         Type::Dict(key, value) => {
@@ -109,6 +135,8 @@ pub(crate) enum Kind {
     /// The address of a string's block, which something owns; or its 24-byte header, when the
     /// layouts hold strings as headers.
     Str,
+    /// The address of a block of `bytes`, which something owns.
+    Bytes,
     /// A string as its block's address where strings are otherwise headers: how a dict holds one.
     TextBlock,
     /// An optional string where strings are headers: a header, all zero for `None`.
@@ -153,6 +181,8 @@ impl Kind {
             Ty::Boxed(id) => Kind::Boxed(id),
             Ty::List(item) => Kind::List(item),
             Ty::Str => Kind::Str,
+            Ty::Bytes => Kind::Bytes,
+            Ty::Gen => Kind::Gen,
             Ty::Dict(key, value) => Kind::Dict(key, value),
             Ty::Maybe(Block::Str) if layouts.text_headers() => Kind::MaybeText,
             Ty::Maybe(block) => Kind::Maybe(Box::new(Kind::from_ty(layouts, block.ty())?)),
@@ -169,6 +199,7 @@ impl Kind {
             Kind::Cap
                 | Kind::List(_)
                 | Kind::Str
+                | Kind::Bytes
                 | Kind::TextBlock
                 | Kind::MaybeText
                 | Kind::Boxed(_)
@@ -203,6 +234,7 @@ impl Kind {
             Kind::Cap
             | Kind::List(_)
             | Kind::Str
+            | Kind::Bytes
             | Kind::TextBlock
             | Kind::Boxed(_)
             | Kind::Dict(..)
@@ -245,6 +277,20 @@ pub(crate) fn element_symbol(layouts: &Layouts, item: ListItem) -> String {
 /// The line defining a plain struct's type, and those of the structs in it.
 pub(crate) fn struct_definitions(layouts: &Layouts, id: u32, out: &mut Vec<String>) {
     let Some(layout) = layouts.get(id) else { return };
+    // An array's items, as LLVM's own array of them: one type however many there are.
+    if is_array(layout)
+        && let Some(first) = layout.fields.first()
+    {
+        if let Ty::Struct(inner) = first.ty
+            && layouts.get(inner).is_some_and(|layout| layout.cases.is_none())
+        {
+            struct_definitions(layouts, inner, out);
+        }
+        let item =
+            Kind::from_ty(layouts, first.ty).map_or_else(|| "i64".to_owned(), |kind| kind.memory(layouts));
+        out.push(format!("%\"s.{}\" = type {{ [{} x {item}] }}\n", layout.name, layout.fields.len()));
+        return;
+    }
     let mut fields = Vec::with_capacity(layout.fields.len());
     for field in &layout.fields {
         if let Ty::Struct(inner) = field.ty
@@ -257,4 +303,9 @@ pub(crate) fn struct_definitions(layouts: &Layouts, id: u32, out: &mut Vec<Strin
         );
     }
     out.push(format!("%\"s.{}\" = type {{ {} }}\n", layout.name, fields.join(", ")));
+}
+
+/// Whether a layout is an array kept in place: a field for each item, `0` first.
+pub(crate) fn is_array(layout: &fennec_layout::Layout) -> bool {
+    layout.name.starts_with("array[") && layout.cases.is_none()
 }

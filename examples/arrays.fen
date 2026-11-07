@@ -1,0 +1,53 @@
+# `array[T, N]` holds exactly N items, kept where the array is: in a struct, in a list, or on
+# the stack. It's for math types, fixed buffers and slots.
+
+struct Mat2:
+    cells: array[float, 4] = [1.0, 0.0, 0.0, 1.0]
+
+    def times(self, other: Mat2) -> Mat2:
+        mut out = Mat2()
+        for row in range(2):
+            for col in range(2):
+                out.cells[row * 2 + col] = (
+                    self.cells[row * 2] * other.cells[col]
+                    + self.cells[row * 2 + 1] * other.cells[2 + col]
+                )
+        out
+
+struct Item:
+    name = ""
+    weight = 1
+
+struct Bag:
+    # Filled with each item's zero: here None, since a slot can be empty.
+    slots = array[Item?, 4]()
+
+    def weight(self) -> int:
+        mut total = 0
+        for slot in self.slots:
+            if slot is not None:
+                total += slot.weight
+        total
+
+def doubled(ref values: array[int, 3]):
+    for ref value in values:
+        value *= 2
+
+def main(stdout: Stdout):
+    shear = Mat2(cells=[2.0, 1.0, 0.0, 3.0])
+    stdout.print(shear.times(shear).cells, Mat2().times(shear) == shear)
+
+    mut bag = Bag()
+    bag.slots[0] = Item(name="rope", weight=2)
+    bag.slots[-1] = Item(name="lamp", weight=3)
+    stdout.print(bag.weight(), bag.slots.len(), bag.slots[1] is None)
+
+    # A plain `=` copies the whole array.
+    mut counts = array[int, 3]()
+    counts[1] = 5
+    before = counts
+    doubled(ref counts)
+    stdout.print(before, counts, 10 in counts, list(counts) + [0])
+
+    grid = array[array[int, 2], 2]()
+    stdout.print(grid, grid[1][0])

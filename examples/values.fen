@@ -1,5 +1,5 @@
-def add_bonus(mut scores: list[int], bonus: int):
-    for mut score in scores:
+def add_bonus(ref scores: list[int], bonus: int):
+    for ref score in scores:
         score += bonus
 
 def main(stdout: Stdout):
@@ -10,5 +10,5 @@ def main(stdout: Stdout):
     stdout.print(changed)
 
     mut scores = [10, 20, 30]
-    add_bonus(mut scores, 5)
+    add_bonus(ref scores, 5)
     stdout.print(scores)

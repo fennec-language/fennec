@@ -111,7 +111,7 @@ pub fn in_stmts(body: &mut [Stmt], change: &mut dyn FnMut(&mut Expr)) {
 }
 
 /// Writes out the type of each field whose default makes a type with its type arguments, like
-/// `IdMap[Unit]()` or `list[str]()`, for what reads a field's type from what's written.
+/// `Table[Unit]()` or `list[str]()`, for what reads a field's type from what's written.
 pub fn type_fields_from_defaults(module: &mut Module) {
     for item in &mut module.items {
         let (Item::Struct(def) | Item::Error(def)) = item else { continue };
@@ -140,6 +140,15 @@ pub fn empty_collection(made: &mut Expr) {
             args: Vec::new(),
         },
     };
+}
+
+/// Makes `array[float, 16]()` into `array.new[float, 16](0.0)`: the builtin that fills an
+/// array with copies of its element's zero. Nothing written can name it.
+pub fn filled_array(made: &mut Expr, zero: &Expr) {
+    let ExprKind::Call { callee, args } = &mut made.kind else { return };
+    let ExprKind::Index { object, .. } = &mut callee.kind else { return };
+    object.kind = ExprKind::Name("array.new".to_owned());
+    args.push(crate::ast::Arg { name: None, is_mut: false, value: zero.clone() });
 }
 
 /// Makes `a != b` into `not (a == b)`, for a type whose `def ==` decides both.
@@ -171,13 +180,13 @@ pub fn name_enum(case: &mut Expr, owner: &str) {
     case.kind = ExprKind::Attr { object, name, optional: false };
 }
 
-/// Writes the defaults a call leaves out into it, by name.
+/// Writes the defaults a call leaves out into it, by name. Each keeps the span it has where its
+/// parameter is declared, which the checker gives its type in the calling function: two defaults
+/// can't share one span, or one's type would stand for both.
 pub fn add_defaults(call: &mut Expr, defaults: &[(String, Expr)]) {
     if let ExprKind::Call { args, .. } = &mut call.kind {
         for (name, default) in defaults {
-            let at = crate::Span { start: call.span.end, end: call.span.end };
-            let value = Expr { kind: default.kind.clone(), span: at };
-            args.push(crate::ast::Arg { name: Some(name.clone()), is_mut: false, value });
+            args.push(crate::ast::Arg { name: Some(name.clone()), is_mut: false, value: default.clone() });
         }
     }
 }
@@ -252,6 +261,10 @@ fn stmt(stmt: &mut Stmt, change: &mut dyn FnMut(&mut Expr)) {
         | StmtKind::Yield(value)
         | StmtKind::Assert(value)
         | StmtKind::Return(Some(value)) => expr(value, change),
+        StmtKind::Lend { value, otherwise } => {
+            expr(value, change);
+            stmts(otherwise, change);
+        }
         StmtKind::Assign { target, value, .. } => {
             expr(target, change);
             expr(value, change);

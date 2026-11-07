@@ -145,6 +145,22 @@ impl<'p> Check<'p> {
                 Some(Type::Optional(inner)) => self.local(*dest) == Some(*inner),
                 _ => false,
             },
+            InstKind::MakeMember { dest, value, member } => match self.local(*dest) {
+                Some(Type::Union(members)) => {
+                    members.get(*member).is_some_and(|wanted| held(self, value).as_ref() == Some(wanted))
+                }
+                _ => false,
+            },
+            InstKind::IsMember { dest, value, member } => {
+                self.local(*dest) == Some(Type::Bool)
+                    && matches!(held(self, value), Some(Type::Union(members)) if *member < members.len())
+            }
+            InstKind::GetMember { dest, value, member } => match held(self, value) {
+                Some(Type::Union(members)) => {
+                    members.get(*member).is_some_and(|wanted| self.local(*dest).as_ref() == Some(wanted))
+                }
+                _ => false,
+            },
             InstKind::MakeOk { dest, value } => match (self.local(*dest), value) {
                 (Some(Type::Result(ok, _)), Some(value)) => {
                     held(self, value).is_some_and(|ty| fits(&ok, &ty))
@@ -187,10 +203,7 @@ impl<'p> Check<'p> {
     /// Building collections, and reading and changing their items.
     fn collection_inst(&mut self, inst: &InstKind) {
         match inst {
-            InstKind::MakeList { dest, items } => match self.local(*dest) {
-                Some(Type::List(item)) => self.operands(items, &item),
-                _ => self.problems.push(format!("`{inst}` makes a list in another type")),
-            },
+            InstKind::MakeList { dest, items } => self.make_list(inst, *dest, items),
             InstKind::MakeSet { dest, items } => match self.local(*dest) {
                 Some(Type::Set(item)) => self.operands(items, &item),
                 _ => self.problems.push(format!("`{inst}` makes a set in another type")),
@@ -254,9 +267,9 @@ impl<'p> Check<'p> {
                     ty = ty.and_then(|ty| self.field(&ty, field));
                 }
                 let (key, item) = match ty {
-                    Some(Type::List(item) | Type::Buffer(item)) => (Type::Int, *item),
+                    Some(Type::List(item) | Type::Buffer(item) | Type::Array(item, _)) => (Type::Int, *item),
                     Some(Type::Dict(key, item)) => (*key, *item),
-                    Some(Type::IdMap(item)) => (Type::Id(item.clone()), *item),
+                    Some(Type::Table(item)) => (Type::Id(item.clone()), *item),
                     _ => {
                         self.problems.push(format!("`{inst}` changes an item of something else"));
                         return;
@@ -266,6 +279,17 @@ impl<'p> Check<'p> {
                 self.operand(value, Some(&item), "item");
             }
             _ => {}
+        }
+    }
+
+    fn make_list(&mut self, inst: &InstKind, dest: LocalId, items: &[Operand]) {
+        match self.local(dest) {
+            Some(Type::List(item)) => self.operands(items, &item),
+            // An array is made with all its items.
+            Some(Type::Array(item, size)) if u64::try_from(items.len()) == Ok(size) => {
+                self.operands(items, &item);
+            }
+            _ => self.problems.push(format!("`{inst}` makes a list in another type")),
         }
     }
 
@@ -535,12 +559,12 @@ pub(crate) fn plainly_ordered(ty: &Type) -> bool {
 /// What a value of this type is indexed by, and what that gives.
 fn indexed(ty: &Type) -> Option<(Type, Type)> {
     match ty {
-        Type::List(item) | Type::Buffer(item) => Some((Type::Int, *item.clone())),
+        Type::List(item) | Type::Buffer(item) | Type::Array(item, _) => Some((Type::Int, *item.clone())),
         Type::Str => Some((Type::Int, Type::Str)),
         Type::Bytes => Some((Type::Int, Type::Int)),
         Type::Dict(key, value) => Some((*key.clone(), *value.clone())),
         Type::Named(name) if name == "Args" => Some((Type::Int, Type::Str)),
-        Type::IdMap(item) => Some((Type::Id(item.clone()), *item.clone())),
+        Type::Table(item) => Some((Type::Id(item.clone()), *item.clone())),
         Type::Tuple(items) => {
             let first = items.first()?;
             items.iter().all(|item| item == first).then(|| (Type::Int, first.clone()))

@@ -9,7 +9,7 @@ struct Particle:
     velocity: Vec2
     bounces = 0
 
-    def step(mut self, dt: float):
+    def step(ref self, dt: float):
         self.velocity.y -= 9.8 * dt
         self.position.x += self.velocity.x * dt
         self.position.y += self.velocity.y * dt
@@ -25,7 +25,7 @@ def main(stdout: Stdout):
         velocity = Vec2(x=float(i % 7) - 3.0, y=float(i % 11))
         particles.append(Particle(position=position, velocity=velocity))
     for _ in range(2500):
-        for mut particle in particles:
+        for ref particle in particles:
             particle.step(0.01)
     mut bounces = 0
     mut height = 0.0

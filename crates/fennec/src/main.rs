@@ -19,12 +19,26 @@ mod image;
 mod lint;
 mod llvm_tests;
 mod lsp;
+mod notices;
 mod report;
 mod run;
 mod test;
 mod test_inputs;
 mod trace;
 mod verdict;
+
+/// A path in the temporary folder for this command's own scratch work, named so that nothing
+/// else can have it: the process's id and when it asked, as the temporary folder is shared by
+/// every process, and one killed before it tidied up can leave a tool it started still writing to
+/// a folder named by an id the system has given out again.
+pub(crate) fn own_temp(what: &str) -> std::path::PathBuf {
+    static ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let count = ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("fennec-{what}-{}-{at:x}-{count}", std::process::id()))
+}
 
 use std::process::ExitCode;
 
@@ -34,8 +48,7 @@ const USAGE: &str = "usage:
   fennec run --no-test [path] [args]  run it without running the tests first
   fennec run --jit [path] [args]  run it with the JIT instead of LLVM
   fennec run --interp [path]  run it with the interpreter instead of compiling it
-  fennec build [path] [-o out]  compile it to a standalone executable
-  fennec build --llvm [--release] [--cpu baseline] [path] [-o out]  the same through LLVM, for what that backend takes so far;
+  fennec build [--release] [--cpu baseline] [path] [-o out]  compile it to a native program through LLVM;
                                      --release optimizes the whole program as one;
                                      --cpu baseline builds for x86-64 machines older than AVX2
   fennec test [path]        run a kit's tests, or a single file's, skipping unchanged ones that passed
@@ -53,6 +66,7 @@ const USAGE: &str = "usage:
                             add --json to either for JSON on standard output
   fennec fix [path]         make the fixes the type checker and linter suggest, in a kit or a .fen file
   fennec lsp                the language server, for editors, over standard input and output
+  fennec notices <program>  the third-party notices a program built by `fennec build` holds
   fennec daemon <action>    the build daemon: `status` or `stop`; commands start it
   fennec --version          show the version
 
@@ -61,17 +75,31 @@ const USAGE: &str = "usage:
 /// The interpreter recurses for each nested call, so it gets a generous stack.
 pub(crate) const STACK_BYTES: usize = 512 * 1024 * 1024;
 
-fn main() -> ExitCode {
+/// The command's arguments, with `--cpu baseline` taken out wherever it's put: it builds for the
+/// first processors of the architecture. Nothing when `--cpu` is given something else.
+fn arguments() -> Option<Vec<String>> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    // `--cpu baseline` builds for the first processors of the architecture, wherever it's put.
     if let Some(at) = args.iter().position(|arg| arg == "--cpu") {
         if args.get(at + 1).map(String::as_str) != Some("baseline") {
             eprintln!("error: `--cpu` takes `baseline`, for older machines");
-            return ExitCode::FAILURE;
+            return None;
         }
         args.drain(at..at + 2);
         aot::BASELINE.store(true, std::sync::atomic::Ordering::Relaxed);
     }
+    // `build --llvm` is what asked for LLVM before every build went through it. It's still taken,
+    // as the benchmarks build the commit before this one with the same command.
+    if args.first().is_some_and(|arg| arg == "build") && args.get(1).is_some_and(|arg| arg == "--llvm") {
+        args.remove(1);
+    }
+    Some(args)
+}
+
+fn main() -> ExitCode {
+    fennec_interp::use_tls();
+    let Some(args) = arguments() else {
+        return ExitCode::FAILURE;
+    };
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["run"] => run(run::Engine::Native, ".", &[]),
         ["run", "--no-test"] => run(run::Engine::Untested, ".", &[]),
@@ -81,18 +109,14 @@ fn main() -> ExitCode {
         ["run", "--jit"] => run(run::Engine::NativeNoted, ".", &[]),
         ["run", "--jit", path, arguments @ ..] => run(run::Engine::NativeNoted, path, arguments),
         ["run", path, arguments @ ..] => run(run::Engine::Native, path, arguments),
-        ["build", "--llvm", "--release"] => aot::build_llvm(".", None, true),
-        ["build", "--llvm", "--release", "-o", output] => aot::build_llvm(".", Some(output), true),
-        ["build", "--llvm", "--release", path] => aot::build_llvm(path, None, true),
-        ["build", "--llvm", "--release", path, "-o", output] => aot::build_llvm(path, Some(output), true),
-        ["build", "--llvm"] => aot::build_llvm(".", None, false),
-        ["build", "--llvm", "-o", output] => aot::build_llvm(".", Some(output), false),
-        ["build", "--llvm", path] => aot::build_llvm(path, None, false),
-        ["build", "--llvm", path, "-o", output] => aot::build_llvm(path, Some(output), false),
-        ["build"] => aot::build(".", None),
-        ["build", "-o", output] => aot::build(".", Some(output)),
-        ["build", path] => aot::build(path, None),
-        ["build", path, "-o", output] => aot::build(path, Some(output)),
+        ["build", "--release"] => aot::build(".", None, true),
+        ["build", "--release", "-o", output] => aot::build(".", Some(output), true),
+        ["build", "--release", path] => aot::build(path, None, true),
+        ["build", "--release", path, "-o", output] => aot::build(path, Some(output), true),
+        ["build"] => aot::build(".", None, false),
+        ["build", "-o", output] => aot::build(".", Some(output), false),
+        ["build", path] => aot::build(path, None, false),
+        ["build", path, "-o", output] => aot::build(path, Some(output), false),
         ["test", rest @ ..] => test(rest),
         ["bench"] => bench::bench("."),
         ["bench", path] => bench::bench(path),
@@ -122,7 +146,14 @@ fn main() -> ExitCode {
         ["dev", "check", path] => dev(check_dump, path),
         ["daemon", action] => daemon::command(action),
         ["lsp"] => lsp::lsp(),
+        ["notices", program] => notices::command(program),
+        ["dev", "checks"] => on_big_stack(fallbacks::checks, "."),
+        ["dev", "checks", path] => on_big_stack(fallbacks::checks, path),
+        ["dev", "waits"] => on_big_stack(fallbacks::waits, "."),
+        ["dev", "waits", path] => on_big_stack(fallbacks::waits, path),
         ["dev", "fallbacks"] => on_big_stack(fallbacks::fallbacks, "."),
+        ["dev", "fallbacks", "--llvm"] => on_big_stack(fallbacks::not_lowered, "."),
+        ["dev", "fallbacks", "--llvm", path] => on_big_stack(fallbacks::not_lowered, path),
         ["dev", "fallbacks", path] => on_big_stack(fallbacks::fallbacks, path),
         ["dev", "copies"] => on_big_stack(copies::copies, "."),
         ["dev", "copies", "--run"] => on_big_stack(copies::copies_in_a_run, "."),

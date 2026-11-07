@@ -1,7 +1,7 @@
 //! A program's declarations: its functions, methods, types and aliases, together with the
 //! standard library's. Function bodies are looked at later, one function at a time.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fennec_syntax::{
     Diagnostic, FnDef, Generic, Import, Imported, Interface, Item, Module, Span, TestDef, TypeDef, TypeExpr,
@@ -16,14 +16,16 @@ pub(crate) enum TypeKind {
     Error,
 }
 
+#[derive(Clone)]
 pub(crate) struct TypeInfo {
     pub(crate) kind: TypeKind,
-    pub(crate) def: TypeDef,
+    pub(crate) def: std::sync::Arc<TypeDef>,
     /// Whether it comes from the standard library rather than the program.
     pub(crate) prelude: bool,
 }
 
 /// A constant at the top level: `KEYWORDS = {"def", "if"}`.
+#[derive(Clone)]
 pub(crate) struct ConstEntry {
     pub(crate) ty: Option<TypeExpr>,
     pub(crate) value: fennec_syntax::Expr,
@@ -31,8 +33,9 @@ pub(crate) struct ConstEntry {
     pub(crate) prelude: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct FnEntry {
-    pub(crate) def: FnDef,
+    pub(crate) def: std::sync::Arc<FnDef>,
     /// The type a method belongs to.
     pub(crate) owner: Option<String>,
     pub(crate) prelude: bool,
@@ -45,7 +48,7 @@ pub(crate) struct FnEntry {
 
 /// Every declaration in a program, keyed the way the signature table is: `name` for a
 /// function, `Type.name` for a method, `outer.inner` for a nested function.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Program {
     pub(crate) types: BTreeMap<String, TypeInfo>,
     pub(crate) functions: BTreeMap<String, FnEntry>,
@@ -60,7 +63,7 @@ pub(crate) struct Program {
     /// Standard library functions written in Fennec, by the name they're imported under.
     pub(crate) std_functions: BTreeMap<String, String>,
     /// Standard library types imported by name, like `Deque` from `std.collections`.
-    pub(crate) imported_types: std::collections::BTreeSet<String>,
+    pub(crate) imported_types: BTreeSet<String>,
     /// Imported modules, by the name they're used under, like `json` in `json.loads(...)`.
     pub(crate) modules: BTreeMap<String, &'static str>,
     /// What the standard library's own code imports as modules, which only that code sees.
@@ -68,6 +71,9 @@ pub(crate) struct Program {
     /// Problems found while adding declarations: imports of modules or names that don't
     /// exist, and methods that can't be added.
     pub(crate) problems: Vec<Diagnostic>,
+    /// The names an import that failed would have bound, which aren't reported again where
+    /// they're used.
+    pub(crate) failed_imports: BTreeSet<String>,
     aliases: BTreeMap<String, TypeExpr>,
 }
 
@@ -80,7 +86,7 @@ impl Program {
             match item {
                 Item::Function(def) => {
                     let entry = FnEntry {
-                        def: def.clone(),
+                        def: def.clone().into(),
                         owner: None,
                         prelude,
                         inherited: Vec::new(),
@@ -124,7 +130,34 @@ impl Program {
         }
         let imported = match fennec_syntax::std_import(import) {
             Ok(imported) => imported,
+            // One unknown name among several, as in `from std import compres, json`, is reported
+            // alone: the others are imported as if each had its own line, and a name that
+            // failed isn't reported again wherever it's used.
+            Err(_) if import.names.len() > 1 => {
+                for (at, name) in import.names.iter().enumerate() {
+                    let one = Import {
+                        names: vec![name.clone()],
+                        aliases: vec![import.aliases.get(at).cloned().flatten()],
+                        ..import.clone()
+                    };
+                    match fennec_syntax::std_import(&one) {
+                        Ok(_) => self.add_import(&one),
+                        Err(problem) => {
+                            let bound = one
+                                .bound()
+                                .next()
+                                .map_or_else(|| name.clone(), |(_, alias)| alias.to_owned());
+                            self.failed_imports.insert(bound);
+                            self.problems.push(problem);
+                        }
+                    }
+                }
+                return;
+            }
             Err(problem) => {
+                if let Some((_, alias)) = import.bound().next() {
+                    self.failed_imports.insert(alias.to_owned());
+                }
                 self.problems.push(problem);
                 return;
             }
@@ -155,7 +188,7 @@ impl Program {
         for method in &def.methods {
             self.add_method(&def.name, method, prelude, &[]);
         }
-        self.types.insert(def.name.clone(), TypeInfo { kind, def: def.clone(), prelude });
+        self.types.insert(def.name.clone(), TypeInfo { kind, def: def.clone().into(), prelude });
     }
 
     /// The type a parameter with no written type takes from its default: an `int`, `float`,
@@ -194,7 +227,7 @@ impl Program {
 
     /// Whether a name, used as a value, means a type: `Enemy` in `Enemy.at(...)`.
     pub(crate) fn is_type_name(&self, name: &str) -> bool {
-        self.types.contains_key(name) || matches!(name, "Id" | "IdMap" | "SoaList" | "Buffer")
+        self.types.contains_key(name) || matches!(name, "Id" | "Table" | "SoaList" | "Buffer")
     }
 
     /// The enums that have a case with this name, in name order.
@@ -216,23 +249,101 @@ impl Program {
         self.resolve_within(written, generics, ALIAS_DEPTH)
     }
 
-    fn resolve_within(
-        &self,
-        written: &TypeExpr,
-        generics: &[String],
-        depth: usize,
-    ) -> Result<Type, Diagnostic> {
-        // `std.collections.Deque` or `collections.Deque`, through an imported module.
-        let name = match written.name.rsplit_once('.') {
+    /// `ParseError | RangeError` after `fails`: one of several errors. Each has to be one.
+    fn errors_named(&self, union: &TypeExpr, generics: &[String], depth: usize) -> Result<Type, Diagnostic> {
+        let members: Vec<Type> = union
+            .args
+            .iter()
+            .map(|member| self.resolve_within(member, generics, depth))
+            .collect::<Result<_, _>>()?;
+        let is_error = |ty: &Type| {
+            matches!(ty, Type::Named(name) if self.types.get(name).is_some_and(|info| info.kind == TypeKind::Error))
+                || matches!(ty, Type::Errors(_))
+        };
+        if !members.iter().any(is_error) {
+            let ty = union_of(union, members)?;
+            return Ok(if union.optional { Type::optional(ty) } else { ty });
+        }
+        let mut names = Vec::new();
+        for error in &union.args {
+            match self.resolve_within(error, generics, depth)? {
+                Type::Named(name)
+                    if self.types.get(&name).is_some_and(|info| info.kind == TypeKind::Error) =>
+                {
+                    names.push(name);
+                }
+                Type::Unknown => {}
+                other => {
+                    return Err(Diagnostic::new(
+                        format!("`|` joins errors, but `{}` is {}", written(error), crate::types::a(&other)),
+                        error.span,
+                    )
+                    .with_help("declare the ways it can fail with `error`, like `error LoadError:`"));
+                }
+            }
+        }
+        names.sort();
+        names.dedup();
+        Ok(Type::Errors(names))
+    }
+
+    /// The name a written type gives, through an imported module: `Deque` for
+    /// `std.collections.Deque` or `collections.Deque`.
+    fn written_name<'w>(&self, written: &'w TypeExpr) -> &'w str {
+        match written.name.rsplit_once('.') {
             Some((path, member))
                 if self.modules_at(written.span).contains_key(path) && self.types.contains_key(member) =>
             {
                 member
             }
             _ => written.name.as_str(),
-        };
+        }
+    }
+
+    /// `(str) -> int fails ParseError`'s return type: a result of what it gives back and its errors.
+    fn fallible_returns(
+        &self,
+        written: &TypeExpr,
+        generics: &[String],
+        depth: usize,
+    ) -> Result<Type, Diagnostic> {
+        let [returns, errors] = written.args.as_slice() else { return Ok(Type::Unknown) };
+        let returns = self.resolve_within(returns, generics, depth)?;
+        Ok(Type::result(returns, self.resolve_within(errors, generics, depth)?))
+    }
+
+    /// How many types in brackets a type takes, when `given` are written.
+    fn wanted_args(&self, name: &str, given: usize) -> usize {
+        match name {
+            "->" => given.max(1),
+            "list" | "set" | "SoaList" | "Buffer" | "Id" | "Table" | "Iterator" => 1,
+            "dict" | "Result" | "array" => 2,
+            "tuple" => given,
+            name => self.type_params(name).len(),
+        }
+    }
+
+    fn resolve_within(
+        &self,
+        written: &TypeExpr,
+        generics: &[String],
+        depth: usize,
+    ) -> Result<Type, Diagnostic> {
+        let name = self.written_name(written);
         if self.is_interface(name) {
             return Err(interface_as_type(name, written.span));
+        }
+        match name {
+            "|" => return self.errors_named(written, generics, depth),
+            "fails" => return self.fallible_returns(written, generics, depth),
+            _ => {}
+        }
+        // `with Transaction`, what a source lends, and `shared Scores`, which holds any type.
+        if matches!(name, crate::lend::WITH | crate::lock::SHARED)
+            && let [held] = written.args.as_slice()
+        {
+            let ty = Type::Generic(name.to_owned(), vec![self.resolve_within(held, generics, depth)?]);
+            return Ok(if written.optional { Type::optional(ty) } else { ty });
         }
         let builtin = BUILT_IN_TYPES.contains(&name);
         let declared = generics.iter().any(|generic| generic == name)
@@ -241,18 +352,13 @@ impl Program {
         if !builtin && !declared {
             return Err(unknown_type(name, written.span));
         }
-        let wanted = match name {
-            "->" => written.args.len().max(1),
-            "list" | "set" | "SoaList" | "Buffer" | "Id" | "IdMap" | "Iterator" => 1,
-            "dict" | "Result" => 2,
-            "tuple" => written.args.len(),
-            name => self.type_params(name).len(),
-        };
+        let wanted = self.wanted_args(name, written.args.len());
         if written.args.len() != wanted {
             return Err(wrong_type_args(written, wanted));
         }
         let mut args = Vec::new();
-        for arg in &written.args {
+        // An array's size is a number, not a type.
+        for arg in written.args.iter().take(if name == "array" { 1 } else { usize::MAX }) {
             args.push(self.resolve_within(arg, generics, depth)?);
         }
         let mut items = args.clone().into_iter();
@@ -269,6 +375,7 @@ impl Program {
             "nothing" => Type::Unit,
             "list" | "SoaList" => Type::List(arg()),
             "Buffer" => Type::Buffer(arg()),
+            "array" => Type::Array(arg(), array_size(written)?),
             "Iterator" => Type::Iterator(arg()),
             "set" => Type::Set(arg()),
             "dict" => Type::Dict(arg(), arg()),
@@ -280,8 +387,10 @@ impl Program {
                 Type::Arrow(params, Box::new(ret))
             }
             "Id" => Type::Id(arg()),
-            "IdMap" => Type::IdMap(arg()),
-            "Stdout" | "Fs" | "Clock" | "Args" | "Stdin" | "Process" | "Entropy" | "Net" => Type::named(name),
+            "Table" => Type::Table(arg()),
+            "Stdout" | "Fs" | "Clock" | "Args" | "Stdin" | "Process" | "Entropy" | "Net" | "Env" => {
+                Type::named(name)
+            }
             name if generics.iter().any(|generic| generic == name) => Type::Param(name.to_owned()),
             name if self.types.contains_key(name) && !args.is_empty() => Type::Generic(name.to_owned(), args),
             name if self.types.contains_key(name) => Type::named(name),
@@ -295,6 +404,9 @@ impl Program {
                 }
             },
         };
+        if let Some(problem) = optional_inside(&ty, written.span) {
+            return Err(problem);
+        }
         Ok(if written.optional { Type::optional(ty) } else { ty })
     }
 
@@ -382,10 +494,10 @@ impl Program {
 
 pub(crate) use fennec_syntax::visit::BUILT_IN_INTERFACES;
 
-pub(crate) const BUILT_IN_TYPES: [&str; 26] = [
-    "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "SoaList", "Buffer", "set", "dict",
-    "tuple", "Id", "IdMap", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Net", "Result",
-    "Iterator", "->",
+pub(crate) const BUILT_IN_TYPES: [&str; 28] = [
+    "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "array", "SoaList", "Buffer", "set",
+    "dict", "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Net",
+    "Env", "Result", "Iterator", "->",
 ];
 
 /// An interface written where a type goes, as in `list[Shape]`.
@@ -395,13 +507,22 @@ fn interface_as_type(name: &str, span: Span) -> Diagnostic {
     ))
 }
 
+/// The `16` in `array[float, 16]`: a whole number of at least 1, written out.
+fn array_size(written: &TypeExpr) -> Result<u64, Diagnostic> {
+    let size = written.args.get(1).and_then(|size| size.name.parse::<u64>().ok());
+    size.filter(|size| *size > 0).ok_or_else(|| {
+        Diagnostic::new("an array's size is a whole number of at least 1, written out", written.span)
+            .with_help("write it like `array[float, 16]`")
+    })
+}
+
 fn wrong_type_args(written: &TypeExpr, wanted: usize) -> Diagnostic {
     let name = &written.name;
     let example = match name.as_str() {
         "dict" => "dict[str, int]".to_owned(),
         "Result" => "Result[int, IoError]".to_owned(),
         "list" | "set" | "SoaList" | "Buffer" => format!("{name}[int]"),
-        "Id" | "IdMap" => format!("{name}[Enemy]"),
+        "Id" | "Table" => format!("{name}[Enemy]"),
         _ => name.clone(),
     };
     let message = if wanted == 0 {
@@ -421,6 +542,10 @@ pub(crate) fn unknown_type(name: &str, span: Span) -> Diagnostic {
         "boolean" | "Bool" => diagnostic.with_help("write `bool`"),
         "List" | "Dict" | "Set" => diagnostic.with_help(format!("write `{}`", name.to_lowercase())),
         "Optional" => diagnostic.with_help("write `?` after the type, like `Enemy?`"),
+        // The type's name comes first in what's written, before any brackets.
+        "IdMap" => diagnostic
+            .with_help(crate::messages::TABLE)
+            .with_fix(Span { start: span.start, end: span.start + 5 }, "Table"),
         "Self" => diagnostic.with_help(
             "`Self` means the type a method belongs to, so it goes in a method of a type or an interface",
         ),
@@ -439,6 +564,11 @@ pub(crate) fn written_ret(def: &FnDef) -> Option<&TypeExpr> {
 /// A written type as source text, for suggesting a fix.
 pub(crate) fn written(ty: &TypeExpr) -> String {
     let args: Vec<String> = ty.args.iter().map(written).collect();
+    match ty.name.as_str() {
+        "|" => return args.join(" | "),
+        "fails" => return args.join(" fails "),
+        _ => {}
+    }
     if ty.name == "->" {
         let (ret, params) = args.split_last().map_or(("", &[][..]), |(ret, params)| (ret.as_str(), params));
         return format!("({}) -> {ret}", params.join(", "));
@@ -521,4 +651,71 @@ pub(crate) fn default_problem(
             .with_help(format!("remove the type, so it reads `{name} = ` and its default"))
             .with_fix(between, " = "),
     )
+}
+
+/// What's wrong with a dict or set that holds optionals: not being in one already means missing,
+/// so a `None` in it would be a second way to say so.
+pub(crate) fn optional_inside(ty: &Type, span: Span) -> Option<Diagnostic> {
+    let (message, help) = match ty {
+        Type::Dict(_, value) if matches!(**value, Type::Optional(_) | Type::None) => (
+            "a dict can't hold optional values",
+            "leave the key out instead, since not being in the dict already means missing",
+        ),
+        Type::Dict(key, _) if matches!(**key, Type::Optional(_) | Type::None) => {
+            ("a dict's keys can't be optional", "keep a key that's missing out of the dict")
+        }
+        Type::Set(item) if matches!(**item, Type::Optional(_) | Type::None) => (
+            "a set can't hold optional items",
+            "leave a missing item out, since not being in the set already says so",
+        ),
+        _ => return None,
+    };
+    Some(Diagnostic::new(message, span).with_help(help))
+}
+
+/// `Circle | Square`: the union of `members`, flattened and in a fixed order, so `A | B` is
+/// `B | A`. A member that's there twice, `None`, or a type parameter is a mistake.
+fn union_of(written: &TypeExpr, members: Vec<Type>) -> Result<Type, Diagnostic> {
+    let mut flat = Vec::new();
+    for (member, at) in members.into_iter().zip(&written.args) {
+        match member {
+            Type::Union(inner) => flat.extend(inner.into_iter().map(|inner| (inner, at.span))),
+            Type::None | Type::Optional(_) => {
+                let others: Vec<String> =
+                    written.args.iter().filter(|arg| arg.name != "None").map(written_type).collect();
+                let without = match others.as_slice() {
+                    [one] => format!("{one}?"),
+                    _ => format!("({})?", others.join(" | ")),
+                };
+                return Err(Diagnostic::new("`None` is never part of a union", at.span)
+                    .with_help(format!("write `{without}`: an optional says it can be missing"))
+                    .with_fix(written.span, without));
+            }
+            Type::Param(name) => {
+                return Err(Diagnostic::new(
+                    format!("`{name}` is a type parameter, which can't be part of a union"),
+                    at.span,
+                )
+                .with_help(
+                    "a union mixes types that are known; generic code uses an enum, like `enum Either[L, R]`",
+                ));
+            }
+            member => flat.push((member, at.span)),
+        }
+    }
+    flat.sort_by_key(|(member, _)| member.to_string());
+    let twice = flat.windows(2).find_map(|pair| match pair {
+        [(one, _), (other, at)] if one == other => Some((other, at)),
+        _ => None,
+    });
+    if let Some((member, at)) = twice {
+        return Err(
+            Diagnostic::new(format!("`{member}` is in this union twice"), *at).with_help("write it once")
+        );
+    }
+    Ok(Type::Union(flat.into_iter().map(|(member, _)| member).collect()))
+}
+
+fn written_type(ty: &TypeExpr) -> String {
+    written(ty)
 }

@@ -380,7 +380,13 @@ pub struct Image {
 impl Image {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut to = Writer::default();
-        self.module.encode(&mut to);
+        // The syntax goes first with its length, so a runtime that has no interpreter to run it
+        // can step over it unread.
+        let mut module = Writer::default();
+        self.module.encode(&mut module);
+        let module = module.into_bytes();
+        to.word(u64::try_from(module.len()).unwrap_or(u64::MAX));
+        to.bytes.extend_from_slice(&module);
         let files: Vec<(String, String)> =
             self.sources.files().map(|(path, text)| (path.to_owned(), text.to_owned())).collect();
         files.encode(&mut to);
@@ -392,6 +398,8 @@ impl Image {
         tables.patterns.encode(&mut to);
         tables.elements.encode(&mut to);
         tables.shapes.encode(&mut to);
+        tables.cells.encode(&mut to);
+        tables.blocks.encode(&mut to);
         tables.str_shape.encode(&mut to);
         tables.text_headers.encode(&mut to);
         self.literals.encode(&mut to);
@@ -400,7 +408,13 @@ impl Image {
 
     pub fn from_bytes(bytes: &[u8]) -> Option<Image> {
         let from = &mut Reader::new(bytes);
-        let module = Module::decode(from)?;
+        let length = usize::try_from(from.word()?).ok()?;
+        let syntax = from.take(length)?;
+        let module = if cfg!(feature = "lean") {
+            Module { items: Vec::new() }
+        } else {
+            Module::decode(&mut Reader::new(syntax))?
+        };
         let mut sources = Sources::new();
         for (path, text) in Vec::<(String, String)>::decode(from)? {
             sources.add(path, text);
@@ -413,6 +427,8 @@ impl Image {
             patterns: Decode::decode(from)?,
             elements: Decode::decode(from)?,
             shapes: Decode::decode(from)?,
+            cells: Decode::decode(from)?,
+            blocks: Decode::decode(from)?,
             str_shape: Decode::decode(from)?,
             text_headers: Decode::decode(from)?,
             ..Tables::default()
@@ -466,6 +482,25 @@ mod tests {
         });
         round_trip(&Element::Boxed(4));
         round_trip(&Element::Maybe(std::rc::Rc::new(Element::Str)));
+    }
+
+    /// An image comes back with its syntax, which goes first with its length, and what follows it.
+    #[test]
+    fn an_image_comes_back_with_its_syntax_and_what_follows_it() {
+        let module = fennec_syntax::parse("def main(stdout: Stdout):\n    stdout.print(1)\n").unwrap();
+        let mut sources = fennec_syntax::Sources::new();
+        sources.add("main.fen".to_owned(), "def main(stdout: Stdout):\n".to_owned());
+        let image = Image {
+            module: module.clone(),
+            sources,
+            tables: crate::embed::Tables { str_shape: 7, ..crate::embed::Tables::default() },
+            literals: vec!["fox".to_owned()],
+        };
+        let back = Image::from_bytes(&image.to_bytes()).unwrap();
+        assert_eq!(back.module, module);
+        assert_eq!(back.tables.str_shape, 7);
+        assert_eq!(back.literals, ["fox"]);
+        assert_eq!(back.sources.files().count(), 1);
     }
 
     #[test]

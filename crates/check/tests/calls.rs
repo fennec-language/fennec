@@ -295,21 +295,23 @@ fn builtins_take_the_right_arguments() {
     );
 }
 
+/// `copy` with fields changes fields that exist, to values of their types. `replace` was its old
+/// name, which `fennec fix` moves to `copy`.
 #[test]
-fn replace_changes_fields_that_exist() {
+fn copy_with_fields_changes_fields_that_exist() {
     let program = "
         enemy = Enemy(name='Ash')
-        replace(enemy, health=5)
-        replace(enemy, hp=5)
-        replace(enemy, health='x')
-        replace()
+        copy(enemy, health=5)
+        copy(enemy, hp=5)
+        copy(enemy, health='x')
+        replace(enemy, health=6)
     ";
     assert_eq!(
         with_types(program),
         [
             "`Enemy` has no field called `hp` @ 5",
             "`health` should be an int, but this is a str @ 'x'".replace('\'', "\"").as_str(),
-            "`replace` takes a struct value, then the fields to change @ replace()",
+            "`replace` is called `copy` now: `copy(value, field=new)` @ replace",
         ]
     );
 }
@@ -317,18 +319,19 @@ fn replace_changes_fields_that_exist() {
 #[test]
 fn builtin_types_are_built_the_right_way() {
     let program = "
-        a = IdMap[Enemy]()
+        a = Table[Enemy]()
         b = SoaList[Enemy]()
         c = Path('/tmp')
-        d = IdMap(1)
+        d = Table(1)
         e = Path(1)
         f = Id()
     ";
-    let imports = "from std.game import Id, IdMap\nfrom std.layout import SoaList\nfrom std.path import Path";
+    let imports =
+        "from std.collections import Id, Table\nfrom std.layout import SoaList\nfrom std.path import Path";
     assert_eq!(
         crate::in_main_after(&format!("{imports}\n{TYPES}"), program),
         [
-            "`IdMap` was called with the wrong arguments @ IdMap(1)",
+            "`Table` was called with the wrong arguments @ Table(1)",
             "`text` should be a str, but this is an int @ 1",
             "`Id` was called with the wrong arguments @ Id()",
         ]
@@ -354,6 +357,37 @@ fn values_held_in_names_can_be_called() {
             "can't tell the type of `a` @ (a, b) => a + b",
             "can't tell the type of `b` @ (a, b) => a + b",
             "`this function` takes 2 argument(s) @ 3",
+        ]
+    );
+}
+
+#[test]
+fn a_named_function_goes_where_its_function_type_is_written() {
+    let program = "
+        def twice(n: int) -> int:
+            n * 2
+
+        def add(a: int, b: int) -> int:
+            a + b
+
+        def bump(ref n: int):
+            n += 1
+
+        def apply(f: (int) -> int, n: int) -> int:
+            f(n)
+
+        def main(stdout: Stdout):
+            step: (int) -> int = twice
+            bumped: (int) -> int = n => n + 1
+            stdout.print(apply(twice, 3), step(1), bumped(1))
+            stdout.print(apply(add, 1))
+            touch: (int) -> nothing = bump
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "`f` should be a (int) -> int, but this is a function @ add",
+            "`touch` should be a (int) -> nothing, but this is a function @ bump",
         ]
     );
 }
@@ -615,7 +649,7 @@ fn only_sum_takes_a_start() {
 fn a_literal_default_gives_its_type() {
     let text = "enum Mode:\n    Fast\n    Slow\n\ndef scan(limit=8, ratio=-0.5, name='x', on=True, mode=Mode.Fast) -> str:\n    \
         f'{limit + 1} {ratio * 2.0} {name.upper()} {not on} {mode}'\n\ndef main(stdout: Stdout):\n    \
-        stdout.print(scan(limit=2, mode=Mode.Slow))\n";
+        stdout.print(scan(limit=2, mode=.Slow))\n";
     let empty: [&str; 0] = [];
     assert_eq!(problems(text), empty);
     let wrong = text.replace("scan(limit=2", "scan(limit='two'");

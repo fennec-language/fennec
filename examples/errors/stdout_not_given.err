@@ -1,0 +1,7 @@
+error: `stdout` doesn't exist
+ --> examples/errors/stdout_not_given.fen:3:5
+  |
+3 |     stdout.print(f"hello, {name}")
+  |     ^^^^^^
+  |
+  = help: a function reaches outside itself only through what's in its signature, so give `greet` a `stdout: Stdout` parameter and pass it from `main`

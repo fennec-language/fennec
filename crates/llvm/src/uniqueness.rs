@@ -264,6 +264,8 @@ pub(crate) fn unsettled(
         | InstKind::IsNone { .. }
         | InstKind::IsCase { .. }
         | InstKind::IsErr { .. }
+        | InstKind::IsError { .. }
+        | InstKind::IsMember { .. }
         | InstKind::Binary { .. }
         | InstKind::Unary { .. }
         | InstKind::Constant { .. } => {}

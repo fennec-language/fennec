@@ -1,6 +1,7 @@
 //! Lowering a checked module to the IR, one function at a time. The types come from the
 //! checker's typed tree, never from working them out again.
 
+mod arrays;
 pub(crate) mod calls;
 mod closures;
 mod collections;
@@ -36,6 +37,9 @@ pub struct Options {
     /// Whether the body of each `parallel` loop, comprehension and sum is lifted into a function
     /// of its own, for a backend that runs them on threads (see `lower::parallel`).
     pub outline_parallel: bool,
+    /// Whether `main`, if it can fail, ends the program itself rather than give its failure back
+    /// to what started it, for a backend with nothing there to take one.
+    pub stop_on_failed_main: bool,
 }
 
 /// Lowers a module's functions and methods, and the standard library's that they reach. The
@@ -132,6 +136,7 @@ fn lower_from(
             program.not_lowered.push(NotLowered { function: next.name, why });
         }
     }
+    failure::stop_on_failed_main(&mut program, &functions, options);
     program.external = calls::external(&program);
     let (mut defs, mut enums) = (defs.clone(), enums.iter().map(|def| (*def).clone()).collect::<Vec<_>>());
     structs::add_copies(&context, &mut defs, &mut enums);
@@ -140,6 +145,7 @@ fn lower_from(
     program.structs = defs;
     program.enums = enums;
     program.errors = errors;
+    crate::arrays::spill_big_arrays(&mut program);
     program
 }
 
@@ -233,7 +239,8 @@ struct Loop {
 }
 
 /// The capabilities, whose methods the engines provide.
-const CAPABILITIES: [&str; 8] = ["Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Net"];
+const CAPABILITIES: [&str; 9] =
+    ["Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Net", "Env"];
 
 /// What's known about the whole program.
 struct Context<'a> {
@@ -302,17 +309,21 @@ impl Context<'_> {
             | Type::Iterator(item)
             | Type::Set(item)
             | Type::Optional(item)
-            | Type::IdMap(item)
-            | Type::Id(item) => self.holds(item),
+            | Type::Table(item)
+            | Type::Id(item)
+            | Type::Array(item, _) => self.holds(item),
             Type::Dict(key, value) => self.holds(key) && self.holds(value),
-            Type::Tuple(items) => items.iter().all(|item| self.holds(item)),
+            Type::Tuple(items) | Type::Union(items) => items.iter().all(|item| self.holds(item)),
             Type::Arrow(params, returns) => {
                 params.iter().all(|param| self.holds(param))
                     && (**returns == Type::Unit || self.holds(returns))
             }
             Type::Function(key) => self.arrow_of(key).is_some(),
             Type::Result(ok, error) => (**ok == Type::Unit || self.holds(ok)) && self.holds(error),
-            Type::Errors(names) => names.iter().all(|name| self.errors.contains(name.as_str())),
+            // An error with cases is held as an enum.
+            Type::Errors(names) => names
+                .iter()
+                .all(|name| self.errors.contains(name.as_str()) || self.enums.contains_key(name.as_str())),
             Type::Named(name) => {
                 self.structs.contains(name.as_str())
                     || self.instances.types.borrow().contains_key(name.as_str())
@@ -359,6 +370,13 @@ struct Lowering<'a> {
     fills: Vec<collections::Fill>,
     /// The types of the yield functions whose copies are being lowered, innermost last.
     copied: Vec<(String, &'a Body, Option<generics::Subst>)>,
+    /// The types written in brackets at the call being lowered.
+    written_types: Vec<Type>,
+    /// Set while lowering a `list.pop()` whose list is known not to be empty.
+    popping: bool,
+    /// Types that stand in for what the typed tree says, innermost last: a union's receiver,
+    /// read as one member while that member's method is called.
+    retyped: Vec<(Span, Type)>,
 }
 
 impl<'a> Lowering<'a> {
@@ -389,6 +407,9 @@ impl<'a> Lowering<'a> {
             places: Vec::new(),
             fills: Vec::new(),
             copied: Vec::new(),
+            written_types: Vec::new(),
+            popping: false,
+            retyped: Vec::new(),
         }
     }
 
@@ -575,6 +596,8 @@ impl<'a> Lowering<'a> {
             StmtKind::While { cond, body } => self.while_stmt(cond, body)?,
             StmtKind::Return(Some(value)) => self.return_value(value)?,
             StmtKind::Return(None) => self.return_nothing(stmt.span)?,
+            // The checker writes each `lend` in where its source is used.
+            StmtKind::Lend { .. } => return Err("a `lend` outside a `with` source".into()),
             StmtKind::Break | StmtKind::Continue => {
                 let target = self.loops.last().ok_or("`break` outside a loop")?;
                 let depth = target.depth;
@@ -584,7 +607,10 @@ impl<'a> Lowering<'a> {
             }
             StmtKind::Pass => {}
             StmtKind::For { names, is_mut, iter, body } => {
-                match self.parallel_for((names, *is_mut), iter, body, stmt.span) {
+                let lifted = self
+                    .parallel_for((names, *is_mut), iter, body, stmt.span)
+                    .or_else(|| self.parallel_serve(names, iter, body, stmt.span));
+                match lifted {
                     Some(outlined) => outlined?,
                     None => self.for_stmt((names, *is_mut), iter, body, stmt.span)?,
                 }
@@ -592,7 +618,9 @@ impl<'a> Lowering<'a> {
             StmtKind::Fail(error) => self.fail(error, stmt.span)?,
             StmtKind::Yield(value) => self.yield_value(value, stmt.span)?,
             StmtKind::Assert(cond) => self.assert(cond)?,
-            StmtKind::With { value, names, body } => self.with_block(value, names, body, tail, stmt.span)?,
+            StmtKind::With { value, names, body, .. } => {
+                self.with_block(value, names, body, tail, stmt.span)?;
+            }
             StmtKind::Def(def) => self.nested(def, stmt.span)?,
         }
         Ok(())
@@ -744,11 +772,14 @@ impl<'a> Lowering<'a> {
         Ok(Operand::Local(dest))
     }
 
-    /// A call that makes its value itself rather than calling a function: `replace(...)`, a
+    /// A call that makes its value itself rather than calling a function: `copy(x, field=...)`, a
     /// consumer like `sum(...)`, or `Ok(...)` or `Err(...)` written out.
     fn made_by_name(&mut self, expr: &Expr, callee: &Expr, args: &[Arg]) -> Lowered<Option<Operand>> {
-        if matches!(&callee.kind, ExprKind::Name(name) if name == "replace" && self.lookup(name).is_none())
-            && !self.context.functions.contains("replace")
+        // `copy(value, field=new)` copies with fields changed. `replace` was its old name.
+        if let ExprKind::Name(name) = &callee.kind
+            && (name == "replace" || name == "copy" && args.len() > 1)
+            && self.lookup(name).is_none()
+            && !self.context.functions.contains(name.as_str())
         {
             return self.replace(args, expr.span).map(Some);
         }
@@ -962,13 +993,15 @@ fn reachable(blocks: Vec<Open>) -> Vec<Block> {
         .collect()
 }
 
-/// The `shared` types a module declares.
+/// The `shared` types a module declares that take a lock. One the standard library ships, like a
+/// connection, is a resource: lowered like a struct around what it holds, with no lock, and a
+/// `with` on it runs its `del` when the block ends.
 fn shared_types(module: &Module) -> Vec<String> {
     module
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Struct(def) if def.shared => Some(def.name.clone()),
+            Item::Struct(def) if def.shared && !def.span.in_prelude() => Some(def.name.clone()),
             _ => None,
         })
         .collect()

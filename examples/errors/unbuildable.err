@@ -1,0 +1,7 @@
+error: nothing can build `Token`: `_secret` has no default, and `Token` has no named constructor
+ --> examples/errors/unbuildable.fen:3:1
+  |
+3 | struct Token:
+  | ^^^^^^^^^^^^
+  |
+  = help: only `Token`'s own methods can set `_secret`: give it a default, or add a method that builds one, like `def new(...) -> Token:`

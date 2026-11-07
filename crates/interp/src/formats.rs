@@ -1,6 +1,7 @@
 //! `std.json` and `std.toml`: reading text into Fennec values and writing values back out.
 //! Bad text fails with a `ParseError` that says the line and column of the problem.
 
+mod base64;
 mod decode;
 mod dump;
 mod ids;
@@ -239,13 +240,15 @@ impl Interp<'_> {
             }
             ("toml.loads", [Value::Str(text)]) => self.parsed(text, toml::parse(text), span),
             ("json.dumps", [value]) => {
-                let value = self.natural(value, reading.names, span)?;
+                let value = self.saved_ids(value).map_err(|why| Diagnostic::new(why, span))?;
+                let value = self.natural(&value, reading.names, span)?;
                 dump::json(&value, indent)
                     .map(|text| Value::str(&text))
                     .map_err(|why| Diagnostic::new(why, span))
             }
             ("toml.dumps", [value]) => {
-                let value = self.natural(value, Names::Snake, span)?;
+                let value = self.saved_ids(value).map_err(|why| Diagnostic::new(why, span))?;
+                let value = self.natural(&value, Names::Snake, span)?;
                 dump::toml(&value).map(|text| Value::str(&text)).map_err(|why| Diagnostic::new(why, span))
             }
             _ => Err(Diagnostic::new(format!("`{name}` was called with the wrong arguments"), span)),
@@ -263,6 +266,8 @@ impl Interp<'_> {
     ) -> Result<Value, Diagnostic> {
         let read = self.format_builtin(name, args, span)?;
         let Value::Ok(value) = read else { return Ok(read) };
+        self.tables_read.clear();
+        self.load_tags.clear();
         let read = self.decode(value.as_ref().clone(), ty, "", span);
         // How this call reads is over once it has.
         self.reading = Reading::default();

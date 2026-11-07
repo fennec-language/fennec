@@ -1,0 +1,53 @@
+# The notes, kept in memory while the server runs.
+from std.time import Time
+
+## One note. Its id is a UUID and its times are when it was made and last changed.
+export struct Note:
+    ## A UUID v7, so ids sort in the order the notes were made.
+    id: str
+    ## A short name for the note.
+    title: str
+    ## The note's text.
+    body: str
+    ## When the note was made.
+    created: Time
+    ## When the note was last changed, or made if it hasn't been.
+    changed: Time
+
+## What a client sends to make or change a note.
+export struct Draft:
+    ## The note's title.
+    title: str
+    ## The note's text, empty if the client leaves it out.
+    body = ""
+
+## Every note, by id. It's `shared`, so each connection's task reaches the same notes.
+export shared Notes:
+    ## The notes by their ids.
+    items = dict[str, Note]()
+
+    ## Keeps `note`, in place of any note with its id.
+    def add(ref self, note: Note):
+        self.items[note.id] = note
+
+    ## The note with `id`, or `None` if there isn't one.
+    def get(self, id: str) -> Note?:
+        self.items.get(id)
+
+    ## Removes the note with `id`, saying whether there was one.
+    def remove(ref self, id: str) -> bool:
+        (self.items.pop(id) else None) is not None
+
+    ## The notes whose title or body has `words` in it, oldest first.
+    def find(self, words: str) -> list[Note]:
+        found = [
+            note for _,
+            note in self.items.items() if words == "" or note.title.find(
+                words,
+            ) is not None or note.body.find(words) is not None
+        ]
+        sorted(found, key=note => note.created.nanos)
+
+    ## How many notes there are.
+    def count(self) -> int:
+        self.items.len()

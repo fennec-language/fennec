@@ -242,7 +242,7 @@ fn lists_are_written_out_read_changed_and_looped_over() {
   bb0:
     _1 = [1, _0]
     _2 = _1
-    builtin list.append(mut _2, 3)
+    builtin list.append(ref _2, 3)
     _3 = _2[0]
     _4 = _3 + 1
     _2[0] = _4
@@ -275,32 +275,32 @@ fn a_mut_field_is_copied_in_and_back_out() {
     let source = "struct Bag:
     items: list[int]
 
-    def add(mut self, item: int):
+    def add(ref self, item: int):
         self.items.append(item)
 
-def grow(mut items: list[int]):
+def grow(ref items: list[int]):
     items.append(1)
 
-def fill(mut bag: Bag):
-    grow(mut bag.items)
+def fill(ref bag: Bag):
+    grow(ref bag.items)
     bag.add(2)
 ";
     assert_eq!(
         printed(source, "Bag.add").unwrap(),
-        "fn Bag.add(mut _0, _1)
+        "fn Bag.add(ref _0, _1)
   local _0 self: Bag
   local _1 item: int
   local _2: list[int]
   bb0:
     _2 = _0.items
-    builtin list.append(mut _2, _1)
+    builtin list.append(ref _2, _1)
     _0.items = _2
     return
 "
     );
     assert_eq!(
         printed(source, "fill").unwrap(),
-        "fn fill(mut _0)
+        "fn fill(ref _0)
   local _0 bag: Bag
   local _1: list[int]
   bb0:
@@ -481,7 +481,7 @@ fn a_leading_dot_case_takes_its_enum_from_the_typed_tree() {
         case .Name(text):
             .Name(text)
         case .Eof:
-            ExprKind.Negative(0)
+            .Negative(0)
 "
     );
     assert_eq!(
@@ -760,7 +760,7 @@ fn values_are_wrapped_going_where_an_optional_goes_and_else_runs_only_when_neede
     let source = "struct Slot:
     held: int?
 
-def fill(mut slot: Slot, value: int?) -> int:
+def fill(ref slot: Slot, value: int?) -> int:
     slot.held = 1
     slot.held = None
     mut kept: int? = 2
@@ -773,6 +773,56 @@ def fill(mut slot: Slot, value: int?) -> int:
     for line in ["= some 1", "_0.held = none", "= some 2", "_3 = none", "is none", "as some"] {
         assert!(printed.contains(line), "no {line} in {printed}");
     }
+}
+
+/// A member going where its union goes is wrapped with its place in the union as its tag; `is`
+/// and `match` test the tag, and what the checker narrowed reads the member back out.
+#[test]
+fn a_union_is_tagged_by_its_member_and_tested_and_read_by_it() {
+    let source = "struct Circle:
+    radius: float
+
+    def area(self) -> float:
+        self.radius
+
+struct Square:
+    side: float
+
+    def area(self) -> float:
+        self.side
+
+def radius(s: Circle | Square) -> float:
+    if s is Circle:
+        return s.radius
+    0.0
+
+def named(s: Circle | Square) -> str:
+    match s:
+        case Circle(radius): \"circle\"
+        case Square(side): \"square\"
+
+def area(s: Circle | Square) -> float:
+    s.area()
+
+def made() -> Circle | Square:
+    Square(side=1.0)
+";
+    assert_eq!(lowered(source).unwrap().not_lowered, []);
+    let printed = |name: &str| printed(source, name).unwrap();
+    let radius = printed("radius");
+    for line in ["is member 0", "as member 0"] {
+        assert!(radius.contains(line), "no {line} in {radius}");
+    }
+    let named = printed("named");
+    for line in ["is member 0", "as member 0", "is member 1", "as member 1"] {
+        assert!(named.contains(line), "no {line} in {named}");
+    }
+    // A method every member has: the first member is tested, the last needs no test.
+    let area = printed("area");
+    assert!(area.contains("is member 0") && !area.contains("is member 1"), "{area}");
+    assert!(area.contains("call Circle.area") && area.contains("call Square.area"), "{area}");
+    let made = printed("made");
+    assert!(made.contains("= member 1 "), "{made}");
 }
 
 #[test]
@@ -892,7 +942,7 @@ fn a_comprehension_is_a_loop_that_fills_a_collection() {
     return _1
   bb5:
     _9 = _7 * 2
-    builtin list.append(mut _1, _9)
+    builtin list.append(ref _1, _9)
     jump bb3
 "
     );
@@ -902,7 +952,7 @@ fn a_comprehension_is_a_loop_that_fills_a_collection() {
 fn dict_and_set_comprehensions() {
     let source = "def f(xs: list[int]) -> dict[int, str]:\n    {x: str(x) for x in {x for x in xs}}\n";
     let text = printed(source, "f").unwrap();
-    for expected in ["= dict {}", "= set {}", "builtin set.add(mut", "builtin list(", "] = "] {
+    for expected in ["= dict {}", "= set {}", "builtin set.add(ref", "builtin list(", "] = "] {
         assert!(text.contains(expected), "no `{expected}` in {text}");
     }
 }
@@ -926,7 +976,7 @@ fn tuples_unpack_in_assignments_and_loops() {
 
 #[test]
 fn dicts_and_slices_read_and_change_items() {
-    let source = "def f(xs: list[int], d: dict[str, int?]) -> list[int]:
+    let source = "def f(xs: list[int], d: dict[str, int]) -> list[int]:
     mut seen = d
     seen[\"a\"] = 1
     if \"b\" in seen:
@@ -934,7 +984,7 @@ fn dicts_and_slices_read_and_change_items() {
     xs[:2]
 ";
     let text = printed(source, "f").unwrap();
-    for expected in ["= some 1", "[\"a\"] = ", "builtin dict.contains(", "= _0[1:]", "= _0[:2]"] {
+    for expected in ["[\"a\"] = ", "builtin dict.contains(", "= _0[1:]", "= _0[:2]"] {
         assert!(text.contains(expected), "no `{expected}` in {text}");
     }
 }
@@ -950,13 +1000,13 @@ fn a_types_own_operators_are_calls() {
     def <(self, other: Money) -> bool:
         self.cents < other.cents
 
-def f(mut a: Money, b: Money) -> bool:
+def f(ref a: Money, b: Money) -> bool:
     a += b
     a >= b
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
-        "fn f(mut _0, _1) -> bool
+        "fn f(ref _0, _1) -> bool
   local _0 a: Money
   local _1 b: Money
   local _2: Money
@@ -1017,6 +1067,24 @@ def f() -> P:
     assert!(text.contains("= make P(1, 2.5, _0)"), "{text}");
 }
 
+/// Each argument a call leaves out is written in with its own type: a `Duration` and an `int`
+/// left out of one call don't take each other's.
+#[test]
+fn arguments_left_out_get_their_defaults_with_their_types() {
+    let source = "from std.time import Duration
+
+def wait(label: str, timeout=30s, tries=3) -> int:
+    label.len() + tries
+
+def f() -> int:
+    wait(\"a\") + wait(\"b\", tries=1)
+";
+    let program = lowered(source).unwrap();
+    assert_eq!(program.not_lowered, [], "{program}");
+    let text = printed(source, "f").unwrap();
+    assert!(text.contains("call wait(\"a\", "), "{text}");
+}
+
 #[test]
 fn literal_constants_are_written_out_and_others_are_functions() {
     let source = "LIMIT = -2
@@ -1061,8 +1129,8 @@ fn a_range_with_a_step_goes_through_a_list() {
 
 #[test]
 fn for_mut_writes_each_item_back_however_the_loop_is_left() {
-    let source = "def f(mut xs: list[int]) -> int:
-    for mut x in xs:
+    let source = "def f(ref xs: list[int]) -> int:
+    for ref x in xs:
         x += 1
         if x > 3:
             break
@@ -1072,7 +1140,7 @@ fn for_mut_writes_each_item_back_however_the_loop_is_left() {
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
-        "fn f(mut _0) -> int
+        "fn f(ref _0) -> int
   local _0 xs: list[int]
   local _1: list[int]
   local _2: int
@@ -1130,13 +1198,13 @@ fn changing_an_items_insides_reads_it_changes_it_and_writes_it_back() {
     let source = "struct P:
     x: int
 
-def f(mut ps: list[P], mut grid: list[list[int]]):
+def f(ref ps: list[P], ref grid: list[list[int]]):
     ps[0].x += 1
     grid[1][2] = 3
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
-        "fn f(mut _0, mut _1)
+        "fn f(ref _0, ref _1)
   local _0 ps: list[P]
   local _1 grid: list[list[int]]
   local _2: P
@@ -1167,19 +1235,19 @@ fn a_types_own_indexing_is_calls() {
     def [](self, at: int) -> int:
         self.cells[at]
 
-    def []=(mut self, at: int, value: int):
+    def []=(ref self, at: int, value: int):
         self.cells[at] = value
 
 struct Holder:
     grid: Grid
 
-def f(mut holder: Holder) -> int:
+def f(ref holder: Holder) -> int:
     holder.grid[1] = 2
     holder.grid[0]
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
-        "fn f(mut _0) -> int
+        "fn f(ref _0) -> int
   local _0 holder: Holder
   local _1: Grid
   local _2: Grid
@@ -1197,16 +1265,16 @@ def f(mut holder: Holder) -> int:
 
 #[test]
 fn mut_arguments_can_be_items() {
-    let source = "def bump(mut n: int):
+    let source = "def bump(ref n: int):
     n += 1
 
-def f(mut xs: list[int], mut lists: list[list[int]]):
-    bump(mut xs[0])
+def f(ref xs: list[int], ref lists: list[list[int]]):
+    bump(ref xs[0])
     lists[1].append(2)
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
-        "fn f(mut _0, mut _1)
+        "fn f(ref _0, ref _1)
   local _0 xs: list[int]
   local _1 lists: list[list[int]]
   local _2: int
@@ -1216,7 +1284,7 @@ def f(mut xs: list[int], mut lists: list[list[int]]):
     call bump(_2)
     _0[0] = _2
     _3 = _1[1]
-    builtin list.append(mut _3, 2)
+    builtin list.append(ref _3, 2)
     _1[1] = _3
     return
 "
@@ -1402,14 +1470,11 @@ def h(data: bytes, at: int) -> int:
 
 #[test]
 fn a_loop_over_a_generator_with_a_cleanup_or_match_still_lowers() {
-    let source = "struct Door:
-    open: bool
+    // Only a type the standard library ships, like `Connection`, has `def del` on a struct.
+    let source = "from std.net import Connection
 
-    def del(self):
-        pass
-
-def held() -> Iterator[int]:
-    with Door(open=True) as door:
+def held(door: Connection) -> Iterator[int]:
+    with door as open:
         yield 1
     match 2:
         case 2:
@@ -1417,12 +1482,12 @@ def held() -> Iterator[int]:
         case _:
             return
 
-def f() -> int:
-    sum(n for n in held())
+def f(door: Connection) -> int:
+    sum(n for n in held(door))
 ";
     assert!(printed(source, "held.resume").is_ok());
     let closing = printed(source, "held.abandon").unwrap();
-    assert!(closing.contains("call Door.del"), "{closing}");
+    assert!(closing.contains("call Connection.del"), "{closing}");
     let module = fennec_syntax::parse(source).unwrap();
     let checked = fennec_check::check(&module).unwrap();
     let program = lower(&module, &checked);
@@ -1671,144 +1736,142 @@ def f(text: str) -> list[int]:
 
 #[test]
 fn an_id_map_is_read_and_changed_by_id() {
-    let source = "from std.game import IdMap
+    let source = "from std.collections import Table
 
 struct Enemy:
     health: int
 
-    def hit(mut self):
+    def hit(ref self):
         self.health -= 1
 
 def f() -> int:
-    mut map = IdMap[Enemy]()
-    one = map.insert(Enemy(2))
+    mut map = Table[Enemy]()
+    one = map.add(Enemy(2))
     map[one] = Enemy(3)
     map.modify(one, e => e.hit())
-    for mut enemy in map:
+    for ref enemy in map:
         enemy.hit()
     map[one].health
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
         "fn f() -> int
-  local _0: IdMap[Enemy]
-  local _1 map: IdMap[Enemy]
+  local _0: Table[Enemy]
+  local _1 map: Table[Enemy]
   local _2: Enemy
   local _3: Id[Enemy]
   local _4 one: Id[Enemy]
   local _5: Enemy
   local _6: (Enemy) -> nothing
-  local _7: list[(Id[Enemy], Enemy)]
+  local _7: int
   local _8: int
-  local _9: int
-  local _10: int
-  local _11: bool
-  local _12: (Id[Enemy], Enemy)
+  local _9: bool
+  local _10: bool
+  local _11: Enemy
+  local _12 enemy: Enemy
   local _13: Id[Enemy]
-  local _14 enemy: Enemy
-  local _15: Enemy
-  local _16: int
+  local _14: Enemy
+  local _15: int
   bb0:
-    _0 = builtin IdMap()
+    _0 = builtin Table()
     _1 = _0
     _2 = make Enemy(2)
-    _3 = builtin IdMap.insert(mut _1, _2)
+    _3 = builtin Table.add(ref _1, _2)
     _4 = _3
     _5 = make Enemy(3)
     _1[_4] = _5
-    _6 = closure f.arrow@228[]
-    builtin IdMap.modify(mut _1, _4, _6)
-    _7 = builtin IdMap.items(_1)
-    _8 = builtin list.len(_7)
-    _9 = 0
-    _10 = _8
+    _6 = closure f.arrow@232[]
+    builtin Table.modify(ref _1, _4, _6)
+    _7 = builtin Table.slots(_1)
+    _8 = 0
     jump bb1
   bb1:
-    _11 = _9 < _10
-    branch _11 bb2 bb4
+    _9 = _8 < _7
+    branch _9 bb2 bb4
   bb2:
-    _12 = _7[_9]
-    _13 = _12.0
-    _14 = _12.1
-    call Enemy.hit(_14)
-    jump bb3
+    _10 = builtin Table.slot_live(_1, _8)
+    branch _10 bb3 bb5
   bb3:
-    _1[_13] = _14
-    _9 = _9 + 1
-    jump bb1
+    _11 = builtin Table.at_slot(_1, _8)
+    _12 = _11
+    _13 = builtin Table.slot_id(_1, _8)
+    call Enemy.hit(_12)
+    jump bb6
   bb4:
-    _15 = _1[_4]
-    _16 = _15.health
-    return _16
+    _14 = _1[_4]
+    _15 = _14.health
+    return _15
+  bb5:
+    _8 = _8 + 1
+    jump bb1
+  bb6:
+    _1[_13] = _12
+    _8 = _8 + 1
+    jump bb1
 "
     );
 }
 
 #[test]
 fn with_cleans_up_however_its_block_is_left() {
-    let source = "struct File:
-    name: str
+    // Only a type the standard library ships, like `Connection`, has `def del` on a struct.
+    let source = "from std.net import Connection
 
-    def del(self):
-        pass
-
-def f(n: int) -> int:
+def f(n: int, a: Connection, b: Connection) -> int:
     while n > 0:
-        with File(\"a\") as file:
+        with a as file:
             if n == 1:
                 break
             if n == 2:
-                return file.name.len()
-    with File(\"b\"):
+                return file.peer.len()
+    with b:
         pass
     0
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
-        "fn f(_0) -> int
+        "fn f(_0, _1, _2) -> int
   local _0 n: int
-  local _1: bool
-  local _2: File
-  local _3 file: File
-  local _4: bool
+  local _1 a: Connection
+  local _2 b: Connection
+  local _3: bool
+  local _4 file: Connection
   local _5: bool
-  local _6: str
-  local _7: int
+  local _6: bool
+  local _7: str
   local _8: int
-  local _9: File
-  local _10: File
+  local _9: int
+  local _10: Connection
   bb0:
     jump bb1
   bb1:
-    _1 = _0 > 0
-    branch _1 bb2 bb3
+    _3 = _0 > 0
+    branch _3 bb2 bb3
   bb2:
-    _2 = make File(\"a\")
-    _3 = _2
-    _4 = _0 == 1
-    branch _4 bb5 bb6
+    _4 = _1
+    _5 = _0 == 1
+    branch _5 bb5 bb6
   bb3:
-    _9 = make File(\"b\")
-    _10 = _9
-    call File.del(_10)
+    _10 = _2
+    call Connection.del(_10)
     return 0
   bb4:
-    _5 = _0 == 2
-    branch _5 bb8 bb9
+    _6 = _0 == 2
+    branch _6 bb8 bb9
   bb5:
-    call File.del(_3)
+    call Connection.del(_4)
     jump bb3
   bb6:
     jump bb4
   bb7:
-    call File.del(_3)
+    call Connection.del(_4)
     jump bb1
   bb8:
-    _6 = _3.name
-    _7 = builtin str.len(_6)
-    _8 = _7
-    call File.del(_3)
-    return _8
+    _7 = _4.peer
+    _8 = builtin str.len(_7)
+    _9 = _8
+    call Connection.del(_4)
+    return _9
   bb9:
     jump bb7
 "
@@ -1821,11 +1884,11 @@ fn an_argument_is_copied_only_when_a_later_one_changes_it() {
         "def show(a: list[int], b: int) -> int:
     b
 
-def kept(mut xs: list[int], ys: list[int]) -> int:
+def kept(ref xs: list[int], ys: list[int]) -> int:
     show(xs, ys.len()) + show(ys, xs.len())
 
-def changed(mut xs: list[int]) -> int:
-    show(xs, xs.pop())
+def changed(ref xs: list[int]) -> int:
+    show(xs, xs.pop(0))
 ",
     )
     .unwrap();
@@ -1912,13 +1975,13 @@ def f(p: P?) -> int:
 }
 
 #[test]
-fn replace_copies_and_changes_fields() {
+fn copy_with_fields_copies_and_changes_them() {
     let source = "struct P:
     x: int
     y: int? = None
 
 def f(p: P) -> P:
-    replace(p, y=1)
+    copy(p, y=1)
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
@@ -1940,7 +2003,7 @@ fn a_method_changing_a_name_known_not_to_be_none_writes_back_an_optional() {
     let source = "struct P:
     x: int
 
-    def up(mut self):
+    def up(ref self):
         self.x += 1
 
 def f(p: P?) -> P?:
@@ -2127,7 +2190,7 @@ def f() -> int:
 
 #[test]
 fn a_method_of_a_list_is_copied_for_what_it_holds() {
-    let source = "def f(mut xs: list[int]) -> int:
+    let source = "def f(ref xs: list[int]) -> int:
     xs.reverse()
     xs.count(1)
 ";
@@ -2207,12 +2270,12 @@ fn facts_narrow_a_local_holding_one_value_along_branches() {
 
 #[test]
 fn facts_keep_a_count_inside_its_loop_and_say_nothing_of_a_changed_local() {
-    let source = "def bump(mut x: int):
+    let source = "def bump(ref x: int):
     x += 1
 
 def f(n: int) -> int:
     mut total = 0
-    bump(mut total)
+    bump(ref total)
     once = 5
     for i in range(3, 9):
         total += i + once
@@ -2240,7 +2303,7 @@ fn a_write_runs_only_the_rule_of_the_field_it_writes() {
     low: int where low >= 0
     high: int where high >= 9
 
-def f(mut pair: Pair):
+def f(ref pair: Pair):
     pair.low = 1
 ";
     let text = printed(source, "f").unwrap();
@@ -2252,7 +2315,7 @@ const ACCOUNT: &str = "shared Account:
     total = 0
     log = list[int]()
 
-    def add(mut self, amount: int):
+    def add(ref self, amount: int):
         self.total += amount
         self.log.append(amount)
         self.note()
@@ -2295,7 +2358,7 @@ fn a_shared_types_methods_are_called_with_its_lock() {
     _3 = _2 + _1
     _0.total = _3
     _4 = _0.log
-    builtin list.append(mut _4, _1)
+    builtin list.append(ref _4, _1)
     _0.log = _4
     call Account.note(_0)
     return
@@ -2357,6 +2420,9 @@ fn every_example_kit_lowers_to_valid_ir() {
     assert!(kits >= 6, "only {kits} kits");
 }
 
+/// Examples that use what lowering doesn't take yet.
+const NOT_LOWERED_YET: &[&str] = &[];
+
 #[test]
 fn every_example_lowers_to_valid_ir() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
@@ -2373,6 +2439,10 @@ fn every_example_lowers_to_valid_ir() {
             .unwrap_or_else(|problems| panic!("{file}: {problems:?}"));
         let program = lower(&module, &checked);
         validate(&program).unwrap_or_else(|problems| panic!("{file}: {problems:?}\n{program}"));
+        if NOT_LOWERED_YET.contains(&file.as_str()) {
+            assert_ne!(program.not_lowered, [], "{file} lowers now: take it off `NOT_LOWERED_YET`");
+            continue;
+        }
         assert_eq!(program.not_lowered, [], "{file}");
         assert_eq!(program.external, Vec::<String>::new(), "{file}");
         lowered_functions
@@ -2684,11 +2754,11 @@ fn a_buffer_is_made_filled_and_read_through_its_own_builtins() {
 const TRANSFER: &str = "shared Account:
     total = 0
 
-    def add(mut self, amount: int):
+    def add(ref self, amount: int):
         self.total += amount
 
 def transfer(a: Account, b: Account, amount: int) -> bool:
-    with a, b as mut x, mut y:
+    with a, b as ref x, ref y:
         if x.total < amount:
             return False
         x.total -= amount
@@ -2853,7 +2923,7 @@ fn in_calls_a_types_own_in() {
 /// what it wrote, so native code never prints such a value from its fields.
 #[test]
 fn a_type_with_its_own_str_prints_through_it() {
-    let source = "struct Point:\n    x: int\n\n    def str(self, mut out: StrWriter):\n        out.value(self.x)\n\ndef label(p: Point) -> str:\n    f\"at {p}\"\n";
+    let source = "struct Point:\n    x: int\n\n    def str(self, ref out: StrWriter):\n        out.value(self.x)\n\ndef label(p: Point) -> str:\n    f\"at {p}\"\n";
     assert_eq!(
         printed(source, "label").unwrap(),
         r#"fn label(_0) -> str

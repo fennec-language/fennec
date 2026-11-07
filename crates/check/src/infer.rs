@@ -93,21 +93,43 @@ impl Checker {
             | (Type::Set(a), Type::Set(b))
             | (Type::Iterator(a), Type::Iterator(b))
             | (Type::Id(a), Type::Id(b))
-            | (Type::IdMap(a), Type::IdMap(b)) => self.fits(a, b),
+            | (Type::Table(a), Type::Table(b)) => self.fits(a, b),
             (Type::Dict(k1, v1), Type::Dict(k2, v2)) | (Type::Result(k1, v1), Type::Result(k2, v2)) => {
                 self.fits(k1, k2) && self.fits(v1, v2)
             }
+            (Type::Array(a, n), Type::Array(b, m)) if n == m => self.fits(a, b),
             (Type::Tuple(a), Type::Tuple(b)) if a.len() == b.len() => {
                 a.iter().zip(b).all(|(a, b)| self.fits(a, b))
             }
             (Type::Generic(n1, a), Type::Generic(n2, b)) if n1 == n2 && a.len() == b.len() => {
                 a.iter().zip(b).all(|(a, b)| self.fits(a, b))
             }
+            // A function named as a value, like `handle` in `server.serve(handle)`, fits a function
+            // type that takes and gives back what its signature does.
+            (Type::Arrow(params, returns), Type::Function(key)) => self.function_fits(params, returns, key),
             (Type::Arrow(p1, r1), Type::Arrow(p2, r2)) if p1.len() == p2.len() => {
                 p1.iter().zip(p2).all(|(a, b)| self.fits(b, a)) && self.fits(r1, r2)
             }
+            // A member goes where its union is wanted, and so does a union of some of its members.
+            (Type::Union(members), Type::Union(others)) => others.iter().all(|other| members.contains(other)),
+            (Type::Union(members), other) => members.contains(other),
             _ => false,
         }
+    }
+
+    /// Whether the function `key` can go where a `(params) -> returns` is wanted. A generic
+    /// one, or one with a `mut` parameter, can't: a call through the type can't say which types
+    /// it stands for or pass anything `mut`.
+    fn function_fits(&mut self, params: &[Type], returns: &Type, key: &str) -> bool {
+        let Some(signature) = self.signature(key) else { return false };
+        signature.generics.is_empty()
+            && signature.params.len() == params.len()
+            && signature
+                .params
+                .iter()
+                .zip(params)
+                .all(|(param, ty)| !param.is_mut && self.fits(&param.ty, ty))
+            && self.fits(returns, &signature.returns)
     }
 
     /// The type of a value that comes from either `a` or `b`, or `None` when they don't fit
@@ -130,10 +152,11 @@ impl Checker {
                 Type::optional(self.join(inner, &other)?)
             }
             (Type::List(a), Type::List(b)) => Type::list(self.join(a, b)?),
+            (Type::Array(a, n), Type::Array(b, m)) if n == m => Type::Array(Box::new(self.join(a, b)?), *n),
             (Type::Set(a), Type::Set(b)) => Type::Set(Box::new(self.join(a, b)?)),
             (Type::Iterator(a), Type::Iterator(b)) => Type::Iterator(Box::new(self.join(a, b)?)),
             (Type::Id(a), Type::Id(b)) => Type::Id(Box::new(self.join(a, b)?)),
-            (Type::IdMap(a), Type::IdMap(b)) => Type::IdMap(Box::new(self.join(a, b)?)),
+            (Type::Table(a), Type::Table(b)) => Type::Table(Box::new(self.join(a, b)?)),
             (Type::Dict(k1, v1), Type::Dict(k2, v2)) => {
                 Type::Dict(Box::new(self.join(k1, k2)?), Box::new(self.join(v1, v2)?))
             }

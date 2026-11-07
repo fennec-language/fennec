@@ -44,16 +44,20 @@ print_stdout = "deny"
 print_stderr = "deny"
 
 [workspace.dependencies]
-# Finding Visual Studio's linker on Windows, as Rust's own builds do. It's already here for `mimalloc`.
-cc = "=1.10.0"
 # The allocator the runtime gives Fennec programs: fast for many small blocks, under MIT.
 mimalloc = { version = "=0.1.52", default-features = false }
 # Secure random bytes from the operating system, for `Entropy`, on every platform Fennec runs on.
 # Reading them on Windows takes FFI, which Fennec's own crates forbid. Under MIT or Apache-2.0.
 getrandom = { version = "=0.4.3", default-features = false }
-# The work-stealing pool `parallel` runs on, for programs with tasks: well-tested Chase-Lev
-# deques, which would be a lot of subtle code to write again. Under MIT or Apache-2.0.
-rayon-core = { version = "=1.13.0", default-features = false }
+# `std.net`'s HTTP client needs TLS, which isn't something to write by hand. rustls is memory-safe
+# and pinned exactly, as every dependency here is. `ring` is its crypto provider, since the other
+# needs CMake to build. The platform verifier checks certificates against what the operating
+# system trusts, so there's no list of roots to ship and keep up to date.
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "=0.7.1"
+# The deques of the work-stealing pool `parallel` runs on, for programs with tasks: well-tested
+# Chase-Lev deques, which would be a lot of subtle code to write again. Under MIT or Apache-2.0.
+crossbeam-deque = { version = "=0.8.8", default-features = false, features = ["std"] }
 # Switching a parked task's stack, for `parallel(server)`: the stack switch is a few lines of
 # assembly per platform, with guard pages on every stack, in a small, well-audited crate whose
 # `unsafe` stays its own. Our one use of `unsafe` with it is in fennec-parked. Without its
@@ -62,7 +66,13 @@ rayon-core = { version = "=1.13.0", default-features = false }
 corosensei = { version = "=0.3.4", default-features = false, features = ["default-stack"] }
 # Waiting on many sockets at once, for `parallel(server)`: epoll, kqueue and IOCP behind one
 # API, the event loop under Tokio, without its logging. Under MIT.
-mio = { version = "=1.2.4", default-features = false, features = ["net", "os-poll"] }
+mio = { version = "=1.2.4", default-features = false, features = ["net", "os-ext", "os-poll"] }
+# Every float function, `sin` through `**`, is computed by this one pure-Rust library on every
+# platform, so a program prints the same bits on arm64, x86-64, Windows and WebAssembly: each
+# platform's own C library rounds some results differently in the last bit, and replays and
+# lockstep multiplayer need them the same. It's the library Rust itself uses where there's no C
+# library, as on WebAssembly. Without `arch`, nothing in it is chosen by the CPU. Under MIT.
+libm = { version = "=0.2.16", default-features = false }
 cranelift-codegen = "=0.137.0"
 cranelift-frontend = "=0.137.0"
 cranelift-jit = "=0.137.0"

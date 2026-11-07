@@ -1,5 +1,5 @@
 //! `fennec run`: checks a program, then runs its `main` as native code. That's the cached dev
-//! build LLVM makes, as `fennec build --llvm` does, compiled a function at a time so an edit
+//! build LLVM makes, as `fennec build` does, compiled a function at a time so an edit
 //! recompiles only what it touched. Where LLVM can't build the program yet it says why, in
 //! one line, and the JIT runs it, or the interpreter what the JIT can't. `--jit` and
 //! `--interp` ask for those directly.
@@ -94,11 +94,7 @@ fn built_and_run(
     } else {
         program
     };
-    let executable = std::env::temp_dir().join(format!(
-        "fennec-run-{}{}",
-        std::process::id(),
-        std::env::consts::EXE_SUFFIX
-    ));
+    let executable = crate::own_temp("run").with_extension(std::env::consts::EXE_EXTENSION);
     crate::aot::executable(program, &executable, false)?;
     let mut command = std::process::Command::new(&executable);
     // `args.program` is the program it ran, not where it was built to for this run.
@@ -149,7 +145,7 @@ pub(crate) fn startup(path: &str) -> ExitCode {
 /// Loads and checks all of a program.
 fn whole(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures), ExitCode> {
     let mut program = crate::load(path, fennec_kit::Entry::Main).ok_or(ExitCode::FAILURE)?;
-    match crate::copy_rule::check_to_run(&mut program.module) {
+    match crate::copy_rule::check_to_run(&mut program.module, &program.sources) {
         Ok(signatures) => Ok((program, signatures)),
         Err(diagnostics) => Err(reject(&program, &diagnostics)),
     }
@@ -174,7 +170,8 @@ fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures)
         program.sources.files().chain(embedded.iter().map(|(path, text)| (path.as_str(), text.as_str()))),
     );
     if cache.read("checked", &name).is_none_or(|passed| passed != text.as_bytes()) {
-        if let Err(diagnostics) = crate::copy_rule::check_rules(&mut program.module.clone()) {
+        if let Err(diagnostics) = crate::copy_rule::check_rules(&mut program.module.clone(), &program.sources)
+        {
             return Err(reject(&program, &diagnostics));
         }
         // A cache that can't be written only means checking all of it again next time.
@@ -270,6 +267,18 @@ fn interpret(
 /// of each leading-dot case its expected type decided. Returns whether it passed.
 pub(crate) fn check(program: &mut fennec_kit::Program) -> bool {
     match fennec_check::check_and_resolve(&mut program.module) {
+        Ok(_) => true,
+        Err(diagnostics) => {
+            reject(program, &diagnostics);
+            false
+        }
+    }
+}
+
+/// Checks a program to build, refusing what `fennec check` and a run refuse. Returns whether it
+/// passed. Tools that report on a program use `check`, since what they report may be why.
+pub(crate) fn check_to_build(program: &mut fennec_kit::Program) -> bool {
+    match crate::copy_rule::check_all_rules(&mut program.module, &program.sources) {
         Ok(_) => true,
         Err(diagnostics) => {
             reject(program, &diagnostics);

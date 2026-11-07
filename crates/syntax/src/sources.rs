@@ -41,7 +41,7 @@ impl Sources {
             start: span.start.saturating_sub(file.base),
             end: span.end.saturating_sub(file.base),
         };
-        let also = diagnostic.also.and_then(|span| {
+        let also = diagnostic.also().and_then(|span| {
             let other = self.file(span)?;
             Some(crate::diagnostic::place(&other.path, &other.text, local(span, other)))
         });

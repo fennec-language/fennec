@@ -332,6 +332,65 @@ fn an_inner_task_is_resumed_later_by_a_different_parent() {
     assert!(inner.borrow().is_empty());
 }
 
+/// The lowest address of the stack of the task running this, from inside it.
+fn own_stack() -> i64 {
+    i64::try_from(super::stack_low().unwrap()).unwrap()
+}
+
+#[test]
+fn a_task_that_ends_leaves_its_stack_for_the_next_and_only_so_many_are_kept() {
+    let mut scheduler = Scheduler::keeping(STACK, 2);
+    let first = scheduler.spawn(own_stack).unwrap();
+    let Step::Done(first_stack) = scheduler.resume(first, Wake::Ready(0)) else { panic!("it ended") };
+    assert_eq!(scheduler.spare_stacks(), 1);
+    // The next task runs on the stack the first left.
+    let second = scheduler.spawn(own_stack).unwrap();
+    assert_eq!(scheduler.spare_stacks(), 0);
+    assert_eq!(scheduler.resume(second, Wake::Ready(0)), Step::Done(first_stack));
+    // Tasks alive at once never share one, and of those that end, only two stacks are kept.
+    let parked: Vec<TaskId> = (0..4)
+        .map(|_| {
+            scheduler
+                .spawn(|| {
+                    let low = own_stack();
+                    let _ = park(1);
+                    low
+                })
+                .unwrap()
+        })
+        .collect();
+    for task in &parked {
+        assert_eq!(scheduler.resume(*task, Wake::Ready(0)), Step::Parked(1));
+    }
+    let lows: Vec<i64> = parked
+        .iter()
+        .map(|task| match scheduler.resume(*task, Wake::Ready(0)) {
+            Step::Done(low) => low,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    let mut distinct = lows.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), lows.len(), "two live tasks shared a stack: {lows:?}");
+    assert_eq!(scheduler.spare_stacks(), 2);
+}
+
+/// Thousands of short tasks one after another, as a worker running ranges makes them, on stacks as
+/// big as a range's: with reuse, a stack is made only once.
+#[test]
+fn short_tasks_one_after_another_take_one_stack_between_them() {
+    const BIG: usize = 64 << 20;
+    let mut scheduler = Scheduler::new(BIG);
+    let mut stacks = std::collections::HashSet::new();
+    for _ in 0..2000 {
+        let task = scheduler.spawn(own_stack).unwrap();
+        let Step::Done(low) = scheduler.resume(task, Wake::Ready(0)) else { panic!("it ended") };
+        stacks.insert(low);
+    }
+    assert_eq!(stacks.len(), 1);
+}
+
 #[test]
 fn task_numbers_are_never_given_twice_on_a_thread() {
     let mut scheduler = Scheduler::new(STACK);
@@ -373,7 +432,7 @@ fn stop_the_process(how: &str) {
             }
             let mut running = scheduler.tasks.remove(&task).unwrap();
             let _running = super::current::Running::start(999_999, running.stack, false);
-            running.coroutine.resume(Wake::Ready(0));
+            running.coroutine.as_mut().unwrap().resume(Wake::Ready(0));
         }
         // A task finding an outer task's records, number and all, while it runs on its own
         // stack: only the stack check tells them apart.

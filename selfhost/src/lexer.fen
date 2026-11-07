@@ -47,7 +47,7 @@ struct Lexer:
     depth = 0
     at_line_start = True
 
-    def run(mut self):
+    def run(ref self):
         while True:
             if self.at_line_start and self.depth == 0 and not self.indentation()?:
                 break
@@ -98,10 +98,10 @@ struct Lexer:
     def text(self, start: int, end: int) -> str:
         "".join(self.chars[start:end])
 
-    def push(mut self, tok: Tok, start: int):
+    def push(ref self, tok: Tok, start: int):
         self.tokens.append(Token(tok=tok, span=self.span(start)))
 
-    def newline(mut self, start: int):
+    def newline(ref self, start: int):
         if self.tokens.len() > 0 and self.tokens[-1].tok != .Newline:
             self.push(.Newline, start)
 
@@ -109,13 +109,13 @@ struct Lexer:
         span = Span(start=self.offset(start), end=self.offset(start) + 1)
         Diagnostic(message="tabs aren't allowed", span=span, help="indent with 4 spaces")
 
-    def skip_comment(mut self):
+    def skip_comment(ref self):
         while self.peek(0) != "" and self.peek(0) != "\n":
             self.pos += 1
 
     ## Measures the indentation at the start of a line and emits `Indent` or `Dedent` tokens.
     ## Blank and comment-only lines are skipped. Returns false at the end of the file.
-    def indentation(mut self) -> bool:
+    def indentation(ref self) -> bool:
         while True:
             line_start = self.pos
             mut width = 0
@@ -133,11 +133,11 @@ struct Lexer:
                 self.skip_comment()
             else:
                 self.at_line_start = False
-                self.set_indent(width, line_start)?
+                self.set_indent(width, line_start=line_start)?
                 return True
         False
 
-    def set_indent(mut self, width: int, line_start: int):
+    def set_indent(ref self, width: int, line_start: int):
         if width > self.indents[-1]:
             self.indents.append(width)
             self.push(.Indent, line_start)
@@ -152,7 +152,7 @@ struct Lexer:
                 help="line it up with the block it belongs to",
             )
 
-    def finish(mut self):
+    def finish(ref self):
         self.pos = self.chars.len()
         self.newline(self.pos)
         while self.indents.len() > 1:
@@ -160,16 +160,16 @@ struct Lexer:
             self.push(.Dedent, self.pos)
         self.push(.Eof, self.pos)
 
-    def word(mut self, start: int):
+    def word(ref self, start: int):
         while is_letter(self.peek(0)) or is_digit(self.peek(0)) or self.peek(0) == "_":
             self.pos += 1
         word = self.text(start, self.pos)
         if is_keyword(word):
             self.push(.Keyword(word), start)
         else:
-            self.push(Tok.Name(word), start)
+            self.push(.Name(word), start)
 
-    def number(mut self, start: int):
+    def number(ref self, start: int):
         self.digits()
         mut is_float = False
         if self.peek(0) == "." and is_digit(self.peek(1)):
@@ -195,19 +195,19 @@ struct Lexer:
                     self.digits()
                 numbers.append(self.text(part_start, self.pos).replace("_", ""))
                 units.append(self.unit())
-            nanos = duration(self.text(start, self.pos), numbers, units, self.span(start))?
-            self.push(Tok.Duration(nanos), start)
+            nanos = duration(self.text(start, self.pos), numbers=numbers, units=units, span=self.span(start))?
+            self.push(.Duration(nanos), start)
             return
         if is_float:
             match float(text):
                 case Ok(value):
-                    self.push(Tok.Float(value), start)
+                    self.push(.Float(value), start)
                 case Err(_):
                     fail Diagnostic(message="this isn't a valid number", span=self.span(start))
         else:
             match int(text):
                 case Ok(value):
-                    self.push(Tok.Int(value), start)
+                    self.push(.Int(value), start)
                 case Err(_):
                     fail Diagnostic(
                         message="this number is too big for an int",
@@ -216,17 +216,17 @@ struct Lexer:
                     )
 
     ## The letters of a duration's unit, like `ms`.
-    def unit(mut self) -> str:
+    def unit(ref self) -> str:
         start = self.pos
         while is_letter(self.peek(0)):
             self.pos += 1
         self.text(start, self.pos)
 
-    def digits(mut self):
+    def digits(ref self):
         while is_digit(self.peek(0)) or self.peek(0) == "_":
             self.pos += 1
 
-    def punct(mut self, start: int):
+    def punct(ref self, start: int):
         c = self.peek(0)
         pair = c + self.peek(1)
         triple = pair + self.peek(2)
@@ -248,7 +248,7 @@ struct Lexer:
         self.pos += 1
         self.push(.Punct(c), start)
 
-    def string(mut self, start: int):
+    def string(ref self, start: int):
         self.pos += 1
         mut text = ""
         while self.peek(0) != "\"":
@@ -261,10 +261,10 @@ struct Lexer:
                 text += c
                 self.pos += 1
         self.pos += 1
-        self.push(Tok.Str(text), start)
+        self.push(.Str(text), start)
 
     ## `r"..."`: backslashes are kept as written, for patterns like `r"\d+"`.
-    def raw_string(mut self, start: int):
+    def raw_string(ref self, start: int):
         self.pos += 2
         mut text = ""
         while self.peek(0) != "\"":
@@ -274,7 +274,7 @@ struct Lexer:
             text += c
             self.pos += 1
         self.pos += 1
-        self.push(Tok.Str(text), start)
+        self.push(.Str(text), start)
 
     def unterminated(self, start: int) -> Diagnostic:
         Diagnostic(
@@ -284,7 +284,7 @@ struct Lexer:
         )
 
     ## Reads a backslash escape and returns the character it stands for.
-    def escape(mut self, start: int) -> str:
+    def escape(ref self, start: int) -> str:
         at = self.pos
         self.pos += 1
         c = self.peek(0)
@@ -312,7 +312,7 @@ struct Lexer:
 
     ## `\x41`, `\u00e9` or `\U0001f98a`: a character written as its code in hex, with two,
     ## four or eight digits. `at` is where the backslash is.
-    def code_escape(mut self, letter: str, at: int) -> str:
+    def code_escape(ref self, letter: str, at: int) -> str:
         digits = 2 if letter == "x" else (4 if letter == "u" else 8)
         self.pos += 1
         mut code = 0
@@ -339,7 +339,7 @@ struct Lexer:
                     span=self.span(at),
                 )
 
-    def fstring(mut self, start: int):
+    def fstring(ref self, start: int):
         self.pos += 2
         mut parts = []
         mut text = ""
@@ -369,10 +369,10 @@ struct Lexer:
         self.pos += 1
         if text != "":
             parts.append(FPart.Text(text))
-        self.push(Tok.FStr(parts), start)
+        self.push(.FStr(parts), start)
 
     ## Reads `{expression}` or `{expression:spec}` inside an f-string.
-    def fstring_code(mut self, start: int) -> FPart:
+    def fstring_code(ref self, start: int) -> FPart:
         self.pos += 1
         code_start = self.pos
         mut nesting = 0
@@ -392,7 +392,7 @@ struct Lexer:
         self.pos += 1
         code_end = spec_start else end
         spec = self.text(spec_start + 1, end) if spec_start is not None else None
-        FPart.Code(self.text(code_start, code_end), self.offset(code_start), spec)
+        .Code(self.text(code_start, code_end), self.offset(code_start), spec)
 
 ## How many nanoseconds a unit of time is, or 0 when it isn't one. Minutes are `min`, so `m`
 ## is never a unit.
@@ -429,7 +429,7 @@ def duration(written: str, numbers: list[str], units: list[str], span: Span) -> 
                 help="write each unit once, the largest first, like `1h30min`",
             )
         previous = per
-        total += part_nanos(written, number, per, span)?
+        total += part_nanos(written, number=number, per=per, span=span)?
     total
 
 ## The nanoseconds in `number` of a unit `per` nanoseconds long.

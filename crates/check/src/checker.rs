@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Generic, Module, Span};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Generic, Module, Span, Stmt};
 
 use crate::effects::{self, Effects};
 use crate::function::{Binding, FnCx};
@@ -19,6 +19,17 @@ enum State {
     /// Being checked now.
     Checking,
     Done(Signature),
+}
+
+/// How much of the standard library a check covers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scope {
+    /// All of it.
+    Everything,
+    /// Just the functions the program reaches.
+    Reached,
+    /// Just the functions the program reaches, and every type's fields.
+    ReachedWithFields,
 }
 
 pub(crate) struct Checker {
@@ -46,6 +57,8 @@ pub(crate) struct Checker {
     pub(crate) not_equals: BTreeSet<(u32, u32)>,
     /// The `list[T]()`, `dict[K, V]()` and `set[T]()` calls, written in as `[]`, `{}` and `set()`.
     pub(crate) empty_collections: BTreeSet<(u32, u32)>,
+    /// Each `array[T, N]()` and the zero it's filled with, written in as `array.new(zero)`.
+    pub(crate) array_zeros: BTreeMap<(u32, u32), Expr>,
     /// The fields and method calls on a value that might be missing, in a chain an `else`
     /// ends, which are written in as optional.
     pub(crate) optional_steps: BTreeSet<(u32, u32)>,
@@ -53,6 +66,22 @@ pub(crate) struct Checker {
     pub(crate) failing_steps: BTreeSet<(u32, u32)>,
     /// What each name for a standard library function written in Fennec means.
     pub(crate) std_names: BTreeMap<(u32, u32), String>,
+    /// The field each value given by position goes to, by the value's span, where that isn't
+    /// the field at its position: from outside a type, the `_` fields are skipped.
+    pub(crate) field_args: BTreeMap<(u32, u32), String>,
+    /// The fields, in order, of each pattern written with them by name, by its case's span and
+    /// the variant's name.
+    pub(crate) named_patterns: BTreeMap<(u32, u32, String), Vec<String>>,
+    /// What each `shared name = value` holds, by the value's span.
+    pub(crate) shared_values: BTreeMap<(u32, u32), Type>,
+    /// The source each call that lends is to, by the call's span.
+    pub(crate) sources: BTreeMap<(u32, u32), crate::lend_lowering::Source>,
+    /// The calls to `json` and `toml`'s `dumps` and `loads` whose type has its own `def serialize`
+    /// or `def deserialize`, each with the function in std that does the same in Fennec.
+    pub(crate) native_formats: BTreeMap<(u32, u32), String>,
+    /// The values given as `json=` to an HTTP call whose type has its own `def serialize`, which
+    /// native code writes through `json.native_dumps` before sending.
+    pub(crate) native_json_bodies: BTreeSet<(u32, u32)>,
     /// Each constant's type, once worked out. `None` while its value is being checked.
     pub(crate) const_types: BTreeMap<String, Option<Type>>,
     /// The functions being checked, innermost last.
@@ -74,10 +103,19 @@ pub(crate) struct Checker {
 const REVISITS: usize = 16;
 
 /// The program's declarations, with the standard library's modules added first.
+#[cfg(test)]
 fn with_library<'m>(library: impl IntoIterator<Item = &'m Module>, module: &Module) -> Program {
+    let mut program = library_alone(library);
+    program.add(module, false);
+    program
+}
+
+/// The standard library's declarations, which a program's are added to.
+fn library_alone<'m>(library: impl IntoIterator<Item = &'m Module>) -> Program {
     let mut program = Program::default();
     for prelude in library {
         program.add(prelude, true);
+        program.problems.extend(crate::privacy::top_level_underscores(prelude));
     }
     program.prelude_imports = std::mem::take(&mut program.imports);
     program.prelude_modules = std::mem::take(&mut program.modules);
@@ -85,15 +123,24 @@ fn with_library<'m>(library: impl IntoIterator<Item = &'m Module>, module: &Modu
     // it too.
     program.std_functions.clear();
     program.imported_types.clear();
-    program.add(module, false);
     program
+}
+
+/// The standard library's declarations, worked out once and copied for each program: they're
+/// the same every time.
+fn library() -> &'static Program {
+    static LIBRARY: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
+    LIBRARY.get_or_init(|| library_alone(fennec_syntax::prelude_modules().unwrap_or_default()))
 }
 
 impl Checker {
     pub(crate) fn new(module: &Module) -> Self {
-        let mut program = with_library(fennec_syntax::prelude_modules().unwrap_or_default(), module);
+        let mut program = library().clone();
+        program.add(module, false);
         let mut diagnostics = std::mem::take(&mut program.problems);
         diagnostics.extend(crate::imports::unimported(module, &program));
+        diagnostics.extend(crate::privacy::top_level_underscores(module));
+        diagnostics.extend(crate::privacy::unbuildable(module));
         Checker {
             program,
             states: BTreeMap::new(),
@@ -107,9 +154,16 @@ impl Checker {
             generator_types: BTreeMap::new(),
             not_equals: BTreeSet::new(),
             empty_collections: BTreeSet::new(),
+            array_zeros: BTreeMap::new(),
             optional_steps: BTreeSet::new(),
             failing_steps: BTreeSet::new(),
             std_names: BTreeMap::new(),
+            field_args: BTreeMap::new(),
+            named_patterns: BTreeMap::new(),
+            shared_values: BTreeMap::new(),
+            sources: BTreeMap::new(),
+            native_formats: BTreeMap::new(),
+            native_json_bodies: BTreeSet::new(),
             const_types: BTreeMap::new(),
             checking: Vec::new(),
             revisit: BTreeSet::new(),
@@ -119,15 +173,16 @@ impl Checker {
         }
     }
 
-    /// Checks everything, or for `reached_only`, the program's own code and just the
+    /// Checks everything, or for `Scope::Reached`, the program's own code and just the
     /// standard library functions it reaches: the library's other code can't affect a run.
-    pub(crate) fn run(mut self, reached_only: bool) -> Result<Checked, Vec<Diagnostic>> {
+    /// `Scope::ReachedWithFields` also types every library type's fields, which lowering needs.
+    pub(crate) fn run(mut self, scope: Scope) -> Result<Checked, Vec<Diagnostic>> {
         self.check_declarations();
         let keys: Vec<String> = self
             .program
             .functions
             .iter()
-            .filter(|(_, entry)| !(reached_only && entry.prelude))
+            .filter(|(_, entry)| scope == Scope::Everything || !entry.prelude)
             .map(|(key, _)| key.clone())
             .collect();
         for key in &keys {
@@ -136,8 +191,7 @@ impl Checker {
             }
         }
         self.revisit_cycles();
-        let constants: Vec<String> = self.program.constants.keys().cloned().collect();
-        for name in constants {
+        for name in self.program.constants.keys().cloned().collect::<Vec<_>>() {
             self.constant_type(&name);
         }
         for test in self.program.tests.clone() {
@@ -147,7 +201,7 @@ impl Checker {
             .program
             .types
             .values()
-            .filter(|info| !(reached_only && info.prelude))
+            .filter(|info| !(scope == Scope::Reached && info.prelude))
             .map(|info| info.def.name.clone())
             .collect();
         for name in types {
@@ -156,46 +210,64 @@ impl Checker {
         let structs = self.structs(TypeKind::Struct);
         let errors = self.structs(TypeKind::Error);
         self.check_annotations();
+        self.check_saving_pairs();
         self.check_function_annotations();
         self.check_shared_types();
+        self.check_dels();
         self.settle_typed();
         if self.diagnostics.is_empty() {
             self.unknowns_left();
         }
-        let places = if self.diagnostics.is_empty() { self.names_for_places() } else { BTreeSet::new() };
         if self.diagnostics.is_empty() {
-            let enums = self.enums();
-            let locals = std::mem::take(&mut self.locals);
-            let functions = self
-                .states
-                .into_iter()
-                .filter_map(|(key, state)| match state {
-                    State::Done(signature) => Some((key, signature)),
-                    State::Checking => None,
-                })
-                .collect();
-            let signatures =
-                Signatures { functions, structs, enums, errors, locals, ..Signatures::default() };
-            let types = Types { functions: self.typed };
-            return Ok(Checked {
-                signatures,
-                types,
-                cases: self.cases,
-                float_sums: self.float_sums,
-                places,
-                defaults: self.defaults,
-                generator_types: self.generator_types,
-                not_equals: self.not_equals,
-                empty_collections: self.empty_collections,
-                optional_steps: self.optional_steps,
-                failing_steps: self.failing_steps,
-                std_names: self.std_names,
-            });
+            self.body_rules();
+        }
+        if self.diagnostics.is_empty() {
+            return Ok(self.checked(structs, errors));
         }
         let mut diagnostics = self.diagnostics;
         diagnostics.sort_by(|a, b| (a.span.start, &a.message).cmp(&(b.span.start, &b.message)));
         diagnostics.dedup();
         Err(diagnostics)
+    }
+
+    /// What a check that found nothing wrong gives back.
+    fn checked(
+        mut self,
+        structs: BTreeMap<String, crate::Struct>,
+        errors: BTreeMap<String, crate::Struct>,
+    ) -> Checked {
+        let enums = self.enums();
+        let locals = std::mem::take(&mut self.locals);
+        let functions = self
+            .states
+            .into_iter()
+            .filter_map(|(key, state)| match state {
+                State::Done(signature) => Some((key, signature)),
+                State::Checking => None,
+            })
+            .collect();
+        let signatures = Signatures { functions, structs, enums, errors, locals, ..Signatures::default() };
+        let types = Types { functions: self.typed };
+        Checked {
+            signatures,
+            types,
+            cases: self.cases,
+            float_sums: self.float_sums,
+            defaults: self.defaults,
+            generator_types: self.generator_types,
+            not_equals: self.not_equals,
+            empty_collections: self.empty_collections,
+            array_zeros: self.array_zeros,
+            optional_steps: self.optional_steps,
+            failing_steps: self.failing_steps,
+            std_names: self.std_names,
+            field_args: self.field_args,
+            named_patterns: self.named_patterns,
+            shared_values: self.shared_values,
+            sources: self.sources,
+            native_formats: self.native_formats,
+            native_json_bodies: self.native_json_bodies,
+        }
     }
 
     /// Reports types written in signatures and interfaces that don't mean anything, and
@@ -247,13 +319,14 @@ impl Checker {
 
     /// A test with no inputs has a signature like a function's, under its key in the typed
     /// tree, so a compiler can treat it as one. It gives back nothing, or an error.
-    pub(crate) fn record_test(&mut self, key: String, body: &[fennec_syntax::Stmt]) {
+    pub(crate) fn record_test(&mut self, key: String, body: &[Stmt]) {
         let effects = effects::of_body(body);
         let signature = Signature {
             params: Vec::new(),
             returns: Type::Unit,
             can_fail: effects.fails,
             generator: effects.yields,
+            generics: Vec::new(),
         };
         self.states.insert(key, State::Done(signature));
     }
@@ -320,6 +393,7 @@ impl Checker {
             returns,
             can_fail: effects.fails || entry.def.fails.is_some(),
             generator: effects.yields,
+            generics: entry.def.generics.iter().map(|generic| generic.name.clone()).collect(),
         })
     }
 
@@ -327,36 +401,47 @@ impl Checker {
         self.program.generics_of(entry).into_iter().map(|generic| generic.name).collect()
     }
 
-    /// Works out every `mut x = place` in the program's own functions.
-    fn names_for_places(&mut self) -> BTreeSet<(u32, u32)> {
-        let mut places = BTreeSet::new();
+    /// The rules over whole bodies, once their types are known: what a loop goes over and a call
+    /// is given can't change another way, and a change has to be read.
+    fn body_rules(&mut self) {
         let mut problems = Vec::new();
-        let mut wanted = Vec::new();
+        let keys: Vec<String> = self
+            .program
+            .functions
+            .iter()
+            .filter(|(_, entry)| !entry.prelude)
+            .map(|(key, _)| key.clone())
+            .collect();
+        let mut settled = crate::loops::Settled::default();
         for (key, entry) in self.program.functions.iter().filter(|(_, entry)| !entry.prelude) {
-            let (found, named) = crate::alias::check_function(self, &entry.def, self.typed.get(key));
-            problems.extend(found);
-            problems.extend(crate::loops::check_function(self, key, &entry.def));
-            wanted.push((key.clone(), named.clone()));
-            places.extend(named.into_iter().map(|span| (span.start, span.end)));
+            problems.extend(crate::loops::check_function(self, &mut settled, key, &entry.def));
+            problems.extend(crate::loops::check_arguments(&entry.def.body));
+            problems.extend(crate::once::check_function(self, key, &entry.def));
+        }
+        for test in &self.program.tests {
+            problems.extend(crate::loops::check_arguments(&test.body));
         }
         // A change that's lost matters only once what's written is otherwise right.
-        let clean = problems.is_empty();
-        for (key, named) in wanted.into_iter().filter(|_| clean) {
-            let Some(def) = self.program.functions.get(&key).map(|entry| entry.def.clone()) else { continue };
-            problems.extend(crate::lost::check_body(self, &key, &def.body, &named));
-        }
-        if clean {
-            for test in self.program.tests.clone() {
-                problems.extend(crate::lost::check_body(
-                    self,
-                    &format!("test \"{}\"", test.name),
-                    &test.body,
-                    &[],
-                ));
+        if problems.is_empty() {
+            for key in keys {
+                let Some(def) = self.program.functions.get(&key).map(|entry| entry.def.clone()) else {
+                    continue;
+                };
+                let counted = crate::lost::counted(self, &key, &def.body);
+                problems.extend(crate::lost::check_body(self, &key, &def.body, &counted));
+            }
+            let tests: Vec<(String, Vec<Stmt>)> = self
+                .program
+                .tests
+                .iter()
+                .map(|test| (format!("test \"{}\"", test.name), test.body.clone()))
+                .collect();
+            for (key, stmts) in tests {
+                let counted = crate::lost::counted(self, &key, &stmts);
+                problems.extend(crate::lost::check_body(self, &key, &stmts, &counted));
             }
         }
         self.diagnostics.extend(problems);
-        places
     }
 
     fn params(&self, entry: &FnEntry) -> Vec<ParamType> {
@@ -396,14 +481,15 @@ impl Checker {
         if let Some(State::Done(signature)) = self.states.get(key) {
             self.previous.insert(key.to_owned(), known_errors(signature.clone()));
         }
-        let entry = FnEntry { def: def.clone(), owner: None, prelude, inherited, extension: Vec::new() };
+        let entry =
+            FnEntry { def: def.clone().into(), owner: None, prelude, inherited, extension: Vec::new() };
         self.program.functions.insert(key.to_owned(), entry);
         self.check_with(key, captured);
     }
 
     /// Whether a body ends in a call made for what it changes: one that takes something `mut`,
     /// or a method that changes what it's called on, like `board.add(score)`.
-    fn ends_in_change(&self, key: &str, body: &[fennec_syntax::Stmt]) -> bool {
+    fn ends_in_change(&self, key: &str, body: &[Stmt]) -> bool {
         let Some(fennec_syntax::StmtKind::Expr(last)) = body.last().map(|stmt| &stmt.kind) else {
             return false;
         };
@@ -474,6 +560,11 @@ impl Checker {
     /// other than `E`.
     fn only_what_it_says(&mut self, def: &FnDef, fails: &fennec_syntax::TypeExpr, errors: &Type) {
         let Ok(declared) = self.program.resolve(fails) else { return };
+        // `fails ParseError | RangeError` was checked when it was resolved.
+        if let Type::Errors(owns) = &declared {
+            self.only_these(def, fails, owns, errors);
+            return;
+        }
         if !self.is_error_type(&declared) {
             if declared.is_known() {
                 self.diagnostics.push(
@@ -506,6 +597,30 @@ impl Checker {
         );
     }
 
+    /// Reports a body of a function that says `fails A | B` that can fail some other way.
+    fn only_these(&mut self, def: &FnDef, fails: &fennec_syntax::TypeExpr, owns: &[String], errors: &Type) {
+        let others: Vec<String> = match self.settled(errors) {
+            Type::Named(name) => vec![name],
+            Type::Errors(names) => names,
+            _ => Vec::new(),
+        }
+        .into_iter()
+        .filter(|name| !owns.contains(name))
+        .map(|name| format!("`{name}`"))
+        .collect();
+        if others.is_empty() {
+            return;
+        }
+        let (others, owns) = (others.join(" or "), written(fails));
+        self.diagnostics.push(
+            Diagnostic::new(
+                format!("`{}` says it fails with `{owns}`, but it can fail with {others} too", def.name),
+                fails.span,
+            )
+            .with_help(format!("handle {others} where it happens, or add it after `fails`")),
+        );
+    }
+
     /// Whether a program can write a type as it is, with every type it names in scope.
     fn can_write(&self, ty: &Type) -> bool {
         let mut writable = true;
@@ -513,7 +628,7 @@ impl Checker {
             let name = match part {
                 Type::Named(name) | Type::Generic(name, _) => Some(name.as_str()),
                 Type::Id(_) => Some("Id"),
-                Type::IdMap(_) => Some("IdMap"),
+                Type::Table(_) => Some("Table"),
                 _ => None,
             };
             writable &= name.is_none_or(|name| self.program.can_name(name));
@@ -747,7 +862,7 @@ impl Checker {
 
     /// Every enum's cases, with the types of their fields, and every error's that has cases.
     fn enums(&mut self) -> BTreeMap<String, crate::Enum> {
-        let enums: Vec<fennec_syntax::TypeDef> = self
+        let enums: Vec<std::sync::Arc<fennec_syntax::TypeDef>> = self
             .program
             .types
             .values()
@@ -769,7 +884,7 @@ impl Checker {
                     .collect();
                 cases.push((case.name.clone(), fields));
             }
-            found.insert(def.name, crate::Enum { cases, rules });
+            found.insert(def.name.clone(), crate::Enum { cases, rules });
         }
         found
     }
@@ -836,7 +951,7 @@ fn missing_return_type(def: &FnDef, value: &Type, generator: bool, fixable: bool
         .params
         .iter()
         .map(|param| {
-            let prefix = if param.is_mut { "mut " } else { "" };
+            let prefix = if param.is_mut { "ref " } else { "" };
             match &param.ty {
                 Some(ty) => format!("{prefix}{}: {}", param.name, written(ty)),
                 None => format!("{prefix}{}", param.name),

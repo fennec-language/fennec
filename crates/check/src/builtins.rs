@@ -60,7 +60,7 @@ pub(crate) fn modules_with(name: &str) -> Vec<&'static str> {
 pub(crate) struct Method {
     pub(crate) changes: bool,
     /// The types of its arguments, in order. Arguments past these can be anything.
-    params: Vec<Type>,
+    pub(crate) params: Vec<Type>,
     returns: Type,
     arity: (usize, usize),
     /// The types an arrow function passed to it receives, like the item for `remove_where`.
@@ -83,7 +83,7 @@ impl Method {
     }
 
     /// The last `optional` arguments can be left out.
-    fn optional(self, optional: usize) -> Method {
+    pub(crate) fn optional(self, optional: usize) -> Method {
         Method { arity: (self.arity.0.saturating_sub(optional), self.arity.1), ..self }
     }
 
@@ -114,7 +114,7 @@ pub(crate) fn engine_signature(ty: &Type, name: &str) -> Option<Signature> {
     };
     let mut params = vec![param("self", ty, is_mut)];
     params.extend(others.iter().map(|other| param("other", other, false)));
-    Some(Signature { params, returns, can_fail: false, generator: false })
+    Some(Signature { params, returns, can_fail: false, generator: false, generics: Vec::new() })
 }
 
 pub(crate) fn method(ty: &Type, name: &str) -> Option<Method> {
@@ -122,10 +122,11 @@ pub(crate) fn method(ty: &Type, name: &str) -> Option<Method> {
     let sized = matches!(
         ty,
         Type::List(_)
+            | Type::Array(..)
             | Type::Buffer(_)
             | Type::Set(_)
             | Type::Dict(..)
-            | Type::IdMap(_)
+            | Type::Table(_)
             | Type::Str
             | Type::Bytes
             | Type::Tuple(_)
@@ -136,12 +137,15 @@ pub(crate) fn method(ty: &Type, name: &str) -> Option<Method> {
     if matches!(ty, Type::Int | Type::Float) && name == "abs" {
         return Some(reads(&[], ty.clone()));
     }
+    if matches!(ty, Type::Float) && name == "is_nan" {
+        return Some(reads(&[], Type::Bool));
+    }
     match ty {
         Type::List(item) => list_method(item, name),
         Type::Buffer(item) => buffer_method(item, name),
         Type::Set(item) => set_method(item, name),
         Type::Dict(key, value) => dict_method(key, value, name),
-        Type::IdMap(item) => id_map_method(item, name),
+        Type::Table(item) => id_map_method(item, name),
         Type::Str => str_method(name),
         Type::Bytes => bytes_method(name),
         Type::Named(type_name) => named_method(type_name, name),
@@ -203,7 +207,7 @@ fn id_map_method(item: &Type, name: &str) -> Option<Method> {
     let id = Type::Id(Box::new(item.clone()));
     let item = item.clone();
     Some(match name {
-        "insert" => changes(&[item], id),
+        "add" => changes(&[item], id),
         "remove" => changes(&[id], Type::optional(item)),
         "get" => reads(&[id], Type::optional(item)),
         "modify" => changes(&[id], Type::Bool).receiving(&item).any_args(),
@@ -245,7 +249,10 @@ fn bytes_method(name: &str) -> Option<Method> {
 fn waits_on_network(type_name: &str, name: &str) -> bool {
     matches!(
         (type_name, name),
-        ("Net", "connect") | ("Connection", "read" | "read_line") | ("Server", "accept")
+        ("Net", "connect")
+            | ("Connection", "read" | "read_line")
+            | ("Server", "accept")
+            | ("UdpSocket", "receive")
     )
 }
 
@@ -255,12 +262,49 @@ fn named_method(type_name: &str, name: &str) -> Option<Method> {
         ("Stdout", "print" | "write") => reads(&[], Type::Unit).any_args(),
         ("Stdout", "captured") => reads(&[], Type::Str),
         ("Clock", "now") => reads(&[], Type::named("Instant")),
+        ("Clock", "time") => reads(&[], Type::named("Time")),
         ("Args", "len") | ("Entropy", "seed") => reads(&[], Type::Int),
         ("Stdin", "lines") => reads(&[], Type::list(Type::Str)),
         ("Clock", "sleep") => reads(&[Type::named("Duration")], Type::Unit),
         ("Entropy", "bytes") => reads(&[Type::Int], Type::Bytes),
+        ("Env", "get") => reads(&[Type::Str], Type::optional(Type::Str)),
+        ("Env", "all") => reads(&[], Type::Dict(Box::new(Type::Str), Box::new(Type::Str))),
+        // Only a test's fake `Env` is set.
+        ("Env", "set") => reads(&[Type::Str, Type::Str], Type::Unit),
         _ => return stdlib::method(type_name, name),
     })
+}
+
+/// What to say of a method only a test's own body can call, on the fake capability it received.
+fn test_only(ty: &Type, name: &str) -> Option<&'static str> {
+    let Type::Named(owner) = ty else { return None };
+    Some(match (owner.as_str(), name) {
+        ("Stdout", "captured") => {
+            "only a test's own body can read what it printed, from the `Stdout` it received"
+        }
+        ("Net", "script" | "requests") => {
+            "only a test's own body can script or read the fake `Net` it received"
+        }
+        // Only a test's fake `Process` is scripted, and says what ran.
+        ("Process", "script" | "ran") => {
+            "only a test's own body can script or read the fake `Process` it received"
+        }
+        ("Env", "set") => "only a test's own body can set what the fake `Env` it received holds",
+        _ => return None,
+    })
+}
+
+/// A method a built-in type doesn't have, with the name it has now if it was renamed: a table's
+/// `insert` is `add`. The name comes straight after the value and its dot, as `fennec fmt` writes it.
+fn renamed_method(object: &Expr, ty: &Type, name: &str, span: Span) -> Diagnostic {
+    let diagnostic = no_method(ty, name, span);
+    if name != "insert" || !matches!(ty, Type::Table(_)) {
+        return diagnostic;
+    }
+    let at = object.span.end + 1;
+    diagnostic
+        .with_help("a table's `insert` is called `add` now")
+        .with_fix(Span { start: at, end: at + 6 }, "add")
 }
 
 impl FnCx<'_> {
@@ -273,15 +317,11 @@ impl FnCx<'_> {
         span: Span,
     ) -> Type {
         let Some(method) = method(ty, name) else {
-            return self.unusable(no_method(ty, name, span), args);
+            return self.unusable(renamed_method(object, ty, name, span), args);
         };
-        if name == "captured" && *ty == Type::named("Stdout") && !self.in_a_test() {
-            let help = "only a test's own body can read what it printed, from the `Stdout` it received";
-            return self.unusable(no_method(ty, name, span).with_help(help), args);
-        }
-        // Only a test's fake `Process` is scripted, and says what ran.
-        if matches!(name, "script" | "ran") && *ty == Type::named("Process") && !self.in_a_test() {
-            let help = "only a test's own body can script or read the fake `Process` it received";
+        if let Some(help) = test_only(ty, name)
+            && !self.in_a_test()
+        {
             return self.unusable(no_method(ty, name, span).with_help(help), args);
         }
         if method.changes {
@@ -293,12 +333,25 @@ impl FnCx<'_> {
         let named: &[&str] = match ty.type_name() {
             _ if name == "sort" => &["key"],
             Some(owner) if waits_on_network(owner, name) => &["timeout"],
+            Some("Net") if name == "udp" => &["port"],
+            Some("Process") if name == "run" => &["cwd", "env", "input"],
+            Some("Net") if matches!(name, "get" | "post" | "request") => {
+                let given = |option: &str| args.iter().any(|arg| arg.name.as_deref() == Some(option));
+                if given("body") && given("json") {
+                    let message = "a request sends `body=` or `json=`, not both";
+                    self.error(
+                        Diagnostic::new(message, span)
+                            .with_help("`json=` sends a value as JSON, as its body"),
+                    );
+                }
+                &["body", "headers", "json", "params", "timeout"]
+            }
             _ => &[],
         };
         let plain = self.builtin_args(name, args, named, &method.receives, span);
-        if name == "write"
-            && *ty == Type::named("Connection")
-            && let [(data, at)] = plain.as_slice()
+        if (name == "write" && *ty == Type::named("Connection")
+            || name == "send_to" && *ty == Type::named("UdpSocket"))
+            && let [(data, at), ..] = plain.as_slice()
             && !matches!(data, Type::Str | Type::Bytes | Type::Unknown | Type::Var(_))
         {
             self.error(
@@ -341,6 +394,11 @@ impl FnCx<'_> {
             );
             return value.as_ref().clone();
         }
+        // `pop()` gives `None` for an empty list. `pop(at)` fails on a position that isn't there,
+        // as `items[at]` does.
+        if let (Type::List(item), "pop", []) = (ty, name, plain.as_slice()) {
+            return Type::optional(item.as_ref().clone());
+        }
         method.returns
     }
 
@@ -369,9 +427,48 @@ impl FnCx<'_> {
                         self.error(mismatch("`timeout`", &Type::named("Duration"), &ty, arg.value.span));
                     }
                 }
-                Some("indent") if named.contains(&"indent") => {
+                Some("body") if named.contains(&"body") => {
+                    if !matches!(self.checker.settled(&ty), Type::Str | Type::Bytes) {
+                        self.error(
+                            mismatch("what's sent", &Type::Bytes, &ty, arg.value.span)
+                                .with_help("a request sends `bytes`, or a `str` as its UTF-8 bytes"),
+                        );
+                    }
+                }
+                Some("json") if named.contains(&"json") => self.json_body(&ty, arg.value.span),
+                Some("input") if named.contains(&"input") => {
+                    if !matches!(self.checker.settled(&ty), Type::Str | Type::Bytes) {
+                        self.error(
+                            mismatch("what the program reads", &Type::Str, &ty, arg.value.span)
+                                .with_help("`input=` is what the program reads from its standard input, as a `str` or `bytes`"),
+                        );
+                    }
+                }
+                Some("cwd") if named.contains(&"cwd") => {
+                    if !matches!(self.checker.settled(&ty), Type::Str)
+                        && !self.checker.fits(&Type::named("Path"), &ty)
+                    {
+                        self.error(
+                            mismatch("`cwd`", &Type::Str, &ty, arg.value.span).with_help(
+                                "`cwd=` is the folder the program runs in, as a `Path` or a `str`",
+                            ),
+                        );
+                    }
+                }
+                Some(option @ ("headers" | "params" | "env")) if named.contains(&option) => {
+                    let wanted = Type::Dict(Box::new(Type::Str), Box::new(Type::Str));
+                    if !self.checker.fits(&wanted, &ty) {
+                        self.error(mismatch(&format!("`{option}`"), &wanted, &ty, arg.value.span));
+                    }
+                }
+                Some("port") if named.contains(&"port") => {
                     if !self.checker.fits(&Type::Int, &ty) {
-                        self.error(mismatch("`indent`", &Type::Int, &ty, arg.value.span));
+                        self.error(mismatch("`port`", &Type::Int, &ty, arg.value.span));
+                    }
+                }
+                Some(option @ ("indent" | "level")) if named.contains(&option) => {
+                    if !self.checker.fits(&Type::Int, &ty) {
+                        self.error(mismatch(&format!("`{option}`"), &Type::Int, &ty, arg.value.span));
                     }
                 }
                 Some(option @ ("names" | "extra")) if named.contains(&option) => {
@@ -407,7 +504,17 @@ impl FnCx<'_> {
     }
 
     pub(crate) fn call_builtin(&mut self, name: &str, args: &[Arg], span: Span) -> Type {
+        if name == "copy" && args.len() > 1 {
+            return self.replace(args, span);
+        }
         if name == "replace" {
+            // The callee is the name the call starts with.
+            let callee = Span { start: span.start, end: span.start + 7 };
+            self.error(
+                Diagnostic::new("`replace` is called `copy` now: `copy(value, field=new)`", callee)
+                    .with_help("`fennec fix` writes `copy`")
+                    .with_fix(callee, "copy"),
+            );
             return self.replace(args, span);
         }
         // An arrow function passed as `key` receives the items of the first argument.
@@ -608,22 +715,23 @@ impl FnCx<'_> {
         Type::result(Type::Str, Type::named("InvalidValue"))
     }
 
-    /// `replace(value, field=new, ...)`: a copy with some fields changed.
+    /// `copy(value, field=new, ...)`: a copy of a struct with some fields changed, each new
+    /// value the type its field is.
     fn replace(&mut self, args: &[Arg], span: Span) -> Type {
         let types: Vec<Type> = args.iter().map(|arg| self.arg_value(arg, &[])).collect();
         let Some(ty) = types.first() else {
             self.error(
-                Diagnostic::new("`replace` takes a struct value, then the fields to change", span)
-                    .with_help("like `replace(enemy, health=50)`"),
+                Diagnostic::new("`copy` with fields takes a struct value, then the fields to change", span)
+                    .with_help("like `copy(enemy, health=50)`"),
             );
             return Type::Unknown;
         };
         if args.iter().any(|arg| arg.is_mut) {
-            self.error(needless_mut("replace", span));
+            self.error(needless_mut("copy", span));
         }
         let Some(type_name) = ty.type_name() else {
             if ty.is_known() {
-                let message = format!("`replace` copies a struct, but this is {}", a(ty));
+                let message = format!("`copy` with fields copies a struct, but this is {}", a(ty));
                 self.error(Diagnostic::new(message, span));
             }
             return ty.clone();
@@ -665,7 +773,7 @@ fn peek_item(ty: &Type) -> Type {
         | Type::Buffer(item)
         | Type::Set(item)
         | Type::Iterator(item)
-        | Type::IdMap(item)
+        | Type::Table(item)
         | Type::Dict(item, _) => item.as_ref().clone(),
         Type::Tuple(items) if items.windows(2).all(|pair| pair.first() == pair.last()) => {
             items.first().cloned().unwrap_or(Type::Unknown)

@@ -222,8 +222,8 @@ fn an_error_with_cases_is_made_from_one_and_matched_whole() {
     );
     assert_eq!(
         in_main(
-            "    problem = DialError.Closed\n    match problem:\n        case Closed: stdout.print(\"closed\")\n        \
-             case NotFound(host): stdout.print(host)\n"
+            "    problem = DialError.Closed\n    match problem:\n        case .Closed: stdout.print(\"closed\")\n        \
+             case .NotFound(host): stdout.print(host)\n"
         ),
         ["this `match` doesn't handle `DialError.Refused` @ problem"]
     );
@@ -240,12 +240,44 @@ const LOAD_ERROR: &str =
 fn fails_names_the_one_error_a_function_can_fail_with() {
     let text = format!(
         "{LOAD_ERROR}def load(path: str) -> float fails LoadError:\n    if path == \"\":\n        \
-         fail LoadError.NotFound(path)\n    if path == \"bad\":\n        return Err(LoadError.BadRow(3))\n    1.5\n\n\
+         fail .NotFound(path)\n    if path == \"bad\":\n        return Err(LoadError.BadRow(3))\n    1.5\n\n\
          def total(paths: list[str]) -> float fails LoadError:\n    mut sum = 0.0\n    for path in paths:\n        \
          sum += load(path)?\n    sum\n\ndef check(path: str) fails LoadError:\n    if load(path)? < 0.0:\n        \
-         fail LoadError.BadRow(0)\n"
+         fail .BadRow(0)\n"
     );
     assert_eq!(problems(&text), Vec::<String>::new());
+}
+
+#[test]
+fn fails_can_name_several_errors_and_question_mark_passes_any_up() {
+    let text = format!(
+        "{LOAD_ERROR}error ParseError:\n    Bad(text: str)\n\n\
+         def parse(text: str) -> int fails ParseError:\n    if text == \"\":\n        fail .Bad(text)\n    1\n\n\
+         def load(path: str) -> int fails LoadError | ParseError:\n    if path == \"\":\n        \
+         fail .NotFound(path)\n    parse(path)?\n\n\
+         def apply(read: (str) -> int fails LoadError | ParseError, path: str) -> int fails LoadError | ParseError:\n    \
+         read(path)?\n\n\
+         def main(stdout: Stdout):\n    match load(\"a\"):\n        case Ok(n): stdout.print(n)\n        \
+         case Err(.NotFound(path)): stdout.print(path)\n        case Err(.Bad(text)): stdout.print(text)\n        \
+         case Err(_): pass\n    stdout.print(apply(path => load(path), \"b\") else 0)\n    \
+         reader: (str) -> int fails LoadError | ParseError = path => load(path)\n    \
+         stdout.print(said(reader(\"c\")))\n\n\
+         def said(found: Result[int, LoadError | ParseError]) -> int:\n    found else -1\n"
+    );
+    assert_eq!(problems(&text), Vec::<String>::new());
+    assert_eq!(
+        problems(&format!(
+            "{LOAD_ERROR}def load(path: str) -> int fails LoadError | int:\n    1\n\n\
+             def read(path: str) -> int fails LoadError | Other:\n    if path == \"\":\n        fail .Gone(path)\n    1\n\n\
+             def other() -> int fails Other:\n    fail Other(why=\"no\")\n\n\
+             def check(path: str) -> int fails LoadError:\n    other()?\n"
+        )),
+        [
+            "`|` joins errors, but `int` is an int @ int",
+            "no enum has a case called `Gone` @ .Gone(path)",
+            "`check` says it fails with `LoadError`, but it can fail with `Other` too @ LoadError",
+        ]
+    );
 }
 
 #[test]
@@ -326,6 +358,37 @@ fn leaving_with_else_is_checked_like_the_statement() {
     );
     let cant_fail = "def age_of(ages: dict[str, int]) -> int:\n    ages.get('a') else fail 'nope'\n";
     assert_eq!(problems(cant_fail).len(), 1, "{:?}", problems(cant_fail));
+}
+
+/// Nothing is told to expect a failure from a function used as a value. Where this got through,
+/// the JIT ended the program there with no error and an exit code of 0.
+#[test]
+fn an_arrow_function_cant_pass_a_failure_up() {
+    let said = "an arrow function can't pass a failure up with `?`";
+    for body in [
+        "kept = sorted(['1'], key=text => int(text)?)\nstdout.print(kept)",
+        "kept = sorted(['1'], key=text => [int(part)? for part in [text]][0])\nstdout.print(kept)",
+        "kept = sorted(['1'], key=text => int(text)? from Bad(why=text))\nstdout.print(kept)",
+    ] {
+        let source = format!(
+            "error Bad:\n    why: str\n\ndef main(stdout: Stdout):\n    {}\n",
+            body.replace('\n', "\n    ")
+        );
+        let found = problems(&source);
+        assert_eq!(found.iter().filter(|one| one.starts_with(said)).count(), 1, "{body}: {found:?}");
+        assert_eq!(found.len(), 1, "{body}: {found:?}");
+    }
+    // The failure is the arrow's mistake, not one more way the function around it fails.
+    let around = "error Bad:\n    why: str\n\ndef around() -> list[str] fails Bad:\n    fail Bad(why=\"no\")\n    sorted(['1'], key=text => int(text)?)\n";
+    let found = problems(around);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found.iter().all(|one| one.starts_with(said)), "{found:?}");
+    // After an arrow, `?` is as it was.
+    let after = "def after(text: str) -> int fails InvalidValue:\n    kept = sorted(['1'], key=one => one)\n    int(text)? + kept.len()\n\ndef main(stdout: Stdout):\n    stdout.print(after(\"1\") else 0)\n";
+    assert_eq!(problems(after), Vec::<String>::new());
+    // `?` still leaves from a comprehension, and an arrow can still give a value instead.
+    let fine = "def parsed(texts: list[str]) -> list[int] fails InvalidValue:\n    [int(text)? for text in texts]\n\ndef main(stdout: Stdout):\n    stdout.print(sorted(['1'], key=text => int(text) else 0))\n";
+    assert_eq!(problems(fine), Vec::<String>::new());
 }
 
 #[test]

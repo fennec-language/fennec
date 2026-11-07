@@ -31,8 +31,13 @@ pub const TEXT_BYTES: i32 = 16;
 pub const TEXT_CHARS: i32 = 24;
 /// How many bytes a string has room for.
 pub const TEXT_ROOM: i32 = 32;
+/// The last character native code found in a string that isn't ASCII, so reading one in order
+/// takes a step for each: its number in the low 32 bits and where its bytes start in the high 32,
+/// or 0, which is always right. Read and written atomically, as threads may share the string; any
+/// value written is right for it, since its text only ever grows at the end.
+pub const TEXT_CURSOR: i32 = 40;
 /// Where a string's UTF-8 starts.
-pub const TEXT: i32 = 40;
+pub const TEXT: i32 = 48;
 
 /// A generator's block, whose words come after its count and shape like a boxed value's. Every
 /// generator's start the same way, so a loop can read one without knowing which it is. A
@@ -129,6 +134,25 @@ mod tests {
         assert_eq!(text_of(strings::join(string(""), list)), pieces.concat());
         let chars = u64::try_from(pieces.join("--").chars().count()).unwrap();
         assert_eq!(word(strings::join(string("--"), list), TEXT_CHARS), Some(chars));
+        finish();
+    }
+
+    /// A loop making and freeing strings takes each from what the last one left. If it made new
+    /// ones, what's freed would pile up unused to the limit on every thread.
+    #[test]
+    #[cfg(not(feature = "sanitize"))]
+    fn a_string_a_runtime_call_makes_reuses_what_a_freed_one_left() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let long = with(|state| heap::text_address(state, "long enough to be a block of its own, twice"));
+        let first = strings::concat(long, long);
+        heap::free_text(first);
+        let second = strings::concat(long, long);
+        assert_eq!(second, first);
+        assert_eq!(
+            text_of(second),
+            "long enough to be a block of its own, twicelong enough to be a block of its own, twice"
+        );
         finish();
     }
 
@@ -438,8 +462,12 @@ mod tests {
             allocated_bytes: 640,
         };
         assert_eq!(
-            super::super::aot::counts_line(&counts),
+            super::super::aot::counts_line(&counts, 0, 0),
             "copies 2 copied_bytes 48 largest_copy 32 allocations 5 allocated_bytes 640"
+        );
+        assert_eq!(
+            super::super::aot::counts_line(&counts, 4, 1),
+            "copies 2 copied_bytes 48 largest_copy 32 allocations 5 allocated_bytes 640 parallel_calls 4 blocked_waits 1"
         );
     }
 

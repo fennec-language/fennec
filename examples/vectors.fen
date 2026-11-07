@@ -1,5 +1,5 @@
 # Plain structs, made only of numbers, bools and other plain structs, are values: copying
-# one copies it, and only a `mut` name or `mut self` changes one in place.
+# one copies it, and only a `mut` name or `ref self` changes one in place.
 from std.math import Vec3, ceil, cos, floor, sin, sqrt
 
 struct Body:
@@ -8,14 +8,14 @@ struct Body:
     mass = 1.0
     asleep = False
 
-    def kick(mut self, push: Vec3):
+    def kick(ref self, push: Vec3):
         self.velocity = self.velocity + push * (1.0 / self.mass)
         self.asleep = False
 
     def moved(self, dt: float) -> Body:
         Body(position=self.position + self.velocity * dt, velocity=self.velocity, mass=self.mass)
 
-def settle(mut body: Body):
+def settle(ref body: Body):
     body.velocity = Vec3.zero()
     body.asleep = True
 
@@ -35,14 +35,14 @@ def main(stdout: Stdout):
     ball.position.z += 1.5
     stdout.print(ball.position, ball.position.length())
 
-    settle(mut ball)
+    settle(ref ball)
     stdout.print(ball.velocity, ball.asleep)
 
     rock = Body(mass=5.0)
     stdout.print(heaviest(ball, second=rock).mass, ball == kept, kept == Body(mass=2.0))
 
     mut bodies = [Body(mass=float(n)) for n in range(1, 4)]
-    for mut body in bodies:
+    for ref body in bodies:
         body.kick(Vec3(x=body.mass))
     for body in bodies:
         stdout.print(body.velocity.x)

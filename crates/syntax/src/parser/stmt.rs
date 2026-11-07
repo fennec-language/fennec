@@ -1,7 +1,7 @@
 //! Statements and blocks.
 
 use super::Parser;
-use crate::ast::{BinOp, Expr, ExprKind, Stmt, StmtKind, WithName};
+use crate::ast::{BinOp, Expr, ExprKind, Stmt, StmtKind, TypeExpr, WithName};
 use crate::diagnostic::Diagnostic;
 use crate::span::Span;
 use crate::token::{Kw, Punct, Tok};
@@ -25,7 +25,13 @@ impl Parser {
             Tok::Kw(Kw::If) => self.if_stmt(),
             Tok::Kw(Kw::While) => self.while_stmt(),
             Tok::Kw(Kw::For) => self.for_stmt(),
-            Tok::Kw(Kw::With) => self.with_stmt(),
+            Tok::Kw(Kw::With) => self.with_stmt(false),
+            // `lend value`, or `lend value else:` with a block, in a `with` source.
+            Tok::Name(word) if word == "lend" && starts_value(self.peek_at(1)) => self.lend_stmt(),
+            // `lock scores as ref current:`, where a name follows `lock`.
+            Tok::Name(word) if word == "lock" && matches!(self.peek_at(1), Tok::Name(_)) => {
+                self.with_stmt(true)
+            }
             Tok::Kw(Kw::Def) => {
                 let function = self.def()?;
                 let span = function.span;
@@ -50,6 +56,15 @@ impl Parser {
             Tok::Kw(Kw::Continue) => self.keyword_stmt(StmtKind::Continue),
             Tok::Kw(Kw::Pass) => self.keyword_stmt(StmtKind::Pass),
             Tok::Kw(Kw::Mut) => self.mut_declaration()?,
+            // `shared scores = Scores()`: a plain value made `shared`, written out.
+            Tok::Name(word)
+                if word == "shared"
+                    && matches!(self.peek_at(1), Tok::Name(_))
+                    && matches!(self.peek_at(2), Tok::P(Punct::Assign)) =>
+            {
+                self.shared_declaration()?
+            }
+            Tok::Kw(Kw::Ref) => return Err(no_inline_ref(start)),
             Tok::Name(word) if self.is_python_only(&word) => return Err(python_only(&word, start)),
             _ => self.expr_or_assign()?,
         };
@@ -167,7 +182,7 @@ impl Parser {
 
     fn for_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.advance().span;
-        let is_mut = self.eat_kw(Kw::Mut);
+        let is_mut = self.eat_ref("a loop's name");
         let names = self.loop_names()?;
         let (iter, body) = self.condition_and_block()?;
         Ok(Stmt { kind: StmtKind::For { names, is_mut, iter, body }, span: start.to(self.prev_span()) })
@@ -185,44 +200,99 @@ impl Parser {
         Ok(names)
     }
 
-    /// `with value as name:`, or `with a, b as mut x, mut y:` with one name for each value.
-    fn with_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+    /// `with game as ref current:`, or several at once: `with a as ref x, b as ref y:`, or
+    /// `with a, b as x, y:`.
+    /// `with a as x:`, or, for `lock`, `lock a as ref x:`, which takes `shared` values.
+    fn with_stmt(&mut self, lock: bool) -> Result<Stmt, Diagnostic> {
         let start = self.advance().span;
-        let mut value = self.expr()?;
-        let mut held = 1;
-        if self.at_p(Punct::Comma) {
-            let mut items = vec![value];
-            while self.eat_p(Punct::Comma) {
-                items.push(self.expr()?);
-            }
-            held = items.len();
-            let span = items.iter().fold(self.prev_span(), |span, item| span.to(item.span));
-            value = Expr { kind: ExprKind::Tuple(items), span };
+        let mut items = vec![self.expr()?];
+        while self.eat_p(Punct::Comma) {
+            items.push(self.expr()?);
         }
         let mut names = Vec::new();
         if self.eat_kw(Kw::As) {
             loop {
                 let at = self.span();
-                let is_mut = self.eat_kw(Kw::Mut);
+                let is_mut = self.eat_ref("a `with` name");
                 let name = self.name("a name after `as`")?;
                 names.push(WithName { name, is_mut, span: at.to(self.prev_span()) });
                 if !self.eat_p(Punct::Comma) {
                     break;
                 }
+                // `with a as ref x, b as ref y:`: the next value comes with its own name.
+                if names.len() == items.len() && !self.at_with_name() {
+                    items.push(self.expr()?);
+                    if !self.eat_kw(Kw::As) {
+                        return Err(self.unexpected("`as` and a name for it"));
+                    }
+                }
             }
         }
+        let held = items.len();
+        let value = if let [one] = items.as_slice() {
+            one.clone()
+        } else {
+            let first = items.first().map_or(start, |item| item.span);
+            let span = items.iter().fold(first, |span, item| span.to(item.span));
+            Expr { kind: ExprKind::Tuple(items), span }
+        };
         if !names.is_empty() && names.len() != held {
             let span = names.iter().fold(value.span, |span, name| span.to(name.span));
             return Err(Diagnostic::new(
                 format!("this `with` holds {held} values but names {}", names.len()),
                 span,
             )
-            .with_help("give one name for each value, in order: `with a, b as x, y:`"));
+            .with_help("give each value its own name: `with a as ref x, b as ref y:`"));
+        }
+        if lock && names.is_empty() {
+            return Err(Diagnostic::new("a `lock` names what it holds, for the block", value.span)
+                .with_help("write `lock scores as current:` to read it, or `lock scores as ref current:` to change it"));
         }
         self.expect_p(Punct::Colon)?;
         let body = self.block()?;
-        Ok(Stmt { kind: StmtKind::With { value, names, body }, span: start.to(self.prev_span()) })
+        Ok(Stmt { kind: StmtKind::With { value, names, body, lock }, span: start.to(self.prev_span()) })
     }
+
+    /// `lend value`, or `lend value else:` and the block that runs when the caller's fails.
+    fn lend_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        let start = self.advance().span;
+        let value = self.or_expr()?;
+        let otherwise = if self.eat_kw(Kw::Else) {
+            self.expect_p(Punct::Colon)?;
+            self.block()?
+        } else {
+            self.end_line()?;
+            Vec::new()
+        };
+        Ok(Stmt { kind: StmtKind::Lend { value, otherwise }, span: start.to(self.prev_span()) })
+    }
+
+    /// `shared name = value`, written in as `name: shared = value`: a type of `shared` with
+    /// nothing in its brackets, which takes the value's type.
+    fn shared_declaration(&mut self) -> Result<StmtKind, Diagnostic> {
+        let word = self.advance().span;
+        let at = self.span();
+        let name = self.name("a name after `shared`")?;
+        let target = Expr { kind: ExprKind::Name(name), span: at };
+        self.expect_p(Punct::Assign)?;
+        let value = self.expr()?;
+        let ty = TypeExpr { name: "shared".to_owned(), args: Vec::new(), optional: false, span: word };
+        Ok(StmtKind::Assign { target, op: None, value, declare_mut: false, ty: Some(ty) })
+    }
+
+    /// Whether a name after `as` comes next, as in `with a, b as x, y:`, rather than another
+    /// value: `ref` or `mut`, or a name and then `,` or `:`.
+    fn at_with_name(&self) -> bool {
+        matches!(self.peek(), Tok::Kw(Kw::Ref | Kw::Mut))
+            || matches!(self.peek(), Tok::Name(_))
+                && matches!(self.peek_at(1), Tok::P(Punct::Comma | Punct::Colon))
+    }
+}
+
+fn no_inline_ref(span: Span) -> Diagnostic {
+    Diagnostic::new("there's no inline `ref`", span).with_help(
+        "`ref` is for loops and parameters. To change something in a list, write to it there, like `units[0].health -= 1`; to make a name that can change, write `mut`",
+    )
 }
 
 fn python_only(word: &str, span: Span) -> Diagnostic {
@@ -233,4 +303,19 @@ fn python_only(word: &str, span: Span) -> Diagnostic {
         }
     };
     Diagnostic::new(format!("Fennec doesn't have `{word}`"), span).with_help(help)
+}
+
+/// Whether a value can start with this token, so `lend` before it starts a `lend`.
+fn starts_value(tok: &Tok) -> bool {
+    matches!(
+        tok,
+        Tok::Name(_)
+            | Tok::Int(_)
+            | Tok::Float(_)
+            | Tok::Duration(_)
+            | Tok::Str(_)
+            | Tok::FStr(_)
+            | Tok::Kw(Kw::True | Kw::False | Kw::None | Kw::Not)
+            | Tok::P(Punct::LParen | Punct::LBracket | Punct::LBrace | Punct::Dot | Punct::Minus)
+    )
 }

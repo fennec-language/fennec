@@ -57,12 +57,20 @@ fn only(source: &str, lines: &[DocLine<'_>]) -> String {
     String::from_utf8(bytes).unwrap_or_default()
 }
 
-/// The examples in a file's doc comments, as tests. The file is shown as `shown`, its spans start
-/// at byte `base`, and a fence that's never closed or code that doesn't parse is a mistake.
-pub fn doc_examples(source: &str, base: u32, shown: &str) -> Result<Vec<Item>, Diagnostic> {
+/// A code fence in a doc comment.
+struct Fence<'s> {
+    open: DocLine<'s>,
+    body: Vec<DocLine<'s>>,
+    /// Where its last line's comment ends.
+    last_end: usize,
+    closed: bool,
+    runs: bool,
+}
+
+/// The code fences in a file's doc comments, in order.
+fn fences(source: &str) -> Vec<Fence<'_>> {
     let mut lines = doc_lines(source).into_iter().peekable();
-    let mut tests = Vec::new();
-    let mut count = 0;
+    let mut fences = Vec::new();
     while let Some(open) = lines.next() {
         let Some(runs) = opens(&open) else { continue };
         let mut body = Vec::new();
@@ -77,6 +85,17 @@ pub fn doc_examples(source: &str, base: u32, shown: &str) -> Result<Vec<Item>, D
             }
             body.push(next);
         }
+        fences.push(Fence { open, body, last_end, closed, runs });
+    }
+    fences
+}
+
+/// The examples in a file's doc comments, as tests. The file is shown as `shown`, its spans start
+/// at byte `base`, and a fence that's never closed or code that doesn't parse is a mistake.
+pub fn doc_examples(source: &str, base: u32, shown: &str) -> Result<Vec<Item>, Diagnostic> {
+    let mut tests = Vec::new();
+    let mut count = 0;
+    for Fence { open, body, last_end, closed, runs } in fences(source) {
         if !closed {
             return Err(Diagnostic::new(
                 "this doc example's code fence is never closed",

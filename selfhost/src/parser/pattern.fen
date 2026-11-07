@@ -15,7 +15,7 @@ extend Parser:
             return False
         next not in [.Punct("="), .Punct("("), .Punct("."), .Punct(","), .Punct(")"), .Punct(":")]
 
-    def match_expr(mut self) -> Expr:
+    def match_expr(ref self) -> Expr:
         start = self.advance().span
         subject = self.or_expr()?
         self.expect_punct(":")?
@@ -34,13 +34,13 @@ extend Parser:
         Expr(kind=.Match(subject, arms), span=start.to(self.prev_span()))
 
     ## `if condition` after a `case`'s pattern, if there is one.
-    def guard(mut self) -> Expr?:
+    def guard(ref self) -> Expr?:
         if self.eat_keyword("if"):
             return self.expr()?
         None
 
     ## A pattern, or several separated by `|`, any of which matches.
-    def pattern(mut self) -> Pattern:
+    def pattern(ref self) -> Pattern:
         first = self.one_pattern()?
         if not self.at_punct("|"):
             return first
@@ -49,7 +49,7 @@ extend Parser:
             alternatives.append(self.one_pattern()?)
         .Or(alternatives)
 
-    def one_pattern(mut self) -> Pattern:
+    def one_pattern(ref self) -> Pattern:
         token = self.advance()
         match token.tok:
             case .Name(name):
@@ -60,16 +60,18 @@ extend Parser:
                     mut dotted = name
                     while self.eat_punct("."):
                         dotted += "." + self.name("a name")?
-                    return Pattern.Variant(dotted, False, self.pattern_args()?)
+                    args, fields = self.pattern_args()?
+                    return .Variant(dotted, False, args, fields)
                 if name[0] >= "A" and name[0] <= "Z":
-                    return Pattern.Variant(name, False, self.pattern_args()?)
+                    args, fields = self.pattern_args()?
+                    return .Variant(name, False, args, fields)
                 .Bind(name)
-            case .Int(value): literal(ExprKind.Int(value), token.span)
-            case .Float(value): literal(ExprKind.Float(value), token.span)
-            case .Str(text): literal(ExprKind.Str(text), token.span)
+            case .Int(value): literal(.Int(value), token.span)
+            case .Float(value): literal(.Float(value), token.span)
+            case .Str(text): literal(.Str(text), token.span)
             case .Keyword(word):
                 if word == "True" or word == "False":
-                    return literal(ExprKind.Bool(word == "True"), token.span)
+                    return literal(.Bool(word == "True"), token.span)
                 if word == "None":
                     return literal(.Nothing, token.span)
                 self.pos -= 1
@@ -80,14 +82,15 @@ extend Parser:
                 fail self.unexpected("a pattern")
 
     ## A pattern that starts with punctuation: `.Case(...)`, a negative number, or a tuple.
-    def punct_pattern(mut self, text: str, span: Span) -> Pattern:
+    def punct_pattern(ref self, text: str, span: Span) -> Pattern:
         if text == ".":
             name = self.name("an enum case")?
-            return Pattern.Variant(name, True, self.pattern_args()?)
+            args, fields = self.pattern_args()?
+            return .Variant(name, True, args, fields)
         if text == "-":
             match self.advance().tok:
-                case .Int(value): return literal(ExprKind.Int(-value), span)
-                case .Float(value): return literal(ExprKind.Float(-value), span)
+                case .Int(value): return literal(.Int(-value), span)
+                case .Float(value): return literal(.Float(-value), span)
                 case _: fail Diagnostic(message="expected a number after `-`", span=span)
         if text == "(":
             mut items = []
@@ -96,19 +99,34 @@ extend Parser:
                 if not self.eat_punct(","):
                     break
             self.expect_punct(")")?
-            return Pattern.Tuple(items)
+            return .Tuple(items)
         self.pos -= 1
         fail self.unexpected("a pattern")
 
-    def pattern_args(mut self) -> list[Pattern]:
-        mut args = []
+    ## What a case's parentheses hold: patterns by position, as in `Point(a, b)`, or each
+    ## after the name of the field it matches, as in `Point(x=a, y=_)`, but not both.
+    def pattern_args(ref self) -> (list[Pattern], list[str]):
+        mut args = list[Pattern]()
+        mut fields = list[str]()
         if self.eat_punct("("):
             while not self.at_punct(")"):
+                start = self.span()
+                named = match self.peek():
+                    case .Name(_): self.peek_at(1) == .Punct("=")
+                    case _: False
+                if args.len() > 0 and named == (fields.len() == 0):
+                    fail Diagnostic(message="a pattern names every field it matches, or none of them", span=start)
+                if named:
+                    field = self.name("a field")?
+                    _ = self.advance()
+                    if field in fields:
+                        fail Diagnostic(message=f"this pattern names `{field}` twice", span=start)
+                    fields.append(field)
                 args.append(self.pattern()?)
                 if not self.eat_punct(","):
                     break
             self.expect_punct(")")?
-        args
+        (args, fields)
 
 def literal(kind: ExprKind, span: Span) -> Pattern:
     .Literal(Expr(kind=kind, span=span))

@@ -3,10 +3,14 @@
 //! or pass it as `mut`, and neither may a function the body calls: each function's summary says
 //! which places under its `mut` parameters it changes. The loop goes over `copy(xs)` instead, or
 //! collects the changes and makes them after.
+//!
+//! A `mut` argument has its place to itself the same way: nothing else in the call can reach it.
+//! Nor can an argument change what its call changes, like `self.items.append(self.grow())` where
+//! `grow` appends to `self.items`: the engines would disagree on which change wins.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Span, Stmt, StmtKind};
+use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, FnDef, Span, Stmt, StmtKind};
 
 use crate::Body;
 use crate::builtins;
@@ -33,6 +37,14 @@ impl Place {
     /// This place, with `inner` read as a place under it.
     fn under(&self, inner: &[Step]) -> Place {
         Place { root: self.root.clone(), steps: self.steps.iter().chain(inner).cloned().collect() }
+    }
+
+    /// The place as it's written, with `[...]` for any index.
+    fn shown(&self) -> String {
+        self.steps.iter().fold(self.root.clone(), |text, step| match step {
+            Some(field) => format!("{text}.{field}"),
+            None => format!("{text}[...]"),
+        })
     }
 }
 
@@ -78,30 +90,49 @@ fn looped_over(iter: &Expr) -> Vec<(Place, &Expr)> {
 /// parameter, where an empty one is the whole parameter.
 type Summary = HashMap<String, Vec<Vec<Step>>>;
 
-struct Loops<'c> {
+/// The summaries worked out for good, kept from one function's check to the next.
+#[derive(Default)]
+pub(crate) struct Settled(HashMap<String, Summary>);
+
+struct Loops<'c, 's> {
     checker: &'c Checker,
+    settled: &'s mut Settled,
+    /// What's known so far of the functions whose summaries aren't settled yet.
     summaries: HashMap<String, Summary>,
-    /// The functions whose summaries are being worked out, for a call back into one.
-    working: HashSet<String>,
-    /// The functions whose summaries are settled.
-    done: HashSet<String>,
+    /// Those functions, in the order they were reached, each with where it is in `open`.
+    open: Vec<String>,
+    places: HashMap<String, usize>,
+    /// The earliest place in `open` the function being worked out calls back into, directly or
+    /// through what it calls.
+    lowest: usize,
+    /// How many calls have come back into a function not settled yet.
+    calls_back: usize,
     problems: Vec<Diagnostic>,
 }
 
 /// Checks a function's loops, reporting each change to what a loop goes over.
-pub(crate) fn check_function(checker: &Checker, key: &str, def: &FnDef) -> Vec<Diagnostic> {
+pub(crate) fn check_function(
+    checker: &Checker,
+    settled: &mut Settled,
+    key: &str,
+    def: &FnDef,
+) -> Vec<Diagnostic> {
     let mut loops = Loops {
         checker,
+        settled,
         summaries: HashMap::new(),
-        working: HashSet::new(),
-        done: HashSet::new(),
+        open: Vec::new(),
+        places: HashMap::new(),
+        lowest: usize::MAX,
+        calls_back: 0,
         problems: Vec::new(),
     };
     loops.loops_in(&def.body, checker.typed.get(key));
+    loops.arguments_changing_their_call(&def.body, checker.typed.get(key));
     loops.problems
 }
 
-impl Loops<'_> {
+impl Loops<'_, '_> {
     /// Checks every loop in a block, and the loops inside them.
     fn loops_in(&mut self, stmts: &[Stmt], body: Option<&Body>) {
         for stmt in stmts {
@@ -111,17 +142,15 @@ impl Loops<'_> {
                     let shown = fennec_syntax::dotted(written).unwrap_or_else(|| "it".to_owned());
                     // A `for mut` over a copy would write to the copy.
                     let help = if *is_mut {
-                        "collect the changes and make them after the loop".to_owned()
+                        "loop over indexes, or collect the changes and make them after the loop"
                     } else {
-                        format!(
-                            "loop over `copy({shown})`, or collect the changes and make them after the loop"
-                        )
+                        "use `for ref`, or loop over indexes"
                     };
                     for (_, span) in changes.iter().filter(|(changed, _)| changed.overlaps(&looped)) {
-                        let message = format!("`{shown}` changes while a loop goes over it");
+                        let message = format!("you can't change `{shown}` while looping over it");
                         self.problems.push(
                             Diagnostic::new(message, *span)
-                                .with_help(help.clone())
+                                .with_help(help)
                                 .also_at_the(fennec_syntax::Also::Loop, written.span),
                         );
                     }
@@ -130,6 +159,98 @@ impl Loops<'_> {
             for block in blocks(stmt) {
                 self.loops_in(block, body);
             }
+        }
+    }
+
+    /// Reports each call inside an argument that changes a place the call it's passed to also
+    /// changes: what a method changing its value is called on, or a `ref` argument's place.
+    fn arguments_changing_their_call(&mut self, stmts: &[Stmt], body: Option<&Body>) {
+        for stmt in stmts {
+            for expr in exprs(stmt) {
+                self.argument_changes_in(expr, body);
+            }
+            for block in blocks(stmt) {
+                self.arguments_changing_their_call(block, body);
+            }
+        }
+    }
+
+    fn argument_changes_in(&mut self, expr: &Expr, body: Option<&Body>) {
+        if let ExprKind::Call { callee, args } = &expr.kind {
+            let held = self.call_changes(callee, args, body);
+            if !held.is_empty() {
+                for arg in args {
+                    let mut changed = Vec::new();
+                    self.written_changes(&arg.value, body, &mut changed);
+                    for (place, written, span) in changed {
+                        let Some((both, _)) = held.iter().find(|(held, held_written)| {
+                            held.overlaps(&place) && !written_apart(held_written, written)
+                        }) else {
+                            continue;
+                        };
+                        let message = format!(
+                            "this changes `{}`, which the call it's passed to changes too",
+                            both.shown()
+                        );
+                        self.problems.push(Diagnostic::new(message, span).with_help(ARGUMENT_CHANGES_FIX));
+                    }
+                }
+            }
+        }
+        if let ExprKind::Match { arms, .. } = &expr.kind {
+            for arm in arms {
+                self.arguments_changing_their_call(&arm.body, body);
+            }
+        }
+        for inner in crate::effects::children(expr) {
+            self.argument_changes_in(inner, body);
+        }
+    }
+
+    /// The places a call itself changes, apart from what its arguments do, each with the place
+    /// as it's written: what it's called on, for a method that changes its value, and what it
+    /// changes under each `ref` argument.
+    fn call_changes<'e>(
+        &mut self,
+        callee: &'e Expr,
+        args: &'e [Arg],
+        body: Option<&Body>,
+    ) -> Vec<(Place, &'e Expr)> {
+        let mut held = Vec::new();
+        if let ExprKind::Attr { object, name, .. } = &callee.kind
+            && let Some(receiver) = place(object)
+        {
+            for inner in self.method_changes(object, name, body) {
+                held.push((receiver.under(&inner), object.as_ref()));
+            }
+        }
+        let callee_key = self.function_key(callee, body);
+        for (at, arg) in args.iter().enumerate() {
+            let Some(given) = place(&arg.value).filter(|_| arg.is_mut) else { continue };
+            let inner = callee_key.as_ref().and_then(|key| self.param_changes(key, at, arg.name.as_ref()));
+            for inner in inner.unwrap_or_else(|| vec![Vec::new()]) {
+                held.push((given.under(&inner), &arg.value));
+            }
+        }
+        held
+    }
+
+    /// What the calls in an expression change, as `call_changes` gives it, with where each call is.
+    fn written_changes<'e>(
+        &mut self,
+        expr: &'e Expr,
+        body: Option<&Body>,
+        found: &mut Vec<(Place, &'e Expr, Span)>,
+    ) {
+        if let ExprKind::Call { callee, args } = &expr.kind {
+            found.extend(
+                self.call_changes(callee, args, body)
+                    .into_iter()
+                    .map(|(place, written)| (place, written, expr.span)),
+            );
+        }
+        for inner in crate::effects::children(expr) {
+            self.written_changes(inner, body, found);
         }
     }
 
@@ -236,36 +357,233 @@ impl Loops<'_> {
     }
 
     /// What a function changes under each `mut` parameter, worked out once. Functions that
-    /// call each other are worked out together: a call back into one being worked out sees
-    /// what's known of it so far, and it's worked out again until nothing more is found.
+    /// call each other are worked out together, as one group: each pass over the group sees what
+    /// the last found, until a pass finds nothing more, and then the whole group is settled.
     fn summary(&mut self, key: &str) -> Summary {
-        if self.done.contains(key) || self.working.contains(key) {
+        if let Some(settled) = self.settled.0.get(key) {
+            return settled.clone();
+        }
+        if let Some(&place) = self.places.get(key) {
+            self.lowest = self.lowest.min(place);
+            self.calls_back += 1;
             return self.summaries.get(key).cloned().unwrap_or_default();
         }
-        let Some(entry) = self.checker.program.functions.get(key) else { return Summary::new() };
-        let def = entry.def.clone();
-        let mutable: Vec<String> =
-            def.params.iter().filter(|param| param.is_mut).map(|param| param.name.clone()).collect();
-        self.working.insert(key.to_owned());
-        loop {
-            let mut summary = Summary::new();
-            for (changed, _) in self.changes_in(&def.body, self.checker.typed.get(key)) {
-                if mutable.contains(&changed.root) {
-                    let found = summary.entry(changed.root).or_default();
-                    if !found.contains(&changed.steps) {
-                        found.push(changed.steps);
-                    }
+        if !self.checker.program.functions.contains_key(key) {
+            return Summary::new();
+        }
+        let place = self.open.len();
+        self.open.push(key.to_owned());
+        self.places.insert(key.to_owned(), place);
+        let outer = std::mem::replace(&mut self.lowest, place);
+        let calls_back = self.calls_back;
+        let found = self.worked_out(key);
+        self.summaries.insert(key.to_owned(), found);
+        let lowest = std::mem::replace(&mut self.lowest, outer);
+        self.lowest = self.lowest.min(lowest);
+        if lowest >= place {
+            // One function alone needs another pass only when something called back into it.
+            let again = self.open.len() > place + 1 || self.calls_back > calls_back;
+            self.settle_group(place, again);
+        }
+        self.settled.0.get(key).or_else(|| self.summaries.get(key)).cloned().unwrap_or_default()
+    }
+
+    /// Works the group starting at `first` in `open` out again until nothing more is found,
+    /// then settles it.
+    fn settle_group(&mut self, first: usize, again: bool) {
+        let group: Vec<String> = self.open.split_off(first);
+        let mut grew = again;
+        while grew {
+            grew = false;
+            for key in &group {
+                let outer = std::mem::replace(&mut self.lowest, usize::MAX);
+                let found = self.worked_out(key);
+                self.lowest = outer;
+                if self.summaries.get(key) != Some(&found) {
+                    self.summaries.insert(key.clone(), found);
+                    grew = true;
                 }
             }
-            let grew = self.summaries.get(key) != Some(&summary);
-            self.summaries.insert(key.to_owned(), summary);
-            if !grew {
-                break;
+        }
+        for key in group {
+            self.places.remove(&key);
+            let found = self.summaries.remove(&key).unwrap_or_default();
+            self.settled.0.insert(key, found);
+        }
+    }
+
+    /// One pass over a function's body: what it changes under each `mut` parameter, given what's
+    /// known so far of what it calls.
+    fn worked_out(&mut self, key: &str) -> Summary {
+        let checker = self.checker;
+        let Some(entry) = checker.program.functions.get(key) else { return Summary::new() };
+        let def = &entry.def;
+        let mutable: Vec<&str> =
+            def.params.iter().filter(|param| param.is_mut).map(|param| param.name.as_str()).collect();
+        let mut summary = Summary::new();
+        for (changed, _) in self.changes_in(&def.body, checker.typed.get(key)) {
+            if mutable.contains(&changed.root.as_str()) {
+                let found = summary.entry(changed.root).or_default();
+                if !found.contains(&changed.steps) {
+                    found.push(changed.steps);
+                }
             }
         }
-        self.working.remove(key);
-        self.done.insert(key.to_owned());
-        self.summaries.get(key).cloned().unwrap_or_default()
+        summary
+    }
+}
+
+/// Reports each `mut` argument whose place another argument of the same call can reach, in a
+/// function's body or a nested function's. What a method is called on counts as an argument.
+pub(crate) fn check_arguments(stmts: &[Stmt]) -> Vec<Diagnostic> {
+    let mut problems = Vec::new();
+    arguments_in_block(stmts, &mut problems);
+    problems
+}
+
+fn arguments_in_block(stmts: &[Stmt], problems: &mut Vec<Diagnostic>) {
+    for stmt in stmts {
+        for expr in exprs(stmt) {
+            arguments_in(expr, problems);
+        }
+        for block in blocks(stmt) {
+            arguments_in_block(block, problems);
+        }
+        if let StmtKind::Def(def) = &stmt.kind {
+            arguments_in_block(&def.body, problems);
+        }
+    }
+}
+
+fn arguments_in(expr: &Expr, problems: &mut Vec<Diagnostic>) {
+    if let ExprKind::Call { callee, args } = &expr.kind {
+        overlapping_arguments(callee, args, problems);
+    }
+    if let ExprKind::Match { arms, .. } = &expr.kind {
+        for arm in arms {
+            arguments_in_block(&arm.body, problems);
+        }
+    }
+    for inner in crate::effects::children(expr) {
+        arguments_in(inner, problems);
+    }
+}
+
+fn overlapping_arguments(callee: &Expr, args: &[Arg], problems: &mut Vec<Diagnostic>) {
+    let receiver = match &callee.kind {
+        ExprKind::Attr { object, .. } => place(object).map(|found| (found, object.as_ref())),
+        _ => None,
+    };
+    let mut earlier: Vec<(Place, &Expr, bool)> = Vec::new();
+    for arg in args {
+        let Some(given) = place(&arg.value) else { continue };
+        let clash = earlier.iter().find(|(other, written, is_mut)| {
+            (arg.is_mut || *is_mut) && given.overlaps(other) && !written_apart(&arg.value, written)
+        });
+        let held = receiver.as_ref().filter(|(called_on, written)| {
+            arg.is_mut && given.overlaps(called_on) && !written_apart(&arg.value, written)
+        });
+        if let Some((_, other, is_mut)) = clash {
+            let (first, second) = (written(other, *is_mut), written(&arg.value, arg.is_mut));
+            let message = format!("{first} and {second} overlap");
+            problems.push(Diagnostic::new(message, arg.value.span).with_help(OVERLAP_FIX));
+        } else if let Some((_, called_on)) = held {
+            let (first, second) = (written(&arg.value, true), written(called_on, false));
+            let message = format!("{first} overlaps {second}, which this method is called on");
+            problems.push(Diagnostic::new(message, arg.value.span).with_help(OVERLAP_FIX));
+        }
+        earlier.push((given, &arg.value, arg.is_mut));
+    }
+    picked_by_a_mut_argument(callee, args, problems);
+}
+
+/// Whether two places are written with different indexes that are known as written, like `xs[0]`
+/// and `xs[1]`, so they can't be one item. `xs[-1]` could be `xs[0]`, so an index counted from the
+/// end isn't known.
+fn written_apart(first: &Expr, second: &Expr) -> bool {
+    steps_of(first).iter().zip(&steps_of(second)).any(|(one, other)| match (&one.kind, &other.kind) {
+        (ExprKind::Int(one), ExprKind::Int(other)) => one != other,
+        (ExprKind::Str(one), ExprKind::Str(other)) => one != other,
+        _ => false,
+    })
+}
+
+/// What each step along a place goes by, from its root: an index, or for a field the field's own
+/// expression, which is never told apart here, since `Place::overlaps` compares fields.
+fn steps_of(expr: &Expr) -> Vec<&Expr> {
+    let (object, step) = match &expr.kind {
+        ExprKind::Attr { object, .. } => (object, expr),
+        ExprKind::Index { object, index } => (object, index.as_ref()),
+        _ => return Vec::new(),
+    };
+    let mut steps = steps_of(object);
+    steps.push(step);
+    steps
+}
+
+/// `units[at].step(mut at)` and `f(mut xs[i], mut i)`: a `mut` argument changes what picks the
+/// place another argument names, so which place that is would depend on when it's read.
+fn picked_by_a_mut_argument(callee: &Expr, args: &[Arg], problems: &mut Vec<Diagnostic>) {
+    let receiver = match &callee.kind {
+        ExprKind::Attr { object, .. } => Some(object.as_ref()),
+        _ => None,
+    };
+    let others = || receiver.into_iter().chain(args.iter().map(|arg| &arg.value));
+    for arg in args.iter().filter(|arg| arg.is_mut) {
+        let Some(changed) = place(&arg.value) else { continue };
+        let picked = others().find(|other| {
+            other.span != arg.value.span && place(other).is_some() && picks_with(other, &changed)
+        });
+        if let Some(other) = picked {
+            let (first, second) = (written(&arg.value, true), written(other, false));
+            let message = format!("{first} changes what picks {second}");
+            problems.push(
+                Diagnostic::new(message, arg.value.span)
+                    .with_help("hold the index in another name, and give that name as `ref`"),
+            );
+        }
+    }
+}
+
+/// Whether an index along a place reads `changed`.
+fn picks_with(expr: &Expr, changed: &Place) -> bool {
+    match &expr.kind {
+        ExprKind::Attr { object, .. } => picks_with(object, changed),
+        ExprKind::Index { object, index } => reads(index, changed) || picks_with(object, changed),
+        _ => false,
+    }
+}
+
+fn reads(expr: &Expr, changed: &Place) -> bool {
+    place(expr).is_some_and(|found| found.overlaps(changed))
+        || crate::effects::children(expr).into_iter().any(|inner| reads(inner, changed))
+}
+
+const ARGUMENT_CHANGES_FIX: &str =
+    "make that change on the line before, keeping what it gives back in a name, and pass the name";
+
+const OVERLAP_FIX: &str = "a `ref` argument needs its place to itself: give the other `copy(...)` of what \
+it reads, or make the changes one at a time";
+
+/// An argument that names a place, in backticks as it's written.
+fn written(expr: &Expr, is_mut: bool) -> String {
+    let word = if is_mut { "ref " } else { "" };
+    format!("`{word}{}`", place_text(expr))
+}
+
+pub(crate) fn place_text(expr: &Expr) -> String {
+    match &expr.kind {
+        ExprKind::Name(name) => name.clone(),
+        ExprKind::Attr { object, name, .. } => format!("{}.{name}", place_text(object)),
+        ExprKind::Index { object, index } => {
+            let at = match &index.kind {
+                ExprKind::Name(name) => name.clone(),
+                ExprKind::Int(value) => value.to_string(),
+                _ => "...".to_owned(),
+            };
+            format!("{}[{at}]", place_text(object))
+        }
+        _ => "...".to_owned(),
     }
 }
 
@@ -287,6 +605,7 @@ pub(crate) fn exprs(stmt: &Stmt) -> Vec<&Expr> {
         | StmtKind::Fail(value)
         | StmtKind::Yield(value)
         | StmtKind::Assert(value)
+        | StmtKind::Lend { value, .. }
         | StmtKind::Return(Some(value)) => vec![value],
         StmtKind::Assign { target, value, .. } => vec![target, value],
         StmtKind::If { branches, .. } => branches.iter().map(|(cond, _)| cond).collect(),

@@ -1,14 +1,22 @@
 ## `std.net`: the network, through the `Net` capability, which `main` names like `Fs`. Every
 ## call waits until it's done, with no `async`: a server gives each connection its own
 ## `parallel` task. `net.connect(host, port)` gives a `Connection` and `net.listen(port)` a
-## `Server`, each used in a `with` block that closes it. Connecting gives up after 30 seconds
-## unless `timeout=` says otherwise. In a test, `Net` is a fake that never touches the
-## network: the test's own servers are at `localhost`, and its clients reach them in memory.
-## Nothing else runs while a test waits, so a test's server is done once no connection is
-## waiting.
+## `Server`, and `server.serve(respond)` answers HTTP with a function. Connecting gives up after
+## 30 seconds unless `timeout=` says otherwise.
+##
+## `Connection`, `Server` and `UdpSocket` are `shared`: a second name for one is the same socket.
+## Each manages its own sides, so it takes no lock, and `with` on one only closes it at the end of
+## the block.
+##
+## In a test, `Net` is a fake that never touches the network: the test's own servers are at
+## `localhost`, and its clients reach them in memory. Nothing else runs while a test waits, so a
+## test's server is done once no connection is waiting.
+
+from std import json
+from std.url import decode_query, unquote
 
 ## A failure of the network, with a case for each way it fails. `message()` says it in words.
-error NetError:
+export error NetError:
     ## No host has that name.
     NotFound(host: str)
     ## The host is there, but nothing listens on that port.
@@ -30,24 +38,41 @@ error NetError:
     ## What went wrong, in words.
     def message(self) -> str:
         match self:
-            case NotFound(host):
+            case .NotFound(host):
                 f"there's no host called `{host}`"
-            case Refused(host, port):
+            case .Refused(host, port):
                 f"`{host}` refused a connection on port {port}"
-            case TimedOut(after):
+            case .TimedOut(after):
                 f"gave up after {after.as_seconds()}s"
-            case Closed:
+            case .Closed:
                 "the other side closed the connection"
             case Denied(reason) | Tls(reason) | Other(reason):
                 reason
-            case Status(code):
+            case .Status(code):
                 f"the response's status was {code}"
+
+## What a server answered. A 404 is an answer like any other, so `ok()` says which it was. Its
+## `text()`, written in Rust, gives the body as text, with anything that isn't text replaced.
+export struct Response:
+    status: int
+    ## By their names in lower case.
+    headers = dict[str, str]()
+    body = bytes([])
+
+    ## Whether the status is one of the 200s.
+    def ok(self) -> bool:
+        self.status >= 200 and self.status < 300
+
+    ## The body read as JSON into a `T`, as `json.loads[T]` reads text: what an API sent back.
+    ## Text that isn't JSON, or doesn't fit `T`, fails with a `ParseError` saying where.
+    def json[T: Deserializable](self) -> T fails ParseError:
+        json.loads[T](self.text())?
 
 ## One end of a TCP connection. Its methods, written in Rust: `read(n)` gives up to `n` bytes,
 ## or empty bytes once the other side is done; `read_line()` gives the next line without its
 ## ending, or `None` at the end; `write(data)` sends `bytes` or a `str`; and `close()`. Reads
 ## wait as long as it takes, unless given `timeout=`.
-struct Connection:
+export shared Connection:
     _handle: int
     ## The other side's address, like `"127.0.0.1:52811"`.
     peer: str
@@ -63,9 +88,33 @@ struct Connection:
     def del(self):
         self.close()
 
+## One datagram, and the address it came from, like `"127.0.0.1:52811"`, which `send_to` answers.
+export struct Packet:
+    data: bytes
+    sender: str
+
+## A UDP port. Looping over it gives each packet as it arrives. Its methods, written in Rust:
+## `receive()` gives the next `Packet`, waiting as long as it takes unless given `timeout=`;
+## `send_to(data, address)` sends `bytes` or a `str` to an address like `"127.0.0.1:9001"`; and
+## `close()`.
+export shared UdpSocket:
+    _handle: int
+    ## The port it listens on: the one asked for, or the one the system picked for port 0.
+    port: int
+
+    ## Each packet as it arrives, until the socket is closed or fails.
+    def iter(self) -> Iterator[Packet]:
+        while True:
+            packet = self.receive() else None
+            if packet is None: return
+            yield packet
+
+    def del(self):
+        self.close()
+
 ## A TCP port being listened on. Looping over it gives each connection as it arrives, and
 ## `accept()` waits for the next one.
-struct Server:
+export shared Server:
     _handle: int
     ## The port it listens on: the one asked for, or the one the system picked for port 0.
     port: int
@@ -77,5 +126,168 @@ struct Server:
             if conn is None: return
             yield conn
 
+    ## Answers HTTP/1.1 with `respond`, each connection its own task, until the server is closed. A
+    ## connection is kept open for more requests unless either side says to close it, and one that
+    ## sends nothing for `timeout` is closed. A request that's too big, or isn't HTTP, is answered
+    ## with the 4xx status that says so, without calling `respond`.
+    def serve(self, respond: (Request) -> Response, timeout = 30s):
+        for connection in parallel(self):
+            _ = answer_all(connection, respond, timeout)
+
     def del(self):
         self.close()
+
+## An HTTP request a server was sent: its method, like `"GET"`, its path without the query, the
+## query's parameters, its headers by their names in lower case, and its body.
+export struct Request:
+    method: str
+    path: str
+    query = dict[str, str]()
+    headers = dict[str, str]()
+    body = bytes([])
+
+    ## The body as text, or empty text when it isn't UTF-8.
+    def text(self) -> str:
+        self.body.decode() else ""
+
+## The most a request's headers may hold, in lines and in bytes, and the most its body may be.
+MOST_HEADERS = 100
+MOST_HEADER_BYTES = 16384
+MOST_BODY = 10485760
+
+## What reading a request gave: one to answer, one the server answers itself, or the end.
+enum RequestRead:
+    Got(request: Request, keep: bool)
+    Bad(status: int, reason: str)
+    Done
+
+## Answers each request on a connection until it's closed or asks to be.
+def answer_all(
+    connection: Connection,
+    respond: (Request) -> Response,
+    timeout: Duration,
+) fails NetError:
+    while True:
+        match read_request(connection, timeout)?:
+            case .Got(request, keep):
+                write_response(connection, respond(request), keep)?
+                if not keep:
+                    connection.close()
+                    return
+            case .Bad(status, reason):
+                write_response(connection, Response(status=status, body=reason.encode()), False)?
+                connection.close()
+                return
+            case .Done:
+                connection.close()
+                return
+
+## The next request on a connection.
+def read_request(connection: Connection, timeout: Duration) -> RequestRead fails NetError:
+    first = connection.read_line(timeout=timeout)? else return .Done
+    if first == "": return .Done
+    parts = first.split(" ")
+    if parts.len() != 3 or not parts[2].startswith("HTTP/1."):
+        return .Bad(status=400, reason="that isn't an HTTP/1.1 request line")
+    mut headers: dict[str, str] = {}
+    mut size = first.len()
+    mut lines = 0
+    while True:
+        line = connection.read_line(timeout=timeout)? else return .Bad(
+            status=400,
+            reason="the headers didn't end",
+        )
+        if line == "": break
+        size += line.len()
+        lines += 1
+        if lines > MOST_HEADERS or size > MOST_HEADER_BYTES:
+            return .Bad(status=431, reason="the headers are too big")
+        colon = line.find(":") else return .Bad(status=400, reason="a header has no `:`")
+        headers[line[:colon].strip().lower()] = line[colon + 1:].strip()
+    if "transfer-encoding" in headers:
+        return .Bad(status=501, reason="chunked bodies aren't taken yet")
+    mut body = bytes([])
+    if "content-length" in headers:
+        length = int(headers["content-length"]) else return .Bad(
+            status=400,
+            reason="the content length isn't a number",
+        )
+        if length < 0: return .Bad(status=400, reason="the content length is negative")
+        if length > MOST_BODY: return .Bad(status=413, reason="the body is too big")
+        while body.len() < length:
+            more = connection.read(length - body.len(), timeout=timeout)?
+            if more.len() == 0: return .Bad(status=400, reason="the body ended early")
+            body = body + more
+    version = parts[2]
+    asked = (headers.get("connection") else "").lower()
+    keep = asked != "close" if version == "HTTP/1.1" else asked == "keep-alive"
+    target = parts[1]
+    mut path = target
+    mut query: dict[str, str] = {}
+    at = target.find("?")
+    if at is not None:
+        path = target[:at]
+        query = decode_query(target[at + 1:])
+    .Got(
+        request=Request(
+            method=parts[0],
+            path=unquote(path),
+            query=query,
+            headers=headers,
+            body=body,
+        ),
+        keep=keep,
+    )
+
+## Writes a response, saying the connection closes after it when it does.
+def write_response(connection: Connection, response: Response, keep: bool) fails NetError:
+    mut head = f"HTTP/1.1 {response.status} {reason_phrase(response.status)}\r\n"
+    for name, value in response.headers.items():
+        lower = name.lower()
+        if lower != "content-length" and lower != "connection":
+            head += f"{name}: {value}\r\n"
+    head += f"content-length: {response.body.len()}\r\n"
+    if not keep:
+        head += "connection: close\r\n"
+    head += "\r\n"
+    connection.write(head)?
+    if response.body.len() > 0:
+        connection.write(response.body)?
+
+## The words that go with a status.
+def reason_phrase(status: int) -> str:
+    match status:
+        case 200:
+            "OK"
+        case 201:
+            "Created"
+        case 204:
+            "No Content"
+        case 301:
+            "Moved Permanently"
+        case 302:
+            "Found"
+        case 304:
+            "Not Modified"
+        case 400:
+            "Bad Request"
+        case 401:
+            "Unauthorized"
+        case 403:
+            "Forbidden"
+        case 404:
+            "Not Found"
+        case 405:
+            "Method Not Allowed"
+        case 413:
+            "Content Too Large"
+        case 431:
+            "Request Header Fields Too Large"
+        case 500:
+            "Internal Server Error"
+        case 501:
+            "Not Implemented"
+        case 503:
+            "Service Unavailable"
+        case _:
+            "Unknown"

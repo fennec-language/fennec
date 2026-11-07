@@ -1,0 +1,10 @@
+apple costs 3
+no price for plum
+pear costs 5
+no price for fig
+no price for kiwi
+5
+stopping at fig
+next: kiwi
+next: pear
+couldn't price the fig

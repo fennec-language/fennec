@@ -19,7 +19,9 @@ pub(super) fn definitions(modules: &[&Module], signatures: &Signatures) -> Vec<S
     defs.filter(|def| seen.insert(def.name.as_str()))
         .filter_map(|def| {
             let found = signatures.structure(&def.name)?;
-            Some(StructDef { name: def.name.clone(), fields: found.fields.clone(), shared: def.shared })
+            // One the standard library ships is a resource, with no lock: a struct like any other.
+            let shared = def.shared && !def.span.in_prelude();
+            Some(StructDef { name: def.name.clone(), fields: found.fields.clone(), shared })
         })
         .collect()
 }
@@ -57,7 +59,10 @@ pub(super) fn add_copies(
         }
         for (name, copy) in waiting {
             if let Some(found) = signatures.structure(&copy.base) {
-                let shared = context.generic_types.get(copy.base.as_str()).is_some_and(|def| def.shared);
+                let shared = context
+                    .generic_types
+                    .get(copy.base.as_str())
+                    .is_some_and(|def| def.shared && !def.span.in_prelude());
                 structs.push(StructDef { name, fields: concrete(&found.fields, &copy.subst), shared });
             } else if let Some(found) = signatures.enumeration(&copy.base) {
                 let cases = found
@@ -273,6 +278,11 @@ impl Lowering<'_> {
             return self.function_value(&key, expr);
         }
         if let Some(member) = self.std_member(expr) {
+            // A constant the standard library writes in Fennec, like `string.DIGITS`, reads as
+            // it does when imported by name.
+            if self.context.constants.contains_key(member.as_str()) {
+                return self.read_constant(&member, expr);
+            }
             return self.std_value(member, expr);
         }
         if let ExprKind::Name(owner) = &object.kind

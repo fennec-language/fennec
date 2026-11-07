@@ -5,5 +5,5 @@ def main(stdout: Stdout):
     xs = [n for n in range(6_000)]
     accented = "é" * 6_000
     wide = "日" * 6_000
-    stdout.print(count(accented, "é", xs), count(accented, "é", xs))
-    stdout.print(count(wide, "日", xs), count(wide, "日", xs))
+    stdout.print(count(accented, wanted="é", xs=xs), count(accented, wanted="é", xs=xs))
+    stdout.print(count(wide, wanted="日", xs=xs), count(wide, wanted="日", xs=xs))

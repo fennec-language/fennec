@@ -132,7 +132,8 @@ fn whole_program(path: &str, results: &Results) -> Result<Plan, ExitCode> {
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Tests) else {
         return Err(ExitCode::FAILURE);
     };
-    let signatures = match crate::copy_rule::check_and_resolve(&mut program.module) {
+    // The standard library as a run checks it: just what the tests reach.
+    let signatures = match crate::copy_rule::check_to_run(&mut program.module, &program.sources) {
         Ok(signatures) => signatures,
         Err(diagnostics) => {
             eprint!("{}", program.sources.render_all(&diagnostics));
@@ -293,7 +294,7 @@ fn say_how_llvm_went(through_llvm: &crate::llvm_tests::LlvmTests, wanted: usize)
     if let Some(why) = through_llvm.refused.as_deref().and_then(|why| why.lines().next()) {
         eprintln!("note: some tests run another way, since LLVM can't build what they reach: {why}");
     }
-    eprintln!("note: {} of {wanted} tests passed through LLVM", through_llvm.outcomes.len());
+    eprintln!("note: {} of {wanted} tests ran through LLVM", through_llvm.outcomes.len());
 }
 
 /// Runs the tests in `names` in the interpreter.

@@ -1,0 +1,33 @@
+# An `else:` block says something, then leaves with `return`, `fail`, `continue` or `break`. A
+# plain `else` can leave the same way, as in `else break`.
+
+error LookupError:
+    Missing(name: str)
+
+def price(prices: dict[str, int], name: str) -> int fails LookupError:
+    found = prices.get(name) else:
+        fail .Missing(name)
+    found
+
+def main(stdout: Stdout):
+    prices = {"apple": 3, "pear": 5}
+    for name in ["apple", "plum", "pear", "fig", "kiwi"]:
+        cost = prices.get(name) else:
+            stdout.print(f"no price for {name}")
+            continue
+        stdout.print(f"{name} costs {cost}")
+    for name in ["pear", "fig", "apple"]:
+        cost = prices.get(name) else:
+            stdout.print(f"stopping at {name}")
+            break
+        stdout.print(cost)
+    queue = {0: "kiwi", 1: "pear"}
+    mut at = 0
+    while True:
+        name = queue.get(at) else break
+        stdout.print(f"next: {name}")
+        at += 1
+    total = price(prices, "fig") else:
+        stdout.print("couldn't price the fig")
+        return
+    stdout.print(total)

@@ -1,12 +1,12 @@
 //! Values a backend lays out as ordinary structs and enums, but the interpreter holds as
-//! values of their own: an optional held as an enum, a result, an `Id` and an `IdMap`. Reading a block
+//! values of their own: an optional held as an enum, a result, an `Id` and a `Table`. Reading a block
 //! turns these into what the interpreter holds, and writing one turns them back.
 
 use std::rc::Rc;
 
 use super::{State, write};
 use crate::packed::Element;
-use crate::value::{Id, IdMap, Instance, Slot, Value};
+use crate::value::{Id, Instance, Slot, Table, Value};
 
 /// An optional held as an enum, with cases `None` and `Some(value)`.
 pub(super) fn is_option(name: &str) -> bool {
@@ -18,10 +18,21 @@ pub(super) fn is_result(name: &str) -> bool {
     name.starts_with("Result[")
 }
 
-/// An `IdMap` laid out as its items, each slot's generation, and how many are live. A
+/// One of several error types held as an enum, with a case for each: `A | B`.
+pub(super) fn is_one_of_several(name: &str) -> bool {
+    name.contains(" | ") && !name.contains('[') && !name.starts_with('(')
+}
+
+/// A fixed-size array a backend keeps in place, laid out as a struct with a field for each item,
+/// named after its type, like `array[int, 4]`. The interpreter holds it as a list.
+pub(in crate::embed) fn is_array(name: &str) -> bool {
+    name.starts_with("array[")
+}
+
+/// A `Table` laid out as its items, each slot's generation, and how many are live. A
 /// removed slot's generation is held as `-1 - generation`, and its item is zero.
 pub(super) fn is_id_map(name: &str) -> bool {
-    name.starts_with("IdMap[")
+    name.starts_with("Table[")
 }
 
 /// Whether items of a kind read as the interpreter's packed items: numbers, and structs and
@@ -32,10 +43,17 @@ pub(in crate::embed) fn packable(element: &Element) -> bool {
         Element::Int | Element::Float | Element::Bool => true,
         // A tuple a backend lays out as a struct, like `(int, int)`, is a tuple to the interpreter.
         Element::Struct { name, fields } => {
-            !name.starts_with('(') && name.as_ref() != "Id" && !is_id_map(name) && all(fields)
+            !name.starts_with('(')
+                && !is_array(name)
+                && name.as_ref() != "Id"
+                && !is_id_map(name)
+                && all(fields)
         }
         Element::Enum { name, cases, .. } => {
-            !is_option(name) && !is_result(name) && cases.iter().all(|(_, fields)| all(fields))
+            !is_option(name)
+                && !is_result(name)
+                && !is_one_of_several(name)
+                && cases.iter().all(|(_, fields)| all(fields))
         }
         _ => false,
     }
@@ -57,11 +75,14 @@ pub(super) fn interpreted(name: &str, value: Value) -> Value {
             _ => Value::Ok(held),
         };
     }
+    if is_one_of_several(name) {
+        return instance.fields.first().map_or(Value::Unit, |(_, held)| held.clone());
+    }
     if name == "Id" {
         return id(instance).map_or(value, Value::Id);
     }
     if is_id_map(name) {
-        return id_map(instance).map_or(value, |map| Value::IdMap(Rc::new(map)));
+        return id_map(instance).map_or(value, |map| Value::Table(Rc::new(map)));
     }
     value
 }
@@ -71,12 +92,12 @@ fn id(instance: &Instance) -> Option<Id> {
         Value::Int(n) => Some(*n),
         _ => None,
     };
-    let slot = usize::try_from(number("slot")?).ok()?;
-    let generation = u32::try_from(number("generation")?).ok()?;
-    Some(Id { slot, generation })
+    let key = u64::try_from(number("key")?).ok()?;
+    let tag = u64::try_from(number("tag")?).ok()?;
+    Some(Id::from_key(key, tag))
 }
 
-fn id_map(instance: &Instance) -> Option<IdMap> {
+fn id_map(instance: &Instance) -> Option<Table> {
     let list = |field: &str| match instance.field(field)?.clone().unpacked() {
         Value::List(items) => Some(items),
         _ => None,
@@ -90,7 +111,11 @@ fn id_map(instance: &Instance) -> Option<IdMap> {
             Slot { generation: u32::try_from(*generation).ok()?, value: Some(item.clone()) }
         })
     });
-    Some(IdMap::new(slots.collect::<Option<_>>()?))
+    let tag = match instance.field("tag")? {
+        Value::Int(tag) => u64::try_from(*tag).ok()?,
+        _ => return None,
+    };
+    Some(Table::tagged(slots.collect::<Option<_>>()?, tag))
 }
 
 /// What `write_named` did.
@@ -151,11 +176,10 @@ pub(super) fn write_named(
             written.into()
         }
         (Element::Struct { name, .. }, Value::Id(id)) if name.as_ref() == "Id" => {
-            let Ok(slot) = u64::try_from(id.slot) else { return Written::Failed };
-            words.extend([slot, u64::from(id.generation)]);
+            words.extend([id.key(), id.tag]);
             Written::Done
         }
-        (Element::Struct { name, fields }, Value::IdMap(map)) if is_id_map(name) => {
+        (Element::Struct { name, fields }, Value::Table(map)) if is_id_map(name) => {
             write_id_map(state, fields, map, words).into()
         }
         _ => Written::NotNamed,
@@ -165,7 +189,7 @@ pub(super) fn write_named(
 fn write_id_map(
     state: &mut State,
     fields: &[(Rc<str>, Element)],
-    map: &IdMap,
+    map: &Table,
     words: &mut Vec<u64>,
 ) -> Option<()> {
     let item = match fields.first() {
@@ -192,5 +216,6 @@ fn write_id_map(
     words.push(u64::try_from(live).ok()?);
     // Where to start looking for a free slot: from the first is always right.
     words.push(0);
+    words.push(map.tag);
     Some(())
 }

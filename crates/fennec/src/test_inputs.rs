@@ -15,14 +15,14 @@ pub(crate) const PREFIX: &str = "fennec_test_";
 /// The functions every type's function uses: the next random number below a limit, and how long a
 /// string or list is, which is empty once it's deep inside another.
 const SHARED: &str = "\
-def fennec_test_random(mut state: int, limit: int) -> int:
+def fennec_test_random(ref state: int, limit: int) -> int:
     state = state * 48271 % 2147483647
     state % limit
 
-def fennec_test_length(mut state: int, depth: int) -> int:
+def fennec_test_length(ref state: int, depth: int) -> int:
     if depth > 2:
         return 0
-    fennec_test_random(mut state, 8)
+    fennec_test_random(ref state, 8)
 
 ";
 
@@ -67,29 +67,29 @@ impl<'m> Inputs<'m> {
         let body = if ty.optional {
             let inner = self.function_for(&TypeExpr { optional: false, ..ty.clone() })?;
             format!(
-                "    if fennec_test_random(mut state, 5) == 0:\n        return None\n    {inner}(mut state, depth)\n"
+                "    if fennec_test_random(ref state, 5) == 0:\n        return None\n    {inner}(ref state, depth)\n"
             )
         } else {
             self.body_for(ty)?
         };
-        let _ = write!(self.source, "def {name}(mut state: int, depth: int) -> {shown}:\n{body}\n");
+        let _ = write!(self.source, "def {name}(ref state: int, depth: int) -> {shown}:\n{body}\n");
         Some(name)
     }
 
     fn body_for(&mut self, ty: &TypeExpr) -> Option<String> {
         Some(match (ty.name.as_str(), ty.args.as_slice()) {
-            ("int", []) => "    kind = fennec_test_random(mut state, 10)\n    if kind == 0:\n        return 0\n    if kind == 1:\n        return 1\n    if kind == 2:\n        return -1\n    fennec_test_random(mut state, 2001) - 1000\n".to_owned(),
+            ("int", []) => "    kind = fennec_test_random(ref state, 10)\n    if kind == 0:\n        return 0\n    if kind == 1:\n        return 1\n    if kind == 2:\n        return -1\n    fennec_test_random(ref state, 2001) - 1000\n".to_owned(),
             ("float", []) => {
                 let int = TypeExpr { name: "int".to_owned(), args: Vec::new(), optional: false, span: ty.span };
                 let int = self.function_for(&int)?;
-                format!("    float({int}(mut state, depth)) / 8.0\n")
+                format!("    float({int}(ref state, depth)) / 8.0\n")
             }
-            ("bool", []) => "    fennec_test_random(mut state, 2) == 0\n".to_owned(),
-            ("str", []) => "    letters = \"abcdefghijklmnopqrstuvwxyz\"\n    mut text = \"\"\n    for _ in range(fennec_test_length(mut state, depth)):\n        text += letters[fennec_test_random(mut state, 26)]\n    text\n".to_owned(),
+            ("bool", []) => "    fennec_test_random(ref state, 2) == 0\n".to_owned(),
+            ("str", []) => "    letters = \"abcdefghijklmnopqrstuvwxyz\"\n    mut text = \"\"\n    for _ in range(fennec_test_length(ref state, depth)):\n        text += letters[fennec_test_random(ref state, 26)]\n    text\n".to_owned(),
             ("list", [item]) => {
                 let inner = self.function_for(item)?;
                 format!(
-                    "    mut items: {} = []\n    for _ in range(fennec_test_length(mut state, depth)):\n        items.append({inner}(mut state, depth + 1))\n    items\n",
+                    "    mut items: {} = []\n    for _ in range(fennec_test_length(ref state, depth)):\n        items.append({inner}(ref state, depth + 1))\n    items\n",
                     written(ty)
                 )
             }
@@ -98,7 +98,7 @@ impl<'m> Inputs<'m> {
                 let mut names = Vec::with_capacity(items.len());
                 for (at, item) in items.iter().enumerate() {
                     let inner = self.function_for(item)?;
-                    let _ = writeln!(body, "    item{at} = {inner}(mut state, depth + 1)");
+                    let _ = writeln!(body, "    item{at} = {inner}(ref state, depth + 1)");
                     names.push(format!("item{at}"));
                 }
                 let _ = writeln!(body, "    ({})", names.join(", "));
@@ -121,7 +121,7 @@ impl<'m> Inputs<'m> {
             let (lines, made) = self.fields(&def.fields, "    ")?;
             return Some(format!("{lines}    {name}({made})\n"));
         }
-        let mut body = format!("    kind = fennec_test_random(mut state, {})\n", def.cases.len());
+        let mut body = format!("    kind = fennec_test_random(ref state, {})\n", def.cases.len());
         for (at, case) in def.cases.iter().enumerate() {
             let (lines, made) = self.fields(&case.fields, "        ")?;
             let made = if case.fields.is_empty() {
@@ -152,7 +152,7 @@ impl<'m> Inputs<'m> {
             }
             let Some(ty) = &field.ty else { continue };
             let inner = self.function_for(ty)?;
-            let _ = writeln!(lines, "{indent}field_{} = {inner}(mut state, depth + 1)", field.name);
+            let _ = writeln!(lines, "{indent}field_{} = {inner}(ref state, depth + 1)", field.name);
             args.push(format!("{0}=field_{0}", field.name));
         }
         Some((lines, args.join(", ")))
@@ -200,7 +200,7 @@ struct Tree:
         );
         for input in &test.inputs {
             let function = inputs.function_for(input.ty.as_ref().unwrap()).unwrap();
-            let _ = writeln!(body, "        stdout.print({function}(mut state, 0))");
+            let _ = writeln!(body, "        stdout.print({function}(ref state, 0))");
         }
         format!("{TYPES}{}{body}", inputs.source())
     }

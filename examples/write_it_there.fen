@@ -1,0 +1,33 @@
+# A name holds its own value. To change something in a list, write to it there.
+struct Stats:
+    health = 10
+    mana = 5
+
+struct Unit:
+    name: str
+    stats: Stats
+
+struct World:
+    units: list[Unit]
+
+def hurt(ref stats: Stats, damage: int):
+    stats.health -= damage
+
+def main(stdout: Stdout):
+    mut world = World(units=[Unit(name="fox", stats=Stats()), Unit(name="owl", stats=Stats())])
+
+    # A write goes to the place it names, however deep.
+    world.units[1].stats.health -= 3
+    hurt(ref world.units[1].stats, 1)
+    stdout.print(world.units[1].stats.health)
+
+    # A `mut` name read from a place is your own copy.
+    mut spare = world.units[0].stats
+    spare.health = 50
+    spare.mana += 2
+    stdout.print(spare.health, spare.mana, world.units[0].stats.health, world.units[0].stats.mana)
+
+    # In a loop, each time round writes to the item.
+    for i in range(2):
+        world.units[i].stats.health += 10
+    stdout.print(world.units[0].stats.health, world.units[1].stats.health)

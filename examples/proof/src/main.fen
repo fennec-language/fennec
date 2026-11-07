@@ -3,7 +3,7 @@
 ## The battle ends when one side is gone, or after `LONGEST` ticks. Then it's saved to JSON,
 ## loaded back, and played on, to show the save holds everything.
 
-from std.game import Id
+from std.collections import Id
 from std.random import Random
 
 import combat
@@ -30,7 +30,7 @@ FIELD = [
 ]
 
 ## An army of `size` on `team`, in two squads, starting in the given columns.
-def raise_army(mut world: World, team: Team, columns: (int, int), rally: (int, int), seed: int):
+def raise_army(ref world: World, team: Team, columns: (int, int), rally: (int, int), seed: int):
     mut random = Random(seed=seed)
     kinds = [Kind.Soldier, Kind.Soldier, Kind.Archer, Kind.Soldier, Kind.Medic, Kind.Archer]
     first, last = columns
@@ -42,15 +42,15 @@ def raise_army(mut world: World, team: Team, columns: (int, int), rally: (int, i
             if placed == 12: break
             at = (column, row)
             if not world.field.walkable(at) or world.unit_at(at) is not None: continue
-            if random.randint(0, 2) == 0: continue
+            if random.randint(0, high=2) == 0: continue
             kind = kinds[placed % kinds.len()]
             id = world.spawn(f"{team.name()}{placed + 1}", team, kind, at)
-            if kind == Kind.Medic:
+            if kind == .Medic:
                 world.units[id].items = [
                     Item(name="bandage", heals=15),
                     Item(name="bandage", heals=15),
                 ]
-            if kind == Kind.Soldier and placed % 3 == 0:
+            if kind == .Soldier and placed % 3 == 0:
                 world.units[id].items = [Item(name="whetstone", sharpens=3)]
             squads[placed % 2].append(id)
             placed += 1
@@ -71,32 +71,32 @@ def show(stdout: Stdout, world: World):
     for unit in world.units.values():
         x, y = unit.at
         mark = unit.kind.name()[0]
-        letter = mark.upper() if unit.team == Team.Red else mark
+        letter = mark.upper() if unit.team == .Red else mark
         row = rows[y]
         rows[y] = row[:x] + letter + row[x + 1:]
     for row in rows:
         stdout.print(row)
 
-def play(stdout: Stdout, mut world: World, mut board: Scoreboard, until: int):
+def play(stdout: Stdout, ref world: World, ref board: Scoreboard, until: int):
     while world.tick < until and world.alive_count(.Red) > 0 and world.alive_count(.Blue) > 0:
-        combat.tick(mut world, mut board)
+        combat.tick(ref world, ref board)
         if world.tick % 20 == 0:
             report(stdout, world, board)
 
 def main(stdout: Stdout):
     mut world = World(field=map.Map.drawn(FIELD))
-    raise_army(mut world, .Red, (0, 4), (10, 2), 7)
-    raise_army(mut world, .Blue, (19, 23), (12, 7), 11)
+    raise_army(ref world, .Red, (0, 4), (10, 2), 7)
+    raise_army(ref world, .Blue, (19, 23), (12, 7), 11)
     mut board = Scoreboard()
     stdout.print(f"{world.units.len()} units in {world.squads.len()} squads")
     show(stdout, world)
-    play(stdout, mut world, mut board, LONGEST // 2)
+    play(stdout, ref world, ref board, LONGEST // 2)
 
     # Half way: save, load, and carry on from the loaded copy.
     text = save.dumps(world)
     mut loaded = save.loads(text) else world
     stdout.print(f"saved {text.len()} bytes; loads back the same: {save.dumps(loaded) == text}")
-    play(stdout, mut loaded, mut board, LONGEST)
+    play(stdout, ref loaded, ref board, LONGEST)
 
     report(stdout, loaded, board)
     show(stdout, loaded)

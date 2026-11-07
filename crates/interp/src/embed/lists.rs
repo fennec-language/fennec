@@ -168,18 +168,18 @@ fn grow_to(state: &mut State, list: i64, more: usize, least: usize) -> Option<i6
     let room = usize::try_from(*block.get(3)?).ok()?;
     let shared = !state.heap.is_alone(address, block);
     let wanted = if count + more > room { grown_room(count, more) } else { room }.max(least);
-    let address = if shared || wanted > room {
+    let address = if shared {
         let kept = items(block, stride).to_vec();
-        if shared {
-            state.heap.copied(kept.len());
-            retain_items(state, &element, &kept);
-        }
+        state.heap.copied(kept.len());
+        retain_items(state, &element, &kept);
         let grown = build(state, at, stride, &kept, wanted);
-        if shared {
-            release(state, address);
-        } else {
-            state.heap.discard(address);
-        }
+        release(state, address);
+        u64::try_from(state.heap.insert(grown)).ok()?
+    } else if wanted > room {
+        // Its own block: taken out first, its items move straight across with no copy on the way.
+        let old = state.heap.take_out(address)?;
+        let grown = build(state, at, stride, items(&old, stride), wanted);
+        state.heap.recycle(old);
         u64::try_from(state.heap.insert(grown)).ok()?
     } else {
         address
@@ -378,7 +378,7 @@ pub extern "C" fn sorted_with(list: i64, compare: extern "C" fn(i64, i64) -> i64
     let address = |place: usize| i64::try_from(base + place * stride * 8).unwrap_or(0);
     let mut order: Vec<usize> = (0..count).collect();
     order.sort_by(|a, b| {
-        if super::FAILED.get() != 0 {
+        if super::failed() {
             return std::cmp::Ordering::Equal;
         }
         compare(address(*a), address(*b)).cmp(&0)
@@ -413,6 +413,26 @@ fn copied_for_sorting(state: &mut State, list: i64) -> Option<(u64, usize, usize
     let copy = u64::try_from(copy).ok()?;
     let start = state.heap.block(copy)?.get(LIST_HEADER_WORDS..)?.as_ptr().addr();
     Some((copy, start, stride, words.len() / stride))
+}
+
+/// A new list owned once of a list's items in the order of their keys, a list as long as it, by
+/// a function comparing two keys by their addresses, as when keys are tuples.
+pub extern "C" fn sorted_by_keys_with(list: i64, keys: i64, compare: extern "C" fn(i64, i64) -> i64) -> i64 {
+    let Some((copy, base, stride, count)) = with(|state| copied_for_sorting(state, keys)) else {
+        return 0;
+    };
+    let address = |place: usize| i64::try_from(base + place * stride * 8).unwrap_or(0);
+    let mut places: Vec<usize> = (0..count).collect();
+    places.sort_by(|a, b| {
+        if super::failed() {
+            return std::cmp::Ordering::Equal;
+        }
+        compare(address(*a), address(*b)).cmp(&0)
+    });
+    with(|state| {
+        release(state, copy);
+        in_places(state, u64::try_from(list).unwrap_or(0), &places).unwrap_or(0)
+    })
 }
 
 /// A new list owned once of a list's items in the order of their keys, a list as long as it.
@@ -460,7 +480,7 @@ pub(super) fn shown(state: &State, block: &[u64], out: &mut Written) {
     out.push(']');
 }
 
-/// Writes the items of an `IdMap` whose slots are still in use: those whose generation in the
+/// Writes the items of a `Table` whose slots are still in use: those whose generation in the
 /// list `generations` isn't negative.
 pub(super) fn shown_where_used(state: &State, held: u64, generations: u64, out: &mut Written) {
     let (Some(block), Some(numbers)) = (state.heap.block(held), state.heap.block(generations)) else {
@@ -825,9 +845,9 @@ pub extern "C" fn int_power(a: i64, b: i64, start: i64, end: i64) -> i64 {
     })
 }
 
-/// `a ** b` on floats.
+/// `a ** b` on floats, by `libm` as every float function is, so it's the same on every platform.
 pub extern "C" fn float_power(a: f64, b: f64) -> f64 {
-    a.powf(b)
+    libm::pow(a, b)
 }
 
 /// Fails with the interpreter's message for an index past either end of a list.

@@ -38,6 +38,49 @@ thread_local! {
     static INDEX: std::cell::Cell<u16> = const { std::cell::Cell::new(0) };
 }
 
+#[cfg(any(test, feature = "threads"))]
+thread_local! {
+    /// What says the launched task running on this thread is to stop, if one is.
+    static STOP: std::cell::RefCell<Option<Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Whether the task running on this thread was launched and is to stop: its waits are cut short.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn stopped() -> bool {
+    STOP.with_borrow(|stop| stop.as_ref().is_some_and(|stop| stop.load(Ordering::Acquire)))
+}
+
+thread_local! {
+    /// The `shared` values' lock words this thread holds beside the one native code remembers.
+    static LOCKS: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Notes that this thread is taking the lock at `word`: 1 if it holds it already, which would
+/// wait forever, and 0 otherwise.
+pub extern "C" fn lock_note(word: u64) -> i64 {
+    LOCKS.with_borrow_mut(|held| {
+        if held.contains(&word) {
+            return 1;
+        }
+        held.push(word);
+        0
+    })
+}
+
+/// Whether this thread holds any `shared` value's lock.
+pub(super) fn holds_locks() -> bool {
+    super::lock_word_held() || LOCKS.with_borrow(|held| !held.is_empty())
+}
+
+/// Notes that this thread has given back the lock at `word`.
+pub extern "C" fn lock_forget(word: u64) {
+    LOCKS.with_borrow_mut(|held| {
+        if let Some(at) = held.iter().rposition(|taken| *taken == word) {
+            held.swap_remove(at);
+        }
+    });
+}
+
 /// This thread's number: 0 for the main thread, until it takes another.
 pub fn index() -> u16 {
     INDEX.get()
@@ -105,6 +148,109 @@ pub(super) fn range_starts(lent: Option<Arc<Table>>) {
     super::with(|state| state.heap.lent = lent);
 }
 
+/// Starts a server's I/O worker: it can read what's lent, and its tasks' blocks end with them, so
+/// nothing's kept to hand over, however long it serves.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn serving_starts(lent: Option<Arc<Table>>) {
+    super::with(|state| {
+        state.heap.lent = lent;
+        state.heap.serving = true;
+    });
+}
+
+/// A server's state on a worker, set aside while the worker runs a job from the pool.
+#[cfg(any(test, feature = "threads"))]
+pub(super) struct Serving {
+    lent: Option<Arc<Table>>,
+}
+
+/// Starts a job from the pool on a worker. While the worker serves, the job hands what it makes
+/// over as any range's does, and lends and takes back blocks of its own, so the server's are set
+/// aside until it ends.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn job_starts() -> Option<Serving> {
+    super::with(|state| {
+        let serving = std::mem::replace(&mut state.heap.serving, false);
+        serving.then(|| Serving { lent: state.heap.lent.take() })
+    })
+}
+
+/// Ends a job from the pool on a worker, giving a server's state back.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn job_ends(serving: Option<Serving>) {
+    if let Some(Serving { lent }) = serving {
+        super::with(|state| {
+            state.heap.serving = true;
+            state.heap.lent = lent;
+        });
+    }
+}
+
+/// What a range running as a parked task keeps of its own in its thread's runtime: swapped in each
+/// time it's resumed, and out each time it parks or ends. Tasks taking turns on one thread then
+/// never mix what they made, the blocks lent to them, how they changed those blocks' owners, or
+/// what they printed. Without it, one range ending could hand over blocks another range on the
+/// same thread was still using.
+#[cfg(any(test, feature = "threads"))]
+#[derive(Default)]
+pub(crate) struct Accounts {
+    made: Vec<u64>,
+    lent: Option<Arc<Table>>,
+    lent_owners: HashMap<u64, i64, std::hash::BuildHasherDefault<super::heap::AddressHasher>>,
+    printed: Vec<u8>,
+    /// Whether the heap serves, which a range never does: a range parked on a worker that serves
+    /// hands what it makes over, as one that isn't parked does.
+    serving: bool,
+    /// For a launched task, set when it's to stop: each wait it's in, or comes to, is cut short.
+    stop: Option<Arc<AtomicBool>>,
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl Accounts {
+    /// A launched task's, reading what's `lent` to the code that launched it, if anything, and
+    /// stopping when `stop` is set.
+    pub(in crate::embed) fn for_task(lent: Option<Arc<Table>>, stop: Arc<AtomicBool>) -> Accounts {
+        Accounts { lent, stop: Some(stop), ..Accounts::default() }
+    }
+
+    /// Whether nothing's left in them: a range that ended has handed everything over.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.made.is_empty() && self.lent.is_none() && self.lent_owners.is_empty() && self.printed.is_empty()
+    }
+}
+
+/// Swaps a parked range's accounts with this thread's runtime's: in before it's resumed, back out
+/// after. What the runtime keeps of lent strings is let go when the lent blocks change, as at a
+/// range's end, since the same addresses may hold other strings.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn swap_accounts(accounts: &mut Accounts) {
+    super::with(|state| {
+        state.heap.swap_made(&mut accounts.made);
+        let same = match (&state.heap.lent, &accounts.lent) {
+            (Some(here), Some(there)) => Arc::ptr_eq(here, there),
+            (None, None) => true,
+            _ => false,
+        };
+        std::mem::swap(&mut state.heap.lent, &mut accounts.lent);
+        std::mem::swap(&mut state.heap.lent_owners, &mut accounts.lent_owners);
+        std::mem::swap(&mut state.heap.serving, &mut accounts.serving);
+        std::mem::swap(&mut *state.output.0.borrow_mut(), &mut accounts.printed);
+        STOP.with_borrow_mut(|stop| std::mem::swap(stop, &mut accounts.stop));
+        if !same {
+            state.heap.texts.get_mut().clear();
+            state.heap.set_cursor(super::heap::Cursor::default());
+        }
+    });
+}
+
+/// Ends a server on a worker that served it: as a range's end, and what its tasks make is handed
+/// over again from here on.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn serving_ends() -> (Vec<(u64, i64)>, Vec<u8>) {
+    super::with(|state| state.heap.serving = false);
+    range_ends()
+}
+
 /// Ends a range on a worker: it lets go of the blocks lent for the call, and of the text it
 /// kept of them, as the same addresses may hold other strings by its next range. Writes what it
 /// printed, so it all comes before what the calling thread prints next. Gives back how it changed
@@ -146,6 +292,10 @@ pub(super) fn settle(changes: HashMap<u64, i64>) {
 /// didn't make it. `owner` is the number in the block's shape word, which native code has
 /// just read to see the block isn't its own.
 pub extern "C" fn retain_shared(address: i64, owner: i64) {
+    if owner.cast_unsigned() == super::guarded::HANDLE_OWNER {
+        super::guarded::count_handle(address.cast_unsigned());
+        return;
+    }
     if super::with(|state| state.heap.change_lent_owners(address.cast_unsigned(), 1)) {
         return;
     }
@@ -161,8 +311,12 @@ pub extern "C" fn retain_shared(address: i64, owner: i64) {
 /// `fennec_release_shared(address, owner)`: one count fewer of a block, from a thread that
 /// didn't make it. When that was the last count anyone held, the block goes on its owner's
 /// queue.
-pub extern "C" fn release_shared(address: i64, _owner: i64) {
+pub extern "C" fn release_shared(address: i64, owner: i64) {
     let address = address.cast_unsigned();
+    if owner.cast_unsigned() == super::guarded::HANDLE_OWNER {
+        super::with(|state| super::guarded::release_handle(state, address));
+        return;
+    }
     if super::with(|state| state.heap.change_lent_owners(address, -1)) {
         return;
     }
@@ -183,6 +337,12 @@ pub extern "C" fn release_shared(address: i64, _owner: i64) {
 /// Whether a block whose owner has just let go of its last count is still held by another
 /// thread, in which case it waits for that thread to let go, rather than being freed now.
 #[inline]
+/// Whether any block may be counted by threads that didn't make it, so freeing one has to ask
+/// `held_elsewhere` first.
+pub(super) fn counted_elsewhere() -> bool {
+    ON && ANY_SHARED.load(Ordering::Relaxed)
+}
+
 pub(super) fn held_elsewhere(address: u64) -> bool {
     ON && ANY_SHARED.load(Ordering::Relaxed) && held_elsewhere_now(address)
 }

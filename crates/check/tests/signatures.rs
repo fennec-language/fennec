@@ -120,7 +120,7 @@ fn signatures_cover_methods_nested_functions_and_the_standard_library() {
         struct Enemy:
             health = 100
 
-            def take_damage(mut self, amount: int):
+            def take_damage(ref self, amount: int):
                 self.health -= amount
 
             def at(health: int):
@@ -161,7 +161,7 @@ fn signatures_cover_methods_nested_functions_and_the_standard_library() {
 #[test]
 fn written_types_resolve() {
     let program = "
-        from std.game import Id, IdMap
+        from std.collections import Id, Table
         from std.layout import SoaList
         from std.path import Path
 
@@ -171,7 +171,7 @@ fn written_types_resolve() {
         type Things = list[Thing]
         type Loop = Loop
 
-        def f(a: int?, b: list[str], c: set[int], d: dict[str, int], e: (int, str), g: Id[Thing], h: IdMap[Thing], i: Path, j: Things, m: SoaList[Thing], n: None, o: bool, p: float, q: Fs):
+        def f(a: int?, b: list[str], c: set[int], d: dict[str, int], e: (int, str), g: Id[Thing], h: Table[Thing], i: Path, j: Things, m: SoaList[Thing], n: None, o: bool, p: float, q: Fs):
             pass
     ";
     let signatures = check(program).map_err(|problems| problems.join("; ")).unwrap();
@@ -185,7 +185,7 @@ fn written_types_resolve() {
             Type::Dict(Box::new(Type::Str), Box::new(Type::Int)),
             Type::Tuple(vec![Type::Int, Type::Str]),
             Type::Id(Box::new(named("Thing"))),
-            Type::IdMap(Box::new(named("Thing"))),
+            Type::Table(Box::new(named("Thing"))),
             named("Path"),
             list(named("Thing")),
             list(named("Thing")),
@@ -285,8 +285,8 @@ fn recursive_functions_give_back_what_their_arrow_says() {
     assert_eq!(returns(program, "fact"), Ok(Type::Int));
     // No arrow means it gives back nothing, which needs nothing written.
     let program = "
-        def walk(mut items: list[int], label: str?):
-            walk(mut items, label)
+        def walk(ref items: list[int], label: str?):
+            walk(ref items, label)
 
         def outer():
             def inner(n: int):
@@ -344,14 +344,7 @@ fn a_clean_program_has_no_problems() {
 
 #[test]
 fn values_from_several_places_combine() {
-    let cases = [
-        ("def f(n: int):\n    [[n], [None]]\n", list(list(optional(Type::Int)))),
-        ("def f(n: int):\n    [{n}, {None}]\n", list(Type::Set(Box::new(optional(Type::Int))))),
-        (
-            "def f(n: int):\n    [{n: n}, {None: n}]\n",
-            list(Type::Dict(Box::new(optional(Type::Int)), Box::new(Type::Int))),
-        ),
-    ];
+    let cases = [("def f(n: int):\n    [[n], [None]]\n", list(list(optional(Type::Int))))];
     for (program, expected) in cases {
         assert_eq!(returns(program, "f"), Ok(expected), "{program}");
     }

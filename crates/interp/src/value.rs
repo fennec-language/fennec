@@ -36,9 +36,9 @@ pub(crate) enum Value {
     Shared(Rc<std::cell::RefCell<Value>>),
     Ok(Rc<Value>),
     Err(Rc<Value>),
-    IdMap(Rc<IdMap>),
+    Table(Rc<Table>),
     Id(Id),
-    /// A type used as a value, as in `Enemy.at(...)` or `IdMap[Enemy]()`.
+    /// A type used as a value, as in `Enemy.at(...)` or `Table[Enemy]()`.
     Type(Rc<str>),
     Function(Rc<Callable>),
     Builtin(&'static str),
@@ -82,6 +82,7 @@ pub(crate) enum Capability {
     Process,
     Entropy,
     Net,
+    Env,
 }
 
 #[derive(Clone, Debug)]
@@ -175,16 +176,34 @@ pub(crate) struct Lambda {
 }
 
 /// Slots that hand out generational IDs, so a stale ID never finds the wrong thing.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct IdMap {
+#[derive(Clone, Debug)]
+pub(crate) struct Table {
     pub(crate) slots: Vec<Slot>,
     /// No slot below this one is free, so finding the first free slot needn't look at them.
     free_from: usize,
+    /// Which `Table` this is, so an `Id` from another finds nothing in it. A copy keeps it, since
+    /// it holds the same items in the same slots.
+    pub(crate) tag: u64,
+}
+
+/// The next `Table`'s tag. Tags count up from 1 for the whole run and are never used again; a
+/// 64-bit count can't run out.
+static NEXT_TAG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A tag no `Table` has had.
+pub(crate) fn new_tag() -> u64 {
+    NEXT_TAG.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+impl Default for Table {
+    fn default() -> Table {
+        Table::new(Vec::new())
+    }
 }
 
 /// Maps are the same when their slots are: where one's looking for a free slot is no part of it.
-impl PartialEq for IdMap {
-    fn eq(&self, other: &IdMap) -> bool {
+impl PartialEq for Table {
+    fn eq(&self, other: &Table) -> bool {
         self.slots == other.slots
     }
 }
@@ -195,53 +214,112 @@ pub(crate) struct Slot {
     pub(crate) value: Option<Value>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Id {
-    pub(crate) slot: usize,
+    /// A `u32`, so an `Id` with its tag is as big as a `Value`'s other contents and no bigger.
+    pub(crate) slot: u32,
     pub(crate) generation: u32,
+    /// The tag of the `Table` that handed it out.
+    pub(crate) tag: u64,
 }
 
-impl IdMap {
-    pub(crate) fn new(slots: Vec<Slot>) -> IdMap {
-        IdMap { slots, free_from: 0 }
+// An `Id` stays as big as a `str`'s handle, so holding one doesn't make every `Value` bigger.
+const _: () = assert!(size_of::<Id>() == 16);
+
+impl Id {
+    pub(crate) fn new(slot: usize, generation: u32, tag: u64) -> Id {
+        Id { slot: u32::try_from(slot).unwrap_or(u32::MAX), generation, tag }
+    }
+
+    /// Where its slot is.
+    pub(crate) fn at(self) -> usize {
+        self.slot as usize
+    }
+
+    /// Its slot and generation in one number, as native code holds them: the slot in the high 32
+    /// bits, and the generation in the low 32.
+    pub(crate) fn key(self) -> u64 {
+        (u64::from(self.slot) << 32) | u64::from(self.generation)
+    }
+
+    pub(crate) fn from_key(key: u64, tag: u64) -> Id {
+        let slot = u32::try_from(key >> 32).unwrap_or(u32::MAX);
+        let generation = u32::try_from(key & u64::from(u32::MAX)).unwrap_or(u32::MAX);
+        Id { slot, generation, tag }
+    }
+}
+
+impl Table {
+    /// A `Table` with a tag of its own.
+    pub(crate) fn new(slots: Vec<Slot>) -> Table {
+        Table::tagged(slots, new_tag())
+    }
+
+    pub(crate) fn tagged(slots: Vec<Slot>, tag: u64) -> Table {
+        Table { slots, free_from: 0, tag }
     }
 
     pub(crate) fn get(&self, id: Id) -> Option<&Value> {
+        if id.tag != self.tag {
+            return None;
+        }
         self.slots
-            .get(id.slot)
+            .get(id.at())
             .filter(|slot| slot.generation == id.generation)
             .and_then(|slot| slot.value.as_ref())
     }
 
     pub(crate) fn get_mut(&mut self, id: Id) -> Option<&mut Value> {
+        if id.tag != self.tag {
+            return None;
+        }
         self.slots
-            .get_mut(id.slot)
+            .get_mut(id.at())
             .filter(|slot| slot.generation == id.generation)
             .and_then(|slot| slot.value.as_mut())
     }
 
+    /// What finding nothing for `id` says when it has to be there.
+    pub(crate) fn missing(&self, id: Id) -> &'static str {
+        if id.tag == self.tag {
+            "this Id refers to something that's been removed"
+        } else {
+            "this Id is from another Table"
+        }
+    }
+
     /// Puts a value in the first free slot, or a new one.
     pub(crate) fn insert(&mut self, value: Value) -> Id {
-        let free = self.slots.iter().enumerate().skip(self.free_from).find(|(_, slot)| slot.value.is_none());
+        // A slot at the last generation an `Id` can hold is retired: used again, an old `Id`
+        // would find what's new there.
+        let free = self
+            .slots
+            .iter()
+            .enumerate()
+            .skip(self.free_from)
+            .find(|(_, slot)| slot.value.is_none() && slot.generation < u32::MAX);
         let at = free.map(|(at, _)| at);
         self.free_from = at.unwrap_or(self.slots.len()) + 1;
         if let Some(slot) = at.and_then(|at| self.slots.get_mut(at)) {
             slot.generation += 1;
             slot.value = Some(value);
-            return Id { slot: self.free_from - 1, generation: slot.generation };
+            return Id::new(self.free_from - 1, slot.generation, self.tag);
         }
         self.slots.push(Slot { generation: 0, value: Some(value) });
-        Id { slot: self.slots.len() - 1, generation: 0 }
+        Id::new(self.slots.len() - 1, 0, self.tag)
     }
 
     pub(crate) fn remove(&mut self, id: Id) -> Option<Value> {
+        if id.tag != self.tag {
+            return None;
+        }
         let removed = self
             .slots
-            .get_mut(id.slot)
+            .get_mut(id.at())
             .filter(|slot| slot.generation == id.generation)
             .and_then(|slot| slot.value.take());
         if removed.is_some() {
-            self.free_from = self.free_from.min(id.slot);
+            self.free_from = self.free_from.min(id.at());
         }
         removed
     }
@@ -249,7 +327,7 @@ impl IdMap {
     /// Live entries, in slot order.
     pub(crate) fn entries(&self) -> impl Iterator<Item = (Id, &Value)> {
         self.slots.iter().enumerate().filter_map(|(at, slot)| {
-            slot.value.as_ref().map(|value| (Id { slot: at, generation: slot.generation }, value))
+            slot.value.as_ref().map(|value| (Id::new(at, slot.generation, self.tag), value))
         })
     }
 }
@@ -291,6 +369,13 @@ impl Value {
     /// An error of the standard library, with its fields in the order they're declared.
     pub(crate) fn made_error(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
         Value::Instance(Rc::new(Instance::of(type_name, fields, true)))
+    }
+
+    /// A case of an error of the standard library, with its fields in the order they're declared.
+    pub(crate) fn made_case(type_name: &str, case: &str, fields: Vec<(&str, Value)>) -> Value {
+        let mut made = Instance::of(type_name, fields, true);
+        made.case = Some(Rc::from(case));
+        Value::Instance(Rc::new(made))
     }
 
     pub(crate) fn str(text: &str) -> Value {
@@ -336,7 +421,7 @@ impl Value {
             Value::Set(_) => "set".to_owned(),
             Value::Instance(instance) => instance.type_name.to_string(),
             Value::Ok(_) | Value::Err(_) => "result".to_owned(),
-            Value::IdMap(_) => "IdMap".to_owned(),
+            Value::Table(_) => "Table".to_owned(),
             Value::Id(_) => "Id".to_owned(),
             Value::Type(_) => "type".to_owned(),
             Value::Function(_) | Value::Builtin(_) | Value::Lambda(_) => "function".to_owned(),
@@ -348,6 +433,7 @@ impl Value {
             Value::Capability(Capability::Process) => "Process".to_owned(),
             Value::Capability(Capability::Entropy) => "Entropy".to_owned(),
             Value::Capability(Capability::Net) => "Net".to_owned(),
+            Value::Capability(Capability::Env) => "Env".to_owned(),
             Value::Limited(limited) => Value::Capability(limited.capability).type_name(),
         }
     }
@@ -360,6 +446,7 @@ impl PartialEq for Value {
             (Value::Unit, Value::Unit) | (Value::None, Value::None) => true,
             (Value::Lent(a), Value::Lent(b)) => a.address == b.address,
             (Value::Generator(a), Value::Generator(b)) => Rc::ptr_eq(a, b),
+            (Value::Shared(a), Value::Shared(b)) => Rc::ptr_eq(a, b),
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => floats_same(*a, *b),
@@ -375,7 +462,7 @@ impl PartialEq for Value {
                 a.type_name == b.type_name && a.case == b.case && a.fields == b.fields
             }
             (Value::Ok(a), Value::Ok(b)) | (Value::Err(a), Value::Err(b)) => a == b,
-            (Value::IdMap(a), Value::IdMap(b)) => a == b,
+            (Value::Table(a), Value::Table(b)) => a == b,
             (Value::Id(a), Value::Id(b)) => a == b,
             (Value::Type(a), Value::Type(b)) => a == b,
             (Value::Function(a), Value::Function(b)) => Rc::ptr_eq(a, b),
@@ -384,5 +471,29 @@ impl PartialEq for Value {
             (Value::Capability(a), Value::Capability(b)) => a == b,
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Id, Slot, Table, Value};
+
+    /// A slot freed at the last generation an `Id` can hold is never used again, so no `Id`'s
+    /// generation comes round to one an old `Id` has.
+    #[test]
+    fn a_slot_at_its_last_generation_is_retired() {
+        let mut table = Table::new(vec![Slot { generation: u32::MAX, value: None }]);
+        let added = table.insert(Value::Int(1));
+        assert_eq!(added.at(), 1);
+        let old = Id { slot: 0, generation: u32::MAX, tag: table.tag };
+        assert!(table.get(old).is_none());
+    }
+
+    /// An `Id`'s key packs its slot above its generation, and comes back the same.
+    #[test]
+    fn an_id_goes_through_its_key_unchanged() {
+        let id = Id { slot: 7, generation: u32::MAX, tag: 3 };
+        assert_eq!(id.key(), (7 << 32) | u64::from(u32::MAX));
+        assert_eq!(Id::from_key(id.key(), 3), id);
     }
 }

@@ -33,6 +33,36 @@ impl CallArg {
 }
 
 impl Interp<'_> {
+    /// A collection made with its type written in brackets, if that's what this is.
+    fn made_collection(
+        &mut self,
+        callee: &Expr,
+        (object, index): (&Expr, &Expr),
+        args: &[Arg],
+        span: Span,
+    ) -> Option<Result<Value, Diagnostic>> {
+        // `array.new[float, 16](0.0)`, what `array[float, 16]()` is written in as: here an
+        // array is a list that never changes size.
+        if matches!(&object.kind, ExprKind::Name(name) if name == "array.new")
+            && let ExprKind::Tuple(parts) = &index.kind
+            && let Some(ExprKind::Int(size)) = parts.get(1).map(|size| &size.kind)
+            && let [zero] = args
+        {
+            let size = usize::try_from(*size).unwrap_or(0);
+            return Some(self.eval(&zero.value).map(|zero| Value::list(vec![zero; size])));
+        }
+        // `dict[str, str]()`: the checker writes it as `{}`, but a standard library default it
+        // reached only through a test, like `Response`'s `headers`, can be left as written. It's
+        // an empty one either way.
+        if args.is_empty() && is_collection(object) {
+            let callee = Box::new(callee.clone());
+            let mut empty = Expr { kind: ExprKind::Call { callee, args: Vec::new() }, span };
+            fennec_syntax::visit::empty_collection(&mut empty);
+            return Some(self.eval(&empty));
+        }
+        None
+    }
+
     pub(crate) fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Result<Value, Diagnostic> {
         match &callee.kind {
             ExprKind::Attr { object, name, optional } => {
@@ -68,7 +98,15 @@ impl Interp<'_> {
                 if let ExprKind::Attr { object: receiver, name, optional } = &object.kind
                     && self.module_member(receiver, name, object.span).is_none()
                 {
-                    return self.method_call(receiver, name, *optional, args, span);
+                    if name == "json" {
+                        self.json_type = index.as_type();
+                    }
+                    let answer = self.method_call(receiver, name, *optional, args, span);
+                    self.json_type = None;
+                    return answer;
+                }
+                if let Some(made) = self.made_collection(callee, (object, index), args, span) {
+                    return made;
                 }
                 let function = self.eval(object)?;
                 match (&function, index.as_type()) {
@@ -383,8 +421,25 @@ impl Interp<'_> {
         result
     }
 
-    /// Runs a value's `def del` when a `with` block ends.
+    /// Whether a `shared` value is a resource the standard library ships, like a connection: it
+    /// takes no lock, and a `with` on it closes it when the block ends.
+    pub(crate) fn is_resource(&self, cell: &Rc<std::cell::RefCell<Value>>) -> bool {
+        let name = cell.borrow().type_name();
+        self.type_info(&name).is_some_and(|info| matches!(info.def, crate::interp::TypeRef::Std(_)))
+    }
+
+    /// Runs a value's `def del` when a `with` block ends: a struct the standard library ships,
+    /// or a resource `shared` value.
     pub(crate) fn clean_up(&mut self, value: Value, span: Span) -> Result<(), Diagnostic> {
+        if let Value::Shared(cell) = &value
+            && self.is_resource(cell)
+        {
+            let name = cell.borrow().type_name();
+            if let Some(cleanup) = self.type_info(&name).and_then(|info| info.methods.get("del").cloned()) {
+                self.call_on_shared(cell, &cleanup, Vec::new(), span)?;
+            }
+            return Ok(());
+        }
         if let Value::Instance(instance) = &value
             && let Some(cleanup) =
                 self.type_info(&instance.type_name).and_then(|info| info.methods.get("del").cloned())
@@ -520,6 +575,11 @@ fn over_parallel(expr: &Expr) -> bool {
 
 fn is_generator(expr: &Expr) -> bool {
     matches!(&expr.kind, ExprKind::Comprehension { kind: CompKind::Generator, .. })
+}
+
+/// Whether this names a collection type, as in `dict[str, str]()`.
+fn is_collection(named: &Expr) -> bool {
+    matches!(&named.kind, ExprKind::Name(name) if matches!(name.as_str(), "list" | "dict" | "set"))
 }
 
 /// Whether this builtin uses every item of a generator written right inside the call.

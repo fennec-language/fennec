@@ -28,7 +28,7 @@ enum Light:
             case _:
                 1.5
 
-    def cycle(mut self):
+    def cycle(ref self):
         self = self.next()
 
 struct Junction:
@@ -47,7 +47,7 @@ def main(stdout: Stdout):
     j = junctions["j"]
     stdout.print(j.light.next(), j.at.row, j)
     mut every_light = [Light.Red, .Green(1.0), .Amber(False)]
-    for mut each_light in every_light:
+    for ref each_light in every_light:
         each_light = each_light.next()
     stdout.print(every_light)
     every_light.append(.Green(2.0))
@@ -68,4 +68,4 @@ def main(stdout: Stdout):
         case False:
             "no"
     stdout.print(said)
-    stdout.print(Junction(at=cell, light=.Red) == Junction(at=Cell(3, col=4), light=Light.Red))
+    stdout.print(Junction(at=cell, light=.Red) == Junction(at=Cell(3, col=4), light=.Red))

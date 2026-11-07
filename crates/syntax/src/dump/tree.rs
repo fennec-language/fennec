@@ -265,8 +265,8 @@ impl Tree {
             StmtKind::Fail(value) => self.node("fail", span, |tree| tree.expr(value)),
             StmtKind::Yield(value) => self.node("yield", span, |tree| tree.expr(value)),
             StmtKind::Assert(value) => self.node("assert", span, |tree| tree.expr(value)),
-            StmtKind::With { value, names, body } => {
-                let mut label = "with".to_owned();
+            StmtKind::With { value, names, body, lock } => {
+                let mut label = if *lock { "lock" } else { "with" }.to_owned();
                 for (at, held) in names.iter().enumerate() {
                     let mutable = if held.is_mut { "mut " } else { "" };
                     label = format!("{label}{} {mutable}{}", if at == 0 { " as" } else { "," }, held.name);
@@ -280,6 +280,10 @@ impl Tree {
             StmtKind::Break => self.spanned("break", stmt.span),
             StmtKind::Continue => self.spanned("continue", stmt.span),
             StmtKind::Pass => self.spanned("pass", stmt.span),
+            StmtKind::Lend { value, otherwise } => self.node("lend", span, |tree| {
+                tree.expr(value);
+                tree.stmts(otherwise);
+            }),
         }
     }
 
@@ -445,8 +449,9 @@ impl Tree {
             Pattern::Wildcard => self.line("pattern _"),
             Pattern::Bind(name) => self.line(&format!("pattern bind {name}")),
             Pattern::Literal(expr) => self.node("pattern literal", None, |tree| tree.expr(expr)),
-            Pattern::Variant { name, dotted, args } => {
-                let label = format!("pattern {}{name}", if *dotted { "." } else { "" });
+            Pattern::Variant { name, dotted, args, fields } => {
+                let by = if fields.is_empty() { String::new() } else { format!(" by {}", fields.join(", ")) };
+                let label = format!("pattern {}{name}{by}", if *dotted { "." } else { "" });
                 self.node(&label, None, |tree| {
                     for arg in args {
                         tree.pattern(arg);

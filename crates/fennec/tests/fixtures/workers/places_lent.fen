@@ -1,10 +1,10 @@
 struct Inner:
     tags: list[int]
 
-    def grow(mut self, value: int):
+    def grow(ref self, value: int):
         self.tags.append(value)
 
-    def reset(mut self):
+    def reset(ref self):
         self = Inner([100])
 
 struct Unit:
@@ -13,11 +13,11 @@ struct Unit:
     inner: Inner
     name: str
 
-    def grow(mut self, value: int):
+    def grow(ref self, value: int):
         self.tags.append(value)
         self.hp += value
 
-    def grown_by(mut self, values: list[int]):
+    def grown_by(ref self, values: list[int]):
         for value in values:
             self.tags.append(value)
 
@@ -36,7 +36,7 @@ def builtin_places(captured: list[Unit], at: int) -> int:
     copy_of[at % 2].tags.append(copy_of[0].hp)
     copy_of[at % 2].tags.append(copy_of[at % 2].tags.len())
     copy_of[at % 2].inner.tags.extend(copy_of[1].tags)
-    got = copy_of[at % 2].tags.pop()
+    got = copy_of[at % 2].tags.pop() else 0
     copy_of[at % 2].tags.insert(0, got)
     copy_of[1 - at % 2].tags.pop()
     copy_of[at % 2].tags.len() * 7 + copy_of[at % 2].inner.tags.len() + copy_of[1 - at % 2].tags.len() + got
@@ -59,7 +59,7 @@ def main(stdout: Stdout):
     xs = [n for n in range(3000)]
     stdout.print(sum(method_places(captured, x) for x in parallel(xs)))
     stdout.print(sum(builtin_places(captured, x) for x in parallel(xs)))
-    stdout.print(sum(given_place(captured, grid, x) for x in parallel(xs)))
+    stdout.print(sum(given_place(captured, grid=grid, at=x) for x in parallel(xs)))
     for one in captured:
         stdout.print(one.hp, one.tags, one.inner.tags, one.name)
     for row in grid:

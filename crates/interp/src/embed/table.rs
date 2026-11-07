@@ -19,18 +19,33 @@ const PLACES: usize = 1 << (PAGE_BITS - PLACE_BITS);
 /// The shortest block, in words, that has a page's place to itself.
 const PLACED_WORDS: usize = 2;
 
-type Page = Box<[Option<Box<[u64]>>]>;
+/// A page's places and a region's pages are fixed in size, so finding a place checks no bounds.
+type Page = Box<[Option<Box<[u64]>>; PLACES]>;
+type Pages = Box<[Option<Page>; PAGES]>;
 
 #[derive(Default)]
 pub(super) struct Table {
     /// Each region's pages, by the region's number. A run uses one or two regions.
-    regions: Vec<(usize, Box<[Option<Page>]>)>,
+    regions: Vec<(usize, Pages)>,
+    /// Whether every block goes in `short`, for a table that's usually small: pages cost a lot more
+    /// than a few blocks do.
+    hashed: bool,
     /// Blocks too short to have a place of their own.
     short: HashMap<usize, Box<[u64]>, BuildHasherDefault<AddressHasher>>,
     len: usize,
     /// The block the heap's kept a place in. A block can't leave while the heap still has one,
     /// as its address could come back as another string, and a wrong place gives no failure.
     place_in: usize,
+}
+
+/// What taking an owner off a block found.
+pub(super) enum Released {
+    /// That was its last owner, and here it is, out of the table.
+    Gone(Box<[u64]>),
+    /// It has owners left.
+    Held,
+    /// No block of this table's is there.
+    Missing,
 }
 
 /// An address's region, page in it, and place in the page. A 32-bit address space is one
@@ -44,23 +59,70 @@ fn at(block: &[u64]) -> usize {
     block.as_ptr().addr()
 }
 
-/// The place holding the block at `address`, when one does.
-fn slot_mut(regions: &mut [(usize, Box<[Option<Page>]>)], address: usize) -> Option<&mut Option<Box<[u64]>>> {
+/// A region's pages. The first region is looked at before any search: a run's blocks are
+/// almost all in one.
+fn pages_of(regions: &[(usize, Pages)], region: usize) -> Option<&Pages> {
+    match regions.split_first()? {
+        ((number, pages), _) if *number == region => Some(pages),
+        (_, rest) => rest.iter().find(|(number, _)| *number == region).map(|(_, pages)| pages),
+    }
+}
+
+/// `pages_of`, to change them.
+fn pages_of_mut(regions: &mut [(usize, Pages)], region: usize) -> Option<&mut Pages> {
+    match regions.split_first_mut()? {
+        ((number, pages), _) if *number == region => Some(pages),
+        (_, rest) => rest.iter_mut().find(|(number, _)| *number == region).map(|(_, pages)| pages),
+    }
+}
+
+/// The place for `address`, on a page that's been made, whatever it holds.
+fn place_mut(regions: &mut [(usize, Pages)], address: usize) -> Option<&mut Option<Box<[u64]>>> {
     let (region, page, place) = split(address);
-    let (_, pages) = regions.iter_mut().find(|(number, _)| *number == region)?;
-    let slot = pages.get_mut(page)?.as_mut()?.get_mut(place)?;
+    pages_of_mut(regions, region)?.get_mut(page)?.as_mut()?.get_mut(place)
+}
+
+/// The place holding the block at `address`, when one does.
+fn slot_mut(regions: &mut [(usize, Pages)], address: usize) -> Option<&mut Option<Box<[u64]>>> {
+    let slot = place_mut(regions, address)?;
     slot.as_ref().is_some_and(|block| at(block) == address).then_some(slot)
 }
 
+/// A region's pages or a page's places, as a slice.
+fn boxed_slice<T, const N: usize>(items: Box<[T; N]>) -> Box<[T]> {
+    items
+}
+
+/// A region's pages or a page's places, none made yet.
+fn empty<T: Clone, const N: usize>() -> Option<Box<[Option<T>; N]>> {
+    vec![None; N].into_boxed_slice().try_into().ok()
+}
+
 impl Table {
+    /// A table for a `shared` value's blocks.
+    pub(super) fn hashed() -> Table {
+        Table { hashed: true, ..Table::default() }
+    }
+
+    /// All its blocks, emptying it.
+    pub(super) fn into_blocks(self) -> impl Iterator<Item = Box<[u64]>> {
+        let pages = self.regions.into_iter().flat_map(|(_, pages)| boxed_slice(pages).into_vec());
+        let places = pages.flatten().flat_map(|page| boxed_slice(page).into_vec()).flatten();
+        places.chain(self.short.into_values())
+    }
+
     pub(super) fn len(&self) -> usize {
         self.len
     }
 
     fn slot(&self, address: usize) -> Option<&[u64]> {
         let (region, page, place) = split(address);
-        let (_, pages) = self.regions.iter().find(|(number, _)| *number == region)?;
-        pages.get(page)?.as_ref()?.get(place)?.as_deref().filter(|block| at(block) == address)
+        pages_of(&self.regions, region)?
+            .get(page)?
+            .as_ref()?
+            .get(place)?
+            .as_deref()
+            .filter(|block| at(block) == address)
     }
 
     pub(super) fn get(&self, address: usize) -> Option<&[u64]> {
@@ -82,14 +144,11 @@ impl Table {
     /// Adds a block at its own address, replacing one already there.
     pub(super) fn insert(&mut self, block: Box<[u64]>) {
         let address = at(&block);
-        if block.len() < PLACED_WORDS {
+        if block.len() < PLACED_WORDS || self.hashed {
             self.insert_short(address, block);
             return;
         }
-        let (region, page, place) = split(address);
-        let found = self.regions.iter_mut().find(|(number, _)| *number == region);
-        let page = found.and_then(|(_, pages)| pages.get_mut(page)).and_then(Option::as_mut);
-        match page.and_then(|page| page.get_mut(place)) {
+        match place_mut(&mut self.regions, address) {
             Some(slot) => {
                 if slot.is_none() {
                     self.len += 1;
@@ -114,20 +173,50 @@ impl Table {
     #[inline(never)]
     fn insert_in_new_page(&mut self, block: Box<[u64]>) {
         let (region, page, place) = split(at(&block));
-        let pages = self.regions.iter().position(|(number, _)| *number == region).unwrap_or_else(|| {
-            self.regions.push((region, vec![None; PAGES].into_boxed_slice()));
-            self.regions.len() - 1
-        });
-        let Some(page) = self.regions.get_mut(pages).and_then(|(_, pages)| pages.get_mut(page)) else {
+        if pages_of(&self.regions, region).is_none() {
+            let Some(pages) = empty() else { return };
+            self.regions.push((region, pages));
+        }
+        let Some(page) = pages_of_mut(&mut self.regions, region).and_then(|pages| pages.get_mut(page)) else {
             return;
         };
-        let page = page.get_or_insert_with(|| vec![None; PLACES].into_boxed_slice());
-        if let Some(slot) = page.get_mut(place) {
+        if page.is_none() {
+            *page = empty();
+        }
+        if let Some(slot) = page.as_mut().and_then(|page| page.get_mut(place)) {
             if slot.is_none() {
                 self.len += 1;
             }
             *slot = Some(block);
         }
+    }
+
+    /// Takes one owner off the block at `address`, and takes the block out when that was its last,
+    /// in one look.
+    pub(super) fn release_one(&mut self, address: usize) -> Released {
+        let Some(slot) = slot_mut(&mut self.regions, address) else { return self.release_short(address) };
+        let Some(count) = slot.as_mut().and_then(|block| block.first_mut()) else { return Released::Missing };
+        if *count > 1 {
+            *count -= 1;
+            return Released::Held;
+        }
+        self.len -= 1;
+        slot.take().map_or(Released::Missing, Released::Gone)
+    }
+
+    /// `release_one`, for a block too short to have a place of its own.
+    #[cold]
+    #[inline(never)]
+    fn release_short(&mut self, address: usize) -> Released {
+        let Some(count) = self.short.get_mut(&address).and_then(|block| block.first_mut()) else {
+            return Released::Missing;
+        };
+        if *count > 1 {
+            *count -= 1;
+            return Released::Held;
+        }
+        self.len -= 1;
+        self.short.remove(&address).map_or(Released::Missing, Released::Gone)
     }
 
     /// Says which block the heap's keeping a place in, or 0 for none.

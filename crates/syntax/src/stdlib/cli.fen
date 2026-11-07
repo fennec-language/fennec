@@ -1,5 +1,5 @@
 ## Arguments a program wasn't given in a way it understands. `message` says what's wrong.
-error CliError:
+export error CliError:
     message: str
 
 ## One flag, option or positional argument a program takes.
@@ -16,7 +16,7 @@ struct CliArg:
     many = False
 
 ## The arguments a program was given, read the way its `Cli` describes.
-struct CliArgs:
+export struct CliArgs:
     flags: set[str] = set()
     values: dict[str, str] = {}
     rest: list[str] = []
@@ -44,7 +44,7 @@ struct CliArgs:
 ## ```
 ## Options are written `--name value`, `--name=value` or `-n value`. Flags take no value, and
 ## short ones can be written together, `-lv`. Everything after `--` is positional.
-struct Cli:
+export struct Cli:
     name: str
     about = ""
     takes: list[CliArg] = []
@@ -115,8 +115,8 @@ struct Cli:
                         at += 1
                     given.values[name] = value
             else:
-                at = self._shorts(arg, args, at, mut given)?
-        self._place(positionals, mut given)?
+                at = self._shorts(arg, args, at, ref given)?
+        self._place(positionals, ref given)?
         if not given.wants_help:
             for taken in self.takes:
                 if taken.required and taken.name not in given.values and not taken.many:
@@ -154,7 +154,7 @@ struct Cli:
     ## This `Cli` with one more argument. Two with the same name is a mistake in the program.
     def _with(self, taken: CliArg) -> Cli:
         assert all(each.name != taken.name for each in self.takes)
-        replace(self, takes=self.takes + [taken])
+        copy(self, takes=self.takes + [taken])
 
     def _named(self, name: str) -> CliArg:
         for taken in self.takes:
@@ -163,7 +163,7 @@ struct Cli:
 
     ## `-l`, `-lv` or `-n value`: short flags, the last of which may take a value. Gives back
     ## where the next argument starts.
-    def _shorts(self, arg: str, args: list[str], at: int, mut given: CliArgs) -> int:
+    def _shorts(self, arg: str, args: list[str], at: int, ref given: CliArgs) -> int:
         mut next = at
         letters = arg[1:]
         for spot, letter in enumerate(letters):
@@ -187,7 +187,7 @@ struct Cli:
         next
 
     ## Gives each positional argument its value, in order.
-    def _place(self, positionals: list[str], mut given: CliArgs):
+    def _place(self, positionals: list[str], ref given: CliArgs):
         mut left = positionals
         for taken in self.takes:
             if not taken.positional: continue

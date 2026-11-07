@@ -49,7 +49,7 @@ pub extern "C" fn with_room(bytes: i64) -> i64 {
     with(|state| {
         let words = usize::try_from(bytes).unwrap_or(0).div_ceil(8).max(1);
         let mut block = state.heap.fresh(TEXT_HEADER_WORDS + words);
-        if let Some([count, shape, _, _, room]) = block.get_mut(..TEXT_HEADER_WORDS) {
+        if let Some([count, shape, _, _, room, _cursor]) = block.get_mut(..TEXT_HEADER_WORDS) {
             *count = 1;
             *shape = state.tables.str_shape;
             *room = u64::try_from(words * 8).unwrap_or(0);
@@ -109,7 +109,7 @@ fn grow_by(state: &mut State, text: i64, added: &[u64], extra: usize, extra_char
     }
     put_words(&mut grown, length, added, extra);
     set_lengths(&mut grown, total, chars + extra_chars);
-    if let Some([count, .., bytes]) = grown.get_mut(..TEXT_HEADER_WORDS) {
+    if let Some([count, _, _, _, bytes, _cursor]) = grown.get_mut(..TEXT_HEADER_WORDS) {
         *count = 1;
         *bytes = u64::try_from(room * 8).unwrap_or(0);
     }
@@ -395,6 +395,7 @@ fn ascii_part(state: &mut State, address: i64, from: i64, to: i64) -> Option<i64
         number(size),
         number(size),
         number(words * 8),
+        0,
     ]);
     let text = state.heap.block(source)?.get(TEXT_HEADER_WORDS..)?;
     // Each word of the part is made of the end of one word and the start of the next.
@@ -422,6 +423,35 @@ pub extern "C" fn slice(address: i64, from: i64, to: i64, start: i64, end: i64) 
         }
         part_by_chars(state, address, from, to).ok_or_else(|| lost(start, end))
     })
+}
+
+/// The part of a string between two places in its bytes, each where a character starts or at
+/// its end, for `std.intrinsics`' `text_part`.
+pub extern "C" fn part(address: i64, from: i64, to: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| part_by_bytes(state, address, from, to).ok_or_else(|| lost(start, end)))
+}
+
+fn part_by_bytes(state: &mut State, address: i64, from: i64, to: i64) -> Option<i64> {
+    let source = u64::try_from(address).ok()?;
+    let (from, to) = (usize::try_from(from).ok()?, usize::try_from(to).ok()?);
+    let block = state.heap.block(source)?;
+    let (length, chars) = lengths(block);
+    let all_ascii = usize::try_from(chars).ok() == Some(length);
+    if !super::heap::is_text(state, block) || from > to || to > length {
+        return None;
+    }
+    let chars = if all_ascii {
+        to - from
+    } else {
+        let words = block.get(TEXT_HEADER_WORDS..)?;
+        (from..to)
+            .filter(|at| {
+                let byte = words.get(at / 8).and_then(|word| word.to_le_bytes().get(at % 8).copied());
+                byte.is_some_and(|byte| byte & 0xC0 != 0x80)
+            })
+            .count()
+    };
+    ascii_part_of(state, source, (from, to), u64::try_from(chars).ok()?)
 }
 
 /// How two strings order: -1, 0 or 1, comparing bytes as the interpreter does.
@@ -518,7 +548,41 @@ pub extern "C" fn print(address: i64) {
 
 /// A new string with an int's text.
 pub extern "C" fn int_text(n: i64) -> i64 {
-    with(|state| text_address(state, &n.to_string()))
+    // Written on the stack, so the only thing made is the string's block.
+    let mut digits = [0_u8; 20];
+    let text = std::str::from_utf8(super::text::decimal(n, &mut digits)).unwrap_or_default();
+    with(|state| text_address(state, text))
+}
+
+/// `reversed(text)`: a new string of its characters, last first.
+pub extern "C" fn reversed(address: i64) -> i64 {
+    with(|state| {
+        let whole = text(state, address).unwrap_or_default();
+        let turned: String = whole.chars().rev().collect();
+        text_address(state, &turned)
+    })
+}
+
+/// `text.codes()`: a new list of the code of each character.
+pub extern "C" fn codes(address: i64, element: i64) -> i64 {
+    with(|state| {
+        let whole = text(state, address).unwrap_or_default();
+        let words: Vec<u64> = whole.chars().map(|c| u64::from(u32::from(c))).collect();
+        super::lists::list_of_words(state, element, &words)
+    })
+}
+
+/// `str.from_code(code)`: a new string of the character with a code, or 0 if none has it.
+pub extern "C" fn from_code(code: i64) -> i64 {
+    match u32::try_from(code).ok().and_then(char::from_u32) {
+        Some(c) => with(|state| text_address(state, c.encode_utf8(&mut [0; 4]))),
+        None => 0,
+    }
+}
+
+/// What's wrong with a number that isn't a character's code.
+pub extern "C" fn from_code_problem(code: i64) -> i64 {
+    with(|state| text_address(state, &format!("{code} isn't the code of a character")))
 }
 
 /// A new string with a string's text as it shows inside a collection, in quotes.
@@ -689,7 +753,7 @@ pub(super) fn ascii_part_of(
     let words = kept.div_ceil(8);
     let mut part = state.heap.fresh(TEXT_HEADER_WORDS + words);
     let number = |n: usize| u64::try_from(n).unwrap_or(0);
-    let header = [1, state.tables.str_shape, number(kept), chars, number(words * 8)];
+    let header = [1, state.tables.str_shape, number(kept), chars, number(words * 8), 0];
     part.get_mut(..TEXT_HEADER_WORDS)?.copy_from_slice(&header);
     let source = state.heap.block(address)?.get(TEXT_HEADER_WORDS + from / 8..)?;
     let shift = u32::try_from(from % 8 * 8).ok()?;
@@ -757,7 +821,7 @@ pub extern "C" fn join(separator: i64, list: i64) -> i64 {
             (at, chars) = (at + length, chars + count);
         }
         let room = u64::try_from(joined.len() - TEXT_HEADER_WORDS).unwrap_or(0) * 8;
-        let header = [1, state.tables.str_shape, 0, 0, room];
+        let header = [1, state.tables.str_shape, 0, 0, room, 0];
         if let Some(start) = joined.get_mut(..TEXT_HEADER_WORDS) {
             start.copy_from_slice(&header);
         }

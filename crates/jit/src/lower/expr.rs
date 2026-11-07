@@ -127,6 +127,12 @@ impl Lowerer<'_, '_> {
             ExprKind::Binary { op: op @ (BinOp::And | BinOp::Or), lhs, rhs } => {
                 self.logic(*op, lhs, rhs).map(|value| (Some(value), Ty::Bool))
             }
+            // `s is Circle`: which type a union holds, which the interpreter tells.
+            ExprKind::Binary { op: BinOp::Is | BinOp::IsNot, rhs, .. }
+                if !matches!(rhs.kind, ExprKind::None) =>
+            {
+                self.fallback(expr)
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let left = self.expr(lhs)?;
                 let right = self.expr(rhs)?;
@@ -187,7 +193,7 @@ impl Lowerer<'_, '_> {
             Ty::Dict(key, value) => return self.handle_to_dict(handle, key, value, span),
             Ty::List(item) => return self.handle_to_list(handle, item, span),
             // The JIT's own layouts never hold an optional in one word.
-            Ty::Unit | Ty::Cap(_) | Ty::Known(_) | Ty::Maybe(_) | Ty::Block(_) => {
+            Ty::Unit | Ty::Cap(_) | Ty::Bytes | Ty::Gen | Ty::Known(_) | Ty::Maybe(_) | Ty::Block(_) => {
                 return Err(unsupported(&format!("using a value as {}", to.name()), span));
             }
         };
@@ -225,7 +231,7 @@ impl Lowerer<'_, '_> {
                 return self.help(Helper::Capability, &[kind]);
             }
             Ty::Known(at) => return self.known_as_object(at, span),
-            Ty::Maybe(_) | Ty::Block(_) => {
+            Ty::Maybe(_) | Ty::Block(_) | Ty::Bytes | Ty::Gen => {
                 return Err(unsupported("a value laid out for another backend", span));
             }
         };

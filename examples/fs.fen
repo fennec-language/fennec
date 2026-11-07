@@ -1,12 +1,27 @@
 # decision: Files and folders go through `fs`.
 
 # Files and folders go through the `Fs` capability that `main` receives, so code can only
-# touch the disk when it's handed `fs`. A method that can fail gives an `IoError`.
+# touch the disk when it's handed `fs`. A method that can fail gives an `IoError`. `list_dir`
+# gives what's in a folder, and `walk` everything under it, at any depth.
 from std.fs import Metadata
 
 def describe(found: Metadata) -> str:
     if found.is_dir: return "a folder"
     "a file" if found.is_file else "something else"
+
+## The `.fen` files under `folder`, at any depth, in the order `walk` gives them.
+def sources(fs: Fs, folder: str) -> list[str]:
+    found = fs.walk(folder) else []
+    [path.text for path in found if path.text.endswith(".fen")]
+
+test "walk goes into every folder, a folder before what's in it"(fs: Fs):
+    fs.make_dir("game/world")?
+    fs.write_text("game/main.fen", "")?
+    fs.write_text("game/world/map.fen", "")?
+    fs.write_text("game/notes.txt", "")?
+    walked = [path.text for path in fs.walk("game")?]
+    assert walked == ["game/main.fen", "game/notes.txt", "game/world", "game/world/map.fen"]
+    assert sources(fs, folder="game") == ["game/main.fen", "game/world/map.fen"]
 
 def main(stdout: Stdout, fs: Fs):
     stdout.print("the root is", describe(fs.metadata("/")?))
@@ -15,15 +30,16 @@ def main(stdout: Stdout, fs: Fs):
     match fs.list_dir("no/such/folder"):
         case Ok(paths):
             stdout.print(paths.len(), "paths")
-        case IoError(_):
+        case IoError():
             stdout.print("there's no folder to list")
+    stdout.print(sources(fs, folder="no/such/folder"))
     match fs.remove("no/such/folder/save.txt"):
         case Ok(_):
             stdout.print("removed it")
-        case IoError(_):
+        case IoError():
             stdout.print("there's nothing to remove")
     match fs.metadata("no/such/folder/save.txt"):
         case Ok(found):
             stdout.print(found.size)
-        case IoError(_):
+        case IoError():
             stdout.print("there's nothing to look at")

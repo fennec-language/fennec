@@ -7,7 +7,7 @@ struct Enemy:
     health: int
 
 ## Rolls `count` dice with `sides` sides each.
-def roll(mut rng: Random, count: int, sides: int) -> int:
+def roll(ref rng: Random, count: int, sides: int) -> int:
     sum(rng.randint(1, high=sides) for _ in range(count))
 
 test "the same seed gives the same numbers" for seed: int:
@@ -23,13 +23,13 @@ test "randint stays in its range" for seed: int, low: int:
 test "shuffling keeps every item" for seed: int, items: list[int]:
     mut rng = Random(seed=seed)
     mut shuffled = items
-    rng.shuffle(mut shuffled)
+    rng.shuffle(ref shuffled)
     assert sorted(shuffled) == sorted(items)
 
 def main(stdout: Stdout):
     mut rng = Random(seed=42)
     stdout.print([rng.randint(1, high=6) for _ in range(10)])
-    stdout.print(roll(mut rng, 3, 6), rng.random(), rng.uniform(-1.0, high=1.0))
+    stdout.print(roll(ref rng, 3, 6), rng.random(), rng.uniform(-1.0, high=1.0))
 
     enemies = [
         Enemy(name="goblin", health=7),
@@ -39,7 +39,7 @@ def main(stdout: Stdout):
     stdout.print(rng.choice(enemies).name)
 
     mut deck = ["ace", "king", "queen", "jack", "ten"]
-    rng.shuffle(mut deck)
+    rng.shuffle(ref deck)
     stdout.print(deck)
     stdout.print(rng)
 

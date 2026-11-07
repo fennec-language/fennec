@@ -1,7 +1,8 @@
-# JSON holds `Id`s and `IdMap`s. An `Id` is written as its slot and generation, and an `IdMap`
-# as all its slots, so after loading, every `Id` that was saved finds the same item.
+# JSON holds `Table`s and the `Id`s that point into them. A `Table` is written as a list of its
+# items in order, and an `Id` as where its item is in that list. Loading makes a new `Table`, and
+# every `Id` loaded with it finds its item there.
 from std import json
-from std.game import Id, IdMap
+from std.collections import Id, Table
 
 struct Unit:
     name: str
@@ -9,8 +10,28 @@ struct Unit:
     target: Id[Unit]? = None
 
 struct World:
-    units = IdMap[Unit]()
+    units = Table[Unit]()
     selected = list[Id[Unit]]()
+
+struct TwoTables:
+    ours = Table[Unit]()
+    theirs = Table[Unit]()
+
+struct Item:
+    name: str
+
+struct Armed:
+    name: str
+    weapon: Id[Item]
+
+struct Armory:
+    items = Table[Item]()
+    units = Table[Armed]()
+
+struct Camp:
+    items = Table[Item]()
+    best: Id[Item]? = None
+    units = Table[Unit]()
 
 def failure[T](found: Result[T, ParseError]) -> str:
     match found:
@@ -21,76 +42,108 @@ def failure[T](found: Result[T, ParseError]) -> str:
 
 test "a world with Ids loads back the same":
     mut world = World()
-    ash = world.units.insert(Unit(name="ash", health=10))
-    gone = world.units.insert(Unit(name="gone", health=1))
-    vex = world.units.insert(Unit(name="vex", health=8, target=ash))
+    ash = world.units.add(Unit(name="ash", health=10))
+    gone = world.units.add(Unit(name="gone", health=1))
+    vex = world.units.add(Unit(name="vex", health=8, target=ash))
     world.units.remove(gone)
-    kit = world.units.insert(Unit(name="kit", health=5, target=vex))
+    kit = world.units.add(Unit(name="kit", health=5, target=vex))
     world.selected = [ash, kit]
     text = json.dumps(world)
+    assert (
+        text
+        == "{\"units\": [{\"name\": \"ash\", \"health\": 10, \"target\": null}, {\"name\": \"kit\", \"health\": 5, \"target\": 2}, {\"name\": \"vex\", \"health\": 8, \"target\": 0}], \"selected\": [0, 1]}"
+    )
     loaded = json.loads[World](text)?
     assert json.dumps(loaded) == text
-    assert loaded.units[ash].name == "ash" and loaded.units[kit].name == "kit"
-    target = loaded.units[kit].target
-    assert target is not None
-    if target is not None:
-        assert loaded.units[target].name == "vex"
-    # The slot `gone` had was used again, so its old Id still finds nothing.
-    assert loaded.units.get(gone) is None
-    # New items go where they would have before saving.
-    mut more = loaded
+    first = loaded.selected[0]
+    last = loaded.selected[1]
+    assert loaded.units[first].name == "ash" and loaded.units[last].name == "kit"
+    target = loaded.units[last].target else first
+    assert loaded.units[target].name == "vex"
+
+test "an optional Id whose item has gone is saved as missing":
+    mut world = World()
+    gone = world.units.add(Unit(name="gone", health=1))
+    world.units.add(Unit(name="ash", health=10, target=gone))
+    world.units.remove(gone)
     assert (
-        more.units.insert(Unit(name="owl", health=1))
-        == world.units.insert(Unit(name="owl", health=1))
+        json.dumps(world)
+        == "{\"units\": [{\"name\": \"ash\", \"health\": 10, \"target\": null}], \"selected\": []}"
     )
 
-test "an Id the map never handed out isn't loaded":
-    text = "{\"units\": {\"slots\": [{\"generation\": 0, \"value\": {\"name\": \"ash\", \"health\": 1}}]}, \"selected\": [{\"slot\": 0, \"generation\": 3}]}"
+test "an Id past the end of its Table isn't loaded":
+    text = "{\"units\": [{\"name\": \"ash\", \"health\": 1}], \"selected\": [3]}"
     assert (
-        failure(json.loads[World](text))
-        == "`selected[0]` is an Id that `units` never handed out: slot 0, generation 3"
+        failure(json.loads[World](text)) == "`selected[0]` is item 3 of `units`, which has only 1"
     )
-    far = "{\"units\": {\"slots\": []}, \"selected\": [{\"slot\": 4, \"generation\": 0}]}"
-    assert (
-        failure(json.loads[World](far))
-        == "`selected[0]` is an Id that `units` never handed out: slot 4, generation 0"
-    )
-    inside = "{\"units\": {\"slots\": [{\"generation\": 0, \"value\": {\"name\": \"ash\", \"health\": 1, \"target\": {\"slot\": 1, \"generation\": 0}}}]}}"
+    inside = "{\"units\": [{\"name\": \"ash\", \"health\": 1, \"target\": 1}]}"
     assert (
         failure(json.loads[World](inside))
-        == "`units.slots[0].value.target` is an Id that `units` never handed out: slot 1, generation 0"
+        == "`units[0].target` is item 1 of `units`, which has only 1"
+    )
+    assert failure(json.loads[World]("{\"selected\": [-1]}")) == "`selected[0]` is out of range"
+
+test "an Id needs the one Table of its type":
+    assert (
+        failure(json.loads[Id[Unit]]("0"))
+        == "the text is an Id, but the text has no `Table[Unit]` for it to be in"
+    )
+    assert (
+        failure(json.loads[TwoTables]("{\"ours\": [], \"theirs\": []}"))
+        == "`ours` and `theirs` are both a `Table[Unit]`, so an Id can't say which it's in"
     )
 
-test "an Id of a removed item still loads, and finds nothing":
-    mut world = World()
-    gone = world.units.insert(Unit(name="gone", health=1))
-    world.units.remove(gone)
-    world.selected = [gone]
-    loaded = json.loads[World](json.dumps(world))?
-    assert loaded.units.get(loaded.selected[0]) is None
+test "an Id points into another Table in the same text":
+    mut armory = Armory()
+    _ = armory.items.add(Item(name="axe"))
+    sword = armory.items.add(Item(name="sword"))
+    _ = armory.units.add(Armed(name="ash", weapon=sword))
+    text = json.dumps(armory)
+    assert (
+        text
+        == "{\"items\": [{\"name\": \"axe\"}, {\"name\": \"sword\"}], \"units\": [{\"name\": \"ash\", \"weapon\": 1}]}"
+    )
+    loaded = json.loads[Armory](text)?
+    for _, unit in loaded.units.items():
+        assert loaded.items[unit.weapon].name == "sword"
 
-test "an Id or a slot written wrong says where":
+test "an Id whose Table the text leaves out isn't loaded as a bare position":
     assert (
-        failure(json.loads[Id[Unit]]("{\"slot\": -1, \"generation\": 0}"))
-        == "`slot` is out of range"
+        failure(json.loads[Armory]("{\"units\": [{\"name\": \"ash\", \"weapon\": 0}]}"))
+        == "`units[0].weapon` is an Id, but the text has no `Table[Item]` for it to be in"
     )
-    assert failure(json.loads[Id[Unit]]("{\"slot\": 1}")) == "`generation` is missing"
     assert (
-        failure(json.loads[Id[Unit]]("{\"slot\": 1, \"generation\": 0, \"tag\": 2}"))
-        == "an Id has only `slot` and `generation`, but the text has \"tag\""
+        failure(json.loads[World]("{\"selected\": [0]}"))
+        == "`selected[0]` is an Id, but the text has no `Table[Unit]` for it to be in"
     )
-    assert failure(json.loads[IdMap[Unit]]("{}")) == "the text should be an IdMap, with its `slots`"
+
+test "an Id isn't taken for a removed one of another type in the same slot":
+    mut camp = Camp()
+    axe = camp.items.add(Item(name="axe"))
+    gone = camp.units.add(Unit(name="gone", health=1))
+    camp.units.add(Unit(name="ash", health=10, target=gone))
+    camp.units.remove(gone)
+    camp.best = axe
     assert (
-        failure(json.loads[IdMap[Unit]]("{\"slots\": [1]}"))
-        == "`slots[0]` should be a slot, with its `generation`"
+        json.dumps(camp)
+        == "{\"items\": [{\"name\": \"axe\"}], \"best\": 0, \"units\": [{\"name\": \"ash\", \"health\": 10, \"target\": null}]}"
     )
+
+test "each load makes a Table of its own, so its Ids find nothing in another load's":
+    text = "{\"units\": [{\"name\": \"ash\", \"health\": 10}], \"selected\": [0]}"
+    first = json.loads[World](text)?
+    second = json.loads[World](text)?
+    ash = first.selected[0]
+    assert ash in first.units and ash not in second.units
+    assert second.units.get(ash) is None
+    assert second.units[second.selected[0]].name == "ash"
 
 def main(stdout: Stdout):
     mut world = World()
-    ash = world.units.insert(Unit(name="ash", health=10))
-    world.units.insert(Unit(name="vex", health=8, target=ash))
+    ash = world.units.add(Unit(name="ash", health=10))
+    world.units.add(Unit(name="vex", health=8, target=ash))
     world.selected = [ash]
     text = json.dumps(world)
     stdout.print(text)
     loaded = json.loads[World](text) else World()
-    stdout.print(loaded.units[ash].name, json.dumps(loaded) == text)
+    stdout.print(loaded.units[loaded.selected[0]].name, json.dumps(loaded) == text)

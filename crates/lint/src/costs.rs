@@ -1,9 +1,10 @@
 //! What may copy or allocate, from what the IR finds. A copy made each time round a loop
-//! without saying so is a compile error. The rest are hints: they flag correct code, so they
+//! without saying so is a compile error, and so is anything that costs in a `@hot` function or
+//! what it calls. The rest are hints: they flag correct code, so they
 //! never fail `fennec lint`, but whoever is looking at a hot path wants every one, with where it
 //! runs.
 
-use fennec_ir::{Cost, Finding, Shared};
+use fennec_ir::{Cost, Finding, HotReach, Shared};
 use fennec_syntax::Diagnostic;
 
 use crate::Lint;
@@ -44,6 +45,42 @@ pub(crate) fn implicit(findings: &[Finding]) -> Vec<Diagnostic> {
     findings.iter().filter(|finding| finding.per_iteration()).filter_map(problem).collect()
 }
 
+pub(crate) fn hot(findings: &[Finding], reach: &HotReach) -> Vec<Diagnostic> {
+    let key = |name: &str| name.split_once('[').map_or(name, |(key, _)| key).to_owned();
+    let whose = |function: &str, root: &str| {
+        if key(function) == root {
+            format!("`@hot` `{root}`")
+        } else {
+            format!("`{}`, which `@hot` `{root}` calls", key(function))
+        }
+    };
+    let mut problems: Vec<Diagnostic> = findings
+        .iter()
+        .filter(|finding| !(finding.per_iteration() && matches!(finding.cost, Cost::Copy { .. })))
+        .filter_map(|finding| {
+            let (_, root) = reach.reached.iter().find(|(name, _)| *name == finding.function)?;
+            let help = match &finding.cost {
+                Cost::Allocation { .. } => {
+                    "a `@hot` function and what it calls may not allocate: make it before the hot path and pass it in, or take `@hot` off".to_owned()
+                }
+                Cost::Copy { value, .. } => format!(
+                    "a `@hot` function and what it calls may not copy: stop holding `{value}` elsewhere while this changes it, or take `@hot` off"
+                ),
+            };
+            let message = format!("{} in {}", finding.message(), whose(&finding.function, root));
+            Some(Diagnostic::new(message, finding.span).with_help(help))
+        })
+        .collect();
+    for (span, callee, root) in &reach.unlowered {
+        let message = format!(
+            "`@hot` `{root}` calls `{}`, which can't be shown not to allocate or copy, since it isn't built natively yet",
+            key(callee)
+        );
+        problems.push(Diagnostic::new(message, *span).with_help("take `@hot` off until it is"));
+    }
+    problems
+}
+
 fn problem(finding: &Finding) -> Option<Diagnostic> {
     let Cost::Copy { value, why } = &finding.cost else { return None };
     let (because, later) = match why {
@@ -63,7 +100,7 @@ fn problem(finding: &Finding) -> Option<Diagnostic> {
     );
     let diagnostic = Diagnostic::new(message, finding.span).with_help(help);
     Some(match later {
-        Some(later) => Diagnostic { also: Some(later), ..diagnostic },
+        Some(later) => diagnostic.also_at(later),
         None => diagnostic,
     })
 }

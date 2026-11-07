@@ -1,0 +1,31 @@
+# Shared values changed from every worker: by method, by `with`, read, and two taken in opposite
+# orders by the same body, which only stays out of a deadlock by taking them in one order.
+
+shared Counter:
+    total = 0
+    peak = 0.5
+
+    def add(ref self, amount: int):
+        self.total += amount
+        self.peak = self.peak * 1.0
+
+    def seen(self) -> int:
+        self.total
+
+struct Unit:
+    x: int
+
+def main(stdout: Stdout):
+    first = Counter()
+    second = Counter(total=5)
+    mut units = [Unit(n % 100) for n in range(50_000)]
+    for ref unit in parallel(units):
+        first.add(unit.x)
+        with first, second as ref a, ref b:
+            a.total += 1
+            b.total += 2
+        with second, first as ref b, ref a:
+            b.total += a.total % 2
+            b.total -= a.total % 2
+        unit.x += first.total % 1 + second.seen() % 1
+    stdout.print(first.total, second.total, first.peak, sum(unit.x for unit in parallel(units)))

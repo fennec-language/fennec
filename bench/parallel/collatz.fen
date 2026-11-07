@@ -1,0 +1,23 @@
+# The Collatz steps of each of the first million numbers, as a comprehension over `parallel`. Some
+# numbers take a few steps and some hundreds, so the work per item is uneven, and stealing has to
+# even it out.
+
+def steps(start: int) -> int:
+    mut n = start
+    mut count = 0
+    while n != 1:
+        n = n // 2 if n % 2 == 0 else 3 * n + 1
+        count += 1
+    count
+
+def main(stdout: Stdout):
+    counts = [steps(n) for n in parallel(range(1, 1_000_001))]
+    mut total = 0
+    mut longest = 0
+    mut longest_at = 0
+    for at, count in enumerate(counts):
+        total += count
+        if count > longest:
+            longest = count
+            longest_at = at + 1
+    stdout.print(total, longest, longest_at)

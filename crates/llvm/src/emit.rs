@@ -9,13 +9,10 @@ use fennec_ir::{FormatPart, Function, GeneratorDef, InstKind, LocalId, Operand, 
 use fennec_layout::Layouts;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
-use crate::Shared;
 use crate::analysis::{Analysis, Whole, callees, visit, whole};
 use crate::kinds::{Kind, struct_definitions};
 use crate::uniqueness::{FieldPath, Tracked, coming_in, unsettled, written_order};
-
-/// Why a program with bytes written into it, as `embed("path")` gives, isn't taken yet.
-pub(crate) const BYTES: &str = "it uses a Bytes, which this backend doesn't take yet";
+use crate::{CheckKind, CheckLeft, Shared};
 
 /// The level of processor code is built for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -113,7 +110,7 @@ pub fn emit_tracing_costs(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Sha
     emit_with(program, cpu, Shared { tracing_costs: true, ..Shared::default() })
 }
 
-fn emit_with(
+pub(crate) fn emit_with(
     program: &Program,
     cpu: Cpu,
     mut shared: Shared,
@@ -125,6 +122,19 @@ fn emit_with(
     let mut units = Vec::with_capacity(program.functions.len());
     // Every module of a program agrees, since what it declares has to match what's defined.
     let threads = crate::parallel::uses_parallel(program);
+    shared.native = crate::native::native_types(program, &layouts);
+    let waits = crate::waits::may_wait(program, true);
+    let closures =
+        program.functions.iter().flat_map(|function| &function.blocks).flat_map(|block| &block.insts);
+    shared.waiting_closures = closures
+        .filter_map(|inst| match &inst.kind {
+            InstKind::MakeClosure { function, .. } if waits.marked.contains_key(function) => {
+                Some(function.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    shared.waiting = waits.marked.into_keys().collect();
     // Every function it can't take yet is named, not just the first.
     let mut refused = Vec::new();
     for function in program.functions.iter().chain(&program.constants) {
@@ -209,6 +219,8 @@ pub(crate) struct Module<'w, 'p> {
     /// Whether the program runs `parallel`'s ranges on other threads, which keep their own stack
     /// limit and failure flag.
     pub(crate) threads: bool,
+    /// Whether it also has `shared` values, whose blocks that needs more from counting.
+    pub(crate) cells: bool,
     declares: BTreeSet<String>,
     pub(crate) defined: HashSet<&'p str>,
     bodies: String,
@@ -228,6 +240,7 @@ fn unit<'p>(
         layouts,
         shared,
         threads,
+        cells: threads && whole.cells,
         declares: BTreeSet::new(),
         defined: HashSet::new(),
         bodies: String::new(),
@@ -428,6 +441,7 @@ impl<'p> Module<'_, 'p> {
             kinds,
             returns,
             allocas: String::new(),
+            kept_lengths: HashMap::new(),
             out: String::new(),
             cold: String::new(),
             next: 0,
@@ -445,6 +459,7 @@ impl<'p> Module<'_, 'p> {
             taken_items: HashMap::new(),
             place_homes: HashMap::new(),
             at: (usize::MAX, usize::MAX),
+            check_kind: None,
             inside_items: Vec::new(),
             inside_slots: HashMap::new(),
             pair_slots: HashMap::new(),
@@ -487,6 +502,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     kinds: Vec<Kind>,
     returns: Kind,
     pub(crate) allocas: String,
+    /// Where a list a loop fills keeps its length while the loop runs, by the list's local: in
+    /// a local of its own, which LLVM holds in a register, written to the list as the loop ends.
+    pub(crate) kept_lengths: HashMap<usize, String>,
     out: String,
     cold: String,
     next: usize,
@@ -516,6 +534,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) place_homes: HashMap<usize, (String, Kind, &'static str)>,
     /// The instruction being written: its block, and its place in it.
     at: (usize, usize),
+    /// What the next way out on a failure is for, when what writes it says.
+    check_kind: Option<(Span, Option<CheckKind>)>,
     /// Items of lists, by field path and index, known to be inside their lists here.
     pub(crate) inside_items: Vec<FieldPath>,
     /// Where the position each was found at is kept, negative indexes counted from the end.
@@ -597,7 +617,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Whether this local's slot holds an owner, for it to release.
-    fn owns(&self, local: LocalId) -> bool {
+    pub(crate) fn owns(&self, local: LocalId) -> bool {
         self.kinds.get(local.0).is_some_and(Kind::counted)
             && !self.is_mut_param(local)
             && !self.is_lent(local)
@@ -625,7 +645,8 @@ impl Emit<'_, '_, '_> {
             if kind.counted() && text == "ptr" {
                 let _ = writeln!(self.allocas, "  store ptr null, ptr %l{at}");
             } else if kind.counted() || self.holds_inline(kind) {
-                let _ = writeln!(self.allocas, "  store {text} zeroinitializer, ptr %l{at}");
+                let zero = self.zero_line(kind, &format!("%l{at}"));
+                let _ = writeln!(self.allocas, "  {zero}");
             }
         }
         for (at, kind) in kinds.iter().take(function.params).enumerate() {
@@ -715,6 +736,7 @@ impl Emit<'_, '_, '_> {
         for at in written_order(function) {
             let Some(block) = function.blocks.get(at) else { continue };
             self.start_block(&format!("bb{at}"));
+            self.write_kept_lengths(at);
             let ways_in = before.get(&at).map_or(&[][..], Vec::as_slice);
             self.alone_fields =
                 coming_in(function, self.known, settles, (at, &before, &done), (&on_entry, &alone_left));
@@ -848,7 +870,9 @@ impl Emit<'_, '_, '_> {
         let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
         self.retain_value(value, held);
         // A local holds an optional string as a header, all zero for `None`.
-        let missing = if *held == Kind::MaybeText {
+        let missing = if *held == Kind::Str {
+            "false".to_owned()
+        } else if *held == Kind::MaybeText {
             self.header_is_none(value)
         } else {
             let missing = self.temp();
@@ -863,8 +887,8 @@ impl Emit<'_, '_, '_> {
             (block, fields_at)
         } else {
             let place = self.place_for(kind);
-            let text = self.text_of(kind);
-            self.line(&format!("store {text} zeroinitializer, ptr {place}"));
+            let zero = self.zero_line(kind, &place);
+            self.line(&zero);
             (place.clone(), place)
         };
         self.line(&format!("store i64 {tag}, ptr {fields_at}"));
@@ -879,8 +903,11 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn value_for(&mut self, operand: &Operand, kind: &Kind) -> Result<(String, bool), String> {
         if *operand != Operand::None {
             let (value, held) = self.operand(operand)?;
-            if matches!(held, Kind::Maybe(_) | Kind::MaybeText) && self.is_optional(kind) {
+            if matches!(held, Kind::Maybe(_) | Kind::MaybeText | Kind::Str) && self.is_optional(kind) {
                 return self.optional_as_enum(&value, &held, kind);
+            }
+            if self.widens(&held, kind) {
+                return Ok((self.widened(&value, &held, kind)?, true));
             }
             return Ok((value, false));
         }
@@ -983,7 +1010,8 @@ impl Emit<'_, '_, '_> {
     /// One owner fewer for a block, if there's a block, freeing it when that was the last.
     pub(crate) fn release(&mut self, block: &str) {
         debug_assert_eq!(COUNT, 0);
-        self.declare("declare void @fennec_free(ptr) nounwind");
+        // A program's native types are layouts it has, so finding their free can't fail.
+        let free = self.free_function().unwrap_or("@fennec_free");
         let (none, held, last, done) =
             (self.temp(), self.label("held"), self.label("last"), self.label("done"));
         self.line(&format!("{none} = icmp eq ptr {block}, null"));
@@ -992,7 +1020,7 @@ impl Emit<'_, '_, '_> {
         let gone = self.owner_gone(block);
         self.line(&format!("br i1 {gone}, label %{last}, label %{done}"));
         self.start_block(&last);
-        self.line(&format!("call void @fennec_free(ptr {block})"));
+        self.line(&format!("call void {free}(ptr {block})"));
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
     }
@@ -1026,9 +1054,20 @@ impl Emit<'_, '_, '_> {
     }
 
     /// How a function leaves when it has failed.
-    pub(crate) fn failed_exit(&self) -> String {
+    pub(crate) fn failed_exit(&mut self) -> String {
         self.leaves.set(true);
+        // Each way out on a failure is a check: what it's for, if what writes it said so.
+        match self.check_kind.take() {
+            Some((span, Some(what))) => self.note_check(span, what),
+            Some((_, None)) => {}
+            None => self.note_runtime_check(),
+        }
         self.failed.clone()
+    }
+
+    /// Says what the next way out on a failure is for, or with `None` that it isn't a check.
+    pub(crate) fn next_check(&mut self, span: Span, what: Option<CheckKind>) {
+        self.check_kind = Some((span, what));
     }
 
     /// Leaves the function, the failure already recorded, when `failed` holds.
@@ -1041,6 +1080,15 @@ impl Emit<'_, '_, '_> {
 
     /// Calls the runtime's failure and leaves the function when `bad` holds.
     pub(crate) fn fail_if(&mut self, bad: &str, code: i64, span: Span) {
+        let what = match code {
+            OVERFLOW => Some(CheckKind::Overflow),
+            DIVISION_BY_ZERO => Some(CheckKind::DivideByZero),
+            fennec_interp::embed::checks::BAD_SHIFT => Some(CheckKind::ShiftRange),
+            // How deep the calls go is checked on the way into a function, not by what it does.
+            TOO_DEEP => None,
+            _ => Some(CheckKind::Builtin(self.failing_here())),
+        };
+        self.next_check(span, what);
         let (fail, ok) = (self.label("fail"), self.label("ok"));
         self.line(&format!("br i1 {bad}, label %{fail}, label %{ok}, !prof !0"));
         self.start_block(&ok);
@@ -1049,6 +1097,68 @@ impl Emit<'_, '_, '_> {
         let failed = self.failed_exit();
         let _ =
             writeln!(self.cold, "{fail}:\n{place}  call void @fennec_fail(i64 {code}, {args})\n  {failed}");
+    }
+
+    /// The case a union's member is held under: the member's name, by its place among them.
+    fn member_case(&self, union: &Operand, member: usize) -> Result<String, String> {
+        match self.function.type_of(union) {
+            Some(fennec_check::Type::Union(members)) => members
+                .get(member)
+                .map(ToString::to_string)
+                .ok_or_else(|| format!("a union has no member {member}")),
+            other => Err(format!("it reads a union's member from a {other:?}")),
+        }
+    }
+
+    /// Notes a check as it's written, when checks are being noted.
+    pub(crate) fn note_check(&mut self, span: Span, what: CheckKind) {
+        if self.module.shared.noting_checks {
+            let function = self.function.name.clone();
+            self.module.shared.checks.push(CheckLeft { function, span, what });
+        }
+    }
+
+    /// What the instruction being written is, for a check the runtime makes in it.
+    fn failing_here(&self) -> String {
+        let function = self.function;
+        let inst = function.blocks.get(self.at.0).and_then(|block| block.insts.get(self.at.1));
+        match inst.map(|inst| &inst.kind) {
+            Some(InstKind::Builtin { name, .. }) => name.clone(),
+            Some(InstKind::Format { .. }) => "a format".to_owned(),
+            Some(InstKind::Slice { .. }) => "a slice".to_owned(),
+            Some(InstKind::Constant { .. }) => "a constant".to_owned(),
+            Some(InstKind::Lock { .. } | InstKind::LockAll { .. }) => "a lock".to_owned(),
+            _ => "a check".to_owned(),
+        }
+    }
+
+    /// Notes the check the runtime made in what was just called, which leaves when it failed.
+    /// What a call to a function fails with is noted in that function, and a call through a
+    /// closure or into a generator in what runs there.
+    pub(crate) fn note_runtime_check(&mut self) {
+        if !self.module.shared.noting_checks {
+            return;
+        }
+        let function = self.function;
+        let Some(inst) = function.blocks.get(self.at.0).and_then(|block| block.insts.get(self.at.1)) else {
+            return;
+        };
+        let what = match &inst.kind {
+            InstKind::Call { .. } | InstKind::CallClosure { .. } | InstKind::Resume { .. } => return,
+            InstKind::Binary { op: BinOp::Pow, .. } => CheckKind::Overflow,
+            InstKind::GetIndex { object, .. } => match function.type_of(object) {
+                Some(
+                    fennec_check::Type::Str
+                    | fennec_check::Type::Bytes
+                    | fennec_check::Type::List(_)
+                    | fennec_check::Type::Array(..),
+                ) => CheckKind::Bounds,
+                _ => CheckKind::MissingKey,
+            },
+            InstKind::SetIndex { .. } => CheckKind::MissingKey,
+            _ => CheckKind::Builtin(self.failing_here()),
+        };
+        self.note_check(inst.span, what);
     }
 
     /// A value: a number as itself, a block's address, or the slot of something in memory.
@@ -1069,7 +1179,7 @@ impl Emit<'_, '_, '_> {
             Operand::Float(value) => (float_text(*value), Kind::Float),
             Operand::Bool(value) => (value.to_string(), Kind::Bool),
             Operand::Str(text) => (self.literal_value(text), Kind::Str),
-            Operand::Bytes(_) => return Err(BYTES.to_owned()),
+            Operand::Bytes(data) => (self.bytes_literal(&data.0), Kind::Bytes),
             Operand::None => ("null".to_owned(), Kind::Unit),
         })
     }
@@ -1103,8 +1213,10 @@ impl Emit<'_, '_, '_> {
         if owner {
             self.release_inline(&kind, &slot);
         }
-        self.line(&format!("{held} = load {text}, ptr {from}{access}"));
-        self.line(&format!("store {text} {held}, ptr {slot}"));
+        if !self.copied_as_bytes(&kind, from, &slot) {
+            self.line(&format!("{held} = load {text}, ptr {from}{access}"));
+            self.line(&format!("store {text} {held}, ptr {slot}"));
+        }
         if owner {
             self.retain_inline(&kind, &slot);
         }
@@ -1121,13 +1233,17 @@ impl Emit<'_, '_, '_> {
             self.release_inline(&kind, &slot);
         } else {
             // Nothing here owns them, so they're let go of now.
-            self.line(&format!("{held} = load {text}, ptr {from}"));
-            self.line(&format!("store {text} {held}, ptr {slot}"));
+            if !self.copied_as_bytes(&kind, from, &slot) {
+                self.line(&format!("{held} = load {text}, ptr {from}"));
+                self.line(&format!("store {text} {held}, ptr {slot}"));
+            }
             self.release_inline(&kind, from);
             return Ok(());
         }
-        self.line(&format!("{held} = load {text}, ptr {from}"));
-        self.line(&format!("store {text} {held}, ptr {slot}"));
+        if !self.copied_as_bytes(&kind, from, &slot) {
+            self.line(&format!("{held} = load {text}, ptr {from}"));
+            self.line(&format!("store {text} {held}, ptr {slot}"));
+        }
         Ok(())
     }
 
@@ -1184,6 +1300,9 @@ impl Emit<'_, '_, '_> {
         self.module.define_types(kind);
         let memory = kind.memory(self.module.layouts);
         if kind.in_memory() {
+            if self.copied_as_bytes(kind, value, at) {
+                return;
+            }
             let held = self.temp();
             self.line(&format!("{held} = load {memory}, ptr {value}"));
             self.line(&format!("store {memory} {held}, ptr {at}{access}"));
@@ -1205,9 +1324,17 @@ impl Emit<'_, '_, '_> {
         self.declare(&format!("declare {{ i64, i1 }} {intrinsic}(i64, i64)"));
         let (pair, value, bad) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{pair} = call {{ i64, i1 }} {intrinsic}(i64 {a}, i64 {b})"));
-        self.line(&format!("{value} = extractvalue {{ i64, i1 }} {pair}, 0"));
         self.line(&format!("{bad} = extractvalue {{ i64, i1 }} {pair}, 1"));
         self.fail_if(&bad, OVERFLOW, span);
+        // A product past the check is the plain multiply's, which says it didn't overflow: so LLVM
+        // knows one of numbers that aren't negative isn't either, and can drop checks after it
+        // that can't fail. A sum or difference stays as it was, as saying the same of a counter
+        // lets LLVM unroll short loops in ways that cost more than they save.
+        if name == "smul" {
+            self.line(&format!("{value} = mul nsw i64 {a}, {b}"));
+        } else {
+            self.line(&format!("{value} = extractvalue {{ i64, i1 }} {pair}, 0"));
+        }
         value
     }
 
@@ -1226,14 +1353,28 @@ impl Emit<'_, '_, '_> {
             return self.assign(dest, &found);
         }
         let (a, kind) = self.operand(lhs)?;
-        let (b, _) = self.operand(rhs)?;
+        let (mut b, mut b_kind) = self.operand(rhs)?;
+        // `None` beside an optional string is that string's `None`: a header all zero.
+        if *rhs == Operand::None && kind == Kind::MaybeText {
+            (b, b_kind) = ("zeroinitializer".to_owned(), Kind::MaybeText);
+        }
+        let optional = (kind == Kind::MaybeText, b_kind == Kind::MaybeText);
         let value = match kind {
             Kind::Int => self.int_binary(dest, op, (&a, &b), rhs, span)?,
+            Kind::Str | Kind::MaybeText
+                if matches!(op, BinOp::Eq | BinOp::NotEq) && (optional.0 || optional.1) =>
+            {
+                self.maybe_text_binary(op, (&a, optional.0), (&b, optional.1))
+            }
             Kind::Float => self.float_binary(op, (&a, &b), rhs, span)?,
             Kind::Bool => {
                 let cc = match op {
                     BinOp::Eq => "eq",
                     BinOp::NotEq => "ne",
+                    BinOp::Lt => "ult",
+                    BinOp::LtEq => "ule",
+                    BinOp::Gt => "ugt",
+                    BinOp::GtEq => "uge",
                     other => return Err(format!("it uses {other:?} on bools")),
                 };
                 let temp = self.temp();
@@ -1257,7 +1398,23 @@ impl Emit<'_, '_, '_> {
                 _ => self.string_binary(op, (&a, &b))?,
             },
             Kind::Str => self.string_binary(op, (&a, &b))?,
-            Kind::Boxed(_) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_blocks(op, (&a, &b)),
+            // Two `shared` values are the same only if they're one value.
+            Kind::Boxed(_) if self.is_cell(&kind) && matches!(op, BinOp::Eq | BinOp::NotEq) => {
+                let (same, cc) = (self.temp(), if op == BinOp::Eq { "eq" } else { "ne" });
+                self.line(&format!("{same} = icmp {cc} ptr {a}, {b}"));
+                same
+            }
+            Kind::Boxed(_) | Kind::Bytes | Kind::List(_) | Kind::Dict(..) | Kind::Maybe(_)
+                if matches!(op, BinOp::Eq | BinOp::NotEq) =>
+            {
+                self.same_blocks(op, (&a, &b))
+            }
+            Kind::Closure(..) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_code(op, (&a, &b)),
+            Kind::List(_) if op == BinOp::Add => self.joined_lists(&a, &b),
+            Kind::Bytes => self.bytes_binary(op, (&a, &b))?,
+            Kind::List(item) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
+                self.lists_in_order(op, item, (&a, &b), span)?
+            }
             Kind::Enum(id) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_enums(op, id, (&a, &b))?,
             Kind::Struct(id) => self.compare_structs(op, id, (&a, &b))?,
             Kind::Boxed(id) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
@@ -1309,7 +1466,8 @@ impl Emit<'_, '_, '_> {
             BinOp::Mul => self.checked("smul", a, b, span),
             BinOp::FloorDiv | BinOp::Mod => self.division(op, (a, b), rhs, span),
             BinOp::Div => {
-                if !matches!(rhs, Operand::Int(1..)) {
+                // A number written out that isn't zero needs no check.
+                if matches!(rhs, Operand::Local(_) | Operand::Int(0)) {
                     let zero = self.temp();
                     self.line(&format!("{zero} = icmp eq i64 {b}, 0"));
                     self.fail_if(&zero, DIVISION_BY_ZERO, span);
@@ -1330,6 +1488,17 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = {word} i64 {a}, {b}"));
                 temp
             }
+            BinOp::ShiftLeft | BinOp::ShiftRight => {
+                if !matches!(rhs, Operand::Int(0..64)) {
+                    let outside = self.temp();
+                    self.line(&format!("{outside} = icmp uge i64 {b}, 64"));
+                    self.fail_if(&outside, fennec_interp::embed::checks::BAD_SHIFT, span);
+                }
+                let word = if op == BinOp::ShiftLeft { "shl" } else { "ashr" };
+                let temp = self.temp();
+                self.line(&format!("{temp} = {word} i64 {a}, {b}"));
+                temp
+            }
             BinOp::Pow => {
                 self.declare("declare i64 @fennec_int_power(i64, i64, i64, i64) nounwind");
                 let (from, to) = (i64::from(span.start), i64::from(span.end));
@@ -1346,10 +1515,28 @@ impl Emit<'_, '_, '_> {
 
     /// Rounds toward negative infinity, unlike the machine's division.
     fn division(&mut self, op: BinOp, (a, b): (&str, &str), rhs: &Operand, span: Span) -> String {
-        if !matches!(rhs, Operand::Int(1..)) {
+        // By a power of two, rounding toward negative infinity is what shifting does, and the
+        // remainder that goes with it is the low bits, whatever the sign: `-7 // 2` is `-7 >> 1`,
+        // -4, and `-7 % 2` is `-7 & 1`, 1. So nothing's left to fix up, and LLVM can see that
+        // `n % 2 == 0` leaves `n // 2` exact.
+        if let Operand::Int(divisor @ 1..) = rhs
+            && divisor.count_ones() == 1
+        {
+            let result = self.temp();
+            if op == BinOp::FloorDiv {
+                self.line(&format!("{result} = ashr i64 {a}, {}", divisor.trailing_zeros()));
+            } else {
+                self.line(&format!("{result} = and i64 {a}, {}", divisor - 1));
+            }
+            return result;
+        }
+        // A number written out is checked only for what it can be: zero, or -1 with the lowest int.
+        if matches!(rhs, Operand::Local(_) | Operand::Int(0)) {
             let zero = self.temp();
             self.line(&format!("{zero} = icmp eq i64 {b}, 0"));
             self.fail_if(&zero, DIVISION_BY_ZERO, span);
+        }
+        if matches!(rhs, Operand::Local(_) | Operand::Int(-1)) {
             let (minus_one, lowest, both) = (self.temp(), self.temp(), self.temp());
             self.line(&format!("{minus_one} = icmp eq i64 {b}, -1"));
             self.line(&format!("{lowest} = icmp eq i64 {a}, {}", i64::MIN));
@@ -1373,6 +1560,17 @@ impl Emit<'_, '_, '_> {
             let more = self.temp();
             self.line(&format!("{more} = add i64 {remainder}, {b}"));
             self.line(&format!("{result} = select i1 {adjust}, i64 {more}, i64 {remainder}"));
+            // By a positive number, the remainder is always from 0 up to it: said to LLVM, a value
+            // worked out from it again, as in `x = x * k % m`, needs no fix-up for a sign it can't
+            // have, and is the machine's remainder alone.
+            if let Operand::Int(divisor @ 1..) = rhs {
+                self.declare("declare void @llvm.assume(i1)");
+                let (low, high) = (self.temp(), self.temp());
+                self.line(&format!("{low} = icmp sge i64 {result}, 0"));
+                self.line(&format!("call void @llvm.assume(i1 {low})"));
+                self.line(&format!("{high} = icmp slt i64 {result}, {divisor}"));
+                self.line(&format!("call void @llvm.assume(i1 {high})"));
+            }
         }
         result
     }
@@ -1614,16 +1812,18 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
-        if let Some(done) = self.loop_builtin(dest, name, args, span) {
+        if let Some(done) = self.conversion(dest, name, args, span) {
             return done;
         }
-        if let Some(done) = self.conversion(dest, name, args, span) {
+        if let Some(done) = self.loop_builtin(dest, name, args, span) {
             return done;
         }
         let first = args.first();
         match name {
             // A test's `Stdout` is a fake that keeps what's printed, which the runtime holds.
             "Stdout.print" if !self.module.shared.traced => self.print(args.get(1..).unwrap_or_default()),
+            "Stdout.write" if !self.module.shared.traced => self.write(args.get(1..).unwrap_or_default()),
+            "array.new" => self.new_array(dest.ok_or("an array made for nothing")?, args),
             "list.len" => {
                 if let Some(Operand::Local(local)) = first
                     && let Some(map) = self.known.map_walks.get(&local.0).copied()
@@ -1644,8 +1844,61 @@ impl Emit<'_, '_, '_> {
             }
             "list.append" => self.append(args),
             "result.expect" => self.expect(dest, args, span),
-            "str.byte_len" | "str.char_at_byte" => self.text_by_bytes(dest, name, args),
-            "random.random_int" | "random.random_float" => self.random_builtin(dest, name, args, span),
+            "str.byte_len" | "str.char_at_byte" | "str.is_ascii" => self.text_by_bytes(dest, name, args),
+            // A place in a string's bytes and a character's length there: the next place, which is
+            // never past the text's end, so it can't overflow.
+            "str.next_place" => {
+                let (at, _) = self.operand(first.ok_or("no place")?)?;
+                let (step, _) = self.operand(args.get(1).ok_or("no step")?)?;
+                let next = self.temp();
+                self.line(&format!("{next} = add nuw nsw i64 {at}, {step}"));
+                self.assign(dest.ok_or("no result")?, &next)
+            }
+            "intrinsics.text_byte"
+            | "intrinsics.text_size"
+            | "intrinsics.text_part"
+            | "intrinsics.text_of_code" => self.text_by_place(dest, name, args, span),
+            "intrinsics.id_key"
+            | "intrinsics.id_at"
+            | "intrinsics.id_tag"
+            | "intrinsics.table_tag"
+            | "intrinsics.new_tag"
+            | "intrinsics.table_tagged"
+            | "intrinsics.table_slots"
+            | "intrinsics.table_of_slots"
+            | "intrinsics.id_of_key" => self.id_intrinsic(dest, name, args),
+            "intrinsics.bytes_text" => self.bytes_text(dest.ok_or("no result")?, args),
+            "intrinsics.bytes_builder"
+            | "intrinsics.bytes_push"
+            | "intrinsics.bytes_push_word"
+            | "intrinsics.bytes_push_text"
+            | "intrinsics.bytes_push_bytes"
+            | "intrinsics.bytes_set" => self.byte_builder(dest, name, args),
+            "intrinsics.text_plain_end" | "intrinsics.text_escape_at" => {
+                self.text_scan(dest.ok_or("no result")?, name, args)
+            }
+            // A float's bits as an int, and back, which a binary format saves.
+            "intrinsics.float_bits" | "intrinsics.float_of_bits" => {
+                let (value, _) = self.operand(first.ok_or("no argument")?)?;
+                let (from, to) =
+                    if name == "intrinsics.float_bits" { ("double", "i64") } else { ("i64", "double") };
+                let cast = self.temp();
+                self.line(&format!("{cast} = bitcast {from} {value} to {to}"));
+                self.assign(dest.ok_or("no result")?, &cast)
+            }
+            "intrinsics.stop" => {
+                let (value, kind) = self.operand(first.ok_or("no argument")?)?;
+                let block =
+                    if kind == Kind::Str && self.headers() { self.owned_text_block(&value) } else { value };
+                self.declare("declare ptr @fennec_block_text(ptr) nounwind");
+                let text = self.temp();
+                self.line(&format!("{text} = call ptr @fennec_block_text(ptr {block})"));
+                self.stop_with(&text, span);
+                Ok(())
+            }
+            "random.random_int" | "random.random_float" | "random_choice" | "random.random_choice" => {
+                self.random_builtin(dest, name, args, span)
+            }
             parallel if parallel.starts_with("parallel.") => self.parallel_builtin(dest, name, args, span),
             // A list of a list's items is the list, shared until one changes.
             "parallel" | "list"
@@ -1655,13 +1908,36 @@ impl Emit<'_, '_, '_> {
                 let from = args.first().ok_or("no argument")?;
                 self.copy(dest.ok_or("no result")?, from)
             }
-            "IdMap" | "IdMap.len" | "IdMap.contains" | "IdMap.get" | "IdMap.insert" | "IdMap.remove"
-            | "IdMap.values" | "IdMap.ids" | "IdMap.items" => self.id_map_builtin(dest, name, args, span),
+            "Table" | "Table.len" | "Table.contains" | "Table.get" | "Table.add" | "Table.remove"
+            | "Table.values" | "Table.ids" | "Table.items" | "Table.remove_where" | "Table.clear"
+            | "Table.modify" | "Table.slots" | "Table.slot_live" | "Table.at_slot" | "Table.slot_id" => {
+                self.id_map_builtin(dest, name, args, span)
+            }
             "is_regex" | "re.is_regex" | "re.pattern_problem" | "Regex.replace" | "Regex.split"
             | "Regex.find_all" | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
                 self.regex_builtin(dest, name, args, span)
             }
-            "json.dumps" | "json.loads" => self.json_builtin(dest, name, args, span),
+            "json.dumps" | "json.loads" | "toml.dumps" | "toml.loads" => {
+                self.json_builtin(dest, name, args, span)
+            }
+            named
+                if ["json.dumps.", "json.loads.", "toml.dumps.", "toml.loads."]
+                    .iter()
+                    .any(|format| named.starts_with(format)) =>
+            {
+                self.std_call(dest, name, args, span)
+            }
+            pure if pure.starts_with("crypto.")
+                || pure.starts_with("compress.")
+                || pure.starts_with("unicode.") =>
+            {
+                self.crypto_call(dest, name, args, span)
+            }
+            "error.with_cause" => {
+                // Nothing reads what caused an error yet, so the wrapper is all there is.
+                let wrapper = first.ok_or("no argument")?;
+                self.copy(dest.ok_or("no result")?, wrapper)
+            }
             buffer if buffer.starts_with("Buffer.") => self.buffer_builtin(dest, name, args, span),
             "str.len" | "str" | "str.code" | "str.join" | "str.contains" | "str.upper" | "str.lower"
             | "str.replace" | "str.find" | "str.split" => self.text_builtin(dest, name, args, span),
@@ -1676,7 +1952,14 @@ impl Emit<'_, '_, '_> {
                 self.assign(dest.ok_or("no result")?, &temp)
             }
             "math.sqrt" => {
-                let (value, _) = self.operand(first.ok_or("no argument")?)?;
+                let (value, kind) = self.operand(first.ok_or("no argument")?)?;
+                let value = if kind == Kind::Int {
+                    let wide = self.temp();
+                    self.line(&format!("{wide} = sitofp i64 {value} to double"));
+                    wide
+                } else {
+                    value
+                };
                 let negative = self.temp();
                 self.line(&format!("{negative} = fcmp olt double {value}, {}", float_text(0.0)));
                 self.fail_if(&negative, NEGATIVE_SQRT, span);
@@ -1702,6 +1985,14 @@ impl Emit<'_, '_, '_> {
                     && matches!(first, Some(Operand::Local(local)) if self.kind_of(*local).ok() == Some(&Kind::Cap)) =>
             {
                 self.capability_call(dest, other, args, span)
+            }
+            "Response.text" => match args {
+                [response] => self.response_text(dest.ok_or("no result")?, response),
+                _ => Err("`text` takes nothing".to_owned()),
+            },
+            // A test's network is a fake, which only the interpreter holds.
+            other if crate::analysis::is_socket_method(other) && !self.module.shared.traced => {
+                self.socket_call(dest, other, args, span)
             }
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }
@@ -1732,7 +2023,7 @@ impl Emit<'_, '_, '_> {
             Operand::Float(_) => Kind::Float,
             Operand::Bool(_) => Kind::Bool,
             Operand::Str(_) => Kind::Str,
-            Operand::Bytes(_) => return Err(BYTES.to_owned()),
+            Operand::Bytes(_) => Kind::Bytes,
             Operand::None => wanted.clone(),
         };
         if from != wanted && self.headers() {
@@ -1750,6 +2041,14 @@ impl Emit<'_, '_, '_> {
             }
         }
         if from != wanted {
+            if self.widens(&from, &wanted) {
+                let (held, _) = self.operand(value)?;
+                let made = self.widened(&held, &from, &wanted)?;
+                if wanted.in_memory() {
+                    return self.assign_memory_owned(dest, &made);
+                }
+                return self.assign(dest, &made);
+            }
             if self.is_optional(&wanted) {
                 return self.make_case(dest, "Some", std::slice::from_ref(value));
             }
@@ -1765,8 +2064,8 @@ impl Emit<'_, '_, '_> {
                 && (self.known.moves(*from) || self.known.is_last_copy(self.at.0, self.at.1))
             {
                 self.assign_memory_owned(dest, &held)?;
-                let text = self.text_of(&kind);
-                self.line(&format!("store {text} zeroinitializer, ptr {held}"));
+                let zero = self.zero_line(&kind, &held);
+                self.line(&zero);
                 return Ok(());
             }
             return self.assign_memory(dest, &held, "");
@@ -1815,6 +2114,19 @@ impl Emit<'_, '_, '_> {
             return done;
         }
         match inst {
+            // A union is laid out as an enum with a case for each member, named for it.
+            InstKind::MakeMember { dest, value, member } => {
+                let case = self.member_case(&Operand::Local(*dest), *member)?;
+                self.make_case(*dest, &case, std::slice::from_ref(value))
+            }
+            InstKind::IsMember { dest, value, member } => {
+                let case = self.member_case(value, *member)?;
+                self.is_case(*dest, value, &case)
+            }
+            InstKind::GetMember { dest, value, member } => {
+                let case = self.member_case(value, *member)?;
+                self.get_case_field(*dest, value, &case, "value")
+            }
             // Used only as a key the runtime finds where it is.
             InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }
                 if self.known.unmade.contains(&dest.0) =>
@@ -1836,6 +2148,11 @@ impl Emit<'_, '_, '_> {
                     (UnaryOp::Neg, Kind::Float) => {
                         let temp = self.temp();
                         self.line(&format!("{temp} = fneg double {value}"));
+                        temp
+                    }
+                    (UnaryOp::BitNot, Kind::Int) => {
+                        let temp = self.temp();
+                        self.line(&format!("{temp} = xor i64 {value}, -1"));
                         temp
                     }
                     (UnaryOp::Not, Kind::Bool) => {
@@ -1868,6 +2185,8 @@ impl Emit<'_, '_, '_> {
             InstKind::IsErr { dest, value } => self.is_case(*dest, value, "Err"),
             InstKind::GetOk { dest, value } => self.get_case_field(*dest, value, "Ok", "value"),
             InstKind::GetErr { dest, value } => self.get_case_field(*dest, value, "Err", "error"),
+            InstKind::IsError { dest, value, type_name } => self.is_case(*dest, value, type_name),
+            InstKind::AsError { dest, value } => self.as_error(*dest, value),
             InstKind::GetField { dest, object, field } => self.get_field(*dest, object, field),
             InstKind::SetField { object, path, value } => self.set_field(*object, path, value),
             InstKind::MakeTuple { dest, items } => self.make(*dest, items),
@@ -1914,16 +2233,10 @@ impl Emit<'_, '_, '_> {
             InstKind::Resume { dest, generator, known } => {
                 self.resume(*dest, generator, known.as_deref(), span)
             }
-            InstKind::Lock { .. }
-            | InstKind::Unlock { .. }
-            | InstKind::LockAll { .. }
-            | InstKind::UnlockAll { .. }
-                if !self.module.threads =>
-            {
-                // With only one thread, nothing else could be holding a lock.
-                Ok(())
-            }
-            other => Err(format!("it uses `{other}`, which this backend doesn't take yet")),
+            InstKind::Lock { handle, write } => self.lock(handle, *write, span),
+            InstKind::Unlock { handle } => self.unlock(handle),
+            InstKind::LockAll { handles } => self.lock_all(handles, span),
+            InstKind::UnlockAll { handles } => self.unlock_all(handles),
         }
     }
 
@@ -2114,17 +2427,17 @@ impl Emit<'_, '_, '_> {
         let text = self.text_of(&returns);
         let keeps = self.keeps_its_value();
         if returns.in_memory() {
-            let (at, _) =
+            let (at, fresh) =
                 self.value_for(value.ok_or("it returns nothing where a value is due")?, &returns)?;
             let held = self.temp();
             self.line(&format!("{held} = load {text}, ptr {at}"));
             self.line(&format!("store {text} {held}, ptr %ret"));
             // Leaving, a local's blocks go with its value; others' get another owner.
             let moved = match value {
-                Some(Operand::Local(local)) if self.owns_inline(*local) => Some(*local),
+                Some(Operand::Local(local)) if !fresh && self.owns_inline(*local) => Some(*local),
                 _ => None,
             };
-            if moved.is_none() {
+            if moved.is_none() && !fresh {
                 self.retain_inline(&returns, "%ret");
             }
             if keeps {
@@ -2143,7 +2456,7 @@ impl Emit<'_, '_, '_> {
         let (held, fresh) = self.value_for(operand, &returns)?;
         // Leaving, a local's owner goes with its value.
         let moved = match operand {
-            Operand::Local(local) if returns.counted() && self.owns(*local) => Some(*local),
+            Operand::Local(local) if !fresh && returns.counted() && self.owns(*local) => Some(*local),
             _ => None,
         };
         if returns.counted() && moved.is_none() && !fresh {
@@ -2192,6 +2505,33 @@ mod tests {
             .map_or_else(String::new, |unit| unit.text))
     }
 
+    /// A program's image describes the shapes of what it makes and what those hold, not the
+    /// standard library's other types, with strings' shape right after them.
+    #[test]
+    fn an_image_has_shapes_only_for_what_the_program_makes() -> Result<(), String> {
+        let named = |image: &crate::Image, wanted: &str| {
+            image.tables.shapes.iter().any(|shape| match shape.as_ref() {
+                fennec_interp::packed::Element::Enum { name, .. }
+                | fennec_interp::packed::Element::Struct { name, .. } => &**name == wanted,
+                _ => false,
+            })
+        };
+        let hello = "def main(stdout: Stdout):\n    stdout.print(1)\n";
+        let (_, shared, layouts) = emit(&lowered(hello)?)?;
+        let image = crate::Image::of(&layouts, &shared)?;
+        // Types that hold themselves through lists keep their numbers as kinds of item, so they
+        // and what they hold stay, and strings' shape comes last.
+        let shapes = image.tables.shapes.len();
+        assert!(shapes <= 2 * layouts.all_through_lists().len() + 1, "{shapes} of {} layouts", layouts.len());
+        assert_eq!(image.tables.str_shape, u64::try_from(shapes - 1).unwrap_or(0));
+        let points = "struct Point:\n    x: int\n    y: int\n\nstruct Unused:\n    x: int\n\ndef main(stdout: Stdout):\n    points = [Point(x=1, y=2), Point(x=3, y=4)]\n    stdout.print(points[1].x)\n";
+        let (_, shared, layouts) = emit(&lowered(points)?)?;
+        let image = crate::Image::of(&layouts, &shared)?;
+        assert!(named(&image, "Point"), "{:?}", image.tables.shapes);
+        assert!(!named(&image, "Unused"), "{:?}", image.tables.shapes);
+        Ok(())
+    }
+
     #[test]
     fn arguments_and_the_clock_need_no_interpreter() -> Result<(), String> {
         let source = "\
@@ -2203,6 +2543,7 @@ def main(stdout: Stdout, args: Args, clock: Clock):
     stdout.print(args.len(), args.program, started.nanos)
     for arg in args:
         stdout.print(arg, args[0])
+    stdout.write(args.len())
 ";
         let text = text_of(source, "main")?;
         assert!(text.contains("@fennec_args_list("), "{text}");
@@ -2262,11 +2603,15 @@ def main(stdout: Stdout):
     #[test]
     fn a_program_using_parallel_works_out_its_constants_before_any_worker_starts() -> Result<(), String> {
         let source = "WORDS = [\"a\", \"b\"]\nFIRST = WORDS[5]\n\ndef main(stdout: Stdout):\n    mut counts = [1, 2]\n    \
-                      for mut count in parallel(counts):\n        count += WORDS.len() + FIRST.len()\n    \
+                      for ref count in parallel(counts):\n        count += WORDS.len() + FIRST.len()\n    \
                       stdout.print(counts)\n";
         let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
-        let program = fennec_ir::lower_with(&module, &checked, fennec_ir::Options { outline_parallel: true });
+        let program = fennec_ir::lower_with(
+            &module,
+            &checked,
+            fennec_ir::Options { outline_parallel: true, ..fennec_ir::Options::default() },
+        );
         assert!(crate::parallel::uses_parallel(&program), "{:?}", program.not_lowered);
         let (units, _, _) = emit(&program)?;
         let text =
@@ -2291,9 +2636,9 @@ def main(stdout: Stdout):
     fn appending_to_a_field_of_an_item_takes_it_out_and_lets_go_of_nothing() -> Result<(), String> {
         let types =
             "struct Unit:\n    tags: list[int]\n    hp: int\n\nstruct World:\n    units: list[Unit]\n\n";
-        let main = "def main(stdout: Stdout):\n    mut units = [Unit([1], 0)]\n    grow(mut units, 0, 1)\n    mut world = World(units)\n    grow_field(mut world, 0, 1)\n    stdout.print(units[0].hp, read(world, 0))\n";
+        let main = "def main(stdout: Stdout):\n    mut units = [Unit([1], 0)]\n    grow(ref units, 0, 1)\n    mut world = World(units)\n    grow_field(ref world, 0, 1)\n    stdout.print(units[0].hp, read(world, 0))\n";
         let source = format!(
-            "{types}def grow(mut units: list[Unit], at: int, v: int):\n    units[at].tags.append(v)\n\ndef grow_field(mut world: World, at: int, v: int):\n    world.units[at].tags.append(v)\n\ndef read(world: World, at: int) -> int:\n    world.units[at].hp\n\n{main}"
+            "{types}def grow(ref units: list[Unit], at: int, v: int):\n    units[at].tags.append(v)\n\ndef grow_field(ref world: World, at: int, v: int):\n    world.units[at].tags.append(v)\n\ndef read(world: World, at: int) -> int:\n    world.units[at].hp\n\n{main}"
         );
         for function in ["grow", "grow_field"] {
             let text = text_of(&source, function)?;
@@ -2315,7 +2660,7 @@ def main(stdout: Stdout):
 struct Note:
     text = \"\"
 
-def in_field(mut note: Note, more: str):
+def in_field(ref note: Note, more: str):
     note.text += more
 
 def in_local(more: str) -> str:
@@ -2328,7 +2673,7 @@ def anew(note: Note, more: str) -> str:
 
 def main(stdout: Stdout):
     mut note = Note()
-    in_field(mut note, \"a\")
+    in_field(ref note, \"a\")
     stdout.print(in_local(\"b\"), anew(note, \"c\"))
 ";
         for function in ["in_field", "in_local"] {
@@ -2377,7 +2722,7 @@ def main(stdout: Stdout):
 
     #[test]
     fn what_it_cant_take_says_which_function() -> Result<(), String> {
-        let source = "def f(mut items: list[int]):\n    items.sort()\n\ndef main(stdout: Stdout):\n    mut items = [2]\n    f(mut items)\n    stdout.print(items.len())\n";
+        let source = "def f(step: (int) -> int) -> Iterator[int]:\n    yield step(1)\n\ndef main(stdout: Stdout):\n    for n in f((a) => a + 1):\n        stdout.print(n)\n";
         let error = emit(&lowered(source)?).err().unwrap_or_default();
         assert!(error.contains("`f`"), "{error}");
         Ok(())

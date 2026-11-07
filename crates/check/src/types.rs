@@ -26,6 +26,8 @@ pub enum Type {
     /// `Buffer[T]`: the growable, counted run of slots `list` is built on, with public
     /// methods. Its block is a list's.
     Buffer(Box<Type>),
+    /// `array[T, N]`: exactly `N` items, held where the array is, with no block of their own.
+    Array(Box<Type>, u64),
     Set(Box<Type>),
     Dict(Box<Type>, Box<Type>),
     /// A generator: items one at a time, as they're asked for, once.
@@ -39,9 +41,9 @@ pub enum Type {
     Named(String),
     /// A struct with type parameters, and the type given for each: `Deque[int]`.
     Generic(String, Vec<Type>),
-    /// An `Id` from an `IdMap` of the given type.
+    /// An `Id` from a `Table` of the given type.
     Id(Box<Type>),
-    IdMap(Box<Type>),
+    Table(Box<Type>),
     /// A function, by its name in the signature table.
     Function(String),
     /// An arrow function: the types of its parameters, and what it gives back.
@@ -52,6 +54,9 @@ pub enum Type {
     /// One of several error types, in name order: what something gives back when it can
     /// fail in more than one way.
     Errors(Vec<String>),
+    /// `Circle | Square`: a value that's exactly one of these types, in the order they're
+    /// shown, with none of them a union, `None` or a type parameter, and none twice.
+    Union(Vec<Type>),
     /// A type still being worked out inside one function, like the items of `[]` before
     /// anything is added. It's settled, or reported, before the function's check ends.
     Var(u32),
@@ -104,6 +109,7 @@ impl Type {
             Type::Bytes => "bytes".to_owned(),
             Type::List(_) => "list".to_owned(),
             Type::Buffer(_) => "Buffer".to_owned(),
+            Type::Array(..) => "array".to_owned(),
             Type::Set(_) => "set".to_owned(),
             Type::Iterator(_) => "Iterator".to_owned(),
             Type::Dict(..) => "dict".to_owned(),
@@ -112,9 +118,10 @@ impl Type {
             Type::Result(..) => "result".to_owned(),
             Type::Named(name) | Type::Param(name) | Type::Generic(name, _) => name.clone(),
             Type::Id(_) => "Id".to_owned(),
-            Type::IdMap(_) => "IdMap".to_owned(),
+            Type::Table(_) => "Table".to_owned(),
             Type::Function(_) | Type::Arrow(..) => "function".to_owned(),
             Type::Errors(_) => "error".to_owned(),
+            Type::Union(members) => members.iter().map(ToString::to_string).collect::<Vec<_>>().join(" | "),
         }
     }
 
@@ -122,7 +129,13 @@ impl Type {
     pub(crate) fn is_collection(&self) -> bool {
         matches!(
             self,
-            Type::List(_) | Type::Buffer(_) | Type::Str | Type::Bytes | Type::Dict(..) | Type::Set(_)
+            Type::List(_)
+                | Type::Buffer(_)
+                | Type::Array(..)
+                | Type::Str
+                | Type::Bytes
+                | Type::Dict(..)
+                | Type::Set(_)
         )
     }
 
@@ -139,15 +152,16 @@ impl Type {
         match self {
             Type::List(inner)
             | Type::Buffer(inner)
+            | Type::Array(inner, _)
             | Type::Set(inner)
             | Type::Iterator(inner)
             | Type::Optional(inner)
             | Type::Id(inner)
-            | Type::IdMap(inner) => {
+            | Type::Table(inner) => {
                 vec![inner]
             }
             Type::Dict(a, b) | Type::Result(a, b) => vec![a, b],
-            Type::Tuple(items) | Type::Generic(_, items) => items.iter().collect(),
+            Type::Tuple(items) | Type::Generic(_, items) | Type::Union(items) => items.iter().collect(),
             Type::Arrow(params, ret) => params.iter().chain(std::iter::once(ret.as_ref())).collect(),
             _ => Vec::new(),
         }
@@ -160,14 +174,16 @@ impl Type {
         let mapped = match self {
             Type::List(item) => Type::List(inner(item)),
             Type::Buffer(item) => Type::Buffer(inner(item)),
+            Type::Array(item, size) => Type::Array(inner(item), *size),
             Type::Set(item) => Type::Set(inner(item)),
             Type::Iterator(item) => Type::Iterator(inner(item)),
             Type::Optional(item) => Type::optional(*inner(item)),
             Type::Id(item) => Type::Id(inner(item)),
-            Type::IdMap(item) => Type::IdMap(inner(item)),
+            Type::Table(item) => Type::Table(inner(item)),
             Type::Dict(a, b) => Type::Dict(inner(a), inner(b)),
             Type::Result(a, b) => Type::Result(inner(a), inner(b)),
             Type::Tuple(items) => Type::Tuple(items.iter().map(|item| *inner(item)).collect()),
+            Type::Union(members) => Type::Union(members.iter().map(|member| *inner(member)).collect()),
             Type::Generic(name, items) => {
                 Type::Generic(name.clone(), items.iter().map(|item| *inner(item)).collect())
             }
@@ -192,8 +208,12 @@ impl Type {
             Type::Str => Some("str"),
             Type::List(_) => Some("list"),
             Type::Buffer(_) => Some("Buffer"),
+            Type::Array(..) => Some("array"),
             Type::Dict(..) => Some("dict"),
             Type::Set(_) => Some("set"),
+            Type::Optional(_) => Some("Optional"),
+            Type::Id(_) => Some("Id"),
+            Type::Table(_) => Some("Table"),
             other => other.type_name(),
         }
     }
@@ -206,6 +226,9 @@ impl Type {
             ("Buffer", [item]) => Some(Type::Buffer(Box::new(item.clone()))),
             ("dict", [key, value]) => Some(Type::Dict(Box::new(key.clone()), Box::new(value.clone()))),
             ("set", [item]) => Some(Type::Set(Box::new(item.clone()))),
+            ("Optional", [item]) => Some(Type::optional(item.clone())),
+            ("Id", [item]) => Some(Type::Id(Box::new(item.clone()))),
+            ("Table", [item]) => Some(Type::Table(Box::new(item.clone()))),
             _ => None,
         }
     }
@@ -214,7 +237,12 @@ impl Type {
     pub(crate) fn type_args(&self) -> Vec<Type> {
         match self {
             Type::Generic(_, args) => args.clone(),
-            Type::List(item) | Type::Buffer(item) | Type::Set(item) => vec![item.as_ref().clone()],
+            Type::List(item)
+            | Type::Buffer(item)
+            | Type::Set(item)
+            | Type::Optional(item)
+            | Type::Id(item)
+            | Type::Table(item) => vec![item.as_ref().clone()],
             Type::Dict(key, value) => vec![key.as_ref().clone(), value.as_ref().clone()],
             _ => Vec::new(),
         }
@@ -249,7 +277,7 @@ impl Type {
 
     /// The type as it's written in source, like `list[int]` or `Enemy?`. `None` for a type
     /// that has no written form, like one of several errors, or nothing at all.
-    pub(crate) fn source(&self) -> Option<String> {
+    pub fn source(&self) -> Option<String> {
         let all = |items: &[Type]| {
             items.iter().map(Type::source).collect::<Option<Vec<_>>>().map(|items| items.join(", "))
         };
@@ -258,16 +286,25 @@ impl Type {
             Type::None => "None".to_owned(),
             Type::List(item) => format!("list[{}]", item.source()?),
             Type::Buffer(item) => format!("Buffer[{}]", item.source()?),
+            Type::Array(item, size) => format!("array[{}, {size}]", item.source()?),
             Type::Set(item) => format!("set[{}]", item.source()?),
             Type::Iterator(item) => format!("Iterator[{}]", item.source()?),
             Type::Dict(key, value) => format!("dict[{}, {}]", key.source()?, value.source()?),
             Type::Tuple(items) => format!("({})", all(items)?),
+            Type::Optional(inner) if matches!(**inner, Type::Union(_)) => format!("({})?", inner.source()?),
             Type::Optional(inner) => format!("{}?", inner.source()?),
+            Type::Union(members) => members
+                .iter()
+                .map(Type::source)
+                .collect::<Option<Vec<_>>>()
+                .map(|members| members.join(" | "))?,
             Type::Result(value, error) => format!("Result[{}, {}]", value.source()?, error.source()?),
             Type::Named(name) | Type::Param(name) => name.clone(),
+            Type::Generic(name, args) if name == crate::lock::SHARED => format!("shared {}", all(args)?),
+            Type::Generic(name, args) if name == crate::lend::WITH => format!("with {}", all(args)?),
             Type::Generic(name, args) => format!("{name}[{}]", all(args)?),
             Type::Id(item) => format!("Id[{}]", item.source()?),
-            Type::IdMap(item) => format!("IdMap[{}]", item.source()?),
+            Type::Table(item) => format!("Table[{}]", item.source()?),
             Type::Arrow(params, ret) => format!("({}) -> {}", all(params)?, ret.source()?),
             Type::Unknown | Type::Unit | Type::Function(_) | Type::Errors(_) | Type::Var(_) => return None,
         })
@@ -284,6 +321,7 @@ impl fmt::Display for Type {
         match self {
             Type::List(item) => write!(f, "list[{item}]"),
             Type::Buffer(item) => write!(f, "Buffer[{item}]"),
+            Type::Array(item, size) => write!(f, "array[{item}, {size}]"),
             Type::Set(item) => write!(f, "set[{item}]"),
             Type::Iterator(item) => write!(f, "Iterator[{item}]"),
             Type::Dict(key, value) => write!(f, "dict[{key}, {value}]"),
@@ -291,6 +329,7 @@ impl fmt::Display for Type {
                 let items: Vec<String> = items.iter().map(ToString::to_string).collect();
                 write!(f, "({})", items.join(", "))
             }
+            Type::Optional(inner) if matches!(**inner, Type::Union(_)) => write!(f, "({inner})?"),
             Type::Optional(inner) => write!(f, "{inner}?"),
             Type::Result(value, _) => write!(f, "result of {value}"),
             Type::Errors(names) => f.write_str(&names.join(" | ")),
@@ -299,11 +338,19 @@ impl fmt::Display for Type {
                 write!(f, "({}) -> {ret}", params.join(", "))
             }
             Type::Id(item) => write!(f, "Id[{item}]"),
+            Type::Generic(name, items) if name == crate::lend::WITH && items.len() == 1 => {
+                let lent: Vec<String> = items.iter().map(ToString::to_string).collect();
+                write!(f, "with {}", lent.join(""))
+            }
+            Type::Generic(name, items) if name == crate::lock::SHARED && items.len() == 1 => {
+                let held: Vec<String> = items.iter().map(ToString::to_string).collect();
+                write!(f, "shared {}", held.join(""))
+            }
             Type::Generic(name, items) => {
                 let items: Vec<String> = items.iter().map(ToString::to_string).collect();
                 write!(f, "{name}[{}]", items.join(", "))
             }
-            Type::IdMap(item) => write!(f, "IdMap[{item}]"),
+            Type::Table(item) => write!(f, "Table[{item}]"),
             // A type parameter the program didn't write shows as the interface it stands for.
             Type::Param(name) => f.write_str(name.split(fennec_syntax::visit::HIDDEN).next().unwrap_or(name)),
             other => f.write_str(&other.kind()),

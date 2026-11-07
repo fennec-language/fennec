@@ -1,6 +1,6 @@
 //! Writing values as JSON or TOML text. Dicts and structs become objects or tables, lists
 //! and tuples become arrays. An enum case with no fields is its name, and one with fields is
-//! `{"Case": {fields}}`. An `Id` is its slot and generation, and an `IdMap` is every slot
+//! `{"Case": {fields}}`. An `Id` is its slot and generation, and a `Table` is every slot
 //! with its generation, so the `Id`s a program saved still find their items once it's read
 //! back. A value the format can't hold, like a set, stops the program.
 
@@ -9,7 +9,7 @@ use std::fmt::Write;
 use std::rc::Rc;
 
 use crate::format;
-use crate::value::{IdMap, Value};
+use crate::value::Value;
 
 /// Whether a dict is written as an object: its keys are text or ints, which are written as
 /// their digits. Otherwise JSON writes it as an array of `[key, value]` pairs.
@@ -39,25 +39,8 @@ fn entries(value: &Value, format: &str) -> Result<Option<Vec<(String, Value)>>, 
                 instance.fields.iter().map(|(name, value)| (Value::str(name), value.clone())).collect();
             Ok(Some(vec![(case, Value::Dict(Rc::new(fields.into())))]))
         }
-        Value::Id(id) => Ok(Some(vec![
-            ("slot".to_owned(), Value::Int(i64::try_from(id.slot).unwrap_or(i64::MAX))),
-            ("generation".to_owned(), Value::Int(i64::from(id.generation))),
-        ])),
-        Value::IdMap(map) => Ok(Some(vec![("slots".to_owned(), slots(map))])),
         _ => Ok(None),
     }
-}
-
-/// An `IdMap`'s slots, each its generation and, unless it's free, its value.
-fn slots(map: &IdMap) -> Value {
-    let slots = map.slots.iter().map(|slot| {
-        let mut pairs = vec![(Value::str("generation"), Value::Int(i64::from(slot.generation)))];
-        if let Some(value) = &slot.value {
-            pairs.push((Value::str("value"), value.clone()));
-        }
-        Value::Dict(Rc::new(pairs.into()))
-    });
-    Value::list(slots.collect())
 }
 
 fn a(value: &Value) -> String {
@@ -108,6 +91,10 @@ pub(super) fn json(value: &Value, indent: Option<usize>) -> Result<String, Strin
 }
 
 fn write_json(out: &mut String, value: &Value, indent: Option<usize>, depth: usize) -> Result<(), String> {
+    // A list native code packed, as it crosses over.
+    if let Value::Packed(packed) = value {
+        return write_json(out, &packed.unpack(), indent, depth);
+    }
     if let Some(entries) = entries(value, "JSON")? {
         let entries = entries.into_iter().map(|(key, value)| (Some(key), value)).collect();
         return json_container(out, ('{', '}'), entries, indent, depth);
@@ -119,6 +106,7 @@ fn write_json(out: &mut String, value: &Value, indent: Option<usize>, depth: usi
         Value::Float(x) if x.is_finite() => out.push_str(&float(*x)),
         Value::Float(_) => return Err("JSON can't hold inf or nan".to_owned()),
         Value::Str(text) => out.push_str(&quoted(text)),
+        Value::Bytes(data) => out.push_str(&quoted(&super::base64::encode(data))),
         Value::List(items) | Value::Tuple(items) => {
             let entries = items.iter().map(|item| (None, item.clone())).collect();
             json_container(out, ('[', ']'), entries, indent, depth)?;
@@ -270,6 +258,7 @@ fn toml_value(value: &Value) -> Result<String, String> {
         Value::Int(n) => n.to_string(),
         Value::Float(x) => float(*x),
         Value::Str(text) => quoted(text),
+        Value::Bytes(data) => quoted(&super::base64::encode(data)),
         Value::List(items) | Value::Tuple(items) => {
             let items: Result<Vec<String>, String> = items.iter().map(toml_value).collect();
             format!("[{}]", items?.join(", "))

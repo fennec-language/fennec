@@ -307,7 +307,11 @@ impl Resolver<'_> {
 
     fn stmt(&mut self, stmt: &mut Stmt) {
         match &mut stmt.kind {
-            StmtKind::Expr(expr) | StmtKind::Fail(expr) | StmtKind::Yield(expr) | StmtKind::Assert(expr) => {
+            StmtKind::Expr(expr)
+            | StmtKind::Fail(expr)
+            | StmtKind::Yield(expr)
+            | StmtKind::Assert(expr)
+            | StmtKind::Lend { value: expr, .. } => {
                 self.expr(expr);
             }
             StmtKind::Return(value) => {
@@ -340,7 +344,7 @@ impl Resolver<'_> {
                 self.expr(iter);
                 self.stmts(body);
             }
-            StmtKind::With { value, names, body } => {
+            StmtKind::With { value, names, body, .. } => {
                 for held in names {
                     self.bind(&held.name);
                 }
@@ -490,7 +494,7 @@ impl Resolver<'_> {
             Pattern::Wildcard => {}
             Pattern::Bind(name) => self.bind(name),
             Pattern::Literal(expr) => self.expr(expr),
-            Pattern::Variant { name, dotted, args } => {
+            Pattern::Variant { name, dotted, args, .. } => {
                 if !*dotted {
                     self.qualified(name, span);
                 }

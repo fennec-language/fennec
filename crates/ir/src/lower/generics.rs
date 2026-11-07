@@ -20,7 +20,7 @@ const DEEPEST_TYPE: usize = 32;
 fn depth(ty: &Type) -> usize {
     let deepest = |types: &[Type]| types.iter().map(depth).max().unwrap_or(0);
     1 + match ty {
-        Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::IdMap(item) | Type::Id(item) => {
+        Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::Table(item) | Type::Id(item) => {
             depth(item)
         }
         Type::Dict(first, second) | Type::Result(first, second) => depth(first).max(depth(second)),
@@ -67,7 +67,7 @@ pub(super) struct Instances {
 pub(super) fn mentions_param(ty: &Type) -> bool {
     match ty {
         Type::Param(_) | Type::Generic(..) => true,
-        Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::IdMap(item) | Type::Id(item) => {
+        Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::Table(item) | Type::Id(item) => {
             mentions_param(item)
         }
         Type::Dict(first, second) | Type::Result(first, second) => {
@@ -81,6 +81,11 @@ pub(super) fn mentions_param(ty: &Type) -> bool {
 
 /// Whether a signature only makes sense once its type parameters are known.
 pub(super) fn is_generic(signature: &Signature) -> bool {
+    !signature.generics.is_empty() || leaves_open(signature)
+}
+
+/// Whether its parameters or what it gives back still mention a type parameter.
+fn leaves_open(signature: &Signature) -> bool {
     signature.params.iter().any(|param| mentions_param(&param.ty)) || mentions_param(&signature.returns)
 }
 
@@ -93,8 +98,13 @@ impl Context<'_> {
             Type::List(item) => Type::List(inner(item)),
             Type::Iterator(item) => Type::Iterator(inner(item)),
             Type::Set(item) => Type::Set(inner(item)),
-            Type::Optional(item) => Type::Optional(inner(item)),
-            Type::IdMap(item) => Type::IdMap(inner(item)),
+            // As the checker has it, an optional of an optional is that optional: `V?` with `V`
+            // a `str?` is a `str?`.
+            Type::Optional(item) => match self.concrete(item, subst) {
+                held @ (Type::Optional(_) | Type::None | Type::Unknown) => held,
+                held => Type::Optional(Box::new(held)),
+            },
+            Type::Table(item) => Type::Table(inner(item)),
             Type::Id(item) => Type::Id(inner(item)),
             Type::Dict(key, value) => Type::Dict(inner(key), inner(value)),
             Type::Result(ok, error) => Type::Result(inner(ok), inner(error)),
@@ -178,7 +188,7 @@ impl Context<'_> {
             (Type::List(first), Type::List(second))
             | (Type::Set(first), Type::Set(second))
             | (Type::Optional(first), Type::Optional(second))
-            | (Type::IdMap(first), Type::IdMap(second))
+            | (Type::Table(first), Type::Table(second))
             | (Type::Id(first), Type::Id(second)) => self.unify(first, second, subst),
             (Type::Optional(first), other) => self.unify(first, other, subst),
             (Type::Dict(key, value), Type::Dict(other_key, other_value))
@@ -222,6 +232,9 @@ impl Lowering<'_> {
 
     /// The type of the expression at a span, as it is in this copy.
     pub(super) fn type_at(&self, span: fennec_syntax::Span) -> Option<Type> {
+        if let Some((_, ty)) = self.retyped.iter().rev().find(|(at, _)| *at == span) {
+            return Some(ty.clone());
+        }
         if let Some(ty) = self.body.expr(span) {
             return Some(self.concrete(ty));
         }
@@ -242,6 +255,17 @@ impl Lowering<'_> {
         given: &[Option<Type>],
         returns: Option<&Type>,
     ) -> Option<(String, Signature)> {
+        self.resolve_written(key, &[], given, returns)
+    }
+
+    /// The same, with the types written in brackets at the call, which come first.
+    pub(super) fn resolve_written(
+        &self,
+        key: &str,
+        written: &[Type],
+        given: &[Option<Type>],
+        returns: Option<&Type>,
+    ) -> Option<(String, Signature)> {
         let context = self.context;
         let base = context.base_key(key);
         let raw = context.signatures.get(&base)?;
@@ -250,6 +274,7 @@ impl Lowering<'_> {
             .and_then(|(owner, _)| context.type_instance(owner))
             .map(|instance| instance.subst)
             .unwrap_or_default();
+        subst.extend(raw.generics.iter().cloned().zip(written.iter().cloned()));
         for (param, given) in raw.params.iter().zip(given) {
             if let Some(given) = given {
                 context.unify(&param.ty, given, &mut subst);
@@ -262,7 +287,7 @@ impl Lowering<'_> {
         if !is_generic(raw) {
             return Some((base, filled));
         }
-        if is_generic(&filled) {
+        if leaves_open(&filled) || raw.generics.iter().any(|generic| !subst.contains_key(generic)) {
             return None;
         }
         Some((context.request(&base, subst)?, filled))

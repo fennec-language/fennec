@@ -85,30 +85,30 @@ struct Tree:
     ## Two spaces for each level of nesting.
     indent = ""
 
-    def line(mut self, label: str):
+    def line(ref self, label: str):
         self.lines.append(self.indent + label)
 
-    def spanned(mut self, label: str, span: Span):
+    def spanned(ref self, label: str, span: Span):
         self.line(f"{label} @{span.start}..{span.end}")
 
     ## A line for a node whose children follow, one level deeper, until `close`.
-    def open(mut self, label: str, span: Span?):
+    def open(ref self, label: str, span: Span?):
         if span is None:
             self.line(label)
         else:
             self.spanned(label, span)
         self.indent += "  "
 
-    def close(mut self):
+    def close(ref self):
         self.indent = self.indent[2:]
 
-    def write_module(mut self, module: Module):
+    def write_module(ref self, module: Module):
         self.open("module", None)
         for item in module.items:
             self.write_item(item)
         self.close()
 
-    def write_item(mut self, item: Item):
+    def write_item(ref self, item: Item):
         match item:
             case .Function(function): self.write_function(function)
             case .Struct(type_def): self.write_type_def("shared" if type_def.shared else "struct", type_def)
@@ -152,7 +152,7 @@ struct Tree:
                 self.write_stmts(test.body)
                 self.close()
 
-    def write_function(mut self, function: FnDef):
+    def write_function(ref self, function: FnDef):
         self.open(f"def {function.name}", function.span)
         self.write_annotations(function.annotations)
         self.write_generics(function.generics)
@@ -172,14 +172,14 @@ struct Tree:
         self.close()
 
     ## Type parameters, each with the interfaces it's bound to.
-    def write_generics(mut self, generics: list[Generic]):
+    def write_generics(ref self, generics: list[Generic]):
         for generic in generics:
             self.open(f"generic {generic.name}", generic.span)
             for bound in generic.bounds:
                 self.write_type_expr(bound)
             self.close()
 
-    def write_param(mut self, param: Param):
+    def write_param(ref self, param: Param):
         mut label = f"param {param.name}"
         if param.is_mut:
             label += " mut"
@@ -194,13 +194,13 @@ struct Tree:
             self.write_expr(default)
         self.close()
 
-    def write_type_expr(mut self, ty: TypeExpr):
+    def write_type_expr(ref self, ty: TypeExpr):
         self.open(f"type {ty.name}" + ("?" if ty.optional else ""), ty.span)
         for arg in ty.args:
             self.write_type_expr(arg)
         self.close()
 
-    def write_type_def(mut self, kind: str, type_def: TypeDef):
+    def write_type_def(ref self, kind: str, type_def: TypeDef):
         self.open(f"{kind} {type_def.name}", type_def.span)
         self.write_generics(type_def.generics)
         for field in type_def.fields:
@@ -211,14 +211,14 @@ struct Tree:
             self.write_function(method)
         self.close()
 
-    def write_annotations(mut self, annotations: list[Annotation]):
+    def write_annotations(ref self, annotations: list[Annotation]):
         for annotation in annotations:
             self.open(f"annotation {annotation.name}", annotation.span)
             for arg in annotation.args:
                 self.write_arg(arg)
             self.close()
 
-    def write_field(mut self, field: Field):
+    def write_field(ref self, field: Field):
         self.open(f"field {field.name}", field.span)
         self.write_annotations(field.annotations)
         ty = field.ty
@@ -229,24 +229,24 @@ struct Tree:
         self.close()
 
     ## A line saying what `expr` is for, with `expr` under it, when there is one.
-    def labelled(mut self, label: str, expr: Expr?):
+    def labelled(ref self, label: str, expr: Expr?):
         if expr is None:
             return
         self.open(label, None)
         self.write_expr(expr)
         self.close()
 
-    def write_case(mut self, case: Case):
+    def write_case(ref self, case: Case):
         self.open(f"case {case.name}", case.span)
         for field in case.fields:
             self.write_field(field)
         self.close()
 
-    def write_stmts(mut self, stmts: list[Stmt]):
+    def write_stmts(ref self, stmts: list[Stmt]):
         for stmt in stmts:
             self.write_stmt(stmt)
 
-    def write_stmt(mut self, stmt: Stmt):
+    def write_stmt(ref self, stmt: Stmt):
         span = stmt.span
         match stmt.kind:
             case .Expr(expr):
@@ -295,8 +295,12 @@ struct Tree:
             case .Assert(value):
                 self.open("assert", span)
                 self.write_expr(value)
-            case .With(value, names, body):
-                mut label = "with"
+            case .Lend(value, otherwise):
+                self.open("lend", span)
+                self.write_expr(value)
+                self.write_stmts(otherwise)
+            case .With(value, names, body, lock):
+                mut label = "lock" if lock else "with"
                 for at, held in enumerate(names):
                     label += (" as " if at == 0 else ", ") + ("mut " if held.is_mut else "") + held.name
                 self.open(label, span)
@@ -316,11 +320,11 @@ struct Tree:
                 return
         self.close()
 
-    def write_exprs(mut self, exprs: list[Expr]):
+    def write_exprs(ref self, exprs: list[Expr]):
         for expr in exprs:
             self.write_expr(expr)
 
-    def write_expr(mut self, expr: Expr):
+    def write_expr(ref self, expr: Expr):
         span = expr.span
         match expr.kind:
             case .Int(value): self.spanned(f"int {value}", span)
@@ -358,19 +362,19 @@ struct Tree:
             case _: self.write_compound(expr)
 
     ## A node holding a list of expressions.
-    def group(mut self, label: str, span: Span, items: list[Expr]):
+    def group(ref self, label: str, span: Span, items: list[Expr]):
         self.open(label, span)
         self.write_exprs(items)
         self.close()
 
-    def write_fstring_part(mut self, part: FStrPart):
+    def write_fstring_part(ref self, part: FStrPart):
         match part:
             case .Text(text): self.line(f"text {quoted(text)}")
             case .Code(expr, spec):
                 self.labelled("code" if spec is None else f"code spec {quoted(spec)}", expr)
 
     ## Expressions built from operators, calls and blocks.
-    def write_compound(mut self, expr: Expr):
+    def write_compound(ref self, expr: Expr):
         span = expr.span
         match expr.kind:
             case .Unary(op, operand):
@@ -417,7 +421,7 @@ struct Tree:
             case _: return
         self.close()
 
-    def write_arg(mut self, arg: Arg):
+    def write_arg(ref self, arg: Arg):
         mut label = "arg"
         if arg.is_mut:
             label += " mut"
@@ -426,23 +430,25 @@ struct Tree:
             label += f" {name}="
         self.labelled(label, arg.value)
 
-    def write_arm(mut self, arm: MatchArm):
+    def write_arm(ref self, arm: MatchArm):
         self.open("arm", arm.span)
         self.write_pattern(arm.pattern)
         self.labelled("guard", arm.guard)
         self.write_stmts(arm.body)
         self.close()
 
-    def write_pattern(mut self, pattern: Pattern):
+    def write_pattern(ref self, pattern: Pattern):
         match pattern:
             case .Wildcard: self.line("pattern _")
             case .Bind(name): self.line(f"pattern bind {name}")
             case .Literal(expr): self.labelled("pattern literal", expr)
-            case .Variant(name, dotted, args): self.write_patterns("pattern " + ("." if dotted else "") + name, args)
+            case .Variant(name, dotted, args, fields):
+                by = "" if fields.len() == 0 else " by " + ", ".join(fields)
+                self.write_patterns("pattern " + ("." if dotted else "") + name + by, args)
             case .Tuple(items): self.write_patterns("pattern tuple", items)
             case .Or(alternatives): self.write_patterns("pattern or", alternatives)
 
-    def write_patterns(mut self, label: str, patterns: list[Pattern]):
+    def write_patterns(ref self, label: str, patterns: list[Pattern]):
         self.open(label, None)
         for pattern in patterns:
             self.write_pattern(pattern)

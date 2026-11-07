@@ -37,7 +37,7 @@ const HEADER: &str = "struct Point:
     def total(self) -> int:
         self.x + self.y
 
-    def moved(mut self, by: int):
+    def moved(ref self, by: int):
         self.x += by
 
 enum Shape:
@@ -84,6 +84,12 @@ struct Writer<'b> {
     /// Whether a struct or enum is printed through what it gives, as `p.total()` and `area(s)`,
     /// rather than whole, for an engine that can't print those yet.
     plainly: bool,
+}
+
+/// A shape written where a `Shape` is expected, which names its case with a leading dot: the type
+/// there is known.
+fn expected_shape(value: &str) -> String {
+    value.strip_prefix("Shape").map_or_else(|| value.to_owned(), str::to_owned)
 }
 
 impl Writer<'_> {
@@ -148,7 +154,7 @@ impl Writer<'_> {
             }
             10 => {
                 let shape = self.of(Kind::Shape, next);
-                self.bounded(&format!("area({shape})"))
+                self.bounded(&format!("area({})", expected_shape(&shape)))
             }
             _ => format!("({} if {} else {})", self.int(next), self.of(Kind::Bool, next), self.int(next)),
         }
@@ -244,7 +250,7 @@ impl Writer<'_> {
     fn printable(&self, value: String, kind: Kind) -> String {
         match kind {
             Kind::Point if self.plainly => format!("{value}.total()"),
-            Kind::Shape if self.plainly => format!("area({value})"),
+            Kind::Shape if self.plainly => format!("area({})", expected_shape(&value)),
             _ => value,
         }
     }

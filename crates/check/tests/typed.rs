@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use fennec_check::{Checked, Type};
-use fennec_syntax::{Expr, ExprKind, FStrPart, Item, Module, Pattern, Span, Stmt, StmtKind};
+use fennec_syntax::{BinOp, Expr, ExprKind, FStrPart, Item, Module, Pattern, Span, Stmt, StmtKind};
 
 use crate::{dedent, list, named, optional};
 
@@ -76,7 +76,11 @@ fn nested(key: &str, body: &[Stmt], found: &mut Vec<(String, Vec<Stmt>, Vec<Expr
 fn values_in(stmts: &[Stmt], found: &mut Vec<Expr>) {
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Expr(expr) | StmtKind::Fail(expr) | StmtKind::Yield(expr) | StmtKind::Assert(expr) => {
+            StmtKind::Expr(expr)
+            | StmtKind::Fail(expr)
+            | StmtKind::Yield(expr)
+            | StmtKind::Assert(expr)
+            | StmtKind::Lend { value: expr, .. } => {
                 values(expr, found);
             }
             StmtKind::Return(value) => value.iter().for_each(|value| values(value, found)),
@@ -110,8 +114,14 @@ fn values_in(stmts: &[Stmt], found: &mut Vec<Expr>) {
 /// are what `import_as.fen` imports modules as. `fs` isn't here, since it's also the name a
 /// program gives its `Fs`.
 fn is_type_name(expr: &Expr) -> bool {
-    const MODULES: [&str; 17] = [
+    const MODULES: [&str; 23] = [
         "std",
+        "string",
+        "compress",
+        "unicode",
+        "base64",
+        "url",
+        "uuid",
         "cli",
         "csv",
         "log",
@@ -178,6 +188,12 @@ fn values(expr: &Expr, found: &mut Vec<Expr>) {
             );
         }
         ExprKind::Unary { expr, .. } => inner.push(expr),
+        // `s is Circle`: the name after `is` is a type, not a value.
+        ExprKind::Binary { op: BinOp::Is | BinOp::IsNot, lhs, rhs }
+            if matches!(rhs.kind, ExprKind::Name(_)) =>
+        {
+            inner.push(lhs);
+        }
         ExprKind::Binary { lhs: a, rhs: b, .. }
         | ExprKind::Else { value: a, default: b }
         | ExprKind::Index { object: a, index: b } => inner.extend([a.as_ref(), b.as_ref()]),
@@ -257,7 +273,13 @@ fn the_standard_library_writes_every_return_type() {
             };
             for def in defs.iter().filter(|def| def.ret.is_none()) {
                 let key = owner.map_or_else(|| def.name.clone(), |owner| format!("{owner}.{}", def.name));
-                let returns = &checked.signatures.get(&key).unwrap().returns;
+                // A function of a module other than the core is known by its module's name too.
+                let found = checked.signatures.get(&key).or_else(|| {
+                    let suffix = format!(".{key}");
+                    let mut named = checked.signatures.iter().filter(|(name, _)| name.ends_with(&suffix));
+                    named.next().map(|(_, signature)| signature)
+                });
+                let returns = &found.unwrap_or_else(|| panic!("`{key}` isn't checked")).returns;
                 let nothing = match returns {
                     Type::Result(value, _) => **value == Type::Unit,
                     other => *other == Type::Unit,

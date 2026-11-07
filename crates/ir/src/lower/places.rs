@@ -85,9 +85,9 @@ impl Lowering<'_> {
     /// What indexes a value of this type.
     fn key_type(&self, ty: &Type) -> Option<Type> {
         match ty {
-            Type::List(_) | Type::Buffer(_) => Some(Type::Int),
+            Type::List(_) | Type::Array(..) | Type::Buffer(_) => Some(Type::Int),
             Type::Dict(key, _) => Some(*key.clone()),
-            Type::IdMap(item) => Some(Type::Id(item.clone())),
+            Type::Table(item) => Some(Type::Id(item.clone())),
             Type::Named(owner) => {
                 let given = [Some(ty.clone())];
                 let found = self
@@ -102,9 +102,11 @@ impl Lowering<'_> {
     /// What indexing a value of this type gives.
     fn item_type(&self, ty: &Type) -> Option<Type> {
         match ty {
-            Type::List(item) | Type::Buffer(item) | Type::Dict(_, item) | Type::IdMap(item) => {
-                Some(*item.clone())
-            }
+            Type::List(item)
+            | Type::Array(item, _)
+            | Type::Buffer(item)
+            | Type::Dict(_, item)
+            | Type::Table(item) => Some(*item.clone()),
             Type::Named(owner) => {
                 let given = [Some(ty.clone())];
                 if let Some((_, read)) = self.resolve(&format!("{owner}.[]"), &given, None) {
@@ -408,7 +410,8 @@ impl Lowering<'_> {
             }),
         };
         if let Some(kind) = kind {
-            self.emit(kind, span);
+            // A `with` can end the program here, and it says so at what it takes.
+            self.emit(kind, value.span);
             entries.push(Leaving::Unlock { handles: locks.iter().map(|(handle, _)| *handle).collect() });
         }
         let locked = self.locked.len();

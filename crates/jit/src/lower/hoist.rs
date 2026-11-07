@@ -192,7 +192,11 @@ fn inner_blocks(stmt: &Stmt) -> Vec<&[Stmt]> {
 /// The expressions written directly in a statement, not in the blocks inside it.
 fn own_exprs(stmt: &Stmt) -> Vec<&Expr> {
     match &stmt.kind {
-        StmtKind::Expr(expr) | StmtKind::Fail(expr) | StmtKind::Yield(expr) | StmtKind::Assert(expr) => {
+        StmtKind::Expr(expr)
+        | StmtKind::Fail(expr)
+        | StmtKind::Yield(expr)
+        | StmtKind::Assert(expr)
+        | StmtKind::Lend { value: expr, .. } => {
             vec![expr]
         }
         StmtKind::Return(value) => value.iter().collect(),
@@ -293,7 +297,7 @@ mod tests {
 
     /// What `indexed_only` says about the `while` loop in a function's body, for `xs`.
     fn loop_uses(body: &str) -> Option<bool> {
-        let source = format!("def f(mut xs: list[int]) -> int:\n    mut at = 0\n{body}    at\n");
+        let source = format!("def f(ref xs: list[int]) -> int:\n    mut at = 0\n{body}    at\n");
         let module = fennec_syntax::parse(&source).unwrap();
         let Some(Item::Function(def)) = module.items.first() else { panic!("no function") };
         let Some(StmtKind::While { cond, body }) = def.body.get(1).map(|stmt| &stmt.kind) else {

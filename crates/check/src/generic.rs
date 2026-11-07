@@ -123,7 +123,7 @@ impl FnCx<'_> {
             "Eq" | "Format" => !matches!(ty, Type::Function(_) | Type::Arrow(..)),
             "Hashable" => self.is_hashable(ty),
             "Ordered" => self.is_ordered(ty),
-            _ => return self.fits_interface(ty, bound),
+            _ => return self.fits_interface_or_says_why(ty, bound),
         };
         if fits {
             return Ok(());
@@ -159,7 +159,7 @@ impl FnCx<'_> {
             | Type::Buffer(_)
             | Type::Set(_)
             | Type::Dict(..)
-            | Type::IdMap(_)
+            | Type::Table(_)
             | Type::Function(_)
             | Type::Arrow(..) => false,
             Type::Param(name) => self.bounds_of(name).iter().any(|bound| bound == "Hashable"),
@@ -168,7 +168,34 @@ impl FnCx<'_> {
     }
 
     /// Whether a type has every method an interface asks for, or why not and what to do.
+    /// Whether a type fits an interface. For saving and loading, what's wrong is further down: what
+    /// a type holds, since its methods are generated from what it holds.
+    fn fits_interface_or_says_why(&mut self, ty: &Type, interface: &str) -> Result<(), (String, String)> {
+        let fits = self.fits_interface(ty, interface);
+        if fits.is_err()
+            && matches!(interface, "Serializable" | "Deserializable")
+            && let Some((place, what, field, owner)) = crate::saving::what_stops_saving(self.checker, ty)
+        {
+            return Err((
+                format!("`{place}` is {what}, which can't be saved"),
+                format!(
+                    "`@skip` the field `{field}`, with a default, or write `def serialize` and `def deserialize` for `{owner}`"
+                ),
+            ));
+        }
+        fits
+    }
+
     pub(crate) fn fits_interface(&mut self, ty: &Type, interface: &str) -> Result<(), (String, String)> {
+        // A union fits an interface every type in it fits: a call through it goes to whichever
+        // member it holds.
+        if let Type::Union(members) = ty {
+            for member in members {
+                self.fits_interface(member, interface)
+                    .map_err(|(why, fix)| (format!("`{member}` is one of its types, and {why}"), fix))?;
+            }
+            return Ok(());
+        }
         let methods = self.checker.program.interfaces.get(interface).map(|found| found.methods.clone());
         for wanted in methods.unwrap_or_default() {
             // A generic method fits when it does for the same stand-ins in each position, which
@@ -201,6 +228,11 @@ impl FnCx<'_> {
             .method_owner()
             .and_then(|owner| self.checker.program.method(owner, &wanted.name).map(|(key, _)| key));
         let actual = if let Some(key) = key {
+            if !self.extension_bounds_fit(ty, &key) {
+                let why =
+                    format!("it has no `{wanted_text}`. Its `{}` asks more of what it holds", wanted.name);
+                return Err((why, fix));
+            }
             let Some(signature) = self.checker.signature(&key) else { return Ok(()) };
             // A function with no `self` has no value to read its type's parameters from.
             let takes_self = self.checker.program.functions.get(&key).is_some_and(|f| f.def.takes_self());
@@ -226,8 +258,17 @@ impl FnCx<'_> {
         } else {
             return Err(missing);
         };
+        // A method that changes its value doesn't fit one that says it won't: a plain name could
+        // change through the interface. One that doesn't change it fits either.
+        let changes = actual.params.first().is_some_and(|param| param.is_mut);
+        if wanted.takes_self() && changes && !wanted.params.first().is_some_and(|param| param.is_mut) {
+            let help =
+                format!("write `ref self` in the interface's `{}`, or don't change `self` here", wanted.name);
+            return Err((format!("it has no `{wanted_text}`. Its `{}` changes `self`", wanted.name), help));
+        }
+        let first = usize::from(wanted.takes_self());
         let takes = actual.params.len() == expected.params.len()
-            && actual.params.iter().zip(&expected.params).skip(1).all(|(actual, expected)| {
+            && actual.params.iter().zip(&expected.params).skip(first).all(|(actual, expected)| {
                 actual.is_mut == expected.is_mut && self.checker.fits(&actual.ty, &expected.ty)
             });
         if !takes {
@@ -241,6 +282,21 @@ impl FnCx<'_> {
             return Err((format!("it has no `{wanted_text}`. Its `{}` returns {returns}", wanted.name), fix));
         }
         Ok(())
+    }
+
+    /// Whether what a type holds fits the bounds the extension giving it `key` asks for, like
+    /// `T: Serializable` in `extend list[T: Serializable]:`.
+    fn extension_bounds_fit(&mut self, ty: &Type, key: &str) -> bool {
+        let Some(entry) = self.checker.program.functions.get(key) else { return true };
+        let wanted: Vec<Vec<String>> = entry
+            .extension
+            .iter()
+            .map(|generic| generic.bounds.iter().map(|bound| bound.name.clone()).collect())
+            .collect();
+        wanted.into_iter().zip(ty.type_args()).all(|(bounds, arg)| {
+            let arg = self.checker.settled(&arg);
+            !arg.is_known() || bounds.iter().all(|bound| self.fits_bound(&arg, bound).is_ok())
+        })
     }
 
     /// A method's signature for a value of type `receiver`, with its type's parameters
@@ -325,7 +381,8 @@ impl FnCx<'_> {
             Some(error) => Type::result(value, resolve(self, error)),
             None => value,
         };
-        Signature { params, returns, can_fail: method.fails.is_some(), generator: false }
+        let generics = method.generics.iter().map(|generic| generic.name.clone()).collect();
+        Signature { params, returns, can_fail: method.fails.is_some(), generator: false, generics }
     }
 
     /// The method an interface among a type parameter's bounds gives it.
@@ -344,7 +401,7 @@ fn signature_text(def: &FnDef) -> String {
         .params
         .iter()
         .map(|param| {
-            let prefix = if param.is_mut { "mut " } else { "" };
+            let prefix = if param.is_mut { "ref " } else { "" };
             match &param.ty {
                 Some(ty) => format!("{prefix}{}: {}", param.name, crate::program::written(ty)),
                 None => format!("{prefix}{}", param.name),

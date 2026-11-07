@@ -12,9 +12,13 @@ use super::codec::Image;
 use super::{State, heap, with};
 use crate::fakes::{TestCapabilities, TestWorld};
 
-/// The stack an executable's program runs on. It's only reserved, not used, until calls
-/// nest deeply.
+/// The stack an executable's program runs on, off macOS. It's only reserved, not used, until
+/// calls nest deeply.
 const STACK_BYTES: usize = 1 << 30;
+
+/// The main thread's stack on macOS, as `fennec build` links it: the most the linker gives on
+/// arm64. Native calls may use `NATIVE_STACK_BYTES` of it, which leaves as much for the runtime.
+pub const MAIN_STACK_BYTES: usize = 1 << 29;
 
 /// How much of the stack native calls may use, leaving the rest for the runtime and the
 /// interpreter.
@@ -36,9 +40,18 @@ thread_local! {
     static RAN: RefCell<Vec<i64>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The first room the program's bytes get: most programs fit, so they come over with no copying
+/// as they grow, which early in a process costs a fresh allocator page each time.
+const IMAGE_ROOM: usize = 64 << 10;
+
 /// The next eight bytes of the program the executable carries.
 pub extern "C" fn image(word: i64) {
-    IMAGE.with_borrow_mut(|bytes| bytes.extend_from_slice(&word.to_le_bytes()));
+    IMAGE.with_borrow_mut(|bytes| {
+        if bytes.capacity() == 0 {
+            bytes.reserve(IMAGE_ROOM);
+        }
+        bytes.extend_from_slice(&word.to_le_bytes());
+    });
 }
 
 /// Runs the program handed over, `length` bytes of it, by calling `entry` with the lowest
@@ -46,6 +59,15 @@ pub extern "C" fn image(word: i64) {
 /// Gives back the process's exit code.
 pub fn run(entry: extern "C" fn(i64), length: i64, stop: fn(i32)) -> i32 {
     let bytes = program_handed_over(length, stop);
+    // On macOS `fennec build` links every executable with a main thread of `MAIN_STACK_BYTES`, so
+    // the program runs there, with no thread to start. Elsewhere the main thread's stack is the
+    // system's, so it gets a thread of its own.
+    if cfg!(target_os = "macos") {
+        return match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(entry, &bytes))) {
+            Ok((output, failure)) => report(&output, &failure),
+            Err(_) => report(b"", "error: the program stopped unexpectedly\n"),
+        };
+    }
     let ran = std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(STACK_BYTES)
@@ -68,9 +90,11 @@ fn program_handed_over(length: i64, stop: fn(i32)) -> Vec<u8> {
     // Each worker `parallel` runs on starts a runtime of its own, holding the program.
     let program = std::sync::Arc::new(bytes.clone());
     super::parallel::set_worker_setup(Box::new(move || {
-        if let Some(Image { module, tables, .. }) = Image::from_bytes(&program) {
+        if let Some(Image { module, sources, tables, .. }) = Image::from_bytes(&program) {
             // What it prints goes straight out: `parallel`'s output follows real call order.
             let _ = super::start(&module, tables, live_inputs());
+            // A worker can end the program itself, and has to say where.
+            SOURCES.set(Some(sources));
         }
     }));
     bytes
@@ -206,7 +230,7 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     let here = 0_u8;
     let limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
     entry(i64::try_from(limit).unwrap_or(0));
-    let (output, failure, leftovers) = super::finish();
+    let (output, failure, leftovers) = super::finish_for_exit();
     report_counts(&leftovers.counts);
     (output, failure.map(|failure| sources.render(&failure)).unwrap_or_default())
 }
@@ -216,7 +240,15 @@ pub fn trace_at(site: i64) {
     with(|state: &mut State| state.heap.trace_at(u32::try_from(site).unwrap_or(0)));
 }
 
-/// Native code built to trace what it costs made a block of its own, of this many bytes.
+/// Whether this run counts what it allocates: under `FENNEC_COUNTS`, after `count_allocations`,
+/// and in tests. Native code that makes blocks of its own reads it once, and says what it made
+/// through `trace_allocated` only when it's 1, so a plain run pays nothing to count.
+pub fn counting() -> i64 {
+    with(|state: &mut State| i64::from(state.heap.counting()))
+}
+
+/// Native code made a block of its own, of this many bytes: one built to trace what it costs, or
+/// one making blocks outside the runtime's table while `counting` says 1.
 pub fn trace_allocated(bytes: i64) {
     with(|state: &mut State| state.heap.allocated(u64::try_from(bytes).unwrap_or(0)));
 }
@@ -246,27 +278,29 @@ fn report_counts(counts: &heap::Counts) {
     if std::env::var_os("FENNEC_COUNTS").is_none() {
         return;
     }
-    let _ = writeln!(std::io::stderr(), "{}", counts_line(counts));
+    #[cfg(any(test, feature = "threads"))]
+    let blocked = super::serve::blocked_waits();
+    #[cfg(not(any(test, feature = "threads")))]
+    let blocked = 0;
+    let _ = writeln!(std::io::stderr(), "{}", counts_line(counts, super::parallel::calls(), blocked));
 }
 
-/// The line `report_counts` writes.
-pub(super) fn counts_line(counts: &heap::Counts) -> String {
+/// The line `report_counts` writes, given how many `parallel` calls native code made and how many
+/// network waits blocked a thread rather than parking a task. Those are kept for the whole process,
+/// so they're passed in, for a test to say what they are.
+pub(super) fn counts_line(counts: &heap::Counts, parallel_calls: u64, blocked_waits: u64) -> String {
     let line = format!(
         "copies {} copied_bytes {} largest_copy {} allocations {} allocated_bytes {}",
         counts.copies, counts.copied_bytes, counts.largest_copy, counts.allocations, counts.allocated_bytes
     );
-    // `parallel` calls native code made, when there were any.
-    let line = match super::parallel::calls() {
+    let line = match parallel_calls {
         0 => line,
         calls => format!("{line} parallel_calls {calls}"),
     };
-    // Network waits that blocked a thread rather than parking a task, when there were any.
-    #[cfg(any(test, feature = "threads"))]
-    let line = match super::serve::blocked_waits() {
+    match blocked_waits {
         0 => line,
         blocked => format!("{line} blocked_waits {blocked}"),
-    };
-    line
+    }
 }
 
 /// Ends the program for a failure where nothing can pass it on, printing what it printed and
@@ -274,7 +308,7 @@ pub(super) fn counts_line(counts: &heap::Counts) -> String {
 /// stays for whoever finishes the run.
 pub(super) fn stop_for_failure() {
     let Some(sources) = SOURCES.take() else { return };
-    let (output, failure, leftovers) = super::finish();
+    let (output, failure, leftovers) = super::finish_for_exit();
     report_counts(&leftovers.counts);
     let failure = failure.map(|failure| sources.render(&failure)).unwrap_or_default();
     let code = report(&output, &failure);

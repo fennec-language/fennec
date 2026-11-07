@@ -70,6 +70,17 @@ jobs:
           cargo rustc --release --locked -p fennec-runtime --features threads --target-dir target/threads --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
           cp target/threads/release/libfennec_runtime.a target/release/libfennec_runtime_threads.a
           cp "$(find target/threads/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime_threads.bc
+      # The runtimes with no interpreter, which `fennec build` uses for every program that doesn't
+      # cross into it.
+      - name: Build the runtimes with no interpreter, and their bitcode
+        run: |
+          for features in lean lean,threads; do
+            dir="target/$(echo "$features" | tr , -)"
+            name="libfennec_runtime_$(echo "$features" | tr , _)"
+            cargo rustc --release --locked -p fennec-runtime --features "$features" --target-dir "$dir" --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
+            cp "$dir/release/libfennec_runtime.a" "target/release/$name.a"
+            cp "$(find "$dir/release/deps" -name 'fennec_runtime-*.bc' -print -quit)" "target/release/$name.bc"
+          done
       - name: Measure every kernel against its twin
         env:
           OS: ${{ matrix.os }}
@@ -82,6 +93,10 @@ jobs:
         env:
           OS: ${{ matrix.os }}
         run: ./target/release/fennec-bench realworld --runs 10 --markdown "suite-realworld-$OS.md"
+      - name: Measure a server under load against Rust and Go
+        env:
+          OS: ${{ matrix.os }}
+        run: ./target/release/fennec-bench server --runs 5 --markdown "suite-server-$OS.md"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -90,6 +105,7 @@ jobs:
             suite-*.json
             suite-parallel-*.md
             suite-realworld-*.md
+            suite-server-*.md
           if-no-files-found: ignore
 
   report:
@@ -185,7 +201,7 @@ jobs:
       - name: Parallel against rayon and real programs against Rust with crates, for each machine
         run: |
           shopt -s nullglob
-          for section in runs/suite-parallel-*.md runs/suite-realworld-*.md; do
+          for section in runs/suite-parallel-*.md runs/suite-realworld-*.md runs/suite-server-*.md; do
             cat "$section" >> "$GITHUB_STEP_SUMMARY"
             echo >> "$GITHUB_STEP_SUMMARY"
           done

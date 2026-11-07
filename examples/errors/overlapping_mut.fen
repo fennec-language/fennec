@@ -1,0 +1,14 @@
+struct Spot:
+    x = 0
+
+struct Unit:
+    position = Spot()
+
+def bump(ref first: Spot, ref second: Spot):
+    first.x += 1
+    second.x += 1
+
+def main(stdout: Stdout):
+    mut unit = Unit()
+    bump(ref unit.position, ref unit.position)
+    stdout.print(unit.position.x)

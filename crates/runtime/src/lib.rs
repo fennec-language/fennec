@@ -14,9 +14,10 @@
     reason = "exporting the runtime's functions under fixed names, for linked executables"
 )]
 
+use fennec_interp::embed::guarded::rollback;
 use fennec_interp::embed::{
-    aot, capabilities, checks, dicts, eval, heap, io, json, lists, names, numbers, objects, parallel, regex,
-    serve, strings, temps, text, threads,
+    aot, bytes, capabilities, checks, dicts, eval, guarded, heap, io, json, lists, names, numbers, objects,
+    parallel, regex, serve, strings, temps, text, threads,
 };
 
 /// The exported functions that can fail, setting the flag `fennec_aot_failed_flag` gives the
@@ -28,8 +29,10 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_dict_pop",
     "fennec_dict_pop_header",
     "fennec_stop",
+    "fennec_bytes_of_list",
     "fennec_assert_sides",
     "fennec_list_sorted_with",
+    "fennec_list_sorted_by_keys_with",
     "fennec_regex_split",
     "fennec_regex_find",
     "fennec_regex_find_all",
@@ -39,7 +42,12 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_buffer_insert",
     "fennec_buffer_pop_empty",
     "fennec_capability_call",
+    "fennec_std_call",
+    "fennec_crypto_call",
+    "fennec_toml_dumps",
+    "fennec_toml_loads",
     "fennec_native_capability",
+    "fennec_net_call",
     "fennec_capability_from_value",
     "fennec_case_of",
     "fennec_dict_missing",
@@ -66,8 +74,13 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_no_match",
     "fennec_out_of_range",
     "fennec_parallel_for",
+    "fennec_parallel_for_waiting",
     "fennec_parallel_map",
+    "fennec_parallel_map_waiting",
     "fennec_parallel_reduce",
+    "fennec_parallel_reduce_waiting",
+    "fennec_launch",
+    "fennec_launch_end",
     "fennec_net_serve",
     "fennec_path_get",
     "fennec_pop_empty",
@@ -77,6 +90,12 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_put",
     "fennec_put_item",
     "fennec_set_remove",
+    "fennec_shared_enter",
+    "fennec_shared_in",
+    "fennec_shared_leave",
+    "fennec_shared_new",
+    "fennec_shared_out",
+    "fennec_shared_settle",
     "fennec_set_remove_header",
     "fennec_spec_text",
     "fennec_stmt",
@@ -86,7 +105,9 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_str_index_text",
     "fennec_str_print",
     "fennec_str_slice",
+    "fennec_str_part",
     "fennec_int_header",
+    "fennec_code_header",
     "fennec_float_header",
     "fennec_str_split",
     "fennec_stream_next",
@@ -104,11 +125,22 @@ pub const CAN_FAIL: &[&str] = &[
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// Whether an export's attribute leaves it out of the lean runtime, which has no interpreter.
+#[cfg_attr(feature = "lean", expect(unused_macros, reason = "the lean runtime has none of those exports"))]
+macro_rules! for_interpreter {
+    (cfg(not(feature = "lean"))) => {
+        true
+    };
+    ($($other:tt)*) => {
+        false
+    };
+}
+
 /// Exports each function under a symbol: `symbol(params) -> result => function(args);`.
 macro_rules! export {
-    ($($(#[$meta:meta])* $symbol:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)? => $module:ident::$function:ident($($pass:ident),*);)*) => {
+    ($($(#[$($meta:tt)*])* $symbol:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)? => $module:ident::$function:ident($($pass:ident),*);)*) => {
         $(
-            $(#[$meta])*
+            $(#[$($meta)*])*
             #[unsafe(no_mangle)]
             pub extern "C" fn $symbol($($arg: $ty),*) $(-> $ret)? {
                 $module::$function($($pass),*)
@@ -116,8 +148,18 @@ macro_rules! export {
         )*
 
         /// Every symbol this library exports.
-        pub const SYMBOLS: &[&str] = &[$($(#[$meta])* stringify!($symbol)),*];
+        pub const SYMBOLS: &[&str] = &[$($(#[$($meta)*])* stringify!($symbol)),*];
+
+        /// Every symbol this library exports, and whether it's one only the interpreter's runtime
+        /// has: a program calling one of those can't link against the lean runtime.
+        pub const EXPORTS: &[(&str, bool)] =
+            &[$($(#[$($meta)*])* (stringify!($symbol), false $(|| for_interpreter!($($meta)*))*)),*];
     };
+}
+
+/// The symbols only the runtime with the interpreter exports.
+pub fn interpreter_symbols() -> impl Iterator<Item = &'static str> {
+    EXPORTS.iter().filter(|(_, interpreter)| *interpreter).map(|(symbol, _)| *symbol)
 }
 
 export! {
@@ -178,6 +220,18 @@ export! {
     #[cfg(not(feature = "lean"))]
     fennec_bind() => eval::bind();
     fennec_no_match(a0: i64, a1: i64, a2: i64) => eval::no_match(a0, a1, a2);
+    fennec_lock_note(a0: u64) -> i64 => threads::lock_note(a0);
+    fennec_lock_forget(a0: u64) => threads::lock_forget(a0);
+    fennec_launch(a0: serve::TaskBody, a1: i64) -> i64 => serve::launch(a0, a1);
+    fennec_launch_end(a0: i64, a1: i64, a2: i64, a3: &mut i64) -> i64 => serve::launch_end(a0, a1, a2, a3);
+    fennec_task_failed(a0: i64) => serve::task_failed(a0);
+    fennec_lock_begin(a0: i64) => rollback::begin(a0);
+    fennec_lock_save(a0: i64, a1: i64, a2: i64, a3: i64) => rollback::save(a0, a1, a2, a3);
+    fennec_lock_save_text(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) => rollback::save_text(a0, a1, a2, a3, a4);
+    fennec_lock_save_ref(a0: i64, a1: i64, a2: i64) => rollback::save_ref(a0, a1, a2);
+    fennec_lock_kept() => rollback::kept();
+    fennec_lock_undo() => rollback::undo();
+    fennec_lock_undo_word(a0: i64, a1: i64, a2: i64) -> i64 => rollback::undo_word(a0, a1, a2);
     fennec_print_int(a0: i64) => io::print_int(a0);
     fennec_print_float(a0: f64) => io::print_float(a0);
     fennec_print_bool(a0: i8) => io::print_bool(a0);
@@ -216,6 +270,10 @@ export! {
     fennec_make_instance(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => objects::make_instance(a0, a1, a2, a3);
     fennec_sin(a0: f64) -> f64 => checks::sin(a0);
     fennec_cos(a0: f64) -> f64 => checks::cos(a0);
+    fennec_tan(a0: f64) -> f64 => checks::tan(a0);
+    fennec_acos(a0: f64) -> f64 => checks::acos(a0);
+    fennec_exp(a0: f64) -> f64 => checks::exp(a0);
+    fennec_log(a0: f64) -> f64 => checks::log(a0);
     fennec_float_power(a0: f64, a1: f64) -> f64 => lists::float_power(a0, a1);
     fennec_int_power(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => lists::int_power(a0, a1, a2, a3);
     fennec_list_new(a0: i64, a1: i64) -> i64 => lists::new(a0, a1);
@@ -237,6 +295,12 @@ export! {
     fennec_not_a_number(a0: i64, a1: i64) -> i64 => numbers::not_a_number(a0, a1);
     fennec_int_text(a0: i64) -> i64 => strings::int_text(a0);
     fennec_str_repr(a0: i64) -> i64 => strings::str_repr(a0);
+    fennec_str_codes(a0: i64, a1: i64) -> i64 => strings::codes(a0, a1);
+    fennec_str_from_code(a0: i64) -> i64 => strings::from_code(a0);
+    fennec_str_from_code_problem(a0: i64) -> i64 => strings::from_code_problem(a0);
+    fennec_str_reversed(a0: i64) -> i64 => strings::reversed(a0);
+    fennec_dict_find_by_value(a0: i64, a1: i64) -> i64 => dicts::find_by_value(a0, a1);
+    fennec_round_places(a0: f64, a1: i64) -> f64 => checks::round_places(a0, a1);
     fennec_float_text(a0: f64) -> i64 => strings::float_text(a0);
     #[cfg(not(feature = "lean"))]
     fennec_value_text(a0: i64) -> i64 => strings::value_text(a0);
@@ -255,8 +319,25 @@ export! {
     fennec_dict_set_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i64) -> i64 => dicts::set_header(a0, a1, a2, a3, a4);
     fennec_dict_pop_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i64, a5: i64) -> i64 => dicts::pop_header(a0, a1, a2, a3, a4, a5);
     fennec_stop(a0: i64, a1: i64, a2: i64) => checks::stop(a0, a1, a2);
+    fennec_bytes_new(a0: i64) -> i64 => bytes::new(a0);
+    fennec_bytes_builder() -> i64 => bytes::builder();
+    fennec_bytes_grow(a0: i64, a1: i64) -> i64 => bytes::grow(a0, a1);
+    fennec_bytes_of_list(a0: i64, a1: i64, a2: i64) -> i64 => bytes::of_list(a0, a1, a2);
+    fennec_bytes_join(a0: i64, a1: i64) -> i64 => bytes::join(a0, a1);
+    fennec_bytes_slice(a0: i64, a1: i64, a2: i64) -> i64 => bytes::slice(a0, a1, a2);
+    fennec_bytes_text_part(a0: i64, a1: i64, a2: i64) -> i64 => bytes::text_part(a0, a1, a2);
+    fennec_bytes_order(a0: i64, a1: i64) -> i64 => bytes::order(a0, a1);
+    fennec_bytes_contains(a0: i64, a1: i64) -> i8 => bytes::contains(a0, a1);
+    fennec_bytes_hex(a0: i64, a1: i64) -> i64 => bytes::hex_text(a0, a1);
+    fennec_bytes_decode(a0: i64) -> i64 => bytes::decode(a0);
+    fennec_bytes_text(a0: i64) -> i64 => bytes::text(a0);
+    fennec_bytes_decode_problem(a0: i64) -> i64 => bytes::decode_problem(a0);
+    fennec_bytes_from_hex(a0: i64) -> i64 => bytes::from_hex_text(a0);
+    fennec_bytes_from_hex_problem(a0: i64) -> i64 => bytes::from_hex_problem(a0);
+    fennec_str_encode(a0: i64) -> i64 => bytes::encode(a0);
     fennec_assert_sides(a0: i64, a1: i64, a2: i64, a3: i64) => checks::assert_sides(a0, a1, a2, a3);
     fennec_list_sorted_with(a0: i64, a1: extern "C" fn(i64, i64) -> i64) -> i64 => lists::sorted_with(a0, a1);
+    fennec_list_sorted_by_keys_with(a0: i64, a1: i64, a2: extern "C" fn(i64, i64) -> i64) -> i64 => lists::sorted_by_keys_with(a0, a1, a2);
     fennec_regex_problem(a0: i64) -> i64 => regex::problem(a0);
     fennec_regex_is_valid(a0: i64) -> i8 => regex::is_valid(a0);
     fennec_regex_groups(a0: i64) -> i64 => regex::groups(a0);
@@ -273,6 +354,13 @@ export! {
     fennec_set_remove(a0: i64, a1: i64, a2: i8, a3: i64, a4: i64) -> i64 => dicts::set_remove(a0, a1, a2, a3, a4);
     fennec_set_remove_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i8, a5: i64, a6: i64) -> i64 => dicts::set_remove_header(a0, a1, a2, a3, a4, a5, a6);
     fennec_set_clear(a0: i64) -> i64 => dicts::set_clear(a0);
+    fennec_shared_new(a0: i64) -> i64 => guarded::shared_new(a0);
+    fennec_shared_enter(a0: i64, a1: i64) -> i64 => guarded::shared_enter(a0, a1);
+    fennec_shared_leave(a0: i64, a1: i64) -> i64 => guarded::shared_leave(a0, a1);
+    fennec_shared_in(a0: i64) -> i64 => guarded::shared_in(a0);
+    fennec_shared_out(a0: i64, a1: i64) -> i64 => guarded::shared_out(a0, a1);
+    fennec_shared_settle(a0: i64) => guarded::shared_settle(a0);
+    fennec_shared_wait() => guarded::shared_wait();
     fennec_cell_new(a0: i64) -> i64 => heap::cell_new(a0);
     fennec_cell_read(a0: i64) -> i64 => heap::cell_read(a0);
     fennec_list_sorted(a0: i64, a1: i64) -> i64 => lists::sorted(a0, a1);
@@ -284,27 +372,21 @@ export! {
     #[cfg(not(feature = "lean"))]
     fennec_case_of(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => objects::case_of(a0, a1, a2, a3);
     fennec_alloc(a0: i64) -> i64 => heap::alloc(a0);
+    fennec_new_tag() -> i64 => heap::new_tag();
     fennec_free(a0: i64) => heap::free(a0);
     fennec_retain_shared(a0: i64, a1: i64) => threads::retain_shared(a0, a1);
     fennec_release_shared(a0: i64, a1: i64) => threads::release_shared(a0, a1);
     fennec_parallel_for(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for(a0, a1, a2);
     fennec_parallel_map(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_map(a0, a1, a2, a3);
     fennec_parallel_reduce(a0: i64, a1: parallel::ReduceBody, a2: parallel::Combine, a3: i64, a4: &mut i64) -> i64 => parallel::parallel_reduce(a0, a1, a2, a3, a4);
+    fennec_parallel_for_waiting(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for_waiting(a0, a1, a2);
+    fennec_parallel_map_waiting(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_map_waiting(a0, a1, a2, a3);
+    fennec_parallel_reduce_waiting(a0: i64, a1: parallel::ReduceBody, a2: parallel::Combine, a3: i64, a4: &mut i64) -> i64 => parallel::parallel_reduce_waiting(a0, a1, a2, a3, a4);
     fennec_parallel_stream(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_stream(a0, a1, a2, a3);
+    fennec_parallel_stream_waiting(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_stream_waiting(a0, a1, a2, a3);
     fennec_stream_next(a0: i64, a1: &mut i64) -> i64 => parallel::stream_next(a0, a1);
     fennec_stream_end(a0: i64) => parallel::stream_end(a0);
-    #[cfg(not(feature = "lean"))]
     fennec_net_serve(a0: i64, a1: serve::ConnBody, a2: i64) -> i64 => serve::net_serve(a0, a1, a2);
-    #[cfg(not(feature = "lean"))]
-    fennec_conn_read(a0: i64, a1: i64) -> i64 => serve::conn_read(a0, a1);
-    #[cfg(not(feature = "lean"))]
-    fennec_conn_read_line(a0: i64) -> i64 => serve::conn_read_line(a0);
-    #[cfg(not(feature = "lean"))]
-    fennec_conn_write(a0: i64, a1: i64) -> i64 => serve::conn_write(a0, a1);
-    #[cfg(not(feature = "lean"))]
-    fennec_conn_peer(a0: i64) -> i64 => serve::conn_peer(a0);
-    #[cfg(not(feature = "lean"))]
-    fennec_conn_close(a0: i64) => serve::conn_close(a0);
     fennec_free_text(a0: i64) => heap::free_text(a0);
     fennec_set_abandon(a0: i64, a1: extern "C" fn(i64)) => heap::set_abandon(a0, a1);
     fennec_unshare(a0: i64) -> i64 => heap::unshare(a0);
@@ -328,6 +410,7 @@ export! {
     fennec_text_contains(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::contains(a0, a1, a2, a3, a4, a5);
     fennec_text_of(a0: i64) -> text::Text => text::of(a0);
     fennec_int_header(a0: i64) -> text::Text => text::int_header(a0);
+    fennec_code_header(a0: i64) -> text::Text => text::code_header(a0);
     fennec_float_header(a0: f64) -> text::Text => text::float_header(a0);
     fennec_str_char_at(a0: i64, a1: i64) -> i64 => strings::char_at(a0, a1);
     fennec_dict_new(a0: i64, a1: i64) -> i64 => dicts::new(a0, a1);
@@ -337,13 +420,18 @@ export! {
     fennec_str_index(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::index(a0, a1, a2, a3);
     fennec_str_index_text(a0: i64, a1: i64, a2: i64, a3: i64) -> text::Text => strings::index_text(a0, a1, a2, a3);
     fennec_str_slice(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => strings::slice(a0, a1, a2, a3, a4);
+    fennec_str_part(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => strings::part(a0, a1, a2, a3, a4);
     fennec_str_compare(a0: i64, a1: i64) -> i64 => strings::compare(a0, a1);
     fennec_str_contains(a0: i64, a1: i64) -> i8 => strings::contains(a0, a1);
     fennec_str_print(a0: i64) => strings::print(a0);
     fennec_capability(a0: i64) -> i64 => temps::capability(a0);
     fennec_capability_block(a0: i64) -> i64 => capabilities::block(a0);
+    fennec_net_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::net_call(a0, a1, a2, a3, a4);
     fennec_native_capability(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::native_call(a0, a1, a2, a3, a4);
+    fennec_crypto_call(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => capabilities::crypto_call(a0, a1, a2, a3);
+    fennec_use_tls() => capabilities::use_tls();
     fennec_clock_now() -> i64 => capabilities::clock_now();
+    fennec_clock_time() -> i64 => capabilities::clock_time();
     fennec_clock_sleep(a0: i64) => capabilities::clock_sleep(a0);
     fennec_args_len() -> i64 => capabilities::args_len();
     fennec_args_program() -> i64 => capabilities::args_program();
@@ -352,6 +440,12 @@ export! {
     fennec_capability_from_value(a0: i64, a1: i64, a2: i64) -> i64 => capabilities::from_value(a0, a1, a2);
     #[cfg(not(feature = "lean"))]
     fennec_capability_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::call(a0, a1, a2, a3, a4);
+    #[cfg(not(feature = "lean"))]
+    fennec_std_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::std_call(a0, a1, a2, a3, a4);
+    #[cfg(not(feature = "lean"))]
+    fennec_toml_dumps(a0: i64, a1: i64, a2: i64) -> i64 => json::toml_dumps(a0, a1, a2);
+    #[cfg(not(feature = "lean"))]
+    fennec_toml_loads(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => json::toml_loads(a0, a1, a2, a3);
     fennec_aot_image(a0: i64) => aot::image(a0);
     fennec_aot_failed_flag() -> i64 => aot::failed_flag();
     fennec_aot_stack_limit() -> i64 => aot::stack_limit();
@@ -364,6 +458,7 @@ export! {
     fennec_aot_test_done(a0: i64) => aot::test_done(a0);
     fennec_trace_at(a0: i64) => aot::trace_at(a0);
     fennec_trace_allocated(a0: i64) => aot::trace_allocated(a0);
+    fennec_counting() -> i64 => aot::counting();
     #[cfg(not(feature = "lean"))]
     fennec_aot_test_world(a0: i64) => aot::test_world(a0);
 }

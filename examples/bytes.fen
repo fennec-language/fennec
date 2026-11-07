@@ -18,12 +18,12 @@ def main(stdout: Stdout):
     match data.decode():
         case Ok(text):
             stdout.print("decoded", text)
-        case InvalidValue(message):
+        case InvalidValue(message=message):
             stdout.print(message)
     match header.decode():
         case Ok(text):
             stdout.print("decoded", text)
-        case InvalidValue(_):
+        case InvalidValue():
             stdout.print("the header isn't text")
 
 test "bytes are written and read as hex, as in Python":

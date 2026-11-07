@@ -6,7 +6,7 @@ def main(stdout: Stdout):
     stdout.print(squares.len(), squares.capacity())
     for i in range(5):
         squares.push(i * i)
-    # Pushing into a full buffer doubles what it needs.
+    # Pushing into a full buffer doubles what it held.
     stdout.print(squares.len(), squares.capacity(), squares[4])
     squares[0] = 100
     stdout.print(squares.pop(), squares.len())

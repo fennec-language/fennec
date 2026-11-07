@@ -56,10 +56,36 @@ pub extern "C" fn fail(code: i64, start: i64, end: i64) {
     });
 }
 
+/// `round(x, places)`.
+pub extern "C" fn round_places(x: f64, places: i64) -> f64 {
+    let scale = 10_f64.powi(i32::try_from(places).unwrap_or(0));
+    (x * scale).round_ties_even() / scale
+}
+
+// The float functions every engine computes them with: `libm`'s, the same on every platform, so a
+// program's floats are the same bits wherever it runs. Past -1 or 1, `acos` has no angle, so it's
+// NaN, as `log` is of a number below 0.
+
 pub extern "C" fn sin(x: f64) -> f64 {
-    x.sin()
+    libm::sin(x)
 }
 
 pub extern "C" fn cos(x: f64) -> f64 {
-    x.cos()
+    libm::cos(x)
+}
+
+pub extern "C" fn tan(x: f64) -> f64 {
+    libm::tan(x)
+}
+
+pub extern "C" fn acos(x: f64) -> f64 {
+    libm::acos(x)
+}
+
+pub extern "C" fn exp(x: f64) -> f64 {
+    libm::exp(x)
+}
+
+pub extern "C" fn log(x: f64) -> f64 {
+    libm::log(x)
 }

@@ -11,7 +11,7 @@ fn lowered(source: &str, options: Options) -> Result<Program, String> {
     Ok(program)
 }
 
-const OUTLINED: Options = Options { outline_parallel: true };
+const OUTLINED: Options = Options { outline_parallel: true, stop_on_failed_main: false };
 
 fn function_named<'p>(program: &'p Program, name: &str) -> Option<&'p Function> {
     program.functions.iter().find(|function| function.name == name)
@@ -120,16 +120,16 @@ def main(stdout: Stdout):
 #[test]
 fn a_for_mut_body_changes_its_item_and_the_loop_changes_the_list() {
     let source = "\
-def grow(mut xs: list[int], mut ys: list[int], by: int):
-    for mut x in parallel(xs):
+def grow(ref xs: list[int], ref ys: list[int], by: int):
+    for ref x in parallel(xs):
         x += by
-    for mut y in ys:
+    for ref y in ys:
         y += by
 
 def main(stdout: Stdout):
     mut xs = [1, 2]
     mut ys = [3]
-    grow(mut xs, mut ys, 3)
+    grow(ref xs, ref ys, 3)
     stdout.print(xs, ys)
 ";
     let program = lowered(source, OUTLINED).unwrap();
@@ -150,17 +150,17 @@ fn the_list_is_worked_out_before_what_the_body_captures() {
     // `take(mut state)` changes `state`, which the body reads: as written, the list comes
     // first, so the body sees `state` as `take` left it.
     let source = "\
-def take(mut state: list[int]) -> list[int]:
+def take(ref state: list[int]) -> list[int]:
     state.append(1)
     [2, 3]
 
-def run(stdout: Stdout, mut state: list[int]):
-    for x in parallel(take(mut state)):
+def run(stdout: Stdout, ref state: list[int]):
+    for x in parallel(take(ref state)):
         stdout.print(x, state)
 
 def main(stdout: Stdout):
     mut state = [0]
-    run(stdout, mut state)
+    run(stdout, ref state)
 ";
     let program = lowered(source, OUTLINED).unwrap();
     let run = function_named(&program, "run").unwrap();
@@ -220,7 +220,7 @@ def twice(f: (int) -> int, n: int) -> int:
 def total(grids: list[list[int]]) -> int:
     sum(sum(twice(n => n + 1, cell) for cell in parallel(row)) for row in parallel(grids))
 ";
-    let program = lowered(source, Options { outline_parallel: true })?;
+    let program = lowered(source, OUTLINED)?;
     let mut names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
     names.sort_unstable();
     let count = names.len();

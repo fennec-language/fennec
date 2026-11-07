@@ -184,6 +184,12 @@ impl Lowerer<'_, '_> {
             ExprKind::Unary { op, expr: inner } => {
                 ExprKind::Unary { op: *op, expr: Box::new(self.input(inner, handover)?) }
             }
+            // `s is Circle`: the name after `is` is a type, which the interpreter reads as written.
+            ExprKind::Binary { op: op @ (BinOp::Is | BinOp::IsNot), lhs, rhs }
+                if matches!(rhs.kind, ExprKind::Name(_)) =>
+            {
+                ExprKind::Binary { op: *op, lhs: Box::new(self.input(lhs, handover)?), rhs: rhs.clone() }
+            }
             ExprKind::Binary { op, lhs, rhs } if !matches!(op, BinOp::And | BinOp::Or) => {
                 let lhs = self.input(lhs, handover)?;
                 ExprKind::Binary { op: *op, lhs: Box::new(lhs), rhs: Box::new(self.input(rhs, handover)?) }
@@ -491,7 +497,11 @@ fn arm_names(arm: &MatchArm, names: &mut Vec<String>) {
 /// Every name a statement mentions.
 pub(super) fn stmt_names(stmt: &Stmt, names: &mut Vec<String>) {
     match &stmt.kind {
-        StmtKind::Expr(expr) | StmtKind::Fail(expr) | StmtKind::Yield(expr) | StmtKind::Assert(expr) => {
+        StmtKind::Expr(expr)
+        | StmtKind::Fail(expr)
+        | StmtKind::Yield(expr)
+        | StmtKind::Assert(expr)
+        | StmtKind::Lend { value: expr, .. } => {
             expr_names(expr, names);
         }
         StmtKind::Return(value) => {
@@ -553,7 +563,10 @@ fn expr_leaves(expr: &Expr) -> bool {
 fn stmt_leaves(stmt: &Stmt) -> bool {
     match &stmt.kind {
         StmtKind::Return(_) | StmtKind::Fail(_) => true,
-        StmtKind::Expr(expr) | StmtKind::Assert(expr) | StmtKind::Yield(expr) => expr_leaves(expr),
+        StmtKind::Expr(expr)
+        | StmtKind::Assert(expr)
+        | StmtKind::Yield(expr)
+        | StmtKind::Lend { value: expr, .. } => expr_leaves(expr),
         StmtKind::Assign { target, value, .. } => expr_leaves(target) || expr_leaves(value),
         StmtKind::If { branches, otherwise } => {
             branches.iter().any(|(cond, body)| expr_leaves(cond) || body.iter().any(stmt_leaves))

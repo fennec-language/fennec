@@ -1,13 +1,16 @@
 //! What each lint flags, and what `fennec fix` makes of it.
 
-use fennec_lint::{Lint, lint};
+use fennec_lint::{Lint, lint, positional_arguments};
 use fennec_syntax::{Sources, apply_fixes, parse_at};
 
 fn found(source: &str) -> Result<Vec<Lint>, String> {
     let mut sources = Sources::new();
     let base = sources.add("game.fen", source);
     let module = parse_at(source, base).map_err(|problem| problem.message)?;
-    Ok(lint(&module, &sources))
+    // Positional arguments are a compile error now, kept with the lints they began as.
+    let mut found = lint(&module, &sources);
+    found.extend(positional_arguments(&module, &sources));
+    Ok(found)
 }
 
 /// The rules about names, which most tests' short names would set off: `name_rules` has them.
@@ -219,11 +222,17 @@ fn a_parameter_nothing_reads_goes_with_its_arguments() {
         fixed_params(source),
         "def damage(power: int, bonus: int = 1) -> int:\n    power * 2 + bonus\n\ndef main(stdout: Stdout):\n    stdout.print(damage(3), damage(power=4, bonus=2))\n"
     );
+    // What comes after it starts at `ref`, not at its value.
+    let source = "def f(unused: int, ref items: list[int]):\n    items.append(1)\n\ndef g():\n    mut xs = [1]\n    f(2, ref xs)\n";
+    assert_eq!(
+        fixed_params(source),
+        "def f(ref items: list[int]):\n    items.append(1)\n\ndef g():\n    mut xs = [1]\n    f(ref xs)\n"
+    );
     let last = "def f(n: int, unused: int) -> int:\n    n\n\ndef g() -> int:\n    f(1, 2)\n";
     assert_eq!(fixed_params(last), "def f(n: int) -> int:\n    n\n\ndef g() -> int:\n    f(1)\n");
     let held = "def f(n: int, unused: int) -> int:\n    n\n\ndef g(h: (int, int) -> int) -> int:\n    h(1, 2)\n\ndef k() -> int:\n    g(f)\n";
     assert!(!all_rules(held).contains(&"unused-param"), "held as a value, it has to take two");
-    let public = "pub def f(n: int, unused: int) -> int:\n    n\n";
+    let public = "export def f(n: int, unused: int) -> int:\n    n\n";
     assert!(!all_rules(public).contains(&"unused-param"), "another kit may call it");
     let method = "struct Dog:\n    age: int\n\n    def speak(self, loud: bool) -> str:\n        \"woof\"\n";
     assert!(!all_rules(method).contains(&"unused-param"), "an interface may need it");
@@ -366,8 +375,6 @@ fn a_lookup_that_would_mean_something_else_stays() {
     for source in [
         // A list's `in` asks about its values, not its positions.
         "def f(xs: list[int], at: int) -> int:\n    xs[at] if at in xs else 0\n",
-        // A key holding `None` gives `None` here, and would give the default.
-        "def f(counts: dict[str, int?], key: str) -> int?:\n    counts[key] if key in counts else 0\n",
         // Another key, or another table.
         "def f(counts: dict[str, int], key: str, other: str) -> int:\n    counts[other] if key in counts else 0\n",
         "def f(one: dict[str, int], two: dict[str, int], key: str) -> int:\n    one[key] if key in two else 0\n",
@@ -402,8 +409,8 @@ fn comparing_a_value_with_itself_is_a_mistake() {
         ("int", "==", "True"),
         ("str", "!=", "False"),
         ("bool", "==", "True"),
-        // `==` treats NaN as equal to NaN, so this doesn't find one.
-        ("float", "!=", "False"),
+        // `==` treats NaN as equal to NaN, so this doesn't rule one out. `!=` is the checker's.
+        ("float", "==", "True"),
     ] {
         let source = format!("def f(amount: {ty}) -> bool:\n    amount {op} amount\n");
         assert_eq!(self_compares(&source), [format!("`amount {op} amount` is always {always}")], "{source}");
@@ -430,23 +437,28 @@ fn comparing_what_may_differ_says_nothing() {
 }
 
 #[test]
-fn a_pub_item_says_what_it_is_for() {
+fn an_exported_item_says_what_it_is_for() {
     let missing = |source: &str| all_rules(source).iter().filter(|rule| **rule == "missing-doc").count();
     for source in [
-        "pub def spawn() -> int:\n    1\n",
-        "pub struct Unit:\n    size: int\n",
-        "pub enum Mood:\n    Calm\n",
-        "pub error Lost:\n    reason: str\n",
-        "pub interface Named:\n    def name(self) -> str\n",
-        "pub type Size = int\n",
-        "pub LIMIT = 8\n",
+        "export def spawn() -> int:\n    1\n",
+        "export enum Mood:\n    Calm\n",
+        "export type Size = int\n",
+        "export LIMIT = 8\n",
         // Nothing but a `##` line just above it counts.
-        "# A plain comment.\npub def spawn() -> int:\n    1\n",
-        "## A comment on nothing.\n\npub def spawn() -> int:\n    1\n",
+        "# A plain comment.\nexport def spawn() -> int:\n    1\n",
+        "## A comment on nothing.\n\nexport def spawn() -> int:\n    1\n",
     ] {
         assert_eq!(missing(source), 1, "{source}");
     }
-    let inside = "## A unit.\npub struct Unit:\n    pub size: int\n\n    pub def grown(self) -> int:\n        self.size + 1\n";
+    // An exported type shows its fields and methods, apart from `_name` ones, and each needs a doc too.
+    for source in [
+        "export struct Unit:\n    size: int\n",
+        "export error Lost:\n    reason: str\n",
+        "export interface Named:\n    def name(self) -> str\n",
+    ] {
+        assert_eq!(missing(source), 2, "{source}");
+    }
+    let inside = "## A unit.\nexport struct Unit:\n    size: int\n    _hidden = 0\n\n    def grown(self) -> int:\n        self.size + 1\n";
     assert_eq!(missing(inside), 2, "its field and its method");
 }
 
@@ -455,12 +467,12 @@ fn a_private_item_or_one_with_a_doc_says_nothing() {
     for source in [
         "def spawn() -> int:\n    1\n",
         "struct Unit:\n    size: int\n",
-        "## Spawns one.\npub def spawn() -> int:\n    1\n",
-        "## Spawns one.\n## It's always the same one.\npub def spawn() -> int:\n    1\n",
-        "## Spawns one.\n@inline\npub def spawn() -> int:\n    1\n",
-        "## A unit.\npub struct Unit:\n    ## How big it is.\n    pub size: int\n\n    ## How big it would be.\n    pub def grown(self) -> int:\n        self.size + 1\n",
-        // `pub` inside text says nothing.
-        "def spawn() -> str:\n    \"pub def\"\n",
+        "## Spawns one.\nexport def spawn() -> int:\n    1\n",
+        "## Spawns one.\n## It's always the same one.\nexport def spawn() -> int:\n    1\n",
+        "## Spawns one.\n@inline\nexport def spawn() -> int:\n    1\n",
+        "## A unit.\nexport struct Unit:\n    ## How big it is.\n    size: int\n\n    ## How big it would be.\n    def grown(self) -> int:\n        self.size + 1\n",
+        // `export` inside text says nothing.
+        "def spawn() -> str:\n    \"export def\"\n",
     ] {
         assert!(!all_rules(source).contains(&"missing-doc"), "{source}");
     }
@@ -489,7 +501,7 @@ fn an_item_nothing_uses_goes_with_its_doc() {
         .map(|lint| lint.message().to_owned())
         .collect();
     assert_eq!(flagged, ["nothing uses the function `origin`"], "a type named in a parameter is used");
-    let public = "pub def greet() -> str:\n    \"hi\"\n";
+    let public = "export def greet() -> str:\n    \"hi\"\n";
     assert!(!all_rules(public).contains(&"unused-item"), "another kit may use it");
     let recursive = "def countdown(n: int) -> int:\n    if n == 0: return 0\n    countdown(n - 1)\n\ndef main(stdout: Stdout):\n    stdout.print(1)\n";
     assert!(all_rules(recursive).contains(&"unused-item"), "calling itself isn't a use");
@@ -786,8 +798,8 @@ fn mut_on_a_local_nothing_changes_goes() {
         "def f() -> int:\n    mut xs = [1]\n    xs.append(2)\n    xs.len()\n",
         "def f() -> int:\n    mut xs = [1]\n    xs[0] = 2\n    xs[0]\n",
         "def f(p: P) -> int:\n    mut q = p\n    q.pos.x = 1\n    q.pos.x\n",
-        "def f() -> int:\n    mut xs = [1]\n    g(mut xs)\n    xs[0]\n",
-        "def f() -> int:\n    mut xs = [1]\n    for mut x in xs:\n        x += 1\n    xs[0]\n",
+        "def f() -> int:\n    mut xs = [1]\n    g(ref xs)\n    xs[0]\n",
+        "def f() -> int:\n    mut xs = [1]\n    for ref x in xs:\n        x += 1\n    xs[0]\n",
         "def f() -> int:\n    mut n = 0\n    def bump():\n        n += 1\n    bump()\n    n\n",
         "def f() -> int:\n    mut n = 0\n    m, n = pair()\n    m + n\n",
         "def f() -> int:\n    mut w = W(xs=[1])\n    mut part = w.xs\n    mut deeper = part\n    deeper[0] = 2\n    w.xs[0]\n",
@@ -890,7 +902,7 @@ fn a_counted_while_is_a_for() {
         ),
         (
             "the limit moves",
-            "def f(mut n: int):\n    mut i = 0\n    while i < n:\n        n -= 1\n        i += 1\n",
+            "def f(ref n: int):\n    mut i = 0\n    while i < n:\n        n -= 1\n        i += 1\n",
         ),
         (
             "it moves elsewhere too",
@@ -910,7 +922,7 @@ fn an_index_that_only_indexes_is_an_item() {
         ("it's used for more", "def f(xs: list[int]):\n    for i in range(xs.len()):\n        g(i, xs[i])\n"),
         (
             "it writes the list",
-            "def f(mut xs: list[int]):\n    for i in range(xs.len()):\n        xs[i] = xs[i] + 1\n",
+            "def f(ref xs: list[int]):\n    for i in range(xs.len()):\n        xs[i] = xs[i] + 1\n",
         ),
         (
             "a dict's keys aren't its items",
@@ -1008,9 +1020,9 @@ fn a_copy_that_changes_nothing_goes() {
 fn a_copy_that_saves_a_change_from_showing_or_names_no_place_stays() {
     for kept in [
         // Without it, `ys` would share `xs`, and changing `xs` would copy it then.
-        "def f(mut xs: list[int]) -> int:\n    ys = copy(xs)\n    xs.append(1)\n    ys.len()\n",
+        "def f(ref xs: list[int]) -> int:\n    ys = copy(xs)\n    xs.append(1)\n    ys.len()\n",
         // Without it, `ys` would name `xs`, so changing `ys` would change the caller's list.
-        "def f(mut xs: list[int]):\n    mut ys = copy(xs)\n    ys.append(1)\n",
+        "def f(ref xs: list[int]):\n    mut ys = copy(xs)\n    ys.append(1)\n",
         // A program's own `copy` isn't the builtin.
         "def copy(n: int) -> int:\n    n + 1\n\ndef f() -> int:\n    copy(7)\n",
     ] {

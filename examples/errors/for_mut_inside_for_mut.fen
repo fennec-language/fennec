@@ -1,7 +1,7 @@
-# Each `for mut` writes its item back, so two over one list would overwrite each other's work.
+# Each `for ref` writes its item back, so two over one list would overwrite each other's work.
 def main(stdout: Stdout):
     mut numbers = [1, 2, 3]
-    for mut x in numbers:
-        for mut y in numbers:
+    for ref x in numbers:
+        for ref y in numbers:
             y += x
     stdout.print(numbers)

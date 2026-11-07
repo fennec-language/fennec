@@ -5,13 +5,6 @@
 error TooBig:
     at: int
 
-struct Door:
-    out: Stdout
-    name: str
-
-    def del(self):
-        self.out.print(f"closing {self.name}")
-
 # Nothing here runs until the first item is asked for.
 def countdown(out: Stdout, start: int) -> Iterator[int]:
     out.print("counting")
@@ -47,13 +40,11 @@ def doubled(numbers: Iterator[int]) -> Iterator[int]:
     for n in numbers:
         yield n * 2
 
-# One left partway closes what it's holding when its owner goes away.
+# One left partway runs nothing past the item it stopped at.
 def holding(out: Stdout) -> Iterator[int]:
-    with Door(out=out, name="outer") as outer:
-        with Door(out=out, name="inner") as inner:
-            yield 1
-            yield 2
-        out.print("past the inner door")
+    yield 1
+    yield 2
+    out.print("past the second item")
 
 def leaves_early(out: Stdout):
     for n in holding(out):
@@ -71,7 +62,7 @@ def total_up_to(limit: int) -> int:
     total = sum(n for n in checked(limit)?)
     total
 
-def bump(mut count: int) -> int:
+def bump(ref count: int) -> int:
     count += 1
     count
 
@@ -121,7 +112,7 @@ def main(stdout: Stdout):
 
     # Written right inside what uses it, it can change the names around it.
     mut count = 0
-    stdout.print(sum(bump(mut count) for _ in range(3)), count)
+    stdout.print(sum(bump(ref count) for _ in range(3)), count)
 
     leaves_early(stdout)
     for n in holding(stdout):

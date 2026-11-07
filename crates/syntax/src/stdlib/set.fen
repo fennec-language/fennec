@@ -2,7 +2,7 @@
 ## operations the engines provide. A new set keeps `self`'s items first, in their order.
 extend set[T: Hashable]:
     ## Adds every item of `more`.
-    def update(mut self, more: set[T]):
+    def update(ref self, more: set[T]):
         for item in more:
             self.add(item)
 

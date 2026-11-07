@@ -47,8 +47,8 @@ def main(stdout: Stdout):
     stdout.print(
         pick(True, 5),
         pick(False, 5),
-        both(True, False),
-        both(False, True),
+        both(True, other=False),
+        both(False, other=True),
         shadow(True),
         early(True),
         early(False),

@@ -1,4 +1,4 @@
-//! Indexing and slicing: lists and strings by position, dicts by key, `IdMap`s by `Id`,
+//! Indexing and slicing: lists and strings by position, dicts by key, `Table`s by `Id`,
 //! tuples by a position written as a number, and types with their own `def []`.
 
 use fennec_syntax::{Diagnostic, Expr, ExprKind, Span, UnaryOp};
@@ -32,6 +32,11 @@ impl FnCx<'_> {
                 self.key_fits(&Type::Int, &at, index.span);
                 item.as_ref().clone()
             }
+            Type::Array(item, size) => {
+                self.key_fits(&Type::Int, &at, index.span);
+                self.array_index_in_range(index, *size);
+                item.as_ref().clone()
+            }
             Type::Str => {
                 self.key_fits(&Type::Int, &at, index.span);
                 Type::Str
@@ -45,7 +50,7 @@ impl FnCx<'_> {
                 self.key_fits(key, &at, index.span);
                 item.as_ref().clone()
             }
-            Type::IdMap(item) => {
+            Type::Table(item) => {
                 self.key_fits(&Type::Id(item.clone()), &at, index.span);
                 item.as_ref().clone()
             }
@@ -59,7 +64,7 @@ impl FnCx<'_> {
                 }
                 // With only the `mut` form, reaching an item takes a `mut` name.
                 if let Some((key, _)) = self.checker.program.method(name, "[]mut") {
-                    let what = format!("`{name}` has only the `mut` form of `def []`, so index a mut name");
+                    let what = format!("`{name}` has only the `ref` form of `def []`, so index a mut name");
                     self.mut_place(object, &what);
                     return self.call_operator(&ty, &key, &at, index.span);
                 }
@@ -86,6 +91,28 @@ impl FnCx<'_> {
             other => format!("this is looked up by {}, not {}", a(other), a(actual)),
         };
         self.error(Diagnostic::new(message, span));
+    }
+
+    /// `slots[20]` on an `array[Item?, 20]`: a position written as a number has to be inside
+    /// the array, counting from the end when it's below 0 as for a list.
+    fn array_index_in_range(&mut self, index: &Expr, size: u64) {
+        let written = match &index.kind {
+            ExprKind::Int(n) => *n,
+            ExprKind::Unary { op: UnaryOp::Neg, expr } => match expr.kind {
+                ExprKind::Int(n) => n.saturating_neg(),
+                _ => return,
+            },
+            _ => return,
+        };
+        let size_signed = i64::try_from(size).unwrap_or(i64::MAX);
+        if written < size_signed && written >= -size_signed {
+            return;
+        }
+        let last = size - 1;
+        self.error(
+            Diagnostic::new(format!("this array has {size} items, so there's no item {written}"), index.span)
+                .with_help(format!("its items are 0 to {last}")),
+        );
     }
 
     /// `pair[0]`: the item's type. The index has to be written as a number, unless every

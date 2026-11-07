@@ -1,0 +1,52 @@
+# `std.compress` makes bytes smaller and gives them back: `gzip` and `gunzip` for files and
+# HTTP, `zlib` and `unzlib` for formats that hold zlib data, like PNG, and `deflate` and
+# `inflate` for raw DEFLATE. `level=` is from 0, which stores the bytes as they are, to 9,
+# which tries hardest; 6 is the usual. Reading back fails with an `InvalidValue` on data that
+# isn't what it says, and it stops past 1 GiB, so a small input can't fill memory.
+from std import compress
+
+## A save written small: what a game might keep on disk.
+def packed_save(text: str) -> bytes:
+    compress.gzip(text, level=9)
+
+test "what goes in comes back, at every level"():
+    text = "the quick brown fox jumps over the lazy dog. " * 200
+    for level in range(10):
+        assert compress.gunzip(compress.gzip(text, level=level))? == text.encode()
+        assert compress.unzlib(compress.zlib(text, level=level))? == text.encode()
+        assert compress.inflate(compress.deflate(text, level=level))? == text.encode()
+
+test "repeats get small"():
+    text = "fennec " * 1000
+    assert compress.gzip(text).len() < 60
+    assert compress.deflate(text, level=0).len() > text.len()
+
+test "it reads what Python's zlib writes"():
+    # `zlib.compress(b"hello")`.
+    assert (
+        compress.unzlib(bytes([120, 156, 203, 72, 205, 201, 201, 7, 0, 6, 44, 2, 21]))?
+        == "hello".encode()
+    )
+
+test "data that isn't what it says fails"():
+    match compress.gunzip("not gzip at all".encode()):
+        case Err(problem):
+            assert problem.message == "this isn't gzip data: it doesn't start as gzip data does"
+        case Ok(_):
+            assert False
+    mut numbers = [b for b in compress.gzip("fennec")]
+    numbers[numbers.len() - 6] = numbers[numbers.len() - 6] ^ 1
+    match compress.gunzip(bytes(numbers)):
+        case Err(problem):
+            assert problem.message == "this isn't gzip data: its check doesn't match what it holds"
+        case Ok(_):
+            assert False
+
+test "any bytes come back as they were" for numbers: list[int]:
+    data = bytes([n % 256 for n in numbers])
+    assert compress.gunzip(compress.gzip(data))? == data
+
+def main(stdout: Stdout):
+    save = "{\"level\": 3, \"score\": 120} " * 100
+    small = packed_save(save)
+    stdout.print(save.len(), small.len(), (compress.gunzip(small) else bytes([])) == save.encode())

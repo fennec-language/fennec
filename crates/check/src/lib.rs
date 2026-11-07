@@ -13,7 +13,6 @@
 //! besides the signatures, a check gives the type of every expression and every name: the
 //! typed tree a compiler builds on. See [`Types`].
 
-mod alias;
 mod annotations;
 mod builtins;
 mod call;
@@ -29,9 +28,15 @@ mod imports;
 mod index;
 mod infer;
 mod keys;
+mod lend;
+mod lend_lowering;
+mod lock;
+mod lock_lowering;
 mod loops;
 mod lost;
 mod messages;
+mod named;
+mod once;
 mod parallel;
 mod pattern;
 mod place;
@@ -39,6 +44,8 @@ mod privacy;
 mod program;
 mod protocols;
 mod rules;
+mod saving;
+mod shapes;
 mod shared;
 mod stdlib;
 mod stmt;
@@ -47,9 +54,11 @@ mod types;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use fennec_syntax::{Diagnostic, Expr, Module, Span};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, Module, Span};
 
 pub use messages::missing_method;
+pub use named::add_pattern_fixes;
+pub use privacy::add_rename_fixes;
 pub use types::Type;
 
 /// Checks a parsed module. Returns the signature of every function and method, or every
@@ -66,10 +75,14 @@ pub fn check_typed(module: &Module) -> Result<Checked, Vec<Diagnostic>> {
     let mut renamed = module.clone();
     hide_interface_params(&mut renamed);
     if names.is_empty() {
-        return checker::Checker::new(&renamed).run(false).map_err(|problems| as_written(problems, &names));
+        return checker::Checker::new(&renamed)
+            .run(checker::Scope::Everything)
+            .map_err(|problems| as_written(problems, &names));
     }
     fennec_syntax::rename::rename_types(&mut renamed, &names);
-    checker::Checker::new(&renamed).run(false).map_err(|problems| as_written(problems, &names))
+    checker::Checker::new(&renamed)
+        .run(checker::Scope::Everything)
+        .map_err(|problems| as_written(problems, &names))
 }
 
 /// The types a program declares with the same name as a standard library type, each with the
@@ -85,7 +98,14 @@ fn own_type_names(module: &Module) -> BTreeMap<String, String> {
         .items
         .iter()
         .filter_map(declared_name)
-        .filter(|name| library.contains(name))
+        // `Table` and `Id` are built in rather than written in the library, but a program can name
+        // its own types that too, and so are the capabilities: an interpreter's `struct Env` is
+        // its own type, not the `Env` `main` can be handed.
+        .filter(|name| {
+            library.contains(name)
+                || fennec_syntax::importable_type(name).is_some()
+                || shared::is_capability_type(&Type::named(name))
+        })
         .map(|name| (name.to_owned(), format!("{name}{}", fennec_syntax::rename::RENAMED)))
         .collect()
 }
@@ -145,7 +165,9 @@ fn without_hidden(text: &str) -> String {
 /// Gives each parameter typed by an interface a hidden type parameter bound by it, the
 /// program's own interfaces and the standard library's alike.
 fn hide_interface_params(module: &mut Module) {
+    saving::generate(module);
     fennec_syntax::rename::self_as_its_type(module);
+    fennec_syntax::rename::discards_apart(module);
     let library = fennec_syntax::prelude_modules().unwrap_or_default();
     let mut interfaces = fennec_syntax::visit::interface_names(library.iter().chain([&*module]));
     // A program's own type with an interface's name is that type.
@@ -199,6 +221,13 @@ pub fn builtin_method_changes(ty: &Type, name: &str) -> Option<bool> {
     builtins::method(ty, name).map(|method| method.changes)
 }
 
+/// The types a method the engines provide on a type takes, after the value it's called on:
+/// `dict.get` on a `dict[int | str, int]` takes an `int | str`. `None` when the type has no
+/// such method.
+pub fn builtin_method_params(ty: &Type, name: &str) -> Option<Vec<Type>> {
+    builtins::method(ty, name).map(|method| method.params)
+}
+
 /// Checks a parsed module, then writes into it the enum of each leading-dot case whose name
 /// more than one enum has, as the type expected where it's written decided: `.Int(value)`
 /// given back as an `ExprKind` becomes `ExprKind.Int(value)`. A `sum` of floats gets its
@@ -210,31 +239,111 @@ pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnost
     Ok(resolved(module, checked))
 }
 
+/// Makes the calls to `json.dumps`, `json.loads`, `toml.dumps` and `toml.loads` in a checked and
+/// resolved module call std's readers and writers written in Fennec instead, where what's read or
+/// written has its own `def serialize` or `def deserialize`, so native code needs no interpreter
+/// for them. The rest stay as they were. Says whether anything changed. If the changed module
+/// doesn't check, which would be a mistake here, it's left as it was.
+pub fn route_formats_natively(module: &mut Module) -> bool {
+    if !imports_a_format(module) && !sends_json(module) {
+        return false;
+    }
+    let Ok(checked) = check_typed(module) else { return false };
+    if checked.native_formats.is_empty() && checked.native_json_bodies.is_empty() {
+        return false;
+    }
+    let mut routed = module.clone();
+    fennec_syntax::visit::exprs_mut(&mut routed, &mut |expr| {
+        // `net.post(url, json=value)` sends `json.native_dumps(value)`: the JSON text.
+        if let ExprKind::Call { args, .. } = &mut expr.kind {
+            for arg in args.iter_mut().filter(|arg| arg.name.as_deref() == Some("json")) {
+                let at = arg.value.span;
+                if checked.native_json_bodies.contains(&(at.start, at.end)) {
+                    // The call gets an empty span of its own: what the checker writes in, like
+                    // the defaults `native_dumps` leaves out, is kept by span, and the value's is
+                    // the value's.
+                    let call = Span { start: at.start, end: at.start };
+                    let placeholder = Expr { kind: ExprKind::Bool(false), span: at };
+                    let value = std::mem::replace(&mut arg.value, placeholder);
+                    let callee = Expr { kind: ExprKind::Name("json.native_dumps".to_owned()), span: call };
+                    let args = vec![fennec_syntax::Arg { name: None, is_mut: false, value }];
+                    arg.value = Expr { kind: ExprKind::Call { callee: Box::new(callee), args }, span: call };
+                }
+            }
+        }
+        let Some(native) = checked.native_formats.get(&(expr.span.start, expr.span.end)) else { return };
+        if let ExprKind::Call { callee, .. } = &mut expr.kind {
+            let named = match &mut callee.kind {
+                ExprKind::Index { object, .. } => object,
+                _ => callee,
+            };
+            named.kind = ExprKind::Name(native.clone());
+        }
+    });
+    if check_and_resolve(&mut routed).is_err() {
+        return false;
+    }
+    *module = routed;
+    true
+}
+
+/// Whether a call is given `json=`, which only an HTTP call takes.
+fn sends_json(module: &Module) -> bool {
+    let mut sends = false;
+    let mut walked = module.clone();
+    fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
+        if let ExprKind::Call { args, .. } = &expr.kind {
+            sends |= args.iter().any(|arg| arg.name.as_deref() == Some("json"));
+        }
+    });
+    sends
+}
+
+fn imports_a_format(module: &Module) -> bool {
+    module.items.iter().any(|item| match item {
+        fennec_syntax::Item::Import(import) => match import.module.as_slice() {
+            [std, name, ..] if std == "std" => matches!(name.as_str(), "json" | "toml"),
+            [std] if std == "std" => import.bound().any(|(name, _)| matches!(name, "json" | "toml")),
+            _ => false,
+        },
+        _ => false,
+    })
+}
+
 /// Like `check_and_resolve`, for a module about to run: the standard library's functions are
 /// checked only when the module reaches them, so its signatures hold just those. The
 /// library's own tests check all of it.
 pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
+    checked_in(module, checker::Scope::Reached)
+}
+
+/// Like `check_to_run`, with every standard library type's fields typed too, so the module can
+/// be lowered to find what it costs, as `fennec lint` does, without checking all of the library.
+pub fn check_to_lower(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
+    checked_in(module, checker::Scope::ReachedWithFields)
+}
+
+fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, Vec<Diagnostic>> {
     library_parses()?;
     let names = own_types_apart(module);
-    let checked = checker::Checker::new(module).run(true).map_err(|problems| as_written(problems, &names))?;
+    let checked =
+        checker::Checker::new(module).run(scope).map_err(|problems| as_written(problems, &names))?;
     Ok(resolved(module, checked))
 }
 
 fn resolved(module: &mut Module, checked: Checked) -> Signatures {
     fennec_syntax::visit::type_fields_from_defaults(module);
-    if !checked.places.is_empty() {
-        fennec_syntax::visit::functions_mut(module, &mut |def| {
-            alias::write_in(&mut def.body, &checked.places);
-        });
-    }
+    named::put_in_order(module, &checked.named_patterns);
     if !checked.cases.is_empty()
         || !checked.float_sums.is_empty()
         || !checked.generator_types.is_empty()
         || !checked.defaults.is_empty()
         || !checked.not_equals.is_empty()
         || !checked.empty_collections.is_empty()
+        || !checked.array_zeros.is_empty()
         || !checked.optional_steps.is_empty()
         || !checked.std_names.is_empty()
+        || !checked.field_args.is_empty()
     {
         fennec_syntax::visit::exprs_mut(module, &mut |expr| {
             let span = (expr.span.start, expr.span.end);
@@ -248,15 +357,25 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
                 fennec_syntax::visit::add_defaults(expr, defaults);
             }
             if let Some(function) = checked.std_names.get(&span) {
-                expr.kind = fennec_syntax::ExprKind::Name(function.clone());
+                expr.kind = ExprKind::Name(function.clone());
+            }
+            if let ExprKind::Call { args, .. } = &mut expr.kind {
+                for arg in args.iter_mut().filter(|arg| arg.name.is_none()) {
+                    if let Some(field) = checked.field_args.get(&(arg.value.span.start, arg.value.span.end)) {
+                        arg.name = Some(field.clone());
+                    }
+                }
             }
             if checked.failing_steps.contains(&span) {
                 fennec_syntax::visit::none_on_failure(expr);
             }
             if checked.optional_steps.contains(&span)
-                && let fennec_syntax::ExprKind::Attr { optional, .. } = &mut expr.kind
+                && let ExprKind::Attr { optional, .. } = &mut expr.kind
             {
                 *optional = true;
+            }
+            if let Some(zero) = checked.array_zeros.get(&span) {
+                fennec_syntax::visit::filled_array(expr, zero);
             }
             if checked.empty_collections.contains(&span) {
                 fennec_syntax::visit::empty_collection(expr);
@@ -268,6 +387,14 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
                 fennec_syntax::visit::name_generator_type(expr, shown);
             }
         });
+    }
+    // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
+    // again, so the signatures and types given back are those of what runs.
+    let sources_written = lend_lowering::lower(module, &checked.sources);
+    if (lock_lowering::lower(module, &checked.shared_values) || sources_written)
+        && let Ok(again) = checker::Checker::new(module).run(checker::Scope::Everything)
+    {
+        return resolved(module, again);
     }
     fennec_syntax::fuse::stored_stages(module);
     checked.into_signatures()
@@ -297,14 +424,24 @@ pub struct Checked {
     cases: BTreeMap<(u32, u32), String>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.
     float_sums: BTreeSet<(u32, u32)>,
-    /// The statements that name a place, by `mut x = place`.
-    places: BTreeSet<(u32, u32)>,
     /// The defaults each call leaves out, to write into it.
     defaults: BTreeMap<(u32, u32), Vec<(String, Expr)>>,
     /// The type of each generator expression, which printing one shows.
     generator_types: BTreeMap<(u32, u32), String>,
     /// What each name for a standard library function written in Fennec means.
     std_names: BTreeMap<(u32, u32), String>,
+    /// The field each value given by position goes to, where that isn't the one at its place.
+    field_args: BTreeMap<(u32, u32), String>,
+    /// The fields, in order, of each pattern written with them by name.
+    named_patterns: BTreeMap<(u32, u32, String), Vec<String>>,
+    /// What each `shared name = value` holds, which lowering writes in.
+    shared_values: BTreeMap<(u32, u32), Type>,
+    /// The source each call that lends is to, which lowering writes in where it's used.
+    sources: BTreeMap<(u32, u32), lend_lowering::Source>,
+    /// The format calls native code can make in Fennec, by the call's span.
+    native_formats: BTreeMap<(u32, u32), String>,
+    /// The `json=` values of HTTP calls native code writes in Fennec, by the value's span.
+    native_json_bodies: BTreeSet<(u32, u32)>,
     /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
     not_equals: BTreeSet<(u32, u32)>,
     /// The fields and method calls on a value that might be missing, in a chain an `else`
@@ -314,6 +451,8 @@ pub struct Checked {
     failing_steps: BTreeSet<(u32, u32)>,
     /// The `list[T]()`, `dict[K, V]()` and `set[T]()` calls, written in as `[]`, `{}` and `set()`.
     empty_collections: BTreeSet<(u32, u32)>,
+    /// Each `array[T, N]()` and the zero it's filled with, written in as `array.new(zero)`.
+    array_zeros: BTreeMap<(u32, u32), Expr>,
 }
 
 /// The typed tree: the type of every expression and every declared name in a program,
@@ -522,6 +661,9 @@ pub struct Signature {
     pub can_fail: bool,
     /// Whether it's a generator: it contains `yield`.
     pub generator: bool,
+    /// Its own type parameters, in order, which its parameters and what it gives back may not
+    /// mention: only what's in brackets at a call can say what those stand for.
+    pub generics: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

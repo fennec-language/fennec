@@ -131,7 +131,7 @@ impl Pairs {
 }
 
 /// A hash that's the same for any two values `==` says are equal.
-fn hash_of(value: &Value) -> u64 {
+pub(crate) fn hash_of(value: &Value) -> u64 {
     let hash = hash_in(0, value);
     hash ^ (hash >> 29)
 }

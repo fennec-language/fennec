@@ -105,6 +105,8 @@ impl Interp<'_> {
             StmtKind::Return(value) => {
                 Ok(Flow::Return(value.as_ref().map_or(Ok(Value::Unit), |value| self.eval(value))?))
             }
+            // The checker writes each `lend` in where its source is used, so none is left to run.
+            StmtKind::Lend { .. } => Err(Diagnostic::new("`lend` runs only in a `with` source", stmt.span)),
             StmtKind::Fail(expr) => {
                 let error = self.eval(expr)?;
                 check_error(&error, expr.span)?;
@@ -115,7 +117,7 @@ impl Interp<'_> {
                 self.assert(expr)?;
                 Ok(Flow::Normal(Value::Unit))
             }
-            StmtKind::With { value, names, body } => self.with_block(value, names, body),
+            StmtKind::With { value, names, body, .. } => self.with_block(value, names, body),
             StmtKind::Def(def) => {
                 let function = Value::Function(Rc::new(callable(def, self.frame.visible())));
                 self.frame.declare(&def.name, function, false);
@@ -237,6 +239,7 @@ impl Interp<'_> {
             [] => vec!["_with"],
             names => names.iter().map(|held| held.name.as_str()).collect(),
         };
+        let mut locked = 0;
         if self.is_resuming() && matches!(self.resume_at(), Some(Position::With { .. })) {
         } else {
             let resource = self.eval(value)?;
@@ -244,12 +247,23 @@ impl Interp<'_> {
                 Value::Tuple(items) if keys.len() > 1 => items.to_vec(),
                 resource => vec![resource],
             };
+            taken_twice(&resources, value.span)?;
+            for resource in &resources {
+                if let Value::Shared(cell) = resource
+                    && !self.is_resource(cell)
+                {
+                    self.check_lock(cell, value.span)?;
+                    self.locks.push((Rc::clone(cell), self.depth));
+                    locked += 1;
+                }
+            }
             self.frame.push();
             for (at, (key, resource)) in keys.iter().zip(resources).enumerate() {
                 self.frame.declare(key, resource, names.get(at).is_some_and(|held| held.is_mut));
             }
         }
         let flow = self.exec_stmts(body);
+        self.locks.truncate(self.locks.len() - locked);
         let held: Vec<Value> =
             keys.iter().filter_map(|key| self.frame.get(key).map(|binding| binding.value.clone())).collect();
         if matches!(flow, Ok(Flow::Yield(_))) {
@@ -367,7 +381,7 @@ impl Interp<'_> {
             let place = if is_mut {
                 Some(self.mut_place(
                     iter,
-                    "`for mut` changes each item, so loop over something held in a mut name or field",
+                    "`for ref` changes each item, so loop over something held in a mut name or field",
                 )?)
             } else {
                 None
@@ -459,4 +473,41 @@ fn parallel_items(iter: &Expr) -> Option<&Expr> {
     let ExprKind::Name(name) = &callee.kind else { return None };
     let [first] = args.as_slice() else { return None };
     (name == "parallel" && first.name.is_none() && !first.is_mut).then_some(&first.value)
+}
+
+impl Interp<'_> {
+    /// What taking a `shared` value's lock checks. The function holding it reaches the value only
+    /// through what holds the lock, so anything further down, reaching it any other way, is
+    /// taking it again, which would wait forever with real threads and ends the program.
+    pub(crate) fn check_lock(
+        &self,
+        cell: &Rc<std::cell::RefCell<Value>>,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        let mut held = false;
+        for (locked, depth) in &self.locks {
+            if Rc::ptr_eq(locked, cell) {
+                if *depth == self.depth {
+                    return Ok(());
+                }
+                held = true;
+            }
+        }
+        if held {
+            return Err(Diagnostic::new("this takes the lock of a `shared` value that's already held", span));
+        }
+        Ok(())
+    }
+}
+
+/// A `with` that takes one `shared` value under two names ends the program.
+fn taken_twice(resources: &[Value], span: Span) -> Result<(), Diagnostic> {
+    for (at, resource) in resources.iter().enumerate() {
+        let Value::Shared(cell) = resource else { continue };
+        let earlier = resources.iter().take(at);
+        if earlier.into_iter().any(|other| matches!(other, Value::Shared(seen) if Rc::ptr_eq(seen, cell))) {
+            return Err(Diagnostic::new("this `with` takes the same `shared` value twice", span));
+        }
+    }
+    Ok(())
 }

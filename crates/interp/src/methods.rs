@@ -21,10 +21,24 @@ impl Interp<'_> {
         args: &[Arg],
         span: Span,
     ) -> Result<Value, Diagnostic> {
+        let wanted = self.json_type.take();
         let receiver = self.eval(object)?;
+        // `response.json[T]()`: the body read as the `T` the call names.
+        if let (Some(ty), "json", Value::Instance(response)) = (&wanted, method, &receiver)
+            && response.type_name.as_ref() == "Response"
+            && args.is_empty()
+        {
+            let body = match response.field("body") {
+                Some(Value::Bytes(body)) => String::from_utf8_lossy(body).into_owned(),
+                _ => String::new(),
+            };
+            return self.typed_loads("json.loads", ty, vec![CallArg::plain(Value::str(&body), span)], span);
+        }
         match &receiver {
             Value::None if optional => return Ok(Value::None),
-            Value::None => return Err(might_be_none(object.span)),
+            Value::None if self.built_in_method(&Value::None, method).is_none() => {
+                return Err(might_be_none(object.span));
+            }
             Value::Type(type_name) => return self.static_call(type_name, method, args, span),
             Value::Builtin("str") if method == "from_code" => {
                 let args = crate::collections::plain(self.eval_args(args)?, method, span)?;
@@ -46,8 +60,11 @@ impl Interp<'_> {
                 };
                 let function = self.type_info(&type_name).and_then(|info| info.methods.get(method).cloned());
                 let function = function.ok_or_else(|| no_method(&receiver, method, span))?;
-                drop(receiver);
-                return self.call_method(object, &function, args, span);
+                self.check_lock(cell, span)?;
+                self.locks.push((std::rc::Rc::clone(cell), self.depth + 1));
+                let called = self.call_method(object, &function, args, span);
+                self.locks.pop();
+                return called;
             }
             Value::Instance(instance) => {
                 let function =
@@ -192,7 +209,7 @@ fn changes_in_place(value: &Value, method: &str) -> bool {
         Value::Buffer(_) => &["push", "pop", "reserve", "truncate", "extend", "insert", "remove"],
         Value::Dict(_) => &["clear", "pop"],
         Value::Set(_) => &["add", "clear", "discard", "remove"],
-        Value::IdMap(_) => &["clear", "insert", "modify", "remove", "remove_where"],
+        Value::Table(_) => &["add", "clear", "modify", "remove", "remove_where"],
         _ => &[],
     };
     methods.contains(&method)

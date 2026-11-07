@@ -14,8 +14,8 @@ NEAR = 400.0
 def spread(n: int, top: float) -> float:
     float((n * 7919 + 104729) % 100003) / 100003.0 * top
 
-def step(mut units: list[Unit], hazards: list[(float, float)], dt: float):
-    for mut unit in units:
+def step(ref units: list[Unit], hazards: list[(float, float)], dt: float):
+    for ref unit in units:
         unit.x += unit.vx * dt
         unit.y += unit.vy * dt
         if unit.x < 0.0 or unit.x > SIZE:
@@ -37,15 +37,15 @@ def main(stdout: Stdout):
     mut units = [
         Unit(
             spread(n, SIZE),
-            spread(n * 3, SIZE),
-            spread(n * 5, 20.0) - 10.0,
-            spread(n * 7, 20.0) - 10.0,
-            100.0,
+            y=spread(n * 3, SIZE),
+            vx=spread(n * 5, 20.0) - 10.0,
+            vy=spread(n * 7, 20.0) - 10.0,
+            health=100.0,
         ) for n in range(count)
     ]
     hazards = [(spread(h * 11, SIZE), spread(h * 13, SIZE)) for h in range(32)]
     for _ in range(200):
-        step(mut units, hazards, 0.5)
+        step(ref units, hazards, 0.5)
     alive = sum((1 if unit.health > 0.0 else 0) for unit in units)
     mut health = 0.0
     for unit in units:

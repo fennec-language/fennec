@@ -1,61 +1,84 @@
 # A format is a type with a `Serializer`'s methods. Each call is compiled for the format it's
 # given, so nothing is looked up as it runs, and one `def serialize` serves every format.
+from std.collections import Id
 
 struct Shown:
     parts = list[str]()
 
-    def int(mut self, value: int):
+    def int(ref self, value: int):
         self.parts.append(str(value))
 
-    def float(mut self, value: float):
+    def float(ref self, value: float):
         self.parts.append(str(value))
 
-    def bool(mut self, value: bool):
+    def bool(ref self, value: bool):
         self.parts.append("yes" if value else "no")
 
-    def text(mut self, value: str):
+    def text(ref self, value: str):
         self.parts.append(f"'{value}'")
 
-    def bytes(mut self, value: bytes):
+    def bytes(ref self, value: bytes):
         self.parts.append("bytes")
 
-    def none(mut self):
+    def none(ref self):
         self.parts.append("nothing")
 
-    def value[T: Serializable](mut self, x: T):
-        x.serialize(mut self)
+    def value[T: Serializable](ref self, x: T):
+        x.serialize(ref self)
 
-    def sequence[T: Serializable](mut self, items: list[T]):
+    def sequence[T: Serializable](ref self, items: list[T]):
         self.parts.append("(")
         for item in items:
-            item.serialize(mut self)
+            item.serialize(ref self)
         self.parts.append(")")
 
-    def map[K: Serializable, V: Serializable](mut self, pairs: list[(K, V)]):
+    def map[K: Serializable, V: Serializable](ref self, pairs: list[(K, V)]):
         for key, value in pairs:
-            key.serialize(mut self)
+            key.serialize(ref self)
             self.parts.append("=")
-            value.serialize(mut self)
+            value.serialize(ref self)
 
-    def record(mut self, name: str, count: int):
+    def record(ref self, name: str, count: int):
         self.parts.append(f"{name}/{count}")
 
-    def field[T: Serializable](mut self, name: str, x: T):
+    def field[T: Serializable](ref self, name: str, x: T):
         self.parts.append(f"{name}:")
-        x.serialize(mut self)
+        x.serialize(ref self)
 
-    def renamed[T: Serializable](mut self, name: str, x: T):
+    def renamed[T: Serializable](ref self, name: str, x: T):
         self.parts.append(f"as {name}:")
-        x.serialize(mut self)
+        x.serialize(ref self)
 
-    def end(mut self):
+    def end(ref self):
         self.parts.append(".")
 
-    def case(mut self, name: str, case: str):
+    def case(ref self, name: str, case: str, at: int):
         self.parts.append(f"{name}.{case}")
 
-    def case_record(mut self, name: str, case: str, count: int):
+    def case_record(ref self, name: str, case: str, at: int, count: int):
         self.parts.append(f"{name}.{case}/{count}")
+
+    def member(ref self, name: str, at: int):
+        pass
+
+    def end_member(ref self):
+        pass
+
+    def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+        self.sequence(items)
+
+    def exact(self) -> bool:
+        False
+
+    def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+        # Never asked for: `exact` says no.
+        pass
+
+    def id(ref self, kind: str, key: int, tag: int):
+        self.parts.append(f"Id[{kind}]")
+
+    def some[T: Serializable](ref self, x: T):
+        x.serialize(ref self)
 
     def shown(self) -> str:
         " ".join(self.parts)
@@ -64,92 +87,91 @@ struct Shown:
 struct Counted:
     total = 0
 
-    def int(mut self, value: int):
+    def int(ref self, value: int):
         self.total += 1
 
-    def float(mut self, value: float):
+    def float(ref self, value: float):
         self.total += 1
 
-    def bool(mut self, value: bool):
+    def bool(ref self, value: bool):
         self.total += 1
 
-    def text(mut self, value: str):
+    def text(ref self, value: str):
         self.total += 1
 
-    def bytes(mut self, value: bytes):
+    def bytes(ref self, value: bytes):
         self.total += 1
 
-    def none(mut self):
+    def none(ref self):
         self.total += 1
 
-    def value[T: Serializable](mut self, x: T):
-        x.serialize(mut self)
+    def value[T: Serializable](ref self, x: T):
+        x.serialize(ref self)
 
-    def sequence[T: Serializable](mut self, items: list[T]):
+    def sequence[T: Serializable](ref self, items: list[T]):
         for item in items:
-            item.serialize(mut self)
+            item.serialize(ref self)
 
-    def map[K: Serializable, V: Serializable](mut self, pairs: list[(K, V)]):
+    def map[K: Serializable, V: Serializable](ref self, pairs: list[(K, V)]):
         for key, value in pairs:
-            value.serialize(mut self)
+            value.serialize(ref self)
 
-    def record(mut self, name: str, count: int):
+    def record(ref self, name: str, count: int):
         pass
 
-    def field[T: Serializable](mut self, name: str, x: T):
-        x.serialize(mut self)
+    def field[T: Serializable](ref self, name: str, x: T):
+        x.serialize(ref self)
 
-    def renamed[T: Serializable](mut self, name: str, x: T):
-        x.serialize(mut self)
+    def renamed[T: Serializable](ref self, name: str, x: T):
+        x.serialize(ref self)
 
-    def end(mut self):
+    def end(ref self):
         pass
 
-    def case(mut self, name: str, case: str):
+    def case(ref self, name: str, case: str, at: int):
         self.total += 1
 
-    def case_record(mut self, name: str, case: str, count: int):
+    def case_record(ref self, name: str, case: str, at: int, count: int):
         self.total += 1
+
+    def member(ref self, name: str, at: int):
+        pass
+
+    def end_member(ref self):
+        pass
+
+    def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+        self.sequence(items)
+
+    def exact(self) -> bool:
+        False
+
+    def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+        # Never asked for: `exact` says no.
+        pass
+
+    def id(ref self, kind: str, key: int, tag: int):
+        self.total += 1
+
+    def some[T: Serializable](ref self, x: T):
+        x.serialize(ref self)
 
 struct Spot:
     x: int
     label: str
 
-    def serialize(self, mut out: Serializer):
-        out.record("Spot", 2)
-        out.field("x", self.x)
-        out.field("label", self.label)
-        out.end()
-
 enum Order:
     Hold
     Move(x: int)
 
-    def serialize(self, mut out: Serializer):
-        match self:
-            case .Hold:
-                out.case("Order", "Hold")
-            case .Move(x):
-                out.case_record("Order", "Move", 1)
-                out.field("x", x)
-                out.end()
-                out.end()
-
+# `def serialize` and `def deserialize` are generated from the fields.
 struct Squad:
     spots: list[Spot]
+    @serialize(name="points")
     scores: dict[str, int]
     ready: bool
     pace: float
     order: Order
-
-    def serialize(self, mut out: Serializer):
-        out.record("Squad", 5)
-        out.field("spots", self.spots)
-        out.renamed("points", self.scores)
-        out.field("ready", self.ready)
-        out.field("pace", self.pace)
-        out.field("order", self.order)
-        out.end()
 
 def shown[T: Serializable](x: T) -> str:
     mut out = Shown()
@@ -181,10 +203,14 @@ def main(stdout: Stdout):
         scores={"ash": 3},
         ready=True,
         pace=0.5,
-        order=Order.Move(x=4),
+        order=.Move(x=4),
     )
     stdout.print(shown(squad))
     mut counted = Counted()
-    squad.serialize(mut counted)
+    squad.serialize(ref counted)
     stdout.print(counted.total)
     stdout.print(shown(bytes([1, 2])))
+
+    # What might be missing is saved as what it holds, or as nothing.
+    maybes: list[int?] = [1, None]
+    stdout.print(shown(maybes))

@@ -1,6 +1,6 @@
 //! `unused-param`: a parameter the function never reads. The fix removes it, and the argument
 //! for it at every call. Only a function whose every call it can see is touched: a top-level
-//! function that isn't `pub`, so no other kit calls it, isn't `main`, which the program is
+//! function that isn't exported, so no other kit calls it, isn't `main`, which the program is
 //! started with, and is never used except by calling it by name, so no one holds it as a value
 //! that has to take the parameter. Methods are left alone, since an interface may need the
 //! parameter. One parameter of a function is removed at a time, so its edits never overlap.
@@ -17,20 +17,20 @@ fn local(sources: &Sources, span: Span) -> Option<(&str, u32, usize, usize)> {
     Some((text, base, at(span.start)?, at(span.end)?))
 }
 
-/// Whether a function is written `pub def`, which other kits can call.
+/// Whether a function is written `export def`, which other kits can call.
 fn public(def: &FnDef, sources: &Sources) -> bool {
     let Some((text, _, start, _)) = local(sources, def.span) else { return true };
     let line_start = text.get(..start).and_then(|before| before.rfind('\n')).map_or(0, |at| at + 1);
-    text.get(line_start..).is_none_or(|line| line.trim_start().starts_with("pub "))
+    text.get(line_start..).is_none_or(|line| line.trim_start().starts_with("export "))
 }
 
-/// Where a call's argument starts as written: before `name=` or `mut`, which its value's span
-/// leaves out.
+/// Where a call's argument starts as written: before `name=` or `ref`, which its value's
+/// span leaves out.
 fn arg_start(text: &str, base: u32, arg: &Arg) -> Option<u32> {
     let value = usize::try_from(arg.value.span.start.checked_sub(base)?).ok()?;
     let mut before = text.get(..value)?.trim_end();
     if arg.is_mut {
-        before = before.strip_suffix("mut")?.trim_end();
+        before = before.strip_suffix("ref")?;
     }
     if let Some(name) = &arg.name {
         before = before.strip_suffix('=')?.trim_end().strip_suffix(name.as_str())?;

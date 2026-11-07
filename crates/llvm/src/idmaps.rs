@@ -1,8 +1,10 @@
-//! `IdMap`s and `Id`s, which the runtime doesn't hold natively. An `Id` is a plain struct of its
-//! slot and generation. An `IdMap` is a boxed struct of its items, each slot's generation, and
-//! how many are live: a removed slot's generation is stored as `-1 - generation`, and its item
+//! `Table`s and `Id`s, which the runtime doesn't hold natively. An `Id` is a plain struct of two
+//! words: its slot and generation, 32 bits each in one, and its tag. A `Table` is a boxed struct of its items, each slot's generation,
+//! how many are live, and its tag, a number from the runtime no other `Table` has, so an `Id`
+//! from another finds nothing in it: a removed slot's generation is stored as `-1 - generation`, and its item
 //! is zero, so a stale `Id` never finds the wrong thing and a slot is used again with the next
-//! generation, as the interpreter's are. The first free slot is used first, and the map says how
+//! generation, as the interpreter's are. A slot whose generation can't go higher is retired, never
+//! used again, so a generation never comes round. The first free slot is used first, and the map says how
 //! far up there's none, so filling a map doesn't look again at what it's filled already.
 
 use fennec_ir::{LocalId, Operand};
@@ -14,21 +16,30 @@ use crate::lists::{FIELDS_OFFSET, list_item};
 
 /// What failing to find an `Id` says, as the interpreter does.
 const REMOVED: &str = "this Id refers to something that's been removed";
+const ANOTHER: &str = "this Id is from another Table";
 
-/// Where an `IdMap`'s parts are, from its fields' start, and how its items are held.
+/// A slot removed at the last generation an `Id` can hold, `-1 - u32::MAX`, which is never used
+/// again.
+const RETIRED: i64 = -4_294_967_296;
+
+/// An `Id`'s slot, generation and tag, loaded.
+type IdParts = (String, String, String);
+
+/// Where a `Table`'s parts are, from its fields' start, and how its items are held.
 struct Parts {
     items: u32,
     generations: u32,
     live: u32,
     free_from: u32,
+    tag: u32,
     held: Kind,
 }
 
 impl Emit<'_, '_, '_> {
-    /// Whether a kind is an `IdMap`'s.
+    /// Whether a kind is a `Table`'s.
     pub(crate) fn is_id_map(&self, kind: &Kind) -> bool {
         let Kind::Boxed(id) = kind else { return false };
-        self.module.layouts.get(*id).is_some_and(|layout| layout.name.starts_with("IdMap["))
+        self.module.layouts.get(*id).is_some_and(|layout| layout.name.starts_with("Table["))
     }
 
     fn parts(&self, kind: &Kind) -> Result<Parts, String> {
@@ -36,21 +47,69 @@ impl Emit<'_, '_, '_> {
         let (generations, _) = self.field(kind, "generations")?;
         let (live, _) = self.field(kind, "live")?;
         let (free_from, _) = self.field(kind, "free_from")?;
+        let (tag, _) = self.field(kind, "tag")?;
         let held = self.item_kind(list_item(&items_kind)?)?;
-        Ok(Parts { items, generations, live, free_from, held })
+        Ok(Parts { items, generations, live, free_from, tag, held })
     }
 
-    /// An `Id`'s slot and generation.
-    fn id_parts(&mut self, id: &Operand) -> Result<(String, String), String> {
+    /// An `Id`'s slot, generation and tag.
+    fn id_parts(&mut self, id: &Operand) -> Result<IdParts, String> {
         let (at, _) = self.operand(id)?;
-        let (slot, generation) = (self.temp(), self.temp());
-        let generation_at = self.offset(&at, 8);
-        self.line(&format!("{slot} = load i64, ptr {at}"));
-        self.line(&format!("{generation} = load i64, ptr {generation_at}"));
-        Ok((slot, generation))
+        let (key, slot, generation, tag) = (self.temp(), self.temp(), self.temp(), self.temp());
+        let tag_at = self.offset(&at, 8);
+        self.line(&format!("{key} = load i64, ptr {at}"));
+        self.line(&format!("{slot} = lshr i64 {key}, 32"));
+        self.line(&format!("{generation} = and i64 {key}, 4294967295"));
+        self.line(&format!("{tag} = load i64, ptr {tag_at}"));
+        Ok((slot, generation, tag))
     }
 
-    /// The address of the list at `offset` into an `IdMap`'s block, and the list.
+    /// An `Id`'s key: its slot in the high 32 bits, and its generation in the low 32.
+    fn id_key_of(&mut self, id: &Operand) -> Result<String, String> {
+        let (at, _) = self.operand(id)?;
+        let key = self.temp();
+        self.line(&format!("{key} = load i64, ptr {at}"));
+        Ok(key)
+    }
+
+    /// Writes an `Id` where `base` is.
+    fn write_id(&mut self, base: &str, (slot, generation, tag): (&str, &str, &str)) {
+        let (high, key) = (self.temp(), self.temp());
+        self.line(&format!("{high} = shl i64 {slot}, 32"));
+        self.line(&format!("{key} = or i64 {high}, {generation}"));
+        let tag_at = self.offset(base, 8);
+        self.line(&format!("store i64 {key}, ptr {base}"));
+        self.line(&format!("store i64 {tag}, ptr {tag_at}"));
+    }
+
+    /// A `Table`'s tag, from its block.
+    fn tag_of(&mut self, block: &str, parts: &Parts) -> String {
+        let fields = self.offset(block, FIELDS_OFFSET);
+        let at = self.offset(&fields, parts.tag);
+        let tag = self.temp();
+        self.line(&format!("{tag} = load i64, ptr {at}"));
+        tag
+    }
+
+    /// Whether an `Id` is from the `Table` whose block this is.
+    fn same_table(&mut self, block: &str, parts: &Parts, id: &IdParts) -> String {
+        let tag = self.tag_of(block, parts);
+        let same = self.temp();
+        self.line(&format!("{same} = icmp eq i64 {}, {tag}", id.2));
+        same
+    }
+
+    /// Ends the program because `id` finds nothing in the `Table` whose block this is, saying
+    /// whether it's from another `Table` or its item has been removed.
+    fn stop_missing(&mut self, block: &str, parts: &Parts, id: &IdParts, span: Span) {
+        let same = self.same_table(block, parts, id);
+        let (removed, another) = (self.literal(REMOVED), self.literal(ANOTHER));
+        let text = self.temp();
+        self.line(&format!("{text} = select i1 {same}, ptr {removed}, ptr {another}"));
+        self.stop_with(&text, span);
+    }
+
+    /// The address of the list at `offset` into a `Table`'s block, and the list.
     fn part(&mut self, block: &str, offset: u32, alone: bool) -> (String, String) {
         let fields = self.offset(block, FIELDS_OFFSET);
         let place = self.offset(&fields, offset);
@@ -64,16 +123,21 @@ impl Emit<'_, '_, '_> {
         (place, list)
     }
 
-    /// Whether an `Id` still finds its item: inside the slots, with the slot's generation.
-    fn finds(&mut self, generations: &str, (slot, generation): (&str, &str)) -> String {
-        let length = self.list_length(generations);
-        let inside = self.temp();
-        self.line(&format!("{inside} = icmp ult i64 {slot}, {length}"));
+    /// Whether an `Id` still finds its item: from this `Table`, inside its slots, with the slot's
+    /// generation.
+    fn finds(&mut self, block: &str, parts: &Parts, id: &IdParts) -> String {
+        let same = self.same_table(block, parts, id);
+        let (_, generations) = self.part(block, parts.generations, false);
+        let (slot, generation) = (&id.0, &id.1);
+        let length = self.list_length(&generations);
+        let (within, inside) = (self.temp(), self.temp());
+        self.line(&format!("{within} = icmp ult i64 {slot}, {length}"));
+        self.line(&format!("{inside} = and i1 {same}, {within}"));
         let (check, outside, joined) = (self.label("check"), self.label("outside"), self.label("found"));
         let before = self.current.clone();
         self.line(&format!("br i1 {inside}, label %{check}, label %{outside}"));
         self.start_block(&check);
-        let at = self.item_address(generations, "i64", slot);
+        let at = self.item_address(&generations, "i64", slot);
         let (held, same) = (self.temp(), self.temp());
         self.line(&format!("{held} = load i64, ptr {at}{ITEM_ACCESS}"));
         self.line(&format!("{same} = icmp eq i64 {held}, {generation}"));
@@ -130,7 +194,7 @@ impl Emit<'_, '_, '_> {
         if !owned {
             self.retain_inline(held, at);
         }
-        if matches!(optional, Kind::Maybe(_)) {
+        if matches!(optional, Kind::Maybe(_) | Kind::MaybeText) {
             return self.assign(dest, &value);
         }
         let (number, fields) = self.case_of(&optional, "Some")?;
@@ -157,6 +221,66 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store {memory} zeroinitializer, ptr {at}{ITEM_ACCESS}"));
     }
 
+    /// Removes the items a test picks, or all of them with no test.
+    fn id_map_remove(&mut self, map: LocalId, parts: &Parts, test: Option<(&str, &Kind)>, span: Span) {
+        let held = parts.held.clone();
+        let memory = held.memory(self.module.layouts);
+        let place = self.slot(map);
+        let block = self.alone_at(&place, "fennec_unshare");
+        let (_, generations) = self.part(&block, parts.generations, true);
+        let (_, items) = self.part(&block, parts.items, true);
+        let length = self.list_length(&generations);
+        let (at, end) = self.loop_begin(&length);
+        let generation_at = self.item_address(&generations, "i64", &at);
+        let (generation, is_live) = (self.temp(), self.temp());
+        self.line(&format!("{generation} = load i64, ptr {generation_at}{ITEM_ACCESS}"));
+        self.line(&format!("{is_live} = icmp sge i64 {generation}, 0"));
+        let (live, take, next) = (self.label("live"), self.label("take"), self.label("next"));
+        self.line(&format!("br i1 {is_live}, label %{live}, label %{next}"));
+        self.start_block(&live);
+        let item_at = self.item_address(&items, &memory, &at);
+        let value =
+            if held.in_memory() { item_at.clone() } else { self.load_field(&held, &item_at, ITEM_ACCESS) };
+        match test {
+            Some((closure, returns)) => {
+                let text = if held.in_memory() { "ptr".to_owned() } else { self.text_of(&held) };
+                let gone = self.call_closure_with(closure, returns, &[format!("{text} {value}")], span);
+                self.line(&format!("br i1 {gone}, label %{take}, label %{next}"));
+            }
+            None => self.line(&format!("br label %{take}")),
+        }
+        self.start_block(&take);
+        if held.in_memory() {
+            self.release_inline(&held, &item_at);
+        } else if held.counted() {
+            self.release_kind(&value, &held);
+        }
+        self.clear_item(&held, &item_at);
+        let removed = self.temp();
+        self.line(&format!("{removed} = sub i64 -1, {generation}"));
+        self.line(&format!("store i64 {removed}, ptr {generation_at}{ITEM_ACCESS}"));
+        let fields = self.offset(&block, FIELDS_OFFSET);
+        let live_at = self.offset(&fields, parts.live);
+        let (count, one_fewer) = (self.temp(), self.temp());
+        self.line(&format!("{count} = load i64, ptr {live_at}"));
+        self.line(&format!("{one_fewer} = add i64 {count}, -1"));
+        self.line(&format!("store i64 {one_fewer}, ptr {live_at}"));
+        self.free_slot(&fields, parts, &at);
+        self.line(&format!("br label %{next}"));
+        self.start_block(&next);
+        self.loop_end(&end);
+    }
+
+    /// There's a free slot at `at` now, so nothing above it may be used first.
+    fn free_slot(&mut self, fields: &str, parts: &Parts, at: &str) {
+        let free_at = self.offset(fields, parts.free_from);
+        let (first, lower, lowest) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{first} = load i64, ptr {free_at}"));
+        self.line(&format!("{lower} = icmp slt i64 {at}, {first}"));
+        self.line(&format!("{lowest} = select i1 {lower}, i64 {at}, i64 {first}"));
+        self.line(&format!("store i64 {lowest}, ptr {free_at}"));
+    }
+
     pub(crate) fn id_map_builtin(
         &mut self,
         dest: Option<LocalId>,
@@ -164,17 +288,17 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
-        if name == "IdMap" {
+        if name == "Table" {
             return self.new_id_map(dest.ok_or("no result")?);
         }
         let map = args.first().ok_or("no argument")?;
-        let Operand::Local(map) = map else { return Err("an IdMap that isn't a local".to_owned()) };
+        let Operand::Local(map) = map else { return Err("a Table that isn't a local".to_owned()) };
         let kind = self.kind_of(*map)?.clone();
         let parts = self.parts(&kind)?;
         let held = parts.held.clone();
         let memory = held.memory(self.module.layouts);
         match name {
-            "IdMap.len" => {
+            "Table.len" => {
                 let (block, _) = self.operand(&Operand::Local(*map))?;
                 let fields = self.offset(&block, FIELDS_OFFSET);
                 let at = self.offset(&fields, parts.live);
@@ -182,19 +306,49 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{live} = load i64, ptr {at}"));
                 self.assign(dest.ok_or("no result")?, &live)
             }
-            "IdMap.contains" => {
+            "Table.contains" => {
                 let id = self.id_parts(args.get(1).ok_or("no argument")?)?;
                 let (block, _) = self.operand(&Operand::Local(*map))?;
-                let (_, generations) = self.part(&block, parts.generations, false);
-                let found = self.finds(&generations, (&id.0, &id.1));
+                let found = self.finds(&block, &parts, &id);
                 self.assign(dest.ok_or("no result")?, &found)
             }
-            "IdMap.get" => {
+            // A loop going through the slots in place: how many there are, whether one has an
+            // item, the item, and its `Id`. The loop keeps inside the slots.
+            "Table.slots" => {
+                let (block, _) = self.operand(&Operand::Local(*map))?;
+                let (_, generations) = self.part(&block, parts.generations, false);
+                let count = self.list_length(&generations);
+                self.assign(dest.ok_or("no result")?, &count)
+            }
+            "Table.slot_live" | "Table.slot_id" => {
+                let (at, _) = self.operand(args.get(1).ok_or("no slot")?)?;
+                let (block, _) = self.operand(&Operand::Local(*map))?;
+                let (_, generations) = self.part(&block, parts.generations, false);
+                let word_at = self.item_address(&generations, "i64", &at);
+                let word = self.temp();
+                self.line(&format!("{word} = load i64, ptr {word_at}{ITEM_ACCESS}"));
+                if name == "Table.slot_live" {
+                    let live = self.temp();
+                    self.line(&format!("{live} = icmp sge i64 {word}, 0"));
+                    return self.assign(dest.ok_or("no result")?, &live);
+                }
+                let tag = self.tag_of(&block, &parts);
+                let place = self.slot(dest.ok_or("no result")?);
+                self.write_id(&place, (&at, &word, &tag));
+                Ok(())
+            }
+            "Table.at_slot" => {
+                let (at, _) = self.operand(args.get(1).ok_or("no slot")?)?;
+                let (block, _) = self.operand(&Operand::Local(*map))?;
+                let (_, items) = self.part(&block, parts.items, false);
+                let place = self.item_address(&items, &memory, &at);
+                self.read_into(dest.ok_or("no result")?, &held, &place, ITEM_ACCESS)
+            }
+            "Table.get" => {
                 let dest = dest.ok_or("no result")?;
                 let id = self.id_parts(args.get(1).ok_or("no argument")?)?;
                 let (block, _) = self.operand(&Operand::Local(*map))?;
-                let (_, generations) = self.part(&block, parts.generations, false);
-                let found = self.finds(&generations, (&id.0, &id.1));
+                let found = self.finds(&block, &parts, &id);
                 let (yes, no, done) = (self.label("got"), self.label("none"), self.label("gotten"));
                 self.line(&format!("br i1 {found}, label %{yes}, label %{no}"));
                 self.start_block(&yes);
@@ -208,7 +362,7 @@ impl Emit<'_, '_, '_> {
                 self.start_block(&done);
                 Ok(())
             }
-            "IdMap.insert" => {
+            "Table.add" => {
                 let value = args.get(1).ok_or("no argument")?;
                 let (value, fresh) = self.value_for(value, &held)?;
                 if held.counted() && !fresh {
@@ -229,9 +383,10 @@ impl Emit<'_, '_, '_> {
                 let first = self.temp();
                 self.line(&format!("{first} = load i64, ptr {free_at}"));
                 let before = self.current.clone();
-                let (head, body, next, reuse, append, done) = (
+                let (head, body, free, next, reuse, append, done) = (
                     self.label("look"),
                     self.label("slot"),
+                    self.label("free"),
                     self.label("next"),
                     self.label("reuse"),
                     self.label("append"),
@@ -245,10 +400,15 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("br i1 {more}, label %{body}, label %{append}"));
                 self.start_block(&body);
                 let generation_at = self.item_address(&generations, "i64", &at);
-                let (stored, removed) = (self.temp(), self.temp());
+                let (stored, removed, spent) = (self.temp(), self.temp(), self.temp());
                 self.line(&format!("{stored} = load i64, ptr {generation_at}{ITEM_ACCESS}"));
                 self.line(&format!("{removed} = icmp slt i64 {stored}, 0"));
-                self.line(&format!("br i1 {removed}, label %{reuse}, label %{next}"));
+                self.line(&format!("br i1 {removed}, label %{free}, label %{next}"));
+                // Free, and not retired: removed at a generation below the last there is. Only a
+                // free slot is asked, so the slots passed on the way cost nothing more.
+                self.start_block(&free);
+                self.line(&format!("{spent} = icmp eq i64 {stored}, {RETIRED}"));
+                self.line(&format!("br i1 {spent}, label %{next}, label %{reuse}, !prof !0"));
                 self.start_block(&next);
                 self.line(&format!("{step} = add i64 {at}, 1"));
                 self.line(&format!("br label %{head}"));
@@ -281,19 +441,18 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{one_more} = add i64 {live}, 1"));
                 self.line(&format!("store i64 {one_more}, ptr {live_at}"));
                 if let Some(dest) = dest {
+                    let tag = self.tag_of(&block, &parts);
                     let at = self.slot(dest);
-                    let generation_at = self.offset(&at, 8);
-                    self.line(&format!("store i64 {slot}, ptr {at}"));
-                    self.line(&format!("store i64 {generation}, ptr {generation_at}"));
+                    self.write_id(&at, (&slot, &generation, &tag));
                 }
                 Ok(())
             }
-            "IdMap.remove" => {
+            "Table.remove" => {
                 let id = self.id_parts(args.get(1).ok_or("no argument")?)?;
                 let place = self.slot(*map);
                 let block = self.alone_at(&place, "fennec_unshare");
                 let (_, generations) = self.part(&block, parts.generations, true);
-                let found = self.finds(&generations, (&id.0, &id.1));
+                let found = self.finds(&block, &parts, &id);
                 let (yes, no, done) = (self.label("take"), self.label("none"), self.label("removed"));
                 self.line(&format!("br i1 {found}, label %{yes}, label %{no}"));
                 self.start_block(&yes);
@@ -320,13 +479,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{live} = load i64, ptr {live_at}"));
                 self.line(&format!("{one_fewer} = add i64 {live}, -1"));
                 self.line(&format!("store i64 {one_fewer}, ptr {live_at}"));
-                // There's a free slot here now, so nothing above it may be used first.
-                let free_at = self.offset(&fields, parts.free_from);
-                let (first, lower, lowest) = (self.temp(), self.temp(), self.temp());
-                self.line(&format!("{first} = load i64, ptr {free_at}"));
-                self.line(&format!("{lower} = icmp slt i64 {}, {first}", id.0));
-                self.line(&format!("{lowest} = select i1 {lower}, i64 {}, i64 {first}", id.0));
-                self.line(&format!("store i64 {lowest}, ptr {free_at}"));
+                self.free_slot(&fields, &parts, &id.0);
                 self.line(&format!("br label %{done}"));
                 self.start_block(&no);
                 if let Some(dest) = dest {
@@ -336,13 +489,57 @@ impl Emit<'_, '_, '_> {
                 self.start_block(&done);
                 Ok(())
             }
+            "Table.remove_where" => {
+                let (closure, closure_kind) = self.operand(args.get(1).ok_or("no argument")?)?;
+                let Kind::Closure(_, returns) = closure_kind else {
+                    return Err("a test that isn't a closure".to_owned());
+                };
+                self.id_map_remove(*map, &parts, Some((&closure, &returns)), span);
+                Ok(())
+            }
+            "Table.modify" => {
+                let id = self.id_parts(args.get(1).ok_or("no argument")?)?;
+                let (closure, closure_kind) = self.operand(args.get(2).ok_or("no argument")?)?;
+                let Kind::Closure(_, returns) = closure_kind else {
+                    return Err("a change that isn't a closure".to_owned());
+                };
+                if held == Kind::Bool {
+                    return Err(
+                        "it changes a bool in a `Table`, which this backend doesn't take yet".to_owned()
+                    );
+                }
+                let place = self.slot(*map);
+                let block = self.alone_at(&place, "fennec_unshare");
+                let found = self.finds(&block, &parts, &id);
+                let (yes, done) = (self.label("change"), self.label("changed"));
+                self.line(&format!("br i1 {found}, label %{yes}, label %{done}"));
+                self.start_block(&yes);
+                let (_, items) = self.part(&block, parts.items, true);
+                let at = self.item_address(&items, &memory, &id.0);
+                let given = self.call_closure_with(&closure, &returns, &[format!("ptr {at}")], span);
+                if returns.in_memory() {
+                    self.release_inline(&returns, &given);
+                } else if returns.counted() {
+                    self.release_kind(&given, &returns);
+                }
+                self.line(&format!("br label %{done}"));
+                self.start_block(&done);
+                match dest {
+                    Some(dest) => self.assign(dest, &found),
+                    None => Ok(()),
+                }
+            }
+            "Table.clear" => {
+                self.id_map_remove(*map, &parts, None, span);
+                Ok(())
+            }
             // Only gone through in order, it's never made: the loop walks the slots.
-            "IdMap.values" | "IdMap.items"
+            "Table.values" | "Table.items"
                 if dest.is_some_and(|dest| self.known.map_walks.contains_key(&dest.0)) =>
             {
                 Ok(())
             }
-            "IdMap.values" | "IdMap.ids" | "IdMap.items" => {
+            "Table.values" | "Table.ids" | "Table.items" => {
                 self.id_map_list(dest.ok_or("no result")?, *map, &parts, name)
             }
             other => {
@@ -352,9 +549,157 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    fn new_id_map(&mut self, dest: LocalId) -> Result<(), String> {
+    /// `std.intrinsics`' ways into an `Id`, which std uses to save and load them: a number for
+    /// one, the `Id` of an item in a `Table` nothing's been taken out of, and the tags that say
+    /// which `Table` each is, with a new `Table` of a tag a load gives it.
+    pub(crate) fn id_intrinsic(
+        &mut self,
+        dest: Option<LocalId>,
+        name: &str,
+        args: &[Operand],
+    ) -> Result<(), String> {
+        let dest = dest.ok_or("no result")?;
+        if name == "intrinsics.new_tag" {
+            let tag = self.new_tag();
+            return self.assign(dest, &tag);
+        }
+        let given = args.first().ok_or("no argument")?;
+        match name {
+            "intrinsics.id_key" => {
+                let key = self.id_key_of(given)?;
+                self.assign(dest, &key)
+            }
+            "intrinsics.id_at" => {
+                let (position, _) = self.operand(given)?;
+                let (tag, _) = self.operand(args.get(1).ok_or("no tag")?)?;
+                let at = self.slot(dest);
+                self.write_id(&at, (&position, "0", &tag));
+                Ok(())
+            }
+            "intrinsics.id_tag" => {
+                let (_, _, tag) = self.id_parts(given)?;
+                self.assign(dest, &tag)
+            }
+            "intrinsics.table_tag" => {
+                let (block, kind) = self.operand(given)?;
+                let parts = self.parts(&kind)?;
+                let tag = self.tag_of(&block, &parts);
+                self.assign(dest, &tag)
+            }
+            "intrinsics.id_of_key" => {
+                let (key, _) = self.operand(given)?;
+                let (tag, _) = self.operand(args.get(1).ok_or("no tag")?)?;
+                let at = self.slot(dest);
+                let tag_at = self.offset(&at, 8);
+                self.line(&format!("store i64 {key}, ptr {at}"));
+                self.line(&format!("store i64 {tag}, ptr {tag_at}"));
+                Ok(())
+            }
+            // The generations a `Table` holds are its slots as `table_slots` gives them: the
+            // same list, shared until one of them changes it.
+            "intrinsics.table_slots" => {
+                let (block, kind) = self.operand(given)?;
+                let parts = self.parts(&kind)?;
+                let (_, generations) = self.part(&block, parts.generations, false);
+                let list = self.kind_of(dest)?.clone();
+                self.retain_value(&generations, &list);
+                self.assign(dest, &generations)
+            }
+            "intrinsics.table_of_slots" => self.table_of_slots(dest, args),
+            "intrinsics.table_tagged" => {
+                let (tag, _) = self.operand(given)?;
+                self.new_id_map_tagged(dest, Some(&tag))
+            }
+            other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
+        }
+    }
+
+    /// A new `Table` of a tag, with each slot as `table_slots` gives it and the items in the
+    /// slots in use, in order. A load has checked there are as many items as slots in use.
+    fn table_of_slots(&mut self, dest: LocalId, args: &[Operand]) -> Result<(), String> {
+        let (tag, _) = self.operand(args.first().ok_or("no tag")?)?;
+        let (slots, slots_kind) = self.operand(args.get(1).ok_or("no slots")?)?;
+        let (items, _) = self.operand(args.get(2).ok_or("no items")?)?;
         let kind = self.kind_of(dest)?.clone();
-        let Kind::Boxed(id) = kind else { return Err("an IdMap that isn't boxed".to_owned()) };
+        let Kind::Boxed(id) = kind else { return Err("a Table that isn't boxed".to_owned()) };
+        let parts = self.parts(&kind)?;
+        let held = parts.held.clone();
+        let memory = held.memory(self.module.layouts);
+        let item = list_item(&self.field(&kind, "items")?.1)?;
+        let count = self.list_length(&slots);
+        let out = self.new_list(item, &count);
+        let before = self.current.clone();
+        let (head, body, copy, next, done) = (
+            self.label("slots"),
+            self.label("slot"),
+            self.label("live"),
+            self.label("slot_next"),
+            self.label("slotted"),
+        );
+        let (at, taken, more, step, taken_after, taken_next) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("br label %{head}"));
+        self.start_block(&head);
+        self.line(&format!("{at} = phi i64 [ 0, %{before} ], [ {step}, %{next} ]"));
+        self.line(&format!("{taken} = phi i64 [ 0, %{before} ], [ {taken_next}, %{next} ]"));
+        self.line(&format!("{more} = icmp slt i64 {at}, {count}"));
+        self.line(&format!("br i1 {more}, label %{body}, label %{done}"));
+        self.start_block(&body);
+        let word_at = self.item_address(&slots, "i64", &at);
+        let (word, live) = (self.temp(), self.temp());
+        self.line(&format!("{word} = load i64, ptr {word_at}{ITEM_ACCESS}"));
+        self.line(&format!("{live} = icmp sge i64 {word}, 0"));
+        self.line(&format!("br i1 {live}, label %{copy}, label %{next}"));
+        self.start_block(&copy);
+        let from = self.item_address(&items, &memory, &taken);
+        let to = self.item_address(&out, &memory, &at);
+        if held.in_memory() {
+            self.store_field(&held, &from, &to, ITEM_ACCESS);
+            self.retain_inline(&held, &to);
+        } else {
+            let value = self.load_field(&held, &from, ITEM_ACCESS);
+            if held.counted() {
+                self.retain_value(&value, &held);
+            }
+            self.store_field(&held, &value, &to, ITEM_ACCESS);
+        }
+        self.line(&format!("{taken_after} = add i64 {taken}, 1"));
+        let copied = self.current.clone();
+        self.line(&format!("br label %{next}"));
+        self.start_block(&next);
+        self.line(&format!("{taken_next} = phi i64 [ {taken_after}, %{copied} ], [ {taken}, %{body} ]"));
+        self.line(&format!("{step} = add i64 {at}, 1"));
+        self.line(&format!("br label %{head}"));
+        self.start_block(&done);
+        let block = self.new_block(id)?;
+        let fields = self.offset(&block, FIELDS_OFFSET);
+        self.retain_value(&slots, &slots_kind);
+        for (offset, list) in [(parts.items, &out), (parts.generations, &slots)] {
+            let place = self.offset(&fields, offset);
+            self.line(&format!("store ptr {list}, ptr {place}"));
+        }
+        let (live_at, tag_at) = (self.offset(&fields, parts.live), self.offset(&fields, parts.tag));
+        self.line(&format!("store i64 {taken}, ptr {live_at}"));
+        self.line(&format!("store i64 {tag}, ptr {tag_at}"));
+        self.assign(dest, &block)
+    }
+
+    /// A tag no `Table` has had, from the runtime's one count.
+    fn new_tag(&mut self) -> String {
+        self.declare("declare i64 @fennec_new_tag() nounwind");
+        let tag = self.temp();
+        self.line(&format!("{tag} = call i64 @fennec_new_tag()"));
+        tag
+    }
+
+    fn new_id_map(&mut self, dest: LocalId) -> Result<(), String> {
+        self.new_id_map_tagged(dest, None)
+    }
+
+    /// A new, empty `Table`, with `tag` or a new one.
+    fn new_id_map_tagged(&mut self, dest: LocalId, tag: Option<&str>) -> Result<(), String> {
+        let kind = self.kind_of(dest)?.clone();
+        let Kind::Boxed(id) = kind else { return Err("a Table that isn't boxed".to_owned()) };
         let parts = self.parts(&kind)?;
         let item = list_item(&self.field(&kind, "items")?.1)?;
         let block = self.new_block(id)?;
@@ -365,6 +710,12 @@ impl Emit<'_, '_, '_> {
             let at = self.offset(&fields, offset);
             self.line(&format!("store ptr {list}, ptr {at}"));
         }
+        let tag = match tag {
+            Some(tag) => tag.to_owned(),
+            None => self.new_tag(),
+        };
+        let tag_at = self.offset(&fields, parts.tag);
+        self.line(&format!("store i64 {tag}, ptr {tag_at}"));
         self.assign(dest, &block)
     }
 
@@ -445,16 +796,15 @@ impl Emit<'_, '_, '_> {
         let (at, generation) = (self.temp(), self.temp());
         self.line(&format!("{at} = load i64, ptr {slot_place}"));
         self.line(&format!("{generation} = load i64, ptr {generation_place}"));
-        if part == 0 {
-            let base = self.slot(dest);
-            let second = self.offset(&base, 8);
-            self.line(&format!("store i64 {at}, ptr {base}"));
-            self.line(&format!("store i64 {generation}, ptr {second}"));
-            return Ok(());
-        }
         let kind = self.kind_of(map)?.clone();
         let parts = self.parts(&kind)?;
         let (block, _) = self.operand(&Operand::Local(map))?;
+        if part == 0 {
+            let tag = self.tag_of(&block, &parts);
+            let base = self.slot(dest);
+            self.write_id(&base, (&at, &generation, &tag));
+            return Ok(());
+        }
         let (_, items) = self.part(&block, parts.items, false);
         let memory = parts.held.memory(self.module.layouts);
         let place = self.item_address(&items, &memory, &at);
@@ -475,6 +825,7 @@ impl Emit<'_, '_, '_> {
         let live = self.temp();
         self.line(&format!("{live} = load i64, ptr {live_at}"));
         let out = self.new_list(item, &live);
+        let tag = self.tag_of(&block, parts);
         let (_, generations) = self.part(&block, parts.generations, false);
         let (_, items) = self.part(&block, parts.items, false);
         let length = self.list_length(&generations);
@@ -503,24 +854,20 @@ impl Emit<'_, '_, '_> {
         self.start_block(&keep);
         let to = self.item_address(&out, &out_memory, &written);
         let from = self.item_address(&items, &memory, &at);
-        let write_id = |emit: &mut Self, base: &str| {
-            let generation_place = emit.offset(base, 8);
-            emit.line(&format!("store i64 {at}, ptr {base}"));
-            emit.line(&format!("store i64 {generation}, ptr {generation_place}"));
-        };
+        let write_id = |emit: &mut Self, base: &str| emit.write_id(base, (&at, &generation, &tag));
         match name {
-            "IdMap.values" if held.in_memory() => {
+            "Table.values" if held.in_memory() => {
                 self.store_field(&held, &from, &to, ITEM_ACCESS);
                 self.retain_inline(&held, &to);
             }
-            "IdMap.values" => {
+            "Table.values" => {
                 let value = self.load_field(&held, &from, ITEM_ACCESS);
                 if held.counted() {
                     self.retain_value(&value, &held);
                 }
                 self.store_field(&held, &value, &to, ITEM_ACCESS);
             }
-            "IdMap.ids" => write_id(self, &to),
+            "Table.ids" => write_id(self, &to),
             _ => {
                 let (id_at, _) = self.field(&out_held, "_0")?;
                 let (value_at, _) = self.field(&out_held, "_1")?;
@@ -543,7 +890,7 @@ impl Emit<'_, '_, '_> {
                     // A pair of an `Id` and the item, a block of its own when it holds a block.
                     let Kind::Boxed(pair) = out_held else {
                         return Err(format!(
-                            "`IdMap.items` gives {out_held:?}, which this backend doesn't take yet"
+                            "`Table.items` gives {out_held:?}, which this backend doesn't take yet"
                         ));
                     };
                     let made = self.new_block(pair)?;
@@ -586,12 +933,11 @@ impl Emit<'_, '_, '_> {
         let held = parts.held.clone();
         let memory = held.memory(self.module.layouts);
         let id = self.id_parts(id)?;
-        let (_, generations) = self.part(&block, parts.generations, false);
-        let found = self.finds(&generations, (&id.0, &id.1));
+        let found = self.finds(&block, &parts, &id);
         let (yes, no) = (self.label("indexed"), self.label("stale"));
         self.line(&format!("br i1 {found}, label %{yes}, label %{no}, !prof !8"));
         self.start_block(&no);
-        self.stop(REMOVED, span);
+        self.stop_missing(&block, &parts, &id, span);
         self.start_block(&yes);
         let (_, items) = self.part(&block, parts.items, false);
         let at = self.item_address(&items, &memory, &id.0);
@@ -613,12 +959,11 @@ impl Emit<'_, '_, '_> {
         let (value, fresh) = self.value_for(value, &held)?;
         let id = self.id_parts(id)?;
         let block = self.alone_at(place, "fennec_unshare");
-        let (_, generations) = self.part(&block, parts.generations, false);
-        let found = self.finds(&generations, (&id.0, &id.1));
+        let found = self.finds(&block, &parts, &id);
         let (yes, no) = (self.label("store"), self.label("stale"));
         self.line(&format!("br i1 {found}, label %{yes}, label %{no}, !prof !8"));
         self.start_block(&no);
-        self.stop(REMOVED, span);
+        self.stop_missing(&block, &parts, &id, span);
         self.start_block(&yes);
         let (_, items) = self.part(&block, parts.items, true);
         let at = self.item_address(&items, &memory, &id.0);

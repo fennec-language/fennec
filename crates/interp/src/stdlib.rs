@@ -32,7 +32,10 @@ macro_rules! modules {
     };
 }
 
+pub(crate) mod http;
+
 modules! {
+    compress,
     crypto,
     fs,
     json,
@@ -42,6 +45,7 @@ modules! {
     random,
     re,
     toml,
+    unicode,
 }
 
 /// The module with a function of this full name, like `json.loads`.

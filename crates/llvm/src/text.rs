@@ -1,5 +1,7 @@
 //! Printing and f-strings.
 
+use std::fmt::Write as _;
+
 use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS, TEXT_ROOM};
 use fennec_ir::{FormatPart, LocalId, Operand};
 use fennec_syntax::{BinOp, Span};
@@ -44,11 +46,23 @@ impl Emit<'_, '_, '_> {
     }
 
     pub(crate) fn print(&mut self, args: &[Operand]) -> Result<(), String> {
+        self.write(args)?;
+        self.print_text("\n");
+        Ok(())
+    }
+
+    /// `stdout.write`: what `print` shows, with no newline.
+    pub(crate) fn write(&mut self, args: &[Operand]) -> Result<(), String> {
         // Everything is worked out before anything prints.
         let mut values = Vec::with_capacity(args.len());
         for arg in args {
             values.push(match arg {
                 Operand::Str(text) => (text.clone(), None),
+                // A generator shows the type it's of.
+                Operand::Local(local) if *self.kind_of(*local)? == Kind::Gen => {
+                    let ty = self.function.locals.get(local.0).map(|held| held.ty.to_string());
+                    (format!("<{}>", ty.unwrap_or_default()), None)
+                }
                 other => {
                     let (value, kind) = self.operand(other)?;
                     (value, Some(kind))
@@ -64,7 +78,6 @@ impl Emit<'_, '_, '_> {
                 Some(kind) => self.print_one(value, kind)?,
             }
         }
-        self.print_text("\n");
         Ok(())
     }
 
@@ -75,8 +88,9 @@ impl Emit<'_, '_, '_> {
             && self.module.layouts.get(*id).is_some_and(|layout| layout.name == "Id")
         {
             self.print_text("Id(");
-            let slot = self.temp();
-            self.line(&format!("{slot} = load i64, ptr {value}"));
+            let (key, slot) = (self.temp(), self.temp());
+            self.line(&format!("{key} = load i64, ptr {value}"));
+            self.line(&format!("{slot} = lshr i64 {key}, 32"));
             self.print_one(&slot, &Kind::Int)?;
             self.print_text(")");
             return Ok(());
@@ -154,7 +168,13 @@ impl Emit<'_, '_, '_> {
                     emit.line(&format!("call void @fennec_str_print(ptr {block})"));
                 });
             }
-            Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => {
+            _ if self.is_one_of_several(kind) => {
+                let text = self.plain_text(value, kind)?;
+                self.declare("declare void @fennec_str_print(ptr) nounwind");
+                self.line(&format!("call void @fennec_str_print(ptr {text})"));
+                self.release(&text);
+            }
+            Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => {
                 self.declare("declare void @fennec_print_block(ptr) nounwind");
                 self.line(&format!("call void @fennec_print_block(ptr {value})"));
             }
@@ -175,6 +195,9 @@ impl Emit<'_, '_, '_> {
     /// A new string with a plain value's text, as the interpreter writes it: `True`, `(1, 2)`,
     /// `Point(x=1, y=2)` or `Kind.Stay`. `value` is a bool, or a plain struct's or enum's address.
     fn plain_text(&mut self, value: &str, kind: &Kind) -> Result<String, String> {
+        if self.is_one_of_several(kind) {
+            return self.one_of_several_text(value, kind);
+        }
         self.declare("declare ptr @fennec_str_concat(ptr, ptr) nounwind");
         self.declare("declare ptr @fennec_int_text(i64) nounwind");
         self.declare("declare ptr @fennec_float_text(double) nounwind");
@@ -196,9 +219,10 @@ impl Emit<'_, '_, '_> {
                 Ok(text)
             }
             // Holding strings or lists, or an enum's fields, it's written by the runtime, from a
-            // block made of it.
+            // block made of it. So is an array, which is written as a list.
             Kind::Struct(id) | Kind::Enum(id)
                 if self.holds_inline(kind)
+                    || self.array_shape(kind).is_some()
                     || self.module.layouts.get(*id).is_some_and(|layout| {
                         layout.cases.iter().flatten().any(|case| !case.fields.is_empty())
                     }) =>
@@ -212,6 +236,20 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{text} = call ptr @fennec_block_text(ptr {block})"));
                 self.release(&block);
                 Ok(text)
+            }
+            // An `Id` shows its slot, as the interpreter's does, and never its tag, which differs
+            // from run to run.
+            Kind::Struct(id) if self.module.layouts.get(*id).is_some_and(|layout| layout.name == "Id") => {
+                let (key, slot) = (self.temp(), self.temp());
+                self.line(&format!("{key} = load i64, ptr {value}"));
+                self.line(&format!("{slot} = lshr i64 {key}, 32"));
+                let number = self.temp();
+                self.line(&format!("{number} = call ptr @fennec_int_text(i64 {slot})"));
+                let opening = self.literal("Id(");
+                self.retain(&opening);
+                let text = self.joined(&opening, &number, true);
+                let closing = self.literal(")");
+                Ok(self.joined(&text, &closing, false))
             }
             Kind::Struct(id) => {
                 let layouts = self.module.layouts;
@@ -287,6 +325,62 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// Ends the program, saying what `main` failed with. What the IR ends this block with is
+    /// never reached, so it goes in a block of its own.
+    pub(crate) fn main_failed(&mut self, error: &Operand, span: Span) -> Result<(), String> {
+        self.failed_with("`main` failed: ", error, span)
+    }
+
+    /// Ends the program or a server's task, saying `start` and what it failed with. What the IR ends
+    /// this block with is never reached, so it goes in a block of its own.
+    pub(crate) fn failed_with(&mut self, start: &str, error: &Operand, span: Span) -> Result<(), String> {
+        let (value, kind) = self.operand(error)?;
+        let shown = self.shown_text(&value, &kind)?;
+        let start = self.literal(start);
+        let text = self.joined(&start, &shown, true);
+        self.stop_with(&text, span);
+        let after = self.label("stopped");
+        self.start_block(&after);
+        Ok(())
+    }
+
+    /// A new string with the text of the error it is, with no sign of the others it might be.
+    fn one_of_several_text(&mut self, value: &str, kind: &Kind) -> Result<String, String> {
+        let (Kind::Enum(id) | Kind::Boxed(id)) = kind else { return Err("not one of several".to_owned()) };
+        let layouts = self.module.layouts;
+        let cases =
+            layouts.get(*id).and_then(|layout| layout.cases.as_ref()).ok_or("an enum with no cases")?;
+        let base = if matches!(kind, Kind::Boxed(_)) {
+            self.offset(value, crate::lists::FIELDS_OFFSET)
+        } else {
+            value.to_owned()
+        };
+        let tag = self.temp();
+        self.line(&format!("{tag} = load i64, ptr {base}"));
+        let empty = self.literal("");
+        let shown = self.temp_slot(&empty);
+        let joined = self.label("error_shown");
+        for (number, case) in cases.iter().enumerate() {
+            let field = case.fields.first().ok_or("a case of an error holds nothing")?;
+            let held = Kind::from_ty(layouts, field.ty).ok_or("a field this backend doesn't take yet")?;
+            let (same, this, next) = (self.temp(), self.label("error_is"), self.label("error_not"));
+            self.line(&format!("{same} = icmp eq i64 {tag}, {number}"));
+            self.line(&format!("br i1 {same}, label %{this}, label %{next}"));
+            self.start_block(&this);
+            let place = self.offset(&base, field.offset);
+            let inside = if held.in_memory() { place } else { self.load_field(&held, &place, "") };
+            let text = self.shown_text(&inside, &held)?;
+            self.line(&format!("store ptr {text}, ptr {shown}"));
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&next);
+        }
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        let text = self.temp();
+        self.line(&format!("{text} = load ptr, ptr {shown}"));
+        Ok(text)
+    }
+
     /// A new string with a side of a comparison, if it has text.
     fn side_text(&mut self, side: &Operand) -> Result<Option<String>, String> {
         if *side == Operand::None {
@@ -317,6 +411,7 @@ impl Emit<'_, '_, '_> {
             | Kind::Enum(_)
             | Kind::List(_)
             | Kind::Boxed(_)
+            | Kind::Bytes
             | Kind::Dict(..) => true,
             _ => false,
         }
@@ -324,6 +419,9 @@ impl Emit<'_, '_, '_> {
 
     /// A new string with a value's text as the interpreter shows it, with a string in quotes.
     fn shown_text(&mut self, value: &str, kind: &Kind) -> Result<String, String> {
+        if self.is_one_of_several(kind) {
+            return self.one_of_several_text(value, kind);
+        }
         let none = self.literal("None");
         if let Kind::Maybe(inner) = kind {
             let (missing, shown) = (self.temp(), self.temp_slot(&none));
@@ -385,7 +483,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{text} = call ptr @fennec_str_repr(ptr {block})"));
                 Ok(text)
             }
-            Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => Ok(self.text_of_block(value)),
+            Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => Ok(self.text_of_block(value)),
             _ => self.plain_text(value, kind),
         }
     }
@@ -430,7 +528,9 @@ impl Emit<'_, '_, '_> {
                     return Ok(value);
                 }
                 Kind::Bool | Kind::Struct(_) | Kind::Enum(_) => return self.plain_text(&value, &kind),
-                Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => return Ok(self.text_of_block(&value)),
+                Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => {
+                    return Ok(self.text_of_block(&value));
+                }
                 other => return Err(format!("it formats a {other:?}, which this backend doesn't take yet")),
             }
             return Ok(temp);
@@ -461,6 +561,9 @@ impl Emit<'_, '_, '_> {
     /// An f-string: every piece worked out first, then one block with room for them all, the
     /// pieces copied in.
     pub(crate) fn format(&mut self, dest: LocalId, parts: &[FormatPart], span: Span) -> Result<(), String> {
+        if self.headers() {
+            return self.format_headers(dest, parts, span);
+        }
         let mut pieces = Vec::with_capacity(parts.len());
         for part in parts {
             pieces.push(match part {
@@ -562,6 +665,155 @@ impl Emit<'_, '_, '_> {
         };
         let value = self.text_value(&value);
         self.assign(dest, &value)
+    }
+
+    /// An f-string where strings are headers, made in one go: each piece is read where it is,
+    /// with no block made for it, the lengths are added up, and the text is written once, inline
+    /// when it fits. A literal is constant bytes, a string its header's, and an int or a float
+    /// a header of its own; only other values are written out as a string first.
+    fn format_headers(&mut self, dest: LocalId, parts: &[FormatPart], span: Span) -> Result<(), String> {
+        // A string on its own is that string, with another owner.
+        if let [FormatPart::Value { value, spec: None }] = parts
+            && matches!(self.operand(value)?.1, Kind::Str)
+        {
+            let (text, _) = self.operand(value)?;
+            self.retain_text(&text);
+            return self.assign(dest, &text);
+        }
+        let mut pieces = Vec::with_capacity(parts.len());
+        for part in parts {
+            match part {
+                FormatPart::Text(text) if text.is_empty() => {}
+                FormatPart::Text(text) => pieces.push(self.literal_piece(text)),
+                FormatPart::Value { value, spec } => {
+                    pieces.push(self.value_piece(value, spec.as_deref(), span)?);
+                }
+            }
+        }
+        let (mut bytes, mut chars) = ("0".to_owned(), "0".to_owned());
+        for piece in &pieces {
+            let (more_bytes, more_chars) = (self.temp(), self.temp());
+            self.line(&format!("{more_bytes} = add nuw nsw i64 {bytes}, {}", piece.size));
+            self.line(&format!("{more_chars} = add nuw nsw i64 {chars}, {}", piece.chars));
+            (bytes, chars) = (more_bytes, more_chars);
+        }
+        let (inline, block, done) =
+            (self.label("format_inline"), self.label("format_block"), self.label("format_done"));
+        let fits = self.temp();
+        self.line(&format!("{fits} = icmp ule i64 {bytes}, 23"));
+        self.line(&format!("br i1 {fits}, label %{inline}, label %{block}"));
+        self.start_block(&inline);
+        let out = self.place_for_text();
+        self.line(&format!("store {} zeroinitializer, ptr {out}", crate::headers::HEADER));
+        self.write_pieces(&out, &pieces, true);
+        let (tag, byte, tag_at, from_inline) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{tag} = or i64 {bytes}, 128"));
+        self.line(&format!("{byte} = trunc i64 {tag} to i8"));
+        self.line(&format!("{tag_at} = getelementptr inbounds i8, ptr {out}, i64 23"));
+        self.line(&format!("store i8 {byte}, ptr {tag_at}"));
+        self.line(&format!("{from_inline} = load {}, ptr {out}", crate::headers::HEADER));
+        let inline_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&block);
+        self.declare("declare ptr @fennec_str_with_room(i64) nounwind");
+        let made = self.temp();
+        self.line(&format!("{made} = call ptr @fennec_str_with_room(i64 {bytes})"));
+        let start = self.offset(&made, TEXT.unsigned_abs());
+        self.write_pieces(&start, &pieces, false);
+        let (bytes_at, chars_at) =
+            (self.offset(&made, TEXT_BYTES.unsigned_abs()), self.offset(&made, TEXT_CHARS.unsigned_abs()));
+        self.line(&format!("store i64 {bytes}, ptr {bytes_at}{HEADER_ACCESS}"));
+        self.line(&format!("store i64 {chars}, ptr {chars_at}{HEADER_ACCESS}"));
+        let from_block = self.text_from_block(&made);
+        let block_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let value = self.temp();
+        self.line(&format!(
+            "{value} = phi {} [ {from_inline}, %{inline_end} ], [ {from_block}, %{block_end} ]",
+            crate::headers::HEADER
+        ));
+        for piece in &pieces {
+            match &piece.owned {
+                Some(Owned::Header(header)) => self.release_text(header),
+                Some(Owned::Block(block)) => self.release(block),
+                None => {}
+            }
+        }
+        self.assign(dest, &value)
+    }
+
+    /// A literal's bytes, as a constant of the module's.
+    fn literal_piece(&mut self, text: &str) -> Piece {
+        let name = format!("@\"fs_{}\"", fennec_blake3::hash(text.as_bytes()).to_hex());
+        let escaped = text.bytes().fold(String::new(), |mut escaped, byte| {
+            let _ = write!(escaped, "\\{byte:02X}");
+            escaped
+        });
+        let size = text.len();
+        self.declare(&format!(
+            "{name} = private unnamed_addr constant [{size} x i8] c\"{escaped}\", align 1"
+        ));
+        Piece { from: name, size: size.to_string(), chars: text.chars().count().to_string(), owned: None }
+    }
+
+    /// A value's text, read where it is: a string's header, an int's or a float's header made
+    /// for it, or anything else written out as a string block.
+    fn value_piece(&mut self, value: &Operand, spec: Option<&str>, span: Span) -> Result<Piece, String> {
+        let (held, kind) = self.operand(value)?;
+        let header = crate::headers::HEADER;
+        let made = match (&kind, spec) {
+            (Kind::Str, None) => None,
+            (Kind::Int | Kind::Float, None) => {
+                let (call, ty) = if kind == Kind::Int { ("int", "i64") } else { ("float", "double") };
+                self.declare(&format!(
+                    "declare void @fennec_{call}_header(ptr sret({header}) align 8, {ty}) nounwind"
+                ));
+                let (place, made) = (self.place_for_text(), self.temp());
+                self.line(&format!(
+                    "call void @fennec_{call}_header(ptr sret({header}) align 8 {place}, {ty} {held})"
+                ));
+                self.line(&format!("{made} = load {header}, ptr {place}"));
+                Some(made)
+            }
+            _ => {
+                let block = self.piece(value, spec, span)?;
+                let (size, chars) = (self.temp(), self.temp());
+                let (bytes_at, chars_at) = (
+                    self.offset(&block, TEXT_BYTES.unsigned_abs()),
+                    self.offset(&block, TEXT_CHARS.unsigned_abs()),
+                );
+                self.line(&format!("{size} = load i64, ptr {bytes_at}{HEADER_ACCESS}"));
+                self.line(&format!("{chars} = load i64, ptr {chars_at}{HEADER_ACCESS}"));
+                let from = self.offset(&block, TEXT.unsigned_abs());
+                return Ok(Piece { from, size, chars, owned: Some(Owned::Block(block)) });
+            }
+        };
+        let text = made.clone().unwrap_or(held);
+        let (from, size, chars) =
+            (self.header_bytes(&text), self.header_byte_length(&text), self.header_chars(&text));
+        Ok(Piece { from, size, chars, owned: made.map(Owned::Header) })
+    }
+
+    /// Writes an f-string's pieces one after another from `start`: with a few moves each when
+    /// they're going in a header, of 23 bytes at most, and with `memcpy` otherwise.
+    fn write_pieces(&mut self, start: &str, pieces: &[Piece], small: bool) {
+        self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+        let mut at = "0".to_owned();
+        for piece in pieces {
+            let (to, after) = (self.temp(), self.temp());
+            self.line(&format!("{to} = getelementptr inbounds i8, ptr {start}, i64 {at}"));
+            if small {
+                self.small_copy(&to, &piece.from, &piece.size);
+            } else {
+                self.line(&format!(
+                    "call void @llvm.memcpy.p0.p0.i64(ptr {to}, ptr {}, i64 {}, i1 false)",
+                    piece.from, piece.size
+                ));
+            }
+            self.line(&format!("{after} = add nuw nsw i64 {at}, {}", piece.size));
+            at = after;
+        }
     }
 
     /// Copies an f-string's pieces' bytes one after another from `start`, each `small`, of 24
@@ -860,15 +1112,23 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Leaves the function if the runtime has recorded a failure.
-    pub(crate) fn leave_if_failed(&mut self) {
+    /// Where this thread's failure flag is.
+    pub(crate) fn failure_flag(&mut self) -> String {
         let (declared, symbol) = if self.module.threads && !self.on_workers() {
             ("@fennec_failed_main = external dso_local global ptr", "@fennec_failed_main")
         } else {
             (crate::parallel::failed_global(self.module.threads), "@fennec_failed")
         };
         self.declare(declared);
-        let (flag_at, flag, failed) = (self.temp(), self.temp(), self.temp());
+        let flag_at = self.temp();
         self.line(&format!("{flag_at} = load ptr, ptr {symbol}, !invariant.load !1"));
+        flag_at
+    }
+
+    pub(crate) fn leave_if_failed(&mut self) {
+        self.note_runtime_check();
+        let flag_at = self.failure_flag();
+        let (flag, failed) = (self.temp(), self.temp());
         self.line(&format!("{flag} = load i8, ptr {flag_at}"));
         self.line(&format!("{failed} = icmp ne i8 {flag}, 0"));
         self.leave_if(&failed);
@@ -937,6 +1197,12 @@ impl Emit<'_, '_, '_> {
                 self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
                 self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {held})"));
             }
+            Kind::Bool => {
+                self.declare("declare i64 @fennec_bool(i8) nounwind");
+                let byte = self.temp();
+                self.line(&format!("{byte} = zext i1 {held} to i8"));
+                self.line(&format!("{handle} = call i64 @fennec_bool(i8 {byte})"));
+            }
             // The checker has shown a `match` on an enum takes every case, so nothing's shown.
             Kind::Enum(_) => {
                 self.declare("declare i64 @fennec_unit() nounwind");
@@ -947,6 +1213,8 @@ impl Emit<'_, '_, '_> {
         self.declare("declare void @fennec_no_match(i64, i64, i64) #1");
         let (from, to) = (i64::from(span.start), i64::from(span.end));
         self.line(&format!("call void @fennec_no_match(i64 {handle}, i64 {from}, i64 {to})"));
+        // A match the checker saw covers everything, so this is never a check of the program's.
+        self.next_check(span, None);
         let failed = self.failed_exit();
         self.line(&failed);
         Ok(())
@@ -1137,4 +1405,19 @@ impl Emit<'_, '_, '_> {
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }
     }
+}
+
+/// One piece of an f-string, read where it is: where its bytes start, how many there are, how
+/// many characters they make, and what was made for it to let go of once it's written.
+struct Piece {
+    from: String,
+    size: String,
+    chars: String,
+    owned: Option<Owned>,
+}
+
+/// What an f-string's piece made to be read from.
+enum Owned {
+    Header(String),
+    Block(String),
 }

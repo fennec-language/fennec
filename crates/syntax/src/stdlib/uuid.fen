@@ -1,0 +1,114 @@
+# `std.uuid`: UUIDs, 128-bit ids written like `0f8fad5b-d9cb-469f-a165-70867728950e`, as
+# RFC 9562 sets them out. `v4` makes one from random bytes, and `v7` one that starts with the
+# time it was made, so ids made later sort after it, which suits a database's keys.
+
+## A UUID. `Uuid()` is the nil UUID, all zeros. It prints in lower case with its hyphens, and
+## `Uuid.parse` reads that back.
+export struct Uuid:
+    ## The first 64 bits, the first byte highest.
+    high = 0
+    ## The last 64 bits.
+    low = 0
+
+    ## The UUID 36-character text says, with its hyphens where they go, in either case.
+    def parse(text: str) -> Uuid fails InvalidValue:
+        if text.len() != 36:
+            fail InvalidValue(
+                message=f"`{text}` isn't a UUID: it has {text.len()} characters, not 36",
+            )
+        mut high = 0
+        mut low = 0
+        mut digits = 0
+        mut at = 0
+        for c in text:
+            if at == 8 or at == 13 or at == 18 or at == 23:
+                if c != "-":
+                    fail InvalidValue(
+                        message=f"`{text}` isn't a UUID: character {at + 1} should be `-`",
+                    )
+            else:
+                n = Uuid._hex_value(c)
+                if n < 0:
+                    fail InvalidValue(
+                        message=f"`{text}` isn't a UUID: character {at + 1} isn't a hex digit",
+                    )
+                if digits < 16:
+                    high = (high << 4) | n
+                else:
+                    low = (low << 4) | n
+                digits += 1
+            at += 1
+        Uuid(high=high, low=low)
+
+    ## Which kind of UUID it is: 4 for one `v4` made, 7 for one `v7` made, 0 for the nil one.
+    def version(self) -> int:
+        (self.high >> 12) & 15
+
+    ## Ordered as their text is, as 128-bit numbers with no sign.
+    def <(self, other: Uuid) -> bool:
+        top = 1 << 63
+        if self.high != other.high: return (self.high ^ top) < (other.high ^ top)
+        (self.low ^ top) < (other.low ^ top)
+
+    def str(self, ref out: StrWriter):
+        out.write(Uuid._hex(self.high >> 32, count=8) + "-")
+        out.write(Uuid._hex(self.high >> 16, count=4) + "-")
+        out.write(Uuid._hex(self.high, count=4) + "-")
+        out.write(Uuid._hex(self.low >> 48, count=4) + "-")
+        out.write(Uuid._hex(self.low, count=12))
+
+    ## The last `count` hex digits of `bits`.
+    def _hex(bits: int, count: int) -> str:
+        mut out = list[str]()
+        mut at = count - 1
+        while at >= 0:
+            out.append("0123456789abcdef"[(bits >> (4 * at)) & 15])
+            at -= 1
+        "".join(out)
+
+    ## What a hex digit stands for, or -1.
+    def _hex_value(c: str) -> int:
+        "0123456789abcdef".find(c.lower()) else -1
+
+## A random UUID: 122 bits from `entropy`, with its version and variant bits set.
+export def v4(entropy: Entropy) -> Uuid:
+    data = entropy.bytes(16)
+    high = word(data, at=0)
+    low = word(data, at=8)
+    stamped(high, low=low, version=4)
+
+## A UUID that starts with the milliseconds since 1970 that `clock` says, then 74 random bits
+## from `entropy`. One made later sorts after one made earlier, at a millisecond's grain.
+export def v7(entropy: Entropy, clock: Clock) -> Uuid:
+    data = entropy.bytes(10)
+    millis = clock.time().nanos // 1_000_000
+    high = (millis << 16) | (data[0] << 8) | data[1]
+    low = word(data, at=2)
+    stamped(high, low=low, version=7)
+
+## The 8 bytes of `data` from `at`, the first highest.
+def word(data: bytes, at: int) -> int:
+    mut n = 0
+    for offset in range(8):
+        n = (n << 8) | data[at + offset]
+    n
+
+## `high` and `low` with the version in bits 48 to 51 and RFC 9562's variant, `10`, at the top
+## of `low`.
+def stamped(high: int, low: int, version: int) -> Uuid:
+    with_version = (high & ~(15 << 12)) | (version << 12)
+    with_variant = (low & ((1 << 62) - 1)) | (1 << 63)
+    Uuid(high=with_version, low=with_variant)
+
+## A `Uuid` saves as its text, as APIs and files write one.
+extend Uuid:
+    def serialize(self, ref out: Serializer):
+        out.text(str(self))
+
+    def deserialize(ref src: Deserializer) -> Uuid fails ParseError:
+        text = src.text()?
+        match Uuid.parse(text):
+            case Ok(found):
+                found
+            case Err(_):
+                fail src.here(f"is `{text}`, which isn't a UUID")

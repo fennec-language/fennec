@@ -3,7 +3,7 @@
 
 use crate::{helps, in_main, in_main_after, problems};
 
-const ID_MAP: &str = "from std.game import IdMap";
+const ID_MAP: &str = "from std.collections import Table";
 
 /// Checks `expression + 1` reports `expected` about the sum, which shows the expression's type.
 fn plus_one(setup: &str, expression: &str, expected: &str) {
@@ -14,7 +14,7 @@ fn plus_one(setup: &str, expression: &str, expected: &str) {
 
 #[test]
 fn methods_of_built_in_values_give_back_their_types() {
-    let setup = "mut pool = IdMap[int]()\nid = pool.insert(1)";
+    let setup = "mut pool = Table[int]()\nid = pool.add(1)";
     plus_one(setup, "pool.ids()[0]", "can't use `+` on an Id and an int");
     plus_one(setup, "pool.items()[0][0]", "can't use `+` on an Id and an int");
     plus_one(setup, "pool.items()[0][1] / 2", "can't mix int and float in `+`");
@@ -24,6 +24,13 @@ fn methods_of_built_in_values_give_back_their_types() {
     plus_one(setup, "'a'.strip()", "can't use `+` on a str and an int");
     plus_one(setup, "'a'.startswith('a')", "can't use `+` on a bool and an int");
     plus_one(setup, "[1].count(1) / 2", "can't mix int and float in `+`");
+    // `/` between ints gives a float, which is likely why it meets an int.
+    let help =
+        |body: &str| helps(&format!("def main(stdout: Stdout):\n    n = 1\n    stdout.print({body})\n"));
+    let floor = "`/` always gives a float, even between ints; `//` divides ints and gives an int";
+    assert_eq!(help("n < 7 / 3"), [floor]);
+    assert_eq!(help("n + 7 / 3"), [floor]);
+    assert_eq!(help("n < 2.5 + 1.0"), ["convert one side with float(...) or int(...)"]);
     plus_one(setup, "pool.modify(id, n => n)", "can't use `+` on a bool and an int");
     plus_one(setup, "stdout.write('a')", "can't use `+` on nothing and an int");
 }
@@ -31,8 +38,8 @@ fn methods_of_built_in_values_give_back_their_types() {
 #[test]
 fn removing_from_an_id_map_might_find_nothing() {
     let program = "
-        mut pool = IdMap[int]()
-        id = pool.insert(1)
+        mut pool = Table[int]()
+        id = pool.add(1)
         stdout.print(pool.remove(id) + 1, pool[id] + 1)
     ";
     assert_eq!(in_main_after(ID_MAP, program), ["this might be None @ pool.remove(id)"]);
@@ -51,7 +58,7 @@ fn builtins_give_back_their_types() {
 fn arrow_functions_receive_the_items() {
     let program = "
         mut items = [1]
-        mut pool = IdMap[str]()
+        mut pool = Table[str]()
         items.remove_where(n => n + 'a')
         items.sort(key=n => n + 'a')
         pool.remove_where(s => s + 1)
@@ -190,14 +197,14 @@ fn a_tuple_in_brackets_is_one_type() {
 fn every_modules_names_have_to_be_imported() {
     let program = "
         position = Vec3(x=1.0)
-        mut pool = IdMap[int]()
+        mut pool = Table[int]()
         stdout.print(sqrt(2.0), PI, floor(1.5), Path('a'), SoaList[int]())
     ";
     assert_eq!(
         in_main(program),
         [
             "`Vec3` doesn't exist @ Vec3",
-            "`IdMap` doesn't exist @ IdMap",
+            "`Table` doesn't exist @ Table",
             "`sqrt` doesn't exist @ sqrt",
             "`PI` doesn't exist @ PI",
             "`floor` doesn't exist @ floor",
@@ -211,11 +218,11 @@ fn every_modules_names_have_to_be_imported() {
     );
     // Through a module imported whole, its types can be built and used as types.
     let program = "
-        from std import math, game
+        from std import collections, math
 
         def main(stdout: Stdout):
-            mut pool = game.IdMap[int]()
-            id = pool.insert(1)
+            mut pool = collections.Table[int]()
+            id = pool.add(1)
             stdout.print(math.sqrt(2.0) + 'a', math.PI + 'a', math.Vec3.zero().x + 'a', pool[id] + 'a')
     ";
     assert_eq!(
@@ -235,7 +242,7 @@ fn capabilities_and_errors_need_no_import() {
         def read(fs: Fs, path: str):
             match fs.read_text(path):
                 case Ok(text): text
-                case IoError(reason): reason
+                case IoError(reason=reason): reason
 
         def main(stdout: Stdout, fs: Fs, clock: Clock):
             stdout.print(read(fs, 'a.txt'), InvalidValue('no'), ParseError('no', 1, 1), clock.now())

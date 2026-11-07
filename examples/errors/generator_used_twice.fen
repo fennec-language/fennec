@@ -1,0 +1,11 @@
+# A generator is used once: its second loop would quietly find nothing, so it's an error.
+def evens(n: int) -> Iterator[int]:
+    for i in range(n):
+        if i % 2 == 0:
+            yield i
+
+def main(stdout: Stdout):
+    found = evens(10)
+    stdout.print(sum(found))
+    for even in found:
+        stdout.print(even)

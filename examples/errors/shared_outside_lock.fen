@@ -1,0 +1,7 @@
+# A `shared` value is reached only inside a `lock`, so no two tasks change it at once.
+struct Scores:
+    best = dict[str, int]()
+
+def main(stdout: Stdout):
+    shared scores = Scores()
+    stdout.print(scores.best)

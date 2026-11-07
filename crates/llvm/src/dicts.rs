@@ -121,11 +121,20 @@ impl Emit<'_, '_, '_> {
 
     /// The address of a key's entry, or zero.
     fn find(&mut self, dict: &str, word: Word, key: &str) -> String {
+        if word == Word::Float {
+            return self.find_float_key(dict, key);
+        }
+        if let Word::Plain(id) = word
+            && self.key_by_value(id)
+        {
+            return self.find_by_value(dict, id, key);
+        }
         // A key held as a header is found by its bytes here, as a slice's are: its inline bytes
         // are zero after its length, as a block's text is, so they hash the same.
         if word == Word::Text {
             let (bytes, length) = (self.header_bytes(key), self.header_byte_length(key));
-            return self.find_text_key(dict, &bytes, &length);
+            // An inline key's header is copied whole where `header_bytes` puts it.
+            return self.find_text_key(dict, (&bytes, KeyBytes::Header), &length);
         }
         if word == Word::Str && self.headers() {
             self.string_slice_helpers();
@@ -179,9 +188,77 @@ impl Emit<'_, '_, '_> {
         entry
     }
 
+    /// Whether a plain key is hashed by what it holds, which the runtime does: strings and lists,
+    /// or floats, whose bits don't say what's equal.
+    fn key_by_value(&self, id: u32) -> bool {
+        self.module.layouts.holds_counted(id) || self.holds_a_float(id)
+    }
+
+    /// A plain key as a block of its own, with owners of what it holds.
+    fn owned_key_block(&mut self, id: u32, key: &str) -> String {
+        let block = self.key_block(id, key).unwrap_or_default();
+        let kind = Kind::from_ty(self.module.layouts, Ty::Struct(id)).unwrap_or(Kind::Struct(id));
+        let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+        self.retain_inline(&kind, &fields);
+        block
+    }
+
+    /// The entry of a plain key that's hashed by what it holds.
+    fn find_by_value(&mut self, dict: &str, id: u32, key: &str) -> String {
+        self.declare("declare ptr @fennec_dict_find_by_value(ptr, ptr) nounwind");
+        let block = self.owned_key_block(id, key);
+        let entry = self.temp();
+        self.line(&format!("{entry} = call ptr @fennec_dict_find_by_value(ptr {dict}, ptr {block})"));
+        self.release(&block);
+        entry
+    }
+
+    /// The entry of a float key, given as its bits. Floats have one equality, with `-0.0` the same
+    /// as `0.0` and every NaN the same, so they're hashed and compared as one form of each, while
+    /// the entry keeps the key as it was written.
+    fn find_float_key(&mut self, dict: &str, key: &str) -> String {
+        let nan = f64::NAN.to_bits().cast_signed();
+        self.module.add_helper(
+            "fen_float_key",
+            format!(
+                "define internal i64 @fen_float_key(i64 %bits) #0 {{\nentry:\n  %value = bitcast i64 %bits to double\n  %zero = fcmp oeq double %value, 0x0000000000000000\n  %nan = fcmp uno double %value, %value\n  %plain = select i1 %zero, i64 0, i64 %bits\n  %key = select i1 %nan, i64 {nan}, i64 %plain\n  ret i64 %key\n}}\n\n"
+            ),
+        );
+        let mut text = find_start("fen_find_float", "i64");
+        text += "  %other = load i64, ptr %other_at\n  %other_key = call i64 @fen_float_key(i64 %other)\n  %same = icmp eq i64 %other_key, %key\n  br i1 %same, label %found, label %next\n}\n\n";
+        self.module.add_helper("fen_find_float", text);
+        let wanted = self.temp();
+        self.line(&format!("{wanted} = call i64 @fen_float_key(i64 {key})"));
+        let hash = self.hash(Word::Int, &wanted);
+        let entry = self.temp();
+        self.line(&format!("{entry} = call ptr @fen_find_float(ptr {dict}, i64 {wanted}, i64 {hash})"));
+        entry
+    }
+
     /// The entry of the string key with these bytes in a dict whose keys are held as headers,
     /// or null: hashed as a block's text is, and compared by bytes, inline keys where they lie.
-    fn find_text_key(&mut self, dict: &str, bytes: &str, length: &str) -> String {
+    fn find_text_key(&mut self, dict: &str, (bytes, from): (&str, KeyBytes), length: &str) -> String {
+        let short_find = self.find_short_key_helper(from);
+        let (short, quick, slow, joined) =
+            (self.temp(), self.label("short_key"), self.label("long_key"), self.label("key_found"));
+        self.line(&format!("{short} = icmp ule i64 {length}, 23"));
+        self.line(&format!("br i1 {short}, label %{quick}, label %{slow}"));
+        self.start_block(&quick);
+        let found_short = self.temp();
+        self.line(&format!("{found_short} = call ptr @{short_find}(ptr {dict}, ptr {bytes}, i64 {length})"));
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&slow);
+        let found_long = self.find_long_text_key(dict, bytes, length);
+        let long_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        let entry = self.temp();
+        self.line(&format!("{entry} = phi ptr [ {found_short}, %{quick} ], [ {found_long}, %{long_end} ]"));
+        entry
+    }
+
+    /// [`Self::find_text_key`] for a key of any length, compared by its bytes.
+    fn find_long_text_key(&mut self, dict: &str, bytes: &str, length: &str) -> String {
         self.string_slice_helpers();
         let mut find = find_start_wide("fen_find_header_key", "ptr", entry_words(Word::Text))
             .replace("(ptr %d, ptr %key, i64 %hash)", "(ptr %d, ptr %key, i64 %length, i64 %hash)");
@@ -209,8 +286,10 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{wide} = zext i1 {value} to i64"));
             return Ok(wide);
         }
-        if matches!(word, Word::Float) {
-            return Err("it uses a float as a key".to_owned());
+        if word == Word::Float {
+            let bits = self.temp();
+            self.line(&format!("{bits} = bitcast double {value} to i64"));
+            return Ok(bits);
         }
         Ok(value)
     }
@@ -229,11 +308,25 @@ impl Emit<'_, '_, '_> {
                 }
                 self.line(&format!("{word} = ptrtoint ptr {block} to i64"));
             }
-            Kind::Str | Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) => {
+            Kind::Str | Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) | Kind::Bytes => {
                 if retain {
                     self.retain(value);
                 }
                 self.line(&format!("{word} = ptrtoint ptr {value} to i64"));
+            }
+            Kind::Maybe(_) => {
+                if retain {
+                    self.retain_value(value, kind);
+                }
+                self.line(&format!("{word} = ptrtoint ptr {value} to i64"));
+            }
+            // A plain struct or enum as a value: a block of its own, with owners of what it holds.
+            Kind::Struct(id) | Kind::Enum(id) => {
+                if let Ok(block) = self.key_block(*id, value) {
+                    let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+                    self.retain_inline(kind, &fields);
+                    self.line(&format!("{word} = ptrtoint ptr {block} to i64"));
+                }
             }
             Kind::Unit => return "0".to_owned(),
             _ => return value.to_owned(),
@@ -259,7 +352,11 @@ impl Emit<'_, '_, '_> {
     fn key_word(&mut self, word: Word, key: &str) -> Result<String, String> {
         Ok(match word {
             Word::Plain(id) => {
-                let block = self.key_block(id, key)?;
+                let block = if self.key_by_value(id) {
+                    self.owned_key_block(id, key)
+                } else {
+                    self.key_block(id, key)?
+                };
                 let held = self.temp();
                 self.line(&format!("{held} = ptrtoint ptr {block} to i64"));
                 held
@@ -385,18 +482,42 @@ impl Emit<'_, '_, '_> {
         };
         let missing = self.temp();
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
-        self.line(&format!("br i1 {missing}, label %{slow}, label %{change}"));
+        // A short new key held inline, for values holding no block, goes straight in.
+        let absent = if key_word == Word::Text && plain_value(value_word) {
+            self.label("absent")
+        } else {
+            slow.clone()
+        };
+        self.line(&format!("br i1 {missing}, label %{absent}, label %{change}"));
+        if absent != slow {
+            self.start_block(&absent);
+            let add = self.add_short_key_helper(KeyBytes::Header);
+            let (bytes, length) = (self.header_bytes(&key), self.header_byte_length(&key));
+            let word = self.dict_word(&value_kind, &held, false);
+            let added = self.temp();
+            self.line(&format!(
+                "{added} = call i1 @{add}(ptr {dict}, ptr {bytes}, i64 {length}, i64 {word})"
+            ));
+            self.line(&format!("br i1 {added}, label %{done}, label %{slow}"));
+        }
         self.start_block(&change);
         let value_at = self.temp();
         self.line(&format!(
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
-        if value_kind.counted() {
+        if value_kind.in_memory() {
+            let word = self.dict_word(&value_kind, &held, true);
+            let (old, block) = (self.temp(), self.temp());
+            self.line(&format!("{old} = load ptr, ptr {value_at}"));
+            self.line(&format!("{block} = inttoptr i64 {word} to ptr"));
+            self.line(&format!("store ptr {block}, ptr {value_at}"));
+            self.release(&old);
+        } else if value_kind.counted() {
             let held = if value_kind == Kind::TextBlock {
                 self.owned_text_block(&held)
             } else {
-                self.retain(&held);
+                self.retain_value(&held, &value_kind);
                 held.clone()
             };
             let old = self.temp();
@@ -469,7 +590,18 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
+        let value_at = self.value_place(&value_kind, &value_at);
         self.read_into(dest, &value_kind, &value_at, "")
+    }
+
+    /// Where a value is, from where a dict keeps it: a plain struct or enum is in a block.
+    fn value_place(&mut self, kind: &Kind, at: &str) -> String {
+        if !kind.in_memory() {
+            return at.to_owned();
+        }
+        let block = self.temp();
+        self.line(&format!("{block} = load ptr, ptr {at}"));
+        self.offset(&block, crate::lists::FIELDS_OFFSET)
     }
 
     /// Notes where a lookup found a key's entry, or null, for a store to the same key right
@@ -506,6 +638,8 @@ impl Emit<'_, '_, '_> {
                 "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
                 entry_value(key_word)
             ));
+            let value_at = self.value_place(&value_kind, &value_at);
+            let value_at = self.value_place(&value_kind, &value_at);
             self.read_into(dest, &value_kind, &value_at, "")?;
             self.line(&format!("br label %{done}"));
             self.start_block(&done);
@@ -536,13 +670,16 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
-        let value = self.load_field(&value_kind, &value_at, "");
+        let value = self.dict_part(&value_kind, &value_at);
         let (value_kind, value, owned) = self.as_header(&value_kind, &value);
         if value_kind.counted() && !owned {
             self.retain_value(&value, &value_kind);
         }
         let at = self.offset(&slot, offset);
         self.store_field(&value_kind, &value, &at, "");
+        if value_kind.in_memory() {
+            self.retain_inline(&value_kind, &at);
+        }
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
         Ok(())
@@ -564,6 +701,182 @@ impl Emit<'_, '_, '_> {
     /// Where the value of the key that's the slice `text[from:to]` is, or null. In ASCII text a
     /// character is a byte, so the slice's bytes are hashed as a stored key's are and looked up
     /// right here; other text asks the runtime, as does an inline header.
+    /// Defines `@fen_add_short_<from>(dict, bytes, length, value)`, which adds a key of 23 bytes
+    /// or fewer to a dict that nothing else holds and that hasn't got it, when the dict has room:
+    /// as an inline header, with a value that holds no block. Gives back whether it did, the
+    /// runtime doing anything else, as its `set_inline` does the same. Its words and hash come
+    /// from [`short_key`], as a lookup's do. `from` says where the bytes are.
+    fn add_short_key_helper(&mut self, from: KeyBytes) -> String {
+        self.string_slice_helpers();
+        let header = header_bytes();
+        let name = format!("fen_add_short_{}", from.name());
+        let key = short_key(from);
+        self.module.add_helper(
+            &name,
+            format!(
+                "define internal i1 @{name}(ptr %d, ptr %bytes, i64 %length, i64 %value) #0 {{
+entry:
+  %short = icmp ule i64 %length, 23
+  br i1 %short, label %room, label %no
+room:
+  %used_at = getelementptr inbounds i8, ptr %d, i64 {USED}
+  %used = load i64, ptr %used_at
+  %mask_at = getelementptr inbounds i8, ptr %d, i64 {MASK}
+  %mask = load i64, ptr %mask_at
+  %count = add i64 %mask, 1
+  %quarter = lshr i64 %count, 2
+  %holds = sub i64 %count, %quarter
+  %fits = icmp ult i64 %used, %holds
+  br i1 %fits, label %add, label %no
+add:
+{key}  %slots = getelementptr inbounds i8, ptr %d, i64 {header}
+  %first = and i64 %hash, %mask
+  br label %probe
+probe:
+  %at = phi i64 [ %first, %add ], [ %after, %taken ]
+  %slot = getelementptr inbounds i64, ptr %slots, i64 %at
+  %held = load i64, ptr %slot
+  %empty = icmp eq i64 %held, 0
+  br i1 %empty, label %place, label %taken
+taken:
+  %stepped = add i64 %at, 1
+  %after = and i64 %stepped, %mask
+  br label %probe
+place:
+  %number = add i64 %used, 1
+  store i64 %number, ptr %slot
+  %entries = getelementptr inbounds i64, ptr %slots, i64 %count
+  %added = getelementptr inbounds [5 x i64], ptr %entries, i64 %used
+  store i64 %hash, ptr %added
+  %a_to = getelementptr inbounds i64, ptr %added, i64 1
+  store i64 %a, ptr %a_to
+  %b_to = getelementptr inbounds i64, ptr %added, i64 2
+  store i64 %b, ptr %b_to
+  %c_to = getelementptr inbounds i64, ptr %added, i64 3
+  store i64 %c, ptr %c_to
+  %value_to = getelementptr inbounds i64, ptr %added, i64 4
+  store i64 %value, ptr %value_to
+  %keys_at = getelementptr inbounds i8, ptr %d, i64 {KEYS}
+  %keys = load i64, ptr %keys_at
+  %more_keys = add i64 %keys, 1
+  store i64 %more_keys, ptr %keys_at
+  store i64 %number, ptr %used_at
+  ret i1 true
+no:
+  ret i1 false
+}}
+
+"
+            ),
+        );
+        name
+    }
+
+    /// Defines `@fen_find_short_<from>(dict, bytes, length)`: the entry of a key of 23 bytes or
+    /// fewer in a dict whose keys are held as headers, or null. The key's header words are made
+    /// once, with no copy, and each entry the probe meets is compared with them a word at a time,
+    /// as two inline headers are equal exactly when their words are.
+    fn find_short_key_helper(&mut self, from: KeyBytes) -> String {
+        self.string_slice_helpers();
+        let header = header_bytes();
+        let name = format!("fen_find_short_{}", from.name());
+        let key = short_key(from);
+        self.module.add_helper(
+            &name,
+            format!(
+                "define internal ptr @{name}(ptr %d, ptr %bytes, i64 %length) #0 {{
+entry:
+{key}  %mask_at = getelementptr inbounds i8, ptr %d, i64 {MASK}
+  %mask = load i64, ptr %mask_at
+  %slots = getelementptr inbounds i8, ptr %d, i64 {header}
+  %count = add i64 %mask, 1
+  %first = and i64 %hash, %mask
+  %entries = getelementptr inbounds i64, ptr %slots, i64 %count
+  br label %head
+head:
+  %at = phi i64 [ %first, %entry ], [ %after, %next ]
+  %slot = getelementptr inbounds i64, ptr %slots, i64 %at
+  %taken = load i64, ptr %slot
+  %empty = icmp eq i64 %taken, 0
+  br i1 %empty, label %none, label %check
+none:
+  ret ptr null
+check:
+  %number = add i64 %taken, -1
+  %entry_at = getelementptr inbounds [5 x i64], ptr %entries, i64 %number
+  %theirs = load i64, ptr %entry_at
+  %same_hash = icmp eq i64 %theirs, %hash
+  br i1 %same_hash, label %compare, label %next
+compare:
+  %k0_at = getelementptr inbounds i64, ptr %entry_at, i64 1
+  %k0 = load i64, ptr %k0_at
+  %k1_at = getelementptr inbounds i64, ptr %entry_at, i64 2
+  %k1 = load i64, ptr %k1_at
+  %k2_at = getelementptr inbounds i64, ptr %entry_at, i64 3
+  %k2 = load i64, ptr %k2_at
+  %e0 = icmp eq i64 %k0, %a
+  %e1 = icmp eq i64 %k1, %b
+  %e2 = icmp eq i64 %k2, %c
+  %e01 = and i1 %e0, %e1
+  %same = and i1 %e01, %e2
+  br i1 %same, label %found, label %next
+next:
+  %stepped = add i64 %at, 1
+  %after = and i64 %stepped, %mask
+  br label %head
+found:
+  ret ptr %entry_at
+}}
+
+"
+            ),
+        );
+        name
+    }
+
+    /// Where an ASCII string's slice is and how many bytes it has, as slicing clamps it, and
+    /// whether it is one: `false` for text that isn't ASCII or a header holding its text.
+    fn ascii_slice_bytes(&mut self, [text, from, to]: &[String; 3]) -> (String, String, String) {
+        let (block_path, joined) = (self.label("slice_bytes"), self.label("slice_bytes_done"));
+        let came_from = self.current.clone();
+        let text = if self.headers() {
+            let in_block = self.header_in_block(text);
+            self.line(&format!("br i1 {in_block}, label %{block_path}, label %{joined}"));
+            self.start_block(&block_path);
+            let (first, block) = (self.header_word(text, 0), self.temp());
+            self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
+            block
+        } else {
+            self.line(&format!("br label %{block_path}"));
+            self.start_block(&block_path);
+            text.clone()
+        };
+        let (bytes_at, chars_at) =
+            (self.offset(&text, TEXT_BYTES.unsigned_abs()), self.offset(&text, TEXT_CHARS.unsigned_abs()));
+        let (length, chars, ascii) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{length} = load i64, ptr {bytes_at}"));
+        self.line(&format!("{chars} = load i64, ptr {chars_at}"));
+        self.line(&format!("{ascii} = icmp eq i64 {length}, {chars}"));
+        let start = self.clamp_place(from, &length, "0");
+        let end = self.clamp_place(to, &length, &length);
+        let (later, size, first) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{later} = call i64 @llvm.smax.i64(i64 {end}, i64 {start})"));
+        self.line(&format!("{size} = sub i64 {later}, {start}"));
+        let text_start = self.offset(&text, TEXT.unsigned_abs());
+        self.line(&format!("{first} = getelementptr inbounds i8, ptr {text_start}, i64 {start}"));
+        let block_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        if !self.headers() {
+            return (ascii, first, size);
+        }
+        let (ok, bytes, count) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{ok} = phi i1 [ false, %{came_from} ], [ {ascii}, %{block_end} ]"));
+        self.line(&format!("{bytes} = phi ptr [ null, %{came_from} ], [ {first}, %{block_end} ]"));
+        self.line(&format!("{count} = phi i64 [ 0, %{came_from} ], [ {size}, %{block_end} ]"));
+        (ok, bytes, count)
+    }
+
     fn slice_value_at(&mut self, dict: &str, key_word: Word, [text, from, to]: &[String; 3]) -> String {
         self.string_slice_helpers();
         let (here, there, joined) = (self.label("ascii"), self.label("other"), self.label("looked"));
@@ -599,7 +912,7 @@ impl Emit<'_, '_, '_> {
         let first = self.temp();
         self.line(&format!("{first} = getelementptr inbounds i8, ptr {text_start}, i64 {start}"));
         let entry = if key_word == Word::Text {
-            self.find_text_key(dict, &first, &size)
+            self.find_text_key(dict, (&first, KeyBytes::InBlock), &size)
         } else {
             let (mixed, high, folded, hash, entry) =
                 (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
@@ -702,6 +1015,8 @@ impl Emit<'_, '_, '_> {
         self.start_block(&found);
         let optional = self.kind_of(dest)?.clone();
         if matches!(optional, Kind::Maybe(_) | Kind::MaybeText) {
+            let value_at = self.value_place(&value_kind, &value_at);
+            let value_at = self.value_place(&value_kind, &value_at);
             self.read_into(dest, &value_kind, &value_at, "")?;
         } else {
             let (number, fields) = self.case_of(&optional, "Some")?;
@@ -717,6 +1032,9 @@ impl Emit<'_, '_, '_> {
             }
             let at = self.offset(&slot, offset);
             self.store_field(&value_kind, &value, &at, "");
+            if value_kind.in_memory() {
+                self.retain_inline(&value_kind, &at);
+            }
         }
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
@@ -749,7 +1067,14 @@ impl Emit<'_, '_, '_> {
         let (change, add, done) = (self.label("change"), self.label("add"), self.label("stored"));
         self.line(&format!("br i1 {quick}, label %{change}, label %{add}"));
         self.start_block(&change);
-        if value_kind.counted() {
+        if value_kind.in_memory() {
+            let word = self.dict_word(&value_kind, &held, true);
+            let (old, block) = (self.temp(), self.temp());
+            self.line(&format!("{old} = load ptr, ptr {value_at}"));
+            self.line(&format!("{block} = inttoptr i64 {word} to ptr"));
+            self.line(&format!("store ptr {block}, ptr {value_at}"));
+            self.release(&old);
+        } else if value_kind.counted() {
             if !fresh {
                 self.retain_value(&held, &value_kind);
             }
@@ -762,6 +1087,24 @@ impl Emit<'_, '_, '_> {
         }
         self.line(&format!("br label %{done}"));
         self.start_block(&add);
+        // A short new key of an ASCII string, for values holding no block, goes straight in.
+        if key_word == Word::Text && plain_value(value_word) {
+            let (ok, bytes, size) = self.ascii_slice_bytes(&sliced);
+            let word = self.dict_word(&value_kind, &held, false);
+            let (missing, try_it) = (self.temp(), self.temp());
+            self.line(&format!("{missing} = xor i1 {there}, true"));
+            let both = self.temp();
+            self.line(&format!("{both} = and i1 {alone}, {missing}"));
+            self.line(&format!("{try_it} = and i1 {both}, {ok}"));
+            let (native, runtime) = (self.label("add_here"), self.label("add_runtime"));
+            self.line(&format!("br i1 {try_it}, label %{native}, label %{runtime}"));
+            self.start_block(&native);
+            let add = self.add_short_key_helper(KeyBytes::InBlock);
+            let added = self.temp();
+            self.line(&format!("{added} = call i1 @{add}(ptr {dict}, ptr {bytes}, i64 {size}, i64 {word})"));
+            self.line(&format!("br i1 {added}, label %{done}, label %{runtime}"));
+            self.start_block(&runtime);
+        }
         // Mostly a new key, so the runtime doesn't look for it again before adding it; it still
         // finds one that's there, in a dict something else holds.
         let word = self.dict_word(&value_kind, &held, !fresh);
@@ -781,6 +1124,52 @@ impl Emit<'_, '_, '_> {
 
     /// `dict.pop(key)`: the runtime takes the key out, failing as the interpreter does if it
     /// isn't there, and hands back its value with its owner.
+    /// `dict.clear()` or `set.clear()`: the runtime takes over the owner and gives back an empty
+    /// one's.
+    pub(crate) fn dict_clear(&mut self, dict: LocalId) {
+        self.declare("declare ptr @fennec_set_clear(ptr) nounwind");
+        let place = self.slot(dict);
+        let (held, empty) = (self.temp(), self.temp());
+        self.line(&format!("{held} = load ptr, ptr {place}"));
+        self.line(&format!("{empty} = call ptr @fennec_set_clear(ptr {held})"));
+        self.line(&format!("store ptr {empty}, ptr {place}"));
+    }
+
+    /// `set.discard(key)`, or `set.remove(key)` when `must`, which fails on a key that isn't there.
+    pub(crate) fn set_remove(
+        &mut self,
+        set: LocalId,
+        key: &Operand,
+        must: bool,
+        span: Span,
+    ) -> Result<(), String> {
+        let Kind::Dict(key_word, _) = self.kind_of(set)?.clone() else {
+            return Err("a set's method on something else".to_owned());
+        };
+        let key = self.key_value(key, key_word)?;
+        let place = self.slot(set);
+        let (held, changed) = (self.temp(), self.temp());
+        let (from, to, must) = (i64::from(span.start), i64::from(span.end), i8::from(must));
+        self.line(&format!("{held} = load ptr, ptr {place}"));
+        if key_word == Word::Text {
+            // The key's owner stays here.
+            self.declare("declare ptr @fennec_set_remove_header(ptr, i64, i64, i64, i8, i64, i64) nounwind");
+            let [a, b, c] = [0, 1, 2].map(|at| self.header_word(&key, at));
+            self.line(&format!(
+                "{changed} = call ptr @fennec_set_remove_header(ptr {held}, i64 {a}, i64 {b}, i64 {c}, i8 {must}, i64 {from}, i64 {to})"
+            ));
+        } else {
+            let key_held = self.key_word(key_word, &key)?;
+            self.declare("declare ptr @fennec_set_remove(ptr, i64, i8, i64, i64) nounwind");
+            self.line(&format!(
+                "{changed} = call ptr @fennec_set_remove(ptr {held}, i64 {key_held}, i8 {must}, i64 {from}, i64 {to})"
+            ));
+        }
+        self.leave_if_failed();
+        self.line(&format!("store ptr {changed}, ptr {place}"));
+        Ok(())
+    }
+
     pub(crate) fn dict_pop(
         &mut self,
         dest: Option<LocalId>,
@@ -816,6 +1205,16 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store ptr {changed}, ptr {place}"));
         self.leave_if_failed();
         self.line(&format!("{word} = call i64 @fennec_dict_popped()"));
+        if value_kind.in_memory() {
+            let block = self.temp();
+            self.line(&format!("{block} = inttoptr i64 {word} to ptr"));
+            if let Some(dest) = dest {
+                let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+                self.read_into(dest, &value_kind, &fields, "")?;
+            }
+            self.release(&block);
+            return Ok(());
+        }
         // The value's word, read back as what it holds, already with its owner.
         let at = self.place_for(&Kind::Int);
         self.line(&format!("store i64 {word}, ptr {at}"));
@@ -895,6 +1294,7 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
+        let value_at = self.value_place(&value_kind, &value_at);
         self.read_into(dest, &value_kind, &value_at, "")?;
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
@@ -1024,5 +1424,61 @@ fn word_ty(word: Word) -> Ty {
         Word::Str | Word::Text => Ty::Str,
         Word::Nothing => Ty::Unit,
         Word::Plain(id) => Ty::Struct(id),
+        Word::Block(number) => Ty::Block(number),
     }
+}
+
+/// Whether a dict's values are words that hold no block, so adding one owns nothing.
+fn plain_value(word: Word) -> bool {
+    matches!(word, Word::Int | Word::Float | Word::Bool | Word::Nothing)
+}
+
+/// Where a key's bytes are, which says how its words can be read.
+#[derive(Clone, Copy)]
+enum KeyBytes {
+    /// A header copied whole into memory of its own: 24 bytes, zero after the text, with its tag
+    /// in the last.
+    Header,
+    /// Inside a string's block, anywhere in its text: past the slice may be past the block, but
+    /// the 8 bytes ending where the slice ends never are, as the block's header comes first.
+    InBlock,
+}
+
+impl KeyBytes {
+    fn name(self) -> &'static str {
+        match self {
+            KeyBytes::Header => "header",
+            KeyBytes::InBlock => "in_block",
+        }
+    }
+}
+
+/// Lines working out a key of 23 bytes or fewer from `%bytes` and `%length`: `%a`, `%b` and `%c`,
+/// the words of its inline header, tag and all; and `%hash`, as the runtime hashes its text, a
+/// word at a time with the last zero after the text. Nothing is copied and nothing outside the
+/// key's memory is read: a slice's last part word is the 8 bytes ending where it ends, moved down.
+fn short_key(from: KeyBytes) -> String {
+    let mut lines = String::new();
+    match from {
+        KeyBytes::Header => {
+            lines += "  %a = load i64, ptr %bytes, align 1\n  %b_from = getelementptr inbounds i8, ptr %bytes, i64 8\n  %b = load i64, ptr %b_from, align 1\n  %c_from = getelementptr inbounds i8, ptr %bytes, i64 16\n  %c = load i64, ptr %c_from, align 1\n  %c_text = and i64 %c, 72057594037927935\n";
+        }
+        KeyBytes::InBlock => {
+            lines += "  %tail_back = add i64 %length, -8\n  %tail_at = getelementptr i8, ptr %bytes, i64 %tail_back\n";
+            for (at, word) in ["a", "b", "c_text"].iter().enumerate() {
+                let start = at * 8;
+                let end = start + 8;
+                let _ = write!(
+                    lines,
+                    "  %{word}_whole = icmp uge i64 %length, {end}\n  %{word}_some = icmp ugt i64 %length, {start}\n  %{word}_at = getelementptr inbounds i8, ptr %bytes, i64 {start}\n  %{word}_from = select i1 %{word}_whole, ptr %{word}_at, ptr %tail_at\n  %{word}_raw = load i64, ptr %{word}_from, align 1\n  %{word}_kept = sub i64 %length, {start}\n  %{word}_dropped = sub i64 8, %{word}_kept\n  %{word}_bits = shl i64 %{word}_dropped, 3\n  %{word}_part_bits = select i1 %{word}_whole, i64 0, i64 %{word}_bits\n  %{word}_shift = select i1 %{word}_some, i64 %{word}_part_bits, i64 0\n  %{word}_moved = lshr i64 %{word}_raw, %{word}_shift\n  %{word} = select i1 %{word}_some, i64 %{word}_moved, i64 0\n"
+                );
+            }
+            lines += "  %tag = or i64 %length, 128\n  %tag_high = shl i64 %tag, 56\n  %c = or i64 %c_text, %tag_high\n";
+        }
+    }
+    let _ = write!(
+        lines,
+        "  %h0 = mul i64 %length, {MIX}\n  %t0 = call i64 @llvm.fshl.i64(i64 %h0, i64 %h0, i64 23)\n  %x0 = xor i64 %t0, %a\n  %h1 = mul i64 %x0, {MIX}\n  %t1 = call i64 @llvm.fshl.i64(i64 %h1, i64 %h1, i64 23)\n  %x1 = xor i64 %t1, %b\n  %h2 = mul i64 %x1, {MIX}\n  %t2 = call i64 @llvm.fshl.i64(i64 %h2, i64 %h2, i64 23)\n  %x2 = xor i64 %t2, %c_text\n  %h3 = mul i64 %x2, {MIX}\n  %rounded = add i64 %length, 7\n  %words = lshr i64 %rounded, 3\n  %one = icmp eq i64 %words, 1\n  %two = icmp eq i64 %words, 2\n  %three = icmp eq i64 %words, 3\n  %pick3 = select i1 %three, i64 %h3, i64 %h0\n  %pick2 = select i1 %two, i64 %h2, i64 %pick3\n  %mixed = select i1 %one, i64 %h1, i64 %pick2\n  %high = lshr i64 %mixed, 29\n  %folded = xor i64 %mixed, %high\n  %hash = lshr i64 %folded, 1\n"
+    );
+    lines
 }

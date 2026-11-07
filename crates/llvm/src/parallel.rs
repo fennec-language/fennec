@@ -34,6 +34,21 @@ use crate::emit::{Emit, HEADER_ACCESS, ITEM_ACCESS};
 use crate::kinds::{Kind, element_symbol};
 use crate::lists::list_item;
 
+/// Whether a builtin makes an HTTP request, the one thing that needs TLS.
+pub(crate) fn is_request(name: &str) -> bool {
+    ["Net.get", "Net.post", "Net.request"].iter().any(|request| name.starts_with(request))
+}
+
+/// Whether a program makes HTTP requests.
+pub fn uses_tls(program: &Program) -> bool {
+    program.functions.iter().chain(&program.constants).flat_map(|function| &function.blocks).any(|block| {
+        block
+            .insts
+            .iter()
+            .any(|inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if is_request(name)))
+    })
+}
+
 /// Whether a program hands work to the runtime's `parallel` calls, and so keeps a stack limit
 /// and failure flag for each thread.
 pub fn uses_parallel(program: &Program) -> bool {
@@ -43,6 +58,11 @@ pub fn uses_parallel(program: &Program) -> bool {
             .iter()
             .any(|inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if name.starts_with("parallel.")))
     })
+}
+
+/// Whether a program has any `shared` type.
+pub(crate) fn has_cells(program: &Program) -> bool {
+    program.structs.iter().any(|def| def.shared)
 }
 
 /// The functions that can run on a thread `parallel` uses. A range is a closure, and anything
@@ -57,6 +77,11 @@ pub(crate) fn run_on_workers(program: &Program) -> HashSet<&str> {
         return found;
     }
     let every = || program.functions.iter().chain(&program.constants);
+    // A `shared` value's handle is only ever counted by the runtime, and a thread under its lock
+    // has another number, so nothing can count without asking who it is.
+    if has_cells(program) {
+        return every().map(|function| function.name.as_str()).collect();
+    }
     let functions: HashMap<&str, &Function> =
         every().map(|function| (function.name.as_str(), function)).collect();
     let closures =
@@ -111,6 +136,11 @@ pub(crate) fn failed_global(threads: bool) -> &'static str {
 /// this thread made it. It's 0 on the program's thread, and a worker's first shim sets it.
 const THREAD_GLOBAL: &str = "@fennec_thread = external dso_local thread_local(initialexec) global i64";
 
+/// How a function declares `@fennec_thread`, to change it.
+pub(crate) fn thread_global() -> &'static str {
+    THREAD_GLOBAL
+}
+
 /// Where a block's shape word is, whose top 16 bits say which thread made it.
 const SHAPE: u32 = 8;
 const OWNER_SHIFT: u32 = 48;
@@ -120,10 +150,12 @@ const IMMORTAL: u64 = 1 << 47;
 
 /// The start of a function about a block's owners: `%owner` is the thread that made `%block`, and
 /// `%mine` says whether that's this one.
-fn whose_block() -> String {
+fn whose_block(changes: bool) -> String {
+    // Under a `shared` value's write lock a thread goes by another number.
+    let invariant = if changes { "" } else { ", !invariant.load !1" };
     format!(
         "  %shape_at = getelementptr inbounds i8, ptr %block, i64 {SHAPE}\n  %shape = load i64, ptr %shape_at\n  \
-         %owner = lshr i64 %shape, {OWNER_SHIFT}\n  %me = load i64, ptr @fennec_thread, !invariant.load !1\n  \
+         %owner = lshr i64 %shape, {OWNER_SHIFT}\n  %me = load i64, ptr @fennec_thread{invariant}\n  \
          %mine = icmp eq i64 %owner, %me\n"
     )
 }
@@ -138,15 +170,16 @@ fn immortal() -> String {
 }
 
 /// The start of every shim: on a thread whose failure flag isn't known yet, a worker running
-/// its first range, asks the runtime where this thread's flag is and how deep its stack goes,
-/// and notes its number. The program's thread has all three from `fennec_entry`. Everything else
-/// reads these as never changing, so the range runs in a function that's never inlined here: no
-/// such read can move above these stores.
+/// its first range, asks the runtime where this thread's flag is, and notes its number. The
+/// program's thread has both from `fennec_entry`. Then, for every range, it asks how deep its stack
+/// may go: a range whose body may wait runs as a parked task, on a stack of its own, so the
+/// worker's stack limit isn't its. Everything else reads these as never changing, so the range
+/// runs in a function that's never inlined here: no such read can move above these stores.
 const READY: &str = "entry:\n  %known = load ptr, ptr @fennec_failed\n  %fresh = icmp eq ptr %known, null\n  \
-    br i1 %fresh, label %ready, label %run\nready:\n  \
+    br i1 %fresh, label %ready, label %set_limit\nready:\n  \
     %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  \
-    store ptr %flag_at, ptr @fennec_failed\n  %limit = call i64 @fennec_aot_stack_limit()\n  \
-    store i64 %limit, ptr @fennec_stack_limit\n  store i64 %thread, ptr @fennec_thread\n  br label %run\nrun:\n";
+    store ptr %flag_at, ptr @fennec_failed\n  store i64 %thread, ptr @fennec_thread\n  br label %set_limit\nset_limit:\n  \
+    %stack_limit = call i64 @fennec_aot_stack_limit()\n  store i64 %stack_limit, ptr @fennec_stack_limit\n  br label %run\nrun:\n";
 
 /// What a range's closure gives back, which says which shim runs it.
 #[derive(Clone, Copy)]
@@ -157,6 +190,8 @@ enum Shape {
     Into,
     /// `(from, to) -> int` or `-> float`: a sum's range, giving back its partial.
     Partial { float: bool },
+    /// `(conn) -> ()`: a server's task for a connection, on a stack of its own.
+    Task,
 }
 
 impl Shape {
@@ -166,14 +201,18 @@ impl Shape {
             Shape::Into => "@fen_parallel_range_into",
             Shape::Partial { float: false } => "@fen_parallel_partial_int",
             Shape::Partial { float: true } => "@fen_parallel_partial_float",
+            Shape::Task => "@fen_parallel_task",
         }
     }
 
     /// The shim's text: the runtime's body, calling the closure `%env` names over the range.
     fn shim(self) -> String {
+        if matches!(self, Shape::Task) {
+            return task_shim();
+        }
         let name = self.name();
         let (extra, args, call, keep) = match self {
-            Shape::Each => ("", "", "call swiftcc void", String::new()),
+            Shape::Each | Shape::Task => ("", "", "call swiftcc void", String::new()),
             Shape::Into => (", i64 %out", ", ptr %into", "call swiftcc void", String::new()),
             Shape::Partial { float: false } => (
                 ", ptr %partial",
@@ -204,13 +243,31 @@ impl Shape {
     }
 }
 
+/// The shim for a server's task: as a range's, but each task has a stack of its own, so its limit
+/// is set every time, whatever this thread has run.
+fn task_shim() -> String {
+    let name = Shape::Task.name();
+    let running = format!("@\"{}.run\"", name.trim_start_matches('@'));
+    format!(
+        "define internal i64 {running}(i64 %env, i64 %conn) noinline #0 {{\nentry:\n  \
+         %closure = inttoptr i64 %env to ptr\n  %code_at = getelementptr inbounds i8, ptr %closure, i64 {CODE}\n  \
+         %code = load ptr, ptr %code_at\n  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n  \
+         call swiftcc void %code(ptr %closure, i64 %conn, ptr swifterror %failed)\n  \
+         %held = load ptr, ptr %failed\n  %bad = icmp ne ptr %held, null\n  %result = zext i1 %bad to i64\n  \
+         ret i64 %result\n}}\n\n\
+         define internal i64 {name}(i64 %env, i64 %conn, i64 %thread) #0 {{\n{READY}  \
+         %task_limit = call i64 @fennec_aot_stack_limit()\n  store i64 %task_limit, ptr @fennec_stack_limit\n  \
+         %result = call i64 {running}(i64 %env, i64 %conn)\n  ret i64 %result\n}}\n\n"
+    )
+}
+
 impl Emit<'_, '_, '_> {
     /// Defines `@fen_retain` for a program that runs `parallel`: one more owner of a block, by
     /// whichever way this thread counts it.
     pub(crate) fn counted_retain_helper(&mut self) {
         self.declare(THREAD_GLOBAL);
         self.declare("declare void @fennec_retain_shared(i64, i64) nounwind");
-        let (start, immortal) = (whose_block(), immortal());
+        let (start, immortal) = (whose_block(self.module.cells), immortal());
         self.module.add_helper(
             "fen_retain",
             format!(
@@ -227,7 +284,7 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn counted_owner_gone_helper(&mut self) {
         self.declare(THREAD_GLOBAL);
         self.declare("declare void @fennec_release_shared(i64, i64) nounwind");
-        let (start, immortal) = (whose_block(), immortal());
+        let (start, immortal) = (whose_block(self.module.cells), immortal());
         self.module.add_helper(
             "fen_owner_gone",
             format!(
@@ -243,7 +300,7 @@ impl Emit<'_, '_, '_> {
     /// with one owner.
     pub(crate) fn alone_helper(&mut self) {
         self.declare(THREAD_GLOBAL);
-        let start = whose_block();
+        let start = whose_block(self.module.cells);
         self.module.add_helper(
             "fen_alone",
             format!(
@@ -304,6 +361,11 @@ impl Emit<'_, '_, '_> {
                 Ok(())
             }
             ("parallel.for", [list, range]) => self.parallel_for(list, range),
+            ("parallel.serve", [server, task]) => self.parallel_serve(server, task),
+            ("parallel.peer", [Operand::Local(conn)]) => {
+                let (handle, _) = self.operand(&Operand::Local(*conn))?;
+                self.socket_method(dest, &handle, "Connection.peer", &[], span)
+            }
             ("parallel.map", [list, range]) => {
                 self.parallel_map(dest.ok_or("a map keeps nothing")?, list, range)
             }
@@ -333,6 +395,37 @@ impl Emit<'_, '_, '_> {
     }
 
     /// The list's address and the closure's, as the words the runtime takes.
+    /// The ending of the runtime's entry point for a `parallel` call whose ranges run `range`:
+    /// `_waiting` when that body may wait, so the scheduler can park a range rather than its
+    /// thread, and nothing for one that only computes. A body made here is known; one passed
+    /// in may be any closure, and waits if any the program makes may.
+    fn waiting(&self, range: &Operand) -> &'static str {
+        let shared = &self.module.shared;
+        let any_closure = !shared.waiting_closures.is_empty();
+        let Operand::Local(local) = range else {
+            return if any_closure { "_waiting" } else { "" };
+        };
+        // Every closure written to it, when only closures made here are.
+        let writes: Vec<Option<&String>> = self
+            .function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.insts)
+            .filter(|inst| inst.kind.dest() == Some(*local))
+            .map(|inst| match &inst.kind {
+                InstKind::MakeClosure { function, .. } => Some(function),
+                _ => None,
+            })
+            .collect();
+        let known = !writes.is_empty() && writes.iter().all(Option::is_some);
+        let waits = if known {
+            writes.iter().flatten().any(|function| shared.waiting.contains(*function))
+        } else {
+            any_closure
+        };
+        if waits { "_waiting" } else { "" }
+    }
+
     fn list_and_env(&mut self, list: &Operand, range: &Operand) -> Result<(String, String), String> {
         let ((list, _), (closure, _)) = (self.operand(list)?, self.operand(range)?);
         let env = self.temp();
@@ -340,14 +433,42 @@ impl Emit<'_, '_, '_> {
         Ok((list, env))
     }
 
+    /// `parallel.serve(server, task)`: each connection a task of the runtime's, until it's stopped.
+    fn parallel_serve(&mut self, server: &Operand, task: &Operand) -> Result<(), String> {
+        let handle = self.socket_handle(server)?;
+        let (closure, _) = self.operand(task)?;
+        let env = self.temp();
+        self.line(&format!("{env} = ptrtoint ptr {closure} to i64"));
+        let shim = self.shim(Shape::Task);
+        self.declare("declare i64 @fennec_net_serve(i64, ptr, i64) nounwind");
+        let done = self.temp();
+        self.line(&format!("{done} = call i64 @fennec_net_serve(i64 {handle}, ptr {shim}, i64 {env})"));
+        self.leave_if_failed();
+        Ok(())
+    }
+
+    /// A parked task's stack limit, read again after anything that can park: other tasks have run
+    /// on this thread since.
+    pub(crate) fn stack_limit_again(&mut self) {
+        if !self.on_workers() {
+            return;
+        }
+        self.declare(stack_limit_global(self.module.threads));
+        self.declare("declare i64 @fennec_aot_stack_limit()");
+        let limit = self.temp();
+        self.line(&format!("{limit} = call i64 @fennec_aot_stack_limit()"));
+        self.line(&format!("store i64 {limit}, ptr @fennec_stack_limit"));
+    }
+
     /// `parallel.for(list, range)`: each range of the list's positions, as the runtime splits
     /// them.
     fn parallel_for(&mut self, list: &Operand, range: &Operand) -> Result<(), String> {
+        let call = format!("fennec_parallel_for{}", self.waiting(range));
         let (list, env) = self.list_and_env(list, range)?;
         let shim = self.shim(Shape::Each);
-        self.declare("declare i64 @fennec_parallel_for(ptr, ptr, i64) nounwind");
+        self.declare(&format!("declare i64 @{call}(ptr, ptr, i64) nounwind"));
         let done = self.temp();
-        self.line(&format!("{done} = call i64 @fennec_parallel_for(ptr {list}, ptr {shim}, i64 {env})"));
+        self.line(&format!("{done} = call i64 @{call}(ptr {list}, ptr {shim}, i64 {env})"));
         self.leave_if_failed();
         Ok(())
     }
@@ -356,17 +477,16 @@ impl Emit<'_, '_, '_> {
     /// in it.
     fn parallel_map(&mut self, dest: LocalId, list: &Operand, range: &Operand) -> Result<(), String> {
         let item = list_item(&self.kind_of(dest)?.clone())?;
+        let call = format!("fennec_parallel_map{}", self.waiting(range));
         let (list, env) = self.list_and_env(list, range)?;
         let symbol = element_symbol(self.module.layouts, item);
         self.module.shared.elements.insert(symbol.clone(), item);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
         let shim = self.shim(Shape::Into);
-        self.declare("declare ptr @fennec_parallel_map(ptr, ptr, i64, i64) nounwind");
+        self.declare(&format!("declare ptr @{call}(ptr, ptr, i64, i64) nounwind"));
         let (element, made) = (self.temp(), self.temp());
         self.line(&format!("{element} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
-        self.line(&format!(
-            "{made} = call ptr @fennec_parallel_map(ptr {list}, ptr {shim}, i64 {env}, i64 {element})"
-        ));
+        self.line(&format!("{made} = call ptr @{call}(ptr {list}, ptr {shim}, i64 {env}, i64 {element})"));
         self.leave_if_failed();
         self.assign(dest, &made)
     }
@@ -386,15 +506,16 @@ impl Emit<'_, '_, '_> {
             other => return Err(format!("it sums {other:?}s, which this backend doesn't take yet")),
         };
         let (start, _) = self.operand(start)?;
+        let call = format!("fennec_parallel_reduce{}", self.waiting(range));
         let (held, env) = self.list_and_env(list, range)?;
         let shim = self.shim(Shape::Partial { float });
         let combine = self.combine(float, span);
-        self.declare("declare i64 @fennec_parallel_reduce(ptr, ptr, ptr, i64, ptr) nounwind");
+        self.declare(&format!("declare i64 @{call}(ptr, ptr, ptr, i64, ptr) nounwind"));
         let (slot, done, length, empty) = (self.temp(), self.temp(), self.list_length(&held), self.temp());
         self.line(&format!("{slot} = alloca i64"));
         self.line(&format!("store i64 0, ptr {slot}"));
         self.line(&format!(
-            "{done} = call i64 @fennec_parallel_reduce(ptr {held}, ptr {shim}, ptr {combine}, i64 {env}, ptr {slot})"
+            "{done} = call i64 @{call}(ptr {held}, ptr {shim}, ptr {combine}, i64 {env}, ptr {slot})"
         ));
         self.leave_if_failed();
         self.line(&format!("{empty} = icmp eq i64 {length}, 0"));
@@ -503,7 +624,7 @@ mod tests {
     fn texts(source: &str) -> Result<String, String> {
         let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
-        let options = fennec_ir::Options { outline_parallel: true };
+        let options = fennec_ir::Options { outline_parallel: true, ..fennec_ir::Options::default() };
         let (units, _, _) = crate::emit::emit(&fennec_ir::lower_with(&module, &checked, options))?;
         Ok(units.into_iter().map(|unit| unit.text).collect())
     }
@@ -550,7 +671,7 @@ def main(stdout: Stdout):
     fn text_of(source: &str, name: &str) -> Result<String, String> {
         let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
-        let options = fennec_ir::Options { outline_parallel: true };
+        let options = fennec_ir::Options { outline_parallel: true, ..fennec_ir::Options::default() };
         let (units, _, _) = crate::emit::emit(&fennec_ir::lower_with(&module, &checked, options))?;
         units
             .into_iter()
@@ -562,10 +683,10 @@ def main(stdout: Stdout):
     #[test]
     fn only_what_a_range_can_reach_pays_for_threads() -> Result<(), String> {
         let source = "\
-def plain(n: int, mut held: list[str]) -> int:
+def plain(n: int, ref held: list[str]) -> int:
     held.append(str(n))
     if n > 0:
-        return plain(n - 1, mut held)
+        return plain(n - 1, ref held)
     n ** 2
 
 def in_a_range(n: int) -> int:
@@ -575,7 +696,7 @@ def in_a_range(n: int) -> int:
 
 def main(stdout: Stdout):
     mut held = [\"a\"]
-    stdout.print(plain(3, mut held), sum(in_a_range(n) for n in parallel([1, 2])))
+    stdout.print(plain(3, ref held), sum(in_a_range(n) for n in parallel([1, 2])))
 ";
         let plain = text_of(source, "plain")?;
         assert!(plain.contains("@fennec_stack_limit_main"), "{plain}");
@@ -591,16 +712,79 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A `parallel` call whose body may wait, here by sleeping, directly or in what it calls,
+    /// goes to the runtime's `_waiting` entry points, so the scheduler can park a waiting range
+    /// rather than its thread. Bodies that only compute go to the plain ones.
+    #[test]
+    fn parallel_bodies_that_may_wait_say_so() -> Result<(), String> {
+        let computes = "\
+def main(stdout: Stdout):
+    mut xs = [1, 2, 3]
+    for ref x in parallel(xs):
+        x += 1
+    doubled = [x * 2 for x in parallel(xs)]
+    stdout.print(doubled, sum(x for x in parallel(xs)))
+";
+        let text = texts(computes)?;
+        for call in ["fennec_parallel_for", "fennec_parallel_map", "fennec_parallel_reduce"] {
+            assert!(text.contains(&format!("@{call}(ptr")), "{call}: {text}");
+            assert!(!text.contains(&format!("@{call}_waiting")), "{call}: {text}");
+        }
+        let waits = "\
+from std.time import Clock
+
+def rest(clock: Clock, x: int) -> int:
+    clock.sleep(1ms)
+    x
+
+def main(stdout: Stdout, clock: Clock):
+    mut xs = [1, 2, 3]
+    for ref x in parallel(xs):
+        clock.sleep(1ms)
+        x += 1
+    rested = [rest(clock, x) for x in parallel(xs)]
+    stdout.print(rested, sum(rest(clock, x) for x in parallel(xs)))
+";
+        let text = texts(waits)?;
+        for call in ["fennec_parallel_for", "fennec_parallel_map", "fennec_parallel_reduce"] {
+            assert!(text.contains(&format!("@{call}_waiting(ptr")), "{call}: {text}");
+            assert!(!text.contains(&format!("@{call}(ptr")), "{call}: {text}");
+        }
+        // A body reading a connection waits, and one doing arithmetic beside it doesn't.
+        let reads = "\
+from std.net import Connection
+
+def heard(conn: Connection, x: int) -> int:
+    match conn.read(1):
+        case Ok(got):
+            got.len() + x
+        case _:
+            x
+
+def main(stdout: Stdout, net: Net):
+    xs = [1, 2, 3]
+    match net.connect(\"localhost\", 9000):
+        case Ok(conn):
+            stdout.print([heard(conn, x) for x in parallel(xs)])
+        case _:
+            stdout.print([x * 2 for x in parallel(xs)])
+";
+        let text = texts(reads)?;
+        assert!(text.contains("@fennec_parallel_map_waiting(ptr"), "{text}");
+        assert!(text.contains("@fennec_parallel_map(ptr"), "{text}");
+        Ok(())
+    }
+
     #[test]
     fn a_for_mut_over_parallel_makes_the_list_its_own_and_puts_items_back_in_place() -> Result<(), String> {
         let source = "\
-def grow(mut xs: list[int], by: int):
-    for mut x in parallel(xs):
+def grow(ref xs: list[int], by: int):
+    for ref x in parallel(xs):
         x += by
 
 def main(stdout: Stdout):
     mut xs = [1, 2]
-    grow(mut xs, 3)
+    grow(ref xs, 3)
     stdout.print(xs)
 ";
         let text = texts(source)?;

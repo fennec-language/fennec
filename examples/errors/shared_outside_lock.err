@@ -1,0 +1,7 @@
+error: `scores` is `shared`, so it's reached inside a `lock`
+ --> examples/errors/shared_outside_lock.fen:7:18
+  |
+7 |     stdout.print(scores.best)
+  |                  ^^^^^^^^^^^
+  |
+  = help: write `lock scores as current:` around this to read it, or `lock scores as ref current:` to change it

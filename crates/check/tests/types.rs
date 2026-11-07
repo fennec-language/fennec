@@ -183,6 +183,75 @@ fn slicing_fits_what_is_sliced() {
 }
 
 #[test]
+fn a_fixed_size_array_holds_exactly_its_size() {
+    let program = "
+        struct Item:
+            name = ''
+
+        struct Bag:
+            slots = array[Item?, 3]()
+            m: array[float, 4] = [1.0, 0.0, 0.0, 1.0] where all(x >= 0.0 for x in m)
+
+        def bump(ref xs: array[int, 3]):
+            for ref x in xs:
+                x += 1
+
+        def main(stdout: Stdout):
+            mut bag = Bag()
+            bag.slots[0] = Item(name='rope')
+            bag.slots[-1] = None
+            mut xs = array[int, 3]()
+            bump(ref xs)
+            grid = array[array[int, 2], 2]()
+            mut maybe = array[str?, 3]()
+            maybe[1] = 'x'
+            lists: list[array[int, 3]] = [array[int, 3](), [1, 2, 3]]
+            by_name: dict[str, array[float, 2]] = {'a': [1.0, 2.0]}
+            picked: array[int, 2]? = [4, 5]
+            stdout.print(maybe, lists, by_name, picked)
+            stdout.print(xs[2] + 1, xs.len(), 2 in xs, xs == array[int, 3](), list(xs), grid[1][0], bag.m[3] * 2.0)
+    ";
+    assert_eq!(problems(&program.replace('\'', "\"")), Vec::<String>::new());
+}
+
+#[test]
+fn a_fixed_size_array_refuses_a_wrong_size_or_position() {
+    let program = "
+        struct Enemy:
+            name: str
+
+        def takes(xs: list[int]) -> int:
+            xs.len()
+
+        def main(stdout: Stdout):
+            a: array[int, 3] = [1, 2]
+            b: array[int, 0] = [1]
+            c: array[str, 2] = ['a', 1]
+            d = array[Enemy, 2]()
+            e = array[int, 3](5)
+            mut f = array[int, 3]()
+            f[3] = 1
+            stdout.print(f[-4], f[-3], takes(f), f[0:2])
+            lists: list[array[int, 3]] = [[1, 2]]
+    ";
+    assert_eq!(
+        problems(&program.replace('\'', "\"")),
+        [
+            "this array holds 3 items, but this list has 2 items @ [1, 2]",
+            "an array's size is a whole number of at least 1, written out @ array[int, 0]",
+            "this array holds a str, not an int @ 1",
+            "an Enemy has no zero to fill an array with @ array[Enemy, 2]()",
+            "`array[int, 3]()` fills it with zeros, so it takes nothing @ array[int, 3](5)",
+            "this array has 3 items, so there's no item 3 @ 3",
+            "this array has 3 items, so there's no item -4 @ -4",
+            "`xs` should be a list[int], but this is an array[int, 3] @ f",
+            "an array can't be sliced @ f[0:2]",
+            "this array holds 3 items, but this list has 2 items @ [1, 2]",
+        ]
+    );
+}
+
+#[test]
 fn loops_go_over_collections() {
     let program = "
         struct Bag:
@@ -268,17 +337,18 @@ fn builtins_give_back_the_right_types() {
         ("any([True]) + 1", "can't use `+` on a bool and an int @ any([True]) + 1"),
         ("set([1]) + 1", "can't use `+` on a set and an int @ set([1]) + 1"),
         ("PI + 1", "can't mix int and float in `+` @ PI + 1"),
-        ("xs.pop() + 1.0", "can't mix int and float in `+` @ xs.pop() + 1.0"),
+        ("xs.pop(0) + 1.0", "can't mix int and float in `+` @ xs.pop(0) + 1.0"),
+        ("xs.pop() + 1", "this might be None @ xs.pop()"),
         ("{'a': 1}.keys()[0] + 1", "can't use `+` on a str and an int @ {\"a\": 1}.keys()[0] + 1"),
         ("{'a': 1}.values()[0] + 1.0", "can't mix int and float in `+` @ {\"a\": 1}.values()[0] + 1.0"),
         ("{'a': 1}.items()[0][1] + 1.0", "can't mix int and float in `+` @ {\"a\": 1}.items()[0][1] + 1.0"),
         ("'a'.split()[0] + 1", "can't use `+` on a str and an int @ \"a\".split()[0] + 1"),
         ("'a'.isdigit() + 1", "can't use `+` on a bool and an int @ \"a\".isdigit() + 1"),
-        ("IdMap[str]().values()[0] + 1", "can't use `+` on a str and an int @ IdMap[str]().values()[0] + 1"),
+        ("Table[str]().values()[0] + 1", "can't use `+` on a str and an int @ Table[str]().values()[0] + 1"),
     ];
     for (expression, expected) in cases {
         let program = format!(
-            "from std.math import PI, sqrt, floor\nfrom std.game import IdMap\n\ndef main(stdout: Stdout):\n    mut xs = [1]\n    stdout.print({expression})\n"
+            "from std.math import PI, sqrt, floor\nfrom std.collections import Table\n\ndef main(stdout: Stdout):\n    mut xs = [1]\n    stdout.print({expression})\n"
         );
         assert_eq!(problems(&program), [expected.to_owned()], "{expression}");
     }
@@ -287,10 +357,10 @@ fn builtins_give_back_the_right_types() {
 #[test]
 fn optional_results_of_builtins_might_be_none() {
     let cases =
-        ["[1].index(1) + 1", "'abc'.find('b') + 1", "{'a': 1}.get('a') + 1", "pool.get(pool.insert(1)) + 1"];
+        ["[1].index(1) + 1", "'abc'.find('b') + 1", "{'a': 1}.get('a') + 1", "pool.get(pool.add(1)) + 1"];
     for expression in cases {
         let program = format!(
-            "from std.game import IdMap\n\ndef main(stdout: Stdout):\n    mut pool = IdMap[int]()\n    stdout.print({expression})\n"
+            "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut pool = Table[int]()\n    stdout.print({expression})\n"
         );
         let expression = expression.replace('\'', "\"");
         let operand = expression.rsplit_once(" + ").map_or("", |(left, _)| left);
@@ -342,8 +412,8 @@ fn a_types_own_equality_takes_its_own_type() {
 
 #[test]
 fn annotations_on_fields_are_checked() {
-    let text = "struct User:\n    @serialize(name=\"uid\")\n    id: int\n    @skip\n    cache = \"\"\n    @skip\n    \
-                total: int\n    @serialize(\"uid\")\n    name: str\n    @json\n    age: int\n";
+    let text = "struct User:\n    @serialize(name=\"uid\")\n    id: int\n    @skip\n    total: int\n    \
+                @serialize(\"uid\")\n    name: str\n    @json\n    age: int\n    @skip\n    cache = \"\"\n";
     assert_eq!(
         problems(text),
         [
@@ -397,4 +467,56 @@ fn a_case_field_default_has_to_fit_its_type() {
     let found = problems(&crate::dedent(program));
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found.iter().all(|problem| problem.contains("`x`")), "{found:?}");
+}
+
+#[test]
+fn a_float_compared_as_not_itself_isnt_a_nan_test() {
+    let empty: [&str; 0] = [];
+    let held = "struct Unit:\n    speed = 1.5\n";
+    assert_eq!(
+        crate::in_main_after(held, "x = 1.5\nstdout.print(x != x)"),
+        ["`x != x` is always False, since NaN equals NaN here @ x != x"]
+    );
+    assert_eq!(
+        crate::in_main_after(held, "unit = Unit()\nstdout.print(unit.speed != unit.speed)"),
+        ["`unit.speed != unit.speed` is always False, since NaN equals NaN here @ unit.speed != unit.speed"]
+    );
+    for body in [
+        "x = 1.5\ny = 2.5\nstdout.print(x != y, x.is_nan())",
+        "unit = Unit()\nstdout.print(unit.speed.is_nan(), unit.speed != 1.0)",
+        // An int can't be NaN, and the lint has what it means to compare one with itself.
+        "x = 1\nstdout.print(x != x)",
+    ] {
+        assert_eq!(crate::in_main_after(held, body), empty, "{body}");
+    }
+    let found = crate::in_main_after(held, "x = 1\nstdout.print(x.is_nan())");
+    assert_eq!(found.len(), 1, "{found:?}");
+}
+
+#[test]
+fn a_dict_or_set_cant_hold_what_might_be_missing() {
+    let dict = "a dict can't hold optional values";
+    for body in [
+        "mut ages: dict[str, int?] = {}\nstdout.print(ages)",
+        "ages = dict[str, int?]()\nstdout.print(ages)",
+        "maybe: int? = None\nages = {\"a\": maybe}\nstdout.print(ages)",
+        "ages = {\"a\": 1, \"b\": None}\nstdout.print(ages)",
+    ] {
+        let found = in_main(body);
+        assert!(found.iter().any(|one| one.starts_with(dict)), "{body}: {found:?}");
+    }
+    let found = in_main("names: dict[str?, int] = {}\nstdout.print(names)");
+    assert!(found.iter().any(|one| one.starts_with("a dict's keys can't be optional")), "{found:?}");
+    let found = in_main("seen: set[int?] = set()\nstdout.print(seen)");
+    assert!(found.iter().any(|one| one.starts_with("a set can't hold optional items")), "{found:?}");
+    let fields = problems("struct Book:\n    pages: dict[str, int?]\n");
+    assert!(fields.iter().any(|one| one.starts_with(dict)), "{fields:?}");
+    // A list of optionals stays, and so does looking up what may be missing.
+    let empty: [&str; 0] = [];
+    assert_eq!(
+        in_main(
+            "mut numbers: list[int?] = [1]\nnumbers.append(None)\nages = {\"a\": 1}\nstdout.print(numbers, ages.get(\"b\"))"
+        ),
+        empty
+    );
 }

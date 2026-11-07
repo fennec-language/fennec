@@ -190,6 +190,27 @@ impl Session {
         }
     }
 
+    /// What to answer a request about a place in `file` from: the quick analysis an edit left,
+    /// when it has the file, typed the first time it's needed, or else the whole program's. After
+    /// an edit, that's the files it touched and what they import, so a definition or a hover
+    /// there doesn't wait for all of a big kit to be checked again.
+    fn analysis_of(&mut self, file: &Path) -> Option<&Analysis> {
+        let program = program_of(file);
+        let path = text::shown(file);
+        let quick = matches!(
+            &self.cached,
+            Some((cached, changes, analysis))
+                if *cached == program && *changes == self.changes && analysis.partial
+                    && analysis.module.is_some() && analysis.sources.by_path(&path).is_some()
+        );
+        if !quick {
+            return self.analysis(&program);
+        }
+        let (_, _, analysis) = self.cached.as_mut()?;
+        analysis.typed();
+        Some(&*analysis)
+    }
+
     /// The analysis of a program, made fresh if it isn't.
     fn analysis(&mut self, program: &Path) -> Option<&Analysis> {
         self.refresh(program);
@@ -210,12 +231,13 @@ impl Session {
         uri_among(&self.documents, path)
     }
 
-    /// What a request's position refers to, with the analysis of its document's program.
-    fn at_position(&mut self, params: &Json) -> Option<(Target, &Analysis)> {
+    /// What a request's position refers to, with the analysis of its document's program: all of
+    /// it when the request is about the `whole` program, as finding references is.
+    fn at_position(&mut self, params: &Json, whole: bool) -> Option<(Target, &Analysis)> {
         let uri = params.at(&["textDocument", "uri"])?.as_str()?;
         let file = canonical(&text::path_of(uri)?);
         let path = text::shown(&file);
-        let analysis = self.analysis(&program_of(&file))?;
+        let analysis = if whole { self.analysis(&program_of(&file))? } else { self.analysis_of(&file)? };
         let (text, _) = analysis.sources.by_path(&path)?;
         let offset = text::offset(text, params.get("position")?)?;
         let at = analysis.span_at(&path, offset)?;
@@ -226,13 +248,17 @@ impl Session {
 
     fn definition(&mut self, params: &Json) -> Json {
         let documents = self.documents.clone();
-        let Some((found, analysis)) = self.at_position(params) else { return Json::Null };
+        let Some((found, analysis)) = self.at_position(params, false) else { return Json::Null };
         let Some(module) = &analysis.module else { return Json::Null };
         let locations: Vec<(String, Json)> =
             declarations(&found, module, &analysis.sources, analysis.checked.as_ref())
                 .iter()
                 .filter_map(|declaration| {
-                    let (file, text, start, end) = analysis.place(declaration.name_at)?;
+                    let (file, text, start, end) = if declaration.library {
+                        library_place(declaration.name_at)?
+                    } else {
+                        analysis.place(declaration.name_at)?
+                    };
                     Some((file.to_owned(), text::range(text, start, end)))
                 })
                 .collect();
@@ -251,7 +277,7 @@ impl Session {
         let documents = self.documents.clone();
         let with_declaration =
             !matches!(params.at(&["context", "includeDeclaration"]), Some(Json::Bool(false)));
-        let Some((found, analysis)) = self.at_position(params) else { return Json::Null };
+        let Some((found, analysis)) = self.at_position(params, true) else { return Json::Null };
         let declared: Vec<Span> = match &analysis.module {
             Some(module) => declarations(&found, module, &analysis.sources, analysis.checked.as_ref())
                 .iter()
@@ -278,7 +304,7 @@ impl Session {
         if !valid_name(&new_name) {
             return Err(format!("`{new_name}` can't be a name"));
         }
-        let Some((found, analysis)) = self.at_position(params) else {
+        let Some((found, analysis)) = self.at_position(params, true) else {
             return Err("there's no name here to rename".to_owned());
         };
         if analysis.checked.is_none() {
@@ -311,7 +337,7 @@ impl Session {
         };
         let file = canonical(&file);
         let path = text::shown(&file);
-        let Some(analysis) = self.analysis(&program_of(&file)) else { return Json::Null };
+        let Some(analysis) = self.analysis_of(&file) else { return Json::Null };
         let Some(module) = &analysis.module else { return Json::Null };
         Json::Array(outline(analysis, module, &path))
     }
@@ -346,7 +372,7 @@ impl Session {
         };
         let file = canonical(&file);
         let path = text::shown(&file);
-        let Some(analysis) = self.analysis(&program_of(&file)) else { return Json::Null };
+        let Some(analysis) = self.analysis_of(&file) else { return Json::Null };
         let Some((text, _)) = analysis.sources.by_path(&path) else { return Json::Null };
         let place = |key: &str| params.at(&["range", key]).and_then(|position| text::offset(text, position));
         let (from, to) = (place("start").unwrap_or(0), place("end").unwrap_or(text.len()));
@@ -354,12 +380,16 @@ impl Session {
     }
 
     fn hover(&mut self, params: &Json) -> Json {
-        let Some((found, analysis)) = self.at_position(params) else { return Json::Null };
+        let Some((found, analysis)) = self.at_position(params, false) else { return Json::Null };
         let Some(module) = &analysis.module else { return Json::Null };
         let name = found.name().to_owned();
         let shown: Vec<String> = declarations(&found, module, &analysis.sources, analysis.checked.as_ref())
             .iter()
-            .filter_map(|declaration| hover_text(declaration, &name, &analysis.sources))
+            .filter_map(|declaration| {
+                let sources =
+                    if declaration.library { &crate::library::library().sources } else { &analysis.sources };
+                hover_text(declaration, &name, sources)
+            })
             .collect();
         if shown.is_empty() {
             return Json::Null;
@@ -380,7 +410,7 @@ impl Session {
         };
         let path = text::shown(&file);
         let documents = self.documents.clone();
-        let Some(analysis) = self.analysis(&program_of(&file)) else { return Json::Array(Vec::new()) };
+        let Some(analysis) = self.analysis_of(&file) else { return Json::Array(Vec::new()) };
         let Some((text, _)) = analysis.sources.by_path(&path) else { return Json::Array(Vec::new()) };
         let place = |key: &str| params.at(&["range", key]).and_then(|position| text::offset(text, position));
         let (Some(from), Some(to)) = (place("start"), place("end")) else { return Json::Array(Vec::new()) };
@@ -410,6 +440,13 @@ impl Session {
 }
 
 /// `uri_of`, for when the session itself is borrowed.
+/// The library file a span of the library's is in, and the span's place in its text.
+fn library_place(span: Span) -> Option<(&'static str, &'static str, usize, usize)> {
+    let (path, text, base) = crate::library::library().sources.file_at(span)?;
+    let local = |at: u32| usize::try_from(at.saturating_sub(base)).unwrap_or(0);
+    Some((path, text, local(span.start), local(span.end)))
+}
+
 fn uri_among(documents: &BTreeMap<String, String>, path: &str) -> String {
     let open = documents
         .keys()

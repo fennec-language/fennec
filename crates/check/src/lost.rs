@@ -46,28 +46,49 @@ struct Lost<'a> {
     found: BTreeMap<&'a str, Span>,
 }
 
-/// Reports each local in a function's or test's body whose change nothing can see.
-pub(crate) fn check_body(
-    checker: &mut Checker,
-    key: &str,
-    stmts: &[Stmt],
-    places: &[Span],
-) -> Vec<Diagnostic> {
+/// Locals, each by its name and the start and end of its first value.
+pub(crate) type Counted = HashSet<(String, u32, u32)>;
+
+/// The locals that count among those a body declares, each by its name and where its first
+/// value is: the ones holding plain values. Worked out before the body is walked, since it may
+/// need to look into types.
+pub(crate) fn counted(checker: &mut Checker, key: &str, stmts: &[Stmt]) -> Counted {
+    let mut locals = Vec::new();
+    declared(stmts, &mut locals);
+    let typed: Vec<(String, Span, Type)> = {
+        let body = checker.typed.get(key);
+        locals
+            .into_iter()
+            .map(|(name, value)| {
+                let ty = body.and_then(|body| body.expr(value.span)).cloned().unwrap_or(Type::Unknown);
+                (name.to_owned(), value.span, ty)
+            })
+            .collect()
+    };
+    typed
+        .into_iter()
+        .filter(|(_, _, ty)| !does_more_than_hold(checker, ty))
+        .map(|(name, span, _)| (name, span.start, span.end))
+        .collect()
+}
+
+/// Reports each local in a function's or test's body whose change nothing can see, of those
+/// `counted` gives.
+pub(crate) fn check_body(checker: &Checker, key: &str, stmts: &[Stmt], counted: &Counted) -> Vec<Diagnostic> {
     let mut problems = Vec::new();
     let mut locals = Vec::new();
     declared(stmts, &mut locals);
-    let body = checker.typed.get(key).cloned();
-    let mut counted = HashMap::new();
-    for (name, value, at) in locals {
-        let ty = body.as_ref().and_then(|body| body.expr(value.span)).cloned().unwrap_or(Type::Unknown);
-        if !places.contains(&at) && !does_more_than_hold(checker, &ty) {
-            counted.insert(name, value);
+    let body = checker.typed.get(key);
+    let mut kept = HashMap::new();
+    for (name, value) in locals {
+        if counted.contains(&(name.to_owned(), value.span.start, value.span.end)) {
+            kept.insert(name, value);
         }
     }
     let mut lost = Lost {
         checker,
-        body: body.as_ref(),
-        locals: counted,
+        body,
+        locals: kept,
         captured: HashSet::new(),
         loops: Vec::new(),
         reporting: true,
@@ -83,12 +104,12 @@ pub(crate) fn check_body(
 }
 
 /// Every `mut x = ...` in a block and what's inside it, but not a nested function's.
-fn declared<'a>(stmts: &'a [Stmt], found: &mut Vec<(&'a str, &'a Expr, Span)>) {
+fn declared<'a>(stmts: &'a [Stmt], found: &mut Vec<(&'a str, &'a Expr)>) {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Assign { target, value, declare_mut: true, .. } => {
                 if let ExprKind::Name(name) = &target.kind {
-                    found.push((name, value, stmt.span));
+                    found.push((name, value));
                 }
             }
             StmtKind::If { branches, otherwise } => {
@@ -122,7 +143,7 @@ enum Started {
 fn started_as(value: &Expr) -> Started {
     match &value.kind {
         ExprKind::Else { value, .. } | ExprKind::Try { value, .. } => started_as(value),
-        ExprKind::Index { object, .. } => {
+        ExprKind::Index { object, .. } | ExprKind::Attr { object, optional: false, .. } => {
             fennec_syntax::dotted(object).map_or(Started::Other, Started::Table)
         }
         ExprKind::Call { callee, .. } => match &callee.kind {
@@ -175,6 +196,7 @@ fn reads_in(stmts: &[Stmt], live: &mut Live) {
             | StmtKind::Fail(value)
             | StmtKind::Yield(value)
             | StmtKind::Assert(value)
+            | StmtKind::Lend { value, .. }
             | StmtKind::Return(Some(value)) => reads(value, live),
             StmtKind::Assign { target, value, .. } => {
                 reads(target, live);
@@ -214,21 +236,21 @@ fn reads_in_place(target: &Expr, live: &mut Live) {
 
 impl<'a> Lost<'a> {
     fn problem(&self, name: &str, span: Span) -> Diagnostic {
-        let (why, help) = match self.locals.get(name).map(|value| started_as(value)) {
+        let (message, help) = match self.locals.get(name).map(|value| started_as(value)) {
             Some(Started::Table(table)) => (
-                format!("`{name}` is a copy of what's in `{table}`, so `{table}` doesn't change"),
-                format!("write `{name}` back into `{table}`, or take out the change"),
+                format!("this changes your own copy of what's in `{table}`, and nothing reads it"),
+                format!("to change `{table}`, write to it there, or take out the change"),
             ),
             Some(Started::Called(called)) if !self.checker.program.is_type_name(&called) => (
-                format!("`{name}` is a copy of what `{called}` gave back, so nothing else changes"),
+                format!("this changes your own copy of what `{called}` gave back, and nothing reads it"),
                 format!("use `{name}` after this, write it back where it came from, or take out the change"),
             ),
             _ => (
-                format!("nothing reads `{name}` after this"),
+                format!("this change to `{name}` is lost: nothing reads `{name}` after this"),
                 format!("use `{name}` after this, or take out the change"),
             ),
         };
-        Diagnostic::new(format!("this change to `{name}` is lost: {why}"), span).with_help(help)
+        Diagnostic::new(message, span).with_help(help)
     }
 
     /// Notes a change to `name`, when what's after it doesn't read it.
@@ -421,6 +443,13 @@ impl<'a> Lost<'a> {
             StmtKind::Break => self.loops.last().map_or_else(Live::new, |(exit, _)| exit.clone()),
             StmtKind::Continue => self.loops.last().map_or_else(Live::new, |(_, head)| head.clone()),
             StmtKind::Pass => live,
+            StmtKind::Lend { value, .. } => read_then(value, live),
         }
     }
+}
+
+/// What's live before reading `value`, given what's live after.
+fn read_then(value: &Expr, mut live: Live) -> Live {
+    reads(value, &mut live);
+    live
 }

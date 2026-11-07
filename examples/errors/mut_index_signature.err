@@ -1,7 +1,7 @@
-error: `Pool`'s `mut` form of `def []` takes a position and gives back its item
+error: `Pool`'s `ref` form of `def []` takes a position and gives back its item
  --> examples/errors/mut_index_signature.fen:4:5
   |
-4 |     def [](mut self, i: str) -> int:
+4 |     def [](ref self, i: str) -> int:
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = help: write `def [](mut self, i: int) -> Item`
+  = help: write `def [](ref self, i: int) -> Item`

@@ -1,4 +1,4 @@
-# Structs whose methods change them, `for mut` loops that change every item, and an
+# Structs whose methods change them, `for ref` loops that change every item, and an
 # operator defined on a struct.
 
 struct Particle:
@@ -6,7 +6,7 @@ struct Particle:
     velocity = 1.0
     hits = 0
 
-    def step(mut self, dt: float):
+    def step(ref self, dt: float):
         self.x += self.velocity * dt
         if self.x > 10.0:
             self.velocity = -self.velocity
@@ -22,14 +22,14 @@ struct Particle:
 struct Swarm:
     particles: list[Particle]
 
-    def run(mut self, frames: int):
+    def run(ref self, frames: int):
         for frame in range(frames):
-            for mut particle in self.particles:
+            for ref particle in self.particles:
                 particle.step(0.5)
 
     # Stops at the first particle that has bounced, after nudging it.
-    def nudge_first_bounced(mut self) -> bool:
-        for mut particle in self.particles:
+    def nudge_first_bounced(ref self) -> bool:
+        for ref particle in self.particles:
             if particle.hits > 0:
                 particle.x = 0.0
                 return True
@@ -46,7 +46,7 @@ def main(stdout: Stdout):
     stdout.print(total)
 
     mut counts = [1, 2, 3, 4]
-    for mut n in counts:
+    for ref n in counts:
         if n == 3: break
         n *= 10
     stdout.print(counts)

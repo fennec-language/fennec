@@ -18,6 +18,9 @@ pub(crate) enum InlinePart {
     Block(u32, Kind),
     /// An enum of this layout, whose blocks depend on its case.
     Enum(u32, u32),
+    /// An array's items, from where it starts: how many, how far apart, and what each owns,
+    /// counted in a loop rather than item by item.
+    Items(u32, u32, u32, Vec<InlinePart>),
 }
 
 impl InlinePart {
@@ -25,6 +28,9 @@ impl InlinePart {
         match self {
             InlinePart::Block(offset, held) => InlinePart::Block(offset + by, held),
             InlinePart::Enum(offset, id) => InlinePart::Enum(offset + by, id),
+            InlinePart::Items(offset, count, stride, parts) => {
+                InlinePart::Items(offset + by, count, stride, parts)
+            }
         }
     }
 }
@@ -62,6 +68,9 @@ impl Emit<'_, '_, '_> {
 
     /// A new block of a boxed type, its shape's number read from a symbol.
     pub(crate) fn new_block(&mut self, id: u32) -> Result<String, String> {
+        if self.is_native(id) {
+            return self.new_native_block(id);
+        }
         let shape = self.shape_of(id)?;
         self.declare("declare ptr @fennec_alloc(i64) nounwind");
         let block = self.temp();
@@ -95,11 +104,11 @@ impl Emit<'_, '_, '_> {
         self.store_field(kind, &value, at, access);
         // An inline struct in a local read only here moves its blocks over; any other gets
         // another owner for each.
-        let moved =
-            matches!(operand, Operand::Local(local) if self.owns_inline(*local) && self.known.moves(*local));
+        let moved = !fresh
+            && matches!(operand, Operand::Local(local) if self.owns_inline(*local) && self.known.moves(*local));
         if moved {
-            let text = self.text_of(kind);
-            self.line(&format!("store {text} zeroinitializer, ptr {value}"));
+            let zero = self.zero_line(kind, &value);
+            self.line(&zero);
         } else if !fresh {
             self.retain_inline(kind, at);
         }
@@ -161,6 +170,19 @@ impl Emit<'_, '_, '_> {
     /// What's owned inside an inline struct or enum, its inner structs' fields too. Nothing for
     /// anything else, or for an enum whose cases are all plain.
     pub(crate) fn inline_parts(&self, kind: &Kind) -> Vec<InlinePart> {
+        if let Some(shape) = self.array_shape(kind).filter(|shape| !shape.boxed) {
+            let each = match &shape.item {
+                Kind::Struct(_) => self.inline_parts(&shape.item),
+                Kind::Enum(id) if !self.case_parts(*id).is_empty() => vec![InlinePart::Enum(0, *id)],
+                held if held.counted() => vec![InlinePart::Block(0, held.clone())],
+                _ => Vec::new(),
+            };
+            return if each.is_empty() {
+                Vec::new()
+            } else {
+                vec![InlinePart::Items(0, shape.count, shape.stride, each)]
+            };
+        }
         match kind {
             Kind::Struct(id) => {
                 self.module.layouts.get(*id).map_or_else(Vec::new, |layout| self.parts_of(&layout.fields))
@@ -236,6 +258,20 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("br label %{done}"));
                 self.start_block(&done);
             }
+            InlinePart::Items(offset, count, stride, parts) => {
+                let base = self.offset(at, offset);
+                self.each_position(&count.to_string(), |emit, position| {
+                    let item = emit.temp();
+                    emit.line(&format!(
+                        "{item} = getelementptr inbounds [{stride} x i8], ptr {base}, i64 {position}"
+                    ));
+                    for part in parts.clone() {
+                        emit.count_part(part, &item, more);
+                    }
+                    Ok(())
+                })
+                .unwrap_or_default();
+            }
         }
     }
 
@@ -282,6 +318,13 @@ impl Emit<'_, '_, '_> {
             let held = held.ok_or("a field this backend doesn't take yet")?;
             let at = self.offset(&base, offset);
             self.fill(&held, value, &at, access)?;
+        }
+        if let (Some(block), true) = (&block, self.module.threads && self.is_cell(&kind)) {
+            // Before anything else holds it: what it was given goes in its table.
+            self.declare("declare ptr @fennec_shared_new(ptr) nounwind");
+            let made = self.temp();
+            self.line(&format!("{made} = call ptr @fennec_shared_new(ptr {block})"));
+            self.leave_if_failed();
         }
         if let Some(block) = block {
             self.assign(dest, &block)?;
@@ -434,7 +477,8 @@ impl Emit<'_, '_, '_> {
                 PlaceStep::Field(name) => {
                     let boxed = matches!(kind, Kind::Boxed(_));
                     let inside = if boxed {
-                        let block = if taking {
+                        // A `shared` value's block is the same one for every name.
+                        let block = if taking && !self.is_cell(&kind) {
                             self.alone_along((root, &along), &at, "fennec_unshare")
                         } else {
                             self.load_block(&at)
@@ -590,7 +634,24 @@ impl Emit<'_, '_, '_> {
 
     pub(crate) fn make_case(&mut self, dest: LocalId, case: &str, fields: &[Operand]) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();
+        // An optional string is a header, all zero for `None`.
+        if kind == Kind::MaybeText {
+            return match (case, fields) {
+                ("None", _) => self.assign(dest, "zeroinitializer"),
+                (_, [value]) => {
+                    let (value, _) = self.operand(value)?;
+                    self.retain_text(&value);
+                    self.assign(dest, &value)
+                }
+                _ => Err("an optional string with no string".to_owned()),
+            };
+        }
         let (number, written) = self.case_of(&kind, case)?;
+        if let (Kind::Boxed(id), true) = (&kind, written.is_empty()) {
+            let shared = self.shared_case(*id, number)?;
+            self.retain_value(&shared, &kind);
+            return self.assign(dest, &shared);
+        }
         let block = if let Kind::Boxed(id) = kind { Some(self.new_block(id)?) } else { None };
         // Holding blocks, it's made beside what the local holds, which may be read for it.
         let beside = (block.is_none() && self.holds_inline(&kind)).then(|| self.place_for(&kind));
@@ -599,8 +660,8 @@ impl Emit<'_, '_, '_> {
         } else {
             // Words a case doesn't use are zero, so equal enums have equal words.
             let place = beside.clone().unwrap_or_else(|| self.slot(dest));
-            let text = self.text_of(&kind);
-            self.line(&format!("store {text} zeroinitializer, ptr {place}"));
+            let zero = self.zero_line(&kind, &place);
+            self.line(&zero);
             place
         };
         self.line(&format!("store i64 {number}, ptr {base}"));
@@ -616,6 +677,168 @@ impl Emit<'_, '_, '_> {
             self.assign_memory_owned(dest, &place)?;
         }
         Ok(())
+    }
+
+    /// The one block for case `number` of the boxed enum `id`, a case with no fields, so making
+    /// one allocates nothing: the block is made the first time, counted as never freed, and
+    /// kept in a global every module shares. Each value made from it is retained, so its count
+    /// stays where it starts, too high for anything to take it as having one owner and change
+    /// it in place, and other threads don't count it at all, as with a string literal's block. Two threads making the
+    /// first one at once each make a block, and either serves.
+    fn shared_case(&mut self, id: u32, number: i64) -> Result<String, String> {
+        use fennec_interp::embed::heap::IMMORTAL;
+        let global = format!("@\"fen_case_{id}_{number}\"");
+        self.declare(&format!("{global} = linkonce_odr hidden global ptr null, align 8"));
+        let (kept, none) = (self.temp(), self.temp());
+        self.line(&format!("{kept} = load atomic ptr, ptr {global} unordered, align 8"));
+        self.line(&format!("{none} = icmp eq ptr {kept}, null"));
+        let (first, ready) = (self.label("case_first"), self.label("case_ready"));
+        let before = self.current.clone();
+        self.line(&format!("br i1 {none}, label %{first}, label %{ready}, !prof !0"));
+        self.start_block(&first);
+        let made = self.new_block(id)?;
+        self.line(&format!("store i64 {IMMORTAL}, ptr {made}{HEADER_ACCESS}"));
+        let tag_at = self.offset(&made, FIELDS_OFFSET);
+        self.line(&format!("store i64 {number}, ptr {tag_at}"));
+        self.line(&format!("store atomic ptr {made}, ptr {global} unordered, align 8"));
+        let made_end = self.current.clone();
+        self.line(&format!("br label %{ready}"));
+        self.start_block(&ready);
+        let shared = self.temp();
+        self.line(&format!("{shared} = phi ptr [ {kept}, %{before} ], [ {made}, %{made_end} ]"));
+        Ok(shared)
+    }
+
+    /// Whether this is one of several error types, laid out with a case for each, named for it.
+    pub(crate) fn is_one_of_several(&self, kind: &Kind) -> bool {
+        let (Kind::Enum(id) | Kind::Boxed(id)) = kind else { return false };
+        self.module.layouts.get(*id).is_some_and(|layout| {
+            layout.name.contains(" | ")
+                && layout
+                    .cases
+                    .iter()
+                    .flatten()
+                    .all(|case| matches!(case.fields.as_slice(), [field] if field.name == "error"))
+        })
+    }
+
+    /// Whether what's held has to change to go where `wanted` goes: an error, or a result, going
+    /// where more kinds of error can be.
+    pub(crate) fn widens(&self, held: &Kind, wanted: &Kind) -> bool {
+        let result = |kind: &Kind| match kind {
+            Kind::Enum(id) | Kind::Boxed(id) => {
+                self.module.layouts.get(*id).is_some_and(|layout| layout.name.starts_with("Result["))
+            }
+            _ => false,
+        };
+        held != wanted && (self.is_one_of_several(wanted) || (result(held) && result(wanted)))
+    }
+
+    /// `value` as a `wanted`, with owners of its own: a block, or an address in this frame.
+    pub(crate) fn widened(&mut self, value: &str, held: &Kind, wanted: &Kind) -> Result<String, String> {
+        let at = self.label("%widened");
+        let text = self.text_of(wanted);
+        let _ = writeln!(self.allocas, "  {at} = alloca {text}");
+        self.widen_into(value, held, wanted, &at)?;
+        if wanted.in_memory() {
+            return Ok(at);
+        }
+        let block = self.temp();
+        self.line(&format!("{block} = load ptr, ptr {at}"));
+        Ok(block)
+    }
+
+    /// Where an enum's words start, whether it's a block or in place.
+    fn enum_words(&mut self, value: &str, kind: &Kind) -> String {
+        if matches!(kind, Kind::Boxed(_)) { self.offset(value, FIELDS_OFFSET) } else { value.to_owned() }
+    }
+
+    /// The value in a field at `place`, as `kind` passes it around.
+    fn field_at(&mut self, place: String, kind: &Kind) -> String {
+        if kind.in_memory() { place } else { self.load_field(kind, &place, "") }
+    }
+
+    /// Writes `value` at `at` as a `wanted`, with owners of its own.
+    fn widen_into(&mut self, value: &str, held: &Kind, wanted: &Kind, at: &str) -> Result<(), String> {
+        if !self.widens(held, wanted) {
+            self.store_field(wanted, value, at, "");
+            if wanted.counted() {
+                self.retain_value(value, wanted);
+            } else {
+                self.retain_inline(wanted, at);
+            }
+            return Ok(());
+        }
+        let block = if let Kind::Boxed(id) = wanted { Some(self.new_block(*id)?) } else { None };
+        let base = if let Some(block) = &block {
+            self.offset(block, FIELDS_OFFSET)
+        } else {
+            let zero = self.zero_line(wanted, at);
+            self.line(&zero);
+            at.to_owned()
+        };
+        if self.is_one_of_several(wanted) && !self.is_one_of_several(held) {
+            let (Kind::Struct(id) | Kind::Enum(id) | Kind::Boxed(id)) = held else {
+                return Err(format!("it gives a {held:?} where one of several errors goes"));
+            };
+            let name = self.module.layouts.get(*id).ok_or("no such layout")?.name.clone();
+            let (number, written) = self.case_of(wanted, &name)?;
+            let (_, offset, _) = written.into_iter().next().ok_or("a case of an error holds nothing")?;
+            self.line(&format!("store i64 {number}, ptr {base}"));
+            let inside = self.offset(&base, offset);
+            self.widen_into(value, held, held, &inside)?;
+        } else {
+            self.widen_cases(value, held, wanted, &base)?;
+        }
+        if let Some(block) = block {
+            self.line(&format!("store ptr {block}, ptr {at}"));
+        }
+        Ok(())
+    }
+
+    /// Writes each case `value` might be as the case of `wanted` with the same name.
+    fn widen_cases(&mut self, value: &str, held: &Kind, wanted: &Kind, base: &str) -> Result<(), String> {
+        let (Kind::Enum(id) | Kind::Boxed(id)) = held else {
+            return Err(format!("it gives a {held:?} where a result goes"));
+        };
+        let layouts = self.module.layouts;
+        let cases =
+            layouts.get(*id).and_then(|layout| layout.cases.as_ref()).ok_or("an enum with no cases")?;
+        let from = self.enum_words(value, held);
+        let tag = self.temp();
+        self.line(&format!("{tag} = load i64, ptr {from}"));
+        let done = self.label("widened");
+        for (number, case) in cases.iter().enumerate() {
+            let (same, this, next) = (self.temp(), self.label("widen"), self.label("widen_not"));
+            self.line(&format!("{same} = icmp eq i64 {tag}, {number}"));
+            self.line(&format!("br i1 {same}, label %{this}, label %{next}"));
+            self.start_block(&this);
+            let (mine, written) = self.case_of(wanted, &case.name)?;
+            self.line(&format!("store i64 {mine}, ptr {base}"));
+            for (field, (_, offset, to)) in case.fields.iter().zip(written) {
+                let from_kind =
+                    Kind::from_ty(layouts, field.ty).ok_or("a field this backend doesn't take yet")?;
+                let to = to.ok_or("a field this backend doesn't take yet")?;
+                let place = self.offset(&from, field.offset);
+                let inside = self.field_at(place, &from_kind);
+                let target = self.offset(base, offset);
+                self.widen_into(&inside, &from_kind, &to, &target)?;
+            }
+            self.line(&format!("br label %{done}"));
+            self.start_block(&next);
+        }
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        Ok(())
+    }
+
+    /// One of several errors read as the one type a test has shown it is.
+    pub(crate) fn as_error(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
+        let (Kind::Struct(id) | Kind::Enum(id) | Kind::Boxed(id)) = *self.kind_of(dest)? else {
+            return Err("an error read as something else".to_owned());
+        };
+        let name = self.module.layouts.get(id).ok_or("no such layout")?.name.clone();
+        self.get_case_field(dest, value, &name, "error")
     }
 
     pub(crate) fn is_case(&mut self, dest: LocalId, value: &Operand, case: &str) -> Result<(), String> {
@@ -650,6 +873,12 @@ impl Emit<'_, '_, '_> {
         case: &str,
         field: &str,
     ) -> Result<(), String> {
+        // What's in an optional string that isn't `None` is its header.
+        if matches!(value, Operand::Local(local) if *self.kind_of(*local)? == Kind::MaybeText) {
+            let (held, _) = self.operand(value)?;
+            self.retain_text(&held);
+            return self.assign(dest, &held);
+        }
         let (base, kind) = self.operand(value)?;
         let (_, written) = self.case_of(&kind, case)?;
         let (_, offset, held) =
@@ -710,12 +939,19 @@ impl Emit<'_, '_, '_> {
     }
 
     fn same_structs(&mut self, id: u32, places: (&str, &str)) -> Result<String, String> {
+        if let Some(shape) = self.array_shape(&Kind::Struct(id)) {
+            return self.same_arrays(&shape, places);
+        }
         let fields = self.struct_fields(id)?;
         self.same_fields(&fields, places)
     }
 
     /// Whether these fields of what's at two addresses are all the same.
-    fn same_fields(&mut self, fields: &[(u32, Kind)], (a, b): (&str, &str)) -> Result<String, String> {
+    pub(crate) fn same_fields(
+        &mut self,
+        fields: &[(u32, Kind)],
+        (a, b): (&str, &str),
+    ) -> Result<String, String> {
         let mut same = "true".to_owned();
         for (offset, kind) in fields {
             let (x_at, y_at) = (self.offset(a, *offset), self.offset(b, *offset));
@@ -853,7 +1089,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Whether a value of this layout has a float anywhere in it, in place.
-    fn holds_a_float(&self, id: u32) -> bool {
+    pub(crate) fn holds_a_float(&self, id: u32) -> bool {
         let Some(layout) = self.module.layouts.get(id) else { return false };
         let fields = layout.fields.iter().chain(layout.cases.iter().flatten().flat_map(|case| &case.fields));
         fields.into_iter().any(|field| match Kind::from_ty(self.module.layouts, field.ty) {
@@ -988,6 +1224,11 @@ impl Emit<'_, '_, '_> {
     /// Where an index points: from the start, or the end if it's negative, failing outside.
     pub(crate) fn position(&mut self, list: &str, index: &str, span: Span) -> String {
         let length = self.list_length(list);
+        self.position_in(&length, index, span)
+    }
+
+    /// Where an index points in something this long, as [`Self::position`] says.
+    pub(crate) fn position_in(&mut self, length: &str, index: &str, span: Span) -> String {
         let (inside, from, ok, fail) =
             (self.temp(), self.label("from_end"), self.label("ok"), self.label("outside"));
         self.line(&format!("{inside} = icmp ult i64 {index}, {length}"));
@@ -998,6 +1239,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{resolved} = phi i64 [ {index}, %{came_from} ], [ {back}, %{from} ]"));
         self.declare("declare void @fennec_out_of_range(i64, i64, i64, i64) #1");
         let (place, args) = self.span_values(&fail, span);
+        self.next_check(span, Some(crate::CheckKind::Bounds));
         let failed = self.failed_exit();
         self.cold_block(&format!(
             "{from}:\n  {back} = add i64 {index}, {length}\n  {back_inside} = icmp ult i64 {back}, {length}\n  br i1 {back_inside}, label %{ok}, label %{fail}\n{fail}:\n{place}  call void @fennec_out_of_range(i64 {index}, i64 {length}, {args})\n  {failed}\n"
@@ -1012,23 +1254,29 @@ impl Emit<'_, '_, '_> {
         index: &Operand,
         span: Span,
     ) -> Result<(), String> {
+        if let Some(shape) = self.array_in(object) {
+            return self.array_get(dest, (object, shape), index, span);
+        }
         if let Some((map, _)) = self.known.walk_items.get(&dest.0).copied() {
             return self.walk_to_next(dest, map, index, span);
         }
         // A pair from an `enumerate` never made isn't made either: where it points in the list
         // is checked, and kept for its parts.
         if let Some((list, _)) = self.known.pairs.get(&dest.0).cloned() {
+            // The pairs have the list's length, so an index known inside them is inside it.
+            let inside = matches!(object, Operand::Local(pairs) if self.known.inside(*pairs, index));
             let (list, _) = self.operand(&Operand::Local(list))?;
             let (index, _) = self.operand(index)?;
-            let position = self.position(&list, &index, span);
+            let position = if inside { index } else { self.position(&list, &index, span) };
             let slot = self.place_for(&Kind::Int);
             self.line(&format!("store i64 {position}, ptr {slot}"));
             self.pair_slots.insert(dest.0, slot);
             // Holding nothing, letting go of it lets go of nothing.
             let kind = self.kind_of(dest)?.clone();
-            let (held, text) = (self.slot(dest), self.text_of(&kind));
+            let held = self.slot(dest);
             if kind.in_memory() || kind.counted() {
-                self.line(&format!("store {text} zeroinitializer, ptr {held}"));
+                let zero = self.zero_line(&kind, &held);
+                self.line(&zero);
             }
             return Ok(());
         }
@@ -1050,6 +1298,9 @@ impl Emit<'_, '_, '_> {
                 return self.header_index(dest, &list, index, span);
             }
             return self.on_blocks([&list], |emit, [block]| emit.string_index(dest, &block, index, span));
+        }
+        if kind == Kind::Bytes {
+            return self.bytes_index(dest, &list, index, span);
         }
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;
@@ -1189,7 +1440,12 @@ impl Emit<'_, '_, '_> {
 
     /// The block at `place` for changing what's in it: a handle's own, which every name for it
     /// sees change, and otherwise one with no other owner.
-    fn block_to_change(&mut self, (root, path): (LocalId, &[String]), place: &str, kind: &Kind) -> String {
+    pub(crate) fn block_to_change(
+        &mut self,
+        (root, path): (LocalId, &[String]),
+        place: &str,
+        kind: &Kind,
+    ) -> String {
         if self.is_cell(kind) {
             let block = self.temp();
             self.line(&format!("{block} = load ptr, ptr {place}"));
@@ -1264,8 +1520,11 @@ impl Emit<'_, '_, '_> {
         value: &Operand,
         span: Span,
     ) -> Result<(), String> {
-        let inside = path.is_empty() && self.known.inside(object, index);
         let kind = self.place_kind(object, path)?;
+        if let Some(shape) = self.array_shape(&kind) {
+            return self.array_set((object, path), shape, index, value, span);
+        }
+        let inside = path.is_empty() && self.known.inside(object, index);
         if self.is_id_map(&kind) {
             let place = self.place_of(object, path)?;
             return self.id_map_store(&place, &kind, index, value, span);
@@ -1360,12 +1619,22 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let (object, kind) = self.operand(object)?;
+        if matches!(kind, Kind::Struct(_) | Kind::Boxed(_)) {
+            return self.tuple_slice(dest, (&object, &kind), start);
+        }
         let lowest = i64::MIN.to_string();
         let start =
             start.map(|start| self.operand(start)).transpose()?.map_or_else(|| lowest.clone(), |held| held.0);
         let end = end.map(|end| self.operand(end)).transpose()?.map_or(lowest, |held| held.0);
         let part = self.temp();
         match kind {
+            Kind::Bytes => {
+                self.declare("declare ptr @fennec_bytes_slice(ptr, i64, i64) nounwind");
+                self.line(&format!(
+                    "{part} = call ptr @fennec_bytes_slice(ptr {object}, i64 {start}, i64 {end})"
+                ));
+                return self.assign(dest, &part);
+            }
             Kind::Str if self.headers() => {
                 let part = self.header_slice(&object, (&start, &end), span);
                 return self.assign(dest, &part);
@@ -1408,6 +1677,10 @@ impl Emit<'_, '_, '_> {
             return Ok(());
         }
         let kind = self.kind_of(dest)?.clone();
+        // An array is made as the struct it's laid out as.
+        if self.array_shape(&kind).is_some() {
+            return self.make(dest, items);
+        }
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;
         let list = self.new_list(item, &items.len().to_string());
@@ -1434,7 +1707,42 @@ impl Emit<'_, '_, '_> {
             "fennec_list_with_room"
         };
         let list = self.new_list_with(item, &room, helper);
+        if self.known.length_kept.contains_key(&dest.0) {
+            let kept = self.kept_length(dest.0);
+            self.line(&format!("store i64 0, ptr {kept}"));
+        }
         self.assign(dest, &list)
+    }
+
+    /// The local a list's length is kept in while its loop fills it.
+    fn kept_length(&mut self, list: usize) -> String {
+        if let Some(kept) = self.kept_lengths.get(&list) {
+            return kept.clone();
+        }
+        let kept = self.label("%kept_length");
+        let _ = writeln!(self.allocas, "  {kept} = alloca i64");
+        self.kept_lengths.insert(list, kept.clone());
+        kept
+    }
+
+    /// At the block after a loop that kept a list's length aside, writes it to the list.
+    pub(crate) fn write_kept_lengths(&mut self, block: usize) {
+        let mut ended: Vec<usize> = self
+            .known
+            .length_kept
+            .iter()
+            .filter(|(_, after)| **after == block)
+            .map(|(list, _)| *list)
+            .collect();
+        ended.sort_unstable();
+        for list in ended {
+            let (kept, slot) = (self.kept_length(list), self.slot(LocalId(list)));
+            let (length, block) = (self.temp(), self.temp());
+            self.line(&format!("{length} = load i64, ptr {kept}"));
+            self.line(&format!("{block} = load ptr, ptr {slot}"));
+            let length_at = self.offset(&block, u32::try_from(LIST_LENGTH).unwrap_or(0));
+            self.line(&format!("store i64 {length}, ptr {length_at}{HEADER_ACCESS}"));
+        }
     }
 
     /// `list.append(value)`: in place when nothing else holds the list and there's room.
@@ -1459,6 +1767,30 @@ impl Emit<'_, '_, '_> {
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;
         let new_item = args.get(1).ok_or("no argument")?;
+        // Filled by a loop that never appends more than the room it made, with nothing else
+        // there touching the list: no room to check, and nobody else holds it. With no call
+        // left in the loop, LLVM keeps the length in a register while it fills.
+        if self.known.room_enough.contains(&local.0) {
+            let slot = self.slot(*local);
+            let (list, length, longer) = (self.temp(), self.temp(), self.temp());
+            self.line(&format!("{list} = load ptr, ptr {slot}"));
+            // Kept aside while the loop runs, when it only leaves by its header; otherwise in
+            // the list, for whatever another way out leads to.
+            if self.known.length_kept.contains_key(&local.0) {
+                let kept = self.kept_length(local.0);
+                self.line(&format!("{length} = load i64, ptr {kept}"));
+                self.line(&format!("{longer} = add nuw nsw i64 {length}, 1"));
+                self.line(&format!("store i64 {longer}, ptr {kept}"));
+            } else {
+                let length_at = self.offset(&list, u32::try_from(LIST_LENGTH).unwrap_or(0));
+                self.line(&format!("{length} = load i64, ptr {length_at}{LENGTH_ACCESS}"));
+                self.line(&format!("{longer} = add nuw nsw i64 {length}, 1"));
+                self.line(&format!("store i64 {longer}, ptr {length_at}{HEADER_ACCESS}"));
+            }
+            let memory = held.memory(self.module.layouts);
+            let at = self.item_address(&list, &memory, &length);
+            return self.fill(&held, new_item, &at, ITEM_ACCESS);
+        }
         self.declare("declare ptr @fennec_list_grow(ptr) nounwind");
         let slot = self.slot(*local);
         let (list, length, room_at, room) = (self.temp(), self.temp(), self.temp(), self.temp());

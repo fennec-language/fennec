@@ -4,6 +4,7 @@ use fennec_syntax::{Diagnostic, Span};
 
 use super::Module;
 use crate::builtins::to_int;
+use crate::embed::checks;
 use crate::call::CallArg;
 use crate::collections::plain;
 use crate::interp::Interp;
@@ -11,7 +12,17 @@ use crate::ops;
 use crate::value::Value;
 
 pub(crate) const MODULE: Module = Module {
-    functions: &["math.ceil", "math.cos", "math.floor", "math.sin", "math.sqrt"],
+    functions: &[
+        "math.acos",
+        "math.ceil",
+        "math.cos",
+        "math.exp",
+        "math.floor",
+        "math.log",
+        "math.sin",
+        "math.sqrt",
+        "math.tan",
+    ],
     call,
     constant,
     methods: &[],
@@ -37,8 +48,12 @@ fn call(_: &mut Interp<'_>, name: &str, args: Vec<CallArg>, span: Span) -> Resul
     match name {
         "math.floor" => to_int(&Value::Float(x.floor()), span),
         "math.ceil" => to_int(&Value::Float(x.ceil()), span),
-        "math.sin" => Ok(Value::Float(x.sin())),
-        "math.cos" => Ok(Value::Float(x.cos())),
+        "math.sin" => Ok(Value::Float(checks::sin(x))),
+        "math.cos" => Ok(Value::Float(checks::cos(x))),
+        "math.tan" => Ok(Value::Float(checks::tan(x))),
+        "math.acos" => Ok(Value::Float(checks::acos(x))),
+        "math.exp" => Ok(Value::Float(checks::exp(x))),
+        "math.log" => Ok(Value::Float(checks::log(x))),
         _ if x < 0.0 => Err(Diagnostic::new("can't take the square root of a negative number", span)),
         _ => Ok(Value::Float(x.sqrt())),
     }

@@ -47,6 +47,7 @@ macro_rules! modules {
 }
 
 modules! {
+    compress,
     crypto,
     fs,
     json,
@@ -56,6 +57,7 @@ modules! {
     random,
     re,
     toml,
+    unicode,
 }
 
 /// The module function of this full name, like `json.loads`, and its module.

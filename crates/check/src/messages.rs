@@ -6,13 +6,21 @@ use fennec_syntax::{Diagnostic, Span};
 
 use crate::types::{Type, a, article};
 
+/// What an `IdMap` is called now, and where it is.
+pub(crate) const TABLE: &str = "it's called `Table` now, from `std.collections`";
+
 /// An unknown name, with a pointer to the Fennec spelling when it's a habit from elsewhere.
 pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
+    if name.starts_with(&format!("_{}", fennec_syntax::visit::HIDDEN)) {
+        return Diagnostic::new("`_` throws away what it's given, so it can't be read", span)
+            .with_help("give what you want to read a name of its own");
+    }
     let diagnostic = Diagnostic::new(format!("`{name}` doesn't exist"), span);
     match name {
         "print" | "console" => diagnostic.with_help(
-            "there's no global output: write with the `stdout` that `main` receives, like `stdout.print(x)`",
+            "there's no global output: a function reaches outside itself only through what's in its signature, like `stdout: Stdout`",
         ),
+        "IdMap" => diagnostic.with_help(TABLE).with_fix(span, "Table"),
         "true" | "false" => diagnostic.with_help("write `True` or `False`"),
         "null" | "nil" | "none" | "undefined" => diagnostic.with_help("write `None`"),
         "lambda" => diagnostic.with_help("write an arrow function: `x => x * 2`"),
@@ -34,9 +42,51 @@ pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
     }
 }
 
-pub(crate) fn not_mut(name: &str, span: Span) -> Diagnostic {
-    Diagnostic::new(format!("`{name}` isn't mut"), span)
-        .with_help(format!("declare it with `mut {name} = ...` if it needs to change"))
+/// Which of `names` was probably meant by a name that doesn't exist: the closest, if it's a slip
+/// of a letter or two and not another word. A name of one or two letters is too short to tell.
+pub(crate) fn spelled_most_like<'n>(name: &str, names: impl Iterator<Item = &'n str>) -> Option<&'n str> {
+    let wanted: Vec<char> = name.chars().collect();
+    let allowed = (wanted.len() / 3).min(2);
+    let mut distances: Vec<(usize, &str)> = names
+        .filter_map(|other| {
+            let distance = edits(&wanted, &other.chars().collect::<Vec<char>>());
+            (distance <= allowed && distance > 0).then_some((distance, other))
+        })
+        .collect();
+    distances.sort_unstable();
+    distances.first().map(|(_, closest)| *closest)
+}
+
+/// How many letters to add, remove, change or swap with the next one, to get from `a` to `b`.
+fn edits(a: &[char], b: &[char]) -> usize {
+    let at = |row: &[usize], column: usize| row.get(column).copied().unwrap_or(usize::MAX - 1);
+    let mut two_back: Vec<usize> = Vec::new();
+    let mut last: Vec<usize> = (0..=b.len()).collect();
+    for (i, letter) in a.iter().enumerate() {
+        let mut row = vec![i + 1];
+        for (j, other) in b.iter().enumerate() {
+            let changed = at(&last, j) + usize::from(letter != other);
+            let mut best = changed.min(at(&last, j + 1) + 1).min(at(&row, j) + 1);
+            if i > 0 && j > 0 && a.get(i - 1) == Some(other) && b.get(j - 1) == Some(letter) {
+                best = best.min(at(&two_back, j - 1) + 1);
+            }
+            row.push(best);
+        }
+        two_back = std::mem::replace(&mut last, row);
+    }
+    at(&last, b.len())
+}
+
+/// `name` given a new value, with where `mut ` would go in its declaration when there's one.
+pub(crate) fn not_mut(name: &str, span: Span, mut_at: Option<u32>) -> Diagnostic {
+    let diagnostic = Diagnostic::new(format!("`{name}` isn't mut"), span);
+    match mut_at {
+        // Adding `mut` changes what the program means, so it's a fix to make by hand.
+        Some(at) => {
+            diagnostic.with_hint(format!("declare it `mut {name}`"), Span { start: at, end: at }, "mut ")
+        }
+        None => diagnostic.with_help(format!("declare it with `mut {name} = ...` if it needs to change")),
+    }
 }
 
 pub(crate) fn might_be_none(span: Span) -> Diagnostic {
@@ -100,7 +150,7 @@ pub(crate) fn wrong_args(function: &str, span: Span) -> Diagnostic {
 }
 
 pub(crate) fn needless_mut(function: &str, span: Span) -> Diagnostic {
-    Diagnostic::new(format!("`{function}` doesn't change its arguments, so don't pass `mut`"), span)
+    Diagnostic::new(format!("`{function}` doesn't change its arguments, so don't pass `ref`"), span)
 }
 
 /// A value of the wrong type for a parameter or field.
@@ -119,6 +169,13 @@ pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -
         }
         (Type::Int, Type::Float) => {
             diagnostic.with_help("convert it with int(...), round(...) or math.floor(...)")
+        }
+        (Type::Arrow(..), Type::Function(key)) => {
+            let name = key.rsplit('.').next().unwrap_or(key);
+            diagnostic.with_help(format!(
+                "`{name}` has to take and give back what {} says, with no `ref` parameter or type parameters of its own",
+                a(expected)
+            ))
         }
         _ => diagnostic,
     }

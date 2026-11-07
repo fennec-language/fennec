@@ -38,8 +38,10 @@
 //! can't be lowered is listed in [`Program::not_lowered`], with why, and no example has one.
 //! Tests aren't lowered yet.
 
+pub mod arrays;
 mod costs;
 pub mod facts;
+mod guard;
 mod lower;
 mod print;
 mod validate;
@@ -47,7 +49,8 @@ mod validate;
 use fennec_check::Type;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
-pub use costs::{Cost, Finding, Shared, costs};
+pub use costs::{Cost, Finding, HotReach, Shared, costs, reached_from_hot};
+pub use guard::guard_shared;
 pub use lower::{Options, lower, lower_some, lower_with};
 pub use validate::validate;
 
@@ -354,6 +357,25 @@ pub enum InstKind {
         dest: LocalId,
         value: Operand,
     },
+    /// A member's value as its union, tagged with the member: its place in the union's types,
+    /// which `fennec_check::Type::Union` keeps in a fixed order.
+    MakeMember {
+        dest: LocalId,
+        value: Operand,
+        member: usize,
+    },
+    /// Whether a union holds the member at that place, for `is` and `match`.
+    IsMember {
+        dest: LocalId,
+        value: Operand,
+        member: usize,
+    },
+    /// The value inside a union known to hold the member at that place.
+    GetMember {
+        dest: LocalId,
+        value: Operand,
+        member: usize,
+    },
     /// A result that succeeded, holding nothing when `value` is `None`.
     MakeOk {
         dest: LocalId,
@@ -452,8 +474,8 @@ pub enum InstKind {
     },
     /// Takes the locks of several `shared` handles, each to write or to read, for a `with`
     /// block. They're taken in the order of their cells' addresses, so two blocks that lock the
-    /// same handles never each wait for the other. Handles that reach the same cell take its lock
-    /// once, to write if any of them writes.
+    /// same handles never each wait for the other. Two handles that reach the same cell end the
+    /// program.
     LockAll {
         handles: Vec<(Operand, bool)>,
     },
@@ -532,6 +554,9 @@ impl InstKind {
             | InstKind::MakeSome { dest, .. }
             | InstKind::IsNone { dest, .. }
             | InstKind::GetSome { dest, .. }
+            | InstKind::MakeMember { dest, .. }
+            | InstKind::IsMember { dest, .. }
+            | InstKind::GetMember { dest, .. }
             | InstKind::MakeOk { dest, .. }
             | InstKind::MakeErr { dest, .. }
             | InstKind::IsErr { dest, .. }

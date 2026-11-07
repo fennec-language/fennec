@@ -1,5 +1,5 @@
 ## Saving a battle to JSON and loading it back. JSON holds the whole world as it is: the
-## `IdMap`s with their slots, every `Id`, the enums, and the map's grid. So every `Id` that
+## `Table`s with their slots, every `Id`, the enums, and the map's grid. So every `Id` that
 ## was saved finds the same unit once it's loaded. The map's links come from its grid, so
 ## they're left out with `@skip` and loading works them out again.
 
@@ -31,10 +31,15 @@ test "a saved world loads back the same":
     loaded = loads(text)?
     assert dumps(loaded) == text
     assert loaded.units.len() == 3 and loaded.squads.len() == 1
-    # The same `Id`s find the same units.
-    assert loaded.units[a].target == b
-    assert loaded.units[c].following == a
-    assert loaded.units[c].items == [Item(name="bandage", heals=15)]
+    # The loaded world's `Id`s find the same units. Those from before the load are another
+    # `Table`'s, so the loaded ones are taken in order.
+    ids = loaded.units.ids()
+    ash = ids[0]
+    vex = ids[1]
+    kit = ids[2]
+    assert loaded.units[ash].target == vex
+    assert loaded.units[kit].following == ash
+    assert loaded.units[kit].items == [Item(name="bandage", heals=15)]
     assert loaded.field.drawing() == ["...", "^~."]
     # The links weren't saved, but loading worked them out again.
     assert "links" not in text

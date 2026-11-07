@@ -1,6 +1,6 @@
 //! What `std.json` and `std.toml` share. Reading text needs the type to read it as, written
-//! in brackets: `json.loads[Settings](text)`. Every type made of numbers, text, bools, lists,
-//! dicts with text keys, tuples, optionals and structs of those can be read and written.
+//! in brackets: `json.loads[Settings](text)`. Every type made of numbers, text, bytes, bools,
+//! lists, dicts with text keys, tuples, optionals and structs of those can be read and written.
 
 use fennec_syntax::{Arg, Diagnostic, Expr, Span};
 
@@ -35,8 +35,22 @@ impl FnCx<'_> {
             self.error(problem);
         } else if format == "TOML" && mentions_none(first, &self.checker.program) {
             self.error(Diagnostic::new("TOML has no None, so leave the key out instead", call));
+        } else if self.fits_interface(first, "Serializable").is_ok() {
+            self.checker
+                .native_formats
+                .insert((call.start, call.end), format!("{}.native_dumps", format.to_lowercase()));
         }
         Type::Str
+    }
+
+    /// `net.post(url, json=value)`: the value is sent as JSON, so it has to be something JSON
+    /// holds. Native code writes it through its own `def serialize`, as `json.dumps` does.
+    pub(crate) fn json_body(&mut self, ty: &Type, at: Span) {
+        if let Err(problem) = self.holds("JSON", ty, (at, None), &mut Vec::new()) {
+            self.error(problem);
+        } else if self.fits_interface(ty, "Serializable").is_ok() {
+            self.checker.native_json_bodies.insert((at.start, at.end));
+        }
     }
 
     /// `json.loads[T](text)`: the text read as a `T`, or a `ParseError`.
@@ -77,6 +91,10 @@ impl FnCx<'_> {
             self.error(Diagnostic::new(message, index.span));
         } else if let Err(problem) = self.holds(&format, &ty, (index.span, None), &mut Vec::new()) {
             self.error(problem);
+        } else if self.fits_interface(&ty, "Deserializable").is_ok() {
+            self.checker
+                .native_formats
+                .insert((span.start, span.end), format!("{}.native_loads", format.to_lowercase()));
         }
         Type::result(ty, Type::named("ParseError"))
     }
@@ -148,16 +166,25 @@ impl FnCx<'_> {
             ));
         }
         match ty {
-            Type::Unknown | Type::Unit | Type::None | Type::Bool | Type::Int | Type::Float | Type::Str => {
-                Ok(())
-            }
-            Type::List(item) | Type::Optional(item) | Type::IdMap(item) => {
+            // `bytes` are written as base64 text, and an `Id` as its slot and generation, whatever
+            // it's for.
+            Type::Unknown
+            | Type::Unit
+            | Type::None
+            | Type::Bool
+            | Type::Int
+            | Type::Float
+            | Type::Str
+            | Type::Bytes
+            | Type::Id(_) => Ok(()),
+            // A union is saved tagged with its member, which a type's name alone has to say.
+            Type::Union(members) if !members.iter().all(crate::saving::tested_by_name) => Err(cannot(ty)),
+            Type::Dict(key, _) if crate::saving::holds_union(key) => Err(cannot(ty)),
+            Type::List(item) | Type::Optional(item) | Type::Table(item) => {
                 self.holds(format, item, (span, field), seen)
             }
-            // An `Id` is written as its slot and generation, whatever it's for.
-            Type::Id(_) => Ok(()),
             Type::Dict(key, value) => self.holds_map(format, ty, (key, value), (span, field), seen),
-            Type::Tuple(items) => {
+            Type::Tuple(items) | Type::Union(items) => {
                 items.iter().try_for_each(|item| self.holds(format, item, (span, field), seen))
             }
             Type::Result(..) => Err(unhandled_result(span)),

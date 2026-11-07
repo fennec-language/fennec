@@ -74,12 +74,12 @@ fn run(workers: usize, handler: &Handler, clients: impl FnOnce(SocketAddr) + Sen
             let _ = sent.send(went);
         });
     };
-    let served =
-        serve(listener, workers, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>), handler, started);
+    let pool = crate::embed::parallel::with_setup(workers, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>));
+    let served = serve(listener, pool, None, handler, started);
     if let Ok(Err(panic)) = ran.recv() {
         std::panic::resume_unwind(panic);
     }
-    served.unwrap()
+    served
 }
 
 /// A client that sends `lines` and checks each comes back.
@@ -112,7 +112,7 @@ fn hundreds_of_connections_are_served_by_a_few_workers_each_a_parked_task() {
             client.join().unwrap();
         }
     });
-    assert_eq!(served, Served { connections: 200, failed: 0 });
+    assert_eq!(served, Served { connections: 200, failed: 0, owners: std::collections::HashMap::new() });
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn a_failing_connection_ends_only_its_own_task() {
         // Stopped only once both have finished, so neither is cancelled by the stop first.
         wait_for(&waited, 2);
     });
-    assert_eq!(served, Served { connections: 2, failed: 1 });
+    assert_eq!(served, Served { connections: 2, failed: 1, owners: std::collections::HashMap::new() });
     let mut ended = wait_for(&finished, 2);
     ended.sort_unstable();
     assert_eq!(ended, [0, 1]);
@@ -171,7 +171,7 @@ fn a_wait_with_a_timeout_gives_up_while_others_go_on() {
         drop(quiet);
     });
     // The quiet one timed out, and the other was answered, whichever finished first.
-    assert_eq!(served, Served { connections: 2, failed: 1 });
+    assert_eq!(served, Served { connections: 2, failed: 1, owners: std::collections::HashMap::new() });
     let mut ended = wait_for(&finished, 2);
     ended.sort_unstable();
     assert_eq!(ended, [0, 7]);
@@ -198,7 +198,7 @@ fn a_connection_that_sends_nothing_times_out_however_often_its_task_is_woken() {
         drop(silent);
     });
     assert_eq!(wait_for(&finished, 1), [7]);
-    assert_eq!(served, Served { connections: 1, failed: 1 });
+    assert_eq!(served, Served { connections: 1, failed: 1, owners: std::collections::HashMap::new() });
 }
 
 #[test]
@@ -313,21 +313,16 @@ fn measure_memory_per_parked_connection() {
 /// A served connection's body, as native code would be: sends back each line it's sent until
 /// the other side is done.
 extern "C" fn echo_body(_env: i64, conn: i64, _thread: i64) -> i64 {
-    use super::super::with;
     use crate::value::Value;
+    let span = fennec_syntax::Span::default();
     loop {
-        let line = super::conn_read_line(conn);
-        let line = with(|state| match state.take(line) {
-            Value::Ok(line) => match line.as_ref() {
-                Value::Str(text) => Some(format!("{text}\n")),
-                _ => None,
-            },
-            _ => None,
-        });
-        let Some(line) = line else { return 0 };
-        let data = with(|state| state.push(Value::str(&line)));
-        let written = super::conn_write(conn, data);
-        with(|state| drop(state.take(written)));
+        let Some(Ok(Value::Ok(line))) = super::served_call(conn, "read_line", &[], None, span) else {
+            return 1;
+        };
+        let Value::Str(line) = line.as_ref() else { return 0 };
+        let line = Value::str(&format!("{line}\n"));
+        let written = super::served_call(conn, "write", &[line], None, span);
+        assert!(matches!(written, Some(Ok(Value::Ok(_)))));
     }
 }
 
@@ -336,9 +331,16 @@ fn native_code_serves_a_server_the_interpreter_opened() {
     use super::super::{Tables, finish, start, with};
     use crate::call::CallArg;
     use crate::value::Value;
+    // The workers' setup is the process's, set by whichever test gets there first, and this
+    // server runs on the pool the `parallel` tests share. So it sets workers up as theirs do: with
+    // default tables, their workers had no `Int` element, and a stream's items came out wrong.
     super::super::parallel::set_worker_setup(Box::new(|| {
-        let _ =
-            start(&fennec_syntax::Module { items: Vec::new() }, Tables::default(), crate::Inputs::default());
+        let tables = Tables {
+            shapes: vec![std::rc::Rc::new(crate::packed::Element::Str)],
+            elements: vec![std::rc::Rc::new(crate::packed::Element::Int)],
+            ..Tables::default()
+        };
+        let _ = start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default());
     }));
     let module = fennec_syntax::parse("from std.net import Connection, NetError, Server\n").unwrap();
     start(&module, Tables::default(), crate::Inputs::default()).unwrap();
@@ -348,9 +350,12 @@ fn native_code_serves_a_server_the_interpreter_opened() {
             state.interp.net_method("listen", vec![CallArg::plain(Value::Int(0), span)], span).ok()?;
         let Value::Ok(server) = listened else { return None };
         let Value::Instance(instance) = server.as_ref() else { return None };
-        let Some(Value::Int(port)) = instance.field("port") else { return None };
-        let port = *port;
-        Some((state.push(server.as_ref().clone()), port))
+        let (Some(Value::Int(port)), Some(Value::Int(handle))) =
+            (instance.field("port"), instance.field("_handle"))
+        else {
+            return None;
+        };
+        Some((*handle, *port))
     })
     .unwrap();
     let client = std::thread::spawn(move || {
@@ -429,7 +434,8 @@ fn what_a_parked_task_printed_comes_out_while_another_task_runs() {
             let _ = sent.send(went);
         });
     };
-    let served = serve(listener, 2, &setup, &printing(), started).unwrap();
+    let pool = crate::embed::parallel::with_setup(2, &setup);
+    let served = serve(listener, pool, None, &printing(), started);
     super::super::finish();
     if let Ok(Err(panic)) = ran.recv() {
         std::panic::resume_unwind(panic);

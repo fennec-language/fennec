@@ -1,6 +1,6 @@
 //! What a test's capabilities reach: an in-memory `Fs`, a fixed `Clock`, captured `Stdout`, a
 //! `Process` that runs nothing but gives back what the test scripted, an `Entropy` whose
-//! bytes are fixed, and a `Net` whose servers and clients talk in memory, fresh for each run of a test. These hold state every copy of a capability shares, which
+//! bytes are fixed, an `Env` holding only what the test set, and a `Net` whose servers and clients talk in memory, fresh for each run of a test. These hold state every copy of a capability shares, which
 //! Fennec code has no way to do yet, so they're written here. With `fennec test --real` only
 //! the output is kept, and the rest is real.
 
@@ -36,6 +36,8 @@ pub(crate) struct TestWorld {
     pub(crate) ran: Vec<Vec<String>>,
     /// How many bytes the fake `Entropy` has given so far.
     pub(crate) entropy_drawn: usize,
+    /// The fake `Env`'s variables, by name, as the test set them.
+    pub(crate) variables: BTreeMap<String, String>,
     /// The test's network, in memory.
     pub(crate) net: crate::stdlib::net::Fake,
 }
@@ -50,6 +52,7 @@ impl TestWorld {
             scripts: BTreeMap::new(),
             ran: Vec::new(),
             entropy_drawn: 0,
+            variables: BTreeMap::new(),
             net: crate::stdlib::net::Fake::default(),
         }
     }
@@ -140,6 +143,18 @@ impl TestWorld {
         })
     }
 
+    /// Every path under `folder`, as the real `walk` gives them.
+    fn walk_into(&self, folder: &str, found: &mut Vec<String>) -> Result<(), String> {
+        for name in self.list(folder)? {
+            let path = crate::stdlib::fs::joined(folder, &name);
+            found.push(path.clone());
+            if self.is_folder(&key(&path)) {
+                self.walk_into(&path, found)?;
+            }
+        }
+        Ok(())
+    }
+
     fn list(&self, path: &str) -> Result<Vec<String>, String> {
         let key = key(path);
         if self.is_folder(&key) {
@@ -200,7 +215,14 @@ impl Interp<'_> {
             ("remove", [Value::Str(path)]) => world.remove(path).map(|()| Value::Unit),
             ("list_dir", [Value::Str(path)]) => {
                 return Some(match world.list(path) {
-                    Ok(names) => Ok(crate::stdlib::fs::paths_in(path, names)),
+                    Ok(names) => Ok(crate::stdlib::fs::paths_in(path, &names)),
+                    Err(reason) => Ok(crate::stdlib::fs::io_error(&reason)),
+                });
+            }
+            ("walk", [Value::Str(path)]) => {
+                let mut found = Vec::new();
+                return Some(match world.walk_into(path, &mut found) {
+                    Ok(()) => Ok(crate::stdlib::fs::paths_of(&found)),
                     Err(reason) => Ok(crate::stdlib::fs::io_error(&reason)),
                 });
             }

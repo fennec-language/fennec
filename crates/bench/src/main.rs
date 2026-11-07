@@ -1,10 +1,11 @@
-//! `fennec-bench`: the benchmark suite. Each kernel in `bench/kernels/` is measured on its own,
-//! against a target pinned in `bench/targets/`: how many instructions its work should take.
+//! `fennec-bench`: the benchmark suite. Each kernel in `bench/kernels/` is built by
+//! `fennec build --llvm --release` and measured on its own, against a target pinned in
+//! `bench/targets/`: how many instructions its work should take.
 //! The table shows how long each kernel takes to start and to do its work, its speed as a
 //! percentage of its target, and how it compares with the previous commit's `fennec`.
 //!
 //! A run fails if a kernel prints the wrong thing, or if one marked as enforced drops below the
-//! JIT's floor, or got slower than before: by its median time and, where they're counted, its
+//! floor, or got slower than before: by its median time and, where they're counted, its
 //! instructions too.
 //!
 //! `fennec-bench pin` measures the targets again, from the twins that sit beside the kernels.
@@ -17,6 +18,7 @@
 //! fennec-bench llvm-suite [--fennec PATH] [--runs N] [--kernels DIR] [--json PATH]
 //! fennec-bench parallel [--fennec PATH] [--runs N] [--dir DIR] [--markdown PATH]
 //! fennec-bench realworld [--fennec PATH] [--runs N] [--dir DIR] [--markdown PATH]
+//! fennec-bench server [--fennec PATH] [--runs N] [--dir DIR] [--markdown PATH]
 //! ```
 //!
 //! `budgets` measures something else: see the `budgets` module. `llvm-suite` compares what
@@ -35,6 +37,7 @@ mod other_twins;
 mod parallel;
 mod realworld;
 mod report;
+mod server;
 mod startup;
 mod targets;
 
@@ -134,6 +137,7 @@ fn main() -> ExitCode {
     let section: Option<(&str, Section)> = match args.first().map(String::as_str) {
         Some("parallel") => Some(("bench/parallel", parallel::run)),
         Some("realworld") => Some(("bench/realworld", realworld::run)),
+        Some("server") => Some(("bench/server", server::run)),
         _ => None,
     };
     if let Some((dir, section)) = section {
@@ -217,9 +221,11 @@ fn report(options: &Options, mut found: Found) -> ExitCode {
         let (kernel, count) = (&result.kernel, result.not_native.unwrap_or(0));
         // What falls off the fast path prints nothing when it runs, so the suite says so.
         if on_github {
-            println!("::warning title=Not native::{kernel} has {count} places that aren't native code");
+            println!("::warning title=Not native::{kernel} has {count} functions LLVM doesn't take yet");
         }
-        eprintln!("warning: {kernel} has {count} places that aren't native code: see `fennec dev fallbacks`");
+        eprintln!(
+            "warning: {kernel} has {count} functions LLVM doesn't take yet: see `fennec dev fallbacks --llvm`"
+        );
     }
     for error in &found.errors {
         eprintln!("error: {error}");
@@ -282,7 +288,7 @@ fn pin(options: &Options) -> std::result::Result<(), String> {
     for kernel in &kernels {
         eprintln!("pinning {}", kernel.name);
         let twin = kernel.twin(&options.fennec, &out_dir, Overflow::Checked)?;
-        let printed = time_together(&[twin, kernel.run(&options.fennec)], 1)?;
+        let printed = time_together(&[twin, kernel.built(&options.fennec, &out_dir, "ours")?], 1)?;
         let [twin_timing, ours] = printed.as_slice() else { return Err("nothing was run".to_owned()) };
         if kernel.output_hash(&ours.output) != kernels::hash(&twin_timing.output) {
             return Err(format!(
@@ -337,11 +343,18 @@ fn suite(options: &Options) -> std::result::Result<Found, String> {
     );
     let mut found =
         Found { results: Vec::new(), slowdowns: Vec::new(), errors: lock_problems(&kernels, &targets)? };
+    // What a built program takes before its `main` is the same for every kernel: an empty one's
+    // whole run.
+    let empty = options.kernels.parent().unwrap_or(&options.kernels).join("startup/empty.fen");
+    let empty = empty.to_string_lossy();
+    let startup = llvm_suite::built(&options.fennec, &empty, &out_dir, "empty")
+        .map(|command| measure::Program { command, args: Vec::new(), stdin: None })?;
     for kernel in &kernels {
         eprintln!("running {}", kernel.name);
         let target = targets.get(&kernel.name);
         let plain = unchecked.get(&kernel.name).map(|target| target.instructions);
-        match run_kernel(kernel, options, options.runs, counter.as_ref(), (target, plain)) {
+        let built = (out_dir.as_path(), &startup);
+        match run_kernel(kernel, options, options.runs, counter.as_ref(), (target, plain), built) {
             Ok(result) => {
                 found.slowdowns.extend(result.failure());
                 found.errors.extend(result.below_floor());
@@ -388,26 +401,35 @@ fn as_native(previous: Option<usize>, ours: Option<usize>) -> bool {
     previous.unwrap_or(0) <= ours.unwrap_or(0)
 }
 
-/// Times and counts one kernel, against the previous `fennec` if there's one that can still
-/// run it. A slowdown is confirmed by counting the previous run's instructions, or, with
-/// nothing to count them, by measuring again for three times as long.
+/// Times and counts one kernel's LLVM release build, against the previous `fennec`'s if there's
+/// one that can still build and run it. A slowdown is confirmed by counting the previous run's
+/// instructions, or, with nothing to count them, by measuring again for three times as long.
 fn run_kernel(
     kernel: &Kernel,
     options: &Options,
     runs: usize,
     counter: Option<&Counter>,
     (target, unchecked): (Option<&Target>, Option<u64>),
+    (out_dir, startup): (&Path, &measure::Program),
 ) -> std::result::Result<Result, String> {
-    let mut programs = vec![kernel.run(&options.fennec), kernel.startup(&options.fennec)];
-    let previous = options.previous.as_deref().filter(|previous| {
-        // A previous `fennec` that can't run a new kernel, or would interpret more of it, just
-        // isn't compared on it: counting instructions through the interpreter takes hours.
-        let native = as_native(kernel.not_native(previous), kernel.not_native(&options.fennec));
-        comparable(native, || time_together(&[kernel.run(previous)], 1).is_ok())
+    // A kernel LLVM can't build yet runs on the JIT, and the run warns about it.
+    let built = kernel.built(&options.fennec, out_dir, "ours").unwrap_or_else(|why| {
+        eprintln!("warning: {} doesn't build through LLVM, so it runs on the JIT: {why}", kernel.name);
+        kernel.on_the_jit(&options.fennec)
     });
-    programs.extend(previous.map(|previous| kernel.run(previous)));
+    // A program just linked starts slowly the first time on macOS, while the system checks it.
+    time_together(&[built.clone(), startup.clone()], 1)?;
+    let mut programs = vec![built.clone(), startup.clone()];
+    let previous = options.previous.as_deref().and_then(|previous| {
+        // A previous `fennec` that can't build a new kernel, or would leave more of it to the
+        // interpreter, just isn't compared on it.
+        let native = as_native(kernel.not_native(previous), kernel.not_native(&options.fennec));
+        let built = native.then(|| kernel.built(previous, out_dir, "previous").ok()).flatten()?;
+        comparable(native, || time_together(std::slice::from_ref(&built), 1).is_ok()).then_some(built)
+    });
+    programs.extend(previous.clone());
     let timings = time_together(&programs, runs)?;
-    let [ours, startup, others @ ..] = timings.as_slice() else { return Err("nothing was timed".to_owned()) };
+    let [ours, started, others @ ..] = timings.as_slice() else { return Err("nothing was timed".to_owned()) };
     let printed = kernel.output_hash(&ours.output);
     if let Some(target) = target.filter(|target| target.output != printed) {
         return Err(format!(
@@ -419,25 +441,33 @@ fn run_kernel(
     let mut result = Result {
         kernel: kernel.name.clone(),
         total: ours.median,
-        startup: startup.median,
+        startup: started.median,
         previous: previous_output.map(|previous| previous.median),
-        instructions: counter.and_then(|counter| counter.count(&kernel.run(&options.fennec))),
-        startup_instructions: counter.and_then(|counter| counter.count(&kernel.startup(&options.fennec))),
+        instructions: counter.and_then(|counter| counter.count(&built)),
+        startup_instructions: counter.and_then(|counter| counter.count(startup)),
         previous_instructions: None,
         not_native: kernel.not_native(&options.fennec),
         target: target.cloned(),
         unchecked,
-        fell_back: ours.notes.contains("using the interpreter"),
+        fell_back: built.args.first().is_some_and(|first| first == "run")
+            || ours.notes.contains("using the interpreter"),
     };
     if result.failure().is_some() {
         match (counter, previous) {
             (Some(counter), Some(previous)) => {
                 eprintln!("counting {} on the previous commit", kernel.name);
-                result.previous_instructions = counter.count(&kernel.run(previous));
+                result.previous_instructions = counter.count(&previous);
             }
             _ if runs == options.runs => {
                 eprintln!("measuring {} again", kernel.name);
-                return run_kernel(kernel, options, runs * 3, counter, (target, unchecked));
+                return run_kernel(
+                    kernel,
+                    options,
+                    runs * 3,
+                    counter,
+                    (target, unchecked),
+                    (out_dir, startup),
+                );
             }
             _ => {}
         }

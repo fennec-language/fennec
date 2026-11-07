@@ -85,7 +85,8 @@ impl<'m> Keep<'m> for Copied {
 }
 
 /// The built-in types the standard library's code gives methods to with `extend`.
-const BUILT_IN_OWNERS: [&str; 8] = ["int", "float", "bool", "bytes", "str", "list", "dict", "set"];
+const BUILT_IN_OWNERS: [&str; 11] =
+    ["Optional", "int", "float", "bool", "bytes", "str", "list", "dict", "set", "Id", "Table"];
 
 /// A running Fennec program: its declarations, the current call's names, and its output.
 pub struct Interp<'out> {
@@ -107,6 +108,8 @@ pub struct Interp<'out> {
     pub(crate) tests: Vec<TestDef>,
     pub(crate) frame: Frame,
     pub(crate) depth: usize,
+    /// The `shared` values whose locks are held, each with the call depth that holds it.
+    pub(crate) locks: Vec<(Rc<std::cell::RefCell<Value>>, usize)>,
     pub(crate) max_depth: usize,
     pub(crate) out: Box<dyn Write + 'out>,
     /// The value a `?` or `fail` is carrying up to the enclosing function.
@@ -129,14 +132,21 @@ pub struct Interp<'out> {
     /// leaves that place in `named_place` instead of giving a value.
     pub(crate) naming_place: Option<usize>,
     pub(crate) named_place: Option<crate::place::Place>,
-    /// The sockets the program has open, by their handles.
-    pub(crate) sockets: crate::stdlib::net::Sockets,
     /// What tests get when they name a capability.
     pub(crate) test_capabilities: crate::fakes::TestCapabilities,
     /// The command-line arguments and standard input `main` can receive.
     pub(crate) given: crate::inputs::Given,
     /// How the `json.loads` call being read spells field names and treats unknown keys.
     pub(crate) reading: crate::formats::Reading,
+    /// The type a call like `response.json[T]()` names, for the method it calls to read the body
+    /// as: native code knows `T` inside the generic method, and the interpreter is told it here.
+    pub(crate) json_type: Option<fennec_syntax::TypeExpr>,
+    /// Where each `Table` a load has read from its text is, so a field left to its default
+    /// doesn't count as one when its `Id`s are checked.
+    pub(crate) tables_read: Vec<String>,
+    /// The tag each type of `Table` a load reads gets, the same for its `Id`s, so they find
+    /// their items in it and in no other `Table`.
+    pub(crate) load_tags: HashMap<String, u64>,
     /// The methods the standard library gives built-in types, like `str`'s `def *`, by type.
     pub(crate) built_in_methods: HashMap<String, HashMap<String, Rc<Callable>>>,
     /// The standard library's modules loaded so far. Only the core is loaded to start with; a
@@ -168,6 +178,7 @@ impl<'out> Interp<'out> {
             tests: Vec::new(),
             frame: Frame::new(),
             depth: 0,
+            locks: Vec::new(),
             max_depth: MAX_DEPTH,
             out,
             passing_up: None,
@@ -182,10 +193,12 @@ impl<'out> Interp<'out> {
             world: None,
             naming_place: None,
             named_place: None,
-            sockets: crate::stdlib::net::Sockets::default(),
             test_capabilities: crate::fakes::TestCapabilities::Fakes,
             given: crate::inputs::Inputs::default().into(),
             reading: crate::formats::Reading::default(),
+            json_type: None,
+            tables_read: Vec::new(),
+            load_tags: HashMap::new(),
             built_in_methods: HashMap::new(),
             std_loaded: std::collections::HashSet::new(),
         };
@@ -347,6 +360,7 @@ impl<'out> Interp<'out> {
     /// A method the standard library gives a built-in value's type, like `str`'s `def *`.
     pub(crate) fn built_in_method(&self, value: &Value, method: &str) -> Option<Rc<Callable>> {
         let owner = match value {
+            Value::None => "Optional",
             Value::Int(_) => "int",
             Value::Float(_) => "float",
             Value::Bool(_) => "bool",
@@ -355,6 +369,8 @@ impl<'out> Interp<'out> {
             Value::List(_) | Value::Packed(_) => "list",
             Value::Dict(_) => "dict",
             Value::Set(_) => "set",
+            Value::Id(_) => "Id",
+            Value::Table(_) => "Table",
             _ => return None,
         };
         self.built_in_methods.get(owner)?.get(method).cloned()
@@ -409,6 +425,7 @@ impl<'out> Interp<'out> {
                 "Process" => Capability::Process,
                 "Entropy" => Capability::Entropy,
                 "Net" => Capability::Net,
+                "Env" => Capability::Env,
                 "Clock" => {
                     return Err(Diagnostic::new(
                         "`main` can't receive `Clock` here: there's no clock",
@@ -419,7 +436,7 @@ impl<'out> Interp<'out> {
                 other => {
                     return Err(Diagnostic::new(format!("`main` can't receive a `{other}`"), param.span)
                         .with_help(
-                            "`main` can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock`, `args: Args`, `stdin: Stdin`, `process: Process`, `entropy: Entropy` and `net: Net`",
+                            "`main` can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock`, `args: Args`, `stdin: Stdin`, `process: Process`, `entropy: Entropy`, `net: Net` and `env: Env`",
                         ));
                 }
             }));

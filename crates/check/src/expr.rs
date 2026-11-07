@@ -27,8 +27,13 @@ impl FnCx<'_> {
             None => self.expr_kind(expr),
         };
         let ty = self.checker.settled(&ty);
+        if crate::lend::lent(&ty).is_some()
+            && matches!(expr.kind, ExprKind::Call { .. } | ExprKind::Try { .. })
+            && !self.with_values.contains(&(expr.span.start, expr.span.end))
+        {
+            self.source_outside_with(expr, &ty);
+        }
         self.record(expr.span, &ty);
-        self.io_under_lock(expr, &ty);
         ty
     }
 
@@ -56,13 +61,24 @@ impl FnCx<'_> {
                 self.track(lhs);
                 let before = self.snapshot();
                 self.narrow(&not_none(lhs, *op == BinOp::And));
+                self.narrow_members(&crate::stmt::members(lhs, *op == BinOp::And));
                 self.condition(rhs, op.symbol());
                 self.restore(&before);
                 Type::Bool
             }
             ExprKind::Binary { op: op @ (BinOp::Eq | BinOp::NotEq), lhs, rhs } => {
                 let (left, right) = self.compared(lhs, rhs);
+                if *op == BinOp::NotEq && left == Type::Float {
+                    self.not_a_nan_test(lhs, rhs, span);
+                }
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
+            }
+            ExprKind::Binary { op: BinOp::Is | BinOp::IsNot, lhs, rhs }
+                if let ExprKind::Name(member) = &rhs.kind
+                    && self.lookup(member).is_none()
+                    && self.member_type(member, rhs.span).is_some() =>
+            {
+                self.is_member(lhs, member, rhs.span)
             }
             ExprKind::Binary { op, lhs, rhs } => {
                 let (left, right) = (self.expr(lhs), self.expr(rhs));
@@ -73,9 +89,11 @@ impl FnCx<'_> {
                 self.track(cond);
                 let before = self.snapshot();
                 self.narrow(&not_none(cond, true));
+                self.narrow_members(&crate::stmt::members(cond, true));
                 let then = self.expr(then);
                 self.restore(&before);
                 self.narrow(&not_none(cond, false));
+                self.narrow_members(&crate::stmt::members(cond, false));
                 let otherwise = self.expr(otherwise);
                 self.restore(&before);
                 self.join_or_report(&[then, otherwise], span, "the two sides of this `if` give")
@@ -95,6 +113,14 @@ impl FnCx<'_> {
 
     /// An f-string, or a collection written out or built by a comprehension.
     fn written_out(&mut self, expr: &Expr) -> Type {
+        let ty = self.written_out_kind(expr);
+        if let Some(problem) = crate::program::optional_inside(&self.checker.settled(&ty), expr.span) {
+            self.error(problem);
+        }
+        ty
+    }
+
+    fn written_out_kind(&mut self, expr: &Expr) -> Type {
         let span = expr.span;
         match &expr.kind {
             ExprKind::FStr(parts) => {
@@ -124,7 +150,11 @@ impl FnCx<'_> {
             }
             ExprKind::Comprehension { kind, elem, value, names, iter, cond } => {
                 let parts = (elem.as_ref(), value.as_deref(), cond.as_deref());
-                let (elem, value) = self.comprehension(parts, names, iter, span);
+                let kept =
+                    *kind == CompKind::Generator && !self.worked_out_here.contains(&(span.start, span.end));
+                self.kept_generators += usize::from(kept);
+                let (elem, value) = self.comprehension(parts, names, iter, span, kept);
+                self.kept_generators -= usize::from(kept);
                 match kind {
                     CompKind::List => Type::list(elem),
                     CompKind::Generator => {
@@ -172,6 +202,72 @@ impl FnCx<'_> {
         Type::Unknown
     }
 
+    /// A name that doesn't exist, and what was probably meant if there's nothing else to say.
+    pub(crate) fn unknown(&self, name: &str, span: Span) -> Diagnostic {
+        if let Some(problem) = self.missing_capability(name, span) {
+            return problem;
+        }
+        let problem = unknown_name(name, span);
+        match self.similar_name(name).filter(|_| problem.help.is_none()) {
+            Some(similar) => problem.with_help(format!("did you mean `{similar}`?")),
+            None => problem,
+        }
+    }
+
+    /// `print` or `console`, which a newcomer writes first: what to write instead, in the function
+    /// it's written in. With a `Stdout` already in the signature, it's only a matter of using it.
+    fn no_global_output(&self, name: &str, span: Span) -> Diagnostic {
+        const WHY: &str = "a function reaches outside itself only through what's in its signature";
+        let diagnostic = Diagnostic::new(format!("there's no global `{name}`"), span);
+        if let Some(held) = self.name_holding(&Type::named("Stdout")) {
+            let diagnostic = diagnostic.with_help(format!("{WHY}: write `{held}.print(...)`"));
+            return if name == "print" {
+                diagnostic.with_fix(span, format!("{held}.print"))
+            } else {
+                diagnostic
+            };
+        }
+        let to_add = self.give_it("stdout: Stdout");
+        diagnostic.with_help(format!("{WHY}, {to_add}, then `stdout.print(...)`"))
+    }
+
+    /// A capability read by its usual name, like `stdout` or `fs`, in a function that wasn't given
+    /// it: how to give it one, or what it's called here when it has one under another name.
+    fn missing_capability(&self, name: &str, span: Span) -> Option<Diagnostic> {
+        let mut letters = name.chars();
+        let first = letters.next()?;
+        let ty: String = first.to_uppercase().chain(letters).collect();
+        if !first.is_lowercase() || !crate::shared::is_capability(&ty) && ty != "Net" {
+            return None;
+        }
+        let diagnostic = Diagnostic::new(format!("`{name}` doesn't exist"), span);
+        if let Some(held) = self.name_holding(&Type::named(&ty)) {
+            let help = format!("this function's `{ty}` is called `{held}`");
+            return Some(diagnostic.with_help(help).with_fix(span, held));
+        }
+        let to_add = self.give_it(&format!("{name}: {ty}"));
+        Some(diagnostic.with_help(format!(
+            "a function reaches outside itself only through what's in its signature, {to_add}"
+        )))
+    }
+
+    /// How to give the function being checked a parameter, written as `param`: in `main`'s
+    /// signature, beside what it already takes, after a test's name, or in a function's
+    /// parameters and passed from `main`.
+    fn give_it(&self, param: &str) -> String {
+        let takes_some =
+            self.checker.program.functions.get(&self.key).is_some_and(|main| !main.def.params.is_empty());
+        if self.key == "main" && takes_some {
+            format!("so add `{param}` to `main`'s parameters")
+        } else if self.key == "main" {
+            format!("so write `def main({param}):`")
+        } else if self.in_a_test() {
+            format!("so give this test a `({param})` after its name")
+        } else {
+            format!("so give `{}` a `{param}` parameter and pass it from `main`", self.key)
+        }
+    }
+
     fn name(&mut self, name: &str, span: Span) -> Type {
         if let Some((ty, _)) = self.lookup(name) {
             return ty;
@@ -188,6 +284,10 @@ impl FnCx<'_> {
         if name == "PI" {
             return Type::Float;
         }
+        // A name an import that failed would have bound was reported at the import.
+        if self.checker.program.failed_imports.contains(name) {
+            return Type::Unknown;
+        }
         let modules = self.checker.program.modules_at(span);
         let problem = if let Some(module) = modules.get(name) {
             fennec_syntax::module_as_value(name, module, span)
@@ -203,8 +303,10 @@ impl FnCx<'_> {
         } else if builtins::is_builtin(name) || self.checker.program.imported(name, span).is_some() {
             Diagnostic::new(format!("`{name}` can only be called"), span)
                 .with_help(format!("call it, like `{name}(...)`, or pass an arrow function that calls it"))
+        } else if matches!(name, "print" | "console") {
+            self.no_global_output(name, span)
         } else {
-            unknown_name(name, span)
+            self.unknown(name, span)
         };
         self.error(problem);
         Type::Unknown
@@ -249,8 +351,8 @@ impl FnCx<'_> {
         Some(function)
     }
 
-    /// A name used as a type, like `Enemy` in `Enemy.at(...)` or `game.IdMap` in
-    /// `game.IdMap[Enemy]()`, rather than as a value.
+    /// A name used as a type, like `Enemy` in `Enemy.at(...)` or `collections.Table` in
+    /// `collections.Table[Enemy]()`, rather than as a value.
     pub(crate) fn as_type_name<'e>(&self, expr: &'e Expr) -> Option<&'e str> {
         let name = match &expr.kind {
             ExprKind::Name(name) => name,
@@ -268,7 +370,32 @@ impl FnCx<'_> {
         (self.lookup(name).is_none() && self.checker.program.is_type_name(name)).then_some(name.as_str())
     }
 
+    /// `x != x` on a float: how other languages ask about NaN, but here NaN equals NaN, so it's
+    /// always False, and a program relying on it would go on as if nothing were wrong.
+    fn not_a_nan_test(&mut self, lhs: &Expr, rhs: &Expr, span: Span) {
+        let Some(name) =
+            fennec_syntax::dotted(lhs).filter(|name| Some(name) == fennec_syntax::dotted(rhs).as_ref())
+        else {
+            return;
+        };
+        let message = format!("`{name} != {name}` is always False, since NaN equals NaN here");
+        self.error(
+            Diagnostic::new(message, span).with_help(format!("write `{name}.is_nan()` to ask about NaN")),
+        );
+    }
+
     /// An operator on two values. `spans` are the two sides', for pointing at one of them.
+    /// What to do about an int and a float mixed: `//` when the float is an int `/` an int,
+    /// which always gives a float, or else convert one side.
+    fn mix_help(&self, (left, right): (Span, Span)) -> &'static str {
+        let divided = |span: Span| self.int_divisions.contains(&(span.start, span.end));
+        if divided(left) || divided(right) {
+            "`/` always gives a float, even between ints; `//` divides ints and gives an int"
+        } else {
+            "convert one side with float(...) or int(...)"
+        }
+    }
+
     pub(crate) fn binary(
         &mut self,
         op: BinOp,
@@ -292,7 +419,7 @@ impl FnCx<'_> {
             BinOp::Is | BinOp::IsNot | BinOp::And | BinOp::Or => return Type::Bool,
             BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
                 if self.usable_operands(&left, &right, span, spans) {
-                    self.ordered(&left, &right, op, span, spans.1);
+                    self.ordered(&left, &right, op, span, spans);
                 }
                 return Type::Bool;
             }
@@ -316,7 +443,10 @@ impl FnCx<'_> {
             return result;
         }
         match (&left, &right) {
-            (Type::Int, Type::Int) if op == BinOp::Div => Type::Float,
+            (Type::Int, Type::Int) if op == BinOp::Div => {
+                self.int_divisions.insert((span.start, span.end));
+                Type::Float
+            }
             (Type::Int, Type::Int) => Type::Int,
             (Type::Float, Type::Float) => Type::Float,
             (Type::Str, Type::Str) if op == BinOp::Add => Type::Str,
@@ -327,9 +457,10 @@ impl FnCx<'_> {
             }
             (Type::Unknown, _) | (_, Type::Unknown) => Type::Unknown,
             (Type::Int, Type::Float) | (Type::Float, Type::Int) => {
+                let help = self.mix_help(spans);
                 self.error(
                     Diagnostic::new(format!("can't mix int and float in `{}`", op.symbol()), span)
-                        .with_help("convert one side with float(...) or int(...)"),
+                        .with_help(help),
                 );
                 Type::Unknown
             }
@@ -428,10 +559,12 @@ impl FnCx<'_> {
             return;
         }
         let held = match collection {
-            Type::List(held) | Type::Buffer(held) | Type::Set(held) | Type::Dict(held, _) => {
-                held.as_ref().clone()
-            }
-            Type::IdMap(held) => Type::Id(held.clone()),
+            Type::List(held)
+            | Type::Array(held, _)
+            | Type::Buffer(held)
+            | Type::Set(held)
+            | Type::Dict(held, _) => held.as_ref().clone(),
+            Type::Table(held) => Type::Id(held.clone()),
             Type::Str => Type::Str,
             Type::Bytes => Type::Int,
             Type::Unknown | Type::Var(_) => return,
@@ -448,7 +581,8 @@ impl FnCx<'_> {
     }
 
     /// `<`, `<=`, `>` and `>=` need two values of a type with an order.
-    fn ordered(&mut self, left: &Type, right: &Type, op: BinOp, span: Span, right_span: Span) {
+    fn ordered(&mut self, left: &Type, right: &Type, op: BinOp, span: Span, spans: (Span, Span)) {
+        let right_span = spans.1;
         if let Some(name) = left.type_name()
             && let Some((key, _)) = self.checker.program.method(name, "<")
         {
@@ -465,10 +599,13 @@ impl FnCx<'_> {
         }
         match (left, right) {
             (Type::Unknown, _) | (_, Type::Unknown) => {}
-            (Type::Int, Type::Float) | (Type::Float, Type::Int) => self.error(
-                Diagnostic::new(format!("can't mix int and float in `{}`", op.symbol()), span)
-                    .with_help("convert one side with float(...) or int(...)"),
-            ),
+            (Type::Int, Type::Float) | (Type::Float, Type::Int) => {
+                let help = self.mix_help(spans);
+                self.error(
+                    Diagnostic::new(format!("can't mix int and float in `{}`", op.symbol()), span)
+                        .with_help(help),
+                );
+            }
             _ if left == right && self.is_ordered(left) => {}
             _ => {
                 let message = format!("can't order {} and {} with `{}`", a(left), a(right), op.symbol());
@@ -559,6 +696,9 @@ impl FnCx<'_> {
             return ty;
         }
         let ty = self.expr(object);
+        if self.outside_lock(object, &ty, span) {
+            return Type::Unknown;
+        }
         let ty = self.failing_step(ty, object.span, span);
         let optional = optional || self.chained_step(&ty, span);
         self.field_of(&ty, name, optional, span)
@@ -676,10 +816,11 @@ impl FnCx<'_> {
     pub(crate) fn item_type(&mut self, ty: &Type, span: Span) -> Type {
         match self.checker.settled(ty) {
             Type::List(item)
+            | Type::Array(item, _)
             | Type::Buffer(item)
             | Type::Set(item)
             | Type::Iterator(item)
-            | Type::IdMap(item)
+            | Type::Table(item)
             | Type::Dict(item, _) => *item,
             Type::Tuple(items) => {
                 if let Some(joined) = self.checker.join_all(&items) {
@@ -742,12 +883,14 @@ impl FnCx<'_> {
         names: &[String],
         iter: &Expr,
         span: Span,
+        kept: bool,
     ) -> (Type, Type) {
         let (elem, value, cond) = parts;
         let iter_ty = self.expr(iter);
         let item = self.item_type(&iter_ty, iter.span);
         let before = self.snapshot();
-        self.push(false);
+        // One kept for later runs after this line, so it can't change what's around it.
+        self.push(kept);
         self.value_functions += 1;
         self.bind_names(names, &item, false, (iter.span, span));
         if let Some(cond) = cond {
@@ -819,7 +962,9 @@ impl FnCx<'_> {
             known.push(ty);
         }
         self.value_functions += 1;
+        self.arrows += 1;
         let returns = self.expr(body);
+        self.arrows -= 1;
         self.value_functions -= 1;
         self.pop();
         let ty = Type::Arrow(known, Box::new(returns));
@@ -829,13 +974,17 @@ impl FnCx<'_> {
 
     /// `value?`: the value inside a result, passing its error up.
     fn try_value(&mut self, value: &Expr, context: Option<&Expr>, span: Span) -> Type {
-        self.not_under_lock(
-            "`?` can't leave",
-            span,
-            "handle the failure here with `match` or `else`, so what the lock guards isn't left half changed",
-        );
+        // A function used as a value says nothing of failing, so nothing is told to expect it.
+        let in_arrow = self.arrows > 0;
+        if in_arrow {
+            self.error(
+                Diagnostic::new("an arrow function can't pass a failure up with `?`", span)
+                    .with_help("give a value with `else` here, or write a loop, which can use `?`"),
+            );
+        }
         let ty = self.expr(value);
         let inner = match &ty {
+            Type::Result(inner, _) if in_arrow => inner.as_ref().clone(),
             Type::Result(inner, error) => {
                 if context.is_none() {
                     self.errors.push(error.as_ref().clone());
@@ -860,7 +1009,9 @@ impl FnCx<'_> {
                 let message = format!("`from` needs an error, but this is {}", a(&error));
                 self.error(Diagnostic::new(message, context.span));
             }
-            self.errors.push(error);
+            if !in_arrow {
+                self.errors.push(error);
+            }
         }
         inner
     }

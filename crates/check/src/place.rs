@@ -25,7 +25,7 @@ impl FnCx<'_> {
         {
             let message = format!("`{handle}` is `shared`, so change it in one of its methods");
             self.error(Diagnostic::new(message, expr.span).with_help(format!(
-                "a `shared` value's methods take its lock: add a `mut self` method that makes the change, or lock it for a block with `with {handle} as mut locked:`"
+                "a `shared` value's methods take its lock: add a `ref self` method that makes the change, or lock it for a block with `with {handle} as ref locked:`"
             )));
             return;
         }
@@ -37,10 +37,30 @@ impl FnCx<'_> {
                     return;
                 }
                 if let Some((_, false)) = self.lookup(name) {
-                    self.error(self.cannot_change(name, expr.span));
+                    let mut problem = self.cannot_change(name, expr.span);
+                    if let Some(fix) = self.write_it_there(name, expr) {
+                        // `mut target` would change a copy, so the change would be lost.
+                        problem.hint = None;
+                        problem = problem.with_help(fix);
+                    }
+                    self.error(problem);
                 }
             }
         }
+    }
+
+    /// How to change what `target = units[at]` read from, when `target.health` can't change.
+    fn write_it_there(&self, name: &str, expr: &Expr) -> Option<String> {
+        if self.origin(name) != Some(Origin::Local) {
+            return None;
+        }
+        let source = self.read_from.get(name)?;
+        let rest = crate::loops::place_text(expr);
+        let holder = source.split(['[', '.']).next().unwrap_or(source);
+        Some(format!(
+            "to change `{holder}`: write to `{source}{}`",
+            rest.strip_prefix(name).unwrap_or_default()
+        ))
     }
 
     pub(crate) fn assign(
@@ -53,6 +73,13 @@ impl FnCx<'_> {
     ) {
         match &target.kind {
             ExprKind::Name(name) => {
+                if !declare_mut
+                    && matches!(value.kind, ExprKind::Index { .. } | ExprKind::Attr { .. })
+                    && self.lookup(name).is_none()
+                    && root(value).is_some_and(|from| self.lookup(from).is_some())
+                {
+                    self.read_from.insert(name.clone(), crate::loops::place_text(value));
+                }
                 let expected = match written {
                     Some(written) => self.written_type(written),
                     None if op.is_none() => self.declared_type(name),
@@ -74,7 +101,11 @@ impl FnCx<'_> {
                 let parts = self.unpack(&ty, names.len(), value.span);
                 for (name, ty) in names.iter().zip(parts) {
                     if let ExprKind::Name(text) = &name.kind {
+                        let new = self.lookup(text).is_none();
                         self.assign_name(text, name.span, None, ty, false);
+                        if new {
+                            self.unpacked(text);
+                        }
                     }
                 }
             }
@@ -134,8 +165,14 @@ impl FnCx<'_> {
         if !self.checker.fits(&declared, ty) {
             self.error(mismatch(&format!("`{name}`"), &declared, ty, value));
         }
-        let binding =
-            Binding { name: name.to_owned(), ty: ty.clone(), declared, is_mut, origin: Origin::Local };
+        let binding = Binding {
+            name: name.to_owned(),
+            ty: ty.clone(),
+            declared,
+            is_mut,
+            origin: Origin::Local,
+            mut_at: Some(at.start),
+        };
         self.declare_with(binding, at);
         self.record(at, &self.checker.settled(ty));
     }
@@ -206,7 +243,7 @@ impl FnCx<'_> {
         {
             let message = format!("`{name}` has a `def []` but no `def []=`, so its items can't be changed");
             let help = format!(
-                "define the `mut` form, `def [](mut self, i: int)`, or `def []=(mut self, index: ..., value: ...)` for `{name}`"
+                "define the `ref` form, `def [](ref self, i: int)`, or `def []=(ref self, index: ..., value: ...)` for `{name}`"
             );
             self.error(Diagnostic::new(message, place.span).with_help(help));
         }

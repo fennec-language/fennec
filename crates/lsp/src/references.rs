@@ -36,11 +36,30 @@ pub(crate) fn imported(sources: &Sources) -> Vec<(String, Span, bool)> {
     found
 }
 
-/// What the name an import lists at `at` refers to: a top-level name.
+/// What the name an import lists at `at` refers to: a top-level name, or the kit's module
+/// the import names, like `physics` in `import physics` or `combat` in `from combat import hit`.
 pub(crate) fn import_at(analysis: &Analysis, at: u32) -> Option<Target> {
-    let (name, ..) =
-        imported(&analysis.sources).into_iter().find(|(_, span, _)| span.start <= at && at <= span.end)?;
-    Some(Target::Global(name))
+    let listed =
+        imported(&analysis.sources).into_iter().find(|(_, span, _)| span.start <= at && at <= span.end);
+    if let Some((name, ..)) = listed {
+        return Some(Target::Global(name));
+    }
+    let sources = &analysis.sources;
+    let (text, base) =
+        sources.files().filter_map(|(path, _)| sources.by_path(path)).find(|(text, base)| {
+            let end = base.saturating_add(u32::try_from(text.len()).unwrap_or(u32::MAX));
+            *base <= at && at <= end
+        })?;
+    let module = fennec_syntax::parse_at(text, base).ok()?;
+    module.items.iter().find_map(|item| {
+        let Item::Import(import) = item else { return None };
+        if import.module.first().is_none_or(|first| first == "std") {
+            return None;
+        }
+        let whole = import.module.join(".");
+        let written = name_in(sources, import.span, &whole);
+        (written != import.span && written.start <= at && at <= written.end).then_some(Target::Module(whole))
+    })
 }
 
 /// Where each declaration a target may refer to has its name, as start and end.
@@ -108,6 +127,10 @@ pub(crate) fn valid_name(name: &str) -> bool {
 /// program: none of its declarations is the standard library's.
 pub(crate) fn own(analysis: &Analysis, found: &Target) -> bool {
     let Some(module) = &analysis.module else { return false };
+    // A module is renamed by renaming its file.
+    if matches!(found, Target::Module(_)) {
+        return false;
+    }
     let all = declarations(found, module, &analysis.sources, analysis.checked.as_ref());
-    !all.is_empty() && all.iter().all(|declaration| !declaration.name_at.in_prelude())
+    !all.is_empty() && all.iter().all(|declaration| !declaration.library && !declaration.name_at.in_prelude())
 }

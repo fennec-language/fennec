@@ -1,7 +1,7 @@
 error: `Player` already has a method called `reset`
  --> examples/projects/errors/method_twice/src/main.fen:4:5
   |
-4 |     def reset(mut self):
+4 |     def reset(ref self):
   |     ^^^^^^^^^^^^^^^^^^^
   |
   = help: rename one of them

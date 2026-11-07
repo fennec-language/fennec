@@ -67,22 +67,22 @@ struct Planner:
     constraints: list[Constraint]
     current_mark = 0
 
-    def variable(mut self, value: int) -> int:
+    def variable(ref self, value: int) -> int:
         self.variables.append(Variable(value=value, constraints=[]))
         self.variables.len() - 1
 
-    def new_mark(mut self) -> int:
+    def new_mark(ref self) -> int:
         self.current_mark += 1
         self.current_mark
 
-    def add(mut self, constraint: Constraint) -> int:
+    def add(ref self, constraint: Constraint) -> int:
         self.constraints.append(constraint)
         at = self.constraints.len() - 1
         self.add_to_graph(at)
         self.incremental_add(at)
         at
 
-    def add_to_graph(mut self, at: int):
+    def add_to_graph(ref self, at: int):
         c = self.constraints[at]
         self.variables[c.first].constraints.append(at)
         if not c.unary():
@@ -92,7 +92,7 @@ struct Planner:
             self.variables[c.offset].constraints.append(at)
         self.constraints[at].direction = UNDECIDED
 
-    def remove_from_graph(mut self, at: int):
+    def remove_from_graph(ref self, at: int):
         c = self.constraints[at]
         for place in [c.first, c.second, c.scale, c.offset]:
             if place != NONE:
@@ -101,7 +101,7 @@ struct Planner:
                     self.variables[place].determined_by = NONE
         self.constraints[at].direction = UNDECIDED
 
-    def choose_method(mut self, at: int, mark: int):
+    def choose_method(ref self, at: int, mark: int):
         c = self.constraints[at]
         if c.unary():
             walk = self.variables[c.first].walk
@@ -124,7 +124,7 @@ struct Planner:
             direction = FORWARD
         self.constraints[at].direction = direction
 
-    def mark_inputs(mut self, at: int, mark: int):
+    def mark_inputs(ref self, at: int, mark: int):
         c = self.constraints[at]
         if c.unary(): return
         self.variables[c.input()].mark = mark
@@ -132,13 +132,13 @@ struct Planner:
             self.variables[c.scale].mark = mark
             self.variables[c.offset].mark = mark
 
-    def inputs_known(mut self, at: int, mark: int) -> bool:
+    def inputs_known(ref self, at: int, mark: int) -> bool:
         c = self.constraints[at]
         if c.unary(): return True
         input = self.variables[c.input()]
         input.mark == mark or input.stay or input.determined_by == NONE
 
-    def recalculate(mut self, at: int):
+    def recalculate(ref self, at: int):
         c = self.constraints[at]
         out = c.output()
         if c.unary():
@@ -156,7 +156,7 @@ struct Planner:
         if stay:
             self.execute(at)
 
-    def execute(mut self, at: int):
+    def execute(ref self, at: int):
         c = self.constraints[at]
         match c.kind:
             case .Stay | .Edit:
@@ -173,26 +173,26 @@ struct Planner:
                         (self.variables[c.second].value - offset) // scale
                     )
 
-    def satisfy(mut self, at: int, mark: int) -> int:
-        self.choose_method(at, mark)
+    def satisfy(ref self, at: int, mark: int) -> int:
+        self.choose_method(at, mark=mark)
         if not self.constraints[at].satisfied(): return NONE
-        self.mark_inputs(at, mark)
+        self.mark_inputs(at, mark=mark)
         out = self.constraints[at].output()
         overridden = self.variables[out].determined_by
         if overridden != NONE:
             self.constraints[overridden].direction = UNDECIDED
         self.variables[out].determined_by = at
-        self.add_propagate(at, mark)
+        self.add_propagate(at, mark=mark)
         self.variables[out].mark = mark
         overridden
 
-    def incremental_add(mut self, at: int):
+    def incremental_add(ref self, at: int):
         mark = self.new_mark()
-        mut overridden = self.satisfy(at, mark)
+        mut overridden = self.satisfy(at, mark=mark)
         while overridden != NONE:
-            overridden = self.satisfy(overridden, mark)
+            overridden = self.satisfy(overridden, mark=mark)
 
-    def incremental_remove(mut self, at: int):
+    def incremental_remove(ref self, at: int):
         out = self.constraints[at].output()
         self.constraints[at].direction = UNDECIDED
         self.remove_from_graph(at)
@@ -202,33 +202,33 @@ struct Planner:
                 if self.constraints[other].strength == strength:
                     self.incremental_add(other)
 
-    def destroy(mut self, at: int):
+    def destroy(ref self, at: int):
         if self.constraints[at].satisfied():
             self.incremental_remove(at)
         else:
             self.remove_from_graph(at)
 
-    def add_propagate(mut self, at: int, mark: int):
+    def add_propagate(ref self, at: int, mark: int):
         mut todo = [at]
-        while todo.len() > 0:
-            next = todo.pop()
+        while True:
+            next = todo.pop() else break
             self.recalculate(next)
-            self.consuming(self.constraints[next].output(), mut todo)
+            self.consuming(self.constraints[next].output(), ref todo)
 
-    def consuming(mut self, place: int, mut into: list[int]):
+    def consuming(ref self, place: int, ref into: list[int]):
         determining = self.variables[place].determined_by
         for other in self.variables[place].constraints:
             if other != determining and self.constraints[other].satisfied():
                 into.append(other)
 
-    def remove_propagate_from(mut self, place: int) -> list[int]:
+    def remove_propagate_from(ref self, place: int) -> list[int]:
         self.variables[place].determined_by = NONE
         self.variables[place].walk = WEAKEST
         self.variables[place].stay = True
         mut unsatisfied = []
         mut todo = [place]
-        while todo.len() > 0:
-            next = todo.pop()
+        while True:
+            next = todo.pop() else break
             determining = self.variables[next].determined_by
             for other in self.variables[next].constraints:
                 if not self.constraints[other].satisfied():
@@ -239,25 +239,25 @@ struct Planner:
                     todo.append(self.constraints[other].output())
         unsatisfied
 
-    def plan_from(mut self, sources: list[int]) -> list[int]:
+    def plan_from(ref self, sources: list[int]) -> list[int]:
         mark = self.new_mark()
         mut plan = []
         mut todo = sources
-        while todo.len() > 0:
-            next = todo.pop()
+        while True:
+            next = todo.pop() else break
             out = self.constraints[next].output()
-            if self.variables[out].mark != mark and self.inputs_known(next, mark):
+            if self.variables[out].mark != mark and self.inputs_known(next, mark=mark):
                 plan.append(next)
                 self.variables[out].mark = mark
-                self.consuming(out, mut todo)
+                self.consuming(out, ref todo)
         plan
 
-    def run_plan(mut self, plan: list[int]):
+    def run_plan(ref self, plan: list[int]):
         for at in plan:
             self.execute(at)
 
-    def change(mut self, place: int, value: int):
-        edit = self.add(Constraint(kind=Kind.Edit, strength=PREFERRED, first=place))
+    def change(ref self, place: int, value: int):
+        edit = self.add(Constraint(kind=.Edit, strength=PREFERRED, first=place))
         plan = self.plan_from([edit])
         for _ in range(10):
             self.variables[place].value = value
@@ -270,11 +270,11 @@ def chain_test(size: int) -> int:
     places = [planner.variable(0) for _ in range(size + 1)]
     for i in range(size):
         planner.add(
-            Constraint(kind=Kind.Equal, strength=REQUIRED, first=places[i], second=places[i + 1]),
+            Constraint(kind=.Equal, strength=REQUIRED, first=places[i], second=places[i + 1]),
         )
     last = places[size]
-    planner.add(Constraint(kind=Kind.Stay, strength=STRONG_DEFAULT, first=last))
-    edit = planner.add(Constraint(kind=Kind.Edit, strength=PREFERRED, first=places[0]))
+    planner.add(Constraint(kind=.Stay, strength=STRONG_DEFAULT, first=last))
+    edit = planner.add(Constraint(kind=.Edit, strength=PREFERRED, first=places[0]))
     plan = planner.plan_from([edit])
     mut total = 0
     for value in range(100):
@@ -297,10 +297,10 @@ def projection_test(size: int) -> int:
         target = planner.variable(i)
         sources.append(source)
         targets.append(target)
-        planner.add(Constraint(kind=Kind.Stay, strength=NORMAL, first=source))
+        planner.add(Constraint(kind=.Stay, strength=NORMAL, first=source))
         planner.add(
             Constraint(
-                kind=Kind.Scale,
+                kind=.Scale,
                 strength=REQUIRED,
                 first=source,
                 second=target,
@@ -308,14 +308,14 @@ def projection_test(size: int) -> int:
                 offset=offset,
             ),
         )
-    planner.change(sources[0], 17)
+    planner.change(sources[0], value=17)
     mut total = planner.variables[targets[0]].value
-    planner.change(targets[0], 1050)
+    planner.change(targets[0], value=1050)
     total += planner.variables[sources[0]].value
-    planner.change(scale, 5)
+    planner.change(scale, value=5)
     for target in targets:
         total += planner.variables[target].value
-    planner.change(offset, 2000)
+    planner.change(offset, value=2000)
     for target in targets:
         total += planner.variables[target].value
     total

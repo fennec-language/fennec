@@ -22,7 +22,7 @@ pub use ast::{
     Import, Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr,
     UnaryOp, WithName,
 };
-pub use diagnostic::{Also, Diagnostic, Edit, apply_fixes};
+pub use diagnostic::{Also, Diagnostic, Edit, Hint, apply_fixes};
 pub use doc_examples::doc_examples;
 pub use modules::{
     Imported, dotted, importable_type, member as std_member, module_as_value, package_member, short_module,
@@ -32,6 +32,7 @@ pub use parser::{parse, parse_at, parse_prelude};
 pub use sources::Sources;
 pub use span::Span;
 pub use stdlib::{
-    core_to_run, given, module_providing, module_to_run, prelude, prelude_modules, prelude_to_run,
+    core_to_run, given, module_providing, module_to_run, prelude, prelude_files, prelude_modules,
+    prelude_to_run,
 };
 pub use trivia::{Lexed, SourceToken, TokenKind, lex_source};

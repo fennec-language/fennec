@@ -261,6 +261,35 @@ fn a_diagnostics_fix_is_a_code_action() {
     assert_eq!(edit.at(&["range", "start"]), Some(&position(text, ":\n", 0)));
 }
 
+#[test]
+fn a_fix_to_make_by_hand_is_offered_but_not_preferred() {
+    let mut editor = Editor::new("by-hand").unwrap();
+    let text = "def main(stdout: Stdout):\n    names = [1]\n    names = [2]\n    stdout.print(names)\n";
+    let published = editor.open("src/main.fen", text);
+    let shown = messages(for_file(&published, "main.fen").unwrap());
+    assert!(shown.iter().any(|message| message.contains("fix: declare it `mut names`")), "{shown:?}");
+    let params = Json::object([
+        ("textDocument", Json::object([("uri", Json::string(editor.uri("src/main.fen")))])),
+        (
+            "range",
+            Json::object([
+                ("start", position(text, "names = [2]", 0)),
+                ("end", position(text, "names = [2]", 5)),
+            ]),
+        ),
+        ("context", Json::object([("diagnostics", Json::Array(Vec::new()))])),
+    ]);
+    let actions = editor.request("textDocument/codeAction", params);
+    let [action] = actions.as_array().unwrap() else { panic!("{actions:?}") };
+    assert_eq!(action.get("title"), Some(&Json::string("Fix by hand: declare it `mut names`")));
+    assert_eq!(action.get("isPreferred"), Some(&Json::Bool(false)));
+    let edits =
+        action.at(&["edit", "changes"]).and_then(|changes| changes.get(&editor.uri("src/main.fen"))).unwrap();
+    let edit = &edits.as_array().unwrap()[0];
+    assert_eq!(edit.get("newText"), Some(&Json::string("mut ")));
+    assert_eq!(edit.at(&["range", "start"]), Some(&position(text, "names", 0)));
+}
+
 /// What a published diagnostic's `code` is: a lint's rule.
 fn codes(diagnostics: &[Json]) -> Vec<&str> {
     diagnostics.iter().filter_map(|diagnostic| diagnostic.get("code")?.as_str()).collect()
@@ -441,6 +470,78 @@ fn names_bound_in_a_case_are_found_from_its_guard_and_body() {
     }
 }
 
+/// Names that aren't plain uses: a named argument, a case in a pattern, a test's capability, a
+/// type parameter, a comprehension's name where it's bound, and a module named in front of what
+/// it holds or in its import.
+#[test]
+fn definitions_of_arguments_cases_capabilities_parameters_and_modules() {
+    let mut editor = Editor::new("named").unwrap();
+    let text = "import combat\n\nenum Shape:\n    Dot\n    Line(length: int)\n\n\
+        struct Point:\n    x: int\n\n    def moved(self, by: int) -> Point:\n        Point(x=self.x + by)\n\n\
+        def scaled(value: int, times: int) -> int:\n    value * times\n\n\
+        def first[T](items: list[T]) -> T:\n    items[0]\n\n\
+        def size_of(shape: Shape) -> int:\n    match shape:\n        case .Line(length): length\n        case .Dot: 0\n\n\
+        def main(stdout: Stdout):\n    point = Point(x=1)\n    \
+        stdout.print(scaled(2, times=3), point.moved(by=2).x, size_of(.Line(length=4)), first([n for n in [1]]))\n    \
+        stdout.print(combat.hit(combat.Fighter(name=\"Kit\"), 3))\n\n\
+        test \"prints\"(screen: Stdout):\n    screen.print(1)\n";
+    let published = editor.open("src/main.fen", text);
+    let errors = for_file(&published, "main.fen").unwrap_or_default().iter();
+    let errors: Vec<&Json> = errors.filter(|found| found.get("severity") == Some(&Json::number(1))).collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    let cases = [
+        ("x=1", "x: int"),
+        ("times=3", "times: int"),
+        ("by=2", "by: int"),
+        ("length=4", "length: int"),
+        ("Line(length):", "Line(length: int)"),
+        ("T:\n    items", "T](items"),
+        ("n for n", "n in [1]"),
+        ("screen.print", "screen: Stdout"),
+    ];
+    for (needle, declared) in cases {
+        let found = editor.at("textDocument/definition", "src/main.fen", text, needle, 0);
+        let found = found.as_array().map(|found| &found[0]);
+        assert_eq!(
+            found.and_then(|found| found.at(&["range", "start"])),
+            Some(&position(text, declared, 0)),
+            "{needle}"
+        );
+    }
+    let combat = Json::string(editor.uri("src/combat.fen"));
+    for needle in ["combat.hit", "combat.Fighter", "combat\n\nenum"] {
+        let found = editor.at("textDocument/definition", "src/main.fen", text, needle, 0);
+        let found = found.as_array().map(|found| &found[0]);
+        assert_eq!(found.and_then(|found| found.get("uri")), Some(&combat), "{needle}");
+        assert_eq!(found.map(line_of), Some(0), "{needle}");
+    }
+}
+
+/// The standard library's source is built into `fennec`, so going to what it declares goes to a
+/// copy of its file, which shows in a hover too, and renaming it is refused.
+#[test]
+fn the_standard_librarys_declarations_are_found_in_a_copy_of_its_files() {
+    let mut editor = Editor::new("library").unwrap();
+    let text = "from std.math import Vec3\n\ndef main(stdout: Stdout):\n    at = Vec3(x=1.0)\n    stdout.print(at.x, at.length())\n";
+    editor.open("src/main.fen", text);
+    for (needle, declared) in
+        [("Vec3(x", "export struct Vec3:"), ("x=1.0", "    x = 0.0"), ("length()", "    def length(self)")]
+    {
+        let found = editor.at("textDocument/definition", "src/main.fen", text, needle, 0);
+        let found = &found.as_array().unwrap()[0];
+        let uri = found.get("uri").and_then(Json::as_str).unwrap();
+        assert!(uri.ends_with(&format!("/std/{}/math.fen", env!("CARGO_PKG_VERSION"))), "{needle}: {uri}");
+        let copy = std::fs::read_to_string(fennec_lsp::path_of(uri).unwrap()).unwrap();
+        let line = copy.lines().nth(line_of(found)).unwrap();
+        assert!(line.starts_with(declared), "{needle}: {line}");
+    }
+    let hover = editor.at("textDocument/hover", "src/main.fen", text, "Vec3(x", 0);
+    let shown = hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap_or("");
+    assert!(shown.contains("struct Vec3"), "{shown}");
+    let params = params_at(&editor, "src/main.fen", text, "Vec3(x", vec![("newName", Json::string("Point"))]);
+    assert_eq!(editor.request("textDocument/rename", params), Json::string("no result"));
+}
+
 /// A request about the place in `file` where `needle` starts, plus `into` characters, with more
 /// parameters.
 fn params_at(editor: &Editor, file: &str, text: &str, needle: &str, more: Vec<(&str, Json)>) -> Json {
@@ -462,6 +563,28 @@ fn places(locations: &Json) -> Vec<(String, usize)> {
     let mut found: Vec<(String, usize)> = all.iter().map(place).collect();
     found.sort();
     found
+}
+
+/// An edit to a function's body is checked by itself, and what's asked about a place after it
+/// is answered from that quick check: a definition in another file, a local's type, and, from
+/// the whole program, every reference.
+#[test]
+fn after_an_edit_to_a_body_definitions_hovers_and_references_still_answer() {
+    let mut editor = Editor::new("answers_after_a_body_edit").unwrap();
+    editor.open("src/main.fen", MAIN);
+    let edited = MAIN.replace("hit(fighter, 3)", "hit(fighter, 4)");
+    let published = editor.change("src/main.fen", &edited);
+    assert_eq!(for_file(&published, "main.fen"), Some(&[][..]));
+    let hit = editor.at("textDocument/definition", "src/main.fen", &edited, "hit(fighter", 1);
+    let hit = &hit.as_array().unwrap()[0];
+    assert_eq!(hit.get("uri"), Some(&Json::string(editor.uri("src/combat.fen"))));
+    assert_eq!(hit.at(&["range", "start"]), Some(&position(COMBAT, "hit(", 0)));
+    let hover = editor.at("textDocument/hover", "src/main.fen", &edited, "damage =", 0);
+    let shown = hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap_or("");
+    assert!(shown.contains("damage: int"), "{shown}");
+    let with = Json::object([("includeDeclaration", Json::Bool(true))]);
+    let params = params_at(&editor, "src/main.fen", &edited, "Fighter(", vec![("context", with)]);
+    assert_eq!(places(&editor.request("textDocument/references", params)).len(), 4);
 }
 
 #[test]

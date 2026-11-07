@@ -1,4 +1,4 @@
-//! Methods on built-in values: `stdout`, `fs`, strings, lists, dicts, sets and `IdMap`.
+//! Methods on built-in values: `stdout`, `fs`, strings, lists, dicts, sets and `Table`.
 
 use std::fmt::Write;
 use std::rc::Rc;
@@ -48,6 +48,52 @@ fn wrong_args(method: &str, span: Span) -> Diagnostic {
 }
 
 impl Interp<'_> {
+    /// A method of a whole capability. `Net`'s take named arguments, so they're handled first.
+    fn capability_method(
+        &mut self,
+        capability: Capability,
+        method: &str,
+        args: &[Value],
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        match capability {
+            Capability::Stdout => self.stdout_method(method, args, span),
+            Capability::Fs => self.fs_method(method, args, span),
+            Capability::Clock => self.clock_method(method, args, span),
+            Capability::Stdin => self.stdin_method(method, args, span),
+            Capability::Process => self.process_method(method, args, span),
+            Capability::Entropy => self.entropy_method(method, args, span),
+            Capability::Env => self.env_method(method, args, span),
+            Capability::Args | Capability::Net => {
+                Err(no_method(&Value::Capability(capability), method, span))
+            }
+        }
+    }
+
+    /// The capability methods that take named arguments: waiting on the network takes
+    /// `timeout=`, and `process.run` takes `cwd=`, `env=` and `input=`, which go on the method's
+    /// name, sorted, with their values last, as native code has them: `run.cwd.input`. The
+    /// arguments come back for any other method.
+    fn with_named(
+        &mut self,
+        receiver: &Value,
+        method: &str,
+        args: Vec<CallArg>,
+        span: Span,
+    ) -> Result<Result<Value, Diagnostic>, Vec<CallArg>> {
+        let is_process = match receiver {
+            Value::Capability(Capability::Net) => return Ok(self.net_method(method, args, span)),
+            Value::Capability(capability) => *capability == Capability::Process,
+            Value::Limited(limited) => limited.capability == Capability::Process,
+            _ => false,
+        };
+        if !is_process || method != "run" || args.iter().all(|arg| arg.name.is_none()) {
+            return Err(args);
+        }
+        let (method, args) = crate::stdlib::process::options_on_name(method, args);
+        Ok(self.read_method(receiver, &method, args, span))
+    }
+
     /// Methods that only read their receiver.
     pub(crate) fn read_method(
         &mut self,
@@ -62,11 +108,10 @@ impl Interp<'_> {
                 span,
             ));
         }
-        // Waiting on the network takes `timeout=`.
-        if let Value::Capability(Capability::Net) = receiver {
-            return self.net_method(method, args, span);
-        }
-        let args = plain(args, method, span)?;
+        let args = match self.with_named(receiver, method, args, span) {
+            Ok(done) => return done,
+            Err(args) => plain(args, method, span)?,
+        };
         match (receiver, method, args.as_slice()) {
             (Value::Int(n), "abs", []) => {
                 return n
@@ -74,7 +119,7 @@ impl Interp<'_> {
                     .map(Value::Int)
                     .ok_or_else(|| Diagnostic::new("this overflows an int", span));
             }
-            (Value::Float(x), "abs", []) => return Ok(Value::Float(x.abs())),
+            (Value::Float(x), "abs" | "is_nan", []) => return Ok(float_method(*x, method)),
             _ => {}
         }
         if method == "len" && args.is_empty() {
@@ -88,12 +133,9 @@ impl Interp<'_> {
             };
         }
         match receiver {
-            Value::Capability(Capability::Stdout) => self.stdout_method(method, &args, span),
-            Value::Capability(Capability::Fs) => self.fs_method(method, &args, span),
-            Value::Capability(Capability::Clock) => self.clock_method(method, &args, span),
-            Value::Capability(Capability::Stdin) => self.stdin_method(method, &args, span),
-            Value::Capability(Capability::Process) => self.process_method(method, &args, span),
-            Value::Capability(Capability::Entropy) => self.entropy_method(method, &args, span),
+            Value::Capability(capability) if *capability != Capability::Args => {
+                self.capability_method(*capability, method, &args, span)
+            }
             Value::Limited(limited) => self.limited_method(&Rc::clone(limited), method, &args, span),
             Value::Buffer(buffer) => crate::buffer::read(buffer, method, &args, span),
             // The bytes share the string's memory: nothing is copied.
@@ -128,7 +170,7 @@ impl Interp<'_> {
                 )),
                 _ => Err(no_method(receiver, method, span)),
             },
-            Value::IdMap(map) => match (method, args.as_slice()) {
+            Value::Table(map) => match (method, args.as_slice()) {
                 ("get", [Value::Id(id)]) => Ok(map.get(*id).cloned().unwrap_or(Value::None)),
                 ("items", []) => Ok(Value::list(
                     map.entries().map(|(id, v)| Value::tuple(vec![Value::Id(id), v.clone()])).collect(),
@@ -166,14 +208,7 @@ impl Interp<'_> {
         let [Value::Str(text)] = args else { return Err(wrong_args("fromhex", span)) };
         let message = match from_hex(text) {
             Ok(bytes) => return Ok(Value::Ok(Rc::new(Value::Bytes(Rc::from(bytes))))),
-            Err(at) => match text.chars().nth(at) {
-                Some(c) => format!(
-                    "`fromhex` needs two hex digits for each byte, but found {} at {at}",
-                    format::repr(&Value::str(c.encode_utf8(&mut [0; 4])))
-                ),
-                None => "`fromhex` needs two hex digits for each byte, but the text ends halfway through one"
-                    .to_owned(),
-            },
+            Err(at) => hex_problem(text, at),
         };
         let error = self.make_value("InvalidValue", vec![("message", Value::str(&message))], span)?;
         Ok(Value::Err(Rc::new(error)))
@@ -210,7 +245,11 @@ impl Interp<'_> {
                 }
                 Ok(Value::Unit)
             }
-            ("now" | "sleep", _) => Err(wrong_args(method, span)),
+            ("time", []) => {
+                let nanos = fixed.map_or_else(wall_nanos, |elapsed| FAKE_TIME.saturating_add(elapsed));
+                self.make_value("Time", vec![("nanos", Value::Int(nanos))], span)
+            }
+            ("now" | "sleep" | "time", _) => Err(wrong_args(method, span)),
             _ => Err(no_method(&Value::Capability(Capability::Clock), method, span)),
         }
     }
@@ -265,7 +304,7 @@ impl Interp<'_> {
                 }
                 Ok(Value::Unit)
             }
-            Value::IdMap(_) => self.change_id_map(value, method, &args, span),
+            Value::Table(_) => self.change_id_map(value, method, &args, span),
             other => Err(no_method(other, method, span)),
         }
     }
@@ -280,9 +319,7 @@ impl Interp<'_> {
     ) -> Result<Value, Diagnostic> {
         match (method, args) {
             ("append", [value]) => items.push(value.clone()),
-            ("pop", []) => {
-                return items.pop().ok_or_else(|| Diagnostic::new("can't pop from an empty list", span));
-            }
+            ("pop", []) => return Ok(items.pop().unwrap_or(Value::None)),
             ("pop", [Value::Int(at)]) => return Ok(items.remove(ops::position(*at, items.len(), span)?)),
             ("insert", [Value::Int(at), value]) => {
                 let at = usize::try_from(*at).ok().filter(|&at| at <= items.len()).ok_or_else(|| {
@@ -319,10 +356,10 @@ impl Interp<'_> {
         args: &[Value],
         span: Span,
     ) -> Result<Value, Diagnostic> {
-        let Value::IdMap(map) = value else { return Err(wrong_args(method, span)) };
+        let Value::Table(map) = value else { return Err(wrong_args(method, span)) };
         let map = Rc::make_mut(map);
         match (method, args) {
-            ("insert", [item]) => Ok(Value::Id(map.insert(item.clone()))),
+            ("add", [item]) => Ok(Value::Id(map.insert(item.clone()))),
             ("remove", [Value::Id(id)]) => Ok(map.remove(*id).unwrap_or(Value::None)),
             ("clear", []) => {
                 for slot in &mut map.slots {
@@ -333,7 +370,7 @@ impl Interp<'_> {
             ("modify", [Value::Id(id), change]) => {
                 let Some(current) = map.remove(*id) else { return Ok(Value::Bool(false)) };
                 let changed = self.call_changing(change, current, span)?;
-                if let Some(slot) = map.slots.get_mut(id.slot) {
+                if let Some(slot) = map.slots.get_mut(id.at()) {
                     slot.value = Some(changed);
                 }
                 Ok(Value::Bool(true))
@@ -362,7 +399,7 @@ impl Interp<'_> {
         }
     }
 
-    /// Calls a function that changes one value, like the change passed to `IdMap.modify`,
+    /// Calls a function that changes one value, like the change passed to `Table.modify`,
     /// and returns the changed value.
     fn call_changing(&mut self, change: &Value, value: Value, span: Span) -> Result<Value, Diagnostic> {
         match change {
@@ -401,6 +438,19 @@ impl Interp<'_> {
 fn clock_start() -> std::time::Instant {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     *START.get_or_init(std::time::Instant::now)
+}
+
+/// What a test's fake `Clock` says the time is before it sleeps: 2000-01-01T00:00:00Z, as
+/// nanoseconds since 1970 began in UTC. It moves on as the test sleeps.
+pub(crate) const FAKE_TIME: i64 = 946_684_800_000_000_000;
+
+/// The wall clock's reading, in nanoseconds since 1970 began in UTC, negative before then.
+pub(crate) fn wall_nanos() -> i64 {
+    let now = std::time::SystemTime::now();
+    match now.duration_since(std::time::UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_nanos()).unwrap_or(i64::MAX),
+        Err(before) => i64::try_from(before.duration().as_nanos()).map_or(i64::MIN, |nanos| -nanos),
+    }
 }
 
 /// The monotonic clock's reading, in nanoseconds since it started.
@@ -480,7 +530,7 @@ fn bytes_hex(data: &[u8], args: &[Value], span: Span) -> Result<Value, Diagnosti
 }
 
 /// Each byte as two lowercase hex digits, with `sep` between bytes.
-fn hex(data: &[u8], sep: &str) -> String {
+pub(crate) fn hex(data: &[u8], sep: &str) -> String {
     let mut out = String::with_capacity(data.len() * (2 + sep.len()));
     for (at, byte) in data.iter().enumerate() {
         if at > 0 {
@@ -491,9 +541,22 @@ fn hex(data: &[u8], sep: &str) -> String {
     out
 }
 
+/// What's wrong with text that `from_hex` stopped reading at `at`.
+pub(crate) fn hex_problem(text: &str, at: usize) -> String {
+    match text.chars().nth(at) {
+        Some(c) => format!(
+            "`fromhex` needs two hex digits for each byte, but found {} at {at}",
+            format::repr(&Value::str(c.encode_utf8(&mut [0; 4])))
+        ),
+        None => {
+            "`fromhex` needs two hex digits for each byte, but the text ends halfway through one".to_owned()
+        }
+    }
+}
+
 /// The bytes that pairs of hex digits spell, with ASCII whitespace allowed between pairs. A
 /// failure gives the position, in characters, of what doesn't fit.
-fn from_hex(text: &str) -> Result<Vec<u8>, usize> {
+pub(crate) fn from_hex(text: &str) -> Result<Vec<u8>, usize> {
     let mut bytes = Vec::new();
     let mut chars = text.chars().enumerate();
     while let Some((at, c)) = chars.next() {
@@ -506,4 +569,9 @@ fn from_hex(text: &str) -> Result<Vec<u8>, usize> {
         bytes.push(u8::try_from(high * 16 + low).map_err(|_| at)?);
     }
     Ok(bytes)
+}
+
+/// `x.abs()` or `x.is_nan()`.
+fn float_method(x: f64, method: &str) -> Value {
+    if method == "abs" { Value::Float(x.abs()) } else { Value::Bool(x.is_nan()) }
 }

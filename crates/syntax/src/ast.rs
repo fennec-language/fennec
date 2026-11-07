@@ -260,12 +260,22 @@ pub enum StmtKind {
     Assert(Expr),
     /// `with value as name:`, or `with a, b as mut x, mut y:`, whose `value` is the tuple of
     /// what it holds and which names each one.
+    /// `with value as name:`, or, with `lock`, `lock value as ref name:`, which reaches a
+    /// `shared` value: `name` is what it holds, for the block.
     With {
         value: Expr,
         names: Vec<WithName>,
         body: Vec<Stmt>,
+        lock: bool,
     },
     Def(FnDef),
+    /// `lend value`, in a function that gives back `with T`: the caller's `with` block runs
+    /// here, with `value` lent to it. `otherwise` is the `else:` block, which runs when the
+    /// caller's block fails, empty when there's none.
+    Lend {
+        value: Expr,
+        otherwise: Vec<Stmt>,
+    },
     Break,
     Continue,
     Pass,
@@ -387,6 +397,17 @@ impl Expr {
     /// The type an expression spells, as in `json.loads[list[int]]`: a name, a name with
     /// types in brackets, a tuple of types, or any of those with `?`. `None` for anything
     /// else.
+    /// A type in brackets with others, or a number there: an array's size, `16` in
+    /// `array[float, 16]`.
+    fn as_type_or_size(&self) -> Option<TypeExpr> {
+        match self.kind {
+            ExprKind::Int(size) => {
+                Some(TypeExpr { name: size.to_string(), args: Vec::new(), optional: false, span: self.span })
+            }
+            _ => self.as_type(),
+        }
+    }
+
     pub fn as_type(&self) -> Option<TypeExpr> {
         let plain = |name: &str, args: Vec<TypeExpr>| TypeExpr {
             name: name.to_owned(),
@@ -405,7 +426,7 @@ impl Expr {
                     ExprKind::Tuple(items)
                         if items.first().is_some_and(|first| first.span.start == index.span.start) =>
                     {
-                        items.iter().map(Expr::as_type).collect::<Option<Vec<_>>>()?
+                        items.iter().map(Expr::as_type_or_size).collect::<Option<Vec<_>>>()?
                     }
                     _ => vec![index.as_type()?],
                 };
@@ -443,11 +464,15 @@ pub enum Pattern {
     Wildcard,
     Bind(String),
     Literal(Expr),
-    /// `.Circle(radius)` (`dotted`), or `NotFound(path)`, `Ok(value)`, `Err(error)`.
+    /// `.Circle(radius)` (`dotted`), or `NotFound(path)`, `Ok(value)`, `Err(error)`. Written by
+    /// name, as `IoError(reason=r)`, `fields` names each of `args`. The checker then puts them
+    /// in the fields' order, with `_` for any it skips, so what runs a program can take `args`
+    /// by position.
     Variant {
         name: String,
         dotted: bool,
         args: Vec<Pattern>,
+        fields: Vec<String>,
     },
     Tuple(Vec<Pattern>),
     /// `.Int(_) | .Float(_)`: any of the alternatives, each binding the same names.
@@ -507,16 +532,16 @@ pub enum BinOp {
 }
 
 impl Expr {
-    /// Whether this is what `else continue`, `else return` or `else fail` parse to: it never gives
-    /// a value, because it always leaves.
+    /// Whether this is what `else continue`, `else return`, `else fail` or an `else:` block parse
+    /// to: it never gives a value, because it always leaves.
     pub fn leaves(&self) -> bool {
         let ExprKind::Match { subject, arms } = &self.kind else { return false };
         let [MatchArm { pattern: Pattern::Wildcard, guard: None, body, .. }] = arms.as_slice() else {
             return false;
         };
-        let [Stmt { kind, .. }] = body.as_slice() else { return false };
+        let Some(Stmt { kind, .. }) = body.last() else { return false };
         matches!(subject.kind, ExprKind::Bool(false))
-            && matches!(kind, StmtKind::Continue | StmtKind::Return(_) | StmtKind::Fail(_))
+            && matches!(kind, StmtKind::Continue | StmtKind::Break | StmtKind::Return(_) | StmtKind::Fail(_))
     }
 
     /// Whether this is a plain value written out: a number, string, bool or `None`.

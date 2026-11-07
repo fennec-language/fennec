@@ -8,17 +8,17 @@ import enemies
 ## Whether an enemy is down is about damage, so it's written here, as `Enemy`'s own method.
 extend Enemy:
     ## Whether it has no health left.
-    pub def is_down(self) -> bool:
+    def is_down(self) -> bool:
         self.health <= 0
 
 error Dodged:
     name: str
 
-def hit(mut enemy: enemies.Enemy, amount: int) -> int:
+def hit(ref enemy: enemies.Enemy, amount: int) -> int:
     if amount == 0: fail Dodged(enemy.name)
     enemy.health -= amount
     enemy.health
 
 test "hitting takes health away":
     mut enemy = enemies.spawn("dummy", Vec3.zero, 100)
-    assert hit(mut enemy, 10) == Ok(90)
+    assert hit(ref enemy, 10) == Ok(90)

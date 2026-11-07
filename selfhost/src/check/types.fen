@@ -26,9 +26,9 @@ enum Type:
     Named(name: str)
     ## A generic struct with its type arguments: `Deque[int]`.
     Generic(name: str, args: list[Type])
-    ## An `Id` from an `IdMap` of the given type.
+    ## An `Id` from a `Table` of the given type.
     Id(item: Type)
-    IdMap(item: Type)
+    Table(item: Type)
     ## A function, by its name in the signature table.
     Function(name: str)
     ## An arrow function: the types of its parameters, and what it gives back.
@@ -43,7 +43,11 @@ enum Type:
 ## `T?`, which stays `T` when `T` can already be None or isn't known.
 def optional_type(inner: Type) -> Type:
     match inner:
-        case .Optional(_): inner
-        case .NoneType: inner
-        case .Unknown: inner
-        case _: Type.Optional(inner)
+        case .Optional(_):
+            inner
+        case .NoneType:
+            inner
+        case .Unknown:
+            inner
+        case _:
+            .Optional(inner)

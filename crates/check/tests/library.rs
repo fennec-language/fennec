@@ -54,7 +54,7 @@ fn reading_needs_a_type_the_format_can_hold() {
         e = loads[Player]('{}')
         f = loads[3]('1')
     ";
-    let declarations = "from std.json import loads\nfrom std.game import Id\n\nstruct Player:\n    name: str\n    friends: list[Player]\n";
+    let declarations = "from std.json import loads\nfrom std.collections import Id\n\nstruct Player:\n    name: str\n    friends: list[Player]\n";
     assert_eq!(
         with_imports(declarations, program),
         [
@@ -188,6 +188,24 @@ fn imports_name_modules_and_names_that_exist() {
     assert_eq!(
         with_imports("from std.json import parse", main),
         ["`std.json` has nothing called `parse` @ from std.json import parse"]
+    );
+}
+
+/// One unknown module among several on an import line is the one problem: the others are
+/// imported, and the unknown name isn't reported again where it's used. A name a letter or two
+/// off a module's is taken to mean it.
+#[test]
+fn an_unknown_module_in_an_import_is_reported_once() {
+    let main = "stdout.print(json.dumps(1), compres.gzip('x'), json.dumps(2), time.Duration(nanos=1))";
+    assert_eq!(
+        with_imports("from std import compres, json, time", main),
+        ["there's no module called `std.compres` @ from std import compres, json, time"]
+    );
+    assert_eq!(
+        crate::helps(
+            "from std import compres, json\n\ndef main(stdout: Stdout):\n    stdout.print(json.dumps(1))\n"
+        ),
+        ["did you mean `std.compress`?"]
     );
 }
 

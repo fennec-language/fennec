@@ -1,7 +1,7 @@
 //! Checking statements: blocks and their values, `if` and loops (and how they narrow
 //! optionals), `return`, `fail`, `yield`, `with`, and nested functions.
 
-use fennec_syntax::{BinOp, Diagnostic, Expr, ExprKind, FnDef, Stmt, StmtKind, UnaryOp};
+use fennec_syntax::{BinOp, Diagnostic, Expr, ExprKind, FnDef, Span, Stmt, StmtKind, UnaryOp};
 
 use crate::effects;
 use crate::function::{Binding, FnCx, Origin};
@@ -16,7 +16,7 @@ pub(crate) struct Flow {
 }
 
 impl Flow {
-    fn unit() -> Flow {
+    pub(crate) fn unit() -> Flow {
         Flow { ty: Type::Unit, exits: false }
     }
 
@@ -64,92 +64,142 @@ impl FnCx<'_> {
                 let ty = self.expr(expr);
                 if always_leaves(expr) { Flow::exit() } else { Flow { ty, exits: false } }
             }
+            StmtKind::Assign { target, value, ty: Some(written), .. }
+                if written.name == crate::lock::SHARED && written.args.is_empty() =>
+            {
+                if let ExprKind::Name(name) = &target.kind {
+                    self.shared_declaration(name, value, target.span);
+                }
+                Flow::unit()
+            }
             StmtKind::Assign { target, op, value, declare_mut, ty } => {
+                self.note_arrow(target, value);
                 self.assign(target, *op, value, *declare_mut, ty.as_ref());
                 Flow::unit()
             }
             StmtKind::If { branches, otherwise } => {
                 self.if_stmt(branches, otherwise.as_deref(), used, stmt.span)
             }
-            StmtKind::While { cond, body } => self.while_stmt(cond, body),
+            StmtKind::While { cond, body } => {
+                self.loops += 1;
+                let flow = self.while_stmt(cond, body);
+                self.loops -= 1;
+                flow
+            }
             StmtKind::For { names, is_mut, iter, body } => {
+                self.loops += 1;
                 self.for_stmt(names, *is_mut, iter, body, stmt.span);
+                self.loops -= 1;
                 Flow::unit()
             }
-            StmtKind::Return(value) => {
-                let declared = self.declared.clone().filter(|_| !self.generator);
-                // `return Err(...)` in a function that says `fails E` makes a result of both.
-                let declared = match (value.as_ref().map(|value| &value.kind), &self.fails) {
-                    (Some(ExprKind::Call { callee, .. }), Some(error)) if matches!(&callee.kind, ExprKind::Name(name) if name == "Err" || name == "Ok") => {
-                        Some(Type::result(declared.unwrap_or(Type::Unit), error.clone()))
-                    }
-                    _ => declared,
-                };
-                let ty = match (value, &declared) {
-                    (Some(value), Some(declared)) => self.expr_as(value, declared),
-                    (Some(value), None) => self.expr(value),
-                    (None, _) => Type::Unit,
-                };
-                // A function that says `fails E` returns nothing without an arrow, or fails.
-                let checked = self.declared.clone().or_else(|| self.fails.as_ref().map(|_| Type::Unit));
-                if let (Some(declared), Some(value)) = (checked, value) {
-                    self.check_return(&declared, &ty, value.span);
-                }
-                if let (Some(declared), None) = (declared.filter(|ty| *ty != Type::Unit), value) {
-                    let declared = crate::types::a(&declared);
-                    self.error(
-                        Diagnostic::new(
-                            format!("`{}` returns {declared}, but this gives back nothing", self.name),
-                            stmt.span,
-                        )
-                        .with_help(format!("return {declared}, or change the return type")),
-                    );
-                }
-                self.returns.push(ty);
-                Flow::exit()
-            }
+            StmtKind::Return(value) => self.return_stmt(value.as_ref(), stmt.span),
             StmtKind::Fail(error) => {
                 self.fail(error);
                 Flow::exit()
             }
-            StmtKind::Yield(value) => {
-                self.not_under_lock(
-                    "`yield` can't pause",
-                    stmt.span,
-                    "work out the items under the lock, then yield them after the block",
-                );
-                let ty = self.expr(value);
-                // `-> Iterator[T]` says what each item it yields is.
-                if let Some(Type::Iterator(item) | Type::List(item)) = self.declared.clone()
-                    && !self.checker.fits(&item, &ty)
-                {
-                    let what = format!("what `{}` yields", self.name);
-                    self.error(crate::messages::mismatch(&what, &item, &ty, value.span));
-                }
-                self.yields.push(ty);
-                Flow::unit()
-            }
+            StmtKind::Yield(value) => self.yield_stmt(value, stmt.span),
             StmtKind::Assert(cond) => {
                 self.condition(cond, "assert");
                 Flow::unit()
             }
-            StmtKind::With { value, names, body } => self.with_block(value, names, body, used),
+            StmtKind::With { value, names, body, lock: true } => self.lock_block(value, names, body, used),
+            StmtKind::With { value, names, body, .. } => self.with_block(value, names, body, used),
             StmtKind::Def(def) => {
                 self.nested(def);
                 Flow::unit()
             }
-            StmtKind::Break | StmtKind::Continue => Flow::exit(),
+            StmtKind::Break | StmtKind::Continue => self.leave_loop(stmt),
             StmtKind::Pass => Flow::unit(),
+            StmtKind::Lend { value, otherwise } => self.lend(value, otherwise, stmt.span),
         }
     }
 
-    fn fail(&mut self, error: &Expr) {
+    /// `return`, with a value or not, against what the function says it gives back.
+    fn return_stmt(&mut self, value: Option<&Expr>, span: Span) -> Flow {
+        if self.lends.is_some() {
+            if let Some(value) = value {
+                self.expr(value);
+            }
+            self.error(
+                Diagnostic::new(format!("`{}` is a `with` source, so it doesn't `return`", self.name), span)
+                    .with_help(
+                        "it gives its caller what it lends with `lend`; to stop before lending, `fail`",
+                    ),
+            );
+            return Flow::exit();
+        }
+        let declared = self.declared.clone().filter(|_| !self.generator);
+        // `return Err(...)` in a function that says `fails E` makes a result of both.
+        let declared = match (value.as_ref().map(|value| &value.kind), &self.fails) {
+            (Some(ExprKind::Call { callee, .. }), Some(error)) if matches!(&callee.kind, ExprKind::Name(name) if name == "Err" || name == "Ok") => {
+                Some(Type::result(declared.unwrap_or(Type::Unit), error.clone()))
+            }
+            _ => declared,
+        };
+        let ty = match (value, &declared) {
+            (Some(value), Some(declared)) => self.expr_as(value, declared),
+            (Some(value), None) => self.expr(value),
+            (None, _) => Type::Unit,
+        };
+        // A function that says `fails E` returns nothing without an arrow, or fails.
+        let checked = self.declared.clone().or_else(|| self.fails.as_ref().map(|_| Type::Unit));
+        if let (Some(declared), Some(value)) = (checked, value) {
+            self.check_return(&declared, &ty, value.span);
+        }
+        if let (Some(declared), None) = (declared.filter(|ty| *ty != Type::Unit), value) {
+            let declared = crate::types::a(&declared);
+            self.error(
+                Diagnostic::new(
+                    format!("`{}` returns {declared}, but this gives back nothing", self.name),
+                    span,
+                )
+                .with_help(format!("return {declared}, or change the return type")),
+            );
+        }
+        self.returns.push(ty);
+        Flow::exit()
+    }
+
+    /// `yield`, whose items have to fit `-> Iterator[T]`.
+    fn yield_stmt(&mut self, value: &Expr, span: Span) -> Flow {
         self.not_under_lock(
-            "`fail` can't leave",
-            error.span,
-            "give back a value that says what went wrong, so what the lock guards isn't left half changed",
+            "`yield` can't pause",
+            span,
+            "work out the items under the lock, then yield them after the block",
         );
-        let ty = self.expr(error);
+        let ty = self.expr(value);
+        // `-> Iterator[T]` says what each item it yields is.
+        if let Some(Type::Iterator(item) | Type::List(item)) = self.declared.clone()
+            && !self.checker.fits(&item, &ty)
+        {
+            let what = format!("what `{}` yields", self.name);
+            self.error(crate::messages::mismatch(&what, &item, &ty, value.span));
+        }
+        self.yields.push(ty);
+        Flow::unit()
+    }
+
+    /// `break` or `continue`, which only a loop can take.
+    fn leave_loop(&mut self, stmt: &Stmt) -> Flow {
+        if self.loops == 0 {
+            let word = if matches!(stmt.kind, StmtKind::Break) { "break" } else { "continue" };
+            self.error(
+                Diagnostic::new(
+                    format!("`{word}` is only for leaving a loop, and this isn't in one"),
+                    stmt.span,
+                )
+                .with_help("to leave the function, use `return`"),
+            );
+        }
+        Flow::exit()
+    }
+
+    fn fail(&mut self, error: &Expr) {
+        // A leading-dot case here is a case of the error the function says it fails with.
+        let ty = match self.fails.clone() {
+            Some(fails) => self.expr_as(error, &fails),
+            None => self.expr(error),
+        };
         if self.checker.is_error_type(&ty) || matches!(ty, Type::Errors(_)) {
             self.errors.push(ty);
         } else if ty != Type::Unknown {
@@ -170,28 +220,34 @@ impl FnCx<'_> {
         branches: &[(Expr, Vec<Stmt>)],
         otherwise: Option<&[Stmt]>,
         used: bool,
-        span: fennec_syntax::Span,
+        span: Span,
     ) -> Flow {
         for (cond, _) in branches {
             self.track(cond);
         }
         let before = self.snapshot();
         let mut ruled_out = Vec::new();
+        let mut not_members = Vec::new();
         let mut paths = Vec::new();
         let mut values = Vec::new();
-        let mut arms: Vec<(Vec<String>, Option<&[Stmt]>)> = Vec::new();
+        let mut arms: Vec<Arm<'_>> = Vec::new();
         for (cond, body) in branches {
             self.narrow(&ruled_out);
+            self.narrow_members(&not_members);
             self.condition(cond, "if");
             let mut known = ruled_out.clone();
             known.extend(not_none(cond, true));
-            arms.push((known, Some(body)));
+            let mut held = not_members.clone();
+            held.extend(members(cond, true));
+            arms.push((known, held, Some(body)));
             ruled_out.extend(not_none(cond, false));
+            not_members.extend(members(cond, false));
             self.restore(&before);
         }
-        arms.push((ruled_out, otherwise));
-        for (known, body) in arms {
+        arms.push((ruled_out, not_members, otherwise));
+        for (known, held, body) in arms {
             self.narrow(&known);
+            self.narrow_members(&held);
             let flow = match body {
                 Some(body) => self.block(body, used),
                 None => Flow::unit(),
@@ -218,6 +274,7 @@ impl FnCx<'_> {
         self.track(cond);
         let before = self.snapshot();
         self.narrow(&not_none(cond, true));
+        self.narrow_members(&members(cond, true));
         self.block(body, false);
         let after = self.snapshot();
         self.merge(&[before, after]);
@@ -228,16 +285,16 @@ impl FnCx<'_> {
     /// `for mut` over a type of its own goes through its positions: its `def len` and the
     /// `mut` form of its `def []`, which gives the item's type. A type with only `def iter` makes
     /// copies, so a change to one would be lost. `None` for any other type.
-    fn positions_item(&mut self, ty: &Type, in_parallel: bool, span: fennec_syntax::Span) -> Option<Type> {
+    fn positions_item(&mut self, ty: &Type, in_parallel: bool, span: Span) -> Option<Type> {
         let ty = self.checker.settled(ty);
         let (Type::Named(name) | Type::Generic(name, _)) = &ty else { return None };
         let give_positions = format!(
-            "give `{name}` positions: `def len(self) -> int` and the `mut` form, `def [](mut self, i: int)`"
+            "give `{name}` positions: `def len(self) -> int` and the `ref` form, `def [](ref self, i: int)`"
         );
         let Some((key, entry)) = self.checker.program.method(name, "[]mut") else {
             if self.checker.program.method(name, "iter").is_some() {
                 let message = format!(
-                    "`for mut` can't change the items of a `{name}`, since its `iter` makes copies of them"
+                    "`for ref` can't change the items of a `{name}`, since its `iter` makes copies of them"
                 );
                 self.error(Diagnostic::new(message, span).with_help(give_positions));
             }
@@ -245,29 +302,29 @@ impl FnCx<'_> {
         };
         let own_items = crate::protocols::writes_one_item(&entry.def);
         if self.checker.program.method(name, "len").is_none() {
-            let message = format!("`for mut` over a `{name}` needs its `def len`");
+            let message = format!("`for ref` over a `{name}` needs its `def len`");
             self.error(Diagnostic::new(message, span).with_help(give_positions));
         } else if in_parallel && !own_items {
             let message = format!(
-                "`for mut` over `parallel(...)` needs `{name}`'s `mut` form of `def []` to touch only its own item"
+                "`for ref` over `parallel(...)` needs `{name}`'s `ref` form of `def []` to touch only its own item"
             );
-            let help = "write it as `return self.field[i]`, or use a plain `for mut`";
+            let help = "write it as `return self.field[i]`, or use a plain `for ref`";
             self.error(Diagnostic::new(message, span).with_help(help));
+        }
+        // The loop calls `len`, and `is_live` where there is one, so they're reached too, as the
+        // ones of a library type have to be when only what's reached is checked.
+        for counting in ["len", "is_live"] {
+            if let Some((counted, _)) = self.checker.program.method(name, counting) {
+                let _ = self.method_signature(&ty, &counted);
+            }
         }
         self.method_signature(&ty, &key).map(|signature| signature.returns)
     }
 
-    fn for_stmt(
-        &mut self,
-        names: &[String],
-        is_mut: bool,
-        iter: &Expr,
-        body: &[Stmt],
-        span: fennec_syntax::Span,
-    ) {
+    fn for_stmt(&mut self, names: &[String], is_mut: bool, iter: &Expr, body: &[Stmt], span: Span) {
         let parallel = crate::parallel::parallel_items(iter).filter(|_| self.lookup("parallel").is_none());
         if is_mut {
-            let what = "`for mut` changes each item, so loop over something held in a mut name";
+            let what = "`for ref` changes each item, so loop over something held in a mut name";
             self.mut_place(parallel.unwrap_or(iter), what);
         }
         if parallel.is_some() {
@@ -307,13 +364,7 @@ impl FnCx<'_> {
 
     /// Binds a loop's names to an item: one name, or several unpacking a tuple. `spans`
     /// are what's looped over, for problems, and the loop, where the names are declared.
-    pub(crate) fn bind_names(
-        &mut self,
-        names: &[String],
-        item: &Type,
-        is_mut: bool,
-        spans: (fennec_syntax::Span, fennec_syntax::Span),
-    ) {
+    pub(crate) fn bind_names(&mut self, names: &[String], item: &Type, is_mut: bool, spans: (Span, Span)) {
         let (span, at) = spans;
         if let [name] = names {
             self.declare_as(name, item.clone(), is_mut, Origin::Loop, at);
@@ -326,7 +377,7 @@ impl FnCx<'_> {
     }
 
     /// The types of the parts of a tuple being unpacked into `count` names.
-    pub(crate) fn unpack(&mut self, ty: &Type, count: usize, span: fennec_syntax::Span) -> Vec<Type> {
+    pub(crate) fn unpack(&mut self, ty: &Type, count: usize, span: Span) -> Vec<Type> {
         match &self.checker.settled(ty) {
             Type::Tuple(items) if items.len() == count => return items.clone(),
             Type::Tuple(items) => self.error(Diagnostic::new(
@@ -350,7 +401,21 @@ impl FnCx<'_> {
     }
 
     /// A function defined inside this one. It can read the names around it, but not change them.
+    /// `work = () => ...`: an arrow function given to a name, which may capture a handle.
+    fn note_arrow(&mut self, target: &Expr, value: &Expr) {
+        let (ExprKind::Name(name), ExprKind::Lambda { params, body }) = (&target.kind, &value.kind) else {
+            return;
+        };
+        let mut reads = Vec::new();
+        fennec_syntax::visit::in_expr(&mut body.as_ref().clone(), &mut |seen| names_read(seen, &mut reads));
+        self.note_closure(name, &reads, params);
+    }
+
     fn nested(&mut self, def: &FnDef) {
+        let mut reads = Vec::new();
+        fennec_syntax::visit::in_function(&mut def.clone(), &mut |seen| names_read(seen, &mut reads));
+        let own: Vec<String> = def.params.iter().map(|param| param.name.clone()).collect();
+        self.note_closure(&def.name, &reads, &own);
         let key = format!("{}.{}", self.key, def.name);
         let mut captured = self.visible();
         let function = Type::Function(key.clone());
@@ -360,6 +425,7 @@ impl FnCx<'_> {
             declared: function.clone(),
             is_mut: false,
             origin: Origin::Captured,
+            mut_at: None,
         });
         let report = self.report;
         let inherited = self.generics.clone();
@@ -396,6 +462,34 @@ pub(crate) fn not_none(cond: &Expr, when: bool) -> Vec<String> {
     }
 }
 
+/// A name, a member of its union by its written name, and whether the name holds that member.
+pub(crate) type Member = (String, String, bool);
+
+/// One way through an `if`: the names known not to be None there, what's known of the unions
+/// names hold, and its body, if it has one.
+type Arm<'s> = (Vec<String>, Vec<Member>, Option<&'s [Stmt]>);
+
+/// What a condition shows about which member of a union a name holds, when it's `true` or when
+/// it's `false`: `s is Circle` shows `s` holds a `Circle` when true and doesn't when false, and
+/// `and`, `or` and `not` combine them as for `None`. Each is the path, the member's written name,
+/// and whether it holds that member.
+pub(crate) fn members(cond: &Expr, when: bool) -> Vec<Member> {
+    match &cond.kind {
+        ExprKind::Binary { op: op @ (BinOp::Is | BinOp::IsNot), lhs, rhs } => match (path(lhs), &rhs.kind) {
+            (Some(path), ExprKind::Name(member)) => vec![(path, member.clone(), (*op == BinOp::Is) == when)],
+            _ => Vec::new(),
+        },
+        ExprKind::Binary { op: BinOp::And, lhs, rhs } if when => {
+            members(lhs, true).into_iter().chain(members(rhs, true)).collect()
+        }
+        ExprKind::Binary { op: BinOp::Or, lhs, rhs } if !when => {
+            members(lhs, false).into_iter().chain(members(rhs, false)).collect()
+        }
+        ExprKind::Unary { op: UnaryOp::Not, expr } => members(expr, !when),
+        _ => Vec::new(),
+    }
+}
+
 /// A name, or a path of fields from one: `player.weapon`.
 pub(crate) fn path(expr: &Expr) -> Option<String> {
     match &expr.kind {
@@ -421,5 +515,11 @@ fn block_leaves(stmts: &[Stmt]) -> bool {
         }
         Some(StmtKind::Expr(inner)) => always_leaves(inner),
         _ => false,
+    }
+}
+
+fn names_read(expr: &Expr, reads: &mut Vec<String>) {
+    if let ExprKind::Name(name) = &expr.kind {
+        reads.push(name.clone());
     }
 }

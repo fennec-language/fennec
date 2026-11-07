@@ -1,17 +1,23 @@
 //! The interpreter's bodies for `std.intrinsics`: each does what the operator it stands for
-//! does, failing the same way, through the same code.
+//! does, failing the same way, through the same code. The text ones read a text by where its
+//! bytes are.
 
 use fennec_syntax::{BinOp, Diagnostic, Span, UnaryOp};
 
 use crate::ops;
-use crate::value::Value;
+use crate::value::{Id, Slot, Table, Value};
 
 /// Runs the intrinsic named `name` on its arguments.
 pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    // Imported by name into another std module, it keeps its module's name.
+    let name = name.strip_prefix("intrinsics.").unwrap_or(name);
     let binary = |op: BinOp| match args {
         [a, b] => ops::binary(op, a.clone(), b.clone(), span),
         _ => Err(wrong(name, span)),
     };
+    if let Some(done) = ids(name, args, span) {
+        return done;
+    }
     match (name, args) {
         ("int_add" | "float_add", _) => binary(BinOp::Add),
         ("int_sub" | "float_sub", _) => binary(BinOp::Sub),
@@ -40,6 +46,104 @@ pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagn
         }
         ("float_to_int", [a @ Value::Float(_)]) => crate::builtins::to_int(a, span),
         ("float_bits", [Value::Float(a)]) => Ok(Value::Int(a.to_bits().cast_signed())),
+        ("bytes_text", [Value::Bytes(data), Value::Int(start), Value::Int(end)]) => {
+            let part = usize::try_from(*start).ok().zip(usize::try_from(*end).ok()).and_then(|(from, to)| data.get(from..to));
+            let text = part.and_then(|part| std::str::from_utf8(part).ok()).unwrap_or("");
+            Ok(Value::str(text))
+        }
+        ("text_plain_end" | "text_escape_at", [Value::Str(text), Value::Int(at)]) => {
+            let writing = name == "text_escape_at";
+            let from = usize::try_from(*at).unwrap_or(0);
+            let found = text.bytes().enumerate().skip(from).find(|(_, b)| {
+                *b < 32 || *b == 34 || *b == 92 || (writing && (*b == 127 || *b == 194))
+            });
+            Ok(Value::Int(i64::try_from(found.map_or(text.len(), |(at, _)| at)).unwrap_or(i64::MAX)))
+        }
+        ("float_of_bits", [Value::Int(bits)]) => Ok(Value::Float(f64::from_bits(bits.cast_unsigned()))),
+        // What a type is, which only native code knows as it runs.
+        ("shape_hash" | "type_name", []) => Err(Diagnostic::new(
+            "this saves or loads through a format written in Fennec, like `std.pack`, which needs native code",
+            span,
+        )
+        .with_help("the interpreter has no types while it runs: run this without `--interp` or `--jit`")),
+        ("text_byte", [Value::Str(text), Value::Int(at)]) => {
+            let byte = usize::try_from(*at).ok().and_then(|at| text.as_bytes().get(at).copied());
+            Ok(Value::Int(byte.map_or(-1, i64::from)))
+        }
+        ("text_of_code", [Value::Int(code)]) => {
+            let found = u32::try_from(*code).ok().and_then(char::from_u32);
+            found.map(|c| Value::str(c.encode_utf8(&mut [0; 4]))).ok_or_else(|| wrong(name, span))
+        }
+        ("text_size", [Value::Str(text)]) => Ok(Value::Int(i64::try_from(text.len()).unwrap_or(i64::MAX))),
+        ("text_part", [Value::Str(text), Value::Int(start), Value::Int(end)]) => {
+            let place = |at: &i64| usize::try_from(*at).ok();
+            let part = place(start).zip(place(end)).and_then(|(start, end)| text.get(start..end));
+            part.map(Value::str).ok_or_else(|| wrong(name, span))
+        }
+        ("stop", [Value::Str(message)]) => Err(Diagnostic::new(message.to_string(), span)),
+        _ => Err(wrong(name, span)),
+    }
+}
+
+/// The intrinsics into `Table`s and `Id`s, which std uses to save and load them, or `None` for
+/// another.
+fn ids(name: &str, args: &[Value], span: Span) -> Option<Result<Value, Diagnostic>> {
+    let known = matches!(
+        name,
+        "id_key"
+            | "id_at"
+            | "id_tag"
+            | "table_tag"
+            | "new_tag"
+            | "table_tagged"
+            | "table_slots"
+            | "table_of_slots"
+            | "id_of_key"
+    );
+    known.then(|| id_intrinsic(name, args, span))
+}
+
+fn id_intrinsic(name: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    match (name, args) {
+        ("id_key", [Value::Id(id)]) => Ok(Value::Int(id.key().cast_signed())),
+        ("id_at", [Value::Int(position), Value::Int(tag)]) => {
+            let slot = u32::try_from(*position).map_err(|_| wrong(name, span))?;
+            Ok(Value::Id(Id { slot, generation: 0, tag: tag.cast_unsigned() }))
+        }
+        ("id_tag", [Value::Id(id)]) => Ok(Value::Int(id.tag.cast_signed())),
+        ("table_tag", [Value::Table(table)]) => Ok(Value::Int(table.tag.cast_signed())),
+        ("new_tag", []) => Ok(Value::Int(crate::value::new_tag().cast_signed())),
+        ("table_tagged", [Value::Int(tag)]) => {
+            Ok(Value::Table(std::rc::Rc::new(Table::tagged(Vec::new(), tag.cast_unsigned()))))
+        }
+        ("table_slots", [Value::Table(map)]) => Ok(Value::list(
+            map.slots
+                .iter()
+                .map(|slot| {
+                    let generation = i64::from(slot.generation);
+                    Value::Int(if slot.value.is_some() { generation } else { -1 - generation })
+                })
+                .collect(),
+        )),
+        ("table_of_slots", [Value::Int(tag), Value::List(words), Value::List(items)]) => {
+            let mut held = items.iter();
+            let mut slots = Vec::with_capacity(words.len());
+            for word in words.iter() {
+                let Value::Int(word) = word else { return Err(wrong(name, span)) };
+                let generation = if *word >= 0 { *word } else { -1 - *word };
+                let generation = u32::try_from(generation).map_err(|_| wrong(name, span))?;
+                let value = if *word >= 0 {
+                    Some(held.next().cloned().ok_or_else(|| wrong(name, span))?)
+                } else {
+                    None
+                };
+                slots.push(Slot { generation, value });
+            }
+            Ok(Value::Table(std::rc::Rc::new(Table::tagged(slots, tag.cast_unsigned()))))
+        }
+        ("id_of_key", [Value::Int(key), Value::Int(tag)]) => {
+            Ok(Value::Id(Id::from_key(key.cast_unsigned(), tag.cast_unsigned())))
+        }
         _ => Err(wrong(name, span)),
     }
 }

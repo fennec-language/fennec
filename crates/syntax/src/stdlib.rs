@@ -30,24 +30,30 @@ macro_rules! modules {
 }
 
 modules! {
+    base64,
     cli,
     collections,
+    compress,
     crypto,
     csv,
     fs,
-    game,
     intrinsics,
     json,
     layout,
     log,
     math,
     net,
+    pack,
     path,
     process,
     random,
     re,
+    string,
     time,
     toml,
+    unicode,
+    url,
+    uuid,
 }
 
 /// What's available everywhere without an import: the errors standard operations fail
@@ -60,6 +66,14 @@ const CORE: [(&str, &str); 6] = [
     ("set", include_str!("stdlib/set.fen")),
     ("serialize", include_str!("stdlib/serialize.fen")),
 ];
+
+/// Each file of the standard library written in Fennec, by its name, like `math` for
+/// `std.math`, in the order `prelude` gives them.
+pub fn prelude_files() -> impl Iterator<Item = (&'static str, &'static str)> {
+    let modules =
+        MODULES.iter().filter(|module| !module.source.is_empty()).map(|module| (module.name, module.source));
+    CORE.into_iter().chain(modules)
+}
 
 /// The standard library written in Fennec, loaded before every program by both the
 /// interpreter and the type checker: the core, then each module's code.
@@ -229,12 +243,14 @@ fn parse_prelude() -> Result<Vec<crate::Module>, crate::Diagnostic> {
 /// Parses one file of the standard library. A mistake in one says which file and line, since it
 /// can't be shown against a program's own lines.
 fn parse_module(name: &str, source: &str) -> Result<crate::Module, crate::Diagnostic> {
-    crate::parser::parse_prelude(source).map_err(|problem| {
+    let mut module = crate::parser::parse_prelude(source).map_err(|problem| {
         let at = problem.span.start.saturating_sub(crate::Span::PRELUDE) as usize;
         let line = source.get(..at).map_or(1, |before| before.matches('\n').count() + 1);
         let message = format!("the standard library's `{name}.fen`, line {line}: {}", problem.message);
         crate::Diagnostic { message, ..problem }
-    })
+    })?;
+    crate::rename::discards_apart(&mut module);
+    Ok(module)
 }
 
 /// Gives each module's top-level functions the name `module.function`, which no one can write

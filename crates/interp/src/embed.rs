@@ -17,10 +17,12 @@ use std::rc::Rc;
 use fennec_syntax::{Diagnostic, Expr, Module, Pattern, Span, Stmt};
 
 pub mod aot;
+pub mod bytes;
 pub mod capabilities;
 pub mod checks;
 pub mod codec;
 pub mod dicts;
+pub mod guarded;
 pub mod heap;
 pub mod json;
 pub mod layout;
@@ -33,57 +35,55 @@ pub mod regex;
 #[cfg(any(test, feature = "threads"))]
 pub mod serve;
 
-/// Without the `threads` feature, a program has no tasks, so nothing is served: the calls are
-/// here for the runtime to export, and say so.
+/// Without the `threads` feature, a program has no tasks, so a server takes its connections one
+/// at a time, as looping over it does.
 #[cfg(not(any(test, feature = "threads")))]
 pub mod serve {
     use fennec_syntax::{Diagnostic, Span};
 
-    use super::{State, attempt, with};
-    use crate::stdlib::net::Failure;
     use crate::value::Value;
 
     /// What runs each served connection (see the `threads` version).
     pub type ConnBody = extern "C" fn(env: i64, conn: i64, thread: i64) -> i64;
 
-    pub extern "C" fn net_serve(_server: i64, _body: ConnBody, _env: i64) -> i64 {
-        let message = "serving connections needs a program built with tasks";
-        attempt(|_: &mut State| -> Result<i64, Diagnostic> { Err(Diagnostic::new(message, Span::default())) })
-            .max(1)
+    pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
+        super::write_kept_output();
+        while let Ok(conn) = crate::stdlib::net::accepted(server) {
+            if body(env, conn, 0) != 0 {
+                super::report_failure();
+            }
+            super::write_kept_output();
+            crate::stdlib::net::closed(conn);
+        }
+        0
     }
 
-    /// With nothing served, every connection number is closed.
-    #[cfg(not(feature = "lean"))]
-    fn closed() -> i64 {
-        with(|state| {
-            let error = state.interp.net_error(&Failure::Closed, Span::default()).unwrap_or(Value::None);
-            state.push(error)
-        })
+    /// A launched task's function (see the `threads` version).
+    pub type TaskBody = extern "C" fn(env: i64, thread: i64) -> i64;
+
+    /// `with launch(...)` needs tasks, so threads.
+    pub extern "C" fn launch(_body: TaskBody, _env: i64) -> i64 {
+        super::fail_with(Diagnostic::new("`launch` needs a program built with threads", Span::default()));
+        0
     }
 
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn conn_read(_conn: i64, _count: i64) -> i64 {
-        closed()
+    pub extern "C" fn launch_end(_task: i64, _stop_after_ns: i64, _failed: i64, _failure: &mut i64) -> i64 {
+        0
     }
 
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn conn_read_line(_conn: i64) -> i64 {
-        closed()
-    }
+    pub extern "C" fn task_failed(_failure: i64) {}
 
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn conn_write(_conn: i64, data: i64) -> i64 {
-        with(|state| drop(state.take(data)));
-        closed()
+    pub(super) fn served_call(
+        _handle: i64,
+        _method: &str,
+        _args: &[Value],
+        _timeout: Option<std::time::Duration>,
+        _at: Span,
+    ) -> Option<Result<Value, Diagnostic>> {
+        None
     }
-
-    pub extern "C" fn conn_peer(_conn: i64) -> i64 {
-        with(|state| state.push(Value::str("")))
-    }
-
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn conn_close(_conn: i64) {}
 }
+
 pub mod strings;
 mod table;
 mod tests;
@@ -99,7 +99,7 @@ use crate::place::Place;
 use crate::scope::Frame;
 use crate::value::{Capability, Value};
 
-pub use heap::Counts;
+pub use heap::{Counts, count_allocations};
 #[cfg(not(feature = "lean"))]
 pub use tests::{next_test, ran_in_interpreter};
 
@@ -116,6 +116,11 @@ pub struct Tables {
     pub elements: Vec<Rc<crate::packed::Element>>,
     /// The shapes of boxed values' blocks, by their number.
     pub shapes: Vec<Rc<crate::packed::Element>>,
+    /// The numbers of the shapes of `shared` values, which are the same only if they're one
+    /// value.
+    pub cells: Vec<u64>,
+    /// The kinds of block a dict's values can be, by the number `dicts::Word::Block` has.
+    pub blocks: Vec<Rc<crate::packed::Element>>,
     /// The shape number strings' blocks have.
     pub str_shape: u64,
     /// Blocks that live for the whole run, like string literals, made while compiling so
@@ -145,6 +150,7 @@ impl Tables {
             patterns: self.patterns.clone(),
             elements: self.elements.clone(),
             shapes: self.shapes.clone(),
+            cells: self.cells.clone(),
             str_shape: self.str_shape,
             ..Tables::default()
         }
@@ -208,6 +214,11 @@ impl Write for Output {
             return Ok(());
         }
         let length = self.0.borrow().len();
+        // Nothing kept, as after most of a `parallel` call's ranges: standard output, which every
+        // thread shares, isn't touched.
+        if length == 0 {
+            return Ok(());
+        }
         self.write_out(length)
     }
 }
@@ -290,24 +301,42 @@ struct State {
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+    static FLAGS: Flags = const { Flags { failed: Cell::new(0), lock_held: Cell::new(0) } };
+}
+
+/// What native code reads and writes on this thread without a call, through the one address.
+#[repr(C)]
+struct Flags {
     /// Set when the program fails. Native code reads it directly after each call that can
     /// fail, and returns early when it's set.
-    static FAILED: Cell<u8> = const { Cell::new(0) };
+    failed: Cell<u8>,
+    /// The word of the `shared` value's lock this thread holds, if any, at 8 bytes in. Others held
+    /// beside it are in `threads`.
+    lock_held: Cell<u64>,
+}
+
+fn set_failed(failed: u8) {
+    FLAGS.with(|flags| flags.failed.set(failed));
+}
+
+/// Whether native code says this thread holds a `shared` value's lock.
+fn lock_word_held() -> bool {
+    FLAGS.with(|flags| flags.lock_held.get() != 0)
 }
 
 /// Where this thread's failure flag lives, for native code to read. Code compiled for one
 /// thread must run on that thread.
 pub(crate) fn failed() -> bool {
-    FAILED.get() != 0
+    FLAGS.with(|flags| flags.failed.get() != 0)
 }
 
 /// Where the failure flag is.
 pub fn failed_flag() -> usize {
-    FAILED.with(|flag| flag.as_ptr().addr())
+    FLAGS.with(|flags| std::ptr::from_ref(flags).addr())
 }
 
 /// The capability native code means by `kind`: 0 for `Stdout`, 1 for `Fs`, 2 for `Clock`,
-/// 3 for `Args`, 4 for `Stdin`, 5 for `Process`, 6 for `Entropy` and 7 for `Net`.
+/// 3 for `Args`, 4 for `Stdin`, 5 for `Process`, 6 for `Entropy`, 7 for `Net` and 8 for `Env`.
 fn capability(kind: i64) -> Capability {
     match kind {
         0 => Capability::Stdout,
@@ -317,9 +346,53 @@ fn capability(kind: i64) -> Capability {
         5 => Capability::Process,
         6 => Capability::Entropy,
         7 => Capability::Net,
+        8 => Capability::Env,
         _ => Capability::Clock,
     }
 }
+
+/// The runtime's exports only the one with the interpreter has: native code calling any of these
+/// can't link against the lean runtime. The runtime's own tests check it's exactly those.
+pub const INTERPRETER_EXPORTS: &[&str] = &[
+    "fennec_enter",
+    "fennec_leave",
+    "fennec_push_scope",
+    "fennec_pop_scope",
+    "fennec_declare",
+    "fennec_assign",
+    "fennec_get",
+    "fennec_take",
+    "fennec_put_back",
+    "fennec_declare_capability",
+    "fennec_expr",
+    "fennec_stmt",
+    "fennec_matches",
+    "fennec_bind",
+    "fennec_print_value",
+    "fennec_print_spec",
+    "fennec_items",
+    "fennec_next",
+    "fennec_binary",
+    "fennec_field",
+    "fennec_index",
+    "fennec_path_get",
+    "fennec_put",
+    "fennec_put_item",
+    "fennec_entries",
+    "fennec_make_instance",
+    "fennec_value_text",
+    "fennec_spec_text",
+    "fennec_make_variant",
+    "fennec_case_of",
+    "fennec_json_dumps",
+    "fennec_json_loads",
+    "fennec_capability_call",
+    "fennec_std_call",
+    "fennec_toml_dumps",
+    "fennec_toml_loads",
+    "fennec_aot_test_done",
+    "fennec_aot_test_world",
+];
 
 /// Sets up the runtime to run `module` with `tables` and `inputs`, replacing any earlier
 /// run's.
@@ -337,7 +410,7 @@ pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Resu
     #[cfg(feature = "lean")]
     let _ = (module, inputs);
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
-    FAILED.set(0);
+    set_failed(0);
     STATE.set(Some(State {
         #[cfg(not(feature = "lean"))]
         interp,
@@ -376,9 +449,20 @@ pub struct Leftovers {
 
 /// Ends the run: what it printed, why it failed if it did, and what it left behind.
 pub fn finish() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
+    finish_run(false)
+}
+
+/// `finish`, for a process about to exit: the runtime's state, its heap and every block in it,
+/// is left for the exit to give back. Freeing them one at a time was most of what an executable
+/// did after its `main`.
+pub(crate) fn finish_for_exit() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
+    finish_run(true)
+}
+
+fn finish_run(leave: bool) -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
     heap::run_abandons();
     let state = STATE.take();
-    FAILED.set(0);
+    set_failed(0);
     match state {
         Some(mut state) => {
             state.temps.clear();
@@ -390,7 +474,12 @@ pub fn finish() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
                 boxes: state.heap.live(),
                 counts: state.heap.counts,
             };
-            (state.output.0.take(), state.failure, leftovers)
+            let finished = (state.output.0.take(), state.failure.take(), leftovers);
+            if leave {
+                // Kept until the process ends, which gives back all of it at once.
+                Box::leak(Box::new(state));
+            }
+            finished
         }
         None => (Vec::new(), None, Leftovers::default()),
     }
@@ -403,7 +492,7 @@ pub fn fail_with(diagnostic: Diagnostic) {
             state.failure = Some(diagnostic);
         }
     });
-    FAILED.set(1);
+    set_failed(1);
 }
 
 /// Whether this thread's runtime state is borrowed, as it is all through a call into the
@@ -414,12 +503,15 @@ fn state_is_borrowed() -> bool {
     STATE.with(|state| state.try_borrow_mut().is_err())
 }
 
-/// Forgets the failure this thread's runtime holds, once it's been dealt with, as a server
-/// does for a connection's task that failed.
-#[cfg(any(test, feature = "threads"))]
-fn clear_failure() {
-    with(|state| state.failure = None);
-    FAILED.set(0);
+/// Says what this thread's runtime holds as a failure and forgets it, as a server does for a
+/// connection's task that failed, which ends only that task.
+fn report_failure() {
+    let failure = with(|state| state.failure.take());
+    set_failed(0);
+    if let Some(failure) = failure {
+        write_kept_output();
+        let _ = writeln!(std::io::stderr(), "error: {}", failure.message);
+    }
 }
 
 fn with<T: Default>(f: impl FnOnce(&mut State) -> T) -> T {
@@ -479,7 +571,7 @@ impl State {
         #[cfg(not(feature = "lean"))]
         if let Err(failure) = self.interp.clean_up_abandoned() {
             self.failure.get_or_insert(failure);
-            FAILED.set(1);
+            set_failed(1);
         }
         loop {
             let blocks = crate::value::blocks_let_go();
@@ -645,7 +737,7 @@ pub mod names {
 
     /// Declares a capability `main` was given, so interpreted code can use it: a capability's
     /// block, or a kind, 0 for `Stdout`, 1 for `Fs`, 2 for `Clock`, 3 for `Args`, 4 for
-    /// `Stdin`, 5 for `Process`, 6 for `Entropy` and 7 for `Net`.
+    /// `Stdin`, 5 for `Process`, 6 for `Entropy`, 7 for `Net` and 8 for `Env`.
     #[cfg(not(feature = "lean"))]
     pub extern "C" fn declare_capability(name: i64, kind: i64) {
         with(|state| {

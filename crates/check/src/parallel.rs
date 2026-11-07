@@ -21,7 +21,10 @@ impl FnCx<'_> {
         let mut writes = Vec::new();
         self.writes_in(body, &mut writes);
         for (name, span) in writes {
-            if names.contains(&name) || self.lookup(&name).is_none() {
+            // A `shared` value is made to be changed from anywhere, each change under its lock.
+            if names.contains(&name)
+                || self.lookup(&name).is_none_or(|(ty, _)| self.checker.program.is_shared(&ty))
+            {
                 continue;
             }
             let message = format!("a `parallel` loop can't change `{name}`, which is outside it");
@@ -52,6 +55,7 @@ impl FnCx<'_> {
                 | StmtKind::Fail(value)
                 | StmtKind::Yield(value)
                 | StmtKind::Assert(value)
+                | StmtKind::Lend { value, .. }
                 | StmtKind::Return(Some(value)) => self.writes_in_expr(value, writes),
                 StmtKind::If { branches, otherwise } => {
                     for (cond, block) in branches {

@@ -10,86 +10,98 @@ description: What Fennec does today, what's being built next, and the design que
 
 ## Works today
 
-- `fennec run`, which runs the tests a change affects and then your program. `fennec test`, `fennec bench`, `fennec new`, `fennec init`, `fennec fmt`, `fennec check`, `fennec lint` (each with JSON for agents), `fennec fix` and a language server.
-- Programs over several files: a kit is a folder with a `kit.toml`, and its files import from each other.
-- Names and `mut`, functions with written return types, default parameters passed by name, nested functions and arrow functions.
-- Structs with defaults, methods, named constructors and `where` rules; enums and `match`; operators; interfaces and generics.
-- Errors with `error`, `fail`, `?`, `else`, `match` and `from`; optional values with `None` and `else`.
-- Lists, dicts, sets, tuples, comprehensions and slices. Structs work as dict keys with nothing to write.
-- Lazy generators, used once, with `yield` allowed inside `with`.
-- `with` and `def del`: any way out of a block closes what it opened.
-- Tables: `IdMap`, `Id` and `Tree`, and `SortedMap` on a B-tree.
-- A type checker that runs before every program and test.
-- The first standard library: `math`, `game`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re`.
-- Native code: `fennec run` uses a cached LLVM build, and says so in one line when LLVM can't build a program yet and the JIT runs it instead. `fennec build` compiles with Cranelift, and `fennec build --llvm` handles part of the language. Every example gives exactly the interpreter's output.
-- Function-level caching of checked and compiled code, shared across runs.
-- Every example in the repository's `examples/` folder is a test, including its error messages, and the [language reference](/reference/) is generated from them.
+**Tools**
+
+- `fennec run`, which runs the tests a change affects and then your program, and `fennec build`, which makes a native program. Both build through LLVM, a function at a time, with each function cached by its content. `--release` optimizes the whole program as one.
+- `fennec test`, which skips tests that passed and whose code hasn't changed, with property tests and fake capabilities. `fennec bench` for `bench` blocks.
+- `fennec new`, `fennec init`, `fennec fmt`, `fennec check`, `fennec lint` and `fennec fix`, with JSON output for agents, and a language server.
+- On Linux, `fennec build --release` makes one static program that needs nothing from the machine.
+- Kits: a folder with a `kit.toml`, whose files import from each other.
+
+**The language**
+
+- Names and `mut`, functions with written return types, defaults passed by name, nested functions and arrow functions.
+- `ref` for loops, parameters and `self`. Compile errors for changing a copy nobody reads, changing a list while looping over it, and a copy made on every round of a loop.
+- Structs with defaults, methods, named constructors and `where` rules, checked on every write. `copy(x, field=...)` for a changed copy.
+- Fixed-size arrays, `array[T, N]`, held inline.
+- Enums and `match`, with or-patterns and guards. Unions, `Circle | Square`, narrowed with `is` and `match`. Interfaces and generics. `extend` for a type's methods in another file.
+- Failures with `error`, `fail`, `?`, `else` and `match`, `fails Name` in signatures, and `fails A | B`. An `else:` block must leave. Optional values with `None` and `else`.
+- Lists, dicts, sets, tuples, `bytes`, comprehensions and slices. Structs work as dict keys with nothing to write.
+- Lazy generators, used once.
+- Errors for positional calls that are easy to get backwards.
+- `export` on top-level things, and `_name` hiding a field or method from everything but its type.
+- Durations like `30s` and `200ms`, raw strings, constants worked out at compile time, and `embed`.
+- `@hot`, which proves a function allocates nothing, copies nothing and keeps no checks it can't prove away, or doesn't compile.
+- One equality, order and hash for floats.
+- `parallel` over collections, streams and a server's connections, on every core, with reductions that combine in a fixed order.
+- `shared Name:` with methods that take its lock, and `with` for connections and servers. Both get a new design, below.
+- Capabilities: `Stdout`, `Stdin`, `Args`, `Fs`, `Clock`, `Env`, `Entropy`, `Process` and `Net`.
+
+**The standard library**
+
+- `collections`: `Table` and `Id`, `Tree`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Deque`, `Heap`, `PriorityQueue` and `Counter`.
+- `json`, `toml` and `pack`, which save any type whose fields can be saved. `csv`, `base64` and `compress`.
+- `net`: TCP, UDP, an HTTP client with TLS, and an HTTP server.
+- `math`, with `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` for games. `layout`, `path`, `fs`, `random`, `time`, `string`, `re`, `unicode`, `log`, `cli`, `url`, `process`, `crypto` and `uuid`.
+
+Every example in the repository's `examples/` folder is a test, including its error messages, and the [language reference](/reference/) is generated from them.
+
+## Next up
+
+- **More game math.** 32-bit math types, and `Simd` for when a loop must use vectors.
+- **Wrapped C libraries for games.** Windows, input, audio and graphics, wrapped by the Fennec project behind safe APIs. Your own code never needs `unsafe`, because there isn't any.
+- **Hot reload,** so a running game picks up a change.
+- **Debug info and stack traces,** so a failure shows the calls that led to it.
+- **Sized number types,** like `i32`, `u8` and `f32`.
+- **Kit dependencies and [the Den](/den/),** Fennec's registry for kits.
+- **Cross-compiling and WebAssembly.**
+- **The concurrency design:** `shared` as a type with `lock`, `with` and `lend`, `launch` and channels, keeper pools, and rollback when a task crashes inside a lock. The [tour](/tour/#sharing-resources-and-tasks) describes it.
+- **A docs rewrite.**
 
 ## Next: speed and builds
 
-- One backend: LLVM, with per-function `-O3` and a function-level cache. Whole-program work happens only in `--release`.
-- LLVM becomes the default once about 90% of examples build natively. Removing Cranelift also takes a native `fennec test` harness and Windows linking. A program either builds natively or is refused, and refused examples go on a tracked list that must reach zero.
-- One content store per machine, with results named by hash and no `target` folders. `fennec run` makes real binaries in it.
-- A shared cache that only trusted builds can write to, and a clean rebuild in CI to check it against.
+- Everything on LLVM, so the JIT and the interpreter can go. What doesn't build natively yet is on a tracked list that must reach zero.
+- Every kernel at 110% of its hand-written twin. The [benchmarks](/benchmarks/) show where each one stands.
+- One content store per machine, with results named by hash and no `target` folders.
+- A shared cache that only trusted builds can write to, checked by a clean rebuild in CI.
 - A tiny launcher that fetches the compiler a kit asks for. Pinned compilers never change by themselves.
 
 ## Next: the rest of the language
 
 Each of these is decided and not built.
 
-- `for mut` over user types, through `def len` and the `mut` form of `def []`.
-- A compile error for changing a collection while it's being looped over or written through.
-- `xs.pair(i, j)`, and compile errors for copies that can go stale and for a copy on every iteration of a loop.
-- A compile error for a local that's changed and then never read, returned or passed on.
-- `fails Name` in signatures, with one `error` listing several cases. `?` required wherever a failure passes up, narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
-- `xs.get(i)`, and `sum(xs, start=...)` replacing today's positional start.
-- `_name` hiding a field, and `pub` on top-level things only.
-- Constructor calls like `dict[str, int]()` as defaults, giving the type as a literal does, and the only form for an empty collection.
-- Fields named with any word, keywords included, like `from: str`. Soft keywords like `type` and `match` work as field names today.
-- `names=` and `extra=` on `json.loads` and `json.dumps`, and `@serialize(name=...)`.
-- Union types, `Circle | Square`, inline with a one-byte tag, narrowed with `is` and `match`.
-- Hard errors for positional calls that are easy to get backwards.
-- `fennec fix` applying only fixes that can't change what a program does, with the rest shown as hints to make by hand.
-- `with a() as x, b() as y:` and a block's last line as its value.
-- A compile error for a dict key struct with its own `def ==`.
-- `@hot`, which proves a function allocates nothing, copies nothing and has no leftover count checks, or doesn't compile. It replaces today's `noalloc def`.
-- One equality, order and hash for floats, with NaN equal to itself and sorted last, `x.approx(y, within=...)`, and `@fast_math`.
+- A compile error for a copy that can go stale, which `copy(x)` makes on purpose.
+- A compile error for ignoring a returned value.
+- Narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
+- `xs.get(i)`, which gives an optional when an index might not be there.
+- `case .Button(ref clicks):` to change a field inside an enum.
+- `{x=}` in f-strings.
+- `x.approx(y, within=...)`, and `@fast_math`.
+- Units of measure.
 
-## After that: concurrency and sharing
+## After that
 
-- `parallel` over collections and streams, on real cores, with `limit=`. Today it compiles for reading, and runs in order.
-- User types splitting for `parallel` through their positions, and `(f(x) for x in parallel(xs))` streaming results in order.
-- `with launch(fn) as task:` for long-running tasks, and bounded channels with `send`, `pending()` and `for x in ch`.
-- Event channels, for many listeners each reading at its own pace.
-- One scheduler, with I/O multiplexed by the OS.
-- `shared Name:`, with methods that lock automatically.
-- A failure in a server task staying in that task, designed when servers are built.
-
-## After that: libraries and C
-
-- Compile-time loops over a type, `Writer` and `Reader` for every format, annotations as data, and `std.pack`.
-- `SortedSet`, `Grid` and `Packed`.
-- `Graph`, built on `IdMap` as `Tree` is.
-- `std.net`, `std.sql`, `std.process` and `std.crypto`.
-- `extern "C"` and `unsafe`, for what can't be written in Fennec, and first-party native kits.
-- SIMD and GPU types, and [the Den](/den/), Fennec's registry for kits.
-- A Fennec compiler written in Fennec.
+- Compile-time loops over a type, and `Writer` and `Reader` for every format built on them. `where` ranges, delta encoding and quantization in `std.pack`.
+- `Graph`, built on `Table` as `Tree` is.
+- `std.sql`, and WebSocket in `std.net`.
+- GPU kernels written as plain functions.
+- `fennec context`, a kit's whole API sized for a prompt, and an MCP server for agents.
+- A Fennec compiler written in Fennec. Its lexer, parser and checker are underway.
 
 ## Only if the evidence asks
 
-These stay out unless measurements show they're needed: a limited `View[T]` for stored views, and tighter lock patterns. `yield mut` helpers, `@arena` and compile-time channel deadlock checks were cut from the first version, and each can come later without breaking anything.
+These stay out unless measurements show they're needed: a limited `View[T]` for stored views, and tighter lock patterns. `select` on channels, handles that move between tasks, and results returned from tasks wait until real programs need them.
+
+Never in the language: `del`, destructors, moves, lifetimes, `unsafe` and global state.
 
 ## Open questions
 
-These are still being decided. Decisions already made, and why, are in [the design decisions](https://github.com/fennec-language/fennec/blob/main/docs/decisions.md).
+These are still being decided. Decisions already made, and why, are in [the language page](https://github.com/fennec-language/fennec/blob/main/docs/language.md) and [the design decisions](https://github.com/fennec-language/fennec/blob/main/docs/decisions.md).
 
-- Whether kits can define their own annotations.
-- Whether independent writes, not just reads, should overlap automatically.
-- How a type marks that its finishing method has to be called.
+- A clean way to print a friendly message and still exit with failure.
+- Whether `x / 0.0` keeps stopping the program.
 - How replay records the order tasks reach a `shared` value or a channel.
-- The exact API of event channels.
+- Whether kits can define their own annotations.
 - The API of `Graph`.
 - The exact syntax for property tests, and for units of measure.
 - The file extension (currently `.fen`).
-- Whether files of a kit may reuse a top-level name, reached through `import` by their module's name.
-- SQLite: whether and how Fennec includes it.

@@ -174,16 +174,22 @@ impl Encode for StmtKind {
             StmtKind::Fail(value) => (6, value).encode_tagged(to),
             StmtKind::Yield(value) => (7, value).encode_tagged(to),
             StmtKind::Assert(value) => (8, value).encode_tagged(to),
-            StmtKind::With { value, names, body } => {
+            StmtKind::With { value, names, body, lock } => {
                 to.tag(9);
                 value.encode(to);
                 names.encode(to);
                 body.encode(to);
+                lock.encode(to);
             }
             StmtKind::Def(def) => (10, def).encode_tagged(to),
             StmtKind::Break => to.tag(11),
             StmtKind::Continue => to.tag(12),
             StmtKind::Pass => to.tag(13),
+            StmtKind::Lend { value, otherwise } => {
+                to.tag(14);
+                value.encode(to);
+                otherwise.encode(to);
+            }
         }
     }
 }
@@ -216,11 +222,13 @@ impl Decode for StmtKind {
                 value: Decode::decode(r)?,
                 names: Decode::decode(r)?,
                 body: Decode::decode(r)?,
+                lock: Decode::decode(r)?,
             },
             10 => StmtKind::Def(Decode::decode(r)?),
             11 => StmtKind::Break,
             12 => StmtKind::Continue,
             13 => StmtKind::Pass,
+            14 => StmtKind::Lend { value: Decode::decode(r)?, otherwise: Decode::decode(r)? },
             _ => return None,
         })
     }
@@ -389,11 +397,12 @@ impl Encode for Pattern {
             Pattern::Wildcard => to.tag(0),
             Pattern::Bind(name) => (1, name).encode_tagged(to),
             Pattern::Literal(expr) => (2, expr).encode_tagged(to),
-            Pattern::Variant { name, dotted, args } => {
+            Pattern::Variant { name, dotted, args, fields } => {
                 to.tag(3);
                 name.encode(to);
                 dotted.encode(to);
                 args.encode(to);
+                fields.encode(to);
             }
             Pattern::Tuple(items) => (4, items).encode_tagged(to),
             Pattern::Or(alternatives) => (5, alternatives).encode_tagged(to),
@@ -411,6 +420,7 @@ impl Decode for Pattern {
                 name: Decode::decode(from)?,
                 dotted: Decode::decode(from)?,
                 args: Decode::decode(from)?,
+                fields: Decode::decode(from)?,
             },
             4 => Pattern::Tuple(Decode::decode(from)?),
             5 => Pattern::Or(Decode::decode(from)?),

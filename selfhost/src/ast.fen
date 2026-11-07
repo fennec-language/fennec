@@ -28,13 +28,13 @@ struct FnDef:
     ret: TypeExpr?
     ## Where the `->` is, when there is one.
     arrow: Span?
-    ## The error it says it can fail with: `LoadError` in `-> float fails LoadError`.
-    fails: TypeExpr? = None
     ## Empty only for a `def` written without one, which std's `@intrinsic` functions are.
     body: list[Stmt]
+    span: Span
+    ## The error it says it can fail with: `LoadError` in `-> float fails LoadError`.
+    fails: TypeExpr? = None
     ## What's written above it, like `@intrinsic`.
     annotations = list[Annotation]()
-    span: Span
 
 ## A type parameter, with the interfaces its types have to fit: `T`, or `T: Shape & Eq`.
 struct Generic:
@@ -89,12 +89,12 @@ struct TypeDef:
     name: str
     ## Type parameters, like `T` in `struct Deque[T]:`.
     generics: list[Generic]
+    span: Span
     fields = list[Field]()
     cases = list[Case]()
     methods = list[FnDef]()
     ## Whether it's a `shared` type: a counted handle to one cell, whose methods lock it.
     shared = False
-    span: Span
 
 struct Field:
     name: str
@@ -102,9 +102,9 @@ struct Field:
     default: Expr?
     ## The `where` rule a value of this field must follow.
     rule: Expr?
+    span: Span
     ## What's written above it, like `@skip`: data, never a change to the field.
     annotations = list[Annotation]()
-    span: Span
 
 ## `@name` or `@name(args)` above a field.
 struct Annotation:
@@ -171,13 +171,18 @@ enum StmtKind:
     Fail(value: Expr)
     Yield(value: Expr)
     Assert(value: Expr)
-    ## `with value as name:`, or `with a, b as mut x, mut y:`, whose `value` is the tuple of
+    ## `with value as name:`, or `with a, b as ref x, ref y:`, whose `value` is the tuple of
     ## what it holds and which names each one.
-    With(value: Expr, names: list[WithName], body: list[Stmt])
+    ## With `lock`, `lock value as ref name:`, which reaches a `shared` value: `name` is what it
+    ## holds, for the block.
+    With(value: Expr, names: list[WithName], body: list[Stmt], lock: bool)
     Def(function: FnDef)
     Break
     Continue
     Pass
+    ## `lend value`, in a function that gives back `with T`: the caller's `with` block runs
+    ## here. `otherwise` is the `else:` block, which runs when the caller's block fails.
+    Lend(value: Expr, otherwise: list[Stmt])
 
 struct Expr:
     kind: ExprKind
@@ -239,8 +244,9 @@ enum Pattern:
     Wildcard
     Bind(name: str)
     Literal(expr: Expr)
-    ## `.Circle(radius)` (`dotted`), or `NotFound(path)`, `Ok(value)`, `Err(error)`.
-    Variant(name: str, dotted: bool, args: list[Pattern])
+    ## `.Circle(radius)` (`dotted`), or `NotFound(path)`, `Ok(value)`, `Err(error)`. Written
+    ## by name, as `IoError(reason=r)`, `fields` names each of `args`.
+    Variant(name: str, dotted: bool, args: list[Pattern], fields: list[str])
     Tuple(items: list[Pattern])
     ## `.Int(_) | .Float(_)`: any of the alternatives, each binding the same names.
     Or(alternatives: list[Pattern])
@@ -249,7 +255,7 @@ enum FStrPart:
     Text(text: str)
     Code(expr: Expr, spec: str?)
 
-## A call argument: `value`, `name=value` or `mut name`.
+## A call argument: `value`, `name=value` or `ref name`.
 struct Arg:
     name: str?
     is_mut: bool

@@ -1,6 +1,8 @@
 # `std.process` runs other programs through the `Process` capability. Arguments are always a
-# list, so nothing in them is read by a shell. In a test, `Process` is a fake that runs nothing
-# and gives back what the test scripted.
+# list, so nothing in them is read by a shell. `input=` is what the program reads from its
+# standard input, `cwd=` the folder it runs in, and `env=` variables it gets on top of this
+# program's own. In a test, `Process` is a fake that runs nothing and gives back what the test
+# scripted.
 from std.process import Output, ProcessError
 
 ## The commits since `tag`, one a line, newest first.
@@ -25,7 +27,7 @@ test "a failing program is its status, not an error"(process: Process):
 
 test "a program nothing scripted can't run"(process: Process):
     match process.run("cargo", ["build"]):
-        case Err(ProcessError(program, message)):
+        case Err(ProcessError(program=program, message=message)):
             assert program == "cargo"
             assert message.startswith("the test's fake Process has nothing scripted for `cargo`")
         case Ok(_):
@@ -37,10 +39,20 @@ test "an argument with spaces or quotes is one argument"(process: Process):
     process.run("echo", ["a b", "'c'", "$(rm -rf /)"])?
     assert process.ran() == [["echo", "a b", "'c'", "$(rm -rf /)"]]
 
+## How many lines of `text` say `word`, as grep counts them.
+def count_lines(process: Process, text: str, word: str) -> int:
+    found = process.run("grep", ["-c", word], input=text, env={"LC_ALL": "C"}) else Output()
+    int(found.stdout.strip()) else 0
+
+test "grep is given the text to read"(process: Process):
+    process.script("grep", Output(stdout="2\n"))
+    assert count_lines(process, text="a fox\na dog\nfoxes\n", word="fox") == 2
+    assert process.ran() == [["grep", "-c", "fox"]]
+
 def main(stdout: Stdout, process: Process):
     # A program that isn't installed fails with a `ProcessError` value.
     match process.run("fennec-no-such-program", []):
-        case Err(ProcessError(program, _)):
+        case Err(ProcessError(program=program)):
             stdout.print(f"couldn't run {program}")
         case Ok(_):
             stdout.print("ran")

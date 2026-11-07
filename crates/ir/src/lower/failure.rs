@@ -2,11 +2,14 @@
 //! to be `None`, and `is None`, `else`, `fail` and `?`.
 
 use fennec_check::{Signatures, Type};
-use fennec_syntax::{Arg, BinOp, Expr, ExprKind, Pattern, Span, UnaryOp};
+use fennec_syntax::{Arg, BinOp, Expr, ExprKind, FnDef, Pattern, Span, UnaryOp};
 
-use super::{Lowered, Lowering, Tail};
+use super::{Lowered, Lowering, Options, Tail};
 use crate::validate::fits;
-use crate::{BlockId, InstKind, Operand, StructDef, Terminator, type_in};
+use crate::{
+    Block, BlockId, Function, Inst, InstKind, Local, LocalId, Operand, Program, StructDef, Terminator,
+    type_in,
+};
 
 /// Every error type the IR can hold: not ones with `where` rules, which are checked
 /// whenever a value is made.
@@ -70,6 +73,12 @@ impl Lowering<'_> {
                 self.emit(InstKind::MakeOk { dest, value: Some(value) }, span);
                 Ok(Operand::Local(dest))
             }
+            // A member where its union goes, tagged with which member it is.
+            Type::Union(members) if let Some(member) = members.iter().position(|member| *member == from) => {
+                let dest = self.temporary(to.clone());
+                self.emit(InstKind::MakeMember { dest, value, member }, span);
+                Ok(Operand::Local(dest))
+            }
             _ => Err(format!("it gives {from} where {to} goes")),
         }
     }
@@ -90,8 +99,39 @@ impl Lowering<'_> {
                 self.emit(InstKind::GetSome { dest, value }, expr.span);
                 Ok(Operand::Local(dest))
             }
+            // A union the checker narrowed to one member, by `is` or a `match`.
+            (Type::Union(members), read)
+                if let Some(member) = members.iter().position(|member| *member == read) =>
+            {
+                let dest = self.temporary(read);
+                self.emit(InstKind::GetMember { dest, value, member }, expr.span);
+                Ok(Operand::Local(dest))
+            }
             (from, read) => Err(format!("it reads {from} as {read}")),
         }
+    }
+
+    /// `s is Circle`: whether a union holds that member. A value the checker already narrowed to
+    /// one member is known to, or known not to.
+    fn is_member(&mut self, op: BinOp, lhs: &Expr, member: &str, span: Span) -> Lowered<(Operand, Operand)> {
+        let value = self.expr(lhs)?;
+        let held = type_in(&self.locals, &value).ok_or("a value has no type")?;
+        let test = match &held {
+            Type::Union(members) => {
+                let at = members.iter().position(|each| each.to_string() == member);
+                let at = at.ok_or_else(|| format!("`{member}` isn't one of the types in {held}"))?;
+                let dest = self.temporary(Type::Bool);
+                self.emit(InstKind::IsMember { dest, value: value.clone(), member: at }, span);
+                Operand::Local(dest)
+            }
+            other => Operand::Bool(other.to_string() == member),
+        };
+        if op == BinOp::Is {
+            return Ok((test, value));
+        }
+        let dest = self.temporary(Type::Bool);
+        self.emit(InstKind::Unary { dest, op: UnaryOp::Not, value: test }, span);
+        Ok((Operand::Local(dest), value))
     }
 
     /// `value is None` and `value is not None`.
@@ -107,6 +147,9 @@ impl Lowering<'_> {
         rhs: &Expr,
         span: Span,
     ) -> Lowered<(Operand, Operand)> {
+        if let ExprKind::Name(member) = &rhs.kind {
+            return self.is_member(op, lhs, member, span);
+        }
         if !matches!(rhs.kind, ExprKind::None) {
             return Err("it uses `is` with something other than `None`".to_owned());
         }
@@ -289,8 +332,8 @@ impl Lowering<'_> {
         self.emit(InstKind::IsErr { dest: failed, value: value.clone() }, span);
         let failed = Operand::Local(failed);
         let (sees_error, inner) = match pattern {
-            Pattern::Variant { name, dotted: false, args } if name == "Err" => (true, args.first()),
-            Pattern::Variant { name, dotted: false, args } if name == "Ok" => (false, args.first()),
+            Pattern::Variant { name, dotted: false, args, .. } if name == "Err" => (true, args.first()),
+            Pattern::Variant { name, dotted: false, args, .. } if name == "Ok" => (false, args.first()),
             Pattern::Variant { name, dotted: false, .. } if self.context.errors.contains(name.as_str()) => {
                 (true, Some(pattern))
             }
@@ -339,4 +382,58 @@ impl Lowering<'_> {
         self.emit(InstKind::GetSome { dest, value: value.clone() }, span);
         self.pattern(pattern, &Operand::Local(dest), inner, fail, span)
     }
+}
+
+/// If a backend asks, makes `main` end the program when it fails, rather than give a result back,
+/// so that it gives back nothing. Only a backend knows how to say what failed, as its text is
+/// worked out then. The functions `fennec test` makes of tests, named `test:` and their number,
+/// end the same way, so a test's failure says what failed as `main`'s does. A property test's
+/// body, `test:` and its number and `_body`, is called with `?` for each input, so it doesn't.
+pub(super) fn stop_on_failed_main(program: &mut Program, defs: &[(String, &FnDef)], options: Options) {
+    if !options.stop_on_failed_main {
+        return;
+    }
+    let stops = |name: &str| {
+        name == "main"
+            || name.strip_prefix("test:").is_some_and(|number| number.chars().all(|c| c.is_ascii_digit()))
+    };
+    for (key, def) in defs.iter().filter(|(key, _)| stops(key)) {
+        if let Some(function) = program.functions.iter_mut().find(|function| function.name == *key) {
+            stop_on_failure(function, def.span);
+        }
+    }
+}
+
+/// Makes `function`, which gives back a result with nothing in its `Ok`, stop when it fails.
+fn stop_on_failure(function: &mut Function, span: Span) {
+    let Type::Result(ok, error) = function.returns.clone() else { return };
+    if *ok != Type::Unit {
+        return;
+    }
+    function.returns = Type::Unit;
+    let inst = |kind| Inst { kind, span };
+    let mut added = Vec::new();
+    let first = function.blocks.len();
+    for block in &mut function.blocks {
+        let Terminator::Return(Some(value)) = block.end.clone() else { continue };
+        let (failed, cause) = (LocalId(function.locals.len()), LocalId(function.locals.len() + 1));
+        function.locals.push(Local { name: None, ty: Type::Bool, copied: false });
+        function.locals.push(Local { name: None, ty: (*error).clone(), copied: false });
+        let (then, otherwise) = (BlockId(first + added.len()), BlockId(first + added.len() + 1));
+        block.insts.push(inst(InstKind::IsErr { dest: failed, value: value.clone() }));
+        block.end = Terminator::Branch { cond: Operand::Local(failed), then, otherwise };
+        let says = InstKind::Builtin {
+            dest: None,
+            name: "main.failed".to_owned(),
+            args: vec![Operand::Local(cause)],
+            changes: false,
+        };
+        added.push(Block {
+            insts: vec![inst(InstKind::GetErr { dest: cause, value }), inst(says)],
+            // The text above is what stops it, and what a backend's checks see as stopping.
+            end: Terminator::Stop { message: "`main` failed".to_owned(), span },
+        });
+        added.push(Block { insts: Vec::new(), end: Terminator::Return(None) });
+    }
+    function.blocks.extend(added);
 }

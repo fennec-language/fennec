@@ -24,6 +24,9 @@ pub(super) fn dest(inst: &InstKind) -> Option<LocalId> {
         | InstKind::MakeSome { dest, .. }
         | InstKind::IsNone { dest, .. }
         | InstKind::GetSome { dest, .. }
+        | InstKind::MakeMember { dest, .. }
+        | InstKind::IsMember { dest, .. }
+        | InstKind::GetMember { dest, .. }
         | InstKind::MakeOk { dest, .. }
         | InstKind::MakeErr { dest, .. }
         | InstKind::IsErr { dest, .. }
@@ -61,6 +64,9 @@ pub(crate) fn operands(inst: &InstKind) -> Vec<&Operand> {
         | InstKind::MakeSome { value, .. }
         | InstKind::IsNone { value, .. }
         | InstKind::GetSome { value, .. }
+        | InstKind::MakeMember { value, .. }
+        | InstKind::IsMember { value, .. }
+        | InstKind::GetMember { value, .. }
         | InstKind::IsErr { value, .. }
         | InstKind::GetOk { value, .. }
         | InstKind::GetErr { value, .. }

@@ -55,7 +55,7 @@ const BUILTINS: [&str; 23] = [
 
 /// The words the language keeps, with those that are keywords only where a statement or a
 /// declaration starts.
-const KEYWORDS: [&str; 39] = [
+const KEYWORDS: [&str; 40] = [
     "and",
     "as",
     "assert",
@@ -87,6 +87,7 @@ const KEYWORDS: [&str; 39] = [
     "not",
     "or",
     "pass",
+    "ref",
     "return",
     "shared",
     "struct",
@@ -108,8 +109,8 @@ fn engine_methods(ty: &Type) -> &'static [&'static str] {
         Type::List(_) => &["len", "append", "remove", "insert", "clear", "remove_where", "sort", "pop"],
         Type::Set(_) => &["len", "add", "discard", "remove", "clear"],
         Type::Dict(..) => &["len", "pop", "get", "keys", "values", "items", "clear"],
-        Type::IdMap(_) => {
-            &["len", "insert", "remove", "get", "modify", "remove_where", "values", "ids", "items", "clear"]
+        Type::Table(_) => {
+            &["len", "add", "remove", "get", "modify", "remove_where", "values", "ids", "items", "clear"]
         }
         Type::Bytes => &["len", "decode"],
         Type::Tuple(_) => &["len"],

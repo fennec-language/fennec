@@ -1,7 +1,0 @@
-error: `out` does I/O, which can't happen while `self` is locked
- --> examples/errors/io_under_lock.fen:5:9
-  |
-5 |         out.print(self.count)
-  |         ^^^
-  |
-  = help: do the I/O before or after the lock, with what the block works out

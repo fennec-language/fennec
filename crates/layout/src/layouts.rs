@@ -173,8 +173,8 @@ impl Layouts {
         match def {
             Written::Generator(_) | Written::Cell(_) => None,
             Written::Struct(fields) => {
-                // An `IdMap` is a block of its own, shared until it changes, like a list.
-                let (fields, size) = place(fields, 0, !name.starts_with("IdMap["))?;
+                // A `Table` is a block of its own, shared until it changes, like a list.
+                let (fields, size) = place(fields, 0, !name.starts_with("Table["))?;
                 Some(Layout {
                     name: name.to_owned(),
                     fields,
@@ -209,7 +209,7 @@ impl Layouts {
         let mut candidates: BTreeMap<String, Written> = names
             .iter()
             .filter(|name| {
-                !self.by_name.contains_key(*name) && !name.starts_with("IdMap[") && *name != "Match"
+                !self.by_name.contains_key(*name) && !name.starts_with("Table[") && *name != "Match"
             })
             .filter_map(|name| Some((name.clone(), written(sources, name)?)))
             // A `shared` type's whole point is to be one block, however it's held.
@@ -349,7 +349,8 @@ impl Layouts {
                     place(self, fields, 0).map(|(fields, size)| Layout {
                         name: name.clone(),
                         fields,
-                        size: size.max(WORD),
+                        // A cell's lock is one more word, after its fields.
+                        size: size.max(WORD) + if matches!(written, Written::Cell(_)) { WORD } else { 0 },
                         cases: None,
                         boxed: true,
                         cell: matches!(written, Written::Cell(_)),
@@ -542,7 +543,7 @@ impl Layouts {
     }
 
     /// Whether a plain struct or enum holds a block anywhere, in a field or a case.
-    fn holds_counted(&self, id: u32) -> bool {
+    pub fn holds_counted(&self, id: u32) -> bool {
         let Some(layout) = self.get(id) else { return false };
         let cases = layout.cases.iter().flatten().flat_map(|case| &case.fields);
         layout.fields.iter().chain(cases).any(|field| match field.ty {
@@ -566,12 +567,37 @@ impl Layouts {
         if !self.one_word_optionals || !item.counted() {
             return None;
         }
+        self.block_number(item).map(ListItem::Block)
+    }
+
+    /// The number of a kind of block, which a list's items and a dict's values go by.
+    fn block_number(&self, item: Ty) -> Option<u32> {
         let mut blocks = self.blocks.borrow_mut();
         let at = blocks.iter().position(|known| *known == item).unwrap_or_else(|| {
             blocks.push(item);
             blocks.len() - 1
         });
-        Some(ListItem::Block(u32::try_from(at).ok()?))
+        u32::try_from(at).ok()
+    }
+
+    /// How a dict holds a value of a kind that isn't one word already: in a block.
+    fn value_word(&self, value: Ty) -> Option<Word> {
+        if !self.native_buffers {
+            return None;
+        }
+        match value {
+            Ty::Struct(id) => Some(Word::Plain(id)),
+            // An optional string is three words, where strings are headers.
+            Ty::Maybe(Block::Str) if self.text_headers() => None,
+            value if value.counted() => self.block_number(value).map(Word::Block),
+            _ => None,
+        }
+    }
+
+    /// How many kinds of block have numbers.
+    #[must_use]
+    pub fn block_count(&self) -> u32 {
+        u32::try_from(self.blocks.borrow().len()).unwrap_or(0)
     }
 
     pub fn id(&self, name: &str) -> Option<u32> {
@@ -586,7 +612,7 @@ impl Layouts {
             Type::Bool => Ty::Bool,
             Type::Unit => Ty::Unit,
             Type::Str => Ty::Str,
-            Type::Dict(key, value) => dict_ty(self, key, value),
+            Type::Dict(key, value) => dict_ty(self, key, value, &|value| self.ty(value)),
             Type::Set(item) => set_ty(self, item),
             Type::List(item) => self.list_item(self.ty(item)).map_or(Ty::Obj, Ty::List),
             // A buffer is a list's block.
@@ -596,6 +622,10 @@ impl Layouts {
             Type::Optional(inner) if self.one_word_optionals => {
                 Block::of(self.ty(inner)).map_or(Ty::Obj, Ty::Maybe)
             }
+            Type::Bytes if self.native_buffers => Ty::Bytes,
+            Type::Iterator(_) if self.native_buffers => Ty::Gen,
+            // `None` itself, as a tuple can hold: an optional that's never anything else.
+            Type::None if self.native_buffers => Ty::Maybe(Block::Bytes),
             Type::Named(name) => match (Cap::named(name), self.id(name)) {
                 (Some(cap), _) => Ty::Cap(cap),
                 (None, Some(id)) if self.get(id).is_some_and(|layout| layout.boxed) => Ty::Boxed(id),
@@ -650,7 +680,7 @@ fn has_param(ty: &Type) -> bool {
         | Type::Set(inner)
         | Type::Optional(inner)
         | Type::Id(inner)
-        | Type::IdMap(inner) => has_param(inner),
+        | Type::Table(inner) => has_param(inner),
         Type::Dict(a, b) | Type::Result(a, b) => has_param(a) || has_param(b),
         Type::Tuple(parts) | Type::Generic(_, parts) => parts.iter().any(has_param),
         Type::Arrow(parts, result) => parts.iter().any(has_param) || has_param(result),
@@ -665,6 +695,12 @@ fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type)
         Type::Float => Ty::Float,
         Type::Bool => Ty::Bool,
         Type::Str => Ty::Str,
+        Type::Named(name) if layouts.native_buffers && Cap::named(name).is_some() => {
+            Cap::named(name).map_or(Ty::Obj, Ty::Cap)
+        }
+        Type::Bytes if layouts.native_buffers => Ty::Bytes,
+        Type::Iterator(_) if layouts.native_buffers => Ty::Gen,
+        Type::None if layouts.native_buffers => Ty::Maybe(Block::Bytes),
         Type::Named(name) => match (reserved.get(name), layouts.id(name)) {
             (Some(id), _) => Ty::Boxed(*id),
             (None, Some(id)) => Ty::Struct(id),
@@ -676,7 +712,9 @@ fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type)
         Type::Buffer(item) if layouts.native_buffers => {
             layouts.list_item(boxed_field_ty(layouts, reserved, item)).map_or(Ty::Obj, Ty::List)
         }
-        Type::Dict(key, value) => dict_ty(layouts, key, value),
+        Type::Dict(key, value) => {
+            dict_ty(layouts, key, value, &|value| boxed_field_ty(layouts, reserved, value))
+        }
         Type::Set(item) => set_ty(layouts, item),
         Type::Optional(inner) if layouts.one_word_optionals => {
             Block::of(boxed_field_ty(layouts, reserved, inner)).map_or(Ty::Obj, Ty::Maybe)
@@ -694,27 +732,29 @@ fn set_ty(layouts: &Layouts, item: &Type) -> Ty {
 fn key_word(layouts: &Layouts, key: &Type) -> Option<Word> {
     match key {
         Type::Int => Some(Word::Int),
+        Type::Float if layouts.native_buffers => Some(Word::Float),
         // A string key is held in the entry as its header, when strings are headers.
         Type::Str if layouts.text_headers() => Some(Word::Text),
         Type::Str => Some(Word::Str),
         Type::Named(name) => {
             let id = layouts.id(name)?;
             layouts.get(id).filter(|layout| !layout.boxed)?;
-            // Keys are compared and hashed by their words, which only numbers can be.
-            (!layouts.holds_counted(id)).then_some(Word::Plain(id))
+            // Keys are compared and hashed by their words, which only numbers can be, unless the
+            // runtime does it by what they hold.
+            (layouts.native_buffers || !layouts.holds_counted(id)).then_some(Word::Plain(id))
         }
         _ => None,
     }
 }
 
 /// A dict natively, when dict keys can be its keys and its values are plain words.
-fn dict_ty(layouts: &Layouts, key: &Type, value: &Type) -> Ty {
+fn dict_ty(layouts: &Layouts, key: &Type, value: &Type, held: &dyn Fn(&Type) -> Ty) -> Ty {
     let word = match value {
         Type::Int => Some(Word::Int),
         Type::Float => Some(Word::Float),
         Type::Bool => Some(Word::Bool),
         Type::Str => Some(Word::Str),
-        _ => None,
+        other => layouts.value_word(held(other)),
     };
     match (key_word(layouts, key), word) {
         (Some(key), Some(value)) => Ty::Dict(key, value),
@@ -733,7 +773,7 @@ fn written_type(written: &TypeExpr) -> Type {
         ("Buffer", [item]) => Type::Buffer(Box::new(written_type(item))),
         ("set", [item]) => Type::Set(Box::new(written_type(item))),
         ("dict", [key, value]) => Type::Dict(Box::new(written_type(key)), Box::new(written_type(value))),
-        (_, [_, ..]) | ("list" | "dict" | "set" | "tuple" | "Id" | "IdMap", _) => Type::Unknown,
+        (_, [_, ..]) | ("list" | "dict" | "set" | "tuple" | "Id" | "Table", _) => Type::Unknown,
         ("int", _) => Type::Int,
         ("float", _) => Type::Float,
         ("bool", _) => Type::Bool,

@@ -18,9 +18,28 @@ pub struct Image {
     strings: Vec<(String, i64)>,
 }
 
+/// The layouts a program's image needs shapes for: those native code names, by a shape, a kind
+/// of list item, a dict's words or a type writing its own text, the ones holding themselves
+/// through lists, and everything those hold. Nothing else is ever made, so the rest, like most
+/// of the standard library's types, needn't be described.
+fn used_layouts(layouts: &Layouts, shared: &Shared) -> fennec_layout::Numbering {
+    let mut used: Vec<u32> = shared.shapes.values().copied().collect();
+    for item in shared.elements.values() {
+        fennec_layout::held_layouts(layouts, item.ty(), &mut used);
+    }
+    for (key, value) in shared.dicts.values() {
+        fennec_layout::held_by_word(layouts, *key, &mut used);
+        fennec_layout::held_by_word(layouts, *value, &mut used);
+    }
+    let own_names = shared.own_texts.iter().filter_map(|(symbol, _, _)| shared.literals.get(symbol));
+    used.extend(own_names.filter_map(|name| layouts.id(name)));
+    used.extend(layouts.all_through_lists());
+    fennec_layout::Numbering::of(layouts, used)
+}
+
 impl Image {
     pub fn of(layouts: &Layouts, shared: &Shared) -> Result<Image, String> {
-        let mut registry = Registry::new(layouts);
+        let mut registry = Registry::numbered(layouts, used_layouts(layouts, shared));
         let mut elements = Vec::with_capacity(shared.elements.len());
         for (symbol, item) in &shared.elements {
             let number =
@@ -32,7 +51,7 @@ impl Image {
             Some((symbol.clone(), i64::try_from(number).ok()?))
         });
         elements.extend(boxed);
-        let str_shape = u64::try_from(layouts.len()).unwrap_or(0);
+        let str_shape = registry.str_shape();
         let dicts = shared.dicts.iter().filter_map(|(symbol, (key, value))| {
             let number = fennec_interp::embed::dicts::shape(str_shape, *key, *value)?;
             Some((symbol.clone(), i64::try_from(number).ok()?))
@@ -49,21 +68,22 @@ impl Image {
     }
 }
 
-fn words_of(image: &[u8]) -> Vec<u64> {
-    let mut words: Vec<u64> = image
-        .chunks(8)
-        .map(|chunk| {
-            let mut word = [0_u8; 8];
-            for (to, from) in word.iter_mut().zip(chunk) {
-                *to = *from;
-            }
-            u64::from_le_bytes(word)
-        })
-        .collect();
-    if words.is_empty() {
-        words.push(0);
+/// Writes `bytes` into a string constant in LLVM's text, then zeros to make it `length` long:
+/// a printable byte as itself, and the rest as `\` and two hex digits.
+fn image_text(out: &mut String, bytes: &[u8], length: usize) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    out.reserve(length * 2);
+    let padding = std::iter::repeat_n(&0_u8, length.saturating_sub(bytes.len()));
+    for byte in bytes.iter().chain(padding) {
+        if (0x20..0x7f).contains(byte) && *byte != b'"' && *byte != b'\\' {
+            out.push(char::from(*byte));
+        } else {
+            let digit = |half: u8| HEX.get(usize::from(half)).copied().map_or('0', char::from);
+            out.push('\\');
+            out.push(digit(byte >> 4));
+            out.push(digit(byte & 15));
+        }
     }
-    words
 }
 
 /// What a module for a program starts with: what every function reads by symbol, and the
@@ -84,6 +104,10 @@ fn start_of(
         out += crate::parallel::MAIN_THREAD_GLOBALS;
     }
     out += "@fennec_ascii = dso_local global ptr null\n";
+    // Whether this run counts what it allocates, for native blocks to say what they made.
+    if !shared.native.is_empty() {
+        out += "@fennec_counting_native = dso_local global i64 0\n";
+    }
     for (symbol, start) in &shared.starts {
         let _ = writeln!(out, "@\"{symbol}\" = dso_local constant i64 {start}");
     }
@@ -93,11 +117,14 @@ fn start_of(
     for symbol in shared.literals.keys() {
         let _ = writeln!(out, "@\"{symbol}\" = dso_local global ptr null");
     }
-    let words = words_of(bytes);
-    let shown: Vec<String> = words.iter().map(|word| format!("i64 {word}")).collect();
-    let count = words.len();
-    let _ = writeln!(out, "@fennec_image = private constant [{count} x i64] [{}]\n", shown.join(", "));
-    out += "declare void @fennec_aot_image(i64)\ndeclare i64 @fennec_aot_failed_flag()\ndeclare i64 @fennec_aot_literal(i64)\ndeclare i64 @fennec_aot_ascii()\n\n";
+    // The image is read a word at a time, but written as bytes in one string: LLVM reads a
+    // program's megabytes of it many times faster that way than as a word for each value.
+    // An empty image is still a word, of zero.
+    let count = bytes.len().div_ceil(8).max(1);
+    let _ = write!(out, "@fennec_image = private constant [{} x i8] c\"", count * 8);
+    image_text(&mut out, bytes, count * 8);
+    out += "\", align 8\n\n";
+    out += "declare void @fennec_aot_image(i64)\ndeclare i64 @fennec_aot_failed_flag()\ndeclare i64 @fennec_aot_literal(i64)\ndeclare i64 @fennec_aot_ascii()\ndeclare i64 @fennec_counting()\n\n";
     Ok((out, count))
 }
 
@@ -111,6 +138,10 @@ fn setup(out: &mut String, program: &Program, shared: &Shared, image: &Image) ->
     if let Some(main_thread) = main_thread {
         // Filled in as soon as it's all set, before anything reads them.
         *out += main_thread;
+    }
+    if !shared.native.is_empty() {
+        *out +=
+            "  %counting = call i64 @fennec_counting()\n  store i64 %counting, ptr @fennec_counting_native\n";
     }
     for (number, symbol) in shared.literals.keys().enumerate() {
         let _ = writeln!(
@@ -214,6 +245,7 @@ fn capability_kind(ty: &fennec_check::Type) -> Option<i64> {
         fennec_layout::Cap::Process => 5,
         fennec_layout::Cap::Entropy => 6,
         fennec_layout::Cap::Net => 7,
+        fennec_layout::Cap::Env => 8,
     })
 }
 
@@ -336,4 +368,16 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
     out += &thunks;
     out += &c_main(count, &format!("@fennec_aot_run(ptr @fennec_entry, i64 {})", bytes.len()));
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    /// An image's bytes go into LLVM's text as themselves when printable, and as hex otherwise,
+    /// quotes and backslashes included, then zeros up to a whole word.
+    #[test]
+    fn an_image_is_written_as_one_string() {
+        let mut out = String::new();
+        super::image_text(&mut out, &[b'a', b'"', b'\\', 0, 0xff], 8);
+        assert_eq!(out, "a\\22\\5C\\00\\FF\\00\\00\\00");
+    }
 }

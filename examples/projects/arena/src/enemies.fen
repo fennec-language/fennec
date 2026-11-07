@@ -3,12 +3,12 @@
 from std.math import Vec3
 
 ## How much of a threat an enemy is.
-pub enum Rank:
+export enum Rank:
     Grunt
     Boss
 
     ## The rank's name, as a message shows it.
-    pub def label(self) -> str:
+    def label(self) -> str:
         match self:
             case .Grunt:
                 "grunt"
@@ -16,19 +16,22 @@ pub enum Rank:
                 "boss"
 
 ## One enemy in the arena.
-pub struct Enemy:
+export struct Enemy:
     ## What messages call it.
-    pub name: str
+    name: str
+    ## Where it stands.
     position: Vec3
+    ## How strong it is.
     rank = Rank.Grunt
+    ## What it has left before it's beaten.
     health = 100
 
     ## A line saying who it is, where it is and how healthy.
-    pub def describe(self) -> str:
+    def describe(self) -> str:
         f"{self.name} ({self.rank.label()}) at {self.position.x} with {self.health} health"
 
 ## A new enemy of the lowest rank.
-pub def spawn(name: str, position: Vec3, health: int) -> Enemy:
+export def spawn(name: str, position: Vec3, health: int) -> Enemy:
     Enemy(name=name, position=position, health=health)
 
 def wave(size: int) -> list[Enemy]:

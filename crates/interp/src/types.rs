@@ -19,7 +19,7 @@ struct Shape<'a> {
 }
 
 impl Interp<'_> {
-    /// Calls a type as a constructor: `Enemy(position=p)`, `NotFound(path)`, `IdMap[Enemy]()`.
+    /// Calls a type as a constructor: `Enemy(position=p)`, `NotFound(path)`, `Table[Enemy]()`.
     pub(crate) fn construct(
         &mut self,
         type_name: &str,
@@ -28,10 +28,10 @@ impl Interp<'_> {
     ) -> Result<Value, Diagnostic> {
         self.load_std_providing(type_name)?;
         match (type_name, args.as_slice()) {
-            ("IdMap", []) => return Ok(Value::IdMap(Rc::default())),
+            ("Table", []) => return Ok(Value::Table(Rc::default())),
             ("SoaList", []) => return Ok(Value::list(Vec::new())),
             ("Buffer", _) => return crate::buffer::make(&args, span),
-            ("IdMap" | "SoaList" | "Id", _) => {
+            ("Table" | "SoaList" | "Id", _) => {
                 return Err(Diagnostic::new(
                     format!("`{type_name}` was called with the wrong arguments"),
                     span,
@@ -229,12 +229,15 @@ impl Interp<'_> {
         failure.map_or(Ok(broken), Err)
     }
 
-    /// `replace(value, field=new, ...)`: a copy with some fields changed.
+    /// `copy(value, field=new, ...)`: a copy with some fields changed.
     pub(crate) fn replace(&mut self, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
         let mut args = args.into_iter();
         let Some(CallArg { value: Value::Instance(instance), name: None, .. }) = args.next() else {
-            return Err(Diagnostic::new("`replace` takes a struct value, then the fields to change", span)
-                .with_help("like `replace(enemy, health=50)`"));
+            return Err(Diagnostic::new(
+                "`copy` with fields takes a struct value, then the fields to change",
+                span,
+            )
+            .with_help("like `copy(enemy, health=50)`"));
         };
         let mut changed = instance.as_ref().clone();
         for arg in args {

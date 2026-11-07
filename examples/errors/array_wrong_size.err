@@ -1,0 +1,7 @@
+error: this array holds 4 items, but this list has 3 items
+ --> examples/errors/array_wrong_size.fen:2:33
+  |
+2 |     identity: array[float, 4] = [1.0, 0.0, 1.0]
+  |                                 ^^^^^^^^^^^^^^^
+  |
+  = help: write all 4, or make it with `array[float, 4]()` and set the ones you need

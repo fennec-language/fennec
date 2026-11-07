@@ -13,11 +13,11 @@ fn habits_from_other_languages_get_a_hint() {
     let hints = [
         (
             "print(1)",
-            "there's no global output: write with the `stdout` that `main` receives, like `stdout.print(x)`",
+            "a function reaches outside itself only through what's in its signature: write `stdout.print(...)`",
         ),
         (
             "console",
-            "there's no global output: write with the `stdout` that `main` receives, like `stdout.print(x)`",
+            "a function reaches outside itself only through what's in its signature: write `stdout.print(...)`",
         ),
         ("x = true", "write `True` or `False`"),
         ("x = false", "write `True` or `False`"),
@@ -33,6 +33,101 @@ fn habits_from_other_languages_get_a_hint() {
         let program = format!("def main(stdout: Stdout):\n    {body}\n");
         assert_eq!(helps(&program), [help], "{body}");
     }
+}
+
+/// `print` is the first thing a newcomer writes, so what it says fits where it's written.
+#[test]
+fn print_says_what_to_do_where_it_is() {
+    const WHY: &str = "a function reaches outside itself only through what's in its signature";
+    for (program, help) in [
+        (
+            "def main():\n    print(1)\n",
+            format!("{WHY}, so write `def main(stdout: Stdout):`, then `stdout.print(...)`"),
+        ),
+        (
+            "def report(x: int):\n    print(x)\n\ndef main(stdout: Stdout):\n    report(1)\n",
+            format!(
+                "{WHY}, so give `report` a `stdout: Stdout` parameter and pass it from `main`, then `stdout.print(...)`"
+            ),
+        ),
+        (
+            "test \"it\":\n    print(1)\n",
+            format!("{WHY}, so give this test a `(stdout: Stdout)` after its name, then `stdout.print(...)`"),
+        ),
+        (
+            "def report(out: Stdout):\n    print(1)\n\ndef main(stdout: Stdout):\n    report(stdout)\n",
+            format!("{WHY}: write `out.print(...)`"),
+        ),
+    ] {
+        assert_eq!(helps(program), [help], "{program}");
+    }
+    assert_eq!(in_main("print(1)"), ["there's no global `print` @ print"]);
+}
+
+/// A capability read by its usual name in a function that wasn't given it says how to give it
+/// one, the way a global `print` does, or what it's called when it has one under another name.
+#[test]
+fn a_capability_that_wasnt_given_says_how_to_give_it() {
+    const WHY: &str = "a function reaches outside itself only through what's in its signature";
+    for (program, help) in [
+        ("def main():\n    stdout.print(1)\n", format!("{WHY}, so write `def main(stdout: Stdout):`")),
+        (
+            "def main(stdout: Stdout):\n    stdout.print(fs.read(\"x\"))\n",
+            format!("{WHY}, so add `fs: Fs` to `main`'s parameters"),
+        ),
+        (
+            "def greet():\n    stdout.print(1)\n\ndef main(stdout: Stdout):\n    greet()\n",
+            format!("{WHY}, so give `greet` a `stdout: Stdout` parameter and pass it from `main`"),
+        ),
+        (
+            "def report(out: Stdout):\n    stdout.print(1)\n\ndef main(stdout: Stdout):\n    report(stdout)\n",
+            "this function's `Stdout` is called `out`".to_owned(),
+        ),
+    ] {
+        assert_eq!(helps(program), [help], "{program}");
+    }
+}
+
+/// A name that doesn't exist, spelled nearly like one in sight, is most likely that one, including
+/// where `mut` says it's the thing to change.
+#[test]
+fn a_name_spelled_nearly_like_another_says_so() {
+    for (body, help) in [
+        ("mut units = [1]\n    grow(ref untis)", "did you mean `units`?"),
+        ("mut units = [1]\n    for ref unit in unit:\n        unit += 1", "did you mean `units`?"),
+        ("mut units = [1]\n    units.append(unts[0])", "did you mean `units`?"),
+        ("stdout.print(growe)", "did you mean `grow`?"),
+    ] {
+        let program = format!(
+            "def grow(ref items: list[int]):\n    items.append(1)\n\ndef main(stdout: Stdout):\n    {body}\n"
+        );
+        assert_eq!(helps(&program), [help], "{body}");
+    }
+}
+
+#[test]
+fn a_name_like_nothing_in_sight_says_nothing_more() {
+    for body in ["stdout.print(health)", "stdout.print(ab)", "unit = 1\n    stdout.print(unit, tin)"] {
+        let program = format!("def main(stdout: Stdout):\n    {body}\n");
+        assert_eq!(helps(&program), [""], "{body}");
+    }
+    // What's out of sight isn't suggested, and neither is the standard library.
+    let program = "def other():\n    secret = 1\n\ndef main(stdout: Stdout):\n    stdout.print(secrte)\n";
+    assert_eq!(helps(program), [""]);
+}
+
+/// `mut` on the wrong argument says which one the function does change.
+#[test]
+fn mut_on_the_wrong_argument_says_which_one() {
+    let program = "def grow(amount: int, ref items: list[int]):\n    items.append(amount)\n\ndef main():\n    mut xs = [1]\n    mut n = 1\n    n += 1\n    grow(ref n, xs)\n";
+    let helps = helps(program);
+    assert!(
+        helps.iter().any(|help| help == "did you mean to put `ref` on `items`, which `grow` does change?"),
+        "{helps:?}"
+    );
+    let nothing_changes =
+        "def grow(amount: int):\n    amount + 1\n\ndef main():\n    mut n = 1\n    n += 1\n    grow(ref n)\n";
+    assert!(!crate::helps(nothing_changes).iter().any(|help| help.contains("did you mean")));
 }
 
 #[test]
@@ -247,7 +342,7 @@ const ACCOUNT: &str = "struct Account:
     owner: str
     _balance = 0
 
-    def deposit(mut self, amount: int):
+    def deposit(ref self, amount: int):
         self._balance += amount
 
     def _audit(self) -> bool:
@@ -283,8 +378,9 @@ fn nothing_outside_a_type_reaches_its_underscore_names() {
         ["`_audit` is private to `Account` @ account._audit()"]
     );
     assert_eq!(in_main("    forged = Account(owner=\"x\", _balance=100)\n"), [format!("{private} @ 100")]);
-    assert_eq!(in_main("    forged = Account(\"x\", 100)\n"), [format!("{private} @ 100")]);
-    assert_eq!(in_main("    forged = replace(account, _balance=9)\n"), [format!("{private} @ 9")]);
+    // By position, values go to the public fields alone, so there's none left for `100`.
+    assert_eq!(in_main("    forged = Account(\"x\", 100)\n"), ["`Account` takes 1 value(s) @ 100"]);
+    assert_eq!(in_main("    forged = copy(account, _balance=9)\n"), [format!("{private} @ 9")]);
     assert_eq!(
         in_main("    match account:\n        case Account(owner, balance): stdout.print(balance)\n"),
         [format!("{private} @ case Account(owner, balance): stdout.print(balance)\n")]
@@ -292,6 +388,50 @@ fn nothing_outside_a_type_reaches_its_underscore_names() {
     assert_eq!(
         problems(&format!("{ACCOUNT}extend Account:\n    def peek(self) -> int:\n        self._balance\n")),
         [format!("{private} @ self._balance")]
+    );
+}
+
+/// From outside a type, its automatic constructor sets its public fields, and its `_` fields
+/// take their defaults. One with no default is set by a named constructor, a method without
+/// `self` that builds one, and a type with neither can't be built at all.
+#[test]
+fn a_private_field_with_no_default_needs_a_named_constructor() {
+    let account = "struct Account:
+    _id: int
+    owner: str
+    _audit = list[str]()
+
+    def open(owner: str, id: int) -> Account:
+        Account(_id=id, owner=owner)
+
+struct Counter:
+    step: int
+    _count = 0
+
+";
+    let in_main = |body: &str| problems(&format!("{account}def main(stdout: Stdout):\n{body}"));
+    assert_eq!(
+        in_main("    stdout.print(Account.open(\"ana\", 7).owner, Counter(2).step)\n"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        in_main("    stdout.print(Account(owner=\"bo\").owner)\n"),
+        [
+            "`Account` is built through its named constructors: only its own methods can set `_id` @ Account(owner=\"bo\")"
+        ]
+    );
+    assert_eq!(
+        helps(&format!(
+            "{account}def main(stdout: Stdout):\n    stdout.print(Account(owner=\"bo\").owner)\n"
+        )),
+        ["use `Account.open(...)`"]
+    );
+    let sealed = "struct Sealed:\n    _key: str\n\n    def key(self) -> str:\n        self._key\n";
+    assert_eq!(
+        problems(sealed),
+        [
+            "nothing can build `Sealed`: `_key` has no default, and `Sealed` has no named constructor @ struct Sealed"
+        ]
     );
 }
 
@@ -308,4 +448,49 @@ fn a_type_another_std_module_imports_still_needs_its_own_import() {
     );
     let imported = "from std.time import Duration\n\ndef wait(pause: Duration) -> int:\n    pause.nanos\n";
     assert_eq!(problems(imported), Vec::<String>::new());
+}
+
+#[test]
+fn each_underscore_throws_away_what_its_given_whatever_its_type() {
+    let empty: [&str; 0] = [];
+    let body = "mut numbers = [1]\nmut words = [\"a\"]\n_ = numbers.pop()\n_ = words.pop()\n_, one = (1, \"x\")\n_, two = (\"y\", 2)\nstdout.print(numbers, words, one, two)\n";
+    assert_eq!(in_main(body), empty);
+    let read = in_main("_ = 1\nstdout.print(_)\n");
+    assert_eq!(read, ["`_` throws away what it's given, so it can't be read @ _"]);
+}
+
+/// A top-level name is private to its kit already, so `_` at its start is a mistake, for a
+/// function, a type, an interface, an alias or a constant. A field's or method's `_` is fine.
+#[test]
+fn a_top_level_name_doesnt_start_with_an_underscore() {
+    let source = "_LIMIT = 3\n\nstruct _Box:\n    _size = 1\n\n    def _grown(self) -> int:\n        self._size + _LIMIT\n\ninterface _Sized:\n    def size(self) -> int\n\ntype _Count = int\n\ndef _helper() -> _Box:\n    _Box()\n\ndef main(stdout: Stdout):\n    stdout.print(_helper()._size)\n";
+    let found = problems(source);
+    let named: Vec<&str> = found.iter().filter_map(|problem| problem.split('`').nth(1)).collect();
+    assert_eq!(named, ["_LIMIT", "_Box", "_Sized", "_Count", "_helper", "_size"], "{found:?}");
+    assert!(found[0].starts_with("`_LIMIT` is a top-level name, so it doesn't start with `_`"), "{found:?}");
+    assert_eq!(
+        helps("_LIMIT = 3\n\ndef main(stdout: Stdout):\n    stdout.print(_LIMIT)\n"),
+        ["top-level names are already private to the kit; `_` marks a private field or method"]
+    );
+}
+
+/// The standard library is one kit: its modules use each other's helpers, which a program can't
+/// import, or reach through the module, since they aren't exported. Nothing in it starts with `_`
+/// at the top level either, which every check would report.
+#[test]
+fn a_program_reaches_only_what_the_standard_library_exports() {
+    let hidden = "`std.json` has nothing called `article`";
+    let imported = problems(
+        "from std.json import article\n\ndef main(stdout: Stdout):\n    stdout.print(article(\"x\"))\n",
+    );
+    assert!(imported.first().is_some_and(|problem| problem.starts_with(hidden)), "{imported:?}");
+    let reached = problems(
+        "from std import json\n\ndef main(stdout: Stdout):\n    stdout.print(json.article(\"x\"))\n",
+    );
+    assert!(reached.first().is_some_and(|problem| problem.starts_with(hidden)), "{reached:?}");
+    let empty: [&str; 0] = [];
+    assert_eq!(
+        problems("from std.json import dumps\n\ndef main(stdout: Stdout):\n    stdout.print(dumps([1]))\n"),
+        empty
+    );
 }

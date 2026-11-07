@@ -1,0 +1,13 @@
+# `_` throws away what it's given, as many times as you like, whatever the type.
+
+struct Frame:
+    depth = 0
+
+def main(stdout: Stdout):
+    mut frames = [Frame(), Frame(depth=2)]
+    mut words = ["a", "b"]
+    _ = frames.pop()
+    _ = words.pop()
+    _, word = (1, "x")
+    _, number = ("y", 2)
+    stdout.print(frames.len(), words.len(), word, number)

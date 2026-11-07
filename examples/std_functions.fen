@@ -6,11 +6,11 @@ def lerp(text: str) -> str:
     text + " is mine"
 
 def main(stdout: Stdout):
-    stdout.print(blend(0.0, 10.0, 0.5))
-    stdout.print(blend(0.0, 4.0, 0.25))
+    stdout.print(blend(0.0, end=10.0, amount=0.5))
+    stdout.print(blend(0.0, end=4.0, amount=0.25))
     stdout.print(lerp("this lerp"))
-    stdout.print(max([1.0, 3.0], key=n => blend(0.0, n, -1.0)))
+    stdout.print(max([1.0, 3.0], key=n => blend(0.0, end=n, amount=-1.0)))
 
 test "a std function written in Fennec works in a test":
-    assert blend(0.0, 2.0, 0.5) == 1.0
-    assert blend(1.0, 3.0, 0.5) == 2.0
+    assert blend(0.0, end=2.0, amount=0.5) == 1.0
+    assert blend(1.0, end=3.0, amount=0.5) == 2.0

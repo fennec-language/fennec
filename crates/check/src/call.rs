@@ -2,7 +2,7 @@
 //! errors and enum cases. Arguments are matched to parameters or fields, positionally and by
 //! name, and `mut` has to be written exactly where a parameter changes.
 
-use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Field, Generic, Span, UnaryOp};
+use fennec_syntax::{Arg, CompKind, Diagnostic, Expr, ExprKind, Field, Generic, Span, UnaryOp};
 
 use crate::ParamType;
 use crate::builtins;
@@ -33,7 +33,7 @@ struct Target<'a> {
     given: Vec<(String, Type)>,
 }
 
-const MUT_ARG: &str = "only a name, or a field or item of one, can be passed with `mut`";
+const MUT_ARG: &str = "only a name, or a field or item of one, can be passed with `ref`";
 
 impl FnCx<'_> {
     /// Whether this is one of the functions on built-in types, `str.from_code(n)` and
@@ -47,7 +47,46 @@ impl FnCx<'_> {
         if name == "from_code" { self.char_from_code(args, span) } else { self.bytes_from_hex(args, span) }
     }
 
+    /// What's called with types given and isn't a type or a function of this module's: `json.loads[T]`,
+    /// a module's generic function like `pack.loads[T]`, checked as the function's own name with
+    /// them, or a method with types for its own type parameters, like `src.field[int]()`.
+    fn called_with_types(
+        &mut self,
+        (object, index): (&Expr, &Expr),
+        callee_span: Span,
+        args: &[Arg],
+        span: Span,
+    ) -> Option<Type> {
+        if let Some(builtin) = self.loads(object) {
+            return Some(self.typed_loads(&builtin, index, args, span));
+        }
+        let ExprKind::Attr { object: owner, name, .. } = &object.kind else {
+            return self.typed_method_call(object, index, args, span);
+        };
+        let Some(Member::Name(member)) = self.module_member(owner, name, object.span) else {
+            return self.typed_method_call(object, index, args, span);
+        };
+        let named = Expr { kind: ExprKind::Name(member), span: object.span };
+        let given = Expr {
+            kind: ExprKind::Index { object: Box::new(named), index: Box::new(index.clone()) },
+            span: callee_span,
+        };
+        Some(self.call(&given, args, span))
+    }
+
+    /// A generator right inside what uses it is worked out here, in order, as a loop would be.
+    fn note_generator_worked_out_here(&mut self, callee: &Expr, args: &[Arg]) {
+        if let (ExprKind::Name(name), Some(first)) = (&callee.kind, args.first())
+            && matches!(name.as_str(), "sum" | "min" | "max" | "sorted" | "list" | "set" | "any" | "all")
+            && matches!(first.value.kind, ExprKind::Comprehension { kind: CompKind::Generator, .. })
+        {
+            self.worked_out_here.insert((first.value.span.start, first.value.span.end));
+        }
+    }
+
     pub(crate) fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Type {
+        self.closure_locks_again(callee);
+        self.note_generator_worked_out_here(callee, args);
         match &callee.kind {
             ExprKind::Attr { object, name, .. } if self.is_built_in_function(object, name) => {
                 return self.built_in_function(name, args, span);
@@ -66,8 +105,8 @@ impl FnCx<'_> {
             }
             ExprKind::Variant(name) => return self.construct_variant(None, name, args, span),
             ExprKind::Index { object, index } => {
-                if self.names_a_collection(object) {
-                    return self.empty_collection(callee, args, span);
+                if let Some(made) = self.made_collection(callee, (object, index), args, span) {
+                    return made;
                 }
                 if let Some(type_name) = self.as_type_name(object) {
                     if self.checker.program.type_info(type_name).is_some() {
@@ -92,10 +131,7 @@ impl FnCx<'_> {
                     self.record(object.span, &Type::Function(function.clone()));
                     return self.call_with_types(&function, name, (args, &types), span);
                 }
-                if let Some(builtin) = self.loads(object) {
-                    return self.typed_loads(&builtin, index, args, span);
-                }
-                if let Some(returns) = self.typed_method_call(object, index, args, span) {
+                if let Some(returns) = self.called_with_types((object, index), callee.span, args, span) {
                     return returns;
                 }
             }
@@ -216,6 +252,7 @@ impl FnCx<'_> {
         let (signature, chosen) = self.instantiate(key, &signature, None, types, span);
         self.bind_args(name, &signature.params, args, span);
         self.check_bounds(chosen, span);
+        self.note_source(key, &signature.returns, false, span);
         signature.returns
     }
 
@@ -259,13 +296,15 @@ impl FnCx<'_> {
                 }
                 *slot = true;
             }
-            self.check_mut_arg(function, param, arg);
+            self.check_mut_arg(function, param, arg, params);
             self.check_arg(param, &ty, arg.value.span);
         }
         // An argument with a misspelled name is most likely the missing one.
         let mut left_out = Vec::new();
         for (param, given) in params.iter().zip(given) {
             if let (false, Some(default)) = (given, &param.default) {
+                // What's written in for it is typed here, as lowering reads its type.
+                self.record(default.span, &param.ty);
                 left_out.push((param.name.clone(), plain_default(default)));
             } else if !given && !unmatched_args {
                 let message = format!("`{function}` is missing its `{}` argument", param.name);
@@ -277,20 +316,33 @@ impl FnCx<'_> {
         }
     }
 
-    fn check_mut_arg(&mut self, function: &str, param: &ParamType, arg: &Arg) {
+    fn check_mut_arg(&mut self, function: &str, param: &ParamType, arg: &Arg, params: &[ParamType]) {
         let span = arg.value.span;
         match (param.is_mut, arg.is_mut) {
             (true, false) => self.error(
                 Diagnostic::new(
-                    format!("`{function}` changes `{}`, so it has to be passed with `mut`", param.name),
+                    format!("`{function}` changes `{}`, so it has to be passed with `ref`", param.name),
                     span,
                 )
-                .with_help("write `mut` before the argument, so readers can see it changes"),
+                .with_help("write `ref` before the argument, so readers can see it changes"),
             ),
-            (false, true) => self.error(Diagnostic::new(
-                format!("`{function}` doesn't change `{}`, so it shouldn't be passed with `mut`", param.name),
-                span,
-            )),
+            (false, true) => {
+                let diagnostic = Diagnostic::new(
+                    format!(
+                        "`{function}` doesn't change `{}`, so it shouldn't be passed with `ref`",
+                        param.name
+                    ),
+                    span,
+                );
+                // It's most likely meant for what the function does change.
+                self.error(match params.iter().find(|other| other.is_mut) {
+                    Some(changed) => diagnostic.with_help(format!(
+                        "did you mean to put `ref` on `{}`, which `{function}` does change?",
+                        changed.name
+                    )),
+                    None => diagnostic,
+                });
+            }
             // What it's given to can make it `None`, whatever a check for `None` said before.
             (true, true) => {
                 if let ExprKind::Name(name) = &arg.value.kind
@@ -360,6 +412,10 @@ impl FnCx<'_> {
             return self.static_on_param(param, method, (types, args), span);
         }
         let ty = self.expr(object);
+        if self.outside_lock(object, &ty, span) {
+            self.ignore_args(args);
+            return Type::Unknown;
+        }
         let ty = if method == "expect" { ty } else { self.failing_step(ty, object.span, step) };
         let optional = optional || self.chained_step(&ty, step);
         self.method_on(&MethodCall { object, method, types, args, span }, &ty, optional)
@@ -390,6 +446,7 @@ impl FnCx<'_> {
                 }
             }
             Type::Param(name) => self.interface_call(call, name),
+            Type::Union(members) => self.union_method(call, members),
             Type::Unknown | Type::Var(_) => {
                 self.ignore_args(args);
                 Type::Unknown
@@ -401,6 +458,43 @@ impl FnCx<'_> {
             }
             _ => self.builtin_method(object, ty, method, args, span),
         }
+    }
+
+    /// A method of a union, which it has when every type in it does, giving back the same type
+    /// on each. Which one runs depends on the member it holds.
+    fn union_method(&mut self, call: &MethodCall<'_>, members: &[Type]) -> Type {
+        let union = Type::Union(members.to_vec());
+        if let Some(missing) = members.iter().find(|member| !self.has_method(member, call.method)) {
+            let message =
+                format!("{} has no method `{}`, so {} doesn't either", a(missing), call.method, a(&union));
+            let help = "a union has a method when every type in it does";
+            return self.unusable(
+                Diagnostic::new(message, call.object.span.to(call.span)).with_help(help),
+                call.args,
+            );
+        }
+        let Some((first, rest)) = members.split_first() else { return Type::Unknown };
+        let returns = self.method_on(call, first, false);
+        let report = std::mem::replace(&mut self.report, false);
+        let others: Vec<Type> = rest.iter().map(|member| self.method_on(call, member, false)).collect();
+        self.report = report;
+        let settled = self.checker.settled(&returns);
+        if others.iter().any(|other| self.checker.settled(other) != settled) {
+            let message =
+                format!("`{}` gives back different types on the types in {}", call.method, a(&union));
+            self.error(
+                Diagnostic::new(message, call.span)
+                    .with_help("give each the same return type, or use `is` or `match` to tell them apart"),
+            );
+            return Type::Unknown;
+        }
+        returns
+    }
+
+    /// Whether a type has a method by this name, its own or one std or the engines give it.
+    fn has_method(&self, ty: &Type, method: &str) -> bool {
+        let own = ty.type_name().is_some_and(|name| self.checker.program.method(name, method).is_some());
+        own || self.std_method(ty, method).is_some() || builtins::method(ty, method).is_some()
     }
 
     /// The method the standard library gives a built-in type, if it has one by that name,
@@ -524,6 +618,7 @@ impl FnCx<'_> {
         let MethodCall { object, method, types, args, span } = *call;
         let (key, takes_self) = method_key;
         self.locks_again(object, receiver, &format!("calling `{method}`"));
+        self.method_on_holder(object, receiver, method);
         if let Some(owner) = receiver.type_name() {
             self.private_member(owner, method, object.span.to(span));
         }
@@ -561,10 +656,11 @@ impl FnCx<'_> {
                     format!("`{name}` is locked to read, and `{method}` changes it"),
                     object.span,
                 )
-                .with_help(format!("lock it to write with `as mut {name}`")),
+                .with_help(format!("lock it to write with `as ref {name}`")),
             );
         }
         self.bind_args(method, params, args, span);
+        self.note_source(key, &signature.returns, takes_self, span);
         signature.returns
     }
 
@@ -681,7 +777,10 @@ impl FnCx<'_> {
             self.error(Diagnostic::new("write types in the brackets, like `[int]`", index.span));
             return Vec::new();
         };
-        written.iter().map(|ty| self.resolve(ty)).collect()
+        let types: Vec<Type> = written.iter().map(|ty| self.resolve(ty)).collect();
+        // For compilers, since a function's body may be the only thing that uses them.
+        self.record(index.span, &Type::Tuple(types.clone()));
+        types
     }
 
     /// Calls a type to build a value: `Enemy(position=p)`, `NotFound(path)`.
@@ -733,10 +832,25 @@ impl FnCx<'_> {
         built
     }
 
-    /// `IdMap[Enemy]()` and `SoaList[Particle]()`.
+    /// `Table[Enemy]()` and `SoaList[Particle]()`.
     /// Whether an expression is `list`, `dict` or `set`, the built-in collections.
-    fn names_a_collection(&self, object: &Expr) -> bool {
-        matches!(&object.kind, ExprKind::Name(name) if matches!(name.as_str(), "list" | "dict" | "set") && self.lookup(name).is_none())
+    /// `list[str]()` and the like, or `array[float, 16]()`, when the name is the builtin's.
+    fn made_collection(
+        &mut self,
+        callee: &Expr,
+        (object, index): (&Expr, &Expr),
+        args: &[Arg],
+        span: Span,
+    ) -> Option<Type> {
+        let ExprKind::Name(name) = &object.kind else { return None };
+        if self.lookup(name).is_some() {
+            return None;
+        }
+        match name.as_str() {
+            "list" | "dict" | "set" => Some(self.empty_collection(callee, args, span)),
+            "array" | "array.new" => Some(self.filled_array(callee, index, args, span)),
+            _ => None,
+        }
     }
 
     /// `list[str]()`, `dict[str, int]()` or `set[int]()`: an empty collection that says its type.
@@ -764,6 +878,99 @@ impl FnCx<'_> {
         ty
     }
 
+    /// `array[float, 16]()`: an array filled with its element's zero. It's written in as
+    /// `array.new[float, 16](0.0)`, with the zero checked here like any other expression, and
+    /// checked again in that form.
+    fn filled_array(&mut self, callee: &Expr, index: &Expr, args: &[Arg], span: Span) -> Type {
+        if let ExprKind::Index { object, .. } = &callee.kind
+            && let ExprKind::Name(name) = &object.kind
+            && name == "array.new"
+        {
+            let renamed = Expr { kind: ExprKind::Name("array".to_owned()), span: object.span };
+            let written = Expr {
+                kind: ExprKind::Index { object: Box::new(renamed), index: Box::new(index.clone()) },
+                span: callee.span,
+            };
+            let ty = written.as_type().map_or(Type::Unknown, |written| self.resolve(&written));
+            if let (Type::Array(item, _), [zero]) = (&ty, args) {
+                let got = self.expr_as(&zero.value, item);
+                if !self.checker.fits(item, &got) {
+                    self.error(mismatch("this array's zero", item, &got, zero.value.span));
+                }
+            }
+            return ty;
+        }
+        let Some(written) = callee.as_type() else {
+            self.error(Diagnostic::new("write an array's type like `array[float, 16]()`", callee.span));
+            self.ignore_args(args);
+            return Type::Unknown;
+        };
+        if !args.is_empty() {
+            let message =
+                format!("`{}()` fills it with zeros, so it takes nothing", crate::program::written(&written));
+            self.error(
+                Diagnostic::new(message, span)
+                    .with_help("set the items afterwards, or write them in `[...]` where an array goes"),
+            );
+            self.ignore_args(args);
+            return Type::Unknown;
+        }
+        let ty = self.resolve(&written);
+        let Type::Array(item, _) = &ty else { return ty };
+        let item_written = match &index.kind {
+            ExprKind::Tuple(parts) => parts.first().unwrap_or(index),
+            _ => index,
+        };
+        let Some(zero) = self.zero_of(item, item_written, callee.span) else {
+            let message = format!("{} has no zero to fill an array with", a(item));
+            let help = match item.as_ref() {
+                Type::Named(name)
+                    if self
+                        .checker
+                        .program
+                        .type_info(name)
+                        .is_some_and(|info| info.kind == TypeKind::Struct && !info.def.shared) =>
+                {
+                    format!(
+                        "give every field of `{name}` a default, or write the items out: `[first, second, ...]`"
+                    )
+                }
+                _ => "write the items out where the array goes: `[first, second, ...]`".to_owned(),
+            };
+            self.error(Diagnostic::new(message, span).with_help(help));
+            return Type::Unknown;
+        };
+        self.expr(&zero);
+        self.checker.array_zeros.insert((span.start, span.end), zero);
+        ty
+    }
+
+    /// What an array of `item` starts out holding: 0, 0.0, False, "", None, an array of zeros,
+    /// or a struct made with all its defaults. It takes the span of the array's type, which is
+    /// never checked as an expression, so its type has a place of its own.
+    fn zero_of(&mut self, item: &Type, written: &Expr, at: Span) -> Option<Expr> {
+        let kind = match item {
+            Type::Int => ExprKind::Int(0),
+            Type::Float => ExprKind::Float(0.0),
+            Type::Bool => ExprKind::Bool(false),
+            Type::Str => ExprKind::Str(String::new()),
+            Type::Optional(_) => ExprKind::None,
+            Type::Array(..) => ExprKind::Call { callee: Box::new(written.clone()), args: Vec::new() },
+            Type::Named(name) => {
+                let info = self.checker.program.type_info(name)?;
+                let all_defaults = info.kind == TypeKind::Struct
+                    && !info.def.shared
+                    && info.def.fields.iter().all(|field| field.default.is_some());
+                if !all_defaults {
+                    return None;
+                }
+                ExprKind::Call { callee: Box::new(written.clone()), args: Vec::new() }
+            }
+            _ => return None,
+        };
+        Some(Expr { kind, span: at })
+    }
+
     fn construct_builtin(&mut self, type_name: &str, item: Option<&Expr>, args: &[Arg], span: Span) -> Type {
         let has_item = item.is_some();
         let item = match item.map(|item| (item.as_type(), item.span)) {
@@ -778,7 +985,7 @@ impl FnCx<'_> {
         };
         let types: Vec<Type> = args.iter().map(|arg| self.arg_value(arg, &[])).collect();
         match (type_name, types.as_slice()) {
-            ("IdMap", []) if has_item => Type::IdMap(Box::new(item)),
+            ("Table", []) if has_item => Type::Table(Box::new(item)),
             ("SoaList", []) if has_item => Type::list(item),
             ("Buffer", []) if has_item => Type::Buffer(Box::new(item)),
             ("Buffer", [Type::Int])
@@ -831,6 +1038,31 @@ impl FnCx<'_> {
         Type::Named(owner)
     }
 
+    /// Building a type from outside it when one of its `_` fields has no default, which only its
+    /// own methods can set: it's built through one of its named constructors.
+    fn built_elsewhere(&self, type_name: &str, field: &str, span: Span) -> Diagnostic {
+        let message = format!(
+            "`{type_name}` is built through its named constructors: only its own methods can set `{field}`"
+        );
+        let named: Vec<String> = self
+            .checker
+            .program
+            .type_info(type_name)
+            .map(|info| {
+                crate::privacy::named_constructors(&info.def)
+                    .iter()
+                    .map(|name| format!("`{type_name}.{name}(...)`"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let help = if named.is_empty() {
+            format!("`{field}` has no default, and `{type_name}` has no named constructor yet")
+        } else {
+            format!("use {}", named.join(" or "))
+        };
+        Diagnostic::new(message, span).with_help(help)
+    }
+
     /// Matches arguments to fields, positionally and by name. Returns whether every argument
     /// is written as a literal, so `where` rules can be checked when the value is made.
     fn build(&mut self, target: &Target<'_>, fields: &[Field], args: &[Arg], span: Span) -> bool {
@@ -838,21 +1070,41 @@ impl FnCx<'_> {
         let display = case.map_or_else(|| type_name.to_owned(), |case| format!("{type_name}.{case}"));
         let mut given = vec![false; fields.len()];
         let mut unmatched_args = false;
+        // From outside the type, its automatic constructor sets only its public fields, so
+        // values given by position go to those.
+        let outside = !self.inside(type_name);
+        let settable: Vec<usize> = (0..fields.len())
+            .filter(|&at| !(outside && fields.get(at).is_some_and(|field| field.name.starts_with('_'))))
+            .collect();
         for (position, arg) in args.iter().enumerate() {
             let at = match &arg.name {
                 Some(name) => fields.iter().position(|field| &field.name == name),
-                None => Some(position),
+                None => settable.get(position).copied(),
             };
+            // A value given by position that skips a `_` field is written in by its field's name,
+            // so what runs the program puts it where the check did.
+            if arg.name.is_none()
+                && at != Some(position)
+                && let Some(field) = at.and_then(|at| fields.get(at))
+            {
+                self.checker
+                    .field_args
+                    .insert((arg.value.span.start, arg.value.span.end), field.name.clone());
+            }
             let expected = at
                 .and_then(|at| fields.get(at))
                 .map(|field| self.checker.field_type(type_name, case, &field.name).substitute(&target.given));
             let ty = self.arg_as(arg, &[], expected.as_ref());
             if arg.is_mut {
-                let message = "building a value doesn't change its arguments, so don't pass `mut`";
+                let message = "building a value doesn't change its arguments, so don't pass `ref`";
                 self.error(Diagnostic::new(message, arg.value.span));
             }
             let Some((field, slot)) = at.and_then(|at| fields.get(at).zip(given.get_mut(at))) else {
-                let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+                let names: Vec<&str> = settable
+                    .iter()
+                    .filter_map(|&at| fields.get(at))
+                    .map(|field| field.name.as_str())
+                    .collect();
                 self.error(unmatched(&display, ("field", "value"), &names, arg));
                 unmatched_args = true;
                 continue;
@@ -869,10 +1121,13 @@ impl FnCx<'_> {
         }
         for (field, given) in fields.iter().zip(given) {
             if !given && field.default.is_none() && !unmatched_args {
-                self.error(
+                let problem = if outside && field.name.starts_with('_') {
+                    self.built_elsewhere(type_name, &field.name, span)
+                } else {
                     Diagnostic::new(format!("`{display}` needs a value for `{}`", field.name), span)
-                        .with_help(format!("pass it, like `{display}({}=...)`", field.name)),
-                );
+                        .with_help(format!("pass it, like `{display}({}=...)`", field.name))
+                };
+                self.error(problem);
             }
         }
         args.iter().all(|arg| {

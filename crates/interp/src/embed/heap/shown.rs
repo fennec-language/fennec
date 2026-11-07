@@ -3,18 +3,20 @@
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
+use std::rc::Rc;
 use std::sync::Mutex;
 
 use fennec_syntax::rename::shown_type_name;
 use fennec_syntax::{Diagnostic, Span};
 
-use super::named::{is_id_map, is_option, is_result};
+use super::named::{is_array, is_id_map, is_one_of_several, is_option, is_result};
 use super::{
     CAPABILITY_SHAPE, HEADER_WORDS, State, block_text, cell_value, is_text, shape_of, shape_word, type_name,
     with,
 };
 use crate::embed::STATE;
 use crate::packed::{Element, Fields};
+use crate::value::Value;
 
 /// How native code writes a value of a type that writes its own text: given where the value's
 /// fields are, it hands the text to `own_text_written`.
@@ -159,6 +161,9 @@ pub(in crate::embed) fn quoted(state: &State, address: u64, out: &mut Written) {
         out.push_str(&crate::format::repr(&state.expanded(value)));
     } else if shape_word(block) == Some(CAPABILITY_SHAPE) {
         out.push_str(&crate::format::repr(&crate::embed::capabilities::read(state, block)));
+    } else if shape_word(block) == Some(super::BYTES_SHAPE) {
+        let data = crate::embed::bytes::data_of(block);
+        out.push_str(&crate::format::repr(&Value::Bytes(Rc::from(data))));
     } else if is_text(state, block) {
         let _ = write!(out, "{:?}", block_text(block));
     } else if crate::embed::dicts::is_dict(state, block) {
@@ -218,6 +223,16 @@ pub(in crate::embed) fn item(
             0 => out.push_str("None"),
             address => item(state, inner, &mut std::iter::once(&address), out),
         },
+        Element::Struct { name, fields } if is_array(name) => {
+            out.push('[');
+            for (at, (_, element)) in fields.iter().enumerate() {
+                if at > 0 {
+                    out.push_str(", ");
+                }
+                item(state, element, words, out);
+            }
+            out.push(']');
+        }
         Element::Struct { name, fields } if name.starts_with('(') => {
             out.push('(');
             for (at, (_, element)) in fields.iter().enumerate() {
@@ -236,7 +251,10 @@ pub(in crate::embed) fn item(
             named_fields(state, fields, words, out);
         }
         Element::Enum { name, words: size, .. }
-            if !is_option(name) && !is_result(name) && own_value(state, (name, *size), words, out) => {}
+            if !is_option(name)
+                && !is_result(name)
+                && !is_one_of_several(name)
+                && own_value(state, (name, *size), words, out) => {}
         Element::Enum { name, cases, words: size } => {
             let mut mine = (&mut *words).take(*size);
             let at = usize::try_from(word(&mut mine)).unwrap_or(0);
@@ -263,6 +281,10 @@ fn enum_case(
             Some((_, element)) if case == "Some" => item(state, element, words, out),
             _ => out.push_str("None"),
         }
+    } else if is_one_of_several(name) {
+        if let Some((_, element)) = fields.first() {
+            item(state, element, words, out);
+        }
     } else if is_result(name) {
         out.push_str(if case == "Err" { "Err(" } else { "Ok(" });
         if let Some((_, element)) = fields.first() {
@@ -280,7 +302,8 @@ fn enum_case(
 /// `(x=1, y=2)`.
 fn named_fields(state: &State, fields: &Fields, words: &mut dyn Iterator<Item = &u64>, out: &mut Written) {
     out.push('(');
-    for (at, (field, element)) in fields.iter().enumerate() {
+    let shown = fields.iter().filter(|(field, _)| field.as_ref() != crate::packed::LOCK);
+    for (at, (field, element)) in shown.enumerate() {
         if at > 0 {
             out.push_str(", ");
         }
@@ -297,14 +320,15 @@ fn id(fields: &Fields, words: &mut dyn Iterator<Item = &u64>, out: &mut Written)
         let mut mine = (&mut *words).take(element.words());
         let first = word(&mut mine);
         mine.for_each(drop);
-        if field.as_ref() == "slot" {
-            slot = first;
+        // The slot is the key's high 32 bits.
+        if field.as_ref() == "key" {
+            slot = first >> 32;
         }
     }
     let _ = write!(out, "Id({slot})");
 }
 
-/// `IdMap([a, b])`: what's in the slots still in use.
+/// `Table([a, b])`: what's in the slots still in use.
 fn id_map(state: &State, fields: &Fields, words: &mut dyn Iterator<Item = &u64>, out: &mut Written) {
     let (mut held, mut generations) = (0, 0);
     for (field, element) in fields {
@@ -317,7 +341,7 @@ fn id_map(state: &State, fields: &Fields, words: &mut dyn Iterator<Item = &u64>,
             _ => {}
         }
     }
-    out.push_str("IdMap([");
+    out.push_str("Table([");
     crate::embed::lists::shown_where_used(state, held, generations, out);
     out.push_str("])");
 }

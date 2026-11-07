@@ -25,6 +25,8 @@ pub(crate) struct Binding {
     pub(crate) declared: Type,
     pub(crate) is_mut: bool,
     pub(crate) origin: Origin,
+    /// Where `mut ` would go to make it changeable: before the name in `name = value`.
+    pub(crate) mut_at: Option<u32>,
 }
 
 /// Where a name came from, for explaining how to make it changeable.
@@ -65,6 +67,11 @@ pub(crate) struct FnCx<'c> {
     /// The return type written in the signature, if any.
     pub(crate) declared: Option<Type>,
     pub(crate) generator: bool,
+    /// What a `with` source lends, from its `-> with T`, and how many `lend`s it has so far.
+    pub(crate) lends: Option<Type>,
+    pub(crate) lent: usize,
+    /// The spans of the values `with` blocks are taking now, where a source may be called.
+    pub(crate) with_values: Vec<(u32, u32)>,
     /// Whether it can fail, so it can give back a result it gets unhandled.
     pub(crate) fallible: bool,
     pub(crate) returns: Vec<Type>,
@@ -90,14 +97,32 @@ pub(crate) struct FnCx<'c> {
     /// The type expected of the value of the block being checked: the return type for a
     /// function's body, or what's expected of a `match` for its cases.
     pub(crate) tail: Option<Type>,
+    /// Where each name that isn't `mut` was read from, as it's written: `units[at]` for
+    /// `target = units[at]`.
+    pub(crate) read_from: std::collections::HashMap<String, String>,
+    /// The functions in sight, by name, that capture a `shared` handle.
+    pub(crate) handle_closures: std::collections::HashSet<String>,
+    /// The generators right inside what uses all of their items, by span.
+    pub(crate) worked_out_here: std::collections::HashSet<(u32, u32)>,
+    /// The `/`s between two ints, which give a float, so a mix with an int there can say `//`.
+    pub(crate) int_divisions: std::collections::HashSet<(u32, u32)>,
+    /// How many generators kept for later this is inside.
+    pub(crate) kept_generators: usize,
     /// How many arrow functions and comprehensions this is inside, which `else` can't leave.
     pub(crate) value_functions: usize,
+    /// How many loops this is inside, which `break` and `continue` need.
+    pub(crate) loops: usize,
+    /// How many arrow functions the code being checked is inside.
+    pub(crate) arrows: usize,
     /// The fields and method calls in the chain before an `else`, which may be on a value
     /// that might be missing.
     pub(crate) else_chain: std::collections::HashSet<(u32, u32)>,
     /// Which locks are held while checking a lock body, a `shared` type's method or a `with`
     /// block that locks handles, for messages: "while `x` is locked".
     pub(crate) lock: Option<String>,
+    /// The `shared` types whose locks are held, which a lock body can take only the inner
+    /// types of: those they hold.
+    pub(crate) locked_types: Vec<String>,
     /// The error it says it fails with, from `fails E`.
     pub(crate) fails: Option<Type>,
 }
@@ -113,6 +138,9 @@ impl<'c> FnCx<'c> {
             report,
             declared: None,
             generator: false,
+            lends: None,
+            lent: 0,
+            with_values: Vec::new(),
             fallible: false,
             returns: Vec::new(),
             errors: Vec::new(),
@@ -126,10 +154,18 @@ impl<'c> FnCx<'c> {
             first_var,
             expecting: None,
             tail: None,
+            read_from: std::collections::HashMap::new(),
+            handle_closures: std::collections::HashSet::new(),
+            worked_out_here: std::collections::HashSet::new(),
+            int_divisions: std::collections::HashSet::new(),
+            kept_generators: 0,
             value_functions: 0,
+            loops: 0,
+            arrows: 0,
             else_chain: std::collections::HashSet::new(),
             fails: None,
             lock: None,
+            locked_types: Vec::new(),
         }
     }
 
@@ -191,6 +227,7 @@ impl<'c> FnCx<'c> {
         let entry = cx.checker.program.functions.get(key);
         cx.generics = entry.map(|entry| cx.checker.program.generics_of(entry)).unwrap_or_default();
         cx.declared = crate::program::written_ret(def).map(|ret| cx.resolve(ret));
+        cx.lends = cx.declared.as_ref().and_then(crate::lend::lent).cloned();
         cx.fails = def.fails.as_ref().map(|fails| cx.resolve(fails));
         if def.body.is_empty() {
             return cx.bodiless(def);
@@ -204,21 +241,35 @@ impl<'c> FnCx<'c> {
         for (param, written) in params.iter().zip(&def.params) {
             cx.default_written(written);
             if let Some(default) = &written.default {
-                let actual = cx.expr_as(default, &param.ty);
+                // A parameter with no type written takes it from its default, so only a written
+                // one is expected of the default.
+                let actual =
+                    if written.ty.is_some() { cx.expr_as(default, &param.ty) } else { cx.expr(default) };
                 cx.check_arg(param, &actual, default.span);
             }
             cx.declare_as(&param.name, param.ty.clone(), param.is_mut, Origin::Param, written.span);
         }
         // A `shared` type's method holds its lock for the whole call.
         if def.params.first().is_some_and(|param| param.is_self)
-            && params.first().is_some_and(|param| cx.checker.program.is_shared(&param.ty))
+            && params.first().is_some_and(|param| cx.checker.program.takes_lock(&param.ty))
         {
             cx.lock = Some("while `self` is locked".to_owned());
+            cx.locked_types = params
+                .first()
+                .and_then(|param| param.ty.type_name())
+                .map(str::to_owned)
+                .into_iter()
+                .collect();
         }
-        cx.tail = if cx.generator { None } else { cx.declared.clone() };
-        let flow = cx.stmts(&def.body, true);
+        cx.tail = if cx.generator || cx.lends.is_some() { None } else { cx.declared.clone() };
+        let flow = cx.stmts(&def.body, cx.lends.is_none());
+        if cx.lends.is_some() {
+            cx.source_finished(def);
+        }
         // A body that always leaves early has an unknown value, which fits any type.
-        if let (Some(declared), Some(StmtKind::Expr(last))) =
+        if cx.lends.is_some() {
+            // A source gives back what it lends, through `lend`, and nothing from its body.
+        } else if let (Some(declared), Some(StmtKind::Expr(last))) =
             (&cx.declared, def.body.last().map(|stmt| &stmt.kind))
         {
             let declared = declared.clone();
@@ -419,11 +470,11 @@ impl<'c> FnCx<'c> {
         let mut cx = FnCx::new(checker, &key, "test", true);
         for capability in &test.capabilities {
             let name = capability.ty.as_ref().map_or("", |ty| ty.name.as_str());
-            let fits = matches!(name, "Stdout" | "Fs" | "Clock" | "Process" | "Entropy" | "Net")
+            let fits = matches!(name, "Stdout" | "Fs" | "Clock" | "Process" | "Entropy" | "Net" | "Env")
                 && capability.default.is_none();
             if !fits {
                 let message = format!("a test can't receive `{}` this way", capability.name);
-                let help = "a test can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock`, `process: Process`, `entropy: Entropy` and `net: Net`";
+                let help = "a test can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock`, `process: Process`, `entropy: Entropy`, `net: Net` and `env: Env`";
                 cx.error(Diagnostic::new(message, capability.span).with_help(help));
             }
             let ty = if fits { Type::named(name) } else { Type::Unknown };
@@ -478,7 +529,9 @@ impl<'c> FnCx<'c> {
     fn check_field_default(&mut self, type_name: &str, case: Option<&str>, field: &Field) {
         let expected = self.checker.field_type(type_name, case, &field.name);
         let Some(default) = &field.default else { return };
-        let actual = self.expr(default);
+        // A field with no type written takes it from its default, so only a written one is
+        // expected of the default.
+        let actual = if field.ty.is_some() { self.expr_as(default, &expected) } else { self.expr(default) };
         if !self.checker.fits(&expected, &actual) {
             let what = format!("`{}`", field.name);
             self.error(crate::messages::mismatch(&what, &expected, &actual, default.span));
@@ -538,7 +591,7 @@ impl<'c> FnCx<'c> {
 
     pub(crate) fn declare_as(&mut self, name: &str, ty: Type, is_mut: bool, origin: Origin, at: Span) {
         self.declare_with(
-            Binding { name: name.to_owned(), ty: ty.clone(), declared: ty, is_mut, origin },
+            Binding { name: name.to_owned(), ty: ty.clone(), declared: ty, is_mut, origin, mut_at: None },
             at,
         );
     }
@@ -550,7 +603,15 @@ impl<'c> FnCx<'c> {
             Type::None => Type::Optional(Box::new(self.checker.fresh(at, Hole::None))),
             other => other,
         };
-        self.declare_with(Binding { name: name.to_owned(), ty, declared, is_mut, origin: Origin::Local }, at);
+        let binding = Binding {
+            name: name.to_owned(),
+            ty,
+            declared,
+            is_mut,
+            origin: Origin::Local,
+            mut_at: Some(at.start),
+        };
+        self.declare_with(binding, at);
     }
 
     /// Declares a name with the type it was declared with, and what it holds now.
@@ -565,6 +626,17 @@ impl<'c> FnCx<'c> {
     /// A name from around a nested function, which it can read.
     fn capture(&mut self, binding: Binding) {
         self.bind(Binding { is_mut: false, origin: Origin::Captured, ..binding });
+    }
+
+    /// `name`, just declared by unpacking, which `mut` can't be written before.
+    pub(crate) fn unpacked(&mut self, name: &str) {
+        let here = self
+            .scopes
+            .last_mut()
+            .and_then(|scope| scope.bindings.iter_mut().rev().find(|binding| binding.name == name));
+        if let Some(binding) = here {
+            binding.mut_at = None;
+        }
     }
 
     fn bind(&mut self, binding: Binding) {
@@ -584,7 +656,29 @@ impl<'c> FnCx<'c> {
             }
             crossed |= scope.barrier;
         }
-        let Some(binding) = found else { return not_mut(name, span) };
+        let Some(binding) = found else { return not_mut(name, span, None) };
+        if crossed && self.kept_generators > 0 {
+            let message =
+                format!("a generator kept for later can't change `{name}`, which is defined outside it");
+            return Diagnostic::new(message, span).with_help(
+                "it runs after this line, when it's asked for an item: write it right inside `sum(...)` or `list(...)`, or write a loop",
+            );
+        }
+        // A new name, from a `for` or a `case`, over one that can change.
+        let same_name = self.scopes.iter().rev().flat_map(|scope| scope.bindings.iter().rev());
+        let hidden = same_name.filter(|binding| binding.name == name).skip(1).find(|binding| binding.is_mut);
+        if let Some(hidden) = hidden
+            && !crossed
+            && !binding.is_mut
+        {
+            // Only a local is written `mut`: a parameter, loop or `with` name is `ref`.
+            let word = if matches!(hidden.origin, Origin::Local | Origin::Captured) { "mut" } else { "ref" };
+            return Diagnostic::new(
+                format!("this `{name}` is a new name, which hides the `{word} {name}` around it"),
+                span,
+            )
+            .with_help(format!("give this one another name, to change the `{name}` around it"));
+        }
         if crossed || binding.origin == Origin::Captured {
             let function = if crossed { "an arrow function" } else { "a nested function" };
             return Diagnostic::new(format!("{function} can't change `{name}`, which is defined outside it"), span)
@@ -594,17 +688,17 @@ impl<'c> FnCx<'c> {
         }
         let help = match binding.origin {
             Origin::Param if name == "self" => {
-                format!("to change `self`, write `mut self` in `{}`'s parameters", self.name)
+                format!("to change `self`, write `ref self` in `{}`'s parameters", self.name)
             }
             Origin::Param => format!(
-                "parameters are read-only: to change it, write `mut {name}` in `{}`'s parameters, and pass it with `mut` at each call",
+                "parameters are read-only: to change it, write `ref {name}` in `{}`'s parameters, and pass it with `ref` at each call",
                 self.name
             ),
-            Origin::Loop => format!("loop with `for mut {name} in ...` to change each item"),
-            Origin::Locked => format!("it's locked to read: lock it to write with `as mut {name}`"),
-            Origin::Local | Origin::Captured => return not_mut(name, span),
+            Origin::Loop => format!("loop with `for ref {name} in ...` to change each item"),
+            Origin::Locked => format!("it's locked to read: lock it to write with `as ref {name}`"),
+            Origin::Local | Origin::Captured => return not_mut(name, span, binding.mut_at),
         };
-        Diagnostic::new(format!("`{name}` isn't mut"), span).with_help(help)
+        Diagnostic::new(format!("`{name}` isn't `ref`"), span).with_help(help)
     }
 
     /// The type a name was declared with.
@@ -622,6 +716,22 @@ impl<'c> FnCx<'c> {
             crossed |= scope.barrier;
         }
         None
+    }
+
+    /// The innermost name in sight that holds this type.
+    pub(crate) fn name_holding(&self, ty: &Type) -> Option<String> {
+        let mut bindings = self.scopes.iter().rev().flat_map(|scope| scope.bindings.iter().rev());
+        bindings.find(|binding| binding.ty == *ty).map(|binding| binding.name.clone())
+    }
+
+    /// The name in sight, or function of the program's own, spelled most like `name`.
+    pub(crate) fn similar_name(&self, name: &str) -> Option<String> {
+        let names =
+            self.scopes.iter().flat_map(|scope| scope.bindings.iter().map(|binding| binding.name.as_str()));
+        let functions = self.checker.program.functions.iter();
+        let functions = functions.filter(|(_, entry)| !entry.prelude && entry.owner.is_none());
+        crate::messages::spelled_most_like(name, names.chain(functions.map(|(key, _)| key.as_str())))
+            .map(str::to_owned)
     }
 
     /// Where the name in sight came from.
@@ -776,6 +886,72 @@ impl<'c> FnCx<'c> {
             binding.ty = binding.declared.clone();
         }
         self.forget_fields(&name);
+    }
+
+    /// Records which member of its union each name holds, or doesn't: a name known to hold one
+    /// is that member's type, and one known not to is the union of the rest.
+    pub(crate) fn narrow_members(&mut self, known: &[(String, String, bool)]) {
+        for (name, member, holds) in known {
+            let Some(member) = self.member_type(member, Span::default()) else { continue };
+            let Some(ty) = self.union_of(name) else { continue };
+            let Type::Union(members) = ty else { continue };
+            if !members.contains(&member) {
+                continue;
+            }
+            let narrowed = if *holds {
+                member
+            } else {
+                let mut rest: Vec<Type> = members.into_iter().filter(|other| *other != member).collect();
+                if rest.len() == 1 { rest.remove(0) } else { Type::Union(rest) }
+            };
+            if let Some(binding) = self.binding_mut(name) {
+                binding.ty = narrowed;
+            }
+        }
+    }
+
+    /// The union a name or field path holds, by the type it was declared with, since what was
+    /// last given to it may have narrowed it to one member already.
+    fn union_of(&mut self, name: &str) -> Option<Type> {
+        let binding = self
+            .scopes
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.bindings.iter().rev())
+            .find(|b| b.name == name)?;
+        let (ty, declared) = (binding.ty.clone(), binding.declared.clone());
+        [declared, ty].into_iter().map(|ty| self.checker.settled(&ty)).find(|ty| matches!(ty, Type::Union(_)))
+    }
+
+    /// The type a name after `is` stands for, if it names one: `Circle` in `s is Circle`.
+    pub(crate) fn member_type(&self, name: &str, span: Span) -> Option<Type> {
+        let written =
+            fennec_syntax::TypeExpr { name: name.to_owned(), args: Vec::new(), optional: false, span };
+        self.checker.program.resolve(&written).ok().filter(|ty| !matches!(ty, Type::Unknown))
+    }
+
+    /// `s is Circle`: a bool, for a name or field holding a union with that member.
+    pub(crate) fn is_member(&mut self, value: &Expr, member: &str, at: Span) -> Type {
+        let ty = self.expr(value);
+        let declared = path(value).and_then(|name| self.union_of(&name));
+        let settled = declared.unwrap_or_else(|| self.checker.settled(&ty));
+        let Some(wanted) = self.member_type(member, at) else { return Type::Bool };
+        match &settled {
+            Type::Union(members) if members.contains(&wanted) => {}
+            Type::Union(_) => {
+                let message = format!("`{member}` isn't one of the types in {}", crate::types::a(&settled));
+                self.error(Diagnostic::new(message, at));
+            }
+            Type::Unknown => {}
+            other => {
+                let message =
+                    format!("this is always {}, so `is {member}` says nothing", crate::types::a(other));
+                self.error(
+                    Diagnostic::new(message, value.span).with_help("`is` tells apart the types in a union"),
+                );
+            }
+        }
+        Type::Bool
     }
 
     /// Records that these names aren't None.

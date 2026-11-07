@@ -10,7 +10,7 @@ use fennec_jit::JitError;
 
 /// Examples the JIT may hand back to the interpreter whole, because it can't compile their
 /// `main` yet. Every other example must run natively. The JIT doesn't take `shared` types yet.
-const INTERPRETED: &[&str] = &["shared_accounts.fen"];
+const INTERPRETED: &[&str] = &["locks.fen", "shared_accounts.fen", "shared_bank.fen"];
 
 /// The functions the JIT can't compile yet, in the examples that have any: generators,
 /// functions with functions inside them, and `match`es with a guarded `case`. They run in
@@ -25,10 +25,12 @@ const INTERPRETED_FUNCTIONS: &[(&str, &[&str])] = &[
     ("generators.fen", &["checked", "countdown", "doubled", "holding", "naturals", "words"]),
     ("generators_fused.fen", &["checked", "odd", "running", "three", "upto"]),
     // Each std collection's `iter`, below, for the same reason (#450).
+    // `Server.iter`, as in `std_net.fen`, and `respond`'s `case` with a guard, which the JIT
+    // doesn't compile yet.
+    ("http_server.fen", &["Server.iter", "respond"]),
     ("imports.fen", &["Deque.iter"]),
     ("json_collections.fen", &["Grid.iter", "SortedMap.iter"]),
     ("json_enums.fen", &["Grid.iter"]),
-    ("operators.fen", &["Grid.iter"]),
     ("own_positions.fen", &["Deque.iter", "Grid.iter"]),
     ("std_collections.fen", &["Counter.iter", "Deque.iter"]),
     ("std_grid.fen", &["Deque.iter", "Grid.iter"]),
@@ -197,6 +199,9 @@ fn the_jit_runs_examples_exactly_like_the_interpreter() {
     .unwrap();
 }
 
+/// A run of every example and kernel, as a whole and checking only what it reaches, which
+/// compile the same. One program at a time, it took 57 seconds, most of it `richards` and
+/// `deltablue`, so programs run on up to 8 workers and each one's two runs at once.
 #[test]
 fn a_run_checking_only_what_it_reaches_compiles_the_same() {
     let home = std::env::temp_dir().join(format!("fennec-examples-reached-{}", std::process::id()));
@@ -204,36 +209,65 @@ fn a_run_checking_only_what_it_reaches_compiles_the_same() {
     let dir = examples_dir();
     let mut paths = programs(&dir).unwrap();
     paths.extend(programs(&dir.join("../bench/kernels")).unwrap());
-    let on_a_big_stack = std::thread::Builder::new().stack_size(1 << 28).spawn(move || {
-        for path in paths {
-            let source = fs::read_to_string(&path).unwrap();
-            let mut module = fennec_syntax::parse(&source).unwrap();
-            let signatures = fennec_check::check_to_run(&mut module).unwrap();
-            let Ok(whole) = fennec_jit::run_with_report(&module, &mut Vec::new()) else { continue };
-            let inputs = fennec_interp::Inputs::default();
-            let reached = fennec_jit::run_cached(
-                &module,
-                Some(&signatures),
-                &mut Vec::new(),
-                inputs,
-                &cache,
-                "reached",
-            )
-            .unwrap();
-            // A std iter the reached run fused away, and only that, is left out of the whole one.
-            let mut whole_interpreted = whole.interpreted.clone();
-            whole_interpreted
-                .retain(|key| !FUSED_STD_ITERS.contains(&key.as_str()) || reached.interpreted.contains(key));
-            assert_eq!(
-                (reached.interpreted, reached.handed_over, reached.with_frames),
-                (whole_interpreted, whole.handed_over, whole.with_frames),
-                "{} compiled differently",
-                path.display()
-            );
+    let workers = std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(8);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let differ = std::sync::Mutex::new(Vec::new());
+    // Each run takes a big stack, as compiling a large program goes deep.
+    let on_a_big_stack = || std::thread::Builder::new().stack_size(1 << 28);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let (paths, cache, next, differ) = (&paths, &cache, &next, &differ);
+            on_a_big_stack()
+                .spawn_scoped(scope, move || {
+                    loop {
+                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(path) = paths.get(at) else { return };
+                        match compiled_differently(path, cache, &format!("reached-{at}")) {
+                            Ok(None) => {}
+                            Ok(Some(difference)) | Err(difference) => differ.lock().unwrap().push(difference),
+                        }
+                    }
+                })
+                .unwrap();
         }
     });
-    on_a_big_stack.unwrap().join().unwrap();
+    let differ = differ.into_inner().unwrap();
+    assert!(differ.is_empty(), "{}", differ.join("\n\n"));
     fs::remove_dir_all(home).ok();
+}
+
+/// How a program compiles differently as a whole and checking only what it reaches, if it does,
+/// with its two runs at once. A run of it as a whole that fails leaves nothing to compare.
+fn compiled_differently(
+    path: &Path,
+    cache: &fennec_build::Cache,
+    name: &str,
+) -> Result<Option<String>, String> {
+    let shown = path.display();
+    let source = fs::read_to_string(path).map_err(|err| format!("{shown}: {err}"))?;
+    let mut module = fennec_syntax::parse(&source).map_err(|err| format!("{shown}: {}", err.message))?;
+    let signatures = fennec_check::check_to_run(&mut module).map_err(|_| format!("{shown} doesn't check"))?;
+    let (whole, reached) = std::thread::scope(|scope| {
+        let whole = std::thread::Builder::new()
+            .stack_size(1 << 28)
+            .spawn_scoped(scope, || fennec_jit::run_with_report(&module, &mut Vec::new()).ok())
+            .map_err(|err| err.to_string())?;
+        let inputs = fennec_interp::Inputs::default();
+        let reached =
+            fennec_jit::run_cached(&module, Some(&signatures), &mut Vec::new(), inputs, cache, name);
+        let whole = whole.join().map_err(|_| format!("{shown}: the run as a whole panicked"))?;
+        Ok::<_, String>((whole, reached))
+    })?;
+    let Some(whole) = whole else { return Ok(None) };
+    let reached = reached.map_err(|_| format!("{shown}: the run checking what it reaches failed"))?;
+    // A std iter the reached run fused away, and only that, is left out of the whole one.
+    let mut whole_interpreted = whole.interpreted.clone();
+    whole_interpreted
+        .retain(|key| !FUSED_STD_ITERS.contains(&key.as_str()) || reached.interpreted.contains(key));
+    let reached = (reached.interpreted, reached.handed_over, reached.with_frames);
+    let whole = (whole_interpreted, whole.handed_over, whole.with_frames);
+    Ok((reached != whole)
+        .then(|| format!("{shown} compiled differently:\n  reached {reached:?}\n  whole {whole:?}")))
 }
 
 #[test]
@@ -247,8 +281,8 @@ fn a_run_checking_only_what_it_reaches_finds_the_same_mistakes() {
     }
 }
 
-/// How many places each benchmark kernel isn't native can only go down: a change that adds
-/// one fails here, and one that removes some lowers the count in `bench/fallbacks.txt`.
+/// How many functions in each benchmark kernel LLVM doesn't take can only go down: a change that
+/// adds one fails here, and one that removes some lowers the count in `bench/fallbacks.txt`.
 #[test]
 fn benchmark_kernels_only_lose_fallbacks() {
     let bench = examples_dir().join("../bench");
@@ -261,32 +295,37 @@ fn benchmark_kernels_only_lose_fallbacks() {
             (kernel.to_owned(), count.parse().unwrap())
         })
         .collect();
-    let on_a_big_stack = std::thread::Builder::new().stack_size(1 << 28).spawn(move || {
-        let mut wrong = Vec::new();
-        let paths = programs(&bench.join("kernels")).unwrap();
-        for path in &paths {
-            let kernel = path.file_stem().unwrap().to_string_lossy().into_owned();
-            let module = fennec_syntax::parse(&fs::read_to_string(path).unwrap()).unwrap();
-            let count = fennec_jit::fallbacks(&module).unwrap().len();
-            match allowed.iter().find(|(name, _)| *name == kernel) {
-                Some((_, limit)) if count == *limit => {}
-                Some((_, limit)) => wrong.push(format!("{kernel}: {count} fallbacks, the list says {limit}")),
-                None => wrong.push(format!("{kernel}: {count} fallbacks, and it isn't on the list")),
+    let mut wrong = Vec::new();
+    let paths = programs(&bench.join("kernels")).unwrap();
+    for path in &paths {
+        let kernel = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let output = crate::executables::fennec_command()
+            .args(["dev", "fallbacks", "--llvm", &path.to_string_lossy()])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{kernel}: {}", String::from_utf8_lossy(&output.stderr));
+        let said = String::from_utf8_lossy(&output.stdout);
+        let last = said.lines().last().unwrap_or("");
+        let count = last.strip_suffix(" places aren't native").map_or(0, |count| count.parse().unwrap());
+        match allowed.iter().find(|(name, _)| *name == kernel) {
+            Some((_, limit)) if count == *limit => {}
+            Some((_, limit)) => {
+                wrong.push(format!("{kernel}: {count} fallbacks, the list says {limit}\n{said}"));
             }
+            None => wrong.push(format!("{kernel}: {count} fallbacks, and it isn't on the list")),
         }
-        for (name, _) in &allowed {
-            if !paths.iter().any(|path| path.file_stem().is_some_and(|stem| stem == name.as_str())) {
-                wrong.push(format!("{name} is on the list, but isn't a kernel"));
-            }
+    }
+    for (name, _) in &allowed {
+        if !paths.iter().any(|path| path.file_stem().is_some_and(|stem| stem == name.as_str())) {
+            wrong.push(format!("{name} is on the list, but isn't a kernel"));
         }
-        assert!(
-            wrong.is_empty(),
-            "bench/fallbacks.txt is out of date. A count that went up means a kernel lost native code; \
-             see `fennec dev fallbacks`. One that went down should be lowered there:\n{}",
-            wrong.join("\n")
-        );
-    });
-    on_a_big_stack.unwrap().join().unwrap();
+    }
+    assert!(
+        wrong.is_empty(),
+        "bench/fallbacks.txt is out of date. A count that went up means LLVM stopped taking part of a \
+         kernel; see `fennec dev fallbacks --llvm`. One that went down should be lowered there:\n{}",
+        wrong.join("\n")
+    );
 }
 
 #[test]
@@ -564,8 +603,8 @@ fn run_both(source: &str) -> Result<[(String, Option<String>); 2], Vec<fennec_sy
 fn using_a_generator_twice_fails_in_both_engines() {
     let source = "def main(stdout: Stdout):
     made = (n for n in [1, 2])
-    stdout.print(list(made))
-    stdout.print(list(made))
+    for _ in range(2):
+        stdout.print(list(made))
 ";
     for (output, failure) in run_both(source).unwrap() {
         assert_eq!(output, "[1, 2]\n");

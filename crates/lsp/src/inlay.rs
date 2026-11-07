@@ -242,7 +242,11 @@ fn block(body: &[Stmt], visit: &mut dyn FnMut(&Expr)) {
 
 fn statement(stmt: &Stmt, visit: &mut dyn FnMut(&Expr)) {
     match &stmt.kind {
-        StmtKind::Expr(value) | StmtKind::Fail(value) | StmtKind::Yield(value) | StmtKind::Assert(value) => {
+        StmtKind::Expr(value)
+        | StmtKind::Fail(value)
+        | StmtKind::Yield(value)
+        | StmtKind::Assert(value)
+        | StmtKind::Lend { value, .. } => {
             walk_expr(value, visit);
         }
         StmtKind::Return(value) => value.iter().for_each(|value| walk_expr(value, visit)),

@@ -79,14 +79,19 @@ fn what_a_run_rejects(
     if !left_out {
         return None;
     }
-    let diagnostics = crate::copy_rule::check_and_resolve(&mut run.module.clone()).err()?;
+    let diagnostics = crate::copy_rule::check_to_run(&mut run.module.clone(), &run.sources).err()?;
     Some((run, diagnostics))
 }
 
 fn checked(path: &str, json: bool) -> ExitCode {
     let Some(program) = loaded(path, json) else { return ExitCode::FAILURE };
-    let diagnostics =
-        crate::copy_rule::check_and_resolve(&mut program.module.clone()).err().unwrap_or_default();
+    // As a run checks it: all of the program, and of the standard library just what it reaches,
+    // since the library's own tests check the rest.
+    let mut diagnostics = crate::copy_rule::check_to_run(&mut program.module.clone(), &program.sources)
+        .err()
+        .unwrap_or_default();
+    fennec_check::add_rename_fixes(&mut diagnostics, &program.module, &program.sources);
+    fennec_check::add_pattern_fixes(&mut diagnostics, &program.sources);
     if diagnostics.is_empty()
         && let Some((run, diagnostics)) = what_a_run_rejects(path, &program)
     {
@@ -98,9 +103,11 @@ fn checked(path: &str, json: bool) -> ExitCode {
 fn linted(path: &str, json: bool) -> ExitCode {
     let Some(program) = loaded(path, json) else { return ExitCode::FAILURE };
     // Lowering takes the module with what checking works out written in, and the linter the
-    // module as it's written, so checking writes into a copy.
+    // module as it's written, so checking writes into a copy. Of the standard library, only what
+    // the program reaches is checked, with every type's fields for lowering: checking all of it
+    // would take most of the time a lint has.
     let mut resolved = program.module.clone();
-    let signatures = match fennec_check::check_and_resolve(&mut resolved) {
+    let signatures = match fennec_check::check_to_lower(&mut resolved) {
         Ok(signatures) => signatures,
         Err(diagnostics) => return rejected(&program, &diagnostics, json),
     };

@@ -7,6 +7,7 @@ use std::hash::BuildHasherDefault;
 
 use super::{CELL_SHAPE, FINISHED, GENERATOR_PC, HEADER_WORDS, Heap, children_into, is_text, shape_word};
 use crate::embed::plans::{Holds, Plan};
+use crate::embed::table::Released;
 use crate::embed::{State, with};
 use crate::value::Value;
 
@@ -109,16 +110,14 @@ fn is_abandoned(state: &State, block: &[u64]) -> bool {
 /// way down.
 fn free_block(state: &mut State, address: u64) {
     let mut pending = std::mem::take(&mut state.heap.pending);
+    let mut taken = std::mem::take(&mut state.heap.taken);
     pending.push(address);
-    while let Some(address) = pending.pop() {
-        if crate::embed::threads::held_elsewhere(address) {
+    while let Some((address, block)) = next_to_free(state, &mut pending, &mut taken) {
+        if super::is_handle_block(&block) {
+            state.heap.blocks.insert(block);
+            crate::embed::guarded::release_handle(state, address);
             continue;
         }
-        // Only a string has a place kept in it, and that's forgotten below, once it's known to be one.
-        let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove_any(at))
-        else {
-            continue;
-        };
         let shape = shape_word(&block).unwrap_or(u64::MAX);
         debug_assert!(
             shape == state.tables.str_shape
@@ -134,12 +133,45 @@ fn free_block(state: &mut State, address: u64) {
             if !state.heap.texts.get_mut().is_empty() {
                 forget_text(state, address);
             }
-        } else if shape >= state.tables.str_shape || !release_planned(&mut state.heap, &block, &mut pending) {
-            free_unplanned(state, &block, &mut pending);
+        } else if shape >= state.tables.str_shape {
+            // A list of numbers, the most usual kind, has nothing to look through.
+            let number = crate::embed::lists::element_number(state, &block);
+            if !number.is_some_and(|number| state.heap.items_hold_nothing(number)) {
+                free_unplanned(state, &block, &mut pending, &mut taken);
+            }
+        } else if !release_planned(&mut state.heap, &block, &mut pending, &mut taken) {
+            free_unplanned(state, &block, &mut pending, &mut taken);
         }
         state.heap.recycle(block);
     }
     state.heap.pending = pending;
+    state.heap.taken = taken;
+}
+
+/// The next block to free, out of the table: a child a freed struct held the last owner of, which
+/// is out already, or else the next address waiting whose block is still this thread's.
+fn next_to_free(
+    state: &mut State,
+    pending: &mut Vec<u64>,
+    taken: &mut Vec<Box<[u64]>>,
+) -> Option<(u64, Box<[u64]>)> {
+    if let Some(block) = taken.pop() {
+        return Some((u64::try_from(block.as_ptr().addr()).unwrap_or(0), block));
+    }
+    while let Some(address) = pending.pop() {
+        if crate::embed::threads::held_elsewhere(address) {
+            continue;
+        }
+        // Only a string has a place kept in it, and that's forgotten after, once it's known to be one.
+        if let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.take_block(at)) {
+            return Some((address, block));
+        }
+        // A `shared` value's handle: its count is the runtime's, wherever its block is.
+        if crate::embed::guarded::is_handle(address) {
+            crate::embed::guarded::release_handle(state, address);
+        }
+    }
+    None
 }
 
 /// Keeps a generator let go partway until what closes it has run, which holds it as its one
@@ -165,7 +197,7 @@ fn forget_text(state: &mut State, address: u64) {
 /// Frees what a block with no plan holds: a cell's value, or the blocks a list, dict or
 /// unplanned struct refers to.
 #[inline(never)]
-fn free_unplanned(state: &mut State, block: &[u64], pending: &mut Vec<u64>) {
+fn free_unplanned(state: &mut State, block: &[u64], pending: &mut Vec<u64>, taken: &mut Vec<Box<[u64]>>) {
     if shape_word(block) == Some(CELL_SHAPE) {
         let number = block.get(2).and_then(|number| usize::try_from(*number).ok());
         if let Some(number) = number {
@@ -176,23 +208,35 @@ fn free_unplanned(state: &mut State, block: &[u64], pending: &mut Vec<u64>) {
             state.heap.spare_cells.push(number);
         }
     } else {
-        release_children(state, block, pending);
+        release_children(state, block, pending, taken);
     }
 }
 
-/// Gives up the owner a block holds of each block it refers to, adding those it was the last
-/// owner of to `pending`.
-fn release_children(state: &mut State, block: &[u64], pending: &mut Vec<u64>) {
+/// Gives up the owner a block holds of each block it refers to, queueing those it was the last
+/// owner of to be freed: taken out of the table at once when this thread alone counts them and
+/// holds every block it can reach.
+fn release_children(state: &mut State, block: &[u64], pending: &mut Vec<u64>, taken: &mut Vec<Box<[u64]>>) {
     let mut found = std::mem::take(&mut state.heap.found);
     children_into(state, block, &mut found);
+    let direct = !crate::embed::threads::counted_elsewhere() && state.heap.holds_all();
     for child in found.drain(..) {
+        if direct {
+            match state.heap.blocks.release_one(usize::try_from(child).unwrap_or(usize::MAX)) {
+                Released::Gone(block) => {
+                    taken.push(block);
+                    continue;
+                }
+                Released::Held => continue,
+                Released::Missing => {}
+            }
+        }
         if let Some(count) = state.heap.block_mut(child).and_then(|child| child.first_mut()) {
             *count = count.saturating_sub(1);
             if *count == 0 {
                 pending.push(child);
             }
-        } else {
-            state.heap.change_lent_owners(child, -1);
+        } else if !state.heap.change_lent_owners(child, -1) && crate::embed::guarded::is_handle(child) {
+            pending.push(child);
         }
     }
     state.heap.found = found;
@@ -201,8 +245,14 @@ fn release_children(state: &mut State, block: &[u64], pending: &mut Vec<u64>) {
 /// Gives up the owner a struct's or enum's block holds of each block its plan says it refers
 /// to, adding those it was the last owner of to `pending`. False, having done nothing, when
 /// its shape's plan doesn't say.
-fn release_planned(heap: &mut Heap, block: &[u64], pending: &mut Vec<u64>) -> bool {
+fn release_planned(
+    heap: &mut Heap,
+    block: &[u64],
+    pending: &mut Vec<u64>,
+    taken: &mut Vec<Box<[u64]>>,
+) -> bool {
     let Heap { plans, blocks, lent, lent_owners, .. } = heap;
+    let freeing = &mut Freeing { pending, taken, direct: !crate::embed::threads::counted_elsewhere() };
     let shape = shape_word(block).and_then(|shape| usize::try_from(shape).ok());
     let fields = block.get(HEADER_WORDS..).unwrap_or_default();
     let words = match shape.and_then(|shape| plans.get(shape)) {
@@ -215,21 +265,31 @@ fn release_planned(heap: &mut Heap, block: &[u64], pending: &mut Vec<u64>) -> bo
             }
         }
         Some(Plan::FixedWithTexts(holds)) => {
-            release_planned_holds(holds, fields, blocks, lent.as_ref(), lent_owners, pending);
+            release_planned_holds(holds, fields, blocks, lent.as_ref(), lent_owners, freeing);
             return true;
         }
         Some(Plan::CasesWithTexts(cases)) => {
             let case = fields.first().and_then(|case| usize::try_from(*case).ok());
             let Some(holds) = case.and_then(|case| cases.get(case)) else { return false };
-            release_planned_holds(holds, fields, blocks, lent.as_ref(), lent_owners, pending);
+            release_planned_holds(holds, fields, blocks, lent.as_ref(), lent_owners, freeing);
             return true;
         }
         _ => return false,
     };
     for child in words.iter().filter_map(|at| fields.get(*at).copied()).filter(|child| *child != 0) {
-        release_planned_child(blocks, lent.as_ref(), lent_owners, pending, child);
+        release_planned_child(blocks, lent.as_ref(), lent_owners, freeing, child);
     }
     true
+}
+
+/// Where a freed struct's children go: by address when they have to be looked up again, and taken
+/// out of the table already when this thread alone counts them.
+struct Freeing<'f> {
+    pending: &'f mut Vec<u64>,
+    taken: &'f mut Vec<Box<[u64]>>,
+    /// Whether no block can be counted by another thread, so one with no owner left is this
+    /// thread's to take out at once.
+    direct: bool,
 }
 
 /// Gives up the owner a block holds of what's in its words and of the strings' blocks in its
@@ -240,17 +300,17 @@ fn release_planned_holds(
     blocks: &mut crate::embed::table::Table,
     lent: Option<&std::sync::Arc<crate::embed::table::Table>>,
     lent_owners: &mut HashMap<u64, i64, BuildHasherDefault<super::AddressHasher>>,
-    pending: &mut Vec<u64>,
+    freeing: &mut Freeing<'_>,
 ) {
     for child in holds.blocks_in(fields).filter(|child| *child != 0) {
-        release_planned_child(blocks, lent, lent_owners, pending, child);
+        release_planned_child(blocks, lent, lent_owners, freeing, child);
     }
     for child in holds.texts_in(fields).filter(|child| *child != 0) {
-        release_planned_child(blocks, lent, lent_owners, pending, child);
+        release_planned_child(blocks, lent, lent_owners, freeing, child);
     }
 }
 
-/// Gives up one owner of a block a struct or enum held, adding it to `pending` if that was the
+/// Gives up one owner of a block a struct or enum held, queueing it to be freed if that was the
 /// last.
 #[expect(clippy::inline_always, reason = "every block's free goes through this, and a call here costs 2%")]
 #[inline(always)]
@@ -258,19 +318,29 @@ fn release_planned_child(
     blocks: &mut crate::embed::table::Table,
     lent: Option<&std::sync::Arc<crate::embed::table::Table>>,
     lent_owners: &mut HashMap<u64, i64, BuildHasherDefault<super::AddressHasher>>,
-    pending: &mut Vec<u64>,
+    freeing: &mut Freeing<'_>,
     child: u64,
 ) {
-    let count = usize::try_from(child).ok().and_then(|at| blocks.get_mut(at)).and_then(<[u64]>::first_mut);
-    if let Some(count) = count {
+    let at = usize::try_from(child).unwrap_or(usize::MAX);
+    if freeing.direct {
+        match blocks.release_one(at) {
+            Released::Gone(block) => return freeing.taken.push(block),
+            Released::Held => return,
+            Released::Missing => {}
+        }
+    } else if let Some(count) = blocks.get_mut(at).and_then(<[u64]>::first_mut) {
         *count = count.saturating_sub(1);
         if *count == 0 {
-            pending.push(child);
+            freeing.pending.push(child);
         }
-    } else if crate::embed::threads::ON
+        return;
+    }
+    if crate::embed::threads::ON
         && lent.is_some_and(|lent| usize::try_from(child).is_ok_and(|at| lent.get(at).is_some()))
     {
         *lent_owners.entry(child).or_default() -= 1;
+    } else if crate::embed::guarded::is_handle(child) {
+        freeing.pending.push(child);
     }
 }
 
@@ -320,7 +390,9 @@ pub(in crate::embed) fn release(state: &mut State, address: u64) {
         }
         Some(_) => true,
         None => {
-            state.heap.change_lent_owners(address, -1);
+            if !state.heap.change_lent_owners(address, -1) && crate::embed::guarded::is_handle(address) {
+                crate::embed::guarded::release_handle(state, address);
+            }
             false
         }
     };
@@ -331,7 +403,11 @@ pub(in crate::embed) fn release(state: &mut State, address: u64) {
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
+    use super::Heap;
     use crate::embed::{Tables, finish, start, with};
+    use crate::packed::Element;
 
     /// Frees `count` blocks of `words` words at once, as a program dropping a big structure does.
     fn free_many(count: usize, words: usize) {
@@ -344,12 +420,54 @@ mod tests {
     }
 
     #[test]
+    fn a_heap_knows_which_lists_hold_no_blocks_only_from_its_plans() {
+        let elements = [Rc::new(Element::Int), Rc::new(Element::Str)];
+        let heap = Heap::default().planned(&[], &elements);
+        assert!(heap.items_hold_nothing(0));
+        assert!(!heap.items_hold_nothing(1));
+        assert!(!heap.items_hold_nothing(2), "a kind it hasn't a plan for");
+        assert!(!Heap::default().items_hold_nothing(0), "a worker's heap, which has none");
+    }
+
+    /// One size freed over and over, which nothing asks for again, takes only its share, leaving room
+    /// for the others: a string of each length is mostly made fresh, not reused.
+    #[test]
+    fn no_one_size_takes_all_a_heap_keeps_for_reuse() {
+        let module = fennec_syntax::Module { items: Vec::new() };
+        start(&module, Tables::default(), crate::Inputs::default()).unwrap();
+        free_many(400_000, 7);
+        with(|state| {
+            let sevens = state.heap.spare.get(7).map_or(0, Vec::len) * 7;
+            assert!(sevens <= super::super::SPARE_SIZE_WORDS, "{sevens} words of one size");
+            assert!(sevens > super::super::SPARE_SIZE_WORDS - 7, "it kept less than its share");
+        });
+        free_many(1_000, 4);
+        with(|state| assert_eq!(state.heap.spare.get(4).map_or(0, Vec::len), 1_000, "room for the next"));
+        finish();
+    }
+
+    /// A block native code makes outside the table is counted when it says so, and only while
+    /// the run counts at all, which a test's always does.
+    #[test]
+    fn native_code_counts_the_blocks_it_makes_itself_while_counting_is_on() {
+        let module = fennec_syntax::Module { items: Vec::new() };
+        start(&module, Tables::default(), crate::Inputs::default()).unwrap();
+        assert_eq!(crate::embed::aot::counting(), 1, "a test's run counts");
+        let before = with(|state| state.heap.counts);
+        crate::embed::aot::trace_allocated(40);
+        let after = with(|state| state.heap.counts);
+        assert_eq!(after.allocations, before.allocations + 1);
+        assert_eq!(after.allocated_bytes, before.allocated_bytes + 40);
+        finish();
+    }
+
+    #[test]
     fn what_a_heap_keeps_for_reuse_stays_under_its_limit_however_much_is_freed() {
         let module = fennec_syntax::Module { items: Vec::new() };
         start(&module, Tables::default(), crate::Inputs::default()).unwrap();
-        // Blocks of four words fill the limit exactly, and all of it gets used.
+        // Blocks of four words fill their size's share exactly, and all of it gets used.
         free_many(400_000, 4);
-        with(|state| assert_eq!(state.heap.spare_words, super::super::SPARE_TOTAL_WORDS));
+        with(|state| assert_eq!(state.heap.spare_words, super::super::SPARE_SIZE_WORDS));
         for words in [4, 5, 16, 100] {
             free_many(400_000, words);
             with(|state| {

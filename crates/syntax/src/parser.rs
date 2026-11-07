@@ -41,7 +41,7 @@ pub(crate) fn parse_statements_at(source: &str, base: u32) -> Result<Vec<Stmt>, 
     while !parser.eat(&Tok::Dedent) && !parser.at(&Tok::Eof) {
         stmts.push(parser.stmt()?);
     }
-    Ok(stmts)
+    parser.old_spelling_error().map_or(Ok(stmts), Err)
 }
 
 pub(crate) struct Parser {
@@ -51,12 +51,26 @@ pub(crate) struct Parser {
     /// Set when an expression ended with an indented block (a `match`), so the statement
     /// holding it has no line ending of its own to consume.
     block_ended: bool,
+    /// Each `mut` written where the language now says `ref`, and what it was on. Parsing goes on
+    /// past them, so the one error they give can fix every one in the file.
+    old_mut: Vec<(Span, &'static str)>,
+    /// Each `pub` written, the old spelling, with what goes there instead: `export` on a top-level
+    /// name, and nothing on a method, which comes with its type. Like `old_mut`, they give one
+    /// error that fixes them all.
+    old_pub: Vec<(Span, Span, &'static str)>,
 }
 
 impl Parser {
     fn new(tokens: Vec<Token>) -> Self {
         let end = tokens.last().map_or_else(Span::default, |token| token.span);
-        Parser { tokens, pos: 0, eof: Token { tok: Tok::Eof, span: end }, block_ended: false }
+        Parser {
+            tokens,
+            pos: 0,
+            eof: Token { tok: Tok::Eof, span: end },
+            block_ended: false,
+            old_mut: Vec::new(),
+            old_pub: Vec::new(),
+        }
     }
 
     fn current(&self) -> &Token {
@@ -117,15 +131,89 @@ impl Parser {
         self.eat(&Tok::P(punct))
     }
 
-    /// Skips `pub` before a declaration or field. It matters only between kits.
-    fn eat_pub(&mut self) {
+    /// Skips `pub`, the old spelling of `export`, before a declaration or field, giving back the
+    /// span from it to what follows. On a top-level name it's `export`, and anywhere else it goes.
+    fn eat_pub(&mut self, top_level: bool) -> Option<Span> {
         if self.at_soft("pub") && matches!(self.peek_at(1), Tok::Name(_) | Tok::Kw(_)) {
-            self.advance();
+            let word = self.advance().span;
+            let span = Span { start: word.start, end: self.span().start };
+            self.old_pub.push((word, span, if top_level { "export " } else { "" }));
+            return Some(span);
         }
+        None
+    }
+
+    /// Skips `export` on a method, which comes with its type, for the error that removes it.
+    fn eat_export(&mut self) -> Option<Span> {
+        if !self.at_kw(Kw::Export) {
+            return None;
+        }
+        let word = self.advance().span;
+        let span = Span { start: word.start, end: self.span().start };
+        self.old_pub.push((word, span, ""));
+        Some(span)
+    }
+
+    /// The error for each `pub`, at the first one, with the fixes for all of them.
+    fn old_pub_error(&self) -> Option<Diagnostic> {
+        let &(at, _, _) = self.old_pub.first()?;
+        let others = self.old_pub.len() - 1;
+        let more = match others {
+            0 => String::new(),
+            1 => " and in 1 other place".to_owned(),
+            _ => format!(" and in {others} other places"),
+        };
+        let message = if self.old_pub.iter().any(|(_, _, text)| !text.is_empty()) {
+            "`pub` is written `export` now"
+        } else {
+            "a field or method has no `export` of its own"
+        };
+        let mut diagnostic = Diagnostic::new(message, at).with_help(format!(
+            "`export` marks a top-level name other kits can use, and a type's fields and methods come with it. `fennec fix` mends it here{more}"
+        ));
+        for &(_, span, text) in &self.old_pub {
+            diagnostic = diagnostic.with_fix(span, text);
+        }
+        Some(diagnostic)
+    }
+
+    /// The one error for an old spelling, `mut` for `ref` first, then `pub`.
+    fn old_spelling_error(&self) -> Option<Diagnostic> {
+        self.old_mut_error().or_else(|| self.old_pub_error())
     }
 
     fn eat_kw(&mut self, kw: Kw) -> bool {
         self.eat(&Tok::Kw(kw))
+    }
+
+    /// `ref` on `what`: a loop, a parameter, an argument or a `with` name. `mut` there was the old
+    /// spelling. It's kept as `ref` so parsing can go on, and the file fails with one error at
+    /// the end, which `fennec fix` mends everywhere it was written.
+    fn eat_ref(&mut self, what: &'static str) -> bool {
+        if self.at_kw(Kw::Mut) {
+            let span = self.advance().span;
+            self.old_mut.push((span, what));
+            return true;
+        }
+        self.eat_kw(Kw::Ref)
+    }
+
+    /// The error for each `mut` that should be `ref`, at the first one, with the fixes for all of
+    /// them. It comes before any later mistake, since it's earlier in the file.
+    fn old_mut_error(&self) -> Option<Diagnostic> {
+        let &(span, what) = self.old_mut.first()?;
+        let others = self.old_mut.len() - 1;
+        let more = match others {
+            0 => String::new(),
+            1 => " and in 1 other place".to_owned(),
+            _ => format!(" and in {others} other places"),
+        };
+        let mut diagnostic = Diagnostic::new(format!("{what} is written `ref`, not `mut`"), span)
+            .with_help(format!("`mut` is only for a new local name. `fennec fix` writes `ref` here{more}"));
+        for &(span, _) in &self.old_mut {
+            diagnostic = diagnostic.with_fix(span, "ref");
+        }
+        Some(diagnostic)
     }
 
     fn expect_p(&mut self, punct: Punct) -> Result<Span, Diagnostic> {
@@ -181,6 +269,14 @@ impl Parser {
     }
 
     fn module(&mut self) -> Result<Module, Diagnostic> {
+        let module = self.items();
+        match self.old_spelling_error() {
+            Some(old) => Err(old),
+            None => module,
+        }
+    }
+
+    fn items(&mut self) -> Result<Module, Diagnostic> {
         let mut items = Vec::new();
         loop {
             while self.eat(&Tok::Newline) {}
@@ -200,18 +296,19 @@ impl Parser {
     fn item(&mut self) -> Result<Item, Diagnostic> {
         let annotations = self.annotations()?;
         if let Some(first) = annotations.first() {
-            self.eat_pub();
+            self.eat_pub(true);
+            self.eat_kw(Kw::Export);
             if !self.at_kw(Kw::Def) {
                 return Err(Diagnostic::new("an annotation goes above a field or a `def`", first.span));
             }
             return Ok(Item::Function(FnDef { annotations, ..self.def()? }));
         }
-        // `pub`, `export` and `noalloc` are accepted. Inside a kit everything is visible, and
-        // allocation checks come later.
-        self.eat_pub();
+        // Inside a kit everything is visible: `export` matters only between kits.
+        self.eat_pub(true);
         self.eat_kw(Kw::Export);
-        if self.eat_kw(Kw::Noalloc) && !self.at_kw(Kw::Def) {
-            return Err(Diagnostic::new("`noalloc` goes right before `def`", self.span()));
+        if self.at_kw(Kw::Noalloc) {
+            return Err(Diagnostic::new("`noalloc` is written `@hot` now", self.span())
+                .with_help("write `@hot` on the line above the `def`: the function and what it calls may not allocate or copy"));
         }
         match self.peek().clone() {
             Tok::Kw(Kw::Def) => Ok(Item::Function(self.def()?)),
@@ -288,13 +385,13 @@ impl Parser {
             span,
         };
         while !self.eat(&Tok::Dedent) && !self.at(&Tok::Eof) {
-            // Enum cases come with their enum and have no `pub` of their own.
+            // Enum cases, fields and methods come with their type and have no `export` of their own.
             if !is_enum || matches!(self.peek_at(1), Tok::Kw(Kw::Def)) {
-                self.eat_pub();
+                let _ = self.eat_pub(false).or_else(|| self.eat_export());
             }
             let annotations = if is_enum { Vec::new() } else { self.annotations()? };
             if !annotations.is_empty() {
-                self.eat_pub();
+                let _ = self.eat_pub(false).or_else(|| self.eat_export());
             }
             if self.at_kw(Kw::Def) {
                 def.methods.push(FnDef { annotations, ..self.def()? });
@@ -311,6 +408,7 @@ impl Parser {
                 def.cases.push(self.case()?);
             } else {
                 let field = self.field(true)?;
+                default_comes_last(&def.fields, &field)?;
                 def.fields.push(Field { annotations, ..field });
                 self.end_line()?;
             }
@@ -376,7 +474,9 @@ impl Parser {
         let mut fields = Vec::new();
         if self.eat_p(Punct::LParen) {
             while !self.at_p(Punct::RParen) {
-                fields.push(self.field(false)?);
+                let field = self.field(false)?;
+                default_comes_last(&fields, &field)?;
+                fields.push(field);
                 if !self.eat_p(Punct::Comma) {
                     break;
                 }
@@ -411,7 +511,7 @@ impl Parser {
         self.expect_block_start()?;
         let mut methods = Vec::new();
         while !self.eat(&Tok::Dedent) && !self.at(&Tok::Eof) {
-            self.eat_pub();
+            let _ = self.eat_pub(false).or_else(|| self.eat_export());
             if self.at_kw(Kw::Def) {
                 methods.push(self.def()?);
             } else if self.eat_kw(Kw::Pass) {
@@ -571,9 +671,7 @@ impl Parser {
         while !self.at_p(Punct::RParen) {
             let param = self.param()?;
             if param.default.is_none() && params.iter().any(|earlier: &Param| earlier.default.is_some()) {
-                let message =
-                    format!("`{}` has no default, so it has to come before the ones that do", param.name);
-                return Err(Diagnostic::new(message, param.span));
+                return Err(no_default_after_defaults(&param.name, param.span));
             }
             params.push(param);
             if !self.eat_p(Punct::Comma) {
@@ -588,14 +686,19 @@ impl Parser {
             name
         };
         let arrow = self.eat_p(Punct::Arrow).then(|| self.prev_span());
-        let ret = if arrow.is_some() { Some(self.type_expr()?) } else { None };
-        // `fails` is a word only here, after the parameters and any return type.
-        let fails = if matches!(self.peek(), Tok::Name(word) if word == "fails") {
-            self.advance();
-            Some(self.type_expr()?)
-        } else {
+        let ret = if arrow.is_none() {
             None
+        } else if self.at_kw(Kw::With) {
+            // `-> with Transaction`: a source, which lends one to its caller's `with` block.
+            let start = self.advance().span;
+            let lent = self.type_expr()?;
+            let span = start.to(self.prev_span());
+            Some(TypeExpr { name: "with".to_owned(), args: vec![lent], optional: false, span })
+        } else {
+            Some(self.type_expr()?)
         };
+        // `fails` is a word only here, after the parameters and any return type.
+        let fails = if self.at_fails() { Some(self.fails_type()?) } else { None };
         Ok(FnDef {
             name,
             generics,
@@ -611,7 +714,7 @@ impl Parser {
 
     fn param(&mut self) -> Result<Param, Diagnostic> {
         let start = self.span();
-        let is_mut = self.eat_kw(Kw::Mut);
+        let is_mut = self.eat_ref("a parameter");
         let name = self.name("a parameter name")?;
         if name == "self" {
             return Ok(Param {
@@ -650,9 +753,9 @@ impl Parser {
     fn param_default(&mut self, name: &str, is_mut: bool) -> Result<crate::ast::Expr, Diagnostic> {
         let value = self.expr()?;
         if is_mut {
-            let message = format!("`mut` parameter `{name}` can't have a default");
+            let message = format!("`ref` parameter `{name}` can't have a default");
             return Err(Diagnostic::new(message, value.span).with_help(
-                "a `mut` parameter changes what the caller passes, so a call has to pass something",
+                "a `ref` parameter changes what the caller passes, so a call has to pass something",
             ));
         }
         if !value.is_plain_value() {
@@ -662,11 +765,60 @@ impl Parser {
         Ok(value)
     }
 
+    /// Whether `fails` comes next. It's a word only after a function's parameters and any
+    /// return type.
+    fn at_fails(&self) -> bool {
+        matches!(self.peek(), Tok::Name(word) if word == "fails")
+    }
+
+    /// `fails LoadError`, or `fails ParseError | RangeError`: the errors after `fails`. Several
+    /// are one written type named `|`.
+    fn fails_type(&mut self) -> Result<TypeExpr, Diagnostic> {
+        self.advance();
+        self.type_expr()
+    }
+
+    /// A type, or several joined by `|`: a union, like `Circle | Square`, or the errors after
+    /// `fails` or in `Result[int, A | B]`. Either is one written type named `|`.
     pub(crate) fn type_expr(&mut self) -> Result<TypeExpr, Diagnostic> {
+        let first = self.member_type()?;
+        if !self.at_p(Punct::Pipe) {
+            return Ok(first);
+        }
+        let start = first.span;
+        let mut members = vec![first];
+        while self.eat_p(Punct::Pipe) {
+            members.push(self.member_type()?);
+        }
+        Ok(TypeExpr {
+            name: "|".to_owned(),
+            args: members,
+            optional: false,
+            span: start.to(self.prev_span()),
+        })
+    }
+
+    /// One type with no `|` around it, unless it's in parentheses, as in `(Circle | Square)?`.
+    fn member_type(&mut self) -> Result<TypeExpr, Diagnostic> {
         let start = self.span();
+        // `shared Scores`: a value many tasks can reach, each inside a `lock`. A `?` after it
+        // makes the shared value optional: `shared Scores?` is `(shared Scores)?`.
+        if matches!(self.peek(), Tok::Name(word) if word == "shared")
+            && matches!(self.peek_at(1), Tok::Name(_) | Tok::P(Punct::LParen))
+        {
+            self.advance();
+            let mut held = self.member_type()?;
+            let optional = std::mem::take(&mut held.optional);
+            let span = start.to(self.prev_span());
+            return Ok(TypeExpr { name: "shared".to_owned(), args: vec![held], optional, span });
+        }
         let mut args = Vec::new();
         let name = if self.eat_kw(Kw::None) {
             "None".to_owned()
+        } else if let Tok::Int(size) = self.peek().clone() {
+            // An array's size: `16` in `array[float, 16]`.
+            self.advance();
+            size.to_string()
         } else if self.eat_p(Punct::LParen) {
             while !self.at_p(Punct::RParen) {
                 args.push(self.type_expr()?);
@@ -675,9 +827,27 @@ impl Parser {
                 }
             }
             self.expect_p(Punct::RParen)?;
-            // `(int, str) -> bool`: a function type, its return type last.
+            // `(Circle | Square)?`: a union in parentheses is the union, so it can be optional.
+            if let [only] = args.as_slice()
+                && only.name == "|"
+                && !self.at_p(Punct::Arrow)
+            {
+                let optional = self.eat_p(Punct::Question);
+                return Ok(TypeExpr { optional, span: start.to(self.prev_span()), ..only.clone() });
+            }
+            // `(int, str) -> bool`: a function type, its return type last. One that can fail
+            // says so, as in `(str) -> int fails ParseError`, which is written in as its own
+            // `fails` type holding the return type and the errors.
             if self.eat_p(Punct::Arrow) {
-                args.push(self.type_expr()?);
+                let returns = self.type_expr()?;
+                let returns = if self.at_fails() {
+                    let errors = self.fails_type()?;
+                    let span = returns.span.to(errors.span);
+                    TypeExpr { name: "fails".to_owned(), args: vec![returns, errors], optional: false, span }
+                } else {
+                    returns
+                };
+                args.push(returns);
                 return Ok(TypeExpr {
                     name: "->".to_owned(),
                     args,
@@ -739,4 +909,19 @@ fn describe(tok: &Tok) -> String {
         Tok::Dedent => "the end of the block".to_owned(),
         Tok::Eof => "the end of the file".to_owned(),
     }
+}
+
+/// A field with no default after one with a default. Fields, like parameters, put the ones with
+/// defaults last, so a value given by position never lands in a defaulted one, and a type can
+/// gain a field with a default at its end without changing what any call means.
+fn default_comes_last(earlier: &[Field], field: &Field) -> Result<(), Diagnostic> {
+    if field.default.is_none() && earlier.iter().any(|earlier| earlier.default.is_some()) {
+        return Err(no_default_after_defaults(&field.name, field.span));
+    }
+    Ok(())
+}
+
+fn no_default_after_defaults(name: &str, span: Span) -> Diagnostic {
+    Diagnostic::new(format!("`{name}` has no default, so it has to come before the ones that do"), span)
+        .with_help("put the fields and parameters with defaults after all the ones without")
 }

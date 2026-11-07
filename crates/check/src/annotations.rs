@@ -1,7 +1,8 @@
 //! Annotations on fields: data written above a field, like `@skip`, that formats and other code
 //! read at compile time. An annotation never changes the field, so each is checked here for
-//! being one the language has, written the way it reads. A `def` can have one too: std's
-//! `@intrinsic` functions, which have no body because the engines provide them.
+//! being one the language has, written the way it reads. A `def` can have one too: `@hot`, for a
+//! function that may not allocate or copy, and std's `@intrinsic` functions, which have no body
+//! because the engines provide them.
 
 use fennec_syntax::{Annotation, Diagnostic, ExprKind, Field, FnDef};
 
@@ -17,7 +18,7 @@ impl Checker {
     /// Checks the annotations on every function and method: the program's own can have none,
     /// and std's intrinsics are written without a body or arguments.
     pub(crate) fn check_function_annotations(&mut self) {
-        let mut defs: Vec<(FnDef, bool)> =
+        let mut defs: Vec<(std::sync::Arc<FnDef>, bool)> =
             self.program.functions.values().map(|entry| (entry.def.clone(), entry.prelude)).collect();
         defs.sort_by_key(|(def, _)| (def.span.start, def.span.end));
         for (def, prelude) in defs {
@@ -38,6 +39,32 @@ impl Checker {
     }
 
     /// Checks the annotations on every field of the program's own types.
+    /// A type that writes one of `def serialize` and `def deserialize` writes the other, since with
+    /// neither they're generated together and they have to agree.
+    pub(crate) fn check_saving_pairs(&mut self) {
+        let names: Vec<(String, fennec_syntax::Span)> = self
+            .program
+            .types
+            .values()
+            .filter(|info| !info.prelude)
+            .map(|info| (info.def.name.clone(), info.def.span))
+            .collect();
+        for (name, span) in names {
+            let has = |checker: &Self, method: &str| checker.program.method(&name, method).is_some();
+            let (saves, loads) = (has(self, "serialize"), has(self, "deserialize"));
+            if saves != loads {
+                let (written, missing) =
+                    if saves { ("serialize", "deserialize") } else { ("deserialize", "serialize") };
+                self.diagnostics.push(
+                    Diagnostic::new(format!("`{name}` writes `def {written}` but not `def {missing}`"), span)
+                        .with_help(
+                            "a type writes both or neither: with neither, both are generated from its fields",
+                        ),
+                );
+            }
+        }
+    }
+
     pub(crate) fn check_annotations(&mut self) {
         let defs: Vec<_> =
             self.program.types.values().filter(|info| !info.prelude).map(|info| info.def.clone()).collect();
@@ -89,10 +116,14 @@ fn function_problem(def: &FnDef, annotation: &Annotation, prelude: bool) -> Opti
             Diagnostic::new(format!("`{}` is `@intrinsic`, so it has no body", def.name), span)
                 .with_help("end the signature without `:`, since the engines provide what it does"),
         ),
-        "intrinsic" => None,
+        "hot" if !annotation.args.is_empty() => Some(
+            Diagnostic::new("`@hot` takes nothing", span)
+                .with_help("write it as `@hot`: the function and what it calls may not allocate or copy"),
+        ),
+        "intrinsic" | "hot" => None,
         other => Some(
             Diagnostic::new(format!("`@{other}` isn't something a `def` can have"), span)
-                .with_help("only std's machine operations are marked, with `@intrinsic`"),
+                .with_help("a `def` can be `@hot`, and std's machine operations are marked `@intrinsic`"),
         ),
     }
 }

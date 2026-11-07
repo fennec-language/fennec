@@ -304,7 +304,7 @@ impl Interp<'_> {
         let method = |name: &str| info.as_ref().and_then(|info| info.methods.get(name).cloned());
         let (length, is_live) = (method("len"), method("is_live"));
         let length =
-            length.ok_or_else(|| Diagnostic::new("`for mut` over this needs its `def len`", span))?;
+            length.ok_or_else(|| Diagnostic::new("`for ref` over this needs its `def len`", span))?;
         let Value::Int(count) = self.call_with_values(&length, vec![source.clone()], span)? else {
             return Err(Diagnostic::new("`def len` should give an int", span));
         };
@@ -424,7 +424,7 @@ fn step_into<'v>(value: &'v Value, step: &Step) -> Option<&'v Value> {
             buffer.items.get(ops::position(*at, buffer.items.len(), Span::default()).ok()?)
         }
         (Value::Dict(pairs), Step::Index(key)) => pairs.get(key),
-        (Value::IdMap(map), Step::Index(Value::Id(id))) => map.get(*id),
+        (Value::Table(map), Step::Index(Value::Id(id))) => map.get(*id),
         _ => None,
     }
 }
@@ -481,9 +481,10 @@ fn slot<'v>(value: &'v mut Value, step: &Step, span: Span) -> Result<&'v mut Val
         (Value::Dict(pairs), Step::Index(key)) => Rc::make_mut(pairs).get_mut(key).ok_or_else(|| {
             Diagnostic::new(format!("the dict has no key {}", crate::format::repr(key)), span)
         }),
-        (Value::IdMap(map), Step::Index(Value::Id(id))) => Rc::make_mut(map)
-            .get_mut(*id)
-            .ok_or_else(|| Diagnostic::new("this Id refers to something that's been removed", span)),
+        (Value::Table(map), Step::Index(Value::Id(id))) => {
+            let missing = map.missing(*id);
+            Rc::make_mut(map).get_mut(*id).ok_or_else(|| Diagnostic::new(missing, span))
+        }
         (value, _) => Err(Diagnostic::new(format!("can't change part of a {}", value.type_name()), span)),
     }
 }

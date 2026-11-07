@@ -1,0 +1,705 @@
+//! A type saves and loads through `def serialize` and `def deserialize`, which most types never
+//! write: they're generated here from its fields, as code like any other, for the types whose
+//! fields can all be saved. It only happens in a program that uses saving, so others check as if
+//! it weren't there. A type that writes either one keeps what it wrote.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write;
+
+use fennec_syntax::{Expr, ExprKind, Field, Item, Module, TypeDef};
+
+use crate::checker::Checker;
+use crate::types::Type;
+
+/// The modules that save through these methods.
+const SAVING_MODULES: [&str; 3] = ["json", "toml", "pack"];
+
+/// The names that show a program uses saving.
+const SAVING_NAMES: [&str; 4] = ["serialize", "deserialize", "Serializable", "Deserializable"];
+
+/// Adds the methods a program's types don't write, when it uses saving.
+pub(crate) fn generate(module: &mut Module) {
+    if !uses_saving(module) {
+        return;
+    }
+    let mut checker = Checker::new(module);
+    let types: Vec<TypeDef> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(def) | Item::Enum(def) if !def.shared => Some(def.clone()),
+            _ => None,
+        })
+        .collect();
+    let written = written_by_hand(module);
+    let mut generated: BTreeSet<String> = types
+        .iter()
+        .filter(|def| !written.contains(&def.name) && !has_method(def))
+        .map(|def| def.name.clone())
+        .collect();
+    // What can't be saved takes what holds it with it, until nothing more goes.
+    loop {
+        let before = generated.len();
+        for def in &types {
+            if generated.contains(&def.name) && !all_saved(&mut checker, def, &generated) {
+                generated.remove(&def.name);
+            }
+        }
+        if generated.len() == before {
+            break;
+        }
+    }
+    let mut unions = Unions::default();
+    for def in types.iter().filter(|def| generated.contains(&def.name)) {
+        if let Some(items) = pair_for(&mut checker, &mut unions, def) {
+            module.items.extend(items);
+        }
+    }
+    if !unions.text.is_empty()
+        && let Ok(parsed) = fennec_syntax::parse_prelude(&unions.text)
+    {
+        module.items.extend(parsed.items);
+    }
+}
+
+fn uses_saving(module: &Module) -> bool {
+    // A program's own interface by one of these names is its own business.
+    let own = module.items.iter().any(|item| match item {
+        Item::Interface(interface) => SAVING_NAMES.contains(&interface.name.as_str()),
+        _ => false,
+    });
+    if own {
+        return false;
+    }
+    let imported = module.items.iter().any(|item| match item {
+        // `import std.json`, `from std.json import loads`, or `from std import json`.
+        Item::Import(import) => match import.module.as_slice() {
+            [std, name, ..] if std == "std" => SAVING_MODULES.contains(&name.as_str()),
+            [std] if std == "std" => import.bound().any(|(name, _)| SAVING_MODULES.contains(&name)),
+            _ => false,
+        },
+        _ => false,
+    });
+    if imported {
+        return true;
+    }
+    let mut named = false;
+    let mut walked = module.clone();
+    fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
+        named |= match &expr.kind {
+            ExprKind::Name(name) => SAVING_NAMES.contains(&name.as_str()),
+            // `response.json[T]()` reads what an HTTP call gave back as a `T`.
+            ExprKind::Attr { name, .. } => SAVING_NAMES.contains(&name.as_str()) || name == "json",
+            // `net.post(url, json=value)` writes the value as JSON.
+            ExprKind::Call { args, .. } => args.iter().any(|arg| arg.name.as_deref() == Some("json")),
+            _ => false,
+        };
+    });
+    fennec_syntax::visit::functions_mut(&mut walked, &mut |def| {
+        named |= def
+            .generics
+            .iter()
+            .flat_map(|generic| &generic.bounds)
+            .any(|bound| SAVING_NAMES.contains(&bound.name.as_str()))
+            || def
+                .params
+                .iter()
+                .filter_map(|param| param.ty.as_ref())
+                .any(|ty| SAVING_NAMES.contains(&ty.name.as_str()));
+    });
+    named
+}
+
+fn has_method(def: &TypeDef) -> bool {
+    def.methods.iter().any(|method| method.name == "serialize" || method.name == "deserialize")
+}
+
+fn written_by_hand(module: &Module) -> BTreeSet<String> {
+    let extended = module.items.iter().filter_map(|item| match item {
+        Item::Extend(extension)
+            if extension
+                .methods
+                .iter()
+                .any(|method| method.name == "serialize" || method.name == "deserialize") =>
+        {
+            Some(extension.name.clone())
+        }
+        _ => None,
+    });
+    extended.collect()
+}
+
+fn skipped(field: &Field) -> bool {
+    field.annotations.iter().any(|annotation| annotation.name == "skip")
+}
+
+/// The name a field is saved under, when `@serialize(name=...)` gave it one.
+fn renamed(field: &Field) -> Option<&str> {
+    let annotation = field.annotations.iter().find(|annotation| annotation.name == "serialize")?;
+    annotation.args.iter().find_map(|arg| match &arg.value.kind {
+        ExprKind::Str(name) if arg.name.as_deref() == Some("name") => Some(name.as_str()),
+        _ => None,
+    })
+}
+
+fn all_saved(checker: &mut Checker, def: &TypeDef, generated: &BTreeSet<String>) -> bool {
+    let fields = def.fields.iter().map(|field| (None, field));
+    let in_cases =
+        def.cases.iter().flat_map(|case| case.fields.iter().map(|field| (Some(case.name.as_str()), field)));
+    let all: Vec<(Option<&str>, &Field)> = fields.chain(in_cases).collect();
+    all.into_iter().filter(|(_, field)| !skipped(field)).all(|(case, field)| {
+        let ty = checker.field_type(&def.name, case, &field.name);
+        saved(checker, &ty, generated)
+    })
+}
+
+/// Whether a value of this type can be saved and loaded. A type parameter is the extension's to
+/// ask of what it stands for.
+fn saved(checker: &Checker, ty: &Type, generated: &BTreeSet<String>) -> bool {
+    match ty {
+        Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::Param(_) | Type::Id(_) => true,
+        // A union is saved through a type made for it, which a set's items and a dict's keys
+        // can't be changed to and from.
+        Type::Set(inner) | Type::Table(inner) if holds_union(inner) => false,
+        Type::Dict(key, _) if holds_union(key) => false,
+        Type::List(inner) | Type::Set(inner) | Type::Optional(inner) | Type::Table(inner) => {
+            saved(checker, inner, generated)
+        }
+        Type::Dict(key, value) => saved(checker, key, generated) && saved(checker, value, generated),
+        Type::Union(members) => {
+            members.iter().all(|member| tested_by_name(member) && saved(checker, member, generated))
+        }
+        Type::Named(name) | Type::Generic(name, _) => {
+            let own = generated.contains(name) || has_both(checker, name);
+            own && ty.type_args().iter().all(|arg| saved(checker, arg, generated))
+        }
+        _ => false,
+    }
+}
+
+fn has_both(checker: &Checker, name: &str) -> bool {
+    !checker.program.is_shared(&Type::named(name))
+        && ["serialize", "deserialize"].iter().all(|method| checker.program.method(name, method).is_some())
+}
+
+/// One field to read: its type as it's written, and whether it holds an optional already.
+/// One that holds a union is saved as what `Unions` makes for its type.
+struct Read<'f> {
+    field: &'f Field,
+    ty: String,
+    /// Its type made optional, as it's written, when it isn't one already.
+    or_none: String,
+    optional: bool,
+    union: Option<Changed>,
+}
+
+impl Read<'_> {
+    /// The field's value as it's saved.
+    fn saved(&self, value: &str) -> String {
+        match &self.union {
+            Some(changed) => format!("saved_union__{}({value})", changed.helper),
+            None => value.to_owned(),
+        }
+    }
+
+    /// Reads the field's value.
+    fn read(&self) -> String {
+        match &self.union {
+            Some(changed) => {
+                format!("loaded_union__{}(src__.value[{}]()?)", changed.helper, changed.saved_as)
+            }
+            None => format!("src__.value[{}]()?", self.ty),
+        }
+    }
+}
+
+/// A type that holds a union, as it's saved: `saved_as`, the type it's changed to, by the
+/// functions numbered `helper`.
+#[derive(Clone)]
+struct Changed {
+    saved_as: String,
+    helper: usize,
+}
+
+/// What a program's unions are saved through: for each union, a struct holding one, which saves
+/// it tagged with its member, and for each type holding one, functions to change it to and from
+/// the type it's saved as.
+#[derive(Default)]
+struct Unions {
+    text: String,
+    wrappers: BTreeMap<String, usize>,
+    helpers: BTreeMap<String, Changed>,
+}
+
+impl Unions {
+    /// How a value of `ty` is saved, when it holds a union.
+    fn change(&mut self, ty: &Type) -> Option<Changed> {
+        if !holds_union(ty) {
+            return None;
+        }
+        let key = ty.to_string();
+        if let Some(changed) = self.helpers.get(&key) {
+            return Some(changed.clone());
+        }
+        let (saved_as, saving, loading) = match ty {
+            Type::Union(members) => {
+                let wrapper = self.wrapper(ty, members)?;
+                (wrapper.clone(), format!("{wrapper}(value=x__)"), "x__.value".to_owned())
+            }
+            Type::Optional(inner) => {
+                let Changed { saved_as, helper } = self.change(inner)?;
+                let saving = format!("y__ = x__ else return None\n    saved_union__{helper}(y__)");
+                let loading = format!("y__ = x__ else return None\n    loaded_union__{helper}(y__)");
+                (format!("{saved_as}?"), saving, loading)
+            }
+            Type::List(inner) => {
+                let Changed { saved_as, helper } = self.change(inner)?;
+                let each = |way: &str| format!("[{way}_union__{helper}(item__) for item__ in x__]");
+                (format!("list[{saved_as}]"), each("saved"), each("loaded"))
+            }
+            Type::Dict(key, value) => {
+                let Changed { saved_as, helper } = self.change(value)?;
+                let each = |way: &str| {
+                    format!("{{key__: {way}_union__{helper}(value__) for key__, value__ in x__.items()}}")
+                };
+                (format!("dict[{}, {saved_as}]", key.source()?), each("saved"), each("loaded"))
+            }
+            _ => return None,
+        };
+        let helper = self.helpers.len();
+        let source = ty.source()?;
+        let _ = writeln!(
+            self.text,
+            "def saved_union__{helper}(x__: {source}) -> {saved_as}:\n    {saving}\n\ndef loaded_union__{helper}(x__: {saved_as}) -> {source}:\n    {loading}\n"
+        );
+        let changed = Changed { saved_as, helper };
+        self.helpers.insert(key, changed.clone());
+        Some(changed)
+    }
+
+    /// The struct a union is saved through: its member, by the member's type's name and where it
+    /// is among the members, in the union's own order, then the member's own value.
+    fn wrapper(&mut self, ty: &Type, members: &[Type]) -> Option<String> {
+        let key = ty.to_string();
+        let number = match self.wrappers.get(&key) {
+            Some(&number) => return Some(format!("SavedUnion__{number}")),
+            None => self.wrappers.len(),
+        };
+        self.wrappers.insert(key, number);
+        let name = format!("SavedUnion__{number}");
+        let names: Vec<String> = members.iter().map(Type::source).collect::<Option<_>>()?;
+        let listed: Vec<String> = names.iter().map(|member| format!("\"{member}\"")).collect();
+        let mut saving = String::new();
+        let mut loading = format!("        at__ = src__.member([{}])?\n", listed.join(", "));
+        for (at, member) in names.iter().enumerate() {
+            // Each test on its own, so each sees every member.
+            let _ = writeln!(
+                saving,
+                "        if self.value is {member}:\n            out__.member(\"{member}\", {at})\n            out__.value(self.value)"
+            );
+            let read = format!(
+                "value__ = src__.value[{member}]()?\n            src__.end_member()?\n            return {name}(value=value__)"
+            );
+            if at + 1 < names.len() {
+                let _ = writeln!(loading, "        if at__ == {at}:\n            {read}");
+            } else {
+                let read = read.replace("\n    ", "\n");
+                let _ = writeln!(loading, "        {read}");
+            }
+        }
+        let _ = writeln!(saving, "        out__.end_member()");
+        let _ = writeln!(
+            self.text,
+            "struct {name}:\n    value: {}\n\nextend {name}:\n    def serialize(self, ref out__: Serializer):\n{saving}\n    def deserialize(ref src__: Deserializer) -> {name} fails ParseError:\n{loading}",
+            ty.source()?
+        );
+        Some(name)
+    }
+}
+
+/// Whether a type is a union, or holds one.
+pub(crate) fn holds_union(ty: &Type) -> bool {
+    match ty {
+        Type::Union(_) => true,
+        Type::List(inner) | Type::Set(inner) | Type::Optional(inner) | Type::Table(inner) => {
+            holds_union(inner)
+        }
+        Type::Dict(key, value) => holds_union(key) || holds_union(value),
+        _ => false,
+    }
+}
+
+/// Whether a union's member can be told apart by its name alone, as `value is Circle` does.
+pub(crate) fn tested_by_name(member: &Type) -> bool {
+    match member {
+        Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes => true,
+        Type::Named(name) => !name.contains('.'),
+        _ => false,
+    }
+}
+
+/// What loading a type's fields needs: those it reads, and those it leaves out, with what's known
+/// of their types.
+type Fields<'f> = (Vec<Read<'f>>, Vec<(&'f Field, Option<String>)>);
+
+fn reads<'f>(
+    checker: &mut Checker,
+    unions: &mut Unions,
+    owner: &str,
+    case: Option<&str>,
+    fields: &'f [Field],
+) -> Option<Fields<'f>> {
+    let mut saved = Vec::new();
+    let mut left_out = Vec::new();
+    for field in fields {
+        let ty = checker.field_type(owner, case, &field.name);
+        if skipped(field) {
+            left_out.push((field, ty.source()));
+        } else {
+            let optional = matches!(ty, Type::Optional(_));
+            let union = unions.change(&ty);
+            let or_none = Type::optional(ty.clone()).source()?;
+            saved.push(Read { field, ty: ty.source()?, or_none, optional, union });
+        }
+    }
+    Some((saved, left_out))
+}
+
+/// The constant and the extension for a type, parsed.
+fn pair_for(checker: &mut Checker, unions: &mut Unions, def: &TypeDef) -> Option<Vec<Item>> {
+    let name = &def.name;
+    let mut text = String::new();
+    let (saving, loading) = if def.cases.is_empty() {
+        let fields = reads(checker, unions, name, None, &def.fields)?;
+        let list = field_list(&def.fields);
+        let _ = writeln!(text, "{} = [{list}]\n", constant(name, ""));
+        (save_struct(name, &fields.0), load_struct(name, &def.fields, &fields))
+    } else {
+        let cases = def.cases.iter().map(|case| {
+            format!("(\"{}\", {})", case.name, if case.fields.is_empty() { "False" } else { "True" })
+        });
+        let list = cases.collect::<Vec<_>>().join(", ");
+        let _ = writeln!(text, "{} = [{list}]\n", constant(name, ""));
+        let mut saving = String::from("        match self:\n");
+        let mut loading = format!("        match src__.case(\"{name}\", {})?:\n", constant(name, ""));
+        for (at, case) in def.cases.iter().enumerate() {
+            let fields = reads(checker, unions, name, Some(&case.name), &case.fields)?;
+            save_case(&mut saving, name, (at, &case.name), &fields.0);
+            load_case(&mut text, &mut loading, name, (at, &case.name), (&case.fields, &fields));
+        }
+        let _ = writeln!(
+            loading,
+            "            case _:\n                fail src__.rule(\"`{name}` has no such case\")"
+        );
+        (saving, loading)
+    };
+    let shown = bounded(def, "Serializable");
+    let _ =
+        writeln!(text, "extend {name}{shown}:\n    def serialize(self, ref out__: Serializer):\n{saving}");
+    let shown = bounded(def, "Deserializable");
+    let _ = writeln!(
+        text,
+        "extend {name}{shown}:\n    def deserialize(ref src__: Deserializer) -> Self fails ParseError:\n{loading}"
+    );
+    let mut parsed = fennec_syntax::parse_prelude(&text).ok()?;
+    fill_in(&mut parsed, def);
+    Some(parsed.items)
+}
+
+fn bounded(def: &TypeDef, bound: &str) -> String {
+    if def.generics.is_empty() {
+        return String::new();
+    }
+    let params: Vec<String> =
+        def.generics.iter().map(|generic| format!("{}: {bound}", generic.name)).collect();
+    format!("[{}]", params.join(", "))
+}
+
+fn constant(owner: &str, case: &str) -> String {
+    let owner = owner.replace('.', "_");
+    format!("SAVED_NAMES_{owner}_{case}")
+}
+
+fn field_list(fields: &[Field]) -> String {
+    let saved = fields.iter().filter(|field| !skipped(field));
+    let saved =
+        saved.map(|field| format!("(\"{}\", \"{}\")", renamed(field).unwrap_or(&field.name), field.name));
+    let left_out =
+        fields.iter().filter(|field| skipped(field)).map(|field| format!("(\"\", \"{}\")", field.name));
+    saved.chain(left_out).collect::<Vec<_>>().join(", ")
+}
+
+fn save_fields(out: &mut String, indent: &str, fields: &[Read<'_>], value: impl Fn(&str) -> String) {
+    for read in fields {
+        let name = &read.field.name;
+        let _ = match renamed(read.field) {
+            Some(shown) => writeln!(out, "{indent}out__.renamed(\"{shown}\", {})", read.saved(&value(name))),
+            None => writeln!(out, "{indent}out__.field(\"{name}\", {})", read.saved(&value(name))),
+        };
+    }
+    let _ = writeln!(out, "{indent}out__.end()");
+}
+
+fn save_struct(name: &str, fields: &[Read<'_>]) -> String {
+    let mut out = format!("        out__.record(\"{name}\", {})\n", fields.len());
+    save_fields(&mut out, "        ", fields, |field| format!("self.{field}"));
+    out
+}
+
+/// Writes a case by its name, and by `at`, where it is among the type's cases, for a format that
+/// saves no names.
+fn save_case(out: &mut String, name: &str, (at, case): (usize, &str), fields: &[Read<'_>]) {
+    if fields.is_empty() {
+        let _ = writeln!(
+            out,
+            "            case .{case}:\n                out__.case(\"{name}\", \"{case}\", {at})"
+        );
+        return;
+    }
+    let names: Vec<&str> = fields.iter().map(|read| read.field.name.as_str()).collect();
+    let _ = writeln!(out, "            case .{case}({}):", names.join(", "));
+    let _ =
+        writeln!(out, "                out__.case_record(\"{name}\", \"{case}\", {at}, {})", fields.len());
+    save_fields(out, "                ", fields, str::to_owned);
+    let _ = writeln!(out, "                out__.end()");
+}
+
+/// Reads fields into names of their own, each what the type's constructor is given.
+fn load_fields(out: &mut String, indent: &str, list: &str, (fields, left_out): &Fields<'_>) {
+    for read in fields {
+        let _ = writeln!(out, "{indent}mut read_{}: {} = None", read.field.name, read.or_none);
+    }
+    let _ = writeln!(out, "{indent}while src__.next_field({list})?:\n{indent}    match src__.field_at():");
+    for (at, read) in fields.iter().enumerate() {
+        let name = &read.field.name;
+        let _ = writeln!(out, "{indent}        case {at}:");
+        if read.optional {
+            let _ = writeln!(out, "{indent}            read_{name} = {}", read.read());
+            continue;
+        }
+        // A format with a missing value, like JSON's `null`, may give one for any field, which
+        // then takes its default. One with none reads what the field holds. Either way the value
+        // is read as what the field holds, never wrapped as an optional on the way.
+        let _ = writeln!(
+            out,
+            "{indent}            if src__.none_next() and src__.none()?:\n{indent}                read_{name} = None\n{indent}            else:\n{indent}                read_{name} = {}",
+            read.read()
+        );
+    }
+    let _ = writeln!(out, "{indent}        case _:\n{indent}            pass");
+    for read in fields {
+        let name = &read.field.name;
+        let shown = renamed(read.field).unwrap_or(name);
+        if read.field.default.is_some() && read.union.is_some() {
+            // A default that's one of a union's members is given as the union.
+            let _ = writeln!(
+                out,
+                "{indent}mut {name}: {} = DEFAULT_{name}\n{indent}if read_{name} is not None: {name} = read_{name}",
+                read.ty
+            );
+        } else if read.field.default.is_some() {
+            let _ = writeln!(out, "{indent}{name} = read_{name} else DEFAULT_{name}");
+        } else if read.optional {
+            let _ = writeln!(out, "{indent}{name} = read_{name}");
+        } else {
+            let _ = writeln!(out, "{indent}if read_{name} is None: fail src__.missing(\"{shown}\")");
+            let _ = writeln!(out, "{indent}{name} = read_{name}");
+        }
+    }
+    for (field, ty) in left_out {
+        let name = &field.name;
+        let _ = match ty {
+            Some(ty) => writeln!(out, "{indent}{name}: {ty} = DEFAULT_{name}"),
+            None => writeln!(out, "{indent}{name} = DEFAULT_{name}"),
+        };
+    }
+}
+
+fn given(all: &[Field]) -> String {
+    all.iter().map(|field| format!("{0}={0}", field.name)).collect::<Vec<_>>().join(", ")
+}
+
+/// Gives back the value. One with a `where` rule fails to load when what was read breaks it.
+fn made(out: &mut String, indent: &str, make: &str, all: &[Field]) {
+    if all.iter().all(|field| field.rule.is_none()) {
+        let _ = writeln!(out, "{indent}{make}({})", given(all));
+        return;
+    }
+    let value = make.strip_prefix("return ").unwrap_or(make);
+    let _ = writeln!(out, "{indent}match {value}({}):", given(all));
+    let _ = writeln!(out, "{indent}    case Ok(value__):\n{indent}        return value__");
+    let _ =
+        writeln!(out, "{indent}    case Err(broken__):\n{indent}        fail src__.rule(broken__.message)");
+}
+
+/// Reads fields that come in order, every one there, as a format that saves no names gives them,
+/// each straight into a name of its own, then gives back the value made of them.
+fn load_in_order(
+    out: &mut String,
+    indent: &str,
+    (name, make): (&str, &str),
+    all: &[Field],
+    fields: &Fields<'_>,
+) {
+    let (reads, left_out) = fields;
+    let _ = writeln!(out, "{indent}if src__.ordered(\"{name}\")?:");
+    for read in reads {
+        let _ = writeln!(out, "{indent}    in_{} = {}", read.field.name, read.read());
+    }
+    let _ = writeln!(out, "{indent}    src__.end_ordered()");
+    if make != "Self" {
+        let _ = writeln!(out, "{indent}    src__.end_case()?");
+    }
+    let given: Vec<String> = all
+        .iter()
+        .map(|field| {
+            if left_out.iter().any(|(gone, _)| gone.name == field.name) {
+                format!("{0}=DEFAULT_{0}", field.name)
+            } else {
+                format!("{0}=in_{0}", field.name)
+            }
+        })
+        .collect();
+    let value = make.strip_prefix("return ").unwrap_or(make);
+    if all.iter().all(|field| field.rule.is_none()) {
+        let _ = writeln!(out, "{indent}    return {value}({})", given.join(", "));
+        return;
+    }
+    let _ = writeln!(out, "{indent}    match {value}({}):", given.join(", "));
+    let _ = writeln!(out, "{indent}        case Ok(value__):\n{indent}            return value__");
+    let _ = writeln!(
+        out,
+        "{indent}        case Err(broken__):\n{indent}            fail src__.rule(broken__.message)"
+    );
+}
+
+fn load_struct(name: &str, all: &[Field], fields: &Fields<'_>) -> String {
+    let mut out = String::new();
+    load_in_order(&mut out, "        ", (name, "Self"), all, fields);
+    let _ = writeln!(out, "        src__.record(\"{name}\")?");
+    load_fields(&mut out, "        ", &constant(name, ""), fields);
+    made(&mut out, "        ", "Self", all);
+    out
+}
+
+fn load_case(
+    text: &mut String,
+    out: &mut String,
+    name: &str,
+    (at, case): (usize, &str),
+    (all, fields): (&[Field], &Fields<'_>),
+) {
+    let _ = writeln!(out, "            case {at}:");
+    let indent = "                ";
+    if all.is_empty() {
+        let _ = writeln!(out, "{indent}return {name}.{case}");
+        return;
+    }
+    let list = constant(name, case);
+    let _ = writeln!(text, "{list} = [{}]\n", field_list(all));
+    load_in_order(out, indent, (case, &format!("{name}.{case}")), all, fields);
+    let _ = writeln!(out, "{indent}src__.record(\"{case}\")?");
+    load_fields(out, indent, &list, fields);
+    let _ = writeln!(out, "{indent}src__.end_case()?");
+    made(out, indent, &format!("return {name}.{case}"), all);
+}
+
+/// Puts each field's default where the generated code names it, as it's written in the type.
+fn fill_in(parsed: &mut Module, def: &TypeDef) {
+    let fields: Vec<&Field> =
+        def.fields.iter().chain(def.cases.iter().flat_map(|case| &case.fields)).collect();
+    fennec_syntax::visit::exprs_mut(parsed, &mut |expr: &mut Expr| {
+        let ExprKind::Name(name) = &expr.kind else { return };
+        let Some(wanted) = name.strip_prefix("DEFAULT_") else { return };
+        if let Some(default) =
+            fields.iter().find(|field| field.name == wanted).and_then(|field| field.default.as_ref())
+        {
+            *expr = default.clone();
+        }
+    });
+}
+
+/// The first thing in a value of this type that stops it being saved: where it is, what it is, the
+/// field to `@skip`, and the type to write the methods for.
+pub(crate) fn what_stops_saving(
+    checker: &mut Checker,
+    ty: &Type,
+) -> Option<(String, String, String, String)> {
+    // What a collection or an optional holds is what stops it, as `Note` does in `list[Note]`.
+    match ty {
+        Type::List(inner) | Type::Set(inner) | Type::Optional(inner) | Type::Table(inner) => {
+            return what_stops_saving(checker, inner);
+        }
+        Type::Dict(key, value) => {
+            return what_stops_saving(checker, key).or_else(|| what_stops_saving(checker, value));
+        }
+        _ => {}
+    }
+    let name = ty.type_name()?.to_owned();
+    stops_in(checker, &name, &name, &mut Vec::new())
+}
+
+fn stops_in(
+    checker: &mut Checker,
+    name: &str,
+    path: &str,
+    open: &mut Vec<String>,
+) -> Option<(String, String, String, String)> {
+    if open.iter().any(|seen| seen == name) || has_both(checker, name) {
+        return None;
+    }
+    let def = checker.program.type_info(name)?.def.clone();
+    open.push(name.to_owned());
+    let fields = def.fields.iter().map(|field| (None, field));
+    let in_cases =
+        def.cases.iter().flat_map(|case| case.fields.iter().map(|field| (Some(case.name.as_str()), field)));
+    let all: Vec<(Option<&str>, &Field)> =
+        fields.chain(in_cases).filter(|(_, field)| !skipped(field)).collect();
+    let mut found = None;
+    for (case, field) in all {
+        let ty = checker.field_type(name, case, &field.name);
+        let place = format!("{path}.{}", field.name);
+        found = field_stops(checker, &ty, &place, (&field.name, name), open);
+        if found.is_some() {
+            break;
+        }
+    }
+    open.pop();
+    found
+}
+
+fn field_stops(
+    checker: &mut Checker,
+    ty: &Type,
+    place: &str,
+    (field, owner): (&str, &str),
+    open: &mut Vec<String>,
+) -> Option<(String, String, String, String)> {
+    let stop = |what: String| Some((place.to_owned(), what, field.to_owned(), owner.to_owned()));
+    match ty {
+        Type::Int
+        | Type::Float
+        | Type::Bool
+        | Type::Str
+        | Type::Bytes
+        | Type::Param(_)
+        | Type::Unknown
+        | Type::Id(_) => None,
+        Type::Set(inner) | Type::Table(inner) if holds_union(inner) => stop(crate::types::a(ty)),
+        Type::Dict(key, _) if holds_union(key) => stop(crate::types::a(ty)),
+        Type::List(inner) | Type::Set(inner) | Type::Optional(inner) | Type::Table(inner) => {
+            field_stops(checker, inner, place, (field, owner), open)
+        }
+        Type::Dict(key, value) => field_stops(checker, key, place, (field, owner), open)
+            .or_else(|| field_stops(checker, value, place, (field, owner), open)),
+        Type::Function(_) | Type::Arrow(..) => stop("a function".to_owned()),
+        Type::Union(members) if members.iter().all(tested_by_name) => {
+            members.iter().find_map(|member| field_stops(checker, member, place, (field, owner), open))
+        }
+        Type::Named(_) | Type::Generic(..) if checker.program.is_shared(ty) => stop("`shared`".to_owned()),
+        Type::Named(name) | Type::Generic(name, _) if checker.program.type_info(name).is_some() => {
+            stops_in(checker, name, place, open)
+        }
+        other => stop(crate::types::a(other)),
+    }
+}

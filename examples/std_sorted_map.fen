@@ -74,7 +74,7 @@ test "finding a key, or the nearest ones":
     for key in [10, 20, 30]:
         map[key] = f"at {key}"
     assert map.get(20) == "at 20" and map.get(25) is None
-    assert map.has(10) and not map.has(11)
+    assert 10 in map and 11 not in map
     assert map.first() == (10, "at 10") and map.last() == (30, "at 30")
     assert map.floor(25) == (20, "at 20") and map.floor(20) == (20, "at 20")
     assert map.floor(5) is None
@@ -95,9 +95,9 @@ test "a range of keys":
 test "values can be None":
     mut map = SortedMap[int, str?]()
     map[1] = None
-    assert map.has(1) and map.get(1) is None
+    assert 1 in map and map.get(1) is None
     assert map.remove(1) is None
-    assert map.len() == 0 and not map.has(1)
+    assert map.len() == 0 and 1 not in map
     assert map.remove(1) is None
 
 test "a copy is independent":

@@ -106,6 +106,12 @@ impl Interp<'_> {
                     .map_err(|_| format!("{} is out of range", place(at)))
             }
             ("Table", Value::List(items)) => self.decode_table(&items, &arg(0)?, at, span),
+            (name, value)
+                if self.saves_plain(name)
+                    && let Some(found) = self.read_plain(name, &value, at, span) =>
+            {
+                found
+            }
             (name, value) if self.has_shape(name) => {
                 let read = self.decode(value, &Self::shape_of(ty), at, span)?;
                 self.build_shaped(name, read, at, span)

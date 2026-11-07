@@ -8905,6 +8905,33 @@ def main(stdout: Stdout):
     )
 }
 
+/// `==` and `!=` on an optional string, against a string, another optional string or `None`:
+/// short and long strings, and `None`, whose header is all zero, on either side.
+#[test]
+fn optional_strings_compare_as_the_jit_does() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "optional_strings_compare",
+        r#"def first(words: list[str]) -> str?:
+    if words.len() > 0:
+        return words[0]
+    None
+
+def main(stdout: Stdout):
+    long = "a string long enough that it has a block of its own"
+    short = first(["kit"])
+    missing = first([])
+    held = first([long])
+    stdout.print(short == "kit", short != "kit", short == "vex", short == "")
+    stdout.print(missing == "kit", missing != "kit", missing == "", missing == None, short == None)
+    stdout.print(held == long, held == "a string long enough", held == short, missing == missing)
+    stdout.print(short == first(["kit"]), short != missing, "kit" == short, "" == missing)
+"#,
+    )
+}
+
 /// `?` in `main`, which then gives back a result: going on when it's `Ok`.
 #[test]
 fn a_main_giving_back_a_result_matches_the_jit() -> std::io::Result<()> {

@@ -138,6 +138,9 @@ pub struct Interp<'out> {
     pub(crate) given: crate::inputs::Given,
     /// How the `json.loads` call being read spells field names and treats unknown keys.
     pub(crate) reading: crate::formats::Reading,
+    /// The type a call like `response.json[T]()` names, for the method it calls to read the body
+    /// as: native code knows `T` inside the generic method, and the interpreter is told it here.
+    pub(crate) json_type: Option<fennec_syntax::TypeExpr>,
     /// Where each `Table` a load has read from its text is, so a field left to its default
     /// doesn't count as one when its `Id`s are checked.
     pub(crate) tables_read: Vec<String>,
@@ -193,6 +196,7 @@ impl<'out> Interp<'out> {
             test_capabilities: crate::fakes::TestCapabilities::Fakes,
             given: crate::inputs::Inputs::default().into(),
             reading: crate::formats::Reading::default(),
+            json_type: None,
             tables_read: Vec::new(),
             load_tags: HashMap::new(),
             built_in_methods: HashMap::new(),

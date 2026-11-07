@@ -287,15 +287,11 @@ fn native_method(
             let paths: Vec<Value> = args.iter().map(path_text).collect();
             crate::stdlib::fs::real_fs(method, &paths, at)
         }
-        (Capability::Process, "run", [Value::Str(program), Value::List(items)]) => {
-            let mut arguments = Vec::with_capacity(items.len());
-            for item in items.iter() {
-                let Value::Str(text) = item else { return Err(wrong()) };
-                arguments.push(text.to_string());
-            }
+        (Capability::Process, run, _) if run == "run" || run.starts_with("run.") => {
+            let (program, arguments, options) = crate::stdlib::process::run_of(run, args, at)?;
             // A prompt this program printed shows before the other program starts.
             super::write_kept_output();
-            Ok(crate::stdlib::process::run_program(program, &arguments))
+            Ok(crate::stdlib::process::run_program(&program, &arguments, &options))
         }
         (Capability::Process, "only", [Value::Str(program)]) => {
             Ok(Limited::to(Capability::Process, vec![Rc::clone(program)]))

@@ -10,6 +10,8 @@ on:
   pull_request:
     paths:
       - .github/workflows/release.yml
+      - .github/scripts/windows.sh
+      - .cargo/config.toml
       - THIRD-PARTY.md
       - crates/fennec/src/aot.rs
       - crates/llvm/src/build.rs
@@ -33,7 +35,8 @@ jobs:
           - { os: macos-latest, target: aarch64-apple-darwin }
           # On an Intel Mac, so its archive is tried on the machine it's for.
           - { os: macos-15-intel, target: x86_64-apple-darwin }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          # Programs link with LLD and MinGW-w64's libraries there: see `.github/scripts/windows.sh`.
+          - { os: windows-latest, target: x86_64-pc-windows-gnullvm }
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
     timeout-minutes: 60
@@ -56,6 +59,10 @@ jobs:
       - name: Install the toolchain `rust-toolchain.toml` names
         if: matrix.container
         run: rustup toolchain install
+      - name: Use Rust's gnullvm toolchain and llvm-mingw
+        if: runner.os == 'Windows'
+        shell: bash
+        run: .github/scripts/windows.sh toolchain
       - run: rustup target add ${{ matrix.target }}
       # `fennec build` links executables against the runtime library, shipped next to `fennec`.
       - run: cargo build --release --locked -p fennec -p fennec-runtime --target ${{ matrix.target }}
@@ -63,7 +70,6 @@ jobs:
       # on its own, in a folder of its own: built with the others, Cargo would give all of them
       # `threads`.
       - name: Build the runtime library with threads
-        if: runner.os != 'Windows'
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -73,7 +79,6 @@ jobs:
           cp "$(find "target/threads/$TARGET/release/deps" -name 'fennec_runtime-*.bc' -print -quit)" "target/$TARGET/release/libfennec_runtime_threads.bc"
       # A release build puts what it uses of the runtime in the program's own unit, from this.
       - name: Build the runtime's bitcode
-        if: runner.os != 'Windows'
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -83,7 +88,6 @@ jobs:
       # The runtimes with no interpreter, which `fennec build` uses for every program that doesn't
       # cross into it, also next to `fennec`, each in a folder of its own.
       - name: Build the runtime libraries with no interpreter
-        if: runner.os != 'Windows'
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -115,36 +119,44 @@ jobs:
           name="fennec-${GITHUB_REF_NAME//\//-}-${TARGET}"
           mkdir "$name"
           cp README.md LICENSE-MIT LICENSE-APACHE RUNTIME-LIBRARY-EXCEPTION THIRD-PARTY.md "$name/"
+          from="target/${TARGET}/release"
+          for runtime in libfennec_runtime libfennec_runtime_threads libfennec_runtime_lean libfennec_runtime_lean_threads; do
+            cp "$from/$runtime.a" "$from/$runtime.bc" "$name/"
+          done
+          mkdir -p "$name/licenses"
           if [ "$RUNNER_OS" = Windows ]; then
-            cp "target/${TARGET}/release/fennec.exe" "$name/"
-            7z a "$name.zip" "$name" > /dev/null
-            echo "ARCHIVE=$name.zip" >> "$GITHUB_ENV"
+            cp "$from/fennec.exe" "$name/"
+            # LLVM's tools from Rust's MSVC toolchain, LLD, and the libraries it links.
+            .github/scripts/windows.sh folder "$name/llvm"
+            TOOLCHAIN="$(rustup show home)/toolchains/$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)-x86_64-pc-windows-msvc"
+            cp licenses/mingw-w64-runtime.txt "$name/licenses/"
           else
-            cp "target/${TARGET}/release/fennec" "target/${TARGET}/release/libfennec_runtime.a" "target/${TARGET}/release/libfennec_runtime.bc" \
-              "target/${TARGET}/release/libfennec_runtime_threads.a" "target/${TARGET}/release/libfennec_runtime_threads.bc" \
-              "target/${TARGET}/release/libfennec_runtime_lean.a" "target/${TARGET}/release/libfennec_runtime_lean.bc" \
-              "target/${TARGET}/release/libfennec_runtime_lean_threads.a" "target/${TARGET}/release/libfennec_runtime_lean_threads.bc" "$name/"
+            cp "$from/fennec" "$name/"
             tools="$TOOLCHAIN/lib/rustlib/$TARGET"
-            mkdir -p "$name/llvm/bin" "$name/llvm/lib" "$name/licenses"
+            mkdir -p "$name/llvm/bin" "$name/llvm/lib"
             cp "$tools"/bin/{opt,llc,llvm-link} "$name/llvm/bin/"
             # The tools share LLVM from a library of their own, which they find in `../lib`.
             cp "$TOOLCHAIN"/lib/libLLVM* "$name/llvm/lib/"
-            licenses="$TOOLCHAIN/share/doc/rust/licenses"
-            cp "$licenses/Apache-2.0.txt" "$licenses/LLVM-exception.txt" "$licenses/NCSA.txt" "$name/licenses/"
-            cp "$TOOLCHAIN/share/doc/rust/COPYRIGHT.html" "$name/licenses/rust-COPYRIGHT.html"
+          fi
+          licenses="$TOOLCHAIN/share/doc/rust/licenses"
+          cp "$licenses/Apache-2.0.txt" "$licenses/LLVM-exception.txt" "$licenses/NCSA.txt" "$name/licenses/"
+          cp "$TOOLCHAIN/share/doc/rust/COPYRIGHT.html" "$name/licenses/rust-COPYRIGHT.html"
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z a "$name.zip" "$name" > /dev/null
+            echo "ARCHIVE=$name.zip" >> "$GITHUB_ENV"
+          else
             tar czf "$name.tar.gz" "$name"
             echo "ARCHIVE=$name.tar.gz" >> "$GITHUB_ENV"
           fi
           echo "PACKAGED=$name" >> "$GITHUB_ENV"
           ls -l "$name.zip" "$name.tar.gz" 2> /dev/null || true
-      # What a user gets: the archive's own tools, with Rust's toolchain out of reach and a Fennec
-      # home with nothing in it. `cc` is still the system's, which links. Windows' archive doesn't
-      # build programs yet.
+      # What a user gets: the archive's own tools, with Rust's toolchain, llvm-mingw and Visual
+      # Studio out of reach and a Fennec home with nothing in it. On macOS and Linux, `cc` is still
+      # the system's, which links; on Windows, the archive's own LLD links.
       - name: Try the archive with no toolchain around
-        if: runner.os != 'Windows'
         shell: bash
         run: |
-          reach="$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE 'cargo|rustup' | paste -sd: -)"
+          reach="$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE 'cargo|rustup|mingw|visual studio' | paste -sd: -)"
           fennec="$PWD/$PACKAGED/fennec"
           source="$GITHUB_WORKSPACE/examples"
           cd "$RUNNER_TEMP"
@@ -153,14 +165,13 @@ jobs:
             env PATH="$reach" RUSTUP_HOME="$RUNNER_TEMP/no-rustup" CARGO_HOME="$RUNNER_TEMP/no-cargo" \
               FENNEC_HOME="$RUNNER_TEMP/fennec-home" "$@"
           }
-          # `--llvm` is what a build said before every build went through LLVM; both take it.
-          try "$fennec" build --llvm "$source/hello.fen" -o hello
+          try "$fennec" build "$source/hello.fen" -o hello
           [ "$(try ./hello)" = "$(cat "$source/hello.out")" ]
-          try "$fennec" build --llvm --release "$source/hello.fen" -o hello_release
+          try "$fennec" build --release "$source/hello.fen" -o hello_release
           [ "$(try ./hello_release)" = "$(cat "$source/hello.out")" ]
-          try "$fennec" build --llvm "$source/parallel_loops.fen" -o threads
+          try "$fennec" build "$source/parallel_loops.fen" -o threads
           [ "$(try ./threads | sort)" = "$(sort "$source/parallel_loops.out")" ]
-          try "$fennec" build --llvm --release "$source/parallel_loops.fen" -o threads_release
+          try "$fennec" build --release "$source/parallel_loops.fen" -o threads_release
           [ "$(try ./threads_release | sort)" = "$(sort "$source/parallel_loops.out")" ]
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         if: startsWith(github.ref, 'refs/tags/v')

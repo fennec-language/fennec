@@ -1,0 +1,7 @@
+error: `name` has no default, so it has to come before the ones that do
+ --> examples/errors/default_field_first.fen:5:5
+  |
+5 |     name: str
+  |     ^^^^^^^^^
+  |
+  = help: put the fields and parameters with defaults after all the ones without

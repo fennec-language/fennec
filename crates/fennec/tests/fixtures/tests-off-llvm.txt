@@ -9,6 +9,5 @@ http_server 3
 json_collections 1
 own_str 1
 std_net 13
-std_sorted_map 1
 std_uuid 1
 test_capabilities 1

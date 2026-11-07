@@ -21,8 +21,8 @@ struct Packet:
     link: int
     id: int
     kind: int
-    a1 = 0
     a2: array[int, 4]
+    a1 = 0
 
 struct Task:
     kind: Kind

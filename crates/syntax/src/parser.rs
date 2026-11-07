@@ -408,6 +408,7 @@ impl Parser {
                 def.cases.push(self.case()?);
             } else {
                 let field = self.field(true)?;
+                default_comes_last(&def.fields, &field)?;
                 def.fields.push(Field { annotations, ..field });
                 self.end_line()?;
             }
@@ -473,7 +474,9 @@ impl Parser {
         let mut fields = Vec::new();
         if self.eat_p(Punct::LParen) {
             while !self.at_p(Punct::RParen) {
-                fields.push(self.field(false)?);
+                let field = self.field(false)?;
+                default_comes_last(&fields, &field)?;
+                fields.push(field);
                 if !self.eat_p(Punct::Comma) {
                     break;
                 }
@@ -668,9 +671,7 @@ impl Parser {
         while !self.at_p(Punct::RParen) {
             let param = self.param()?;
             if param.default.is_none() && params.iter().any(|earlier: &Param| earlier.default.is_some()) {
-                let message =
-                    format!("`{}` has no default, so it has to come before the ones that do", param.name);
-                return Err(Diagnostic::new(message, param.span));
+                return Err(no_default_after_defaults(&param.name, param.span));
             }
             params.push(param);
             if !self.eat_p(Punct::Comma) {
@@ -887,4 +888,19 @@ fn describe(tok: &Tok) -> String {
         Tok::Dedent => "the end of the block".to_owned(),
         Tok::Eof => "the end of the file".to_owned(),
     }
+}
+
+/// A field with no default after one with a default. Fields, like parameters, put the ones with
+/// defaults last, so a value given by position never lands in a defaulted one, and a type can
+/// gain a field with a default at its end without changing what any call means.
+fn default_comes_last(earlier: &[Field], field: &Field) -> Result<(), Diagnostic> {
+    if field.default.is_none() && earlier.iter().any(|earlier| earlier.default.is_some()) {
+        return Err(no_default_after_defaults(&field.name, field.span));
+    }
+    Ok(())
+}
+
+fn no_default_after_defaults(name: &str, span: Span) -> Diagnostic {
+    Diagnostic::new(format!("`{name}` has no default, so it has to come before the ones that do"), span)
+        .with_help("put the fields and parameters with defaults after all the ones without")
 }

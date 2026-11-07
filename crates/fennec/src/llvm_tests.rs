@@ -2,8 +2,10 @@
 //! go into one executable with what they reach, compiled a function at a time from the cache.
 //! Worker processes run it, each with its share of the tests, so a crash ends only the tests that
 //! worker hadn't run yet. Tests LLVM can't build yet and tests a crash left come back for the
-//! caller to run another way. So does a test that failed, since the other way says more about why, like what each side of an `assert` was. If it passes
-//! there, the two disagree, which is reported as a failure rather than hidden.
+//! caller to run another way. A test that fails says why as the other way does, both sides of an
+//! `assert` and what a failure passed up was, except that a property test's input isn't made the
+//! smallest that fails here: one that fails comes back too. If it passes there, the two disagree,
+//! which is reported as a failure rather than hidden.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -17,11 +19,11 @@ use crate::test_inputs::{Inputs, PREFIX};
 /// What running tests through LLVM did.
 #[derive(Default)]
 pub(crate) struct LlvmTests {
-    /// The tests that passed.
+    /// The tests that ran through LLVM, and how each went.
     pub(crate) outcomes: Vec<TestOutcome>,
     /// The names of the tests to run another way.
     pub(crate) left: Vec<String>,
-    /// The tests that failed, which are in `left` too, with how.
+    /// The property tests that failed, which are in `left` too, with how.
     pub(crate) failed: Vec<(String, Diagnostic)>,
     /// Why LLVM wouldn't build some of them, the first it said.
     pub(crate) refused: Option<String>,
@@ -209,38 +211,28 @@ fn functions_in(source: &str, start: u32) -> Option<Vec<FnDef>> {
     Some(functions)
 }
 
-/// The function for test `number`, which takes the capabilities the test names and gives back
-/// nothing, as the executable calls it, and the test's body in a function of its own. A property
-/// test's calls its body with each input in turn. A failure the body gives back fails the test:
-/// `fennec test` runs a failed test again another way, which says what the failure was.
+/// The function for test `number`, which takes the capabilities the test names, and the test's
+/// body in a function of its own. A test with no inputs is its body. A property test's calls its
+/// body with each input in turn. A failure the body gives back stops the test, saying what failed,
+/// as a failed `main` does.
 fn test_functions(number: usize, test: &TestDef, inputs: &mut Inputs<'_>) -> Option<Vec<FnDef>> {
     let name = function_name(number);
-    if test.inputs.is_empty() && !passes_failures_up(test) {
+    if test.inputs.is_empty() {
         return Some(vec![as_function(name, test)]);
     }
     let capabilities: Vec<&str> = test.capabilities.iter().map(|param| param.name.as_str()).collect();
     let mut args: Vec<String> = capabilities.iter().map(ToString::to_string).collect();
     let mut made = String::new();
-    let looped = !test.inputs.is_empty();
-    let indent = if looped { "        " } else { "    " };
+    let indent = "        ";
     for (at, input) in test.inputs.iter().enumerate() {
         let function = inputs.function_for(input.ty.as_ref()?)?;
         let _ = writeln!(made, "{indent}input{at} = {function}(ref state, 0)");
         args.push(format!("input{at}"));
     }
-    let body_call = format!("{PREFIX}{number}_body({})", args.join(", "));
-    let call = if passes_failures_up(test) {
-        format!(
-            "{indent}match {body_call}:\n{indent}    case Err(_):\n{indent}        assert False\n{indent}    case _:\n{indent}        pass\n"
-        )
-    } else {
-        format!("{indent}{body_call}\n")
-    };
-    let start = if looped {
-        format!("    mut state = {}\n    for _ in range({}):\n", property_seed(&test.name), PROPERTY_CASES)
-    } else {
-        String::new()
-    };
+    let tried = if passes_failures_up(test) { "?" } else { "" };
+    let call = format!("{indent}{PREFIX}{number}_body({}){tried}\n", args.join(", "));
+    let start =
+        format!("    mut state = {}\n    for _ in range({}):\n", property_seed(&test.name), PROPERTY_CASES);
     let source = format!("def {PREFIX}{number}():\n{start}{made}{call}");
     let mut caller = functions_in(&source, test.span.start)?;
     if let Some(caller) = caller.first_mut() {
@@ -443,6 +435,13 @@ pub(crate) fn run(module: &Module, wanted: &[String], defines: &dyn Fn(&str) -> 
                 }
                 let cases = if test.inputs.is_empty() { 1 } else { PROPERTY_CASES };
                 result.outcomes.push(TestOutcome { name: test.name.clone(), failure: None, cases });
+            }
+            Some(failure) if test.inputs.is_empty() => {
+                result.outcomes.push(TestOutcome {
+                    name: test.name.clone(),
+                    failure: Some(test_failure(failure)),
+                    cases: 1,
+                });
             }
             Some(failure) => {
                 result.left.push(test.name.clone());

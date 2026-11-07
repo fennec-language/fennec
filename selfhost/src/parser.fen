@@ -19,10 +19,6 @@ struct Parser:
     tokens: list[Token]
     ## Stands in for every token past the end.
     eof: Token
-    pos = 0
-    ## Set when an expression ended with an indented block (a `match`), so the statement
-    ## holding it has no line ending of its own to consume.
-    block_ended = False
     ## Each `mut` written where the language now says `ref`, and what it was on. Parsing goes on
     ## past them, so the one error they give can fix every one in the file.
     old_mut: list[Span]
@@ -31,6 +27,10 @@ struct Parser:
     ## `export`: a method comes with its type. Like `old_mut`, they give one error.
     old_pub: list[Span]
     old_pub_top: list[bool]
+    pos = 0
+    ## Set when an expression ended with an indented block (a `match`), so the statement
+    ## holding it has no line ending of its own to consume.
+    block_ended = False
 
     def over(tokens: list[Token]) -> Parser:
         end = tokens[-1].span if tokens.len() > 0 else Span(start=0, end=0)
@@ -316,6 +316,7 @@ struct Parser:
                 type_def.cases.append(self.case()?)
             else:
                 field = self.field(True)?
+                default_comes_last(type_def.fields, field)?
                 type_def.fields.append(copy(field, annotations=annotations))
                 self.end_line()?
         type_def
@@ -373,7 +374,9 @@ struct Parser:
         mut fields = []
         if self.eat_punct("("):
             while not self.at_punct(")"):
-                fields.append(self.field(False)?)
+                field = self.field(False)?
+                default_comes_last(fields, field)?
+                fields.append(field)
                 if not self.eat_punct(","):
                     break
             self.expect_punct(")")?
@@ -526,10 +529,7 @@ struct Parser:
         while not self.at_punct(")"):
             param = self.param()?
             if param.default is None and seen_default:
-                fail Diagnostic(
-                    message=f"`{param.name}` has no default, so it has to come before the ones that do",
-                    span=param.span,
-                )
+                fail no_default_after_defaults(param.name, param.span)
             seen_default = param.default is not None
             params.append(param)
             if not self.eat_punct(","):
@@ -729,4 +729,17 @@ def constant(stmt: Stmt) -> Item:
         message="only declarations and constants can go at the top level of a file",
         span=stmt.span,
         help="put this code inside `def main(stdout: Stdout):`",
+    )
+
+## A field with no default after one with a default. Fields, like parameters, put the ones with
+## defaults last, so a value given by position never lands in a defaulted one.
+def default_comes_last(earlier: list[Field], field: Field):
+    if field.default is None and any(other.default is not None for other in earlier):
+        fail no_default_after_defaults(field.name, field.span)
+
+def no_default_after_defaults(name: str, span: Span) -> Diagnostic:
+    Diagnostic(
+        message=f"`{name}` has no default, so it has to come before the ones that do",
+        span=span,
+        help="put the fields and parameters with defaults after all the ones without",
     )

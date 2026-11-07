@@ -5788,9 +5788,9 @@ enum Event:
 
 struct Scene:
     main: Circle | Square
-    count: int | str = 3
     shapes: list[Circle | Square | int]
     named: dict[str, Circle | Square]
+    count: int | str = 3
 
 struct Log:
     events: list[Event]
@@ -5835,7 +5835,7 @@ fn fields_holding_unions_are_saved_tagged_in_every_format() -> std::io::Result<(
     let printed = printed_by("union_fields", UNION_FIELDS)?;
     assert_eq!(
         printed,
-        "{\"main\": {\"Square\": {\"side\": 2.0}}, \"count\": {\"str\": \"many\"}, \"shapes\": [{\"Circle\": {\"radius\": 1.5}}, {\"int\": 7}], \"named\": {\"a\": {\"Circle\": {\"radius\": 2.0}}}}\nTrue\n[main.Square]\nside = 2.0\n\n[count]\nstr = \"many\"\n\n[[shapes]]\n\n[shapes.Circle]\nradius = 1.5\n\n[[shapes]]\nint = 7\n\n[named.a.Circle]\nradius = 2.0\n\nTrue\nTrue\n{\"events\": [{\"Spawn\": {\"what\": {\"Circle\": {\"radius\": 0.5}}}}, \"Quit\"], \"picked\": {\"int\": 4}}\nTrue\nTrue\nTrue\n3\n`main` is \"Triangle\", which is none of `Circle | Square`\n`main` is \"radius\", which is none of `Circle | Square`\n`picked` is \"str\", which is none of `Circle | int`\n"
+        "{\"main\": {\"Square\": {\"side\": 2.0}}, \"shapes\": [{\"Circle\": {\"radius\": 1.5}}, {\"int\": 7}], \"named\": {\"a\": {\"Circle\": {\"radius\": 2.0}}}, \"count\": {\"str\": \"many\"}}\nTrue\n[main.Square]\nside = 2.0\n\n[[shapes]]\n\n[shapes.Circle]\nradius = 1.5\n\n[[shapes]]\nint = 7\n\n[named.a.Circle]\nradius = 2.0\n\n[count]\nstr = \"many\"\n\nTrue\nTrue\n{\"events\": [{\"Spawn\": {\"what\": {\"Circle\": {\"radius\": 0.5}}}}, \"Quit\"], \"picked\": {\"int\": 4}}\nTrue\nTrue\nTrue\n3\n`main` is \"Triangle\", which is none of `Circle | Square`\n`main` is \"radius\", which is none of `Circle | Square`\n`picked` is \"str\", which is none of `Circle | int`\n"
     );
     Ok(())
 }
@@ -9024,6 +9024,39 @@ def main(stdout: Stdout):
     )
 }
 
+/// A generic's `T?` with `T` an optional is that optional, as the checker has it: `first` of a
+/// `list[str?]` gives back a `str?`, and a `SortedMap[int, str?]`'s `get` and `remove` do too.
+#[test]
+fn an_optional_of_an_optional_is_the_optional_as_on_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "optional_of_optional",
+        r#"from std.collections import SortedMap
+
+def first[T](items: list[T]) -> T?:
+    if items.len() > 0:
+        return items[0]
+    None
+
+def words() -> list[str?]:
+    ["kit", None]
+
+def numbers() -> list[int?]:
+    [None, 3]
+
+def main(stdout: Stdout):
+    stdout.print(first(words()), first(words()[1:]) is None, first(numbers()) is None)
+    mut map = SortedMap[int, str?]()
+    map[1] = None
+    map[2] = "kit"
+    stdout.print(map.get(1) is None, map.get(2), map.get(3) is None)
+    stdout.print(map.remove(2), map.remove(1) is None, map.len())
+"#,
+    )
+}
+
 /// `?` in `main`, which then gives back a result: going on when it's `Ok`.
 #[test]
 fn a_main_giving_back_a_result_matches_the_jit() -> std::io::Result<()> {
@@ -9346,9 +9379,9 @@ struct Pair[T]:
 
 struct Unit:
     name: str
+    pet: str?
     @serialize(name="hp")
     health = 10 where health >= 0
-    pet: str?
     pace = 0.0
     ready = False
     tags = list[str]()
@@ -9661,7 +9694,7 @@ test \"a failure comes back as its case\"(net: Net):
     let ran = fennec(&["test", "--all", "--verbose", &path], &dir)?;
     let said = String::from_utf8_lossy(&ran.stderr);
     assert!(ran.status.success(), "{said}");
-    assert!(said.contains("4 of 4 tests passed through LLVM"), "{said}");
+    assert!(said.contains("4 of 4 tests ran through LLVM"), "{said}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -9697,7 +9730,7 @@ test \"nothing runs\"(process: Process):
     let ran = fennec(&["test", "--all", "--verbose", &path], &dir)?;
     let said = String::from_utf8_lossy(&ran.stderr);
     assert!(ran.status.success(), "{said}");
-    assert!(said.contains("2 of 2 tests passed through LLVM"), "{said}");
+    assert!(said.contains("2 of 2 tests ran through LLVM"), "{said}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -9732,7 +9765,7 @@ test \"this one goes too far\" for value: int:
     let ran = fennec(&["test", "--all", "--verbose", &path], &dir)?;
     let (out, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
     assert!(!ran.status.success(), "{said}");
-    assert!(said.contains("2 of 3 tests passed through LLVM"), "{said}");
+    assert!(said.contains("2 of 3 tests ran through LLVM"), "{said}");
     assert!(out.contains("ints stay small (100 inputs)"), "{out}");
     assert!(said.contains("it failed for value = 500"), "{said}");
     assert!(!said.contains("through LLVM and passes"), "{said}");

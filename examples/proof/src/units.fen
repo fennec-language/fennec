@@ -101,9 +101,9 @@ struct Squad:
     name: str
     team: Team
     leader: Id[Unit]
-    members = list[Id[Unit]]()
     ## Where the squad is heading when nobody has a target.
     rally: (int, int)
+    members = list[Id[Unit]]()
 
 struct World:
     field: map.Map

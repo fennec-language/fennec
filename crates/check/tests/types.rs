@@ -412,8 +412,8 @@ fn a_types_own_equality_takes_its_own_type() {
 
 #[test]
 fn annotations_on_fields_are_checked() {
-    let text = "struct User:\n    @serialize(name=\"uid\")\n    id: int\n    @skip\n    cache = \"\"\n    @skip\n    \
-                total: int\n    @serialize(\"uid\")\n    name: str\n    @json\n    age: int\n";
+    let text = "struct User:\n    @serialize(name=\"uid\")\n    id: int\n    @skip\n    total: int\n    \
+                @serialize(\"uid\")\n    name: str\n    @json\n    age: int\n    @skip\n    cache = \"\"\n";
     assert_eq!(
         problems(text),
         [

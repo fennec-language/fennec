@@ -7,7 +7,8 @@ use fennec_syntax::{Arg, BinOp, Expr, ExprKind, FnDef, Pattern, Span, UnaryOp};
 use super::{Lowered, Lowering, Options, Tail};
 use crate::validate::fits;
 use crate::{
-    Block, BlockId, Inst, InstKind, Local, LocalId, Operand, Program, StructDef, Terminator, type_in,
+    Block, BlockId, Function, Inst, InstKind, Local, LocalId, Operand, Program, StructDef, Terminator,
+    type_in,
 };
 
 /// Every error type the IR can hold: not ones with `where` rules, which are checked
@@ -385,26 +386,39 @@ impl Lowering<'_> {
 
 /// If a backend asks, makes `main` end the program when it fails, rather than give a result back,
 /// so that it gives back nothing. Only a backend knows how to say what failed, as its text is
-/// worked out then.
+/// worked out then. The functions `fennec test` makes of tests, named `test:` and their number,
+/// end the same way, so a test's failure says what failed as `main`'s does. A property test's
+/// body, `test:` and its number and `_body`, is called with `?` for each input, so it doesn't.
 pub(super) fn stop_on_failed_main(program: &mut Program, defs: &[(String, &FnDef)], options: Options) {
-    let Some((_, def)) = defs.iter().find(|(key, _)| key == "main") else { return };
-    let Some(main) = program.functions.iter_mut().find(|function| function.name == "main") else {
-        return;
-    };
-    let Type::Result(ok, error) = main.returns.clone() else { return };
-    if !options.stop_on_failed_main || *ok != Type::Unit {
+    if !options.stop_on_failed_main {
         return;
     }
-    main.returns = Type::Unit;
-    let span = def.span;
+    let stops = |name: &str| {
+        name == "main"
+            || name.strip_prefix("test:").is_some_and(|number| number.chars().all(|c| c.is_ascii_digit()))
+    };
+    for (key, def) in defs.iter().filter(|(key, _)| stops(key)) {
+        if let Some(function) = program.functions.iter_mut().find(|function| function.name == *key) {
+            stop_on_failure(function, def.span);
+        }
+    }
+}
+
+/// Makes `function`, which gives back a result with nothing in its `Ok`, stop when it fails.
+fn stop_on_failure(function: &mut Function, span: Span) {
+    let Type::Result(ok, error) = function.returns.clone() else { return };
+    if *ok != Type::Unit {
+        return;
+    }
+    function.returns = Type::Unit;
     let inst = |kind| Inst { kind, span };
     let mut added = Vec::new();
-    let first = main.blocks.len();
-    for block in &mut main.blocks {
+    let first = function.blocks.len();
+    for block in &mut function.blocks {
         let Terminator::Return(Some(value)) = block.end.clone() else { continue };
-        let (failed, cause) = (LocalId(main.locals.len()), LocalId(main.locals.len() + 1));
-        main.locals.push(Local { name: None, ty: Type::Bool, copied: false });
-        main.locals.push(Local { name: None, ty: (*error).clone(), copied: false });
+        let (failed, cause) = (LocalId(function.locals.len()), LocalId(function.locals.len() + 1));
+        function.locals.push(Local { name: None, ty: Type::Bool, copied: false });
+        function.locals.push(Local { name: None, ty: (*error).clone(), copied: false });
         let (then, otherwise) = (BlockId(first + added.len()), BlockId(first + added.len() + 1));
         block.insts.push(inst(InstKind::IsErr { dest: failed, value: value.clone() }));
         block.end = Terminator::Branch { cond: Operand::Local(failed), then, otherwise };
@@ -421,5 +435,5 @@ pub(super) fn stop_on_failed_main(program: &mut Program, defs: &[(String, &FnDef
         });
         added.push(Block { insts: Vec::new(), end: Terminator::Return(None) });
     }
-    main.blocks.extend(added);
+    function.blocks.extend(added);
 }

@@ -19,9 +19,11 @@ export struct Fs:
     ## `with fs.create("save.txt")? as file:`. What's written goes into a file of its own beside
     ## `path`, which takes `path`'s place when the block ends, and a failure then is the `with`
     ## line's. A block that fails leaves `path` as it was, so there's never half a file, and
-    ## nothing's held in memory however much is written.
-    def create(self, path: str) -> with File fails IoError:
-        file = self._create(path)?
+    ## nothing's held in memory however much is written. When the block ends, the file is on the
+    ## disk, and so is its new name: `durable=False` skips that wait, for a file that doesn't
+    ## matter if the power goes.
+    def create(self, path: str, durable = True) -> with File fails IoError:
+        file = self._create(path, durable)?
         lend file else:
             self._discard(file)
         self._finish(file)?
@@ -35,9 +37,11 @@ export struct Fs:
         self._finish(file)?
 
 ## A file lent by `fs.create`, to write, or by `fs.open`, to read, for the length of a `with`
-## block. Its methods written in Rust: `write(data)` writes `bytes` or a `str`'s UTF-8; `read()`
-## gives what's left as `bytes`; and `read_line()` gives the next line without its ending, or
-## `None` at the end. Each fails with an `IoError`, as a read of a file made to write does.
+## block. Its methods written in Rust: `write(data)` writes `bytes` or a `str`'s UTF-8; `sync()`
+## puts what's been written on the disk now; `read()` gives what's left as `bytes`;
+## `read_chunk(size)` gives up to `size` bytes, and empty bytes at the end; and `read_line()` gives
+## the next line without its ending, or `None` at the end. Each fails with an `IoError`, as a read
+## of a file made to write does. In a task, each waits on the disk without holding up the others.
 export struct File:
     _handle: int
 
@@ -59,6 +63,14 @@ export struct File:
 
     def read_bytes(self) -> bytes fails IoError:
         self.read()?
+
+    ## What's left in it, `size` bytes at a time, the last chunk shorter: for reading a file far
+    ## bigger than memory, as `blake3(file.chunks(1_000_000))` will.
+    def chunks(self, size: int) -> Iterator[bytes]:
+        while True:
+            chunk = self.read_chunk(size) else bytes([])
+            if chunk.len() == 0: return
+            yield chunk
 
     ## Each line left in it, without its line break, until the end or a failure. To tell those
     ## apart, call `read_line()` instead.

@@ -25,12 +25,15 @@ fn method(type_name: &str, name: &str) -> Option<Method> {
         ("Fs", "only") => reads(&[path()], Type::named("Fs")),
         // What `fs.create` and `fs.open` are written with, in fs.fen: a file to write beside
         // `path` or one to read, and finishing or dropping it.
-        ("Fs", "_create" | "_open") => reads(&[path()], io(Type::named("File"))),
+        ("Fs", "_create") => reads(&[path(), Type::Bool], io(Type::named("File"))),
+        ("Fs", "_open") => reads(&[path()], io(Type::named("File"))),
         ("Fs", "_finish") => reads(&[Type::named("File")], io(Type::Unit)),
         ("Fs", "_discard") => reads(&[Type::named("File")], Type::Unit),
         // `bytes`, or a `str` as its UTF-8.
         ("File", "write") => reads(&[Type::Unknown], io(Type::Unit)),
         ("File", "read") => reads(&[], io(Type::Bytes)),
+        ("File", "read_chunk") => reads(&[Type::Int], io(Type::Bytes)),
+        ("File", "sync") => reads(&[], io(Type::Unit)),
         ("File", "read_line") => reads(&[], io(Type::optional(Type::Str))),
         _ => return None,
     })

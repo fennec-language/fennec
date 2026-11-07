@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use fennec_syntax::{Diagnostic, Span};
 
@@ -22,21 +22,38 @@ pub(crate) const MODULE: Module =
 /// goes into a file of its own beside where it's going, which takes that place when its block
 /// ends. A test's fake files are held in memory, and go into its fake file system then.
 enum OpenFile {
-    Writing { out: BufWriter<std::fs::File>, temporary: PathBuf, target: PathBuf },
+    Writing { out: BufWriter<std::fs::File>, temporary: PathBuf, target: PathBuf, durable: bool },
     Reading(BufReader<std::fs::File>),
     FakeWriting { target: String, data: Vec<u8> },
     FakeReading { data: Vec<u8>, at: usize },
 }
 
-static OPEN: LazyLock<Mutex<HashMap<i64, OpenFile>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Each open file has a lock of its own, so a long write to one never holds up another.
+type Shared = Arc<Mutex<OpenFile>>;
+
+static OPEN: LazyLock<Mutex<HashMap<i64, Shared>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static NEXT: LazyLock<Mutex<i64>> = LazyLock::new(|| Mutex::new(1));
+
+/// `work`, which may wait on the disk, on one of the runtime's blocking threads when it's in a
+/// task, so a slow disk pauses only that task, as a network wait does. Outside a task it runs
+/// here, and so does all of it where there are no threads.
+fn blocking<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+    #[cfg(any(test, feature = "threads"))]
+    {
+        crate::embed::serve::off_thread(work)
+    }
+    #[cfg(not(any(test, feature = "threads")))]
+    {
+        work()
+    }
+}
 
 /// Keeps an open file, giving back the `File` that holds its handle.
 fn lent(file: OpenFile) -> Value {
     let mut next = NEXT.lock().unwrap_or_else(PoisonError::into_inner);
     let handle = *next;
     *next += 1;
-    OPEN.lock().unwrap_or_else(PoisonError::into_inner).insert(handle, file);
+    OPEN.lock().unwrap_or_else(PoisonError::into_inner).insert(handle, Arc::new(Mutex::new(file)));
     Value::made("File", vec![("_handle", Value::Int(handle))])
 }
 
@@ -50,8 +67,12 @@ fn handle_of(file: &Value) -> Option<i64> {
     }
 }
 
+fn shared(handle: i64) -> Option<Shared> {
+    OPEN.lock().unwrap_or_else(PoisonError::into_inner).get(&handle).cloned()
+}
+
 /// Takes an open file out of the table, to finish or drop it.
-fn taken(file: &Value) -> Option<OpenFile> {
+fn taken(file: &Value) -> Option<Shared> {
     OPEN.lock().unwrap_or_else(PoisonError::into_inner).remove(&handle_of(file)?)
 }
 
@@ -65,93 +86,195 @@ fn temporary_beside(target: &Path) -> PathBuf {
     target.with_file_name(format!(".{name}.{}.{}.fennec-partial", std::process::id(), *made))
 }
 
-/// `fs._create(path)`: a new file beside `path` to write.
-fn create(path: &str) -> std::io::Result<Value> {
+/// `fs._create(path, durable)`: a new file beside `path` to write.
+fn create(path: &str, durable: bool) -> Value {
     let target = PathBuf::from(path);
-    let temporary = temporary_beside(&target);
-    let out = BufWriter::new(std::fs::File::create(&temporary)?);
-    Ok(lent(OpenFile::Writing { out, temporary, target }))
+    let made = blocking(move || {
+        let temporary = temporary_beside(&target);
+        std::fs::File::create(&temporary).map(|file| (file, temporary, target)).map_err(|err| err.to_string())
+    });
+    match made {
+        Ok((file, temporary, target)) => {
+            let out = BufWriter::new(file);
+            Value::Ok(Rc::new(lent(OpenFile::Writing { out, temporary, target, durable })))
+        }
+        Err(reason) => io_error(&reason),
+    }
 }
 
 /// `fs._open(path)`: the file at `path`, to read.
-fn open(path: &str) -> std::io::Result<Value> {
-    Ok(lent(OpenFile::Reading(BufReader::new(std::fs::File::open(path)?))))
+fn open(path: &str) -> Value {
+    let path = path.to_owned();
+    match blocking(move || std::fs::File::open(path).map_err(|err| err.to_string())) {
+        Ok(file) => Value::Ok(Rc::new(lent(OpenFile::Reading(BufReader::new(file))))),
+        Err(reason) => io_error(&reason),
+    }
+}
+
+/// A file written takes its target's place: everything written is on the disk first, and the
+/// rename is too, after, unless it was made with `durable=False`. Anything left is thrown away
+/// when that fails, leaving the target as it was.
+fn finish_writing(out: &mut BufWriter<std::fs::File>, temporary: &Path, target: &Path, durable: bool) -> Result<(), String> {
+    let done = (|| {
+        out.flush()?;
+        if durable {
+            out.get_ref().sync_all()?;
+        }
+        std::fs::rename(temporary, target)?;
+        if durable {
+            sync_folder(target)?;
+        }
+        Ok::<(), std::io::Error>(())
+    })();
+    if done.is_err() {
+        let _ = std::fs::remove_file(temporary);
+    }
+    done.map_err(|err| err.to_string())
+}
+
+/// Puts a rename in `path`'s folder on the disk. Windows has no handle to a folder to sync, and
+/// its renames are written through by the file system.
+fn sync_folder(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let folder = path.parent().filter(|folder| !folder.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        std::fs::File::open(folder)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
 }
 
 /// `fs._finish(file)`: a file written takes its target's place, and one read is closed. A fake
 /// one goes into the test's fake file system, by `fake`.
 fn finish(file: &Value, fake: &mut dyn FnMut(&str, &[u8]) -> Result<(), String>) -> Result<(), String> {
-    match taken(file) {
-        Some(OpenFile::Writing { mut out, temporary, target }) => {
-            let done = out.flush().and_then(|()| std::fs::rename(&temporary, &target));
-            if done.is_err() {
-                let _ = std::fs::remove_file(&temporary);
-            }
-            done.map_err(|err| err.to_string())
-        }
-        Some(OpenFile::FakeWriting { target, data }) => fake(&target, &data),
-        Some(OpenFile::Reading(_) | OpenFile::FakeReading { .. }) | None => Ok(()),
+    let Some(file) = taken(file) else { return Ok(()) };
+    let fake_written = match &mut *file.lock().unwrap_or_else(PoisonError::into_inner) {
+        OpenFile::FakeWriting { target, data } => Some((std::mem::take(target), std::mem::take(data))),
+        _ => None,
+    };
+    if let Some((target, data)) = fake_written {
+        return fake(&target, &data);
     }
+    blocking(move || match &mut *file.lock().unwrap_or_else(PoisonError::into_inner) {
+        OpenFile::Writing { out, temporary, target, durable } => finish_writing(out, temporary, target, *durable),
+        _ => Ok(()),
+    })
 }
 
 /// `fs._discard(file)`: a file written is thrown away, leaving its target as it was.
 fn discard(file: &Value) {
-    if let Some(OpenFile::Writing { out, temporary, .. }) = taken(file) {
-        drop(out);
-        let _ = std::fs::remove_file(&temporary);
-    }
+    let Some(file) = taken(file) else { return };
+    blocking(move || {
+        if let OpenFile::Writing { temporary, .. } = &*file.lock().unwrap_or_else(PoisonError::into_inner) {
+            let _ = std::fs::remove_file(temporary);
+        }
+    });
 }
 
-/// A method of a lent `File` by its handle: `write(data)`, `read()` or `read_line()`, as native
-/// code calls it and the interpreter does.
+/// What a `File`'s method gives back, as plain data that can come back from another thread.
+enum Given {
+    Nothing,
+    Data(Vec<u8>),
+    Line(Option<Vec<u8>>),
+}
+
+/// A method of a lent `File` by its handle: `write(data)`, `read()`, `read_chunk(size)`,
+/// `read_line()` or `sync()`, as native code calls it and the interpreter does.
 pub(crate) fn real_file(handle: i64, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
-    let mut open = OPEN.lock().unwrap_or_else(PoisonError::into_inner);
-    let Some(file) = open.get_mut(&handle) else {
+    let Some(file) = shared(handle) else {
         return Ok(io_error("this file was closed when its `with` block ended"));
     };
-    let done: Result<Value, String> = match (method, args, file) {
-        ("write", [data @ (Value::Str(_) | Value::Bytes(_))], OpenFile::Writing { out, .. }) => {
-            out.write_all(bytes_of(data)).map(|()| Value::Unit).map_err(|err| err.to_string())
-        }
-        ("write", [data @ (Value::Str(_) | Value::Bytes(_))], OpenFile::FakeWriting { data: kept, .. }) => {
-            kept.extend_from_slice(bytes_of(data));
-            Ok(Value::Unit)
-        }
-        ("write", [_], _) => Err("this file was opened to read, not to write".to_owned()),
-        ("read", [], OpenFile::Reading(reader)) => {
-            let mut data = Vec::new();
-            reader.read_to_end(&mut data).map(|_| Value::Bytes(Rc::from(data))).map_err(|err| err.to_string())
-        }
-        ("read", [], OpenFile::FakeReading { data, at }) => {
-            let rest = data.get(*at..).unwrap_or_default().to_vec();
-            *at = data.len();
-            Ok(Value::Bytes(Rc::from(rest)))
-        }
-        ("read_line", [], OpenFile::Reading(reader)) => {
-            let mut line = Vec::new();
-            match reader.read_until(b'\n', &mut line) {
-                Ok(0) => Ok(Value::None),
-                Ok(_) => line_value(line),
-                Err(err) => Err(err.to_string()),
-            }
-        }
-        ("read_line", [], OpenFile::FakeReading { data, at }) => {
-            let rest = data.get(*at..).unwrap_or_default();
-            if rest.is_empty() {
-                Ok(Value::None)
-            } else {
-                let end = rest.iter().position(|byte| *byte == b'\n').map_or(rest.len(), |end| end + 1);
-                *at += end;
-                line_value(rest.get(..end).unwrap_or_default().to_vec())
-            }
-        }
-        ("read" | "read_line", [], _) => Err("this file was made to write, not to read".to_owned()),
-        _ => return Err(Diagnostic::new(format!("a File has no method `{method}`"), span)),
+    let data = match args {
+        [data @ (Value::Str(_) | Value::Bytes(_))] => Some(bytes_of(data).to_vec()),
+        _ => None,
     };
+    let size = match args {
+        [Value::Int(size)] => usize::try_from(*size).ok(),
+        _ => None,
+    };
+    let method = match (method, &data, size) {
+        ("write", Some(_), _) | ("read" | "read_line" | "sync", None, None) | ("read_chunk", None, Some(_)) => {
+            method.to_owned()
+        }
+        ("read_chunk", None, None) => {
+            return Err(Diagnostic::new("`read_chunk` takes how many bytes to read, 0 or more", span));
+        }
+        _ => return Err(Diagnostic::new(format!("a File has no method `{method}` that takes these"), span)),
+    };
+    let done = blocking(move || file_work(&mut file.lock().unwrap_or_else(PoisonError::into_inner), &method, data, size));
     Ok(match done {
-        Ok(value) => Value::Ok(Rc::new(value)),
+        Ok(Given::Nothing) => Value::Ok(Rc::new(Value::Unit)),
+        Ok(Given::Data(data)) => Value::Ok(Rc::new(Value::Bytes(Rc::from(data)))),
+        Ok(Given::Line(None)) => Value::Ok(Rc::new(Value::None)),
+        Ok(Given::Line(Some(line))) => match line_text(line) {
+            Ok(text) => Value::Ok(Rc::new(Value::str(&text))),
+            Err(reason) => io_error(&reason),
+        },
         Err(reason) => io_error(&reason),
     })
+}
+
+/// The work of a `File`'s method, which may wait on the disk.
+fn file_work(file: &mut OpenFile, method: &str, data: Option<Vec<u8>>, size: Option<usize>) -> Result<Given, String> {
+    let io = |err: std::io::Error| err.to_string();
+    match (method, file) {
+        ("write", OpenFile::Writing { out, .. }) => {
+            out.write_all(&data.unwrap_or_default()).map_err(io)?;
+            Ok(Given::Nothing)
+        }
+        ("write", OpenFile::FakeWriting { data: kept, .. }) => {
+            kept.extend_from_slice(&data.unwrap_or_default());
+            Ok(Given::Nothing)
+        }
+        ("sync", OpenFile::Writing { out, .. }) => {
+            out.flush().map_err(io)?;
+            out.get_ref().sync_all().map_err(io)?;
+            Ok(Given::Nothing)
+        }
+        ("sync", _) => Ok(Given::Nothing),
+        ("write", _) => Err("this file was opened to read, not to write".to_owned()),
+        ("read", OpenFile::Reading(reader)) => {
+            let mut all = Vec::new();
+            reader.read_to_end(&mut all).map_err(io)?;
+            Ok(Given::Data(all))
+        }
+        ("read_chunk", OpenFile::Reading(reader)) => {
+            let mut chunk = vec![0; size.unwrap_or(0)];
+            let mut filled = 0;
+            while filled < chunk.len() {
+                let read = reader.read(chunk.get_mut(filled..).unwrap_or_default()).map_err(io)?;
+                if read == 0 {
+                    break;
+                }
+                filled += read;
+            }
+            chunk.truncate(filled);
+            Ok(Given::Data(chunk))
+        }
+        ("read_line", OpenFile::Reading(reader)) => {
+            let mut line = Vec::new();
+            match reader.read_until(b'\n', &mut line).map_err(io)? {
+                0 => Ok(Given::Line(None)),
+                _ => Ok(Given::Line(Some(line))),
+            }
+        }
+        (reading, OpenFile::FakeReading { data, at }) => {
+            let rest = data.get(*at..).unwrap_or_default();
+            let end = match reading {
+                "read" => rest.len(),
+                "read_chunk" => size.unwrap_or(0).min(rest.len()),
+                _ if rest.is_empty() => return Ok(Given::Line(None)),
+                _ => rest.iter().position(|byte| *byte == b'\n').map_or(rest.len(), |end| end + 1),
+            };
+            let taken = rest.get(..end).unwrap_or_default().to_vec();
+            *at += end;
+            Ok(if reading == "read_line" { Given::Line(Some(taken)) } else { Given::Data(taken) })
+        }
+        _ => Err("this file was made to write, not to read".to_owned()),
+    }
 }
 
 fn bytes_of(data: &Value) -> &[u8] {
@@ -163,14 +286,14 @@ fn bytes_of(data: &Value) -> &[u8] {
 }
 
 /// A line read, without its line break, as text.
-fn line_value(mut line: Vec<u8>) -> Result<Value, String> {
+fn line_text(mut line: Vec<u8>) -> Result<String, String> {
     if line.last() == Some(&b'\n') {
         line.pop();
         if line.last() == Some(&b'\r') {
             line.pop();
         }
     }
-    String::from_utf8(line).map(|text| Value::str(&text)).map_err(|_| "this line isn't UTF-8 text".to_owned())
+    String::from_utf8(line).map_err(|_| "this line isn't UTF-8 text".to_owned())
 }
 
 /// `File`'s methods written in Rust, as the interpreter calls them.
@@ -196,7 +319,7 @@ impl Interp<'_> {
         }
         if self.world.as_ref().is_some_and(|world| !world.real()) {
             match (method, paths.as_slice()) {
-                ("_create", [Value::Str(path)]) => {
+                ("_create", [Value::Str(path), _]) => {
                     let file = OpenFile::FakeWriting { target: path.to_string(), data: Vec::new() };
                     return Ok(Value::Ok(Rc::new(lent(file))));
                 }
@@ -244,76 +367,97 @@ impl Interp<'_> {
 /// A method of the real `Fs`, which needs nothing of a program's, on paths as `path_text` gives
 /// them.
 pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value, Diagnostic> {
-    let done = match (method, paths) {
-        ("exists", [Value::Str(path)]) => return Ok(Value::Bool(Path::new(path.as_ref()).exists())),
-        ("read_text", [Value::Str(path)]) => std::fs::read_to_string(path.as_ref()).map(|text| Value::str(&text)),
-        ("write_text", [Value::Str(path), Value::Str(text)]) => {
-            std::fs::write(path.as_ref(), text.as_bytes()).map(|()| Value::Unit)
+    let wrong = || Err(Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span));
+    let io = |err: std::io::Error| err.to_string();
+    Ok(match (method, paths) {
+        ("exists", [Value::Str(path)]) => {
+            let path = path.to_string();
+            Value::Bool(blocking(move || Path::new(&path).exists()))
         }
-        ("read_bytes", [Value::Str(path)]) => std::fs::read(path.as_ref()).map(|data| Value::Bytes(Rc::from(data))),
-        ("write_bytes", [Value::Str(path), Value::Bytes(data)]) => {
-            std::fs::write(path.as_ref(), data).map(|()| Value::Unit)
+        ("read_text", [Value::Str(path)]) => {
+            let path = path.to_string();
+            done(blocking(move || std::fs::read_to_string(path).map_err(io)), |text| Value::str(&text))
         }
-        ("list_dir", [Value::Str(path)]) => return Ok(list_dir(path)),
-        ("_create", [Value::Str(path)]) => create(path),
-        ("_open", [Value::Str(path)]) => open(path),
-        ("_finish", [file]) => {
-            return Ok(match finish(file, &mut |_, _| Ok(())) {
-                Ok(()) => Value::Ok(Rc::new(Value::Unit)),
+        ("read_bytes", [Value::Str(path)]) => {
+            let path = path.to_string();
+            done(blocking(move || std::fs::read(path).map_err(io)), |data| Value::Bytes(Rc::from(data)))
+        }
+        ("write_text" | "write_bytes", [Value::Str(path), data @ (Value::Str(_) | Value::Bytes(_))]) => {
+            let (path, data) = (path.to_string(), bytes_of(data).to_vec());
+            done(blocking(move || std::fs::write(path, data).map_err(io)), |()| Value::Unit)
+        }
+        ("list_dir", [Value::Str(path)]) => {
+            let folder = path.to_string();
+            let listed = blocking(move || names_in(&folder).map_err(io));
+            match listed {
+                Ok(names) => paths_in(path, &names),
                 Err(reason) => io_error(&reason),
-            });
-        }
-        ("_discard", [file]) => {
-            discard(file);
-            return Ok(Value::Unit);
+            }
         }
         ("walk", [Value::Str(path)]) => {
-            let mut found = Vec::new();
-            return Ok(match walk_into(path, &mut found) {
-                Ok(()) => paths_of(&found),
-                Err(err) => io_error(&err.to_string()),
+            let folder = path.to_string();
+            let walked = blocking(move || {
+                let mut found = Vec::new();
+                walk_into(&folder, &mut found).map(|()| found).map_err(io)
             });
+            match walked {
+                Ok(found) => paths_of(&found),
+                Err(reason) => io_error(&reason),
+            }
         }
-        ("make_dir", [Value::Str(path)]) => std::fs::create_dir_all(path.as_ref()).map(|()| Value::Unit),
-        ("remove", [Value::Str(path)]) => remove(path).map(|()| Value::Unit),
-        ("metadata", [Value::Str(path)]) => std::fs::metadata(path.as_ref()).map(|found| {
-            let size = i64::try_from(found.len()).unwrap_or(i64::MAX);
-            Value::made(
-                "Metadata",
-                vec![
-                    ("size", Value::Int(size)),
-                    ("is_file", Value::Bool(found.is_file())),
-                    ("is_dir", Value::Bool(found.is_dir())),
-                ],
-            )
-        }),
+        ("make_dir", [Value::Str(path)]) => {
+            let path = path.to_string();
+            done(blocking(move || std::fs::create_dir_all(path).map_err(io)), |()| Value::Unit)
+        }
+        ("remove", [Value::Str(path)]) => {
+            let path = path.to_string();
+            done(blocking(move || remove(&path).map_err(io)), |()| Value::Unit)
+        }
+        ("metadata", [Value::Str(path)]) => {
+            let path = path.to_string();
+            let found = blocking(move || {
+                std::fs::metadata(path).map(|found| (found.len(), found.is_file(), found.is_dir())).map_err(io)
+            });
+            done(found, |(size, is_file, is_dir)| {
+                Value::made(
+                    "Metadata",
+                    vec![
+                        ("size", Value::Int(i64::try_from(size).unwrap_or(i64::MAX))),
+                        ("is_file", Value::Bool(is_file)),
+                        ("is_dir", Value::Bool(is_dir)),
+                    ],
+                )
+            })
+        }
+        ("_create", [Value::Str(path), Value::Bool(durable)]) => create(path, *durable),
+        ("_open", [Value::Str(path)]) => open(path),
+        ("_finish", [file]) => done(finish(file, &mut |_, _| Ok(())), |()| Value::Unit),
+        ("_discard", [file]) => {
+            discard(file);
+            Value::Unit
+        }
         ("exists" | "read_text" | "write_text" | "read_bytes" | "write_bytes" | "list_dir" | "walk" | "make_dir"
-        | "remove" | "metadata", _) => {
-            return Err(Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span));
-        }
+        | "remove" | "metadata" | "_create" | "_open", _) => return wrong(),
         _ => return Err(no_method(&Value::Capability(Capability::Fs), method, span)),
-    };
-    Ok(match done {
-        Ok(value) => Value::Ok(Rc::new(value)),
-        Err(err) => io_error(&err.to_string()),
     })
 }
 
-/// The paths in a folder, sorted by name so every system lists them in the same order.
-fn list_dir(folder: &str) -> Value {
-    let entries = match std::fs::read_dir(folder) {
-        Ok(entries) => entries,
-        Err(err) => return io_error(&err.to_string()),
-    };
+/// A result's value, made into what a program gets back, or its failure as an `IoError`.
+fn done<T>(result: Result<T, String>, made: impl FnOnce(T) -> Value) -> Value {
+    match result {
+        Ok(value) => Value::Ok(Rc::new(made(value))),
+        Err(reason) => io_error(&reason),
+    }
+}
+
+/// The names of what's in a folder, sorted so every system lists them in the same order.
+fn names_in(folder: &str) -> std::io::Result<Vec<String>> {
     let mut names = Vec::new();
-    for entry in entries {
-        match entry {
-            Ok(entry) => names.push(entry.file_name().to_string_lossy().into_owned()),
-            Err(err) => return io_error(&err.to_string()),
-        }
+    for entry in std::fs::read_dir(folder)? {
+        names.push(entry?.file_name().to_string_lossy().into_owned());
     }
     names.sort();
-    paths_in(folder, &names)
+    Ok(names)
 }
 
 /// The paths of the things called `names` in a folder.

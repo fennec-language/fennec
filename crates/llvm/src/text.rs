@@ -1,5 +1,7 @@
 //! Printing and f-strings.
 
+use std::fmt::Write as _;
+
 use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS, TEXT_ROOM};
 use fennec_ir::{FormatPart, LocalId, Operand};
 use fennec_syntax::{BinOp, Span};
@@ -559,6 +561,9 @@ impl Emit<'_, '_, '_> {
     /// An f-string: every piece worked out first, then one block with room for them all, the
     /// pieces copied in.
     pub(crate) fn format(&mut self, dest: LocalId, parts: &[FormatPart], span: Span) -> Result<(), String> {
+        if self.headers() {
+            return self.format_headers(dest, parts, span);
+        }
         let mut pieces = Vec::with_capacity(parts.len());
         for part in parts {
             pieces.push(match part {
@@ -660,6 +665,155 @@ impl Emit<'_, '_, '_> {
         };
         let value = self.text_value(&value);
         self.assign(dest, &value)
+    }
+
+    /// An f-string where strings are headers, made in one go: each piece is read where it is,
+    /// with no block made for it, the lengths are added up, and the text is written once, inline
+    /// when it fits. A literal is constant bytes, a string its header's, and an int or a float
+    /// a header of its own; only other values are written out as a string first.
+    fn format_headers(&mut self, dest: LocalId, parts: &[FormatPart], span: Span) -> Result<(), String> {
+        // A string on its own is that string, with another owner.
+        if let [FormatPart::Value { value, spec: None }] = parts
+            && matches!(self.operand(value)?.1, Kind::Str)
+        {
+            let (text, _) = self.operand(value)?;
+            self.retain_text(&text);
+            return self.assign(dest, &text);
+        }
+        let mut pieces = Vec::with_capacity(parts.len());
+        for part in parts {
+            match part {
+                FormatPart::Text(text) if text.is_empty() => {}
+                FormatPart::Text(text) => pieces.push(self.literal_piece(text)),
+                FormatPart::Value { value, spec } => {
+                    pieces.push(self.value_piece(value, spec.as_deref(), span)?);
+                }
+            }
+        }
+        let (mut bytes, mut chars) = ("0".to_owned(), "0".to_owned());
+        for piece in &pieces {
+            let (more_bytes, more_chars) = (self.temp(), self.temp());
+            self.line(&format!("{more_bytes} = add nuw nsw i64 {bytes}, {}", piece.size));
+            self.line(&format!("{more_chars} = add nuw nsw i64 {chars}, {}", piece.chars));
+            (bytes, chars) = (more_bytes, more_chars);
+        }
+        let (inline, block, done) =
+            (self.label("format_inline"), self.label("format_block"), self.label("format_done"));
+        let fits = self.temp();
+        self.line(&format!("{fits} = icmp ule i64 {bytes}, 23"));
+        self.line(&format!("br i1 {fits}, label %{inline}, label %{block}"));
+        self.start_block(&inline);
+        let out = self.place_for_text();
+        self.line(&format!("store {} zeroinitializer, ptr {out}", crate::headers::HEADER));
+        self.write_pieces(&out, &pieces, true);
+        let (tag, byte, tag_at, from_inline) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{tag} = or i64 {bytes}, 128"));
+        self.line(&format!("{byte} = trunc i64 {tag} to i8"));
+        self.line(&format!("{tag_at} = getelementptr inbounds i8, ptr {out}, i64 23"));
+        self.line(&format!("store i8 {byte}, ptr {tag_at}"));
+        self.line(&format!("{from_inline} = load {}, ptr {out}", crate::headers::HEADER));
+        let inline_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&block);
+        self.declare("declare ptr @fennec_str_with_room(i64) nounwind");
+        let made = self.temp();
+        self.line(&format!("{made} = call ptr @fennec_str_with_room(i64 {bytes})"));
+        let start = self.offset(&made, TEXT.unsigned_abs());
+        self.write_pieces(&start, &pieces, false);
+        let (bytes_at, chars_at) =
+            (self.offset(&made, TEXT_BYTES.unsigned_abs()), self.offset(&made, TEXT_CHARS.unsigned_abs()));
+        self.line(&format!("store i64 {bytes}, ptr {bytes_at}{HEADER_ACCESS}"));
+        self.line(&format!("store i64 {chars}, ptr {chars_at}{HEADER_ACCESS}"));
+        let from_block = self.text_from_block(&made);
+        let block_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let value = self.temp();
+        self.line(&format!(
+            "{value} = phi {} [ {from_inline}, %{inline_end} ], [ {from_block}, %{block_end} ]",
+            crate::headers::HEADER
+        ));
+        for piece in &pieces {
+            match &piece.owned {
+                Some(Owned::Header(header)) => self.release_text(header),
+                Some(Owned::Block(block)) => self.release(block),
+                None => {}
+            }
+        }
+        self.assign(dest, &value)
+    }
+
+    /// A literal's bytes, as a constant of the module's.
+    fn literal_piece(&mut self, text: &str) -> Piece {
+        let name = format!("@\"fs_{}\"", fennec_blake3::hash(text.as_bytes()).to_hex());
+        let escaped = text.bytes().fold(String::new(), |mut escaped, byte| {
+            let _ = write!(escaped, "\\{byte:02X}");
+            escaped
+        });
+        let size = text.len();
+        self.declare(&format!(
+            "{name} = private unnamed_addr constant [{size} x i8] c\"{escaped}\", align 1"
+        ));
+        Piece { from: name, size: size.to_string(), chars: text.chars().count().to_string(), owned: None }
+    }
+
+    /// A value's text, read where it is: a string's header, an int's or a float's header made
+    /// for it, or anything else written out as a string block.
+    fn value_piece(&mut self, value: &Operand, spec: Option<&str>, span: Span) -> Result<Piece, String> {
+        let (held, kind) = self.operand(value)?;
+        let header = crate::headers::HEADER;
+        let made = match (&kind, spec) {
+            (Kind::Str, None) => None,
+            (Kind::Int | Kind::Float, None) => {
+                let (call, ty) = if kind == Kind::Int { ("int", "i64") } else { ("float", "double") };
+                self.declare(&format!(
+                    "declare void @fennec_{call}_header(ptr sret({header}) align 8, {ty}) nounwind"
+                ));
+                let (place, made) = (self.place_for_text(), self.temp());
+                self.line(&format!(
+                    "call void @fennec_{call}_header(ptr sret({header}) align 8 {place}, {ty} {held})"
+                ));
+                self.line(&format!("{made} = load {header}, ptr {place}"));
+                Some(made)
+            }
+            _ => {
+                let block = self.piece(value, spec, span)?;
+                let (size, chars) = (self.temp(), self.temp());
+                let (bytes_at, chars_at) = (
+                    self.offset(&block, TEXT_BYTES.unsigned_abs()),
+                    self.offset(&block, TEXT_CHARS.unsigned_abs()),
+                );
+                self.line(&format!("{size} = load i64, ptr {bytes_at}{HEADER_ACCESS}"));
+                self.line(&format!("{chars} = load i64, ptr {chars_at}{HEADER_ACCESS}"));
+                let from = self.offset(&block, TEXT.unsigned_abs());
+                return Ok(Piece { from, size, chars, owned: Some(Owned::Block(block)) });
+            }
+        };
+        let text = made.clone().unwrap_or(held);
+        let (from, size, chars) =
+            (self.header_bytes(&text), self.header_byte_length(&text), self.header_chars(&text));
+        Ok(Piece { from, size, chars, owned: made.map(Owned::Header) })
+    }
+
+    /// Writes an f-string's pieces one after another from `start`: with a few moves each when
+    /// they're going in a header, of 23 bytes at most, and with `memcpy` otherwise.
+    fn write_pieces(&mut self, start: &str, pieces: &[Piece], small: bool) {
+        self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+        let mut at = "0".to_owned();
+        for piece in pieces {
+            let (to, after) = (self.temp(), self.temp());
+            self.line(&format!("{to} = getelementptr inbounds i8, ptr {start}, i64 {at}"));
+            if small {
+                self.small_copy(&to, &piece.from, &piece.size);
+            } else {
+                self.line(&format!(
+                    "call void @llvm.memcpy.p0.p0.i64(ptr {to}, ptr {}, i64 {}, i1 false)",
+                    piece.from, piece.size
+                ));
+            }
+            self.line(&format!("{after} = add nuw nsw i64 {at}, {}", piece.size));
+            at = after;
+        }
     }
 
     /// Copies an f-string's pieces' bytes one after another from `start`, each `small`, of 24
@@ -1251,4 +1405,19 @@ impl Emit<'_, '_, '_> {
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }
     }
+}
+
+/// One piece of an f-string, read where it is: where its bytes start, how many there are, how
+/// many characters they make, and what was made for it to let go of once it's written.
+struct Piece {
+    from: String,
+    size: String,
+    chars: String,
+    owned: Option<Owned>,
+}
+
+/// What an f-string's piece made to be read from.
+enum Owned {
+    Header(String),
+    Block(String),
 }

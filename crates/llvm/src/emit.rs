@@ -122,6 +122,7 @@ pub(crate) fn emit_with(
     let mut units = Vec::with_capacity(program.functions.len());
     // Every module of a program agrees, since what it declares has to match what's defined.
     let threads = crate::parallel::uses_parallel(program);
+    shared.native = crate::native::native_types(program, &layouts);
     // Every function it can't take yet is named, not just the first.
     let mut refused = Vec::new();
     for function in program.functions.iter().chain(&program.constants) {
@@ -992,7 +993,8 @@ impl Emit<'_, '_, '_> {
     /// One owner fewer for a block, if there's a block, freeing it when that was the last.
     pub(crate) fn release(&mut self, block: &str) {
         debug_assert_eq!(COUNT, 0);
-        self.declare("declare void @fennec_free(ptr) nounwind");
+        // A program's native types are layouts it has, so finding their free can't fail.
+        let free = self.free_function().unwrap_or("@fennec_free");
         let (none, held, last, done) =
             (self.temp(), self.label("held"), self.label("last"), self.label("done"));
         self.line(&format!("{none} = icmp eq ptr {block}, null"));
@@ -1001,7 +1003,7 @@ impl Emit<'_, '_, '_> {
         let gone = self.owner_gone(block);
         self.line(&format!("br i1 {gone}, label %{last}, label %{done}"));
         self.start_block(&last);
-        self.line(&format!("call void @fennec_free(ptr {block})"));
+        self.line(&format!("call void {free}(ptr {block})"));
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
     }

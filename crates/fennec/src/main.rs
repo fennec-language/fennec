@@ -146,6 +146,8 @@ fn main() -> ExitCode {
         ["lsp"] => lsp::lsp(),
         ["dev", "checks"] => on_big_stack(fallbacks::checks, "."),
         ["dev", "checks", path] => on_big_stack(fallbacks::checks, path),
+        ["dev", "waits"] => on_big_stack(fallbacks::waits, "."),
+        ["dev", "waits", path] => on_big_stack(fallbacks::waits, path),
         ["dev", "fallbacks"] => on_big_stack(fallbacks::fallbacks, "."),
         ["dev", "fallbacks", "--llvm"] => on_big_stack(fallbacks::not_lowered, "."),
         ["dev", "fallbacks", "--llvm", path] => on_big_stack(fallbacks::not_lowered, path),

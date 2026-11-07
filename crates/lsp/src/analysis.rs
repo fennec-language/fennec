@@ -33,6 +33,9 @@ pub(crate) struct Analysis {
     pub(crate) costs: Vec<fennec_ir::Finding>,
     /// Whether this looked at only part of the program. See `edited_bodies`.
     pub(crate) partial: bool,
+    /// Whether `checked` has been worked out for a partial analysis, which waits until a request
+    /// needs the types.
+    pub(crate) typed: bool,
 }
 
 /// The program a file belongs to: its kit's folder when it's in a kit's `src`, or else the
@@ -145,11 +148,13 @@ pub(crate) fn edited_bodies(clean: &Clean, program: &Path, overlay: &Overlay) ->
         sources: loaded.sources,
         diagnostics,
         unplaced: Vec::new(),
-        module: None,
+        // The files it loaded, as written, which answer a request about a place in one of them.
+        module: Some(written),
         checked: None,
         findings,
         costs: Vec::new(),
         partial: true,
+        typed: false,
     })
 }
 
@@ -166,6 +171,7 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
             findings: Vec::new(),
             costs: Vec::new(),
             partial: false,
+            typed: true,
         },
         Ok(loaded) => {
             let (mut diagnostics, checked) = match fennec_check::check_typed(&loaded.module) {
@@ -194,12 +200,24 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
                 findings,
                 costs,
                 partial: false,
+                typed: true,
             }
         }
     }
 }
 
 impl Analysis {
+    /// Works out the types of a partial analysis's files, the first time a request needs them.
+    pub(crate) fn typed(&mut self) {
+        if self.typed {
+            return;
+        }
+        self.typed = true;
+        if self.diagnostics.is_empty() {
+            self.checked = self.module.as_ref().and_then(|module| fennec_check::check_typed(module).ok());
+        }
+    }
+
     /// The file a span is in, and the span's place in that file's text.
     pub(crate) fn place(&self, span: Span) -> Option<(&str, &str, usize, usize)> {
         if span.in_prelude() {

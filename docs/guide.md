@@ -1,0 +1,316 @@
+# Building a program in Fennec
+
+A practical guide to writing a real program today, using a small version of Hoard, a source control tool, as the example. Every sample here compiles and passes its tests on main. Anything that doesn't is marked **planned**, with what to write until it lands. `docs/language.md` is the full language on one page.
+
+## Start a kit
+
+```bash
+fennec new hoard
+```
+
+That makes a folder:
+
+```text
+hoard/
+  kit.toml
+  AGENTS.md
+  src/
+    main.fen
+    greeting.fen
+```
+
+`kit.toml` names the kit and the Fennec it's built with:
+
+```toml
+name = "hoard"
+version = "0.1.0"
+fennec = "0.0.1"
+
+[dependencies]
+```
+
+- `src/main.fen` holds `main`. Every other file under `src` is a module: `src/store.fen` is `store`, and `src/net/sync.fen` is `net.sync`.
+- A file uses another's names only after importing them: `from store import save`, or `import store` and then `store.save(...)`.
+- Two files of a kit can't define the same top-level name, so a name means one thing everywhere in the kit.
+- Without `export`, a name is private to its kit. Mark what other kits may use: `export def save(...)`.
+
+## `main` and capabilities
+
+A function reaches outside itself only through what's in its signature. So `main` names everything the program may do, and hands each piece to the code that needs it:
+
+```fennec
+def main(stdout: Stdout, fs: Fs, args: Args):
+    folder = args[0] if args.len() > 0 else "."
+    stdout.print(f"saving {folder}")
+```
+
+There's no global `print`, and no way to reach the disk or the network without being handed `Fs` or `Net`. The others are `Clock`, `Entropy`, `Stdin`, `Env` and `Process`. Tests get fakes of each, below.
+
+`main` ends the program. Failing out of it prints the failure to stderr and exits with code 1, and `def main(...) -> int:` exits with the `int` it gives back. There's no `exit()`.
+
+## Failures and `?`
+
+A function that can fail says so in its signature, and every place it can leave is visible. This is `src/store.fen`, where Hoard keeps file contents under the hash of their bytes:
+
+```fennec
+## Where Hoard keeps file contents, each under the hash of its bytes.
+from std.crypto import blake3
+
+error StoreError:
+    Missing(hash: str)
+    Unreadable(path: str)
+
+## The hash that names `data`: the same bytes always give the same name.
+def name_of(data: bytes) -> str:
+    blake3(data)
+
+## Saves `data` in the store under its hash, and gives back the hash.
+def save(fs: Fs, data: bytes) -> str fails IoError:
+    hash = name_of(data)
+    fs.make_dir(".hoard/objects")?
+    fs.write_bytes(f".hoard/objects/{hash}", data)?
+    hash
+
+## Reads back what `save` stored under `hash`.
+def load(fs: Fs, hash: str) -> bytes fails StoreError:
+    path = f".hoard/objects/{hash}"
+    if not fs.exists(path):
+        fail .Missing(hash)
+    fs.read_bytes(path) else fail .Unreadable(path)
+```
+
+- `error StoreError:` lists the ways it can fail, each with the data a caller needs.
+- `?` passes a failure up to the caller. It's only for failures, and a function using it must say `fails`.
+- `fail .Missing(hash)` leaves with a failure of your own.
+- `else` gives a default when something fails or is missing, or leaves: `else fail ...`, `else return`, `else continue`.
+- `match` handles each case:
+
+```fennec
+match load(fs, hash):
+    case Ok(data):
+        stdout.print(data.len(), "bytes")
+    case Err(Missing(hash)):
+        stdout.print(f"nothing is saved under {hash}")
+    case Err(Unreadable(path)):
+        stdout.print(f"couldn't read {path}")
+```
+
+Ignoring a returned value is a compile error. Write `_ = call()` when you mean to throw one away.
+
+## Files
+
+Everything on disk goes through `fs`:
+
+| Call | What it does |
+|---|---|
+| `fs.read_text(path)?`, `fs.read_bytes(path)?` | Read a whole file |
+| `fs.write_text(path, text)?`, `fs.write_bytes(path, data)?` | Write a whole file |
+| `fs.exists(path)` | Whether it's there |
+| `fs.metadata(path)?` | Its `size`, `is_file` and `is_dir` |
+| `fs.list_dir(path)?` | What's in a folder, sorted by name |
+| `fs.walk(path)?` | Everything under a folder, at any depth |
+| `fs.make_dir(path)?` | Make a folder and any missing parents |
+| `fs.remove(path)?` | Remove a file, or an empty folder |
+
+Each failure is an `IoError`.
+
+**Planned:** files opened with `with`, which close themselves at the end of the block. `fs.create` writes a new file and puts it in place at the end of the block, after syncing it to disk, so a crash halfway through never leaves half a file:
+
+```fennec planned
+# the `?` covers opening the file and finishing it at the block's end
+with fs.create(".hoard/HEAD")? as file:
+    file.write_text(hash)?
+```
+
+Until then, write a whole file with `fs.write_text` or `fs.write_bytes`.
+
+## Shared state with `shared` and `lock`
+
+Most code passes plain values around: `=` gives you your own copy, and `ref` lets a function change yours. When many tasks have to reach the same value, make it `shared` in `main`, pass it down, and touch it inside `lock`. This is `src/index.fen`:
+
+```fennec
+## Which hash each tracked path had when it was last saved, shared by every task.
+struct Entry:
+    path: str
+    hash: str
+
+def record(index: shared dict[str, Entry], path: str, hash: str):
+    # one task at a time can change it
+    lock index as ref entries:
+        entries[path] = Entry(path=path, hash=hash)
+
+def hash_of(index: shared dict[str, Entry], path: str) -> str?:
+    # many tasks can read it at once
+    lock index as entries:
+        found = entries.get(path) else return None
+        return found.hash
+    None
+```
+
+- `lock x as s:` reads, and `lock x as ref s:` changes. Any way out of the block releases it.
+- A crash inside `lock x as ref` puts back what the block changed, so nobody sees half a change.
+- Don't wait inside a lock, on the network or a channel. Wait first, then lock.
+- Two values locked together go in one `lock`: `lock source, target as ref payer, ref payee:`. A `lock` inside another is refused for now.
+- There's no global state. A `shared` value is made in a function, usually `main`, as `shared index = dict[str, Entry]()`.
+
+## `parallel` over data
+
+`parallel(xs)` splits work across cores, with no threads or `async` to manage. This is `src/main.fen`:
+
+```fennec
+from index import Entry, record
+from store import save
+
+## Saves every file under `folder` into the store, hashing them in parallel.
+def snapshot(fs: Fs, folder: str, index: shared dict[str, Entry]) -> int fails IoError:
+    paths = [path.text for path in fs.walk(folder)? if not fs.metadata(path)?.is_dir]
+    # each file is read and hashed in its own task, and the results stay in order
+    hashes = [save(fs, fs.read_bytes(path)?)? for path in parallel(paths)]
+    for path, hash in zip(paths, hashes):
+        record(index, path=path, hash=hash)
+    paths.len()
+
+def main(stdout: Stdout, fs: Fs, args: Args):
+    folder = args[0] if args.len() > 0 else "."
+    shared index = dict[str, Entry]()
+    saved = snapshot(fs, folder, index) else:
+        stdout.print(f"couldn't read {folder}")
+        return
+    stdout.print(f"saved {saved} files")
+```
+
+- `[f(x) for x in parallel(xs)]` runs in parallel, and gives its results in input order.
+- `for ref x in parallel(xs):` changes each item where it is. A body changes only its own item.
+- `sum(f(x) for x in parallel(xs))` adds up in a fixed order, so a float total is the same on every run.
+- A failure in one round passes up out of the loop once the other rounds stop, as `?` does anywhere.
+
+## Servers
+
+An HTTP server is a function that answers each request, and `server.serve` runs it, with each connection in its own task:
+
+```fennec
+from std.net import Request, Response
+
+## Answers `GET /objects/<hash>` with what the store holds under that hash.
+def respond(fs: Fs, request: Request) -> Response:
+    if request.method != "GET" or not request.path.startswith("/objects/"):
+        return Response(status=404, body="nothing here".encode())
+    hash = request.path[9:]
+    data = fs.read_bytes(f".hoard/objects/{hash}") else:
+        return Response(status=404, body=f"no object {hash}".encode())
+    Response(status=200, headers={"content-type": "application/octet-stream"}, body=data)
+
+test "a saved object is served"(fs: Fs):
+    fs.make_dir(".hoard/objects")?
+    fs.write_bytes(".hoard/objects/abc", "hi".encode())?
+    answer = respond(fs, Request(method="GET", path="/objects/abc"))
+    assert answer.status == 200 and answer.text() == "hi"
+    assert respond(fs, Request(method="GET", path="/objects/nope")).status == 404
+
+def main(net: Net, fs: Fs, stdout: Stdout):
+    with net.listen(8080)? as server:
+        stdout.print(f"serving on http://localhost:{server.port}")
+        # each connection gets its own task
+        server.serve((request) => respond(fs, request))
+```
+
+`respond` is a plain function, so its tests call it directly.
+
+For a protocol of your own, loop over the server's connections:
+
+```fennec
+from std.net import Connection, NetError
+
+## Sends back each line a client sends, until it hangs up.
+def echo(conn: Connection) fails NetError:
+    for line in conn.lines():
+        conn.write(f"{line}\n")?
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(9000)? as server:
+        # one task for each connection, which closes when its round ends
+        for conn in parallel(server):
+            # handle a failure here, or it would pass up and stop the server
+            echo(conn) else:
+                continue
+```
+
+A crash in one connection's task ends only that task, and the server keeps serving.
+
+## Hashing
+
+`std.crypto` gives `blake3` and `sha256` as lowercase hex, for text or `bytes`, plus `keyed_blake3`, `hmac_sha256`, `derive_key` and `equal`, which compares secrets in constant time. The same bytes give the same hash on every machine, so a hash names its content, as `name_of` does above.
+
+**Planned:** hashing anything you can loop over that gives bytes, so a large file hashes chunk by chunk without being read into memory first:
+
+```fennec planned
+with fs.open(path)? as file:
+    hash = blake3(file.chunks(size=65536))
+```
+
+Until then, hash the whole file's bytes: `blake3(fs.read_bytes(path)?)`.
+
+## SQLite with t-strings
+
+**Planned.** `std.sqlite` doesn't exist yet, and neither do t-strings. A query will be a `t"..."` template, which keeps its text and its values apart, so a value can never become SQL:
+
+```fennec planned
+from std import sqlite
+
+with sqlite.open(fs, ".hoard/index.db")? as db:
+    rows = db.query(t"select path, hash from entries where path = {path}")?
+    for row in rows:
+        stdout.print(row["hash"])
+```
+
+A plain `str` is never a template, so building a query by joining strings is a compile error. Until it lands, keep an index in a `shared` dict, as above, and save it with `std.json` or `std.pack`.
+
+## Tests
+
+A test sits beside the code it tests, and names the capabilities it needs, as `main` does. It gets fakes: an in-memory `Fs`, a fixed `Clock`, captured `Stdout` and a `Net` that works in memory. Each test starts with nothing.
+
+```fennec
+test "what's saved loads back"(fs: Fs):
+    hash = save(fs, "hello".encode())?
+    assert load(fs, hash)? == "hello".encode()
+
+test "a hash nothing was saved under is missing"(fs: Fs):
+    match load(fs, "nothing"):
+        case Err(Missing(hash)):
+            assert hash == "nothing"
+        case _:
+            assert False
+```
+
+A property test takes its inputs after `for`. Fennec tries many random ones from a fixed seed, so a run repeats exactly, and shrinks a failing input to a small one:
+
+```fennec
+test "a hash names its content" for text: str:
+    assert name_of(text.encode()) == name_of(text.encode())
+```
+
+`fennec test --real` gives tests the real disk and network instead.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `fennec run` | Runs the tests a change affects, then the kit's `main`. Arguments after the path go to `main`: `fennec run . src` |
+| `fennec run --no-test` | Runs it without the tests first |
+| `fennec test` | Runs the kit's tests, skipping unchanged ones that passed. `--all` runs every one |
+| `fennec build` | Makes a native program. `--release` optimizes the whole program as one, and `-o hoard` names it |
+| `fennec check` | Type-checks without running anything |
+| `fennec lint` | What the checker and the linter find. `--json` for tools |
+| `fennec fix` | Makes the fixes that can't change what the program does |
+| `fennec fmt` | Formats the kit in the one style |
+
+Builds go through LLVM a function at a time and are cached, so an edit rebuilds only what changed. Where LLVM can't build something yet, `fennec run` says so and runs it another way.
+
+## Not there yet
+
+These are decided and planned, and `docs/language.md` says where each one stands:
+- `with` on files, with `fs.open` and `fs.create`;
+- hashing over chunks;
+- `std.sqlite` and t-strings;
+- `launch` and `Channel` for long-running tasks;
+- sized numbers like `u8` and `f32`.

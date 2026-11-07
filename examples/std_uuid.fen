@@ -3,7 +3,7 @@
 # one that starts with the time it was made, so later ones sort after it. In a test, `Entropy`
 # gives fixed bytes and the clock starts at 2000-01-01, so the ids a test makes are the same
 # every run.
-from std import uuid
+from std import json, uuid
 from std.uuid import Uuid
 
 ## A new order's id: time-ordered, so orders list in the order they came in.
@@ -50,6 +50,11 @@ test "text that isn't a UUID says why"():
                 assert problem.message == f"`{text}` isn't a UUID: {why}"
             case Ok(_):
                 assert False
+
+test "a UUID saves as its text"():
+    found = Uuid.parse("0f8fad5b-d9cb-469f-a165-70867728950e")?
+    assert json.dumps([found]) == "[\"0f8fad5b-d9cb-469f-a165-70867728950e\"]"
+    assert json.loads[list[Uuid]](json.dumps([found]))? == [found]
 
 def main(stdout: Stdout, entropy: Entropy, clock: Clock):
     made = uuid.v4(entropy)

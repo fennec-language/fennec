@@ -446,6 +446,21 @@ mod tests {
         finish();
     }
 
+    /// A block native code makes outside the table is counted when it says so, and only while
+    /// the run counts at all, which a test's always does.
+    #[test]
+    fn native_code_counts_the_blocks_it_makes_itself_while_counting_is_on() {
+        let module = fennec_syntax::Module { items: Vec::new() };
+        start(&module, Tables::default(), crate::Inputs::default()).unwrap();
+        assert_eq!(crate::embed::aot::counting(), 1, "a test's run counts");
+        let before = with(|state| state.heap.counts);
+        crate::embed::aot::trace_allocated(40);
+        let after = with(|state| state.heap.counts);
+        assert_eq!(after.allocations, before.allocations + 1);
+        assert_eq!(after.allocated_bytes, before.allocated_bytes + 40);
+        finish();
+    }
+
     #[test]
     fn what_a_heap_keeps_for_reuse_stays_under_its_limit_however_much_is_freed() {
         let module = fennec_syntax::Module { items: Vec::new() };

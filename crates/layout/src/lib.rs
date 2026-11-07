@@ -2,7 +2,7 @@
 //! which types are plain, which are boxed, where fields go, and how the runtime reads them.
 //! It knows nothing about generating code.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
 pub use fennec_interp::embed::dicts::Word;
@@ -255,18 +255,14 @@ pub fn shapes(layouts: &Layouts) -> Vec<Rc<Element>> {
         .collect()
 }
 
-/// The numbers of the shapes of `shared` values.
-fn cells(layouts: &Layouts) -> Vec<u64> {
-    (0..layouts.len())
-        .filter_map(|id| {
-            let cell = layouts.get(u32::try_from(id).ok()?)?.cell;
-            cell.then(|| u64::try_from(id).ok()).flatten()
-        })
-        .collect()
-}
-
 /// How the runtime reads values of a kind from words.
 pub fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
+    describe_numbered(layouts, ty, &Numbering::all(layouts))
+}
+
+/// `describe`, with each layout's shape numbered as `numbering` has it.
+fn describe_numbered(layouts: &Layouts, ty: Ty, numbering: &Numbering) -> Option<Element> {
+    let describe = |layouts: &Layouts, ty: Ty| describe_numbered(layouts, ty, numbering);
     let fields = |fields: &[Field]| -> Option<Vec<(Rc<str>, Element)>> {
         fields
             .iter()
@@ -277,7 +273,7 @@ pub fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
         Ty::Int => Element::Int,
         Ty::Float => Element::Float,
         Ty::Bool => Element::Bool,
-        Ty::Boxed(id) => Element::Boxed(usize::try_from(id).ok()?),
+        Ty::Boxed(id) => Element::Boxed(usize::try_from(numbering.number(id)?).ok()?),
         // By its block's address, whose own shape says it's a capability.
         Ty::Cap(_) => Element::Boxed(usize::try_from(fennec_interp::embed::heap::CAPABILITY_SHAPE).ok()?),
         Ty::Bytes => Element::Boxed(usize::try_from(fennec_interp::embed::heap::BYTES_SHAPE).ok()?),
@@ -297,7 +293,7 @@ pub fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
         }
         Ty::List(item) => Element::List(Rc::new(describe(layouts, item.ty())?)),
         Ty::Dict(key, value) => {
-            let str_shape = u64::try_from(layouts.len()).ok()?;
+            let str_shape = numbering.str_shape();
             let shape = dicts::shape(str_shape, key, value)?;
             Element::Boxed(usize::try_from(shape).ok()?)
         }
@@ -323,6 +319,92 @@ pub fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
     })
 }
 
+/// Which layouts a program's image has shapes for, and each one's number there: those it
+/// uses, numbered in order, then strings' shape after them. A program's image needs nothing
+/// for the rest, like the standard library's types it never makes.
+pub struct Numbering {
+    kept: Vec<u32>,
+    numbers: HashMap<u32, u64>,
+}
+
+impl Numbering {
+    /// Every layout, each numbered as itself.
+    #[must_use]
+    pub fn all(layouts: &Layouts) -> Numbering {
+        let kept: Vec<u32> = (0..layouts.len()).filter_map(|id| u32::try_from(id).ok()).collect();
+        let numbers = kept.iter().map(|id| (*id, u64::from(*id))).collect();
+        Numbering { kept, numbers }
+    }
+
+    /// The layouts `used` names and every one their fields, cases, items and dicts hold,
+    /// numbered in the order of their layouts.
+    #[must_use]
+    pub fn of(layouts: &Layouts, used: impl IntoIterator<Item = u32>) -> Numbering {
+        let mut kept = BTreeSet::new();
+        let mut waiting: Vec<u32> = used.into_iter().collect();
+        while let Some(id) = waiting.pop() {
+            if layouts.get(id).is_none() || !kept.insert(id) {
+                continue;
+            }
+            let Some(layout) = layouts.get(id) else { continue };
+            let cases = layout.cases.iter().flatten().flat_map(|case| &case.fields);
+            for field in layout.fields.iter().chain(cases) {
+                held_layouts(layouts, field.ty, &mut waiting);
+            }
+        }
+        let kept: Vec<u32> = kept.into_iter().collect();
+        let numbers =
+            kept.iter().enumerate().filter_map(|(at, id)| Some((*id, u64::try_from(at).ok()?))).collect();
+        Numbering { kept, numbers }
+    }
+
+    /// A layout's shape number, if the image has it.
+    #[must_use]
+    pub fn number(&self, id: u32) -> Option<u64> {
+        self.numbers.get(&id).copied()
+    }
+
+    /// Strings' shape number, after every layout's.
+    #[must_use]
+    pub fn str_shape(&self) -> u64 {
+        u64::try_from(self.kept.len()).unwrap_or(0)
+    }
+}
+
+/// Adds to `found` each layout a value of `ty` holds: itself, or what its items, its optional's
+/// value or its dict's words are.
+pub fn held_layouts(layouts: &Layouts, ty: Ty, found: &mut Vec<u32>) {
+    match ty {
+        Ty::Struct(id) | Ty::Boxed(id) => found.push(id),
+        Ty::List(item) => held_layouts(layouts, item.ty(), found),
+        Ty::Maybe(block) => held_layouts(layouts, block.ty(), found),
+        Ty::Block(number) => {
+            if let Some(held) = layouts.block(number) {
+                held_layouts(layouts, held, found);
+            }
+        }
+        Ty::Dict(key, value) => {
+            for word in [key, value] {
+                held_by_word(layouts, word, found);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Adds to `found` the layout a dict's word holds, if it holds one.
+pub fn held_by_word(layouts: &Layouts, word: Word, found: &mut Vec<u32>) {
+    match word {
+        Word::Plain(id) => found.push(id),
+        Word::Block(number) => {
+            if let Some(held) = layouts.block(number) {
+                held_layouts(layouts, held, found);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// What a program's blocks need the runtime to know, built up from the layouts: shapes and
 /// string numbers, and the numbers of the kinds of items its lists hold.
 pub struct Registry<'l> {
@@ -330,31 +412,53 @@ pub struct Registry<'l> {
     tables: Tables,
     elements: HashMap<Ty, i64>,
     strings: HashMap<String, i64>,
+    numbering: Numbering,
 }
 
 impl<'l> Registry<'l> {
     #[must_use]
     pub fn new(layouts: &'l Layouts) -> Self {
+        Self::numbered(layouts, Numbering::all(layouts))
+    }
+
+    /// A registry whose tables have shapes for the layouts `numbering` keeps, numbered as it
+    /// numbers them, and none for the rest.
+    #[must_use]
+    pub fn numbered(layouts: &'l Layouts, numbering: Numbering) -> Self {
         let blocks = (0..layouts.block_count())
-            .filter_map(|number| describe(layouts, layouts.block(number)?))
+            .filter_map(|number| describe_numbered(layouts, layouts.block(number)?, &numbering))
             .map(Rc::new)
             .collect();
+        let shapes = numbering
+            .kept
+            .iter()
+            .map(|id| {
+                Rc::new(describe_numbered(layouts, Ty::Struct(*id), &numbering).unwrap_or(Element::Int))
+            })
+            .chain(std::iter::once(Rc::new(Element::Str)))
+            .collect();
+        let cells = numbering
+            .kept
+            .iter()
+            .filter(|id| layouts.get(**id).is_some_and(|layout| layout.cell))
+            .filter_map(|id| numbering.number(*id))
+            .collect();
         let mut tables = Tables {
-            shapes: shapes(layouts),
-            cells: cells(layouts),
+            shapes,
+            cells,
             blocks,
-            str_shape: u64::try_from(layouts.len()).unwrap_or(0),
+            str_shape: numbering.str_shape(),
             text_headers: layouts.text_headers(),
             ..Tables::default()
         };
         // The numbers a type holding itself through a list refers to in its own description.
         let mut elements = HashMap::new();
         for (number, id) in layouts.all_through_lists().iter().enumerate() {
-            let described = describe(layouts, Ty::Struct(*id)).unwrap_or(Element::Int);
+            let described = describe_numbered(layouts, Ty::Struct(*id), &numbering).unwrap_or(Element::Int);
             tables.elements.push(Rc::new(described));
             elements.insert(Ty::Struct(*id), i64::try_from(number).unwrap_or(0));
         }
-        Self { layouts, tables, elements, strings: HashMap::new() }
+        Self { layouts, tables, elements, strings: HashMap::new(), numbering }
     }
 
     /// The number of the kind of item a list of these holds, which `fennec_list_new` takes.
@@ -362,7 +466,7 @@ impl<'l> Registry<'l> {
         if let Some(number) = self.elements.get(&item.ty()) {
             return Some(*number);
         }
-        let described = describe(self.layouts, item.ty())?;
+        let described = describe_numbered(self.layouts, item.ty(), &self.numbering)?;
         let number = i64::try_from(self.tables.elements.len()).ok()?;
         self.tables.elements.push(Rc::new(described));
         self.elements.insert(item.ty(), number);
@@ -376,10 +480,16 @@ impl<'l> Registry<'l> {
     #[must_use]
     pub fn shape(&self, ty: Ty) -> Option<u64> {
         match ty {
-            Ty::Boxed(id) | Ty::Struct(id) => Some(u64::from(id)),
+            Ty::Boxed(id) | Ty::Struct(id) => self.numbering.number(id),
             Ty::Str => Some(self.tables.str_shape),
             _ => None,
         }
+    }
+
+    /// Strings' shape number in these tables, after every layout's they have.
+    #[must_use]
+    pub fn str_shape(&self) -> u64 {
+        self.tables.str_shape
     }
 
     /// The number of a string literal, which `fennec_aot_literal` takes.

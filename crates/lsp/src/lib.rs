@@ -4,7 +4,8 @@
 //!
 //! - diagnostics, the checker's errors, published for every file of the program;
 //! - each diagnostic's fix as a code action, the edit `fennec fix` would make;
-//! - go to definition, for names, members, types and enum cases;
+//! - go to definition, for names, members, types, enum cases, named arguments, the cases a
+//!   pattern names and the modules of a kit;
 //! - hover, showing a declaration's signature as written and its `##` doc comment, or what
 //!   a local name holds;
 //! - find references and rename, which know scopes and types, so a local of the same name

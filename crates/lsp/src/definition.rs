@@ -27,6 +27,15 @@ pub(crate) enum Target {
     Member { object: Span, name: String, function: String },
     /// `Type.name`: a named constructor, a method or an enum case of a type named directly.
     TypeMember { owner: String, name: String },
+    /// A kit's module, as `physics` in `physics.step` names it.
+    Module(String),
+    /// A parameter of the function with key `function`, as `limit=` names it at a call.
+    Param { function: String, name: String },
+    /// A field of an enum or error case, as `.Group(parts=...)` names it.
+    CaseField { case: String, name: String },
+    /// A parameter of `object.method`, as `name=` names it at a call, read in the function with
+    /// key `function`.
+    MethodParam { object: Span, method: String, name: String, function: String },
 }
 
 impl Target {
@@ -37,7 +46,11 @@ impl Target {
             | Target::Global(name)
             | Target::Case(name)
             | Target::Member { name, .. }
-            | Target::TypeMember { name, .. } => name,
+            | Target::TypeMember { name, .. }
+            | Target::Module(name)
+            | Target::Param { name, .. }
+            | Target::CaseField { name, .. }
+            | Target::MethodParam { name, .. } => name,
         }
     }
 }
@@ -199,6 +212,13 @@ impl Finder<'_> {
                 for (span, name) in def.methods.iter().map(|method| (method.span, &method.name)) {
                     self.names(span, name, || member(name));
                 }
+                for case in &def.cases {
+                    for field in &case.fields {
+                        let target =
+                            || Target::CaseField { case: case.name.clone(), name: field.name.clone() };
+                        self.names(field.span, &field.name, target);
+                    }
+                }
                 for field in def.fields.iter().chain(def.cases.iter().flat_map(|case| &case.fields)) {
                     self.type_expr(field.ty.as_ref());
                     self.function = format!("fields of {}", def.name);
@@ -211,6 +231,7 @@ impl Finder<'_> {
                 }
             }
             Item::Interface(interface) => {
+                self.names(interface.span, &interface.name, || Target::Global(interface.name.clone()));
                 for method in &interface.methods {
                     self.function(method, format!("{}.{}", interface.name, method.name));
                 }
@@ -235,6 +256,10 @@ impl Finder<'_> {
             Item::Test(test) => {
                 self.function = format!("test \"{}\"", test.name);
                 self.scoped(|finder| {
+                    for capability in &test.capabilities {
+                        finder.type_expr(capability.ty.as_ref());
+                        finder.declare(&capability.name, capability.span);
+                    }
                     for input in &test.inputs {
                         finder.type_expr(input.ty.as_ref());
                         finder.declare(&input.name, input.span);
@@ -242,15 +267,18 @@ impl Finder<'_> {
                     finder.block(&test.body);
                 });
             }
-            Item::Import(import) => {
-                // A name brought in is the program's top-level name it names, so finding its uses,
-                // or renaming it, reaches the import too.
-                let names = imported_names(self.sources, import.span);
-                for name in &import.names {
-                    self.names(names, name, || Target::Global(name.clone()));
-                }
-            }
+            Item::Import(import) => self.import(import),
             Item::Stmt(_) => {}
+        }
+    }
+
+    /// The names an import brings in.
+    fn import(&mut self, import: &fennec_syntax::Import) {
+        // A name brought in is the program's top-level name it names, so finding its uses,
+        // or renaming it, reaches the import too.
+        let names = imported_names(self.sources, import.span);
+        for name in &import.names {
+            self.names(names, name, || Target::Global(name.clone()));
         }
     }
 
@@ -259,6 +287,7 @@ impl Finder<'_> {
         let outer = std::mem::replace(&mut self.function, key);
         self.scoped(|finder| {
             for generic in &def.generics {
+                finder.declare(&generic.name, generic.span);
                 generic.bounds.iter().for_each(|bound| finder.type_expr(Some(bound)));
             }
             for param in &def.params {
@@ -340,11 +369,33 @@ impl Finder<'_> {
 
     fn type_expr(&mut self, ty: Option<&TypeExpr>) {
         let Some(ty) = ty.filter(|ty| self.contains(ty.span)) else { return };
-        let name_end = ty.span.start.saturating_add(u32::try_from(ty.name.len()).unwrap_or(0));
-        if self.at <= name_end {
-            self.found(Target::Global(ty.name.clone()));
+        // A type from another module, like `map.Map`, is written with the module in front.
+        let written = self.written(ty.span).unwrap_or_default();
+        let path = written
+            .find(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == '.'))
+            .unwrap_or(written.len());
+        let module =
+            written.get(..path).and_then(|head| head.strip_suffix(ty.name.as_str())?.strip_suffix('.'));
+        let width = |text: &str| u32::try_from(text.len()).unwrap_or(0);
+        let name_start = ty.span.start.saturating_add(module.map_or(0, |module| width(module) + 1));
+        match module {
+            Some(module) if !module.is_empty() && self.at < name_start.saturating_sub(1) => {
+                self.found(Target::Module(module.to_owned()));
+            }
+            _ if self.at <= name_start.saturating_add(width(&ty.name)) => {
+                let target = self.lookup(&ty.name).unwrap_or_else(|| Target::Global(ty.name.clone()));
+                self.found(target);
+            }
+            _ => {}
         }
         ty.args.iter().for_each(|arg| self.type_expr(Some(arg)));
+    }
+
+    /// The text `span` covers.
+    fn written(&self, span: Span) -> Option<&str> {
+        let (_, text, base) = self.sources.file_at(span)?;
+        let local = |at: u32| usize::try_from(at.saturating_sub(base)).unwrap_or(0);
+        text.get(local(span.start)..local(span.end))
     }
 
     fn expr(&mut self, expr: &Expr) {
@@ -355,14 +406,37 @@ impl Finder<'_> {
             self.ending = Some((expr.span, self.function.clone()));
         }
         match &expr.kind {
-            ExprKind::Name(name) => self.found(self.resolve(name)),
+            ExprKind::Name(name) => match self.module_before(expr.span, name) {
+                Some(module) => self.found(Target::Module(module)),
+                None => self.found(self.resolve(name)),
+            },
             ExprKind::Variant(name) => self.found(Target::Case(name.clone())),
             ExprKind::Attr { object, name, .. } => self.attr(expr.span, object, name),
+            ExprKind::Call { callee, args } => {
+                for arg in args {
+                    let Some(name) = &arg.name else { continue };
+                    let width = u32::try_from(name.len()).unwrap_or(0);
+                    let before = Span {
+                        start: arg.value.span.start.saturating_sub(width + 3),
+                        end: arg.value.span.start,
+                    };
+                    let written = name_in(self.sources, before, name);
+                    if written != before && self.contains(written) {
+                        if let Some(target) = self.named_argument(callee, name) {
+                            self.found(target);
+                        }
+                        return;
+                    }
+                }
+                children(expr, &mut |child| self.expr(child));
+            }
             ExprKind::Comprehension { elem, value, names, iter, cond, .. } => {
                 self.expr(iter);
+                // Its names are written after `for`, and may be used before it.
+                let after_for = self.after_for(expr.span);
                 self.scoped(|finder| {
                     for name in names {
-                        finder.declare(name, expr.span);
+                        finder.declare(name, after_for);
                     }
                     for part in [Some(elem), value.as_ref(), cond.as_ref()].into_iter().flatten() {
                         finder.expr(part);
@@ -413,6 +487,84 @@ impl Finder<'_> {
         });
     }
 
+    /// The module a name was reached through, when it's written `module.name` and the place
+    /// is on the module: loading a kit leaves `physics.step` as the name `step`, written where
+    /// `physics.step` is.
+    fn module_before(&self, span: Span, name: &str) -> Option<String> {
+        let module = self.written(span)?.strip_suffix(name)?.strip_suffix('.')?;
+        let path = |ch: char| ch.is_alphanumeric() || ch == '_' || ch == '.';
+        let on_it = self.at < span.start.saturating_add(u32::try_from(module.len()).unwrap_or(0));
+        (!module.is_empty() && module.chars().all(path) && on_it).then(|| module.to_owned())
+    }
+
+    /// What `name=` names at a call of `callee`: a field of a type it builds, a field of a case
+    /// it makes, or a parameter of a function it calls.
+    fn named_argument(&self, callee: &Expr, name: &str) -> Option<Target> {
+        let name = name.to_owned();
+        match &callee.kind {
+            ExprKind::Name(made) if self.lookup(made).is_none() && self.is_type(made) => {
+                Some(Target::TypeMember { owner: made.clone(), name })
+            }
+            ExprKind::Name(made) if self.lookup(made).is_none() && self.is_case(made) => {
+                Some(Target::CaseField { case: made.clone(), name })
+            }
+            ExprKind::Variant(case) => Some(Target::CaseField { case: case.clone(), name }),
+            ExprKind::Name(function) => Some(Target::Param { function: function.clone(), name }),
+            ExprKind::Attr { object, name: method, .. } => match &object.kind {
+                ExprKind::Name(owner)
+                    if self.lookup(owner).is_none() && self.is_type(owner) && self.is_case(method) =>
+                {
+                    Some(Target::CaseField { case: method.clone(), name })
+                }
+                ExprKind::Name(owner) if self.lookup(owner).is_none() && self.is_type(owner) => {
+                    Some(Target::Param { function: format!("{owner}.{method}"), name })
+                }
+                _ => Some(Target::MethodParam {
+                    object: object.span,
+                    method: method.clone(),
+                    name,
+                    function: self.function.clone(),
+                }),
+            },
+            _ => None,
+        }
+    }
+
+    fn is_case(&self, name: &str) -> bool {
+        self.module.items.iter().any(|item| match item {
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+                def.cases.iter().any(|case| case.name == name)
+            }
+            _ => false,
+        })
+    }
+
+    /// The part of a comprehension from its `for` on, where its names are written.
+    fn after_for(&self, span: Span) -> Span {
+        // The comprehension's own `for` is the outermost one: one inside it is another's.
+        let at = self.written(span).and_then(|text| {
+            let mut depth = 0_usize;
+            let mut outermost: Option<(usize, usize)> = None;
+            for (at, ch) in text.char_indices() {
+                match ch {
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                    ' ' if text.get(at..).is_some_and(|rest| rest.starts_with(" for "))
+                        && outermost.is_none_or(|(_, least)| depth < least) =>
+                    {
+                        outermost = Some((at, depth));
+                    }
+                    _ => {}
+                }
+            }
+            outermost.map(|(at, _)| at)
+        });
+        at.map_or(span, |at| Span {
+            start: span.start.saturating_add(u32::try_from(at).unwrap_or(0)),
+            end: span.end,
+        })
+    }
+
     fn is_type(&self, name: &str) -> bool {
         self.module.items.iter().any(|item| match item {
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => def.name == name,
@@ -424,7 +576,13 @@ impl Finder<'_> {
     fn pattern(&mut self, pattern: &Pattern, arm: Span) {
         match pattern {
             Pattern::Bind(name) => self.declare(name, arm),
-            Pattern::Variant { args, .. } | Pattern::Tuple(args) => {
+            Pattern::Variant { name, args, .. } => {
+                self.names(arm, name, || Target::Case(name.clone()));
+                for arg in args {
+                    self.pattern(arg, arm);
+                }
+            }
+            Pattern::Tuple(args) => {
                 for arg in args {
                     self.pattern(arg, arm);
                 }
@@ -436,6 +594,7 @@ impl Finder<'_> {
                     self.pattern(first, arm);
                 }
                 for alternative in alternatives.iter().skip(1) {
+                    self.case_names(alternative, arm);
                     self.literals(alternative);
                 }
             }
@@ -446,6 +605,24 @@ impl Finder<'_> {
 }
 
 impl Finder<'_> {
+    /// The cases a pattern names, without declaring the names it binds.
+    fn case_names(&mut self, pattern: &Pattern, arm: Span) {
+        match pattern {
+            Pattern::Variant { name, args, .. } => {
+                self.names(arm, name, || Target::Case(name.clone()));
+                for arg in args {
+                    self.case_names(arg, arm);
+                }
+            }
+            Pattern::Tuple(args) | Pattern::Or(args) => {
+                for arg in args {
+                    self.case_names(arg, arm);
+                }
+            }
+            Pattern::Bind(_) | Pattern::Wildcard | Pattern::Literal(_) => {}
+        }
+    }
+
     /// Walks the values a pattern compares with, without declaring the names it binds.
     fn literals(&mut self, pattern: &Pattern) {
         match pattern {

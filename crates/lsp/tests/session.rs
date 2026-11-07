@@ -470,6 +470,53 @@ fn names_bound_in_a_case_are_found_from_its_guard_and_body() {
     }
 }
 
+/// Names that aren't plain uses: a named argument, a case in a pattern, a test's capability, a
+/// type parameter, a comprehension's name where it's bound, and a module named in front of what
+/// it holds or in its import.
+#[test]
+fn definitions_of_arguments_cases_capabilities_parameters_and_modules() {
+    let mut editor = Editor::new("named").unwrap();
+    let text = "import combat\n\nenum Shape:\n    Dot\n    Line(length: int)\n\n\
+        struct Point:\n    x: int\n\n    def moved(self, by: int) -> Point:\n        Point(x=self.x + by)\n\n\
+        def scaled(value: int, times: int) -> int:\n    value * times\n\n\
+        def first[T](items: list[T]) -> T:\n    items[0]\n\n\
+        def size_of(shape: Shape) -> int:\n    match shape:\n        case .Line(length): length\n        case .Dot: 0\n\n\
+        def main(stdout: Stdout):\n    point = Point(x=1)\n    \
+        stdout.print(scaled(2, times=3), point.moved(by=2).x, size_of(.Line(length=4)), first([n for n in [1]]))\n    \
+        stdout.print(combat.hit(combat.Fighter(name=\"Kit\"), 3))\n\n\
+        test \"prints\"(screen: Stdout):\n    screen.print(1)\n";
+    let published = editor.open("src/main.fen", text);
+    let errors = for_file(&published, "main.fen").unwrap_or_default().iter();
+    let errors: Vec<&Json> = errors.filter(|found| found.get("severity") == Some(&Json::number(1))).collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    let cases = [
+        ("x=1", "x: int"),
+        ("times=3", "times: int"),
+        ("by=2", "by: int"),
+        ("length=4", "length: int"),
+        ("Line(length):", "Line(length: int)"),
+        ("T:\n    items", "T](items"),
+        ("n for n", "n in [1]"),
+        ("screen.print", "screen: Stdout"),
+    ];
+    for (needle, declared) in cases {
+        let found = editor.at("textDocument/definition", "src/main.fen", text, needle, 0);
+        let found = found.as_array().map(|found| &found[0]);
+        assert_eq!(
+            found.and_then(|found| found.at(&["range", "start"])),
+            Some(&position(text, declared, 0)),
+            "{needle}"
+        );
+    }
+    let combat = Json::string(editor.uri("src/combat.fen"));
+    for needle in ["combat.hit", "combat.Fighter", "combat\n\nenum"] {
+        let found = editor.at("textDocument/definition", "src/main.fen", text, needle, 0);
+        let found = found.as_array().map(|found| &found[0]);
+        assert_eq!(found.and_then(|found| found.get("uri")), Some(&combat), "{needle}");
+        assert_eq!(found.map(line_of), Some(0), "{needle}");
+    }
+}
+
 /// A request about the place in `file` where `needle` starts, plus `into` characters, with more
 /// parameters.
 fn params_at(editor: &Editor, file: &str, text: &str, needle: &str, more: Vec<(&str, Json)>) -> Json {

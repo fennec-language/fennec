@@ -39,6 +39,21 @@ pub(crate) fn declarations(
             found.types().flat_map(|def| found.members(def, name, MemberKind::Cases)).collect()
         }
         Target::TypeMember { owner, name } => found.of_type(owner, name, MemberKind::All),
+        Target::Module(module) => found.module_file(module).into_iter().collect(),
+        Target::Param { function, name } => found.param(function, name).into_iter().collect(),
+        Target::MethodParam { object, method, name, function } => {
+            let owner =
+                checked.and_then(|checked| checked.types.body(function)?.expr(*object)).and_then(type_name);
+            owner.and_then(|owner| found.param(&format!("{owner}.{method}"), name)).into_iter().collect()
+        }
+        Target::CaseField { case, name } => found
+            .types()
+            .flat_map(|def| &def.cases)
+            .filter(|declared| declared.name == *case)
+            .flat_map(|declared| &declared.fields)
+            .filter(|field| field.name == *name)
+            .map(|field| found.declared(field.span, name))
+            .collect(),
         Target::Member { object, name, function } => {
             let owner =
                 checked.and_then(|checked| checked.types.body(function)?.expr(*object)).and_then(type_name);
@@ -104,6 +119,45 @@ impl<'a> Found<'a> {
 
     fn method(&self, methods: &[FnDef], name: &str) -> Option<Declaration> {
         methods.iter().find(|method| method.name == name).map(|method| self.function(method))
+    }
+
+    /// A parameter of the function with key `function`: a top-level function's name, or a
+    /// type's method as `Type.method`.
+    fn param(&self, function: &str, name: &str) -> Option<Declaration> {
+        let def = match function.split_once('.') {
+            Some((owner, method)) => {
+                let own = self.types().filter(|def| def.name == owner).flat_map(|def| &def.methods);
+                let extended = self
+                    .extensions()
+                    .filter(|(extended, _)| *extended == owner)
+                    .flat_map(|(_, methods)| methods);
+                own.chain(extended).find(|declared| declared.name == method)
+            }
+            None => self.module.items.iter().find_map(|item| match item {
+                Item::Function(def) if def.name == function => Some(def),
+                _ => None,
+            }),
+        }?;
+        let param = def.params.iter().find(|param| param.name == name)?;
+        Some(self.declared(param.span, name))
+    }
+
+    /// A kit's module, by its name, like `combat.damage`: the start of its file, with its first
+    /// line, which is its `##` comment when it has one.
+    fn module_file(&self, module: &str) -> Option<Declaration> {
+        let file = format!("{}.fen", module.replace('.', "/"));
+        let (path, _) = self.sources.files().find(|(path, _)| {
+            path.strip_suffix(file.as_str()).is_some_and(|before| before.is_empty() || before.ends_with('/'))
+        })?;
+        let (text, base) = self.sources.by_path(path)?;
+        let first = u32::try_from(text.lines().next().unwrap_or_default().len()).unwrap_or(0);
+        let start = Span { start: base, end: base };
+        Some(Declaration {
+            name_at: start,
+            header: Span { start: base, end: base + first },
+            holds: None,
+            local: false,
+        })
     }
 
     fn global(&self, name: &str) -> Vec<Declaration> {

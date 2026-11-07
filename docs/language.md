@@ -209,6 +209,8 @@ with fs.open("save.dat")? as file, net.connect(host)? as conn:
 # both are closed here, however the block ends
 ```
 
+The end of a `with` block is where what it lent finishes: a file closes and a transaction commits. A failure while finishing is the `with` statement's failure, covered by the `?` on its line, so `with fs.create(path)? as file:` covers both opening and finishing. Not built yet.
+
 - `with` lends you something for the length of a block, then takes it back. It's the only way to open files, sockets, servers and transactions.
 - What it lends can't escape the block: it can't be returned, stored outside it or put in a `shared`. A second name for it inside the block is fine.
 - A struct holding something borrowed is borrowed too, so a wrapper like `LineProtocol(conn=conn)` works inside the block and can't leak out.
@@ -223,16 +225,23 @@ def transaction(self) -> with Transaction fails DbError:
         conn.begin()?
         # the caller's block runs here, with the transaction lent to it
         lend Transaction(_conn=conn) else:
-            # the caller's block failed
+            # the caller's block failed or crashed
             conn.rollback()
+        # the caller's block succeeded: a failure here is the `with` statement's own
+        conn.commit()?
 
+# the `?` covers starting the transaction and committing it at the block's end
 with db.transaction()? as tx:
     tx.insert(order)?
-    tx.commit()?
+
+# the `?` covers opening the file and finishing it at the block's end
+with fs.create("save.dat")? as file:
+    file.write_text(data)?
 ```
 
-- `lend x else:` runs when the caller's block fails, and a failure there is reported with the caller's. `return`, `break` and `continue` in the caller count as success.
-- Nothing after `lend` may fail on the success path. A type can require its caller to finish it, like `tx.commit()?`, and a wrapper around such a type requires finishing too. The compiler works this out from a `lend` whose cleanup can fail, so there's no marker to write. A written file is one, finished with `close()?`, so a failed write can't be hidden by an automatic close. Not built yet.
+- Code after `lend` runs when the caller's block succeeds, and it may fail. That failure becomes the `with` statement's failure. `return`, `break` and `continue` in the caller count as success, so an early `return` still runs the cleanup, and a failing cleanup makes the function fail.
+- `lend x else:` runs when the caller's block fails or crashes, and the block's own failure is the one that passes up.
+- There's nothing for the caller to finish by hand, like a `commit()` or a `close()`, and nothing to forget. Not built yet.
 - A source can't `lend` while it holds a lock it took. Opening a file inside a lock is fine.
 - A generator can `lend` each item, closed when that round of the loop ends: `def clients(server: Server) -> Iterator[with Connection]:`. That's how `for conn in parallel(server)` works, with each connection belonging to its own round's task.
 - Tasks started inside a `with` may borrow what it lent, since they always end first. From many tasks at once, only its read-only methods, like a server's `accept`.
@@ -273,7 +282,6 @@ with Database.open(net, url, pool_size=10)? as db:
     for request in parallel(server):
         with db.transaction()? as tx:
             tx.insert(order)?
-            tx.commit()?
 ```
 
 - Pools in `std.concurrent` are written in plain Fennec. Each connection lives inside one keeper task's `with`, and the pool keeps only the keepers' inboxes, so nothing can leak or be used twice.
@@ -465,7 +473,6 @@ def serve(conn: Connection, rooms: shared dict[str, Room], db: Database) fails N
         say(rooms, room_name, user=user, text=line)
         with db.transaction()? as tx:
             tx.insert(Message(room=room_name, author=user, text=line))?
-            tx.commit()?
         # the network write waits, so it happens after the lock is released
         for message in recent(rooms, room_name):
             conn.write_line(message)?

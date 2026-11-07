@@ -1,5 +1,6 @@
 //! Writes `shared T` and `lock` in as what every engine runs today, once a program checks:
-//! each `shared T` becomes a `shared` declaration holding one field, `value: T`, and
+//! each `shared T` is given a `shared` declaration holding one field, `value: T`, which the
+//! written `shared T` then means, so every message still says what was written, and
 //! `lock x as ref s:` becomes `with x as ref s__lock:` with each `s` read as `s__lock.value`.
 //! `shared s = e` builds one around `e`. It's the only place that knows how they're run, so a
 //! native `shared T`, and the rollback a crash in a lock takes, can replace it alone.
@@ -43,6 +44,16 @@ pub(crate) fn lower(module: &mut Module, declared: &BTreeMap<(u32, u32), Type>) 
             Item::Import(_) => {}
         }
     }
+    // A declaration made by an earlier lowering of the same program is there already.
+    let declared: Vec<String> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(def) => Some(def.name.clone()),
+            _ => None,
+        })
+        .collect();
+    lowering.made.retain(|name, _| !declared.contains(name));
     let changed = lowering.changed || !lowering.made.is_empty();
     for (name, held) in lowering.made {
         let value = Field {
@@ -67,7 +78,7 @@ pub(crate) fn lower(module: &mut Module, declared: &BTreeMap<(u32, u32), Type>) 
 }
 
 /// The name of the `shared` declaration that holds a `held`, made from how it's written.
-fn made_name(held: &str) -> String {
+pub(crate) fn made_name(held: &str) -> String {
     let letters: String = held.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
     format!("Shared__{letters}")
 }
@@ -105,7 +116,8 @@ impl Lowering<'_> {
         self.stmts(&mut def.body);
     }
 
-    /// `shared T`, here or anywhere inside a written type, as the declaration that holds a `T`.
+    /// The declaration for each `shared T`, here or anywhere inside a written type. What's
+    /// written stays as it is, and means that declaration once it exists.
     fn written(&mut self, ty: Option<&mut TypeExpr>) {
         let Some(ty) = ty else { return };
         for arg in &mut ty.args {
@@ -114,8 +126,7 @@ impl Lowering<'_> {
         if ty.name == SHARED
             && let [held] = ty.args.as_slice()
         {
-            let name = self.made(held.clone());
-            *ty = TypeExpr { name, args: Vec::new(), optional: ty.optional, span: ty.span };
+            self.made(held.clone());
         }
     }
 

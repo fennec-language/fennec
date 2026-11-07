@@ -625,6 +625,51 @@ fn run_exits_the_same_way_whichever_engine_runs_it() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// `main` may give back an int, which the process exits with: `return 2` exits with 2, and
+/// `return 0` with 0. One that gives back an int or a failure exits with the int, or prints the
+/// failure on standard error and exits with 1. The same on every engine, and built.
+#[test]
+fn main_gives_back_its_exit_code_on_every_engine() {
+    let dir = scratch("main-exit-codes").unwrap();
+    let programs = [
+        ("two", "def main() -> int:\n    return 2\n", 2),
+        ("zero", "def main() -> int:\n    return 0\n", 0),
+        (
+            "failing",
+            "error Broke:\n    why: str\n\ndef main(stdout: Stdout) fails Broke:\n    stdout.print(\"before\")\n    fail Broke(why=\"no\")\n",
+            1,
+        ),
+        (
+            "given_or_failing",
+            "error Broke:\n    why: str\n\ndef main(args: Args) -> int fails Broke:\n    if args.len() > 5:\n        fail Broke(why=\"many\")\n    return 3\n",
+            3,
+        ),
+    ];
+    for (name, source, code) in programs {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source).unwrap();
+        let path = program.to_str().unwrap();
+        for engine in [&["run", "--no-test"][..], &["run", "--jit"], &["run", "--interp"]] {
+            let args: Vec<&str> = engine.iter().copied().chain([path]).collect();
+            let output = fennec(&args, "").unwrap();
+            let said = text(&output.stderr);
+            assert_eq!(output.status.code(), Some(code), "{name}, {engine:?}: {said}");
+            if name == "failing" {
+                assert!(said.starts_with("error: `main` failed: Broke(why=\"no\")"), "{engine:?}: {said}");
+                assert_eq!(text(&output.stdout), "before\n", "{engine:?}");
+            }
+        }
+        if llvm_ready_for_run() {
+            let built = dir.join(name);
+            let made = fennec(&["build", path, "-o", built.to_str().unwrap()], "").unwrap();
+            assert!(made.status.success(), "{name}: {}", text(&made.stderr));
+            let ran = std::process::Command::new(&built).output().unwrap();
+            assert_eq!(ran.status.code(), Some(code), "{name}, built: {}", text(&ran.stderr));
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn test_runs_the_tests_in_every_file_of_a_kit() {
     let output = fennec(&["test", "--verbose", "examples/projects/arena"], "").unwrap();

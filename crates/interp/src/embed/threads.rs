@@ -64,12 +64,6 @@ pub(crate) fn stopped() -> bool {
     level >= STOPPED_HARD || (level >= STOPPING && CLEANING.get() == 0)
 }
 
-/// Whether the task running on this thread was launched and has been told to stop at all.
-#[cfg(any(test, feature = "threads"))]
-pub(crate) fn stop_asked() -> bool {
-    STOP.with_borrow(|stop| stop.as_ref().is_some_and(|stop| stop.load(Ordering::Acquire) > 0))
-}
-
 /// The task running on this thread starts cleaning up after a crash, or ends doing so.
 pub(crate) fn cleaning(starts: bool) {
     #[cfg(any(test, feature = "threads"))]

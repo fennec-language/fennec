@@ -209,13 +209,13 @@ with fs.open("save.dat")? as file, net.connect(host)? as conn:
 # both are closed here, however the block ends
 ```
 
-- `with` lends you something for the length of a block, then takes it back. It's the only way to open files, sockets, servers and transactions.
+- `with` lends you something for the length of a block, then takes it back. It's the only way to open files, sockets, servers and transactions. Built for sources a program writes, below; the standard library's files and sockets move to them next.
 - What it lends can't escape the block: it can't be returned, stored outside it or put in a `shared`. A second name for it inside the block is fine.
 - A struct holding something borrowed is borrowed too, so a wrapper like `LineProtocol(conn=conn)` works inside the block and can't leak out.
 - `with conn.split() as reader, writer:` gives a connection's read and write sides, for one task reading while another writes.
 - `with` never locks.
 
-Writing your own takes `-> with T` and one `lend`. Setup goes above it and cleanup below:
+Writing your own takes `-> with T` and one `lend`, outside any loop. Setup goes above it and cleanup below. Built:
 
 ```fennec
 def transaction(self) -> with Transaction fails DbError:
@@ -231,7 +231,7 @@ with db.transaction()? as tx:
     tx.commit()?
 ```
 
-- `lend x else:` runs when the caller's block fails, and a failure there is reported with the caller's. `return`, `break` and `continue` in the caller count as success.
+- `lend x else:` runs when the caller's block fails, and a failure there is reported with the caller's. `return`, `break` and `continue` in the caller count as success. Built.
 - Nothing after `lend` may fail on the success path. A type can require its caller to finish it, like `tx.commit()?`, and a wrapper around such a type requires finishing too. The compiler works this out from a `lend` whose cleanup can fail, so there's no marker to write. A written file is one, finished with `close()?`, so a failed write can't be hidden by an automatic close. Not built yet.
 - A source can't `lend` while it holds a lock it took. Opening a file inside a lock is fine.
 - A generator can `lend` each item, closed when that round of the loop ends: `def clients(server: Server) -> Iterator[with Connection]:`. That's how `for conn in parallel(server)` works, with each connection belonging to its own round's task.

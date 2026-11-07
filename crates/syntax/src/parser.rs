@@ -686,7 +686,17 @@ impl Parser {
             name
         };
         let arrow = self.eat_p(Punct::Arrow).then(|| self.prev_span());
-        let ret = if arrow.is_some() { Some(self.type_expr()?) } else { None };
+        let ret = if arrow.is_none() {
+            None
+        } else if self.at_kw(Kw::With) {
+            // `-> with Transaction`: a source, which lends one to its caller's `with` block.
+            let start = self.advance().span;
+            let lent = self.type_expr()?;
+            let span = start.to(self.prev_span());
+            Some(TypeExpr { name: "with".to_owned(), args: vec![lent], optional: false, span })
+        } else {
+            Some(self.type_expr()?)
+        };
         // `fails` is a word only here, after the parameters and any return type.
         let fails = if self.at_fails() { Some(self.fails_type()?) } else { None };
         Ok(FnDef {

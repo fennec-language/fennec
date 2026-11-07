@@ -269,6 +269,13 @@ pub enum StmtKind {
         lock: bool,
     },
     Def(FnDef),
+    /// `lend value`, in a function that gives back `with T`: the caller's `with` block runs
+    /// here, with `value` lent to it. `otherwise` is the `else:` block, which runs when the
+    /// caller's block fails, empty when there's none.
+    Lend {
+        value: Expr,
+        otherwise: Vec<Stmt>,
+    },
     Break,
     Continue,
     Pass,

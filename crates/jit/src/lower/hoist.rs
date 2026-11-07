@@ -192,7 +192,11 @@ fn inner_blocks(stmt: &Stmt) -> Vec<&[Stmt]> {
 /// The expressions written directly in a statement, not in the blocks inside it.
 fn own_exprs(stmt: &Stmt) -> Vec<&Expr> {
     match &stmt.kind {
-        StmtKind::Expr(expr) | StmtKind::Fail(expr) | StmtKind::Yield(expr) | StmtKind::Assert(expr) => {
+        StmtKind::Expr(expr)
+        | StmtKind::Fail(expr)
+        | StmtKind::Yield(expr)
+        | StmtKind::Assert(expr)
+        | StmtKind::Lend { value: expr, .. } => {
             vec![expr]
         }
         StmtKind::Return(value) => value.iter().collect(),

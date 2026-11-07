@@ -192,6 +192,7 @@ fn statements_binding(body: &mut [Stmt], each: &mut dyn FnMut(&mut String)) {
             StmtKind::Expr(_)
             | StmtKind::Return(_)
             | StmtKind::Fail(_)
+            | StmtKind::Lend { .. }
             | StmtKind::Yield(_)
             | StmtKind::Assert(_)
             | StmtKind::Break

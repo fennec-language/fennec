@@ -596,6 +596,8 @@ impl<'a> Lowering<'a> {
             StmtKind::While { cond, body } => self.while_stmt(cond, body)?,
             StmtKind::Return(Some(value)) => self.return_value(value)?,
             StmtKind::Return(None) => self.return_nothing(stmt.span)?,
+            // The checker writes each `lend` in where its source is used.
+            StmtKind::Lend { .. } => return Err("a `lend` outside a `with` source".into()),
             StmtKind::Break | StmtKind::Continue => {
                 let target = self.loops.last().ok_or("`break` outside a loop")?;
                 let depth = target.depth;

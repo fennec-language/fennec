@@ -149,6 +149,9 @@ struct Checker:
                     if value is not None:
                         self.check_expr(value, generics)
                 case .Fail(value): self.check_expr(value, generics)
+                case .Lend(value, otherwise):
+                    self.check_expr(value, generics)
+                    self.check_body(otherwise, generics)
                 case .Yield(value): self.check_expr(value, generics)
                 case .Assert(value): self.check_expr(value, generics)
                 case .Def(function): self.check_function(function, generics + function.generics)

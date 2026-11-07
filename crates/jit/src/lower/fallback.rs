@@ -497,7 +497,11 @@ fn arm_names(arm: &MatchArm, names: &mut Vec<String>) {
 /// Every name a statement mentions.
 pub(super) fn stmt_names(stmt: &Stmt, names: &mut Vec<String>) {
     match &stmt.kind {
-        StmtKind::Expr(expr) | StmtKind::Fail(expr) | StmtKind::Yield(expr) | StmtKind::Assert(expr) => {
+        StmtKind::Expr(expr)
+        | StmtKind::Fail(expr)
+        | StmtKind::Yield(expr)
+        | StmtKind::Assert(expr)
+        | StmtKind::Lend { value: expr, .. } => {
             expr_names(expr, names);
         }
         StmtKind::Return(value) => {
@@ -559,7 +563,10 @@ fn expr_leaves(expr: &Expr) -> bool {
 fn stmt_leaves(stmt: &Stmt) -> bool {
     match &stmt.kind {
         StmtKind::Return(_) | StmtKind::Fail(_) => true,
-        StmtKind::Expr(expr) | StmtKind::Assert(expr) | StmtKind::Yield(expr) => expr_leaves(expr),
+        StmtKind::Expr(expr)
+        | StmtKind::Assert(expr)
+        | StmtKind::Yield(expr)
+        | StmtKind::Lend { value: expr, .. } => expr_leaves(expr),
         StmtKind::Assign { target, value, .. } => expr_leaves(target) || expr_leaves(value),
         StmtKind::If { branches, otherwise } => {
             branches.iter().any(|(cond, body)| expr_leaves(cond) || body.iter().any(stmt_leaves))

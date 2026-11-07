@@ -5078,7 +5078,7 @@ fn native_json_tags_a_union_where_the_jit_does_not() -> std::io::Result<()> {
     }
     let ((ours, _, _), (jit, _, _)) = both(
         "native_json_union_tags",
-        r#"from std import json
+        r"from std import json
 
 struct Circle:
     radius: float
@@ -5088,7 +5088,7 @@ struct Scene:
 
 def main(stdout: Stdout):
     stdout.print(json.dumps(Scene(main=Circle(radius=1.5))))
-"#,
+",
     )?;
     assert_eq!(ours, "{\"main\": {\"Circle\": {\"radius\": 1.5}}}\n");
     assert_eq!(jit, "{\"main\": {\"radius\": 1.5}}\n");

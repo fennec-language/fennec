@@ -2199,6 +2199,29 @@ fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// A builtin's value nothing keeps is still made and let go of natively, each on a line of its own,
+/// with what's printed after the same.
+#[test]
+fn a_value_nothing_keeps_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "discarded",
+        r#"def doubled(xs: list[int]) -> list[int]:
+    [x * 2 for x in xs]
+
+def main(stdout: Stdout):
+    scores = [3, 1, 2]
+    sorted(scores)
+    str(42)
+    "a,b".split(",")
+    doubled(scores)
+    stdout.print(scores, sorted(scores))
+"#,
+    )
+}
+
 /// A std module's exported constant, read through its module and imported by name, which
 /// natively are the same text.
 #[test]

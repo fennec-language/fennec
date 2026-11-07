@@ -10476,8 +10476,8 @@ test \"nothing runs\"(process: Process):
     Ok(())
 }
 
-/// A property test runs through LLVM with each input, and one that fails there runs again in the
-/// interpreter, on the same inputs, which shrinks what it failed for.
+/// A property test runs through LLVM with each input, and one that fails there shrinks what it
+/// failed for there too, as the interpreter does.
 #[test]
 fn property_tests_run_through_llvm() -> std::io::Result<()> {
     if !ready() {
@@ -10506,7 +10506,7 @@ test \"this one goes too far\" for value: int:
     let ran = fennec(&["test", "--all", "--verbose", &path], &dir)?;
     let (out, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
     assert!(!ran.status.success(), "{said}");
-    assert!(said.contains("2 of 3 tests ran through LLVM"), "{said}");
+    assert!(said.contains("3 of 3 tests ran through LLVM"), "{said}");
     assert!(out.contains("ints stay small (100 inputs)"), "{out}");
     assert!(said.contains("it failed for value = 500"), "{said}");
     assert!(!said.contains("through LLVM and passes"), "{said}");

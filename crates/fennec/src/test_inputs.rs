@@ -31,10 +31,12 @@ pub(crate) struct Inputs<'m> {
     module: &'m Module,
     /// The function for each type, by how the type is written.
     made: HashMap<String, String>,
+    /// The function giving the simpler values of each type, by how the type is written.
+    simpler: HashMap<String, String>,
     source: String,
 }
 
-fn written(ty: &TypeExpr) -> String {
+pub(crate) fn written(ty: &TypeExpr) -> String {
     let args: Vec<String> = ty.args.iter().map(written).collect();
     let plain = match (ty.name.as_str(), args.is_empty()) {
         ("tuple", _) => format!("({})", args.join(", ")),
@@ -46,7 +48,7 @@ fn written(ty: &TypeExpr) -> String {
 
 impl<'m> Inputs<'m> {
     pub(crate) fn new(module: &'m Module) -> Self {
-        Inputs { module, made: HashMap::new(), source: SHARED.to_owned() }
+        Inputs { module, made: HashMap::new(), simpler: HashMap::new(), source: SHARED.to_owned() }
     }
 
     /// The source of every function so far.
@@ -73,6 +75,34 @@ impl<'m> Inputs<'m> {
             self.body_for(ty)?
         };
         let _ = write!(self.source, "def {name}(ref state: int, depth: int) -> {shown}:\n{body}\n");
+        Some(name)
+    }
+
+    /// The function giving a value's simpler values to try, in the order `simpler` in the
+    /// interpreter's `testing.rs` gives them, written if it hasn't been, or None for a type only the
+    /// interpreter shrinks yet.
+    pub(crate) fn simpler_for(&mut self, ty: &TypeExpr) -> Option<String> {
+        let shown = written(ty);
+        if let Some(name) = self.simpler.get(&shown) {
+            return Some(name.clone());
+        }
+        let body = match (ty.name.as_str(), ty.args.as_slice(), ty.optional) {
+            // Toward 0: 0, half of it rounded toward 0, and one step nearer.
+            ("int", [], false) => "    if value == 0:\n        return []\n    mut half = value // 2\n    if value < 0 and half * 2 != value:\n        half += 1\n    if value > 0:\n        return [0, half, value - 1]\n    [0, half, value + 1]\n".to_owned(),
+            ("bool", [], false) => "    if value:\n        return [False]\n    []\n".to_owned(),
+            ("str", [], false) => "    if value.len() == 0:\n        return []\n    [\"\", value[0:value.len() - 1]]\n".to_owned(),
+            // Empty, then each item left out in turn.
+            ("list", [item], false) => {
+                self.function_for(item)?;
+                format!(
+                    "    if value.len() == 0:\n        return []\n    mut options: list[{shown}] = [[]]\n    for skip in range(value.len()):\n        options.append(value[:skip] + value[skip + 1:])\n    options\n"
+                )
+            }
+            _ => return None,
+        };
+        let name = format!("{PREFIX}simpler_{}", self.simpler.len());
+        self.simpler.insert(shown.clone(), name.clone());
+        let _ = write!(self.source, "def {name}(value: {shown}) -> list[{shown}]:\n{body}\n");
         Some(name)
     }
 

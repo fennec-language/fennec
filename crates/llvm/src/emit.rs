@@ -1762,6 +1762,23 @@ impl Emit<'_, '_, '_> {
             self.line("call void @fennec_aot_test_world(i64 1)");
             return Ok(());
         }
+        // Whether the attempt of a property test's shrinking just made passed.
+        if let ("test:passed", Some(dest), []) = (name, dest, args) {
+            self.declare("declare i8 @fennec_aot_attempt_passed()");
+            let (byte, passed) = (self.temp(), self.temp());
+            self.line(&format!("{byte} = call i8 @fennec_aot_attempt_passed()"));
+            self.line(&format!("{passed} = icmp ne i8 {byte}, 0"));
+            return self.assign(dest, &passed);
+        }
+        // What the property test failing next was given, for its report.
+        if let ("test:failed_for", [text]) = (name, args) {
+            let (text, _) = self.operand(text)?;
+            return self.on_blocks([&text], |emit, [block]| {
+                emit.declare("declare void @fennec_aot_failed_for(ptr)");
+                emit.line(&format!("call void @fennec_aot_failed_for(ptr {block})"));
+                Ok(())
+            });
+        }
         let callee = *self
             .module
             .whole
@@ -1825,7 +1842,22 @@ impl Emit<'_, '_, '_> {
         } else {
             self.line(&format!("{result} = call swiftcc {ret} {target}({shown})"));
         }
-        if flagged {
+        if flagged && is_attempt(&self.function.name) {
+            // An attempt of a property test's shrinking finds out whether the test fails, so a
+            // failure is cleared, as one test's is before the next, and the attempt goes on to say
+            // so. Built in place of `with launch`, which the test entry can use once it's emitted.
+            let (held, failed) = (self.temp(), self.temp());
+            self.line(&format!("{held} = load ptr, ptr %err"));
+            self.line(&format!("{failed} = icmp ne ptr {held}, null"));
+            let (caught, after) = (self.label("attempt_failed"), self.label("attempt_done"));
+            self.line(&format!("br i1 {failed}, label %{caught}, label %{after}"));
+            self.start_block(&caught);
+            self.declare("declare void @fennec_aot_attempt_failed()");
+            self.line("store ptr null, ptr %err");
+            self.line("call void @fennec_aot_attempt_failed()");
+            self.line(&format!("br label %{after}"));
+            self.start_block(&after);
+        } else if flagged {
             let (held, failed) = (self.temp(), self.temp());
             self.line(&format!("{held} = load ptr, ptr %err"));
             self.line(&format!("{failed} = icmp ne ptr {held}, null"));
@@ -2779,4 +2811,12 @@ def main(stdout: Stdout):
         assert!(error.contains("`f`"), "{error}");
         Ok(())
     }
+}
+
+/// Whether a function is one `fennec test` makes for an attempt of a property test's shrinking,
+/// named `test:`, the test's number and `_attempt`.
+fn is_attempt(name: &str) -> bool {
+    name.strip_prefix("test:")
+        .and_then(|rest| rest.strip_suffix("_attempt"))
+        .is_some_and(|number| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
 }

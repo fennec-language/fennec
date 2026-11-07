@@ -405,9 +405,14 @@ fn run_each(run: Run, length: usize, words: usize, leaf: Leaf) -> i64 {
         run.each((0, length), &|from, to, thread| leaf.run(from, to, thread));
         return run.finish();
     };
+    each_on_pool(run, pool, length, leaf).finish()
+}
+
+/// A loop's or a comprehension's ranges run on `pool`, with the call's ranges to finish.
+fn each_on_pool(run: Run, pool: &'static Pool, length: usize, leaf: Leaf) -> Run {
     let run = Arc::new(run);
     pool::install(&run, || run.each_on_start(pool, length, leaf), &run.done);
-    alone(run).finish()
+    alone(run)
 }
 
 /// The call's ranges, once the last job has let go of them: a worker can still be dropping its
@@ -628,7 +633,7 @@ pub(in crate::embed) use pool::with_setup;
 #[cfg(not(any(test, feature = "threads")))]
 use pool::{Latch, Pool};
 #[cfg(any(test, feature = "threads"))]
-pub(in crate::embed) use pool::{Latch, Pool, for_server};
+pub(in crate::embed) use pool::{Latch, Pool, for_server, here};
 #[cfg(any(test, feature = "threads"))]
 pub use pool::{has_worker_setup, run_worker_setup};
 pub use pool::{set_worker_setup, stack_limit};
@@ -636,7 +641,8 @@ pub use pool::{set_worker_setup, stack_limit};
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;
-    use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::{Arc, Mutex};
 
     use fennec_syntax::{Diagnostic, Span};
 
@@ -799,6 +805,54 @@ mod tests {
             heap::free(joined);
         }
         assert_eq!(with(|state| state.heap.live()), before);
+        finish();
+    }
+
+    /// A server that answers each connection with a line, 300 ms after it's made, as a slow web
+    /// service would, and counts the most connections it held open at once.
+    fn slow_server() -> (u16, Arc<AtomicUsize>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (open, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let seen = Arc::clone(&most);
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let (open, most) = (Arc::clone(&open), Arc::clone(&most));
+                std::thread::spawn(move || {
+                    let now = open.fetch_add(1, Ordering::SeqCst) + 1;
+                    most.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    open.fetch_sub(1, Ordering::SeqCst);
+                    let _ = std::io::Write::write_all(&mut &stream, b"pong\n");
+                });
+            }
+        });
+        (port, seen)
+    }
+
+    static FETCHED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    /// Connects to the slow server on port `env` and reads its line, as a parked task.
+    extern "C" fn fetches(env: i64, _from: i64, _to: i64, _thread: i64) -> i64 {
+        let port = u16::try_from(env).unwrap();
+        assert_eq!(crate::stdlib::net::fetch_line("127.0.0.1", port), Ok(b"pong\n".to_vec()));
+        FETCHED.fetch_add(1, Ordering::Relaxed);
+        0
+    }
+
+    /// More fetches than workers: each parks while it connects and while its line is on the way, so
+    /// two workers have more than two of them waiting at once, which blocking waits never could.
+    #[test]
+    fn fetches_that_may_wait_all_wait_at_once_on_a_few_workers() {
+        begin();
+        let (port, most) = slow_server();
+        let pool = super::pool::with_threads(2);
+        let run = super::Run::new(1).waiting(true);
+        let run = super::each_on_pool(run, pool, 16, super::Leaf::For(fetches, i64::from(port)));
+        assert_eq!(run.finish(), 0);
+        assert_eq!(FETCHED.load(Ordering::Relaxed), 16);
+        let most = most.load(Ordering::SeqCst);
+        assert!(most > 2, "the server held at most {most} connections at once, from 2 workers");
         finish();
     }
 

@@ -3,9 +3,109 @@
 //! outside can't forge a value with a `_` field set to whatever it likes, which capabilities
 //! like a network connection rely on.
 
-use fennec_syntax::{Arg, Diagnostic, Field, Span};
+use fennec_syntax::{Arg, Diagnostic, Edit, Field, Item, Module, Sources, Span, TokenKind};
 
 use crate::function::FnCx;
+
+/// Why a top-level name doesn't start with `_`, which is also how its error is known when its
+/// fix is added.
+pub(crate) const TOP_LEVEL_HELP: &str =
+    "top-level names are already private to the kit; `_` marks a private field or method";
+
+/// Reports each of a program's own top-level names that starts with `_`: a function, a type, an
+/// interface, an alias or a constant. The standard library's are left alone for now: its modules
+/// hide their helpers that way until they say what they `export`.
+pub(crate) fn top_level_underscores(module: &Module) -> Vec<Diagnostic> {
+    let mut found = Vec::new();
+    for item in &module.items {
+        let (name, span) = match item {
+            Item::Function(def) => (&def.name, def.span),
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => (&def.name, def.span),
+            Item::Interface(interface) => (&interface.name, interface.span),
+            Item::TypeAlias { name, span, .. } | Item::Const { name, span, .. } => (name, *span),
+            _ => continue,
+        };
+        if name.len() > 1 && name.starts_with('_') && !span.in_prelude() {
+            let message = format!("`{name}` is a top-level name, so it doesn't start with `_`");
+            found.push(Diagnostic::new(message, span).with_help(TOP_LEVEL_HELP));
+        }
+    }
+    found
+}
+
+/// Gives each top-level `_name` error its fix, which renames the name everywhere it's written
+/// in the program's files, without the `_`. It's made only where that can't change what the
+/// program means: each place the name is written is a name, not a field or method of that name
+/// or one reached with `.`, the name isn't in an f-string, and the new name isn't written
+/// anywhere already or one the language provides.
+pub fn add_rename_fixes(diagnostics: &mut [Diagnostic], module: &Module, sources: &Sources) {
+    for diagnostic in diagnostics.iter_mut() {
+        if diagnostic.help.as_deref() != Some(TOP_LEVEL_HELP) || !diagnostic.fixes.is_empty() {
+            continue;
+        }
+        let Some(old) = diagnostic.message.split('`').nth(1) else { continue };
+        let new = old.trim_start_matches('_');
+        if new.is_empty() || new.starts_with(|c: char| c.is_ascii_digit()) || crate::provided_everywhere(new)
+        {
+            continue;
+        }
+        if let Some(edits) = renamed(module, sources, old, new) {
+            diagnostic.fixes = edits;
+        }
+    }
+}
+
+fn renamed(module: &Module, sources: &Sources, old: &str, new: &str) -> Option<Vec<Edit>> {
+    let member = |name: &str| name == old;
+    let has_member = module.items.iter().any(|item| match item {
+        Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+            def.fields.iter().any(|field| member(&field.name))
+                || def.methods.iter().any(|method| member(&method.name))
+                || def.cases.iter().any(|case| member(&case.name))
+        }
+        Item::Interface(interface) => interface.methods.iter().any(|method| member(&method.name)),
+        Item::Extend(extension) => extension.methods.iter().any(|method| member(&method.name)),
+        _ => false,
+    });
+    if has_member {
+        return None;
+    }
+    let mut edits = Vec::new();
+    for (path, text) in sources.files() {
+        let (_, base) = sources.by_path(path)?;
+        let lexed = fennec_syntax::lex_source(text).ok()?;
+        let mut after_dot = false;
+        for token in &lexed.tokens {
+            let start = usize::try_from(token.span.start).ok()?;
+            let end = usize::try_from(token.span.end).ok()?;
+            let written = text.get(start..end)?;
+            match token.kind {
+                TokenKind::Name if written == new => return None,
+                TokenKind::Name if written == old => {
+                    if after_dot {
+                        return None;
+                    }
+                    let span = Span { start: base + token.span.start, end: base + token.span.end };
+                    edits.push(Edit { span, text: new.to_owned() });
+                }
+                TokenKind::FStr if has_word(written, old) || has_word(written, new) => return None,
+                _ => {}
+            }
+            after_dot = token.kind == TokenKind::Punct && written == ".";
+        }
+    }
+    (!edits.is_empty()).then_some(edits)
+}
+
+/// Whether `name` is written in `text` as a whole word.
+fn has_word(text: &str, name: &str) -> bool {
+    let word = |ch: char| ch.is_ascii_alphanumeric() || ch == '_';
+    text.match_indices(name).any(|(at, _)| {
+        let before = text.get(..at).and_then(|text| text.chars().next_back());
+        let after = text.get(at + name.len()..).and_then(|text| text.chars().next());
+        !before.is_some_and(word) && !after.is_some_and(word)
+    })
+}
 
 impl FnCx<'_> {
     /// Whether the code being checked is inside `owner`: one of the methods written in its own

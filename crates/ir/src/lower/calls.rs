@@ -341,6 +341,11 @@ impl Lowering<'_> {
             if name == "list.pop" && values.len() == 1 && !self.popping {
                 dest = self.pop_in_block(values, keep.as_ref(), span)?;
             } else {
+                // A value nothing keeps from a builtin that changes nothing, like `sorted(scores)`
+                // on a line of its own, is still made and let go of, so a backend that writes it
+                // somewhere has somewhere to write it. One that changes what it's given, like
+                // `items.pop(i)`, is made for that, and lets go of what it gives itself.
+                let keep = keep.or_else(|| self.type_at(span).filter(|ty| !changes && gives_a_value(ty)));
                 dest = keep.map(|ty| self.temporary(ty));
                 self.emit(InstKind::Builtin { dest, name, args: values, changes }, span);
             }
@@ -805,4 +810,9 @@ fn read_twice(expr: &Expr) -> bool {
         }
         _ => false,
     }
+}
+
+/// Whether a call's type says it gives back something that could be kept.
+fn gives_a_value(ty: &Type) -> bool {
+    !matches!(ty, Type::Unit | Type::Unknown | Type::None)
 }

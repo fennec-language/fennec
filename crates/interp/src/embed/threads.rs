@@ -146,6 +146,14 @@ pub(super) fn serving_starts(lent: Option<Arc<Table>>) {
     });
 }
 
+/// Ends a server on a worker that served it: as a range's end, and what its tasks make is handed
+/// over again from here on.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn serving_ends() -> (Vec<(u64, i64)>, Vec<u8>) {
+    super::with(|state| state.heap.serving = false);
+    range_ends()
+}
+
 /// Ends a range on a worker: it lets go of the blocks lent for the call, and of the text it
 /// kept of them, as the same addresses may hold other strings by its next range. Writes what it
 /// printed, so it all comes before what the calling thread prints next. Gives back how it changed

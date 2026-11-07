@@ -6,12 +6,19 @@
 //! Each worker takes a thread number and starts a runtime of its own before its first job,
 //! through the setup the program gives (`set_worker_setup`). Each range hands what it made over
 //! to its call, which the calling thread adopts when the call ends.
+//!
+//! Each worker is a server's I/O worker too, with a poll of its own and the tasks of the
+//! connections it serves (see `serve`). Its loop runs tasks that are ready, then jobs, and looks
+//! at its poll between them while it serves anything. An idle worker sleeps in its poll, so a
+//! socket getting ready, a job pushed, or work sent to it in particular (`run_on`) wakes it.
 
 use std::cell::{Cell, RefCell};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 
 use crossbeam_deque::{Injector, Steal, Stealer, Worker};
+
+use super::super::serve::Io;
 
 /// Below this many words of items, a loop isn't worth threads, and its ranges run on the
 /// calling thread.
@@ -41,18 +48,31 @@ static POOL: OnceLock<Option<&'static Pool>> = OnceLock::new();
 /// Work for a worker, owning everything it uses.
 pub(super) type Job = Box<dyn FnOnce() + Send>;
 
+/// Work for one worker in particular, given what it serves.
+pub(in crate::embed) type IoJob = Box<dyn FnOnce(&mut Io) + Send>;
+
+/// What a worker does before its first job, when it isn't the program's own setup.
+type Setup = Arc<dyn Fn() + Send + Sync>;
+
 /// The workers and their queues.
-pub(super) struct Pool {
+pub(in crate::embed) struct Pool {
     /// Jobs from threads that aren't this pool's workers.
     injector: Injector<Job>,
     /// The other end of each worker's own deque, to steal from.
     stealers: Vec<Stealer<Job>>,
-    /// How many workers are asleep, read without the lock so a push to a busy pool takes none.
+    /// Each worker's work sent to it in particular, and how to wake it.
+    mail: Vec<Mail>,
+    /// How many workers are asleep, read without a lock so a push to a busy pool takes none.
     sleeping: AtomicUsize,
-    /// A count that goes up whenever there's new work while a worker sleeps, which a worker going
-    /// to sleep checks, so it can't miss a job pushed as it does.
-    pushed: Mutex<u64>,
-    woken: Condvar,
+}
+
+/// Work sent to one worker, and how to wake it from its poll.
+struct Mail {
+    jobs: Mutex<Vec<IoJob>>,
+    /// Whether `jobs` has anything, read without the lock on every turn of the worker's loop.
+    any: AtomicBool,
+    asleep: AtomicBool,
+    waker: mio::Waker,
 }
 
 thread_local! {
@@ -98,22 +118,32 @@ fn threads_wanted() -> usize {
 }
 
 impl Pool {
-    /// A pool of `threads` workers, started now, which live as long as the process.
-    fn start(threads: usize) -> Option<&'static Pool> {
+    /// A pool of `threads` workers, started now, which live as long as the process. Each runs
+    /// `setup` first, or the program's own when there's none.
+    fn start(threads: usize, setup: Option<&Setup>) -> Option<&'static Pool> {
         let deques: Vec<Worker<Job>> = (0..threads).map(|_| Worker::new_lifo()).collect();
         let stealers = deques.iter().map(Worker::stealer).collect();
+        let mut polls = Vec::with_capacity(threads);
+        let mut mail = Vec::with_capacity(threads);
+        for _ in 0..threads {
+            let poll = mio::Poll::new().ok()?;
+            let waker = mio::Waker::new(poll.registry(), super::super::serve::WAKER).ok()?;
+            polls.push(poll);
+            let (any, asleep) = (AtomicBool::new(false), AtomicBool::new(false));
+            mail.push(Mail { jobs: Mutex::new(Vec::new()), any, asleep, waker });
+        }
         let pool: &'static Pool = Box::leak(Box::new(Pool {
             injector: Injector::new(),
             stealers,
+            mail,
             sleeping: AtomicUsize::new(0),
-            pushed: Mutex::new(0),
-            woken: Condvar::new(),
         }));
-        for (at, deque) in deques.into_iter().enumerate() {
+        for (at, (deque, poll)) in deques.into_iter().zip(polls).enumerate() {
+            let setup = setup.cloned();
             let started = std::thread::Builder::new()
                 .name(format!("fennec-worker-{at}"))
                 .stack_size(WORKER_STACK_BYTES)
-                .spawn(move || pool.work(at, deque));
+                .spawn(move || pool.work(at, deque, poll, setup.as_deref()));
             if started.is_err() && at == 0 {
                 return None;
             }
@@ -121,19 +151,68 @@ impl Pool {
         Some(pool)
     }
 
-    /// A worker's life: set up, then run jobs as they come, sleeping when there are none.
-    fn work(&'static self, at: usize, deque: Worker<Job>) {
+    /// A worker's life: set up, then run tasks and jobs as they come, sleeping when there are
+    /// none.
+    fn work(
+        &'static self,
+        at: usize,
+        deque: Worker<Job>,
+        poll: mio::Poll,
+        setup: Option<&(dyn Fn() + Send + Sync)>,
+    ) {
         let here = 0_u8;
         LIMIT.set(std::ptr::from_ref(&here).addr().saturating_sub(WORKER_NATIVE_BYTES));
         super::super::threads::take_index();
         WORKER.set(true);
         OWN.set(Some(deque));
-        run_worker_setup();
+        match setup {
+            Some(setup) => setup(),
+            None => run_worker_setup(),
+        }
+        let mut io = Io::new(poll, self, at);
+        let mut idle = 0;
         loop {
-            match self.find(at) {
-                Some(job) => job(),
-                None => self.sleep(at),
+            self.read_mail(at, &mut io);
+            io.run_ready();
+            if let Some(job) = self.find(at) {
+                job();
+                idle = 0;
+                io.poll_now();
+            } else if io.has_ready() {
+                idle = 0;
+            } else if idle < ROUNDS {
+                // A program that makes many short `parallel` calls in a row finds its workers awake.
+                idle += 1;
+                std::thread::yield_now();
+                io.poll_now();
+            } else {
+                self.sleep(at, &mut io);
+                idle = 0;
             }
+        }
+    }
+
+    /// Runs what's been sent to worker `at` in particular.
+    fn read_mail(&self, at: usize, io: &mut Io) {
+        let Some(mail) = self.mail.get(at) else { return };
+        if !mail.any.load(Ordering::Acquire) {
+            return;
+        }
+        mail.any.store(false, Ordering::Release);
+        let jobs = std::mem::take(&mut *mail.jobs.lock().unwrap_or_else(PoisonError::into_inner));
+        for job in jobs {
+            job(io);
+        }
+    }
+
+    /// Sends worker `at` work of its own, waking it if it sleeps.
+    pub(in crate::embed) fn run_on(&self, at: usize, job: IoJob) {
+        let Some(mail) = self.mail.get(at) else { return };
+        mail.jobs.lock().unwrap_or_else(PoisonError::into_inner).push(job);
+        mail.any.store(true, Ordering::SeqCst);
+        fence(Ordering::SeqCst);
+        if mail.asleep.load(Ordering::SeqCst) {
+            let _ = mail.waker.wake();
         }
     }
 
@@ -165,26 +244,21 @@ impl Pool {
         }
     }
 
-    /// Waits for work: looks again a few times, then sleeps until a job is pushed.
-    fn sleep(&self, at: usize) {
-        for _ in 0..ROUNDS {
-            std::thread::yield_now();
-            if !self.is_empty() {
-                return;
-            }
-        }
-        let mut pushed = self.pushed.lock().unwrap_or_else(PoisonError::into_inner);
-        let seen = *pushed;
-        // Saying it sleeps before it looks once more, against `push` adding before it looks at
-        // `sleeping`: one of the two sees the other, so a job is never left with every worker asleep.
+    /// Sleeps in the worker's poll until a socket is ready, a wait times out, or it's woken for a
+    /// job or for mail.
+    fn sleep(&self, at: usize, io: &mut Io) {
+        let Some(mail) = self.mail.get(at) else { return };
+        // Saying it sleeps before it looks once more, against `push` and `run_on` adding before
+        // they look at whether it sleeps: one of the two sees the other, so nothing's left with
+        // every worker asleep.
+        mail.asleep.store(true, Ordering::SeqCst);
         self.sleeping.fetch_add(1, Ordering::SeqCst);
-        std::sync::atomic::fence(Ordering::SeqCst);
-        if self.is_empty() && self.stealers.get(at).is_none_or(Stealer::is_empty) {
-            while *pushed == seen {
-                pushed = self.woken.wait(pushed).unwrap_or_else(PoisonError::into_inner);
-            }
+        fence(Ordering::SeqCst);
+        if self.is_empty() && !mail.any.load(Ordering::SeqCst) {
+            io.poll(io.timeout());
         }
         self.sleeping.fetch_sub(1, Ordering::SeqCst);
+        mail.asleep.store(false, Ordering::SeqCst);
     }
 
     fn is_empty(&self) -> bool {
@@ -203,23 +277,28 @@ impl Pool {
         if let Some(job) = left {
             self.injector.push(job);
         }
-        std::sync::atomic::fence(Ordering::SeqCst);
-        if self.sleeping.load(Ordering::SeqCst) > 0 {
-            let mut pushed = self.pushed.lock().unwrap_or_else(PoisonError::into_inner);
-            *pushed = pushed.wrapping_add(1);
-            self.woken.notify_one();
+        fence(Ordering::SeqCst);
+        if self.sleeping.load(Ordering::SeqCst) > 0
+            && let Some(asleep) = self.mail.iter().find(|mail| mail.asleep.load(Ordering::SeqCst))
+        {
+            let _ = asleep.waker.wake();
         }
     }
 
     /// How many workers it has.
-    pub(super) fn threads(&self) -> usize {
+    pub(in crate::embed) fn threads(&self) -> usize {
         self.stealers.len()
     }
 }
 
 /// The shared pool, started on first use.
 fn pool() -> Option<&'static Pool> {
-    *POOL.get_or_init(|| Pool::start(threads_wanted()))
+    *POOL.get_or_init(|| Pool::start(threads_wanted(), None))
+}
+
+/// The pool a server runs on: the shared one, once workers can have runtimes.
+pub(in crate::embed) fn for_server() -> Option<&'static Pool> {
+    SETUP.get().is_some().then(pool).flatten()
 }
 
 /// Whether `FENNEC_PARALLEL_STRESS` asks every loop to run on the pool, however few its items,
@@ -233,7 +312,13 @@ pub(super) fn stressed() -> bool {
 /// A pool of its own with `threads` workers, set up as the shared pool's are, for tests.
 #[cfg(test)]
 pub(super) fn with_threads(threads: usize) -> &'static Pool {
-    Pool::start(threads).unwrap()
+    Pool::start(threads, None).unwrap()
+}
+
+/// A pool of its own with `threads` workers, each running `setup` first, for tests.
+#[cfg(test)]
+pub(in crate::embed) fn with_setup(threads: usize, setup: &Setup) -> &'static Pool {
+    Pool::start(threads, Some(setup)).unwrap()
 }
 
 /// The pool a call's ranges run on: the shared one, when there are enough words of items to be
@@ -262,7 +347,7 @@ pub(super) fn install(call: &super::Run, start: impl FnOnce(), done: &Latch) {
 
 /// Says when the last of a number of jobs has finished, to the thread waiting for them.
 #[derive(Default)]
-pub(super) struct Latch {
+pub(in crate::embed) struct Latch {
     /// How many jobs are still to finish.
     left: AtomicUsize,
     finished: Mutex<bool>,
@@ -272,7 +357,12 @@ pub(super) struct Latch {
 impl Latch {
     /// A latch waiting for one job, which may add more with `more` before it finishes.
     pub(super) fn one() -> Latch {
-        Latch { left: AtomicUsize::new(1), ..Latch::default() }
+        Latch::of(1)
+    }
+
+    /// A latch waiting for `count` jobs.
+    pub(in crate::embed) fn of(count: usize) -> Latch {
+        Latch { left: AtomicUsize::new(count), ..Latch::default() }
     }
 
     /// Another job to wait for, added by one still running.
@@ -281,14 +371,14 @@ impl Latch {
     }
 
     /// A job has finished.
-    pub(super) fn finished(&self) {
+    pub(in crate::embed) fn finished(&self) {
         if self.left.fetch_sub(1, Ordering::AcqRel) == 1 {
             *self.finished.lock().unwrap_or_else(PoisonError::into_inner) = true;
             self.woken.notify_all();
         }
     }
 
-    fn wait(&self) {
+    pub(in crate::embed) fn wait(&self) {
         let mut finished = self.finished.lock().unwrap_or_else(PoisonError::into_inner);
         while !*finished {
             finished = self.woken.wait(finished).unwrap_or_else(PoisonError::into_inner);
@@ -297,7 +387,7 @@ impl Latch {
 }
 
 /// Starts a range on a worker, with the blocks lent for the call to read.
-pub(super) fn range_starts(lent: Option<std::sync::Arc<crate::embed::table::Table>>) {
+pub(super) fn range_starts(lent: Option<Arc<crate::embed::table::Table>>) {
     super::super::threads::range_starts(lent);
 }
 

@@ -17,7 +17,26 @@ pub fn importable_type(name: &str) -> Option<&'static str> {
     if EVERYWHERE.contains(&name) || !name.starts_with(|c: char| c.is_ascii_uppercase()) {
         return None;
     }
-    MODULES.iter().find(|module| module.names.contains(&name)).map(|module| module.name)
+    MODULES
+        .iter()
+        .find(|module| module.names.contains(&name) && !kept_inside(module.name, name))
+        .map(|module| module.name)
+}
+
+/// Whether `name` is one of a module's own top-level names, written in Fennec without `export`.
+/// The standard library is one kit, so its other modules may import it, and a program may not.
+fn kept_inside(module: &str, name: &str) -> bool {
+    let Some(source) = MODULES.iter().find(|known| known.name == module).map(|known| known.source) else {
+        return false;
+    };
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    source.lines().any(|line| {
+        let declared = ["def ", "struct ", "enum ", "error ", "shared ", "interface ", "type "]
+            .iter()
+            .find_map(|keyword| line.strip_prefix(keyword))
+            .unwrap_or(line);
+        declared.strip_prefix(name).is_some_and(|after| after.starts_with(|c: char| !word(c)))
+    })
 }
 
 /// What an import brings in.
@@ -72,14 +91,15 @@ pub fn std_import(import: &Import) -> Result<Vec<Imported>, Diagnostic> {
     }
 }
 
-/// Checks `module.name` is something the module provides.
+/// Checks `module.name` is something the module provides: to a program, what it exports, and to
+/// the standard library's own code, any of its names.
 pub fn member(module: &str, name: &str, span: Span) -> Result<(), Diagnostic> {
     let names = names(module);
-    if names.contains(&name) {
+    if names.contains(&name) && (span.in_prelude() || !kept_inside(module, name)) {
         return Ok(());
     }
     Err(Diagnostic::new(format!("`std.{module}` has nothing called `{name}`"), span)
-        .with_help(format!("`std.{module}` provides {}", shown(names))))
+        .with_help(format!("`std.{module}` provides {}", shown(module, names))))
 }
 
 /// The mistake of using a module itself as a value, as in `stdout.print(json)`.
@@ -87,7 +107,7 @@ pub fn module_as_value(alias: &str, module: &str, span: Span) -> Diagnostic {
     let names = names(module);
     let example = names.first().copied().unwrap_or("name");
     Diagnostic::new(format!("`{alias}` is a module, so use one of its names, like `{alias}.{example}`"), span)
-        .with_help(format!("`std.{module}` provides {}", shown(names)))
+        .with_help(format!("`std.{module}` provides {}", shown(module, names)))
 }
 
 /// `a.b.c` for a chain of names and attributes, like the module path in `std.json.loads`.
@@ -119,9 +139,12 @@ pub fn short_module(name: &str, span: Span) -> Diagnostic {
 }
 
 /// A module's names as help lists them: not those only other std modules and native code use.
-fn shown(names: &[&str]) -> String {
-    let public: Vec<&str> =
-        names.iter().copied().filter(|name| !name.starts_with('_') && !name.starts_with("native_")).collect();
+fn shown(module: &str, names: &[&str]) -> String {
+    let public: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| !kept_inside(module, name) && !name.starts_with("native_"))
+        .collect();
     public.join(", ")
 }
 

@@ -1,7 +1,7 @@
-from std.json import _quoted
+from std.json import quoted
 
 ## How much a log entry matters, least first.
-enum LogLevel:
+export enum LogLevel:
     Debug
     Info
     Warn
@@ -30,7 +30,7 @@ enum LogLevel:
                 "ERROR"
 
 ## How each entry is written.
-enum LogFormat:
+export enum LogFormat:
     ## `INFO saved file=a.txt`, for people.
     Text
     ## `{"level": "INFO", "message": "saved", "file": "a.txt"}`, one object a line, for tools
@@ -42,7 +42,7 @@ enum LogFormat:
 ## program that uses it chose. Each entry is one line, like `INFO saved file=a.txt size=12`.
 ## Give it a `Clock` and each line starts with the seconds since the clock started.
 ## `format=.Json` writes each entry as a JSON object instead.
-struct Log:
+export struct Log:
     out: Stdout
     level = LogLevel.Info
     format = LogFormat.Text
@@ -101,11 +101,11 @@ struct Log:
         mut parts = []
         if seconds != "":
             parts.append(f"\"time\": {seconds}")
-        parts.append(f"\"level\": {_quoted(level.label())}")
-        parts.append(f"\"message\": {_quoted(message)}")
+        parts.append(f"\"level\": {quoted(level.label())}")
+        parts.append(f"\"message\": {quoted(message)}")
         for name, value in fields.items():
             if name != "time" and name != "level" and name != "message":
-                parts.append(f"{_quoted(name)}: {_quoted(value)}")
+                parts.append(f"{quoted(name)}: {quoted(value)}")
         "{" + ", ".join(parts) + "}"
 
     ## Text that can't start another line, so an entry can't pretend to be two.

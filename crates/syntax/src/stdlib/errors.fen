@@ -1,10 +1,10 @@
-error IoError:
+export error IoError:
     reason: str
 
-error InvalidValue:
+export error InvalidValue:
     message: str
 
-error ParseError:
+export error ParseError:
     message: str
     line: int
     column: int

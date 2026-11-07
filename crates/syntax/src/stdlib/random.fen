@@ -3,7 +3,7 @@ from std.random import random_choice, random_float, random_int
 ## A seeded random number generator. The same seed gives the same numbers in the same order
 ## on every machine, so games replay and tests repeat exactly. It's SplitMix64: fast, and
 ## good enough for games, but not for secrets.
-struct Random:
+export struct Random:
     seed: int
     ## How many numbers it has drawn so far.
     drawn = 0

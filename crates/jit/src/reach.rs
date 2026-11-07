@@ -100,7 +100,11 @@ pub(crate) fn is_mentioned(key: &str, mentions: &Mentions) -> bool {
 
 fn stmt_mentions(stmt: &Stmt, mentions: &mut Mentions) {
     match &stmt.kind {
-        StmtKind::Expr(value) | StmtKind::Fail(value) | StmtKind::Yield(value) | StmtKind::Assert(value) => {
+        StmtKind::Expr(value)
+        | StmtKind::Fail(value)
+        | StmtKind::Yield(value)
+        | StmtKind::Assert(value)
+        | StmtKind::Lend { value, .. } => {
             expr(value, mentions);
         }
         StmtKind::Return(value) => {

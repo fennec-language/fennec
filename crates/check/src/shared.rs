@@ -222,7 +222,7 @@ impl FnCx<'_> {
     /// handles locked together, and a handle is always named: the block changes it through that
     /// name, which holds its lock, to write when it's `mut`.
     pub(crate) fn with_block(&mut self, value: &Expr, names: &[WithName], body: &[Stmt], used: bool) -> Flow {
-        let ty = self.expr(value);
+        let ty = self.with_value(value);
         self.with_on_shared(&ty, value.span);
         let (items, types) = match (&value.kind, ty) {
             (ExprKind::Tuple(items), Type::Tuple(types)) if names.len() != 1 => {
@@ -291,6 +291,7 @@ impl FnCx<'_> {
         self.push(false);
         for (held, ty) in names.iter().zip(types) {
             let origin = if self.checker.program.takes_lock(&ty) { Origin::Locked } else { Origin::Local };
+            let ty = self.lent_to(ty, body);
             self.declare_as(&held.name, ty, held.is_mut, origin, held.span);
         }
         let flow = self.stmts(body, used);

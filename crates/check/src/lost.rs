@@ -196,6 +196,7 @@ fn reads_in(stmts: &[Stmt], live: &mut Live) {
             | StmtKind::Fail(value)
             | StmtKind::Yield(value)
             | StmtKind::Assert(value)
+            | StmtKind::Lend { value, .. }
             | StmtKind::Return(Some(value)) => reads(value, live),
             StmtKind::Assign { target, value, .. } => {
                 reads(target, live);
@@ -442,6 +443,13 @@ impl<'a> Lost<'a> {
             StmtKind::Break => self.loops.last().map_or_else(Live::new, |(exit, _)| exit.clone()),
             StmtKind::Continue => self.loops.last().map_or_else(Live::new, |(_, head)| head.clone()),
             StmtKind::Pass => live,
+            StmtKind::Lend { value, .. } => read_then(value, live),
         }
     }
+}
+
+/// What's live before reading `value`, given what's live after.
+fn read_then(value: &Expr, mut live: Live) -> Live {
+    reads(value, &mut live);
+    live
 }

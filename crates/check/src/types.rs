@@ -301,6 +301,7 @@ impl Type {
             Type::Result(value, error) => format!("Result[{}, {}]", value.source()?, error.source()?),
             Type::Named(name) | Type::Param(name) => name.clone(),
             Type::Generic(name, args) if name == crate::lock::SHARED => format!("shared {}", all(args)?),
+            Type::Generic(name, args) if name == crate::lend::WITH => format!("with {}", all(args)?),
             Type::Generic(name, args) => format!("{name}[{}]", all(args)?),
             Type::Id(item) => format!("Id[{}]", item.source()?),
             Type::Table(item) => format!("Table[{}]", item.source()?),
@@ -337,6 +338,10 @@ impl fmt::Display for Type {
                 write!(f, "({}) -> {ret}", params.join(", "))
             }
             Type::Id(item) => write!(f, "Id[{item}]"),
+            Type::Generic(name, items) if name == crate::lend::WITH && items.len() == 1 => {
+                let lent: Vec<String> = items.iter().map(ToString::to_string).collect();
+                write!(f, "with {}", lent.join(""))
+            }
             Type::Generic(name, items) if name == crate::lock::SHARED && items.len() == 1 => {
                 let held: Vec<String> = items.iter().map(ToString::to_string).collect();
                 write!(f, "shared {}", held.join(""))

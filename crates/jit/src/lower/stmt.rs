@@ -176,7 +176,9 @@ impl Lowerer<'_, '_> {
             }
             StmtKind::Assert(condition) => self.interpret_assert(condition, stmt.span),
             StmtKind::With { .. } => self.interpret_stmt(stmt),
-            StmtKind::Yield(_) => Err(unsupported("this kind of statement", stmt.span)),
+            StmtKind::Yield(_) | StmtKind::Lend { .. } => {
+                Err(unsupported("this kind of statement", stmt.span))
+            }
             StmtKind::Def(def) => self.nested_def(def),
         }
     }

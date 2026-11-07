@@ -295,6 +295,10 @@ struct Tree:
             case .Assert(value):
                 self.open("assert", span)
                 self.write_expr(value)
+            case .Lend(value, otherwise):
+                self.open("lend", span)
+                self.write_expr(value)
+                self.write_stmts(otherwise)
             case .With(value, names, body, lock):
                 mut label = "lock" if lock else "with"
                 for at, held in enumerate(names):

@@ -46,23 +46,49 @@ struct Lost<'a> {
     found: BTreeMap<&'a str, Span>,
 }
 
-/// Reports each local in a function's or test's body whose change nothing can see.
-pub(crate) fn check_body(checker: &mut Checker, key: &str, stmts: &[Stmt]) -> Vec<Diagnostic> {
+/// Locals, each by its name and the start and end of its first value.
+pub(crate) type Counted = HashSet<(String, u32, u32)>;
+
+/// The locals that count among those a body declares, each by its name and where its first
+/// value is: the ones holding plain values. Worked out before the body is walked, since it may
+/// need to look into types.
+pub(crate) fn counted(checker: &mut Checker, key: &str, stmts: &[Stmt]) -> Counted {
+    let mut locals = Vec::new();
+    declared(stmts, &mut locals);
+    let typed: Vec<(String, Span, Type)> = {
+        let body = checker.typed.get(key);
+        locals
+            .into_iter()
+            .map(|(name, value)| {
+                let ty = body.and_then(|body| body.expr(value.span)).cloned().unwrap_or(Type::Unknown);
+                (name.to_owned(), value.span, ty)
+            })
+            .collect()
+    };
+    typed
+        .into_iter()
+        .filter(|(_, _, ty)| !does_more_than_hold(checker, ty))
+        .map(|(name, span, _)| (name, span.start, span.end))
+        .collect()
+}
+
+/// Reports each local in a function's or test's body whose change nothing can see, of those
+/// `counted` gives.
+pub(crate) fn check_body(checker: &Checker, key: &str, stmts: &[Stmt], counted: &Counted) -> Vec<Diagnostic> {
     let mut problems = Vec::new();
     let mut locals = Vec::new();
     declared(stmts, &mut locals);
-    let body = checker.typed.get(key).cloned();
-    let mut counted = HashMap::new();
+    let body = checker.typed.get(key);
+    let mut kept = HashMap::new();
     for (name, value) in locals {
-        let ty = body.as_ref().and_then(|body| body.expr(value.span)).cloned().unwrap_or(Type::Unknown);
-        if !does_more_than_hold(checker, &ty) {
-            counted.insert(name, value);
+        if counted.contains(&(name.to_owned(), value.span.start, value.span.end)) {
+            kept.insert(name, value);
         }
     }
     let mut lost = Lost {
         checker,
-        body: body.as_ref(),
-        locals: counted,
+        body,
+        locals: kept,
         captured: HashSet::new(),
         loops: Vec::new(),
         reporting: true,

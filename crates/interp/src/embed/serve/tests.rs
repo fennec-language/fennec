@@ -74,12 +74,12 @@ fn run(workers: usize, handler: &Handler, clients: impl FnOnce(SocketAddr) + Sen
             let _ = sent.send(went);
         });
     };
-    let served =
-        serve(listener, workers, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>), None, handler, started);
+    let pool = crate::embed::parallel::with_setup(workers, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>));
+    let served = serve(listener, pool, None, handler, started);
     if let Ok(Err(panic)) = ran.recv() {
         std::panic::resume_unwind(panic);
     }
-    served.unwrap()
+    served
 }
 
 /// A client that sends `lines` and checks each comes back.
@@ -427,7 +427,8 @@ fn what_a_parked_task_printed_comes_out_while_another_task_runs() {
             let _ = sent.send(went);
         });
     };
-    let served = serve(listener, 2, &setup, None, &printing(), started).unwrap();
+    let pool = crate::embed::parallel::with_setup(2, &setup);
+    let served = serve(listener, pool, None, &printing(), started);
     super::super::finish();
     if let Ok(Err(panic)) = ran.recv() {
         std::panic::resume_unwind(panic);

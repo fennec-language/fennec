@@ -211,7 +211,7 @@ pub(crate) fn tracing_executable(
 ) -> Result<(std::collections::BTreeMap<u32, String>, fennec_ir::Program), String> {
     let mut reached = program.module.clone();
     fennec_build::keep_what_main_reaches(&mut reached);
-    let emitted = emitted_with(&reached, fennec_llvm::emit_tracing_costs)?;
+    let emitted = emitted_with(&reached, fennec_llvm::emit_tracing_costs, false)?;
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_interp::embed::codec::Image {
             module: program.module.clone(),
@@ -231,6 +231,11 @@ pub(crate) fn tracing_executable(
 /// Whether LLVM has text for a trimmed program, or why not, without compiling any of it.
 pub(crate) fn takes(module: &fennec_syntax::Module) -> Result<(), String> {
     emitted(module, false).map(|_| ())
+}
+
+/// Whether LLVM has text for a trimmed program of tests, as `tests_executable` writes one.
+pub(crate) fn tests_take(module: &fennec_syntax::Module) -> Result<(), String> {
+    emitted(module, true).map(|_| ())
 }
 
 /// The IR a trimmed program's native code is written from, as a build lowers it.
@@ -409,32 +414,35 @@ struct Emitted {
 
 /// Lowers a trimmed program and writes its text, or says why LLVM can't.
 fn emitted(reached: &fennec_syntax::Module, traced: bool) -> Result<Emitted, String> {
-    emitted_with(reached, if traced { fennec_llvm::emit_traced } else { fennec_llvm::emit_for })
+    emitted_with(reached, if traced { fennec_llvm::emit_traced } else { fennec_llvm::emit_for }, traced)
 }
 
 /// What LLVM emits for a program: each function's text, and what they share.
 type Emits = Result<(Vec<fennec_llvm::Unit>, fennec_llvm::Shared, fennec_llvm::Layouts), String>;
 
-/// A trimmed program's text from one of LLVM's ways of emitting it.
+/// A trimmed program's text from one of LLVM's ways of emitting it. `tests` says it's a program of
+/// tests, whose network is a fake.
 fn emitted_with(
     reached: &fennec_syntax::Module,
     emit: fn(&fennec_ir::Program, fennec_llvm::Cpu) -> Emits,
+    tests: bool,
 ) -> Result<Emitted, String> {
     // Reading and writing JSON and TOML go through std's code in Fennec where they can, here alone,
     // so other engines keep the interpreter's. Where LLVM can't take that code yet, they don't.
     let mut routed = reached.clone();
     if fennec_check::route_formats_natively(&mut routed)
-        && let Ok(emitted) = emitted_as_written(&routed, emit)
+        && let Ok(emitted) = emitted_as_written(&routed, emit, tests)
     {
         return Ok(emitted);
     }
-    emitted_as_written(reached, emit)
+    emitted_as_written(reached, emit, tests)
 }
 
 /// What LLVM emits for a trimmed program, with its calls as they are.
 fn emitted_as_written(
     reached: &fennec_syntax::Module,
     emit: fn(&fennec_ir::Program, fennec_llvm::Cpu) -> Emits,
+    tests: bool,
 ) -> Result<Emitted, String> {
     let checked = fennec_check::check(reached)
         .map_err(|problems| format!("the program didn't check once trimmed: {problems:?}"))?;
@@ -442,7 +450,8 @@ fn emitted_as_written(
     let mut lowered = fennec_ir::lower_with(
         reached,
         &checked,
-        fennec_ir::Options { outline_parallel: true, stop_on_failed_main: true },
+        // A test's network is a fake, which answers a server's connections in order.
+        fennec_ir::Options { outline_parallel: true, stop_on_failed_main: true, serve_in_order: tests },
     );
     // On threads, a value crossing the edge of a `shared` value's lock is copied.
     if fennec_llvm::uses_parallel(&lowered) {

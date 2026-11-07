@@ -136,18 +136,16 @@ pub extern "C" fn call(word: i64, method: i64, count: i64, start: i64, end: i64)
         let given = state.inputs.split_off(state.inputs.len() - count);
         let mut args: Vec<_> =
             given.into_iter().map(|value| crate::call::CallArg::plain(value, at)).collect();
-        // A `timeout=` comes last, and the name says so.
-        let name = match (name.strip_suffix(".timeout"), args.pop()) {
-            (Some(method), Some(timeout)) => {
-                args.push(crate::call::CallArg::named("timeout", timeout.value, at));
-                method.to_owned()
-            }
-            (_, last) => {
-                args.extend(last);
-                name
-            }
-        };
-        let result = state.interp.read_method(&receiver, &name, args, at)?;
+        // Named arguments come last, and the name says what they're called: `get.params` is
+        // `get` with `params=` last, and `read_line.timeout` is `read_line` with `timeout=`.
+        let mut parts = name.split('.');
+        let method = parts.next().unwrap_or_default();
+        let named: Vec<&str> = parts.collect();
+        let plain = args.len().saturating_sub(named.len());
+        for (arg, called) in args.iter_mut().skip(plain).zip(&named) {
+            *arg = crate::call::CallArg::named(called, arg.value.clone(), at);
+        }
+        let result = state.interp.read_method(&receiver, method, args, at)?;
         Ok(state.push(result))
     })
 }
@@ -266,6 +264,16 @@ pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end
         Ok(Some((name, given.into_iter().map(Value::unpacked).collect::<Vec<Value>>())))
     });
     let Some((name, given)) = called else { return 0 };
+    // A test's network is a fake the interpreter holds, which never waits, so it runs here with
+    // the state borrowed. The real one runs below with nothing borrowed, so a socket's wait can
+    // park its task.
+    #[cfg(not(feature = "lean"))]
+    if with(|state| state.interp.faked_net()) {
+        return attempt(|state: &mut State| {
+            let done = state.interp.fake_socket_call(handle, &name, given, at)?;
+            Ok(state.push(done))
+        });
+    }
     super::write_kept_output();
     let done = crate::stdlib::net::timed(&name, &given, at).and_then(|(method, args, timeout)| match method
         .split_once('.')

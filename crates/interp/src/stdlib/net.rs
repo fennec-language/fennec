@@ -249,8 +249,47 @@ fn waits_forever(what: &str, span: Span) -> Diagnostic {
 }
 
 impl Interp<'_> {
-    fn faked_net(&self) -> bool {
+    /// Whether this is a test's world, whose network is a fake in memory.
+    pub(crate) fn faked_net(&self) -> bool {
         self.world.as_ref().is_some_and(|world| !world.real())
+    }
+
+    /// A method of a socket of a test's fake network, by its handle, for native code: `name` is
+    /// like `Connection.read_line`, and ends `.timeout` when the last argument is one.
+    pub(crate) fn fake_socket_call(
+        &mut self,
+        handle: i64,
+        name: &str,
+        given: Vec<Value>,
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        let wrong = || Diagnostic::new("the native code lost a method's name", span);
+        let (kind, method) = name.split_once('.').ok_or_else(wrong)?;
+        let mut args: Vec<CallArg> = given.into_iter().map(|value| CallArg::plain(value, span)).collect();
+        // A `timeout=` comes last, and the name says so.
+        let method = match (method.strip_suffix(".timeout"), args.pop()) {
+            (Some(method), Some(timeout)) => {
+                args.push(CallArg::named("timeout", timeout.value, span));
+                method
+            }
+            (_, last) => {
+                args.extend(last);
+                method
+            }
+        };
+        let socket = Instance {
+            type_name: Rc::from(kind),
+            case: None,
+            fields: vec![(Rc::from("_handle"), Value::Int(handle))],
+            is_error: false,
+            cause: None,
+        };
+        match kind {
+            "Connection" => self.connection_method(&socket, method, args, span),
+            "Server" => self.server_method(&socket, method, args, span),
+            "UdpSocket" => self.udp_method(&socket, method, args, span),
+            _ => Err(wrong()),
+        }
     }
 
     fn fake(&mut self) -> Option<&mut Fake> {

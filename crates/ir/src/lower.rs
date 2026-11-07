@@ -40,6 +40,10 @@ pub struct Options {
     /// Whether `main`, if it can fail, ends the program itself rather than give its failure back
     /// to what started it, for a backend with nothing there to take one.
     pub stop_on_failed_main: bool,
+    /// Whether `for conn in parallel(server)` goes through the connections in order, as the
+    /// interpreter does, rather than giving each a task: a test's servers are a fake network the
+    /// runtime holds, which only answers in order.
+    pub serve_in_order: bool,
 }
 
 /// Lowers a module's functions and methods, and the standard library's that they reach. The

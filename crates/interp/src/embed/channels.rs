@@ -1,0 +1,285 @@
+//! Channels: bounded queues of messages between tasks, `with Channel[T](size=n) as c:` and the
+//! inbox `with launch` makes. Senders and receivers are plain values holding a channel's number,
+//! so there can be many of each.
+//!
+//! - **Bounded:** `send` waits while a channel's full, and `receive` while it's empty. Each takes a
+//!   timeout. A wait parks in a task, so its thread runs others meanwhile, and blocks a thread that
+//!   isn't one. A stop cuts a parked wait short, as it does any other.
+//! - **Closing:** after `close`, a send fails at once, and receivers take what's left before they're
+//!   told it's closed. That's how a task drains its inbox.
+//! - **Messages:** a message crosses threads as what's given to a launched task does. It's copied
+//!   at `send` into a table of its own, which whoever receives it takes as its own. A message of only
+//!   numbers is a word and isn't copied.
+//! - **Lifetime:** a channel can't leave its `with`, so everything holding it has ended by the time
+//!   the block ends and frees it. A number that's been freed acts as a closed channel's.
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
+
+use super::table::Table;
+use super::{State, attempt, guarded, heap, with};
+
+/// What `send` and `receive` give back.
+const DONE: i64 = 0;
+const CLOSED: i64 = 1;
+const TIMED_OUT: i64 = 2;
+
+/// One message waiting in a channel.
+enum Message {
+    /// A value of only numbers.
+    Word(u64),
+    /// A block's copy, at this address in this table.
+    Block(u64, Box<Table>),
+}
+
+struct Channel {
+    size: usize,
+    queue: Mutex<Queue>,
+    /// For waits that block their thread.
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct Queue {
+    messages: VecDeque<Message>,
+    closed: bool,
+    /// Parked tasks waiting for room, and for a message, to wake when there may be one.
+    senders: Vec<Waiter>,
+    receivers: Vec<Waiter>,
+}
+
+/// A parked task to wake: the pool's worker it's on, and the token it's parked on.
+#[cfg(any(test, feature = "threads"))]
+struct Waiter {
+    pool: &'static super::parallel::Pool,
+    at: usize,
+    token: mio::Token,
+}
+
+/// Without threads, nothing parks.
+#[cfg(not(any(test, feature = "threads")))]
+struct Waiter;
+
+static CHANNELS: Mutex<Option<HashMap<i64, Arc<Channel>>>> = Mutex::new(None);
+static NEXT: AtomicI64 = AtomicI64::new(1);
+
+fn channels<T>(use_them: impl FnOnce(&mut HashMap<i64, Arc<Channel>>) -> T) -> T {
+    use_them(CHANNELS.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(HashMap::new))
+}
+
+fn find(channel: i64) -> Option<Arc<Channel>> {
+    channels(|channels| channels.get(&channel).cloned())
+}
+
+impl Channel {
+    fn queue(&self) -> MutexGuard<'_, Queue> {
+        self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// `fennec_channel_new(size)`: an open channel holding at most `size` messages, at least one.
+pub extern "C" fn channel_new(size: i64) -> i64 {
+    let size = usize::try_from(size).unwrap_or(1).max(1);
+    let channel = Channel { size, queue: Mutex::new(Queue::default()), changed: Condvar::new() };
+    let number = NEXT.fetch_add(1, Ordering::Relaxed);
+    channels(|channels| channels.insert(number, Arc::new(channel)));
+    number
+}
+
+/// When a wait of `timeout_ns` gives up: never, for -1.
+fn deadline(timeout_ns: i64) -> Option<Instant> {
+    u64::try_from(timeout_ns).ok().map(|nanos| Instant::now() + Duration::from_nanos(nanos))
+}
+
+/// `fennec_channel_send(channel, value, is_block, timeout_ns)`: sends `value`, a block's address if
+/// `is_block` is 1, which is copied, the sender keeping its own. Waits up to `timeout_ns` for room,
+/// or as long as it takes for -1. Gives back 0 when it's sent, 1 when the channel's closed, and 2
+/// when it timed out. A stop cuts the wait short, failing it.
+pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_ns: i64) -> i64 {
+    let Some(channel) = find(channel) else { return CLOSED };
+    let address = u64::try_from(value).unwrap_or(0);
+    let message = if is_block != 0 && address != 0 {
+        let copied = attempt(|state: &mut State| guarded::copied_for_task(state, address).map(Some));
+        let Some((copy, table)) = copied else { return DONE };
+        Message::Block(copy, table)
+    } else {
+        Message::Word(address)
+    };
+    let deadline = deadline(timeout_ns);
+    let mut message = Some(message);
+    loop {
+        let mut queue = channel.queue();
+        if queue.closed {
+            drop(queue);
+            let_go(message);
+            return CLOSED;
+        }
+        if queue.messages.len() < channel.size {
+            queue.messages.extend(message.take());
+            let waiting = std::mem::take(&mut queue.receivers);
+            drop(queue);
+            wake(waiting);
+            channel.changed.notify_all();
+            return DONE;
+        }
+        match wait(&channel, queue, deadline, Side::Sending) {
+            Waited::Again => {}
+            Waited::TimedOut => {
+                let_go(message);
+                return TIMED_OUT;
+            }
+            Waited::Stopped => {
+                let_go(message);
+                return DONE;
+            }
+        }
+    }
+}
+
+/// `fennec_channel_receive(channel, timeout_ns, value)`: takes the next message into `value`, now
+/// the receiver's own, holding one count, and gives back 0. Waits up to `timeout_ns` for one, or as
+/// long as it takes for -1. Gives back 1 once the channel's closed and empty, and 2 when it timed
+/// out. A stop cuts the wait short, failing it.
+pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64) -> i64 {
+    *value = 0;
+    let Some(channel) = find(channel) else { return CLOSED };
+    let deadline = deadline(timeout_ns);
+    loop {
+        let mut queue = channel.queue();
+        if let Some(message) = queue.messages.pop_front() {
+            let waiting = std::mem::take(&mut queue.senders);
+            drop(queue);
+            wake(waiting);
+            channel.changed.notify_all();
+            *value = i64::try_from(taken(message)).unwrap_or(0);
+            return DONE;
+        }
+        if queue.closed {
+            return CLOSED;
+        }
+        match wait(&channel, queue, deadline, Side::Receiving) {
+            Waited::Again => {}
+            Waited::TimedOut => return TIMED_OUT,
+            Waited::Stopped => return DONE,
+        }
+    }
+}
+
+/// `fennec_channel_close(channel)`: no more can be sent. Receivers take what's left, then are told
+/// it's closed. Everything waiting on it wakes.
+pub extern "C" fn channel_close(channel: i64) {
+    let Some(channel) = find(channel) else { return };
+    let mut queue = channel.queue();
+    queue.closed = true;
+    let mut waiting = std::mem::take(&mut queue.senders);
+    waiting.append(&mut queue.receivers);
+    drop(queue);
+    wake(waiting);
+    channel.changed.notify_all();
+}
+
+/// `fennec_channel_free(channel)`: its `with` ends, so nothing holds it any more. What's still in it
+/// is let go of.
+pub extern "C" fn channel_free(channel: i64) {
+    let Some(channel) = channels(|channels| channels.remove(&channel)) else { return };
+    let mut queue = channel.queue();
+    queue.closed = true;
+    let left: Vec<Message> = queue.messages.drain(..).collect();
+    drop(queue);
+    for message in left {
+        let_go(Some(message));
+    }
+}
+
+/// A message, taken as this thread's own: its block's address, or its word.
+fn taken(message: Message) -> u64 {
+    match message {
+        Message::Word(word) => word,
+        Message::Block(address, table) => {
+            with(|state| state.heap.adopt_made(table.into_blocks()));
+            address
+        }
+    }
+}
+
+/// Lets go of a message that was never received.
+fn let_go(message: Option<Message>) {
+    if let Some(Message::Block(..)) = &message {
+        let address = message.map_or(0, taken);
+        attempt(|state: &mut State| {
+            heap::release(state, address);
+            Ok(())
+        });
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Side {
+    Sending,
+    Receiving,
+}
+
+enum Waited {
+    /// Look again: something may have changed.
+    Again,
+    TimedOut,
+    /// A stop cut it short: the task's failing.
+    #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only tasks are stopped"))]
+    Stopped,
+}
+
+/// Waits for the channel to change, with `queue` held to see that it hasn't: parked, in a task that
+/// can, and otherwise blocking.
+fn wait(channel: &Channel, queue: MutexGuard<'_, Queue>, deadline: Option<Instant>, side: Side) -> Waited {
+    if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
+        return Waited::TimedOut;
+    }
+    #[cfg(any(test, feature = "threads"))]
+    if super::serve::can_park()
+        && let Some((pool, at)) = super::parallel::here()
+    {
+        let mut queue = queue;
+        let token = super::serve::next_token();
+        let waiter = Waiter { pool, at, token };
+        match side {
+            Side::Sending => queue.senders.push(waiter),
+            Side::Receiving => queue.receivers.push(waiter),
+        }
+        drop(queue);
+        return match super::serve::park_on(token, deadline) {
+            // Stopped, it's failing. Cancelled otherwise, as by a server that's stopping, it looks again.
+            super::serve::Parked::Cancelled if super::failed() => Waited::Stopped,
+            super::serve::Parked::TimedOut => Waited::TimedOut,
+            super::serve::Parked::Cancelled | super::serve::Parked::Ready => Waited::Again,
+        };
+    }
+    let _ = side;
+    // What this thread printed comes out first, as before anything else that waits. The queue stays
+    // held, so no change is missed before the wait.
+    super::write_kept_output();
+    let (_queue, timed_out) = match deadline {
+        Some(deadline) => {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let (queue, waited) =
+                channel.changed.wait_timeout(queue, left).unwrap_or_else(PoisonError::into_inner);
+            (queue, waited.timed_out())
+        }
+        None => (channel.changed.wait(queue).unwrap_or_else(PoisonError::into_inner), false),
+    };
+    if timed_out { Waited::TimedOut } else { Waited::Again }
+}
+
+/// Wakes parked tasks that were waiting on a channel: each looks again.
+fn wake(waiting: Vec<Waiter>) {
+    #[cfg(any(test, feature = "threads"))]
+    for Waiter { pool, at, token } in waiting {
+        pool.run_on(at, Box::new(move |io: &mut super::serve::Io| io.wake_token(token)));
+    }
+    #[cfg(not(any(test, feature = "threads")))]
+    drop(waiting);
+}
+
+#[cfg(test)]
+mod tests;

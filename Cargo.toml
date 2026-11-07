@@ -44,8 +44,6 @@ print_stdout = "deny"
 print_stderr = "deny"
 
 [workspace.dependencies]
-# Finding Visual Studio's linker on Windows, as Rust's own builds do. It's already here for `mimalloc`.
-cc = "=1.10.0"
 # The allocator the runtime gives Fennec programs: fast for many small blocks, under MIT.
 mimalloc = { version = "=0.1.52", default-features = false }
 # Secure random bytes from the operating system, for `Entropy`, on every platform Fennec runs on.
@@ -57,9 +55,9 @@ getrandom = { version = "=0.4.3", default-features = false }
 # system trusts, so there's no list of roots to ship and keep up to date.
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-platform-verifier = "=0.7.1"
-# The work-stealing pool `parallel` runs on, for programs with tasks: well-tested Chase-Lev
-# deques, which would be a lot of subtle code to write again. Under MIT or Apache-2.0.
-rayon-core = { version = "=1.13.0", default-features = false }
+# The deques of the work-stealing pool `parallel` runs on, for programs with tasks: well-tested
+# Chase-Lev deques, which would be a lot of subtle code to write again. Under MIT or Apache-2.0.
+crossbeam-deque = { version = "=0.8.8", default-features = false, features = ["std"] }
 # Switching a parked task's stack, for `parallel(server)`: the stack switch is a few lines of
 # assembly per platform, with guard pages on every stack, in a small, well-audited crate whose
 # `unsafe` stays its own. Our one use of `unsafe` with it is in fennec-parked. Without its

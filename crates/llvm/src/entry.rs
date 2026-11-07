@@ -18,9 +18,28 @@ pub struct Image {
     strings: Vec<(String, i64)>,
 }
 
+/// The layouts a program's image needs shapes for: those native code names, by a shape, a kind
+/// of list item, a dict's words or a type writing its own text, the ones holding themselves
+/// through lists, and everything those hold. Nothing else is ever made, so the rest, like most
+/// of the standard library's types, needn't be described.
+fn used_layouts(layouts: &Layouts, shared: &Shared) -> fennec_layout::Numbering {
+    let mut used: Vec<u32> = shared.shapes.values().copied().collect();
+    for item in shared.elements.values() {
+        fennec_layout::held_layouts(layouts, item.ty(), &mut used);
+    }
+    for (key, value) in shared.dicts.values() {
+        fennec_layout::held_by_word(layouts, *key, &mut used);
+        fennec_layout::held_by_word(layouts, *value, &mut used);
+    }
+    let own_names = shared.own_texts.iter().filter_map(|(symbol, _, _)| shared.literals.get(symbol));
+    used.extend(own_names.filter_map(|name| layouts.id(name)));
+    used.extend(layouts.all_through_lists());
+    fennec_layout::Numbering::of(layouts, used)
+}
+
 impl Image {
     pub fn of(layouts: &Layouts, shared: &Shared) -> Result<Image, String> {
-        let mut registry = Registry::new(layouts);
+        let mut registry = Registry::numbered(layouts, used_layouts(layouts, shared));
         let mut elements = Vec::with_capacity(shared.elements.len());
         for (symbol, item) in &shared.elements {
             let number =
@@ -32,7 +51,7 @@ impl Image {
             Some((symbol.clone(), i64::try_from(number).ok()?))
         });
         elements.extend(boxed);
-        let str_shape = u64::try_from(layouts.len()).unwrap_or(0);
+        let str_shape = registry.str_shape();
         let dicts = shared.dicts.iter().filter_map(|(symbol, (key, value))| {
             let number = fennec_interp::embed::dicts::shape(str_shape, *key, *value)?;
             Some((symbol.clone(), i64::try_from(number).ok()?))
@@ -84,6 +103,10 @@ fn start_of(
         out += crate::parallel::MAIN_THREAD_GLOBALS;
     }
     out += "@fennec_ascii = dso_local global ptr null\n";
+    // Whether this run counts what it allocates, for native blocks to say what they made.
+    if !shared.native.is_empty() {
+        out += "@fennec_counting_native = dso_local global i64 0\n";
+    }
     for (symbol, start) in &shared.starts {
         let _ = writeln!(out, "@\"{symbol}\" = dso_local constant i64 {start}");
     }
@@ -97,7 +120,7 @@ fn start_of(
     let shown: Vec<String> = words.iter().map(|word| format!("i64 {word}")).collect();
     let count = words.len();
     let _ = writeln!(out, "@fennec_image = private constant [{count} x i64] [{}]\n", shown.join(", "));
-    out += "declare void @fennec_aot_image(i64)\ndeclare i64 @fennec_aot_failed_flag()\ndeclare i64 @fennec_aot_literal(i64)\ndeclare i64 @fennec_aot_ascii()\n\n";
+    out += "declare void @fennec_aot_image(i64)\ndeclare i64 @fennec_aot_failed_flag()\ndeclare i64 @fennec_aot_literal(i64)\ndeclare i64 @fennec_aot_ascii()\ndeclare i64 @fennec_counting()\n\n";
     Ok((out, count))
 }
 
@@ -111,6 +134,10 @@ fn setup(out: &mut String, program: &Program, shared: &Shared, image: &Image) ->
     if let Some(main_thread) = main_thread {
         // Filled in as soon as it's all set, before anything reads them.
         *out += main_thread;
+    }
+    if !shared.native.is_empty() {
+        *out +=
+            "  %counting = call i64 @fennec_counting()\n  store i64 %counting, ptr @fennec_counting_native\n";
     }
     for (number, symbol) in shared.literals.keys().enumerate() {
         let _ = writeln!(
@@ -214,6 +241,7 @@ fn capability_kind(ty: &fennec_check::Type) -> Option<i64> {
         fennec_layout::Cap::Process => 5,
         fennec_layout::Cap::Entropy => 6,
         fennec_layout::Cap::Net => 7,
+        fennec_layout::Cap::Env => 8,
     })
 }
 

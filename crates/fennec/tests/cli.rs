@@ -40,6 +40,28 @@ fn run_prints_the_programs_output() {
     assert_eq!(text(&output.stdout), "Hello, Fennec\n");
 }
 
+/// The README's sample is the first Fennec code most people see, so it has to run as it's
+/// shown, formatted and with nothing for the linter to say.
+#[test]
+fn the_readme_sample_runs() {
+    let readme = std::fs::read_to_string(repo().join("README.md")).unwrap();
+    let taste = readme.split("## A taste").nth(1).expect("the README has a section `## A taste`");
+    let sample = taste
+        .split_once("```python\n")
+        .and_then(|(_, rest)| rest.split_once("```"))
+        .map(|(code, _)| code)
+        .expect("`## A taste` starts with a ```python block");
+    let dir = scratch("readme").unwrap();
+    std::fs::write(dir.join("taste.fen"), sample).unwrap();
+    for command in [&["run", "taste.fen"][..], &["fmt", "--check", "taste.fen"], &["lint", "taste.fen"]] {
+        let output = fennec_in(&dir, command, "").unwrap();
+        assert!(output.status.success(), "`fennec {}` failed:\n{}", command.join(" "), text(&output.stderr));
+        if command[0] == "run" {
+            assert_eq!(text(&output.stdout), "95\n");
+        }
+    }
+}
+
 /// Skirmish, the proof program in `examples/proof`, is the biggest Fennec program there is, so
 /// what breaks it has to fail here: it checks, passes its tests, and prints its `.out` file in
 /// both engines.
@@ -796,6 +818,35 @@ fn the_reference_is_written_and_a_stale_decision_fails() {
         assert!(text(&stale.stderr).contains("names a decision"), "{}", text(&stale.stderr));
     }
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The tour says every sample not marked planned compiles, so each one is checked as it's shown.
+#[test]
+fn every_tour_sample_not_marked_planned_compiles() {
+    let tour = std::fs::read_to_string(repo().join("site/src/pages/tour.md")).unwrap();
+    let dir = scratch("tour").unwrap();
+    let mut checked = 0;
+    let mut lines = tour.lines().enumerate();
+    while let Some((at, line)) = lines.next() {
+        let Some(info) = line.strip_prefix("```fennec") else { continue };
+        let sample: Vec<&str> =
+            lines.by_ref().map(|(_, line)| line).take_while(|line| !line.starts_with("```")).collect();
+        if info.contains("planned") {
+            continue;
+        }
+        let name = format!("line_{}.fen", at + 2);
+        std::fs::write(dir.join(&name), sample.join("\n") + "\n").unwrap();
+        let output = fennec_in(&dir, &["check", &name], "").unwrap();
+        assert!(
+            output.status.success(),
+            "the tour's sample at line {} doesn't compile:\n{}",
+            at + 2,
+            text(&output.stderr)
+        );
+        checked += 1;
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(checked > 30, "found only {checked} samples in the tour");
 }
 
 #[test]

@@ -1326,6 +1326,54 @@ fn fix_leaves_a_fix_that_may_change_what_a_program_does_to_be_made_by_hand() {
     assert!(json.contains(r#""line":2,"column":5,"end_line":2,"end_column":5"#), "{json}");
 }
 
+/// `fennec fix` renames a top-level `_name` everywhere it's written, without the `_`, in each of
+/// a kit's files. It leaves one alone when the new name is taken, or an f-string uses it.
+#[test]
+fn fix_renames_a_top_level_name_that_starts_with_an_underscore() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-underscore", std::process::id()));
+    let src = dir.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"tidy\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    std::fs::write(src.join("parts.fen"), "_LIMIT = 3\n\nstruct _Box:\n    size: int\n\ndef _made(_count: int) -> _Box:\n    _Box(size=_count + _LIMIT)\n").unwrap();
+    std::fs::write(
+        src.join("main.fen"),
+        "from parts import _made\n\ndef main(stdout: Stdout):\n    stdout.print(_made(_count=2).size)\n",
+    )
+    .unwrap();
+    let path = dir.to_string_lossy().into_owned();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let parts = std::fs::read_to_string(src.join("parts.fen")).unwrap();
+    let main = std::fs::read_to_string(src.join("main.fen")).unwrap();
+    let ran = fennec(&["run", &path], "").unwrap();
+    std::fs::write(src.join("main.fen"), "def helper() -> int:\n    1\n\ndef _helper() -> int:\n    2\n\ndef main(stdout: Stdout):\n    stdout.print(helper(), _helper())\n").unwrap();
+    std::fs::write(
+        src.join("parts.fen"),
+        "def _shown() -> int:\n    3\n\ndef show() -> str:\n    f\"{_shown()}\"\n",
+    )
+    .unwrap();
+    let left = fennec(&["fix", &path], "").unwrap();
+    let kept = std::fs::read_to_string(src.join("main.fen")).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert_eq!(
+        parts,
+        "LIMIT = 3\n\nstruct Box:\n    size: int\n\ndef made(_count: int) -> Box:\n    Box(size=_count + LIMIT)\n"
+    );
+    assert_eq!(
+        main,
+        "from parts import made\n\ndef main(stdout: Stdout):\n    stdout.print(made(_count=2).size)\n"
+    );
+    assert_eq!(text(&ran.stdout), "5\n");
+    assert!(!left.status.success());
+    assert!(kept.contains("def _helper()"), "{kept}");
+    let said = text(&left.stderr);
+    assert!(
+        said.contains("`_helper` is a top-level name") && said.contains("`_shown` is a top-level name"),
+        "{said}"
+    );
+}
+
 /// Enums with a case in common, which only the expected type can tell apart, and an error.
 const CASES_BEFORE: &str = "enum Color:
     Red

@@ -651,7 +651,6 @@ This reverses the decision that a directly called nested function can change out
 ```fennec
 with db.transaction()? as tx, fs.open(path)? as file:
     tx.insert(parse(file)?)?
-    tx.commit()?
 ```
 There are no moves. A resource that has to live a long time, like a pooled database connection, lives inside one keeper task's `with`, and everyone else sends it messages. This replaces the rule that a long-lived resource is an owned value that moves and closes when its last owner goes away.
 *Why:* If everything temporary lives inside a block, there's nothing for lifetime annotations to describe.
@@ -672,21 +671,19 @@ There are no moves. A resource that has to live a long time, like a pooled datab
 **There's no `def del` and no destructor.** Everything that needs cleanup is opened with `with`. This replaces `def del` on `shared` types, and the standard library's `Connection` closing when its last owner goes away. `fennec fix` rewrites existing code. Not built yet.
 *Why:* A destructor runs at a moment no line shows, and has nowhere to report a failure. Memory frees itself, so only real resources need cleanup, and `with` shows where.
 
-**A `with` source is a function returning `-> with T`, with exactly one `lend`.** Setup goes above it and cleanup below. `lend x else:` runs when the caller's block fails, and a failure there is reported with the caller's. `return`, `break` and `continue` in the caller count as success. Not built yet.
+**A `with` source is a function returning `-> with T`, with exactly one `lend`.** Setup goes above it and cleanup below. Code after `lend` runs when the caller's block succeeds, and `lend x else:` runs when it fails or crashes, with the block's own failure passing up. `return`, `break` and `continue` in the caller count as success. Built for a block that fails or ends well; running `else:` on a crash isn't built yet.
 ```fennec
 def transaction(self) -> with Transaction fails DbError:
     with self._pool.take()? as conn:
         conn.begin()?
         lend Transaction(_conn=conn) else:
             conn.rollback()
+        conn.commit()?
 ```
 *Why:* One `lend` makes every source read the same way, open, lend, close, and a user's `with` source can do anything the standard library's can.
 
-**Nothing after `lend` may fail on the success path.** Finishing that can fail is a method the caller calls and checks, like `tx.commit()?`.
-*Why:* A cleanup failure after the caller's block has succeeded has nowhere to go, so it would be lost.
-
-**A type can require its finish, and wrappers inherit it.** For a type like a buffered writer or a transaction, ending the block on the success path without calling its finishing method is a compile error: "`tx` ended without `commit()`". A type holding one requires finishing too. The compiler infers it from a `lend` whose cleanup can fail, with no marker, and a written file is one, finished with `close()?`. Not built yet.
-*Why:* Cleanup that fails with nowhere to report the error silently loses data.
+**The end of a `with` block is where what it lent finishes, and finishing may fail.** A failure after `lend` becomes the `with` statement's failure, covered by the `?` on its line, so `with fs.create(path)? as file:` covers both opening and finishing. Files close themselves at the block's end, and a transaction commits there and rolls back in `lend x else:`. An early `return` still runs the cleanup, and a failing cleanup makes the function fail. Built for sources a program writes; the standard library's files and transactions move to it next. This replaces the rule that nothing after `lend` may fail, along with types the caller must finish, how that was inferred, and callers finishing written files with `close()?`.
+*Why:* A cleanup failure still reaches the caller, through a `?` that's already there, and there's no `commit()` or `close()` to forget.
 
 **A source can't `lend` while it holds a lock it took.** Opening a file inside a lock is fine.
 *Why:* The caller's block would run under a lock it can't see, and could wait in it.

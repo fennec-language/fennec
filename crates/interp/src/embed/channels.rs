@@ -12,6 +12,8 @@
 //!   numbers is a word and isn't copied.
 //! - **Lifetime:** a channel can't leave its `with`, so everything holding it has ended by the time
 //!   the block ends and frees it. A number that's been freed acts as a closed channel's.
+//! - **To every listener:** a channel made `to=.Every` gives each listener every message, instead of
+//!   one receiver each (see `every`).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -32,6 +34,9 @@ enum Message {
     Word(u64),
     /// A block's copy, at this address in this table.
     Block(u64, Box<Table>),
+    /// A block's copy, at this address in this table, kept for every listener of a channel to
+    /// `.Every`: each takes a copy of its own.
+    Shared(u64, Arc<Table>),
 }
 
 struct Channel {
@@ -48,6 +53,8 @@ struct Queue {
     /// Parked tasks waiting for room, and for a message, to wake when there may be one.
     senders: Vec<Waiter>,
     receivers: Vec<Waiter>,
+    /// For a channel to `.Every`: where each listener's up to.
+    every: Option<every::Listeners>,
 }
 
 /// A parked task to wake: the pool's worker it's on, and the token it's parked on.
@@ -116,6 +123,16 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
             let_go(message);
             return CLOSED;
         }
+        if queue.every.is_some() {
+            // It never waits: the oldest message goes, if there's no room.
+            let dropped = every::push(&mut queue, message.take(), channel.size);
+            let waiting = std::mem::take(&mut queue.receivers);
+            drop(queue);
+            let_go(dropped);
+            wake(waiting);
+            channel.changed.notify_all();
+            return DONE;
+        }
         if queue.messages.len() < channel.size {
             queue.messages.extend(message.take());
             let waiting = std::mem::take(&mut queue.receivers);
@@ -144,6 +161,9 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
 /// out. A stop cuts the wait short, failing it.
 pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64) -> i64 {
     *value = 0;
+    if let Some((channel, listener)) = every::listening(channel) {
+        return every::receive(&channel, listener, timeout_ns, value);
+    }
     let Some(channel) = find(channel) else { return CLOSED };
     let deadline = deadline(timeout_ns);
     loop {
@@ -183,6 +203,7 @@ pub extern "C" fn channel_close(channel: i64) {
 /// `fennec_channel_free(channel)`: its `with` ends, so nothing holds it any more. What's still in it
 /// is let go of.
 pub extern "C" fn channel_free(channel: i64) {
+    every::forget(channel);
     let Some(channel) = channels(|channels| channels.remove(&channel)) else { return };
     let mut queue = channel.queue();
     queue.closed = true;
@@ -201,11 +222,20 @@ fn taken(message: Message) -> u64 {
             with(|state| state.heap.adopt_made(table.into_blocks()));
             address
         }
+        Message::Shared(address, table) => every::copied_out(address, &table),
     }
 }
 
 /// Lets go of a message that was never received.
 fn let_go(message: Option<Message>) {
+    let message = match message {
+        // Kept for others too, it's only let go of by the last to hold it.
+        Some(Message::Shared(address, table)) => match Arc::try_unwrap(table) {
+            Ok(table) => Some(Message::Block(address, Box::new(table))),
+            Err(_) => None,
+        },
+        message => message,
+    };
     if let Some(Message::Block(..)) = &message {
         let address = message.map_or(0, taken);
         attempt(|state: &mut State| {
@@ -280,6 +310,9 @@ fn wake(waiting: Vec<Waiter>) {
     #[cfg(not(any(test, feature = "threads")))]
     drop(waiting);
 }
+
+mod every;
+pub use every::{channel_listen, channel_new_every};
 
 #[cfg(test)]
 mod tests;

@@ -748,10 +748,9 @@ fn park_on_token(token: Token, deadline: Option<Instant>, stoppable: bool) -> Pa
 fn parked_as(woken: Option<Wake>) -> Parked {
     match woken {
         Some(Wake::Ready(TIMED_OUT)) => Parked::TimedOut,
-        Some(Wake::Cancelled) => {
-            cut_short();
-            Parked::Cancelled
-        }
+        // A stop that doesn't cut this wait short, as it's a cleanup's in its grace: it looks again.
+        Some(Wake::Cancelled) if !cut_short() && super::threads::stop_asked() => Parked::Ready,
+        Some(Wake::Cancelled) => Parked::Cancelled,
         _ => Parked::Ready,
     }
 }

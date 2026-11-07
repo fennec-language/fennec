@@ -1,0 +1,7 @@
+# A small HTTP JSON API that keeps notes in memory: Fennec's first program written the way a
+# user would write one, from what's built today.
+name = "notes_api"
+version = "0.1.0"
+fennec = "0.0.1"
+
+[dependencies]

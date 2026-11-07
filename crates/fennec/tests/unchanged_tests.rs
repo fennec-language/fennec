@@ -219,6 +219,21 @@ fn test_kit(dir: &Path) -> std::io::Result<Output> {
         .output()
 }
 
+/// A kit's results are kept under its name too, so moving it to another folder runs none of the
+/// tests that passed, and an edit there still runs the ones it reaches.
+#[test]
+fn a_kit_that_moves_keeps_what_passed() {
+    let dir = kit_with_tests("kit_moves").unwrap();
+    assert_eq!(stdout(&test_kit(&dir).unwrap()), "2 passed, 0 failed\n");
+    let moved = dir.with_file_name(format!("{}-moved", dir.file_name().unwrap().to_string_lossy()));
+    let _ = std::fs::remove_dir_all(&moved);
+    std::fs::rename(&dir, &moved).unwrap();
+    assert_eq!(stdout(&test_kit(&moved).unwrap()), "2 passed, 0 failed (0 run, 2 unchanged)\n");
+    std::fs::write(moved.join("src/maths.fen"), "def double(x: int) -> int:\n    x + x\n").unwrap();
+    assert_eq!(stdout(&test_kit(&moved).unwrap()), "2 passed, 0 failed (1 run, 1 unchanged)\n");
+    std::fs::remove_dir_all(&moved).unwrap();
+}
+
 #[test]
 fn an_edit_to_an_embedded_file_runs_only_the_tests_that_use_it() {
     let dir = kit_with_tests("kit_embed").unwrap();

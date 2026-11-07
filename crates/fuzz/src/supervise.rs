@@ -214,7 +214,7 @@ impl Run<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Duration, Failure, cpu_time_in, watch};
+    use super::{Duration, cpu_time_in};
 
     #[test]
     fn cpu_time_reads_as_ps_writes_it() {
@@ -231,6 +231,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn stuck_counts_cpu_time() {
+        use super::{Failure, watch};
         let start = |script: &str| std::process::Command::new("sh").args(["-c", script]).spawn().unwrap();
         let mut waits = start("sleep 1");
         assert_eq!(watch(&mut waits, Duration::from_millis(500), None, || false), None);

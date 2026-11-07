@@ -310,6 +310,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 **Math types are 32-bit.** `Vec3` and the other math types use 32-bit floats, and `float` stays 64-bit.
 *Why:* Twice the SIMD throughput for game math, while `float` stays accurate everywhere else.
+Not built yet: there's no 32-bit float in the language, so `std.math`'s `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` are `float` for now and are checked against glam's 64-bit types. Moving them is a change of field types once sized numbers are in.
 
 **The compiler tells LLVM that names don't alias.** Exclusive `ref` access proves no two names point at the same memory, so every function gets that guarantee for free. Fortran's speed comes from the same guarantee.
 

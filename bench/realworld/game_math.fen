@@ -1,0 +1,40 @@
+## Game math as a game's frame uses it, through `std.math`, against glam: each frame places a
+## model with a scale, a turn and a move, puts it through a camera and a projection, then moves
+## every point of a cloud by that matrix and lights it by the turned direction it faces.
+
+from std.math import Mat4, PI, Quat, Vec3, cos, sin
+
+## `count` points spread over a 20-wide cube, from a fixed seed, so both sides get the same ones.
+def cloud(count: int) -> list[Vec3]:
+    mut points = []
+    mut seed = 12345
+    for _ in range(count):
+        mut parts = [0.0, 0.0, 0.0]
+        for at in range(3):
+            seed = (seed * 1103515245 + 12345) % 2147483648
+            parts[at] = float(seed) / 2147483648.0 * 20.0 - 10.0
+        points.append(Vec3(x=parts[0], y=parts[1], z=parts[2]))
+    points
+
+def main(stdout: Stdout):
+    points = cloud(50000)
+    view = Mat4.look_at(eye=Vec3(y=5.0, z=30.0), target=Vec3(), up=Vec3(y=1.0))
+    projection = Mat4.perspective(fov_y=PI / 3.0, aspect=16.0 / 9.0, near=0.1, far=500.0)
+    axis = Vec3(x=0.3, y=1.0, z=0.2).normalize()
+    light = Vec3(x=-0.4, y=1.0, z=0.5).normalize()
+    mut total = 0.0
+    mut lit = 0.0
+    for frame in range(200):
+        time = float(frame) * 0.016
+        turn = Quat.from_axis_angle(axis, time)
+        model = Mat4.from_scale_rotation_translation(
+            scale=Vec3(x=1.5, y=1.5, z=1.5),
+            rotation=turn,
+            translation=Vec3(x=sin(time), z=cos(time)),
+        )
+        clip = projection * view * model
+        for point in points:
+            moved = clip.transform_point(point)
+            total = total + moved.x + moved.y + moved.z
+            lit = lit + max(turn.rotate(point.normalize()).dot(light), 0.0)
+    stdout.print(total, lit)

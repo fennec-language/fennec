@@ -13,12 +13,14 @@ pub(crate) const MODULE: Module = Module {
     construct: no_checks,
 };
 
-const FUNCTIONS: [Function; 5] = [
+const FUNCTIONS: [Function; 7] = [
+    takes("math.acos", (1, 1)),
     takes("math.ceil", (1, 1)),
     takes("math.cos", (1, 1)),
     takes("math.floor", (1, 1)),
     takes("math.sin", (1, 1)),
     takes("math.sqrt", (1, 1)),
+    takes("math.tan", (1, 1)),
 ];
 
 /// Each takes a number. `floor` and `ceil` give ints; the rest give floats.

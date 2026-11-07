@@ -8,7 +8,7 @@ description: A walk through Fennec's design, from values and tables to lifetimes
 
 <p class="lede">If you can read Python, you can read Fennec. What's different is underneath: data is plain values in flat tables, types are checked before anything runs, errors can't be ignored, and there are no references to manage.</p>
 
-> **What you can trust on this page.** Fennec is in progress. Every plain code sample here compiles today. Anything that doesn't yet sits under a **Planned** label, and that part of the design is decided but not built, so don't expect it to run.
+> **What you can trust on this page.** Fennec is in progress. Every plain code sample here compiles today, and a test checks that it does. Anything that doesn't yet sits under a **Planned** label: that part of the design is decided but not built, so don't expect it to run. A section marked **Being redesigned** describes something that's still being decided and may change.
 
 ## Hello
 
@@ -24,9 +24,11 @@ def main(stdout: Stdout):
 A name is immutable unless you declare it `mut`. There's no `let` or `const`, because those two forms already say everything.
 
 ```fennec
-name = "Ash"
-mut health = 100
-health -= 10
+def main(stdout: Stdout):
+    name = "Ash"
+    mut health = 100
+    health -= 10
+    stdout.print(name, health)
 ```
 
 Writing `name = "Vex"` next would be a compile error, and it tells you to declare it `mut name = "Ash"`.
@@ -80,16 +82,16 @@ def main(stdout: Stdout):
 
 A literal default gives the parameter its type: an `int`, `float`, `str` or `bool`, or an enum case like `mode=Mode.fast`. Writing `limit: int = 8` is an error whose fix drops the `: int`. The type is written when the default is `None`, as in `target: Unit? = None`, or isn't the literal's own type.
 
-**Planned:** a constructor call with its type arguments written, like `dict[str, int]()` or `Packed[int]()`, giving the type the same way, for struct fields and parameters alike. For an empty collection it becomes the only form of default: `items = list[str]()`, with `fennec fix` rewriting `items: list[str] = []`. Inside a function body, `items = []` stays fine.
+A constructor call with its type arguments written, like `dict[str, int]()` or `Packed[int]()`, gives the type the same way, for struct fields and parameters alike. For an empty collection it's the only form of default: `items = list[str]()`, and `items: list[str] = []` is an error that says so. Inside a function body, `items = []` stays fine.
 
-**Planned:** hard errors for the positional calls that are easy to get backwards: a bare `True` or `False`, neighboring parameters of the same type, and three or more positional arguments unless no two neighbors could be swapped and still compile. The first argument and `self` are exempt.
+The positional calls that are easy to get backwards are compile errors: a bare `True` or `False`, and neighboring arguments of the same type, which could be swapped and still compile. The error says which one to name. The first argument and `self` are exempt.
 
 ## Built-in types
 
 | Type | Example |
 | --- | --- |
 | `int`, `float` | `42`, `3.14` (64-bit) |
-| Sized numbers | `i32`, `u8`, `f32` when you want control over size |
+| Sized numbers | **Planned:** `i32`, `u8`, `f32` when you want control over size |
 | `bool` | `True`, `False` |
 | `str` | `"fennec"`, `f"{count} foxes"` |
 | `list`, `dict`, `set` | `[1, 2]`, `{"hp": 10}`, `{1, 2}` |
@@ -169,7 +171,7 @@ An `Id` is a small plain value with a generation in it, so it stays safe after i
 
 Assigning or passing a value never lets anyone change yours. This doesn't mean everything gets copied: the compiler passes values by reference when it's safe, moves them when the original isn't used again, and shares large data until one side changes it. You write simple value code, and the compiler does the rest.
 
-Nested structs are stored inline, so editing one is a single write to memory:
+Nested structs are stored inline, so editing one is a single write to memory. To change something in a list or a table, write to it there:
 
 ```fennec
 struct Stats:
@@ -180,62 +182,55 @@ struct Unit:
 
 def main(stdout: Stdout):
     mut units = [Unit(stats=Stats())]
-    units[0].stats.health -= 10
-    stdout.print(units[0].stats.health)
+    units[0].stats.health -= 10       # edits the unit in the list
+
+    mut backup = units[0]             # your own copy
+    backup.stats.health = 0
+    stdout.print(units[0].stats.health, backup.stats.health)
 ```
 
-`mut x = place` names the real place, so writing through it edits the original, as you'd expect from Python:
+A name always holds its own value, `mut` or not. So `mut unit = units[0]` is a copy, and changing it and then never reading it is a compile error, since the change would be lost. The fix writes to the list directly: `units[0].stats.health -= 10`. To let a loop or a function change something in place, use [`ref`](#mutation-is-visible). There's no inline `ref` name.
 
-```fennec planned
-mut unit = world.units[id]
-unit.stats.health -= 10          # edits the unit in the table
-
-best = unit                      # replacing a name makes a new value
-mut backup = copy(unit)          # a separate value, on purpose
-```
-
-Writing through a name and replacing it on the same name is a compile error. So is reading what the name came from while the name is still in use. The name can't be stored, returned or captured, so there are no lifetimes to write.
-
-Planned: `mut a, b = xs.pair(i, j)` for two elements of one list, and a compile error for a copy that can quietly go stale:
+**Planned:** a compile error for a copy that can quietly go stale:
 
 ```fennec planned
 world.selected = world.units[i]          # error: edits to one won't reach the other
 world.selected = copy(world.units[i])    # fine: a separate copy, on purpose
 ```
 
-A copy that would happen on every iteration of a loop is planned to be a compile error too, naming the line and why the value is shared: "`state` is copied every iteration because `history` keeps it". A copy that happens once, on the first write, is only a hint.
+A copy that would happen on every iteration of a loop is a compile error, naming the line and why the value is shared, as in "`state.xs` is copied each time round the loop, since it was put into `history`, which is used again". A copy that happens once, on the first write, is only a hint.
 
-A write that goes nowhere is planned to be a compile error as well: a local that's changed and then never read, returned or passed on. Writing through a name for a place doesn't count, since that edits the place. It doesn't catch a copy that's read afterwards.
+A write that goes nowhere is a compile error as well: a local that's changed and then never read, returned or passed on. A write through a `ref` doesn't count, since that reaches the original. It doesn't catch a copy that's read afterwards.
 
 ## Mutation is visible
 
-Parameters are read-only. A function that changes its argument says `mut` in its signature, and every call to it says `mut` too.
+Parameters are read-only. A function that changes its argument says `ref` in its signature, and every call to it says `ref` too.
 
 ```fennec
 struct Player:
     health = 100
 
-def apply_damage(mut player: Player, amount: int):
+def apply_damage(ref player: Player, amount: int):
     player.health -= amount
 
 def main(stdout: Stdout):
     mut player = Player()
-    apply_damage(mut player, 10)   # you can see player changes here
+    apply_damage(ref player, 10)   # you can see player changes here
     stdout.print(player)           # and that it doesn't change here
 ```
 
-Reading any call, you know whether it can modify your data without opening the function. Methods and loops say it the same way:
+Reading any call, you know whether it can modify your data without opening the function. A `ref` needs a `mut` name or another `ref` to start from, and it can't be stored, returned or captured, so there are no lifetimes to write. Methods and loops say it the same way:
 
 ```fennec
 struct Enemy:
     health: int
 
-    def take_damage(mut self, amount: int):
+    def take_damage(ref self, amount: int):
         self.health -= amount
 
 def main(stdout: Stdout):
     mut enemies = [Enemy(health=3)]
-    for mut enemy in enemies:
+    for ref enemy in enemies:
         enemy.take_damage(1)
     stdout.print(enemies)
 ```
@@ -281,8 +276,18 @@ def main(stdout: Stdout):
 A chain that ends in `else` can read through something that might be missing. It stops at the first missing step and gives the default. `?` only ever means a failure passes up.
 
 ```fennec
-health = find_target(enemies).health else 1     # 1 if there's no target
-score = scores.get(team).get(player) else 0
+struct Enemy:
+    health = 3
+
+def find_target(enemies: list[Enemy]) -> Enemy?:
+    if enemies.len() == 0: return None
+    enemies[0]
+
+def main(stdout: Stdout):
+    health = find_target([]).health else 1      # 1 if there's no target
+    scores = {"red": {"ash": 12}}
+    score = scores.get("red").get("vex") else 0
+    stdout.print(health, score)
 ```
 
 `else` covers only the chain right before it, so a larger expression needs brackets: `(find_target(enemies).health else 1) + 1`. Without the `else`, it's a compile error that suggests one or an `is None` check. Indexing with `[]` in such a chain isn't built yet.
@@ -328,15 +333,17 @@ The default after `else` is only evaluated if it's needed. Failing is a plain re
 
 A run-time bug is different from an error. `xs[i]` out of range stops the program with a clear message, because there's nothing sensible to handle.
 
-**Planned: errors in the signature.** Today the errors a function can fail with are inferred. In the locked design, a function says so with `fails Name`, where one `error` can list several cases, so a signature stays short. `fennec fix` will write it for you.
+**Errors in the signature.** A function can say what it fails with, `fails Name`, where one `error` can list several cases, so a signature stays short. `fails A | B` combines failures from different places, and `?` passes any of them up as it is.
 
-```fennec planned
+```fennec
 error LoadError:
     NotFound(path: str)
     BadRow(line: int)
 
 def load(path: str) -> float fails LoadError:
-    ...
+    if path == "":
+        fail .NotFound(path)
+    1.0
 ```
 
 **Also planned:** `if result is Err(NotFound):`, which checks one error and narrows the rest; `?` required everywhere a failure passes up, including in `with` and `for`; a compile error for checking an error and then ignoring it; and `xs.get(i)`, which returns an optional when an index might not be there.
@@ -386,7 +393,7 @@ def main(stdout: Stdout):
     stdout.print(scores.keys(), scores["ash"])
 ```
 
-**Planned:** a compile error for a key struct with its own `def ==`, suggesting you key by a field instead; `SortedSet`, `Grid` and `Packed`; and `sum(wallet, start=Money(cents=0))`, which replaces today's positional start.
+A key struct with its own `def ==` is a compile error, which suggests keying by a field instead. `std.collections` also has `SortedSet`, `Grid`, `Packed`, `Deque`, `Counter` and `Tree`, and a sum can start somewhere other than zero, as in `sum(prices, start=1.5)`.
 
 ## Strings
 
@@ -425,15 +432,17 @@ def main(stdout: Stdout):
         break
 ```
 
-Using one twice fails loudly with `this generator has already been used`, rather than quietly giving you nothing, which is Python's trap. `yield` is allowed inside `with`, and what it holds is closed when the generator's owner goes away. A failure comes out when the item that fails is asked for, and acts like a failure from any call.
+Using one twice is a compile error, `this generator has already been used`, rather than quietly giving you nothing, which is Python's trap. A second use the compiler can't see, like one in a later round of a loop, stops the program with the same message. `yield` is allowed inside `with`, and what it holds is closed when the generator's owner goes away. A failure comes out when the item that fails is asked for, and acts like a failure from any call.
 
-**Planned:** a compile error for a second use, wherever that can be proved. `map` and `filter` could come later, though `(f(x) for x in xs if ok(x))` already says both.
+`map` and `filter` could come later, though `(f(x) for x in xs if ok(x))` already says both.
 
 ## A lifetime is a block
 
+**Being redesigned.** `with`, `def del` and how a thing is closed are still being decided, so this section may change.
+
 `with` is how Fennec spells ownership and lifetime. A thing opened by `with` lasts for the block, and any way out of the block closes it, inner blocks first. You can read the order from the indentation, and that's the whole lifetime system: there's nothing to annotate.
 
-```fennec
+```fennec planned
 struct Lease:
     name: str
 
@@ -453,22 +462,29 @@ There's nothing special to implement: any type that defines cleanup with `def de
 
 ## Parallel work
 
-`parallel` is the one word for using more cores. Reading through it compiles today, but it still runs in order on one core:
+`parallel` is the one word for using more cores. Everything it starts ends when its loop ends, and there's no `async`, no `await` and no thread pool to manage.
 
 ```fennec
+struct Particle:
+    position: float
+    velocity: float
+
 def main(stdout: Stdout):
+    mut particles = [Particle(position=0.0, velocity=1.5)]
+    for ref particle in parallel(particles):
+        particle.position += particle.velocity * 2.0
+
     bullets = [1, 2, 3]
     total = sum(b for b in parallel(bullets))
     hits = [b * 2 for b in parallel(bullets)]
-    stdout.print(total, hits)
+    stdout.print(particles, total, hits)
 ```
 
-**Planned:** actually using your cores, `for mut` through it, streams and `limit=`. Everything it starts ends when its loop ends, and there's no `async`, no `await` and no thread pool to manage.
+A sum through `parallel` combines its parts in a fixed order, so a float sum gives the same bits however many cores it ran on.
+
+**Planned:** `limit=`, and servers that take each connection in its own task.
 
 ```fennec planned
-for mut particle in parallel(particles):
-    particle.position += particle.velocity * dt
-
 hits = [check(b) for b in parallel(bullets, limit=8)]
 
 with net.listen(8080) as server:
@@ -491,8 +507,8 @@ def physics_loop(inbox: Channel[Cmd]):
     mut sim = Sim()
     while sim.running:
         for cmd in inbox.pending():      # what's waiting, without blocking
-            apply(mut sim, cmd)
-        step(mut sim)
+            apply(ref sim, cmd)
+        step(ref sim)
 
 with launch(physics_loop) as physics:
     physics.send(Cmd.Push(id, force))
@@ -504,32 +520,37 @@ Event channels are planned too, for many listeners each reading at its own pace.
 
 ## Sharing
 
-**Planned.** Most programs share nothing. For the few things that really are shared, like a cache or a server's stats, `shared Name:` is Fennec's one reference type. Its methods lock automatically: `mut self` writes and `self` reads.
+**Being redesigned.** `shared` is built, but parts of it are still being decided, so this section may change.
 
-```fennec planned
+Most programs share nothing. For the few things that really are shared, like a cache or a server's stats, `shared Name:` is Fennec's one reference type. Its methods lock automatically: `ref self` writes and `self` reads.
+
+```fennec
+struct Page:
+    text: str
+
 shared Cache:
     _pages = dict[str, Page]()
 
     def get(self, key: str) -> Page?:
         self._pages.get(key)
 
-    def set(mut self, key: str, page: Page):
+    def set(ref self, key: str, page: Page):
         self._pages[key] = page
 ```
 
-Calling `cache.set(key, page)` takes the lock for that call. To change several handles together, `with` locks them all, always in the same order, so two transfers can't deadlock:
+Calling `cache.set(key, page)` takes the lock for that call. To change several handles together, one `with` takes them all at once:
 
-```fennec planned
+```fennec
 shared Account:
     total = 0
 
-def transfer(a: Account, b: Account, amount: int):
-    with a, b as mut x, mut y:               # both locked for the block
-        x.total -= amount
-        y.total += amount
+def transfer(source: Account, destination: Account, amount: int):
+    with source as ref from_account, destination as ref to_account:   # both locked for the block
+        from_account.total -= amount
+        to_account.total += amount
 ```
 
-It holds plain values and `Id`s, never another `shared`, so handles can't form a cycle. Lock bodies can't do I/O, and there's no module-level `shared`: a handle in a signature acts like a capability, so a function's parameters show what it can reach. And a search for `shared` finds every shared thing in your program.
+It can hold another `shared` type, but never in a cycle, which is a compile error, and locks are taken outer type first, so nesting can't deadlock. A lock body can do I/O, which only makes it slow, and can leave early; the lock is released on the way out. There's no module-level `shared`: a handle in a signature acts like a capability, so a function's parameters show what it can reach. And a search for `shared` finds every shared thing in your program.
 
 ## Visibility
 
@@ -567,7 +588,21 @@ def total_area[T: Shape](shapes: list[T]) -> float:
 
 For a collection of different kinds of things, use a union or an `enum`. A union mixes types you already have, and an enum defines new cases. Either way each item is stored inline with a one-byte tag, never boxed.
 
-```fennec planned
+```fennec
+from std.math import PI
+
+struct Circle:
+    radius: float
+
+    def area(self) -> float:
+        PI * self.radius * self.radius
+
+struct Square:
+    side: float
+
+    def area(self) -> float:
+        self.side * self.side
+
 type Shape = Circle | Square
 
 def report(shapes: list[Shape], stdout: Stdout):
@@ -588,22 +623,20 @@ def worth(pickup: Pickup) -> int:
         case .Heart(amount): amount * 10
 ```
 
-**Planned:** unions. Enums work today.
-
 ## Compile-time loops and serialization
 
 **Planned.** Instead of macros or `derive`, a generic function can loop over a type at compile time, and that's all. `fields(T)` gives a struct's fields, `cases(T)` an enum's cases, and `*Cs` a list of types. Each set of types gets its own specialized copy, and the checker sees ordinary code. There's no I/O at compile time and no generating code from text, so a kit can't run anything on your machine while it compiles.
 
 ```fennec planned
-def write[T, W: Writer](x: T, mut out: W):
+def write[T, W: Writer](x: T, ref out: W):
     for f in fields(T):
         out.field(f.name)
-        write(f.get(x), mut out)
+        write(f.get(x), ref out)
 ```
 
-That's what serialization is built on. Each format implements a small `Writer` and `Reader`, and one generic function breaks any type down, so a struct is exactly what's on the wire, with no per-format overrides. A field may be named any word, keywords included, and case style is an option on the call:
+That's what serialization will be built on. Each format implements a small `Writer` and `Reader`, and one generic function breaks any type down, so a struct is exactly what's on the wire, with no per-format overrides. A field may be named any word, keywords included, and case style is an option on the call:
 
-```fennec planned
+```fennec
 from std import json
 
 struct Account:
@@ -617,9 +650,9 @@ def main(stdout: Stdout):
 
 Every field is saved, private `_` ones included, and `where` rules check a value as it loads. `@skip` leaves a field out, and it needs a default so loading still builds a whole value. A key the struct doesn't have is an error unless the call says `extra=.ignore`, and `@serialize(name="uid")` renames a field when an API's name isn't yours.
 
-`std.pack` will be the default binary format: no field names on the wire, `where` ranges shrink values, a fingerprint of the layout, delta encoding and opt-in quantization, all in plain Fennec. Annotations like `@serialize(name="uid")` are data read at compile time, and they never change what they're on.
+`std.pack` is the default binary format, written in plain Fennec: no field names on the wire, and a number for the layout's shape at the start, so loading into a type of another shape fails at once. **Planned:** `where` ranges that shrink values, delta encoding and opt-in quantization. Annotations like `@serialize(name="uid")` are data read at compile time, and they never change what they're on.
 
-JSON and TOML already work today, including typed reading:
+A `Table` is saved as a list of its items in order, with each `Id` as where its item is in that list, and loading makes a new `Table` whose `Id`s find the same items. JSON, TOML and `std.pack` all work today, including typed reading:
 
 ```fennec
 from std import json
@@ -642,7 +675,7 @@ enum Command:
     Damage(target: int, amount: int)
 
 def on_explosion(healths: list[int]) -> list[Command]:
-    [.Damage(i, 50) for i, health in enumerate(healths) if health > 0]
+    [.Damage(target=i, amount=50) for i, health in enumerate(healths) if health > 0]
 
 def main(stdout: Stdout):
     mut healths = [100, 0]
@@ -676,14 +709,14 @@ Signatures show what code can do. `Stdout`, `Fs`, `Clock`, `Args`, `Stdin`, `Pro
 Tests live next to the code they test.
 
 ```fennec
-def add(a: int, b: int) -> int:
-    a + b
+def clamped(health: int) -> int:
+    max(health, 0)
 
-test "adding works":
-    assert add(2, 3) == 5
+test "clamping stops at zero":
+    assert clamped(-5) == 0
 
-test "adding zero changes nothing" for n: int:
-    assert add(n, 0) == n
+test "clamping never goes below zero" for n: int:
+    assert clamped(n) >= 0
 ```
 
 The second test is a property test: Fennec generates inputs and shrinks a failure to the smallest example. `fennec run` runs the tests a change affects before it runs your program, and `fennec test` skips the ones whose code hasn't changed.
@@ -691,26 +724,34 @@ The second test is a property test: Fennec generates inputs and shrinks a failur
 A test names the capabilities it needs, like `main`, and gets fakes: an in-memory `Fs`, a fixed `Clock` and captured `Stdout`, fresh for each test.
 
 ```fennec
+def save_score(fs: Fs, stdout: Stdout, score: int):
+    fs.write_text("score.txt", str(score))?
+    stdout.print("saved")
+
 test "saves the score"(fs: Fs, stdout: Stdout):
     save_score(fs, stdout, 120)?
     assert fs.read_text("score.txt")? == "120"
     assert stdout.captured() == "saved\n"
 ```
 
-Sleeping on the fixed clock moves it on at once, and `stdout.captured()` works only in a test's own body. `fennec test --real` gives tests the real capabilities. A scripted `Net` is planned, for when `Net` exists.
+Sleeping on the fixed clock moves it on at once, and `stdout.captured()` works only in a test's own body. `fennec test --real` gives tests the real capabilities. A scripted `Net` is planned.
 
 ## Performance controls
 
-**Planned.** `@hot` on a function means prove it or don't compile. The compiler has to show the function and everything it calls does no allocation, makes no copies and has no leftover count checks, or it's a compile error naming the line.
+`@hot` on a function means prove it or don't compile. The compiler has to show the function and everything it calls does no allocation, makes no copies and keeps no checks it can't prove away, like an index it can't place inside its list, or it's a compile error naming the line and why.
 
-```fennec planned
+```fennec
+struct Particle:
+    position: float
+    velocity: float
+
 @hot
-def update(mut particles: list[Particle], dt: f32):
-    for mut particle in particles:
+def update(ref particles: list[Particle], dt: float):
+    for ref particle in particles:
         particle.position += particle.velocity * dt
 ```
 
-`@fast_math` opts one function out of Fennec's deterministic floats. Without it, there are no fused operations, so results stay the same on every machine. Floats will also have one equality, order and hash: NaN equals itself and sorts last, `0.0` equals `-0.0`, and `a.approx(b, within=...)` compares computed values with a tolerance.
+Floats have one equality, order and hash: NaN equals itself and sorts last, and `0.0` equals `-0.0`. There are no fused operations, so results stay the same on every machine. **Planned:** `@fast_math`, which opts one function out of that, and `a.approx(b, within=...)`, which compares computed values with a tolerance.
 
 ## C and unsafe code
 
@@ -734,4 +775,5 @@ export struct Database:
 - Pointers and `unsafe` are only allowed in files with an `extern` block, and every call into C states its reason.
 - Exported functions can't expose pointers, so callers only ever see a safe API.
 - A C callback is a plain top-level function that gets an `Id` through user data, so C never holds anything that can go wrong.
+- How a native handle is closed, here with `def del`, is part of the [lifetime redesign](#a-lifetime-is-a-block).
 - For now, only the Fennec project publishes native kits. Your own app can still use `extern` in its own code.

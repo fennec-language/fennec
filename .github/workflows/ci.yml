@@ -474,20 +474,19 @@ jobs:
           path: found
           if-no-files-found: ignore
 
-  # The LLVM tests with native blocks on: values of a boxed enum only generated code meets, which
-  # it makes and frees itself, outside the runtime's table. Every program the tests build is
-  # instrumented by AddressSanitizer, and native blocks go through the system's allocator, which
-  # it watches, so one used after it's freed, or freed twice, stops its test. The runtime library
-  # isn't instrumented here, since the tests build their own; the `asan` job covers it.
-  native-blocks:
-    name: LLVM tests with native blocks, under AddressSanitizer
+  # The LLVM tests with every program they build instrumented by AddressSanitizer, so touching
+  # memory a program doesn't own stops its test. Native blocks, the ones generated code makes
+  # and frees itself outside the runtime's table, go through the system's allocator here, which
+  # the sanitizer watches, so one used after it's freed, or freed twice, is caught. The runtime
+  # library isn't instrumented here, since the tests build their own; the `asan` job covers it.
+  llvm-asan:
+    name: LLVM tests under AddressSanitizer
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
       FENNEC_EXPECT_LLVM: 1
-      FENNEC_NATIVE_BLOCKS: 1
       FENNEC_SANITIZE: address
       ASAN_OPTIONS: detect_leaks=0:exitcode=86
     steps:
@@ -724,6 +723,23 @@ jobs:
           env "$OPTIONS" RUSTFLAGS="$FLAGS" RUSTDOCFLAGS="$FLAGS" cargo "+$NIGHTLY" test --locked \
             -Zbuild-std="$STD" --target x86_64-unknown-linux-gnu -p fennec-parked $FEATURES
 
+  # After each push to main, deletes the caches nothing will restore again, so the repository
+  # stays under GitHub's 10 GB and its builds keep the caches they start from: see the script.
+  prune-caches:
+    name: Prune caches
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: .github/scripts/prune-caches.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   # Servers run on the `parallel` pool's workers, each with a poll and parked tasks of its own, and
   # hand connections between workers: the runtime's own tests of that and of `parallel`'s pool,
   # under ThreadSanitizer. Network programs aren't in the workers' job above, which needs no clients.
@@ -754,7 +770,7 @@ jobs:
   ok:
     name: CI passed
     if: always()
-    needs: [changes, lint, test, x86-mac, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, server-sanitizers, lean-runtime, asan, native-blocks, parked-sanitizers]
+    needs: [changes, lint, test, x86-mac, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, server-sanitizers, lean-runtime, asan, llvm-asan, parked-sanitizers]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

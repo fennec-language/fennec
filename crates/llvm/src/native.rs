@@ -6,8 +6,8 @@
 //! printed or compared by it, not in a generator, a closure or another thread. A type gets
 //! native blocks only when the whole program shows that, and stays in the table otherwise.
 //!
-//! A prototype for now: `FENNEC_NATIVE_BLOCKS=1` turns it on, for enums whose fields are numbers
-//! or the enum itself.
+//! For now that's enums whose fields are numbers or the enum itself. While a run counts what it
+//! allocates, under `FENNEC_COUNTS` or the copy tracer, each native block made says so.
 
 use std::collections::{BTreeSet, HashSet};
 
@@ -18,16 +18,8 @@ use fennec_layout::Layouts;
 use crate::analysis::visit;
 use crate::kinds::Kind;
 
-/// Whether the build asked for native blocks.
-fn asked() -> bool {
-    std::env::var_os("FENNEC_NATIVE_BLOCKS").is_some_and(|set| set == "1")
-}
-
 /// The layouts of the boxed enums whose blocks can be native in `program`.
 pub(crate) fn native_types(program: &Program, layouts: &Layouts) -> BTreeSet<u32> {
-    if !asked() {
-        return BTreeSet::new();
-    }
     program
         .enums
         .iter()
@@ -188,10 +180,27 @@ impl crate::emit::Emit<'_, '_, '_> {
         // Zeroed with stores LLVM sees, which the case's own stores mostly replace, rather than
         // by the allocator's call to clear it.
         self.line(&format!("store [{} x i64] zeroinitializer, ptr {made}", bytes / 8));
+        self.count_native(bytes);
         self.line(&format!("store i64 1, ptr {made}{}", crate::emit::HEADER_ACCESS));
         let shape_at = self.offset(&made, 8);
         self.line(&format!("store i64 {shape}, ptr {shape_at}{}", crate::emit::HEADER_ACCESS));
         Ok(made)
+    }
+
+    /// Says a native block of `bytes` was made, when the run counts what it allocates: read once
+    /// at the start, so a run that doesn't count only tests it.
+    fn count_native(&mut self, bytes: u64) {
+        self.declare("@fennec_counting_native = external dso_local global i64");
+        self.declare("declare void @fennec_trace_allocated(i64) nounwind");
+        let (counting, on, count, go) =
+            (self.temp(), self.temp(), self.label("count_native"), self.label("counted_native"));
+        self.line(&format!("{counting} = load i64, ptr @fennec_counting_native"));
+        self.line(&format!("{on} = icmp ne i64 {counting}, 0"));
+        self.line(&format!("br i1 {on}, label %{count}, label %{go}, !prof !0"));
+        self.start_block(&count);
+        self.line(&format!("call void @fennec_trace_allocated(i64 {bytes})"));
+        self.line(&format!("br label %{go}"));
+        self.start_block(&go);
     }
 
     /// The function a block whose last owner let it go is freed with: the runtime's `free`, or,

@@ -1471,6 +1471,47 @@ fn a_comprehension_replacing_its_source_says_what_a_new_list_would() -> std::io:
     same_as_the_interpreter_in_both_builds("replacing_its_source", REPLACING_ITS_SOURCE)
 }
 
+/// A list a counted loop fills once a turn, with room made for every turn and nothing else in
+/// the loop touching it, is filled with no room check. Every way that rule can fail keeps the
+/// check: the list shared or read in the loop, a count starting below 0 or from a variable,
+/// two appends a turn, and a loop inside another that makes the list each time round.
+#[test]
+fn lists_filled_within_their_room_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit("filled_within_room", FILLED_WITHIN_ROOM)
+}
+
+const FILLED_WITHIN_ROOM: &str = r#"def main(stdout: Stdout):
+    mut total = 0
+    for round in range(3):
+        numbers = [i * 2 + round for i in range(1000)]
+        names = [f"n{i}" for i in range(50)]
+        total += numbers[999] + numbers.len() + names[49].len()
+    stdout.print(total)
+    mut shared = []
+    mut seen = []
+    for i in range(6):
+        shared.append(i)
+        seen = shared
+    stdout.print(shared, seen)
+    below = [i for i in range(-3, 3)]
+    stdout.print(below)
+    start = 2
+    from_variable = [i for i in range(start, 8)]
+    stdout.print(from_variable)
+    mut twice = []
+    for i in range(4):
+        twice.append(i)
+        twice.append(i * 10)
+    stdout.print(twice)
+    mut read = []
+    for i in range(5):
+        read.append(read.len() + i)
+    stdout.print(read)
+"#;
+
 #[test]
 fn a_comprehension_replacing_its_source_makes_no_second_list() -> std::io::Result<()> {
     if !ready() {
@@ -4544,6 +4585,7 @@ fn process_options_without_the_interpreter_match_it() -> std::io::Result<()> {
 
 /// `fs.walk` in compiled code, on a real tree holding a link back to its own top, which is
 /// listed and not gone into, and through an `Fs` narrowed to one folder.
+#[cfg(unix)]
 const WALKED: &str = "\
 def main(stdout: Stdout, fs: Fs):
     for path in fs.walk(\"tree\").expect(\"it works\"):
@@ -7694,6 +7736,21 @@ fn a_case_with_no_fields_allocates_nothing() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A boxed enum only generated code meets is made outside the runtime's table, and a run that
+/// counts what it allocates still counts each one: a tree of 31 nodes is 31 allocations at least.
+#[test]
+fn native_blocks_are_counted() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source =
+        format!("{SHARED_LEAVES_TREE}def main(stdout: Stdout):\n    stdout.print(count(build(5)))\n");
+    let counts = counts_of("native_blocks_counted", &source)?;
+    assert!(count(&counts, "allocations") >= Some(31), "{counts}");
+    assert!(count(&counts, "allocations") < Some(60), "{counts}");
+    Ok(())
+}
+
 /// The shared block behaves as a block of its own would: compared, matched, printed, held in
 /// lists and dicts, and made and let go of on other threads.
 #[test]
@@ -8364,7 +8421,7 @@ def named(present: bool) -> str?:
         return \"hi\"
     None
 ";
-    for (number, condition) in [
+    let conditions = [
         "1 + 1 == 3",
         "2 > 3",
         "2.5 <= 1.5",
@@ -8392,13 +8449,18 @@ def named(present: bool) -> str?:
         "1 == 1 and 1 == 2",
         "not True",
     ]
-    .iter()
+    .into_iter()
     .enumerate()
-    {
+    .collect::<Vec<_>>();
+    // Each builds on its own, so they build at once: one at a time took over a minute.
+    let outcomes = crate::executables::at_once(&conditions, |_, (number, condition)| {
         let source =
             format!("{setup}\ndef main(stdout: Stdout):\n    stdout.print(1)\n    assert {condition}\n");
-        let ((ours_out, ours_err, ours_code), (jit_out, jit_err, jit_code)) =
-            both(&format!("assert_{number}"), &source)?;
+        both(&format!("assert_{number}"), &source)
+    })?;
+    for ((_, condition), ((ours_out, ours_err, ours_code), (jit_out, jit_err, jit_code))) in
+        conditions.iter().zip(outcomes)
+    {
         assert_eq!((&ours_out, ours_code), (&jit_out, jit_code), "{condition}");
         assert_eq!(ours_err, jit_err, "{condition}");
     }

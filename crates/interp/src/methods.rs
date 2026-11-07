@@ -2,6 +2,7 @@
 //! Methods that change a built-in value need it held in a `mut` place.
 
 use std::cmp::Ordering;
+use std::rc::Rc;
 
 use fennec_syntax::{Arg, Diagnostic, Expr, Span};
 
@@ -10,9 +11,43 @@ use crate::call::CallArg;
 use crate::eval::unhandled_result;
 use crate::interp::Interp;
 use crate::ops;
-use crate::value::Value;
+use crate::value::{Callable, Value};
 
 impl Interp<'_> {
+    /// A capability declared in std, like `Fs` in `fs.fen`, has methods written in Fennec as well
+    /// as its builtin ones, as `Connection` does. A narrowed one has them too, and its builtin
+    /// ones are still narrowed when they run. Nothing imports the module a capability given to
+    /// `main` is declared in, so it's loaded here.
+    fn capability_fennec_method(
+        &mut self,
+        receiver: &Value,
+        method: &str,
+    ) -> Result<Option<Rc<Callable>>, Diagnostic> {
+        let name = receiver.type_name();
+        self.load_std_providing(&name)?;
+        Ok(self.type_info(&name).and_then(|info| info.methods.get(method).cloned()))
+    }
+
+    /// `response.json[T]()`: the body read as the `T` the call names, when it's that call.
+    fn response_json(
+        &mut self,
+        wanted: Option<&fennec_syntax::TypeExpr>,
+        method: &str,
+        receiver: &Value,
+        args: &[Arg],
+        span: Span,
+    ) -> Option<Result<Value, Diagnostic>> {
+        let (Some(ty), "json", Value::Instance(response)) = (wanted, method, receiver) else { return None };
+        if response.type_name.as_ref() != "Response" || !args.is_empty() {
+            return None;
+        }
+        let body = match response.field("body") {
+            Some(Value::Bytes(body)) => String::from_utf8_lossy(body).into_owned(),
+            _ => String::new(),
+        };
+        Some(self.typed_loads("json.loads", ty, vec![CallArg::plain(Value::str(&body), span)], span))
+    }
+
     pub(crate) fn method_call(
         &mut self,
         object: &Expr,
@@ -23,16 +58,8 @@ impl Interp<'_> {
     ) -> Result<Value, Diagnostic> {
         let wanted = self.json_type.take();
         let receiver = self.eval(object)?;
-        // `response.json[T]()`: the body read as the `T` the call names.
-        if let (Some(ty), "json", Value::Instance(response)) = (&wanted, method, &receiver)
-            && response.type_name.as_ref() == "Response"
-            && args.is_empty()
-        {
-            let body = match response.field("body") {
-                Some(Value::Bytes(body)) => String::from_utf8_lossy(body).into_owned(),
-                _ => String::new(),
-            };
-            return self.typed_loads("json.loads", ty, vec![CallArg::plain(Value::str(&body), span)], span);
+        if let Some(read) = self.response_json(wanted.as_ref(), method, &receiver, args, span) {
+            return read;
         }
         match &receiver {
             Value::None if optional => return Ok(Value::None),
@@ -55,13 +82,13 @@ impl Interp<'_> {
             Value::Ok(_) | Value::Err(_) => return Err(unhandled_result(object.span)),
             Value::Shared(cell) => {
                 let type_name = match &*cell.borrow() {
-                    Value::Instance(instance) => std::rc::Rc::clone(&instance.type_name),
+                    Value::Instance(instance) => Rc::clone(&instance.type_name),
                     _ => return Err(no_method(&receiver, method, span)),
                 };
                 let function = self.type_info(&type_name).and_then(|info| info.methods.get(method).cloned());
                 let function = function.ok_or_else(|| no_method(&receiver, method, span))?;
                 self.check_lock(cell, span)?;
-                self.locks.push((std::rc::Rc::clone(cell), self.depth + 1));
+                self.locks.push((Rc::clone(cell), self.depth + 1));
                 let called = self.call_method(object, &function, args, span);
                 self.locks.pop();
                 return called;
@@ -81,15 +108,8 @@ impl Interp<'_> {
                     None => Err(no_method(&receiver, method, span)),
                 };
             }
-            // A capability declared in std, like `Fs` in `fs.fen`, has methods written in Fennec
-            // as well as its builtin ones, as `Connection` does. A narrowed one has them too, and
-            // its builtin ones are still narrowed when they run.
             Value::Capability(_) | Value::Limited(_) => {
-                // Nothing imports the module a capability given to `main` is declared in.
-                let name = receiver.type_name();
-                self.load_std_providing(&name)?;
-                let function = self.type_info(&name).and_then(|info| info.methods.get(method).cloned());
-                if let Some(function) = function {
+                if let Some(function) = self.capability_fennec_method(&receiver, method)? {
                     drop(receiver);
                     return self.call_method(object, &function, args, span);
                 }

@@ -307,7 +307,31 @@ fn renamed_method(object: &Expr, ty: &Type, name: &str, span: Span) -> Diagnosti
         .with_fix(Span { start: at, end: at + 6 }, "add")
 }
 
+/// A `_` method is its type's own, written in Rust for the standard library's code, as a `_`
+/// field is: called from anywhere else, it's refused.
+fn private_method(ty: &Type, name: &str, span: Span) -> Option<Diagnostic> {
+    if !name.starts_with('_') || span.in_prelude() {
+        return None;
+    }
+    let owner = ty.type_name().unwrap_or_default();
+    let message = format!("`{name}` is private to `{owner}`");
+    let help = format!(
+        "only the standard library's own code can reach `_` names: go through one of `{owner}`'s other methods"
+    );
+    Some(Diagnostic::new(message, span).with_help(help))
+}
+
 impl FnCx<'_> {
+    /// Why a builtin method can't be called here, if it can't: it's private to the standard
+    /// library, or it's for a test's own fakes and this isn't a test.
+    fn refused_method(&self, ty: &Type, name: &str, span: Span) -> Option<Diagnostic> {
+        if let Some(private) = private_method(ty, name, span) {
+            return Some(private);
+        }
+        let help = test_only(ty, name).filter(|_| !self.in_a_test())?;
+        Some(no_method(ty, name, span).with_help(help))
+    }
+
     pub(crate) fn builtin_method(
         &mut self,
         object: &Expr,
@@ -319,20 +343,8 @@ impl FnCx<'_> {
         let Some(method) = method(ty, name) else {
             return self.unusable(renamed_method(object, ty, name, span), args);
         };
-        // A `_` method is its type's own, written in Rust for the standard library's code, as a
-        // `_` field is.
-        if name.starts_with('_') && !span.in_prelude() {
-            let owner = ty.type_name().unwrap_or_default();
-            let message = format!("`{name}` is private to `{owner}`");
-            let help = format!(
-                "only the standard library's own code can reach `_` names: go through one of `{owner}`'s other methods"
-            );
-            return self.unusable(Diagnostic::new(message, span).with_help(help), args);
-        }
-        if let Some(help) = test_only(ty, name)
-            && !self.in_a_test()
-        {
-            return self.unusable(no_method(ty, name, span).with_help(help), args);
+        if let Some(refused) = self.refused_method(ty, name, span) {
+            return self.unusable(refused, args);
         }
         if method.changes {
             let what = format!(

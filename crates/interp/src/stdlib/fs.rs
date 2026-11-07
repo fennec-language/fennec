@@ -147,9 +147,12 @@ fn sync_folder(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// What puts a fake file's bytes into a test's fake file system, by its path.
+type FakeWrite<'a> = dyn FnMut(&str, &[u8]) -> Result<(), String> + 'a;
+
 /// `fs._finish(file)`: a file written takes its target's place, and one read is closed. A fake
 /// one goes into the test's fake file system, by `fake`.
-fn finish(file: &Value, fake: &mut dyn FnMut(&str, &[u8]) -> Result<(), String>) -> Result<(), String> {
+fn finish(file: &Value, fake: &mut FakeWrite<'_>) -> Result<(), String> {
     let Some(file) = taken(file) else { return Ok(()) };
     let fake_written = match &mut *file.lock().unwrap_or_else(PoisonError::into_inner) {
         OpenFile::FakeWriting { target, data } => Some((std::mem::take(target), std::mem::take(data))),

@@ -417,26 +417,46 @@ impl Io {
     /// Starts a range as a parked task on this worker, so it can park when it waits. If there's no
     /// stack for it, it runs here and now, as a range whose body can't wait does.
     pub(in crate::embed) fn start_range(&mut self, range: Box<dyn FnOnce() -> i64>) {
+        self.start_task(range, super::threads::Accounts::default());
+    }
+
+    /// Starts `run` as a parked task on this worker with `accounts` its own, giving back its number.
+    /// If there's no stack for it, it runs here and now, and there's none.
+    pub(in crate::embed) fn start_task(
+        &mut self,
+        run: Box<dyn FnOnce() -> i64>,
+        mut accounts: super::threads::Accounts,
+    ) -> Option<TaskId> {
         // The task runs it from its first resume, so it's kept here until then in case it can't.
-        let range = Rc::new(Cell::new(Some(range)));
-        let held = Rc::clone(&range);
-        let made = self.ranges.spawn(move || held.take().map_or(0, |range| range()));
-        match made {
-            Ok(task) => {
-                self.accounts.insert(task, super::threads::Accounts::default());
-                self.ready.push_back((task, Wake::Ready(READY)));
-            }
-            Err(_) => {
-                if let Some(range) = range.take() {
-                    range();
-                }
-            }
+        let run = Rc::new(Cell::new(Some(run)));
+        let held = Rc::clone(&run);
+        let made = self.ranges.spawn(move || held.take().map_or(0, |run| run()));
+        if let Ok(task) = made {
+            self.accounts.insert(task, accounts);
+            self.ready.push_back((task, Wake::Ready(READY)));
+            return Some(task);
+        }
+        if let Some(run) = run.take() {
+            super::threads::swap_accounts(&mut accounts);
+            run();
+            super::threads::swap_accounts(&mut accounts);
+        }
+        None
+    }
+
+    /// Cuts short the wait `task` is parked in, if it's parked here.
+    pub(in crate::embed) fn cancel(&mut self, task: TaskId) {
+        let token = self.waiting.iter().find(|(_, (parked, ..))| *parked == task).map(|(token, _)| *token);
+        if let Some(token) = token {
+            self.waiting.remove(&token);
+            self.ready.push_back((task, Wake::Cancelled));
         }
     }
 
-    /// Whether it serves anything, so its poll has to be looked at between jobs.
+    /// Whether it serves anything or has tasks waiting, so its poll has to be looked at between
+    /// jobs, for a socket that's ready or a wait whose time is up.
     pub(in crate::embed) fn active(&self) -> bool {
-        !self.servers.is_empty()
+        !self.servers.is_empty() || !self.waiting.is_empty()
     }
 
     /// Whether a task is ready to run.
@@ -552,7 +572,7 @@ impl Io {
     }
 
     /// Makes the task parked on `token` ready, for a wait that finished on another thread.
-    fn wake_token(&mut self, token: Token) {
+    pub(in crate::embed) fn wake_token(&mut self, token: Token) {
         if let Some((task, ..)) = self.waiting.remove(&token.0) {
             self.ready.push_back((task, Wake::Ready(READY)));
         }
@@ -676,8 +696,10 @@ pub(crate) enum Parked {
 /// Only for a task that `can_park`.
 #[cfg(unix)]
 pub(crate) fn park_on_fd(fd: std::os::fd::RawFd, interest: Interest, deadline: Option<Instant>) -> Parked {
-    let token = Token(NEXT_TOKEN.get());
-    NEXT_TOKEN.set(token.0.wrapping_add(1) % CONNECTIONS);
+    if cut_short() {
+        return Parked::Cancelled;
+    }
+    let token = next_token();
     let mut source = mio::unix::SourceFd(&fd);
     let registered = REGISTRY.with_borrow(|registry| {
         registry.as_ref().is_some_and(|registry| registry.register(&mut source, token, interest).is_ok())
@@ -688,12 +710,67 @@ pub(crate) fn park_on_fd(fd: std::os::fd::RawFd, interest: Interest, deadline: O
     PARKING.set(Some((interest, deadline)));
     let woken = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
     REGISTRY.with_borrow(|registry| registry.as_ref().map(|registry| registry.deregister(&mut source)));
+    parked_as(woken)
+}
+
+/// A token for a wait on this thread that no other has.
+pub(crate) fn next_token() -> Token {
+    let token = Token(NEXT_TOKEN.get());
+    NEXT_TOKEN.set(token.0.wrapping_add(1) % CONNECTIONS);
+    token
+}
+
+/// Parks this task on `token`, which nothing's registered under, until `wake_token` is sent it from
+/// another thread, `deadline` passes, or the task's stopped: for a sleep, or for another task's end.
+/// Only for a task that `can_park`.
+pub(crate) fn park_on(token: Token, deadline: Option<Instant>) -> Parked {
+    park_on_token(token, deadline, true)
+}
+
+/// `park_on`, which a stop cuts short only if `stoppable`. When it isn't, a stop wakes it, as
+/// cancelled, without failing it: for a task that must wait for another to end all the same.
+fn park_on_token(token: Token, deadline: Option<Instant>, stoppable: bool) -> Parked {
+    if stoppable && cut_short() {
+        return Parked::Cancelled;
+    }
+    PARKING.set(Some((Interest::READABLE, deadline)));
+    let woken = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
+    if stoppable {
+        return parked_as(woken);
+    }
     match woken {
         Some(Wake::Ready(TIMED_OUT)) => Parked::TimedOut,
         Some(Wake::Cancelled) => Parked::Cancelled,
         _ => Parked::Ready,
     }
 }
+
+fn parked_as(woken: Option<Wake>) -> Parked {
+    match woken {
+        Some(Wake::Ready(TIMED_OUT)) => Parked::TimedOut,
+        Some(Wake::Cancelled) => {
+            cut_short();
+            Parked::Cancelled
+        }
+        _ => Parked::Ready,
+    }
+}
+
+/// Whether this is a launched task that's been stopped. If so, it fails, as a crash does, so it
+/// ends with its locks put back and let go; that it was stopped keeps its end quiet.
+fn cut_short() -> bool {
+    let stopped = super::threads::stopped();
+    if stopped {
+        super::fail_with(fennec_syntax::Diagnostic::new(
+            "this task was stopped",
+            fennec_syntax::Span::default(),
+        ));
+    }
+    stopped
+}
+
+mod launch;
+pub use launch::{TaskBody, launch, launch_end, task_failed};
 
 /// Work the operating system can't be asked to say is ready for, run off this task's thread,
 /// a DNS lookup and a connect among them.

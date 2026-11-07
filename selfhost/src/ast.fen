@@ -180,6 +180,9 @@ enum StmtKind:
     Break
     Continue
     Pass
+    ## `lend value`, in a function that gives back `with T`: the caller's `with` block runs
+    ## here. `otherwise` is the `else:` block, which runs when the caller's block fails.
+    Lend(value: Expr, otherwise: list[Stmt])
 
 struct Expr:
     kind: ExprKind

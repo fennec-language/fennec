@@ -16,7 +16,7 @@ pub(crate) struct Flow {
 }
 
 impl Flow {
-    fn unit() -> Flow {
+    pub(crate) fn unit() -> Flow {
         Flow { ty: Type::Unit, exits: false }
     }
 
@@ -110,11 +110,24 @@ impl FnCx<'_> {
             }
             StmtKind::Break | StmtKind::Continue => self.leave_loop(stmt),
             StmtKind::Pass => Flow::unit(),
+            StmtKind::Lend { value, otherwise } => self.lend(value, otherwise, stmt.span),
         }
     }
 
     /// `return`, with a value or not, against what the function says it gives back.
     fn return_stmt(&mut self, value: Option<&Expr>, span: Span) -> Flow {
+        if self.lends.is_some() {
+            if let Some(value) = value {
+                self.expr(value);
+            }
+            self.error(
+                Diagnostic::new(format!("`{}` is a `with` source, so it doesn't `return`", self.name), span)
+                    .with_help(
+                        "it gives its caller what it lends with `lend`; to stop before lending, `fail`",
+                    ),
+            );
+            return Flow::exit();
+        }
         let declared = self.declared.clone().filter(|_| !self.generator);
         // `return Err(...)` in a function that says `fails E` makes a result of both.
         let declared = match (value.as_ref().map(|value| &value.kind), &self.fails) {

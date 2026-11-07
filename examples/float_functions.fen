@@ -1,0 +1,31 @@
+# decision: Float functions give the same bits on every platform.
+#
+# `sin`, `cos`, `tan`, `acos`, `exp`, `log` and `**` are computed the same way on arm64, x86-64,
+# Windows and WebAssembly, so this prints exactly the same everywhere, to the last digit. Each
+# platform's own C library rounds some of these differently in the last bit: `cos(-0.65)` and
+# `cos(-0.1)` were two that did.
+from std.math import PI, acos, cos, exp, log, sin, tan
+
+def main(stdout: Stdout):
+    angles = [-0.65, -0.1, 0.0, 1e-9, 0.3, 0.45, PI / 6.0, 1.0, 2.5, -3.0, 100.0, 1e6, 1e22]
+    for angle in angles:
+        stdout.print(f"sin {angle}: {sin(angle)}")
+        stdout.print(f"cos {angle}: {cos(angle)}")
+        stdout.print(f"tan {angle}: {tan(angle)}")
+    for value in [-1.0, -0.7, -0.25, 0.0, 0.1, 0.5, 0.7, 0.999999, 1.0]:
+        stdout.print(f"acos {value}: {acos(value)}")
+    for power in [-700.0, -20.5, -1.0, 0.0, 1e-10, 0.5, 1.0, 2.0, 10.0, 88.7, 700.0]:
+        stdout.print(f"exp {power}: {exp(power)}")
+    for value in [1e-300, 1e-5, 0.1, 0.5, 1.0, 2.0, 10.0, 12345.678, 1e300]:
+        stdout.print(f"log {value}: {log(value)}")
+    pairs = [
+        (2.0, 0.5),
+        (2.0, 10.0),
+        (10.0, -3.0),
+        (1.5, 2.7),
+        (-2.0, 3.0),
+        (0.5, 100.0),
+        (123.456, 0.123),
+    ]
+    for base, power in pairs:
+        stdout.print(f"pow {base} {power}: {base ** power}")

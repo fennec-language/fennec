@@ -185,6 +185,8 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("call void @fennec_str_print(ptr {text})"));
                 self.release(&text);
             }
+            // A name narrowed to `None`, like `x` after `x = None`, holds nothing but prints so.
+            Kind::Unit => self.print_text("None"),
             other => {
                 return Err(format!("it prints a {other:?}, which this backend doesn't take yet"));
             }
@@ -530,6 +532,12 @@ impl Emit<'_, '_, '_> {
                 Kind::Bool | Kind::Struct(_) | Kind::Enum(_) => return self.plain_text(&value, &kind),
                 Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => {
                     return Ok(self.text_of_block(&value));
+                }
+                // A name narrowed to `None` is written so.
+                Kind::Unit => {
+                    let none = self.literal("None");
+                    self.retain(&none);
+                    return Ok(none);
                 }
                 other => return Err(format!("it formats a {other:?}, which this backend doesn't take yet")),
             }

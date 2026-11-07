@@ -185,6 +185,11 @@ impl Encode for StmtKind {
             StmtKind::Break => to.tag(11),
             StmtKind::Continue => to.tag(12),
             StmtKind::Pass => to.tag(13),
+            StmtKind::Lend { value, otherwise } => {
+                to.tag(14);
+                value.encode(to);
+                otherwise.encode(to);
+            }
         }
     }
 }
@@ -223,6 +228,7 @@ impl Decode for StmtKind {
             11 => StmtKind::Break,
             12 => StmtKind::Continue,
             13 => StmtKind::Pass,
+            14 => StmtKind::Lend { value: Decode::decode(r)?, otherwise: Decode::decode(r)? },
             _ => return None,
         })
     }

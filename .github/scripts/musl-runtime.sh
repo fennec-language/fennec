@@ -13,6 +13,11 @@ set -euo pipefail
 out="${1:?say where the folder goes, like target/release/musl}"
 profile=release
 [ "${2:-}" = --debug ] && profile=debug
+# The bitcode comes from a build with LTO, which the release profile has. Without it, Cargo tells
+# rustc to leave the bitcode out, which `-C lto` below refuses.
+[ "$profile" = debug ] && export CARGO_PROFILE_DEV_LTO=true
+release=()
+[ "$profile" = release ] && release=(--release)
 target="$(uname -m)-unknown-linux-musl"
 cc_variable="CC_$(echo "$target" | tr - _)"
 export "$cc_variable=${!cc_variable:-musl-gcc}"
@@ -24,7 +29,7 @@ for features in "" threads lean lean,threads; do
     dir="${dir//,/-}"
     name="libfennec_runtime${features:+_${features//,/_}}"
     cargo rustc --locked -p fennec-runtime ${features:+--features "$features"} --target "$target" \
-        --target-dir "$dir" $([ "$profile" = release ] && echo --release) --crate-type staticlib \
+        --target-dir "$dir" ${release[@]+"${release[@]}"} --crate-type staticlib \
         -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
     cp "$dir/$target/$profile/libfennec_runtime.a" "$out/$name.a"
     cp "$(find "$dir/$target/$profile/deps" -name 'fennec_runtime-*.bc' -print -quit)" "$out/$name.bc"

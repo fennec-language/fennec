@@ -294,7 +294,7 @@ fn say_how_llvm_went(through_llvm: &crate::llvm_tests::LlvmTests, wanted: usize)
     if let Some(why) = through_llvm.refused.as_deref().and_then(|why| why.lines().next()) {
         eprintln!("note: some tests run another way, since LLVM can't build what they reach: {why}");
     }
-    eprintln!("note: {} of {wanted} tests passed through LLVM", through_llvm.outcomes.len());
+    eprintln!("note: {} of {wanted} tests ran through LLVM", through_llvm.outcomes.len());
 }
 
 /// Runs the tests in `names` in the interpreter.

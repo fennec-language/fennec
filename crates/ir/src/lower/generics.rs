@@ -98,7 +98,12 @@ impl Context<'_> {
             Type::List(item) => Type::List(inner(item)),
             Type::Iterator(item) => Type::Iterator(inner(item)),
             Type::Set(item) => Type::Set(inner(item)),
-            Type::Optional(item) => Type::Optional(inner(item)),
+            // As the checker has it, an optional of an optional is that optional: `V?` with `V`
+            // a `str?` is a `str?`.
+            Type::Optional(item) => match self.concrete(item, subst) {
+                held @ (Type::Optional(_) | Type::None | Type::Unknown) => held,
+                held => Type::Optional(Box::new(held)),
+            },
             Type::Table(item) => Type::Table(inner(item)),
             Type::Id(item) => Type::Id(inner(item)),
             Type::Dict(key, value) => Type::Dict(inner(key), inner(value)),

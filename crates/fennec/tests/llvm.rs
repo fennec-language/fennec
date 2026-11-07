@@ -4544,6 +4544,7 @@ fn process_options_without_the_interpreter_match_it() -> std::io::Result<()> {
 
 /// `fs.walk` in compiled code, on a real tree holding a link back to its own top, which is
 /// listed and not gone into, and through an `Fs` narrowed to one folder.
+#[cfg(unix)]
 const WALKED: &str = "\
 def main(stdout: Stdout, fs: Fs):
     for path in fs.walk(\"tree\").expect(\"it works\"):
@@ -7701,9 +7702,8 @@ fn native_blocks_are_counted() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = format!(
-        "{SHARED_LEAVES_TREE}def main(stdout: Stdout):\n    stdout.print(count(build(5)))\n"
-    );
+    let source =
+        format!("{SHARED_LEAVES_TREE}def main(stdout: Stdout):\n    stdout.print(count(build(5)))\n");
     let counts = counts_of("native_blocks_counted", &source)?;
     assert!(count(&counts, "allocations") >= Some(31), "{counts}");
     assert!(count(&counts, "allocations") < Some(60), "{counts}");

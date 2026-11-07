@@ -676,6 +676,7 @@ with db.transaction() as mut tx:
 **`def serialize(self, ref out: Serializer)` and `def deserialize(ref src: Deserializer) -> Self fails ParseError` are the serialization protocol,** shaped like `def str`.
 - Both are generated from the fields by default: every field, with `@skip` and `@serialize(name=...)` honored, and loading goes through the normal constructor, so `where` rules run. Most types write neither.
 - A type overrides both or neither. Writing one alone is a compile error.
+- A load goes through the constructor, so a rule that spans several fields belongs in a named constructor, which `from_data` uses, like `Map.from_data(json.loads[MapData](text))`.
 - A collection writes them in plain Fennec: `out.sequence(self)`, which goes through `def iter`, or `out.map(pairs)`, read back with `src.sequence[T]()` or `src.map[K, V]()`. `std`'s `list`, `dict`, `Deque` and `SortedMap` do exactly this.
 - One pair serves every format, JSON, TOML and `std.pack` alike, so there are still no per-format overrides.
 ```fennec
@@ -921,9 +922,12 @@ import game.world.physics as physics
 ## Visibility
 
 **`export` marks what other kits can use, and goes on top-level things only.** It goes on each `def`, `struct`, `shared`, `enum`, `error`, `interface`, `type` alias and re-exported `import` that other kits may use. There's no field- or method-level `export`. It was spelled `pub`, and `fennec fix` rewrites `pub` as `export`, dropping it from methods.
-- `_name` hides a field from everything but its type, in its own kit too.
-- An exported struct's other fields are its API. If it has no `_name` fields, other kits get its automatic constructor. Otherwise they build it through its named constructors.
+- `_name` makes a field or method private to its type, on a `struct` or `shared`. Only the type's own methods can use it, in its own kit too. Tests get no special access.
+- A top-level `_name` (function, type or constant) is a compile error, and `fennec fix` renames it. Top-level names are already private to the kit. The standard library follows the same rule, with no exemption.
 - Enum cases, methods and interface methods come with their type and have no `export` of their own.
+- Other kits match an exported type's fields by name: `case IoError(reason=r)`, `case Point(x=a, y=_)`, or `case IoError()` to match the type without reading a field. Matching another kit's type by position is a compile error, and `fennec fix` adds the names. A kit's own code keeps positional patterns. Cases with no fields, like `.Wait`, are unchanged.
+- Other kits build an exported type with named arguments only.
+- The automatic constructor sets the public fields, and `_` fields take their defaults. A `_` field with no default needs a named constructor. A type nobody can build is an error.
 - Writes from another kit still run the field's `where` rules.
 - An exported signature can't mention anything that isn't exported.
 - A lint flags exported items that no other kit can reach.
@@ -931,7 +935,7 @@ import game.world.physics as physics
 **A kit's API is checked against its last published version,** cached from the Den. When a change would break other kits, `fennec check` says so at once, in the editor: "`load` can now also fail with `ParseError` (since v1.2.0). This is a breaking change: handle or wrap it, or release v2.0." `fennec publish` refuses a version number that undersells the change. Adding an error case is a breaking change; removing one isn't.
 
 A big program that wants walls between its own parts splits into local kits in one workspace.
-*Why:* One rule covers every field, and `export` appears only where API stability matters, never in apps. Go's capitalization rule would clash with lowercase built-ins and capitalized user types.
+*Why:* One rule covers every field, and `export` appears only where API stability matters, never in apps. Go's capitalization rule would clash with lowercase built-ins and capitalized user types. Named arguments and named patterns across kits mean a library adding a field with a default never breaks anyone who builds or matches its type.
 
 ## Files and kits
 

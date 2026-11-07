@@ -60,17 +60,20 @@ impl Parser {
             Tok::Name(name) if name == "_" => Ok(Pattern::Wildcard),
             Tok::P(Punct::Dot) => {
                 let name = self.name("an enum case")?;
-                Ok(Pattern::Variant { name, dotted: true, args: self.pattern_args()? })
+                let (args, fields) = self.pattern_args()?;
+                Ok(Pattern::Variant { name, dotted: true, args, fields })
             }
             // `physics.Hit(amount)`: a case from a module imported whole.
             Tok::Name(mut name) if self.at_p(Punct::Dot) => {
                 while self.eat_p(Punct::Dot) {
                     name = format!("{name}.{}", self.name("a name")?);
                 }
-                Ok(Pattern::Variant { name, dotted: false, args: self.pattern_args()? })
+                let (args, fields) = self.pattern_args()?;
+                Ok(Pattern::Variant { name, dotted: false, args, fields })
             }
             Tok::Name(name) if name.starts_with(|c: char| c.is_ascii_uppercase()) => {
-                Ok(Pattern::Variant { name, dotted: false, args: self.pattern_args()? })
+                let (args, fields) = self.pattern_args()?;
+                Ok(Pattern::Variant { name, dotted: false, args, fields })
             }
             Tok::Name(name) => Ok(Pattern::Bind(name)),
             Tok::Int(n) => literal(ExprKind::Int(n)),
@@ -102,10 +105,27 @@ impl Parser {
         }
     }
 
-    fn pattern_args(&mut self) -> Result<Vec<Pattern>, Diagnostic> {
+    /// What a case's parentheses hold: patterns by position, as in `Point(a, b)`, or each
+    /// after the name of the field it matches, as in `Point(x=a, y=_)`, but not both.
+    fn pattern_args(&mut self) -> Result<(Vec<Pattern>, Vec<String>), Diagnostic> {
         let mut args = Vec::new();
+        let mut fields = Vec::new();
         if self.eat_p(Punct::LParen) {
             while !self.at_p(Punct::RParen) {
+                let start = self.span();
+                let named = matches!(self.peek(), Tok::Name(_)) && matches!(self.peek_at(1), Tok::P(Punct::Assign));
+                if !args.is_empty() && named == fields.is_empty() {
+                    let message = "a pattern names every field it matches, or none of them";
+                    return Err(Diagnostic::new(message, start));
+                }
+                if named {
+                    let field = self.name("a field")?;
+                    self.advance();
+                    if fields.contains(&field) {
+                        return Err(Diagnostic::new(format!("this pattern names `{field}` twice"), start));
+                    }
+                    fields.push(field);
+                }
                 args.push(self.pattern()?);
                 if !self.eat_p(Punct::Comma) {
                     break;
@@ -113,6 +133,6 @@ impl Parser {
             }
             self.expect_p(Punct::RParen)?;
         }
-        Ok(args)
+        Ok((args, fields))
     }
 }

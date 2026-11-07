@@ -91,6 +91,7 @@ fn checked(path: &str, json: bool) -> ExitCode {
         .err()
         .unwrap_or_default();
     fennec_check::add_rename_fixes(&mut diagnostics, &program.module, &program.sources);
+    fennec_check::add_pattern_fixes(&mut diagnostics, &program.sources);
     if diagnostics.is_empty()
         && let Some((run, diagnostics)) = what_a_run_rejects(path, &program)
     {

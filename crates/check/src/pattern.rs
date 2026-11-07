@@ -6,6 +6,7 @@
 use fennec_syntax::{Diagnostic, Expr, ExprKind, MatchArm, Pattern, Span};
 
 use crate::function::FnCx;
+use crate::named::POSITIONAL;
 use crate::program::TypeKind;
 use crate::types::{Type, a};
 
@@ -109,7 +110,7 @@ impl FnCx<'_> {
                     self.bind_pattern(pattern, item, span);
                 }
             }
-            Pattern::Variant { name, dotted: false, args } if name == "Ok" || name == "Err" => {
+            Pattern::Variant { name, dotted: false, args, .. } if name == "Ok" || name == "Err" => {
                 if !matches!(subject, Type::Result(..) | Type::Unknown) {
                     let message = format!("this is {}, not a result, so it has no `{name}` case", a(subject));
                     self.error(Diagnostic::new(message, span));
@@ -119,38 +120,80 @@ impl FnCx<'_> {
                     self.bind_pattern(arg, &inner, span);
                 }
             }
-            Pattern::Variant { name, dotted, args } => {
+            Pattern::Variant { name, dotted, args, fields: named } => {
                 let target = if matches!(subject, Type::Result(..)) && !dotted { &error } else { &value };
-                let fields = self.variant_fields(name, *dotted, target, span);
-                if let Some(fields) = &fields
-                    && args.len() > fields.len()
+                let owner = self.variant_owner(name, *dotted, target, span);
+                let names = owner.as_ref().map(|(owner, case)| self.field_names(owner, case.as_deref()));
+                let types = owner.as_ref().map(|(owner, case)| self.case_fields(owner, case.as_deref()));
+                if let Some((owner, _)) = &owner
+                    && named.is_empty()
+                    && !args.is_empty()
                 {
-                    let message = format!(
-                        "this pattern has {} parts, but the value has {} fields",
-                        args.len(),
-                        fields.len()
-                    );
+                    self.positional_elsewhere(owner, name, names.as_deref().unwrap_or_default(), span);
+                }
+                if let Some(names) = &names
+                    && named.is_empty()
+                    && args.len() > names.len()
+                {
+                    let message =
+                        format!("this pattern has {} parts, but the value has {} fields", args.len(), names.len());
                     self.error(Diagnostic::new(message, span));
                 }
-                let fields = fields.unwrap_or_default();
+                // Where each part goes among the fields: by position, or by the name it's given.
+                let places: Vec<Option<usize>> = if named.is_empty() {
+                    (0..args.len()).map(Some).collect()
+                } else {
+                    named.iter().map(|field| self.named_place(name, field, names.as_deref(), span)).collect()
+                };
+                if !named.is_empty()
+                    && let Some(names) = &names
+                {
+                    self.checker.named_patterns.insert((span.start, span.end, name.clone()), names.clone());
+                }
+                let types = types.unwrap_or_default();
                 // A struct's or error's `_` fields can't be read from outside it, here either.
-                let written = self
-                    .checker
-                    .program
-                    .type_info(name)
-                    .filter(|_| !dotted)
-                    .map(|info| info.def.fields.clone());
-                for (at, arg) in args.iter().enumerate() {
-                    if let Some(field) = written.as_ref().and_then(|written| written.get(at))
+                let private = self.checker.program.type_info(name).is_some_and(|_| !dotted);
+                for (arg, place) in args.iter().zip(places) {
+                    if private
+                        && let Some(field) = place.and_then(|at| names.as_ref().and_then(|names| names.get(at)))
                         && !matches!(arg, Pattern::Wildcard)
                     {
-                        self.private_member(name, &field.name, span);
+                        self.private_member(name, &field.clone(), span);
                     }
-                    let field = fields.get(at).cloned().unwrap_or(Type::Unknown);
+                    let field = place.and_then(|at| types.get(at)).cloned().unwrap_or(Type::Unknown);
                     self.bind_pattern(arg, &field, span);
                 }
             }
         }
+    }
+
+    /// Where the field a pattern names is among its type's fields, reporting a name it doesn't have.
+    fn named_place(&mut self, variant: &str, field: &str, names: Option<&[String]>, span: Span) -> Option<usize> {
+        let names = names?;
+        let place = names.iter().position(|name| name == field);
+        if place.is_none() {
+            let has = if names.is_empty() {
+                "has no fields".to_owned()
+            } else {
+                let listed: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
+                format!("has {}", listed.join(", "))
+            };
+            self.error(Diagnostic::new(format!("`{variant}` has no field `{field}`: it {has}"), span));
+        }
+        place
+    }
+
+    /// A pattern matching another kit's type by position. A kit can add a field with a default
+    /// to a type it exports without breaking anyone who builds or matches it, so outside the
+    /// kit a pattern names the fields it reads, and `fennec fix` adds the names.
+    fn positional_elsewhere(&mut self, owner: &str, variant: &str, names: &[String], span: Span) {
+        let elsewhere = self.checker.program.type_info(owner).is_some_and(|info| info.prelude);
+        if !elsewhere || span.in_prelude() {
+            return;
+        }
+        let message = format!("`{variant}` {POSITIONAL}");
+        let help = crate::named::help(variant, names);
+        self.error(Diagnostic::new(message, span).with_help(help));
     }
 
     /// `a | b`: each alternative has to bind the same names, with the same types.
@@ -214,7 +257,15 @@ impl FnCx<'_> {
 
     /// The field types of what a `case` names: a case of the enum being matched, an error or
     /// struct type, or a case of whichever enum has it.
-    fn variant_fields(&mut self, name: &str, dotted: bool, subject: &Type, span: Span) -> Option<Vec<Type>> {
+    /// The type, and its case if it has cases, that a pattern like `.Circle(...)` or `IoError(...)`
+    /// matches.
+    fn variant_owner(
+        &mut self,
+        name: &str,
+        dotted: bool,
+        subject: &Type,
+        span: Span,
+    ) -> Option<(String, Option<String>)> {
         // `case Err(.Bad(text))` on a result that fails with `ParseError | RangeError`.
         if let Type::Errors(owners) = subject {
             let having: Vec<String> = owners
@@ -228,7 +279,7 @@ impl FnCx<'_> {
                 .cloned()
                 .collect();
             if let [owner] = having.as_slice() {
-                return Some(self.case_fields(owner, Some(name)));
+                return Some((owner.clone(), Some(name.to_owned())));
             }
             if dotted {
                 let message = format!("none of `{}` has a case called `{name}`", owners.join(" | "));
@@ -245,7 +296,7 @@ impl FnCx<'_> {
                 .type_info(owner)
                 .is_some_and(|info| info.def.cases.iter().any(|case| case.name == name));
             if has_case {
-                return Some(self.case_fields(owner, Some(name)));
+                return Some((owner.clone(), Some(name.to_owned())));
             }
             if dotted {
                 self.error(Diagnostic::new(format!("`{owner}` has no case called `{name}`"), span));
@@ -254,19 +305,19 @@ impl FnCx<'_> {
         }
         let kind = self.checker.program.type_info(name).map(|info| info.kind);
         if !dotted && matches!(kind, Some(TypeKind::Struct | TypeKind::Error)) {
-            return Some(self.case_fields(name, None));
+            return Some((name.to_owned(), None));
         }
         match self.checker.program.enums_with_case(name).as_slice() {
             [owner] if dotted && *subject == Type::Unknown => {
-                Some(self.case_fields(&owner.clone(), Some(name)))
+                Some((owner.clone(), Some(name.to_owned())))
             }
             _ => None,
         }
     }
 
-    fn case_fields(&mut self, owner: &str, case: Option<&str>) -> Vec<Type> {
-        let names: Vec<String> = self
-            .checker
+    /// The names of a type's fields, or of one of its cases', in order.
+    fn field_names(&self, owner: &str, case: Option<&str>) -> Vec<String> {
+        self.checker
             .program
             .type_info(owner)
             .map(|info| match case {
@@ -279,7 +330,11 @@ impl FnCx<'_> {
                     .unwrap_or_default(),
                 None => info.def.fields.iter().map(|field| field.name.clone()).collect(),
             })
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
+
+    fn case_fields(&mut self, owner: &str, case: Option<&str>) -> Vec<Type> {
+        let names = self.field_names(owner, case);
         names.iter().map(|field| self.checker.field_type(owner, case, field)).collect()
     }
 
@@ -297,7 +352,7 @@ impl FnCx<'_> {
         let covered: Vec<&str> = unguarded
             .iter()
             .filter_map(|pattern| match pattern {
-                Pattern::Variant { name, args, dotted: false } if args.iter().all(always_matches) => {
+                Pattern::Variant { name, args, dotted: false, .. } if args.iter().all(always_matches) => {
                     Some(name.as_str())
                 }
                 _ => None,

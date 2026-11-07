@@ -454,11 +454,15 @@ pub enum Pattern {
     Wildcard,
     Bind(String),
     Literal(Expr),
-    /// `.Circle(radius)` (`dotted`), or `NotFound(path)`, `Ok(value)`, `Err(error)`.
+    /// `.Circle(radius)` (`dotted`), or `NotFound(path)`, `Ok(value)`, `Err(error)`. Written by
+    /// name, as `IoError(reason=r)`, `fields` names each of `args`; the checker then puts them
+    /// in the fields' order, filling the rest with `_`, and empties `fields`, so what runs a
+    /// program only ever sees them by position.
     Variant {
         name: String,
         dotted: bool,
         args: Vec<Pattern>,
+        fields: Vec<String>,
     },
     Tuple(Vec<Pattern>),
     /// `.Int(_) | .Float(_)`: any of the alternatives, each binding the same names.

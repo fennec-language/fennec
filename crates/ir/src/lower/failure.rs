@@ -331,8 +331,8 @@ impl Lowering<'_> {
         self.emit(InstKind::IsErr { dest: failed, value: value.clone() }, span);
         let failed = Operand::Local(failed);
         let (sees_error, inner) = match pattern {
-            Pattern::Variant { name, dotted: false, args } if name == "Err" => (true, args.first()),
-            Pattern::Variant { name, dotted: false, args } if name == "Ok" => (false, args.first()),
+            Pattern::Variant { name, dotted: false, args, .. } if name == "Err" => (true, args.first()),
+            Pattern::Variant { name, dotted: false, args, .. } if name == "Ok" => (false, args.first()),
             Pattern::Variant { name, dotted: false, .. } if self.context.errors.contains(name.as_str()) => {
                 (true, Some(pattern))
             }

@@ -127,6 +127,7 @@ pub(crate) fn edited_bodies(clean: &Clean, program: &Path, overlay: &Overlay) ->
         }
         Err(mut diagnostics) => {
             fennec_check::add_rename_fixes(&mut diagnostics, &written, &loaded.sources);
+            fennec_check::add_pattern_fixes(&mut diagnostics, &loaded.sources);
             diagnostics
         }
     };
@@ -171,6 +172,7 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
                 Ok(checked) => (Vec::new(), Some(checked)),
                 Err(mut diagnostics) => {
                     fennec_check::add_rename_fixes(&mut diagnostics, &loaded.module, &loaded.sources);
+                    fennec_check::add_pattern_fixes(&mut diagnostics, &loaded.sources);
                     (diagnostics, None)
                 }
             };

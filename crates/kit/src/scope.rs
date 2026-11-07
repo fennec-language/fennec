@@ -490,7 +490,7 @@ impl Resolver<'_> {
             Pattern::Wildcard => {}
             Pattern::Bind(name) => self.bind(name),
             Pattern::Literal(expr) => self.expr(expr),
-            Pattern::Variant { name, dotted, args } => {
+            Pattern::Variant { name, dotted, args, .. } => {
                 if !*dotted {
                     self.qualified(name, span);
                 }

@@ -63,12 +63,12 @@ def main(stdout: Stdout):
     match scene.move(trailer, parent=hub):
         case Ok():
             stdout.print("moved")
-        case Err(TreeCycle(message)):
+        case Err(TreeCycle(message=message)):
             stdout.print(message)
     match scene.move(hub, parent=hub):
         case Ok():
             stdout.print("moved")
-        case Err(TreeCycle(message)):
+        case Err(TreeCycle(message=message)):
             stdout.print(message)
 
     scene.make_root(wheel)

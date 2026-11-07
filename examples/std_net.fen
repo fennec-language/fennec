@@ -64,7 +64,7 @@ test "bytes go as they are"(net: Net):
 
 test "a failure is a case of NetError"(net: Net):
     match net.connect("localhost", 9001):
-        case Err(Refused(host, port)):
+        case Err(Refused(host=host, port=port)):
             assert host == "localhost" and port == 9001
         case _:
             assert False
@@ -124,7 +124,7 @@ def main(stdout: Stdout, net: Net):
                 # The server's end is still open but sends nothing more, so a read with a
                 # timeout gives up.
                 match client.read_line(timeout=Duration.millis(50)):
-                    case Err(TimedOut(after)):
+                    case Err(TimedOut(after=after)):
                         stdout.print("nothing came in", after.as_millis(), "ms")
                     case _:
                         stdout.print("something came")

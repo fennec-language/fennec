@@ -3196,7 +3196,7 @@ fn not_native_yet(path: &Path) -> bool {
     path.file_name().and_then(|name| name.to_str()).is_some_and(|name| NOT_NATIVE_YET.contains(&name))
 }
 
-/// Every example builds through LLVM and prints exactly what it should.
+/// Every example builds through LLVM, prints exactly what it should and finishes without failing.
 #[test]
 fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
     if !ready() {
@@ -3224,7 +3224,9 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
             return Ok(Err(String::from_utf8_lossy(&made.stderr).trim().to_owned()));
         }
         let ran = Command::new(&executable).output()?;
-        Ok(Ok(String::from_utf8_lossy(&ran.stdout).into_owned()))
+        // What it printed, or that it failed.
+        let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+        Ok(Ok(ran.status.success().then_some(printed)))
     })?;
     let (mut refused, mut wrong, mut now_native) = (Vec::new(), Vec::new(), Vec::new());
     for (path, outcome) in paths.iter().zip(outcomes) {
@@ -3232,15 +3234,16 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
             Ok(_) if not_native_yet(path) => now_native.push(path),
             Err(_) if not_native_yet(path) => {}
             Err(why) => refused.push(format!("{}: {why}", path.display())),
-            Ok(printed) if printed != std::fs::read_to_string(path.with_extension("out"))? => {
+            Ok(None) => wrong.push(path),
+            Ok(Some(printed)) if printed != std::fs::read_to_string(path.with_extension("out"))? => {
                 wrong.push(path);
             }
-            Ok(_) => {}
+            Ok(Some(_)) => {}
         }
     }
     std::fs::remove_dir_all(&dir)?;
     assert!(now_native.is_empty(), "these build natively now: take them off NOT_NATIVE_YET: {now_native:?}");
-    assert!(wrong.is_empty(), "printed the wrong thing: {wrong:?}");
+    assert!(wrong.is_empty(), "printed the wrong thing or failed: {wrong:?}");
     assert!(refused.is_empty(), "these don't build through LLVM:\n{}", refused.join("\n"));
     Ok(())
 }

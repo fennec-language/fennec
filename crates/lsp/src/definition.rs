@@ -340,7 +340,7 @@ impl Finder<'_> {
                     finder.block(body);
                 });
             }
-            StmtKind::With { value, names, body } => {
+            StmtKind::With { value, names, body, .. } => {
                 self.expr(value);
                 self.scoped(|finder| {
                     for held in names {

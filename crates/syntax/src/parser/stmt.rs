@@ -1,7 +1,7 @@
 //! Statements and blocks.
 
 use super::Parser;
-use crate::ast::{BinOp, Expr, ExprKind, Stmt, StmtKind, WithName};
+use crate::ast::{BinOp, Expr, ExprKind, Stmt, StmtKind, TypeExpr, WithName};
 use crate::diagnostic::Diagnostic;
 use crate::span::Span;
 use crate::token::{Kw, Punct, Tok};
@@ -25,7 +25,11 @@ impl Parser {
             Tok::Kw(Kw::If) => self.if_stmt(),
             Tok::Kw(Kw::While) => self.while_stmt(),
             Tok::Kw(Kw::For) => self.for_stmt(),
-            Tok::Kw(Kw::With) => self.with_stmt(),
+            Tok::Kw(Kw::With) => self.with_stmt(false),
+            // `lock scores as ref current:`, where a name follows `lock`.
+            Tok::Name(word) if word == "lock" && matches!(self.peek_at(1), Tok::Name(_)) => {
+                self.with_stmt(true)
+            }
             Tok::Kw(Kw::Def) => {
                 let function = self.def()?;
                 let span = function.span;
@@ -50,6 +54,14 @@ impl Parser {
             Tok::Kw(Kw::Continue) => self.keyword_stmt(StmtKind::Continue),
             Tok::Kw(Kw::Pass) => self.keyword_stmt(StmtKind::Pass),
             Tok::Kw(Kw::Mut) => self.mut_declaration()?,
+            // `shared scores = Scores()`: a plain value made `shared`, written out.
+            Tok::Name(word)
+                if word == "shared"
+                    && matches!(self.peek_at(1), Tok::Name(_))
+                    && matches!(self.peek_at(2), Tok::P(Punct::Assign)) =>
+            {
+                self.shared_declaration()?
+            }
             Tok::Kw(Kw::Ref) => return Err(no_inline_ref(start)),
             Tok::Name(word) if self.is_python_only(&word) => return Err(python_only(&word, start)),
             _ => self.expr_or_assign()?,
@@ -188,7 +200,8 @@ impl Parser {
 
     /// `with game as ref current:`, or several at once: `with a as ref x, b as ref y:`, or
     /// `with a, b as x, y:`.
-    fn with_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+    /// `with a as x:`, or, for `lock`, `lock a as ref x:`, which takes `shared` values.
+    fn with_stmt(&mut self, lock: bool) -> Result<Stmt, Diagnostic> {
         let start = self.advance().span;
         let mut items = vec![self.expr()?];
         while self.eat_p(Punct::Comma) {
@@ -229,9 +242,26 @@ impl Parser {
             )
             .with_help("give each value its own name: `with a as ref x, b as ref y:`"));
         }
+        if lock && names.is_empty() {
+            return Err(Diagnostic::new("a `lock` names what it holds, for the block", value.span)
+                .with_help("write `lock scores as current:` to read it, or `lock scores as ref current:` to change it"));
+        }
         self.expect_p(Punct::Colon)?;
         let body = self.block()?;
-        Ok(Stmt { kind: StmtKind::With { value, names, body }, span: start.to(self.prev_span()) })
+        Ok(Stmt { kind: StmtKind::With { value, names, body, lock }, span: start.to(self.prev_span()) })
+    }
+
+    /// `shared name = value`, written in as `name: shared = value`: a type of `shared` with
+    /// nothing in its brackets, which takes the value's type.
+    fn shared_declaration(&mut self) -> Result<StmtKind, Diagnostic> {
+        let word = self.advance().span;
+        let at = self.span();
+        let name = self.name("a name after `shared`")?;
+        let target = Expr { kind: ExprKind::Name(name), span: at };
+        self.expect_p(Punct::Assign)?;
+        let value = self.expr()?;
+        let ty = TypeExpr { name: "shared".to_owned(), args: Vec::new(), optional: false, span: word };
+        Ok(StmtKind::Assign { target, op: None, value, declare_mut: false, ty: Some(ty) })
     }
 
     /// Whether a name after `as` comes next, as in `with a, b as x, y:`, rather than another

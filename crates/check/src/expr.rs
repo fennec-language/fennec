@@ -690,6 +690,9 @@ impl FnCx<'_> {
             return ty;
         }
         let ty = self.expr(object);
+        if self.outside_lock(object, &ty, span) {
+            return Type::Unknown;
+        }
         let ty = self.failing_step(ty, object.span, span);
         let optional = optional || self.chained_step(&ty, span);
         self.field_of(&ty, name, optional, span)

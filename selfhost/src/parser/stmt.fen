@@ -24,7 +24,10 @@ extend Parser:
         if self.at_keyword("for"):
             return self.for_stmt()?
         if self.at_keyword("with"):
-            return self.with_stmt()?
+            return self.with_stmt(False)?
+        # `lock scores as ref current:`, where a name follows `lock`.
+        if self.at_soft("lock") and is_name(self.peek_at(1)):
+            return self.with_stmt(True)?
         if self.at_keyword("def"):
             function = self.function()?
             return Stmt(kind=.Def(function), span=function.span)
@@ -37,6 +40,10 @@ extend Parser:
             case .Name(word):
                 if self.is_python_only(word):
                     fail python_only(word, start)
+                # `shared scores = Scores()`: a plain value made `shared`, written out.
+                if word == "shared" and is_name(self.peek_at(1)) and self.peek_at(2) == .Punct("="):
+                    declared = self.shared_declaration()?
+                    return self.finished(declared, start)?
                 self.expr_or_assign()?
             case _: self.expr_or_assign()?
         span = start.to(self.prev_span())
@@ -70,6 +77,24 @@ extend Parser:
         word in ["raise", "try", "except", "finally"] and not (
             self.peek_at(1) in [.Punct("="), .Punct("."), .Punct("("), .Punct("[")]
         )
+
+    ## `shared name = value`, written in as `name: shared = value`: a type of `shared` with
+    ## nothing in its brackets, which takes the value's type.
+    def shared_declaration(ref self) -> StmtKind:
+        word = self.advance().span
+        at = self.span()
+        name = self.name("a name after `shared`")?
+        target = Expr(kind=.Name(name), span=at)
+        self.expect_punct("=")?
+        value = self.expr()?
+        ty = TypeExpr(name="shared", args=[], optional=False, span=word)
+        .Assign(target, None, value, declare_mut=False, ty=ty)
+
+    ## A simple statement's end: its line, and its span from `start`.
+    def finished(ref self, kind: StmtKind, start: Span) -> Stmt:
+        span = start.to(self.prev_span())
+        self.end_line()?
+        Stmt(kind=kind, span=span)
 
     def mut_declaration(ref self) -> StmtKind:
         self.advance()
@@ -150,7 +175,8 @@ extend Parser:
 
     ## `with game as ref current:`, or several at once: `with a as ref x, b as ref y:`, or
     ## `with a, b as x, y:`.
-    def with_stmt(ref self) -> Stmt:
+    ## `with a as x:`, or, for `lock`, `lock a as ref x:`, which takes `shared` values.
+    def with_stmt(ref self, lock: bool) -> Stmt:
         start = self.advance().span
         mut items = [self.expr()?]
         while self.eat_punct(","):
@@ -185,9 +211,15 @@ extend Parser:
                 span=span,
                 help="give each value its own name: `with a as ref x, b as ref y:`",
             )
+        if lock and names.len() == 0:
+            fail Diagnostic(
+                message="a `lock` names what it holds, for the block",
+                span=value.span,
+                help="write `lock scores as current:` to read it, or `lock scores as ref current:` to change it",
+            )
         self.expect_punct(":")?
         body = self.block()?
-        Stmt(kind=.With(value, names=names, body=body), span=start.to(self.prev_span()))
+        Stmt(kind=.With(value, names=names, body=body, lock=lock), span=start.to(self.prev_span()))
 
     ## Whether a name after `as` comes next, as in `with a, b as x, y:`, rather than another
     ## value: `ref` or `mut`, or a name and then `,` or `:`.

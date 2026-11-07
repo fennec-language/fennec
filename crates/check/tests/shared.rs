@@ -270,3 +270,47 @@ fn what_holds_no_handle_goes_on_as_before_under_a_lock() {
     let outside = "one = Cell()\nholder = Holder(cell=one)\nthrough(holder)\nholder.poke()\n";
     assert_eq!(crate::in_main_after(HOLDERS, outside), empty);
 }
+
+const SCORES: &str = "struct Scores:\n    best = dict[str, int]()\n\n    def add(ref self, name: str, points: int):\n        self.best[name] = points\n\n";
+
+/// `shared T` holds any type, made with `shared name = value` and reached only inside a `lock`:
+/// to read, or with `ref` to change. Its methods are called on the name the `lock` gives.
+#[test]
+fn a_shared_value_is_reached_only_in_a_lock() {
+    let empty: [&str; 0] = [];
+    let good = format!(
+        "{SCORES}def record(scores: shared Scores, name: str):\n    lock scores as ref current:\n        current.best[name] = 1\n        current.add(name, points=2)\n\ndef main(stdout: Stdout):\n    shared scores = Scores()\n    record(scores, \"a\")\n    lock scores as current:\n        stdout.print(current.best)\n"
+    );
+    assert_eq!(problems(&good), empty);
+    let in_main = |body: &str| {
+        problems(&format!("{SCORES}def main(stdout: Stdout):\n    shared scores = Scores()\n{body}"))
+    };
+    assert_eq!(
+        in_main("    stdout.print(scores.best)\n"),
+        ["`scores` is `shared`, so it's reached inside a `lock` @ scores.best"]
+    );
+    assert_eq!(
+        in_main("    scores.add(\"a\", points=1)\n"),
+        ["`scores` is `shared`, so it's reached inside a `lock` @ scores.add(\"a\", points=1)"]
+    );
+    assert_eq!(
+        in_main("    lock scores as current:\n        current.best[\"a\"] = 1\n"),
+        ["`current` isn't `ref` @ current.best[\"a\"]"]
+    );
+    assert_eq!(
+        in_main("    with scores as ref current:\n        pass\n"),
+        ["a `shared` value is reached with `lock`, not `with` @ scores"]
+    );
+    assert_eq!(
+        in_main("    plain = Scores()\n    lock plain as p:\n        pass\n"),
+        ["`lock` takes `shared` values, but this is a Scores @ plain"]
+    );
+    assert_eq!(
+        in_main("    lock scores as a:\n        lock scores as b:\n            pass\n"),
+        ["this `lock` waits for another lock while `a` is locked @ scores"]
+    );
+    assert_eq!(
+        in_main("    shared again = scores\n"),
+        ["this is a shared Scores already, so `shared` here has nothing to do @ scores"]
+    );
+}

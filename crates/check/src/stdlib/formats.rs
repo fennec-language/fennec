@@ -167,11 +167,14 @@ impl FnCx<'_> {
             | Type::Str
             | Type::Bytes
             | Type::Id(_) => Ok(()),
+            // A union is saved tagged with its member, which a type's name alone has to say.
+            Type::Union(members) if !members.iter().all(crate::saving::tested_by_name) => Err(cannot(ty)),
+            Type::Dict(key, _) if crate::saving::holds_union(key) => Err(cannot(ty)),
             Type::List(item) | Type::Optional(item) | Type::Table(item) => {
                 self.holds(format, item, (span, field), seen)
             }
             Type::Dict(key, value) => self.holds_map(format, ty, (key, value), (span, field), seen),
-            Type::Tuple(items) => {
+            Type::Tuple(items) | Type::Union(items) => {
                 items.iter().try_for_each(|item| self.holds(format, item, (span, field), seen))
             }
             Type::Result(..) => Err(unhandled_result(span)),

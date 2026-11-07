@@ -849,6 +849,27 @@ fn what_cant_be_saved_names_where_it_is_and_the_fixes() {
     );
 }
 
+/// A union is saved tagged with its member, so each member has to be told apart by its type's
+/// name, and a set's items and a dict's keys can't hold one.
+#[test]
+fn a_union_saves_when_its_members_are_named_types() {
+    let types = "struct Circle:\n    r = 1.0\n\nstruct Scene:\n    main: Circle | int\n    all: list[Circle | str]\n    named: dict[str, Circle | int]\n    picked: (Circle | int)? = None\n\nstruct Mixed:\n    held: list[int] | str\n\nstruct Keyed:\n    by: dict[int | str, int]\n\ndef loaded[T: Deserializable]() -> int:\n    1\n";
+    let empty: [&str; 0] = [];
+    assert_eq!(crate::in_main_after(types, "stdout.print(loaded[Scene]())\n"), empty);
+    assert_eq!(
+        crate::in_main_after(types, "stdout.print(loaded[Mixed]())\n"),
+        [
+            "`Mixed` isn't a `Deserializable`: `Mixed.held` is a list[int] | str, which can't be saved @ loaded[Mixed]()"
+        ]
+    );
+    assert_eq!(
+        crate::in_main_after(types, "stdout.print(loaded[Keyed]())\n"),
+        [
+            "`Keyed` isn't a `Deserializable`: `Keyed.by` is a dict[int | str, int], which can't be saved @ loaded[Keyed]()"
+        ]
+    );
+}
+
 #[test]
 fn a_type_writes_both_or_neither() {
     let one =

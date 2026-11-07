@@ -5068,6 +5068,33 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A known difference: native code writes a field holding a union tagged with its member, as
+/// the language says, where the JIT's JSON writer, which a plain `fennec build` uses too, leaves
+/// the tag out. The JIT is on its way out, so its side isn't being fixed.
+#[test]
+fn native_json_tags_a_union_where_the_jit_does_not() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let ((ours, _, _), (jit, _, _)) = both(
+        "native_json_union_tags",
+        r"from std import json
+
+struct Circle:
+    radius: float
+
+struct Scene:
+    main: Circle | int
+
+def main(stdout: Stdout):
+    stdout.print(json.dumps(Scene(main=Circle(radius=1.5))))
+",
+    )?;
+    assert_eq!(ours, "{\"main\": {\"Circle\": {\"radius\": 1.5}}}\n");
+    assert_eq!(jit, "{\"main\": {\"radius\": 1.5}}\n");
+    Ok(())
+}
+
 /// `bytes` are written as standard base64 natively, padded with `=`, and read back; text that
 /// isn't base64 says so.
 #[test]
@@ -5409,6 +5436,73 @@ fn union_members_are_saved_tagged_in_every_format() -> std::io::Result<()> {
     assert_eq!(
         printed,
         "{\"shapes\": [{\"Circle\": {\"radius\": 1.5}}, {\"Square\": {\"side\": 2.0}}, {\"int\": 7}]}\nTrue\n[[shapes]]\n\n[shapes.Circle]\nradius = 1.5\n\n[[shapes]]\n\n[shapes.Square]\nside = 2.0\n\n[[shapes]]\nint = 7\n\nTrue\nTrue\n`shapes[0]` is \"Triangle\", which is none of `Circle | Square | int`\n`shapes[0]` should be a Circle | Square | int, but it's an int\n`shapes[0]` is \"Triangle\", which is none of `Circle | Square | int`\n`Circle | Square | int` has no member 9, at byte 13\n"
+    );
+    Ok(())
+}
+
+/// What the next test builds: fields that hold unions, saved with their methods made for them.
+const UNION_FIELDS: &str = r#"from std import json, pack, toml
+
+struct Circle:
+    radius: float
+
+struct Square:
+    side: float
+
+enum Event:
+    Spawn(what: Circle | Square)
+    Quit
+
+struct Scene:
+    main: Circle | Square
+    count: int | str = 3
+    shapes: list[Circle | Square | int]
+    named: dict[str, Circle | Square]
+
+struct Log:
+    events: list[Event]
+    picked: (Circle | int)? = None
+
+def said[T](found: Result[T, ParseError]) -> str:
+    match found:
+        case Ok(_):
+            return "loaded"
+        case Err(error):
+            return error.message
+
+def main(stdout: Stdout):
+    scene = Scene(main=Square(side=2.0), count="many", shapes=[Circle(radius=1.5), 7], named={"a": Circle(radius=2.0)})
+    empty = Scene(main=Circle(radius=0.0), shapes=[], named={})
+    text = json.dumps(scene)
+    stdout.print(text)
+    stdout.print((json.loads[Scene](text) else empty) == scene)
+    stdout.print(toml.dumps(scene))
+    stdout.print((toml.loads[Scene](toml.dumps(scene)) else empty) == scene)
+    stdout.print((pack.loads[Scene](pack.dumps(scene)) else empty) == scene)
+    log = Log(events=[Event.Spawn(Circle(radius=0.5)), Event.Quit], picked=4)
+    stdout.print(json.dumps(log))
+    stdout.print((json.loads[Log](json.dumps(log)) else Log(events=[])) == log)
+    stdout.print((pack.loads[Log](pack.dumps(log)) else Log(events=[])) == log)
+    stdout.print((pack.loads[Log](pack.dumps(Log(events=[]))) else log).picked is None)
+    # A default that's one of a union's members, and what doesn't load.
+    stdout.print((json.loads[Scene]("{\"main\": {\"Circle\": {\"radius\": 1.0}}, \"shapes\": [], \"named\": {}}") else scene).count)
+    stdout.print(said(json.loads[Scene]("{\"main\": {\"Triangle\": {}}, \"shapes\": [], \"named\": {}}")))
+    stdout.print(said(json.loads[Scene]("{\"main\": {\"radius\": 1.0}, \"shapes\": [], \"named\": {}}")))
+    stdout.print(said(json.loads[Log]("{\"events\": [], \"picked\": {\"str\": \"x\"}}")))
+"#;
+
+/// A field that holds a union, as it is, in a list, a dict's values, an optional or an enum's
+/// case, is saved tagged with its member in every format, and loads back the same. A default
+/// that's one of the members is the union's, and a tag that's none of them doesn't load.
+#[test]
+fn fields_holding_unions_are_saved_tagged_in_every_format() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("union_fields", UNION_FIELDS)?;
+    assert_eq!(
+        printed,
+        "{\"main\": {\"Square\": {\"side\": 2.0}}, \"count\": {\"str\": \"many\"}, \"shapes\": [{\"Circle\": {\"radius\": 1.5}}, {\"int\": 7}], \"named\": {\"a\": {\"Circle\": {\"radius\": 2.0}}}}\nTrue\n[main.Square]\nside = 2.0\n\n[count]\nstr = \"many\"\n\n[[shapes]]\n\n[shapes.Circle]\nradius = 1.5\n\n[[shapes]]\nint = 7\n\n[named.a.Circle]\nradius = 2.0\n\nTrue\nTrue\n{\"events\": [{\"Spawn\": {\"what\": {\"Circle\": {\"radius\": 0.5}}}}, \"Quit\"], \"picked\": {\"int\": 4}}\nTrue\nTrue\nTrue\n3\n`main` is \"Triangle\", which is none of `Circle | Square`\n`main` is \"radius\", which is none of `Circle | Square`\n`picked` is \"str\", which is none of `Circle | int`\n"
     );
     Ok(())
 }

@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use fennec_lsp::{Json, Session, uri_of};
+use fennec_lsp::{Json, Session, path_of, uri_of};
 
 /// Words that are the language's own, which have nothing to go to.
 const KEYWORDS: &[&str] = &[
@@ -188,17 +188,13 @@ impl Editor {
 
 /// The text a location's range covers, read from its file.
 fn covered(location: &Json) -> Option<String> {
-    let path = fennec_lsp_path(location.get("uri")?.as_str()?)?;
+    let path = path_of(location.get("uri")?.as_str()?)?;
     let text = std::fs::read_to_string(path).ok()?;
     let line = location.at(&["range", "start", "line"])?.as_usize()?;
     let from = location.at(&["range", "start", "character"])?.as_usize()?;
     let to = location.at(&["range", "end", "character"])?.as_usize()?;
     let content: Vec<u16> = text.lines().nth(line)?.encode_utf16().collect();
     Some(String::from_utf16_lossy(content.get(from..to.max(from))?))
-}
-
-fn fennec_lsp_path(uri: &str) -> Option<PathBuf> {
-    Some(PathBuf::from(uri.strip_prefix("file://")?.replace("%20", " ")))
 }
 
 /// What one file came to.
@@ -221,7 +217,8 @@ fn seen(path: &Path, root: &Path, hovers: bool) -> std::io::Result<Seen> {
     let started = Instant::now();
     let (mut editor, errors) = Editor::open(path, &text);
     let mut seen = Seen { opened: started.elapsed(), ..Seen::default() };
-    if shown.contains("/errors/") {
+    // The examples that are meant to fail are the ones in an `errors` folder.
+    if path.strip_prefix(root).unwrap_or(path).components().any(|part| part.as_os_str() == "errors") {
         return Ok(seen);
     }
     seen.errors = errors.into_iter().map(|error| format!("{shown}: {error}")).collect();

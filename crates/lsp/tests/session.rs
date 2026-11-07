@@ -531,7 +531,7 @@ fn the_standard_librarys_declarations_are_found_in_a_copy_of_its_files() {
         let found = &found.as_array().unwrap()[0];
         let uri = found.get("uri").and_then(Json::as_str).unwrap();
         assert!(uri.ends_with(&format!("/std/{}/math.fen", env!("CARGO_PKG_VERSION"))), "{needle}: {uri}");
-        let copy = std::fs::read_to_string(uri.strip_prefix("file://").unwrap()).unwrap();
+        let copy = std::fs::read_to_string(fennec_lsp::path_of(uri).unwrap()).unwrap();
         let line = copy.lines().nth(line_of(found)).unwrap();
         assert!(line.starts_with(declared), "{needle}: {line}");
     }
@@ -570,7 +570,7 @@ fn places(locations: &Json) -> Vec<(String, usize)> {
 /// the whole program, every reference.
 #[test]
 fn after_an_edit_to_a_body_definitions_hovers_and_references_still_answer() {
-    let mut editor = Editor::new("after_edit").unwrap();
+    let mut editor = Editor::new("answers_after_a_body_edit").unwrap();
     editor.open("src/main.fen", MAIN);
     let edited = MAIN.replace("hit(fighter, 3)", "hit(fighter, 4)");
     let published = editor.change("src/main.fen", &edited);

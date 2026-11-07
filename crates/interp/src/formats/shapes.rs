@@ -16,7 +16,57 @@ use crate::value::{Instance, Value};
 const SHAPES: [(&str, &str); 4] =
     [("SortedMap", "items"), ("SortedSet", "items"), ("Deque", "items"), ("Grid", "rows")];
 
+/// The standard library's types that save as one plain value, as their own `serialize` writes
+/// them for native code: a `Time` as its RFC 3339 text, a `Uuid` as its text, and a `Duration`
+/// as its nanoseconds.
+const PLAIN: [&str; 3] = ["Time", "Uuid", "Duration"];
+
 impl Interp<'_> {
+    /// Whether `name` is one of the standard library's types that saves as one plain value.
+    pub(super) fn saves_plain(&self, name: &str) -> bool {
+        PLAIN.contains(&name) && self.type_info(name).is_some_and(|info| info.def.span.in_prelude())
+    }
+
+    /// The plain value one of those saves as.
+    fn plain_of(&mut self, instance: &Instance, value: &Value, span: Span) -> Result<Value, Diagnostic> {
+        Ok(match instance.type_name.as_ref() {
+            "Duration" => instance.field("nanos").cloned().unwrap_or(Value::Int(0)),
+            "Time" => {
+                let iso = self
+                    .type_info("Time")
+                    .and_then(|info| info.methods.get("iso").cloned())
+                    .ok_or_else(|| Diagnostic::new("`Time` has no `iso`", span))?;
+                self.call_with_values(&iso, vec![value.clone()], span)?
+            }
+            _ => Value::str(&self.shown(value, span)?),
+        })
+    }
+
+    /// One of those read back from its plain value, or what's wrong with it, as native code says
+    /// it.
+    pub(super) fn read_plain(
+        &mut self,
+        name: &str,
+        read: &Value,
+        at: &str,
+        span: Span,
+    ) -> Option<Result<Value, String>> {
+        match (name, read) {
+            ("Duration", Value::Int(nanos)) => {
+                Some(Ok(Value::made("Duration", vec![("nanos", Value::Int(*nanos))])))
+            }
+            ("Time" | "Uuid", Value::Str(text)) => {
+                let parse = self.type_info(name).and_then(|info| info.methods.get("parse").cloned())?;
+                let what = if name == "Time" { "an RFC 3339 time" } else { "a UUID" };
+                Some(match self.call_with_values(&parse, vec![Value::str(text)], span) {
+                    Ok(Value::Ok(found)) => Ok(found.as_ref().clone()),
+                    _ => Err(format!("`{at}` is `{text}`, which isn't {what}")),
+                })
+            }
+            _ => None,
+        }
+    }
+
     /// Whether `name` is a standard library collection with a natural shape.
     pub(super) fn has_shape(&self, name: &str) -> bool {
         SHAPES.iter().any(|(shaped, _)| *shaped == name)
@@ -74,6 +124,9 @@ impl Interp<'_> {
     /// every field named as `names` spells it, ready to be written.
     pub(super) fn natural(&mut self, value: &Value, names: Names, span: Span) -> Result<Value, Diagnostic> {
         Ok(match value {
+            Value::Instance(instance) if self.saves_plain(&instance.type_name) => {
+                self.plain_of(instance, value, span)?
+            }
             Value::Instance(instance) if self.has_shape(&instance.type_name) => {
                 let name = instance.type_name.to_string();
                 let method =

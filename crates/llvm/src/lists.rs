@@ -68,6 +68,9 @@ impl Emit<'_, '_, '_> {
 
     /// A new block of a boxed type, its shape's number read from a symbol.
     pub(crate) fn new_block(&mut self, id: u32) -> Result<String, String> {
+        if self.is_native(id) {
+            return self.new_native_block(id);
+        }
         let shape = self.shape_of(id)?;
         self.declare("declare ptr @fennec_alloc(i64) nounwind");
         let block = self.temp();

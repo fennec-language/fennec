@@ -105,6 +105,8 @@ impl Interp<'_> {
             StmtKind::Return(value) => {
                 Ok(Flow::Return(value.as_ref().map_or(Ok(Value::Unit), |value| self.eval(value))?))
             }
+            // The checker writes each `lend` in where its source is used, so none is left to run.
+            StmtKind::Lend { .. } => Err(Diagnostic::new("`lend` runs only in a `with` source", stmt.span)),
             StmtKind::Fail(expr) => {
                 let error = self.eval(expr)?;
                 check_error(&error, expr.span)?;

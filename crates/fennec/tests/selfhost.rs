@@ -74,6 +74,7 @@ const PARSE_CASES: &[(&str, &str)] = &[
         "lock",
         "def f(a: shared A, b: shared B?):\n    shared c = A()\n    lock a, c as ref x, y:\n        pass\n",
     ),
+    ("lend", "def f(a: int) -> with int:\n    lend a + 1 else:\n        pass\n    lend f\"{a}\"\n"),
     ("lock_needs_names", "def f(a: shared A):\n    lock a:\n        pass\n"),
     ("named_pattern", "def f(p: P):\n    match p:\n        case P(y=b, x=_): b\n        case .Q(): 1\n"),
     ("named_pattern_mixed", "def f(p: P):\n    match p:\n        case P(x=a, b): a\n"),

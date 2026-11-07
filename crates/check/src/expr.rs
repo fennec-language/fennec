@@ -27,6 +27,12 @@ impl FnCx<'_> {
             None => self.expr_kind(expr),
         };
         let ty = self.checker.settled(&ty);
+        if crate::lend::lent(&ty).is_some()
+            && matches!(expr.kind, ExprKind::Call { .. } | ExprKind::Try { .. })
+            && !self.with_values.contains(&(expr.span.start, expr.span.end))
+        {
+            self.source_outside_with(expr, &ty);
+        }
         self.record(expr.span, &ty);
         ty
     }

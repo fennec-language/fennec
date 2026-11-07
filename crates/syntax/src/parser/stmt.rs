@@ -26,6 +26,8 @@ impl Parser {
             Tok::Kw(Kw::While) => self.while_stmt(),
             Tok::Kw(Kw::For) => self.for_stmt(),
             Tok::Kw(Kw::With) => self.with_stmt(false),
+            // `lend value`, or `lend value else:` with a block, in a `with` source.
+            Tok::Name(word) if word == "lend" && starts_value(self.peek_at(1)) => self.lend_stmt(),
             // `lock scores as ref current:`, where a name follows `lock`.
             Tok::Name(word) if word == "lock" && matches!(self.peek_at(1), Tok::Name(_)) => {
                 self.with_stmt(true)
@@ -251,6 +253,20 @@ impl Parser {
         Ok(Stmt { kind: StmtKind::With { value, names, body, lock }, span: start.to(self.prev_span()) })
     }
 
+    /// `lend value`, or `lend value else:` and the block that runs when the caller's fails.
+    fn lend_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        let start = self.advance().span;
+        let value = self.or_expr()?;
+        let otherwise = if self.eat_kw(Kw::Else) {
+            self.expect_p(Punct::Colon)?;
+            self.block()?
+        } else {
+            self.end_line()?;
+            Vec::new()
+        };
+        Ok(Stmt { kind: StmtKind::Lend { value, otherwise }, span: start.to(self.prev_span()) })
+    }
+
     /// `shared name = value`, written in as `name: shared = value`: a type of `shared` with
     /// nothing in its brackets, which takes the value's type.
     fn shared_declaration(&mut self) -> Result<StmtKind, Diagnostic> {
@@ -287,4 +303,19 @@ fn python_only(word: &str, span: Span) -> Diagnostic {
         }
     };
     Diagnostic::new(format!("Fennec doesn't have `{word}`"), span).with_help(help)
+}
+
+/// Whether a value can start with this token, so `lend` before it starts a `lend`.
+fn starts_value(tok: &Tok) -> bool {
+    matches!(
+        tok,
+        Tok::Name(_)
+            | Tok::Int(_)
+            | Tok::Float(_)
+            | Tok::Duration(_)
+            | Tok::Str(_)
+            | Tok::FStr(_)
+            | Tok::Kw(Kw::True | Kw::False | Kw::None | Kw::Not)
+            | Tok::P(Punct::LParen | Punct::LBracket | Punct::LBrace | Punct::Dot | Punct::Minus)
+    )
 }

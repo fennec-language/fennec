@@ -57,6 +57,10 @@ pub(crate) fn unimported(module: &Module, program: &Program) -> Vec<Diagnostic> 
 
 impl Uses<'_> {
     fn name(&mut self, name: &str, span: Span) {
+        // A standard library source written in where it's used names its own types.
+        if span.in_prelude() {
+            return;
+        }
         let defined_here = self.program.type_info(name).is_some_and(|info| !info.prelude);
         if fennec_syntax::importable_type(name).is_none()
             || defined_here
@@ -96,7 +100,8 @@ impl Uses<'_> {
             StmtKind::Expr(value)
             | StmtKind::Fail(value)
             | StmtKind::Yield(value)
-            | StmtKind::Assert(value) => {
+            | StmtKind::Assert(value)
+            | StmtKind::Lend { value, .. } => {
                 self.expr(Some(value));
             }
             StmtKind::Return(value) => self.expr(value.as_ref()),

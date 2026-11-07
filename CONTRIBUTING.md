@@ -32,6 +32,10 @@ Then add the module's name to the `modules!` list in each crate's `stdlib.rs`, o
 
 Fennec builds with Rust's `x86_64-pc-windows-gnullvm` toolchain on Windows, as it links programs with LLD and MinGW-w64's libraries rather than Visual Studio. Run `rustup set default-host x86_64-pc-windows-gnullvm` once, and put the `bin` folder of an [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) UCRT release on `PATH`, for `mimalloc`'s C. `.github/scripts/windows.sh toolchain` does both in CI, and `.github/scripts/windows.sh folder target/debug/llvm` gathers the `llvm` folder `fennec` builds programs with: LLVM's tools, LLD and the libraries it links. A build with the MSVC toolchain stops with a compile error that says so.
 
+## Static programs on Linux
+
+On Linux, `fennec build --release` links a program on its own, with musl's C library in it, when there's a `musl` folder beside `fennec`. Without one it links against the system's C library, as other builds do. `.github/scripts/musl-runtime.sh target/debug/musl` makes the folder, with `musl-gcc` from `musl-tools` for the runtime's C parts, and `--debug` after it makes it quickly. CI's `static` job runs the examples built this way in an empty container.
+
 ## Changing the lexer, parser or checker
 
 `selfhost/` is Fennec's front end written in Fennec, and a test checks that it matches the Rust one exactly. A change to `crates/syntax` or `crates/check` usually needs the same change in `selfhost/`. "Changing the front end" in [selfhost/README.md](selfhost/README.md) says where.

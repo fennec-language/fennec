@@ -464,6 +464,7 @@ impl<'p> Module<'_, 'p> {
             inside_slots: HashMap::new(),
             pair_slots: HashMap::new(),
             walks: HashMap::new(),
+            saving: crate::rollback::saving_handles(function),
         };
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
@@ -533,7 +534,10 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// it's marked for LLVM.
     pub(crate) place_homes: HashMap<usize, (String, Kind, &'static str)>,
     /// The instruction being written: its block, and its place in it.
-    at: (usize, usize),
+    pub(crate) at: (usize, usize),
+    /// The handles of the `lock ... as ref` blocks whose changes are saved, for a crash to put
+    /// back, by local.
+    pub(crate) saving: HashSet<usize>,
     /// What the next way out on a failure is for, when what writes it says.
     check_kind: Option<(Span, Option<CheckKind>)>,
     /// Items of lists, by field path and index, known to be inside their lists here.
@@ -2185,7 +2189,16 @@ impl Emit<'_, '_, '_> {
                 self.slice(*dest, object, start.as_ref(), end.as_ref(), span)
             }
             InstKind::Format { dest, parts } => self.format(*dest, parts, span),
-            InstKind::Builtin { dest, name, args, .. } => self.builtin(*dest, name, args, span),
+            InstKind::Builtin { dest, name, args, changes } => {
+                // A value of a `lock ... as ref` block changed in place is saved first.
+                if *changes
+                    && !self.saving.is_empty()
+                    && let Some(changed) = args.first()
+                {
+                    self.save_before_change(changed)?;
+                }
+                self.builtin(*dest, name, args, span)
+            }
             InstKind::Call { dest, function, args } => self.call(*dest, function, args, span),
             InstKind::MakeGenerator { dest, generator, args } => self.make_generator(*dest, generator, args),
             InstKind::GetSlot { dest, generator, slot } => self.get_slot(*dest, generator, *slot),

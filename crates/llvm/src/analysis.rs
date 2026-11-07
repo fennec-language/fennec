@@ -92,6 +92,10 @@ pub(crate) struct Analysis {
     /// them, and that nothing else in the loop touches: an append never needs more room, and
     /// the list is never shared while it's filled.
     pub(crate) room_enough: HashSet<usize>,
+    /// Of those, the lists whose loop leaves only to the block after it, by the header, each
+    /// with that block: the length is kept in a local while the loop fills it, and written to
+    /// the list there. Any other way out is a failure, which ends the program.
+    pub(crate) length_kept: HashMap<usize, usize>,
     /// Copies, by block and place in it, whose source nothing reads again or leans on: the
     /// copy takes over its owner.
     last_copies: HashSet<(usize, usize)>,
@@ -2063,15 +2067,33 @@ fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut 
             .iter()
             .any(|inst| matches!(&inst.kind, InstKind::MakeList { dest, items } if dest.0 == list && items.is_empty()));
         if made_here {
-            if appends_within_room(function, (block, header_at.0), then.0, list) {
-                known.room_enough.insert(list);
+            let zeros = fills_with_zeros(function, block, (header, body), list, known);
+            match appends_within_room(function, (block, header_at.0), then.0, list) {
+                Some(Within::Room) => {
+                    known.room_enough.insert(list);
+                }
+                // A list made whole of zeros has no appends to count, and keeps its length.
+                Some(Within::RoomLeavingTo(after)) => {
+                    known.room_enough.insert(list);
+                    if !zeros {
+                        known.length_kept.insert(list, after);
+                    }
+                }
+                None => {}
             }
             known.reservations.insert(at, (list, limit));
-            if fills_with_zeros(function, block, (header, body), list, known) {
+            if zeros {
                 known.zero_filled.insert(list);
             }
         }
     }
+}
+
+/// What `appends_within_room` found: the appends stay within the room, and whether the loop
+/// leaves only by its header, to the block after it.
+enum Within {
+    Room,
+    RoomLeavingTo(usize),
 }
 
 /// Whether the loop after `before`, at `header`, appends to `list` at most as many times as
@@ -2084,25 +2106,25 @@ fn appends_within_room(
     (before, header_at): (&Block, usize),
     body_at: usize,
     list: usize,
-) -> bool {
-    let Some(header) = function.blocks.get(header_at) else { return false };
-    let Terminator::Branch { cond: Operand::Local(cond), .. } = &header.end else { return false };
+) -> Option<Within> {
+    let header = function.blocks.get(header_at)?;
+    let Terminator::Branch { cond: Operand::Local(cond), otherwise, .. } = &header.end else { return None };
     let compare = header.insts.iter().find_map(|inst| match &inst.kind {
         InstKind::Binary { dest, op: BinOp::Lt, lhs: Operand::Local(count), rhs } if dest == cond => {
             Some((*count, rhs.clone()))
         }
         _ => None,
     });
-    let Some((count, limit)) = compare else { return false };
+    let (count, limit) = compare?;
     if !function.counts.iter().any(|found| found.count == count && !found.down) {
-        return false;
+        return None;
     }
     let start = before.insts.iter().rev().find_map(|inst| match &inst.kind {
         InstKind::Copy { dest, value } if *dest == count => Some(value.clone()),
         _ => None,
     });
     if !matches!(start, Some(Operand::Int(start)) if start >= 0) {
-        return false;
+        return None;
     }
     let ways_in = function
         .blocks
@@ -2110,7 +2132,7 @@ fn appends_within_room(
         .filter(|block| block.end.targets().iter().any(|next| next.0 == body_at))
         .count();
     if ways_in != 1 {
-        return false;
+        return None;
     }
     // The loop's own blocks: those its body reaches without going through the header again,
     // that lead back to it. A loop around this one is left out: it isn't this loop's turn.
@@ -2148,7 +2170,7 @@ fn appends_within_room(
     let looped: Vec<usize> = ahead.intersection(&behind).copied().chain([header_at]).collect();
     let mut appends = 0;
     for at in &looped {
-        let Some(block) = function.blocks.get(*at) else { return false };
+        let block = function.blocks.get(*at)?;
         for inst in &block.insts {
             let (mut read, mut written) = (false, false);
             visit(
@@ -2162,7 +2184,7 @@ fn appends_within_room(
             if let Operand::Local(stop) = &limit
                 && inst.kind.dest() == Some(*stop)
             {
-                return false;
+                return None;
             }
             if !touched {
                 continue;
@@ -2170,12 +2192,24 @@ fn appends_within_room(
             let appended = matches!(&inst.kind, InstKind::Builtin { name, args, .. }
                 if name == "list.append" && args.first() == Some(&Operand::Local(LocalId(list))) && args.len() == 2);
             if !appended || *at != body_at {
-                return false;
+                return None;
             }
             appends += 1;
         }
     }
-    appends == 1
+    if appends != 1 {
+        return None;
+    }
+    // Whether it leaves only by the header, to a block nothing else comes to: then the length
+    // can be kept aside while it fills, and written there.
+    let only_header = looped.iter().filter(|at| **at != header_at).all(|at| {
+        function.blocks.get(*at).is_some_and(|block| {
+            matches!(block.end, Terminator::Jump(_) | Terminator::Branch { .. })
+                && block.end.targets().iter().all(|next| looped.contains(&next.0))
+        })
+    });
+    let into_after = function.blocks.iter().filter(|block| block.end.targets().contains(otherwise)).count();
+    Some(if only_header && into_after == 1 { Within::RoomLeavingTo(otherwise.0) } else { Within::Room })
 }
 
 /// Whether a loop does nothing but append a zero to `list` each turn, counting up from 0 by 1,
@@ -2256,6 +2290,7 @@ impl Analysis {
             reservations: HashMap::new(),
             zero_filled: HashSet::new(),
             room_enough: HashSet::new(),
+            length_kept: HashMap::new(),
             last_copies: HashSet::new(),
             enumerated: HashMap::new(),
             map_walks: HashMap::new(),

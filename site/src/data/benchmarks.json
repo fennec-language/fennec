@@ -1,22 +1,24 @@
 {
   "suite": {
-    "commit": "9423e64",
+    "commit": "4753242",
     "date": "2026-11-07",
     "source": "the Suite report workflow, saved on the bench-history branch",
     "machines": [
       {
         "platform": "x86_64-linux",
-        "label": "x86-64 Linux, AMD EPYC 9V74, 4 cores",
-        "time": 98.8,
-        "dev": 96.8,
+        "label": "x86-64 Linux, AMD EPYC 9V45, 4 cores",
+        "time": 96.3,
+        "kernel": 104.3,
+        "dev": 95.4,
         "instructions": 94,
         "slowest": "json_unicode"
       },
       {
         "platform": "aarch64-macos",
-        "label": "Arm macOS, Apple M2 Pro (virtual), 5 cores",
-        "time": 103.4,
-        "dev": 101.6,
+        "label": "Arm macOS, Apple M1 (virtual), 3 cores",
+        "time": 101.6,
+        "kernel": 103.3,
+        "dev": 99.9,
         "instructions": null,
         "slowest": "json_unicode"
       }
@@ -24,404 +26,456 @@
     "kernels": [
       {
         "name": "binary_trees",
-        "x86": 307.7,
-        "arm": 231.1,
-        "x86_dev": 311.5,
-        "arm_dev": 233.1,
+        "x86": 268.9,
+        "arm": 223.2,
+        "x86_kernel": 303.2,
+        "arm_kernel": 254.5,
+        "x86_dev": 270.6,
+        "arm_dev": 224.6,
         "dev_build_ms": [
-          276.2,
-          231
+          226.8,
+          393.5
         ],
         "release_build_ms": [
-          4642.3,
-          3649.1
+          3978,
+          5454
         ]
       },
       {
         "name": "closures",
-        "x86": 86.5,
-        "arm": 89.4,
-        "x86_dev": 86.4,
-        "arm_dev": 90.3,
+        "x86": 78.7,
+        "arm": 91.5,
+        "x86_kernel": 82.5,
+        "arm_kernel": 91.6,
+        "x86_dev": 79.4,
+        "arm_dev": 90.9,
         "dev_build_ms": [
-          280.7,
-          242.4
+          221.8,
+          345
         ],
         "release_build_ms": [
-          4090,
-          3334.7
+          3512.5,
+          4882
         ]
       },
       {
         "name": "comp_helpers",
         "x86": 94.4,
-        "arm": 78.9,
-        "x86_dev": 92.2,
-        "arm_dev": 78.3,
+        "arm": 76.4,
+        "x86_kernel": 99,
+        "arm_kernel": 77.7,
+        "x86_dev": 92,
+        "arm_dev": 74.4,
         "dev_build_ms": [
-          291.8,
-          246.2
+          236.2,
+          337.7
         ],
         "release_build_ms": [
-          4608.6,
-          3737.6
+          3962.3,
+          5099.5
         ]
       },
       {
         "name": "comprehensions",
-        "x86": 180,
-        "arm": 138.3,
-        "x86_dev": 159.9,
-        "arm_dev": 139.7,
+        "x86": 170,
+        "arm": 133,
+        "x86_kernel": 231.4,
+        "arm_kernel": 157.9,
+        "x86_dev": 170.5,
+        "arm_dev": 118.8,
         "dev_build_ms": [
-          286.7,
-          237.3
+          229.3,
+          337.2
         ],
         "release_build_ms": [
-          4481.7,
-          3631.1
+          3956,
+          5145.5
         ]
       },
       {
         "name": "deltablue",
-        "x86": 65.7,
-        "arm": 107.2,
-        "x86_dev": 66.8,
-        "arm_dev": 106,
+        "x86": 65.2,
+        "arm": 105.6,
+        "x86_kernel": 67.6,
+        "arm_kernel": 108.6,
+        "x86_dev": 67.2,
+        "arm_dev": 105,
         "dev_build_ms": [
-          441.8,
-          465.7
+          364,
+          585.6
         ],
         "release_build_ms": [
-          4810.8,
-          3878.8
+          4244.7,
+          5211.2
         ]
       },
       {
         "name": "dict_field",
-        "x86": 82.4,
-        "arm": 100.5,
-        "x86_dev": 83,
-        "arm_dev": 92.6,
+        "x86": 85.1,
+        "arm": 100,
+        "x86_kernel": 93.2,
+        "arm_kernel": 103.5,
+        "x86_dev": 87.5,
+        "arm_dev": 91.8,
         "dev_build_ms": [
-          265.6,
-          228.4
+          218,
+          251.2
         ],
         "release_build_ms": [
-          4768.6,
-          3798.5
+          4168,
+          4318.3
         ]
       },
       {
         "name": "dicts",
-        "x86": 80.4,
-        "arm": 71.9,
-        "x86_dev": 82.3,
-        "arm_dev": 69.1,
+        "x86": 77.4,
+        "arm": 74.9,
+        "x86_kernel": 83.7,
+        "arm_kernel": 68.2,
+        "x86_dev": 78.8,
+        "arm_dev": 71.1,
         "dev_build_ms": [
-          262.3,
-          214.7
+          209.4,
+          384
         ],
         "release_build_ms": [
-          4752.3,
-          3785.2
+          4134.2,
+          5108.4
         ]
       },
       {
         "name": "fannkuch",
-        "x86": 125.2,
-        "arm": 114.1,
-        "x86_dev": 109.3,
-        "arm_dev": 102.6,
+        "x86": 114.9,
+        "arm": 113.5,
+        "x86_kernel": 121.6,
+        "arm_kernel": 116,
+        "x86_dev": 105.3,
+        "arm_dev": 101.4,
         "dev_build_ms": [
-          276.3,
-          228.2
+          232.3,
+          299.7
         ],
         "release_build_ms": [
-          4166.9,
-          3290.9
+          3586.4,
+          3820.2
         ]
       },
       {
         "name": "fib",
-        "x86": 134,
-        "arm": 154.2,
-        "x86_dev": 132,
-        "arm_dev": 154.2,
+        "x86": 149.6,
+        "arm": 150.2,
+        "x86_kernel": 156.9,
+        "arm_kernel": 156.9,
+        "x86_dev": 147.9,
+        "arm_dev": 147.5,
         "dev_build_ms": [
-          256.5,
-          212.6
+          231.6,
+          340.7
         ],
         "release_build_ms": [
-          4115.3,
-          3321.4
+          3610.5,
+          4900.4
         ]
       },
       {
         "name": "generators",
-        "x86": 74,
-        "arm": 129.9,
-        "x86_dev": 73.2,
-        "arm_dev": 128.8,
+        "x86": 68.3,
+        "arm": 122.4,
+        "x86_kernel": 70,
+        "arm_kernel": 125.9,
+        "x86_dev": 67.8,
+        "arm_dev": 119.5,
         "dev_build_ms": [
-          365.8,
-          325.5
+          304.6,
+          454.8
         ],
         "release_build_ms": [
-          4374.1,
-          3558.1
+          3888,
+          4269.4
         ]
       },
       {
         "name": "generics",
-        "x86": 94.8,
-        "arm": 96.8,
-        "x86_dev": 95.1,
-        "arm_dev": 97.2,
+        "x86": 91.1,
+        "arm": 99.3,
+        "x86_kernel": 98.6,
+        "arm_kernel": 100,
+        "x86_dev": 92.6,
+        "arm_dev": 99.8,
         "dev_build_ms": [
-          299.8,
-          265.8
+          243.8,
+          331.9
         ],
         "release_build_ms": [
-          4621.3,
-          3612.2
+          4093.6,
+          4206.3
         ]
       },
       {
         "name": "id_maps",
-        "x86": 104,
-        "arm": 94.6,
-        "x86_dev": 100.7,
-        "arm_dev": 86.7,
+        "x86": 122.9,
+        "arm": 87.3,
+        "x86_kernel": 146.9,
+        "arm_kernel": 87.2,
+        "x86_dev": 108.2,
+        "arm_dev": 85.3,
         "dev_build_ms": [
-          273.1,
-          277.9
+          225.7,
+          269
         ],
         "release_build_ms": [
-          4229.1,
-          3998.4
+          3506.3,
+          3839.6
         ]
       },
       {
         "name": "json",
-        "x86": 71.9,
-        "arm": 97.8,
-        "x86_dev": 72.2,
-        "arm_dev": 97.4,
+        "x86": 65.7,
+        "arm": 87.2,
+        "x86_kernel": 72.6,
+        "arm_kernel": 87.7,
+        "x86_dev": 66.5,
+        "arm_dev": 88.9,
         "dev_build_ms": [
-          449.6,
-          388.8
+          368,
+          528.6
         ],
         "release_build_ms": [
-          5169.8,
-          4662.6
+          4428.3,
+          5070.4
         ]
       },
       {
         "name": "json_unicode",
-        "x86": 52.5,
-        "arm": 66.3,
-        "x86_dev": 53.1,
-        "arm_dev": 65.3,
+        "x86": 47.6,
+        "arm": 61.7,
+        "x86_kernel": 48.1,
+        "arm_kernel": 59.4,
+        "x86_dev": 48.2,
+        "arm_dev": 62.3,
         "dev_build_ms": [
-          455.9,
-          387.9
+          346.6,
+          459.5
         ],
         "release_build_ms": [
-          5261.4,
-          4386.7
+          4356.2,
+          4641.4
         ]
       },
       {
         "name": "k_nucleotide",
-        "x86": 116.1,
-        "arm": 101.4,
-        "x86_dev": 116.8,
-        "arm_dev": 100.3,
+        "x86": 103.9,
+        "arm": 102.4,
+        "x86_kernel": 113.3,
+        "arm_kernel": 107,
+        "x86_dev": 104.2,
+        "arm_dev": 110.8,
         "dev_build_ms": [
-          377.6,
-          304.6
+          280.1,
+          506.3
         ],
         "release_build_ms": [
-          5323.1,
-          4140.3
+          4134.1,
+          4338
         ]
       },
       {
         "name": "mandelbrot",
-        "x86": 96.7,
-        "arm": 99.1,
-        "x86_dev": 96.3,
-        "arm_dev": 99.5,
+        "x86": 95.6,
+        "arm": 98.5,
+        "x86_kernel": 99.2,
+        "arm_kernel": 99.4,
+        "x86_dev": 94.9,
+        "arm_dev": 98.9,
         "dev_build_ms": [
-          278.5,
-          232.7
+          201.4,
+          246.5
         ],
         "release_build_ms": [
-          4321,
-          3550.5
+          3422.9,
+          4709.7
         ]
       },
       {
         "name": "method_chain",
         "x86": 96.5,
-        "arm": 99,
-        "x86_dev": 96.1,
+        "arm": 93.5,
+        "x86_kernel": 98.7,
+        "arm_kernel": 92.5,
+        "x86_dev": 95.7,
         "arm_dev": 99.9,
         "dev_build_ms": [
-          280.3,
-          272
+          218.5,
+          354.7
         ],
         "release_build_ms": [
-          4267,
-          3709.7
+          3493.6,
+          4569.2
         ]
       },
       {
         "name": "nbody",
-        "x86": 73.5,
-        "arm": 93,
-        "x86_dev": 71.7,
-        "arm_dev": 97.8,
+        "x86": 77.4,
+        "arm": 92.1,
+        "x86_kernel": 82.2,
+        "arm_kernel": 89,
+        "x86_dev": 77.1,
+        "arm_dev": 86.3,
         "dev_build_ms": [
-          278.9,
-          258
+          221.4,
+          316.1
         ],
         "release_build_ms": [
-          4640.2,
-          4290.4
+          3906.8,
+          4886.1
         ]
       },
       {
         "name": "particles",
-        "x86": 70.5,
-        "arm": 90.5,
-        "x86_dev": 67.2,
-        "arm_dev": 85.3,
+        "x86": 62.3,
+        "arm": 90.8,
+        "x86_kernel": 66.6,
+        "arm_kernel": 89,
+        "x86_dev": 63.1,
+        "arm_dev": 86.3,
         "dev_build_ms": [
-          272.2,
-          233.1
+          217,
+          297.7
         ],
         "release_build_ms": [
-          4664.6,
-          4153.7
+          3911.2,
+          5489
         ]
       },
       {
         "name": "regex",
-        "x86": 121.8,
-        "arm": 185.1,
-        "x86_dev": 119.3,
-        "arm_dev": 181,
+        "x86": 127.6,
+        "arm": 185.5,
+        "x86_kernel": 132.4,
+        "arm_kernel": 192.1,
+        "x86_dev": 128.6,
+        "arm_dev": 190.5,
         "dev_build_ms": [
-          319.5,
-          326.8
+          245.8,
+          379.2
         ],
         "release_build_ms": [
-          5304.2,
-          4707.9
+          4601.4,
+          5649.6
         ]
       },
       {
         "name": "richards",
-        "x86": 77.5,
-        "arm": 88.4,
-        "x86_dev": 65.4,
-        "arm_dev": 75.8,
+        "x86": 81.9,
+        "arm": 89.3,
+        "x86_kernel": 87.7,
+        "arm_kernel": 88.8,
+        "x86_dev": 67.8,
+        "arm_dev": 77.1,
         "dev_build_ms": [
-          350.8,
-          336.4
+          270,
+          421.8
         ],
         "release_build_ms": [
-          4737.3,
-          4062.1
+          3969.7,
+          4969.1
         ]
       },
       {
         "name": "sieve",
-        "x86": 121.5,
+        "x86": 137,
         "arm": 94.6,
-        "x86_dev": 125.9,
-        "arm_dev": 95.1,
+        "x86_kernel": 145.2,
+        "arm_kernel": 96.7,
+        "x86_dev": 141.2,
+        "arm_dev": 93.9,
         "dev_build_ms": [
-          260.2,
-          218.1
+          207.1,
+          289.3
         ],
         "release_build_ms": [
-          4133.6,
-          3754.2
+          3404.6,
+          4642.6
         ]
       },
       {
         "name": "sort",
-        "x86": 110.3,
-        "arm": 94.6,
-        "x86_dev": 110.3,
-        "arm_dev": 94,
+        "x86": 109.5,
+        "arm": 98.2,
+        "x86_kernel": 108.3,
+        "arm_kernel": 99.9,
+        "x86_dev": 107.5,
+        "arm_dev": 97.5,
         "dev_build_ms": [
-          283.6,
-          242.9
+          215.8,
+          268.3
         ],
         "release_build_ms": [
-          4647.8,
-          3704.7
+          3827.6,
+          4561.4
         ]
       },
       {
         "name": "spectral_norm",
-        "x86": 94.7,
-        "arm": 89.2,
-        "x86_dev": 93.8,
-        "arm_dev": 91.1,
+        "x86": 89.4,
+        "arm": 88.4,
+        "x86_kernel": 97.5,
+        "arm_kernel": 88.2,
+        "x86_dev": 89,
+        "arm_dev": 88.7,
         "dev_build_ms": [
-          304.8,
-          261.3
+          238.9,
+          337.6
         ],
         "release_build_ms": [
-          4698.3,
-          4018.1
+          3950,
+          4844.7
         ]
       },
       {
         "name": "strings",
-        "x86": 168,
-        "arm": 127,
-        "x86_dev": 158.4,
-        "arm_dev": 129.3,
+        "x86": 137.4,
+        "arm": 123.9,
+        "x86_kernel": 153.6,
+        "arm_kernel": 133.3,
+        "x86_dev": 137.1,
+        "arm_dev": 126.9,
         "dev_build_ms": [
-          275.7,
-          227.4
+          235.2,
+          307.5
         ],
         "release_build_ms": [
-          4471,
-          3893.1
+          3670.5,
+          4252
         ]
       },
       {
         "name": "struct_keys",
         "x86": 70.4,
-        "arm": 71.9,
-        "x86_dev": 72.8,
-        "arm_dev": 74.2,
+        "arm": 70.8,
+        "x86_kernel": 88,
+        "arm_kernel": 67.3,
+        "x86_dev": 73.9,
+        "arm_dev": 76.1,
         "dev_build_ms": [
-          264.7,
-          283.3
+          225.4,
+          332.6
         ],
         "release_build_ms": [
-          4881.8,
-          4211.5
+          4314.8,
+          4856.5
         ]
       }
     ],
     "dev_build_ms": [
-      212.6,
-      465.7
+      201.4,
+      585.6
     ],
     "release_build_ms": [
-      3290.9,
-      5323.1
+      3404.6,
+      5649.6
     ],
-    "fib_dev_build_ms": 212.6
+    "fib_dev_build_ms": 231.6
   },
   "tests": {
     "machine": "Apple M3",

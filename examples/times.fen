@@ -1,0 +1,103 @@
+# `clock.time()` reads the wall clock as a `Time`, a moment in UTC, for saving and showing.
+# `clock.now()` is the one for measuring, since the wall clock can jump when it's set. A `Time`
+# prints as RFC 3339 text, which `Time.parse` reads back, and `format` lays it out with
+# `strftime`'s directives. In a test, the clock is a fake that starts at 2000-01-01T00:00:00Z
+# and moves on only as the test sleeps.
+from std.time import Duration, Time
+
+## When a task done at `done` is due again, `every` later, as a date to show.
+def next_due(done: Time, every: Duration) -> str:
+    (done + every).format("%a %d %b %Y")
+
+test "a moment prints as RFC 3339 text and reads back"():
+    landing = Time.utc(year=1969, month=7, day=20, hour=20, minute=17, second=40)?
+    assert str(landing) == "1969-07-20T20:17:40Z"
+    assert landing.nanos == -14_182_940_000_000_000
+    assert Time.parse(str(landing))? == landing
+    assert landing.weekday() == 6
+
+test "an offset is taken off, and a fraction kept"():
+    found = Time.parse("2026-11-06T23:55:56.25+02:00")?
+    assert found.iso() == "2026-11-06T21:55:56.25Z"
+    assert found.nanosecond() == 250_000_000
+    assert Time.parse("2026-11-06 21:55:56.123456789123z")?.nanosecond() == 123_456_789
+
+test "text that isn't RFC 3339 fails where it goes wrong"():
+    match Time.parse("2026-11-06T21:55"):
+        case Err(problem):
+            assert (
+                problem.message
+                == "`2026-11-06T21:55` isn't an RFC 3339 time, like `2026-11-06T21:55:56Z`"
+            )
+        case Ok(_):
+            assert False
+    match Time.parse("2026-11-06T21:55:56+0200"):
+        case Err(problem):
+            assert problem.column == 20
+        case Ok(_):
+            assert False
+    match Time.parse("2026-02-30T00:00:00Z"):
+        case Err(problem):
+            assert problem.message == "2026-02 has no day 30"
+        case Ok(_):
+            assert False
+
+## Whether the calendar has this date, in the years a `Time` holds.
+def is_date(year: int, month: int, day: int) -> bool:
+    match Time.utc(year, month=month, day=day):
+        case Ok(_):
+            True
+        case Err(_):
+            False
+
+test "the calendar has leap days where it should"():
+    assert is_date(2024, month=2, day=29) and is_date(2000, month=2, day=29)
+    assert not is_date(1900, month=2, day=29) and not is_date(2023, month=2, day=29)
+    assert not is_date(2262, month=1, day=1) and not is_date(2026, month=4, day=31)
+
+test "every day from 1678 to 2261 comes back as the same date"():
+    first = Time.utc(year=1678, month=1, day=1)?.days()
+    last = Time.utc(year=2261, month=12, day=31)?.days()
+    mut days = first
+    mut year = 1678
+    mut day_of_year = 1
+    while days <= last:
+        moment = Time(nanos=days * 86_400_000_000_000)
+        again = Time.utc(year=moment.year(), month=moment.month(), day=moment.day())?
+        assert again.days() == days
+        assert moment.year() == year and moment.day_of_year() == day_of_year
+        days += 1
+        day_of_year += 1
+        if moment.month() == 12 and moment.day() == 31:
+            year += 1
+            day_of_year = 1
+
+test "format lays a moment out"():
+    moment = Time.utc(year=2026, month=11, day=6, hour=21, minute=55, second=56)?
+    assert moment.format("%a %d %b %Y %H:%M") == "Fri 06 Nov 2026 21:55"
+    assert moment.format("%A %B %j %y %z %Z 100%% %q") == "Friday November 310 26 +0000 UTC 100% %q"
+    assert next_due(moment, every=Duration.hours(24 * 7)) == "Fri 13 Nov 2026"
+
+test "durations print as they're written"():
+    assert str(Duration.seconds(1.0 / 60.0)) == "16.666667ms"
+    assert str(1h30min) == "1h30min"
+    assert str(90500ms) == "1min30.5s"
+    assert str(Duration(nanos=-1_500_000_000)) == "-1.5s"
+    assert str(250us) == "250us"
+    assert str(40ns) == "40ns"
+    assert str(Duration()) == "0s"
+    assert str(Duration(nanos=-2_000_000_000).abs()) == "2s"
+
+test "a test's clock starts in 2000 and moves only as it sleeps"(clock: Clock):
+    assert str(clock.time()) == "2000-01-01T00:00:00Z"
+    clock.sleep(1500ms)
+    assert str(clock.time()) == "2000-01-01T00:00:01.5Z"
+
+def main(stdout: Stdout, clock: Clock):
+    moment = Time.utc(year=2026, month=11, day=6, hour=21, minute=55, second=56) else Time()
+    stdout.print(moment, moment.nanos, moment.weekday(), moment.day_of_year())
+    stdout.print(moment.format("%d/%m/%Y %H:%M:%S"), next_due(moment, every=Duration.hours(48)))
+    stdout.print(Duration.minutes(90), Duration.seconds(0.25), is_date(2026, month=11, day=6))
+    # The real wall clock: well after this was written, and printed as RFC 3339.
+    now = clock.time()
+    stdout.print(moment < now, str(now).endswith("Z"))

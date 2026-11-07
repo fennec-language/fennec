@@ -1,5 +1,6 @@
-## A length of time, to the nanosecond. Made with `Duration.seconds(0.5)`,
-## `Duration.millis(16)` or `Duration(nanos=...)`.
+## A length of time, to the nanosecond. Written like `1.5s`, `16ms` or `1h30min`, or made with
+## `Duration.seconds(0.5)`, `Duration.millis(16)` or `Duration(nanos=...)`. It prints the way
+## it's written, as `16.666667ms` or `1h30min5s`.
 export struct Duration:
     nanos = 0
 
@@ -11,6 +12,42 @@ export struct Duration:
 
     def micros(micros: int) -> Duration:
         Duration(nanos=micros * 1_000)
+
+    def minutes(minutes: int) -> Duration:
+        Duration(nanos=minutes * 60_000_000_000)
+
+    def hours(hours: int) -> Duration:
+        Duration(nanos=hours * 3_600_000_000_000)
+
+    ## The same length, forward.
+    def abs(self) -> Duration:
+        Duration(nanos=-self.nanos if self.nanos < 0 else self.nanos)
+
+    ## As it's written: under a second in its largest unit, like `16.5ms`, and from a second up
+    ## in hours, minutes and seconds, leaving out those that are 0, like `1h30min` or `90.5s`.
+    def str(self, ref out: StrWriter):
+        if self.nanos == 0:
+            out.write("0s")
+            return
+        if self.nanos < 0:
+            out.write("-")
+        size = -self.nanos if self.nanos < 0 else self.nanos
+        if size < 1_000:
+            out.write(f"{size}ns")
+        elif size < 1_000_000:
+            out.write(Time._decimal(size, unit=1_000, places=3) + "us")
+        elif size < 1_000_000_000:
+            out.write(Time._decimal(size, unit=1_000_000, places=6) + "ms")
+        else:
+            hours = size // 3_600_000_000_000
+            minutes = size % 3_600_000_000_000 // (60_000_000_000)
+            rest = size % (60_000_000_000)
+            if hours > 0:
+                out.write(f"{hours}h")
+            if minutes > 0:
+                out.write(f"{minutes}min")
+            if rest > 0:
+                out.write(Time._decimal(rest, unit=1_000_000_000, places=9) + "s")
 
     ## The duration in seconds, for moving things by `speed * dt.as_seconds()`.
     def as_seconds(self) -> float:
@@ -44,3 +81,264 @@ export struct Instant:
 
     def <(self, other: Instant) -> bool:
         self.nanos < other.nanos
+
+## A moment in UTC, to the nanosecond, as `clock.time()` reads it, for saving and showing:
+## `clock.now()` is the one for measuring, since this one can jump when the system's clock is
+## set. It prints as RFC 3339 text, like `2026-11-06T21:55:56Z`, which `Time.parse` reads back.
+export struct Time:
+    ## Nanoseconds since 1970-01-01T00:00:00Z, negative before it. An `int` holds the years from
+    ## 1678 to 2261.
+    nanos = 0
+
+    ## The moment of a date and a time of day in UTC, like
+    ## `Time.utc(year=2026, month=11, day=6, hour=21)`. Fails on a date the calendar doesn't
+    ## have, like February 30th, on a time of day past `23:59:59`, and on a year outside 1678 to
+    ## 2261.
+    def utc(
+        year: int,
+        month: int,
+        day: int,
+        hour = 0,
+        minute = 0,
+        second = 0,
+    ) -> Time fails InvalidValue:
+        if year < 1678 or year > 2261:
+            fail InvalidValue(message=f"a `Time` holds the years from 1678 to 2261, not {year}")
+        if month < 1 or month > 12:
+            fail InvalidValue(message=f"a month is from 1 to 12, not {month}")
+        if day < 1 or day > Time._days_in_month(year, month=month):
+            fail InvalidValue(message=f"{year}-{Time._padded(month, width=2)} has no day {day}")
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59 or second < 0 or second > 59:
+            fail InvalidValue(
+                message=f"{hour}:{Time._padded(minute, width=2)}:{Time._padded(second, width=2)} isn't a time of day",
+            )
+        days = Time._days_from_date(year, month=month, day=day)
+        Time(nanos=days * 86_400_000_000_000 + (hour * 3600 + minute * 60 + second) * 1_000_000_000)
+
+    ## The moment RFC 3339 text says, like `2026-11-06T21:55:56Z` or
+    ## `2026-11-06T23:55:56.25+02:00`. `t` and `z` may be lowercase, and a space may stand for the
+    ## `T`. Digits past nanoseconds are left off.
+    def parse(text: str) -> Time fails ParseError:
+        if text.len() < 20: fail Time._not_rfc3339(text, at=text.len())
+        for at, wanted in [(4, "-"), (7, "-"), (13, ":"), (16, ":")]:
+            if text[at] != wanted: fail Time._not_rfc3339(text, at=at)
+        if text[10] != "T" and text[10] != "t" and text[10] != " ":
+            fail Time._not_rfc3339(text, at=10)
+        year = Time._digits_at(text, at=0, count=4)?
+        month = Time._digits_at(text, at=5, count=2)?
+        day = Time._digits_at(text, at=8, count=2)?
+        hour = Time._digits_at(text, at=11, count=2)?
+        minute = Time._digits_at(text, at=14, count=2)?
+        second = Time._digits_at(text, at=17, count=2)?
+        mut at = 19
+        mut fraction = 0
+        if text[at] == ".":
+            at += 1
+            mut places = 0
+            while at < text.len() and text[at].isdigit():
+                if places < 9:
+                    fraction = fraction * 10 + (int(text[at]) else 0)
+                    places += 1
+                at += 1
+            if places == 0: fail Time._not_rfc3339(text, at=at)
+            while places < 9:
+                fraction *= 10
+                places += 1
+        if at >= text.len(): fail Time._not_rfc3339(text, at=at)
+        mut offset = 0
+        sign = text[at]
+        if sign == "Z" or sign == "z":
+            at += 1
+        elif sign == "+" or sign == "-":
+            if at + 6 > text.len() or text[at + 3] != ":": fail Time._not_rfc3339(text, at=at)
+            hours = Time._digits_at(text, at=at + 1, count=2)?
+            minutes = Time._digits_at(text, at=at + 4, count=2)?
+            if hours > 23 or minutes > 59: fail Time._not_rfc3339(text, at=at)
+            offset = (hours * 60 + minutes) * 60_000_000_000
+            if sign == "-":
+                offset = -offset
+            at += 6
+        else:
+            fail Time._not_rfc3339(text, at=at)
+        if at != text.len(): fail Time._not_rfc3339(text, at=at)
+        match Time.utc(year, month=month, day=day, hour=hour, minute=minute, second=second):
+            case Ok(found):
+                Time(nanos=found.nanos + fraction - offset)
+            case Err(problem):
+                fail ParseError(message=problem.message, line=1, column=1)
+
+    ## The year, like 2026.
+    def year(self) -> int:
+        year, _, _ = Time._date_of_days(self.days())
+        year
+
+    ## The month, from 1 for January to 12 for December.
+    def month(self) -> int:
+        _, month, _ = Time._date_of_days(self.days())
+        month
+
+    ## The day of the month, from 1.
+    def day(self) -> int:
+        _, _, day = Time._date_of_days(self.days())
+        day
+
+    def hour(self) -> int:
+        self.nanos % 86_400_000_000_000 // 3_600_000_000_000
+
+    def minute(self) -> int:
+        self.nanos % 3_600_000_000_000 // (60_000_000_000)
+
+    def second(self) -> int:
+        self.nanos % (60_000_000_000) // 1_000_000_000
+
+    ## The nanoseconds past the second, from 0 to 999,999,999.
+    def nanosecond(self) -> int:
+        self.nanos % 1_000_000_000
+
+    ## The day of the week, from 0 for Monday to 6 for Sunday, as Python counts them.
+    def weekday(self) -> int:
+        # 1970-01-01 was a Thursday.
+        (self.days() + 3) % 7
+
+    ## The day of the year, from 1 for January 1st.
+    def day_of_year(self) -> int:
+        self.days() - Time._days_from_date(self.year(), month=1, day=1) + 1
+
+    ## Whole days since 1970-01-01, negative before it.
+    def days(self) -> int:
+        self.nanos // 86_400_000_000_000
+
+    ## RFC 3339 text in UTC, like `2026-11-06T21:55:56Z`, with as many digits of a fraction of a
+    ## second as it needs, like `2026-11-06T21:55:56.25Z`.
+    def iso(self) -> str:
+        year, month, day = Time._date_of_days(self.days())
+        mut text = f"{Time._padded(year, width=4)}-{Time._padded(month, width=2)}-{Time._padded(day, width=2)}"
+        text += f"T{Time._padded(self.hour(), width=2)}:{Time._padded(self.minute(), width=2)}:{Time._padded(self.second(), width=2)}"
+        if self.nanosecond() != 0:
+            text += "." + Time._without_trailing_zeros(Time._padded(self.nanosecond(), width=9))
+        text + "Z"
+
+    ## The moment as `pattern` lays it out, its directives as C's `strftime` has them: `%Y`
+    ## the year, `%m` the month, `%d` the day, `%H`, `%M` and `%S` the hour, minute and second,
+    ## `%f` the microseconds, `%j` the day of the year, `%a` and `%A` the day's name short and
+    ## whole, `%b` and `%B` the month's, `%y` the year's last two digits, `%z` the offset, which
+    ## is `+0000`, `%Z` the zone, which is `UTC`, and `%%` a `%`. Anything else is written as
+    ## it is.
+    def format(self, pattern: str) -> str:
+        mut out = StrWriter()
+        mut at = 0
+        while at < pattern.len():
+            if pattern[at] != "%" or at + 1 == pattern.len():
+                out.write(pattern[at])
+                at += 1
+                continue
+            code = pattern[at + 1]
+            out.write(self.directive(code) else "%" + code)
+            at += 2
+        out.text()
+
+    ## What a `format` directive writes, without its `%`.
+    def directive(self, code: str) -> str?:
+        if code == "Y": return Time._padded(self.year(), width=4)
+        if code == "y": return Time._padded(self.year() % 100, width=2)
+        if code == "m": return Time._padded(self.month(), width=2)
+        if code == "d": return Time._padded(self.day(), width=2)
+        if code == "H": return Time._padded(self.hour(), width=2)
+        if code == "M": return Time._padded(self.minute(), width=2)
+        if code == "S": return Time._padded(self.second(), width=2)
+        if code == "f": return Time._padded(self.nanosecond() // 1_000, width=6)
+        if code == "j": return Time._padded(self.day_of_year(), width=3)
+        if code == "a": return Time._day_name(self.weekday())[0:3]
+        if code == "A": return Time._day_name(self.weekday())
+        if code == "b": return Time._month_name(self.month())[0:3]
+        if code == "B": return Time._month_name(self.month())
+        if code == "z": return "+0000"
+        if code == "Z": return "UTC"
+        if code == "%": return "%"
+        None
+
+    def str(self, ref out: StrWriter):
+        out.write(self.iso())
+
+    def -(self, earlier: Time) -> Duration:
+        Duration(nanos=self.nanos - earlier.nanos)
+
+    def +(self, later: Duration) -> Time:
+        Time(nanos=self.nanos + later.nanos)
+
+    def <(self, other: Time) -> bool:
+        self.nanos < other.nanos
+
+    ## The days from 1970-01-01 to a date of the Gregorian calendar, counted back before it too,
+    ## negative before 1970. Howard Hinnant's `days_from_civil`.
+    def _days_from_date(year: int, month: int, day: int) -> int:
+        shifted = year - 1 if month <= 2 else year
+        era = shifted // 400
+        of_era = shifted - era * 400
+        of_year = (153 * (month - 3 if month > 2 else month + 9) + 2) // 5 + day - 1
+        of_cycle = of_era * 365 + of_era // 4 - of_era // 100 + of_year
+        era * 146_097 + of_cycle - 719_468
+
+    ## The date `days` after 1970-01-01, as its year, month and day: `days_from_date` turned around.
+    def _date_of_days(days: int) -> (int, int, int):
+        shifted = days + 719_468
+        era = shifted // 146_097
+        of_cycle = shifted - era * 146_097
+        of_era = (of_cycle - of_cycle // 1_460 + of_cycle // 36_524 - of_cycle // 146_096) // 365
+        of_year = of_cycle - (365 * of_era + of_era // 4 - of_era // 100)
+        shifted_month = (5 * of_year + 2) // 153
+        day = of_year - (153 * shifted_month + 2) // 5 + 1
+        month = shifted_month + 3 if shifted_month < 10 else shifted_month - 9
+        (of_era + era * 400 + (1 if month <= 2 else 0), month, day)
+
+    ## How many days a month of a year has.
+    def _days_in_month(year: int, month: int) -> int:
+        if month == 2:
+            leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+            return 29 if leap else 28
+        30 if month == 4 or month == 6 or month == 9 or month == 11 else 31
+
+    ## `n` written with zeros before it to at least `width` digits.
+    def _padded(n: int, width: int) -> str:
+        text = str(n)
+        "0" * (width - text.len()) + text
+
+    ## `text` with the zeros at its end taken off.
+    def _without_trailing_zeros(text: str) -> str:
+        mut end = text.len()
+        while end > 1 and text[end - 1] == "0":
+            end -= 1
+        text[0:end]
+
+    ## `size` in `unit`s, with as many of its `places` decimals as it needs: 1,500 in thousands is
+    ## `1.5`.
+    def _decimal(size: int, unit: int, places: int) -> str:
+        whole = str(size // unit)
+        part = size % unit
+        if part == 0: return whole
+        whole + "." + Time._without_trailing_zeros(Time._padded(part, width=places))
+
+    ## The number of `count` digits at `at` in RFC 3339 text.
+    def _digits_at(text: str, at: int, count: int) -> int fails ParseError:
+        part = text[at:at + count]
+        if part.len() != count or not part.isdigit(): fail Time._not_rfc3339(text, at=at)
+        int(part) else 0
+
+    ## The error for text that isn't RFC 3339, at the character it goes wrong at.
+    def _not_rfc3339(text: str, at: int) -> ParseError:
+        ParseError(
+            message=f"`{text}` isn't an RFC 3339 time, like `2026-11-06T21:55:56Z`",
+            line=1,
+            column=at + 1,
+        )
+
+    ## The name of the day of the week `weekday` counts, from 0 for Monday.
+    def _day_name(weekday: int) -> str:
+        ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][weekday]
+
+    ## The name of a month, from 1 for January.
+    def _month_name(month: int) -> str:
+        [
+            "January", "February", "March", "April", "May", "June", "July", "August", "September",
+            "October", "November", "December",
+        ][month - 1]

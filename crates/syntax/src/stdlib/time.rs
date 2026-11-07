@@ -4,7 +4,7 @@ use super::Module;
 
 pub(crate) const MODULE: Module = Module {
     name: "time",
-    names: &["Clock", "Duration", "Instant"],
+    names: &["Clock", "Duration", "Instant", "Time"],
     source: include_str!("time.fen"),
-    gives: &[("now", "Instant")],
+    gives: &[("now", "Instant"), ("time", "Time")],
 };

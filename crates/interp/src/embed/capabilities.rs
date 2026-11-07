@@ -339,6 +339,11 @@ pub extern "C" fn clock_now() -> i64 {
     crate::collections::monotonic_nanos()
 }
 
+/// `clock.time()`, as the nanoseconds of a `Time`.
+pub extern "C" fn clock_time() -> i64 {
+    crate::collections::wall_nanos()
+}
+
 /// `clock.sleep(duration)`, by the nanoseconds of a `Duration`. What's been printed comes out
 /// first, as it does before anything else that waits.
 pub extern "C" fn clock_sleep(nanos: i64) {

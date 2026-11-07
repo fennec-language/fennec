@@ -203,7 +203,11 @@ impl Interp<'_> {
                 }
                 Ok(Value::Unit)
             }
-            ("now" | "sleep", _) => Err(wrong_args(method, span)),
+            ("time", []) => {
+                let nanos = fixed.map_or_else(wall_nanos, |elapsed| FAKE_TIME.saturating_add(elapsed));
+                self.make_value("Time", vec![("nanos", Value::Int(nanos))], span)
+            }
+            ("now" | "sleep" | "time", _) => Err(wrong_args(method, span)),
             _ => Err(no_method(&Value::Capability(Capability::Clock), method, span)),
         }
     }
@@ -392,6 +396,19 @@ impl Interp<'_> {
 fn clock_start() -> std::time::Instant {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     *START.get_or_init(std::time::Instant::now)
+}
+
+/// What a test's fake `Clock` says the time is before it sleeps: 2000-01-01T00:00:00Z, as
+/// nanoseconds since 1970 began in UTC. It moves on as the test sleeps.
+pub(crate) const FAKE_TIME: i64 = 946_684_800_000_000_000;
+
+/// The wall clock's reading, in nanoseconds since 1970 began in UTC, negative before then.
+pub(crate) fn wall_nanos() -> i64 {
+    let now = std::time::SystemTime::now();
+    match now.duration_since(std::time::UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_nanos()).unwrap_or(i64::MAX),
+        Err(before) => i64::try_from(before.duration().as_nanos()).map_or(i64::MIN, |nanos| -nanos),
+    }
 }
 
 /// The monotonic clock's reading, in nanoseconds since it started.

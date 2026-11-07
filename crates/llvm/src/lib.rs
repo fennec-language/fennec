@@ -53,6 +53,7 @@ mod native;
 mod parallel;
 mod random;
 mod regex;
+mod rollback;
 mod text;
 mod uniqueness;
 mod waits;

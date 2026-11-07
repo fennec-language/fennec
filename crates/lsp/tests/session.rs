@@ -570,7 +570,7 @@ fn places(locations: &Json) -> Vec<(String, usize)> {
 /// the whole program, every reference.
 #[test]
 fn after_an_edit_to_a_body_definitions_hovers_and_references_still_answer() {
-    let mut editor = Editor::new("after_edit").unwrap();
+    let mut editor = Editor::new("answers_after_a_body_edit").unwrap();
     editor.open("src/main.fen", MAIN);
     let edited = MAIN.replace("hit(fighter, 3)", "hit(fighter, 4)");
     let published = editor.change("src/main.fen", &edited);

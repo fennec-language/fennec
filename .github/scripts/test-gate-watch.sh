@@ -16,6 +16,9 @@ for name in cargo rustc ld program; do
 done
 cc -o "$work/deps/fennec-0123456789abcdef" "$work/sleeper.c" || exit 1
 cc -o "$work/bin/busy" "$work/busy.c" || exit 1
+# And one that holds 200 MB, touched so it's really held, then waits.
+printf '#include <stdlib.h>\n#include <string.h>\n#include <unistd.h>\nint main(void) { char *held = malloc(200 << 20); memset(held, 1, 200 << 20); sleep(30); return held[7]; }\n' > "$work/swelling.c"
+cc -o "$work/bin/swelling" "$work/swelling.c" || exit 1
 
 # Runs a program for six seconds under a CPU limit of two seconds, and a wall-clock limit of
 # `$2`, or twenty seconds.
@@ -85,6 +88,25 @@ else
   echo "FAILED: a program stuck past its wall-clock limit wasn't stopped"
   failures=$((failures + 1))
 fi
+
+# The memory limit holds for every program, a tool's name or not, and comes before any time limit.
+for named in swelling cargo; do
+  program="$work/bin/swelling"
+  [ "$named" = cargo ] && { mkdir -p "$work/tool"; cp "$work/bin/swelling" "$work/tool/cargo"; program="$work/tool/cargo"; }
+  bash -c "\"$program\"; true" &
+  parent=$!
+  : > "$work/log"
+  "$here/gate-watch.sh" "$parent" "$work/log" 60 20480 600 &
+  watcher=$!
+  wait "$parent"
+  wait "$watcher"
+  if grep -q "over its memory limit" "$work/log"; then
+    echo "ok: a program named $named holding more than its memory limit is stopped"
+  else
+    echo "FAILED: a program named $named holding more than its memory limit wasn't stopped"
+    failures=$((failures + 1))
+  fi
+done
 
 [ "$failures" = 0 ] && echo "all passed"
 exit "$failures"

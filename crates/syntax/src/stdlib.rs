@@ -49,6 +49,7 @@ modules! {
     re,
     time,
     toml,
+    url,
     uuid,
 }
 

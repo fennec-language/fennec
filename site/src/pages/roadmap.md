@@ -100,8 +100,6 @@ These are still being decided. Decisions already made, and why, are in [the lang
 
 - A clean way to print a friendly message and still exit with failure.
 - Whether `x / 0.0` keeps stopping the program.
-- How a type says it must be finished, like a transaction that needs `commit()`.
-- What happens when a stop cuts a task's wait short.
 - How replay records the order tasks reach a `shared` value or a channel.
 - Whether kits can define their own annotations.
 - The API of `Graph`.

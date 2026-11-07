@@ -992,6 +992,3 @@ Floats have one equality, order and hash: NaN equals itself and sorts last, and 
 | `where` | A broken rule always stops the program |
 | `?` inside `parallel` | It ends only that task |
 | A scoped `ref` | Possibly `with units[target_id] as ref target:` |
-| Closing written files | A written file is a type its caller must finish, with `close()?` |
-| How a type says it must be finished | Inferred from a `lend` whose cleanup can fail, with no marker |
-| A wait cut short by a stop | Ends the task quietly, with no failure reported |

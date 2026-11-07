@@ -1,6 +1,8 @@
 # `std.process` runs other programs through the `Process` capability. Arguments are always a
-# list, so nothing in them is read by a shell. In a test, `Process` is a fake that runs nothing
-# and gives back what the test scripted.
+# list, so nothing in them is read by a shell. `input=` is what the program reads from its
+# standard input, `cwd=` the folder it runs in, and `env=` variables it gets on top of this
+# program's own. In a test, `Process` is a fake that runs nothing and gives back what the test
+# scripted.
 from std.process import Output, ProcessError
 
 ## The commits since `tag`, one a line, newest first.
@@ -36,6 +38,16 @@ test "an argument with spaces or quotes is one argument"(process: Process):
     process.script("echo", Output(stdout="ok"))
     process.run("echo", ["a b", "'c'", "$(rm -rf /)"])?
     assert process.ran() == [["echo", "a b", "'c'", "$(rm -rf /)"]]
+
+## How many lines of `text` say `word`, as grep counts them.
+def count_lines(process: Process, text: str, word: str) -> int:
+    found = process.run("grep", ["-c", word], input=text, env={"LC_ALL": "C"}) else Output()
+    int(found.stdout.strip()) else 0
+
+test "grep is given the text to read"(process: Process):
+    process.script("grep", Output(stdout="2\n"))
+    assert count_lines(process, text="a fox\na dog\nfoxes\n", word="fox") == 2
+    assert process.ran() == [["grep", "-c", "fox"]]
 
 def main(stdout: Stdout, process: Process):
     # A program that isn't installed fails with a `ProcessError` value.

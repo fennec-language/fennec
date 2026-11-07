@@ -1,0 +1,17 @@
+# How many of each example's tests `fennec test` runs on the JIT or the interpreter instead of
+# through LLVM, because LLVM can't build what they reach yet, or for another reason
+# `crates/fennec/src/llvm_tests.rs` gives. An example not listed runs all its tests through LLVM.
+# `every_example_tested_through_llvm_says_and_traces_what_it_does_on_the_jit` holds these exactly:
+# a count that goes up fails it, and one that goes down is lowered here. `fennec test --verbose`
+# says the first reason for a program.
+env 1
+http_server 3
+json_collections 1
+own_str 1
+serialize_protocol 4
+std_cli 6
+std_net 12
+std_sorted_map 3
+std_sorted_set 1
+std_uuid 1
+test_capabilities 1

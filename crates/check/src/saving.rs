@@ -90,6 +90,8 @@ fn uses_saving(module: &Module) -> bool {
             ExprKind::Name(name) => SAVING_NAMES.contains(&name.as_str()),
             // `response.json[T]()` reads what an HTTP call gave back as a `T`.
             ExprKind::Attr { name, .. } => SAVING_NAMES.contains(&name.as_str()) || name == "json",
+            // `net.post(url, json=value)` writes the value as JSON.
+            ExprKind::Call { args, .. } => args.iter().any(|arg| arg.name.as_deref() == Some("json")),
             _ => false,
         };
     });

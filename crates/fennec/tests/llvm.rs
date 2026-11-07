@@ -4833,47 +4833,60 @@ def main(net: Net, stdout: Stdout):
 /// The server `http_requests_go_through_native_code` asks: it answers three requests with the
 /// first line of each, and a 200 only for `/a`. It starts once the program is built, and gives up
 /// a minute later, so a program that stops asking fails the test rather than leaving it waiting.
+/// The next connection to a nonblocking listener, waiting until `deadline`.
+fn next_connection(
+    listener: &std::net::TcpListener,
+    deadline: std::time::Instant,
+) -> std::io::Result<std::net::TcpStream> {
+    let conn = loop {
+        match listener.accept() {
+            Ok((conn, _)) => break conn,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() > deadline {
+                    return Err(std::io::Error::other("the program stopped asking"));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => return Err(e),
+        }
+    };
+    conn.set_nonblocking(false)?;
+    conn.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+    Ok(conn)
+}
+
+/// The whole request, its body too: closing a connection with some of it unread resets it, and
+/// on Windows the program can lose the answer to that.
+fn whole_request(conn: &mut std::net::TcpStream) -> std::io::Result<String> {
+    let mut asked = Vec::new();
+    let mut chunk = [0; 4096];
+    let mut wanted = None;
+    while wanted.is_none_or(|wanted| asked.len() < wanted) {
+        let read = std::io::Read::read(conn, &mut chunk)?;
+        if read == 0 {
+            return Err(std::io::Error::other("the program closed a request part-way"));
+        }
+        asked.extend_from_slice(chunk.get(..read).unwrap_or_default());
+        let text = String::from_utf8_lossy(&asked);
+        if let Some(end) = text.find("\r\n\r\n") {
+            let length = text
+                .get(..end)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, length)| length.trim().parse::<usize>().ok());
+            wanted = Some(end + 4 + length.unwrap_or(0));
+        }
+    }
+    Ok(String::from_utf8_lossy(&asked).into_owned())
+}
+
 fn answer_three_requests(listener: &std::net::TcpListener) -> std::io::Result<()> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     for _ in 0..3 {
-        let mut conn = loop {
-            match listener.accept() {
-                Ok((conn, _)) => break conn,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    if std::time::Instant::now() > deadline {
-                        return Err(std::io::Error::other("the program stopped asking"));
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(e) => return Err(e),
-            }
-        };
-        conn.set_nonblocking(false)?;
-        conn.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
-        // The whole request, its body too: closing a connection with some of it unread resets
-        // it, and on Windows the program can lose the answer to that.
-        let mut asked = Vec::new();
-        let mut chunk = [0; 4096];
-        let mut wanted = None;
-        while wanted.is_none_or(|wanted| asked.len() < wanted) {
-            let read = std::io::Read::read(&mut conn, &mut chunk)?;
-            if read == 0 {
-                return Err(std::io::Error::other("the program closed a request part-way"));
-            }
-            asked.extend_from_slice(chunk.get(..read).unwrap_or_default());
-            let text = String::from_utf8_lossy(&asked);
-            if let Some(end) = text.find("\r\n\r\n") {
-                let length = text
-                    .get(..end)
-                    .unwrap_or_default()
-                    .lines()
-                    .filter_map(|line| line.split_once(':'))
-                    .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                    .and_then(|(_, length)| length.trim().parse::<usize>().ok());
-                wanted = Some(end + 4 + length.unwrap_or(0));
-            }
-        }
-        let asked = String::from_utf8_lossy(&asked).into_owned();
+        let mut conn = next_connection(listener, deadline)?;
+        let asked = whole_request(&mut conn)?;
         let first = asked.lines().next().unwrap_or_default();
         let status = if first.contains("/a") { "200 OK" } else { "500 Oops" };
         let why = if asked.contains("X-Mine: yes") { "mine" } else { "plain" };
@@ -4941,6 +4954,85 @@ def main(net: Net, stdout: Stdout):
          `127.0.0.1` refused a connection on port 1\n\
          `not a url` isn't a URL like `https://example.com/path`\n"
     );
+    Ok(())
+}
+
+/// `json=` sends a value as its JSON text, with `content-type: application/json` unless the call
+/// says otherwise, the same natively as in the interpreter: a struct, a list with a type of its
+/// own, and a str, which is quoted.
+#[test]
+fn a_value_sent_as_json_reads_the_same_natively_as_in_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = |port: u16| {
+        format!(
+            r#"from std.net import NetError
+
+struct Draft:
+    title: str
+    tags: list[str]
+    stars: int
+
+def send(net: Net, stdout: Stdout) fails NetError:
+    url = "http://127.0.0.1:{port}/notes"
+    stdout.print(net.post(url, json=Draft(title="den", tags=["fox", "river"], stars=3))?.text())
+    stdout.print(net.post(url, json=["a", "b"], headers={{"Content-Type": "application/vnd.mine+json"}})?.text())
+    stdout.print(net.request("put", url, json="a \"quoted\" note")?.text())
+
+def main(net: Net, stdout: Stdout):
+    match send(net, stdout):
+        case Err(error):
+            stdout.print(error.message())
+        case Ok(_):
+            pass
+"#
+        )
+    };
+    let wanted = "application/json {\"title\": \"den\", \"tags\": [\"fox\", \"river\"], \"stars\": 3}\n\
+                  application/vnd.mine+json [\"a\", \"b\"]\n\
+                  application/json \"a \\\"quoted\\\" note\"\n";
+    let dir = folder("json_body")?;
+    for native in [false, true] {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+        let port = listener.local_addr()?.port();
+        listener.set_nonblocking(true)?;
+        let program = dir.join(format!("post_{native}.fen"));
+        std::fs::write(&program, source(port))?;
+        let program = program.to_string_lossy().into_owned();
+        let server = std::thread::spawn(move || echo_three_bodies(&listener));
+        let ran = if native {
+            let executable = dir.join(format!("post{}", std::env::consts::EXE_SUFFIX));
+            let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            outcome(&Command::new(&executable).output_within()?)
+        } else {
+            outcome(&fennec(&["run", "--interp", &program], &dir)?)
+        };
+        let answered = server.join().map_err(|_| std::io::Error::other("the test's server panicked"))?;
+        assert!(answered.is_ok(), "native {native}: {answered:?}, and the program said {ran:?}");
+        assert_eq!(ran.0, wanted, "native {native}: {}", ran.1);
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// Answers three requests, each with its content type, a space and its body.
+fn echo_three_bodies(listener: &std::net::TcpListener) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    for _ in 0..3 {
+        let mut conn = next_connection(listener, deadline)?;
+        let asked = whole_request(&mut conn)?;
+        let (head, body) = asked.split_once("\r\n\r\n").unwrap_or_default();
+        let kind = head
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map_or("none", |(_, kind)| kind.trim());
+        let echoed = format!("{kind} {body}");
+        let answer = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{echoed}", echoed.len());
+        std::io::Write::write_all(&mut conn, answer.as_bytes())?;
+    }
     Ok(())
 }
 

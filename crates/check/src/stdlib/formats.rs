@@ -43,6 +43,16 @@ impl FnCx<'_> {
         Type::Str
     }
 
+    /// `net.post(url, json=value)`: the value is sent as JSON, so it has to be something JSON
+    /// holds. Native code writes it through its own `def serialize`, as `json.dumps` does.
+    pub(crate) fn json_body(&mut self, ty: &Type, at: Span) {
+        if let Err(problem) = self.holds("JSON", ty, (at, None), &mut Vec::new()) {
+            self.error(problem);
+        } else if self.fits_interface(ty, "Serializable").is_ok() {
+            self.checker.native_json_bodies.insert((at.start, at.end));
+        }
+    }
+
     /// `json.loads[T](text)`: the text read as a `T`, or a `ParseError`.
     pub(crate) fn typed_loads(&mut self, name: &str, index: &Expr, args: &[Arg], span: Span) -> Type {
         let mut plain = Vec::new();

@@ -1,0 +1,7 @@
+error: a request sends `body=` or `json=`, not both
+ --> examples/errors/net_json_and_body.fen:2:12
+  |
+2 |     sent = net.post("https://example.com/notes", body="{}", json={"title": "den"})
+  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: `json=` sends a value as JSON, as its body

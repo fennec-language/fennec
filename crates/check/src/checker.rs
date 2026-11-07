@@ -75,6 +75,9 @@ pub(crate) struct Checker {
     /// The calls to `json` and `toml`'s `dumps` and `loads` whose type has its own `def serialize`
     /// or `def deserialize`, each with the function in std that does the same in Fennec.
     pub(crate) native_formats: BTreeMap<(u32, u32), String>,
+    /// The values given as `json=` to an HTTP call whose type has its own `def serialize`, which
+    /// native code writes through `json.native_dumps` before sending.
+    pub(crate) native_json_bodies: BTreeSet<(u32, u32)>,
     /// Each constant's type, once worked out. `None` while its value is being checked.
     pub(crate) const_types: BTreeMap<String, Option<Type>>,
     /// The functions being checked, innermost last.
@@ -154,6 +157,7 @@ impl Checker {
             field_args: BTreeMap::new(),
             named_patterns: BTreeMap::new(),
             native_formats: BTreeMap::new(),
+            native_json_bodies: BTreeSet::new(),
             const_types: BTreeMap::new(),
             checking: Vec::new(),
             revisit: BTreeSet::new(),
@@ -181,8 +185,7 @@ impl Checker {
             }
         }
         self.revisit_cycles();
-        let constants: Vec<String> = self.program.constants.keys().cloned().collect();
-        for name in constants {
+        for name in self.program.constants.keys().cloned().collect::<Vec<_>>() {
             self.constant_type(&name);
         }
         for test in self.program.tests.clone() {
@@ -255,6 +258,7 @@ impl Checker {
             field_args: self.field_args,
             named_patterns: self.named_patterns,
             native_formats: self.native_formats,
+            native_json_bodies: self.native_json_bodies,
         }
     }
 

@@ -429,6 +429,7 @@ impl<'p> Module<'_, 'p> {
             kinds,
             returns,
             allocas: String::new(),
+            kept_lengths: HashMap::new(),
             out: String::new(),
             cold: String::new(),
             next: 0,
@@ -489,6 +490,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     kinds: Vec<Kind>,
     returns: Kind,
     pub(crate) allocas: String,
+    /// Where a list a loop fills keeps its length while the loop runs, by the list's local: in
+    /// a local of its own, which LLVM holds in a register, written to the list as the loop ends.
+    pub(crate) kept_lengths: HashMap<usize, String>,
     out: String,
     cold: String,
     next: usize,
@@ -720,6 +724,7 @@ impl Emit<'_, '_, '_> {
         for at in written_order(function) {
             let Some(block) = function.blocks.get(at) else { continue };
             self.start_block(&format!("bb{at}"));
+            self.write_kept_lengths(at);
             let ways_in = before.get(&at).map_or(&[][..], Vec::as_slice);
             self.alone_fields =
                 coming_in(function, self.known, settles, (at, &before, &done), (&on_entry, &alone_left));

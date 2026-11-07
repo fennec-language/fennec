@@ -356,7 +356,20 @@ pub extern "C" fn clock_time() -> i64 {
 /// first, as it does before anything else that waits.
 pub extern "C" fn clock_sleep(nanos: i64) {
     super::write_kept_output();
-    std::thread::sleep(std::time::Duration::from_nanos(u64::try_from(nanos).unwrap_or(0)));
+    let length = std::time::Duration::from_nanos(u64::try_from(nanos).unwrap_or(0));
+    #[cfg(any(test, feature = "threads"))]
+    if super::serve::can_park() {
+        // A task parks for it, so its thread runs others meanwhile, and a stop cuts it short.
+        let deadline = std::time::Instant::now() + length;
+        let token = super::serve::next_token();
+        while std::time::Instant::now() < deadline {
+            if super::serve::park_on(token, Some(deadline)) == super::serve::Parked::Cancelled {
+                return;
+            }
+        }
+        return;
+    }
+    std::thread::sleep(length);
 }
 
 /// `args.len()`.

@@ -38,6 +38,18 @@ thread_local! {
     static INDEX: std::cell::Cell<u16> = const { std::cell::Cell::new(0) };
 }
 
+#[cfg(any(test, feature = "threads"))]
+thread_local! {
+    /// What says the launched task running on this thread is to stop, if one is.
+    static STOP: std::cell::RefCell<Option<Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Whether the task running on this thread was launched and is to stop: its waits are cut short.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn stopped() -> bool {
+    STOP.with_borrow(|stop| stop.as_ref().is_some_and(|stop| stop.load(Ordering::Acquire)))
+}
+
 thread_local! {
     /// The `shared` values' lock words this thread holds beside the one native code remembers.
     static LOCKS: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -189,10 +201,18 @@ pub(crate) struct Accounts {
     /// Whether the heap serves, which a range never does: a range parked on a worker that serves
     /// hands what it makes over, as one that isn't parked does.
     serving: bool,
+    /// For a launched task, set when it's to stop: each wait it's in, or comes to, is cut short.
+    stop: Option<Arc<AtomicBool>>,
 }
 
 #[cfg(any(test, feature = "threads"))]
 impl Accounts {
+    /// A launched task's, reading what's `lent` to the code that launched it, if anything, and
+    /// stopping when `stop` is set.
+    pub(in crate::embed) fn for_task(lent: Option<Arc<Table>>, stop: Arc<AtomicBool>) -> Accounts {
+        Accounts { lent, stop: Some(stop), ..Accounts::default() }
+    }
+
     /// Whether nothing's left in them: a range that ended has handed everything over.
     pub(crate) fn is_empty(&self) -> bool {
         self.made.is_empty() && self.lent.is_none() && self.lent_owners.is_empty() && self.printed.is_empty()
@@ -215,6 +235,7 @@ pub(crate) fn swap_accounts(accounts: &mut Accounts) {
         std::mem::swap(&mut state.heap.lent_owners, &mut accounts.lent_owners);
         std::mem::swap(&mut state.heap.serving, &mut accounts.serving);
         std::mem::swap(&mut *state.output.0.borrow_mut(), &mut accounts.printed);
+        STOP.with_borrow_mut(|stop| std::mem::swap(stop, &mut accounts.stop));
         if !same {
             state.heap.texts.get_mut().clear();
             state.heap.set_cursor(super::heap::Cursor::default());

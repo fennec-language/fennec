@@ -7989,6 +7989,34 @@ fn a_list_of_a_union_holds_its_items_in_place() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A `parallel` call whose body may wait goes to the runtime's `_waiting` entry points, and
+/// runs as one whose body only computes does: here a loop, a comprehension and a sum whose
+/// ranges sleep, beside ones that don't.
+#[test]
+fn parallel_bodies_that_wait_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "parallel_waiting",
+        r"from std.time import Clock
+
+def rest(clock: Clock, x: int) -> int:
+    clock.sleep(1ms)
+    x * 10
+
+def main(stdout: Stdout, clock: Clock):
+    mut xs = [1, 2, 3, 4]
+    for ref x in parallel(xs):
+        clock.sleep(1ms)
+        x += 1
+    rested = [rest(clock, x) for x in parallel(xs)]
+    doubled = [x * 2 for x in parallel(xs)]
+    stdout.print(xs, rested, doubled, sum(rest(clock, x) for x in parallel(xs)))
+",
+    )
+}
+
 /// `parallel` puts items back by their case, letting go of what each item held.
 #[test]
 fn parallel_loops_over_enums_holding_blocks_match_the_jit() -> std::io::Result<()> {

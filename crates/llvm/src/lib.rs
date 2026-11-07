@@ -90,6 +90,12 @@ pub struct Shared {
     /// The boxed types whose blocks generated code makes and frees itself, outside the runtime's
     /// table: see `native`.
     pub native: BTreeSet<u32>,
+    /// The functions that may wait, as `waits` works them out, blocking reads counted: a
+    /// `parallel` call whose body is one of them goes to the runtime's `_waiting` entry points.
+    pub waiting: BTreeSet<String>,
+    /// The closures the program makes that may wait: any of them could be a body that isn't
+    /// known where it's run.
+    pub waiting_closures: BTreeSet<String>,
     /// Each kind of dict's symbol for its shape's number, and what it holds.
     pub dicts: BTreeMap<String, (Word, Word)>,
     /// Whether each function sets a flag saying it ran, for a test to say what it ran. A function

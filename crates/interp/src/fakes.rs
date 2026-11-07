@@ -215,14 +215,14 @@ impl Interp<'_> {
             ("remove", [Value::Str(path)]) => world.remove(path).map(|()| Value::Unit),
             ("list_dir", [Value::Str(path)]) => {
                 return Some(match world.list(path) {
-                    Ok(names) => Ok(crate::stdlib::fs::paths_in(path, names)),
+                    Ok(names) => Ok(crate::stdlib::fs::paths_in(path, &names)),
                     Err(reason) => Ok(crate::stdlib::fs::io_error(&reason)),
                 });
             }
             ("walk", [Value::Str(path)]) => {
                 let mut found = Vec::new();
                 return Some(match world.walk_into(path, &mut found) {
-                    Ok(()) => Ok(crate::stdlib::fs::paths_of(found)),
+                    Ok(()) => Ok(crate::stdlib::fs::paths_of(&found)),
                     Err(reason) => Ok(crate::stdlib::fs::io_error(&reason)),
                 });
             }

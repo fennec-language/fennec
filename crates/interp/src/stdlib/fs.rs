@@ -42,7 +42,7 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
         ("walk", [Value::Str(path)]) => {
             let mut found = Vec::new();
             return Ok(match walk_into(path, &mut found) {
-                Ok(()) => paths_of(found),
+                Ok(()) => paths_of(&found),
                 Err(err) => io_error(&err.to_string()),
             });
         }
@@ -85,16 +85,16 @@ fn list_dir(folder: &str) -> Value {
         }
     }
     names.sort();
-    paths_in(folder, names)
+    paths_in(folder, &names)
 }
 
 /// The paths of the things called `names` in a folder.
-pub(crate) fn paths_in(folder: &str, names: Vec<String>) -> Value {
-    paths_of(names.iter().map(|name| joined(folder, name)).collect())
+pub(crate) fn paths_in(folder: &str, names: &[String]) -> Value {
+    paths_of(&names.iter().map(|name| joined(folder, name)).collect::<Vec<_>>())
 }
 
 /// A result holding a list of `Path`s.
-pub(crate) fn paths_of(texts: Vec<String>) -> Value {
+pub(crate) fn paths_of(texts: &[String]) -> Value {
     let paths = texts.iter().map(|text| Value::made("Path", vec![("text", Value::str(text))]));
     Value::Ok(Rc::new(Value::list(paths.collect())))
 }

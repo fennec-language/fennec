@@ -25,22 +25,38 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          # Linux's are built and tried on Debian 11, so they run with glibc 2.31 and later: Ubuntu
+          # 20.04 and later, Debian 11 and later, RHEL 9. Built on the runner's own Ubuntu 24.04,
+          # `fennec` needed glibc 2.39, and the runtime 2.38 to link a program.
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, container: "debian:bullseye@sha256:6f519a81440354a85eb592c5f32109ab80605f6b892455983a6f618bf87fabe9" }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, container: "debian:bullseye@sha256:6f519a81440354a85eb592c5f32109ab80605f6b892455983a6f618bf87fabe9" }
           - { os: macos-latest, target: aarch64-apple-darwin }
           # On an Intel Mac, so its archive is tried on the machine it's for.
           - { os: macos-15-intel, target: x86_64-apple-darwin }
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     timeout-minutes: 60
     permissions:
       contents: read
       id-token: write
       attestations: write
     steps:
+      # A container has none of the runner's tools: a C compiler for mimalloc, git, and rustup,
+      # which takes the toolchain `rust-toolchain.toml` names when it's first used.
+      - name: Set up the container
+        if: matrix.container
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends build-essential ca-certificates curl git
+          curl -sSfL --retry 3 https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install the toolchain `rust-toolchain.toml` names
+        if: matrix.container
+        run: rustup toolchain install
       - run: rustup target add ${{ matrix.target }}
       # `fennec build` links executables against the runtime library, shipped next to `fennec`.
       - run: cargo build --release --locked -p fennec -p fennec-runtime --target ${{ matrix.target }}

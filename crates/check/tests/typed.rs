@@ -114,6 +114,7 @@ fn is_type_name(expr: &Expr) -> bool {
         "std",
         "string",
         "base64",
+        "url",
         "cli",
         "csv",
         "log",

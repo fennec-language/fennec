@@ -1,0 +1,202 @@
+# `std.url`: URLs as RFC 3986 writes them, `scheme://user@host:port/path?query#fragment`, taken
+# apart into a `Url` and put back together. `quote` and `unquote` write and read the `%41`
+# escapes URLs use for bytes they can't hold as they are, and `encode_query` and `decode_query`
+# write and read a query's `name=value` pairs as HTML forms send them, with `+` for a space.
+
+## A URL taken apart. `path`, `query` and `fragment` hold their text with its escapes read,
+## and printing a `Url` writes it back with what needs escaping escaped. A part that wasn't
+## given is "", with `port` 0 when none was given, and a URL with no `scheme` or `host`, like
+## `/search?q=fox`, is relative.
+export struct Url:
+    scheme = ""
+    ## Who's named before an `@`, like `user:password`, as it's written.
+    user = ""
+    ## A name or an address. An IPv6 address is held without its `[` and `]`.
+    host = ""
+    port = 0
+    path = ""
+    ## The query's parameters by name, in the order the URL has them. A name given twice
+    ## keeps its last value.
+    query = dict[str, str]()
+    fragment = ""
+
+    ## `host`, then `:port` when a port was given: what the URL says to connect to.
+    def address(self) -> str:
+        host = f"[{self.host}]" if self.host.find(":") is not None else self.host
+        f"{host}:{self.port}" if self.port > 0 else host
+
+    def str(self, ref out: StrWriter):
+        if self.scheme != "":
+            out.write(self.scheme + ":")
+        if self.host != "" or self.scheme != "":
+            out.write("//")
+            if self.user != "":
+                out.write(self.user + "@")
+            out.write(self.address())
+        out.write(quoted(self.path, keep="/:@!$&'()*+,;="))
+        if self.query.len() > 0:
+            out.write("?" + encode_query(self.query))
+        if self.fragment != "":
+            out.write("#" + quoted(self.fragment, keep="/?:@!$&'()*+,;="))
+
+## The parts of `text`, an absolute URL like `https://example.com/a?b=1` or a relative one like
+## `/a?b=1`. Text that can't be a URL fails with an `InvalidValue` saying why: a space or a
+## control character in it, a port that isn't a number from 1 to 65535, or an IPv6 address
+## with no `]`.
+export def parse(text: str) -> Url fails InvalidValue:
+    for c in text:
+        if c == " " or c.code() < 32 or c.code() == 127:
+            fail InvalidValue(
+                message=f"`{text}` isn't a URL: it can't hold a space or a control character",
+            )
+    mut rest = text
+    mut found = Url()
+    at_hash = rest.find("#")
+    if at_hash is not None:
+        found = copy(found, fragment=unquote(rest[at_hash + 1:]))
+        rest = rest[:at_hash]
+    at_question = rest.find("?")
+    if at_question is not None:
+        found = copy(found, query=decode_query(rest[at_question + 1:]))
+        rest = rest[:at_question]
+    colon = rest.find(":")
+    slash = rest.find("/") else rest.len()
+    if colon is not None and colon < slash and colon > 0 and is_scheme(rest[:colon]):
+        found = copy(found, scheme=rest[:colon].lower())
+        rest = rest[colon + 1:]
+    if rest.startswith("//"):
+        rest = rest[2:]
+        end = rest.find("/") else rest.len()
+        mut authority = rest[:end]
+        rest = rest[end:]
+        at_sign = authority.find("@")
+        if at_sign is not None:
+            found = copy(found, user=authority[:at_sign])
+            authority = authority[at_sign + 1:]
+        host, port = host_and_port(authority, text)?
+        found = copy(found, host=host, port=port)
+    copy(found, path=unquote(rest))
+
+## Whether text can be a URL's scheme: a letter, then letters, digits, `+`, `-` or `.`.
+def is_scheme(text: str) -> bool:
+    mut first = True
+    for c in text:
+        letter = (c >= "a" and c <= "z") or (c >= "A" and c <= "Z")
+        if first and not letter: return False
+        if not letter and not (c >= "0" and c <= "9") and c != "+" and c != "-" and c != ".":
+            return False
+        first = False
+    not first
+
+## An authority's host, lower case unless it's an IPv6 address, and its port, 0 for none.
+def host_and_port(authority: str, text: str) -> (str, int) fails InvalidValue:
+    mut host = authority
+    mut port_text = ""
+    if authority.startswith("["):
+        close = authority.find("]")
+        if close is None:
+            fail InvalidValue(message=f"`{text}` isn't a URL: its IPv6 address has no `]`")
+        host = authority[1:close]
+        after = authority[close + 1:]
+        if after != "":
+            if not after.startswith(":"):
+                fail InvalidValue(
+                    message=f"`{text}` isn't a URL: `{after}` follows its IPv6 address",
+                )
+            port_text = after[1:]
+    else:
+        colon = authority.find(":")
+        if colon is not None:
+            host = authority[:colon]
+            port_text = authority[colon + 1:]
+        host = unquote(host).lower()
+    if port_text == "": return (host, 0)
+    port = int(port_text) else 0
+    if not port_text.isdigit() or port < 1 or port > 65_535:
+        fail InvalidValue(
+            message=f"`{text}` isn't a URL: its port `{port_text}` isn't from 1 to 65535",
+        )
+    (host, port)
+
+## `text` with each byte URLs can't hold as it is written as `%` and two hex digits, like `%20`
+## for a space. Letters, digits and `-._~` are left as they are, and so is anything in `keep`.
+export def quote(text: str, keep = "") -> str:
+    quoted(text, keep=keep)
+
+def quoted(text: str, keep: str) -> str:
+    raw = text.encode()
+    mut out = list[int]()
+    for b in raw:
+        if is_unreserved(b) or (b < 128 and keep.find(text_of_byte(b)) is not None):
+            out.append(b)
+        else:
+            out.append(37)
+            out.append(hex_char(b >> 4))
+            out.append(hex_char(b & 15))
+    bytes(out).decode() else text
+
+## `text` with each `%` and two hex digits read as the byte they write. One that doesn't, like
+## `%zz`, stays as it is, and so does text whose bytes aren't UTF-8 once read.
+export def unquote(text: str) -> str:
+    decoded(text, plus=False)
+
+## `params` as a query, `name=value` pairs joined by `&`, each part escaped as an HTML form
+## sends it, with `+` for a space: `{"q": "red fox"}` is `q=red+fox`.
+export def encode_query(params: dict[str, str]) -> str:
+    "&".join([form_quoted(name) + "=" + form_quoted(value) for name, value in params.items()])
+
+## A query's pairs, with their escapes read and `+` read as a space, in the order the query
+## has them. A name with no `=` has the value "", and a name given twice keeps its last value.
+export def decode_query(text: str) -> dict[str, str]:
+    mut found = dict[str, str]()
+    for pair in text.split("&"):
+        if pair == "": continue
+        equals = pair.find("=")
+        if equals is None:
+            found[decoded(pair, plus=True)] = ""
+        else:
+            found[decoded(pair[:equals], plus=True)] = decoded(pair[equals + 1:], plus=True)
+    found
+
+def form_quoted(text: str) -> str:
+    quoted(text, keep=" ").replace(" ", "+")
+
+def decoded(text: str, plus: bool) -> str:
+    if text.find("%") is None and (not plus or text.find("+") is None): return text
+    raw = text.encode()
+    mut out = list[int]()
+    mut at = 0
+    while at < raw.len():
+        b = raw[at]
+        if b == 43 and plus:
+            out.append(32)
+            at += 1
+        elif (
+            b == 37
+            and at + 2 < raw.len()
+            and hex_value(raw[at + 1]) >= 0
+            and hex_value(raw[at + 2]) >= 0
+        ):
+            out.append(hex_value(raw[at + 1]) * 16 + hex_value(raw[at + 2]))
+            at += 3
+        else:
+            out.append(b)
+            at += 1
+    bytes(out).decode() else text
+
+def is_unreserved(b: int) -> bool:
+    (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or (
+        b >= 48 and b <= 57
+    ) or b == 45 or b == 46 or b == 95 or b == 126
+
+def hex_char(n: int) -> int:
+    n + 48 if n < 10 else n + 55
+
+def hex_value(b: int) -> int:
+    if b >= 48 and b <= 57: return b - 48
+    if b >= 97 and b <= 102: return b - 87
+    if b >= 65 and b <= 70: return b - 55
+    -1
+
+def text_of_byte(b: int) -> str:
+    bytes([b]).decode() else ""

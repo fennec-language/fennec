@@ -17,38 +17,94 @@ pub(crate) struct Declaration {
     pub(crate) holds: Option<Type>,
     /// Whether it's a local name, which shows only what it holds.
     pub(crate) local: bool,
+    /// Whether it's the standard library's, whose spans are `library::library()`'s rather than
+    /// the program's.
+    pub(crate) library: bool,
 }
 
 /// Every declaration `target` may refer to. One, unless it's a member of an object whose
-/// type isn't known.
+/// type isn't known. What the program doesn't declare may be the standard library's.
 pub(crate) fn declarations(
     target: &Target,
     module: &Module,
     sources: &Sources,
     checked: Option<&Checked>,
 ) -> Vec<Declaration> {
-    let found = Found { module, sources };
-    match target {
-        Target::Local { name, name_at, declared, function } => {
-            let holds =
-                checked.and_then(|checked| checked.types.body(function)?.name(*declared, name).cloned());
-            vec![Declaration { name_at: *name_at, header: *name_at, holds, local: true }]
-        }
-        Target::Global(name) => found.global(name),
-        Target::Case(name) => {
-            found.types().flat_map(|def| found.members(def, name, MemberKind::Cases)).collect()
-        }
-        Target::TypeMember { owner, name } => found.of_type(owner, name, MemberKind::All),
-        Target::Member { object, name, function } => {
-            let owner =
-                checked.and_then(|checked| checked.types.body(function)?.expr(*object)).and_then(type_name);
-            if let Some(owner) = owner {
-                return found.of_type(&owner, name, MemberKind::Values);
+    let own = Found { module, sources, library: None }.find(target, checked);
+    if !own.is_empty() || matches!(target, Target::Local { .. } | Target::Module(_)) {
+        return own;
+    }
+    // `json.loads`, with `json` a module of the library, is that module's function.
+    let module_named = match target {
+        Target::Member { object, .. } => covered(sources, *object),
+        _ => None,
+    };
+    let library = crate::library::library();
+    library
+        .modules
+        .iter()
+        .flat_map(|(name, module)| {
+            let found = Found { module, sources: &library.sources, library: Some(name) };
+            match (target, module_named) {
+                (Target::Member { name: member, .. }, Some(named)) if named == *name => {
+                    found.functions(member).collect()
+                }
+                _ => found.find(target, checked),
             }
-            let mut all: Vec<Declaration> =
-                found.types().flat_map(|def| found.members(def, name, MemberKind::Values)).collect();
-            all.extend(found.extensions().filter_map(|(_, methods)| found.method(methods, name)));
-            all
+        })
+        .collect()
+}
+
+/// The text `span` covers.
+fn covered(sources: &Sources, span: Span) -> Option<&str> {
+    let (_, text, base) = sources.file_at(span)?;
+    let local = |at: u32| usize::try_from(at.saturating_sub(base)).unwrap_or(0);
+    text.get(local(span.start)..local(span.end))
+}
+
+impl Found<'_> {
+    /// What `target` refers to among what this declares.
+    fn find(&self, target: &Target, checked: Option<&Checked>) -> Vec<Declaration> {
+        let found = self;
+        match target {
+            Target::Local { name, name_at, declared, function } => {
+                let holds =
+                    checked.and_then(|checked| checked.types.body(function)?.name(*declared, name).cloned());
+                vec![Declaration { name_at: *name_at, header: *name_at, holds, local: true, library: false }]
+            }
+            Target::Global(name) => found.global(name),
+            Target::Case(name) => {
+                found.types().flat_map(|def| found.members(def, name, MemberKind::Cases)).collect()
+            }
+            Target::TypeMember { owner, name } => found.of_type(owner, name, MemberKind::All),
+            Target::Module(module) => found.module_file(module).into_iter().collect(),
+            Target::Param { function, name } => found.param(function, name).into_iter().collect(),
+            Target::MethodParam { object, method, name, function } => {
+                let owner = checked
+                    .and_then(|checked| checked.types.body(function)?.expr(*object))
+                    .and_then(type_name);
+                owner.and_then(|owner| found.param(&format!("{owner}.{method}"), name)).into_iter().collect()
+            }
+            Target::CaseField { case, name } => found
+                .types()
+                .flat_map(|def| &def.cases)
+                .filter(|declared| declared.name == *case)
+                .flat_map(|declared| &declared.fields)
+                .filter(|field| field.name == *name)
+                .map(|field| found.declared(field.span, name))
+                .collect(),
+            Target::Member { object, name, function } => {
+                let owner = checked
+                    .and_then(|checked| checked.types.body(function)?.expr(*object))
+                    .and_then(type_name);
+                if let Some(owner) = owner {
+                    return found.of_type(&owner, name, MemberKind::Values);
+                }
+                let mut all: Vec<Declaration> =
+                    found.types().flat_map(|def| found.members(def, name, MemberKind::Values)).collect();
+                all.extend(found.extensions().filter_map(|(_, methods)| found.method(methods, name)));
+                all
+            }
         }
     }
 }
@@ -58,6 +114,11 @@ fn type_name(ty: &Type) -> Option<String> {
     match ty {
         Type::Named(name) | Type::Generic(name, _) => Some(name.clone()),
         Type::Optional(inner) => type_name(inner),
+        // The built-in types' methods written in Fennec are in an `extend` of each.
+        Type::List(_) => Some("list".to_owned()),
+        Type::Dict(..) => Some("dict".to_owned()),
+        Type::Set(_) => Some("set".to_owned()),
+        Type::Str => Some("str".to_owned()),
         _ => None,
     }
 }
@@ -75,6 +136,8 @@ enum MemberKind {
 struct Found<'a> {
     module: &'a Module,
     sources: &'a Sources,
+    /// The library module this is, by name, or `None` for the program.
+    library: Option<&'a str>,
 }
 
 impl<'a> Found<'a> {
@@ -94,7 +157,22 @@ impl<'a> Found<'a> {
     }
 
     fn declared(&self, span: Span, name: &str) -> Declaration {
-        Declaration { name_at: name_in(self.sources, span, name), header: span, holds: None, local: false }
+        let library = self.library.is_some();
+        Declaration {
+            name_at: name_in(self.sources, span, name),
+            header: span,
+            holds: None,
+            local: false,
+            library,
+        }
+    }
+
+    /// The top-level functions named `name`.
+    fn functions(&self, name: &str) -> impl Iterator<Item = Declaration> {
+        self.module.items.iter().filter_map(move |item| match item {
+            Item::Function(def) if def.name == name => Some(self.function(def)),
+            _ => None,
+        })
     }
 
     fn function(&self, def: &FnDef) -> Declaration {
@@ -104,6 +182,46 @@ impl<'a> Found<'a> {
 
     fn method(&self, methods: &[FnDef], name: &str) -> Option<Declaration> {
         methods.iter().find(|method| method.name == name).map(|method| self.function(method))
+    }
+
+    /// A parameter of the function with key `function`: a top-level function's name, or a
+    /// type's method as `Type.method`.
+    fn param(&self, function: &str, name: &str) -> Option<Declaration> {
+        let def = match function.split_once('.') {
+            Some((owner, method)) => {
+                let own = self.types().filter(|def| def.name == owner).flat_map(|def| &def.methods);
+                let extended = self
+                    .extensions()
+                    .filter(|(extended, _)| *extended == owner)
+                    .flat_map(|(_, methods)| methods);
+                own.chain(extended).find(|declared| declared.name == method)
+            }
+            None => self.module.items.iter().find_map(|item| match item {
+                Item::Function(def) if def.name == function => Some(def),
+                _ => None,
+            }),
+        }?;
+        let param = def.params.iter().find(|param| param.name == name)?;
+        Some(self.declared(param.span, name))
+    }
+
+    /// A kit's module, by its name, like `combat.damage`: the start of its file, with its first
+    /// line, which is its `##` comment when it has one.
+    fn module_file(&self, module: &str) -> Option<Declaration> {
+        let file = format!("{}.fen", module.replace('.', "/"));
+        let (path, _) = self.sources.files().find(|(path, _)| {
+            path.strip_suffix(file.as_str()).is_some_and(|before| before.is_empty() || before.ends_with('/'))
+        })?;
+        let (text, base) = self.sources.by_path(path)?;
+        let first = u32::try_from(text.lines().next().unwrap_or_default().len()).unwrap_or(0);
+        let start = Span { start: base, end: base };
+        Some(Declaration {
+            name_at: start,
+            header: Span { start: base, end: base + first },
+            holds: None,
+            local: false,
+            library: false,
+        })
     }
 
     fn global(&self, name: &str) -> Vec<Declaration> {

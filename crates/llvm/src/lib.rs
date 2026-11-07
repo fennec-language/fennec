@@ -54,6 +54,7 @@ mod random;
 mod regex;
 mod text;
 mod uniqueness;
+mod waits;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -67,6 +68,7 @@ pub use emit::{Cpu, Unit, emit, emit_for, emit_traced, emit_tracing_costs};
 pub use entry::{Image, entry, tests_entry};
 pub use fennec_layout::Layouts;
 pub use parallel::{uses_parallel, uses_tls};
+pub use waits::{Waits, Why, may_wait};
 
 /// What functions' text leaves to the module made fresh each build.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

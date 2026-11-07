@@ -1,0 +1,59 @@
+# `std.uuid` makes UUIDs, 128-bit ids like `0f8fad5b-d9cb-469f-a165-70867728950e`, as RFC 9562
+# sets them out. `uuid.v4(entropy)` makes one from random bytes, and `uuid.v7(entropy, clock)`
+# one that starts with the time it was made, so later ones sort after it. In a test, `Entropy`
+# gives fixed bytes and the clock starts at 2000-01-01, so the ids a test makes are the same
+# every run.
+from std import uuid
+from std.uuid import Uuid
+
+## A new order's id: time-ordered, so orders list in the order they came in.
+def order_id(entropy: Entropy, clock: Clock) -> str:
+    str(uuid.v7(entropy, clock))
+
+test "a v4 is random but for its version and variant"(entropy: Entropy):
+    made = uuid.v4(entropy)
+    text = str(made)
+    assert made.version() == 4 and text[14] == "4"
+    assert "89ab".find(text[19]) is not None
+    assert uuid.v4(entropy) != made
+
+test "a v7 starts with the milliseconds since 1970, and sorts by them"(
+    entropy: Entropy,
+    clock: Clock,
+):
+    first = order_id(entropy, clock)
+    # 2000-01-01 is 946,684,800,000 ms after 1970: 0xdc6acfac00.
+    assert first.startswith("00dc6acf-ac00-7")
+    clock.sleep(5ms)
+    later = order_id(entropy, clock)
+    assert later.startswith("00dc6acf-ac05-7")
+    assert first < later
+    assert uuid.v7(entropy, clock) > Uuid.parse(first)?
+    assert (
+        sorted([Uuid.parse(later)?, Uuid.parse(first)?]) == [Uuid.parse(first)?, Uuid.parse(later)?]
+    )
+
+test "text reads back, in either case, and the nil UUID is all zeros"():
+    found = Uuid.parse("0F8FAD5B-D9CB-469F-A165-70867728950E")?
+    assert str(found) == "0f8fad5b-d9cb-469f-a165-70867728950e"
+    assert found.version() == 4
+    assert str(Uuid()) == "00000000-0000-0000-0000-000000000000" and Uuid().version() == 0
+
+test "text that isn't a UUID says why"():
+    for text, why in [
+        ("0f8fad5b-d9cb-469f-a165", "it has 23 characters, not 36"),
+        ("0f8fad5b+d9cb-469f-a165-70867728950e", "character 9 should be `-`"),
+        ("0f8fad5b-d9cb-469f-a165-70867728950g", "character 36 isn't a hex digit"),
+    ]:
+        match Uuid.parse(text):
+            case Err(problem):
+                assert problem.message == f"`{text}` isn't a UUID: {why}"
+            case Ok(_):
+                assert False
+
+def main(stdout: Stdout, entropy: Entropy, clock: Clock):
+    made = uuid.v4(entropy)
+    stdout.print(made.version(), str(made).len(), (Uuid.parse(str(made)) else Uuid()) == made)
+    ordered = uuid.v7(entropy, clock)
+    stdout.print(ordered.version(), str(ordered).len())
+    stdout.print(Uuid.parse("0F8FAD5B-D9CB-469F-A165-70867728950E") else Uuid())

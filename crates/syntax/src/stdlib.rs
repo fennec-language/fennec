@@ -48,6 +48,7 @@ modules! {
     re,
     time,
     toml,
+    uuid,
 }
 
 /// What's available everywhere without an import: the errors standard operations fail

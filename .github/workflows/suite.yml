@@ -1,6 +1,6 @@
 name: Suite report
 
-# Probe, not for merging: the parked tasks' tests under the sanitizers, on parked-stacks.
+# Probe, not for merging: CI's "Servers under ThreadSanitizer" command, five times, on scheduler-waiting.
 on:
   workflow_dispatch:
 
@@ -9,48 +9,21 @@ permissions:
 
 jobs:
   probe:
-    name: Parked tasks under ${{ matrix.name }} (probe)
+    name: Servers and the pool under ThreadSanitizer (probe)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: AddressSanitizer
-            flags: -Zsanitizer=address
-            features: --features sanitizer
-            options: ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=0
-            std: std
-          - name: AddressSanitizer, panic=abort
-            flags: -Zsanitizer=address -Cpanic=abort -Zpanic-abort-tests
-            features: --features sanitizer
-            options: ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=0
-            std: std,panic_abort
-          - name: ThreadSanitizer
-            flags: -Zsanitizer=thread
-            features: ""
-            options: TSAN_OPTIONS=halt_on_error=1
-            std: std
-          - name: ThreadSanitizer, panic=abort
-            flags: -Zsanitizer=thread -Cpanic=abort -Zpanic-abort-tests
-            features: ""
-            options: TSAN_OPTIONS=halt_on_error=1
-            std: std,panic_abort
+    timeout-minutes: 40
     env:
       NIGHTLY: nightly-2026-10-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: parked-stacks
+          ref: scheduler-waiting
       - run: rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
-      - name: Run the parked tasks' tests
-        env:
-          FLAGS: ${{ matrix.flags }}
-          FEATURES: ${{ matrix.features }}
-          OPTIONS: ${{ matrix.options }}
-          STD: ${{ matrix.std }}
+      - name: The servers' and the pool's tests, five times
         run: |
-          # shellcheck disable=SC2086
-          env "$OPTIONS" RUSTFLAGS="$FLAGS" RUSTDOCFLAGS="$FLAGS" cargo "+$NIGHTLY" test --locked \
-            -Zbuild-std="$STD" --target x86_64-unknown-linux-gnu -p fennec-parked $FEATURES
+          for i in 1 2 3 4 5; do
+            env TSAN_OPTIONS=halt_on_error=1:report_signal_unsafe=0 RUSTFLAGS=-Zsanitizer=thread \
+              cargo "+$NIGHTLY" test --locked -Zbuild-std --target x86_64-unknown-linux-gnu \
+              -p fennec-interp --features threads --lib -- embed::serve embed::parallel
+          done

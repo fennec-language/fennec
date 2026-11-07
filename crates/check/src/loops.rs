@@ -605,6 +605,7 @@ pub(crate) fn exprs(stmt: &Stmt) -> Vec<&Expr> {
         | StmtKind::Fail(value)
         | StmtKind::Yield(value)
         | StmtKind::Assert(value)
+        | StmtKind::Lend { value, .. }
         | StmtKind::Return(Some(value)) => vec![value],
         StmtKind::Assign { target, value, .. } => vec![target, value],
         StmtKind::If { branches, .. } => branches.iter().map(|(cond, _)| cond).collect(),

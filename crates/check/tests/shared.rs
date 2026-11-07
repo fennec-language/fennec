@@ -314,3 +314,54 @@ fn a_shared_value_is_reached_only_in_a_lock() {
         ["this is a shared Scores already, so `shared` here has nothing to do @ scores"]
     );
 }
+
+/// A function that gives back `with T` is a source: it lends a `T` to its caller's `with` block
+/// with exactly one `lend`, outside any loop, and nothing after the `lend` can fail. It's only
+/// used as what a `with` takes, and the block's name is what it lends.
+#[test]
+fn a_with_source_lends_once_to_a_with_block() {
+    let errors = "error Oops:\n    why: str\n\ndef risky() -> int fails Oops:\n    1\n\n";
+    let empty: [&str; 0] = [];
+    let good = format!(
+        "{errors}def opened(name: str) -> with str fails Oops:\n    risky()?\n    lend name + \"!\" else:\n        pass\n\ndef sized(name: str) -> int fails Oops:\n    with opened(name)? as text:\n        return text.len()\n    0\n"
+    );
+    assert_eq!(problems(&good), empty);
+    let found = |body: &str| -> Vec<String> {
+        problems(&format!("{errors}{body}"))
+            .iter()
+            .map(|problem| problem.split(" @ ").next().unwrap_or_default().to_owned())
+            .collect()
+    };
+    assert_eq!(
+        found("def two() -> with int:\n    lend 1\n    lend 2\n"),
+        ["`two` lends twice, but a `with` source lends once"]
+    );
+    assert_eq!(
+        found("def none() -> with int:\n    pass\n"),
+        ["`none` gives back `with`, so it lends an int with `lend`"]
+    );
+    assert_eq!(
+        found("def late() -> with int fails Oops:\n    lend 1\n    x = risky()?\n"),
+        ["nothing after `lend` can fail, since the caller's block has succeeded by then"]
+    );
+    assert_eq!(
+        found("def looped() -> with int:\n    for n in range(2):\n        lend n\n"),
+        ["this `lend` is in a loop, so it could lend more than once"]
+    );
+    assert_eq!(
+        found("def stray():\n    lend 1\n"),
+        ["`lend` is only in a function that gives back `with T`"]
+    );
+    assert_eq!(found("def wrong() -> with str:\n    lend 1\n"), ["`wrong` lends a str, but this is an int"]);
+    assert_eq!(
+        found("def one() -> with int:\n    lend 1\n\ndef main(stdout: Stdout):\n    x = one()\n"),
+        ["this lends an int for a block, so it's used in a `with`"]
+    );
+    // A failure in the block runs the `else:`, so a `?` that might not run isn't built there yet.
+    assert_eq!(
+        found(
+            "def one() -> with int:\n    lend 1\n\ndef f(b: bool) -> int fails Oops:\n    with one() as n:\n        return n if b else risky()?\n"
+        ),
+        ["this `?` might not run, and in a source's block that isn't built yet"]
+    );
+}

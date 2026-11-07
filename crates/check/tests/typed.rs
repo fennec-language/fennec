@@ -76,7 +76,11 @@ fn nested(key: &str, body: &[Stmt], found: &mut Vec<(String, Vec<Stmt>, Vec<Expr
 fn values_in(stmts: &[Stmt], found: &mut Vec<Expr>) {
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Expr(expr) | StmtKind::Fail(expr) | StmtKind::Yield(expr) | StmtKind::Assert(expr) => {
+            StmtKind::Expr(expr)
+            | StmtKind::Fail(expr)
+            | StmtKind::Yield(expr)
+            | StmtKind::Assert(expr)
+            | StmtKind::Lend { value: expr, .. } => {
                 values(expr, found);
             }
             StmtKind::Return(value) => value.iter().for_each(|value| values(value, found)),

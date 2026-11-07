@@ -1,0 +1,292 @@
+//! `with` sources: a function that gives back `with T` lends a `T` to its caller's `with`
+//! block, with exactly one `lend`. Setup goes above the `lend` and cleanup below it, and
+//! `lend x else:` runs when the caller's block fails. Nothing after the `lend` may fail, since
+//! there'd be nowhere to report it once the caller's block has succeeded. Once checked,
+//! `lend_lowering` writes each `with` over a source in as the source's own body.
+
+use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Span, Stmt, StmtKind};
+
+use crate::function::FnCx;
+use crate::stmt::Flow;
+use crate::types::{Type, a};
+
+/// The name `with T` has as a type, the return type of a source.
+pub(crate) const WITH: &str = "with";
+
+/// What a source lends, if `ty` is one's `with T`.
+pub(crate) fn lent(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::Generic(name, args) if name == WITH => args.first(),
+        _ => None,
+    }
+}
+
+impl FnCx<'_> {
+    /// `lend value`, or `lend value else:` with what runs when the caller's block fails.
+    pub(crate) fn lend(&mut self, value: &Expr, otherwise: &[Stmt], span: Span) -> Flow {
+        let Some(lends) = self.lends.clone() else {
+            self.expr(value);
+            self.error(
+                Diagnostic::new("`lend` is only in a function that gives back `with T`", span).with_help(
+                    format!("write `-> with T` as `{}`'s return type, where `T` is what it lends", self.name),
+                ),
+            );
+            return Flow::unit();
+        };
+        let ty = self.expr_as(value, &lends);
+        if !self.checker.fits(&lends, &ty) {
+            let message = format!("`{}` lends {}, but this is {}", self.name, a(&lends), a(&ty));
+            self.error(Diagnostic::new(message, value.span));
+        }
+        self.lent += 1;
+        if self.loops > 0 {
+            self.error(
+                Diagnostic::new("this `lend` is in a loop, so it could lend more than once", span).with_help(
+                    "lend once, outside the loop: a `with` source lends one value for its caller's block",
+                ),
+            );
+        }
+        if self.lent > 1 {
+            self.error(
+                Diagnostic::new(format!("`{}` lends twice, but a `with` source lends once", self.name), span)
+                    .with_help("lend in one place, with setup above it and cleanup below"),
+            );
+        }
+        if !otherwise.is_empty() {
+            self.push(false);
+            self.stmts(otherwise, false);
+            self.pop();
+        }
+        Flow::unit()
+    }
+
+    /// Keeps a call to a source, by its span, for lowering to write in where it's used.
+    pub(crate) fn note_source(&mut self, key: &str, returns: &Type, method: bool, span: Span) {
+        let gives = match returns {
+            Type::Result(value, _) => value.as_ref(),
+            other => other,
+        };
+        if lent(gives).is_none() {
+            return;
+        }
+        if let Some(entry) = self.checker.program.functions.get(key) {
+            let source = crate::lend_lowering::Source { def: entry.def.clone(), method };
+            self.checker.sources.insert((span.start, span.end), source);
+        }
+    }
+
+    /// The type of what a `with` takes, where a source may be called.
+    pub(crate) fn with_value(&mut self, value: &Expr) -> Type {
+        let before = self.with_values.len();
+        self.with_values.extend(Self::with_values_of(value));
+        let ty = self.expr(value);
+        self.with_values.truncate(before);
+        ty
+    }
+
+    /// What a `with` block's name holds: what a source lends, or the value itself.
+    pub(crate) fn lent_to(&mut self, ty: Type, body: &[Stmt]) -> Type {
+        match lent(&ty).cloned() {
+            Some(lent) => {
+                self.unplaced_try_in(body);
+                lent
+            }
+            None => ty,
+        }
+    }
+
+    /// Reports a `?` in a source's caller's block where its failure couldn't run the `else:`.
+    pub(crate) fn unplaced_try_in(&mut self, body: &[Stmt]) {
+        if let Some(span) = unplaced_try(body) {
+            self.error(
+                Diagnostic::new("this `?` might not run, and in a source's block that isn't built yet", span)
+                    .with_help("take it to its own line first, like `got = f()?`, and use `got` here"),
+            );
+        }
+    }
+
+    /// A source called anywhere but as what a `with` takes.
+    pub(crate) fn source_outside_with(&mut self, call: &Expr, ty: &Type) {
+        let lent = lent(ty).map_or_else(|| "something".to_owned(), a);
+        self.error(
+            Diagnostic::new(format!("this lends {lent} for a block, so it's used in a `with`"), call.span)
+                .with_help("write `with ... as name:`, and use `name` inside the block"),
+        );
+    }
+
+    /// The values a `with` takes, where a source may be called: each one, and what's in a `?`.
+    pub(crate) fn with_values_of(value: &Expr) -> Vec<(u32, u32)> {
+        let items: Vec<&Expr> = match &value.kind {
+            ExprKind::Tuple(items) => items.iter().collect(),
+            _ => vec![value],
+        };
+        let mut spans = vec![(value.span.start, value.span.end)];
+        for item in items {
+            spans.push((item.span.start, item.span.end));
+            if let ExprKind::Try { value: inner, .. } = &item.kind {
+                spans.push((inner.span.start, inner.span.end));
+            }
+        }
+        spans
+    }
+
+    /// What's checked of a source once its body is: it lends once, and nothing after its
+    /// `lend` can fail.
+    pub(crate) fn source_finished(&mut self, def: &FnDef) {
+        if self.lent == 0 {
+            let lends = self.lends.clone().map_or_else(|| "something".to_owned(), |ty| a(&ty));
+            self.error(
+                Diagnostic::new(
+                    format!("`{}` gives back `with`, so it lends {lends} with `lend`", self.name),
+                    def.span,
+                )
+                .with_help("write `lend value` where the caller's block runs"),
+            );
+        }
+        if let Some(span) = fails_after_lend(&def.body) {
+            self.error(
+                Diagnostic::new(
+                    "nothing after `lend` can fail, since the caller's block has succeeded by then",
+                    span,
+                )
+                .with_help(
+                    "a finish that can fail is a method the caller calls and checks, like `tx.commit()?`",
+                ),
+            );
+        }
+    }
+}
+
+/// The first `?` or `fail` that runs after a body's `lend`: below it in its block, or below
+/// the statement holding it in each block around it.
+fn fails_after_lend(body: &[Stmt]) -> Option<Span> {
+    let at = body.iter().position(holds_lend)?;
+    let (holding, after) = body.split_at(at + 1);
+    let inner = holding.last().and_then(|stmt| match &stmt.kind {
+        StmtKind::If { branches, otherwise } => branches
+            .iter()
+            .map(|(_, body)| body.as_slice())
+            .chain(otherwise.as_deref())
+            .find_map(fails_after_lend),
+        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+            fails_after_lend(body)
+        }
+        _ => None,
+    });
+    inner.or_else(|| after.iter().find_map(fails_in))
+}
+
+/// Whether a statement is a `lend` or holds one.
+fn holds_lend(stmt: &Stmt) -> bool {
+    match &stmt.kind {
+        StmtKind::Lend { .. } => true,
+        StmtKind::If { branches, otherwise } => {
+            branches.iter().any(|(_, body)| body.iter().any(holds_lend))
+                || otherwise.as_deref().is_some_and(|body| body.iter().any(holds_lend))
+        }
+        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+            body.iter().any(holds_lend)
+        }
+        _ => false,
+    }
+}
+
+/// Where a statement can fail: a `fail`, or a `?`, outside the functions written in it.
+pub(crate) fn fails_in(stmt: &Stmt) -> Option<Span> {
+    if let StmtKind::Fail(_) = &stmt.kind {
+        return Some(stmt.span);
+    }
+    if let StmtKind::Def(_) = &stmt.kind {
+        return None;
+    }
+    let mut found = None;
+    let mut copy = stmt.clone();
+    fennec_syntax::visit::in_stmts(std::slice::from_mut(&mut copy), &mut |expr| {
+        if found.is_none() && matches!(expr.kind, ExprKind::Try { .. }) {
+            found = Some(expr.span);
+        }
+    });
+    found
+}
+
+/// A `?` in a source's caller's block that might not run where it's written: past `and` or
+/// `or`, in a branch of `a if c else b`, after `else`, in a comprehension, in a loop's
+/// condition or in an `elif`'s. Its failure has to run the `lend`'s `else:`, which isn't built
+/// for those places yet.
+pub(crate) fn unplaced_try(body: &[Stmt]) -> Option<Span> {
+    body.iter().find_map(|stmt| match &stmt.kind {
+        StmtKind::While { cond, body } => conditional_try(cond, true).or_else(|| unplaced_try(body)),
+        StmtKind::If { branches, otherwise } => branches
+            .iter()
+            .enumerate()
+            .find_map(|(at, (cond, body))| conditional_try(cond, at > 0).or_else(|| unplaced_try(body)))
+            .or_else(|| otherwise.as_deref().and_then(unplaced_try)),
+        StmtKind::For { iter, body, .. } => conditional_try(iter, false).or_else(|| unplaced_try(body)),
+        StmtKind::With { value, body, .. } => conditional_try(value, false).or_else(|| unplaced_try(body)),
+        StmtKind::Assign { target, value, .. } => {
+            conditional_try(target, false).or_else(|| conditional_try(value, false))
+        }
+        StmtKind::Expr(value)
+        | StmtKind::Fail(value)
+        | StmtKind::Yield(value)
+        | StmtKind::Assert(value)
+        | StmtKind::Return(Some(value))
+        | StmtKind::Lend { value, .. } => conditional_try(value, false),
+        _ => None,
+    })
+}
+
+fn conditional_try(value: &Expr, conditional: bool) -> Option<Span> {
+    let each = |values: &mut dyn Iterator<Item = &Expr>, conditional: bool| {
+        for value in values {
+            if let Some(span) = conditional_try(value, conditional) {
+                return Some(span);
+            }
+        }
+        None
+    };
+    match &value.kind {
+        ExprKind::Try { value: inner, .. } => {
+            if conditional {
+                Some(value.span)
+            } else {
+                conditional_try(inner, false)
+            }
+        }
+        ExprKind::Comprehension { elem, value: held, iter, cond, .. } => {
+            let parts = [Some(elem.as_ref()), held.as_deref(), Some(iter.as_ref()), cond.as_deref()];
+            each(&mut parts.into_iter().flatten(), true)
+        }
+        ExprKind::Binary { op: fennec_syntax::BinOp::And | fennec_syntax::BinOp::Or, lhs, rhs } => {
+            conditional_try(lhs, conditional).or_else(|| conditional_try(rhs, true))
+        }
+        ExprKind::Binary { lhs, rhs, .. } => each(&mut [lhs.as_ref(), rhs.as_ref()].into_iter(), conditional),
+        ExprKind::Cond { then, cond, otherwise } => conditional_try(cond, conditional)
+            .or_else(|| each(&mut [then.as_ref(), otherwise.as_ref()].into_iter(), true)),
+        ExprKind::Else { value: held, default } => {
+            conditional_try(held, conditional).or_else(|| conditional_try(default, true))
+        }
+        ExprKind::Match { subject, arms } => conditional_try(subject, conditional)
+            .or_else(|| arms.iter().find_map(|arm| unplaced_try(&arm.body))),
+        ExprKind::Call { callee, args } => conditional_try(callee, conditional)
+            .or_else(|| each(&mut args.iter().map(|arg| &arg.value), conditional)),
+        ExprKind::Attr { object, .. } | ExprKind::Unary { expr: object, .. } => {
+            conditional_try(object, conditional)
+        }
+        ExprKind::Index { object, index } => {
+            each(&mut [object.as_ref(), index.as_ref()].into_iter(), conditional)
+        }
+        ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => {
+            each(&mut items.iter(), conditional)
+        }
+        ExprKind::Dict(pairs) => each(&mut pairs.iter().flat_map(|(key, value)| [key, value]), conditional),
+        ExprKind::FStr(parts) => each(
+            &mut parts.iter().filter_map(|part| match part {
+                fennec_syntax::FStrPart::Expr { expr, .. } => Some(expr),
+                fennec_syntax::FStrPart::Text(_) => None,
+            }),
+            conditional,
+        ),
+        _ => None,
+    }
+}

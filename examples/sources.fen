@@ -1,0 +1,32 @@
+# A `with` source gives back `with T`: setup above its `lend`, cleanup below, and
+# `lend value else:` for when the caller's block fails. The cleanup runs however the block
+# ends well, by `return`, `break` or falling off its end.
+error PayError:
+    why: str
+
+struct Ledger:
+    lines = list[str]()
+
+def entry(ref ledger: Ledger, name: str) -> with str:
+    ledger.lines.append(f"open {name}")
+    lend name.upper() else:
+        ledger.lines.append(f"undo {name}")
+    ledger.lines.append(f"close {name}")
+
+def charge(amount: int) -> int fails PayError:
+    if amount > 100: fail PayError(why="over the limit")
+    amount
+
+def pay(ref ledger: Ledger, name: str, amount: int) -> int fails PayError:
+    with entry(ref ledger, name) as label:
+        if amount == 0: return 0
+        ledger.lines.append(f"{label} pays {charge(amount)?}")
+    amount
+
+def main(stdout: Stdout):
+    mut ledger = Ledger()
+    stdout.print(pay(ref ledger, "ana", amount=40) else -1)
+    stdout.print(pay(ref ledger, "bo", amount=0) else -1)
+    stdout.print(pay(ref ledger, "cy", amount=500) else -1)
+    for line in ledger.lines:
+        stdout.print(line)

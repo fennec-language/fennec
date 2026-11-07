@@ -1,0 +1,7 @@
+error: nothing after `lend` can fail, since the caller's block has succeeded by then
+  --> examples/errors/fails_after_lend.fen:11:5
+   |
+11 |     flush()?
+   |     ^^^^^^^^
+   |
+   = help: a finish that can fail is a method the caller calls and checks, like `tx.commit()?`

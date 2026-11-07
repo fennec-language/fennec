@@ -309,7 +309,11 @@ impl Finder<'_> {
             return;
         }
         match &stmt.kind {
-            StmtKind::Expr(expr) | StmtKind::Fail(expr) | StmtKind::Yield(expr) | StmtKind::Assert(expr) => {
+            StmtKind::Expr(expr)
+            | StmtKind::Fail(expr)
+            | StmtKind::Yield(expr)
+            | StmtKind::Assert(expr)
+            | StmtKind::Lend { value: expr, .. } => {
                 self.expr(expr);
             }
             StmtKind::Return(value) => value.iter().for_each(|expr| self.expr(expr)),

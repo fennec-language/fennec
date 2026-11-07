@@ -533,9 +533,11 @@ fn can_copy(body: &[Stmt], locals: &mut Vec<String>) -> bool {
             target_names(target, locals);
             plain(value)
         }
-        StmtKind::Expr(value) | StmtKind::Yield(value) | StmtKind::Fail(value) | StmtKind::Assert(value) => {
-            plain(value)
-        }
+        StmtKind::Expr(value)
+        | StmtKind::Yield(value)
+        | StmtKind::Fail(value)
+        | StmtKind::Assert(value)
+        | StmtKind::Lend { value, .. } => plain(value),
         StmtKind::Break | StmtKind::Continue | StmtKind::Pass => true,
     })
 }

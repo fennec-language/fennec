@@ -278,6 +278,10 @@ impl FnCx<'_> {
         if name == "PI" {
             return Type::Float;
         }
+        // A name an import that failed would have bound was reported at the import.
+        if self.checker.program.failed_imports.contains(name) {
+            return Type::Unknown;
+        }
         let modules = self.checker.program.modules_at(span);
         let problem = if let Some(module) = modules.get(name) {
             fennec_syntax::module_as_value(name, module, span)
@@ -375,6 +379,17 @@ impl FnCx<'_> {
     }
 
     /// An operator on two values. `spans` are the two sides', for pointing at one of them.
+    /// What to do about an int and a float mixed: `//` when the float is an int `/` an int,
+    /// which always gives a float, or else convert one side.
+    fn mix_help(&self, (left, right): (Span, Span)) -> &'static str {
+        let divided = |span: Span| self.int_divisions.contains(&(span.start, span.end));
+        if divided(left) || divided(right) {
+            "`/` always gives a float, even between ints; `//` divides ints and gives an int"
+        } else {
+            "convert one side with float(...) or int(...)"
+        }
+    }
+
     pub(crate) fn binary(
         &mut self,
         op: BinOp,
@@ -398,7 +413,7 @@ impl FnCx<'_> {
             BinOp::Is | BinOp::IsNot | BinOp::And | BinOp::Or => return Type::Bool,
             BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
                 if self.usable_operands(&left, &right, span, spans) {
-                    self.ordered(&left, &right, op, span, spans.1);
+                    self.ordered(&left, &right, op, span, spans);
                 }
                 return Type::Bool;
             }
@@ -422,7 +437,10 @@ impl FnCx<'_> {
             return result;
         }
         match (&left, &right) {
-            (Type::Int, Type::Int) if op == BinOp::Div => Type::Float,
+            (Type::Int, Type::Int) if op == BinOp::Div => {
+                self.int_divisions.insert((span.start, span.end));
+                Type::Float
+            }
             (Type::Int, Type::Int) => Type::Int,
             (Type::Float, Type::Float) => Type::Float,
             (Type::Str, Type::Str) if op == BinOp::Add => Type::Str,
@@ -433,9 +451,10 @@ impl FnCx<'_> {
             }
             (Type::Unknown, _) | (_, Type::Unknown) => Type::Unknown,
             (Type::Int, Type::Float) | (Type::Float, Type::Int) => {
+                let help = self.mix_help(spans);
                 self.error(
                     Diagnostic::new(format!("can't mix int and float in `{}`", op.symbol()), span)
-                        .with_help("convert one side with float(...) or int(...)"),
+                        .with_help(help),
                 );
                 Type::Unknown
             }
@@ -556,7 +575,8 @@ impl FnCx<'_> {
     }
 
     /// `<`, `<=`, `>` and `>=` need two values of a type with an order.
-    fn ordered(&mut self, left: &Type, right: &Type, op: BinOp, span: Span, right_span: Span) {
+    fn ordered(&mut self, left: &Type, right: &Type, op: BinOp, span: Span, spans: (Span, Span)) {
+        let right_span = spans.1;
         if let Some(name) = left.type_name()
             && let Some((key, _)) = self.checker.program.method(name, "<")
         {
@@ -573,10 +593,13 @@ impl FnCx<'_> {
         }
         match (left, right) {
             (Type::Unknown, _) | (_, Type::Unknown) => {}
-            (Type::Int, Type::Float) | (Type::Float, Type::Int) => self.error(
-                Diagnostic::new(format!("can't mix int and float in `{}`", op.symbol()), span)
-                    .with_help("convert one side with float(...) or int(...)"),
-            ),
+            (Type::Int, Type::Float) | (Type::Float, Type::Int) => {
+                let help = self.mix_help(spans);
+                self.error(
+                    Diagnostic::new(format!("can't mix int and float in `{}`", op.symbol()), span)
+                        .with_help(help),
+                );
+            }
             _ if left == right && self.is_ordered(left) => {}
             _ => {
                 let message = format!("can't order {} and {} with `{}`", a(left), a(right), op.symbol());

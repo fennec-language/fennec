@@ -101,9 +101,9 @@ impl Interp<'_> {
                     if name == "json" {
                         self.json_type = index.as_type();
                     }
-                    let called = self.method_call(receiver, name, *optional, args, span);
+                    let answer = self.method_call(receiver, name, *optional, args, span);
                     self.json_type = None;
-                    return called;
+                    return answer;
                 }
                 if let Some(made) = self.made_collection(callee, (object, index), args, span) {
                     return made;

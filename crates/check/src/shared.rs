@@ -291,8 +291,11 @@ impl FnCx<'_> {
         self.push(false);
         for (held, ty) in names.iter().zip(types) {
             let origin = if self.checker.program.takes_lock(&ty) { Origin::Locked } else { Origin::Local };
+            // What a source lends is the block's to use, `ref self` methods included: it only
+            // can't leave the block.
+            let is_mut = held.is_mut || crate::lend::lent(&ty).is_some();
             let ty = self.lent_to(ty, body);
-            self.declare_as(&held.name, ty, held.is_mut, origin, held.span);
+            self.declare_as(&held.name, ty, is_mut, origin, held.span);
         }
         let flow = self.stmts(body, used);
         self.pop();

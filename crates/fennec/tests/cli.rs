@@ -917,6 +917,55 @@ fn run_no_test_with_no_path_runs_the_kit_here() {
     assert_eq!(text(&output.stdout), "Hello from demo!\n");
 }
 
+/// Everything Fennec keeps between commands goes in its store, so a kit's folder holds only its own
+/// files after running, testing, checking, linting, formatting and building it, cache and all. A
+/// build writes the program where `-o` says. See `docs/store.md`.
+#[test]
+fn a_kit_holds_only_its_own_files_after_every_command() {
+    let dir = scratch("own_files").unwrap();
+    assert!(fennec_in(&dir, &["new", "demo"], "").unwrap().status.success());
+    let kit = dir.join("demo");
+    let listed = |kit: &Path| -> Vec<String> {
+        fn walk(dir: &Path, root: &Path, found: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                found.push(path.strip_prefix(root).unwrap().display().to_string());
+                if path.is_dir() {
+                    walk(&path, root, found);
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(kit, kit, &mut found);
+        found.sort();
+        found
+    };
+    let before = listed(&kit);
+    let program = dir.join("built");
+    let program = program.to_string_lossy();
+    let mut commands: Vec<Vec<&str>> =
+        vec![vec!["run"], vec!["test"], vec!["check"], vec!["lint"], vec!["fmt"]];
+    if crate::llvm::ready() {
+        commands.push(vec!["build", "-o", &program]);
+        commands.push(vec!["build", "--release", "-o", &program]);
+    }
+    for command in &commands {
+        let output = crate::executables::fennec_command()
+            .args(command)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "`fennec {}` failed: {}", command.join(" "), text(&output.stderr));
+    }
+    let after = listed(&kit);
+    let stored = dir.join("home/cache").is_dir();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(after, before, "the kit's folder changed");
+    assert!(stored, "nothing went in the store");
+}
+
 /// The linter checks only what the program reaches of the standard library, and still finds what
 /// a function costs when it loops `for ref` over a library type, whose `len` the loop reaches.
 #[test]

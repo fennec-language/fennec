@@ -84,6 +84,25 @@ for even in found:
 
 One silent mistake remains: changing a `mut` copy and then reading it, believing the list changed. A rule gets added for that only if testing shows real bugs.
 
+## Loops
+
+```fennec
+for unit in units: ...
+for ref unit in units: ...
+for unit_id, unit in units.items(): ...
+for unit_id, ref unit in units.items(): ...
+
+for at, name in enumerate(names): ...
+for at, ref score in enumerate(scores): ...
+```
+
+- `enumerate` takes anything you can loop over and gives `(index, value)`. Built. `for i, ref x in enumerate(xs)` needs `xs` to have positions, `len` and `[]`, and isn't built yet.
+- `ref` over a generator is a compile error, since its items are made one at a time and aren't anywhere to change. Built.
+- `items()` is for keyed things: a dict, a `Table`, and your own types that give `len`, `[]` and `key(i)`. Built for dicts and `Table`s.
+- Looping over a dict gives its keys, as in Python, and `keys()`, `values()` and `items()` stay. Built.
+- A generator passed to a call like `sum` can read anything, but it can't change the names around it, which is a compile error. Use a loop for that. Not built yet: today it compiles.
+- `f(ref xs[i], ref xs[j])` is always refused, since `i` and `j` may be the same. `xs.swap(i, j)` swaps two items, and there's no `pair`. Not built yet: the call compiles today, and there's no `swap`.
+
 ## Copies
 
 ```fennec
@@ -242,7 +261,7 @@ with fs.create("save.dat")? as file:
 ```
 
 - Code after `lend` runs when the caller's block succeeds, and it may fail. That failure becomes the `with` statement's failure. `return`, `break` and `continue` in the caller count as success, so an early `return` still runs the cleanup, and a failing cleanup makes the function fail. Built.
-- `lend x else:` runs when the caller's block fails or crashes, and the block's own failure is the one that passes up. Built for a failed block; running it on a crash, and letting the block's failure win over one in `else:`, aren't built yet.
+- `lend x else:` runs when the caller's block fails or crashes, and the block's own failure is the one that passes up. If the cleanup in `else:` fails too, its failure is attached to the block's as a note. With several handles, every one runs its cleanup, innermost first. Running `else:` for a failed block is built. Running it on a crash, the note, and several handles in one `with` aren't built yet: today a failing `else:` replaces the block's failure.
 - There's nothing for the caller to finish by hand, like a `commit()` or a `close()`, and nothing to forget.
 - A source can't `lend` while it holds a lock it took. Opening a file inside a lock is fine.
 - A generator can `lend` each item, closed when that round of the loop ends: `def clients(server: Server) -> Iterator[with Connection]:`. That's how `for conn in parallel(server):` works, with each connection lent to its own round's task. It's a plain loop, not `for ref`, and a connection's methods take `self`.
@@ -513,7 +532,7 @@ def main(net: Net, fs: Fs, clock: Clock):
 
 ## Building
 
-- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the JIT stands in and says so. Built.
+- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the JIT stands in and says so. Built. The JIT and the interpreter are then removed, once LLVM builds everything, and the commit before gets a tag. Not built yet.
 - `fennec build` makes a native program through LLVM, and `fennec build --release` optimizes the whole program as one. Built.
 
 ## Checks

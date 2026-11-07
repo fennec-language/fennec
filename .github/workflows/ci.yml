@@ -724,6 +724,23 @@ jobs:
           env "$OPTIONS" RUSTFLAGS="$FLAGS" RUSTDOCFLAGS="$FLAGS" cargo "+$NIGHTLY" test --locked \
             -Zbuild-std="$STD" --target x86_64-unknown-linux-gnu -p fennec-parked $FEATURES
 
+  # After each push to main, deletes the caches nothing will restore again, so the repository
+  # stays under GitHub's 10 GB and its builds keep the caches they start from: see the script.
+  prune-caches:
+    name: Prune caches
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: .github/scripts/prune-caches.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   # One status for branch protection to require, so adding jobs never means changing settings.
   # A job skipped because the change is only documentation counts as passed, and so do the two a
   # merge group can leave out; any other skip, failure or cancellation doesn't.

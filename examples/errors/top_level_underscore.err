@@ -1,0 +1,7 @@
+error: `_clamped` is a top-level name, so it doesn't start with `_`
+ --> examples/errors/top_level_underscore.fen:2:1
+  |
+2 | def _clamped(n: int) -> int:
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: top-level names are already private to the kit; `_` marks a private field or method

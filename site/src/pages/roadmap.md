@@ -21,7 +21,7 @@ description: What Fennec does today, what's being built next, and the design que
 - Tables: `Table`, `Id` and `Tree`, and `SortedMap` on a B-tree.
 - A type checker that runs before every program and test.
 - The first standard library: `math`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re`.
-- Native code: `fennec run` uses a cached LLVM build, and says so in one line when LLVM can't build a program yet and the JIT runs it instead. `fennec build` compiles with Cranelift, and `fennec build --llvm` handles part of the language. Every example gives exactly the interpreter's output.
+- Native code: `fennec run` uses a cached LLVM build, and says so in one line when LLVM can't build a program yet and the JIT runs it instead. `fennec build` makes a native program through LLVM. Every example gives exactly the interpreter's output.
 - Function-level caching of checked and compiled code, shared across runs.
 - Every example in the repository's `examples/` folder is a test, including its error messages, and the [language reference](/reference/) is generated from them.
 
@@ -43,7 +43,7 @@ Each of these is decided and not built.
 - A compile error for a local that's changed and then never read, returned or passed on.
 - `fails Name` in signatures, with one `error` listing several cases. `?` required wherever a failure passes up, narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
 - `xs.get(i)`, and `sum(xs, start=...)` replacing today's positional start.
-- `_name` hiding a field, and `pub` on top-level things only.
+- `_name` hiding a field, and `export` on top-level things only.
 - Constructor calls like `dict[str, int]()` as defaults, giving the type as a literal does, and the only form for an empty collection.
 - Fields named with any word, keywords included, like `from: str`. Soft keywords like `type` and `match` work as field names today.
 - `names=` and `extra=` on `json.loads` and `json.dumps`, and `@serialize(name=...)`.

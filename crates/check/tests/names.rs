@@ -413,3 +413,18 @@ fn each_underscore_throws_away_what_its_given_whatever_its_type() {
     let read = in_main("_ = 1\nstdout.print(_)\n");
     assert_eq!(read, ["`_` throws away what it's given, so it can't be read @ _"]);
 }
+
+/// A top-level name is private to its kit already, so `_` at its start is a mistake, for a
+/// function, a type, an interface, an alias or a constant. A field's or method's `_` is fine.
+#[test]
+fn a_top_level_name_doesnt_start_with_an_underscore() {
+    let source = "_LIMIT = 3\n\nstruct _Box:\n    _size = 1\n\n    def _grown(self) -> int:\n        self._size + _LIMIT\n\ninterface _Sized:\n    def size(self) -> int\n\ntype _Count = int\n\ndef _helper() -> _Box:\n    _Box()\n\ndef main(stdout: Stdout):\n    stdout.print(_helper()._size)\n";
+    let found = problems(source);
+    let named: Vec<&str> = found.iter().filter_map(|problem| problem.split('`').nth(1)).collect();
+    assert_eq!(named, ["_LIMIT", "_Box", "_Sized", "_Count", "_helper", "_size"], "{found:?}");
+    assert!(found[0].starts_with("`_LIMIT` is a top-level name, so it doesn't start with `_`"), "{found:?}");
+    assert_eq!(
+        helps("_LIMIT = 3\n\ndef main(stdout: Stdout):\n    stdout.print(_LIMIT)\n"),
+        ["top-level names are already private to the kit; `_` marks a private field or method"]
+    );
+}

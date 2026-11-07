@@ -14,9 +14,6 @@ autotests = false
 name = "fennec"
 path = "tests/main.rs"
 
-[target.'cfg(windows)'.dependencies]
-cc.workspace = true
-
 [dependencies]
 mimalloc.workspace = true
 fennec-blake3.workspace = true

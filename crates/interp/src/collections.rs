@@ -48,6 +48,52 @@ fn wrong_args(method: &str, span: Span) -> Diagnostic {
 }
 
 impl Interp<'_> {
+    /// A method of a whole capability. `Net`'s take named arguments, so they're handled first.
+    fn capability_method(
+        &mut self,
+        capability: Capability,
+        method: &str,
+        args: &[Value],
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        match capability {
+            Capability::Stdout => self.stdout_method(method, args, span),
+            Capability::Fs => self.fs_method(method, args, span),
+            Capability::Clock => self.clock_method(method, args, span),
+            Capability::Stdin => self.stdin_method(method, args, span),
+            Capability::Process => self.process_method(method, args, span),
+            Capability::Entropy => self.entropy_method(method, args, span),
+            Capability::Env => self.env_method(method, args, span),
+            Capability::Args | Capability::Net => {
+                Err(no_method(&Value::Capability(capability), method, span))
+            }
+        }
+    }
+
+    /// The capability methods that take named arguments: waiting on the network takes
+    /// `timeout=`, and `process.run` takes `cwd=`, `env=` and `input=`, which go on the method's
+    /// name, sorted, with their values last, as native code has them: `run.cwd.input`. The
+    /// arguments come back for any other method.
+    fn with_named(
+        &mut self,
+        receiver: &Value,
+        method: &str,
+        args: Vec<CallArg>,
+        span: Span,
+    ) -> Result<Result<Value, Diagnostic>, Vec<CallArg>> {
+        let is_process = match receiver {
+            Value::Capability(Capability::Net) => return Ok(self.net_method(method, args, span)),
+            Value::Capability(capability) => *capability == Capability::Process,
+            Value::Limited(limited) => limited.capability == Capability::Process,
+            _ => false,
+        };
+        if !is_process || method != "run" || args.iter().all(|arg| arg.name.is_none()) {
+            return Err(args);
+        }
+        let (method, args) = crate::stdlib::process::options_on_name(method, args);
+        Ok(self.read_method(receiver, &method, args, span))
+    }
+
     /// Methods that only read their receiver.
     pub(crate) fn read_method(
         &mut self,
@@ -62,11 +108,10 @@ impl Interp<'_> {
                 span,
             ));
         }
-        // Waiting on the network takes `timeout=`.
-        if let Value::Capability(Capability::Net) = receiver {
-            return self.net_method(method, args, span);
-        }
-        let args = plain(args, method, span)?;
+        let args = match self.with_named(receiver, method, args, span) {
+            Ok(done) => return done,
+            Err(args) => plain(args, method, span)?,
+        };
         match (receiver, method, args.as_slice()) {
             (Value::Int(n), "abs", []) => {
                 return n
@@ -88,12 +133,9 @@ impl Interp<'_> {
             };
         }
         match receiver {
-            Value::Capability(Capability::Stdout) => self.stdout_method(method, &args, span),
-            Value::Capability(Capability::Fs) => self.fs_method(method, &args, span),
-            Value::Capability(Capability::Clock) => self.clock_method(method, &args, span),
-            Value::Capability(Capability::Stdin) => self.stdin_method(method, &args, span),
-            Value::Capability(Capability::Process) => self.process_method(method, &args, span),
-            Value::Capability(Capability::Entropy) => self.entropy_method(method, &args, span),
+            Value::Capability(capability) if *capability != Capability::Args => {
+                self.capability_method(*capability, method, &args, span)
+            }
             Value::Limited(limited) => self.limited_method(&Rc::clone(limited), method, &args, span),
             Value::Buffer(buffer) => crate::buffer::read(buffer, method, &args, span),
             // The bytes share the string's memory: nothing is copied.

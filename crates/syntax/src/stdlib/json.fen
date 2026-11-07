@@ -225,7 +225,7 @@ struct JsonWriter:
     _first = True
     ## Where each `Id` is in its `Table`, by the name of its type and its `id_key`, once
     ## `_TableFinder` has been through what's written. Until then an `Id` asks for it.
-    _tables: dict[str, dict[(int, int), int]] = {}
+    _tables = dict[str, dict[(int, int), int]]()
     _found = False
     _wants_tables = False
     _optional = False
@@ -376,11 +376,9 @@ struct JsonWriter:
         if self._indent < 0 and self._names == .snake_case:
             if self._first:
                 self._first = False
-                self._text += "\""
+                self._text += "\"" + name + "\": "
             else:
-                self._text += ", \""
-            self._text += name
-            self._text += "\": "
+                self._text += ", \"" + name + "\": "
             x.serialize(ref self)
             return
         self._entry()
@@ -427,7 +425,7 @@ struct JsonWriter:
 ## `value` as JSON text, through its own `def serialize`.
 ## Native code runs `json.dumps` through this. Its options' defaults are `None` and `-1`, since the
 ## default a call leaves out is written into the program calling it, which may not import `JsonNames`.
-def native_dumps[T: Serializable](value: T, names: JsonNames? = None, indent: int = -1) -> str:
+def native_dumps[T: Serializable](value: T, names: JsonNames? = None, indent = -1) -> str:
     spelled = names else JsonNames.snake_case
     mut out = JsonWriter(_names=spelled, _indent=indent)
     value.serialize(ref out)
@@ -541,10 +539,10 @@ struct _IdsSeen:
 ## Goes through what's being saved for its `Table`s and `Id`s, writing nothing, so each `Id` can
 ## be written as where its item is, and one that can't be is said with where it is.
 struct _TableFinder:
-    _positions: dict[str, dict[(int, int), int]] = {}
-    _where: dict[str, str] = {}
+    _positions = dict[str, dict[(int, int), int]]()
+    _where = dict[str, str]()
     _ids = list[(str, int, int, bool, str)]()
-    _tags: dict[str, int] = {}
+    _tags = dict[str, int]()
     _path = list[str]()
     _problem = ""
     _optional = False
@@ -713,11 +711,12 @@ struct JsonReader:
     _path = list[str]()
     _fields = list[(str, str)]()
     _owner = ""
-    ## For each object being read, innermost last, the field most likely to come next: the one
-    ## after the last found, since text usually has them in order.
+    ## For the object being read, the field most likely to come next: the one after the last
+    ## found, since text usually has them in order. Each object it's inside keeps its own here.
+    _hint = 0
     _hints = list[int]()
     _ids = _IdsSeen()
-    _tags: dict[str, int] = {}
+    _tags = dict[str, int]()
 
     def _space(ref self) -> int:
         mut at = self._at
@@ -1145,7 +1144,8 @@ struct JsonReader:
         if self._depth > _MOST_DEEP: fail _no_reason()
         if self._explain:
             self._owner = name
-        self._hints.append(0)
+        self._hints.append(self._hint)
+        self._hint = 0
 
     def next_field(ref self, fields: list[(str, str)]) -> bool fails ParseError:
         if self._explain:
@@ -1156,7 +1156,7 @@ struct JsonReader:
             if b == 125:
                 self._at += 1
                 self._depth -= 1
-                _ = self._hints.pop()
+                self._hint = self._hints.pop() else 0
                 return False
             if self._explain and self._extra == .error:
                 self._unknown_first(fields)?
@@ -1166,7 +1166,7 @@ struct JsonReader:
             if b == 125:
                 self._at += 1
                 self._depth -= 1
-                _ = self._hints.pop()
+                self._hint = self._hints.pop() else 0
                 return False
             if b != 44: fail _no_reason()
             self._at += 1
@@ -1174,7 +1174,7 @@ struct JsonReader:
             at = self._key_in_place(fields)
             if at >= 0:
                 self._place = at
-                self._hints[self._hints.len() - 1] = at + 1
+                self._hint = at + 1
                 return True
         key = self.text()?
         if self._space() != 58: fail _no_reason()
@@ -1189,8 +1189,7 @@ struct JsonReader:
         if b != 34: return -1
         start = self._at + 1
         count = fields.len()
-        last = self._hints.len() - 1
-        mut place = self._hints[last]
+        mut place = self._hint
         mut tries = 0
         while tries < count:
             if place >= count:
@@ -1319,8 +1318,8 @@ struct JsonReader:
         self._tags[kind] = made
         made
 
-    def missing_as_none(self) -> bool:
-        True
+    def none_next(ref self) -> bool:
+        self._space() == 110
 
     def exact(self) -> bool:
         False

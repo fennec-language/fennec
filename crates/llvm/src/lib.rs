@@ -1,4 +1,4 @@
-//! The LLVM backend, behind `fennec build --llvm`: the typed IR as LLVM's text format, one module
+//! The LLVM backend, behind `fennec build` and `fennec run`: the typed IR as LLVM's text format, one module
 //! a function, each optimized and compiled by `opt` and `llc` and cached by what's in its text.
 //! Editing a function recompiles it and what copied it to inline, and little else.
 //!
@@ -49,11 +49,13 @@ mod json;
 mod kinds;
 mod lists;
 mod locks;
+mod native;
 mod parallel;
 mod random;
 mod regex;
 mod text;
 mod uniqueness;
+mod waits;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -67,6 +69,7 @@ pub use emit::{Cpu, Unit, emit, emit_for, emit_traced, emit_tracing_costs};
 pub use entry::{Image, entry, tests_entry};
 pub use fennec_layout::Layouts;
 pub use parallel::{uses_parallel, uses_tls};
+pub use waits::{Waits, Why, may_wait};
 
 /// What functions' text leaves to the module made fresh each build.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -84,6 +87,9 @@ pub struct Shared {
     pub elements: BTreeMap<String, ListItem>,
     /// Each boxed type's symbol for its shape's number, and its layout's number.
     pub shapes: BTreeMap<String, u32>,
+    /// The boxed types whose blocks generated code makes and frees itself, outside the runtime's
+    /// table: see `native`.
+    pub native: BTreeSet<u32>,
     /// Each kind of dict's symbol for its shape's number, and what it holds.
     pub dicts: BTreeMap<String, (Word, Word)>,
     /// Whether each function sets a flag saying it ran, for a test to say what it ran. A function
@@ -197,7 +203,7 @@ fn header() -> Result<&'static str, String> {
     const MAC_ARM: &str = "target datalayout = \"e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32\"\ntarget triple = \"arm64-apple-macosx14.0.0\"\n\n";
     const LINUX_ARM: &str = "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8-i16:16-i64:64-i128:128-n32:64-S128-Fn32\"\ntarget triple = \"aarch64-unknown-linux-gnu\"\n\n";
     const LINUX_X86: &str = "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\ntarget triple = \"x86_64-unknown-linux-gnu\"\n\n";
-    const WINDOWS_X86: &str = "target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\ntarget triple = \"x86_64-pc-windows-msvc\"\n\n";
+    const WINDOWS_X86: &str = "target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\ntarget triple = \"x86_64-w64-windows-gnu\"\n\n";
     const MAC_X86: &str = "target datalayout = \"e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\ntarget triple = \"x86_64-apple-macosx14.0.0\"\n\n";
     match (std::env::consts::ARCH, std::env::consts::OS) {
         ("aarch64", "macos") => Ok(MAC_ARM),

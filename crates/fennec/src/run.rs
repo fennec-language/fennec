@@ -1,5 +1,5 @@
 //! `fennec run`: checks a program, then runs its `main` as native code. That's the cached dev
-//! build LLVM makes, as `fennec build --llvm` does, compiled a function at a time so an edit
+//! build LLVM makes, as `fennec build` does, compiled a function at a time so an edit
 //! recompiles only what it touched. Where LLVM can't build the program yet it says why, in
 //! one line, and the JIT runs it, or the interpreter what the JIT can't. `--jit` and
 //! `--interp` ask for those directly.

@@ -79,7 +79,15 @@ pub(crate) struct Checker {
 const REVISITS: usize = 16;
 
 /// The program's declarations, with the standard library's modules added first.
+#[cfg(test)]
 fn with_library<'m>(library: impl IntoIterator<Item = &'m Module>, module: &Module) -> Program {
+    let mut program = library_alone(library);
+    program.add(module, false);
+    program
+}
+
+/// The standard library's declarations, which a program's are added to.
+fn library_alone<'m>(library: impl IntoIterator<Item = &'m Module>) -> Program {
     let mut program = Program::default();
     for prelude in library {
         program.add(prelude, true);
@@ -90,15 +98,23 @@ fn with_library<'m>(library: impl IntoIterator<Item = &'m Module>, module: &Modu
     // it too.
     program.std_functions.clear();
     program.imported_types.clear();
-    program.add(module, false);
     program
+}
+
+/// The standard library's declarations, worked out once and copied for each program: they're
+/// the same every time.
+fn library() -> &'static Program {
+    static LIBRARY: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
+    LIBRARY.get_or_init(|| library_alone(fennec_syntax::prelude_modules().unwrap_or_default()))
 }
 
 impl Checker {
     pub(crate) fn new(module: &Module) -> Self {
-        let mut program = with_library(fennec_syntax::prelude_modules().unwrap_or_default(), module);
+        let mut program = library().clone();
+        program.add(module, false);
         let mut diagnostics = std::mem::take(&mut program.problems);
         diagnostics.extend(crate::imports::unimported(module, &program));
+        diagnostics.extend(crate::privacy::top_level_underscores(module));
         Checker {
             program,
             states: BTreeMap::new(),

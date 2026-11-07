@@ -1,0 +1,7 @@
+# `export` goes on top-level names only: an exported type's fields are its API, and `_name` hides one.
+export struct Account:
+    export owner: str
+    _balance = 0
+
+def main(stdout: Stdout):
+    stdout.print(Account(owner="Ash").owner)

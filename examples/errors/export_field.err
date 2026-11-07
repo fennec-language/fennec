@@ -1,0 +1,7 @@
+error: a field or method has no `export` of its own
+ --> examples/errors/export_field.fen:3:5
+  |
+3 |     export owner: str
+  |     ^^^^^^
+  |
+  = help: `export` marks a top-level name other kits can use, and a type's fields and methods come with it. `fennec fix` mends it here

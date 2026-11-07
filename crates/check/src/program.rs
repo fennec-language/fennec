@@ -16,6 +16,7 @@ pub(crate) enum TypeKind {
     Error,
 }
 
+#[derive(Clone)]
 pub(crate) struct TypeInfo {
     pub(crate) kind: TypeKind,
     pub(crate) def: std::sync::Arc<TypeDef>,
@@ -24,6 +25,7 @@ pub(crate) struct TypeInfo {
 }
 
 /// A constant at the top level: `KEYWORDS = {"def", "if"}`.
+#[derive(Clone)]
 pub(crate) struct ConstEntry {
     pub(crate) ty: Option<TypeExpr>,
     pub(crate) value: fennec_syntax::Expr,
@@ -31,6 +33,7 @@ pub(crate) struct ConstEntry {
     pub(crate) prelude: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct FnEntry {
     pub(crate) def: std::sync::Arc<FnDef>,
     /// The type a method belongs to.
@@ -45,7 +48,7 @@ pub(crate) struct FnEntry {
 
 /// Every declaration in a program, keyed the way the signature table is: `name` for a
 /// function, `Type.name` for a method, `outer.inner` for a nested function.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Program {
     pub(crate) types: BTreeMap<String, TypeInfo>,
     pub(crate) functions: BTreeMap<String, FnEntry>,
@@ -348,7 +351,9 @@ impl Program {
             }
             "Id" => Type::Id(arg()),
             "Table" => Type::Table(arg()),
-            "Stdout" | "Fs" | "Clock" | "Args" | "Stdin" | "Process" | "Entropy" | "Net" => Type::named(name),
+            "Stdout" | "Fs" | "Clock" | "Args" | "Stdin" | "Process" | "Entropy" | "Net" | "Env" => {
+                Type::named(name)
+            }
             name if generics.iter().any(|generic| generic == name) => Type::Param(name.to_owned()),
             name if self.types.contains_key(name) && !args.is_empty() => Type::Generic(name.to_owned(), args),
             name if self.types.contains_key(name) => Type::named(name),
@@ -452,10 +457,10 @@ impl Program {
 
 pub(crate) use fennec_syntax::visit::BUILT_IN_INTERFACES;
 
-pub(crate) const BUILT_IN_TYPES: [&str; 27] = [
+pub(crate) const BUILT_IN_TYPES: [&str; 28] = [
     "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "array", "SoaList", "Buffer", "set",
     "dict", "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Net",
-    "Result", "Iterator", "->",
+    "Env", "Result", "Iterator", "->",
 ];
 
 /// An interface written where a type goes, as in `list[Shape]`.

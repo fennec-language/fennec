@@ -1,27 +1,28 @@
-//! `missing-doc`: every `pub` item has a `##` comment of at least a line, saying what it's for:
-//! a function, a type, its `pub` methods and the fields it shows, an interface, an alias or a
-//! constant. A `pub` type shows every field but its `_name` ones, since a field has no `pub` of
-//! its own. There's no fix, since only someone who knows what it's for can write that. The parser
-//! drops `pub`, so this reads it from the item's line, as `unused-item` does. An annotation can
-//! sit between the comment and what it documents.
+//! `missing-doc`: every exported item has a `##` comment of at least a line, saying what it's
+//! for: a function, a type with the fields and methods it shows, an interface with its methods, an
+//! alias or a constant. An exported type shows every field and method but its `_name` ones, since
+//! they have no `export` of their own. There's no fix, since only someone who knows what it's for
+//! can write that. The parser drops `export`, so this reads it from the item's line, as
+//! `unused-item` does. An annotation can sit between the comment and what it documents.
 
 use fennec_syntax::{Diagnostic, FnDef, Item, Module, Sources, Span, TypeDef};
 
 use crate::Lint;
 
-/// What's declared and could be `pub`, as its kind, name and where it is. A field is `pub`
-/// when its type is, so it comes with where its type is written.
+/// What's declared and could be exported, as its kind, name and where it is. A field or method is
+/// shown when its type is, so it comes with where its type is written.
 type Declared<'m> = (&'static str, &'m str, Span, Option<Span>);
 
 fn declared(module: &Module) -> Vec<Declared<'_>> {
-    fn add_methods<'m>(defs: &'m [FnDef], found: &mut Vec<Declared<'m>>) {
-        found.extend(defs.iter().map(|def| ("method", def.name.as_str(), def.span, None)));
+    fn add_methods<'m>(defs: &'m [FnDef], owner: Span, found: &mut Vec<Declared<'m>>) {
+        let shown = defs.iter().filter(|def| !def.name.starts_with('_'));
+        found.extend(shown.map(|def| ("method", def.name.as_str(), def.span, Some(owner))));
     }
     fn add_type<'m>(kind: &'static str, def: &'m TypeDef, found: &mut Vec<Declared<'m>>) {
         found.push((kind, def.name.as_str(), def.span, None));
         let shown = def.fields.iter().filter(|field| !field.name.starts_with('_'));
         found.extend(shown.map(|field| ("field", field.name.as_str(), field.span, Some(def.span))));
-        add_methods(&def.methods, found);
+        add_methods(&def.methods, def.span, found);
     }
     let mut found = Vec::new();
     for item in &module.items {
@@ -32,9 +33,8 @@ fn declared(module: &Module) -> Vec<Declared<'_>> {
             Item::Error(def) => add_type("error", def, &mut found),
             Item::Interface(interface) => {
                 found.push(("interface", interface.name.as_str(), interface.span, None));
-                add_methods(&interface.methods, &mut found);
+                add_methods(&interface.methods, interface.span, &mut found);
             }
-            Item::Extend(extension) => add_methods(&extension.methods, &mut found),
             Item::TypeAlias { name, span, .. } => found.push(("alias", name.as_str(), *span, None)),
             Item::Const { name, span, .. } => found.push(("constant", name.as_str(), *span, None)),
             _ => {}
@@ -63,19 +63,20 @@ fn line_of(sources: &Sources, span: Span) -> Option<(&str, usize)> {
 }
 
 pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
-    let starts_pub = |(text, line_start): (&str, usize)| {
-        text.get(line_start..).is_some_and(|line| line.trim_start().starts_with("pub "))
+    let exported = |(text, line_start): (&str, usize)| {
+        text.get(line_start..).is_some_and(|line| line.trim_start().starts_with("export "))
     };
     let mut found = Vec::new();
     for (kind, name, span, owner) in declared(module) {
         let Some((text, line_start)) = line_of(sources, span) else { continue };
         let public = match owner {
-            Some(owner) => line_of(sources, owner).is_some_and(starts_pub),
-            None => starts_pub((text, line_start)),
+            Some(owner) => line_of(sources, owner).is_some_and(exported),
+            None => exported((text, line_start)),
         };
         if public && !documented(text, line_start) {
-            let diagnostic = Diagnostic::new(format!("the `pub` {kind} `{name}` has no doc comment"), span)
-                .with_help("write a `##` line above it saying what it's for");
+            let diagnostic =
+                Diagnostic::new(format!("the exported {kind} `{name}` has no doc comment"), span)
+                    .with_help("write a `##` line above it saying what it's for");
             found.push(Lint::new("missing-doc", diagnostic));
         }
     }

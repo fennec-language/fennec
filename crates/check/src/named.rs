@@ -1,8 +1,9 @@
 //! Patterns that name the fields they match, like `case IoError(reason=r)`. Outside the kit a
 //! type comes from, a pattern names its fields rather than taking them by position, so a kit
 //! can add a field with a default to a type it exports without breaking anyone's `match`.
-//! What runs a program only sees patterns by position: once checked, a named pattern is put in
-//! its fields' order here, with `_` for the fields it doesn't read.
+//! Once checked, a named pattern is put in its fields' order here, with `_` for the fields it
+//! doesn't read before the last one it does, so what runs a program can take its parts by
+//! position.
 
 use std::collections::BTreeMap;
 
@@ -28,7 +29,7 @@ fn names_in(help: &str) -> Option<Vec<String>> {
 }
 
 /// Puts each named pattern in its fields' order, as `fields` says it is for the variant a case's
-/// span holds, and drops the names.
+/// span holds.
 pub(crate) fn put_in_order(module: &mut Module, fields: &BTreeMap<(u32, u32, String), Vec<String>>) {
     if fields.is_empty() {
         return;
@@ -63,6 +64,8 @@ fn in_order(pattern: &mut Pattern, span: Span, fields: &BTreeMap<(u32, u32, Stri
             while placed.last() == Some(&Pattern::Wildcard) {
                 placed.pop();
             }
+            // Named still, in order now, so checking it again finds the same thing.
+            *named = order.iter().take(placed.len()).cloned().collect();
             *args = placed;
         }
         Pattern::Tuple(items) | Pattern::Or(items) => {
@@ -99,7 +102,9 @@ fn named_fix(sources: &Sources, span: Span, variant: &str, names: &[String]) -> 
         let token = lexed.tokens.get(at)?;
         text.get(usize::try_from(token.span.start).ok()?..usize::try_from(token.span.end).ok()?)
     };
-    let inside = |token: &fennec_syntax::SourceToken| base + token.span.start >= span.start && base + token.span.end <= span.end;
+    let inside = |token: &fennec_syntax::SourceToken| {
+        base + token.span.start >= span.start && base + token.span.end <= span.end
+    };
     let open = (0..lexed.tokens.len()).find(|&at| {
         lexed.tokens.get(at).is_some_and(|token| inside(token) && token.kind == TokenKind::Name)
             && written(at) == Some(own)

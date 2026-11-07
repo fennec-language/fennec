@@ -455,9 +455,9 @@ pub enum Pattern {
     Bind(String),
     Literal(Expr),
     /// `.Circle(radius)` (`dotted`), or `NotFound(path)`, `Ok(value)`, `Err(error)`. Written by
-    /// name, as `IoError(reason=r)`, `fields` names each of `args`; the checker then puts them
-    /// in the fields' order, filling the rest with `_`, and empties `fields`, so what runs a
-    /// program only ever sees them by position.
+    /// name, as `IoError(reason=r)`, `fields` names each of `args`. The checker then puts them
+    /// in the fields' order, with `_` for any it skips, so what runs a program can take `args`
+    /// by position.
     Variant {
         name: String,
         dotted: bool,

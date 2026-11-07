@@ -27,7 +27,7 @@ test "a failing program is its status, not an error"(process: Process):
 
 test "a program nothing scripted can't run"(process: Process):
     match process.run("cargo", ["build"]):
-        case Err(ProcessError(program, message)):
+        case Err(ProcessError(program=program, message=message)):
             assert program == "cargo"
             assert message.startswith("the test's fake Process has nothing scripted for `cargo`")
         case Ok(_):
@@ -52,7 +52,7 @@ test "grep is given the text to read"(process: Process):
 def main(stdout: Stdout, process: Process):
     # A program that isn't installed fails with a `ProcessError` value.
     match process.run("fennec-no-such-program", []):
-        case Err(ProcessError(program, _)):
+        case Err(ProcessError(program=program)):
             stdout.print(f"couldn't run {program}")
         case Ok(_):
             stdout.print("ran")

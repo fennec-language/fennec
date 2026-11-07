@@ -303,6 +303,68 @@ fn match_binds_the_fields_of_each_case() {
     );
 }
 
+/// A pattern can name the fields it matches, in any order and leaving any out: each name gets
+/// its field's type. Another kit's type is matched that way only, so a field added to it with a
+/// default never breaks a `match`. A kit's own types still match by position.
+#[test]
+fn a_pattern_names_the_fields_it_matches() {
+    let fields = |source: &str| -> Vec<String> {
+        problems(source).iter().map(|problem| problem.split(" @ ").next().unwrap_or_default().to_owned()).collect()
+    };
+    let program = "
+struct Point:
+    x: int
+    y: str
+
+enum Shape:
+    Circle(radius: float)
+    Rect(width: float, height: int)
+
+def area(shape: Shape) -> float:
+    match shape:
+        case .Rect(height=h, width=w): w * h
+        case .Circle(radius=r): r * r
+
+def label(point: Point) -> str:
+    match point:
+        case Point(y=name): name
+        case Point(x, y): y
+
+def read(fs: Fs) -> str:
+    match fs.read_text(\"a\"):
+        case Ok(text): text
+        case Err(IoError(reason=why)): why
+";
+    assert_eq!(fields(program), ["can't mix int and float in `*`"]);
+    let unknown = "
+struct Point:
+    x: int
+
+def f(point: Point) -> int:
+    match point:
+        case Point(z=a): a
+";
+    assert_eq!(fields(unknown), ["`Point` has no field `z`: it has `x`"]);
+    let positional = "
+def read(fs: Fs) -> str:
+    match fs.read_text(\"a\"):
+        case Ok(text): text
+        case Err(IoError(why)): why
+";
+    assert_eq!(fields(positional), ["`IoError` comes from another kit, so this pattern names the fields it reads"]);
+    assert_eq!(
+        helps(positional),
+        ["write `IoError(reason=...)`, or `IoError()` to read none, and a field added to it never breaks this; `fennec fix` adds the names"]
+    );
+    let none_read = "
+def read(fs: Fs) -> str:
+    match fs.read_text(\"a\"):
+        case Ok(text): text
+        case Err(IoError()): \"failed\"
+";
+    assert_eq!(fields(none_read), Vec::<String>::new());
+}
+
 #[test]
 fn match_arms_make_a_value() {
     let program = "

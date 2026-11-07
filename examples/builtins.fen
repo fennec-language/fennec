@@ -16,7 +16,7 @@ def main(stdout: Stdout):
     match int("twelve"):
         case Ok(n):
             stdout.print(n)
-        case InvalidValue(message):
+        case InvalidValue(message=message):
             stdout.print(message)
 
     # Rounding goes to the even neighbour on a tie, as in Python.

@@ -113,7 +113,8 @@ impl Parser {
         if self.eat_p(Punct::LParen) {
             while !self.at_p(Punct::RParen) {
                 let start = self.span();
-                let named = matches!(self.peek(), Tok::Name(_)) && matches!(self.peek_at(1), Tok::P(Punct::Assign));
+                let named =
+                    matches!(self.peek(), Tok::Name(_)) && matches!(self.peek_at(1), Tok::P(Punct::Assign));
                 if !args.is_empty() && named == fields.is_empty() {
                     let message = "a pattern names every field it matches, or none of them";
                     return Err(Diagnostic::new(message, start));

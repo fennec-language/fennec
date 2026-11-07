@@ -135,8 +135,11 @@ impl FnCx<'_> {
                     && named.is_empty()
                     && args.len() > names.len()
                 {
-                    let message =
-                        format!("this pattern has {} parts, but the value has {} fields", args.len(), names.len());
+                    let message = format!(
+                        "this pattern has {} parts, but the value has {} fields",
+                        args.len(),
+                        names.len()
+                    );
                     self.error(Diagnostic::new(message, span));
                 }
                 // Where each part goes among the fields: by position, or by the name it's given.
@@ -155,7 +158,8 @@ impl FnCx<'_> {
                 let private = self.checker.program.type_info(name).is_some_and(|_| !dotted);
                 for (arg, place) in args.iter().zip(places) {
                     if private
-                        && let Some(field) = place.and_then(|at| names.as_ref().and_then(|names| names.get(at)))
+                        && let Some(field) =
+                            place.and_then(|at| names.as_ref().and_then(|names| names.get(at)))
                         && !matches!(arg, Pattern::Wildcard)
                     {
                         self.private_member(name, &field.clone(), span);
@@ -168,7 +172,13 @@ impl FnCx<'_> {
     }
 
     /// Where the field a pattern names is among its type's fields, reporting a name it doesn't have.
-    fn named_place(&mut self, variant: &str, field: &str, names: Option<&[String]>, span: Span) -> Option<usize> {
+    fn named_place(
+        &mut self,
+        variant: &str,
+        field: &str,
+        names: Option<&[String]>,
+        span: Span,
+    ) -> Option<usize> {
         let names = names?;
         let place = names.iter().position(|name| name == field);
         if place.is_none() {
@@ -308,9 +318,7 @@ impl FnCx<'_> {
             return Some((name.to_owned(), None));
         }
         match self.checker.program.enums_with_case(name).as_slice() {
-            [owner] if dotted && *subject == Type::Unknown => {
-                Some((owner.clone(), Some(name.to_owned())))
-            }
+            [owner] if dotted && *subject == Type::Unknown => Some((owner.clone(), Some(name.to_owned()))),
             _ => None,
         }
     }

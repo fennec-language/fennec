@@ -451,6 +451,36 @@ pub extern "C" fn parallel_reduce(
     run.finish()
 }
 
+// The `_waiting` entry points are for a body that may wait: a network call, a lock, a sleep, a
+// blocking read. For now they run as the others do. The scheduler will park a waiting range
+// here rather than its thread.
+
+/// `fennec_parallel_for_waiting`: `parallel_for`, for a body that may wait.
+pub extern "C" fn parallel_for_waiting(list: i64, body: Body, env: i64) -> i64 {
+    parallel_for(list, body, env)
+}
+
+/// `fennec_parallel_map_waiting`: `parallel_map`, for a body that may wait.
+pub extern "C" fn parallel_map_waiting(list: i64, body: MapBody, env: i64, element: i64) -> i64 {
+    parallel_map(list, body, env, element)
+}
+
+/// `fennec_parallel_reduce_waiting`: `parallel_reduce`, for a body that may wait.
+pub extern "C" fn parallel_reduce_waiting(
+    list: i64,
+    body: ReduceBody,
+    combine: Combine,
+    env: i64,
+    result: &mut i64,
+) -> i64 {
+    parallel_reduce(list, body, combine, env, result)
+}
+
+/// `fennec_parallel_stream_waiting`: `parallel_stream`, for a body that may wait.
+pub extern "C" fn parallel_stream_waiting(list: i64, body: MapBody, env: i64, element: i64) -> i64 {
+    parallel_stream(list, body, env, element)
+}
+
 #[cfg(not(any(test, feature = "threads")))]
 mod pool {
     //! Without threads, every range runs on the calling thread, one after another.

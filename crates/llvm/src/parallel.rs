@@ -749,6 +749,28 @@ def main(stdout: Stdout, clock: Clock):
             assert!(text.contains(&format!("@{call}_waiting(ptr")), "{call}: {text}");
             assert!(!text.contains(&format!("@{call}(ptr")), "{call}: {text}");
         }
+        // A body reading a connection waits, and one doing arithmetic beside it doesn't.
+        let reads = "\
+from std.net import Connection
+
+def heard(conn: Connection, x: int) -> int:
+    match conn.read(1):
+        case Ok(got):
+            got.len() + x
+        case _:
+            x
+
+def main(stdout: Stdout, net: Net):
+    xs = [1, 2, 3]
+    match net.connect(\"localhost\", 9000):
+        case Ok(conn):
+            stdout.print([heard(conn, x) for x in parallel(xs)])
+        case _:
+            stdout.print([x * 2 for x in parallel(xs)])
+";
+        let text = texts(reads)?;
+        assert!(text.contains("@fennec_parallel_map_waiting(ptr"), "{text}");
+        assert!(text.contains("@fennec_parallel_map(ptr"), "{text}");
         Ok(())
     }
 

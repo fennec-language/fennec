@@ -1,7 +1,6 @@
-//! `fennec build`: compiles a program ahead of time to a standalone executable. The JIT's
-//! compiler or LLVM writes object files, and the system's linker links them with Fennec's
-//! runtime library, which sits next to the `fennec` command. On Windows, that's Visual Studio's
-//! linker, and for now only LLVM's objects.
+//! `fennec build`: compiles a program ahead of time to a native program through LLVM. LLVM writes
+//! object files, and the system's linker links them with Fennec's runtime library, which sits
+//! next to the `fennec` command. On Windows, that's Visual Studio's linker.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -136,55 +135,12 @@ fn calls_the_interpreter<'t>(texts: impl IntoIterator<Item = &'t str>) -> bool {
     })
 }
 
-pub(crate) fn build(path: &str, output: Option<&str>) -> ExitCode {
-    let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
-    if !crate::run::check_to_build(&mut program) {
-        return ExitCode::FAILURE;
-    }
-    // What's wrong with the program comes first, on every platform.
-    if cfg!(windows) {
-        eprintln!("error: `fennec build` can't link executables on Windows yet; use `fennec run`");
-        return ExitCode::FAILURE;
-    }
-    let started = Instant::now();
-    let built = match fennec_jit::build(&program.module, &program.sources) {
-        Ok(built) => built,
-        Err(diagnostic) => {
-            eprint!("{}", program.sources.render(&diagnostic));
-            return ExitCode::FAILURE;
-        }
-    };
-    let compiled = started.elapsed();
-    let output = output.map_or_else(|| default_output(path, &program), PathBuf::from);
-    match link(&built.object, &output) {
-        Ok(linked) => {
-            let size = std::fs::metadata(&output).map_or(0, |metadata| metadata.len());
-            println!(
-                "🦊 built {} ({} KB) in {} ms: compiled in {} ms, linked in {} ms",
-                output.display(),
-                size / 1024,
-                (compiled + linked).as_millis(),
-                compiled.as_millis(),
-                linked.as_millis(),
-            );
-            if !built.interpreted.is_empty() {
-                println!("   run by the interpreter: {}", built.interpreted.join(", "));
-            }
-            ExitCode::SUCCESS
-        }
-        Err(message) => {
-            eprintln!("error: {message}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
 /// Whether `--cpu baseline` asked for code any machine of its architecture runs.
 pub(crate) static BASELINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// `fennec build --llvm`: the same through LLVM, which says what it can't take yet rather than
-/// falling back to anything.
-pub(crate) fn build_llvm(path: &str, output: Option<&str>, release: bool) -> ExitCode {
+/// `fennec build`: a native program through LLVM, which says what it can't take yet rather than
+/// falling back to anything. `--release` optimizes the whole program as one.
+pub(crate) fn build(path: &str, output: Option<&str>, release: bool) -> ExitCode {
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
     if !crate::run::check_to_build(&mut program) {
         return ExitCode::FAILURE;
@@ -548,25 +504,6 @@ fn default_output(path: &str, program: &fennec_kit::Program) -> PathBuf {
         .map(|manifest| manifest.name.clone())
         .or_else(|| Path::new(path).file_stem().map(|stem| stem.to_string_lossy().into_owned()));
     PathBuf::from(name.filter(|name| !name.is_empty() && name != ".").unwrap_or_else(|| "main".to_owned()))
-}
-
-/// Links an object file with the runtime library into an executable at `output`, giving
-/// back how long linking took.
-fn link(object: &[u8], output: &Path) -> Result<std::time::Duration, String> {
-    let runtime = runtime_library(Runtime::Plain)?;
-    let work = crate::own_temp("build");
-    std::fs::create_dir_all(&work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
-    let object_path = work.join("program.o");
-    std::fs::write(&object_path, object).map_err(|err| format!("couldn't write the object file: {err}"))?;
-    let started = Instant::now();
-    let linked =
-        linker(std::slice::from_ref(&object_path), &runtime, output, false).output().map_err(|err| {
-            let help = if cfg!(windows) { "; install Visual Studio's Build Tools" } else { "" };
-            format!("couldn't run the linker: {err}{help}")
-        })?;
-    let took = started.elapsed();
-    let _ = std::fs::remove_dir_all(&work);
-    if linked.status.success() { Ok(took) } else { Err(link_failure(&linked)) }
 }
 
 /// The runtime's bitcode, next to the `fennec` command, if it was built: see

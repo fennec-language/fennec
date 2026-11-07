@@ -10,7 +10,7 @@ description: Fennec's plan for speed, one LLVM backend with a function-level cac
 
 ## Today
 
-`fennec run` builds through LLVM one function at a time, and each function is cached by its content, so a change recompiles only what it touched. Where LLVM can't build a program yet, it says so in one line and the JIT, built on Cranelift, runs it instead. `fennec build` still compiles with Cranelift, and `fennec build --llvm` handles part of the language. The [benchmarks](/benchmarks/) show where this stands against its targets.
+`fennec run` builds through LLVM one function at a time, and each function is cached by its content, so a change recompiles only what it touched. Where LLVM can't build a program yet, it says so in one line and the JIT, built on Cranelift, runs it instead. `fennec build` makes a native program through LLVM, the same build with `--release` optimizing the whole program as one. The [benchmarks](/benchmarks/) show where this stands against its targets.
 
 ## The plan: one backend
 

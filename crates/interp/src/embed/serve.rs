@@ -78,6 +78,11 @@ thread_local! {
     /// it doesn't wait for would, like a socket that keeps saying it's writable.
     #[cfg(test)]
     static WAKE_ALL: Cell<bool> = const { Cell::new(false) };
+    /// When the task running on this worker was last resumed.
+    static SLICE: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// Whether, when it was, anything else on the worker wanted the thread: another task ready or
+    /// waiting, or a server served.
+    static OTHERS: Cell<bool> = const { Cell::new(false) };
     /// What a connection reads into, shared by the thread's tasks, which run one at a time and
     /// never park while reading: so a parked task holds no buffer of its own.
     static BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -536,6 +541,7 @@ impl Io {
         }
         for _ in 0..self.ready.len() {
             let Some((task, wake)) = self.ready.pop_front() else { break };
+            self.slice_starts();
             if self.accounts.contains_key(&task) {
                 self.resume_range(task, wake);
                 continue;
@@ -603,6 +609,13 @@ impl Io {
                 debug_assert!(accounts.is_empty(), "a range ended with what it made not handed over");
             }
         }
+    }
+
+    /// A task's about to be resumed: its slice starts now, and whether anything else here wants the
+    /// thread is noted, for `fennec_task_tick` to read without this.
+    fn slice_starts(&self) {
+        SLICE.set(Some(Instant::now()));
+        OTHERS.set(!self.ready.is_empty() || !self.waiting.is_empty() || !self.servers.is_empty());
     }
 
     /// Makes the task parked on `token` ready, for a wait that finished on another thread.
@@ -908,6 +921,28 @@ pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 's
         // Cancelled before it finished: the work runs to its end, and this waits for it.
         let _ = yield_task_always();
     }
+}
+
+/// How long a task runs before it makes way for others on its worker, at the next tick.
+const TASK_SLICE: Duration = Duration::from_millis(1);
+
+/// `fennec_task_tick()`: native code calls it every few thousand turns of a loop in code that runs as
+/// a task. Once the task's run for its slice, and something else on its worker wants the thread, it
+/// makes way: it parks as ready, and is resumed after the others. Gives back 1 when it parked, for
+/// native code to read its stack limit again, and 0 otherwise. Outside a task, it's 0 at once.
+///
+/// This is fairness without interrupts: no signal, no preemption, no priorities. A task that's alone
+/// on its worker never parks for it.
+pub extern "C" fn task_tick() -> i64 {
+    let Some(started) = SLICE.get() else { return 0 };
+    if started.elapsed() < TASK_SLICE || !can_park() {
+        return 0;
+    }
+    let others = OTHERS.get() || super::parallel::here().is_some_and(|(pool, at)| pool.has_work_for(at));
+    if !others {
+        return 0;
+    }
+    i64::from(yield_task_always())
 }
 
 /// Lets the other tasks on this thread run, if this is a task, and gives back whether it did.

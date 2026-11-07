@@ -820,6 +820,35 @@ fn the_reference_is_written_and_a_stale_decision_fails() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// The tour says every sample not marked planned compiles, so each one is checked as it's shown.
+#[test]
+fn every_tour_sample_not_marked_planned_compiles() {
+    let tour = std::fs::read_to_string(repo().join("site/src/pages/tour.md")).unwrap();
+    let dir = scratch("tour").unwrap();
+    let mut checked = 0;
+    let mut lines = tour.lines().enumerate();
+    while let Some((at, line)) = lines.next() {
+        let Some(info) = line.strip_prefix("```fennec") else { continue };
+        let sample: Vec<&str> =
+            lines.by_ref().map(|(_, line)| line).take_while(|line| !line.starts_with("```")).collect();
+        if info.contains("planned") {
+            continue;
+        }
+        let name = format!("line_{}.fen", at + 2);
+        std::fs::write(dir.join(&name), sample.join("\n") + "\n").unwrap();
+        let output = fennec_in(&dir, &["check", &name], "").unwrap();
+        assert!(
+            output.status.success(),
+            "the tour's sample at line {} doesn't compile:\n{}",
+            at + 2,
+            text(&output.stderr)
+        );
+        checked += 1;
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(checked > 30, "found only {checked} samples in the tour");
+}
+
 #[test]
 fn run_no_test_with_no_path_runs_the_kit_here() {
     let dir = scratch("no_test_here").unwrap();

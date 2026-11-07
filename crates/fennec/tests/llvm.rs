@@ -5476,6 +5476,72 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// A built server whose rounds crash on purpose, for every tenth request: each crash ends only its
+/// own round, closing its connection, and the server answers the other nine.
+#[test]
+fn a_server_whose_rounds_crash_answers_the_rest_natively() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("crashing-rounds")?;
+    let program = dir.join("crashing.fen");
+    std::fs::write(
+        &program,
+        "from std.net import NetError
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            if line == \"crash\":
+                nothing: list[int] = []
+                stdout.print(nothing[3])
+            conn.write(f\"{line}\\n\")?
+",
+    )?;
+    let executable = dir.join("crashing");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Command::new(&executable)
+        .env("FENNEC_THREADS", "2")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let mut printed = std::io::BufReader::new(server.stdout.take().expect("its output"));
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().unwrap_or(0);
+    let (mut answered, mut closed) = (0, 0);
+    for request in 1..=30 {
+        let line = if request % 10 == 0 { "crash".to_owned() } else { format!("request {request}") };
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        stream.write_all(format!("{line}\n").as_bytes())?;
+        let mut back = String::new();
+        let read = std::io::BufReader::new(stream).read_line(&mut back).unwrap_or(0);
+        if read == 0 {
+            closed += 1;
+        } else {
+            assert_eq!(back, format!("{line}\n"));
+            answered += 1;
+        }
+    }
+    server.kill()?;
+    let ended = server.wait_with_output()?;
+    let errors = String::from_utf8_lossy(&ended.stderr);
+    assert_eq!((answered, closed), (27, 3), "{errors}");
+    assert_eq!(errors.matches("error:").count(), 3, "each crash says why: {errors}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// With nothing asked, a program that uses `parallel` is built with the runtime that runs it on
 /// every core, and prints what it should; `FENNEC_THREADS_RUNTIME=0` keeps it on one thread.
 #[test]

@@ -201,3 +201,52 @@ fn a_list_of_items_with_no_fields_reads_back_with_every_item() {
     assert_eq!(items.len(), 2);
     assert_eq!(shown.unwrap(), "[Empty(), Empty()]");
 }
+
+/// The bases where `pow` has special cases, and some where it hasn't.
+const BASES: [f64; 22] = [
+    0.0,
+    -0.0,
+    f64::INFINITY,
+    f64::NEG_INFINITY,
+    f64::NAN,
+    1.0,
+    -1.0,
+    2.0,
+    -2.0,
+    0.5,
+    -0.5,
+    3.0,
+    0.1,
+    -7.25,
+    1e-310,
+    -1e-310,
+    f64::MIN_POSITIVE,
+    1e154,
+    1e155,
+    -1e200,
+    f64::MAX,
+    f64::MIN,
+];
+
+#[test]
+fn a_powers_fast_paths_give_what_pow_gives_at_its_special_cases() {
+    for power in [2.0, 0.5, 1.0, 0.0, -1.0] {
+        for base in BASES {
+            let fast = super::float_power(base, power);
+            let general = libm::pow(base, power);
+            let same = fast.to_bits() == general.to_bits() || (fast.is_nan() && general.is_nan());
+            assert!(same, "{base:?} ** {power:?}: the fast path gives {fast:?}, and pow {general:?}");
+        }
+    }
+}
+
+#[test]
+fn a_powers_fast_paths_are_exact() {
+    for base in [3.0_f64, 0.1, -7.25, 1.0 / 3.0, 12345.678, 1e-150] {
+        assert_eq!(super::float_power(base, 2.0).to_bits(), (base * base).to_bits());
+        assert_eq!(super::float_power(base.abs(), 0.5).to_bits(), base.abs().sqrt().to_bits());
+        assert_eq!(super::float_power(base, -1.0).to_bits(), (1.0 / base).to_bits());
+    }
+    // Any other power is `pow`'s.
+    assert_eq!(super::float_power(1.5, 2.7).to_bits(), libm::pow(1.5, 2.7).to_bits());
+}

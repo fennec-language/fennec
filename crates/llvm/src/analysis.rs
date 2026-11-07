@@ -547,6 +547,13 @@ fn denied(relation: u8) -> u8 {
 
 impl Guard {
     /// Whether it says anything about a local.
+    /// The local this says something about: the one on the left of its comparison.
+    fn about(&self) -> usize {
+        match *self {
+            Guard::Holds(x, _, _) | Guard::IfTrue(_, x, _, _) | Guard::IfFalse(_, x, _, _) => x,
+        }
+    }
+
     fn mentions(&self, local: usize) -> bool {
         let (flag, x, y) = match *self {
             Guard::Holds(x, _, y) => (None, x, y),
@@ -583,7 +590,7 @@ fn guarded_after(
     function: &Function,
     known: &mut std::collections::BTreeSet<Guard>,
     inst: &InstKind,
-    range: &dyn Fn(usize) -> Range,
+    (range, stepped): (&dyn Fn(usize) -> Range, &HashSet<usize>),
 ) {
     let mut written = Vec::new();
     visit(inst, |_| {}, |local| written.push(local.0));
@@ -645,10 +652,16 @@ fn guarded_after(
         }
         known.extend(
             new.into_iter()
-                .filter(|guard| !written.iter().any(|local| *local != flag && guard.mentions(*local))),
+                .filter(|guard| !written.iter().any(|local| *local != flag && guard.mentions(*local)))
+                .filter(|guard| stepped.contains(&guard.about())),
         );
     }
+    known.retain(|guard| stepped.contains(&guard.about()));
 }
+
+/// The most comparisons a block's way in may carry before `find_guarded_steps` gives up on
+/// its function, so working it out stays small, however many comparisons the function makes.
+const MOST_GUARDS: usize = 64;
 
 /// Steps made safe by a comparison on the way to them: `x + 1` where `x < y` holds can't pass the
 /// highest int, whatever `y` is, and `x - 1` where `x > y` holds can't pass the lowest. What
@@ -668,6 +681,20 @@ fn find_guarded_steps(
     if !function.blocks.iter().flat_map(|block| &block.insts).any(|inst| steps(&inst.kind)) {
         return;
     }
+    // Only what's said about a local a step reads can prove the step, so nothing else is kept:
+    // a function with many comparisons and bools would otherwise carry them all everywhere.
+    let stepped: HashSet<usize> = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.insts)
+        .filter(|inst| steps(&inst.kind))
+        .flat_map(|inst| match &inst.kind {
+            InstKind::Binary { lhs, rhs, .. } => {
+                [lhs, rhs].into_iter().filter_map(local_of).collect::<Vec<_>>()
+            }
+            _ => Vec::new(),
+        })
+        .collect();
     let count = function.blocks.len();
     // What holds on each way into each block, once that way's been worked out.
     let mut coming: Vec<HashMap<usize, BTreeSet<Guard>>> = vec![HashMap::new(); count];
@@ -684,12 +711,17 @@ fn find_guarded_steps(
                 })
             };
             let Some(mut state) = state else { continue };
+            // However it's kept small, what's known stays bounded: past this, no step here is
+            // proved by it, and every check stays.
+            if state.len() > MOST_GUARDS {
+                return;
+            }
             if let Some(slot) = entered.get_mut(at) {
                 *slot = Some(state.clone());
             }
             let range = |local: usize| range_of(facts, multi, &Operand::Local(LocalId(local)), at);
             for inst in &block.insts {
-                guarded_after(function, &mut state, &inst.kind, &range);
+                guarded_after(function, &mut state, &inst.kind, (&range, &stepped));
             }
             let outs: Vec<(usize, BTreeSet<Guard>)> = match &block.end {
                 Terminator::Branch { cond: Operand::Local(flag), then, otherwise } => {
@@ -777,7 +809,7 @@ fn find_guarded_steps(
                 let all = proved.entry(dest.0).or_insert(true);
                 *all &= holds;
             }
-            guarded_after(function, &mut state, &inst.kind, &range);
+            guarded_after(function, &mut state, &inst.kind, (&range, &stepped));
         }
     }
     known.safe.extend(proved.into_iter().filter(|(_, all)| *all).map(|(dest, _)| dest));

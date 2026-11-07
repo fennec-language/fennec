@@ -2,14 +2,13 @@
 //! runtime's parallel calls, as `FENNEC_COUNTS` shows, and print what the interpreter prints.
 //! Skipped where LLVM's tools aren't installed, as `llvm.rs` is.
 
-use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use crate::executables::{runtime_built, threads_runtime_built};
+use crate::executables::{FENNEC_DEADLINE, Running, Within, runtime_built, threads_runtime_built};
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
-    crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
+    crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output_before(FENNEC_DEADLINE)
 }
 
 fn ready() -> bool {
@@ -61,7 +60,7 @@ fn a_for_mut_over_parallel_and_its_kin_run_as_parallel_calls_natively() -> std::
     let (source, executable) = (program.to_string_lossy().into_owned(), dir.join("ticks"));
     let built = fennec(&["build", "--llvm", &source, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output()?;
+    let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
     let interpreted = fennec(&["run", "--interp", &source], &dir)?;
     // `fennec run` takes LLVM's dev build where it can, so it runs the same calls.
     let run = fennec(&["run", &source], &dir)?;
@@ -104,7 +103,7 @@ fn a_range_that_fails_stops_the_program_natively_as_the_interpreter_does() -> st
     let (source, executable) = (program.to_string_lossy().into_owned(), dir.join("fails"));
     let built = fennec(&["build", "--llvm", &source, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let ran = Command::new(&executable).output()?;
+    let ran = Command::new(&executable).output_within()?;
     let interpreted = fennec(&["run", "--interp", &source], &dir)?;
     std::fs::remove_dir_all(&dir)?;
     assert!(!ran.status.success());
@@ -137,9 +136,9 @@ fn items_put_back_unchanged_stay_whole_with_text_inline_or_not() -> std::io::Res
             .arg(&executable)
             .env("FENNEC_HOME", &dir)
             .env("FENNEC_INLINE_TEXT", inline)
-            .output()?;
+            .output_before(FENNEC_DEADLINE)?;
         assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-        let ran = Command::new(&executable).output()?;
+        let ran = Command::new(&executable).output_within()?;
         assert!(ran.status.success(), "inline text {inline}: {}", String::from_utf8_lossy(&ran.stderr));
         assert_eq!(String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&interpreted.stdout));
     }
@@ -178,7 +177,7 @@ fn build_on_threads(dir: &Path, source: &str, name: &str) -> std::io::Result<std
         .arg(&executable)
         .env("FENNEC_HOME", dir)
         .env("FENNEC_THREADS_RUNTIME", "1")
-        .output()?;
+        .output_before(FENNEC_DEADLINE)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     Ok(executable)
 }
@@ -193,7 +192,7 @@ fn ranges_run_on_the_runtime_s_workers_each_with_its_own_stack_limit_and_failure
     std::fs::create_dir_all(&dir)?;
     let (workers, deep) =
         (build_on_threads(&dir, ON_WORKERS, "workers")?, build_on_threads(&dir, TOO_DEEP, "deep")?);
-    let on = |executable: &Path| Command::new(executable).env("FENNEC_THREADS", "4").output();
+    let on = |executable: &Path| Command::new(executable).env("FENNEC_THREADS", "4").output_within();
     let (ran, too_deep) = (on(&workers)?, on(&deep)?);
     let source = |name: &str| dir.join(format!("{name}.fen")).to_string_lossy().into_owned();
     let interpreted = fennec(&["run", "--interp", &source("workers")], &dir)?;
@@ -229,7 +228,8 @@ fn a_parallel_program_built_after_a_plain_one_shares_no_cached_module_that_disag
     // The plain one warms the cache with `half`, declaring plain globals.
     let first = build_on_threads(&dir, &plain, "plain")?;
     let second = build_on_threads(&dir, &threaded, "threaded")?;
-    let (ran_first, ran_second) = (Command::new(&first).output()?, Command::new(&second).output()?);
+    let (ran_first, ran_second) =
+        (Command::new(&first).output_within()?, Command::new(&second).output_within()?);
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(String::from_utf8_lossy(&ran_first.stdout), "5\n");
     assert_eq!(String::from_utf8_lossy(&ran_second.stdout), "99990000\n");
@@ -253,7 +253,7 @@ fn bodies_on_workers_use_the_calling_thread_s_blocks_as_the_interpreter_does() -
     let source = dir.join("lent.fen").to_string_lossy().into_owned();
     let interpreted = fennec(&["run", "--interp", &source], &dir)?;
     for threads in ["1", "2", "4", "8"] {
-        let ran = Command::new(&lent).env("FENNEC_THREADS", threads).output()?;
+        let ran = Command::new(&lent).env("FENNEC_THREADS", threads).output_within()?;
         assert!(ran.status.success(), "{threads} threads: {}", String::from_utf8_lossy(&ran.stderr));
         assert_eq!(
             String::from_utf8_lossy(&ran.stdout),
@@ -279,7 +279,7 @@ fn what_bodies_print_on_workers_all_comes_out_whole_and_in_order_within_each_bod
     let prints = build_on_threads(&dir, PRINTS, "prints")?;
     let source = dir.join("prints.fen").to_string_lossy().into_owned();
     let interpreted = fennec(&["run", "--interp", &source], &dir)?;
-    let ran = Command::new(&prints).env("FENNEC_THREADS", "8").output()?;
+    let ran = Command::new(&prints).env("FENNEC_THREADS", "8").output_within()?;
     std::fs::remove_dir_all(&dir)?;
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
     // Bodies run in any order and print in real call order, so this compares lines, sorted: none
@@ -336,8 +336,10 @@ fn what_was_printed_before_a_failure_comes_out() -> std::io::Result<()> {
     std::fs::create_dir_all(&dir)?;
     let on_worker = build_on_threads(&dir, FAILS_ON_A_WORKER, "on_worker")?;
     let on_main = build_on_threads(&dir, FAILS_ON_THE_MAIN_THREAD, "on_main")?;
-    let (worker, main) =
-        (Command::new(&on_worker).env("FENNEC_THREADS", "4").output()?, Command::new(&on_main).output()?);
+    let (worker, main) = (
+        Command::new(&on_worker).env("FENNEC_THREADS", "4").output_within()?,
+        Command::new(&on_main).output_within()?,
+    );
     std::fs::remove_dir_all(&dir)?;
     assert!(!worker.status.success());
     let text = String::from_utf8_lossy(&worker.stdout);
@@ -363,7 +365,7 @@ fn a_character_first_read_on_a_worker_is_found_by_every_range() -> std::io::Resu
     let dir = std::env::temp_dir().join(format!("fennec-parallel-first-reads-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let reads = build_on_threads(&dir, FIRST_READS, "reads")?;
-    let ran = Command::new(&reads).env("FENNEC_THREADS", "4").output()?;
+    let ran = Command::new(&reads).env("FENNEC_THREADS", "4").output_within()?;
     std::fs::remove_dir_all(&dir)?;
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "6000 6000\n6000 6000\n");
@@ -391,21 +393,12 @@ fn every_worker_sees_the_arguments_and_reads_the_one_standard_input() -> std::io
     let dir = std::env::temp_dir().join(format!("fennec-parallel-inputs-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let inputs = build_on_threads(&dir, INPUTS, "inputs")?;
-    let mut running = Command::new(&inputs)
+    let given = "a line\n".repeat(1000);
+    let ran = Command::new(&inputs)
         .args(["one", "two"])
         .env("FENNEC_PARALLEL_STRESS", "1")
         .env("FENNEC_THREADS", "4")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
-    let given = "a line\n".repeat(1000);
-    running
-        .stdin
-        .take()
-        .ok_or_else(|| std::io::Error::other("no standard input"))?
-        .write_all(given.as_bytes())?;
-    let ran = running.wait_with_output()?;
+        .output_given(given.as_bytes(), crate::executables::PROGRAM_DEADLINE)?;
     std::fs::remove_dir_all(&dir)?;
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "[2, 2, 2, 2, 2, 2, 2, 2]\n1000\n");
@@ -435,7 +428,7 @@ fn matches_the_interpreter_on_workers(dir: &Path, name: &str, source: &str) -> s
         let ran = Command::new(&built)
             .env("FENNEC_THREADS", threads)
             .env("FENNEC_PARALLEL_STRESS", "1")
-            .output()?;
+            .output_within()?;
         assert_eq!(ran.status.code(), interpreted.status.code(), "{name} on {threads} threads");
         assert_eq!(
             sorted_lines(&ran.stdout),
@@ -491,7 +484,7 @@ fn a_worker_failing_under_a_lock_ends_the_program() -> std::io::Result<()> {
         );
         let built = build_on_threads(&dir, &source, name)?;
         for threads in ["1", "4"] {
-            let ran = Command::new(&built).env("FENNEC_THREADS", threads).output()?;
+            let ran = Command::new(&built).env("FENNEC_THREADS", threads).output_within()?;
             assert_eq!(ran.status.code(), Some(1), "{name} on {threads} threads");
             let said = String::from_utf8_lossy(&ran.stderr);
             assert!(said.contains("error:"), "{name} on {threads} threads: {said}");
@@ -598,15 +591,14 @@ fn a_native_server_runs_each_connection_as_its_own_task() -> std::io::Result<()>
     let dir = std::env::temp_dir().join(format!("fennec-server-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let executable = build_on_threads(&dir, SERVER, "server")?;
-    let mut server = Command::new(&executable)
-        .env("FENNEC_THREADS", "4")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
-    let mut printed = BufReader::new(server.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
-    let mut first = String::new();
-    printed.read_line(&mut first)?;
-    let port: u16 = first.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "4")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?,
+    );
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
     let greeting = "hello from 2";
     let clients: Vec<_> = (0..50)
         .map(|at| {
@@ -627,12 +619,11 @@ fn a_native_server_runs_each_connection_as_its_own_task() -> std::io::Result<()>
     assert_eq!(talk(port, &["after"])?, [greeting, "after!"]);
     // Each says why, once it gets there.
     let (says, said) = std::sync::mpsc::channel();
-    let errors = BufReader::new(server.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
+    let errors = BufReader::new(server.0.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
     std::thread::spawn(move || errors.lines().map_while(Result::ok).try_for_each(|line| says.send(line)));
     let wait = std::time::Duration::from_secs(20);
     let mut lines = vec![said.recv_timeout(wait), said.recv_timeout(wait)];
-    server.kill()?;
-    server.wait()?;
+    drop(server);
     std::fs::remove_dir_all(&dir)?;
     lines.sort_by_key(|line| line.as_ref().is_ok_and(|line| line.contains("nested")));
     let wanted = ["error: division by zero".to_owned(), "error: calls nested too deeply".to_owned()];
@@ -675,40 +666,38 @@ def main(net: Net, stdout: Stdout):
 /// itself: what the lock guards may be half changed, and other tasks may be waiting for it.
 #[test]
 fn a_server_task_failing_under_a_lock_ends_the_program() -> std::io::Result<()> {
-    use std::io::{BufRead, BufReader};
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
     let dir = std::env::temp_dir().join(format!("fennec-server-holding-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let executable = build_on_threads(&dir, SERVER_HOLDING, "server")?;
-    let mut server = Command::new(&executable)
-        .env("FENNEC_THREADS", "4")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
-    let mut printed = BufReader::new(server.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
-    let mut first = String::new();
-    printed.read_line(&mut first)?;
-    let port: u16 = first.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "4")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?,
+    );
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
     assert_eq!(talk(port, &["count"])?, ["ready", "1"]);
     let failing = std::thread::spawn(move || talk(port, &["fail"]));
     let _ = failing.join();
     // It ends by itself: nothing here kills it.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     let status = loop {
-        if let Some(status) = server.try_wait()? {
+        if let Some(status) = server.0.try_wait()? {
             break status;
         }
-        if std::time::Instant::now() > deadline {
-            server.kill()?;
-            panic!("the server kept going after a task failed holding a lock");
-        }
+        assert!(
+            std::time::Instant::now() <= deadline,
+            "the server kept going after a task failed holding a lock"
+        );
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
     let mut said = String::new();
     std::io::Read::read_to_string(
-        &mut server.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?,
+        &mut server.0.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?,
         &mut said,
     )?;
     std::fs::remove_dir_all(&dir)?;
@@ -767,7 +756,7 @@ fn a_worker_forgets_where_it_got_to_in_a_string_when_its_range_ends() -> std::io
     let dir = std::env::temp_dir().join(format!("fennec-parallel-places-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let places = build_on_threads(&dir, CHARACTER_PLACES, "places")?;
-    let ran = Command::new(&places).env("FENNEC_THREADS", "4").output()?;
+    let ran = Command::new(&places).env("FENNEC_THREADS", "4").output_within()?;
     std::fs::remove_dir_all(&dir)?;
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "373332\n");
@@ -791,13 +780,13 @@ fn workers_read_a_constant_the_calling_thread_worked_out() -> std::io::Result<()
                   stdout.print(sum(counts), LONG, WORDS.len())\n    mut mine = WORDS\n    mine.append(\"mine\")\n    \
                   stdout.print(mine.len(), WORDS.len())\n";
     let executable = build_on_threads(&dir, source, "constants")?;
-    let ran = Command::new(&executable).env("FENNEC_THREADS", "4").output()?;
+    let ran = Command::new(&executable).env("FENNEC_THREADS", "4").output_within()?;
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
     let interpreted = crate::executables::fennec_command()
         .args(["run", "--interp"])
         .arg(dir.join("constants.fen"))
         .env("FENNEC_HOME", &dir)
-        .output()?;
+        .output_before(FENNEC_DEADLINE)?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&interpreted.stdout));
     assert!(ran.stdout.starts_with(b"1"), "{}", String::from_utf8_lossy(&ran.stdout));

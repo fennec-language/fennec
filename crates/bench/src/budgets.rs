@@ -32,6 +32,9 @@ struct Budget {
 }
 
 const FORMAT: Budget = Budget { name: "format one file", limit: Duration::from_millis(50), enforced: true };
+/// Not met yet: the linter checks all of the standard library before it lints, and that's most of
+/// the time it takes.
+const LINT: Budget = Budget { name: "lint one file", limit: Duration::from_millis(50), enforced: false };
 const CHECK: Budget = Budget { name: "edit to checked", limit: Duration::from_millis(100), enforced: true };
 const VERDICT: Budget =
     Budget { name: "edit to verdict, one function", limit: Duration::from_secs(1), enforced: true };
@@ -42,6 +45,11 @@ const INSTRUCTIONS_A_SECOND: u64 = 6_700_000_000;
 
 /// What an edit's verdict may run: a second.
 const MOST_VERDICT_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND;
+
+/// Not met yet: after an edit, `fennec run` checks all of the program again before it builds the
+/// one function that changed, and on the big kit that's most of the time it takes.
+const EDIT_RUN: Budget =
+    Budget { name: "edit to run, one function", limit: Duration::from_millis(50), enforced: false };
 
 const RUN: Budget =
     Budget { name: "`fennec run` startup", limit: Duration::from_millis(100), enforced: true };
@@ -197,11 +205,12 @@ fn measure(kit: &Kit, runs: usize) -> Result<Vec<Measured>, String> {
     let (check_warm, check_cold) = edit_to_checked(kit, runs)?;
     let counted = kit.counted_edit();
     let check = Measured { budget: CHECK, warm: check_warm, cold: Some(check_cold), counted };
-    let mut measured = vec![check, kit.format(runs)?];
+    let mut measured = vec![check, kit.format(runs)?, kit.lint(runs)?];
     measured.push(kit.verdict(runs)?);
     let mut run = kit.repeated(RUN, &["run"], runs)?;
     run.counted = kit.counted(&["run"], MOST_RUN_INSTRUCTIONS);
     measured.push(run);
+    measured.push(kit.edit_to_run(runs)?);
     Ok(measured)
 }
 
@@ -303,6 +312,51 @@ impl Kit {
         let mut measured = self.repeated(FORMAT, &["fmt", "--check", EDITED], runs)?;
         measured.cold = None;
         Ok(measured)
+    }
+
+    /// Linting the edited file, whose lints, like functions nothing uses, don't fail this.
+    fn lint(&self, runs: usize) -> Result<Measured, String> {
+        let linted = || -> Result<Duration, String> {
+            let start = Instant::now();
+            let output = self
+                .command(&["lint", EDITED])
+                .output()
+                .map_err(|err| format!("couldn't run fennec: {err}"))?;
+            let took = start.elapsed();
+            match output.status.code() {
+                Some(0 | 1) => Ok(took),
+                _ => Err(format!(
+                    "`fennec lint {EDITED}` failed:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                )),
+            }
+        };
+        let cold = linted()?;
+        let times = (0..runs).map(|_| linted()).collect::<Result<Vec<_>, _>>()?;
+        Ok(Measured { budget: LINT, warm: median(times), cold: Some(cold), counted: None })
+    }
+
+    /// From changing a function `main` calls to `fennec run --no-test` having run the program
+    /// with the change, each time: what the build cache has to make quick.
+    fn edit_to_run(&self, runs: usize) -> Result<Measured, String> {
+        let path = self.dir.join(EDITED);
+        let original = std::fs::read_to_string(&path).map_err(|err| err.to_string())?;
+        let (_, before) = self.timed(&["run", "--no-test"])?;
+        let mut times = Vec::with_capacity(runs + 1);
+        for run in 0..=runs {
+            let edited = original.replace(EDITED_LINE, &format!("    y = x + 300 + {}\n", 2000 + run));
+            std::fs::write(&path, edited).map_err(|err| err.to_string())?;
+            let (took, printed) = self.timed(&["run", "--no-test"])?;
+            if printed == before {
+                return Err(format!(
+                    "an edit to a function `main` calls should change what it prints, but it printed {printed}"
+                ));
+            }
+            times.push(took);
+        }
+        std::fs::write(&path, original).map_err(|err| err.to_string())?;
+        let cold = times.remove(0);
+        Ok(Measured { budget: EDIT_RUN, warm: median(times), cold: Some(cold), counted: None })
     }
 
     /// From changing one function to `fennec test` having a pass or fail, each time, which must

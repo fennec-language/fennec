@@ -31,6 +31,7 @@ mod keys;
 mod loops;
 mod lost;
 mod messages;
+mod named;
 mod once;
 mod parallel;
 mod pattern;
@@ -52,6 +53,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use fennec_syntax::{Diagnostic, Expr, Module, Span};
 
 pub use messages::missing_method;
+pub use named::add_pattern_fixes;
 pub use privacy::add_rename_fixes;
 pub use types::Type;
 
@@ -69,10 +71,14 @@ pub fn check_typed(module: &Module) -> Result<Checked, Vec<Diagnostic>> {
     let mut renamed = module.clone();
     hide_interface_params(&mut renamed);
     if names.is_empty() {
-        return checker::Checker::new(&renamed).run(false).map_err(|problems| as_written(problems, &names));
+        return checker::Checker::new(&renamed)
+            .run(checker::Scope::Everything)
+            .map_err(|problems| as_written(problems, &names));
     }
     fennec_syntax::rename::rename_types(&mut renamed, &names);
-    checker::Checker::new(&renamed).run(false).map_err(|problems| as_written(problems, &names))
+    checker::Checker::new(&renamed)
+        .run(checker::Scope::Everything)
+        .map_err(|problems| as_written(problems, &names))
 }
 
 /// The types a program declares with the same name as a standard library type, each with the
@@ -275,14 +281,26 @@ fn imports_a_format(module: &Module) -> bool {
 /// checked only when the module reaches them, so its signatures hold just those. The
 /// library's own tests check all of it.
 pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
+    checked_in(module, checker::Scope::Reached)
+}
+
+/// Like `check_to_run`, with every standard library type's fields typed too, so the module can
+/// be lowered to find what it costs, as `fennec lint` does, without checking all of the library.
+pub fn check_to_lower(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
+    checked_in(module, checker::Scope::ReachedWithFields)
+}
+
+fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, Vec<Diagnostic>> {
     library_parses()?;
     let names = own_types_apart(module);
-    let checked = checker::Checker::new(module).run(true).map_err(|problems| as_written(problems, &names))?;
+    let checked =
+        checker::Checker::new(module).run(scope).map_err(|problems| as_written(problems, &names))?;
     Ok(resolved(module, checked))
 }
 
 fn resolved(module: &mut Module, checked: Checked) -> Signatures {
     fennec_syntax::visit::type_fields_from_defaults(module);
+    named::put_in_order(module, &checked.named_patterns);
     if !checked.cases.is_empty()
         || !checked.float_sums.is_empty()
         || !checked.generator_types.is_empty()
@@ -363,6 +381,8 @@ pub struct Checked {
     generator_types: BTreeMap<(u32, u32), String>,
     /// What each name for a standard library function written in Fennec means.
     std_names: BTreeMap<(u32, u32), String>,
+    /// The fields, in order, of each pattern written with them by name.
+    named_patterns: BTreeMap<(u32, u32, String), Vec<String>>,
     /// The format calls native code can make in Fennec, by the call's span.
     native_formats: BTreeMap<(u32, u32), String>,
     /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.

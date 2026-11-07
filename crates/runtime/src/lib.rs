@@ -73,8 +73,11 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_no_match",
     "fennec_out_of_range",
     "fennec_parallel_for",
+    "fennec_parallel_for_waiting",
     "fennec_parallel_map",
+    "fennec_parallel_map_waiting",
     "fennec_parallel_reduce",
+    "fennec_parallel_reduce_waiting",
     "fennec_net_serve",
     "fennec_path_get",
     "fennec_pop_empty",
@@ -359,7 +362,11 @@ export! {
     fennec_parallel_for(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for(a0, a1, a2);
     fennec_parallel_map(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_map(a0, a1, a2, a3);
     fennec_parallel_reduce(a0: i64, a1: parallel::ReduceBody, a2: parallel::Combine, a3: i64, a4: &mut i64) -> i64 => parallel::parallel_reduce(a0, a1, a2, a3, a4);
+    fennec_parallel_for_waiting(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for_waiting(a0, a1, a2);
+    fennec_parallel_map_waiting(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_map_waiting(a0, a1, a2, a3);
+    fennec_parallel_reduce_waiting(a0: i64, a1: parallel::ReduceBody, a2: parallel::Combine, a3: i64, a4: &mut i64) -> i64 => parallel::parallel_reduce_waiting(a0, a1, a2, a3, a4);
     fennec_parallel_stream(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_stream(a0, a1, a2, a3);
+    fennec_parallel_stream_waiting(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_stream_waiting(a0, a1, a2, a3);
     fennec_stream_next(a0: i64, a1: &mut i64) -> i64 => parallel::stream_next(a0, a1);
     fennec_stream_end(a0: i64) => parallel::stream_end(a0);
     fennec_net_serve(a0: i64, a1: serve::ConnBody, a2: i64) -> i64 => serve::net_serve(a0, a1, a2);
@@ -407,6 +414,7 @@ export! {
     fennec_crypto_call(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => capabilities::crypto_call(a0, a1, a2, a3);
     fennec_use_tls() => capabilities::use_tls();
     fennec_clock_now() -> i64 => capabilities::clock_now();
+    fennec_clock_time() -> i64 => capabilities::clock_time();
     fennec_clock_sleep(a0: i64) => capabilities::clock_sleep(a0);
     fennec_args_len() -> i64 => capabilities::args_len();
     fennec_args_program() -> i64 => capabilities::args_program();

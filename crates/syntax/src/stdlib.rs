@@ -30,8 +30,10 @@ macro_rules! modules {
 }
 
 modules! {
+    base64,
     cli,
     collections,
+    compress,
     crypto,
     csv,
     fs,
@@ -46,8 +48,12 @@ modules! {
     process,
     random,
     re,
+    string,
     time,
     toml,
+    unicode,
+    url,
+    uuid,
 }
 
 /// What's available everywhere without an import: the errors standard operations fail

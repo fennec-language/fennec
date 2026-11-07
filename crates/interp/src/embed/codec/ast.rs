@@ -389,11 +389,12 @@ impl Encode for Pattern {
             Pattern::Wildcard => to.tag(0),
             Pattern::Bind(name) => (1, name).encode_tagged(to),
             Pattern::Literal(expr) => (2, expr).encode_tagged(to),
-            Pattern::Variant { name, dotted, args } => {
+            Pattern::Variant { name, dotted, args, fields } => {
                 to.tag(3);
                 name.encode(to);
                 dotted.encode(to);
                 args.encode(to);
+                fields.encode(to);
             }
             Pattern::Tuple(items) => (4, items).encode_tagged(to),
             Pattern::Or(alternatives) => (5, alternatives).encode_tagged(to),
@@ -411,6 +412,7 @@ impl Decode for Pattern {
                 name: Decode::decode(from)?,
                 dotted: Decode::decode(from)?,
                 args: Decode::decode(from)?,
+                fields: Decode::decode(from)?,
             },
             4 => Pattern::Tuple(Decode::decode(from)?),
             5 => Pattern::Or(Decode::decode(from)?),

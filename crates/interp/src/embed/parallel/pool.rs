@@ -31,8 +31,10 @@ const WORKER_STACK_BYTES: usize = 64 << 20;
 /// stack is room for the runtime it calls.
 const WORKER_NATIVE_BYTES: usize = 48 << 20;
 
-/// What native code leaves free of a parked task's stack, for the runtime it calls.
+/// What native code leaves free of a parked task's stack, for the runtime it calls: a quarter of
+/// it, at least this, and at most a worker's.
 const TASK_RUNTIME_BYTES: usize = 256 << 10;
+const WORKER_RUNTIME_BYTES: usize = WORKER_STACK_BYTES - WORKER_NATIVE_BYTES;
 
 /// How many times an idle worker looks for work again, giving up its thread's turn between
 /// looks, before it sleeps. A program that makes many short `parallel` calls in a row then finds
@@ -82,6 +84,8 @@ thread_local! {
     static OWN: RefCell<Option<Worker<Job>>> = const { RefCell::new(None) };
     /// The lowest address native code on this worker may grow its stack to, or 0 off the pool.
     static LIMIT: Cell<usize> = const { Cell::new(0) };
+    /// Ranges a job just made, to start as parked tasks once it returns (see `as_task`).
+    static STARTING: RefCell<Vec<Box<dyn FnOnce() -> i64>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Gives what each worker runs before its first job. The first one given is kept.
@@ -105,8 +109,11 @@ pub fn run_worker_setup() {
 /// The lowest address native code on this thread may grow its stack to, when it's one of the
 /// pool's workers, and 0 otherwise.
 pub fn stack_limit() -> usize {
-    // A task on a server's I/O worker has a stack of its own, and the runtime needs room below it.
-    fennec_parked::stack_low().map_or_else(|| LIMIT.get(), |low| low + TASK_RUNTIME_BYTES)
+    // A task has a stack of its own, and the runtime needs room below it: a range's as big as a
+    // worker's, a connection's small.
+    let room = fennec_parked::stack_size()
+        .map_or(TASK_RUNTIME_BYTES, |size| (size / 4).clamp(TASK_RUNTIME_BYTES, WORKER_RUNTIME_BYTES));
+    fennec_parked::stack_low().map_or_else(|| LIMIT.get(), |low| low + room)
 }
 
 /// How many workers `FENNEC_THREADS` asks for, or as many as there are cores.
@@ -174,8 +181,16 @@ impl Pool {
         loop {
             self.read_mail(at, &mut io);
             io.run_ready();
+            for range in STARTING.take() {
+                io.start_range(range);
+            }
             if let Some(job) = self.find(at) {
+                let serving = super::super::threads::job_starts();
                 job();
+                super::super::threads::job_ends(serving);
+                for range in STARTING.take() {
+                    io.start_range(range);
+                }
                 idle = 0;
                 io.poll_now();
             } else if io.has_ready() {
@@ -332,6 +347,15 @@ pub(super) fn for_call(words: usize) -> Option<&'static Pool> {
     pool()
 }
 
+/// The pool a call whose body may wait runs on, however few its items: the shared one, when workers
+/// can have runtimes, and None on a worker, whose own call runs its ranges itself.
+pub(super) fn for_waiting() -> Option<&'static Pool> {
+    if WORKER.get() || SETUP.get().is_none() {
+        return None;
+    }
+    pool()
+}
+
 /// Runs a call's ranges on `pool`: `start` hands it the first job, and this thread waits until
 /// `done` says the last has finished, lending its blocks to the workers meanwhile.
 pub(super) fn install(call: &super::Run, start: impl FnOnce(), done: &Latch) {
@@ -407,6 +431,17 @@ pub(super) fn settle(changes: std::collections::HashMap<u64, i64>) {
 pub(super) fn window(words: usize) -> usize {
     let pool = (words >= SEQUENTIAL_WORDS && SETUP.get().is_some()).then(pool).flatten();
     pool.map_or(0, |pool| 2 * pool.threads())
+}
+
+/// Runs a range of a call whose body may wait as a parked task on this worker, so it can park
+/// rather than hold its thread: it starts once the job making it returns. Off the pool, it runs
+/// here and now.
+pub(super) fn as_task(range: impl FnOnce() -> i64 + 'static) {
+    if WORKER.get() {
+        STARTING.with_borrow_mut(|starting| starting.push(Box::new(range)));
+    } else {
+        let _ = range();
+    }
 }
 
 /// Runs a task on the pool's workers, when they get to it.

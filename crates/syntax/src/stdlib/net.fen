@@ -12,6 +12,8 @@
 ## `localhost`, and its clients reach them in memory. Nothing else runs while a test waits, so a
 ## test's server is done once no connection is waiting.
 
+from std.url import decode_query, unquote
+
 ## A failure of the network, with a case for each way it fails. `message()` says it in words.
 export error NetError:
     ## No host has that name.
@@ -122,7 +124,7 @@ export shared Server:
     ## connection is kept open for more requests unless either side says to close it, and one that
     ## sends nothing for `timeout` is closed. A request that's too big, or isn't HTTP, is answered
     ## with the 4xx status that says so, without calling `respond`.
-    def serve(self, respond: (Request) -> Response, timeout: Duration = 30s):
+    def serve(self, respond: (Request) -> Response, timeout = 30s):
         for connection in parallel(self):
             _ = answer_all(connection, respond, timeout)
 
@@ -219,54 +221,17 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
     at = target.find("?")
     if at is not None:
         path = target[:at]
-        for pair in target[at + 1:].split("&"):
-            if pair == "": continue
-            equals = pair.find("=")
-            if equals is None:
-                query[unquoted(pair, True)] = ""
-            else:
-                query[unquoted(pair[:equals], True)] = unquoted(pair[equals + 1:], True)
+        query = decode_query(target[at + 1:])
     .Got(
         request=Request(
             method=parts[0],
-            path=unquoted(path, False),
+            path=unquote(path),
             query=query,
             headers=headers,
             body=body,
         ),
         keep=keep,
     )
-
-## Text from a URL, with `%41` the byte it names, and in a query, `+` a space. Anything that
-## doesn't decode stays as it was.
-def unquoted(text: str, plus: bool) -> str:
-    if text.find("%") is None and (not plus or text.find("+") is None): return text
-    raw = text.encode()
-    mut out: list[int] = []
-    mut at = 0
-    while at < raw.len():
-        b = raw[at]
-        if b == 43 and plus:
-            out.append(32)
-            at += 1
-        elif (
-            b == 37
-            and at + 2 < raw.len()
-            and hex_digit(raw[at + 1]) >= 0
-            and hex_digit(raw[at + 2]) >= 0
-        ):
-            out.append(hex_digit(raw[at + 1]) * 16 + hex_digit(raw[at + 2]))
-            at += 3
-        else:
-            out.append(b)
-            at += 1
-    bytes(out).decode() else text
-
-def hex_digit(b: int) -> int:
-    if b >= 48 and b <= 57: return b - 48
-    if b >= 97 and b <= 102: return b - 87
-    if b >= 65 and b <= 70: return b - 55
-    -1
 
 ## Writes a response, saying the connection closes after it when it does.
 def write_response(connection: Connection, response: Response, keep: bool) fails NetError:

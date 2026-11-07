@@ -123,6 +123,18 @@ pub(crate) fn emit_with(
     // Every module of a program agrees, since what it declares has to match what's defined.
     let threads = crate::parallel::uses_parallel(program);
     shared.native = crate::native::native_types(program, &layouts);
+    let waits = crate::waits::may_wait(program, true);
+    let closures =
+        program.functions.iter().flat_map(|function| &function.blocks).flat_map(|block| &block.insts);
+    shared.waiting_closures = closures
+        .filter_map(|inst| match &inst.kind {
+            InstKind::MakeClosure { function, .. } if waits.marked.contains_key(function) => {
+                Some(function.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    shared.waiting = waits.marked.into_keys().collect();
     // Every function it can't take yet is named, not just the first.
     let mut refused = Vec::new();
     for function in program.functions.iter().chain(&program.constants) {
@@ -429,6 +441,7 @@ impl<'p> Module<'_, 'p> {
             kinds,
             returns,
             allocas: String::new(),
+            kept_lengths: HashMap::new(),
             out: String::new(),
             cold: String::new(),
             next: 0,
@@ -489,6 +502,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     kinds: Vec<Kind>,
     returns: Kind,
     pub(crate) allocas: String,
+    /// Where a list a loop fills keeps its length while the loop runs, by the list's local: in
+    /// a local of its own, which LLVM holds in a register, written to the list as the loop ends.
+    pub(crate) kept_lengths: HashMap<usize, String>,
     out: String,
     cold: String,
     next: usize,
@@ -720,6 +736,7 @@ impl Emit<'_, '_, '_> {
         for at in written_order(function) {
             let Some(block) = function.blocks.get(at) else { continue };
             self.start_block(&format!("bb{at}"));
+            self.write_kept_lengths(at);
             let ways_in = before.get(&at).map_or(&[][..], Vec::as_slice);
             self.alone_fields =
                 coming_in(function, self.known, settles, (at, &before, &done), (&on_entry, &alone_left));
@@ -1860,7 +1877,12 @@ impl Emit<'_, '_, '_> {
             {
                 self.std_call(dest, name, args, span)
             }
-            crypto if crypto.starts_with("crypto.") => self.crypto_call(dest, name, args, span),
+            pure if pure.starts_with("crypto.")
+                || pure.starts_with("compress.")
+                || pure.starts_with("unicode.") =>
+            {
+                self.crypto_call(dest, name, args, span)
+            }
             "error.with_cause" => {
                 // Nothing reads what caused an error yet, so the wrapper is all there is.
                 let wrapper = first.ok_or("no argument")?;

@@ -1,0 +1,7 @@
+# Another kit's type is matched by naming its fields, so a field it adds never breaks this.
+def main(stdout: Stdout, fs: Fs):
+    match fs.read_text("notes.txt"):
+        case Ok(text):
+            stdout.print(text)
+        case Err(IoError(why)):
+            stdout.print(why)

@@ -11,6 +11,7 @@ mod buffer;
 mod builtins;
 mod call;
 mod collections;
+mod compress;
 mod constants;
 pub mod embed;
 mod entropy;
@@ -38,6 +39,8 @@ mod scope;
 mod stdlib;
 mod testing;
 mod types;
+mod unicode;
+mod unicode_tables;
 mod value;
 
 pub use constants::{Baked, bake_constants};

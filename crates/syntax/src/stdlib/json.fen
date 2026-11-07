@@ -1,3 +1,4 @@
+from std import base64
 from std.collections import Id
 from std.intrinsics import id_key, new_tag, stop, text_byte, text_escape_at, text_of_code, text_part, text_plain_end, text_size, type_name
 
@@ -88,58 +89,6 @@ def escape_of(b: int) -> str:
         case _:
             digits = "0123456789abcdef"
             f"\\u00{digits[b // 16]}{digits[b % 16]}"
-
-## `data` in standard base64, with `=` at the end to fill its last four, which is how JSON and TOML
-## write `bytes`.
-def base64_of(data: bytes) -> str:
-    size = data.len()
-    mut out = ""
-    mut at = 0
-    while at < size:
-        first = data[at]
-        second = data[at + 1] if at + 1 < size else 0
-        third = data[at + 2] if at + 2 < size else 0
-        out += base64_digit(first // 4)
-        out += base64_digit(first % 4 * 16 + second // 16)
-        out += base64_digit(second % 16 * 4 + third // 64) if at + 1 < size else "="
-        out += base64_digit(third % 64) if at + 2 < size else "="
-        at += 3
-    out
-
-def base64_digit(n: int) -> str:
-    text_part("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", n, n + 1)
-
-## What a base64 digit stands for, or -1 for anything else.
-def base64_value(b: int) -> int:
-    if b >= 65 and b <= 90: return b - 65
-    if b >= 97 and b <= 122: return b - 71
-    if b >= 48 and b <= 57: return b + 4
-    if b == 43: return 62
-    if b == 47: return 63
-    -1
-
-## The bytes standard base64 text stands for, or None if it isn't base64.
-def from_base64(text: str) -> bytes?:
-    size = text_size(text)
-    if size % 4 != 0: return None
-    mut out = list[int]()
-    mut at = 0
-    while at < size:
-        a = base64_value(text_byte(text, at))
-        b = base64_value(text_byte(text, at + 1))
-        last = at + 4 == size
-        c_byte = text_byte(text, at + 2)
-        d_byte = text_byte(text, at + 3)
-        c = -2 if last and c_byte == 61 and d_byte == 61 else base64_value(c_byte)
-        d = -2 if last and d_byte == 61 else base64_value(d_byte)
-        if a < 0 or b < 0 or c == -1 or d == -1: return None
-        out.append(a * 4 + b // 16)
-        if c >= 0:
-            out.append(b % 16 * 16 + c // 4)
-            if d >= 0:
-                out.append(c % 4 * 64 + d)
-        at += 4
-    bytes(out)
 
 ## What a dict's key is, for deciding how to write it: JSON's object keys are text, and an int
 ## is written as its digits. Anything else makes the dict an array of `[key, value]` pairs.
@@ -271,7 +220,7 @@ struct JsonWriter:
         self._text += "\""
 
     def bytes(ref self, value: bytes):
-        self.text(base64_of(value))
+        self.text(base64.encode(value))
 
     def none(ref self):
         self._text += "null"
@@ -317,8 +266,7 @@ struct JsonWriter:
     def _close(ref self, closing: str):
         self._depth -= 1
         if self._indent >= 0 and not self._first:
-            self._text += "\n"
-            self._text += " " * (self._indent * self._depth)
+            self._new_line()
         self._text += closing
         self._first = False
 
@@ -330,8 +278,13 @@ struct JsonWriter:
         else:
             self._text += ","
         if self._indent >= 0:
-            self._text += "\n"
-            self._text += " " * (self._indent * self._depth)
+            self._new_line()
+
+    ## A new line, indented as deep as what's being written, for output written with `indent`.
+    ## It's apart so that output on one line, as most is, has none of its work.
+    def _new_line(ref self):
+        self._text += "\n"
+        self._text += " " * (self._indent * self._depth)
 
     def sequence[T: Serializable](ref self, items: list[T]):
         self._open("[")
@@ -933,7 +886,7 @@ struct JsonReader:
     def bytes(ref self) -> bytes fails ParseError:
         if self._space() != 34: fail self._misfit("bytes")
         text = self.text()?
-        from_base64(text) else fail self._not_base64()
+        base64.decode(text) else fail self._not_base64()
 
     def _not_base64(self) -> ParseError:
         if not self._explain: return no_reason()

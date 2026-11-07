@@ -432,7 +432,7 @@ def main(stdout: Stdout, fs: Fs):
     stdout.print(found.size, found.is_file, found.is_dir, folder.is_file, folder.is_dir)
     match fs.remove("saves"):
         case Ok(_): stdout.print("removed a folder that isn't empty")
-        case IoError(_): stdout.print("a folder has to be empty to remove")
+        case IoError(): stdout.print("a folder has to be empty to remove")
     for path in fs.list_dir(slots)?:
         fs.remove(path)?
     fs.remove(slots)?
@@ -870,6 +870,23 @@ fn run_no_test_with_no_path_runs_the_kit_here() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(text(&output.stdout), "Hello from demo!\n");
+}
+
+/// The linter checks only what the program reaches of the standard library, and still finds what
+/// a function costs when it loops `for ref` over a library type, whose `len` the loop reaches.
+#[test]
+fn lint_finds_costs_past_a_loop_over_a_library_type() {
+    let source = "from std.collections import Grid\n\ndef main(stdout: Stdout):\n    \
+        mut grid = Grid.filled(width=2, height=2, value=1)\n    for ref cell in grid:\n        cell += 1\n    \
+        mut names = list[str]()\n    for n in range(3):\n        names.append(f\"{n}\")\n    stdout.print(names)\n";
+    let dir = scratch("lint_costs").unwrap();
+    let program = dir.join("game.fen");
+    std::fs::write(&program, source).unwrap();
+    let output = fennec(&["lint", "--json", &program.to_string_lossy()], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let printed = text(&output.stdout);
+    assert!(printed.contains("growing it with `list.append` may allocate"), "{printed}");
+    assert!(printed.contains("this f-string may allocate"), "{printed}");
 }
 
 #[test]
@@ -1434,6 +1451,25 @@ fn fix_renames_a_top_level_name_that_starts_with_an_underscore() {
         said.contains("`_helper` is a top-level name") && said.contains("`_shown` is a top-level name"),
         "{said}"
     );
+}
+
+/// `fennec fix` names the fields of a pattern matching another kit's type by position, and a
+/// part that's only `_` goes, so it reads no field.
+#[test]
+fn fix_names_the_fields_a_pattern_matches_in_another_kits_type() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-named-pattern", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("read.fen");
+    std::fs::write(&program, "def main(stdout: Stdout, fs: Fs):\n    match fs.read_text(\"/nothing/here\"):\n        case Ok(text): stdout.print(text)\n        case Err(IoError(why)): stdout.print(why != \"\")\n    match fs.read_text(\"/nothing/here\"):\n        case Ok(_): stdout.print(\"read\")\n        case Err(IoError(_)): stdout.print(\"failed\")\n").unwrap();
+    let path = program.to_string_lossy().into_owned();
+    let fixed = fennec(&["fix", &path], "").unwrap();
+    let written = std::fs::read_to_string(&program).unwrap();
+    let ran = fennec(&["run", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    assert!(written.contains("case Err(IoError(reason=why)):"), "{written}");
+    assert!(written.contains("case Err(IoError()):"), "{written}");
+    assert_eq!(text(&ran.stdout), "True\nfailed\n", "{}", text(&ran.stderr));
 }
 
 /// Enums with a case in common, which only the expected type can tell apart, and an error.

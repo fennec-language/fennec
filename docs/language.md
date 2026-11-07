@@ -1,6 +1,6 @@
 # Fennec on one page
 
-This page is the source of truth for the language. If `decisions.md` disagrees with it, this page wins. Most of the syntax here isn't built yet.
+This page is the source of truth for the language. If `decisions.md` disagrees with it, this page wins. Most of it is built, and what isn't says so.
 
 Fennec reads at a glance, builds almost instantly, and is built to run as fast as hand-written systems code in release builds. Everything is a plain value by default, and the compiler does the hard work.
 
@@ -149,6 +149,36 @@ game.add("Chris")           # takes the lock for the call
 
 A typical game doesn't use `shared`: its main loop owns the world and passes `ref world` down.
 
+## Unions
+
+```fennec
+type Shape = Circle | Square
+
+def report(shapes: list[Shape], stdout: Stdout):
+    stdout.print(sum(shape.area() for shape in shapes))   # every member has area(), so Shape does
+    for shape in shapes:
+        if shape is Circle:
+            stdout.print(shape.radius)                     # a Circle here
+```
+
+- A union mixes types that already exist, and an `enum` defines new cases. Each value is held in place with its member's tag, never boxed. Built.
+- `if x is Circle:` narrows `x` inside the block, and `match` handles each member, checked for exhaustiveness. A method every member has is the union's too.
+- `None` is never a member: `str | None` is an error whose fix writes `str?`, and an optional union is `(A | B)?`.
+- Failures stay separate: a function that can fail returns `-> T fails E`, never `-> T | E`.
+
+## Named arguments
+
+```fennec
+def scan(rows: list[Row], limit=8) -> list[Row]:
+    ...
+
+scan(rows, limit=100)
+copy_file(source, destination=backup, overwrite=True)
+```
+
+- A parameter with a default is passed by name only, and a literal default gives it its type. An empty collection's default is its constructor: `items = list[str]()`. Built.
+- Some positional arguments are a compile error whose fix names them: a bare `True` or `False`, neighboring arguments of the same type, and three or more unless no two neighbors could be swapped and still compile. The first argument and `self` are exempt. Built.
+
 ## Failures
 
 ```fennec
@@ -173,6 +203,38 @@ stream = fs.open(filename) else:
 - `fails A | B` combines failures from different places: `?` passes any of them up as it is, and a function type can say it too, as in `(str) -> int fails ParseError | RangeError`. Built.
 - An `else:` block must leave: it ends with `return`, `fail`, `continue` or `break`. Built.
 - Taking from an empty collection gives `None`: `list.pop()` returns `T?`, as a queue's `pop` does, so draining one reads `next = todo.pop() else break`. `pop(at)` fails on a position that isn't there, like `items[at]`. Built.
+
+## Visibility
+
+```fennec
+export struct Score:
+    points = 0
+    _best = 0                  # seen only by Score's own methods
+
+export def best(scores: list[Score]) -> int:
+    max(score.points for score in scores)
+```
+
+- `export` marks what other kits can use, and goes on top-level types and functions only. Without it, a name is private to its kit, and inside a kit every file sees everything. `fennec fix` rewrites the old `pub`. Built.
+- A `_name` field or method of a `struct` or `shared` is hidden from everything but its type's own methods. Tests get no special access. Built.
+- A top-level name never starts with `_`, since it's already private to its kit. That's a compile error, and `fennec fix` renames it everywhere. The standard library follows the same rule. Built.
+- Other kits match an exported type's fields by name: `case IoError(reason=r)`, `case Point(x=a, y=_)`, or `case IoError()` to match it without reading a field. Matching another kit's type by position is a compile error, and `fennec fix` adds the names. A kit's own code can still match by position, and cases with no fields, like `.Wait`, are unchanged. Built for the standard library's types.
+- Other kits build an exported type with named arguments only. Not built yet.
+- The automatic constructor sets the public fields, and `_` fields take their defaults. A `_` field with no default needs a named constructor, and a type nobody can build is a compile error. Not built yet.
+- So a kit can add a field with a default to a type it exports, and no other kit's code that builds or matches it breaks.
+
+## Saving data
+
+```fennec
+from std import json
+
+text = json.dumps(world)
+back = json.loads[World](text)?
+```
+
+- JSON, TOML and `std.pack` save any type whose fields can all be saved, through one `serialize` and `deserialize`. Built.
+- A `Table` saves as a list of its items in order, and an `Id` as where its item is in that list. Loading makes a new `Table`, and every `Id` loaded with it finds its item there. An `Id` has to be in a `Table` saved with it. Built.
+- A union saves tagged with its member's type name, as in `{"Circle": {"radius": 1.0}}`. Built.
 
 ## Capabilities
 
@@ -204,6 +266,11 @@ def main(net: Net, stdout: Stdout):
 
 Each connection gets its own task, and a failure ends only that task. The wrapper is a plain value, and connections close when their last owner goes away.
 
+## Building
+
+- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the JIT stands in and says so. Built.
+- `fennec build` makes a native program through LLVM, and `fennec build --release` optimizes the whole program as one. Built.
+
 ## Speed
 
 - Everyday builds stay fast, and release builds can take as long as they need.
@@ -217,7 +284,6 @@ Each connection gets its own task, and a failure ends only that task. The wrappe
 | Float order | Keep one order, and measure x86 before calling it settled |
 | `x / 0.0` | Keep stopping the program |
 | `where` | A broken rule always stops the program |
-| Private fields | Allow them in a constructor inside the same kit; other kits use named constructors |
 | A shared method calling another | Refuse calls into a `shared` passed as a parameter |
 | `?` inside `parallel` | It ends only that task |
 | A scoped `ref` | Possibly `with units[target_id] as ref target:` |

@@ -1,0 +1,66 @@
+# `std.string`: wrapping and indenting text, as Python's `textwrap` does, and the sets of
+# characters Python's `string` names. Most of what's done to text is a method of `str`.
+
+export ASCII_LOWERCASE = "abcdefghijklmnopqrstuvwxyz"
+export ASCII_UPPERCASE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+export ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+export DIGITS = "0123456789"
+export HEX_DIGITS = "0123456789abcdefABCDEF"
+export OCT_DIGITS = "01234567"
+export PUNCTUATION = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+export WHITESPACE = " \t\n\r\x0b\x0c"
+
+## `text`'s words in lines of at most `width` characters, as many on each line as fit. Words
+## are what's between spaces, tabs and line breaks, and a word longer than `width` is broken
+## across lines. Text with no words gives no lines.
+export def wrap(text: str, width: int) -> list[str]:
+    mut lines = list[str]()
+    mut line = ""
+    for word in text.split():
+        mut rest = word
+        while rest.len() > width and width > 0:
+            if line != "":
+                lines.append(line)
+                line = ""
+            lines.append(rest[:width])
+            rest = rest[width:]
+        if rest == "": continue
+        if line == "":
+            line = rest
+        elif line.len() + 1 + rest.len() <= width:
+            line = line + " " + rest
+        else:
+            lines.append(line)
+            line = rest
+    if line != "":
+        lines.append(line)
+    lines
+
+## `text` wrapped to `width`, as `wrap` does it, with its lines joined by line breaks.
+export def fill(text: str, width: int) -> str:
+    "\n".join(wrap(text, width=width))
+
+## `text` with the spaces and tabs every line starts with taken off, so text indented to sit
+## inside code can be written flush. Lines of only spaces and tabs don't count, and come out
+## empty.
+export def dedent(text: str) -> str:
+    lines = text.split("\n")
+    mut common = ""
+    mut first = True
+    for line in lines:
+        if line.strip() == "": continue
+        lead = line[:line.len() - line.lstrip().len()]
+        if first:
+            common = lead
+            first = False
+        else:
+            mut size = 0
+            while size < lead.len() and size < common.len() and lead[size] == common[size]:
+                size += 1
+            common = common[:size]
+    cut = common.len()
+    "\n".join(["" if line.strip() == "" else line[cut:] for line in lines])
+
+## `text` with `prefix` before each line that isn't empty or only spaces and tabs.
+export def indent(text: str, prefix: str) -> str:
+    "\n".join([line if line.strip() == "" else prefix + line for line in text.split("\n")])

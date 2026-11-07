@@ -21,6 +21,17 @@ enum State {
     Done(Signature),
 }
 
+/// How much of the standard library a check covers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scope {
+    /// All of it.
+    Everything,
+    /// Just the functions the program reaches.
+    Reached,
+    /// Just the functions the program reaches, and every type's fields.
+    ReachedWithFields,
+}
+
 pub(crate) struct Checker {
     pub(crate) program: Program,
     states: BTreeMap<String, State>,
@@ -55,6 +66,9 @@ pub(crate) struct Checker {
     pub(crate) failing_steps: BTreeSet<(u32, u32)>,
     /// What each name for a standard library function written in Fennec means.
     pub(crate) std_names: BTreeMap<(u32, u32), String>,
+    /// The fields, in order, of each pattern written with them by name, by its case's span and
+    /// the variant's name.
+    pub(crate) named_patterns: BTreeMap<(u32, u32, String), Vec<String>>,
     /// The calls to `json` and `toml`'s `dumps` and `loads` whose type has its own `def serialize`
     /// or `def deserialize`, each with the function in std that does the same in Fennec.
     pub(crate) native_formats: BTreeMap<(u32, u32), String>,
@@ -133,6 +147,7 @@ impl Checker {
             optional_steps: BTreeSet::new(),
             failing_steps: BTreeSet::new(),
             std_names: BTreeMap::new(),
+            named_patterns: BTreeMap::new(),
             native_formats: BTreeMap::new(),
             const_types: BTreeMap::new(),
             checking: Vec::new(),
@@ -143,15 +158,16 @@ impl Checker {
         }
     }
 
-    /// Checks everything, or for `reached_only`, the program's own code and just the
+    /// Checks everything, or for `Scope::Reached`, the program's own code and just the
     /// standard library functions it reaches: the library's other code can't affect a run.
-    pub(crate) fn run(mut self, reached_only: bool) -> Result<Checked, Vec<Diagnostic>> {
+    /// `Scope::ReachedWithFields` also types every library type's fields, which lowering needs.
+    pub(crate) fn run(mut self, scope: Scope) -> Result<Checked, Vec<Diagnostic>> {
         self.check_declarations();
         let keys: Vec<String> = self
             .program
             .functions
             .iter()
-            .filter(|(_, entry)| !(reached_only && entry.prelude))
+            .filter(|(_, entry)| scope == Scope::Everything || !entry.prelude)
             .map(|(key, _)| key.clone())
             .collect();
         for key in &keys {
@@ -171,7 +187,7 @@ impl Checker {
             .program
             .types
             .values()
-            .filter(|info| !(reached_only && info.prelude))
+            .filter(|info| !(scope == Scope::Reached && info.prelude))
             .map(|info| info.def.name.clone())
             .collect();
         for name in types {
@@ -218,6 +234,7 @@ impl Checker {
                 optional_steps: self.optional_steps,
                 failing_steps: self.failing_steps,
                 std_names: self.std_names,
+                named_patterns: self.named_patterns,
                 native_formats: self.native_formats,
             });
         }

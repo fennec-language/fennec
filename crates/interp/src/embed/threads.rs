@@ -146,6 +146,82 @@ pub(super) fn serving_starts(lent: Option<Arc<Table>>) {
     });
 }
 
+/// A server's state on a worker, set aside while the worker runs a job from the pool.
+#[cfg(any(test, feature = "threads"))]
+pub(super) struct Serving {
+    lent: Option<Arc<Table>>,
+}
+
+/// Starts a job from the pool on a worker. While the worker serves, the job hands what it makes
+/// over as any range's does, and lends and takes back blocks of its own, so the server's are set
+/// aside until it ends.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn job_starts() -> Option<Serving> {
+    super::with(|state| {
+        let serving = std::mem::replace(&mut state.heap.serving, false);
+        serving.then(|| Serving { lent: state.heap.lent.take() })
+    })
+}
+
+/// Ends a job from the pool on a worker, giving a server's state back.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn job_ends(serving: Option<Serving>) {
+    if let Some(Serving { lent }) = serving {
+        super::with(|state| {
+            state.heap.serving = true;
+            state.heap.lent = lent;
+        });
+    }
+}
+
+/// What a range running as a parked task keeps of its own in its thread's runtime: swapped in each
+/// time it's resumed, and out each time it parks or ends. Tasks taking turns on one thread then
+/// never mix what they made, the blocks lent to them, how they changed those blocks' owners, or
+/// what they printed. Without it, one range ending could hand over blocks another range on the
+/// same thread was still using.
+#[cfg(any(test, feature = "threads"))]
+#[derive(Default)]
+pub(crate) struct Accounts {
+    made: Vec<u64>,
+    lent: Option<Arc<Table>>,
+    lent_owners: HashMap<u64, i64, std::hash::BuildHasherDefault<super::heap::AddressHasher>>,
+    printed: Vec<u8>,
+    /// Whether the heap serves, which a range never does: a range parked on a worker that serves
+    /// hands what it makes over, as one that isn't parked does.
+    serving: bool,
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl Accounts {
+    /// Whether nothing's left in them: a range that ended has handed everything over.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.made.is_empty() && self.lent.is_none() && self.lent_owners.is_empty() && self.printed.is_empty()
+    }
+}
+
+/// Swaps a parked range's accounts with this thread's runtime's: in before it's resumed, back out
+/// after. What the runtime keeps of lent strings is let go when the lent blocks change, as at a
+/// range's end, since the same addresses may hold other strings.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn swap_accounts(accounts: &mut Accounts) {
+    super::with(|state| {
+        state.heap.swap_made(&mut accounts.made);
+        let same = match (&state.heap.lent, &accounts.lent) {
+            (Some(here), Some(there)) => Arc::ptr_eq(here, there),
+            (None, None) => true,
+            _ => false,
+        };
+        std::mem::swap(&mut state.heap.lent, &mut accounts.lent);
+        std::mem::swap(&mut state.heap.lent_owners, &mut accounts.lent_owners);
+        std::mem::swap(&mut state.heap.serving, &mut accounts.serving);
+        std::mem::swap(&mut *state.output.0.borrow_mut(), &mut accounts.printed);
+        if !same {
+            state.heap.texts.get_mut().clear();
+            state.heap.set_cursor(super::heap::Cursor::default());
+        }
+    });
+}
+
 /// Ends a server on a worker that served it: as a range's end, and what its tasks make is handed
 /// over again from here on.
 #[cfg(any(test, feature = "threads"))]

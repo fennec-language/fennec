@@ -37,15 +37,15 @@ impl Interp<'_> {
                 Value::Tuple(items) if items.len() == patterns.len() => self.all_match(patterns, items, span),
                 _ => Ok(None),
             },
-            Pattern::Variant { name, dotted: false, args } if name == "Ok" => match value {
+            Pattern::Variant { name, dotted: false, args, .. } if name == "Ok" => match value {
                 Value::Err(_) => Ok(None),
                 _ => self.single(args, success, span),
             },
-            Pattern::Variant { name, dotted: false, args } if name == "Err" => match value {
+            Pattern::Variant { name, dotted: false, args, .. } if name == "Err" => match value {
                 Value::Err(error) => self.single(args, error, span),
                 _ => Ok(None),
             },
-            Pattern::Variant { name, dotted, args } => {
+            Pattern::Variant { name, dotted, args, .. } => {
                 // A dotted case never looks inside an error.
                 let target = match value {
                     Value::Err(error) if !dotted => error.as_ref(),

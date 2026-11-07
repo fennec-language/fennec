@@ -14,6 +14,7 @@ mod collections;
 mod constants;
 pub mod embed;
 mod entropy;
+mod env;
 mod equality;
 mod eval;
 mod exec;

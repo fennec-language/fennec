@@ -98,6 +98,8 @@ impl<'m> Inputs<'m> {
                     "    if value.len() == 0:\n        return []\n    mut options: list[{shown}] = [[]]\n    for skip in range(value.len()):\n        options.append(value[:skip] + value[skip + 1:])\n    options\n"
                 )
             }
+            // Floats, tuples, structs and optionals, the interpreter doesn't shrink yet, or not as
+            // simply. Shrinking structs by their fields comes once the interpreter is gone.
             _ => return None,
         };
         let name = format!("{PREFIX}simpler_{}", self.simpler.len());

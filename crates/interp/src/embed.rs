@@ -415,6 +415,7 @@ pub const INTERPRETER_EXPORTS: &[&str] = &[
     "fennec_std_call",
     "fennec_toml_dumps",
     "fennec_toml_loads",
+    "fennec_aot_attempt_failed",
     "fennec_aot_test_done",
     "fennec_aot_test_world",
 ];

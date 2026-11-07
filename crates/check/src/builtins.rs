@@ -266,7 +266,30 @@ fn named_method(type_name: &str, name: &str) -> Option<Method> {
         ("Stdin", "lines") => reads(&[], Type::list(Type::Str)),
         ("Clock", "sleep") => reads(&[Type::named("Duration")], Type::Unit),
         ("Entropy", "bytes") => reads(&[Type::Int], Type::Bytes),
+        ("Env", "get") => reads(&[Type::Str], Type::optional(Type::Str)),
+        ("Env", "all") => reads(&[], Type::Dict(Box::new(Type::Str), Box::new(Type::Str))),
+        // Only a test's fake `Env` is set.
+        ("Env", "set") => reads(&[Type::Str, Type::Str], Type::Unit),
         _ => return stdlib::method(type_name, name),
+    })
+}
+
+/// What to say of a method only a test's own body can call, on the fake capability it received.
+fn test_only(ty: &Type, name: &str) -> Option<&'static str> {
+    let Type::Named(owner) = ty else { return None };
+    Some(match (owner.as_str(), name) {
+        ("Stdout", "captured") => {
+            "only a test's own body can read what it printed, from the `Stdout` it received"
+        }
+        ("Net", "script" | "requests") => {
+            "only a test's own body can script or read the fake `Net` it received"
+        }
+        // Only a test's fake `Process` is scripted, and says what ran.
+        ("Process", "script" | "ran") => {
+            "only a test's own body can script or read the fake `Process` it received"
+        }
+        ("Env", "set") => "only a test's own body can set what the fake `Env` it received holds",
+        _ => return None,
     })
 }
 
@@ -295,17 +318,9 @@ impl FnCx<'_> {
         let Some(method) = method(ty, name) else {
             return self.unusable(renamed_method(object, ty, name, span), args);
         };
-        if name == "captured" && *ty == Type::named("Stdout") && !self.in_a_test() {
-            let help = "only a test's own body can read what it printed, from the `Stdout` it received";
-            return self.unusable(no_method(ty, name, span).with_help(help), args);
-        }
-        if matches!(name, "script" | "requests") && *ty == Type::named("Net") && !self.in_a_test() {
-            let help = "only a test's own body can script or read the fake `Net` it received";
-            return self.unusable(no_method(ty, name, span).with_help(help), args);
-        }
-        // Only a test's fake `Process` is scripted, and says what ran.
-        if matches!(name, "script" | "ran") && *ty == Type::named("Process") && !self.in_a_test() {
-            let help = "only a test's own body can script or read the fake `Process` it received";
+        if let Some(help) = test_only(ty, name)
+            && !self.in_a_test()
+        {
             return self.unusable(no_method(ty, name, span).with_help(help), args);
         }
         if method.changes {

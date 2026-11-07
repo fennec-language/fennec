@@ -351,7 +351,9 @@ impl Program {
             }
             "Id" => Type::Id(arg()),
             "Table" => Type::Table(arg()),
-            "Stdout" | "Fs" | "Clock" | "Args" | "Stdin" | "Process" | "Entropy" | "Net" => Type::named(name),
+            "Stdout" | "Fs" | "Clock" | "Args" | "Stdin" | "Process" | "Entropy" | "Net" | "Env" => {
+                Type::named(name)
+            }
             name if generics.iter().any(|generic| generic == name) => Type::Param(name.to_owned()),
             name if self.types.contains_key(name) && !args.is_empty() => Type::Generic(name.to_owned(), args),
             name if self.types.contains_key(name) => Type::named(name),
@@ -455,10 +457,10 @@ impl Program {
 
 pub(crate) use fennec_syntax::visit::BUILT_IN_INTERFACES;
 
-pub(crate) const BUILT_IN_TYPES: [&str; 27] = [
+pub(crate) const BUILT_IN_TYPES: [&str; 28] = [
     "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "array", "SoaList", "Buffer", "set",
     "dict", "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Net",
-    "Result", "Iterator", "->",
+    "Env", "Result", "Iterator", "->",
 ];
 
 /// An interface written where a type goes, as in `list[Shape]`.

@@ -1,6 +1,6 @@
 //! What a test's capabilities reach: an in-memory `Fs`, a fixed `Clock`, captured `Stdout`, a
 //! `Process` that runs nothing but gives back what the test scripted, an `Entropy` whose
-//! bytes are fixed, and a `Net` whose servers and clients talk in memory, fresh for each run of a test. These hold state every copy of a capability shares, which
+//! bytes are fixed, an `Env` holding only what the test set, and a `Net` whose servers and clients talk in memory, fresh for each run of a test. These hold state every copy of a capability shares, which
 //! Fennec code has no way to do yet, so they're written here. With `fennec test --real` only
 //! the output is kept, and the rest is real.
 
@@ -36,6 +36,8 @@ pub(crate) struct TestWorld {
     pub(crate) ran: Vec<Vec<String>>,
     /// How many bytes the fake `Entropy` has given so far.
     pub(crate) entropy_drawn: usize,
+    /// The fake `Env`'s variables, by name, as the test set them.
+    pub(crate) variables: BTreeMap<String, String>,
     /// The test's network, in memory.
     pub(crate) net: crate::stdlib::net::Fake,
 }
@@ -50,6 +52,7 @@ impl TestWorld {
             scripts: BTreeMap::new(),
             ran: Vec::new(),
             entropy_drawn: 0,
+            variables: BTreeMap::new(),
             net: crate::stdlib::net::Fake::default(),
         }
     }

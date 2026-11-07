@@ -193,6 +193,7 @@ pub enum Cap {
     Process,
     Entropy,
     Net,
+    Env,
 }
 
 impl Cap {
@@ -206,6 +207,7 @@ impl Cap {
             "Process" => Some(Cap::Process),
             "Entropy" => Some(Cap::Entropy),
             "Net" => Some(Cap::Net),
+            "Env" => Some(Cap::Env),
             _ => None,
         }
     }
@@ -220,6 +222,7 @@ impl Cap {
             Cap::Process => "Process",
             Cap::Entropy => "Entropy",
             Cap::Net => "Net",
+            Cap::Env => "Env",
         }
     }
 
@@ -234,6 +237,7 @@ impl Cap {
             Cap::Process => 5,
             Cap::Entropy => 6,
             Cap::Net => 7,
+            Cap::Env => 8,
         }
     }
 }

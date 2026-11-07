@@ -48,6 +48,8 @@ print_stdout = "deny"
 print_stderr = "deny"
 
 [features]
+# Probe only: the system allocator, to time startup without mimalloc.
+probe_sys = []
 # The runtime for programs with tasks (see `fennec-interp`'s feature of the same name).
 threads = ["fennec-interp/threads"]
 # For AddressSanitizer runs only: the system's allocator, which ASan watches, and freed

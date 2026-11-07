@@ -4544,6 +4544,7 @@ fn process_options_without_the_interpreter_match_it() -> std::io::Result<()> {
 
 /// `fs.walk` in compiled code, on a real tree holding a link back to its own top, which is
 /// listed and not gone into, and through an `Fs` narrowed to one folder.
+#[cfg(unix)]
 const WALKED: &str = "\
 def main(stdout: Stdout, fs: Fs):
     for path in fs.walk(\"tree\").expect(\"it works\"):

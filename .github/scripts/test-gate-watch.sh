@@ -8,17 +8,22 @@ trap 'rm -rf "$work"' EXIT
 failures=0
 # A program that sleeps, compiled, since a copied system binary isn't allowed to run elsewhere.
 printf '#include <stdlib.h>\n#include <unistd.h>\nint main(int c, char **v) { sleep(atoi(v[1])); return 0; }\n' > "$work/sleeper.c"
+# And one that keeps a core busy for as many seconds.
+printf '#include <stdlib.h>\n#include <time.h>\nint main(int c, char **v) { time_t end = time(0) + atoi(v[1]); volatile long n = 0; while (time(0) < end) n++; return 0; }\n' > "$work/busy.c"
 mkdir -p "$work/bin" "$work/deps"
 for name in cargo rustc ld program; do
   cc -o "$work/bin/$name" "$work/sleeper.c" || exit 1
 done
 cc -o "$work/deps/fennec-0123456789abcdef" "$work/sleeper.c" || exit 1
+cc -o "$work/bin/busy" "$work/busy.c" || exit 1
 
+# Runs a program for six seconds under a CPU limit of two seconds, and a wall-clock limit of
+# `$2`, or twenty seconds.
 watched() {
   bash -c "\"$1\" 6; true" &
   local parent=$!
   : > "$work/log"
-  "$here/gate-watch.sh" "$parent" "$work/log" 2 &
+  "$here/gate-watch.sh" "$parent" "$work/log" 2 4194304 "${2:-20}" &
   local watcher=$!
   wait "$parent"
   wait "$watcher"
@@ -49,11 +54,35 @@ else
   echo "ok: a program that has exited is left alone"
 fi
 
-watched "$work/bin/program" 2> /dev/null
-if grep -q "over its time limit" "$work/log"; then
-  echo "ok: a test program over the limit is stopped"
+# On a busy machine a core is shared, so this one runs until it has had a second of CPU, which
+# it gets in thirty seconds however busy the machine is.
+bash -c "\"$work/bin/busy\" 30; true" &
+parent=$!
+: > "$work/log"
+"$here/gate-watch.sh" "$parent" "$work/log" 1 4194304 60 &
+watcher=$!
+wait "$parent"
+wait "$watcher"
+if grep -q "over its cpu limit" "$work/log"; then
+  echo "ok: a test program over its CPU limit is stopped"
 else
-  echo "FAILED: a test program over the limit wasn't stopped"
+  echo "FAILED: a test program over its CPU limit wasn't stopped"
+  failures=$((failures + 1))
+fi
+
+# Waiting isn't using the CPU, so a program that only waits goes on, up to the wall-clock limit.
+watched "$work/bin/program" 2> /dev/null
+if [ -s "$work/log" ]; then
+  echo "FAILED: a program waiting for less than its wall-clock limit was stopped: $(cat "$work/log")"
+  failures=$((failures + 1))
+else
+  echo "ok: a program that waits isn't stopped for its CPU limit"
+fi
+watched "$work/bin/program" 3 2> /dev/null
+if grep -q "over its time limit" "$work/log"; then
+  echo "ok: a program stuck past its wall-clock limit is stopped"
+else
+  echo "FAILED: a program stuck past its wall-clock limit wasn't stopped"
   failures=$((failures + 1))
 fi
 

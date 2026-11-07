@@ -1680,6 +1680,13 @@ impl Emit<'_, '_, '_> {
         if let ("str.isdigit", Some(dest), [text], true) = (name, dest, args, self.headers()) {
             return self.header_isdigit(dest, text);
         }
+        // What `fennec test` calls before each input of a property test with capabilities: a new
+        // world of fakes, with nothing left by the input before.
+        if name == "test:world" && args.is_empty() {
+            self.declare("declare void @fennec_aot_test_world(i64)");
+            self.line("call void @fennec_aot_test_world(i64 1)");
+            return Ok(());
+        }
         let callee = *self
             .module
             .whole

@@ -11,9 +11,8 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
 }
 
-/// Whether this can run: this isn't Windows, where `fennec build` doesn't link, LLVM's tools and
-/// the runtime library are there, and mutation testing isn't under way, which would go past its
-/// time limit, as in `executables.rs`. Where `FENNEC_EXPECT_LLVM` is set, as CI's Linux test
+/// Whether this can run: LLVM's tools and the runtime library are there, and mutation testing
+/// isn't under way, which would go past its time limit, as in `executables.rs`. Where `FENNEC_EXPECT_LLVM` is set, as CI's Linux test
 /// jobs set it, LLVM is the backend that has to work, so what's missing fails the test rather
 /// than skipping it.
 fn ready() -> bool {

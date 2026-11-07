@@ -3037,6 +3037,71 @@ def main(stdout: Stdout):
         stdout.print(line)
 ";
 
+/// What a `with` source lends is the block's to use, `ref self` methods included, with or without
+/// `as ref`: lent by name, the block's changes are what the source's cleanup sees. A `shared`
+/// handle lent the same way takes its methods with no `mut`.
+#[test]
+fn lent_values_take_ref_self_calls_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("lent_structs", LENT_STRUCTS)?;
+    same_as_the_interpreter_in_both_builds("lent_handles", LENT_HANDLES)
+}
+
+const LENT_STRUCTS: &str = "struct Sink:
+    parts = list[str]()
+
+    def write(ref self, text: str):
+        self.parts.append(text)
+
+def sink(stdout: Stdout) -> with Sink:
+    mut held = Sink()
+    lend held
+    stdout.print(\"after the block:\", held.parts)
+
+def made(stdout: Stdout) -> with Sink:
+    lend Sink(parts=[\"start\"])
+    stdout.print(\"made\")
+
+def main(stdout: Stdout):
+    with sink(stdout) as out:
+        out.write(\"a\")
+    with sink(stdout) as ref out:
+        out.write(\"b\")
+    with made(stdout) as other:
+        other.write(\"c\")
+        stdout.print(other.parts)
+";
+
+const LENT_HANDLES: &str = "error WriteError:
+    why: str
+
+shared File:
+    lines: list[str]
+
+    def write_line(ref self, line: str) fails WriteError:
+        if line == \"\": fail WriteError(why=\"empty\")
+        self.lines.append(line)
+
+    def written(self) -> int:
+        self.lines.len()
+
+def create(name: str, stdout: Stdout) -> with File fails WriteError:
+    file = File(lines=[])
+    lend file
+    stdout.print(\"closing\", name, file.written())
+
+def save(stdout: Stdout) -> int fails WriteError:
+    with create(\"notes\", stdout)? as file:
+        file.write_line(\"fox\")?
+        file.write_line(\"den\")?
+    1
+
+def main(stdout: Stdout):
+    stdout.print(save(stdout) else -1)
+";
+
 /// Changing an item in place is only safe once the list is alone: another copy of the list
 /// mustn't see it, however the item's own count reads.
 #[test]

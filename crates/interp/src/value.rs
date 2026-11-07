@@ -332,13 +332,24 @@ impl Table {
     }
 }
 
+/// How two floats order: as numbers, with `0.0` the same as `-0.0`, and NaN after everything and
+/// the same as any other NaN, so its sign can't change a result.
+pub(crate) fn float_order(a: f64, b: f64) -> std::cmp::Ordering {
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => std::cmp::Ordering::Equal,
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+        (false, false) => a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal),
+    }
+}
+
 /// Whether two floats are the same: equal as numbers, with `0.0` the same as `-0.0`, or both NaN.
 #[expect(clippy::float_cmp, reason = "this is what equal means for a float in Fennec")]
 pub(crate) fn floats_same(a: f64, b: f64) -> bool {
     a == b || (a.is_nan() && b.is_nan())
 }
 
-/// A float's bits as they hash: the one form of each float that's equal to others.
+/// A float's bits as they hash and sort: the one form of each float that's equal to others.
 pub(crate) fn float_key(x: f64) -> u64 {
     if x == 0.0 {
         0

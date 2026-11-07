@@ -6366,6 +6366,88 @@ fn a_release_build_optimized_as_a_whole_matches_the_jit() -> std::io::Result<()>
     Ok(())
 }
 
+/// Floats have one equality, order and hash everywhere: `0.0` is `-0.0`, and NaN comes after
+/// everything and is the same as any other NaN, whatever its sign. So this is held to what that
+/// decision says, on LLVM and the interpreter both. The JIT's `==` and keys don't follow it yet.
+#[test]
+fn floats_compare_and_hash_as_decided() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"struct Pair:
+    x: float
+    y: float
+
+def same(a: float, b: float) -> bool:
+    a == b
+
+def different(a: float, b: float) -> bool:
+    a != b
+
+def less(a: float, b: float) -> bool:
+    a < b
+
+def most(a: float, b: float) -> bool:
+    a <= b
+
+def more(a: float, b: float) -> bool:
+    a > b
+
+def least(a: float, b: float) -> bool:
+    a >= b
+
+def main(stdout: Stdout):
+    zero = 0.0
+    minus = -zero
+    nan = 1e300 * 1e300 - 1e300 * 1e300
+    other = -nan
+    one = 1.0
+    stdout.print(same(zero, b=minus), same(nan, b=nan), same(nan, b=other), same(nan, b=one), same(one, b=one))
+    stdout.print(different(zero, b=minus), different(nan, b=other), different(nan, b=one))
+    stdout.print(less(minus, b=zero), less(zero, b=minus), less(one, b=nan), less(nan, b=one), less(nan, b=other))
+    stdout.print(most(minus, b=zero), most(nan, b=other), most(nan, b=one), most(one, b=nan))
+    stdout.print(more(nan, b=one), more(one, b=nan), more(nan, b=other), more(zero, b=minus))
+    stdout.print(least(nan, b=one), least(one, b=nan), least(nan, b=other), least(minus, b=zero))
+    stdout.print(zero == -0.0, nan == 1.0, 1.0 == nan, nan != 1.0, 1.0 != nan)
+    stdout.print(nan < 1.0, 1.0 < nan, nan <= 1.0, 1.0 <= nan, nan > 1.0, 1.0 > nan, nan >= 1.0, 1.0 >= nan)
+    stdout.print(Pair(x=zero, y=nan) == Pair(x=minus, y=other), Pair(x=1.0, y=nan) == Pair(x=1.0, y=2.0))
+    stdout.print((zero, 1.0) < (minus, 2.0), (zero, 2.0) < (minus, 1.0))
+    stdout.print((zero, nan) == (minus, other), (nan, 1.0) > (1.0, 1.0))
+    stdout.print(zero in [minus], other in [nan])
+    stdout.print(max([1.0, nan, 2.0]) == nan, min([other, 1.0, nan]), max(other, 1.0) == nan, min(zero, 1.0))
+    stdout.print(sorted([nan, 2.0, other, 1.0])[:2], sorted([(nan, 1), (1.0, 2)])[0])
+";
+    let dir = folder("floats_ordered_as_decided")?;
+    let program = dir.join("floats.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("floats"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    let interpreted = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours, interpreted);
+    assert_eq!(
+        ours.0,
+        "True True True False True
+False False True
+False False True False False
+True True False True
+True False False False
+True False True True
+True False False True True
+False True False True True False True False
+True False
+True False
+True True
+True True
+True 1.0 True 0.0
+[1.0, 2.0] (1.0, 2)
+"
+    );
+    Ok(())
+}
+
 /// On Linux, with the `musl` folder beside `fennec`, a release build is a program on its own: it
 /// asks for no loader and no shared library, so it runs in an empty container. Where that folder
 /// isn't there, nothing is checked, unless `FENNEC_EXPECT_STATIC` says it has to be.

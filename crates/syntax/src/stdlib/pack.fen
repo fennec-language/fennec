@@ -297,6 +297,12 @@ export struct PackReader:
     ## A count of what follows, which may be no more than the limit.
     def _length(ref self) -> int fails ParseError:
         start = self._at
+        # Most are under 128 and take one byte, read here with no call.
+        if start < self._data.len():
+            b = self._data[start]
+            if b < 128 and b <= self._longest:
+                self._at = start + 1
+                return b
         n = self._varint()?
         if n < 0 or n > self._longest:
             fail self._fail_at(start, f"a length is over the limit of {self._longest}")

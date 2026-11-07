@@ -49,11 +49,11 @@ const design = [
     code: `mut units = Table[Unit]()
 ash = units.add(Unit())
 units[ash].health -= 10`,
-    body: 'No object graphs and no references to manage. Things that point at each other live in tables and hold an Id. Planned: `mut x = place` naming the real place, and `copy(x)`.',
+    body: 'No object graphs and no references to manage. Things that point at each other live in tables and hold an Id, and `ref` lets a loop or a function change one in place. Planned: an error for a copy that can go stale.',
   },
   {
     title: 'A lifetime is a block',
-    status: 'Mostly built',
+    status: 'Being redesigned',
     code: `with Lease(name="outer") as outer:
     with Lease(name="inner") as inner:
         use(outer, inner)
@@ -65,38 +65,38 @@ units[ash].health -= 10`,
     status: 'Built',
     code: `squares = (n * n for n in naturals())
 big = (n for n in squares if n > 50)`,
-    body: 'A pipeline reads like the steps it is, and handles input too big to hold. Using one twice fails loudly instead of quietly giving you nothing.',
+    body: 'A pipeline reads like the steps it is, and handles input too big to hold. Using one twice is a compile error instead of quietly giving you nothing.',
   },
   {
     title: 'Errors you can see',
     status: 'Mostly built',
     code: `score = load_score(path)?
 score = load_score(path) else 0`,
-    body: 'No exceptions, and every line a function can leave from is marked. Planned: `fails Name` in the signature, and narrowing with `if x is Err(...)`.',
+    body: 'No exceptions, every line a function can leave from is marked, and `fails Name` in the signature says how it can fail. Planned: narrowing with `if x is Err(...)`.',
   },
   {
     title: 'parallel and launch',
-    status: 'Planned',
+    status: 'Partly built',
     code: `for conn in parallel(server):
     handle(conn, app)
 
 with launch(physics_loop) as physics:
     physics.send(cmd)`,
-    body: 'One word for more cores, one for a long-running task, and no `async`. `parallel` compiles today, but runs in order on one core.',
+    body: 'One word for more cores, one for a long-running task, and no `async`. `parallel` runs on every core today, and `launch` is planned.',
   },
   {
     title: 'shared, rarely',
-    status: 'Planned',
+    status: 'Being redesigned',
     code: `shared Cache:
     _pages = dict[str, Page]()
 
-    def set(mut self, key: str, page: Page):
+    def set(ref self, key: str, page: Page):
         self._pages[key] = page`,
     body: 'The one reference type, for the few things that really are shared. Its methods lock automatically, and a search for `shared` finds them all.',
   },
   {
     title: 'export and _name',
-    status: 'Partly built',
+    status: 'Built',
     code: `export struct Score:
     points = 0
     _best = 0`,
@@ -105,19 +105,19 @@ with launch(physics_loop) as physics:
   {
     title: 'Compile-time loops',
     status: 'Planned',
-    code: `def write[T, W: Writer](x: T, mut out: W):
+    code: `def write[T, W: Writer](x: T, ref out: W):
     for f in fields(T):
         out.field(f.name)
-        write(f.get(x), mut out)`,
-    body: 'No macros and no `derive`. One generic function serializes any struct, and `std.pack` will be the default binary format. JSON and TOML work today.',
+        write(f.get(x), ref out)`,
+    body: 'No macros and no `derive`. One generic function will serialize any struct. JSON, TOML and `std.pack`, the default binary format, work today.',
   },
   {
     title: 'One backend',
-    status: 'Planned',
+    status: 'Mostly built',
     code: `$ fennec run
 # per-function -O3 through LLVM,
 # each function cached by content`,
-    body: 'What you run is what ships. Whole-program work comes only with `--release`. Today `fennec run` uses this build where LLVM can, and says so when the JIT stands in, since the LLVM backend handles part of the language.',
+    body: 'What you run is what ships. Whole-program work comes only with `--release`. `fennec run` builds through LLVM, and says so when the JIT stands in for what LLVM can\'t build yet.',
   },
 ];
 ---

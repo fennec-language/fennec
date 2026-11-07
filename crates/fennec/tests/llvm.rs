@@ -8503,6 +8503,39 @@ fn members_given_to_builtins_taking_a_union_match_the_interpreter() -> std::io::
     same_as_the_interpreter_in_both_builds("members_given_to_builtins", MEMBERS_GIVEN_TO_BUILTINS)
 }
 
+/// A generic type built where one of it is expected takes its types from there: a `Box[int |
+/// str]` built from an int or a str, in a parameter, a name's type and a list of them.
+#[test]
+fn generic_types_built_where_one_is_expected_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("generics_expected", GENERICS_EXPECTED)
+}
+
+const GENERICS_EXPECTED: &str = r#"struct Box[T]:
+    value: T
+
+struct Held[T]:
+    items: list[Box[T]]
+    plain: list[T]
+
+def show(box: Box[int | str]) -> str:
+    value = box.value
+    if value is int: return f"int {value + 1}"
+    f"str {value}"
+
+def count(held: Held[int | str]) -> str:
+    f"{held.items.len()} {show(held.items[1])} {held.plain.len()}"
+
+def main(stdout: Stdout):
+    name = "x"
+    stdout.print(show(Box(value=3)), show(Box(value=name)))
+    stdout.print(count(Held(items=[Box(value=1), Box(value=name)], plain=[name, 2])))
+    kept: Box[int | str] = Box(value=4)
+    stdout.print(show(kept))
+"#;
+
 const MEMBERS_GIVEN_TO_BUILTINS: &str = r#"struct Circle:
     radius: float
 

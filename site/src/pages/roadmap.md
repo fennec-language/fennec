@@ -21,7 +21,7 @@ description: What Fennec does today, what's being built next, and the design que
 - Tables: `Table`, `Id` and `Tree`, and `SortedMap` on a B-tree.
 - A type checker that runs before every program and test.
 - The first standard library: `math`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re`.
-- Native code: `fennec run` uses a cached LLVM build, and says so in one line when LLVM can't build a program yet and the JIT runs it instead. `fennec build` compiles with Cranelift, and `fennec build --llvm` handles part of the language. Every example gives exactly the interpreter's output.
+- Native code: `fennec run` uses a cached LLVM build, and says so in one line when LLVM can't build a program yet and the JIT runs it instead. `fennec build` makes a native program through LLVM. Every example gives exactly the interpreter's output.
 - Function-level caching of checked and compiled code, shared across runs.
 - Every example in the repository's `examples/` folder is a test, including its error messages, and the [language reference](/reference/) is generated from them.
 

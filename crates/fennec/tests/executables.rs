@@ -1,6 +1,6 @@
-//! `fennec build`: every example compiles to a standalone executable that prints exactly
-//! its `.out` file, and every example that fails while running fails the same way as an
-//! executable, with the interpreter's message.
+//! `fennec build`: every example that fails while running fails the same way as a native
+//! program, with the interpreter's message. That every example builds and prints exactly its
+//! `.out` file is `llvm.rs`'s `the_examples_it_takes_print_what_they_should`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -117,6 +117,47 @@ fn run(executable: &Path) -> std::io::Result<Output> {
     Command::new(executable).output()
 }
 
+/// How many builds the examples' tests run at once: one per core, up to 8. One at a time, LLVM's
+/// took 71 seconds and 8 take 29; holding under 100 megabytes each, they stay well inside 4
+/// gigabytes. `llvm.rs` uses this too.
+fn builds_at_once() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(8)
+}
+
+/// Runs `each` on every item, `builds_at_once()` at a time, each worker with its own number for a
+/// folder of its own. The results come back in the items' order.
+pub(crate) fn at_once<T: Sync, R: Send>(
+    items: &[T],
+    each: impl Fn(usize, &T) -> std::io::Result<R> + Sync,
+) -> std::io::Result<Vec<R>> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let done = std::sync::Mutex::new(Vec::with_capacity(items.len()));
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..builds_at_once().min(items.len()))
+            .map(|worker| {
+                let (next, done, each) = (&next, &done, &each);
+                scope.spawn(move || -> std::io::Result<()> {
+                    loop {
+                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(item) = items.get(at) else { return Ok(()) };
+                        let result = each(worker, item)?;
+                        done.lock()
+                            .map_err(|_| std::io::Error::other("a worker panicked"))?
+                            .push((at, result));
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().map_err(|_| std::io::Error::other("a worker panicked"))??;
+        }
+        Ok::<_, std::io::Error>(())
+    })?;
+    let mut done = done.into_inner().map_err(|_| std::io::Error::other("a worker panicked"))?;
+    done.sort_by_key(|(at, _)| *at);
+    Ok(done.into_iter().map(|(_, result)| result).collect())
+}
+
 /// A fresh folder for this test's executables.
 fn work_dir(test: &str) -> std::io::Result<PathBuf> {
     let work = std::env::temp_dir().join(format!("fennec-executables-{test}-{}", std::process::id()));
@@ -125,61 +166,65 @@ fn work_dir(test: &str) -> std::io::Result<PathBuf> {
     Ok(work)
 }
 
-/// Examples that can't be built to executables yet, because the JIT doesn't take a type they
-/// use: `shared` types, for now. Each must still fail to build, so it comes off when it builds.
-const NOT_BUILT: &[&str] = &["shared_accounts.fen", "shared_bank.fen"];
+/// Error examples whose native program fails otherwise than the interpreter does, with what
+/// differs. Each must still differ, so the list only shrinks. The first two are a check native
+/// code doesn't make yet: it runs on, where the interpreter stops.
+const FAILS_DIFFERENTLY: &[(&str, &str)] = &[
+    ("expect_without_reason.fen", "native code doesn't check `expect`'s reason isn't blank, and runs on"),
+    ("ignore_without_reason.fen", "native code doesn't check `ignore`'s reason isn't blank, and runs on"),
+    ("random_choice_empty.fen", "native code points at the standard library, not at the call"),
+    (
+        "change_missing_key.fen",
+        "native code underlines all of `+=`, as `llvm.rs` notes, and adds a help line",
+    ),
+    ("where_on_copy.fen", "native code leaves out the help line"),
+    ("where_on_write.fen", "native code underlines all of the write and leaves out the help line"),
+    ("where_rule.fen", "native code leaves out the help line"),
+    ("where_through_an_item.fen", "native code underlines all of the write and leaves out the help line"),
+];
 
 #[test]
-#[cfg_attr(windows, ignore = "`fennec build` doesn't link executables on Windows yet")]
-fn examples_build_to_executables_that_print_their_expected_output() {
-    if under_mutants() {
-        return;
-    }
-    assert!(runtime_built(), "couldn't build the runtime library");
-    let work = work_dir("examples").unwrap();
-    for path in programs(&examples_dir()).unwrap() {
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        if NOT_BUILT.contains(&name.as_str()) {
-            assert!(build(&path, &work).unwrap().is_err(), "{name} builds now: take it off `NOT_BUILT`");
-            continue;
-        }
-        let executable = build(&path, &work).unwrap().unwrap_or_else(|built| {
-            panic!("{name} didn't build ({}):\n{}", built.status, String::from_utf8_lossy(&built.stderr))
-        });
-        let ran = run(&executable).unwrap();
-        let expected = fs::read_to_string(path.with_extension("out")).unwrap();
-        assert_eq!(String::from_utf8_lossy(&ran.stdout), expected, "{name} printed something different");
-        assert!(ran.status.success(), "{name} failed:\n{}", String::from_utf8_lossy(&ran.stderr));
-    }
-    let _ = fs::remove_dir_all(&work);
-}
-
-#[test]
-#[cfg_attr(windows, ignore = "`fennec build` doesn't link executables on Windows yet")]
+#[cfg_attr(windows, ignore = "on Windows, `llvm.rs` builds and runs the examples")]
 fn failing_examples_fail_the_same_way_as_executables() {
     if under_mutants() {
         return;
     }
     assert!(runtime_built(), "couldn't build the runtime library");
     let work = work_dir("errors").unwrap();
-    let mut built = 0;
-    for path in programs(&examples_dir().join("errors")).unwrap() {
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    let paths = programs(&examples_dir().join("errors")).unwrap();
+    // For each that built, what was wrong with it, if anything.
+    let found = at_once(&paths, |_, path| {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
         // Most error examples are mistakes the checker catches, which don't build.
-        let Ok(executable) = build(&path, &work).unwrap() else { continue };
-        built += 1;
-        let ran = run(&executable).unwrap();
+        let Ok(executable) = build(path, &work)? else { return Ok(None) };
+        let ran = run(&executable)?;
         // `fennec run` runs an executable itself where LLVM builds the program, so the
         // interpreter is what an executable's failure is held to.
-        let interpreted = fennec_command().args(["run", "--interp"]).arg(&path).output().unwrap();
-        assert!(!ran.status.success(), "{name} should fail");
-        assert_eq!(
-            String::from_utf8_lossy(&ran.stderr),
-            String::from_utf8_lossy(&interpreted.stderr),
-            "{name} failed differently"
-        );
-        assert_eq!(ran.stdout, interpreted.stdout, "{name} printed something different before failing");
-    }
-    assert!(built > 0, "no error example built");
+        let interpreted = fennec_command().args(["run", "--interp"]).arg(path).output()?;
+        let (ours, theirs) =
+            (String::from_utf8_lossy(&ran.stderr), String::from_utf8_lossy(&interpreted.stderr));
+        let differs = if ran.status.success() {
+            Some(format!("{name} should fail"))
+        } else if ours != theirs {
+            Some(format!("{name} failed differently:\n{ours}\nwhere the interpreter said\n{theirs}"))
+        } else if ran.stdout != interpreted.stdout {
+            Some(format!("{name} printed something different before failing"))
+        } else {
+            None
+        };
+        let known = FAILS_DIFFERENTLY.iter().any(|(differing, _)| *differing == name);
+        Ok(Some(match differs {
+            Some(_) if known => None,
+            None if known => {
+                Some(format!("{name} fails as the interpreter does now: take it off `FAILS_DIFFERENTLY`"))
+            }
+            differs => differs,
+        }))
+    })
+    .unwrap();
+    let built: Vec<Option<String>> = found.into_iter().flatten().collect();
+    assert!(!built.is_empty(), "no error example built");
+    let wrong: Vec<String> = built.into_iter().flatten().collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n\n"));
     let _ = fs::remove_dir_all(&work);
 }

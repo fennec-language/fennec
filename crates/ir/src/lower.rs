@@ -617,7 +617,7 @@ impl<'a> Lowering<'a> {
             StmtKind::Yield(value) => self.yield_value(value, stmt.span)?,
             StmtKind::Assert(cond) => self.assert(cond)?,
             StmtKind::With { value, names, body, .. } => {
-                self.with_block(value, names, body, tail, stmt.span)?
+                self.with_block(value, names, body, tail, stmt.span)?;
             }
             StmtKind::Def(def) => self.nested(def, stmt.span)?,
         }

@@ -153,7 +153,7 @@ impl Lowering<'_> {
                         .map(|held| (held.name.clone(), format!("{}__lock", held.name)))
                         .collect();
                     for (held, (_, handle)) in names.iter_mut().zip(&renamed) {
-                        held.name = handle.clone();
+                        held.name.clone_from(handle);
                     }
                     fennec_syntax::visit::in_stmts(body, &mut |expr| {
                         if let ExprKind::Name(name) = &expr.kind

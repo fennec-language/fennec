@@ -61,18 +61,17 @@ impl FnCx<'_> {
         }
         let mut inner = Vec::new();
         for (item, ty) in items.iter().zip(&types) {
-            match held(ty) {
-                Some(held) => inner.push(held.clone()),
-                None => {
-                    if !matches!(ty, Type::Unknown) {
-                        let message = format!("`lock` takes `shared` values, but this is {}", a(ty));
-                        self.error(Diagnostic::new(message, item.span).with_help(
-                            "make it with `shared name = ...`, or use `with` for what's lent, like a file",
-                        ));
-                    }
-                    inner.push(Type::Unknown);
-                }
+            if let Some(held) = held(ty) {
+                inner.push(held.clone());
+                continue;
             }
+            if !matches!(ty, Type::Unknown) {
+                let message = format!("`lock` takes `shared` values, but this is {}", a(ty));
+                self.error(Diagnostic::new(message, item.span).with_help(
+                    "make it with `shared name = ...`, or use `with` for what's lent, like a file",
+                ));
+            }
+            inner.push(Type::Unknown);
         }
         let shown: Vec<String> = names.iter().map(|held| format!("`{}`", held.name)).collect();
         let outer = self.lock.replace(format!(
@@ -88,6 +87,20 @@ impl FnCx<'_> {
         self.pop();
         self.lock = outer;
         flow
+    }
+
+    /// Reports a `with` on a `shared T`, which is reached with `lock`, giving what it holds.
+    pub(crate) fn with_on_shared(&mut self, ty: &Type, span: Span) {
+        let shared = match ty {
+            Type::Tuple(types) => types.iter().any(|ty| held(ty).is_some()),
+            ty => held(ty).is_some(),
+        };
+        if shared {
+            self.error(
+                Diagnostic::new("a `shared` value is reached with `lock`, not `with`", span)
+                    .with_help("write `lock` in place of `with`: `lock scores as ref current:`"),
+            );
+        }
     }
 
     /// Reports reaching into a `shared` value outside a `lock`, through a field or a method.

@@ -223,17 +223,7 @@ impl FnCx<'_> {
     /// name, which holds its lock, to write when it's `mut`.
     pub(crate) fn with_block(&mut self, value: &Expr, names: &[WithName], body: &[Stmt], used: bool) -> Flow {
         let ty = self.expr(value);
-        // A `shared T` is reached with `lock`, which gives what it holds.
-        let shared_values = match &ty {
-            Type::Tuple(types) => types.iter().any(|ty| crate::lock::held(ty).is_some()),
-            ty => crate::lock::held(ty).is_some(),
-        };
-        if shared_values {
-            self.error(
-                Diagnostic::new("a `shared` value is reached with `lock`, not `with`", value.span)
-                    .with_help("write `lock` in place of `with`: `lock scores as ref current:`"),
-            );
-        }
+        self.with_on_shared(&ty, value.span);
         let (items, types) = match (&value.kind, ty) {
             (ExprKind::Tuple(items), Type::Tuple(types)) if names.len() != 1 => {
                 (items.iter().collect(), types)

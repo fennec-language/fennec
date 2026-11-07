@@ -11,6 +11,11 @@
 [env]
 CFLAGS = "-DMI_DEFAULT_ARENA_RESERVE=65536 -DMI_USE_ENVIRON=0"
 CXXFLAGS = "-DMI_DEFAULT_ARENA_RESERVE=65536 -DMI_USE_ENVIRON=0"
+# On Windows, mimalloc learns that the process started and that a thread ended through hooks it sets
+# up with MSVC's pragmas, which Clang ignores for MinGW. Without them it never frees an ended thread's
+# heap for reuse, and never prints. `MI_WIN_INIT_USE_FLS` hooks in with a constructor and a fiber's
+# end instead, both of which MinGW has. This is added to `CFLAGS` above, not in place of it.
+CFLAGS_x86_64_pc_windows_gnullvm = "-DMI_WIN_INIT_USE_FLS"
 
 # Fennec's programs and the `fennec` command unwind with a libunwind of their own on Windows, so
 # neither needs its DLL beside it.

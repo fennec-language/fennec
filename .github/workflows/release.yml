@@ -25,11 +25,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux's are built and tried on Debian 11, so they run with glibc 2.31 and later: Ubuntu
-          # 20.04 and later, Debian 11 and later, RHEL 9. Built on the runner's own Ubuntu 24.04,
-          # `fennec` needed glibc 2.39, and the runtime 2.38 to link a program.
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, container: "debian:bullseye@sha256:6f519a81440354a85eb592c5f32109ab80605f6b892455983a6f618bf87fabe9" }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, container: "debian:bullseye@sha256:6f519a81440354a85eb592c5f32109ab80605f6b892455983a6f618bf87fabe9" }
+          # Linux's are built and tried on AlmaLinux 8, so they run with glibc 2.28 and later: RHEL
+          # 8 and later, Debian 10 and later, Ubuntu 20.04 and later. Built on the runner's own
+          # Ubuntu, `fennec` needed glibc 2.39, and the runtime 2.38 to link a program.
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, container: "almalinux:8@sha256:2d0f2eb2a83cc09dbc2eb92fade4dbe8f709628149e81aa00aec70630406603b" }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, container: "almalinux:8@sha256:2d0f2eb2a83cc09dbc2eb92fade4dbe8f709628149e81aa00aec70630406603b" }
           - { os: macos-latest, target: aarch64-apple-darwin }
           # On an Intel Mac, so its archive is tried on the machine it's for.
           - { os: macos-15-intel, target: x86_64-apple-darwin }
@@ -47,8 +47,7 @@ jobs:
       - name: Set up the container
         if: matrix.container
         run: |
-          apt-get update -qq
-          apt-get install -y -qq --no-install-recommends build-essential ca-certificates curl git
+          dnf install -y -q gcc gcc-c++ make git tar gzip findutils diffutils
           curl -sSfL --retry 3 https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

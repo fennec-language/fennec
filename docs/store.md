@@ -16,6 +16,7 @@ This page is the store's format, so that the launcher and a shared cache can rea
     <version>/            one folder per Fennec version, like 0.0.1
       <kind>/<name>       one entry
     cleanup.lock          held while a cleanup runs
+  work/                   commands' scratch work, like a build's objects before they're linked
   daemon/<version>.sock   the build daemon's socket, or one in the temporary folder when this path is too long
   std/<version>/          the standard library's files, for editors to open
   llvm-tools              where LLVM's tools were last found
@@ -65,6 +66,9 @@ Hashes are BLAKE3, written as 64 lowercase hex digits, and an entry about a prog
 - The build daemon runs cleanup when it starts and every five minutes after, while it's idle. Only
   cleanup takes a lock, so two never run at once, and one that died leaves a lock that's taken over
   after ten minutes.
+- A command's scratch work goes in `work`, in a folder or file of its own named by its process and
+  when it started, and the command removes it when it's done. What a command that was stopped leaves
+  there, the daemon removes once it hasn't changed for an hour, when it checks the cache.
 - Nothing in the store is needed for correctness. An entry that's missing, unreadable or removed by
   cleanup only means the work is done again.
 

@@ -30,6 +30,7 @@ macro_rules! modules {
 }
 
 modules! {
+    base64,
     cli,
     collections,
     crypto,
@@ -48,6 +49,7 @@ modules! {
     re,
     time,
     toml,
+    url,
 }
 
 /// What's available everywhere without an import: the errors standard operations fail

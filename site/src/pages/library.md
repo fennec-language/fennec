@@ -8,7 +8,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 
 <p class="lede">Fennec comes with batteries included, like Python. Where Python has a module for something, Fennec's usually has the same name.</p>
 
-> **Partly built.** `math`, `game`, `layout`, `path`, `json`, `toml`, `pack`, `csv`, `collections`, `random`, `time`, `re`, `log`, `cli`, `net`, `process` and `crypto` work today, along with `Fs`, `Clock`, `Args`, `Stdin`, `Env`, `Entropy` and `Net`. Everything else below is planned, and the built modules don't have everything listed yet. See the [roadmap](/roadmap/).
+> **Partly built.** `math`, `game`, `layout`, `path`, `json`, `toml`, `pack`, `csv`, `base64`, `collections`, `random`, `time`, `re`, `log`, `cli`, `net`, `url`, `process` and `crypto` work today, along with `Fs`, `Clock`, `Args`, `Stdin`, `Env`, `Entropy` and `Net`. Everything else below is planned, and the built modules don't have everything listed yet. See the [roadmap](/roadmap/).
 
 ## What's in it
 
@@ -18,7 +18,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | Collections | `collections`: `Deque`, `Counter`, `Heap`, `PriorityQueue`, `Tree`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Table` and its `Id`s; later `Graph` |
 | Files and the OS | `fs`, `path`, `env`, `process`, `cli` |
 | Data formats | `json`, `toml`, `pack`, `csv`, `base64`, `compress` |
-| Networking | `net`: TCP, UDP, TLS, and an HTTP client and server today; WebSocket and `url` planned |
+| Networking | `net`: TCP, UDP, TLS, and an HTTP client and server today; WebSocket planned. `url` |
 | Security | `crypto`: BLAKE3 and SHA-256 hashes, HMAC and comparing secrets; `uuid`. Secure random bytes come from the `Entropy` capability |
 | Storage | `sql`: one interface, with drivers as first-party kits |
 | Diagnostics | `log`, `profile`, `test` |

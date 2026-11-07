@@ -122,8 +122,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Fennec links programs with LLD and MinGW-w64's libraries on Windows, so it's built for them.
+      - name: Use Rust's gnullvm toolchain and llvm-mingw
+        if: runner.os == 'Windows'
+        shell: bash
+        run: .github/scripts/windows.sh toolchain
       - name: Install LLVM's tools
-        if: runner.os != 'macOS'
+        if: runner.os == 'Linux'
         run: rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # `fennec run` builds through LLVM where it can, linking the runtime library beside
@@ -140,12 +145,16 @@ jobs:
             dir="target/$(echo "$features" | tr , -)"
             name="fennec_runtime_$(echo "$features" | tr , _)"
             cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
-            if [ "$RUNNER_OS" = Windows ]; then
-              cp "$dir/debug/fennec_runtime.lib" "target/debug/$name.lib"
-            else
-              cp "$dir/debug/libfennec_runtime.a" "target/debug/lib$name.a"
-            fi
+            cp "$dir/debug/libfennec_runtime.a" "target/debug/lib$name.a"
           done
+      # The same `llvm` folder a release puts beside `fennec`: LLVM's tools, LLD and the libraries
+      # it links. The tests look for the tools themselves, from a folder deeper than `fennec`'s.
+      - name: Gather LLVM's tools and what they link
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          .github/scripts/windows.sh folder target/debug/llvm
+          echo "FENNEC_LLVM_BIN=$(cygpath -w "$PWD/target/debug/llvm/bin")" >> "$GITHUB_ENV"
       - run: cargo test --locked
       # Which tests passed. A pull request reads its own results, then the shared ones, and
       # keeps its own apart: GitHub never shows one pull request's cache to another run, so

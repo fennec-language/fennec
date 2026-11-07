@@ -18,6 +18,8 @@ fn method(type_name: &str, name: &str) -> Option<Method> {
         ("Fs", "read_bytes") => reads(&[path()], io(Type::Bytes)),
         ("Fs", "write_bytes") => reads(&[path(), Type::Bytes], io(Type::Unit)),
         ("Fs", "list_dir") => reads(&[path()], io(Type::list(Type::named("Path")))),
+        // Every path under a folder, each folder's before what's in it.
+        ("Fs", "walk") => reads(&[path()], io(Type::list(Type::named("Path")))),
         ("Fs", "make_dir" | "remove") => reads(&[path()], io(Type::Unit)),
         ("Fs", "metadata") => reads(&[path()], io(Type::named("Metadata"))),
         // An `Fs` that reaches only what's in one folder.

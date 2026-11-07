@@ -33,6 +33,7 @@ modules! {
     base64,
     cli,
     collections,
+    compress,
     crypto,
     csv,
     fs,

@@ -1877,7 +1877,9 @@ impl Emit<'_, '_, '_> {
             {
                 self.std_call(dest, name, args, span)
             }
-            crypto if crypto.starts_with("crypto.") => self.crypto_call(dest, name, args, span),
+            pure if pure.starts_with("crypto.") || pure.starts_with("compress.") => {
+                self.crypto_call(dest, name, args, span)
+            }
             "error.with_cause" => {
                 // Nothing reads what caused an error yet, so the wrapper is all there is.
                 let wrapper = first.ok_or("no argument")?;

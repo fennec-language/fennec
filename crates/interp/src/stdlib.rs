@@ -35,6 +35,7 @@ macro_rules! modules {
 pub(crate) mod http;
 
 modules! {
+    compress,
     crypto,
     fs,
     json,

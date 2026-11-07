@@ -16,6 +16,7 @@ pub(crate) enum TypeKind {
     Error,
 }
 
+#[derive(Clone)]
 pub(crate) struct TypeInfo {
     pub(crate) kind: TypeKind,
     pub(crate) def: std::sync::Arc<TypeDef>,
@@ -24,6 +25,7 @@ pub(crate) struct TypeInfo {
 }
 
 /// A constant at the top level: `KEYWORDS = {"def", "if"}`.
+#[derive(Clone)]
 pub(crate) struct ConstEntry {
     pub(crate) ty: Option<TypeExpr>,
     pub(crate) value: fennec_syntax::Expr,
@@ -31,6 +33,7 @@ pub(crate) struct ConstEntry {
     pub(crate) prelude: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct FnEntry {
     pub(crate) def: std::sync::Arc<FnDef>,
     /// The type a method belongs to.
@@ -45,7 +48,7 @@ pub(crate) struct FnEntry {
 
 /// Every declaration in a program, keyed the way the signature table is: `name` for a
 /// function, `Type.name` for a method, `outer.inner` for a nested function.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Program {
     pub(crate) types: BTreeMap<String, TypeInfo>,
     pub(crate) functions: BTreeMap<String, FnEntry>,

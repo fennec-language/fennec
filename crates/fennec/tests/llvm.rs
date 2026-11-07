@@ -4542,6 +4542,61 @@ fn process_options_without_the_interpreter_match_it() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `fs.walk` in compiled code, on a real tree holding a link back to its own top, which is
+/// listed and not gone into, and through an `Fs` narrowed to one folder.
+const WALKED: &str = "\
+def main(stdout: Stdout, fs: Fs):
+    for path in fs.walk(\"tree\").expect(\"it works\"):
+        stdout.print(path.text, fs.metadata(path).expect(\"it works\").is_dir)
+    only = fs.only(\"tree/b\")
+    stdout.print([path.text for path in only.walk(\"tree/b\").expect(\"it works\")])
+    match only.walk(\"tree\"):
+        case Ok(_):
+            stdout.print(\"walked it\")
+        case Err(_):
+            stdout.print(\"refused\")
+    match fs.walk(\"no such folder\"):
+        case Ok(_):
+            stdout.print(\"walked it\")
+        case Err(error):
+            stdout.print(error.reason != \"\")
+";
+
+#[test]
+#[cfg(unix)]
+fn walking_a_folder_without_the_interpreter_matches_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("walking")?;
+    for file in ["tree/b/c/deep.txt", "tree/a.txt", "tree/b/z.txt"] {
+        let at = dir.join(file);
+        std::fs::create_dir_all(at.parent().ok_or_else(|| std::io::Error::other("no folder"))?)?;
+        std::fs::write(at, "")?;
+    }
+    std::os::unix::fs::symlink("..", dir.join("tree/b/up"))?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, WALKED)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output()?;
+    let interpreted = crate::executables::fennec_command()
+        .args(["run", "--interp", &path(&program)])
+        .env("FENNEC_HOME", &dir)
+        .current_dir(&dir)
+        .output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "tree/a.txt False\ntree/b True\ntree/b/c True\ntree/b/c/deep.txt False\ntree/b/up True\ntree/b/z.txt False\n\
+         [\"tree/b/c\", \"tree/b/c/deep.txt\", \"tree/b/up\", \"tree/b/z.txt\"]\nrefused\nTrue\n"
+    );
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
 /// The real network, with no interpreter behind it: a server and a client on this machine, each
 /// way a call can come out, and looping over each.
 const REAL_NETWORK: &str = "from std.net import NetError, Connection

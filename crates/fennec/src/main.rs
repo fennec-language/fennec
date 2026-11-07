@@ -19,6 +19,7 @@ mod image;
 mod lint;
 mod llvm_tests;
 mod lsp;
+mod notices;
 mod report;
 mod run;
 mod test;
@@ -65,6 +66,7 @@ const USAGE: &str = "usage:
                             add --json to either for JSON on standard output
   fennec fix [path]         make the fixes the type checker and linter suggest, in a kit or a .fen file
   fennec lsp                the language server, for editors, over standard input and output
+  fennec notices <program>  the third-party notices a program built by `fennec build` holds
   fennec daemon <action>    the build daemon: `status` or `stop`; commands start it
   fennec --version          show the version
 
@@ -144,6 +146,7 @@ fn main() -> ExitCode {
         ["dev", "check", path] => dev(check_dump, path),
         ["daemon", action] => daemon::command(action),
         ["lsp"] => lsp::lsp(),
+        ["notices", program] => notices::command(program),
         ["dev", "checks"] => on_big_stack(fallbacks::checks, "."),
         ["dev", "checks", path] => on_big_stack(fallbacks::checks, path),
         ["dev", "waits"] => on_big_stack(fallbacks::waits, "."),

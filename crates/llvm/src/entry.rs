@@ -68,21 +68,22 @@ impl Image {
     }
 }
 
-fn words_of(image: &[u8]) -> Vec<u64> {
-    let mut words: Vec<u64> = image
-        .chunks(8)
-        .map(|chunk| {
-            let mut word = [0_u8; 8];
-            for (to, from) in word.iter_mut().zip(chunk) {
-                *to = *from;
-            }
-            u64::from_le_bytes(word)
-        })
-        .collect();
-    if words.is_empty() {
-        words.push(0);
+/// Writes `bytes` into a string constant in LLVM's text, then zeros to make it `length` long:
+/// a printable byte as itself, and the rest as `\` and two hex digits.
+fn image_text(out: &mut String, bytes: &[u8], length: usize) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    out.reserve(length * 2);
+    let padding = std::iter::repeat_n(&0_u8, length.saturating_sub(bytes.len()));
+    for byte in bytes.iter().chain(padding) {
+        if (0x20..0x7f).contains(byte) && *byte != b'"' && *byte != b'\\' {
+            out.push(char::from(*byte));
+        } else {
+            let digit = |half: u8| HEX.get(usize::from(half)).copied().map_or('0', char::from);
+            out.push('\\');
+            out.push(digit(byte >> 4));
+            out.push(digit(byte & 15));
+        }
     }
-    words
 }
 
 /// What a module for a program starts with: what every function reads by symbol, and the
@@ -116,10 +117,13 @@ fn start_of(
     for symbol in shared.literals.keys() {
         let _ = writeln!(out, "@\"{symbol}\" = dso_local global ptr null");
     }
-    let words = words_of(bytes);
-    let shown: Vec<String> = words.iter().map(|word| format!("i64 {word}")).collect();
-    let count = words.len();
-    let _ = writeln!(out, "@fennec_image = private constant [{count} x i64] [{}]\n", shown.join(", "));
+    // The image is read a word at a time, but written as bytes in one string: LLVM reads a
+    // program's megabytes of it many times faster that way than as a word for each value.
+    // An empty image is still a word, of zero.
+    let count = bytes.len().div_ceil(8).max(1);
+    let _ = write!(out, "@fennec_image = private constant [{} x i8] c\"", count * 8);
+    image_text(&mut out, bytes, count * 8);
+    out += "\", align 8\n\n";
     out += "declare void @fennec_aot_image(i64)\ndeclare i64 @fennec_aot_failed_flag()\ndeclare i64 @fennec_aot_literal(i64)\ndeclare i64 @fennec_aot_ascii()\ndeclare i64 @fennec_counting()\n\n";
     Ok((out, count))
 }
@@ -364,4 +368,16 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
     out += &thunks;
     out += &c_main(count, &format!("@fennec_aot_run(ptr @fennec_entry, i64 {})", bytes.len()));
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    /// An image's bytes go into LLVM's text as themselves when printable, and as hex otherwise,
+    /// quotes and backslashes included, then zeros up to a whole word.
+    #[test]
+    fn an_image_is_written_as_one_string() {
+        let mut out = String::new();
+        super::image_text(&mut out, &[b'a', b'"', b'\\', 0, 0xff], 8);
+        assert_eq!(out, "a\\22\\5C\\00\\FF\\00\\00\\00");
+    }
 }

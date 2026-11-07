@@ -599,6 +599,9 @@ def report(shapes: list[Shape], stdout: Stdout):
 
 **`Eq`, `Hash`, `Ordered` and `Format` are built-in interfaces,** satisfied automatically wherever the automatic `==`, hashing, ordering and printing apply. A type with its own `def str` still satisfies `Format`.
 
+**A type may define each operator once for each right-hand type.** `Mat4 * Mat4` and `Mat4 * Vec4` can both exist, and so can `Time - Time -> Duration` and `Time - Duration -> Time`. The types must match exactly, with no conversions, and it's for operators only: a named function still has one meaning. Not built yet: today a type can have only one of each.
+*Why:* `m * v` and `deadline - now` read like the math, and exact matching keeps it simple to check, unlike overloading in languages with conversions, whose best-match rules give confusing errors and slow compiles.
+
 **`in` is an operator a type defines,** like `def +`, `def <` and `def []`.
 ```fennec
 struct Inventory:

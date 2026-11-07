@@ -179,6 +179,39 @@ copy_file(source, destination=backup, overwrite=True)
 - A parameter with a default is passed by name only, and a literal default gives it its type. An empty collection's default is its constructor: `items = list[str]()`. Built.
 - Some positional arguments are a compile error whose fix names them: a bare `True` or `False`, neighboring arguments of the same type, and three or more unless no two neighbors could be swapped and still compile. The first argument and `self` are exempt. Built.
 
+## Operators
+
+```fennec
+struct Mat4:
+    columns: array[Vec4, 4]
+
+    def *(self, other: Mat4) -> Mat4:
+        ...
+
+    def *(self, point: Vec4) -> Vec4:
+        ...
+
+struct Time:
+    seconds: float
+
+    # two moments in time give the time between them
+    def -(self, other: Time) -> Duration:
+        ...
+
+    # a moment minus a length of time gives an earlier moment
+    def -(self, length: Duration) -> Time:
+        ...
+
+world = view * model
+moved = model * point
+remaining = deadline - now
+```
+
+- A type may define each operator once for each right-hand type, so `Mat4 * Mat4` and `Mat4 * Vec4` can both exist. Not built yet: today a type has one `def *`, and the checker lane builds this next.
+- Types must match exactly, with no conversions, so there's never a best match to choose. `now + now` is a compile error that lists the `+` that `Time` has.
+- It's for operators only. A named function still has one meaning, so `load(path)` is always the same `load`.
+- A user type gets this exactly as `std`'s types do.
+
 ## Failures
 
 ```fennec

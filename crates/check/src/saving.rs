@@ -314,10 +314,11 @@ fn load_fields(out: &mut String, indent: &str, list: &str, (fields, left_out): &
             continue;
         }
         // A format with a missing value, like JSON's `null`, may give one for any field, which
-        // then takes its default. One with none reads what the field holds.
+        // then takes its default. One with none reads what the field holds. Either way the value
+        // is read as what the field holds, never wrapped as an optional on the way.
         let _ = writeln!(
             out,
-            "{indent}            if src__.missing_as_none():\n{indent}                read_{name} = src__.value[{0}?]()?\n{indent}            else:\n{indent}                read_{name} = src__.value[{0}]()?",
+            "{indent}            if src__.none_next() and src__.none()?:\n{indent}                read_{name} = None\n{indent}            else:\n{indent}                read_{name} = src__.value[{}]()?",
             read.ty
         );
     }

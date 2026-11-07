@@ -713,8 +713,9 @@ struct JsonReader:
     _path = list[str]()
     _fields = list[(str, str)]()
     _owner = ""
-    ## For each object being read, innermost last, the field most likely to come next: the one
-    ## after the last found, since text usually has them in order.
+    ## For the object being read, the field most likely to come next: the one after the last
+    ## found, since text usually has them in order. Each object it's inside keeps its own here.
+    _hint = 0
     _hints = list[int]()
     _ids = _IdsSeen()
     _tags: dict[str, int] = {}
@@ -1145,7 +1146,8 @@ struct JsonReader:
         if self._depth > _MOST_DEEP: fail _no_reason()
         if self._explain:
             self._owner = name
-        self._hints.append(0)
+        self._hints.append(self._hint)
+        self._hint = 0
 
     def next_field(ref self, fields: list[(str, str)]) -> bool fails ParseError:
         if self._explain:
@@ -1156,7 +1158,7 @@ struct JsonReader:
             if b == 125:
                 self._at += 1
                 self._depth -= 1
-                _ = self._hints.pop()
+                self._hint = self._hints.pop() else 0
                 return False
             if self._explain and self._extra == .error:
                 self._unknown_first(fields)?
@@ -1166,7 +1168,7 @@ struct JsonReader:
             if b == 125:
                 self._at += 1
                 self._depth -= 1
-                _ = self._hints.pop()
+                self._hint = self._hints.pop() else 0
                 return False
             if b != 44: fail _no_reason()
             self._at += 1
@@ -1174,7 +1176,7 @@ struct JsonReader:
             at = self._key_in_place(fields)
             if at >= 0:
                 self._place = at
-                self._hints[self._hints.len() - 1] = at + 1
+                self._hint = at + 1
                 return True
         key = self.text()?
         if self._space() != 58: fail _no_reason()
@@ -1189,8 +1191,7 @@ struct JsonReader:
         if b != 34: return -1
         start = self._at + 1
         count = fields.len()
-        last = self._hints.len() - 1
-        mut place = self._hints[last]
+        mut place = self._hint
         mut tries = 0
         while tries < count:
             if place >= count:
@@ -1319,8 +1320,8 @@ struct JsonReader:
         self._tags[kind] = made
         made
 
-    def missing_as_none(self) -> bool:
-        True
+    def none_next(ref self) -> bool:
+        self._space() == 110
 
     def exact(self) -> bool:
         False

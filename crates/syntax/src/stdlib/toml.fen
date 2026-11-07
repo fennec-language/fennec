@@ -960,8 +960,8 @@ struct TomlReader:
         self._tags[kind] = made
         made
 
-    def missing_as_none(self) -> bool:
-        True
+    def none_next(ref self) -> bool:
+        False
 
     def exact(self) -> bool:
         False

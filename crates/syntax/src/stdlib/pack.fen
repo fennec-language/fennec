@@ -442,7 +442,7 @@ struct PackReader:
         self._tags[kind] = made
         made
 
-    def missing_as_none(self) -> bool:
+    def none_next(ref self) -> bool:
         False
 
     def ordered(ref self, name: str) -> bool fails ParseError:

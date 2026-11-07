@@ -8623,8 +8623,8 @@ struct Words:
     def tag(ref self, kind: str) -> int:
         0
 
-    def missing_as_none(self) -> bool:
-        True
+    def none_next(ref self) -> bool:
+        self.at < self.parts.len() and self.parts[self.at] == "-"
 
     def exact(self) -> bool:
         False

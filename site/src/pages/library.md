@@ -8,7 +8,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 
 <p class="lede">Fennec comes with batteries included, like Python. Where Python has a module for something, Fennec's usually has the same name.</p>
 
-> **Partly built.** `math`, `game`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re` work today, along with `Fs`, `Clock`, `Args` and `Stdin`. Everything else below is planned, and the built modules don't have everything listed yet. See the [roadmap](/roadmap/).
+> **Partly built.** `math`, `game`, `layout`, `path`, `json`, `toml`, `pack`, `csv`, `collections`, `random`, `time`, `re`, `log`, `cli`, `net`, `process` and `crypto` work today, along with `Fs`, `Clock`, `Args`, `Stdin`, `Env`, `Entropy` and `Net`. Everything else below is planned, and the built modules don't have everything listed yet. See the [roadmap](/roadmap/).
 
 ## What's in it
 
@@ -18,7 +18,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | Collections | `collections`: `Deque`, `Counter`, `Heap`, `PriorityQueue`, `Tree`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Table` and its `Id`s; later `Graph` |
 | Files and the OS | `fs`, `path`, `env`, `process`, `cli` |
 | Data formats | `json`, `toml`, `pack`, `csv`, `base64`, `compress` |
-| Networking | `net`: TCP today; UDP, TLS, an HTTP client and server, and WebSocket planned; `url` |
+| Networking | `net`: TCP, UDP, TLS, and an HTTP client and server today; WebSocket and `url` planned |
 | Security | `crypto`: BLAKE3 and SHA-256 hashes, HMAC and comparing secrets; `uuid`. Secure random bytes come from the `Entropy` capability |
 | Storage | `sql`: one interface, with drivers as first-party kits |
 | Diagnostics | `log`, `profile`, `test` |
@@ -52,9 +52,9 @@ def main(stdout: Stdout):
     stdout.print(loaded)
 ```
 
-This works for JSON and TOML today. CSV reads and writes rows of text with `csv.loads` and `csv.dumps`, and reading it into structs is planned.
+This works for JSON, TOML and `std.pack` today. A format is a type with a `Serializer`'s methods, so one `serialize` serves every format. A `Table` is saved as a list of its items in order, with each `Id` as where its item is in that list, and loading makes a new `Table` whose `Id`s find the same items. CSV reads and writes rows of text with `csv.loads` and `csv.dumps`, and reading it into structs is planned.
 
-**Planned:** one `Writer` and `Reader` interface that every format implements, so one generic function breaks any struct down, and `std.pack`, the default binary format: no field names on the wire, `where` ranges that shrink values, a fingerprint of the layout, delta encoding and opt-in quantization, written in plain Fennec.
+`std.pack` is the default binary format, written in plain Fennec: no field names on the wire, and a number for the layout's shape, so loading into a type of another shape fails at once. **Planned:** `where` ranges that shrink values, delta encoding and opt-in quantization.
 
 ## Built the same way as your code
 

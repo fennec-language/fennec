@@ -262,6 +262,10 @@ struct Program:
         if name == "fails" and written.args.len() == 2:
             returns = self.resolve_within(written.args[0], generics, depth)?
             return .Result(returns, error=self.resolve_within(written.args[1], generics, depth)?)
+        # `with Transaction`: what a source lends.
+        if name == "with" and written.args.len() == 1:
+            lent = self.resolve_within(written.args[0], generics, depth)?
+            return .Generic("with", [lent])
         # `shared Scores`: what it holds is any type. Written with nothing in its brackets, it's
         # `shared name = value`, which takes the value's type.
         if name == "shared" and written.args.len() == 1:

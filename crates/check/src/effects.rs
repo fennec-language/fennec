@@ -36,6 +36,10 @@ fn statement(stmt: &Stmt, effects: &mut Effects) {
             effects.yields = true;
             expression(expr, effects);
         }
+        StmtKind::Lend { value, otherwise } => {
+            expression(value, effects);
+            block(otherwise, effects);
+        }
         StmtKind::Assign { target, value, .. } => {
             expression(target, effects);
             expression(value, effects);

@@ -114,7 +114,7 @@ def heal(hero: Hero):
 **Indexing gives a place, not a copy.** `enemies[i].health -= 1` writes straight into the list. A user-defined `def []` gets a `ref` form that does the same.
 *Why:* Otherwise each change through an index copies the element out and back, or copies the whole list if it's shared.
 
-**`for ref` over a user type writes back through positions.** A type supports it by defining `def len(self) -> int` and the `ref` form of `def []` taking an `int`, which returns the element as a place. A type whose positions can be empty, like a pool with free slots, also defines `def is_live(self, i: int) -> bool`, and empty positions are skipped.
+**`for ref` over a user type writes back through positions.** A type supports it by defining `def len(self) -> int` and the `ref` form of `def []` taking an `int`, which returns the element as a place. It's the one function that may return a `ref`, since indexing, `for ref` and `parallel` all rest on it. A type whose positions can be empty, like a pool with free slots, also defines `def is_live(self, i: int) -> bool`, and empty positions are skipped.
 ```fennec
 struct Units:
     _items = Buffer[Unit]()
@@ -323,6 +323,9 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 **Math types are 32-bit.** `std.math`'s `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` are concrete `f32` types, and `DVec3` and the other `D` types hold doubles. They're not generic: a generic version with an `f32` default could come later without breaking anything. Not built yet: until sized numbers are in, they're `float` and are checked against glam's 64-bit types.
 *Why:* Twice the SIMD throughput for game math, as glam, GLSL and GPUs have it, while `float` stays accurate everywhere else.
 
+**Float functions give the same bits on every platform.** `sin`, `cos`, `tan`, `acos`, `exp`, `log` and `**` are computed by one pure-Rust library, `libm`, in every engine, on arm64, x86-64, Windows and WebAssembly alike. Native code calls the runtime for them, never a platform intrinsic, and never fuses `a*b+c`. Built.
+*Why:* Each platform's own C library rounds some results differently in the last bit, as `cos(-0.65)` does in WebAssembly and `cos(-0.1)` on x86-64 macOS, and replays and lockstep multiplayer need every machine to agree. It costs a little speed in a loop of nothing but these functions, mostly in `**`. The coordinator decided this on 2026-11-07.
+
 **The compiler tells LLVM that names don't alias.** Exclusive `ref` access proves no two names point at the same memory, so every function gets that guarantee for free. Fortran's speed comes from the same guarantee.
 
 **Integer overflow is checked in release builds too.** Wrapping is opt-in: `x.wrapping_add(y)`.
@@ -330,7 +333,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 ## Functions and types
 
-**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose.
+**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose. Not built yet: `sorted(scores)` alone on a line still compiles.
 ```fennec
 sorted(scores)       # error: the result is ignored
 _ = sorted(scores)   # fine
@@ -343,7 +346,7 @@ healed = copy(unit, health=100)
 names = list(unit.name for unit in units)
 ```
 
-**`case .Button(ref clicks):` changes a field inside an enum.**
+**`case .Button(ref clicks):` changes a field inside an enum.** Not built yet.
 ```fennec
 match ui[widget_id].kind:
     case .Button(ref clicks):
@@ -400,7 +403,7 @@ if result is Err(NotFound):
 - `?` is required wherever a failure passes up, including in `with` and `for`.
 - `if x is Err(...)` and `if x is None:` narrow `x`. `match` handles several cases.
 - Checking an error and then ignoring it is a compile error.
-- `xs[i]` out of range is a bug that stops the program. `xs.get(i)` returns an optional, for when it might not be there.
+- `xs[i]` out of range is a bug that stops the program. `xs.get(i)` returns an optional, for when it might not be there. Not built yet: a list has no `get`.
 
 This replaces the earlier rules that errors are inferred and `fails` is optional.
 *Why:* A reader sees at a glance how a function can fail and every line where it can leave. Swallowed errors are how reliable-looking programs go wrong.
@@ -651,7 +654,6 @@ This reverses the decision that a directly called nested function can change out
 ```fennec
 with db.transaction()? as tx, fs.open(path)? as file:
     tx.insert(parse(file)?)?
-    tx.commit()?
 ```
 There are no moves. A resource that has to live a long time, like a pooled database connection, lives inside one keeper task's `with`, and everyone else sends it messages. This replaces the rule that a long-lived resource is an owned value that moves and closes when its last owner goes away.
 *Why:* If everything temporary lives inside a block, there's nothing for lifetime annotations to describe.
@@ -672,21 +674,19 @@ There are no moves. A resource that has to live a long time, like a pooled datab
 **There's no `def del` and no destructor.** Everything that needs cleanup is opened with `with`. This replaces `def del` on `shared` types, and the standard library's `Connection` closing when its last owner goes away. `fennec fix` rewrites existing code. Not built yet.
 *Why:* A destructor runs at a moment no line shows, and has nowhere to report a failure. Memory frees itself, so only real resources need cleanup, and `with` shows where.
 
-**A `with` source is a function returning `-> with T`, with exactly one `lend`.** Setup goes above it and cleanup below. `lend x else:` runs when the caller's block fails, and a failure there is reported with the caller's. `return`, `break` and `continue` in the caller count as success. Not built yet.
+**A `with` source is a function returning `-> with T`, with exactly one `lend`.** Setup goes above it and cleanup below. Code after `lend` runs when the caller's block succeeds, and `lend x else:` runs when it fails or crashes, with the block's own failure passing up. `return`, `break` and `continue` in the caller count as success. Built for a block that fails or ends well; running `else:` on a crash isn't built yet.
 ```fennec
 def transaction(self) -> with Transaction fails DbError:
     with self._pool.take()? as conn:
         conn.begin()?
         lend Transaction(_conn=conn) else:
             conn.rollback()
+        conn.commit()?
 ```
 *Why:* One `lend` makes every source read the same way, open, lend, close, and a user's `with` source can do anything the standard library's can.
 
-**Nothing after `lend` may fail on the success path.** Finishing that can fail is a method the caller calls and checks, like `tx.commit()?`.
-*Why:* A cleanup failure after the caller's block has succeeded has nowhere to go, so it would be lost.
-
-**A type can require its finish, and wrappers inherit it.** For a type like a buffered writer or a transaction, ending the block on the success path without calling its finishing method is a compile error: "`tx` ended without `commit()`". A type holding one requires finishing too. The compiler infers it from a `lend` whose cleanup can fail, with no marker, and a written file is one, finished with `close()?`. Not built yet.
-*Why:* Cleanup that fails with nowhere to report the error silently loses data.
+**The end of a `with` block is where what it lent finishes, and finishing may fail.** A failure after `lend` becomes the `with` statement's failure, covered by the `?` on its line, so `with fs.create(path)? as file:` covers both opening and finishing. Files close themselves at the block's end, and a transaction commits there and rolls back in `lend x else:`. An early `return` still runs the cleanup, and a failing cleanup makes the function fail. Built for sources a program writes; the standard library's files and transactions move to it next. This replaces the rule that nothing after `lend` may fail, along with types the caller must finish, how that was inferred, and callers finishing written files with `close()?`.
+*Why:* A cleanup failure still reaches the caller, through a `?` that's already there, and there's no `commit()` or `close()` to forget.
 
 **A source can't `lend` while it holds a lock it took.** Opening a file inside a lock is fine.
 *Why:* The caller's block would run under a lock it can't see, and could wait in it.
@@ -851,15 +851,15 @@ from std.net import Connection, NetError
 
 def main(net: Net, stdout: Stdout):
     with net.listen(9000)? as server:
-        for ref conn in parallel(server):
-            match echo(ref conn):
+        for conn in parallel(server):
+            match echo(conn):
                 case Err(error):
                     stdout.print(f"{conn.peer} dropped: {error}")
                 case Ok(_):
                     stdout.print(f"{conn.peer} left")
 
 ## Sends back each line it's sent, until the client hangs up.
-def echo(ref conn: Connection) fails NetError:
+def echo(conn: Connection) fails NetError:
     for line in conn.lines():
         conn.write(f"{line}\n")?
 ```
@@ -1243,7 +1243,7 @@ match tok:
 **Fields may be named any word, keywords included; locals and functions can't be keywords.** `type: str`, `user.type` and `User(type="admin")` all work, since a field name is unambiguous where it's declared, after a dot and before `=`. This replaces the rule that field names can't be keywords.
 *Why:* Structs mirror the wire format, and real formats use keys like `type`, `class` and `from`. Locals and functions stay as Python has them, where a name that's sometimes a keyword would be harder to read.
 
-**f-strings have `{x=}` and no `!r`.** `f"{hp=}"` gives `hp=100`. Format specs like `{x:.2f}` stay.
+**f-strings have `{x=}` and no `!r`.** `f"{hp=}"` gives `hp=100`. Format specs like `{x:.2f}` stay. Not built yet: `{x=}` doesn't parse.
 *Why:* `{x=}` is what people want when debugging; `!r` has no meaning without Python's `repr`.
 
 ## Standard library
@@ -1407,7 +1407,7 @@ These are default lints, and the Den requires them.
 ## Security goal
 
 **The goal is near-zero CVEs, and it's public policy.** True zero isn't possible: the compiler, the runtime and the C that can't be ported can all have bugs. What Fennec can do is remove the usual causes:
-- **Memory bugs are impossible.** Fennec has no `unsafe`, and how C is called without it is still open. The standard library's internals are private to the compiler, not a second kind of `unsafe`.
+- **Memory bugs are impossible.** Fennec has no `unsafe`, and C is called only through the standard library and first-party kits. The standard library's internals are private to the compiler, not a second kind of `unsafe`.
 - **C is ported rather than linked,** so less C runs at all.
 - **A batteries-included standard library** keeps dependency trees shallow.
 - **Capabilities limit the blast radius** of any bug: code can reach only what it was handed.
@@ -1469,7 +1469,7 @@ tools = { path = "../tools" }
 
 ## Engines
 
-**There's one backend: LLVM, with per-function `-O3` and a function-level cache.** `fennec run` makes real binaries in the store. Whole-program work happens only in `--release`. There's no hot reload in the plan, and no tiering.
+**There's one backend: LLVM, with per-function `-O3` and a function-level cache.** `fennec run` makes real binaries in the store. Whole-program work happens only in `--release`. There's no tiering.
 *Why:* What people run is what ships, so a first benchmark shows real speed. The cache is what makes it fast to edit, and one backend is less to maintain and keep in agreement.
 
 **LLVM is the default backend.** `fennec run` and `fennec test` use the cached LLVM build, with a one-line note and then the JIT where LLVM can't build the program, and the interpreter for what the JIT can't compile. Once the interpreter is out, refusing to build and building natively are the only two outcomes. Removing Cranelift also requires Windows linking. Since every program in the repository built natively, `fennec build` always makes a native program through LLVM, with no way back to the JIT's compiler. This replaces the rule that Cranelift is removed when LLVM wins across the benchmark suite, edits stay well under a second, and CI's rebuild comparison stays clean.
@@ -1494,8 +1494,14 @@ Every build and the language server share one build engine and store, described 
 
 ## Builds
 
-**Builds carry no debug info.** There's one kind of development build, optimized and cached, and no separate debug build. No DWARF or stepping information is written, in development or release. A failure still says what went wrong and where: the function, file and line, and the calls that led there, from Fennec's own source positions, which the runtime gets with each failure.
-*Why:* Nobody, human or AI, steps through Fennec code in a debugger. Tests, failure messages and deterministic replay do that job. Debug info is the bulk of build output and link time.
+**There's one kind of development build, optimized and cached, and no separate debug build.** A failure says what went wrong and where: the function, file and line, and the calls that led there, from Fennec's own source positions, which the runtime gets with each failure.
+*Why:* What runs while editing is what ships, and failure messages and deterministic replay do most of a debugger's job.
+
+**Debug info is planned,** so a debugger can step through Fennec code, a stack trace is readable, and a crash maps back to its source line. Not built yet: today no DWARF or stepping information is written. This replaces the rule that builds carry no debug info.
+*Why:* Games and native code need a debugger, even when tests and replay do most of the work.
+
+**Hot reload is planned,** for changing code while a game runs. Changed functions are swapped in between frames, and the state the main loop owns stays as it was. When a struct's fields change, the state is saved with `std.pack`, the code is swapped, and the state is loaded back into the new types, with fields matched by name and new fields taking their defaults. Not built yet. This replaces the rule that there's no hot reload.
+*Why:* A game's state is plain data its main loop owns, with nothing pointing into code, so swapping code is unusually clean, and the function-level cache already makes each change small.
 
 **The unit of work is the function, keyed by its content.** A function's key covers its typed IR, the signatures of what it calls, the bodies of anything inlined into it, and the compiler version, target and flags. A caller depends on a callee's body only if it inlined that callee. Summaries let a change that leaves a signature alone skip the callers.
 
@@ -1589,7 +1595,10 @@ def main(stdout: Stdout, gpu: Gpu):
 
 ## Native code
 
-Fennec has no `unsafe` and no `def del`, since 2026-11-07, so the entries below that use them describe the earlier plan. How C is called without them is still open.
+**C is called only through the standard library and first-party kits.** Their binding to C sits in reviewed runtime code, and Fennec programs see only a safe API, like `with Window.open(...)? as window:`. A program or a third-party kit can't call C itself. Not built yet. This replaces `extern "C":` blocks and `unsafe` in Fennec code, and C in your own app or in git and path dependencies.
+*Why:* "No `unsafe` in Fennec" stays true for every program, and games still get libraries like SDL and Vulkan.
+
+The entries below describe the earlier plan, which had `unsafe`, `def del` and `extern` blocks in Fennec code.
 
 **If it can be Fennec, it is Fennec.** Libraries are ported to Fennec wherever possible. C is called only for what can't be ported: the operating system's own APIs, GPU drivers, and closed platform or console SDKs.
 - **A port is tested against the original:** the C library is the oracle, giving the same outputs for the same inputs, and fuzz tests compare them continuously.
@@ -1706,9 +1715,6 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 - How an `Id` is used across servers, which is expected at the simulation level.
 - How an `Id`'s tag and generation behave across a restart, which decides what a saved `Id` means.
 - How `std.pack` data evolves: a lock file of past layouts with automatic migration rules, as Avro does. It comes later and adds to v1 without breaking it.
-- How C is called with no `unsafe` and no `def del`.
-- Whether the `ref` form of `def []` counts as returning a `ref`, which is otherwise refused.
-- How a task changes an item from a stream. `for ref conn in parallel(server):` is written here, but `for ref` needs positions, and a plain name can't be handed to a `ref`.
 - How `items()` works with `ref` on a user type, and whether `enumerate` stays beside it.
 - Whether `values()` and `keys()` also go from `dict`, where a plain `for` gives keys.
 - What replaces `xs.pair(i, j)`, and whether `f(ref xs[i], ref xs[j])` is always refused.

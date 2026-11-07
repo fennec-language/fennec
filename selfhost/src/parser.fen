@@ -542,7 +542,13 @@ struct Parser:
         mut arrow = None
         if self.eat_punct("->"):
             arrow = self.prev_span()
-            ret = self.type_expr()?
+            if self.at_keyword("with"):
+                # `-> with Transaction`: a source, which lends one to its caller's `with` block.
+                lend_at = self.advance().span
+                lent = self.type_expr()?
+                ret = TypeExpr(name="with", args=[lent], optional=False, span=lend_at.to(self.prev_span()))
+            else:
+                ret = self.type_expr()?
         # `fails` is a word only here, after the parameters and any return type.
         mut fails = None
         if self.at_fails():

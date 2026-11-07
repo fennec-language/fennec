@@ -75,6 +75,8 @@ pub(crate) struct Heap {
     spare_words: usize,
     /// How many of the blocks live for the whole run.
     statics: usize,
+    /// Whether this thread's string literals were moved where every thread can read them.
+    shared_statics: bool,
     /// Strings' text as the interpreter holds it, made once per block.
     pub(super) texts: RefCell<HashMap<usize, Rc<str>, BuildHasherDefault<AddressHasher>>>,
     /// Where a string that isn't ASCII was last read.
@@ -131,6 +133,68 @@ pub(crate) struct Heap {
 /// Whether heaps made from now on count what they allocate, for a caller that reads `Counts`
 /// back: `fennec dev copies --run` does. A run under `FENNEC_COUNTS` counts too.
 static COUNTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The string literals the program's own thread made, which live for the whole run and never
+/// change, where every thread can read them: once a task runs beside that thread, it can't read
+/// that thread's table (see `share_statics`). A program shares once. Tests, each starting a
+/// runtime of its own, take a place each.
+static SHARED_STATICS: [std::sync::OnceLock<super::table::Table>; SHARES] =
+    [const { std::sync::OnceLock::new() }; SHARES];
+
+/// How many runtimes can share their literals in one process.
+const SHARES: usize = 64;
+
+/// How many places in `SHARED_STATICS` are taken.
+static SHARED_PLACES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The block at `at` among the literals every thread can read, if it's one.
+fn shared_block(at: usize) -> Option<&'static [u64]> {
+    let taken = SHARED_PLACES.load(std::sync::atomic::Ordering::Acquire).min(SHARES);
+    SHARED_STATICS.iter().take(taken).find_map(|shared| shared.get()?.get(at))
+}
+
+/// Moves the strings this thread made to live for the whole run, its string literals among them,
+/// where every thread can read them, once. Native code holds their addresses, which don't change.
+/// For the program's own thread, before a task first runs beside it: a parked task elsewhere reads
+/// a literal it prints there.
+#[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only launched tasks use it"))]
+pub(super) fn share_statics(state: &mut State) {
+    if state.heap.shared_statics {
+        return;
+    }
+    state.heap.shared_statics = true;
+    let mut shared = super::table::Table::default();
+    let mut kept = super::table::Table::default();
+    let mut moved = 0;
+    for block in std::mem::take(&mut state.heap.blocks).into_blocks() {
+        if block.first().is_some_and(|count| *count >= IMMORTAL) && is_text(state, &block) {
+            shared.insert(block);
+            moved += 1;
+        } else {
+            kept.insert(block);
+        }
+    }
+    state.heap.blocks = kept;
+    state.heap.statics = state.heap.statics.saturating_sub(moved);
+    state.heap.forget_cursor();
+    let place = SHARED_PLACES.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    let set = match SHARED_STATICS.get(place) {
+        Some(slot) => slot.set(shared),
+        None => Err(shared),
+    };
+    // No place left: they go back, for only this thread to read.
+    if let Err(shared) = set {
+        for block in shared.into_blocks() {
+            state.heap.blocks.insert(block);
+        }
+        state.heap.statics += moved;
+    }
+}
+
+/// Whether a block is one of the program's string literals every thread can read.
+pub(super) fn shared_static(address: u64) -> bool {
+    usize::try_from(address).is_ok_and(|at| shared_block(at).is_some())
+}
 
 /// Has every run from now on count what it allocates.
 pub fn count_allocations() {
@@ -423,6 +487,18 @@ impl Heap {
         handed
     }
 
+    /// Takes over blocks, as this thread's own and as made since it last handed any over: what a
+    /// launched task was given to start with, or left when it ended, for whoever runs next to hand
+    /// over in turn.
+    pub(crate) fn adopt_made(&mut self, blocks: impl IntoIterator<Item = Box<[u64]>>) {
+        let counts = self.counts;
+        for mut block in blocks {
+            mark_owner(&mut block, self.owner_bits);
+            self.insert(block);
+        }
+        self.counts = counts;
+    }
+
     /// Takes over blocks another thread's heap handed over, as this thread's own.
     pub(crate) fn adopt_blocks(&mut self, blocks: Vec<Box<[u64]>>) {
         for mut block in blocks {
@@ -483,6 +559,7 @@ impl Heap {
             .find_map(|(table, _)| table.get(at))
             .or_else(|| self.reading.iter().rev().find_map(|table| table.get(at)))
             .or_else(|| self.lent.as_ref()?.get(at))
+            .or_else(|| shared_block(at))
     }
 
     /// Makes a `shared` value's table the current one, with what's made in it owned as `owner_bits`

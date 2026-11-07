@@ -16,8 +16,8 @@
 
 use fennec_interp::embed::guarded::rollback;
 use fennec_interp::embed::{
-    aot, bytes, capabilities, checks, dicts, eval, guarded, heap, io, json, lists, names, numbers, objects,
-    parallel, regex, serve, strings, temps, text, threads,
+    aot, bytes, capabilities, channels, checks, dicts, eval, guarded, heap, io, json, lists, names, numbers,
+    objects, parallel, regex, serve, strings, temps, text, threads,
 };
 
 /// The exported functions that can fail, setting the flag `fennec_aot_failed_flag` gives the
@@ -79,6 +79,10 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_parallel_map_waiting",
     "fennec_parallel_reduce",
     "fennec_parallel_reduce_waiting",
+    "fennec_channel_send",
+    "fennec_channel_receive",
+    "fennec_launch",
+    "fennec_launch_end",
     "fennec_net_serve",
     "fennec_path_get",
     "fennec_pop_empty",
@@ -220,6 +224,14 @@ export! {
     fennec_no_match(a0: i64, a1: i64, a2: i64) => eval::no_match(a0, a1, a2);
     fennec_lock_note(a0: u64) -> i64 => threads::lock_note(a0);
     fennec_lock_forget(a0: u64) => threads::lock_forget(a0);
+    fennec_launch(a0: serve::TaskBody, a1: i64) -> i64 => serve::launch(a0, a1);
+    fennec_channel_new(a0: i64) -> i64 => channels::channel_new(a0);
+    fennec_channel_send(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => channels::channel_send(a0, a1, a2, a3);
+    fennec_channel_receive(a0: i64, a1: i64, a2: &mut i64) -> i64 => channels::channel_receive(a0, a1, a2);
+    fennec_channel_close(a0: i64) => channels::channel_close(a0);
+    fennec_channel_free(a0: i64) => channels::channel_free(a0);
+    fennec_launch_end(a0: i64, a1: i64, a2: i64, a3: &mut i64) -> i64 => serve::launch_end(a0, a1, a2, a3);
+    fennec_task_failed(a0: i64) => serve::task_failed(a0);
     fennec_lock_begin(a0: i64) => rollback::begin(a0);
     fennec_lock_save(a0: i64, a1: i64, a2: i64, a3: i64) => rollback::save(a0, a1, a2, a3);
     fennec_lock_save_text(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) => rollback::save_text(a0, a1, a2, a3, a4);
@@ -267,6 +279,8 @@ export! {
     fennec_cos(a0: f64) -> f64 => checks::cos(a0);
     fennec_tan(a0: f64) -> f64 => checks::tan(a0);
     fennec_acos(a0: f64) -> f64 => checks::acos(a0);
+    fennec_exp(a0: f64) -> f64 => checks::exp(a0);
+    fennec_log(a0: f64) -> f64 => checks::log(a0);
     fennec_float_power(a0: f64, a1: f64) -> f64 => lists::float_power(a0, a1);
     fennec_int_power(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => lists::int_power(a0, a1, a2, a3);
     fennec_list_new(a0: i64, a1: i64) -> i64 => lists::new(a0, a1);

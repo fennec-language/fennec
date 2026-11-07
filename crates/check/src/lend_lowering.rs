@@ -1,0 +1,697 @@
+//! Writes each `with` over a source in as the source's own body, once a program checks, so
+//! every engine runs it with nothing new. `with transaction()? as tx:` and its block become the
+//! source's statements, its parameters bound to the arguments and its names hidden, with the
+//! `lend` replaced by `tx = ...` and the caller's block:
+//!
+//! - The block's `return`, `break` and `continue` leave a loop that runs it once, and are taken
+//!   again after the source's cleanup, so cleanup below the `lend` always runs on success.
+//! - Each `fail` and `?` in the block runs the `lend`'s `else:` first, so it runs whenever the
+//!   caller's block fails. A `?` is taken out to its own `match` on the result before its
+//!   statement.
+//!
+//! It's the only place that knows how a source runs, so a native one can replace it alone.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use fennec_syntax::{
+    Expr, ExprKind, FnDef, Item, MatchArm, Module, Pattern, Span, Stmt, StmtKind, TypeExpr, WithName,
+};
+
+/// A source a `with` uses: its definition, and whether it's a method, called on a value.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Source {
+    pub(crate) def: Arc<FnDef>,
+    pub(crate) method: bool,
+}
+
+/// Writes in every `with` over a source in `module`, saying whether there were any.
+pub(crate) fn lower(module: &mut Module, sources: &BTreeMap<(u32, u32), Source>) -> bool {
+    if sources.is_empty() {
+        return false;
+    }
+    NEXT.with(|next| next.set(Span::PRELUDE - 1));
+    let mut lowering = Lowering { sources, made: 0, returns: Vec::new() };
+    for item in &mut module.items {
+        match item {
+            Item::Function(def) => lowering.function(def),
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+                def.methods.iter_mut().for_each(|def| lowering.function(def));
+            }
+            Item::Extend(extension) => extension.methods.iter_mut().for_each(|def| lowering.function(def)),
+            Item::Test(test) => {
+                lowering.returns.push(None);
+                lowering.stmts(&mut test.body);
+                lowering.returns.pop();
+            }
+            _ => {}
+        }
+    }
+    lowering.made > 0
+}
+
+struct Lowering<'s> {
+    sources: &'s BTreeMap<(u32, u32), Source>,
+    /// How many have been written in, which makes each one's hidden names its own.
+    made: usize,
+    /// The return type written for each function being walked, innermost last.
+    returns: Vec<Option<TypeExpr>>,
+}
+
+thread_local! {
+    /// The next span for something a lowering writes, counting down from just below the
+    /// standard library's, where no program's text reaches.
+    static NEXT: std::cell::Cell<u32> = const { std::cell::Cell::new(Span::PRELUDE - 1) };
+}
+
+/// Where a lowering writes something of its own: a span covering nothing, its own, so the
+/// types the program is checked again with, found by span, are never another's.
+fn here(_near: Span) -> Span {
+    let at = NEXT.with(|next| {
+        let at = next.get();
+        next.set(at - 1);
+        at
+    });
+    Span { start: at, end: at }
+}
+
+fn name(name: &str, span: Span) -> Expr {
+    Expr { kind: ExprKind::Name(name.to_owned()), span: here(span) }
+}
+
+fn assign(target: &str, value: Expr, declare_mut: bool, ty: Option<TypeExpr>) -> Stmt {
+    let span = value.span;
+    let kind = StmtKind::Assign { target: name(target, span), op: None, value, declare_mut, ty };
+    Stmt { kind, span: here(span) }
+}
+
+fn int(value: i64, span: Span) -> Expr {
+    Expr { kind: ExprKind::Int(value), span: here(span) }
+}
+
+/// `exit == kind`, for taking a block's way out again.
+fn exits_by(exit: &str, kind: i64, span: Span) -> Expr {
+    let lhs = Box::new(name(exit, span));
+    let rhs = Box::new(int(kind, span));
+    Expr { kind: ExprKind::Binary { op: fennec_syntax::BinOp::Eq, lhs, rhs }, span: here(span) }
+}
+
+fn stmt(kind: StmtKind, span: Span) -> Stmt {
+    Stmt { kind, span: here(span) }
+}
+
+/// The ways out of the caller's block, by the number its `exit` is set to.
+const RETURNED: i64 = 1;
+const BROKE: i64 = 2;
+const CONTINUED: i64 = 3;
+
+impl Lowering<'_> {
+    fn function(&mut self, def: &mut FnDef) {
+        self.returns.push(def.ret.clone());
+        self.stmts(&mut def.body);
+        self.returns.pop();
+    }
+
+    fn stmts(&mut self, body: &mut Vec<Stmt>) {
+        let mut at = 0;
+        while at < body.len() {
+            let Some(stmt) = body.get_mut(at) else { return };
+            self.inner(stmt);
+            let written = match &stmt.kind {
+                StmtKind::With { value, names, body: block, lock: false } => {
+                    let call = match &value.kind {
+                        ExprKind::Try { value: inner, context: None } => inner.as_ref(),
+                        _ => value,
+                    };
+                    match self.sources.get(&(call.span.start, call.span.end)) {
+                        Some(source) => self.expand(call, names, block.clone(), &source.clone(), stmt.span),
+                        None => None,
+                    }
+                }
+                _ => None,
+            };
+            match written {
+                Some(written) => {
+                    let count = written.len();
+                    body.splice(at..=at, written);
+                    at += count;
+                }
+                None => at += 1,
+            }
+        }
+    }
+
+    /// The blocks inside a statement, written in first, so a `with` inside another is.
+    fn inner(&mut self, stmt: &mut Stmt) {
+        match &mut stmt.kind {
+            StmtKind::If { branches, otherwise } => {
+                for (_, body) in branches {
+                    self.stmts(body);
+                }
+                if let Some(body) = otherwise {
+                    self.stmts(body);
+                }
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                self.stmts(body);
+            }
+            StmtKind::Def(def) => self.function(def),
+            StmtKind::Expr(value) | StmtKind::Assign { value, .. } => {
+                if let ExprKind::Match { arms, .. } = &mut value.kind {
+                    for arm in arms {
+                        self.stmts(&mut arm.body);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `with call as name: block` written in as the source's body, or nothing if it can't be.
+    fn expand(
+        &mut self,
+        call: &Expr,
+        names: &[WithName],
+        block: Vec<Stmt>,
+        source: &Source,
+        at: Span,
+    ) -> Option<Vec<Stmt>> {
+        let [held] = names else { return None };
+        let ExprKind::Call { callee, args } = &call.kind else { return None };
+        self.made += 1;
+        let suffix = format!("__lend{}", self.made);
+        let hidden = |name: &str| format!("{name}{suffix}");
+        let def = source.def.as_ref();
+        let (mut written, mut renamed) = bound(def, callee, args, source.method, &hidden)?;
+        // The source's own names, hidden, so none is one of the caller's.
+        let mut locals = Vec::new();
+        declared_in(&def.body, &mut locals);
+        renamed.extend(locals.iter().map(|local| (local.clone(), hidden(local))));
+        let mut body = def.body.clone();
+        rename(&mut body, &renamed);
+        // The caller's name for what's lent, hidden too.
+        let lent_as = hidden(&held.name);
+        let mut block = block;
+        rename(&mut block, &[(held.name.clone(), lent_as.clone())]);
+        let exit = hidden("exit");
+        let returned = hidden("returned");
+        let caller_ret = self.returns.last().cloned().flatten();
+        let mut caller = Caller { exit: &exit, returned: &returned, ways: Ways::default(), span: at };
+        if !replace_lend(&mut body, &mut |value, otherwise| {
+            let mut block = block.clone();
+            if !otherwise.is_empty() {
+                fail_through(&mut block, otherwise);
+            }
+            caller.ways = Ways::default();
+            exits(&mut block, &mut caller, false);
+            let mut lent = vec![assign(&lent_as, value, false, None)];
+            if caller.ways.any() {
+                block.push(stmt(StmtKind::Break, at));
+                let always = Expr { kind: ExprKind::Bool(true), span: here(at) };
+                lent.push(stmt(StmtKind::While { cond: always, body: block }, at));
+            } else {
+                lent.extend(block);
+            }
+            Some(lent)
+        }) {
+            return None;
+        }
+        // The block's way out, kept in names set before the source's body, so they're in sight
+        // after it, and taken again once its cleanup has run.
+        let ways = caller.ways;
+        if ways.any() {
+            written.push(assign(&exit, int(0, at), true, None));
+        }
+        if ways.returned == Some(true) {
+            let mut optional = caller_ret?;
+            optional.optional = true;
+            let none = Expr { kind: ExprKind::None, span: here(at) };
+            written.push(assign(&returned, none, true, Some(optional)));
+        }
+        written.extend(body);
+        written.extend(taken_again(ways, &exit, &returned, at));
+        Some(written)
+    }
+}
+
+/// Each parameter given its value, and the value a method is called on: a `ref` parameter is
+/// the caller's own name for what it changes, and the others are copies, given their values
+/// first, under hidden names.
+fn bound(
+    def: &FnDef,
+    callee: &Expr,
+    args: &[fennec_syntax::Arg],
+    method: bool,
+    hidden: &dyn Fn(&str) -> String,
+) -> Option<Bound> {
+    let receiver = match (&callee.kind, method) {
+        (ExprKind::Attr { object, .. }, true) => Some(object.as_ref().clone()),
+        _ => None,
+    };
+    let mut positional = args.iter().filter(|arg| arg.name.is_none());
+    let (mut written, mut renamed) = (Vec::new(), Vec::new());
+    for param in &def.params {
+        let value = if param.is_self {
+            receiver.clone()?
+        } else if let Some(arg) = args.iter().find(|arg| arg.name.as_deref() == Some(param.name.as_str())) {
+            arg.value.clone()
+        } else if let Some(arg) = positional.next() {
+            arg.value.clone()
+        } else {
+            param.default.clone()?
+        };
+        if param.is_mut {
+            let ExprKind::Name(place) = &value.kind else { return None };
+            renamed.push((param.name.clone(), place.clone()));
+        } else {
+            renamed.push((param.name.clone(), hidden(&param.name)));
+            written.push(assign(&hidden(&param.name), value, false, param.ty.clone()));
+        }
+    }
+    Some((written, renamed))
+}
+
+/// The caller's block's way out, taken again once the source's cleanup has run.
+fn taken_again(ways: Ways, exit: &str, returned: &str, at: Span) -> Vec<Stmt> {
+    let mut written = Vec::new();
+    match ways.returned {
+        Some(true) => {
+            // `if returned is not None: return returned`, where it always is.
+            let none = Box::new(Expr { kind: ExprKind::None, span: here(at) });
+            let lhs = Box::new(name(returned, at));
+            let given = Expr {
+                kind: ExprKind::Binary { op: fennec_syntax::BinOp::IsNot, lhs, rhs: none },
+                span: here(at),
+            };
+            let back = stmt(StmtKind::Return(Some(name(returned, at))), at);
+            let then = stmt(StmtKind::If { branches: vec![(given, vec![back])], otherwise: None }, at);
+            let branch = (exits_by(exit, RETURNED, at), vec![then]);
+            written.push(stmt(StmtKind::If { branches: vec![branch], otherwise: None }, at));
+        }
+        Some(false) => written.push(dispatch(exit, RETURNED, StmtKind::Return(None), at)),
+        None => {}
+    }
+    if ways.broke {
+        written.push(dispatch(exit, BROKE, StmtKind::Break, at));
+    }
+    if ways.continued {
+        written.push(dispatch(exit, CONTINUED, StmtKind::Continue, at));
+    }
+    written
+}
+
+/// `if exit == kind: then`.
+fn dispatch(exit: &str, kind: i64, then: StmtKind, span: Span) -> Stmt {
+    let branch = (exits_by(exit, kind, span), vec![stmt(then, span)]);
+    stmt(StmtKind::If { branches: vec![branch], otherwise: None }, span)
+}
+
+/// Which ways out of the caller's block it takes: `returned` is whether it returns, and with a
+/// value when it's `Some(true)`.
+#[derive(Clone, Copy, Default)]
+struct Ways {
+    returned: Option<bool>,
+    broke: bool,
+    continued: bool,
+}
+
+impl Ways {
+    fn any(self) -> bool {
+        self.returned.is_some() || self.broke || self.continued
+    }
+}
+
+/// What binding a source's parameters writes first, and the names they're renamed to.
+type Bound = (Vec<Stmt>, Vec<(String, String)>);
+
+/// What a `lend`'s value and `else:` block are written in as.
+type LentAs<'a> = dyn FnMut(Expr, &[Stmt]) -> Option<Vec<Stmt>> + 'a;
+
+struct Caller<'n> {
+    exit: &'n str,
+    returned: &'n str,
+    ways: Ways,
+    span: Span,
+}
+
+/// Replaces the `lend` in a body with what `with_block` makes of its value and `else:` block,
+/// saying whether there was one.
+fn replace_lend(body: &mut Vec<Stmt>, with_block: &mut LentAs<'_>) -> bool {
+    for at in 0..body.len() {
+        let Some(stmt) = body.get_mut(at) else { return false };
+        if let StmtKind::Lend { value, otherwise } = &stmt.kind {
+            let Some(written) = with_block(value.clone(), &otherwise.clone()) else { return false };
+            body.splice(at..=at, written);
+            return true;
+        }
+        let found = match &mut stmt.kind {
+            StmtKind::If { branches, otherwise } => {
+                branches.iter_mut().any(|(_, body)| replace_lend(body, with_block))
+                    || otherwise.as_mut().is_some_and(|body| replace_lend(body, with_block))
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                replace_lend(body, with_block)
+            }
+            _ => false,
+        };
+        if found {
+            return true;
+        }
+    }
+    false
+}
+
+/// The caller's block's `return`, `break` and `continue`, as setting `exit` and leaving the
+/// loop it runs in. One inside a loop of the block's own leaves that loop, and then the block's.
+fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
+    let mut at = 0;
+    while at < body.len() {
+        let Some(stmt) = body.get_mut(at) else { return };
+        let span = caller.span;
+        let exit = caller.exit;
+        let set = |kind: i64| assign(exit, int(kind, span), false, None);
+        let replaced = match &mut stmt.kind {
+            StmtKind::Return(value) => {
+                caller.ways.returned.get_or_insert(false);
+                let mut written = Vec::new();
+                if let Some(value) = value.take() {
+                    caller.ways.returned = Some(true);
+                    written.push(assign(caller.returned, value, false, None));
+                }
+                written.push(set(RETURNED));
+                written.push(stmt_break(span));
+                Some(written)
+            }
+            StmtKind::Break if !in_loop => {
+                caller.ways.broke = true;
+                Some(vec![set(BROKE), stmt_break(span)])
+            }
+            StmtKind::Continue if !in_loop => {
+                caller.ways.continued = true;
+                Some(vec![set(CONTINUED), stmt_break(span)])
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
+                let before = caller.ways.returned.is_some();
+                exits(body, caller, true);
+                // A `return` inside it leaves this loop too.
+                (caller.ways.returned.is_some() && !before).then(|| {
+                    let leave = dispatch(exit, RETURNED, StmtKind::Break, span);
+                    vec![stmt.clone(), leave]
+                })
+            }
+            StmtKind::If { branches, otherwise } => {
+                for (_, body) in branches {
+                    exits(body, caller, in_loop);
+                }
+                if let Some(body) = otherwise {
+                    exits(body, caller, in_loop);
+                }
+                None
+            }
+            StmtKind::With { body, .. } => {
+                exits(body, caller, in_loop);
+                None
+            }
+            StmtKind::Expr(value) | StmtKind::Assign { value, .. } => {
+                if let ExprKind::Match { arms, .. } = &mut value.kind {
+                    for arm in arms {
+                        exits(&mut arm.body, caller, in_loop);
+                    }
+                }
+                None
+            }
+            _ => None,
+        };
+        match replaced {
+            Some(written) => {
+                let count = written.len();
+                body.splice(at..=at, written);
+                at += count;
+            }
+            None => at += 1,
+        }
+    }
+}
+
+fn stmt_break(span: Span) -> Stmt {
+    stmt(StmtKind::Break, span)
+}
+
+/// Each way the caller's block can fail, a `fail` or a `?`, runs `otherwise` first.
+fn fail_through(body: &mut Vec<Stmt>, otherwise: &[Stmt]) {
+    let mut at = 0;
+    while at < body.len() {
+        let Some(stmt) = body.get_mut(at) else { return };
+        // A function written inside fails by itself, not the block.
+        if matches!(stmt.kind, StmtKind::Def(_)) {
+            at += 1;
+            continue;
+        }
+        let mut before = Vec::new();
+        let mut made = 0;
+        hoist_tries(stmt, otherwise, &mut before, &mut made);
+        match &mut stmt.kind {
+            StmtKind::Fail(_) => {
+                before.extend(otherwise.iter().cloned());
+            }
+            StmtKind::If { branches, otherwise: rest } => {
+                for (_, body) in branches {
+                    fail_through(body, otherwise);
+                }
+                if let Some(body) = rest {
+                    fail_through(body, otherwise);
+                }
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                fail_through(body, otherwise);
+            }
+            StmtKind::Expr(value) | StmtKind::Assign { value, .. } => {
+                if let ExprKind::Match { arms, .. } = &mut value.kind {
+                    for arm in arms {
+                        fail_through(&mut arm.body, otherwise);
+                    }
+                }
+            }
+            _ => {}
+        }
+        let count = before.len();
+        body.splice(at..at, before);
+        at += count + 1;
+    }
+}
+
+/// Takes each `?` in what a statement runs before its blocks out to its own `match` before it,
+/// which runs `otherwise` before failing: `x = f()?` becomes
+/// `got = match f(): case Ok(v): v / case Err(e): otherwise; fail e`, then `x = got`.
+fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made: &mut usize) {
+    loop {
+        let mut taken = None;
+        let span = held.span;
+        let at = *made;
+        let mut take = |expr: &mut Expr| {
+            if taken.is_none()
+                && let ExprKind::Try { value, context: None } = &expr.kind
+            {
+                let got = format!("got__try{}_{at}", span.start);
+                taken = Some((got.clone(), value.as_ref().clone()));
+                expr.kind = ExprKind::Name(got);
+            }
+        };
+        match &mut held.kind {
+            StmtKind::Expr(value)
+            | StmtKind::Fail(value)
+            | StmtKind::Yield(value)
+            | StmtKind::Assert(value)
+            | StmtKind::Return(Some(value))
+            | StmtKind::For { iter: value, .. }
+            | StmtKind::With { value, .. } => outside_functions(value, &mut take),
+            StmtKind::Assign { target, value, .. } => {
+                outside_functions(value, &mut take);
+                outside_functions(target, &mut take);
+            }
+            StmtKind::If { branches, .. } => {
+                if let Some((cond, _)) = branches.first_mut() {
+                    outside_functions(cond, &mut take);
+                }
+            }
+            _ => {}
+        }
+        let Some((got, value)) = taken else { return };
+        *made += 1;
+        let ok = arm("Ok", "value__try", vec![stmt_value(name("value__try", span))], span);
+        let mut failed: Vec<Stmt> = otherwise.to_vec();
+        failed.push(stmt(StmtKind::Fail(name("error__try", span)), span));
+        let err = arm("Err", "error__try", failed, span);
+        let matched = Expr {
+            kind: ExprKind::Match { subject: Box::new(value), arms: vec![ok, err] },
+            span: here(span),
+        };
+        let mut hoisted = assign(&got, matched, false, None);
+        // What was taken out may hold `?`s of its own, which go before it.
+        let mut inner = Vec::new();
+        hoist_tries(&mut hoisted, otherwise, &mut inner, made);
+        before.extend(inner);
+        before.push(hoisted);
+    }
+}
+
+fn stmt_value(value: Expr) -> Stmt {
+    let span = value.span;
+    Stmt { kind: StmtKind::Expr(value), span }
+}
+
+fn arm(variant: &str, bound: &str, body: Vec<Stmt>, span: Span) -> MatchArm {
+    let pattern = Pattern::Variant {
+        name: variant.to_owned(),
+        dotted: false,
+        args: vec![Pattern::Bind(bound.to_owned())],
+        fields: Vec::new(),
+    };
+    MatchArm { pattern, guard: None, body, span: here(span) }
+}
+
+/// Calls `change` on each expression in `value` outside the arrow functions, comprehensions and
+/// `match` arms in it, whose `?`s don't fail the block where they're written.
+fn outside_functions(value: &mut Expr, change: &mut dyn FnMut(&mut Expr)) {
+    change(value);
+    match &mut value.kind {
+        ExprKind::Call { callee, args } => {
+            outside_functions(callee, change);
+            for arg in args {
+                outside_functions(&mut arg.value, change);
+            }
+        }
+        ExprKind::Attr { object, .. } => outside_functions(object, change),
+        ExprKind::Index { object, index } => {
+            outside_functions(object, change);
+            outside_functions(index, change);
+        }
+        // What `and` and `or` may not run stays where it is: the checker allows no `?` there.
+        ExprKind::Binary { op: fennec_syntax::BinOp::And | fennec_syntax::BinOp::Or, lhs, .. } => {
+            outside_functions(lhs, change);
+        }
+        ExprKind::Binary { lhs, rhs, .. } => {
+            outside_functions(lhs, change);
+            outside_functions(rhs, change);
+        }
+        ExprKind::FStr(parts) => {
+            for part in parts {
+                if let fennec_syntax::FStrPart::Expr { expr, .. } = part {
+                    outside_functions(expr, change);
+                }
+            }
+        }
+        ExprKind::Dict(pairs) => {
+            for (key, value) in pairs {
+                outside_functions(key, change);
+                outside_functions(value, change);
+            }
+        }
+        ExprKind::Unary { expr, .. } => outside_functions(expr, change),
+        ExprKind::Try { value, .. } => outside_functions(value, change),
+        ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => {
+            for item in items {
+                outside_functions(item, change);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The names a body declares: what it assigns, and what its loops and `with`s name.
+fn declared_in(body: &[Stmt], found: &mut Vec<String>) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Assign { target, .. } => targets(target, found),
+            StmtKind::For { names, body, .. } => {
+                found.extend(names.iter().cloned());
+                declared_in(body, found);
+            }
+            StmtKind::With { names, body, .. } => {
+                found.extend(names.iter().map(|held| held.name.clone()));
+                declared_in(body, found);
+            }
+            StmtKind::While { body, .. } => declared_in(body, found),
+            StmtKind::If { branches, otherwise } => {
+                for (_, body) in branches {
+                    declared_in(body, found);
+                }
+                if let Some(body) = otherwise {
+                    declared_in(body, found);
+                }
+            }
+            StmtKind::Lend { otherwise, .. } => declared_in(otherwise, found),
+            _ => {}
+        }
+    }
+}
+
+fn targets(target: &Expr, found: &mut Vec<String>) {
+    match &target.kind {
+        ExprKind::Name(name) => found.push(name.clone()),
+        ExprKind::Tuple(items) => items.iter().for_each(|item| targets(item, found)),
+        _ => {}
+    }
+}
+
+/// Renames names in a body, those it reads and those its loops and `with`s give.
+fn rename(body: &mut [Stmt], renamed: &[(String, String)]) {
+    let fresh = |name: &str| renamed.iter().find(|(from, _)| from == name).map(|(_, to)| to.clone());
+    fennec_syntax::visit::in_stmts(body, &mut |expr| match &mut expr.kind {
+        ExprKind::Name(name) => {
+            if let Some(to) = fresh(name) {
+                *name = to;
+            }
+        }
+        ExprKind::Lambda { params, .. } => {
+            for param in params {
+                if let Some(to) = fresh(param) {
+                    *param = to;
+                }
+            }
+        }
+        ExprKind::Comprehension { names, .. } => {
+            for held in names {
+                if let Some(to) = fresh(held) {
+                    *held = to;
+                }
+            }
+        }
+        _ => {}
+    });
+    rename_bound(body, &fresh);
+}
+
+fn rename_bound(body: &mut [Stmt], fresh: &dyn Fn(&str) -> Option<String>) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::For { names, body, .. } => {
+                for held in names {
+                    if let Some(to) = fresh(held) {
+                        *held = to;
+                    }
+                }
+                rename_bound(body, fresh);
+            }
+            StmtKind::With { names, body, .. } => {
+                for held in names {
+                    if let Some(to) = fresh(&held.name) {
+                        held.name = to;
+                    }
+                }
+                rename_bound(body, fresh);
+            }
+            StmtKind::While { body, .. } => rename_bound(body, fresh),
+            StmtKind::If { branches, otherwise } => {
+                for (_, body) in branches {
+                    rename_bound(body, fresh);
+                }
+                if let Some(body) = otherwise {
+                    rename_bound(body, fresh);
+                }
+            }
+            StmtKind::Lend { otherwise, .. } => rename_bound(otherwise, fresh),
+            _ => {}
+        }
+    }
+}

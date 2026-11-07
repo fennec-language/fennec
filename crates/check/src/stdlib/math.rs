@@ -13,11 +13,13 @@ pub(crate) const MODULE: Module = Module {
     construct: no_checks,
 };
 
-const FUNCTIONS: [Function; 7] = [
+const FUNCTIONS: [Function; 9] = [
     takes("math.acos", (1, 1)),
     takes("math.ceil", (1, 1)),
     takes("math.cos", (1, 1)),
+    takes("math.exp", (1, 1)),
     takes("math.floor", (1, 1)),
+    takes("math.log", (1, 1)),
     takes("math.sin", (1, 1)),
     takes("math.sqrt", (1, 1)),
     takes("math.tan", (1, 1)),

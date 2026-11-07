@@ -2645,7 +2645,8 @@ def main(stdout: Stdout):
         Ok(())
     }
 
-    /// A number's text goes straight into a header, with no block made and let go of.
+    /// A number's text goes straight into a header, with no block made and let go of: an int's
+    /// written natively, a float's by the runtime.
     #[test]
     fn a_numbers_text_makes_no_block() -> Result<(), String> {
         let source = "\
@@ -2658,7 +2659,7 @@ def of_float(x: float) -> str:
 def main(stdout: Stdout):
     stdout.print(of_int(1), of_float(1.5))
 ";
-        for (function, call) in [("of_int", "@fennec_int_header("), ("of_float", "@fennec_float_header(")] {
+        for (function, call) in [("of_int", "@fen_int_header("), ("of_float", "@fennec_float_header(")] {
             let text = text_of(source, function)?;
             assert!(text.contains(call), "{function}: {text}");
             assert!(!text.contains("_text("), "{function}: {text}");

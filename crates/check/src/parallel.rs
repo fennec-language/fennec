@@ -55,6 +55,7 @@ impl FnCx<'_> {
                 | StmtKind::Fail(value)
                 | StmtKind::Yield(value)
                 | StmtKind::Assert(value)
+                | StmtKind::Lend { value, .. }
                 | StmtKind::Return(Some(value)) => self.writes_in_expr(value, writes),
                 StmtKind::If { branches, otherwise } => {
                     for (cond, block) in branches {

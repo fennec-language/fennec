@@ -137,10 +137,34 @@ fn lost(address: u64) -> Diagnostic {
 /// Anything reached twice is one block in the copy too. By a list of what's left to do, as a value
 /// can be deeper than a task's stack.
 fn copied(state: &mut State, address: u64) -> Result<u64, Diagnostic> {
+    copied_as(state, address, Copying::ForReaders)
+}
+
+/// Which never-freed blocks a copy keeps as they are, rather than copy.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Copying {
+    /// Those any thread that could read the value finds.
+    ForReaders,
+    /// Only the string literals every thread can read: for a task on another thread, which runs
+    /// beside this one, so can't read its table.
+    ForTask,
+}
+
+/// A copy of `address` and all it holds, in a table of its own, for a task to take as its own: as a
+/// value crossing a lock's edge, keeping nothing of this thread's but `shared` handles and the string
+/// literals every thread can read. Gives back the copy's address and the table.
+pub(super) fn copied_for_task(state: &mut State, address: u64) -> Result<(u64, Box<Table>), Diagnostic> {
+    state.heap.enter_table(Box::new(Table::hashed()), GUARDED_OWNER << OWNER_SHIFT);
+    let copy = copied_as(state, address, Copying::ForTask);
+    let table = state.heap.leave_table();
+    Ok((copy?, table))
+}
+
+fn copied_as(state: &mut State, address: u64, how: Copying) -> Result<u64, Diagnostic> {
     let mut copies: HashMap<u64, u64> = HashMap::new();
     let mut left = Vec::new();
-    let root = copy_of(state, address, &mut copies, &mut left)?;
-    if root == address {
+    let root = copy_of(state, address, &mut copies, &mut left, how)?;
+    if root == address && how == Copying::ForReaders {
         copy_read_in(state, address, &mut copies, &mut left)?;
     }
     while let Some(new) = left.pop() {
@@ -150,7 +174,7 @@ fn copied(state: &mut State, address: u64) -> Result<u64, Diagnostic> {
             if old == 0 {
                 continue;
             }
-            let held = copy_of(state, old, &mut copies, &mut left)?;
+            let held = copy_of(state, old, &mut copies, &mut left, how)?;
             if let Some(word) = state.heap.block_mut(new).and_then(|block| block.get_mut(place)) {
                 *word = held;
             }
@@ -192,7 +216,7 @@ fn copy_read_in(
             if !state.heap.reading.iter().any(|table| table.get(at).is_some()) {
                 continue;
             }
-            let copy = copy_of(state, held, copies, left)?;
+            let copy = copy_of(state, held, copies, left, Copying::ForReaders)?;
             if let Some(word) = state.heap.block_mut(here).and_then(|block| block.get_mut(place)) {
                 *word = copy;
             }
@@ -207,6 +231,7 @@ fn copy_of(
     address: u64,
     copies: &mut HashMap<u64, u64>,
     left: &mut Vec<u64>,
+    how: Copying,
 ) -> Result<u64, Diagnostic> {
     if is_handle(address) {
         count_handle(address);
@@ -221,7 +246,11 @@ fn copy_of(
         return Ok(address);
     }
     let block = state.heap.block(address).ok_or_else(|| lost(address))?;
-    if block.first().is_some_and(|count| *count >= IMMORTAL) && everyone_finds(state, address) {
+    let kept = match how {
+        Copying::ForReaders => everyone_finds(state, address),
+        Copying::ForTask => super::heap::shared_static(address),
+    };
+    if block.first().is_some_and(|count| *count >= IMMORTAL) && kept {
         return Ok(address);
     }
     let mut copy: Box<[u64]> = state.heap.block(address).ok_or_else(|| lost(address))?.into();
@@ -239,7 +268,7 @@ fn copy_of(
 /// Whether a block that's never freed can be found from any thread while it could be read: the
 /// program's own thread's are, as it lends them to any other that runs. String literals are its.
 fn everyone_finds(state: &State, address: u64) -> bool {
-    super::threads::index() == 0 || state.heap.lent_has(address)
+    super::threads::index() == 0 || state.heap.lent_has(address) || super::heap::shared_static(address)
 }
 
 fn bump(state: &mut State, address: u64) {

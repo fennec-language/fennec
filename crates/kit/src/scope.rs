@@ -307,7 +307,11 @@ impl Resolver<'_> {
 
     fn stmt(&mut self, stmt: &mut Stmt) {
         match &mut stmt.kind {
-            StmtKind::Expr(expr) | StmtKind::Fail(expr) | StmtKind::Yield(expr) | StmtKind::Assert(expr) => {
+            StmtKind::Expr(expr)
+            | StmtKind::Fail(expr)
+            | StmtKind::Yield(expr)
+            | StmtKind::Assert(expr)
+            | StmtKind::Lend { value: expr, .. } => {
                 self.expr(expr);
             }
             StmtKind::Return(value) => {

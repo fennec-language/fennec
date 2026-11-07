@@ -19,6 +19,7 @@ use fennec_syntax::{Diagnostic, Expr, Module, Pattern, Span, Stmt};
 pub mod aot;
 pub mod bytes;
 pub mod capabilities;
+pub mod channels;
 pub mod checks;
 pub mod codec;
 pub mod dicts;
@@ -57,6 +58,21 @@ pub mod serve {
         }
         0
     }
+
+    /// A launched task's function (see the `threads` version).
+    pub type TaskBody = extern "C" fn(env: i64, thread: i64) -> i64;
+
+    /// `with launch(...)` needs tasks, so threads.
+    pub extern "C" fn launch(_body: TaskBody, _env: i64) -> i64 {
+        super::fail_with(Diagnostic::new("`launch` needs a program built with threads", Span::default()));
+        0
+    }
+
+    pub extern "C" fn launch_end(_task: i64, _stop_after_ns: i64, _failed: i64, _failure: &mut i64) -> i64 {
+        0
+    }
+
+    pub extern "C" fn task_failed(_failure: i64) {}
 
     pub(super) fn served_call(
         _handle: i64,

@@ -842,9 +842,9 @@ pub extern "C" fn int_power(a: i64, b: i64, start: i64, end: i64) -> i64 {
     })
 }
 
-/// `a ** b` on floats.
+/// `a ** b` on floats, by `libm` as every float function is, so it's the same on every platform.
 pub extern "C" fn float_power(a: f64, b: f64) -> f64 {
-    a.powf(b)
+    libm::pow(a, b)
 }
 
 /// Fails with the interpreter's message for an index past either end of a list.

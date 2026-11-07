@@ -124,7 +124,7 @@ impl Lowering<'_> {
                         _ => value,
                     };
                     match self.sources.get(&(call.span.start, call.span.end)) {
-                        Some(source) => self.expand(call, names, block.clone(), &source.clone(), stmt.span),
+                        Some(source) => self.expand(call, names, block, &source.clone(), stmt.span),
                         None => None,
                     }
                 }
@@ -172,7 +172,7 @@ impl Lowering<'_> {
         &mut self,
         call: &Expr,
         names: &[WithName],
-        block: Vec<Stmt>,
+        block: &[Stmt],
         source: &Source,
         at: Span,
     ) -> Option<Vec<Stmt>> {
@@ -189,22 +189,27 @@ impl Lowering<'_> {
         renamed.extend(locals.iter().map(|local| (local.clone(), hidden(local))));
         let mut body = def.body.clone();
         rename(&mut body, &renamed);
-        // The caller's name for what's lent, hidden too.
-        let lent_as = hidden(&held.name);
-        let mut block = block;
-        rename(&mut block, &[(held.name.clone(), lent_as.clone())]);
+        // The caller's name for what's lent: the source's own name for it, when it lends one,
+        // so the block's changes are what the source's cleanup sees, or else a name of its own,
+        // apart from the source's hidden ones.
+        let lent_as = format!("{}__lent{}", held.name, self.made);
         let exit = hidden("exit");
         let returned = hidden("returned");
         let caller_ret = self.returns.last().cloned().flatten();
         let mut caller = Caller { exit: &exit, returned: &returned, ways: Ways::default(), span: at };
         if !replace_lend(&mut body, &mut |value, otherwise| {
-            let mut block = block.clone();
+            let mut block = block.to_vec();
+            let (place, binding) = match &value.kind {
+                ExprKind::Name(place) => (place.clone(), None),
+                _ => (lent_as.clone(), Some(assign(&lent_as, value, true, None))),
+            };
+            rename(&mut block, &[(held.name.clone(), place)]);
             if !otherwise.is_empty() {
                 fail_through(&mut block, otherwise);
             }
             caller.ways = Ways::default();
             exits(&mut block, &mut caller, false);
-            let mut lent = vec![assign(&lent_as, value, false, None)];
+            let mut lent: Vec<Stmt> = binding.into_iter().collect();
             if caller.ways.any() {
                 block.push(stmt(StmtKind::Break, at));
                 let always = Expr { kind: ExprKind::Bool(true), span: here(at) };

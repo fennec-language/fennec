@@ -12,6 +12,7 @@
 ## `localhost`, and its clients reach them in memory. Nothing else runs while a test waits, so a
 ## test's server is done once no connection is waiting.
 
+from std import json
 from std.url import decode_query, unquote
 
 ## A failure of the network, with a case for each way it fails. `message()` says it in words.
@@ -61,6 +62,11 @@ export struct Response:
     ## Whether the status is one of the 200s.
     def ok(self) -> bool:
         self.status >= 200 and self.status < 300
+
+    ## The body read as JSON into a `T`, as `json.loads[T]` reads text: what an API sent back.
+    ## Text that isn't JSON, or doesn't fit `T`, fails with a `ParseError` saying where.
+    def json[T: Deserializable](self) -> T fails ParseError:
+        json.loads[T](self.text())?
 
 ## One end of a TCP connection. Its methods, written in Rust: `read(n)` gives up to `n` bytes,
 ## or empty bytes once the other side is done; `read_line()` gives the next line without its

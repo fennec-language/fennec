@@ -1,0 +1,33 @@
+## A graph as a compiler's call graph or a build's dependencies use one, through
+## `std.collections`, against petgraph: 100,000 nodes and about 500,000 weighted edges, always
+## from a lower node to a higher one, then a topological order and the cheapest path from the
+## first node to the last.
+
+from std.collections import Graph
+
+def main(stdout: Stdout):
+    count = 100000
+    mut graph = Graph[int, float]()
+    ids = [graph.add_node(at) for at in range(count)]
+    mut seed = 7
+    for _ in range(count * 5):
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        first = (seed // 4096) % count
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        second = (seed // 4096) % count
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        weight = float(seed % 1000003) / 997.0 + 0.5
+        if first < second:
+            graph.add_edge(from_id=ids[first], to_id=ids[second], edge=weight)
+        elif second < first:
+            graph.add_edge(from_id=ids[second], to_id=ids[first], edge=weight)
+    order = graph.topological_order() else []
+    path = graph.shortest_path(from_id=ids[0], to_id=ids[count - 1], cost=length => length) else []
+    mut cost = 0.0
+    for step in range(path.len() - 1):
+        mut cheapest = -1.0
+        for edge in graph.edges_from(path[step]):
+            if edge.to_id == path[step + 1] and (cheapest < 0.0 or edge.value < cheapest):
+                cheapest = edge.value
+        cost = cost + cheapest
+    stdout.print(graph.edge_count(), order.len(), path.len(), cost)

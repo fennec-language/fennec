@@ -834,7 +834,7 @@ def play(ref conn: Connection, ref world: World) fails NetError:
 
 **`std.sql` is one standard database interface,** modeled on the ideas of Python's DB-API. Drivers are first-party kits, with Postgres and MySQL in pure Fennec.
 
-**`Tree` and `Graph` are in `std`,** both built on `Table`. `Tree` keeps parents and children in sync. `Graph` isn't built yet, and its API isn't decided. This moves `Graph` up from the list of things cut from the first version.
+**`Tree` and `Graph` are in `std`,** both built on `Table`. `Tree` keeps parents and children in sync. `Graph[N, E]` holds nodes in a `Table[N]` and directed edges holding an `E`: `add_node` gives an `Id[N]`, `add_edge(from_id=, to_id=, edge=)` links two, `edges_from` and `edges_to` give a node's `Edge`s, and `topological_order()` and `shortest_path(from_id=, to_id=, cost=)` give `Id`s, or `None` for a cycle or no path. It's `Id`s throughout, with no references. Built, and measured against petgraph in `bench/realworld/graph`. This moves `Graph` up from the list of things cut from the first version.
 *Why:* Hierarchies are where `Id` bookkeeping is most tedious and easiest to get wrong, so it's written once.
 
 **`std.process`, `std.crypto`, `std.log`, `std.cli` and `std.csv` are in `std` too.**

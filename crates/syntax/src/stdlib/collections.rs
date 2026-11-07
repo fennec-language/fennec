@@ -12,6 +12,8 @@ pub(crate) const MODULE: Module = Module {
         "Counter",
         "Packed",
         "Tree",
+        "Graph",
+        "Edge",
         "TreeNode",
         "TreeCycle",
         "SortedMap",

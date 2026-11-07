@@ -25,7 +25,7 @@ def main(stdout: Stdout):
     updated_health = target.health + 1
 ```
 
-There's no inline `ref`.
+There's no inline `ref`. The one function that may return a `ref` is a type's `ref` form of `def []`, which gives a place, so `units[i].health -= 1` works on your own types too.
 
 ## What you can declare
 
@@ -234,7 +234,7 @@ with db.transaction()? as tx:
 - `lend x else:` runs when the caller's block fails, and a failure there is reported with the caller's. `return`, `break` and `continue` in the caller count as success. Built.
 - Nothing after `lend` may fail on the success path. A type can require its caller to finish it, like `tx.commit()?`, and a wrapper around such a type requires finishing too. The compiler works this out from a `lend` whose cleanup can fail, so there's no marker to write. A written file is one, finished with `close()?`, so a failed write can't be hidden by an automatic close. Not built yet.
 - A source can't `lend` while it holds a lock it took. Opening a file inside a lock is fine.
-- A generator can `lend` each item, closed when that round of the loop ends: `def clients(server: Server) -> Iterator[with Connection]:`. That's how `for conn in parallel(server)` works, with each connection belonging to its own round's task.
+- A generator can `lend` each item, closed when that round of the loop ends: `def clients(server: Server) -> Iterator[with Connection]:`. That's how `for conn in parallel(server):` works, with each connection lent to its own round's task. It's a plain loop, not `for ref`, and a connection's methods take `self`.
 - Tasks started inside a `with` may borrow what it lent, since they always end first. From many tasks at once, only its read-only methods, like a server's `accept`.
 
 ### `launch` and channels
@@ -372,7 +372,7 @@ stream = fs.open(filename) else:
     return
 ```
 
-- `?` is only for failures, `else` ends a chain and can leave, and ignoring a returned value is an error.
+- `?` is only for failures, `else` ends a chain and can leave, and ignoring a returned value is an error, with `_ = call()` to discard one. Not built yet: `sorted(scores)` alone on a line still compiles.
 - `.Case` is required when the type is known, in values and in `case` patterns; `fennec fix` writes it. Built.
 - `fails A | B` combines failures from different places: `?` passes any of them up as it is, and a function type can say it too, as in `(str) -> int fails ParseError | RangeError`. Built.
 - An `else:` block must leave: it ends with `return`, `fail`, `continue` or `break`. Built.
@@ -417,6 +417,10 @@ Loading is safe on untrusted input:
 - `where` rules run again on load, so a value that breaks one fails the load. Built.
 - Unknown fields are refused unless `extra=` says otherwise: `json.loads[Settings](text, extra=.ignore)`. Built for JSON. TOML always refuses them, and doesn't take `extra=` yet. `std.pack` saves no field names, and refuses data packed from a different type.
 - Untrusted input has depth and size limits. `std.pack` limits nesting, each string's length and the total it reads, before allocating anything. Built. JSON and TOML limit nesting to 500 deep, and don't limit size, string length or collection length yet.
+
+## Calling C
+
+C is called only through the standard library and first-party kits, whose binding to C sits in reviewed runtime code. A program sees a safe API, like `with Window.open(...)? as window:`, and can't call C itself, so there's no `unsafe` in Fennec. Not built yet.
 
 ## Capabilities
 
@@ -519,3 +523,5 @@ def main(net: Net, fs: Fs, clock: Clock):
 | `where` | A broken rule always stops the program |
 | `?` inside `parallel` | It ends only that task |
 | A scoped `ref` | Possibly `with units[target_id] as ref target:` |
+| Event channels, for many listeners | `Events[T]` with `listen()`; `send` never waits, and a listener that falls behind fails unless it asks to drop the oldest |
+| How replay records which task reaches a `shared` value or a channel first | In recorded runs only, log the order of each lock and each channel delivery |

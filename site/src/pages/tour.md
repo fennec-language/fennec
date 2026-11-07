@@ -533,17 +533,17 @@ It holds plain values and `Id`s, never another `shared`, so handles can't form a
 
 ## Visibility
 
-`pub` marks what other kits can use, and it goes on top-level things only. Inside a kit, every file sees everything. A big program that wants walls between its parts splits into local kits.
+`export` marks what other kits can use, and it goes on top-level things only. Inside a kit, every file sees everything. A big program that wants walls between its parts splits into local kits.
 
 ```fennec
-pub struct Score:
+export struct Score:
     points = 0
 
-pub def best(scores: list[Score]) -> int:
+export def best(scores: list[Score]) -> int:
     max(score.points for score in scores)
 ```
 
-**Planned:** `_name` hiding a field from everything but its type. Today a `_name` field is reachable like any other, and fields can still be marked `pub` one at a time.
+A `_name` field or method is hidden from everything but its type's own methods.
 
 ## Interfaces and generics
 
@@ -723,7 +723,7 @@ extern "C":
 
     def sqlite3_close(db: owned ptr[Sqlite3]) -> i32
 
-pub struct Database:
+export struct Database:
     handle: owned ptr[Sqlite3]
 
     def del(self):
@@ -732,6 +732,6 @@ pub struct Database:
 ```
 
 - Pointers and `unsafe` are only allowed in files with an `extern` block, and every call into C states its reason.
-- `pub` functions can't expose pointers, so callers only ever see a safe API.
+- Exported functions can't expose pointers, so callers only ever see a safe API.
 - A C callback is a plain top-level function that gets an `Id` through user data, so C never holds anything that can go wrong.
 - For now, only the Fennec project publishes native kits. Your own app can still use `extern` in its own code.

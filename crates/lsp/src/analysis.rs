@@ -119,12 +119,16 @@ pub(crate) fn edited_bodies(clean: &Clean, program: &Path, overlay: &Overlay) ->
         &findings::lints(&loaded.module, &loaded.sources, program.is_dir()),
     );
     // A copy each time round a loop is a mistake too, as `fennec run` finds it.
+    let written = loaded.module.clone();
     let diagnostics = match fennec_check::check_to_run(&mut loaded.module) {
         Ok(signatures) => {
             let lowered = fennec_ir::lower(&loaded.module, &signatures);
             fennec_lint::implicit_copies(&fennec_ir::costs(&lowered))
         }
-        Err(diagnostics) => diagnostics,
+        Err(mut diagnostics) => {
+            fennec_check::add_rename_fixes(&mut diagnostics, &written, &loaded.sources);
+            diagnostics
+        }
     };
     // A file that hasn't changed keeps what it had. One that has gets the linter's findings
     // afresh, and what may copy waits for the whole program to be checked again.
@@ -165,7 +169,10 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
         Ok(loaded) => {
             let (mut diagnostics, checked) = match fennec_check::check_typed(&loaded.module) {
                 Ok(checked) => (Vec::new(), Some(checked)),
-                Err(diagnostics) => (diagnostics, None),
+                Err(mut diagnostics) => {
+                    fennec_check::add_rename_fixes(&mut diagnostics, &loaded.module, &loaded.sources);
+                    (diagnostics, None)
+                }
             };
             let costs =
                 checked.as_ref().map(|checked| findings::costs(&loaded.module, checked)).unwrap_or_default();

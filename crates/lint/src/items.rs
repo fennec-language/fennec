@@ -5,7 +5,7 @@
 //! definition: called, named as a type, extended, imported, read in a test, or even mentioned
 //! in a comment or a string, which only ever makes the lint hold back. An enum is used, too,
 //! when any of its cases is written, since `.Case` names a case without its enum. `main`, an
-//! item marked `pub`, which another kit may use, and a name starting with `_` are left alone.
+//! item marked `export`, which another kit may use, and a name starting with `_` are left alone.
 
 use fennec_syntax::{Diagnostic, Item, Module, Sources, Span};
 
@@ -53,9 +53,9 @@ fn lines_of(text: &str, start: usize) -> Option<(usize, usize, usize)> {
     Some((from, first, to))
 }
 
-/// Whether the item at `first` is written `pub`, so another kit may use it.
+/// Whether the item at `first` is written `export`, so another kit may use it.
 fn public(text: &str, first: usize) -> bool {
-    text.get(first..).is_some_and(|line| line.trim_start().starts_with("pub "))
+    text.get(first..).is_some_and(|line| line.trim_start().starts_with("export "))
 }
 
 /// Whether any of `names` is written in the program's files outside the item's own lines.

@@ -376,11 +376,9 @@ struct JsonWriter:
         if self._indent < 0 and self._names == .snake_case:
             if self._first:
                 self._first = False
-                self._text += "\""
+                self._text += "\"" + name + "\": "
             else:
-                self._text += ", \""
-            self._text += name
-            self._text += "\": "
+                self._text += ", \"" + name + "\": "
             x.serialize(ref self)
             return
         self._entry()

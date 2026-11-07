@@ -264,6 +264,12 @@ pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end
         Ok(Some((name, given.into_iter().map(Value::unpacked).collect::<Vec<Value>>())))
     });
     let Some((name, given)) = called else { return 0 };
+    // A `File` is a handle in the same table in a test as anywhere, its fake files with the rest,
+    // so it never goes to the fake network.
+    if let Some(method) = name.strip_prefix("File.") {
+        let done = crate::stdlib::fs::real_file(handle, method, &given, at);
+        return attempt(|state: &mut State| done.map(|value| state.push(value)));
+    }
     // A test's network is a fake the interpreter holds, which never waits, so it runs here with
     // the state borrowed. The real one runs below with nothing borrowed, so a socket's wait can
     // park its task.
@@ -280,7 +286,6 @@ pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end
     {
         Some(("Server", method)) => crate::stdlib::net::real_server(handle, method, args, timeout, at),
         Some(("UdpSocket", method)) => crate::stdlib::net::real_udp(handle, method, args, timeout, at),
-        Some(("File", method)) => crate::stdlib::fs::real_file(handle, method, args, at),
         Some((_, method)) => super::serve::served_call(handle, method, args, timeout, at)
             .unwrap_or_else(|| crate::stdlib::net::real_connection(handle, method, args, timeout, at)),
         None => Err(Diagnostic::new("the native code lost a method's name", at)),

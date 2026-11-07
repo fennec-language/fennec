@@ -87,7 +87,9 @@ fn uses_saving(module: &Module) -> bool {
     let mut walked = module.clone();
     fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
         named |= match &expr.kind {
-            ExprKind::Name(name) | ExprKind::Attr { name, .. } => SAVING_NAMES.contains(&name.as_str()),
+            ExprKind::Name(name) => SAVING_NAMES.contains(&name.as_str()),
+            // `response.json[T]()` reads what an HTTP call gave back as a `T`.
+            ExprKind::Attr { name, .. } => SAVING_NAMES.contains(&name.as_str()) || name == "json",
             _ => false,
         };
     });

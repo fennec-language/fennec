@@ -644,6 +644,11 @@ impl Emit<'_, '_, '_> {
             };
         }
         let (number, written) = self.case_of(&kind, case)?;
+        if let (Kind::Boxed(id), true) = (&kind, written.is_empty()) {
+            let shared = self.shared_case(*id, number)?;
+            self.retain_value(&shared, &kind);
+            return self.assign(dest, &shared);
+        }
         let block = if let Kind::Boxed(id) = kind { Some(self.new_block(id)?) } else { None };
         // Holding blocks, it's made beside what the local holds, which may be read for it.
         let beside = (block.is_none() && self.holds_inline(&kind)).then(|| self.place_for(&kind));
@@ -669,6 +674,36 @@ impl Emit<'_, '_, '_> {
             self.assign_memory_owned(dest, &place)?;
         }
         Ok(())
+    }
+
+    /// The one block for case `number` of the boxed enum `id`, a case with no fields, so making
+    /// one allocates nothing: the block is made the first time, counted as never freed, and
+    /// kept in a global every module shares. Each value made from it is retained, so its count
+    /// stays where it starts, too high for anything to take it as having one owner and change
+    /// it in place, and other threads don't count it at all, as with a string literal's block. Two threads making the
+    /// first one at once each make a block, and either serves.
+    fn shared_case(&mut self, id: u32, number: i64) -> Result<String, String> {
+        use fennec_interp::embed::heap::IMMORTAL;
+        let global = format!("@\"fen_case_{id}_{number}\"");
+        self.declare(&format!("{global} = linkonce_odr hidden global ptr null, align 8"));
+        let (kept, none) = (self.temp(), self.temp());
+        self.line(&format!("{kept} = load atomic ptr, ptr {global} unordered, align 8"));
+        self.line(&format!("{none} = icmp eq ptr {kept}, null"));
+        let (first, ready) = (self.label("case_first"), self.label("case_ready"));
+        let before = self.current.clone();
+        self.line(&format!("br i1 {none}, label %{first}, label %{ready}, !prof !0"));
+        self.start_block(&first);
+        let made = self.new_block(id)?;
+        self.line(&format!("store i64 {IMMORTAL}, ptr {made}{HEADER_ACCESS}"));
+        let tag_at = self.offset(&made, FIELDS_OFFSET);
+        self.line(&format!("store i64 {number}, ptr {tag_at}"));
+        self.line(&format!("store atomic ptr {made}, ptr {global} unordered, align 8"));
+        let made_end = self.current.clone();
+        self.line(&format!("br label %{ready}"));
+        self.start_block(&ready);
+        let shared = self.temp();
+        self.line(&format!("{shared} = phi ptr [ {kept}, %{before} ], [ {made}, %{made_end} ]"));
+        Ok(shared)
     }
 
     /// Whether this is one of several error types, laid out with a case for each, named for it.

@@ -28,6 +28,10 @@ Each module under `std` has its own files, so modules added in parallel don't to
 
 Then add the module's name to the `modules!` list in each crate's `stdlib.rs`, one line each.
 
+## Building on Windows
+
+Fennec builds with Rust's `x86_64-pc-windows-gnullvm` toolchain on Windows, as it links programs with LLD and MinGW-w64's libraries rather than Visual Studio. Run `rustup set default-host x86_64-pc-windows-gnullvm` once, and put the `bin` folder of an [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) UCRT release on `PATH`, for `mimalloc`'s C. `.github/scripts/windows.sh toolchain` does both in CI, and `.github/scripts/windows.sh folder target/debug/llvm` gathers the `llvm` folder `fennec` builds programs with: LLVM's tools, LLD and the libraries it links. A build with the MSVC toolchain stops with a compile error that says so.
+
 ## Changing the lexer, parser or checker
 
 `selfhost/` is Fennec's front end written in Fennec, and a test checks that it matches the Rust one exactly. A change to `crates/syntax` or `crates/check` usually needs the same change in `selfhost/`. "Changing the front end" in [selfhost/README.md](selfhost/README.md) says where.

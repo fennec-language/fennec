@@ -79,15 +79,18 @@ fn what_a_run_rejects(
     if !left_out {
         return None;
     }
-    let diagnostics = crate::copy_rule::check_and_resolve(&mut run.module.clone(), &run.sources).err()?;
+    let diagnostics = crate::copy_rule::check_to_run(&mut run.module.clone(), &run.sources).err()?;
     Some((run, diagnostics))
 }
 
 fn checked(path: &str, json: bool) -> ExitCode {
     let Some(program) = loaded(path, json) else { return ExitCode::FAILURE };
-    let diagnostics = crate::copy_rule::check_and_resolve(&mut program.module.clone(), &program.sources)
+    // As a run checks it: all of the program, and of the standard library just what it reaches,
+    // since the library's own tests check the rest.
+    let mut diagnostics = crate::copy_rule::check_to_run(&mut program.module.clone(), &program.sources)
         .err()
         .unwrap_or_default();
+    fennec_check::add_rename_fixes(&mut diagnostics, &program.module, &program.sources);
     if diagnostics.is_empty()
         && let Some((run, diagnostics)) = what_a_run_rejects(path, &program)
     {

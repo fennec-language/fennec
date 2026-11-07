@@ -125,10 +125,11 @@ interface Deserializer:
     ## each read, so they find their items there and in no other `Table`.
     def tag(ref self, kind: str) -> int
 
-    ## Whether any field may be given a missing value, like JSON's `null`, which a field with a
-    ## default takes as missing. A format that says no saves a field's value with nothing to say
-    ## it's there, so only a field that's optional asks `none`.
-    def missing_as_none(self) -> bool
+    ## Whether a missing value, like JSON's `null`, comes next, as any field's may: a field with
+    ## a default takes it as missing, and `none` takes it in. It looks and takes nothing, so it
+    ## can't fail. A format with no missing value says no, and only a field that's optional asks
+    ## `none`, since it saves a field's value with nothing to say it's there.
+    def none_next(ref self) -> bool
 
     ## Whether what's read was saved slot for slot, as `Serializer.exact` says.
     def exact(self) -> bool

@@ -95,12 +95,12 @@ with launch(physics_loop) as physics:
     body: 'The one reference type, for the few things that really are shared. Its methods lock automatically, and a search for `shared` finds them all.',
   },
   {
-    title: 'pub and _name',
+    title: 'export and _name',
     status: 'Partly built',
-    code: `pub struct Score:
+    code: `export struct Score:
     points = 0
     _best = 0`,
-    body: '`pub` goes on top-level things only, and a big program splits into local kits. Planned: `_name` hiding a field from everything but its type.',
+    body: '`export` goes on top-level things only, and a big program splits into local kits. A `_name` field is hidden from everything but its type.',
   },
   {
     title: 'Compile-time loops',

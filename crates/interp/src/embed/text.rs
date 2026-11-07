@@ -58,15 +58,22 @@ pub(super) fn inline_word(word: u64, length: u8) -> [u64; 3] {
     [word, 0, u64::from(INLINE | length) << 56]
 }
 
-/// An inline header holding `bytes`, which are 23 or fewer.
+/// An inline header holding `bytes`, which are 23 or fewer. They're copied a byte at a time,
+/// which for so few is quicker than a call to copy them.
 pub(super) fn inline(bytes: &[u8]) -> [u64; 3] {
     let mut packed = [0_u8; 24];
     let length = bytes.len().min(INLINE_BYTES);
-    if let (Some(to), Some(from)) = (packed.get_mut(..length), bytes.get(..length)) {
-        to.copy_from_slice(from);
+    for (to, from) in packed.iter_mut().zip(bytes.iter().take(length)) {
+        *to = *from;
     }
+    packed_header(packed, length)
+}
+
+/// The header of `packed`, whose first `length` bytes, 23 or fewer, are a text's, with its tag
+/// put in the last.
+fn packed_header(mut packed: [u8; 24], length: usize) -> [u64; 3] {
     if let Some(last) = packed.last_mut() {
-        *last = INLINE | u8::try_from(length).unwrap_or(0);
+        *last = INLINE | u8::try_from(length.min(INLINE_BYTES)).unwrap_or(0);
     }
     let word = |at: usize| {
         let mut eight = [0_u8; 8];
@@ -168,8 +175,27 @@ pub extern "C" fn of(address: i64) -> Text {
 /// `fennec_int_header(n)`: an int's text as a header, which its digits always fit inline, with
 /// no block.
 pub extern "C" fn int_header(n: i64) -> Text {
-    let mut digits = [0_u8; 20];
-    Text { words: inline(decimal(n, &mut digits)) }
+    // The digits are written where they go in the header, from the last, once it's known how
+    // many there are.
+    let mut rest = n.unsigned_abs();
+    let mut count = 1;
+    let mut left = rest / 10;
+    while left > 0 {
+        count += 1;
+        left /= 10;
+    }
+    let length = count + usize::from(n < 0);
+    let mut packed = [0_u8; 24];
+    if n < 0
+        && let Some(sign) = packed.first_mut()
+    {
+        *sign = b'-';
+    }
+    for digit in packed.iter_mut().take(length).rev().take(count) {
+        *digit = b'0' + u8::try_from(rest % 10).unwrap_or(0);
+        rest /= 10;
+    }
+    Text { words: packed_header(packed, length) }
 }
 
 /// An int's decimal digits, with a `-` before them when it's negative, written into the end of
@@ -196,6 +222,118 @@ pub(super) fn decimal(n: i64, digits: &mut [u8; 20]) -> &[u8] {
     digits.get(at..).unwrap_or_default()
 }
 
+/// The few bytes a float's text takes, written where they're kept.
+#[derive(Default)]
+struct Digits {
+    bytes: [u8; 24],
+    length: usize,
+}
+
+impl std::fmt::Write for Digits {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        if self.length + text.len() > INLINE_BYTES {
+            return Err(std::fmt::Error);
+        }
+        for (to, from) in self.bytes.iter_mut().skip(self.length).zip(text.bytes()) {
+            *to = from;
+        }
+        self.length += text.len();
+        Ok(())
+    }
+}
+
+/// A float's text as `format::float` writes it, inline, when it's written with no exponent and
+/// fits; `None` for the rest.
+#[expect(clippy::float_cmp, reason = "checking for a whole number is an exact comparison")]
+fn plain_float(x: f64) -> Option<[u64; 3]> {
+    use std::fmt::Write as _;
+    if !x.is_finite() || (x != 0.0 && !(1e-4..1e16).contains(&x.abs())) {
+        return None;
+    }
+    if let Some(words) = few_places(x) {
+        return Some(words);
+    }
+    let mut digits = Digits::default();
+    if x == x.trunc() { write!(digits, "{x}.0") } else { write!(digits, "{x}") }.ok()?;
+    Some(packed_header(digits.bytes, digits.length))
+}
+
+/// A float's text when it's short, as most saved floats are: `m` over `10^places` for the fewest
+/// places with an `m` that reads back as `x`. Both are exact as floats and division rounds
+/// correctly, so `m / 10^places == x` says exactly that the text `m` with `places` decimals reads
+/// as `x`; with fewer places none does, so its digits are the shortest that do, which is what
+/// `{x}` prints. `None` when it needs more places, or two `m` would do, and for the rest.
+#[expect(clippy::float_cmp, reason = "the text reads back as exactly this float")]
+fn few_places(x: f64) -> Option<[u64; 3]> {
+    const POWERS: [f64; 9] = [1.0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8];
+    // Below 2^53, every whole number is exact as a float.
+    const EXACT: f64 = 9_007_199_254_740_992.0;
+    let size = x.abs();
+    for (places, power) in POWERS.iter().enumerate() {
+        let scaled = size * power;
+        if scaled >= EXACT - 2.0 {
+            return None;
+        }
+        let near = scaled.round();
+        let mut found = None;
+        for whole in [near - 1.0, near, near + 1.0] {
+            if whole >= 0.0 && whole / power == size {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(whole);
+            }
+        }
+        if let Some(whole) = found {
+            return Some(with_places(whole, places, x.is_sign_negative()));
+        }
+    }
+    None
+}
+
+/// The text of `whole` with its last `places` digits after a decimal point, or with `.0` when
+/// there are none: as `format::float` writes a float.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "`few_places` gives a whole number from 0 to 2^53"
+)]
+fn with_places(whole: f64, places: usize, negative: bool) -> [u64; 3] {
+    let mut digits = [0_u8; 20];
+    let mut count = 0;
+    let mut rest = whole as u64;
+    // At least one digit before the point, and `places` after it.
+    while rest > 0 || count <= places {
+        if let Some(digit) = digits.get_mut(count) {
+            *digit = b'0' + u8::try_from(rest % 10).unwrap_or(0);
+        }
+        rest /= 10;
+        count += 1;
+    }
+    let mut packed = [0_u8; 24];
+    let mut length = 0;
+    let mut put = |byte: u8| {
+        if let Some(at) = packed.get_mut(length) {
+            *at = byte;
+        }
+        length += 1;
+    };
+    if negative {
+        put(b'-');
+    }
+    for at in (0..count).rev() {
+        if at + 1 == places {
+            put(b'.');
+        }
+        put(digits.get(at).copied().unwrap_or(b'0'));
+    }
+    if places == 0 {
+        put(b'.');
+        put(b'0');
+    }
+    packed_header(packed, length)
+}
+
 /// `fennec_code_header(code)`: the character with a code as a header. A number that isn't a
 /// character's code gives the replacement character, which `std.json` never asks for.
 pub extern "C" fn code_header(code: i64) -> Text {
@@ -204,8 +342,12 @@ pub extern "C" fn code_header(code: i64) -> Text {
 }
 
 /// `fennec_float_header(x)`: a float's text as it prints, as a header, inline unless it's the
-/// longest there is.
+/// longest there is. One written with no exponent, as most are, is made in place, with no text
+/// made on the way.
 pub extern "C" fn float_header(x: f64) -> Text {
+    if let Some(words) = plain_float(x) {
+        return Text { words };
+    }
     let text = crate::format::display(&crate::value::Value::Float(x));
     if text.len() <= INLINE_BYTES {
         return Text { words: inline(text.as_bytes()) };
@@ -287,6 +429,56 @@ mod tests {
         assert_eq!(words[1], 24);
         heap::free(i64::try_from(words[0]).unwrap());
         assert_eq!(live(), before);
+        finish();
+    }
+
+    #[test]
+    fn a_float_made_in_place_is_written_as_it_prints() {
+        begin();
+        for x in [
+            0.0,
+            -0.0,
+            1.0,
+            -2.25,
+            0.1,
+            1e-4,
+            -0.000_123_456_789_012_345_67,
+            1e15,
+            9_999_999_999_999_998.0,
+            123_456.789,
+            1e16,
+            9.9e-5,
+            f64::MIN_POSITIVE,
+            f64::NAN,
+            f64::INFINITY,
+        ] {
+            assert_eq!(text_of(super::float_header(x).words), crate::format::float(x), "{x:e}");
+        }
+        finish();
+    }
+
+    #[test]
+    fn floats_of_every_size_are_written_as_they_print() {
+        begin();
+        // Floats from bits spread over every exponent, and ones made from a few decimal places,
+        // as saved data has: each made in place has to be what `format::float` writes.
+        let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..200_000 {
+            let bits = next();
+            let spread = f64::from_bits(bits);
+            let decimal = f64::from(u32::try_from(bits % 100_000_000).unwrap())
+                / [1.0, 10.0, 100.0, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9]
+                    [usize::try_from(bits >> 60).unwrap() % 10];
+            for x in [spread, decimal, -decimal, decimal * 1e6, decimal / 1e3] {
+                assert_eq!(text_of(super::float_header(x).words), crate::format::float(x), "{x:e}");
+            }
+        }
         finish();
     }
 

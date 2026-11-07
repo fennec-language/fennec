@@ -199,6 +199,9 @@ fn the_jit_runs_examples_exactly_like_the_interpreter() {
     .unwrap();
 }
 
+/// A run of every example and kernel, as a whole and checking only what it reaches, which
+/// compile the same. One program at a time, it took 57 seconds, most of it `richards` and
+/// `deltablue`, so programs run on up to 8 workers and each one's two runs at once.
 #[test]
 fn a_run_checking_only_what_it_reaches_compiles_the_same() {
     let home = std::env::temp_dir().join(format!("fennec-examples-reached-{}", std::process::id()));
@@ -206,36 +209,65 @@ fn a_run_checking_only_what_it_reaches_compiles_the_same() {
     let dir = examples_dir();
     let mut paths = programs(&dir).unwrap();
     paths.extend(programs(&dir.join("../bench/kernels")).unwrap());
-    let on_a_big_stack = std::thread::Builder::new().stack_size(1 << 28).spawn(move || {
-        for path in paths {
-            let source = fs::read_to_string(&path).unwrap();
-            let mut module = fennec_syntax::parse(&source).unwrap();
-            let signatures = fennec_check::check_to_run(&mut module).unwrap();
-            let Ok(whole) = fennec_jit::run_with_report(&module, &mut Vec::new()) else { continue };
-            let inputs = fennec_interp::Inputs::default();
-            let reached = fennec_jit::run_cached(
-                &module,
-                Some(&signatures),
-                &mut Vec::new(),
-                inputs,
-                &cache,
-                "reached",
-            )
-            .unwrap();
-            // A std iter the reached run fused away, and only that, is left out of the whole one.
-            let mut whole_interpreted = whole.interpreted.clone();
-            whole_interpreted
-                .retain(|key| !FUSED_STD_ITERS.contains(&key.as_str()) || reached.interpreted.contains(key));
-            assert_eq!(
-                (reached.interpreted, reached.handed_over, reached.with_frames),
-                (whole_interpreted, whole.handed_over, whole.with_frames),
-                "{} compiled differently",
-                path.display()
-            );
+    let workers = std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(8);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let differ = std::sync::Mutex::new(Vec::new());
+    // Each run takes a big stack, as compiling a large program goes deep.
+    let on_a_big_stack = || std::thread::Builder::new().stack_size(1 << 28);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let (paths, cache, next, differ) = (&paths, &cache, &next, &differ);
+            on_a_big_stack()
+                .spawn_scoped(scope, move || {
+                    loop {
+                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(path) = paths.get(at) else { return };
+                        match compiled_differently(path, cache, &format!("reached-{at}")) {
+                            Ok(None) => {}
+                            Ok(Some(difference)) | Err(difference) => differ.lock().unwrap().push(difference),
+                        }
+                    }
+                })
+                .unwrap();
         }
     });
-    on_a_big_stack.unwrap().join().unwrap();
+    let differ = differ.into_inner().unwrap();
+    assert!(differ.is_empty(), "{}", differ.join("\n\n"));
     fs::remove_dir_all(home).ok();
+}
+
+/// How a program compiles differently as a whole and checking only what it reaches, if it does,
+/// with its two runs at once. A run of it as a whole that fails leaves nothing to compare.
+fn compiled_differently(
+    path: &Path,
+    cache: &fennec_build::Cache,
+    name: &str,
+) -> Result<Option<String>, String> {
+    let shown = path.display();
+    let source = fs::read_to_string(path).map_err(|err| format!("{shown}: {err}"))?;
+    let mut module = fennec_syntax::parse(&source).map_err(|err| format!("{shown}: {}", err.message))?;
+    let signatures = fennec_check::check_to_run(&mut module).map_err(|_| format!("{shown} doesn't check"))?;
+    let (whole, reached) = std::thread::scope(|scope| {
+        let whole = std::thread::Builder::new()
+            .stack_size(1 << 28)
+            .spawn_scoped(scope, || fennec_jit::run_with_report(&module, &mut Vec::new()).ok())
+            .map_err(|err| err.to_string())?;
+        let inputs = fennec_interp::Inputs::default();
+        let reached =
+            fennec_jit::run_cached(&module, Some(&signatures), &mut Vec::new(), inputs, cache, name);
+        let whole = whole.join().map_err(|_| format!("{shown}: the run as a whole panicked"))?;
+        Ok::<_, String>((whole, reached))
+    })?;
+    let Some(whole) = whole else { return Ok(None) };
+    let reached = reached.map_err(|_| format!("{shown}: the run checking what it reaches failed"))?;
+    // A std iter the reached run fused away, and only that, is left out of the whole one.
+    let mut whole_interpreted = whole.interpreted.clone();
+    whole_interpreted
+        .retain(|key| !FUSED_STD_ITERS.contains(&key.as_str()) || reached.interpreted.contains(key));
+    let reached = (reached.interpreted, reached.handed_over, reached.with_frames);
+    let whole = (whole_interpreted, whole.handed_over, whole.with_frames);
+    Ok((reached != whole)
+        .then(|| format!("{shown} compiled differently:\n  reached {reached:?}\n  whole {whole:?}")))
 }
 
 #[test]

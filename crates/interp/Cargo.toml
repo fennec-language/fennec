@@ -9,7 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-rayon-core = { workspace = true, optional = true }
+crossbeam-deque = { workspace = true, optional = true }
 fennec-parked = { workspace = true, optional = true }
 mio = { workspace = true, optional = true }
 fennec-blake3.workspace = true
@@ -32,12 +32,12 @@ lean = []
 # The checks native code running on several threads needs: blocks counted across threads,
 # and each thread's queue of blocks to free. Programs with no tasks link a runtime without
 # them, so they pay nothing (decisions.md: "Programs with no tasks compile the check away").
-threads = ["dep:rayon-core", "dep:fennec-parked", "dep:mio"]
+threads = ["dep:crossbeam-deque", "dep:fennec-parked", "dep:mio"]
 # For AddressSanitizer runs only: a freed block is given back at once rather than kept for
 # reuse, so ASan poisons it and holds it in quarantine, and native code that touches it fails.
 sanitize = []
 
 [dev-dependencies]
-rayon-core.workspace = true
+crossbeam-deque.workspace = true
 fennec-parked.workspace = true
 mio.workspace = true

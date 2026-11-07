@@ -8,7 +8,7 @@
 //! Nor can an argument change what its call changes, like `self.items.append(self.grow())` where
 //! `grow` appends to `self.items`: the engines would disagree on which change wins.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, FnDef, Span, Stmt, StmtKind};
 
@@ -90,23 +90,41 @@ fn looped_over(iter: &Expr) -> Vec<(Place, &Expr)> {
 /// parameter, where an empty one is the whole parameter.
 type Summary = HashMap<String, Vec<Vec<Step>>>;
 
-struct Loops<'c> {
+/// The summaries worked out for good, kept from one function's check to the next.
+#[derive(Default)]
+pub(crate) struct Settled(HashMap<String, Summary>);
+
+struct Loops<'c, 's> {
     checker: &'c Checker,
+    settled: &'s mut Settled,
+    /// What's known so far of the functions whose summaries aren't settled yet.
     summaries: HashMap<String, Summary>,
-    /// The functions whose summaries are being worked out, for a call back into one.
-    working: HashSet<String>,
-    /// The functions whose summaries are settled.
-    done: HashSet<String>,
+    /// Those functions, in the order they were reached, each with where it is in `open`.
+    open: Vec<String>,
+    places: HashMap<String, usize>,
+    /// The earliest place in `open` the function being worked out calls back into, directly or
+    /// through what it calls.
+    lowest: usize,
+    /// How many calls have come back into a function not settled yet.
+    calls_back: usize,
     problems: Vec<Diagnostic>,
 }
 
 /// Checks a function's loops, reporting each change to what a loop goes over.
-pub(crate) fn check_function(checker: &Checker, key: &str, def: &FnDef) -> Vec<Diagnostic> {
+pub(crate) fn check_function(
+    checker: &Checker,
+    settled: &mut Settled,
+    key: &str,
+    def: &FnDef,
+) -> Vec<Diagnostic> {
     let mut loops = Loops {
         checker,
+        settled,
         summaries: HashMap::new(),
-        working: HashSet::new(),
-        done: HashSet::new(),
+        open: Vec::new(),
+        places: HashMap::new(),
+        lowest: usize::MAX,
+        calls_back: 0,
         problems: Vec::new(),
     };
     loops.loops_in(&def.body, checker.typed.get(key));
@@ -114,7 +132,7 @@ pub(crate) fn check_function(checker: &Checker, key: &str, def: &FnDef) -> Vec<D
     loops.problems
 }
 
-impl Loops<'_> {
+impl Loops<'_, '_> {
     /// Checks every loop in a block, and the loops inside them.
     fn loops_in(&mut self, stmts: &[Stmt], body: Option<&Body>) {
         for stmt in stmts {
@@ -339,36 +357,79 @@ impl Loops<'_> {
     }
 
     /// What a function changes under each `mut` parameter, worked out once. Functions that
-    /// call each other are worked out together: a call back into one being worked out sees
-    /// what's known of it so far, and it's worked out again until nothing more is found.
+    /// call each other are worked out together, as one group: each pass over the group sees what
+    /// the last found, until a pass finds nothing more, and then the whole group is settled.
     fn summary(&mut self, key: &str) -> Summary {
-        if self.done.contains(key) || self.working.contains(key) {
+        if let Some(settled) = self.settled.0.get(key) {
+            return settled.clone();
+        }
+        if let Some(&place) = self.places.get(key) {
+            self.lowest = self.lowest.min(place);
+            self.calls_back += 1;
             return self.summaries.get(key).cloned().unwrap_or_default();
         }
-        let Some(entry) = self.checker.program.functions.get(key) else { return Summary::new() };
-        let def = entry.def.clone();
-        let mutable: Vec<String> =
-            def.params.iter().filter(|param| param.is_mut).map(|param| param.name.clone()).collect();
-        self.working.insert(key.to_owned());
-        loop {
-            let mut summary = Summary::new();
-            for (changed, _) in self.changes_in(&def.body, self.checker.typed.get(key)) {
-                if mutable.contains(&changed.root) {
-                    let found = summary.entry(changed.root).or_default();
-                    if !found.contains(&changed.steps) {
-                        found.push(changed.steps);
-                    }
+        if !self.checker.program.functions.contains_key(key) {
+            return Summary::new();
+        }
+        let place = self.open.len();
+        self.open.push(key.to_owned());
+        self.places.insert(key.to_owned(), place);
+        let outer = std::mem::replace(&mut self.lowest, place);
+        let calls_back = self.calls_back;
+        let found = self.worked_out(key);
+        self.summaries.insert(key.to_owned(), found);
+        let lowest = std::mem::replace(&mut self.lowest, outer);
+        self.lowest = self.lowest.min(lowest);
+        if lowest >= place {
+            // One function alone needs another pass only when something called back into it.
+            let again = self.open.len() > place + 1 || self.calls_back > calls_back;
+            self.settle_group(place, again);
+        }
+        self.settled.0.get(key).or_else(|| self.summaries.get(key)).cloned().unwrap_or_default()
+    }
+
+    /// Works the group starting at `first` in `open` out again until nothing more is found,
+    /// then settles it.
+    fn settle_group(&mut self, first: usize, again: bool) {
+        let group: Vec<String> = self.open.split_off(first);
+        let mut grew = again;
+        while grew {
+            grew = false;
+            for key in &group {
+                let outer = std::mem::replace(&mut self.lowest, usize::MAX);
+                let found = self.worked_out(key);
+                self.lowest = outer;
+                if self.summaries.get(key) != Some(&found) {
+                    self.summaries.insert(key.clone(), found);
+                    grew = true;
                 }
             }
-            let grew = self.summaries.get(key) != Some(&summary);
-            self.summaries.insert(key.to_owned(), summary);
-            if !grew {
-                break;
+        }
+        for key in group {
+            self.places.remove(&key);
+            let found = self.summaries.remove(&key).unwrap_or_default();
+            self.settled.0.insert(key, found);
+        }
+    }
+
+    /// One pass over a function's body: what it changes under each `mut` parameter, given what's
+    /// known so far of what it calls.
+    fn worked_out(&mut self, key: &str) -> Summary {
+        let checker = self.checker;
+        let Some(entry) = checker.program.functions.get(key) else { return Summary::new() };
+        let def = &entry.def;
+        let mutable: Vec<&str> =
+            def.params.iter().filter(|param| param.is_mut).map(|param| param.name.as_str()).collect();
+        let mut summary = Summary::new();
+        for (changed, _) in self.changes_in(&def.body, checker.typed.get(key)) {
+            if mutable.contains(&changed.root.as_str()) {
+                let found = summary.entry(changed.root).or_default();
+                if !found.contains(&changed.steps) {
+                    found.push(changed.steps);
+                }
             }
         }
-        self.working.remove(key);
-        self.done.insert(key.to_owned());
-        self.summaries.get(key).cloned().unwrap_or_default()
+        summary
     }
 }
 

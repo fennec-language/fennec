@@ -532,11 +532,29 @@ fn linker(objects: &[PathBuf], runtime: &Path, output: &Path, _tls: bool) -> Com
     let mut command = found.map_or_else(|| Command::new("link.exe"), |tool| tool.to_command());
     command
         .args(["/NOLOGO", "/SUBSYSTEM:CONSOLE", "/OPT:REF", "/NODEFAULTLIB:libcmt"])
-        .arg(format!("/OUT:{}", output.display()))
-        .args(objects)
-        .arg(runtime)
-        .args(WINDOWS_LIBRARIES);
+        .arg(format!("/OUT:{}", output.display()));
+    // Windows takes a command line of 32,767 characters at most, and a program built in many
+    // parts names more objects than that holds, so they go in a file the linker reads with `@`.
+    match response_file(objects) {
+        Some(file) => command.arg(format!("@{}", file.display())),
+        None => command.args(objects),
+    };
+    command.arg(runtime).args(WINDOWS_LIBRARIES);
     command
+}
+
+/// A file naming each object on a line of its own, quoted, beside the first of them: `None` when
+/// there are none, or it couldn't be written.
+#[cfg(any(windows, test))]
+fn response_file(objects: &[PathBuf]) -> Option<PathBuf> {
+    use std::fmt::Write as _;
+    let file = objects.first()?.parent()?.join("objects.rsp");
+    let mut named = String::new();
+    for object in objects {
+        let _ = writeln!(named, "\"{}\"", object.display());
+    }
+    std::fs::write(&file, named).ok()?;
+    Some(file)
 }
 
 /// Where an executable goes when no `-o` says: named after the kit, or the file, in the
@@ -626,5 +644,22 @@ mod tests {
     fn the_main_stack_linked_is_the_one_the_runtime_counts_on() {
         let flag = format!("-Wl,-stack_size,{:#x}", fennec_interp::embed::aot::MAIN_STACK_BYTES);
         assert!(super::SYSTEM_LIBRARIES.contains(&flag.as_str()), "{flag}");
+    }
+
+    /// The objects Windows' linker is given in a file, each quoted on a line of its own, so a
+    /// program in many parts doesn't make a command line longer than Windows takes.
+    #[test]
+    fn the_objects_to_link_go_in_a_file_each_on_a_line() {
+        let work = std::env::temp_dir().join(format!("fennec-response-file-{}", std::process::id()));
+        std::fs::create_dir_all(&work).unwrap();
+        let objects: Vec<_> = (0..2_000).map(|at| work.join(format!("{at}.o"))).collect();
+        let file = super::response_file(&objects).unwrap();
+        assert_eq!(file, work.join("objects.rsp"));
+        let named = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(named.lines().count(), 2_000);
+        assert_eq!(named.lines().next(), Some(format!("\"{}\"", objects[0].display()).as_str()));
+        assert!(named.len() > 32_767, "a file this size wouldn't fit on a command line");
+        assert_eq!(super::response_file(&[]), None);
+        std::fs::remove_dir_all(&work).unwrap();
     }
 }

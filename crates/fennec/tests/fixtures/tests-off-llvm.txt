@@ -7,7 +7,6 @@
 env 1
 http_server 3
 json_collections 1
-own_str 1
 std_net 13
 std_uuid 1
 test_capabilities 1

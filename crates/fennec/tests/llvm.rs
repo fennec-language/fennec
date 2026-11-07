@@ -5009,8 +5009,8 @@ def main(net: Net, stdout: Stdout):
         } else {
             outcome(&fennec(&["run", "--interp", &program], &dir)?)
         };
-        let served = server.join().map_err(|_| std::io::Error::other("the test's server panicked"))?;
-        assert!(served.is_ok(), "native {native}: {served:?}, and the program said {ran:?}");
+        let answered = server.join().map_err(|_| std::io::Error::other("the test's server panicked"))?;
+        assert!(answered.is_ok(), "native {native}: {answered:?}, and the program said {ran:?}");
         assert_eq!(ran.0, wanted, "native {native}: {}", ran.1);
     }
     std::fs::remove_dir_all(&dir)?;

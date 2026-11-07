@@ -460,6 +460,37 @@ fn tests_through_llvm_pass_and_fail_as_they_do_on_the_jit() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A test that fails through LLVM says why as the JIT does, and isn't run again another way to
+/// find out: both sides of a comparison, a plain condition, a failure passed up with `?`, a check
+/// the runtime makes, and `is not None`.
+#[test]
+fn failing_tests_say_why_through_llvm_as_on_the_jit_and_run_once() {
+    if !llvm_here() {
+        return;
+    }
+    let dir = scratch("llvm-failures").unwrap();
+    let text = "error Broke:\n    why: str\n\ndef double(x: int) -> int:\n    x * 3\n\n\
+                def parse(text: str) -> int fails Broke:\n    if text == \"\":\n        fail Broke(why=\"empty\")\n    int(text) else 0\n\n\
+                test \"a comparison\":\n    assert double(2) == 4\n\n\
+                test \"a plain condition\":\n    ready = double(1) > 10\n    assert ready\n\n\
+                test \"a failure passed up\":\n    assert parse(\"\")? == 1\n\n\
+                test \"out of range\":\n    items = [1, 2]\n    assert items[double(1)] == 1\n\n\
+                test \"is none\":\n    found = [1, 2].index(5) else None\n    assert found is not None\n";
+    std::fs::write(dir.join("game.fen"), text).unwrap();
+    let jit = run_tests(&dir, &["--all", "--jit"]).unwrap();
+    let llvm = run_tests(&dir, &["--all", "--verbose"]).unwrap();
+    let said = String::from_utf8_lossy(&llvm.stderr);
+    assert!(said.contains("note: 5 of 5 tests ran through LLVM"), "{said}");
+    let shown: String = said.split_inclusive('\n').filter(|line| !line.starts_with("note: ")).collect();
+    assert_eq!(shown, String::from_utf8_lossy(&jit.stderr));
+    // `--verbose` lists what passed too, and nothing did.
+    let printed = stdout(&llvm);
+    let failed: String = printed.split_inclusive('\n').filter(|line| !line.starts_with("  ✓")).collect();
+    assert_eq!(failed, stdout(&jit));
+    assert!(!llvm.status.success());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn a_test_llvm_cannot_build_runs_another_way() {
     if !llvm_here() {
@@ -499,7 +530,7 @@ fn left_llvm(said: &mut (String, String)) -> usize {
     for line in said.1.split_inclusive('\n') {
         if let Some(counts) = line
             .strip_prefix("note: ")
-            .and_then(|note| note.trim_end().strip_suffix(" tests passed through LLVM"))
+            .and_then(|note| note.trim_end().strip_suffix(" tests ran through LLVM"))
         {
             let (passed, wanted) = counts.split_once(" of ").unwrap_or_default();
             left += wanted.parse::<usize>().unwrap_or(0).saturating_sub(passed.parse().unwrap_or(0));

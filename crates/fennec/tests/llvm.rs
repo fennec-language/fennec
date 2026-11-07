@@ -9694,7 +9694,7 @@ test \"a failure comes back as its case\"(net: Net):
     let ran = fennec(&["test", "--all", "--verbose", &path], &dir)?;
     let said = String::from_utf8_lossy(&ran.stderr);
     assert!(ran.status.success(), "{said}");
-    assert!(said.contains("4 of 4 tests passed through LLVM"), "{said}");
+    assert!(said.contains("4 of 4 tests ran through LLVM"), "{said}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -9730,7 +9730,7 @@ test \"nothing runs\"(process: Process):
     let ran = fennec(&["test", "--all", "--verbose", &path], &dir)?;
     let said = String::from_utf8_lossy(&ran.stderr);
     assert!(ran.status.success(), "{said}");
-    assert!(said.contains("2 of 2 tests passed through LLVM"), "{said}");
+    assert!(said.contains("2 of 2 tests ran through LLVM"), "{said}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -9765,7 +9765,7 @@ test \"this one goes too far\" for value: int:
     let ran = fennec(&["test", "--all", "--verbose", &path], &dir)?;
     let (out, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
     assert!(!ran.status.success(), "{said}");
-    assert!(said.contains("2 of 3 tests passed through LLVM"), "{said}");
+    assert!(said.contains("2 of 3 tests ran through LLVM"), "{said}");
     assert!(out.contains("ints stay small (100 inputs)"), "{out}");
     assert!(said.contains("it failed for value = 500"), "{said}");
     assert!(!said.contains("through LLVM and passes"), "{said}");

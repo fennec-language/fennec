@@ -18,9 +18,28 @@ pub struct Image {
     strings: Vec<(String, i64)>,
 }
 
+/// The layouts a program's image needs shapes for: those native code names, by a shape, a kind
+/// of list item, a dict's words or a type writing its own text, the ones holding themselves
+/// through lists, and everything those hold. Nothing else is ever made, so the rest, like most
+/// of the standard library's types, needn't be described.
+fn used_layouts(layouts: &Layouts, shared: &Shared) -> fennec_layout::Numbering {
+    let mut used: Vec<u32> = shared.shapes.values().copied().collect();
+    for item in shared.elements.values() {
+        fennec_layout::held_layouts(layouts, item.ty(), &mut used);
+    }
+    for (key, value) in shared.dicts.values() {
+        fennec_layout::held_by_word(layouts, *key, &mut used);
+        fennec_layout::held_by_word(layouts, *value, &mut used);
+    }
+    let own_names = shared.own_texts.iter().filter_map(|(symbol, _, _)| shared.literals.get(symbol));
+    used.extend(own_names.filter_map(|name| layouts.id(name)));
+    used.extend(layouts.all_through_lists());
+    fennec_layout::Numbering::of(layouts, used)
+}
+
 impl Image {
     pub fn of(layouts: &Layouts, shared: &Shared) -> Result<Image, String> {
-        let mut registry = Registry::new(layouts);
+        let mut registry = Registry::numbered(layouts, used_layouts(layouts, shared));
         let mut elements = Vec::with_capacity(shared.elements.len());
         for (symbol, item) in &shared.elements {
             let number =
@@ -32,7 +51,7 @@ impl Image {
             Some((symbol.clone(), i64::try_from(number).ok()?))
         });
         elements.extend(boxed);
-        let str_shape = u64::try_from(layouts.len()).unwrap_or(0);
+        let str_shape = registry.str_shape();
         let dicts = shared.dicts.iter().filter_map(|(symbol, (key, value))| {
             let number = fennec_interp::embed::dicts::shape(str_shape, *key, *value)?;
             Some((symbol.clone(), i64::try_from(number).ok()?))

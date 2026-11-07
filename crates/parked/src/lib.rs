@@ -68,6 +68,11 @@ pub fn stack_low() -> Option<usize> {
     current::stack_low()
 }
 
+/// How big the running task's stack is. With no task running on this thread, `None`.
+pub fn stack_size() -> Option<usize> {
+    current::stack_size()
+}
+
 struct Task {
     /// Taken out only once the task has ended, for its stack to be used again.
     coroutine: Option<Coroutine<Wake, Request, i64, DefaultStack>>,

@@ -309,7 +309,10 @@ fn match_binds_the_fields_of_each_case() {
 #[test]
 fn a_pattern_names_the_fields_it_matches() {
     let fields = |source: &str| -> Vec<String> {
-        problems(source).iter().map(|problem| problem.split(" @ ").next().unwrap_or_default().to_owned()).collect()
+        problems(source)
+            .iter()
+            .map(|problem| problem.split(" @ ").next().unwrap_or_default().to_owned())
+            .collect()
     };
     let program = "
 struct Point:
@@ -351,10 +354,15 @@ def read(fs: Fs) -> str:
         case Ok(text): text
         case Err(IoError(why)): why
 ";
-    assert_eq!(fields(positional), ["`IoError` comes from another kit, so this pattern names the fields it reads"]);
+    assert_eq!(
+        fields(positional),
+        ["`IoError` comes from another kit, so this pattern names the fields it reads"]
+    );
     assert_eq!(
         helps(positional),
-        ["write `IoError(reason=...)`, or `IoError()` to read none, and a field added to it never breaks this; `fennec fix` adds the names"]
+        [
+            "write `IoError(reason=...)`, or `IoError()` to read none, and a field added to it never breaks this; `fennec fix` adds the names"
+        ]
     );
     let none_read = "
 def read(fs: Fs) -> str:

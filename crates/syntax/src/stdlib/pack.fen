@@ -23,10 +23,10 @@
 ## is still gone. Either way an `Id` has to be in a `Table` saved with it, one of each type.
 
 from std.intrinsics import bytes_builder, bytes_push, bytes_push_bytes, bytes_push_text, bytes_push_word, bytes_set, bytes_text, float_bits, float_of_bits, new_tag, shape_hash, text_byte, text_size, type_name
-from std.json import _IdsSeen, _found_tables
+from std.json import IdsSeen, found_tables
 
 ## How far a load may go. Bytes that ask for more fail to load.
-struct Limits:
+export struct Limits:
     ## How deeply lists, dicts, structs and cases may nest.
     depth = 64
     ## The most bytes one text or `bytes` may hold, and the most items a load may read in all.
@@ -34,13 +34,13 @@ struct Limits:
 
 ## `value` as bytes, which `loads` reads back into the same type. With `exact`, its `Table`s are
 ## saved slot for slot.
-def dumps[T: Serializable](value: T, exact = False) -> bytes:
+export def dumps[T: Serializable](value: T, exact = False) -> bytes:
     mut out = PackWriter(_exact=exact)
     out._header(shape_hash[T]())
     value.serialize(ref out)
     if not out._wants_tables: return out._done()
     # It holds `Id`s, so where each one's item is comes first, and every one's checked.
-    found = _found_tables(value, exact)
+    found = found_tables(value, exact)
     mut again = PackWriter(_exact=exact, _tables=found.positions(), _tags=found.tags(), _found=True)
     again._header(shape_hash[T]())
     value.serialize(ref again)
@@ -48,10 +48,10 @@ def dumps[T: Serializable](value: T, exact = False) -> bytes:
 
 ## A `T` from bytes `dumps` wrote for a `T`. It fails if they were written for another shape of
 ## type, if they end too soon or go on past it, or if they go past `limits`.
-def loads[T: Deserializable](data: bytes, limits: Limits? = None) -> T fails ParseError:
+export def loads[T: Deserializable](data: bytes, limits: Limits? = None) -> T fails ParseError:
     held = limits else Limits()
     mut src = PackReader(_data=data, _most_deep=held.depth, _longest=held.length)
-    match _read[T](ref src):
+    match read_value[T](ref src):
         case Ok(value):
             value
         case Err(_):
@@ -62,9 +62,9 @@ def loads[T: Deserializable](data: bytes, limits: Limits? = None) -> T fails Par
                 _longest=held.length,
                 _explain=True,
             )
-            _read[T](ref again)?
+            read_value[T](ref again)?
 
-def _read[T: Deserializable](ref src: PackReader) -> T fails ParseError:
+def read_value[T: Deserializable](ref src: PackReader) -> T fails ParseError:
     src._header(shape_hash[T](), type_name[T]())?
     value = T.deserialize(ref src)?
     if src._at != src._data.len(): fail src._fail("there's more after the value")
@@ -74,13 +74,13 @@ def _read[T: Deserializable](ref src: PackReader) -> T fails ParseError:
 
 ## The bits a varint takes, 7 at a time, with the top 7 cleared after an arithmetic shift so it
 ## goes down as an unsigned number would.
-_LOW_57 = 144115188075855871
+LOW_57 = 144115188075855871
 
 ## The top bit of an int cleared, for a shift by 1 that goes down as an unsigned number would.
-_LOW_63 = 9223372036854775807
+LOW_63 = 9223372036854775807
 
 ## Writes what a value's `serialize` gives it as bytes.
-struct PackWriter:
+export struct PackWriter:
     ## What's written so far, in a builder with room to grow.
     _out = bytes_builder()
     _exact = False
@@ -115,7 +115,7 @@ struct PackWriter:
         mut rest = n
         while rest < 0 or rest >= 128:
             bytes_push(ref self._out, (rest & 127) | 128)
-            rest = (rest >> 7) & _LOW_57
+            rest = (rest >> 7) & LOW_57
         bytes_push(ref self._out, rest)
 
     def int(ref self, value: int):
@@ -220,7 +220,7 @@ struct PackWriter:
             bytes_set(ref self._out, self._some_at, 0)
 
 ## Reads bytes `PackWriter` wrote, for a value's `deserialize`.
-struct PackReader:
+export struct PackReader:
     _data: bytes
     _at = 0
     _depth = 0
@@ -233,7 +233,7 @@ struct PackReader:
     _field = 0
     _exact = False
     ## Each `Id` and `Table` read, checked once everything has been.
-    _ids = _IdsSeen(_whole="the data")
+    _ids = IdsSeen(_whole="the data")
     ## The tag each `Table` of a type gets, new for each load.
     _tags = dict[str, int]()
     ## Whether to keep track of where it is, for a message, and where.
@@ -323,7 +323,7 @@ struct PackReader:
 
     def int(ref self) -> int fails ParseError:
         z = self._varint()?
-        ((z >> 1) & _LOW_63) ^ (0 - (z & 1))
+        ((z >> 1) & LOW_63) ^ (0 - (z & 1))
 
     def float(ref self) -> float fails ParseError:
         float_of_bits(self._word()?)

@@ -1,6 +1,6 @@
 ## A file path, like `saves/slot1.json`. Its parts are separated by `/`. Every method only
 ## looks at the text; none of them touch the file system.
-struct Path:
+export struct Path:
     text: str
 
     ## `Path("saves") / "slot1.json"` is the same as `.join`.

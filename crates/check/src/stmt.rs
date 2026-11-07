@@ -56,10 +56,11 @@ impl FnCx<'_> {
             // knows what it holds.
             if !flow.exits {
                 flow = this;
-            } else if last && used {
-                if let Some(tail) = self.tail.clone() {
-                    _ = self.checker.fits(&tail, &this.ty);
-                }
+            } else if last
+                && used
+                && let Some(tail) = self.tail.clone()
+            {
+                _ = self.checker.fits(&tail, &this.ty);
             }
         }
         flow

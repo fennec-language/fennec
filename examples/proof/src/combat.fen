@@ -69,7 +69,7 @@ def heal(ref world: World, ref board: Scoreboard, actor: Id[Unit], target: Id[Un
     team = medic.team
     # Taken out once `medic` is done with, so the medic's items aren't copied.
     if used >= 0:
-        world.units[actor].items.pop(used)
+        _ = world.units[actor].items.pop(used)
     given = amount if amount < room else room
     world.units[target].health += given
     board.healed(team, given)
@@ -79,7 +79,7 @@ def bury(ref world: World, ref board: Scoreboard):
     dead = [id for id, unit in world.units.items() if unit.health <= 0]
     for id in dead:
         unit = world.units[id]
-        world.units.remove(id)
+        _ = world.units.remove(id)
         squad_id = unit.squad
         if squad_id is not None:
             leave_squad(ref world, ref board, squad_id, id)
@@ -90,7 +90,7 @@ def leave_squad(ref world: World, ref board: Scoreboard, squad_id: Id[Squad], go
     members = [member for member in squad.members if member != gone]
     world.squads[squad_id].members = members
     if members.len() == 0:
-        world.squads.remove(squad_id)
+        _ = world.squads.remove(squad_id)
         board.note(world.tick, f"squad {squad.name} is gone")
         return
     if squad.leader != gone: return

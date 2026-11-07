@@ -91,7 +91,7 @@ def main(stdout: Stdout):
     # An Id stops working once its item is removed, even after its slot is reused.
     mut enemies = Table[str]()
     ash = enemies.add("ash")
-    enemies.remove(ash)
+    _ = enemies.remove(ash)
     kit = enemies.add("kit")
     stdout.print(enemies.get(ash), enemies[kit])
 

@@ -669,6 +669,8 @@ def parse_save(data: str) -> list[str]:
     data.split()                        # pure: no I/O possible
 ```
 
+`clock.now()` reads a monotonic clock, for measuring, and `clock.time()` reads the wall clock as a `Time` in UTC, for saving and showing. A `Time` prints as RFC 3339 text, like `2026-11-06T21:55:56Z`, and `Time.parse` reads it back. A `Duration` prints the way it's written, like `1h30min`.
+
 Signatures show what code can do. `Stdout`, `Fs`, `Clock`, `Args`, `Stdin`, `Process`, `Entropy` and `Net` work today. `Process` runs other programs, with their arguments always a list, `Entropy` gives secure random bytes, and `Net` makes TCP connections. `Env` is planned.
 
 ## Tests
@@ -697,7 +699,7 @@ test "saves the score"(fs: Fs, stdout: Stdout):
     assert stdout.captured() == "saved\n"
 ```
 
-Sleeping on the fixed clock moves it on at once, and `stdout.captured()` works only in a test's own body. `fennec test --real` gives tests the real capabilities. A scripted `Net` is planned, for when `Net` exists.
+Sleeping on the fixed clock moves it on at once, and its `clock.time()` starts at `2000-01-01T00:00:00Z`. `stdout.captured()` works only in a test's own body. `fennec test --real` gives tests the real capabilities. A scripted `Net` is planned, for when `Net` exists.
 
 ## Performance controls
 

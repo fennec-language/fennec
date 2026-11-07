@@ -2199,6 +2199,19 @@ fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// A std module's exported constant, read through its module and imported by name, which
+/// natively are the same text.
+#[test]
+fn a_std_constant_reads_both_ways_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "std_constants",
+        "from std import string\nfrom std.string import DIGITS, PUNCTUATION\n\ndef main(stdout: Stdout):\n    stdout.print(string.DIGITS, DIGITS, string.DIGITS == DIGITS)\n    stdout.print(string.ASCII_LETTERS.len(), PUNCTUATION.len(), string.WHITESPACE.len())\n    stdout.print([c for c in \"a1b2\" if string.DIGITS.find(c) is not None])\n",
+    )
+}
+
 /// `list` of a capability, `round` to places, the codes of text, and clearing and taking keys out
 /// of dicts and sets.
 #[test]

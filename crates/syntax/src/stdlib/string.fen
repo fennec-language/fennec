@@ -1,5 +1,14 @@
-# `std.string`: wrapping and indenting text, as Python's `textwrap` does. Most of what's done
-# to text is a method of `str`.
+# `std.string`: wrapping and indenting text, as Python's `textwrap` does, and the sets of
+# characters Python's `string` names. Most of what's done to text is a method of `str`.
+
+export ASCII_LOWERCASE = "abcdefghijklmnopqrstuvwxyz"
+export ASCII_UPPERCASE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+export ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+export DIGITS = "0123456789"
+export HEX_DIGITS = "0123456789abcdefABCDEF"
+export OCT_DIGITS = "01234567"
+export PUNCTUATION = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+export WHITESPACE = " \t\n\r\x0b\x0c"
 
 ## `text`'s words in lines of at most `width` characters, as many on each line as fit. Words
 ## are what's between spaces, tabs and line breaks, and a word longer than `width` is broken

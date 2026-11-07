@@ -221,6 +221,12 @@ test \"any list\" for items: list[int], n: int:
 /// types are written.
 const CHECK_CASES: &[(&str, &str)] = &[
     (
+        "call_type_arguments",
+        "from std import json\n\ndef read(text: str) -> int:\n    found = json.loads[Draft](text) else 0\n    \
+         made = list[Tokn]()\n    if made.len() == 0 and parsed[Mising](text):\n        return 1\n    \
+         [x for x in f[Wrong](1)].len() + found\n",
+    ),
+    (
         "unknown_types",
         "def f(a: lsit[int], b: String, c: f64, d: i32, e: boolean, g: List[int], h: Optional) -> Strng:\n    pass\n",
     ),

@@ -54,13 +54,16 @@ for ref unit in units: ...
 for unit_id, unit in units.items(): ...
 for unit_id, ref unit in units.items(): ...
 ```
+`enumerate` takes anything you can loop over and gives `(index, value)`, and `for i, ref x in enumerate(xs)` is allowed when `xs` has positions, `len` and `[]`. `ref` over a generator is a compile error. `items()` is for keyed things: a dict, a `Table`, and a user type that gives `len`, `[]` and `key(i)`. Looping over a dict gives its keys, as in Python, and `keys()`, `values()` and `items()` stay. Built, apart from `ref` with `enumerate` and `items()` on a user type.
+*Why:* `enumerate` is what Python people expect, a generator's items aren't anywhere to change, and the compiler's own tables need an `Id` and a `ref` in one loop.
+
 Adding and removing happen outside the loop. In a plain loop the item is a plain value, so the body can write to other items through the collection:
 ```fennec
 for attacker_id, attacker in units.items():
     units[attacker.target_id].health -= attacker.damage
 ```
 
-**Nothing can be reached two ways while it's being changed.** Overlapping `ref`s are refused, including `f(ref x, ref x)` and writing to `units` inside `for ref unit in units`. So is an argument that changes what its call changes, like `self.items.append(self.grow())` when `grow` appends to `self.items`, since which change wins would depend on the engine.
+**Nothing can be reached two ways while it's being changed.** Overlapping `ref`s are refused, including `f(ref x, ref x)`, `f(ref xs[i], ref xs[j])` always, since `i` may equal `j`, and writing to `units` inside `for ref unit in units`. `xs.swap(i, j)` swaps two items, and `pair` is gone. Not built yet for `xs[i]` and `xs[j]`, which compiles today, or `swap`. So is an argument that changes what its call changes, like `self.items.append(self.grow())` when `grow` appends to `self.items`, since which change wins would depend on the engine.
 ```fennec
 for ref unit in units:
     units[unit.target_id].health -= 1    # error: the target may be `unit`
@@ -680,7 +683,7 @@ There are no moves. A resource that has to live a long time, like a pooled datab
 **There's no `def del` and no destructor.** Everything that needs cleanup is opened with `with`. This replaces `def del` on `shared` types, and the standard library's `Connection` closing when its last owner goes away. `fennec fix` rewrites existing code. Not built yet.
 *Why:* A destructor runs at a moment no line shows, and has nowhere to report a failure. Memory frees itself, so only real resources need cleanup, and `with` shows where.
 
-**A `with` source is a function returning `-> with T`, with exactly one `lend`.** Setup goes above it and cleanup below. Code after `lend` runs when the caller's block succeeds, and `lend x else:` runs when it fails or crashes, with the block's own failure passing up. `return`, `break` and `continue` in the caller count as success. Built for a block that fails or ends well; running `else:` on a crash isn't built yet.
+**A `with` source is a function returning `-> with T`, with exactly one `lend`.** Setup goes above it and cleanup below. Code after `lend` runs when the caller's block succeeds, and `lend x else:` runs when it fails or crashes, with the block's own failure passing up. If the cleanup in `else:` fails too, its failure is attached to the block's as a note, and with several handles every one runs its cleanup, innermost first. The note and several handles in one `with` aren't built yet: today a failing `else:` replaces the block's failure. `return`, `break` and `continue` in the caller count as success. Built for a block that fails or ends well; running `else:` on a crash isn't built yet.
 ```fennec
 def transaction(self) -> with Transaction fails DbError:
     with self._pool.take()? as conn:
@@ -834,7 +837,7 @@ def play(ref conn: Connection, ref world: World) fails NetError:
 
 **`std.sql` is one standard database interface,** modeled on the ideas of Python's DB-API. Drivers are first-party kits, with Postgres and MySQL in pure Fennec.
 
-**`Tree` and `Graph` are in `std`,** both built on `Table`. `Tree` keeps parents and children in sync. `Graph` isn't built yet, and its API isn't decided. This moves `Graph` up from the list of things cut from the first version.
+**`Tree` and `Graph` are in `std`,** both built on `Table`. `Tree` keeps parents and children in sync. `Graph[N, E]` is built on `Table`: `add_node` gives an `Id[N]`, `add_edge(from_id, to_id, edge)` connects two, `edges_from(id)` and `edges_to(id)` walk it, and std gives topological order and shortest paths. Not built yet. This moves `Graph` up from the list of things cut from the first version.
 *Why:* Hierarchies are where `Id` bookkeeping is most tedious and easiest to get wrong, so it's written once.
 
 **`std.process`, `std.crypto`, `std.log`, `std.cli` and `std.csv` are in `std` too.**
@@ -983,7 +986,7 @@ A big program that wants walls between its own parts splits into local kits in o
 **A file uses another file's names only after importing them.** `from enemies import spawn` brings in names, and `import physics` brings in the module, used as `physics.step`. For a module in a folder, `import world.physics` is used as `world.physics.step`, and `from world import physics` as `physics.step`. A file's own names need no import.
 *Why:* Where every name comes from is visible in the file that uses it, for people and for AI.
 
-**A kit's files share one set of top-level names.** Two files of a kit can't both define `update`; the error names both files.
+**A kit's files share one set of top-level names.** Two files of a kit can't both define `update`, even when one is reached by its module's name; the error names both files. Built.
 *Why:* A name means the same thing everywhere in the kit, and a value always prints with the one name its type has. Methods belong to their type, so the names that clash are few.
 
 **Imports can't go in a circle.**
@@ -1205,7 +1208,7 @@ total = sum(row.amount for row in rows)
 - A chain of stages is fused into one loop where possible. `map` can come later, and `filter` isn't added for now.
 - It isn't a list: `gen()[0]` and `gen().len()` are compile errors. `list(gen())` keeps the items.
 - What it sees is fixed when it's made, as with a nested `def`. `(x * k for x in xs)` works out `xs` at once and copies `k`.
-- Written right inside `sum`, `min`, `max`, `sorted`, `list`, `set`, `dict`, `any` or `all`, it runs in place, so it can change the names around it.
+- Written right inside `sum`, `min`, `max`, `sorted`, `list`, `set`, `dict`, `any` or `all`, it runs in place, and may read anything, but it can't change the names around it, which is a compile error: use a loop for that. Not built yet: today it compiles. This replaces the rule that such a generator can change the names around it.
 - `yield` is allowed inside `with`. A generator left partway closes what it holds when its owner goes away.
 - A failure comes out when the item that fails is asked for, and acts like a failure from a call: the loop exits, `with` blocks close, and it passes up. A generator that wants to go on past bad items yields errors as values. Getting one that can fail takes `?`, as in `for x in checked()?:`.
 - Printing one shows `<Iterator[int]>` and doesn't use it.
@@ -1337,7 +1340,7 @@ bench "collide 10k bullets":
 
 *Why:* Formatting is never worth discussing, and output that depends on how code was typed isn't one style. Wide enough for real game code and two panes side by side, with breaks that keep a diff to the lines that changed.
 
-**Every breaking change ships with its own fix.** No language change that breaks code lands unless `fennec fix` rewrites old code to match.
+**Every breaking change ships with its own fix, or says why it can't.** A change `fennec fix` can't rewrite, because the rewrite would change meaning, becomes a compile error with a hint, listed in that edition's notes. Not built yet, as editions aren't. Otherwise, no language change that breaks code lands unless `fennec fix` rewrites old code to match.
 *Why:* Upgrading Fennec should never be a project.
 
 **`fennec fix` applies only fixes that provably can't change what a program does.** Formatting, removing a redundant type, naming arguments, writing in an inferred return type, removing a needless `else` and the like. It never prompts or asks questions, so agents and CI can run it on a whole kit.
@@ -1724,19 +1727,12 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 
 - How an `Id` is used across servers, which is expected at the simulation level.
 - How `std.pack` data evolves: a lock file of past layouts with automatic migration rules, as Avro does. It comes later and adds to v1 without breaking it.
-- How `items()` works with `ref` on a user type, and whether `enumerate` stays beside it.
-- Whether `values()` and `keys()` also go from `dict`, where a plain `for` gives keys.
-- What replaces `xs.pair(i, j)`, and whether `f(ref xs[i], ref xs[j])` is always refused.
-- Whether a generator written right inside `sum` and the like can still change the names around it, now that comprehensions make new things.
-- How `fennec fix` handles the changes it can't make for you, since every breaking change is meant to ship with its own fix.
 - What takes over the sandbox and the test reference from the interpreter. Entries under Engines, Sandboxing, For AI and Kits on the Den still give them to it.
-- The API of `Graph`.
 - Whether kits can define their own annotations, like `@get("/todos/{id}")` on a plain function, so a router can build its table at compile time.
 - SQLite: whether and how Fennec includes it. Porting it isn't realistic.
 - Whether independent writes, not just reads, should overlap automatically.
 - The syntax for units of measure.
 - The file extension (currently `.fen`).
-- Whether files of a kit may reuse a top-level name, reached through `import` by their module's name.
 - These security proposals:
   - Types that make injection impossible: `sql"..."` templates, `Path`, argument lists for commands, escaping HTML templates.
   - `Secret[str]`, which can't be printed or logged.

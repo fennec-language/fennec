@@ -4499,6 +4499,39 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// JSON read into dicts, by string, int and plain struct keys, and a dict a capability gives back,
+/// as the JIT has them.
+#[test]
+fn json_into_dicts_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"from std import json
+
+struct Spot:
+    x: int
+    y: int
+
+def main(stdout: Stdout, env: Env):
+    named = json.loads[dict[str, int]]("{\"ash\": 1, \"vex\": 3}") else {}
+    stdout.print(named, named["vex"])
+    levels = json.loads[dict[int, str]]("{\"1\": \"intro\", \"42\": \"boss\"}") else {}
+    stdout.print(levels, levels[42])
+    spots = {Spot(x=1, y=2): "tree", Spot(x=0, y=0): "rock"}
+    back = json.loads[dict[Spot, str]](json.dumps(spots)) else {}
+    stdout.print(back == spots, back[Spot(x=0, y=0)])
+    wrong = json.loads[dict[str, int]]("[1, 2]") else {"none": 0}
+    stdout.print(wrong)
+    stdout.print(env.all().get("PATH") is not None)
+"#;
+    for (name, how) in [("json_dicts", &["--llvm"][..]), ("json_dicts_release", &["--llvm", "--release"][..])]
+    {
+        let (ours, jit) = both_built(name, source, how)?;
+        assert_eq!(ours, jit);
+    }
+    Ok(())
+}
+
 /// Skirmish built with LLVM prints its `.out` file, as `cli.rs` checks the interpreter and the
 /// JIT do: a whole kit, saved to JSON and loaded back, cached and as a release.
 #[test]
@@ -9257,6 +9290,28 @@ fn none_in_a_tuple_matches_the_jit() -> std::io::Result<()> {
     pair = (1, None)
     stdout.print(pair, (None, "a"), (None, None))
     stdout.print(pair == (1, None), [(1, None), (2, None)])
+"#,
+    )
+}
+
+/// A name narrowed to `None`, like `x` after `x = None`, prints and formats as `None`, as in the
+/// interpreter. LLVM refused it once, and the JIT still gets it wrong (#572).
+#[test]
+fn a_name_narrowed_to_none_prints_as_the_interpreter_does() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "narrowed_none",
+        r#"def main(stdout: Stdout):
+    mut x: int? = 5
+    stdout.print(x)
+    x = None
+    stdout.print(x)
+    stdout.print(f"[{x}]", str(x), x is None)
+    mut s: str? = "kit"
+    s = None
+    stdout.print(s, f"{s}")
 "#,
     )
 }

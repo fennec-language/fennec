@@ -232,7 +232,11 @@ impl Session {
             declarations(&found, module, &analysis.sources, analysis.checked.as_ref())
                 .iter()
                 .filter_map(|declaration| {
-                    let (file, text, start, end) = analysis.place(declaration.name_at)?;
+                    let (file, text, start, end) = if declaration.library {
+                        library_place(declaration.name_at)?
+                    } else {
+                        analysis.place(declaration.name_at)?
+                    };
                     Some((file.to_owned(), text::range(text, start, end)))
                 })
                 .collect();
@@ -359,7 +363,11 @@ impl Session {
         let name = found.name().to_owned();
         let shown: Vec<String> = declarations(&found, module, &analysis.sources, analysis.checked.as_ref())
             .iter()
-            .filter_map(|declaration| hover_text(declaration, &name, &analysis.sources))
+            .filter_map(|declaration| {
+                let sources =
+                    if declaration.library { &crate::library::library().sources } else { &analysis.sources };
+                hover_text(declaration, &name, sources)
+            })
             .collect();
         if shown.is_empty() {
             return Json::Null;
@@ -410,6 +418,13 @@ impl Session {
 }
 
 /// `uri_of`, for when the session itself is borrowed.
+/// The library file a span of the library's is in, and the span's place in its text.
+fn library_place(span: Span) -> Option<(&'static str, &'static str, usize, usize)> {
+    let (path, text, base) = crate::library::library().sources.file_at(span)?;
+    let local = |at: u32| usize::try_from(at.saturating_sub(base)).unwrap_or(0);
+    Some((path, text, local(span.start), local(span.end)))
+}
+
 fn uri_among(documents: &BTreeMap<String, String>, path: &str) -> String {
     let open = documents
         .keys()

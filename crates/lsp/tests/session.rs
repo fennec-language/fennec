@@ -517,6 +517,31 @@ fn definitions_of_arguments_cases_capabilities_parameters_and_modules() {
     }
 }
 
+/// The standard library's source is built into `fennec`, so going to what it declares goes to a
+/// copy of its file, which shows in a hover too, and renaming it is refused.
+#[test]
+fn the_standard_librarys_declarations_are_found_in_a_copy_of_its_files() {
+    let mut editor = Editor::new("library").unwrap();
+    let text = "from std.math import Vec3\n\ndef main(stdout: Stdout):\n    at = Vec3(x=1.0)\n    stdout.print(at.x, at.length())\n";
+    editor.open("src/main.fen", text);
+    for (needle, declared) in
+        [("Vec3(x", "export struct Vec3:"), ("x=1.0", "    x = 0.0"), ("length()", "    def length(self)")]
+    {
+        let found = editor.at("textDocument/definition", "src/main.fen", text, needle, 0);
+        let found = &found.as_array().unwrap()[0];
+        let uri = found.get("uri").and_then(Json::as_str).unwrap();
+        assert!(uri.ends_with(&format!("/std/{}/math.fen", env!("CARGO_PKG_VERSION"))), "{needle}: {uri}");
+        let copy = std::fs::read_to_string(uri.strip_prefix("file://").unwrap()).unwrap();
+        let line = copy.lines().nth(line_of(found)).unwrap();
+        assert!(line.starts_with(declared), "{needle}: {line}");
+    }
+    let hover = editor.at("textDocument/hover", "src/main.fen", text, "Vec3(x", 0);
+    let shown = hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap_or("");
+    assert!(shown.contains("struct Vec3"), "{shown}");
+    let params = params_at(&editor, "src/main.fen", text, "Vec3(x", vec![("newName", Json::string("Point"))]);
+    assert_eq!(editor.request("textDocument/rename", params), Json::string("no result"));
+}
+
 /// A request about the place in `file` where `needle` starts, plus `into` characters, with more
 /// parameters.
 fn params_at(editor: &Editor, file: &str, text: &str, needle: &str, more: Vec<(&str, Json)>) -> Json {

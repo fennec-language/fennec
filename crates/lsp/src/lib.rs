@@ -26,6 +26,7 @@ mod definition;
 mod findings;
 mod inlay;
 mod json;
+mod library;
 mod references;
 mod session;
 mod signature;

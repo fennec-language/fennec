@@ -531,7 +531,7 @@ impl Finder<'_> {
     }
 
     fn is_case(&self, name: &str) -> bool {
-        self.module.items.iter().any(|item| match item {
+        self.items().any(|item| match item {
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
                 def.cases.iter().any(|case| case.name == name)
             }
@@ -565,11 +565,18 @@ impl Finder<'_> {
         })
     }
 
+    /// Whether `name` is a struct, enum or error type, the program's or the standard library's.
     fn is_type(&self, name: &str) -> bool {
-        self.module.items.iter().any(|item| match item {
+        self.items().any(|item| match item {
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => def.name == name,
             _ => false,
         })
+    }
+
+    /// The program's items, then the standard library's.
+    fn items(&self) -> impl Iterator<Item = &Item> {
+        let library = crate::library::library().modules.iter().flat_map(|(_, module)| &module.items);
+        self.module.items.iter().chain(library)
     }
 
     /// Declares the names a `match` case's pattern binds, written somewhere in `arm`.

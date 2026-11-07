@@ -132,5 +132,5 @@ pub(crate) fn own(analysis: &Analysis, found: &Target) -> bool {
         return false;
     }
     let all = declarations(found, module, &analysis.sources, analysis.checked.as_ref());
-    !all.is_empty() && all.iter().all(|declaration| !declaration.name_at.in_prelude())
+    !all.is_empty() && all.iter().all(|declaration| !declaration.library && !declaration.name_at.in_prelude())
 }

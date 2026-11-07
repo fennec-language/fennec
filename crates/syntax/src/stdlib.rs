@@ -67,6 +67,14 @@ const CORE: [(&str, &str); 6] = [
     ("serialize", include_str!("stdlib/serialize.fen")),
 ];
 
+/// Each file of the standard library written in Fennec, by its name, like `math` for
+/// `std.math`, in the order `prelude` gives them.
+pub fn prelude_files() -> impl Iterator<Item = (&'static str, &'static str)> {
+    let modules =
+        MODULES.iter().filter(|module| !module.source.is_empty()).map(|module| (module.name, module.source));
+    CORE.into_iter().chain(modules)
+}
+
 /// The standard library written in Fennec, loaded before every program by both the
 /// interpreter and the type checker: the core, then each module's code.
 pub fn prelude() -> impl Iterator<Item = &'static str> {

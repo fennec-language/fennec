@@ -9024,6 +9024,39 @@ def main(stdout: Stdout):
     )
 }
 
+/// A generic's `T?` with `T` an optional is that optional, as the checker has it: `first` of a
+/// `list[str?]` gives back a `str?`, and a `SortedMap[int, str?]`'s `get` and `remove` do too.
+#[test]
+fn an_optional_of_an_optional_is_the_optional_as_on_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "optional_of_optional",
+        r#"from std.collections import SortedMap
+
+def first[T](items: list[T]) -> T?:
+    if items.len() > 0:
+        return items[0]
+    None
+
+def words() -> list[str?]:
+    ["kit", None]
+
+def numbers() -> list[int?]:
+    [None, 3]
+
+def main(stdout: Stdout):
+    stdout.print(first(words()), first(words()[1:]) is None, first(numbers()) is None)
+    mut map = SortedMap[int, str?]()
+    map[1] = None
+    map[2] = "kit"
+    stdout.print(map.get(1) is None, map.get(2), map.get(3) is None)
+    stdout.print(map.remove(2), map.remove(1) is None, map.len())
+"#,
+    )
+}
+
 /// `?` in `main`, which then gives back a result: going on when it's `Ok`.
 #[test]
 fn a_main_giving_back_a_result_matches_the_jit() -> std::io::Result<()> {

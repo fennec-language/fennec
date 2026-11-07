@@ -41,7 +41,7 @@ pub(crate) fn parse_statements_at(source: &str, base: u32) -> Result<Vec<Stmt>, 
     while !parser.eat(&Tok::Dedent) && !parser.at(&Tok::Eof) {
         stmts.push(parser.stmt()?);
     }
-    parser.old_mut_error().map_or(Ok(stmts), Err)
+    parser.old_spelling_error().map_or(Ok(stmts), Err)
 }
 
 pub(crate) struct Parser {
@@ -54,6 +54,10 @@ pub(crate) struct Parser {
     /// Each `mut` written where the language now says `ref`, and what it was on. Parsing goes on
     /// past them, so the one error they give can fix every one in the file.
     old_mut: Vec<(Span, &'static str)>,
+    /// Each `pub` written, the old spelling, with what goes there instead: `export` on a top-level
+    /// name, and nothing on a method, which comes with its type. Like `old_mut`, they give one
+    /// error that fixes them all.
+    old_pub: Vec<(Span, Span, &'static str)>,
 }
 
 impl Parser {
@@ -65,6 +69,7 @@ impl Parser {
             eof: Token { tok: Tok::Eof, span: end },
             block_ended: false,
             old_mut: Vec::new(),
+            old_pub: Vec::new(),
         }
     }
 
@@ -126,14 +131,55 @@ impl Parser {
         self.eat(&Tok::P(punct))
     }
 
-    /// Skips `pub` before a declaration or field, giving back the span from it to what follows,
-    /// for a fix that removes it. It matters only between kits.
-    fn eat_pub(&mut self) -> Option<Span> {
+    /// Skips `pub`, the old spelling of `export`, before a declaration or field, giving back the
+    /// span from it to what follows. On a top-level name it's `export`, and anywhere else it goes.
+    fn eat_pub(&mut self, top_level: bool) -> Option<Span> {
         if self.at_soft("pub") && matches!(self.peek_at(1), Tok::Name(_) | Tok::Kw(_)) {
-            let start = self.advance().span.start;
-            return Some(Span { start, end: self.span().start });
+            let word = self.advance().span;
+            let span = Span { start: word.start, end: self.span().start };
+            self.old_pub.push((word, span, if top_level { "export " } else { "" }));
+            return Some(span);
         }
         None
+    }
+
+    /// Skips `export` on a method, which comes with its type, for the error that removes it.
+    fn eat_export(&mut self) -> Option<Span> {
+        if !self.at_kw(Kw::Export) {
+            return None;
+        }
+        let word = self.advance().span;
+        let span = Span { start: word.start, end: self.span().start };
+        self.old_pub.push((word, span, ""));
+        Some(span)
+    }
+
+    /// The error for each `pub`, at the first one, with the fixes for all of them.
+    fn old_pub_error(&self) -> Option<Diagnostic> {
+        let &(at, _, _) = self.old_pub.first()?;
+        let others = self.old_pub.len() - 1;
+        let more = match others {
+            0 => String::new(),
+            1 => " and in 1 other place".to_owned(),
+            _ => format!(" and in {others} other places"),
+        };
+        let message = if self.old_pub.iter().any(|(_, _, text)| !text.is_empty()) {
+            "`pub` is written `export` now"
+        } else {
+            "a field or method has no `export` of its own"
+        };
+        let mut diagnostic = Diagnostic::new(message, at).with_help(format!(
+            "`export` marks a top-level name other kits can use, and a type's fields and methods come with it. `fennec fix` mends it here{more}"
+        ));
+        for &(_, span, text) in &self.old_pub {
+            diagnostic = diagnostic.with_fix(span, text);
+        }
+        Some(diagnostic)
+    }
+
+    /// The one error for an old spelling, `mut` for `ref` first, then `pub`.
+    fn old_spelling_error(&self) -> Option<Diagnostic> {
+        self.old_mut_error().or_else(|| self.old_pub_error())
     }
 
     fn eat_kw(&mut self, kw: Kw) -> bool {
@@ -224,8 +270,8 @@ impl Parser {
 
     fn module(&mut self) -> Result<Module, Diagnostic> {
         let module = self.items();
-        match self.old_mut_error() {
-            Some(old_mut) => Err(old_mut),
+        match self.old_spelling_error() {
+            Some(old) => Err(old),
             None => module,
         }
     }
@@ -250,14 +296,15 @@ impl Parser {
     fn item(&mut self) -> Result<Item, Diagnostic> {
         let annotations = self.annotations()?;
         if let Some(first) = annotations.first() {
-            self.eat_pub();
+            self.eat_pub(true);
+            self.eat_kw(Kw::Export);
             if !self.at_kw(Kw::Def) {
                 return Err(Diagnostic::new("an annotation goes above a field or a `def`", first.span));
             }
             return Ok(Item::Function(FnDef { annotations, ..self.def()? }));
         }
-        // `pub` and `export` are accepted. Inside a kit everything is visible.
-        self.eat_pub();
+        // Inside a kit everything is visible: `export` matters only between kits.
+        self.eat_pub(true);
         self.eat_kw(Kw::Export);
         if self.at_kw(Kw::Noalloc) {
             return Err(Diagnostic::new("`noalloc` is written `@hot` now", self.span())
@@ -338,14 +385,13 @@ impl Parser {
             span,
         };
         while !self.eat(&Tok::Dedent) && !self.at(&Tok::Eof) {
-            // Enum cases come with their enum and have no `pub` of their own.
-            let mut written = None;
+            // Enum cases, fields and methods come with their type and have no `export` of their own.
             if !is_enum || matches!(self.peek_at(1), Tok::Kw(Kw::Def)) {
-                written = self.eat_pub();
+                let _ = self.eat_pub(false).or_else(|| self.eat_export());
             }
             let annotations = if is_enum { Vec::new() } else { self.annotations()? };
             if !annotations.is_empty() {
-                written = self.eat_pub().or(written);
+                let _ = self.eat_pub(false).or_else(|| self.eat_export());
             }
             if self.at_kw(Kw::Def) {
                 def.methods.push(FnDef { annotations, ..self.def()? });
@@ -361,9 +407,6 @@ impl Parser {
             {
                 def.cases.push(self.case()?);
             } else {
-                if let Some(written) = written {
-                    return Err(public_field(written));
-                }
                 let field = self.field(true)?;
                 def.fields.push(Field { annotations, ..field });
                 self.end_line()?;
@@ -465,7 +508,7 @@ impl Parser {
         self.expect_block_start()?;
         let mut methods = Vec::new();
         while !self.eat(&Tok::Dedent) && !self.at(&Tok::Eof) {
-            self.eat_pub();
+            let _ = self.eat_pub(false).or_else(|| self.eat_export());
             if self.at_kw(Kw::Def) {
                 methods.push(self.def()?);
             } else if self.eat_kw(Kw::Pass) {
@@ -844,13 +887,4 @@ fn describe(tok: &Tok) -> String {
         Tok::Dedent => "the end of the block".to_owned(),
         Tok::Eof => "the end of the file".to_owned(),
     }
-}
-
-/// `pub` on a field, which goes on top-level things only: a `pub struct`'s fields are its API,
-/// and `_name` hides one.
-fn public_field(written: Span) -> Diagnostic {
-    let at = Span { start: written.start, end: written.start + 3 };
-    Diagnostic::new("a field has no `pub` of its own", at)
-        .with_help("a `pub struct`'s fields are what other kits see, and `_name` hides one from them")
-        .with_fix(written, "")
 }

@@ -898,7 +898,7 @@ import game.world.physics as physics
 - A module's own name has one spelling. `import std.json as json` has a fix that rewrites it to `from std import json`, which means the same.
 - An alias can't take a name the language provides everywhere, such as `sum`, `Ok` or `Stdout`.
 - An alias to the same name (`from std import json as json`), or importing one thing twice under two names, is a lint.
-- `pub import x as y` re-exports under a new name, which helps a kit rename part of its API.
+- `export import x as y` re-exports under a new name, which helps a kit rename part of its API.
 
 *Why:* Two modules with the same function names, like `std.json` and `std.toml`, or two kits with a `utils` module, need a way out other than full paths everywhere. Python developers and AI write `as` without thinking, so refusing it only causes errors. Aliases are resolved at compile time and cost nothing.
 
@@ -918,18 +918,18 @@ import game.world.physics as physics
 
 ## Visibility
 
-**`pub` marks what other kits can use, and goes on top-level things only.** It goes on each `def`, `struct`, `shared`, `enum`, `error`, `interface`, `type` alias and re-exported `import` that other kits may use. There's no field-level `pub`.
+**`export` marks what other kits can use, and goes on top-level things only.** It goes on each `def`, `struct`, `shared`, `enum`, `error`, `interface`, `type` alias and re-exported `import` that other kits may use. There's no field- or method-level `export`. It was spelled `pub`, and `fennec fix` rewrites `pub` as `export`, dropping it from methods.
 - `_name` hides a field from everything but its type, in its own kit too.
-- A `pub struct`'s other fields are its API. If it has no `_name` fields, other kits get its automatic constructor. Otherwise they build it through its `pub` named constructors.
-- Enum cases and interface methods come with their type and have no `pub` of their own.
+- An exported struct's other fields are its API. If it has no `_name` fields, other kits get its automatic constructor. Otherwise they build it through its named constructors.
+- Enum cases, methods and interface methods come with their type and have no `export` of their own.
 - Writes from another kit still run the field's `where` rules.
-- A `pub` signature can't mention anything that isn't `pub`.
-- A lint flags `pub` items that no other kit can reach.
+- An exported signature can't mention anything that isn't exported.
+- A lint flags exported items that no other kit can reach.
 
 **A kit's API is checked against its last published version,** cached from the Den. When a change would break other kits, `fennec check` says so at once, in the editor: "`load` can now also fail with `ParseError` (since v1.2.0). This is a breaking change: handle or wrap it, or release v2.0." `fennec publish` refuses a version number that undersells the change. Adding an error case is a breaking change; removing one isn't.
 
 A big program that wants walls between its own parts splits into local kits in one workspace.
-*Why:* One rule covers every field, and `pub` appears only where API stability matters, never in apps. Go's capitalization rule would clash with lowercase built-ins and capitalized user types.
+*Why:* One rule covers every field, and `export` appears only where API stability matters, never in apps. Go's capitalization rule would clash with lowercase built-ins and capitalized user types.
 
 ## Files and kits
 
@@ -1252,7 +1252,7 @@ Every tool ships in the `fennec` binary and has no configuration unless a settin
 - `fennec search`: finds functions by type, locally and on the Den. `fennec search "Path -> str"` lists every function with that shape.
 - `fennec diff`: a semantic diff. It reports renames with their updated call sites, moved functions, changed bodies and API changes with the version bump they need, instead of lines added and removed. A GitHub Action posts it on every pull request.
 - `fennec replay`: replays a recorded run, as described under Determinism.
-- The language server: inlay hints for inferred types and error sets, hover docs, go to definition, rename, and lint fixes as code actions (including "make this `pub`"). It reuses the compiler's queries and cache.
+- The language server: inlay hints for inferred types and error sets, hover docs, go to definition, rename, and lint fixes as code actions (including "export this"). It reuses the compiler's queries and cache.
 - Cost hints: the language server shows each line's copies, allocations and reference-count changes inline, the way it shows inferred types.
 - The copies lint, as above.
 - The tracer, which names the line and the reason for each copy and allocation: "`units` is copied here, because `backup` on line 9 still holds it". It's a core feature, along with `@hot`, which turns "should be free" into "must be free, or it won't compile". The tracer isn't built yet.
@@ -1305,7 +1305,7 @@ bench "collide 10k bullets":
 
 **Docs come in plain Markdown too.** Every documented item has its own versioned Markdown page, with an `llms.txt` index for each kit and for the language.
 
-**`fennec context <kit>` fits a kit in a prompt.** It prints every `pub` signature with the first line of its doc comment.
+**`fennec context <kit>` fits a kit in a prompt.** It prints every exported signature with the first line of its doc comment.
 
 **The language reference is executable.** Every example in it is a test, the way `examples/` already is, so the reference can't drift from the language.
 
@@ -1313,13 +1313,13 @@ bench "collide 10k bullets":
 
 These are default lints, and the Den requires them.
 
-- A `##` doc comment of at least one line on every `pub` item, enforced by the linter, which every build runs.
+- A `##` doc comment of at least one line on every exported item, enforced by the linter, which every build runs.
 - Descriptive names. One-letter and abbreviated names are flagged, except a short allowlist: `i`, `j`, `k`, `n`, `x`, `y`, `z`, `dt`, `id`.
 - Limits on nesting depth and function length, as lints rather than language rules.
 
-*Why:* A one-line doc comment on every `pub` item costs little and tells people and AI what each piece of the API is for. Code that reads well is code AI writes well.
+*Why:* A one-line doc comment on every exported item costs little and tells people and AI what each piece of the API is for. Code that reads well is code AI writes well.
 
-**Runnable examples in doc comments are optional.** `fennec test` runs them, and `fennec doc`, `fennec context` and the Den show them. Whether they become required is left to the eval of what helps AI write Fennec (#76). This replaces the earlier rule that every `pub` function needs a tested example.
+**Runnable examples in doc comments are optional.** `fennec test` runs them, and `fennec doc`, `fennec context` and the Den show them. Whether they become required is left to the eval of what helps AI write Fennec (#76). This replaces the earlier rule that every exported function needs a tested example.
 
 ## Kits on the Den
 
@@ -1568,7 +1568,7 @@ extern "C":
     def sqlite3_open(path: ptr[u8], db: ptr[owned ptr[Sqlite3]?]) -> i32
     def sqlite3_close(db: owned ptr[Sqlite3]) -> i32
 
-pub struct Database:
+export struct Database:
     handle: owned ptr[Sqlite3]
 
     def del(self):
@@ -1585,7 +1585,7 @@ pub struct Database:
 - An `owned ptr` must be used up exactly once, either moved into a struct whose `def del` releases it or passed to a C function that takes `owned`. Dropping one, copying one or losing one on any path is a compile error naming the path.
 - A pointer into a Fennec value, such as a `CString`'s, is usable only inside the `unsafe` block where it was taken.
 - Reading, writing or offsetting through a pointer happens only inside `unsafe`.
-- `pub` signatures never contain pointers, so other files and kits see only a safe API.
+- Exported signatures never contain pointers, so other files and kits see only a safe API.
 
 **Declarations are checked against the real headers.** When building, every `extern` struct's size and field offsets, and every function's signature, are compared with the C headers, and a mismatch fails the build. `fennec bindgen header.h` writes the `extern` block from the headers in the first place, and the generated file is checked in.
 *Why:* A wrong signature corrupts memory silently, and it's the mistake AI-written bindings make most.

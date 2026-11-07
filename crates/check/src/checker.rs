@@ -180,8 +180,7 @@ impl Checker {
             }
         }
         self.revisit_cycles();
-        let constants: Vec<String> = self.program.constants.keys().cloned().collect();
-        for name in constants {
+        for name in self.program.constants.keys().cloned().collect::<Vec<_>>() {
             self.constant_type(&name);
         }
         for test in self.program.tests.clone() {

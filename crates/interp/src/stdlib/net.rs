@@ -682,12 +682,11 @@ fn request_of(method: &str, plain: &[Value], named: &[(&str, &Value)], span: Spa
     for (name, value) in named {
         match (*name, value) {
             ("timeout", value) => request.timeout = duration_of(value, span)?,
-            ("body", Value::Str(text)) => request.body = text.as_bytes().to_vec(),
+            // Native code and `http_method` both give `json=` as the JSON text already.
+            ("body" | "json", Value::Str(text)) => request.body = text.as_bytes().to_vec(),
             ("body", Value::Bytes(data)) => request.body = data.to_vec(),
             ("params", Value::Dict(pairs)) => request.params = text_pairs(pairs, span)?,
             ("headers", Value::Dict(pairs)) => request.headers = text_pairs(pairs, span)?,
-            // Native code and `http_method` both give `json=` as the JSON text already.
-            ("json", Value::Str(text)) => request.body = text.as_bytes().to_vec(),
             (other, _) => {
                 return Err(Diagnostic::new(format!("this has no parameter called `{other}`"), span));
             }

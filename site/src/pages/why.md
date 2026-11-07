@@ -14,13 +14,13 @@ Builds that take minutes break your focus. Build setups that need pages of confi
 
 **Fast iteration while you work.** When you change a line, you should see the result in moments. Fennec compiles a function at a time and caches each one by its content, so a change costs only what it touches.
 
-**What you run is what ships.** The plan is one optimizing backend, so the program you try while you work is the one you ship, with no garbage collector. Whole-program optimization is the only extra step, and it comes with `--release`.
+**What you run is what ships.** There's one optimizing backend, LLVM, so the program you try while you work is the one you ship, with no garbage collector. Whole-program optimization is the only extra step, and it comes with `--release`. In CI, release builds run at about the speed of hand-written native code.
 
 **Code that reads like Python.** If you can read Python, you can read Fennec: indentation, `def`, comprehensions and f-strings, with types checked before anything runs.
 
-**Code you can trust.** If it compiles, it's memory-safe, its errors are handled, and anything that mutates your data says so where it happens.
+**Code you can trust.** If it compiles, it's memory-safe, its failures are handled, and anything that changes your data says so where it happens. There's no `unsafe` to reach for.
 
-**Nothing to configure.** One tool builds, tests, formats, lints and manages dependencies. Strong defaults are built in, so a new project starts out strict without a page of settings.
+**Nothing to configure.** One tool builds, tests, formats and lints, and it will manage dependencies too. Strong defaults are built in, so a new project starts out strict without a page of settings.
 
 **Built for working with AI.** More and more code is written with AI help. Fennec is designed so a model's first attempt is likely to be right, and its mistakes are caught by the compiler instead of by your users.
 
@@ -29,8 +29,8 @@ Builds that take minutes break your focus. Build setups that need pages of confi
 These decide every design question.
 
 1. **The easy way is the readable way and the fast way.** If the obvious code is slow or unclear, that's a bug in the language.
-2. **If it compiles, it's safe.** Memory safety isn't optional, and escape hatches exist only at the boundary with C.
-3. **Every guardrail is free or visible.** Checks cost nothing at runtime, and every exception to a rule carries a written reason you can search for.
+2. **If it compiles, it's safe.** Memory safety isn't optional, and there's no escape hatch. Where a C library is needed, the Fennec project wraps it behind a safe API.
+3. **Every guardrail is free or visible.** A check stays unless the compiler proves it unnecessary, and every exception to a rule carries a written reason you can search for.
 4. **Readable by people, writable by AI.** A familiar syntax with one way to do each thing, and compiler errors that explain how to fix them.
 5. **Occam's razor.** Fewer concepts, each doing one job well. Every feature has to earn its place with real programs that need it.
 

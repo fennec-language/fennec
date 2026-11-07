@@ -3,72 +3,73 @@ import Base from '../layouts/Base.astro';
 import data from '../data/benchmarks.json';
 
 const base = import.meta.env.BASE_URL;
-const { ci, builds, targets } = data;
-const kernels = ci.kernels;
-const met = kernels.filter((kernel) => kernel.percent >= targets.jit).length;
-// The bars run past 100%, since release builds aim beyond the target.
-const scale = 125;
-const at = (percent: number) => `${(percent / scale) * 100}%`;
+const { suite, tests, targets } = data;
+const [x86, arm] = suite.machines;
+const kernels = [...suite.kernels].sort((a, b) => b.x86 - a.x86);
+const atGoal = kernels.filter((kernel) => kernel.x86 >= targets.release && kernel.arm >= targets.release).length;
+// Bars stop at 150%. A kernel past that shows its number, and its bar is full.
+const scale = 150;
+const at = (percent: number) => `${(Math.min(percent, scale) / scale) * 100}%`;
+// Build times are shown in milliseconds, as CI recorded them.
+const ms = (value: number) => value.toLocaleString('en-US', { minimumFractionDigits: 1 });
 ---
 
-<Base title="Benchmarks" description="Fennec's real benchmark numbers against its speed targets, measured in CI. In progress.">
+<Base title="Benchmarks" description="Fennec's real benchmark numbers: native release builds against hand-written twins, measured in CI.">
   <section class="wrap head">
     <span class="pill">In progress</span>
     <h1>Benchmarks</h1>
     <p class="lede">
-      Every kernel has a speed target, and these are real numbers from CI against it. They aren't where we want them yet.
+      Every kernel is built as a native program and raced against a hand-written twin in a fast, C-class systems language. These are real numbers from CI, from commit <code>{suite.commit}</code> on {suite.date}.
     </p>
   </section>
 
   <section class="wrap">
-    <h2>Speed against target</h2>
+    <h2>Speed against the twin</h2>
     <p class="note">
-      Each target comes from idiomatic code for the same work in the fastest established systems language, built with overflow checks, as Fennec is. Each engine aims for its own share of the target, marked on every bar: the interpreter's {targets.interpreter[0]}–{targets.interpreter[1]}% as a band, the JIT's {targets.jit}%, going to {targets.jit_later}% later, and {targets.release}% for release builds. These numbers are the JIT's, measured before LLVM became the default, so they don't show LLVM's builds yet, and we aren't at those goals. The goal after that is to beat the target through LLVM.
+      100% means as fast as the twin. Across the suite, release builds run at {x86.time}% of the twins' speed on {x86.label}, and {arm.time}% on {arm.label}. That's the geometric mean of each kernel's best time. The goal is {targets.release}% on every kernel, and {atGoal} of {kernels.length} are there on both machines. The twins are built fully optimized, with overflow checks, as Fennec always has.
     </p>
     <div class="table">
       <div class="tr th">
-        <span>Kernel</span><span class="num">Startup</span><span class="num">Work</span><span>Work's speed, % of target</span>
+        <span>Kernel</span><span>x86-64 Linux</span><span>Arm macOS</span>
       </div>
       {
         kernels.map((kernel) => (
           <div class="tr">
             <span class="name">{kernel.name}</span>
-            <span class="num">{kernel.startup_ms.toFixed(1)} ms</span>
-            <span class="num">{kernel.work_ms.toFixed(1)} ms</span>
-            <span class="bar-cell">
-              <span class="track">
-                <span class="band" style={`left: ${at(targets.interpreter[0])}; width: ${at(targets.interpreter[1] - targets.interpreter[0])}`} title={`Interpreter target: ${targets.interpreter[0]}–${targets.interpreter[1]}%`} />
-                <span class="fill" style={`width: ${at(Math.min(kernel.percent, scale))}`} />
-                <span class="mark" style={`left: ${at(targets.jit)}`} title={`JIT target: ${targets.jit}%`} />
-                <span class="mark" style={`left: ${at(targets.release)}`} title={`Release target: ${targets.release}%`} />
+            {[kernel.x86, kernel.arm].map((percent) => (
+              <span class="bar-cell">
+                <span class="track">
+                  <span class="fill" style={`width: ${at(percent)}`} />
+                  <span class="mark" style={`left: ${at(100)}`} title="As fast as the twin" />
+                  <span class="mark goal" style={`left: ${at(targets.release)}`} title={`The goal: ${targets.release}%`} />
+                </span>
+                <strong>{percent.toFixed(1)}%</strong>
               </span>
-              <strong>{kernel.percent.toFixed(0)}%</strong>
-            </span>
+            ))}
           </div>
         ))
       }
     </div>
     <p class="note">
-      {met} of {kernels.length} kernels are at the JIT's target. Against a target using a slower, attack-resistant default hash instead, <code>dicts</code> reaches {ci.dicts_default_hash_percent.toFixed(0)}%, which isn't counted here. From commit <code>{ci.commit}</code> on {ci.date}, on {ci.machine}. Speed is counted in instructions, which barely move when a machine is busy, so it can differ from the times shown. Times are medians of repeated runs, and they move by several percent between runs. Once a kernel reaches the JIT's target, CI fails if it drops below.
+      Each kernel runs ten times beside its twin, taking turns, and the best run of each counts. On shared CI machines a single kernel can move by several percent between runs. {x86.slowest === arm.slowest ? <>The slowest kernel on both machines is <code>{x86.slowest}</code>.</> : <>The slowest kernels are <code>{x86.slowest}</code> on x86-64 and <code>{arm.slowest}</code> on Arm.</>} Development builds, which skip whole-program optimization, reach {x86.dev}% and {arm.dev}%.
     </p>
   </section>
 
   <section class="wrap">
-    <h2>Build and test times</h2>
-    <p class="note">Measured on {builds.machine}, at commit <code>{builds.commit}</code>, on {builds.kit}.</p>
+    <h2>Build times</h2>
+    <p class="note">Each kernel is built from an empty cache, so nothing helps it, in the same CI run.</p>
     <div class="stats">
-      <div class="stat"><strong>{builds.one_function_s} s</strong><span>to rebuild after changing one function</span></div>
-      <div class="stat"><strong>{builds.first_s.toFixed(0)} s</strong><span>for its first build, with an empty cache. We want this much lower.</span></div>
-      <div class="stat"><strong>&lt;{builds.tests_unchanged_s} s</strong><span>to rerun tests when nothing they depend on changed, on one small test file</span></div>
+      <div class="stat"><strong>{ms(suite.dev_build_ms[0])}–{ms(suite.dev_build_ms[1])} ms</strong><span>for a development build of one kernel</span></div>
+      <div class="stat"><strong>{ms(suite.release_build_ms[0])}–{ms(suite.release_build_ms[1])} ms</strong><span>for a release build, which optimizes the whole program as one</span></div>
+      <div class="stat"><strong>&lt;{tests.unchanged_s} s</strong><span>to rerun tests when nothing they depend on changed, on one small test file, measured on {tests.machine} on {tests.date}</span></div>
     </div>
   </section>
 
   <section class="wrap">
     <h2>How it's measured</h2>
     <p>
-      Each target is pinned once per architecture, from reference code built at full optimization, with overflow checks, for that architecture's baseline CPU, and each kernel must print what its reference prints. Startup is everything before <code>main</code>; only the work counts toward the target. A failure is fixed in the compiler, never by changing the benchmark. The kernels and the
-      method are in <a href="https://github.com/fennec-language/fennec/tree/main/bench">the repository</a>, and you can{' '}
-      <a href={`${base}speed/`}>read how Fennec plans to get fast</a>.
+      Each kernel stands for one way a language has to be fast: calls, float math, hash tables, strings, allocation, generics, closures and object-heavy code. Each twin does the same work and must print the same answer. Inputs are read so neither optimizer can see through them, and every result depends on all the work. A slow kernel is fixed in the compiler, never by changing the benchmark. The kernels and the method are in <a href="https://github.com/fennec-language/fennec/tree/main/bench">the repository</a>, and you can{' '}
+      <a href={`${base}speed/`}>read how Fennec gets fast</a>.
     </p>
   </section>
 </Base>
@@ -128,7 +129,7 @@ const at = (percent: number) => `${(percent / scale) * 100}%`;
 
   .tr {
     display: grid;
-    grid-template-columns: 1.1fr 0.8fr 0.9fr 2.2fr;
+    grid-template-columns: 1fr 2fr 2fr;
     gap: 1rem;
     align-items: center;
     padding: 0.7rem 1.1rem;
@@ -152,10 +153,6 @@ const at = (percent: number) => `${(percent / scale) * 100}%`;
     font-size: 0.9rem;
   }
 
-  .num {
-    text-align: right;
-  }
-
   .bar-cell {
     display: flex;
     align-items: center;
@@ -163,14 +160,8 @@ const at = (percent: number) => `${(percent / scale) * 100}%`;
   }
 
   .bar-cell strong {
-    width: 2.75rem;
+    width: 3.5rem;
     text-align: right;
-  }
-
-  .band {
-    position: absolute;
-    inset: 0 auto 0 0;
-    background: var(--border);
   }
 
   .mark {
@@ -179,6 +170,10 @@ const at = (percent: number) => `${(percent / scale) * 100}%`;
     bottom: -3px;
     width: 2px;
     background: var(--text, currentColor);
+  }
+
+  .mark.goal {
+    background: var(--accent);
   }
 
   .track {
@@ -230,12 +225,6 @@ const at = (percent: number) => `${(percent / scale) * 100}%`;
 
     .th {
       display: none;
-    }
-
-    .tr .num {
-      text-align: left;
-      font-size: 0.85rem;
-      color: var(--muted);
     }
 
     .name,

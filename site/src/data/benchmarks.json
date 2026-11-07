@@ -1,45 +1,435 @@
 {
-  "ci": {
-    "commit": "7918fba",
-    "date": "2026-10-31",
-    "machine": "GitHub Actions, ubuntu-latest",
-    "dicts_default_hash_percent": 195.6,
+  "suite": {
+    "commit": "9423e64",
+    "date": "2026-11-07",
+    "source": "the Suite report workflow, saved on the bench-history branch",
+    "machines": [
+      {
+        "platform": "x86_64-linux",
+        "label": "x86-64 Linux, AMD EPYC 9V74, 4 cores",
+        "time": 98.8,
+        "dev": 96.8,
+        "instructions": 94,
+        "slowest": "json_unicode"
+      },
+      {
+        "platform": "aarch64-macos",
+        "label": "Arm macOS, Apple M2 Pro (virtual), 5 cores",
+        "time": 103.4,
+        "dev": 101.6,
+        "instructions": null,
+        "slowest": "json_unicode"
+      }
+    ],
     "kernels": [
-      { "name": "regex", "startup_ms": 7.4, "work_ms": 78.7, "percent": 90.6 },
-      { "name": "strings", "startup_ms": 5.3, "work_ms": 33.4, "percent": 72.3 },
-      { "name": "method_chain", "startup_ms": 6.1, "work_ms": 5.8, "percent": 66.5 },
-      { "name": "dicts", "startup_ms": 6.2, "work_ms": 19.6, "percent": 63.6 },
-      { "name": "mandelbrot", "startup_ms": 6.3, "work_ms": 22.4, "percent": 62.3 },
-      { "name": "closures", "startup_ms": 6.7, "work_ms": 0.6, "percent": 58.2 },
-      { "name": "sieve", "startup_ms": 6.0, "work_ms": 65.1, "percent": 50.7 },
-      { "name": "fib", "startup_ms": 5.5, "work_ms": 43.5, "percent": 50.5 },
-      { "name": "binary_trees", "startup_ms": 6.4, "work_ms": 126.3, "percent": 49.0 },
-      { "name": "spectral_norm", "startup_ms": 6.5, "work_ms": 13.5, "percent": 42.2 },
-      { "name": "sort", "startup_ms": 6.7, "work_ms": 89.4, "percent": 40.4 },
-      { "name": "fannkuch", "startup_ms": 6.9, "work_ms": 26.2, "percent": 39.0 },
-      { "name": "nbody", "startup_ms": 7.4, "work_ms": 20.2, "percent": 39.0 },
-      { "name": "generics", "startup_ms": 7.8, "work_ms": 0.0, "percent": 38.2 },
-      { "name": "particles", "startup_ms": 6.6, "work_ms": 17.2, "percent": 25.3 },
-      { "name": "comp_helpers", "startup_ms": 7.2, "work_ms": 2.2, "percent": 21.4 },
-      { "name": "dict_field", "startup_ms": 5.7, "work_ms": 3.8, "percent": 21.3 },
-      { "name": "comprehensions", "startup_ms": 6.0, "work_ms": 62.8, "percent": 19.6 },
-      { "name": "k_nucleotide", "startup_ms": 7.3, "work_ms": 202.7, "percent": 13.8 },
-      { "name": "richards", "startup_ms": 13.5, "work_ms": 26.8, "percent": 11.2 },
-      { "name": "json", "startup_ms": 11.9, "work_ms": 225.3, "percent": 1.9 },
-      { "name": "deltablue", "startup_ms": 20.6, "work_ms": 45.8, "percent": 1.1 },
-      { "name": "struct_keys", "startup_ms": 5.4, "work_ms": 393.9, "percent": 0.0 },
-      { "name": "selfhost", "startup_ms": 183.5, "work_ms": 22441.0, "percent": 0.0 }
-    ]
+      {
+        "name": "binary_trees",
+        "x86": 307.7,
+        "arm": 231.1,
+        "x86_dev": 311.5,
+        "arm_dev": 233.1,
+        "dev_build_ms": [
+          276.2,
+          231
+        ],
+        "release_build_ms": [
+          4642.3,
+          3649.1
+        ]
+      },
+      {
+        "name": "closures",
+        "x86": 86.5,
+        "arm": 89.4,
+        "x86_dev": 86.4,
+        "arm_dev": 90.3,
+        "dev_build_ms": [
+          280.7,
+          242.4
+        ],
+        "release_build_ms": [
+          4090,
+          3334.7
+        ]
+      },
+      {
+        "name": "comp_helpers",
+        "x86": 94.4,
+        "arm": 78.9,
+        "x86_dev": 92.2,
+        "arm_dev": 78.3,
+        "dev_build_ms": [
+          291.8,
+          246.2
+        ],
+        "release_build_ms": [
+          4608.6,
+          3737.6
+        ]
+      },
+      {
+        "name": "comprehensions",
+        "x86": 180,
+        "arm": 138.3,
+        "x86_dev": 159.9,
+        "arm_dev": 139.7,
+        "dev_build_ms": [
+          286.7,
+          237.3
+        ],
+        "release_build_ms": [
+          4481.7,
+          3631.1
+        ]
+      },
+      {
+        "name": "deltablue",
+        "x86": 65.7,
+        "arm": 107.2,
+        "x86_dev": 66.8,
+        "arm_dev": 106,
+        "dev_build_ms": [
+          441.8,
+          465.7
+        ],
+        "release_build_ms": [
+          4810.8,
+          3878.8
+        ]
+      },
+      {
+        "name": "dict_field",
+        "x86": 82.4,
+        "arm": 100.5,
+        "x86_dev": 83,
+        "arm_dev": 92.6,
+        "dev_build_ms": [
+          265.6,
+          228.4
+        ],
+        "release_build_ms": [
+          4768.6,
+          3798.5
+        ]
+      },
+      {
+        "name": "dicts",
+        "x86": 80.4,
+        "arm": 71.9,
+        "x86_dev": 82.3,
+        "arm_dev": 69.1,
+        "dev_build_ms": [
+          262.3,
+          214.7
+        ],
+        "release_build_ms": [
+          4752.3,
+          3785.2
+        ]
+      },
+      {
+        "name": "fannkuch",
+        "x86": 125.2,
+        "arm": 114.1,
+        "x86_dev": 109.3,
+        "arm_dev": 102.6,
+        "dev_build_ms": [
+          276.3,
+          228.2
+        ],
+        "release_build_ms": [
+          4166.9,
+          3290.9
+        ]
+      },
+      {
+        "name": "fib",
+        "x86": 134,
+        "arm": 154.2,
+        "x86_dev": 132,
+        "arm_dev": 154.2,
+        "dev_build_ms": [
+          256.5,
+          212.6
+        ],
+        "release_build_ms": [
+          4115.3,
+          3321.4
+        ]
+      },
+      {
+        "name": "generators",
+        "x86": 74,
+        "arm": 129.9,
+        "x86_dev": 73.2,
+        "arm_dev": 128.8,
+        "dev_build_ms": [
+          365.8,
+          325.5
+        ],
+        "release_build_ms": [
+          4374.1,
+          3558.1
+        ]
+      },
+      {
+        "name": "generics",
+        "x86": 94.8,
+        "arm": 96.8,
+        "x86_dev": 95.1,
+        "arm_dev": 97.2,
+        "dev_build_ms": [
+          299.8,
+          265.8
+        ],
+        "release_build_ms": [
+          4621.3,
+          3612.2
+        ]
+      },
+      {
+        "name": "id_maps",
+        "x86": 104,
+        "arm": 94.6,
+        "x86_dev": 100.7,
+        "arm_dev": 86.7,
+        "dev_build_ms": [
+          273.1,
+          277.9
+        ],
+        "release_build_ms": [
+          4229.1,
+          3998.4
+        ]
+      },
+      {
+        "name": "json",
+        "x86": 71.9,
+        "arm": 97.8,
+        "x86_dev": 72.2,
+        "arm_dev": 97.4,
+        "dev_build_ms": [
+          449.6,
+          388.8
+        ],
+        "release_build_ms": [
+          5169.8,
+          4662.6
+        ]
+      },
+      {
+        "name": "json_unicode",
+        "x86": 52.5,
+        "arm": 66.3,
+        "x86_dev": 53.1,
+        "arm_dev": 65.3,
+        "dev_build_ms": [
+          455.9,
+          387.9
+        ],
+        "release_build_ms": [
+          5261.4,
+          4386.7
+        ]
+      },
+      {
+        "name": "k_nucleotide",
+        "x86": 116.1,
+        "arm": 101.4,
+        "x86_dev": 116.8,
+        "arm_dev": 100.3,
+        "dev_build_ms": [
+          377.6,
+          304.6
+        ],
+        "release_build_ms": [
+          5323.1,
+          4140.3
+        ]
+      },
+      {
+        "name": "mandelbrot",
+        "x86": 96.7,
+        "arm": 99.1,
+        "x86_dev": 96.3,
+        "arm_dev": 99.5,
+        "dev_build_ms": [
+          278.5,
+          232.7
+        ],
+        "release_build_ms": [
+          4321,
+          3550.5
+        ]
+      },
+      {
+        "name": "method_chain",
+        "x86": 96.5,
+        "arm": 99,
+        "x86_dev": 96.1,
+        "arm_dev": 99.9,
+        "dev_build_ms": [
+          280.3,
+          272
+        ],
+        "release_build_ms": [
+          4267,
+          3709.7
+        ]
+      },
+      {
+        "name": "nbody",
+        "x86": 73.5,
+        "arm": 93,
+        "x86_dev": 71.7,
+        "arm_dev": 97.8,
+        "dev_build_ms": [
+          278.9,
+          258
+        ],
+        "release_build_ms": [
+          4640.2,
+          4290.4
+        ]
+      },
+      {
+        "name": "particles",
+        "x86": 70.5,
+        "arm": 90.5,
+        "x86_dev": 67.2,
+        "arm_dev": 85.3,
+        "dev_build_ms": [
+          272.2,
+          233.1
+        ],
+        "release_build_ms": [
+          4664.6,
+          4153.7
+        ]
+      },
+      {
+        "name": "regex",
+        "x86": 121.8,
+        "arm": 185.1,
+        "x86_dev": 119.3,
+        "arm_dev": 181,
+        "dev_build_ms": [
+          319.5,
+          326.8
+        ],
+        "release_build_ms": [
+          5304.2,
+          4707.9
+        ]
+      },
+      {
+        "name": "richards",
+        "x86": 77.5,
+        "arm": 88.4,
+        "x86_dev": 65.4,
+        "arm_dev": 75.8,
+        "dev_build_ms": [
+          350.8,
+          336.4
+        ],
+        "release_build_ms": [
+          4737.3,
+          4062.1
+        ]
+      },
+      {
+        "name": "sieve",
+        "x86": 121.5,
+        "arm": 94.6,
+        "x86_dev": 125.9,
+        "arm_dev": 95.1,
+        "dev_build_ms": [
+          260.2,
+          218.1
+        ],
+        "release_build_ms": [
+          4133.6,
+          3754.2
+        ]
+      },
+      {
+        "name": "sort",
+        "x86": 110.3,
+        "arm": 94.6,
+        "x86_dev": 110.3,
+        "arm_dev": 94,
+        "dev_build_ms": [
+          283.6,
+          242.9
+        ],
+        "release_build_ms": [
+          4647.8,
+          3704.7
+        ]
+      },
+      {
+        "name": "spectral_norm",
+        "x86": 94.7,
+        "arm": 89.2,
+        "x86_dev": 93.8,
+        "arm_dev": 91.1,
+        "dev_build_ms": [
+          304.8,
+          261.3
+        ],
+        "release_build_ms": [
+          4698.3,
+          4018.1
+        ]
+      },
+      {
+        "name": "strings",
+        "x86": 168,
+        "arm": 127,
+        "x86_dev": 158.4,
+        "arm_dev": 129.3,
+        "dev_build_ms": [
+          275.7,
+          227.4
+        ],
+        "release_build_ms": [
+          4471,
+          3893.1
+        ]
+      },
+      {
+        "name": "struct_keys",
+        "x86": 70.4,
+        "arm": 71.9,
+        "x86_dev": 72.8,
+        "arm_dev": 74.2,
+        "dev_build_ms": [
+          264.7,
+          283.3
+        ],
+        "release_build_ms": [
+          4881.8,
+          4211.5
+        ]
+      }
+    ],
+    "dev_build_ms": [
+      212.6,
+      465.7
+    ],
+    "release_build_ms": [
+      3290.9,
+      5323.1
+    ],
+    "fib_dev_build_ms": 212.6
   },
-  "builds": {
+  "tests": {
     "machine": "Apple M3",
     "commit": "633ea1e",
-    "kit": "the 2,800-line self-hosted front end",
-    "first_s": 12.0,
-    "one_function_s": 0.17,
-    "unchanged_s": 0.23,
-    "fib_first_s": 0.14,
-    "tests_unchanged_s": 0.01
+    "date": "2026-10-30",
+    "unchanged_s": 0.01
   },
-  "targets": { "jit": 80, "jit_later": 85, "release": 110, "interpreter": [10, 30] }
+  "targets": {
+    "release": 110
+  }
 }

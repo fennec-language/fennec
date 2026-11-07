@@ -1,7 +1,7 @@
 ---
 layout: ../layouts/Doc.astro
 title: How Fennec gets fast
-description: Fennec's plan for speed, one LLVM backend with a function-level cache, along with what runs today.
+description: How Fennec runs near native speed and builds almost instantly, with one LLVM backend and a function-level cache.
 ---
 
 # How Fennec gets fast
@@ -10,13 +10,14 @@ description: Fennec's plan for speed, one LLVM backend with a function-level cac
 
 ## Today
 
-`fennec run` builds through LLVM one function at a time, and each function is cached by its content, so a change recompiles only what it touched. Where LLVM can't build a program yet, it says so in one line and the JIT runs it instead. `fennec build` makes a native program through LLVM, the same build with `--release` optimizing the whole program as one. The [benchmarks](/benchmarks/) show where this stands against its targets.
+`fennec run` builds through LLVM one function at a time, and each function is cached by its content, so a change recompiles only what it touched. Where LLVM can't build a program yet, it says so in one line and the JIT runs it instead. `fennec build` always makes a native program through LLVM, and `--release` optimizes the whole program as one.
+
+In CI, release builds of the benchmark suite run at about the speed of hand-written twins in a fast, C-class systems language, and a development build of one kernel takes well under a second. The [benchmarks](/benchmarks/) have every number and how it's measured.
 
 ## The plan: one backend
 
-- **LLVM for everything,** with per-function `-O3`. It's the default today. There's no separate development engine, no tiering and no hot reload.
+- **LLVM for everything,** with per-function optimization. It's the default today. There's no separate development engine and no tiering.
 - **Whole-program optimization only in `--release`.** It's the one step that sees everything at once, so it's the one step you opt into. Built.
-- **Planned: `fennec run` makes real binaries** in a store, so what you try is what you ship.
 - **Planned: the JIT and the interpreter go** once everything builds through LLVM. A program then either builds natively or is refused, and what doesn't build yet is on a tracked list that must reach zero.
 
 ## The plan: one store
@@ -36,6 +37,8 @@ These come from the design, so they apply whichever backend runs:
 - A `ref` parameter is known to be the only way to reach its data, which most languages can't prove.
 - Fields can be reordered and optional values packed, because nothing can observe where a value sits in memory.
 - No garbage collector, and flat data with no hidden pointers.
+- A function with no capabilities can't do I/O or change anything outside itself, so repeated calls can be merged and moved out of loops.
+- Generic code is copied for each type it's used with, so every call is direct.
 
 ## Values without references
 
@@ -43,36 +46,39 @@ Fennec code never handles references, but the compiler uses them behind the scen
 
 | You write | What the compiler does |
 | --- | --- |
-| `describe(player)` | Passes a hidden read-only reference; no copy |
-| `apply_damage(ref player, 10)` | Passes a hidden exclusive reference |
-| `b = a`, and `a` isn't used again | Moves it, for free |
+| `describe(player)` | Passes it without copying, since a plain parameter can't change |
+| `apply_damage(ref player, 10)` | Passes the one way to reach it |
+| `b = a`, and `a` isn't used again | Hands it over, with no copy |
 | `b = a`, and both are used | Shares the memory until one of them changes, then copies once |
 | Small values like `Vec3` | Copies them in registers, for free |
 
-The cost of sharing is a reference count on large data, mostly optimized away, and a copy the first time shared data changes. That copy isn't written in the code, so the plan is to keep it in check three ways: a warning when a change inside a loop might copy, `@hot` rejecting it outright, and a report of hidden copies by name.
+The cost of sharing is a reference count on large data, mostly optimized away, and a copy the first time shared data changes. That copy isn't written in the code, so it's kept in check three ways: a copy made on every round of a loop is a compile error, `@hot` rejects any copy at all, and `fennec dev trace` names each copy and why it happened.
 
-## Libraries can't change silently
+## Safe and fast together
 
-When a package is published, Fennec will compare the signatures of everything it exports, including the errors each function can fail with, against the previous version, and flag every change.
+Safety checks stay unless the compiler proves them unnecessary. Speed comes only from those proofs, never from switching checks off.
+
+- **Overflow is checked everywhere,** release builds included. Range analysis removes the checks on loop counters, indices and bounded math, where it can show a number can't overflow.
+- **Bounds checks go** where an index provably can't be out of range.
 
 ## Why builds stay fast
 
 Fast builds come from design decisions, not just a fast compiler.
 
-- **Changes stay local.** When you edit a function, the compiler checks whether its signature changed, including the errors it can fail with. Almost always it hasn't, and nothing that calls the function is checked again.
-- **No macros.** Compile-time loops are ordinary checked code with no I/O, so their results can be cached.
-- **Simple type checking.** Parameters are typed, so each function is checked on its own once the signatures it calls are known. There are no program-wide inference puzzles.
+- **Changes stay local.** When you edit a function, the compiler checks whether its signature changed, including the failures it can fail with. Almost always it hasn't, and nothing that calls the function is checked again.
+- **No macros and no build scripts.** Nothing runs code while compiling, so every result can be cached.
+- **Simple type checking.** Parameters and return types are written, so each function is checked on its own once the signatures it calls are known. There are no program-wide inference puzzles.
 
 ## The performance target
 
-Each benchmark has a target: idiomatic code for the same work in the fastest established systems language, fully optimized and with overflow checks, as Fennec has. Release builds aim for 110% of its speed, the fast compiler for development for 80% to start and then 85%, and the interpreter for 10–30%. That's a promise we intend to check, not just make:
+Each benchmark has a twin: idiomatic code for the same work in a fast, C-class systems language, fully optimized and with overflow checks, as Fennec has. Release builds aim for 110% of the twin's speed on every kernel. That's a promise we intend to check, not just make:
 
-- A benchmark suite of real programs, including a game update loop, a JSON parser, a hash-map-heavy workload, a numeric kernel and a server.
+- A suite of kernels that cover the ways a language has to be fast: calls, float math, hash tables, strings, allocation, generics, closures and object-heavy code.
 - Each written idiomatically in Fennec and compared against expert hand-written native code.
 - Realistic work that neither side's optimizer can delete.
-- Targets are built for a fixed, modern CPU level so they're reproducible. Where the target's standard library does something Fennec doesn't, like a slower default hash, the target matches Fennec, and the standard default is shown as its own number.
-- A check on every change: a benchmark that misses its target or gets slower fails. Falling short is a bug, not a footnote.
+- Twins are built for a fixed CPU level so they're reproducible. Where the twin's standard library does something Fennec doesn't, like a slower default hash, the twin matches Fennec, and the standard default is shown as its own number.
+- A slow kernel is fixed in the compiler, never by changing the benchmark. Once a kernel reaches its floor, CI fails if it drops below it.
 
 ## What costs nothing
 
-These exist only at compile time and have no runtime cost: `mut` and `ref`, type inference, `?` and `else`, optional types, interfaces, tuples and capabilities.
+These exist only at compile time and have no runtime cost: `mut` and `ref`, type inference, `?` and `else`, optional types, interfaces, unions, tuples and capabilities.

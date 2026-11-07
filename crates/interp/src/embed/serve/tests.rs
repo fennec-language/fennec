@@ -331,9 +331,16 @@ fn native_code_serves_a_server_the_interpreter_opened() {
     use super::super::{Tables, finish, start, with};
     use crate::call::CallArg;
     use crate::value::Value;
+    // The workers' setup is the process's, set by whichever test gets there first, and this
+    // server runs on the pool the `parallel` tests share. So it sets workers up as theirs do: with
+    // default tables, their workers had no `Int` element, and a stream's items came out wrong.
     super::super::parallel::set_worker_setup(Box::new(|| {
-        let _ =
-            start(&fennec_syntax::Module { items: Vec::new() }, Tables::default(), crate::Inputs::default());
+        let tables = Tables {
+            shapes: vec![std::rc::Rc::new(crate::packed::Element::Str)],
+            elements: vec![std::rc::Rc::new(crate::packed::Element::Int)],
+            ..Tables::default()
+        };
+        let _ = start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default());
     }));
     let module = fennec_syntax::parse("from std.net import Connection, NetError, Server\n").unwrap();
     start(&module, Tables::default(), crate::Inputs::default()).unwrap();

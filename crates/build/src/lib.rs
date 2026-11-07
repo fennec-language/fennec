@@ -23,7 +23,7 @@ pub use functions::{CompiledFunction, FunctionKey, Relocation, decode_pack, enco
 pub use reach::test_keys;
 pub use reached::{keep_what_functions_reach, keep_what_main_reaches};
 pub use snapshot::{FileRecord, Run, Snapshot};
-pub use store::{fennec_home, load, save};
+pub use store::{WORK_KEPT, fennec_home, load, save, sweep_work, work_folder};
 pub use traced::{TestGraph, TestRecord};
 pub use tree::{definitions, tree_hash};
 pub use verdict::{KitFile, KitState, Row, changed_bodies, item_span, rows};

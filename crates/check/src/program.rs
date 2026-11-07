@@ -18,7 +18,7 @@ pub(crate) enum TypeKind {
 
 pub(crate) struct TypeInfo {
     pub(crate) kind: TypeKind,
-    pub(crate) def: TypeDef,
+    pub(crate) def: std::sync::Arc<TypeDef>,
     /// Whether it comes from the standard library rather than the program.
     pub(crate) prelude: bool,
 }
@@ -32,7 +32,7 @@ pub(crate) struct ConstEntry {
 }
 
 pub(crate) struct FnEntry {
-    pub(crate) def: FnDef,
+    pub(crate) def: std::sync::Arc<FnDef>,
     /// The type a method belongs to.
     pub(crate) owner: Option<String>,
     pub(crate) prelude: bool,
@@ -80,7 +80,7 @@ impl Program {
             match item {
                 Item::Function(def) => {
                     let entry = FnEntry {
-                        def: def.clone(),
+                        def: def.clone().into(),
                         owner: None,
                         prelude,
                         inherited: Vec::new(),
@@ -155,7 +155,7 @@ impl Program {
         for method in &def.methods {
             self.add_method(&def.name, method, prelude, &[]);
         }
-        self.types.insert(def.name.clone(), TypeInfo { kind, def: def.clone(), prelude });
+        self.types.insert(def.name.clone(), TypeInfo { kind, def: def.clone().into(), prelude });
     }
 
     /// The type a parameter with no written type takes from its default: an `int`, `float`,

@@ -146,6 +146,34 @@ pub(super) fn serving_starts(lent: Option<Arc<Table>>) {
     });
 }
 
+/// A server's state on a worker, set aside while the worker runs a job from the pool.
+#[cfg(any(test, feature = "threads"))]
+pub(super) struct Serving {
+    lent: Option<Arc<Table>>,
+}
+
+/// Starts a job from the pool on a worker. While the worker serves, the job hands what it makes
+/// over as any range's does, and lends and takes back blocks of its own, so the server's are set
+/// aside until it ends.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn job_starts() -> Option<Serving> {
+    super::with(|state| {
+        let serving = std::mem::replace(&mut state.heap.serving, false);
+        serving.then(|| Serving { lent: state.heap.lent.take() })
+    })
+}
+
+/// Ends a job from the pool on a worker, giving a server's state back.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn job_ends(serving: Option<Serving>) {
+    if let Some(Serving { lent }) = serving {
+        super::with(|state| {
+            state.heap.serving = true;
+            state.heap.lent = lent;
+        });
+    }
+}
+
 /// Ends a server on a worker that served it: as a range's end, and what its tasks make is handed
 /// over again from here on.
 #[cfg(any(test, feature = "threads"))]

@@ -175,7 +175,9 @@ impl Pool {
             self.read_mail(at, &mut io);
             io.run_ready();
             if let Some(job) = self.find(at) {
+                let serving = super::super::threads::job_starts();
                 job();
+                super::super::threads::job_ends(serving);
                 idle = 0;
                 io.poll_now();
             } else if io.has_ready() {

@@ -9,17 +9,17 @@ def total(map: Table[str], start: int) -> int:
 def main(stdout: Stdout):
     mut map = Table[str]()
     for n in range(50):
-        map.add("name " + str(n))
+        _ = map.add("name " + str(n))
     gone = map.add("gone")
-    map.remove(gone)
+    _ = map.remove(gone)
     results = sorted([total(map, n) for n in parallel(range(64))])
     stdout.print(results[0], results[63], map.len())
     maps = [map, map, map, map]
     mut each = maps
     for ref held in parallel(each):
-        held.add("more")
+        _ = held.add("more")
         mut sizes = 0
         for name in held.values():
             sizes += name.len()
-        held.add(str(sizes))
+        _ = held.add(str(sizes))
     stdout.print(each[0].len(), map.len())

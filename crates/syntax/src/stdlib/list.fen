@@ -6,6 +6,13 @@ extend list[T]:
         for item in more:
             self.append(item)
 
+    ## The item at `at`, counting from the end when it's negative as `self[at]` does, or `None`
+    ## when there's no item there, where `self[at]` would stop the program.
+    def get(self, at: int) -> T?:
+        size = self.len()
+        if at >= size or at < -size: return None
+        self[at]
+
     ## Reverses the items in place.
     def reverse(ref self):
         mut low = 0

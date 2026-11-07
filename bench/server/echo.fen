@@ -12,4 +12,4 @@ def main(net: Net, stdout: Stdout):
     with net.listen(0)? as server:
         stdout.print(server.port)
         for connection in parallel(server):
-            answer(connection)?
+            _ = answer(connection)?

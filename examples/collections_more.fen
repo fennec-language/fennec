@@ -48,8 +48,8 @@ def main(stdout: Stdout, fs: Fs):
     # Table.
     mut enemies = Table[str]()
     first = enemies.add("ash")
-    enemies.add("kit")
-    enemies.add("vex")
+    _ = enemies.add("kit")
+    _ = enemies.add("vex")
     for id, name in enemies.items():
         stdout.print(name, id == first)
     stdout.print(enemies.ids().len(), enemies[first])

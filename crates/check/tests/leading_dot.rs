@@ -69,7 +69,7 @@ fn with_nothing_expected_a_shared_case_is_ambiguous() {
         def main(stdout: Stdout):
             stdout.print(.Int(1))
             n = 2
-            n == .Name('x')
+            _ = n == .Name('x')
             stdout.print(.Eof)
     ";
     assert_eq!(

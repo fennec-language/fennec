@@ -49,6 +49,9 @@ pub(in crate::embed) const YIELD: u64 = u64::MAX;
 /// What a parked wait is woken with.
 const READY: u64 = 0;
 const TIMED_OUT: u64 = 1;
+/// A launched task's wait, woken by its stop. Not `Wake::Cancelled`, after which every wait a task
+/// comes to ends at once: a cleanup in its grace has to be able to wait.
+const STOPPED: u64 = 2;
 
 /// The workers' wakers' token, and the listeners' below it, one for each of up to `SERVERS`
 /// servers running at once; connections count up from 0, below them all.
@@ -449,7 +452,7 @@ impl Io {
         let token = self.waiting.iter().find(|(_, (parked, ..))| *parked == task).map(|(token, _)| *token);
         if let Some(token) = token {
             self.waiting.remove(&token);
-            self.ready.push_back((task, Wake::Cancelled));
+            self.ready.push_back((task, Wake::Ready(STOPPED)));
         }
     }
 
@@ -740,7 +743,7 @@ fn park_on_token(token: Token, deadline: Option<Instant>, stoppable: bool) -> Pa
     }
     match woken {
         Some(Wake::Ready(TIMED_OUT)) => Parked::TimedOut,
-        Some(Wake::Cancelled) => Parked::Cancelled,
+        Some(Wake::Cancelled | Wake::Ready(STOPPED)) => Parked::Cancelled,
         _ => Parked::Ready,
     }
 }
@@ -748,10 +751,15 @@ fn park_on_token(token: Token, deadline: Option<Instant>, stoppable: bool) -> Pa
 fn parked_as(woken: Option<Wake>) -> Parked {
     match woken {
         Some(Wake::Ready(TIMED_OUT)) => Parked::TimedOut,
-        Some(Wake::Cancelled) => {
-            cut_short();
-            Parked::Cancelled
+        // A stop cuts the wait short, unless it's a cleanup's in its grace, which looks again.
+        Some(Wake::Ready(STOPPED)) => {
+            if cut_short() {
+                Parked::Cancelled
+            } else {
+                Parked::Ready
+            }
         }
+        Some(Wake::Cancelled) => Parked::Cancelled,
         _ => Parked::Ready,
     }
 }

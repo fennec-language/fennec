@@ -118,6 +118,10 @@ fn prelude_functions() -> HashSet<String> {
 /// How each test's function is named, which no program can write.
 const TEST_FUNCTION: &str = "test:";
 
+/// The function a property test with capabilities calls before each input, `test:world`, which
+/// native code makes a new world of fakes.
+const NEW_WORLD: &str = "world";
+
 /// What each test's function is named, by its number.
 fn function_name(number: usize) -> String {
     format!("{TEST_FUNCTION}{number}")
@@ -224,6 +228,10 @@ fn test_functions(number: usize, test: &TestDef, inputs: &mut Inputs<'_>) -> Opt
     let mut args: Vec<String> = capabilities.iter().map(ToString::to_string).collect();
     let mut made = String::new();
     let indent = "        ";
+    // Each input gets fakes in a world of its own, as the interpreter gives it.
+    if !test.capabilities.is_empty() {
+        let _ = writeln!(made, "{indent}{PREFIX}{NEW_WORLD}()");
+    }
     for (at, input) in test.inputs.iter().enumerate() {
         let function = inputs.function_for(input.ty.as_ref()?)?;
         let _ = writeln!(made, "{indent}input{at} = {function}(ref state, 0)");
@@ -254,6 +262,9 @@ fn trimmed_for(module: &Module, tests: &[&TestDef]) -> Option<Module> {
     }
     if tests.iter().any(|test| !test.inputs.is_empty()) {
         made.extend(functions_in(inputs.source(), 0)?);
+    }
+    if tests.iter().any(|test| !test.inputs.is_empty() && !test.capabilities.is_empty()) {
+        made.extend(functions_in(&format!("def {PREFIX}{NEW_WORLD}():\n    pass\n"), 0)?);
     }
     trimmed.items.extend(made.into_iter().map(Item::Function));
     fennec_build::keep_what_functions_reach(&mut trimmed, &|name| name.starts_with(TEST_FUNCTION));
@@ -383,10 +394,7 @@ pub(crate) fn run(module: &Module, wanted: &[String], defines: &dyn Fn(&str) -> 
     let tests: Vec<&TestDef> = tests.collect();
     for test in &tests {
         let unique = tests.iter().filter(|other| other.name == test.name).count() == 1;
-        // A property test with capabilities takes a new world for each input, which only the
-        // interpreter gives yet.
-        let takes_both = !test.inputs.is_empty() && !test.capabilities.is_empty();
-        if unique && !takes_both && inputs_can_be_made(module, test) {
+        if unique && inputs_can_be_made(module, test) {
             plain.push(*test);
         } else {
             result.left.push(test.name.clone());

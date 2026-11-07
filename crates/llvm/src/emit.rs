@@ -464,6 +464,7 @@ impl<'p> Module<'_, 'p> {
             inside_slots: HashMap::new(),
             pair_slots: HashMap::new(),
             walks: HashMap::new(),
+            saving: crate::rollback::saving_handles(function),
         };
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
@@ -533,7 +534,10 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// it's marked for LLVM.
     pub(crate) place_homes: HashMap<usize, (String, Kind, &'static str)>,
     /// The instruction being written: its block, and its place in it.
-    at: (usize, usize),
+    pub(crate) at: (usize, usize),
+    /// The handles of the `lock ... as ref` blocks whose changes are saved, for a crash to put
+    /// back, by local.
+    pub(crate) saving: HashSet<usize>,
     /// What the next way out on a failure is for, when what writes it says.
     check_kind: Option<(Span, Option<CheckKind>)>,
     /// Items of lists, by field path and index, known to be inside their lists here.
@@ -1575,21 +1579,69 @@ impl Emit<'_, '_, '_> {
         result
     }
 
-    /// Whether two floats are the same, or not, as floats have one equality everywhere: `0.0` is
-    /// the same as `-0.0`, and NaN as any other NaN. LLVM's own comparison does this with a literal
-    /// on one side, which is never NaN.
-    pub(crate) fn float_equal(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
+    /// A comparison of two floats, which have one equality and order everywhere: `0.0` is the same
+    /// as `-0.0`, and NaN comes after everything and is the same as any other NaN. LLVM's own
+    /// comparisons do this with a literal on one side, which is never NaN, and take a second look
+    /// otherwise.
+    pub(crate) fn float_compare(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
         let plain = |value: &str| {
             value
                 .strip_prefix("0x")
                 .and_then(|bits| u64::from_str_radix(bits, 16).ok())
                 .is_some_and(|bits| !f64::from_bits(bits).is_nan())
         };
-        if plain(a) || plain(b) {
-            let (temp, cc) = (self.temp(), if op == BinOp::Eq { "oeq" } else { "une" });
+        let single = if plain(b) {
+            Some(match op {
+                BinOp::Eq => "oeq",
+                BinOp::NotEq => "une",
+                BinOp::Lt => "olt",
+                BinOp::LtEq => "ole",
+                BinOp::Gt => "ugt",
+                _ => "uge",
+            })
+        } else if plain(a) {
+            Some(match op {
+                BinOp::Eq => "oeq",
+                BinOp::NotEq => "une",
+                BinOp::Lt => "ult",
+                BinOp::LtEq => "ule",
+                BinOp::Gt => "ogt",
+                _ => "oge",
+            })
+        } else {
+            None
+        };
+        if let Some(cc) = single {
+            let temp = self.temp();
             self.line(&format!("{temp} = fcmp {cc} double {a}, {b}"));
             return temp;
         }
+        let not = |emit: &mut Self, value: String| {
+            let flipped = emit.temp();
+            emit.line(&format!("{flipped} = xor i1 {value}, true"));
+            flipped
+        };
+        match op {
+            BinOp::Eq => self.floats_same(a, b),
+            BinOp::NotEq => {
+                let same = self.floats_same(a, b);
+                not(self, same)
+            }
+            BinOp::Lt => self.float_less(a, b),
+            BinOp::Gt => self.float_less(b, a),
+            BinOp::LtEq => {
+                let more = self.float_less(b, a);
+                not(self, more)
+            }
+            _ => {
+                let less = self.float_less(a, b);
+                not(self, less)
+            }
+        }
+    }
+
+    /// Whether two floats are the same: equal as numbers, or both NaN.
+    fn floats_same(&mut self, a: &str, b: &str) -> String {
         let (equal, a_nan, b_nan, both, same) =
             (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{equal} = fcmp oeq double {a}, {b}"));
@@ -1597,12 +1649,16 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{b_nan} = fcmp uno double {b}, {b}"));
         self.line(&format!("{both} = and i1 {a_nan}, {b_nan}"));
         self.line(&format!("{same} = or i1 {equal}, {both}"));
-        if op == BinOp::Eq {
-            return same;
-        }
-        let differ = self.temp();
-        self.line(&format!("{differ} = xor i1 {same}, true"));
-        differ
+        same
+    }
+
+    /// Whether a float comes before another: less as a number, or before a NaN and not one itself.
+    fn float_less(&mut self, a: &str, b: &str) -> String {
+        let (less, a_number, both) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{less} = fcmp ult double {a}, {b}"));
+        self.line(&format!("{a_number} = fcmp ord double {a}, {a}"));
+        self.line(&format!("{both} = and i1 {less}, {a_number}"));
+        both
     }
 
     fn float_binary(
@@ -1612,20 +1668,8 @@ impl Emit<'_, '_, '_> {
         rhs: &Operand,
         span: Span,
     ) -> Result<String, String> {
-        if matches!(op, BinOp::Eq | BinOp::NotEq) {
-            return Ok(self.float_equal(op, (a, b)));
-        }
-        let compare = match op {
-            BinOp::Lt => Some("olt"),
-            BinOp::LtEq => Some("ole"),
-            BinOp::Gt => Some("ogt"),
-            BinOp::GtEq => Some("oge"),
-            _ => None,
-        };
-        if let Some(cc) = compare {
-            let temp = self.temp();
-            self.line(&format!("{temp} = fcmp {cc} double {a}, {b}"));
-            return Ok(temp);
+        if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) {
+            return Ok(self.float_compare(op, (a, b)));
         }
         let word = match op {
             BinOp::Add => "fadd",
@@ -1679,6 +1723,13 @@ impl Emit<'_, '_, '_> {
     ) -> Result<(), String> {
         if let ("str.isdigit", Some(dest), [text], true) = (name, dest, args, self.headers()) {
             return self.header_isdigit(dest, text);
+        }
+        // What `fennec test` calls before each input of a property test with capabilities: a new
+        // world of fakes, with nothing left by the input before.
+        if name == "test:world" && args.is_empty() {
+            self.declare("declare void @fennec_aot_test_world(i64)");
+            self.line("call void @fennec_aot_test_world(i64 1)");
+            return Ok(());
         }
         let callee = *self
             .module
@@ -2185,7 +2236,16 @@ impl Emit<'_, '_, '_> {
                 self.slice(*dest, object, start.as_ref(), end.as_ref(), span)
             }
             InstKind::Format { dest, parts } => self.format(*dest, parts, span),
-            InstKind::Builtin { dest, name, args, .. } => self.builtin(*dest, name, args, span),
+            InstKind::Builtin { dest, name, args, changes } => {
+                // A value of a `lock ... as ref` block changed in place is saved first.
+                if *changes
+                    && !self.saving.is_empty()
+                    && let Some(changed) = args.first()
+                {
+                    self.save_before_change(changed)?;
+                }
+                self.builtin(*dest, name, args, span)
+            }
             InstKind::Call { dest, function, args } => self.call(*dest, function, args, span),
             InstKind::MakeGenerator { dest, generator, args } => self.make_generator(*dest, generator, args),
             InstKind::GetSlot { dest, generator, slot } => self.get_slot(*dest, generator, *slot),

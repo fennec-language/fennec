@@ -63,19 +63,19 @@ fn leaving_early_when_none_narrows_the_rest() {
             player = find(name)
             if player is None:
                 return
-            player.name
+            _ = player.name
 
         def b(names: list[str]):
             for name in names:
                 player = find(name)
                 if player is None:
                     continue
-                player.name
+                _ = player.name
             for name in names:
                 player = find(name)
                 if player is None:
                     break
-                player.name
+                _ = player.name
 
         error Missing:
             name: str
@@ -84,13 +84,13 @@ fn leaving_early_when_none_narrows_the_rest() {
             player = find(name)
             if not (player is not None):
                 fail Missing(name)
-            player.name
+            _ = player.name
 
         def d(name: str):
             player = find(name)
             if player is None:
                 stdout_less = 1
-            player.name
+            _ = player.name
     ";
     assert_eq!(
         problems(&format!("{FIND}\n{}", crate::dedent(program))),
@@ -120,7 +120,7 @@ fn checks_narrow_the_code_they_guard() {
             else:
                 stdout_less = player.name
             names = [p.name for p in [player] if p is not None]
-            player.name
+            _ = player.name
     ";
     assert_eq!(
         problems(&format!("{FIND}\n{}", crate::dedent(program))),
@@ -162,12 +162,12 @@ fn question_mark_and_else_chains() {
 
         def d(name: str):
             player = find(name) else Player(name='x')
-            player.name.upper()
+            _ = player.name.upper()
             find(name).name.upper()
 
         def e(name: str):
             player = find(name)?
-            player.name
+            _ = player.name
 
         def f(name: str):
             longer = find(name).name.len() + 1 else 0
@@ -189,7 +189,7 @@ fn assigning_a_value_counts_as_checking() {
             mut player = find(name)
             if player is None:
                 player = Player(name='x')
-            player.name
+            _ = player.name
 
         def b(names: list[str]):
             mut best = find('')
@@ -201,9 +201,9 @@ fn assigning_a_value_counts_as_checking() {
         def c(names: list[str]):
             mut last = find('a')
             last = Player(name='y')
-            last.name
+            _ = last.name
             last = None
-            last.name
+            _ = last.name
     ";
     assert_eq!(
         problems(&format!("{FIND}\n{}", crate::dedent(program))),
@@ -456,11 +456,11 @@ fn match_cases_bind_typed_values() {
         def b(shape: Shape, other: T):
             match shape:
                 case .Circle(r): r + 1
-            match other:
+            _ = match other:
                 case .Circle(dotted): dotted + 1
                 case Circle(plain): plain + 1
                 case _: 0
-            match 3:
+            _ = match 3:
                 case .Circle(number): number + 1
                 case _: 0
             pair = (1, 'a')
@@ -564,7 +564,7 @@ fn a_loop_keeps_what_its_body_leaves_alone() {
         "mut x: int? = 5\nif x is None:\n    return\nfor n in names:\n    use(x + 1)\nx = None\nuse(x else 0)\n",
         "mut x: int? = None\nfor n in names:\n    x = 1\n    use(x + 1)\n",
         "mut x: int? = None\nfor n in names:\n    if x is not None:\n        use(x + 1)\n    x = 1\n",
-        "h = Held(x=1)\nif h.x is not None:\n    for n in names:\n        use(h.x + 1)\n        h.show()\n",
+        "h = Held(x=1)\nif h.x is not None:\n    for n in names:\n        use(h.x + 1)\n        _ = h.show()\n",
     ];
     for body in cases {
         assert_eq!(problems(&in_a_loop_function(body)), Vec::<String>::new(), "{body}");

@@ -35,7 +35,7 @@ test "each collection is written as what it holds":
     assert json.dumps(scores) == "{\"ash\": 1, \"vex\": 3}"
     assert json.dumps(SortedSet.of([3, 1, 2])) == "[1, 2, 3]"
     mut queue = Deque.of(["a", "b", "c"])
-    queue.popleft()
+    _ = queue.popleft()
     queue.append("d")
     assert json.dumps(queue) == "[\"b\", \"c\", \"d\"]"
     assert json.dumps(Grid.of([[1, 2], [3, 4]])) == "[[1, 2], [3, 4]]"

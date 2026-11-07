@@ -295,8 +295,8 @@ impl Writer<'_> {
                     0 => format!("{list}.append({value})"),
                     1 if self.risky => format!("{list}[{}] = {value}", self.int(2)),
                     1 => format!("if {list}.len() > 0: {list}[{} % {list}.len()] = {value}", self.int(2)),
-                    _ if self.risky => format!("{list}.pop()"),
-                    _ => format!("if {list}.len() > 0: {list}.pop()"),
+                    _ if self.risky => format!("_ = {list}.pop()"),
+                    _ => format!("if {list}.len() > 0: _ = {list}.pop()"),
                 };
                 self.line(indent, &change);
             }

@@ -62,11 +62,11 @@ fn arrow_functions_receive_the_items() {
         items.remove_where(n => n + 'a')
         items.sort(key=n => n + 'a')
         pool.remove_where(s => s + 1)
-        sorted(['a'], key=s => s + 1)
-        max((1, 2), key=n => n + 'a')
-        min('ab', key=c => c + 1)
-        sorted({1: 2}, key=k => k + 'a')
-        sorted(5, key=k => k + 'a')
+        _ = sorted(['a'], key=s => s + 1)
+        _ = max((1, 2), key=n => n + 'a')
+        _ = min('ab', key=c => c + 1)
+        _ = sorted({1: 2}, key=k => k + 'a')
+        _ = sorted(5, key=k => k + 'a')
     ";
     assert_eq!(
         in_main_after(ID_MAP, program),

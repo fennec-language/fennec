@@ -207,6 +207,8 @@ impl Emit<'_, '_, '_> {
             ("main.result", [result], [Some(Kind::Boxed(_) | Kind::Enum(_))]) => {
                 self.main_result(result, span)
             }
+            // An int `main` gives back is the program's exit code.
+            ("main.result", [code], [Some(Kind::Int)]) => self.main_exit(code),
             ("enumerate", [text], [Some(Kind::Str)]) => dest.and_then(|dest| {
                 let (text, _) = self.operand(text)?;
                 self.on_blocks([&text], |emit, [block]| {
@@ -462,6 +464,23 @@ impl Emit<'_, '_, '_> {
         self.leave_if_failed();
         self.line(&format!("br label %{fine}"));
         self.start_block(&fine);
+        // An int in its `Ok` is the program's exit code.
+        let (_, given) = self.case_of(&kind, "Ok")?;
+        if let Some((_, offset, Some(Kind::Int))) = given.first() {
+            let at = self.offset(&fields, *offset);
+            let access = if matches!(kind, Kind::Boxed(_)) { crate::emit::FIELD_ACCESS } else { "" };
+            let code = self.load_field(&Kind::Int, &at, access);
+            self.declare("declare void @fennec_main_exit(i64) nounwind");
+            self.line(&format!("call void @fennec_main_exit(i64 {code})"));
+        }
+        Ok(())
+    }
+
+    /// Hands the int `main` gave back to the runtime, which exits with it.
+    fn main_exit(&mut self, code: &Operand) -> Result<(), String> {
+        let (code, _) = self.operand(code)?;
+        self.declare("declare void @fennec_main_exit(i64) nounwind");
+        self.line(&format!("call void @fennec_main_exit(i64 {code})"));
         Ok(())
     }
 
@@ -641,10 +660,16 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    /// An int that orders as a float's total order does: `f64::total_cmp`'s key.
+    /// An int that orders as floats do, with those that are equal as one.
     fn total_order_key(&mut self, value: &str) -> String {
-        let (bits, sign, rest, key) = (self.temp(), self.temp(), self.temp(), self.temp());
-        self.line(&format!("{bits} = bitcast double {value} to i64"));
+        let (raw, zero, nan, plain, bits) = (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{raw} = bitcast double {value} to i64"));
+        self.line(&format!("{zero} = fcmp oeq double {value}, {}", float_text(0.0)));
+        self.line(&format!("{nan} = fcmp uno double {value}, {value}"));
+        self.line(&format!("{plain} = select i1 {zero}, i64 0, i64 {raw}"));
+        let nan_bits = f64::NAN.to_bits().cast_signed();
+        self.line(&format!("{bits} = select i1 {nan}, i64 {nan_bits}, i64 {plain}"));
+        let (sign, rest, key) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{sign} = ashr i64 {bits}, 63"));
         self.line(&format!("{rest} = lshr i64 {sign}, 1"));
         self.line(&format!("{key} = xor i64 {bits}, {rest}"));

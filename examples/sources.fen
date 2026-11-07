@@ -1,6 +1,7 @@
 # A `with` source gives back `with T`: setup above its `lend`, cleanup below, and
 # `lend value else:` for when the caller's block fails. The cleanup runs however the block
-# ends well, by `return`, `break` or falling off its end.
+# ends well, by `return`, `break` or falling off its end, and the end of the block is the
+# finish: cleanup that fails is the `with` statement failing.
 error PayError:
     why: str
 
@@ -23,10 +24,22 @@ def pay(ref ledger: Ledger, name: str, amount: int) -> int fails PayError:
         ledger.lines.append(f"{label} pays {charge(amount)?}")
     amount
 
+def saved(ref ledger: Ledger, full: bool) -> with int fails PayError:
+    lend ledger.lines.len()
+    if full: fail PayError(why="the disk is full")
+    ledger.lines.append("saved")
+
+def save(ref ledger: Ledger, full: bool) -> int fails PayError:
+    with saved(ref ledger, full)? as count:
+        return count
+    0
+
 def main(stdout: Stdout):
     mut ledger = Ledger()
     stdout.print(pay(ref ledger, "ana", amount=40) else -1)
     stdout.print(pay(ref ledger, "bo", amount=0) else -1)
     stdout.print(pay(ref ledger, "cy", amount=500) else -1)
+    stdout.print(save(ref ledger, full=False) else -1)
+    stdout.print(save(ref ledger, full=True) else -1)
     for line in ledger.lines:
         stdout.print(line)

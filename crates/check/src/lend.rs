@@ -1,7 +1,7 @@
 //! `with` sources: a function that gives back `with T` lends a `T` to its caller's `with`
 //! block, with exactly one `lend`. Setup goes above the `lend` and cleanup below it, and
-//! `lend x else:` runs when the caller's block fails. Nothing after the `lend` may fail, since
-//! there'd be nowhere to report it once the caller's block has succeeded. Once checked,
+//! `lend x else:` runs when the caller's block fails. The end of the block is the finish: code
+//! after the `lend` may fail, and its failure is the `with` statement's. Once checked,
 //! `lend_lowering` writes each `with` over a source in as the source's own body.
 
 use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Span, Stmt, StmtKind};
@@ -130,8 +130,7 @@ impl FnCx<'_> {
         spans
     }
 
-    /// What's checked of a source once its body is: it lends once, and nothing after its
-    /// `lend` can fail.
+    /// What's checked of a source once its body is: it lends once.
     pub(crate) fn source_finished(&mut self, def: &FnDef) {
         if self.lent == 0 {
             let lends = self.lends.clone().map_or_else(|| "something".to_owned(), |ty| a(&ty));
@@ -143,70 +142,7 @@ impl FnCx<'_> {
                 .with_help("write `lend value` where the caller's block runs"),
             );
         }
-        if let Some(span) = fails_after_lend(&def.body) {
-            self.error(
-                Diagnostic::new(
-                    "nothing after `lend` can fail, since the caller's block has succeeded by then",
-                    span,
-                )
-                .with_help(
-                    "a finish that can fail is a method the caller calls and checks, like `tx.commit()?`",
-                ),
-            );
-        }
     }
-}
-
-/// The first `?` or `fail` that runs after a body's `lend`: below it in its block, or below
-/// the statement holding it in each block around it.
-fn fails_after_lend(body: &[Stmt]) -> Option<Span> {
-    let at = body.iter().position(holds_lend)?;
-    let (holding, after) = body.split_at(at + 1);
-    let inner = holding.last().and_then(|stmt| match &stmt.kind {
-        StmtKind::If { branches, otherwise } => branches
-            .iter()
-            .map(|(_, body)| body.as_slice())
-            .chain(otherwise.as_deref())
-            .find_map(fails_after_lend),
-        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
-            fails_after_lend(body)
-        }
-        _ => None,
-    });
-    inner.or_else(|| after.iter().find_map(fails_in))
-}
-
-/// Whether a statement is a `lend` or holds one.
-fn holds_lend(stmt: &Stmt) -> bool {
-    match &stmt.kind {
-        StmtKind::Lend { .. } => true,
-        StmtKind::If { branches, otherwise } => {
-            branches.iter().any(|(_, body)| body.iter().any(holds_lend))
-                || otherwise.as_deref().is_some_and(|body| body.iter().any(holds_lend))
-        }
-        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
-            body.iter().any(holds_lend)
-        }
-        _ => false,
-    }
-}
-
-/// Where a statement can fail: a `fail`, or a `?`, outside the functions written in it.
-pub(crate) fn fails_in(stmt: &Stmt) -> Option<Span> {
-    if let StmtKind::Fail(_) = &stmt.kind {
-        return Some(stmt.span);
-    }
-    if let StmtKind::Def(_) = &stmt.kind {
-        return None;
-    }
-    let mut found = None;
-    let mut copy = stmt.clone();
-    fennec_syntax::visit::in_stmts(std::slice::from_mut(&mut copy), &mut |expr| {
-        if found.is_none() && matches!(expr.kind, ExprKind::Try { .. }) {
-            found = Some(expr.span);
-        }
-    });
-    found
 }
 
 /// A `?` in a source's caller's block that might not run where it's written: past `and` or

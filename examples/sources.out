@@ -1,6 +1,8 @@
 40
 0
 -1
+7
+-1
 open ana
 ANA pays 40
 close ana
@@ -8,3 +10,4 @@ open bo
 close bo
 open cy
 undo cy
+saved

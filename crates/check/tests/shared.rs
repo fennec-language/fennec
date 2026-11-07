@@ -316,7 +316,7 @@ fn a_shared_value_is_reached_only_in_a_lock() {
 }
 
 /// A function that gives back `with T` is a source: it lends a `T` to its caller's `with` block
-/// with exactly one `lend`, outside any loop, and nothing after the `lend` can fail. It's only
+/// with exactly one `lend`, outside any loop. It's only
 /// used as what a `with` takes, and the block's name is what it lends.
 #[test]
 fn a_with_source_lends_once_to_a_with_block() {
@@ -340,10 +340,9 @@ fn a_with_source_lends_once_to_a_with_block() {
         found("def none() -> with int:\n    pass\n"),
         ["`none` gives back `with`, so it lends an int with `lend`"]
     );
-    assert_eq!(
-        found("def late() -> with int fails Oops:\n    lend 1\n    x = risky()?\n"),
-        ["nothing after `lend` can fail, since the caller's block has succeeded by then"]
-    );
+    // The end of the block is the finish: cleanup after the `lend` may fail, and its failure is
+    // the `with` statement's.
+    assert_eq!(found("def late() -> with int fails Oops:\n    lend 1\n    x = risky()?\n"), empty);
     assert_eq!(
         found("def looped() -> with int:\n    for n in range(2):\n        lend n\n"),
         ["this `lend` is in a loop, so it could lend more than once"]

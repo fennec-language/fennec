@@ -215,7 +215,7 @@ with fs.open("save.dat")? as file, net.connect(host)? as conn:
 - `with conn.split() as reader, writer:` gives a connection's read and write sides, for one task reading while another writes.
 - `with` never locks.
 
-Writing your own takes `-> with T` and one `lend`, outside any loop. Setup goes above it and cleanup below. Built, apart from requiring a finish:
+Writing your own takes `-> with T` and one `lend`, outside any loop. Setup goes above it and cleanup below. Built:
 
 ```fennec
 def transaction(self) -> with Transaction fails DbError:
@@ -232,7 +232,7 @@ with db.transaction()? as tx:
 ```
 
 - `lend x else:` runs when the caller's block fails, and a failure there is reported with the caller's. `return`, `break` and `continue` in the caller count as success. Built.
-- Nothing after `lend` may fail on the success path. Built. A type can require its caller to finish it, like `tx.commit()?`, and a wrapper around such a type requires finishing too. The compiler works this out from a `lend` whose cleanup can fail, so there's no marker to write. A written file is one, finished with `close()?`, so a failed write can't be hidden by an automatic close. Requiring a finish isn't built yet.
+- Nothing after `lend` may fail on the success path. A type can require its caller to finish it, like `tx.commit()?`, and a wrapper around such a type requires finishing too. The compiler works this out from a `lend` whose cleanup can fail, so there's no marker to write. A written file is one, finished with `close()?`, so a failed write can't be hidden by an automatic close. Not built yet.
 - A source can't `lend` while it holds a lock it took. Opening a file inside a lock is fine.
 - A generator can `lend` each item, closed when that round of the loop ends: `def clients(server: Server) -> Iterator[with Connection]:`. That's how `for conn in parallel(server)` works, with each connection belonging to its own round's task.
 - Tasks started inside a `with` may borrow what it lent, since they always end first. From many tasks at once, only its read-only methods, like a server's `accept`.

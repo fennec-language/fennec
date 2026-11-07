@@ -1,6 +1,6 @@
 ## A length of time, to the nanosecond. Made with `Duration.seconds(0.5)`,
 ## `Duration.millis(16)` or `Duration(nanos=...)`.
-struct Duration:
+export struct Duration:
     nanos = 0
 
     def seconds(seconds: float) -> Duration:
@@ -32,7 +32,7 @@ struct Duration:
         self.nanos < other.nanos
 
 ## A moment, read from a `Clock`. Subtract two to get the `Duration` between them.
-struct Instant:
+export struct Instant:
     ## Nanoseconds since the clock started.
     nanos = 0
 

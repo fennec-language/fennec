@@ -35,7 +35,7 @@ extend str:
 
 ## Where a type's `def str(self, ref out: StrWriter)` writes how it prints. `print`, `str(x)`
 ## and f-strings call it, and so does printing a collection that holds the type.
-struct StrWriter:
+export struct StrWriter:
     _parts = list[str]()
 
     ## Adds `text` as it is.

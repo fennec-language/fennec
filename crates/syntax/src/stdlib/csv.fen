@@ -3,34 +3,35 @@
 # can end in `\n`, `\r\n` or `\r`, and blank lines aren't rows. Every field is text.
 
 ## The rows of `text`. Text that isn't CSV fails with a `ParseError`.
-def loads(text: str, delimiter = ",") -> list[list[str]]:
-    [row for _, row in _rows(text, delimiter)?]
+export def loads(text: str, delimiter = ",") -> list[list[str]]:
+    [row for _, row in rows_in(text, delimiter)?]
 
 ## The rows after the first as dicts, with the first row's fields as their keys. A row
 ## with a different number of fields fails with a `ParseError`.
-def records(text: str, delimiter = ",") -> list[dict[str, str]]:
-    rows = _rows(text, delimiter)?
+export def records(text: str, delimiter = ",") -> list[dict[str, str]]:
+    rows = rows_in(text, delimiter)?
     if rows.len() == 0: return []
     _, names = rows[0]
-    if set(names).len() != names.len(): fail _problem("the first row has the same name twice", 1, 1)
+    if set(names).len() != names.len():
+        fail parse_problem("the first row has the same name twice", 1, 1)
     mut found = list[dict[str, str]]()
     for line, row in rows[1:]:
         if row.len() != names.len():
             problem = f"the first row sets {names.len()} as the number of fields, but this row has {row.len()}"
-            fail _problem(problem, line, 1)
+            fail parse_problem(problem, line, 1)
         found.append({name: field for name, field in zip(names, row)})
     found
 
 ## CSV text of `rows`, each ending in `\n`.
-def dumps(rows: list[list[str]], delimiter = ",") -> str:
+export def dumps(rows: list[list[str]], delimiter = ",") -> str:
     mut lines = list[str]()
     for row in rows:
-        lines.append(_line(row, delimiter))
+        lines.append(written_row(row, delimiter))
     "".join(lines)
 
 ## CSV text with `names` as its first row, then each record's value for each name, which
 ## is empty when it has none. Other keys aren't written.
-def dumps_records(names: list[str], entries: list[dict[str, str]], delimiter = ",") -> str:
+export def dumps_records(names: list[str], entries: list[dict[str, str]], delimiter = ",") -> str:
     mut rows = [names]
     for record in entries:
         rows.append([(record.get(name) else "") for name in names])
@@ -38,21 +39,21 @@ def dumps_records(names: list[str], entries: list[dict[str, str]], delimiter = "
 
 ## One row and the newline after it. A row of one empty field is written in quotes,
 ## since a blank line isn't a row.
-def _line(row: list[str], delimiter: str) -> str:
+def written_row(row: list[str], delimiter: str) -> str:
     if row == [""]: return "\"\"\n"
-    delimiter.join([_field(field, delimiter) for field in row]) + "\n"
+    delimiter.join([quoted_field(field, delimiter) for field in row]) + "\n"
 
-def _field(field: str, delimiter: str) -> str:
+def quoted_field(field: str, delimiter: str) -> str:
     special = delimiter in field or "\"" in field or "\n" in field or "\r" in field
     if not special: return field
     "\"" + field.replace("\"", "\"\"") + "\""
 
-def _problem(problem: str, line: int, column: int) -> ParseError:
+def parse_problem(problem: str, line: int, column: int) -> ParseError:
     ParseError(message=f"{problem} at line {line}, column {column}", line=line, column=column)
 
 ## Each row, with the line it starts on. It goes through the characters once, since
 ## finding a character by its position can mean walking from the start.
-def _rows(text: str, delimiter: str) -> list[(int, list[str])]:
+def rows_in(text: str, delimiter: str) -> list[(int, list[str])]:
     mut rows = []
     mut row = []
     mut field = ""
@@ -109,17 +110,21 @@ def _rows(text: str, delimiter: str) -> list[(int, list[str])]:
             row_line = line
             after_return = c == "\r"
         elif after_quote:
-            fail _problem("a field can't go on after its closing quote", line, column)
+            fail parse_problem("a field can't go on after its closing quote", line, column)
         elif c == "\"":
             if field != "":
-                fail _problem("a quote in a field needs the whole field in quotes", line, column)
+                fail parse_problem(
+                    "a quote in a field needs the whole field in quotes",
+                    line,
+                    column,
+                )
             in_quotes = True
             was_quoted = True
             quote_line = line
             quote_column = column
         else:
             field += c
-    if in_quotes: fail _problem("this quote never ends", quote_line, quote_column)
+    if in_quotes: fail parse_problem("this quote never ends", quote_line, quote_column)
     if row.len() > 0 or field != "" or was_quoted:
         row.append(field)
         rows.append((row_line, row))

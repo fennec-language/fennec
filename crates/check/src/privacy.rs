@@ -12,9 +12,9 @@ use crate::function::FnCx;
 pub(crate) const TOP_LEVEL_HELP: &str =
     "top-level names are already private to the kit; `_` marks a private field or method";
 
-/// Reports each of a program's own top-level names that starts with `_`: a function, a type, an
-/// interface, an alias or a constant. The standard library's are left alone for now: its modules
-/// hide their helpers that way until they say what they `export`.
+/// Reports each top-level name in a module that starts with `_`: a function, a type, an
+/// interface, an alias or a constant. The standard library's modules are held to it too, by the
+/// last part of the names their functions are given, like `json.article`.
 pub(crate) fn top_level_underscores(module: &Module) -> Vec<Diagnostic> {
     let mut found = Vec::new();
     for item in &module.items {
@@ -25,7 +25,8 @@ pub(crate) fn top_level_underscores(module: &Module) -> Vec<Diagnostic> {
             Item::TypeAlias { name, span, .. } | Item::Const { name, span, .. } => (name, *span),
             _ => continue,
         };
-        if name.len() > 1 && name.starts_with('_') && !span.in_prelude() {
+        let own = name.rsplit('.').next().unwrap_or(name);
+        if own.len() > 1 && own.starts_with('_') {
             let message = format!("`{name}` is a top-level name, so it doesn't start with `_`");
             found.push(Diagnostic::new(message, span).with_help(TOP_LEVEL_HELP));
         }

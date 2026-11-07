@@ -8,11 +8,11 @@ from std.re import is_regex
 ## Its methods: `match(text)` at the start, `fullmatch(text)` for all of it, `search(text)`
 ## anywhere (each gives a `Match?`); `find_all(text)`; `replace(text, with)`, where `\1` in
 ## `with` is group 1; and `split(text)`.
-struct Regex:
+export struct Regex:
     pattern: str where is_regex(pattern)
 
 ## Where a `Regex` matched, and what its groups caught.
-struct Match:
+export struct Match:
     text: str
     ## Where the match starts and ends, counting characters, as in `text[start:end]`.
     start: int

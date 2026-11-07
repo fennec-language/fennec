@@ -91,6 +91,7 @@ fn library_alone<'m>(library: impl IntoIterator<Item = &'m Module>) -> Program {
     let mut program = Program::default();
     for prelude in library {
         program.add(prelude, true);
+        program.problems.extend(crate::privacy::top_level_underscores(prelude));
     }
     program.prelude_imports = std::mem::take(&mut program.imports);
     program.prelude_modules = std::mem::take(&mut program.modules);

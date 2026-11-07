@@ -428,3 +428,24 @@ fn a_top_level_name_doesnt_start_with_an_underscore() {
         ["top-level names are already private to the kit; `_` marks a private field or method"]
     );
 }
+
+/// The standard library is one kit: its modules use each other's helpers, which a program can't
+/// import, or reach through the module, since they aren't exported. Nothing in it starts with `_`
+/// at the top level either, which every check would report.
+#[test]
+fn a_program_reaches_only_what_the_standard_library_exports() {
+    let hidden = "`std.json` has nothing called `article`";
+    let imported = problems(
+        "from std.json import article\n\ndef main(stdout: Stdout):\n    stdout.print(article(\"x\"))\n",
+    );
+    assert!(imported.first().is_some_and(|problem| problem.starts_with(hidden)), "{imported:?}");
+    let reached = problems(
+        "from std import json\n\ndef main(stdout: Stdout):\n    stdout.print(json.article(\"x\"))\n",
+    );
+    assert!(reached.first().is_some_and(|problem| problem.starts_with(hidden)), "{reached:?}");
+    let empty: [&str; 0] = [];
+    assert_eq!(
+        problems("from std.json import dumps\n\ndef main(stdout: Stdout):\n    stdout.print(dumps([1]))\n"),
+        empty
+    );
+}

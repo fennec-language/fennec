@@ -424,25 +424,26 @@ jobs:
           built=0
           failed=0
           for program in examples/*.fen; do
-            for how in --llvm "--llvm --release"; do
-              # shellcheck disable=SC2086 # `$how` is two words for a release
-              if ! .github/scripts/within.sh 300 ./target/release/fennec build $how "$program" -o checked > /dev/null 2> built.txt; then
+            for how in dev release; do
+              release=()
+              [ "$how" = release ] && release=(--release)
+              if ! .github/scripts/within.sh 300 ./target/release/fennec build "${release[@]}" "$program" -o checked > /dev/null 2> built.txt; then
                 # Anything but a failed tool or link is the backend saying what it doesn't take yet.
                 grep -qE "linking failed|failed on|couldn't run|once trimmed|panicked|didn't finish" built.txt || continue
-                echo "::error::$program didn't build with $how"; cat built.txt; failed=1; continue
+                echo "::error::$program didn't build in $how"; cat built.txt; failed=1; continue
               fi
               if ! nm checked | grep -q __asan_report_load; then
-                echo "::error::$program built with $how without AddressSanitizer"; failed=1; continue
+                echo "::error::$program built in $how without AddressSanitizer"; failed=1; continue
               fi
               built=$((built + 1))
               ran=0
               .github/scripts/within.sh 120 ./checked > printed.txt 2> said.txt || ran=$?
               if [ "$ran" = 124 ]; then
-                echo "::error::$program built with $how didn't finish"; cat said.txt; failed=1
+                echo "::error::$program built in $how didn't finish"; cat said.txt; failed=1
               elif grep -q AddressSanitizer said.txt; then
-                echo "::error::$program built with $how touched memory it doesn't own"; cat said.txt; failed=1
+                echo "::error::$program built in $how touched memory it doesn't own"; cat said.txt; failed=1
               elif ! cmp -s printed.txt "${program%.fen}.out"; then
-                echo "::error::$program built with $how printed something different"; cat said.txt; failed=1
+                echo "::error::$program built in $how printed something different"; cat said.txt; failed=1
               fi
             done
           done
@@ -493,7 +494,7 @@ jobs:
           failed=0
           for program in examples/*.fen bench/kernels/*.fen; do
             name=${program%.fen}
-            if ! ./target/release/fennec build --llvm "$program" -o checked > /dev/null 2> built.txt; then
+            if ! ./target/release/fennec build "$program" -o checked > /dev/null 2> built.txt; then
               # Anything but a failed link is the backend saying what it doesn't take yet.
               grep -qE "linking failed|Undefined symbols|undefined reference" built.txt || continue
               case "$still_needs" in
@@ -524,7 +525,7 @@ jobs:
           failed=0
           for program in crates/fennec/tests/fixtures/workers/*.fen examples/parallel_loops.fen examples/parallel_put_back.fen; do
             FENNEC_LEAN_RUNTIME='' FENNEC_THREADS_RUNTIME='' ./target/release/fennec run --interp "$program" 2> /dev/null | sort > wanted.txt
-            ./target/release/fennec build --llvm "$program" -o checked > /dev/null
+            ./target/release/fennec build "$program" -o checked > /dev/null
             for threads in 1 4 8; do
               if [ "$(FENNEC_THREADS=$threads timeout 120 ./checked 2> said.txt | sort)" != "$(cat wanted.txt)" ]; then
                 echo "::error::$program at $threads threads printed something different"; cat said.txt; failed=1
@@ -592,7 +593,7 @@ jobs:
           programs=$(grep -lE 'parallel\(' examples/*.fen | xargs grep -L Net)
           for program in $programs crates/fennec/tests/fixtures/workers/*.fen; do
             FENNEC_SANITIZE='' ./target/release/fennec run --interp "$program" 2> /dev/null | sort > wanted.txt
-            if ! ./target/release/fennec build --llvm "$program" -o checked > /dev/null 2> built.txt; then
+            if ! ./target/release/fennec build "$program" -o checked > /dev/null 2> built.txt; then
               echo "::error::$program didn't build"; cat built.txt; failed=1; continue
             fi
             nm checked | grep -q "$SYMBOL" || { echo "::error::$program built without the sanitizer"; failed=1; }

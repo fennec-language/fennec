@@ -47,8 +47,7 @@ const USAGE: &str = "usage:
   fennec run --no-test [path] [args]  run it without running the tests first
   fennec run --jit [path] [args]  run it with the JIT instead of LLVM
   fennec run --interp [path]  run it with the interpreter instead of compiling it
-  fennec build [path] [-o out]  compile it to a standalone executable
-  fennec build --llvm [--release] [--cpu baseline] [path] [-o out]  the same through LLVM, for what that backend takes so far;
+  fennec build [--release] [--cpu baseline] [path] [-o out]  compile it to a native program through LLVM;
                                      --release optimizes the whole program as one;
                                      --cpu baseline builds for x86-64 machines older than AVX2
   fennec test [path]        run a kit's tests, or a single file's, skipping unchanged ones that passed
@@ -86,6 +85,11 @@ fn arguments() -> Option<Vec<String>> {
         args.drain(at..at + 2);
         aot::BASELINE.store(true, std::sync::atomic::Ordering::Relaxed);
     }
+    // `build --llvm` is what asked for LLVM before every build went through it. It's still taken,
+    // as the benchmarks build the commit before this one with the same command.
+    if args.first().is_some_and(|arg| arg == "build") && args.get(1).is_some_and(|arg| arg == "--llvm") {
+        args.remove(1);
+    }
     Some(args)
 }
 
@@ -103,18 +107,14 @@ fn main() -> ExitCode {
         ["run", "--jit"] => run(run::Engine::NativeNoted, ".", &[]),
         ["run", "--jit", path, arguments @ ..] => run(run::Engine::NativeNoted, path, arguments),
         ["run", path, arguments @ ..] => run(run::Engine::Native, path, arguments),
-        ["build", "--llvm", "--release"] => aot::build_llvm(".", None, true),
-        ["build", "--llvm", "--release", "-o", output] => aot::build_llvm(".", Some(output), true),
-        ["build", "--llvm", "--release", path] => aot::build_llvm(path, None, true),
-        ["build", "--llvm", "--release", path, "-o", output] => aot::build_llvm(path, Some(output), true),
-        ["build", "--llvm"] => aot::build_llvm(".", None, false),
-        ["build", "--llvm", "-o", output] => aot::build_llvm(".", Some(output), false),
-        ["build", "--llvm", path] => aot::build_llvm(path, None, false),
-        ["build", "--llvm", path, "-o", output] => aot::build_llvm(path, Some(output), false),
-        ["build"] => aot::build(".", None),
-        ["build", "-o", output] => aot::build(".", Some(output)),
-        ["build", path] => aot::build(path, None),
-        ["build", path, "-o", output] => aot::build(path, Some(output)),
+        ["build", "--release"] => aot::build(".", None, true),
+        ["build", "--release", "-o", output] => aot::build(".", Some(output), true),
+        ["build", "--release", path] => aot::build(path, None, true),
+        ["build", "--release", path, "-o", output] => aot::build(path, Some(output), true),
+        ["build"] => aot::build(".", None, false),
+        ["build", "-o", output] => aot::build(".", Some(output), false),
+        ["build", path] => aot::build(path, None, false),
+        ["build", path, "-o", output] => aot::build(path, Some(output), false),
         ["test", rest @ ..] => test(rest),
         ["bench"] => bench::bench("."),
         ["bench", path] => bench::bench(path),

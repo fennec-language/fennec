@@ -114,6 +114,7 @@ impl Checker {
         program.add(module, false);
         let mut diagnostics = std::mem::take(&mut program.problems);
         diagnostics.extend(crate::imports::unimported(module, &program));
+        diagnostics.extend(crate::privacy::top_level_underscores(module));
         Checker {
             program,
             states: BTreeMap::new(),

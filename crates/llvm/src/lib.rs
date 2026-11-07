@@ -1,4 +1,4 @@
-//! The LLVM backend, behind `fennec build --llvm`: the typed IR as LLVM's text format, one module
+//! The LLVM backend, behind `fennec build` and `fennec run`: the typed IR as LLVM's text format, one module
 //! a function, each optimized and compiled by `opt` and `llc` and cached by what's in its text.
 //! Editing a function recompiles it and what copied it to inline, and little else.
 //!

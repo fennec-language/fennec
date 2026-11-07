@@ -1490,6 +1490,9 @@ const FILLED_WITHIN_ROOM: &str = r#"def main(stdout: Stdout):
         names = [f"n{i}" for i in range(50)]
         total += numbers[999] + numbers.len() + names[49].len()
     stdout.print(total)
+    zeros = [0 for _ in range(4)]
+    grid = [[r * 10 + c for c in range(3)] for r in range(3)]
+    stdout.print(zeros, grid, [row.len() for row in grid])
     mut shared = []
     mut seen = []
     for i in range(6):
@@ -9455,7 +9458,7 @@ test \"what it prints is kept\"(stdout: Stdout, clock: Clock):
 
 test \"a failure comes back as its case\"(net: Net):
     match net.connect(\"localhost\", 9001):
-        case Err(Refused(host, port)):
+        case Err(Refused(host=host, port=port)):
             assert host == \"localhost\" and port == 9001
         case _:
             assert False

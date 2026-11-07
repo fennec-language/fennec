@@ -1,0 +1,62 @@
+# `std.url` takes a URL apart into a `Url` and puts it back together. `quote` and `unquote`
+# write and read the `%20` escapes a URL uses for what it can't hold as it is, and
+# `encode_query` and `decode_query` the `name=value&...` pairs of a query, with `+` for a space.
+from std import url
+from std.url import Url
+
+## A search link for `words` on `site`.
+def search_link(site: str, words: str) -> str:
+    str(Url(scheme="https", host=site, path="/search", query={"q": words}))
+
+test "a URL comes apart into its parts"():
+    found = url.parse("HTTPS://fox@Example.COM:8443/den%20map/a?q=red+fox&n=1#top")?
+    assert found.scheme == "https" and found.user == "fox"
+    assert found.host == "example.com" and found.port == 8443
+    assert found.path == "/den map/a"
+    assert found.query == {"q": "red fox", "n": "1"}
+    assert found.fragment == "top"
+    assert str(found) == "https://fox@example.com:8443/den%20map/a?q=red+fox&n=1#top"
+
+test "an IPv6 host keeps its case and gets its brackets back"():
+    found = url.parse("http://[::1]:8080/")?
+    assert found.host == "::1" and found.port == 8080
+    assert found.address() == "[::1]:8080"
+    assert str(found) == "http://[::1]:8080/"
+
+test "a relative URL has no scheme or host"():
+    found = url.parse("/search?q=fox")?
+    assert found.scheme == "" and found.host == "" and found.path == "/search"
+    assert str(found) == "/search?q=fox"
+    assert url.parse("mailto:fox@example.com")?.path == "fox@example.com"
+
+test "what can't be a URL says why"():
+    for text, why in [
+        ("https://example.com:99999/", "its port `99999` isn't from 1 to 65535"),
+        ("https://example.com/a b", "it can't hold a space or a control character"),
+        ("http://[::1/", "its IPv6 address has no `]`"),
+    ]:
+        match url.parse(text):
+            case Err(problem):
+                assert problem.message == f"`{text}` isn't a URL: {why}"
+            case Ok(_):
+                assert False
+
+test "escapes and queries go both ways"():
+    assert url.quote("red fox/den") == "red%20fox%2Fden"
+    assert url.quote("red fox/den", keep="/") == "red%20fox/den"
+    assert url.quote("été") == "%C3%A9t%C3%A9"
+    assert url.unquote("%C3%A9t%C3%A9 %zz") == "été %zz"
+    assert url.encode_query({"q": "a&b=c", "n": "1 2"}) == "q=a%26b%3Dc&n=1+2"
+    assert url.decode_query("q=a%26b%3Dc&n=1+2&flag") == {"q": "a&b=c", "n": "1 2", "flag": ""}
+    assert (
+        search_link("example.com", words="fox & hound")
+        == "https://example.com/search?q=fox+%26+hound"
+    )
+
+test "any query text comes back as it was" for name: str, value: str:
+    assert url.decode_query(url.encode_query({name: value})) == {name: value}
+
+def main(stdout: Stdout):
+    found = url.parse("https://example.com/den%20map?q=red+fox") else Url()
+    stdout.print(found.host, found.path, found.query.get("q") else "")
+    stdout.print(search_link("example.com", words="été"))

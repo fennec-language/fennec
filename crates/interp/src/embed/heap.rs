@@ -401,6 +401,13 @@ impl Heap {
         self.made.len()
     }
 
+    /// Puts `made` in place of the blocks this heap's made since it last handed them over, and
+    /// those in `made`'s place: for a parked range, which keeps its own.
+    #[cfg(any(test, feature = "threads"))]
+    pub(super) fn swap_made(&mut self, made: &mut Vec<u64>) {
+        std::mem::swap(&mut self.made, made);
+    }
+
     /// Takes every block this heap made after it had made `since`, and that doesn't live for
     /// the whole run, for another thread's heap to adopt: what a task made that outlives it.
     pub(crate) fn hand_over(&mut self, since: usize) -> Vec<Box<[u64]>> {

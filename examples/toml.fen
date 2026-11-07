@@ -86,7 +86,7 @@ def describe(text: str) -> str:
     match toml.loads[Sample](text):
         case Ok(sample):
             f"read {sample}"
-        case ParseError(message):
+        case ParseError(message=message):
             f"couldn't read it: {message}"
 
 def main(stdout: Stdout):

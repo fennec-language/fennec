@@ -196,7 +196,7 @@ impl Renamer<'_> {
 
     fn pattern(&self, pattern: &mut Pattern) {
         match pattern {
-            Pattern::Variant { name, dotted: false, args } => {
+            Pattern::Variant { name, dotted: false, args, .. } => {
                 self.name(name);
                 for arg in args {
                     self.pattern(arg);

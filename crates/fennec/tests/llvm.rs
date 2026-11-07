@@ -2938,6 +2938,55 @@ fn shared_values_reached_in_locks_build_natively() -> std::io::Result<()> {
     same_as_the_interpreter_in_both_builds("shared_locks", SHARED_LOCKS)
 }
 
+/// A `lock ... as ref` block's changes are saved for a crash to put back, and kept when it ends
+/// normally: an int, a string and a list changed, two values locked together, a `return` from
+/// inside, and appends in a loop. What's printed after is the interpreter's.
+#[test]
+fn changes_in_a_lock_to_write_are_kept_as_the_interpreter_keeps_them() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "lock_saves",
+        r#"struct Account:
+    owner: str
+    log: list[int]
+    balance = 0
+
+def pay(account: shared Account, amount: int, name: str):
+    lock account as ref payer:
+        payer.balance -= amount
+        payer.owner = name
+        payer.log.append(amount)
+
+def swap(a: shared Account, b: shared Account) -> bool:
+    lock a, b as ref first, ref second:
+        if first.balance == second.balance:
+            return False
+        held = first.owner
+        first.owner = second.owner
+        second.owner = held
+    True
+
+def fill(account: shared Account, count: int):
+    lock account as ref held:
+        for n in range(count):
+            held.log.append(n)
+            held.balance += n
+
+def main(stdout: Stdout):
+    shared ana = Account(owner="ana", log=[], balance=10)
+    shared bo = Account(owner="a name long enough to live in a block", log=[1])
+    pay(ana, amount=4, name="bo")
+    stdout.print(swap(ana, b=bo))
+    fill(bo, count=100)
+    lock ana, bo as first, second:
+        stdout.print(first.balance, first.owner, first.log)
+        stdout.print(second.balance, second.owner, second.log.len())
+"#,
+    )
+}
+
 const SHARED_LOCKS: &str = "struct Account:
     owner: str
     balance = 0

@@ -321,7 +321,8 @@ pub(super) fn stop_for_failure() {
 fn report(output: &[u8], failure: &str) -> i32 {
     let printed = std::io::stdout().write_all(output).and_then(|()| std::io::stdout().flush());
     if failure.is_empty() && printed.is_ok() {
-        return 0;
+        // What `main` gave back, when it gave an int.
+        return i32::from(super::take_exit_code());
     }
     let _ = std::io::stderr().write_all(failure.as_bytes());
     1

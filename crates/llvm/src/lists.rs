@@ -578,11 +578,14 @@ impl Emit<'_, '_, '_> {
         let mut place = self.slot(object);
         let mut kind = self.kind_of(object)?.clone();
         let mut in_block = false;
+        // The block the field is in, for a `lock ... as ref` block to save it before it changes.
+        let mut holder = None;
         for (step, name) in path.iter().enumerate() {
             let inside = if matches!(kind, Kind::Boxed(_)) {
                 in_block = true;
                 let block =
                     self.block_to_change((object, path.get(..step).unwrap_or_default()), &place, &kind);
+                holder = Some(block.clone());
                 self.offset(&block, FIELDS_OFFSET)
             } else {
                 place
@@ -592,6 +595,14 @@ impl Emit<'_, '_, '_> {
             kind = inner;
         }
         let access = if in_block { FIELD_ACCESS } else { VALUE_ACCESS };
+        // In a `lock ... as ref` block, the old value goes to the lock's log, which may take over
+        // its count, so a crash can put it back.
+        let saved = match &holder {
+            Some(block) if self.saving.contains(&object.0) && !put_back => {
+                self.save_before_store(block, &place, &kind)
+            }
+            _ => false,
+        };
         if put_back && kind.counted() {
             // The field's old value was taken out, and this is what became of it.
             let text = self.text_of(&kind);
@@ -603,9 +614,11 @@ impl Emit<'_, '_, '_> {
             let (old, text) = (self.temp(), self.text_of(&kind));
             self.line(&format!("{old} = load {text}, ptr {place}{access}"));
             self.line(&format!("store {text} {value}, ptr {place}{access}"));
-            self.release_kind(&old, &kind);
+            if !saved {
+                self.release_kind(&old, &kind);
+            }
         } else {
-            if !put_back {
+            if !put_back && !saved {
                 self.release_inline(&kind, &place);
             }
             self.store_field(&kind, &value, &place, access);

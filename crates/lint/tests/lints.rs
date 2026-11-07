@@ -579,6 +579,23 @@ fn an_argument_that_cant_be_read_from_the_call_needs_a_name() {
     }
 }
 
+/// What two arguments both take is named as it's written: `shared Account`, `list[int]`.
+#[test]
+fn a_swap_names_the_type_as_its_written() {
+    let program = "struct Account:\n    balance = 0\n\ndef swap(a: shared Account, b: shared Account):\n    pass\n\n\
+        def both(a: list[int], b: list[int]):\n    pass\n\ndef main():\n    swap(x, y)\n    both(x, y)\n";
+    let said: Vec<String> =
+        found(program).unwrap().iter().map(|lint| lint.diagnostic.message.clone()).collect();
+    assert!(
+        said.iter().any(|said| said.contains("`a` and `b` both take `shared Account`, so swapping")),
+        "{said:?}"
+    );
+    assert!(
+        said.iter().any(|said| said.contains("`a` and `b` both take `list[int]`, so swapping")),
+        "{said:?}"
+    );
+}
+
 #[test]
 fn an_argument_that_can_be_read_stays_as_it_is() {
     for call in [

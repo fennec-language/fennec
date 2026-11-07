@@ -450,6 +450,22 @@ pub struct Leftovers {
 }
 
 /// Ends the run: what it printed, why it failed if it did, and what it left behind.
+/// The exit code `main` gave back, as an int or in an `Ok`: the process exits with it, once
+/// nothing failed.
+static EXIT_CODE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// Keeps the int `main` gave back as the program's exit code.
+pub fn main_exit(code: i64) {
+    EXIT_CODE.store(code, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The exit code `main` gave back, 0 if it gave none, as the process gets it: its lowest 8 bits,
+/// as Unix takes them, on every system. Taking it starts the next run at 0.
+pub fn take_exit_code() -> u8 {
+    let code = EXIT_CODE.swap(0, std::sync::atomic::Ordering::Relaxed);
+    u8::try_from(code & 0xff).unwrap_or(0)
+}
+
 pub fn finish() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
     finish_run(false)
 }
@@ -842,8 +858,14 @@ pub mod temps {
         })
     }
 
-    /// Fails the program the way the interpreter does when `main` gives back a failure. The
-    /// result is the last temporary, so it's dropped, leaving none behind.
+    /// `fennec_main_exit(code)`: keeps the int `main` gave back as the program's exit code.
+    pub extern "C" fn main_exit(code: i64) {
+        super::main_exit(code);
+    }
+
+    /// Fails the program the way the interpreter does when `main` gives back a failure, and
+    /// keeps the int it gives back otherwise as the exit code. The result is the last temporary,
+    /// so it's dropped, leaving none behind.
     pub extern "C" fn main_result(value: i64, start: i64, end: i64) {
         attempt(|state: &mut State| {
             let result = state.take(value);
@@ -855,6 +877,16 @@ pub mod temps {
                     format!("`main` failed: {}", crate::format::repr(&error)),
                     span(start, end),
                 )),
+                Value::Ok(given) => {
+                    if let Value::Int(code) = given.as_ref() {
+                        super::main_exit(*code);
+                    }
+                    Ok(())
+                }
+                Value::Int(code) => {
+                    super::main_exit(code);
+                    Ok(())
+                }
                 _ => Ok(()),
             }
         });

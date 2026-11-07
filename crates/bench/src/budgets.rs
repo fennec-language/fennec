@@ -32,6 +32,9 @@ struct Budget {
 }
 
 const FORMAT: Budget = Budget { name: "format one file", limit: Duration::from_millis(50), enforced: true };
+/// Not met yet: the linter checks all of the standard library before it lints, and that's most of
+/// the time it takes.
+const LINT: Budget = Budget { name: "lint one file", limit: Duration::from_millis(50), enforced: false };
 const CHECK: Budget = Budget { name: "edit to checked", limit: Duration::from_millis(100), enforced: true };
 const VERDICT: Budget =
     Budget { name: "edit to verdict, one function", limit: Duration::from_secs(1), enforced: true };
@@ -197,7 +200,7 @@ fn measure(kit: &Kit, runs: usize) -> Result<Vec<Measured>, String> {
     let (check_warm, check_cold) = edit_to_checked(kit, runs)?;
     let counted = kit.counted_edit();
     let check = Measured { budget: CHECK, warm: check_warm, cold: Some(check_cold), counted };
-    let mut measured = vec![check, kit.format(runs)?];
+    let mut measured = vec![check, kit.format(runs)?, kit.lint(runs)?];
     measured.push(kit.verdict(runs)?);
     let mut run = kit.repeated(RUN, &["run"], runs)?;
     run.counted = kit.counted(&["run"], MOST_RUN_INSTRUCTIONS);
@@ -303,6 +306,28 @@ impl Kit {
         let mut measured = self.repeated(FORMAT, &["fmt", "--check", EDITED], runs)?;
         measured.cold = None;
         Ok(measured)
+    }
+
+    /// Linting the edited file, whose lints, like functions nothing uses, don't fail this.
+    fn lint(&self, runs: usize) -> Result<Measured, String> {
+        let linted = || -> Result<Duration, String> {
+            let start = Instant::now();
+            let output = self
+                .command(&["lint", EDITED])
+                .output()
+                .map_err(|err| format!("couldn't run fennec: {err}"))?;
+            let took = start.elapsed();
+            match output.status.code() {
+                Some(0 | 1) => Ok(took),
+                _ => Err(format!(
+                    "`fennec lint {EDITED}` failed:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                )),
+            }
+        };
+        let cold = linted()?;
+        let times = (0..runs).map(|_| linted()).collect::<Result<Vec<_>, _>>()?;
+        Ok(Measured { budget: LINT, warm: median(times), cold: Some(cold), counted: None })
     }
 
     /// From changing one function to `fennec test` having a pass or fail, each time, which must

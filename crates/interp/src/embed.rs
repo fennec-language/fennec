@@ -71,6 +71,11 @@ pub mod serve {
         0
     }
 
+    /// Without tasks, nothing makes way.
+    pub extern "C" fn task_tick() -> i64 {
+        0
+    }
+
     pub extern "C" fn net_serve_failure() -> i64 {
         FAILED_WITH.take()
     }

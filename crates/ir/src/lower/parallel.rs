@@ -187,9 +187,12 @@ impl Lowering<'_> {
         body: &[Stmt],
         span: Span,
     ) -> Option<Lowered<()>> {
-        let (true, [name], Some(server)) =
-            (self.context.options.outline_parallel, names, parallel_items(iter))
-        else {
+        let (true, false, [name], Some(server)) = (
+            self.context.options.outline_parallel,
+            self.context.options.serve_in_order,
+            names,
+            parallel_items(iter),
+        ) else {
             return None;
         };
         if self.type_at(server.span)? != Type::Named("Server".to_owned()) || !leaves_only_by_failing(body) {

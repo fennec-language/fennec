@@ -2064,10 +2064,8 @@ impl Emit<'_, '_, '_> {
                 [response] => self.response_text(dest.ok_or("no result")?, response),
                 _ => Err("`text` takes nothing".to_owned()),
             },
-            // A test's network is a fake, which only the interpreter holds.
-            other if crate::analysis::is_socket_method(other) && !self.module.shared.traced => {
-                self.socket_call(dest, other, args, span)
-            }
+            // In a test, the runtime hands a socket's method to the fake network it holds.
+            other if crate::analysis::is_socket_method(other) => self.socket_call(dest, other, args, span),
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }
     }

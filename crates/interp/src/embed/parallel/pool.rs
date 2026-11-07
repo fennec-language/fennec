@@ -84,6 +84,8 @@ thread_local! {
     static OWN: RefCell<Option<Worker<Job>>> = const { RefCell::new(None) };
     /// The lowest address native code on this worker may grow its stack to, or 0 off the pool.
     static LIMIT: Cell<usize> = const { Cell::new(0) };
+    /// Which pool and which of its workers this thread is, on a worker.
+    static HERE: Cell<Option<(&'static Pool, usize)>> = const { Cell::new(None) };
     /// Ranges a job just made, to start as parked tasks once it returns (see `as_task`).
     static STARTING: RefCell<Vec<Box<dyn FnOnce() -> i64>>> = const { RefCell::new(Vec::new()) };
 }
@@ -171,6 +173,7 @@ impl Pool {
         LIMIT.set(std::ptr::from_ref(&here).addr().saturating_sub(WORKER_NATIVE_BYTES));
         super::super::threads::take_index();
         WORKER.set(true);
+        HERE.set(Some((self, at)));
         OWN.set(Some(deque));
         match setup {
             Some(setup) => setup(),
@@ -304,6 +307,12 @@ impl Pool {
     pub(in crate::embed) fn threads(&self) -> usize {
         self.stealers.len()
     }
+}
+
+/// The pool this thread is a worker of, and which worker, for sending it work later, as a wait
+/// that finishes on another thread does.
+pub(in crate::embed) fn here() -> Option<(&'static Pool, usize)> {
+    HERE.get()
 }
 
 /// The shared pool, started on first use.

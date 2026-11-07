@@ -1703,7 +1703,42 @@ impl Emit<'_, '_, '_> {
             "fennec_list_with_room"
         };
         let list = self.new_list_with(item, &room, helper);
+        if self.known.length_kept.contains_key(&dest.0) {
+            let kept = self.kept_length(dest.0);
+            self.line(&format!("store i64 0, ptr {kept}"));
+        }
         self.assign(dest, &list)
+    }
+
+    /// The local a list's length is kept in while its loop fills it.
+    fn kept_length(&mut self, list: usize) -> String {
+        if let Some(kept) = self.kept_lengths.get(&list) {
+            return kept.clone();
+        }
+        let kept = self.label("%kept_length");
+        let _ = writeln!(self.allocas, "  {kept} = alloca i64");
+        self.kept_lengths.insert(list, kept.clone());
+        kept
+    }
+
+    /// At the block after a loop that kept a list's length aside, writes it to the list.
+    pub(crate) fn write_kept_lengths(&mut self, block: usize) {
+        let mut ended: Vec<usize> = self
+            .known
+            .length_kept
+            .iter()
+            .filter(|(_, after)| **after == block)
+            .map(|(list, _)| *list)
+            .collect();
+        ended.sort_unstable();
+        for list in ended {
+            let (kept, slot) = (self.kept_length(list), self.slot(LocalId(list)));
+            let (length, block) = (self.temp(), self.temp());
+            self.line(&format!("{length} = load i64, ptr {kept}"));
+            self.line(&format!("{block} = load ptr, ptr {slot}"));
+            let length_at = self.offset(&block, u32::try_from(LIST_LENGTH).unwrap_or(0));
+            self.line(&format!("store i64 {length}, ptr {length_at}{HEADER_ACCESS}"));
+        }
     }
 
     /// `list.append(value)`: in place when nothing else holds the list and there's room.
@@ -1735,10 +1770,19 @@ impl Emit<'_, '_, '_> {
             let slot = self.slot(*local);
             let (list, length, longer) = (self.temp(), self.temp(), self.temp());
             self.line(&format!("{list} = load ptr, ptr {slot}"));
-            let length_at = self.offset(&list, u32::try_from(LIST_LENGTH).unwrap_or(0));
-            self.line(&format!("{length} = load i64, ptr {length_at}{LENGTH_ACCESS}"));
-            self.line(&format!("{longer} = add nuw nsw i64 {length}, 1"));
-            self.line(&format!("store i64 {longer}, ptr {length_at}{HEADER_ACCESS}"));
+            // Kept aside while the loop runs, when it only leaves by its header; otherwise in
+            // the list, for whatever another way out leads to.
+            if self.known.length_kept.contains_key(&local.0) {
+                let kept = self.kept_length(local.0);
+                self.line(&format!("{length} = load i64, ptr {kept}"));
+                self.line(&format!("{longer} = add nuw nsw i64 {length}, 1"));
+                self.line(&format!("store i64 {longer}, ptr {kept}"));
+            } else {
+                let length_at = self.offset(&list, u32::try_from(LIST_LENGTH).unwrap_or(0));
+                self.line(&format!("{length} = load i64, ptr {length_at}{LENGTH_ACCESS}"));
+                self.line(&format!("{longer} = add nuw nsw i64 {length}, 1"));
+                self.line(&format!("store i64 {longer}, ptr {length_at}{HEADER_ACCESS}"));
+            }
             let memory = held.memory(self.module.layouts);
             let at = self.item_address(&list, &memory, &length);
             return self.fill(&held, new_item, &at, ITEM_ACCESS);

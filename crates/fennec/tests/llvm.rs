@@ -6033,6 +6033,31 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A list of a union's values, whose members are generic or tuples, prints each value as itself,
+/// as the interpreter does, from a literal or from fields, in `print` and in an f-string.
+#[test]
+fn lists_of_unions_with_generic_members_print_their_values() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "union_lists",
+        r#"struct Box[T]:
+    value: T
+
+def main(stdout: Stdout):
+    words: Box[list[int] | str] = Box(value="kit")
+    lists: Box[list[int] | str] = Box(value=[1, 2])
+    stdout.print([words.value, lists.value])
+    stdout.print(f"{[words.value, lists.value]}")
+    both: list[list[int] | str] = ["a", [3]]
+    stdout.print(both)
+    pairs: list[(int, str) | bool] = [(1, "one"), True]
+    stdout.print(pairs)
+"#,
+    )
+}
+
 /// A known difference: native code writes a field holding a union tagged with its member, as
 /// the language says, where the JIT's JSON writer, which a plain `fennec build` uses too, leaves
 /// the tag out. The JIT is on its way out, so its side isn't being fixed.

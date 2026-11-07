@@ -47,7 +47,25 @@ pub(crate) fn lower(module: &mut Module, sources: &BTreeMap<(u32, u32), Source>)
             _ => {}
         }
     }
+    if lowering.made > 0 {
+        discards_apart_again(module);
+    }
     lowering.made > 0
+}
+
+/// Gives each `_` its own name again: a source's `else:` is written in at each place the block
+/// can fail, and each copy repeats its `_ = ...`. No one can write the name, so nothing reads it.
+fn discards_apart_again(module: &mut Module) {
+    let discard = format!("_{}", fennec_syntax::visit::HIDDEN);
+    let mut made = 0;
+    fennec_syntax::visit::exprs_mut(module, &mut |expr| {
+        if let ExprKind::Name(name) = &expr.kind
+            && name.starts_with(&discard)
+        {
+            expr.kind = ExprKind::Name(format!("{discard}{made}"));
+            made += 1;
+        }
+    });
 }
 
 struct Lowering<'s> {
@@ -489,6 +507,27 @@ fn fail_through(body: &mut Vec<Stmt>, otherwise: &[Stmt]) {
 /// which runs `otherwise` before failing: `x = f()?` becomes
 /// `got = match f(): case Ok(v): v / case Err(e): otherwise; fail e`, then `x = got`.
 fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made: &mut usize) {
+    // A whole line that's a `?`, like `file.write_text(text)?`, is a `match` statement: what it
+    // gives back may be nothing, which no name holds.
+    if let StmtKind::Expr(Expr { kind: ExprKind::Try { value, context: None }, .. }) = &held.kind {
+        let span = held.span;
+        let ok = MatchArm {
+            pattern: Pattern::Variant {
+                name: "Ok".to_owned(),
+                dotted: false,
+                args: vec![Pattern::Wildcard],
+                fields: Vec::new(),
+            },
+            guard: None,
+            body: vec![stmt(StmtKind::Pass, span)],
+            span: here(span),
+        };
+        let matched = Expr {
+            kind: ExprKind::Match { subject: value.clone(), arms: vec![ok, failed_arm(otherwise, span)] },
+            span: here(span),
+        };
+        held.kind = StmtKind::Expr(matched);
+    }
     loop {
         let mut taken = None;
         let span = held.span;
@@ -524,11 +563,8 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
         let Some((got, value)) = taken else { return };
         *made += 1;
         let ok = arm("Ok", "value__try", vec![stmt_value(name("value__try", span))], span);
-        let mut failed: Vec<Stmt> = otherwise.to_vec();
-        failed.push(stmt(StmtKind::Fail(name("error__try", span)), span));
-        let err = arm("Err", "error__try", failed, span);
         let matched = Expr {
-            kind: ExprKind::Match { subject: Box::new(value), arms: vec![ok, err] },
+            kind: ExprKind::Match { subject: Box::new(value), arms: vec![ok, failed_arm(otherwise, span)] },
             span: here(span),
         };
         let mut hoisted = assign(&got, matched, false, None);
@@ -538,6 +574,13 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
         before.extend(inner);
         before.push(hoisted);
     }
+}
+
+/// A hoisted `?`'s `Err` case: the `lend`'s `else:`, then the failure passes on.
+fn failed_arm(otherwise: &[Stmt], span: Span) -> MatchArm {
+    let mut failed: Vec<Stmt> = otherwise.to_vec();
+    failed.push(stmt(StmtKind::Fail(name("error__try", span)), span));
+    arm("Err", "error__try", failed, span)
 }
 
 fn stmt_value(value: Expr) -> Stmt {
@@ -633,7 +676,9 @@ fn declared_in(body: &[Stmt], found: &mut Vec<String>) {
 
 fn targets(target: &Expr, found: &mut Vec<String>) {
     match &target.kind {
-        ExprKind::Name(name) => found.push(name.clone()),
+        // `_ = value` throws the value away, so it declares nothing to rename, kept apart from
+        // the others as `_'1` or as written.
+        ExprKind::Name(name) if name != "_" && !name.starts_with("_'") => found.push(name.clone()),
         ExprKind::Tuple(items) => items.iter().for_each(|item| targets(item, found)),
         _ => {}
     }

@@ -323,6 +323,9 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 **Math types are 32-bit.** `std.math`'s `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` are concrete `f32` types, and `DVec3` and the other `D` types hold doubles. They're not generic: a generic version with an `f32` default could come later without breaking anything. Not built yet: until sized numbers are in, they're `float` and are checked against glam's 64-bit types.
 *Why:* Twice the SIMD throughput for game math, as glam, GLSL and GPUs have it, while `float` stays accurate everywhere else.
 
+**Float functions give the same bits on every platform.** `sin`, `cos`, `tan`, `acos`, `exp`, `log` and `**` are computed by one pure-Rust library, `libm`, in every engine, on arm64, x86-64, Windows and WebAssembly alike. Native code calls the runtime for them, never a platform intrinsic, and never fuses `a*b+c`. Built.
+*Why:* Each platform's own C library rounds some results differently in the last bit, as `cos(-0.65)` does in WebAssembly and `cos(-0.1)` on x86-64 macOS, and replays and lockstep multiplayer need every machine to agree. It costs a little speed in a loop of nothing but these functions, mostly in `**`. Chris decided this on 2026-11-07.
+
 **The compiler tells LLVM that names don't alias.** Exclusive `ref` access proves no two names point at the same memory, so every function gets that guarantee for free. Fortran's speed comes from the same guarantee.
 
 **Integer overflow is checked in release builds too.** Wrapping is opt-in: `x.wrapping_add(y)`.

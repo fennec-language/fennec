@@ -111,7 +111,7 @@ test "a soldier goes after the nearest enemy":
     mut world = World(field=map.Map.drawn([".....", "....."]))
     ash = world.spawn("ash", .Red, .Soldier, (0, 0))
     near = world.spawn("vex", .Blue, .Soldier, (2, 0))
-    world.spawn("far", .Blue, .Soldier, (4, 1))
+    _ = world.spawn("far", .Blue, .Soldier, (4, 1))
     decision = decide(world, ash, world.occupied())
     assert decision.target == near
     assert decision.action == .Step(to=(1, 0))
@@ -143,14 +143,14 @@ test "a dead target is let go":
     gone = world.spawn("gone", .Blue, .Soldier, (1, 0))
     other = world.spawn("other", .Blue, .Soldier, (4, 0))
     world.units[ash].target = gone
-    world.units.remove(gone)
+    _ = world.units.remove(gone)
     assert decide(world, ash, world.occupied()).target == other
 
 test "with nobody to fight, a unit follows its leader":
     mut world = World(field=map.Map.drawn(["......"]))
     lead = world.spawn("lead", .Red, .Soldier, (5, 0))
     tail = world.spawn("tail", .Red, .Soldier, (0, 0))
-    world.form_squad("pair", [lead, tail], (5, 0))
+    _ = world.form_squad("pair", [lead, tail], (5, 0))
     decision = decide(world, tail, world.occupied())
     assert decision.action == .Step(to=(1, 0))
     assert decision.path == [(2, 0), (3, 0), (4, 0), (5, 0)]

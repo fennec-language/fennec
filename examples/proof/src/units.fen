@@ -162,7 +162,7 @@ test "a removed unit's Id finds nothing":
     a = world.spawn("ash", .Red, .Soldier, (0, 0))
     b = world.spawn("vex", .Blue, .Soldier, (2, 0))
     world.units[b].target = a
-    world.units.remove(a)
+    _ = world.units.remove(a)
     target = world.units[b].target
     assert target is not None
     if target is not None:

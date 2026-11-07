@@ -57,7 +57,7 @@ fn a_loop_cant_change_what_it_goes_over() {
         changed("team.names", "team.add(name)")
     );
     assert_eq!(
-        changes("for key in scores.keys():\n    scores.pop(key)\n"),
+        changes("for key in scores.keys():\n    _ = scores.pop(key)\n"),
         changed("scores", "scores.pop(key)")
     );
     assert_eq!(

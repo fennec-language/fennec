@@ -139,7 +139,7 @@ fn passing_a_result_where_a_value_is_wanted_is_a_mistake() {
             n * 2
 
         def main(stdout: Stdout):
-            double(risky(1))
+            _ = double(risky(1))
             stdout.print(risky(1))
     ";
     assert_eq!(
@@ -379,7 +379,7 @@ fn an_arrow_function_cant_pass_a_failure_up() {
         assert_eq!(found.len(), 1, "{body}: {found:?}");
     }
     // The failure is the arrow's mistake, not one more way the function around it fails.
-    let around = "error Bad:\n    why: str\n\ndef around() -> list[str] fails Bad:\n    fail Bad(why=\"no\")\n    sorted(['1'], key=text => int(text)?)\n";
+    let around = "error Bad:\n    why: str\n\ndef around() -> list[str] fails Bad:\n    fail Bad(why=\"no\")\n    _ = sorted(['1'], key=text => int(text)?)\n";
     let found = problems(around);
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found.iter().all(|one| one.starts_with(said)), "{found:?}");

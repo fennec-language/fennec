@@ -385,7 +385,7 @@ stream = fs.open(filename) else:
 
 - There's no `exit()`. `fail` out of `main` prints the failure to stderr and exits with code 1, which is built. `main` may also return an `int` as the exit code, which isn't built yet. Nothing else can end the process.
 - `?` means the same everywhere, `parallel` included: a failure in one round passes up out of the loop once the other rounds stop. Built. To let one piece fail alone, handle it in the body, with `match` or `else: continue`. `break` stops new rounds from starting and lets the running ones finish, and a failure passing up cuts them short, like a failed `launch`. Each connection a server lends closes when its round ends, however it ends. Not built yet, apart from the failure passing up. `server.serve(handler)` turns a handler's failure into a 500, in plain Fennec. Not built yet: today's handler can't fail.
-- `?` is only for failures, `else` ends a chain and can leave, and ignoring a returned value is an error, with `_ = call()` to discard one. Not built yet: `sorted(scores)` alone on a line still compiles.
+- `?` is only for failures, `else` ends a chain and can leave, and ignoring a returned value is an error, with `_ = call()` to discard one. Built.
 - `.Case` is required when the type is known, in values and in `case` patterns; `fennec fix` writes it. Built.
 - `fails A | B` combines failures from different places: `?` passes any of them up as it is, and a function type can say it too, as in `(str) -> int fails ParseError | RangeError`. Built.
 - An `else:` block must leave: it ends with `return`, `fail`, `continue` or `break`. Built.

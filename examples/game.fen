@@ -50,10 +50,10 @@ def main(stdout: Stdout):
     step(ref world, 2.0)
     stdout.print(world.enemies[near].position)
 
-    world.enemies.modify(far, foe => foe.take_damage(25))
+    _ = world.enemies.modify(far, foe => foe.take_damage(25))
     stdout.print(world.enemies[far].health)
 
-    world.enemies.remove(near)
+    _ = world.enemies.remove(near)
     stdout.print(attack(ref world, near))
     stdout.print(world.enemies.len(), world.enemies.get(near))
 
@@ -68,5 +68,5 @@ test "attacking a distant enemy fails":
 test "attacking a removed enemy fails":
     mut world = World()
     id = world.enemies.add(Enemy(position=Vec3.zero))
-    world.enemies.remove(id)
+    _ = world.enemies.remove(id)
     assert attack(ref world, id) == Err(TargetGone(id))

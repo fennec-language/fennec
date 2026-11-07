@@ -323,7 +323,7 @@ fn a_with_source_lends_once_to_a_with_block() {
     let errors = "error Oops:\n    why: str\n\ndef risky() -> int fails Oops:\n    1\n\n";
     let empty: [&str; 0] = [];
     let good = format!(
-        "{errors}def opened(name: str) -> with str fails Oops:\n    risky()?\n    lend name + \"!\" else:\n        pass\n\ndef sized(name: str) -> int fails Oops:\n    with opened(name)? as text:\n        return text.len()\n    0\n"
+        "{errors}def opened(name: str) -> with str fails Oops:\n    _ = risky()?\n    lend name + \"!\" else:\n        pass\n\ndef sized(name: str) -> int fails Oops:\n    with opened(name)? as text:\n        return text.len()\n    0\n"
     );
     assert_eq!(problems(&good), empty);
     let found = |body: &str| -> Vec<String> {

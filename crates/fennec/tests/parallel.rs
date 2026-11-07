@@ -67,8 +67,15 @@ fn a_for_mut_over_parallel_and_its_kin_run_as_parallel_calls_natively() -> std::
     let run = fennec(&["run", &source], &dir)?;
     std::fs::remove_dir_all(&dir)?;
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&interpreted.stdout));
-    assert_eq!(String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&interpreted.stdout));
+    // Prints inside `parallel` follow real call order, which can differ between runs, so they're
+    // compared sorted (decisions.md): under `FENNEC_PARALLEL_STRESS` each item is a range of its own.
+    let sorted = |out: &[u8]| {
+        let mut lines: Vec<String> = String::from_utf8_lossy(out).lines().map(str::to_owned).collect();
+        lines.sort();
+        lines
+    };
+    assert_eq!(sorted(&ran.stdout), sorted(&interpreted.stdout));
+    assert_eq!(sorted(&run.stdout), sorted(&interpreted.stdout));
     // The `for mut`, the comprehension, the sum and the loop over `take`'s list: four calls, not
     // ordinary loops.
     let counts = String::from_utf8_lossy(&ran.stderr);

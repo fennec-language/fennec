@@ -39,6 +39,7 @@ impl FnCx<'_> {
         }
         let held = self.checker.settled(&ty);
         self.checker.shared_values.insert((value.span.start, value.span.end), held.clone());
+        self.record(at, &shared(held.clone()));
         self.declare(name, shared(held), false, at);
     }
 

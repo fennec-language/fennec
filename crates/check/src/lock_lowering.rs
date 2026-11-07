@@ -18,11 +18,13 @@ struct Lowering<'d> {
     /// The type each `shared name = value` holds, by the value's span.
     declared: &'d BTreeMap<(u32, u32), Type>,
     made: BTreeMap<String, TypeExpr>,
+    /// Whether anything was written in.
+    changed: bool,
 }
 
-/// Lowers every `shared T`, `shared s = e` and `lock` in `module`.
-pub(crate) fn lower(module: &mut Module, declared: &BTreeMap<(u32, u32), Type>) {
-    let mut lowering = Lowering { declared, made: BTreeMap::new() };
+/// Lowers every `shared T`, `shared s = e` and `lock` in `module`, saying whether there were any.
+pub(crate) fn lower(module: &mut Module, declared: &BTreeMap<(u32, u32), Type>) -> bool {
+    let mut lowering = Lowering { declared, made: BTreeMap::new(), changed: false };
     for item in &mut module.items {
         match item {
             Item::Function(def) => lowering.function(def),
@@ -41,6 +43,7 @@ pub(crate) fn lower(module: &mut Module, declared: &BTreeMap<(u32, u32), Type>) 
             Item::Import(_) => {}
         }
     }
+    let changed = lowering.changed || !lowering.made.is_empty();
     for (name, held) in lowering.made {
         let value = Field {
             name: "value".to_owned(),
@@ -60,6 +63,7 @@ pub(crate) fn lower(module: &mut Module, declared: &BTreeMap<(u32, u32), Type>) 
             span: Span::default(),
         }));
     }
+    changed
 }
 
 /// The name of the `shared` declaration that holds a `held`, made from how it's written.
@@ -148,6 +152,7 @@ impl Lowering<'_> {
             StmtKind::With { value, names, body, lock } => {
                 self.exprs(value);
                 if std::mem::take(lock) {
+                    self.changed = true;
                     let renamed: Vec<(String, String)> = names
                         .iter()
                         .map(|held| (held.name.clone(), format!("{}__lock", held.name)))

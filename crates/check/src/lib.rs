@@ -332,7 +332,6 @@ fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, 
 fn resolved(module: &mut Module, checked: Checked) -> Signatures {
     fennec_syntax::visit::type_fields_from_defaults(module);
     named::put_in_order(module, &checked.named_patterns);
-    lock_lowering::lower(module, &checked.shared_values);
     if !checked.cases.is_empty()
         || !checked.float_sums.is_empty()
         || !checked.generator_types.is_empty()
@@ -386,6 +385,13 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
                 fennec_syntax::visit::name_generator_type(expr, shown);
             }
         });
+    }
+    // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
+    // again, so the signatures and types given back are those of what runs.
+    if lock_lowering::lower(module, &checked.shared_values)
+        && let Ok(again) = checker::Checker::new(module).run(checker::Scope::Everything)
+    {
+        return resolved(module, again);
     }
     fennec_syntax::fuse::stored_stages(module);
     checked.into_signatures()

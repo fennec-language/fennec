@@ -447,3 +447,130 @@ fn what_a_parked_task_printed_comes_out_while_another_task_runs() {
     assert!(first < text.find("from the other task\n").unwrap());
     assert!(first < later);
 }
+
+/// Answers each request with its line, except every tenth, which crashes on purpose.
+fn crashes_every_tenth() -> Handler {
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    Arc::new(move |mut conn: Conn| {
+        let n = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let Ok(Some(mut line)) = conn.read_line(None) else { return 1 };
+        if n.is_multiple_of(10) {
+            return 1;
+        }
+        line.push(b'\n');
+        i64::from(conn.write(&line).is_err())
+    })
+}
+
+/// Sends a line on a connection of its own and gives back the line that came back, or nothing
+/// when the connection closed first.
+fn ask(address: SocketAddr, line: &str) -> Option<String> {
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream.write_all(format!("{line}\n").as_bytes()).unwrap();
+    let mut back = String::new();
+    let read = BufReader::new(stream).read_line(&mut back).unwrap_or(0);
+    (read > 0).then_some(back)
+}
+
+#[test]
+fn a_round_that_crashes_ends_only_itself_and_the_server_answers_the_other_nine() {
+    let (answered, closed) = (Arc::new(std::sync::Mutex::new(0)), Arc::new(std::sync::Mutex::new(0)));
+    let (counted, shut) = (Arc::clone(&answered), Arc::clone(&closed));
+    let served = run(2, &crashes_every_tenth(), move |address| {
+        // One after another, so which is tenth is known.
+        for request in 0..30 {
+            match ask(address, &format!("request {request}")) {
+                Some(back) => {
+                    assert_eq!(back, format!("request {request}\n"));
+                    *counted.lock().unwrap() += 1;
+                }
+                None => *shut.lock().unwrap() += 1,
+            }
+        }
+    });
+    assert_eq!((*answered.lock().unwrap(), *closed.lock().unwrap()), (27, 3));
+    assert_eq!((served.connections, served.failed), (30, 3));
+}
+
+/// Serves with `handler` while `clients` runs, until the server ends by itself, as a round's
+/// `break` or failure ends it. If it hasn't 10 s after the clients finish, it's stopped, and the
+/// result says so, so a server that doesn't end fails its test rather than hang it.
+fn run_until_it_ends(handler: &Handler, clients: impl FnOnce(SocketAddr) + Send + 'static) -> (Served, bool) {
+    let (listener, address) = listener();
+    let ended = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let (watching, had_to_stop) = (Arc::clone(&ended), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    let stopped = Arc::clone(&had_to_stop);
+    let (sent, ran) = std::sync::mpsc::channel();
+    let started = move |stopper: Stopper| {
+        std::thread::spawn(move || {
+            let went = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| clients(address)));
+            let done = watching.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (done, waited) = watching
+                .1
+                .wait_timeout_while(done, Duration::from_secs(10), |done| !*done)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !*done && waited.timed_out() {
+                stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+                stopper.stop();
+            }
+            let _ = sent.send(went);
+        });
+    };
+    let pool = crate::embed::parallel::with_setup(2, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>));
+    let served = serve(listener, pool, None, handler, started);
+    *ended.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+    ended.1.notify_all();
+    if let Ok(Err(panic)) = ran.recv() {
+        std::panic::resume_unwind(panic);
+    }
+    (served, had_to_stop.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+/// Echoes the line it's sent, ending its round with what the line asks: "break", "fail" or
+/// nothing.
+fn ends_as_asked() -> Handler {
+    Arc::new(|mut conn: Conn| {
+        let Ok(Some(mut line)) = conn.read_line(None) else { return 1 };
+        let how = match line.as_slice() {
+            b"break" => super::ROUND_BROKE,
+            b"fail" => super::ROUND_FAILED,
+            _ => 0,
+        };
+        line.push(b'\n');
+        let _ = conn.write(&line);
+        how
+    })
+}
+
+#[test]
+fn a_break_stops_taking_connections_and_the_rounds_running_finish() {
+    let (served, had_to_stop) = run_until_it_ends(&ends_as_asked(), |address| {
+        // A round that's running when another breaks, still waiting for its line.
+        let mut running = std::net::TcpStream::connect(address).unwrap();
+        running.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(ask(address, "break").as_deref(), Some("break\n"));
+        running.write_all(b"still served\n").unwrap();
+        let mut back = String::new();
+        BufReader::new(running).read_line(&mut back).unwrap();
+        assert_eq!(back, "still served\n", "the running round finished");
+    });
+    assert!(!had_to_stop, "the server ended by itself once its rounds finished");
+    assert_eq!((served.connections, served.failed), (2, 0));
+}
+
+#[test]
+fn a_round_that_fails_stops_the_server_and_cuts_the_others_short() {
+    let (served, had_to_stop) = run_until_it_ends(&ends_as_asked(), |address| {
+        // A round waiting for a line it never gets.
+        let waiting = std::net::TcpStream::connect(address).unwrap();
+        waiting.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(ask(address, "fail").as_deref(), Some("fail\n"));
+        let mut back = String::new();
+        let read = BufReader::new(waiting).read_line(&mut back).unwrap_or(0);
+        assert_eq!(read, 0, "the waiting round was cut short, its connection closed");
+    });
+    assert!(!had_to_stop, "the server ended by itself");
+    assert_eq!(served.connections, 2);
+}

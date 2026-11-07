@@ -203,6 +203,11 @@ fn crashed(launched: &Launched) -> i64 {
     CRASHED
 }
 
+/// The failure's value a task's function, or a server's round, handed over before giving back 2.
+pub(super) fn take_failed_with() -> Option<u64> {
+    FAILED_WITH.take()
+}
+
 /// `fennec_task_failed(failure)`: the task's function is about to give back 2, failing with this
 /// value, which its launcher takes.
 pub extern "C" fn task_failed(failure: i64) {

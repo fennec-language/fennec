@@ -26,7 +26,7 @@ impl Lowerer<'_, '_> {
                 )
             }
             Pattern::Variant { name, dotted: false, .. } if name == "Ok" || name == "Err" => false,
-            Pattern::Variant { name, dotted, args } => {
+            Pattern::Variant { name, dotted, args, .. } => {
                 let (Ty::Struct(id) | Ty::Boxed(id)) = ty else { return false };
                 let Ok(layout) = self.layout(id) else { return false };
                 let fields = match &layout.cases {

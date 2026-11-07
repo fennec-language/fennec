@@ -70,6 +70,9 @@ fn node(item: &Item, is_start: &dyn Fn(&str) -> bool) -> Option<Node> {
             node.names.extend(def.cases.iter().map(|case| case.name.clone()));
             node.members.extend(def.methods.iter().map(|method| method.name.clone()));
             node.uses.type_def(def);
+            // Its extensions, which go by its name, as `def serialize` and `def deserialize` do
+            // when they're generated: one without the other doesn't check.
+            node.uses.names.insert(def.name.clone());
         }
         Item::Interface(interface) => {
             node.names.push(interface.name.clone());
@@ -82,6 +85,8 @@ fn node(item: &Item, is_start: &dyn Fn(&str) -> bool) -> Option<Node> {
             node.members.extend(extension.methods.iter().map(|method| method.name.clone()));
             node.root = extension.methods.iter().any(|method| is_implicit(&method.name));
             extension.methods.iter().for_each(|method| node.uses.function(method));
+            // The type it extends, and with it the type's other extensions.
+            node.uses.names.insert(extension.name.clone());
         }
         Item::TypeAlias { name, ty, .. } => {
             node.names.push(name.clone());

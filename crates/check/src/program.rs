@@ -342,7 +342,13 @@ impl Program {
         if matches!(name, crate::lend::WITH | crate::lock::SHARED)
             && let [held] = written.args.as_slice()
         {
-            let ty = Type::Generic(name.to_owned(), vec![self.resolve_within(held, generics, depth)?]);
+            // Once lowered, a `shared T` is the declaration made to hold a `T`.
+            let made = crate::lock_lowering::made_name(&self::written(held));
+            let ty = if name == crate::lock::SHARED && self.types.contains_key(&made) {
+                Type::named(&made)
+            } else {
+                Type::Generic(name.to_owned(), vec![self.resolve_within(held, generics, depth)?])
+            };
             return Ok(if written.optional { Type::optional(ty) } else { ty });
         }
         let builtin = BUILT_IN_TYPES.contains(&name);

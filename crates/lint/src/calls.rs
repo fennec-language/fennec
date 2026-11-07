@@ -186,13 +186,37 @@ fn needs_name(args: &[&Arg], takes: &Takes<'_>, at: usize, many: bool) -> Option
     for other in [at - 1, at + 1] {
         if same_type(ty(at), ty(other)) {
             let (one, two) = (param(at.min(other))?.name, param(at.max(other))?.name);
-            let shown = ty(at).map_or_else(String::new, |ty| ty.name.clone());
+            let shown = ty(at).map_or_else(String::new, type_text);
             return Some(format!(
                 "`{one}` and `{two}` both take `{shown}`, so swapping them would still compile"
             ));
         }
     }
     many.then(|| "three or more arguments in a row are easy to get backwards".to_owned())
+}
+
+/// A type as it's written: `list[int]`, `shared Account`, `(int, str)?`.
+fn type_text(ty: &TypeExpr) -> String {
+    let all = |separator: &str| ty.args.iter().map(type_text).collect::<Vec<_>>().join(separator);
+    let text = match (ty.name.as_str(), ty.args.as_slice()) {
+        ("shared" | "with", [held]) => format!("{} {}", ty.name, type_text(held)),
+        ("|", _) => all(" | "),
+        ("tuple", _) => format!("({})", all(", ")),
+        ("->", [params @ .., returns]) => {
+            let params: Vec<String> = params.iter().map(type_text).collect();
+            format!("({}) -> {}", params.join(", "), type_text(returns))
+        }
+        (name, []) => name.to_owned(),
+        (name, _) => format!("{name}[{}]", all(", ")),
+    };
+    if !ty.optional {
+        return text;
+    }
+    if ty.name == "|" || ty.name == "->" || ty.name == "shared" {
+        format!("({text})?")
+    } else {
+        format!("{text}?")
+    }
 }
 
 /// Where an argument starts as written: before any `(` its value's span leaves out, as in

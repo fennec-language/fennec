@@ -293,3 +293,25 @@ fn a_save_with_no_lock_that_may_crash_lets_go_as_the_write_would() {
     assert_eq!(held(), 0);
     finish();
 }
+
+/// A word with its top bit set goes back as it was: a negative number in the cell, and the last
+/// word of an inline string's header, whose top bit says it isn't in a block.
+#[test]
+fn a_word_with_its_top_bit_set_goes_back_as_it_was() {
+    begin_run();
+    let cell = locked(&["one"]);
+    let at = i64::try_from(COUNT_AT).unwrap();
+    save(cell, at, -1, 0);
+    undo();
+    assert_eq!(undo_word(at, 7, 0), -1);
+    shared_leave(cell, 1);
+    shared_enter(cell, 1);
+    begin(cell);
+    // `"/a"` inline: its bytes, then 0x80 and its length in the last byte.
+    let tag = (0x82_u64 << 56).cast_signed();
+    save_text(cell, at, 0x612f, 0, tag);
+    undo();
+    assert_eq!([undo_word(at, 0, 0), undo_word(at + 1, 0, 0), undo_word(at + 2, 0, 0)], [0x612f, 0, tag]);
+    shared_leave(cell, 1);
+    finish();
+}

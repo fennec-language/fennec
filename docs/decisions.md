@@ -281,8 +281,8 @@ This replaces IEEE comparison operators, and the rule that a struct with a float
 
 **Speed targets are measured against each benchmark's twin, fully optimized.** Every program in the benchmark suite also exists as idiomatic code in the fastest established systems language.
 - Release builds: 110% of the twin's speed.
-- The JIT: 80% to start, then 85%.
-- The interpreter: 10–30%.
+- The JIT, until it's removed: 80% to start, then 85%.
+- The interpreter, until it's removed: 10–30%.
 
 Benchmarks do realistic work that neither side's optimizer can delete.
 
@@ -837,12 +837,12 @@ def play(ref conn: Connection, ref world: World) fails NetError:
 
 **`std.sql` is one standard database interface,** modeled on the ideas of Python's DB-API. Drivers are first-party kits, with Postgres and MySQL in pure Fennec.
 
-**`Tree` and `Graph` are in `std`,** both built on `Table`. `Tree` keeps parents and children in sync. `Graph[N, E]` is built on `Table`: `add_node` gives an `Id[N]`, `add_edge(from_id, to_id, edge)` connects two, `edges_from(id)` and `edges_to(id)` walk it, and std gives topological order and shortest paths. Not built yet. This moves `Graph` up from the list of things cut from the first version.
+**`Tree` and `Graph` are in `std`,** both built on `Table`. `Tree` keeps parents and children in sync. `Graph[N, E]` holds nodes in a `Table[N]` and directed edges holding an `E`: `add_node` gives an `Id[N]`, `add_edge(from_id=, to_id=, edge=)` links two, `edges_from` and `edges_to` give a node's `Edge`s, and `topological_order()` and `shortest_path(from_id=, to_id=, cost=)` give `Id`s, or `None` for a cycle or no path. It's `Id`s throughout, with no references. Built, and measured against petgraph in `bench/realworld/graph`. This moves `Graph` up from the list of things cut from the first version.
 *Why:* Hierarchies are where `Id` bookkeeping is most tedious and easiest to get wrong, so it's written once.
 
 **`std.process`, `std.crypto`, `std.log`, `std.cli` and `std.csv` are in `std` too.**
 
-**`std.crypto` holds hashing, including BLAKE3, so there's no separate `std.hash`.**
+**`std.crypto` holds hashing, including BLAKE3, so there's no separate `std.hash`.** `blake3` and the other hashes take any iterable of bytes, so a file or a stream hashes without being read into one block first. Not built yet: today they take text or `bytes`.
 
 **First-party kits, not `std`:** `fennec/ml`, database drivers, windowing and input for games, and image formats.
 
@@ -957,7 +957,7 @@ import game.world.physics as physics
 **`Path` is a struct written in Fennec.** Its methods only look at its text: `join` (also `/`), `parent`, `name`, `stem`, `extension` and `normalize`. `extension` has no dot: `"png"`, not `".png"`. `fs` methods take a `Path` or a `str`.
 *Why:* Path handling needs nothing the language can't already do, and code written in Fennec is checked and compiled like everyone else's.
 
-**Files and folders go through `fs`.** The `Fs` capability has `read_text`, `write_text`, `exists`, `list_dir`, `make_dir`, `remove` and `metadata`, and each takes a `Path` or a `str`. `list_dir` gives the folder's `Path`s sorted by name. `make_dir` makes any missing parent folders too, and succeeds if the folder is already there. `remove` removes a file, or a folder only if it's empty. `metadata` gives a `Metadata` from `std.fs`, with `size`, `is_file` and `is_dir`. `read_bytes` and `write_bytes` read and write `bytes`. Every failure is an `IoError`.
+**Files and folders go through `fs`.** The `Fs` capability has `read_text`, `write_text`, `exists`, `list_dir`, `make_dir`, `remove` and `metadata`, and each takes a `Path` or a `str`. `list_dir` gives the folder's `Path`s sorted by name. `make_dir` makes any missing parent folders too, and succeeds if the folder is already there. `remove` removes a file, or a folder only if it's empty. `metadata` gives a `Metadata` from `std.fs`, with `size`, `is_file` and `is_dir`. `read_bytes` and `write_bytes` read and write `bytes`. Every failure is an `IoError`. `fs.create(path)` writes a new file and puts it in place at the end of its `with` block, syncing it to disk before the rename by default, and `file.sync()?` syncs at any other point. Not built yet.
 *Why:* Sorting makes a listing the same on every system, so programs and their tests behave the same everywhere. Making the parents and accepting a folder that's already there is what code almost always wants, like Python's `os.makedirs(path, exist_ok=True)`. Removing only empty folders keeps a wrong path from deleting a whole tree; a recursive remove can come later, under its own name.
 
 ## Visibility
@@ -1156,6 +1156,7 @@ from std.math import PI, sin
 
 SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]    # one full turn
 ```
+- A small evaluator inside the compiler works them out, once the interpreter is removed. Not built yet.
 - Evaluation has a build-time budget. A constant that goes over it is computed at startup instead, with a hint naming it.
 - It applies only to top-level constants.
 
@@ -1231,6 +1232,12 @@ struct Ring:
 - A loop over `iter` fuses into a plain loop where it can, as any stage does.
 
 *Why:* A loop shouldn't copy a collection before it starts, and a `break` should stop the work. A `for` that quietly lost its changes was the bug this replaces.
+
+**`t"..."` makes a `Template`, and injection can't be written.** It's Python 3.14's t-string: a `std` `Template` holding the literal pieces and the values separately, with the values' type coming from where it goes, as in `Template[SqlValue]`. A `str` is never a `Template`, and `db.query`, `html.render` and `process.run` take Templates, so text joined from strings never reaches a database, a page or a shell. There are no per-library string prefixes. Not built yet. This replaces the proposal of `sql"..."` templates and separate escaping types.
+*Why:* One form covers every kind of injection, it's what Python people already learn, and the type stops the mistake before it compiles.
+
+**`LiteralStr` is a string that came from the source code,** as Python's `typing.LiteralString` is. Only a string literal, or literals joined with `+`, makes one. It goes anywhere a `str` goes, but a `str` is never a `LiteralStr`. A `Template`'s text pieces are `LiteralStr`, so building one from text read while the program runs is a compile error, and any function may ask for one. It's for strings only. Not built yet.
+*Why:* It keeps "injection can't be written" true for dynamic queries too, where user input chooses between literals through a `match`.
 
 **Raw strings are `r"..."`.** Backslashes stay as written, so a pattern reads `r"\d+"`. A raw string can't contain `"`.
 *Why:* Regular expressions are unreadable with every backslash doubled. Python has the same strings, so people and AI already write them.
@@ -1351,7 +1358,7 @@ bench "collide 10k bullets":
 
 ## For AI
 
-**The toolchain ships an MCP server.** Through it, an AI agent can search by type, read docs, run `fennec check` and run snippets in the sandboxed interpreter.
+**The toolchain ships an MCP server.** Through it, an AI agent can search by type, read docs, run `fennec check` and run snippets in the sandbox, under Sandboxing.
 *Why:* AI's most common failure is calling functions that don't exist. Ground truth from the compiler and the Den replaces guessing.
 
 **Diagnostics are structured.** `fennec check --json` gives every error and lint with its location and any fix as an edit a tool can apply.
@@ -1392,7 +1399,7 @@ These are default lints, and the Den requires them.
 
 **The Den keeps every kit's source permanently.** Installing never touches the git host. Versions are immutable: a bad one can be yanked, never deleted or replaced. Because everything is keyed by its hash, anyone can mirror the Den, and the hashes in `kit.lock` prove a mirror served the real thing.
 
-**The Den checks for itself.** It re-runs formatting and lints, and runs the kit's tests, in the interpreter compiled to wasm, with fake capabilities and a limit on how much work a run may do. Kits have no build scripts, so nothing else ever runs. Native kits, which in v1 only the Fennec project can publish, also run in real CI under sanitizers. The kit's page shows a diff of its capabilities and API against the previous version.
+**The Den checks for itself.** It re-runs formatting and lints, and runs the kit's tests, compiled to WebAssembly and run in Wasmtime, with fake capabilities and a limit on how much work a run may do. Kits have no build scripts, so nothing else ever runs. Native kits, which in v1 only the Fennec project can publish, also run in real CI under sanitizers. The kit's page shows a diff of its capabilities and API against the previous version.
 
 **An existing AI model reviews each release's diff,** and its findings are shown. There's no custom fine-tuned model.
 
@@ -1490,9 +1497,17 @@ tools = { path = "../tools" }
 **Fennec has no REPL.** Running a small file is already quick, and one can come back as a pure addition if people ask.
 *Why:* This is a compiled language written mostly by AI, and it needs to be readable, fast to build and fast to run.
 
-**Getting the tree-walking interpreter out of everything is the top goal, and it leaves one job at a time.** For now it keeps compile-time constants, fuzzing and the playground.
+**The interpreter is removed, and the JIT with it.** Before that, each job it does moves somewhere else:
+- **Code LLVM can't build** goes to zero, on the coverage lane's tracked list.
+- **The test fake network** moves into the runtime.
+- **Constants at compile time** are worked out by a small evaluator inside the compiler.
+- **The fuzzing reference** becomes pinned outputs and the native twins.
+- **The website playground** is compiled on a server with a cache that returns WebAssembly, the first small piece of the Den's builder.
 
-**Every example that builds natively must give the same output as the interpreter.** An example that's refused goes on a tracked list, which must reach zero.
+The commit before removal gets a tag, so the old engines can still be found. Not built yet. This replaces the rule that the interpreter keeps constants, fuzzing and the playground for now.
+*Why:* One engine is what ships and what's tested, so the interpreter's double work and its differences from native code go away.
+
+**Until then, every example that builds natively must give the same output as the interpreter.** An example that's refused goes on a tracked list, which must reach zero.
 
 **While it remains, the JIT aims for 80% of the speed of the benchmark suite's twins to start, then 85%, and no further.** Closing the rest is the release build's job. Optimizations that would slow the JIT's compiling to win the last few percent aren't made.
 *Why:* Development builds are for changing code and seeing it run at once. The 110% target applies to release builds.
@@ -1680,7 +1695,7 @@ The JIT loads them when the program runs, and release builds link them. The C st
 
 **An app allows each native kit by name:** `sqlite = { version = "1.2", native = true }`. A native kit's API still takes the capabilities it uses, `sqlite.open(fs, path)`, so its signatures stay honest.
 
-**The interpreter calls only the standard library's own OS layer, never a kit's `extern` functions.** The playground, the sandbox and compile-time evaluation can't run native kits; the error points to `fennec run`, which runs native code. Native kits' differential tests compare the JIT with release builds.
+**Until it's removed, the interpreter calls only the standard library's own OS layer, never a kit's `extern` functions.** The playground, the sandbox and compile-time evaluation can't run native kits; the error points to `fennec run`, which runs native code. Native kits' differential tests compare the JIT with release builds.
 
 ## Sandboxing
 
@@ -1690,7 +1705,7 @@ The JIT loads them when the program runs, and release builds link them. The C st
 **Capabilities are the sandbox's policy in every engine.** Sandboxed code can do only what the capabilities passed to its `main` allow, and it can't use `extern` or `unsafe`. A tool can show what a snippet asks for before running it: "this snippet wants `Net` and read access to `data/`".
 *Why:* That makes Fennec a good language for AI agents to write tool code in: typed, with every power declared up front.
 
-**The interpreter runs untrusted code for those tools, with limits.** It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs the playground and AI-written snippets, where starting instantly and being easy to sandbox matter more than speed. In the browser it runs as wasm, so the browser sandboxes it again.
+**Until it's removed, the interpreter runs untrusted code for those tools, with limits.** After that, the playground, Den tests and agents' snippets are all compiled to WebAssembly by the server build and run in Wasmtime, with fuel and memory limits and no files or network unless granted. Not built yet. It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs the playground and AI-written snippets, where starting instantly and being easy to sandbox matter more than speed. In the browser it runs as wasm, so the browser sandboxes it again.
 
 **Untrusted code that needs native speed is compiled to WebAssembly and run in Wasmtime.** The development and release backends can both target wasm. Wasmtime already provides fuel, interruption and memory limits.
 *Why:* Wasmtime's sandbox is heavily hardened. Making our own JIT a security boundary would mean any compiler bug is an escape.
@@ -1728,12 +1743,9 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 
 - How an `Id` is used across servers, which is expected at the simulation level.
 - How `std.pack` data evolves: a lock file of past layouts with automatic migration rules, as Avro does. It comes later and adds to v1 without breaking it.
-- What takes over the sandbox and the test reference from the interpreter. Entries under Engines, Sandboxing, For AI and Kits on the Den still give them to it.
 - Whether kits can define their own annotations, like `@get("/todos/{id}")` on a plain function, so a router can build its table at compile time.
 - SQLite: whether and how Fennec includes it. Porting it isn't realistic.
 - Whether independent writes, not just reads, should overlap automatically.
 - The syntax for units of measure.
 - The file extension (currently `.fen`).
-- These security proposals:
-  - Types that make injection impossible: `sql"..."` templates, `Path`, argument lists for commands, escaping HTML templates.
-  - `Secret[str]`, which can't be printed or logged.
+- `Secret[str]`, which can't be printed or logged.

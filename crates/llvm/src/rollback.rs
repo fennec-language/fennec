@@ -7,8 +7,6 @@
 //! a lock to write on a local of such a type is one whose changes are saved. A read lock never
 //! saves, and neither does a plain `with` on a `shared` type of the program's own.
 
-use std::collections::HashSet;
-
 use fennec_check::Type;
 use fennec_ir::{Function, InstKind, LocalId, Operand};
 
@@ -19,28 +17,43 @@ use crate::lists::FIELDS_OFFSET;
 /// The prefix of the `shared` types `lock` is lowered onto.
 const LOCKED: &str = "Shared__";
 
-/// The handles a function locks to write that save their changes: each `lock ... as ref` is
-/// lowered onto a handle of its own, so its `unlock` is known by the handle alone.
-pub(crate) fn saving_handles(function: &Function) -> HashSet<usize> {
+/// What a word of a lock's own cell holds, for the runtime to know what it's putting back.
+#[derive(Clone, Copy)]
+enum Word {
+    /// A number, or a bool.
+    Plain,
+    /// A block's address.
+    Block,
+    /// The first of a string header's three words.
+    Header,
+}
+
+/// The handles a function locks to write that save their changes, in the order they're first
+/// locked: each `lock ... as ref` is lowered onto a handle of its own, so its `unlock` is known by
+/// the handle alone.
+pub(crate) fn saving_handles(function: &Function) -> Vec<usize> {
     let locked = |local: &LocalId| {
         matches!(
             function.locals.get(local.0).map(|local| &local.ty),
             Some(Type::Named(name)) if name.starts_with(LOCKED)
         )
     };
-    let mut found = HashSet::new();
+    let mut found = Vec::new();
+    let mut add = |local: usize| {
+        if !found.contains(&local) {
+            found.push(local);
+        }
+    };
     for inst in function.blocks.iter().flat_map(|block| &block.insts) {
         match &inst.kind {
-            InstKind::Lock { handle: Operand::Local(local), write: true } if locked(local) => {
-                found.insert(local.0);
-            }
+            InstKind::Lock { handle: Operand::Local(local), write: true } if locked(local) => add(local.0),
             InstKind::LockAll { handles } => {
                 for (handle, write) in handles {
                     if let Operand::Local(local) = handle
                         && *write
                         && locked(local)
                     {
-                        found.insert(local.0);
+                        add(local.0);
                     }
                 }
             }
@@ -56,18 +69,129 @@ impl Emit<'_, '_, '_> {
         matches!(handle, Operand::Local(local) if self.saving.contains(&local.0))
     }
 
-    /// The lock on `cell` has just been taken: its log begins.
-    pub(crate) fn rollback_begin(&mut self, cell: &str) {
+    /// The flag saying `handle`'s lock is held, for a crash to know to put back what it changed.
+    fn held_flag(&mut self, handle: &Operand) -> Option<String> {
+        let Operand::Local(local) = handle else { return None };
+        if let Some(slot) = self.saving_slots.get(&local.0) {
+            return Some(slot.clone());
+        }
+        let slot = self.flag_slot();
+        self.saving_slots.insert(local.0, slot.clone());
+        Some(slot)
+    }
+
+    /// The lock on `handle`'s cell has just been taken: its log begins.
+    pub(crate) fn rollback_begin(&mut self, handle: &Operand, cell: &str) {
         self.declare("declare void @fennec_lock_begin(i64) nounwind");
         let address = self.temp();
         self.line(&format!("{address} = ptrtoint ptr {cell} to i64"));
         self.line(&format!("call void @fennec_lock_begin(i64 {address})"));
+        if let Some(flag) = self.held_flag(handle) {
+            self.line(&format!("store i1 true, ptr {flag}"));
+        }
     }
 
     /// The innermost lock that saves its changes ends normally: what it changed is kept.
-    pub(crate) fn rollback_kept(&mut self) {
+    pub(crate) fn rollback_kept(&mut self, handle: &Operand) {
+        if let Some(flag) = self.held_flag(handle) {
+            self.line(&format!("store i1 false, ptr {flag}"));
+        }
         self.declare("declare void @fennec_lock_kept() nounwind");
         self.line("call void @fennec_lock_kept()");
+    }
+
+    /// Where a crash leaves the function: each `lock ... as ref` block still held, the last taken
+    /// first, has what it changed put back, then its lock given back, before the failure goes on.
+    /// The runtime puts back the words of blocks in its tables, and native code the words of the
+    /// lock's own cell, which it's told one at a time.
+    pub(crate) fn roll_back_on_crash(&mut self) -> Result<(), String> {
+        self.declare("declare void @fennec_lock_undo() nounwind");
+        self.declare("declare i64 @fennec_lock_undo_word(i64, i64, i64) nounwind");
+        for local in self.saving.clone().into_iter().rev() {
+            let handle = Operand::Local(LocalId(local));
+            let Some(flag) = self.held_flag(&handle) else { continue };
+            let (held, undo, next) = (self.temp(), self.label("crash_undo"), self.label("crash_next"));
+            self.line(&format!("{held} = load i1, ptr {flag}"));
+            self.line(&format!("br i1 {held}, label %{undo}, label %{next}"));
+            self.start_block(&undo);
+            self.line(&format!("store i1 false, ptr {flag}"));
+            self.line("call void @fennec_lock_undo()");
+            let (cell, kind) = self.operand(&handle)?;
+            let mut words = Vec::new();
+            self.cell_words(&kind, &mut words)?;
+            for (offset, word) in words {
+                self.undo_word(&cell, offset, word);
+            }
+            self.give_back_on_crash(&handle)?;
+            self.line(&format!("br label %{next}"));
+            self.start_block(&next);
+        }
+        Ok(())
+    }
+
+    /// Puts back the word at `offset` in the lock's own cell, as the runtime says it was.
+    fn undo_word(&mut self, cell: &str, offset: u32, word: Word) {
+        let at = |emit: &mut Self, extra: u32| {
+            let place = emit.offset(cell, offset + extra * 8);
+            let index = i64::from((offset + extra * 8) / 8);
+            (place, index)
+        };
+        let one = |emit: &mut Self, extra: u32, holds: &str| {
+            let (place, index) = at(emit, extra);
+            let (now, back) = (emit.temp(), emit.temp());
+            emit.line(&format!("{now} = load i64, ptr {place}"));
+            emit.line(&format!(
+                "{back} = call i64 @fennec_lock_undo_word(i64 {index}, i64 {now}, i64 {holds})"
+            ));
+            emit.line(&format!("store i64 {back}, ptr {place}"));
+        };
+        match word {
+            Word::Plain => one(self, 0, "0"),
+            Word::Block => one(self, 0, "1"),
+            Word::Header => {
+                // The first word holds a block when the last's top bit is clear.
+                let (last_at, _) = at(self, 2);
+                let (last, in_block, holds) = (self.temp(), self.temp(), self.temp());
+                self.line(&format!("{last} = load i64, ptr {last_at}"));
+                self.line(&format!("{in_block} = icmp sge i64 {last}, 0"));
+                self.line(&format!("{holds} = zext i1 {in_block} to i64"));
+                one(self, 0, &holds);
+                one(self, 1, "0");
+                one(self, 2, "0");
+            }
+        }
+    }
+
+    /// The words of a `lock ... as ref` block's cell that its saves can name, by their place from
+    /// the block's start: the cell's fields, then the fields of a struct held in place. A word of a
+    /// value of a kind not saved isn't named, and stays as it is.
+    fn cell_words(&self, kind: &Kind, words: &mut Vec<(u32, Word)>) -> Result<(), String> {
+        let (Kind::Boxed(id) | Kind::Struct(id)) = kind else { return Ok(()) };
+        let names: Vec<String> = self.layout_of(*id)?.fields.iter().map(|field| field.name.clone()).collect();
+        let base = if matches!(kind, Kind::Boxed(_)) { FIELDS_OFFSET } else { 0 };
+        for name in names {
+            let (offset, inner) = self.field(kind, &name)?;
+            self.words_of(&inner, base + offset, words)?;
+        }
+        Ok(())
+    }
+
+    fn words_of(&self, kind: &Kind, at: u32, words: &mut Vec<(u32, Word)>) -> Result<(), String> {
+        match kind {
+            Kind::Int | Kind::Float | Kind::Bool => words.push((at, Word::Plain)),
+            Kind::Str if self.headers() => words.push((at, Word::Header)),
+            Kind::Struct(id) => {
+                let names: Vec<String> =
+                    self.layout_of(*id)?.fields.iter().map(|field| field.name.clone()).collect();
+                for name in names {
+                    let (offset, inner) = self.field(kind, &name)?;
+                    self.words_of(&inner, at + offset, words)?;
+                }
+            }
+            _ if kind.counted() => words.push((at, Word::Block)),
+            _ => {}
+        }
+        Ok(())
     }
 
     /// `block` as an address, and the index of the word at `place` in it, counting its count
@@ -213,6 +337,35 @@ def main(stdout: Stdout):
         let main =
             text.split("define").find(|function| function.contains("@\"f_main\"(")).unwrap_or_default();
         assert!(!main.contains("@fennec_lock_begin("), "{main}");
+        Ok(())
+    }
+
+    /// A function with a lock to write leaves on every failure through `prop`, which puts back
+    /// what the lock changed, word by word for its own cell, before the failure goes on.
+    #[test]
+    fn a_crash_in_a_lock_to_write_goes_through_the_undo() -> Result<(), String> {
+        let source = "\
+struct Tally:
+    names: list[str]
+    count = 0
+
+def hit(tally: shared Tally):
+    lock tally as ref held:
+        held.count += 1
+        held.names.append(\"x\")
+        empty: list[int] = []
+        held.count += empty[3]
+
+def main(stdout: Stdout):
+    shared tally = Tally(names=[])
+    hit(tally)
+";
+        let text = texts(source)?;
+        let hit = text.split("define").find(|function| function.contains("@\"f_hit\"(")).unwrap_or_default();
+        let prop = hit.split("\nprop:\n").nth(1).unwrap_or_default();
+        assert!(prop.contains("call void @fennec_lock_undo()"), "{hit}");
+        assert!(prop.contains("call i64 @fennec_lock_undo_word("), "{hit}");
+        assert!(hit.contains("br label %prop"), "{hit}");
         Ok(())
     }
 }

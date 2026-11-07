@@ -80,7 +80,7 @@ fn push(saved: Saved) -> bool {
 /// generated code doesn't let go of it at the write.
 pub extern "C" fn save(block: i64, word: i64, old: i64, holds: i64) {
     let Ok(word) = usize::try_from(word) else { return };
-    let saved = Saved { block: address(block), word, old: address(old), held: holds != 0 && old != 0 };
+    let saved = Saved { block: address(block), word, old: old.cast_unsigned(), held: holds != 0 && old != 0 };
     if !push(saved) && saved.held {
         // No lock is held that may crash, which would be a bug in generated code: the count is let
         // go of, as the write would have.
@@ -233,7 +233,7 @@ pub extern "C" fn undo_word(word: i64, now: i64, now_holds: i64) -> i64 {
             Ok(())
         });
     }
-    i64::try_from(saved.old).unwrap_or(0)
+    saved.old.cast_signed()
 }
 
 /// How many locks that may crash this thread holds, for tests.

@@ -3025,6 +3025,8 @@ def main(stdout: Stdout):
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.
+/// A whole line that's a `?` on a method giving back nothing fails the block too, and an
+/// `else:` written in at two places keeps each copy's `_ = ...` apart.
 #[test]
 fn with_sources_lend_to_their_callers_blocks_natively() -> std::io::Result<()> {
     if !ready() {
@@ -3059,6 +3061,23 @@ def check(n: int) -> int fails DbError:
     if n == 3: fail DbError(why=\"three\")
     n
 
+struct Probe:
+    held: int
+
+    def poke(self) fails DbError:
+        if self.held > 5: fail DbError(why=\"big\")
+
+def probe(held: int, ref log: Log) -> with Probe fails DbError:
+    lend Probe(held=held) else:
+        _ = log.lines.len()
+        log.lines.append(f\"probe {held} failed\")
+
+def poked(held: int, ref log: Log) fails DbError:
+    with probe(held, ref log)? as box:
+        box.poke()?
+        log.lines.append(f\"poked {held}\")
+        box.poke()?
+
 def first_big(db: Db, ref log: Log, limit: int) -> int fails DbError:
     with db.session(\"ana\", ref log)? as session:
         with scoped(ref log, session) as size:
@@ -3082,6 +3101,10 @@ def main(stdout: Stdout):
     stdout.print(first_big(db, ref log, limit=5) else -9)
     stdout.print(first_big(db, ref log, limit=50) else -9)
     stdout.print(count(db, ref log) else -9)
+    for held in [1, 9]:
+        match poked(held, ref log):
+            case Ok(_): stdout.print(\"poked\")
+            case Err(error): stdout.print(error.why)
     for line in log.lines:
         stdout.print(line)
 ";
@@ -5359,6 +5382,73 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// A crash inside `lock ... as ref` puts back everything the block changed, then gives back the
+/// lock: here a handler counts, keeps its path and appends it, then crashes on `/crash`. The server
+/// keeps serving, and the next request sees the value as it was before the crash: no `/crash` in
+/// it, and a negative count put back as it was.
+#[test]
+fn a_crash_in_a_lock_puts_back_what_it_changed() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"from std.net import Request, Response
+
+struct Tally:
+    names: list[str]
+    count = -10
+    last = ""
+
+def respond(request: Request, tally: shared Tally) -> Response:
+    lock tally as ref held:
+        held.count += 1
+        held.last = request.path
+        held.names.append(request.path)
+        if request.path == "/crash":
+            empty: list[int] = []
+            held.count += empty[3]
+    lock tally as current:
+        Response(status=200, body=f"{current.count} {current.last} {current.names}".encode())
+
+def main(net: Net, stdout: Stdout):
+    shared tally = Tally(names=[])
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve((request) => respond(request, tally), timeout=10s)
+"#;
+    let dir = folder("lock_rollback")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?,
+    );
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    // What the server answers one request with, after the head, or nothing when it closes first.
+    let ask = |path: &str| -> std::io::Result<String> {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
+        stream.write_all(format!("GET {path} HTTP/1.1\r\nConnection: close\r\n\r\n").as_bytes())?;
+        let mut heard = String::new();
+        let _ = stream.read_to_string(&mut heard);
+        Ok(heard.split("\r\n\r\n").nth(1).unwrap_or_default().to_owned())
+    };
+    let answers: Vec<String> =
+        ["/a", "/crash", "/b", "/crash", "/c"].into_iter().map(ask).collect::<std::io::Result<_>>()?;
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        answers,
+        ["-9 /a [\"/a\"]", "", "-8 /b [\"/a\", \"/b\"]", "", "-7 /c [\"/a\", \"/b\", \"/c\"]"]
+    );
+    Ok(())
+}
+
 /// The server `http_requests_go_through_native_code` asks: it answers three requests with the
 /// first line of each, and a 200 only for `/a`. It starts once the program is built, and gives up
 /// a minute later, so a program that stops asking fails the test rather than leaving it waiting.
@@ -5813,6 +5903,72 @@ def main(net: Net, stdout: Stdout):
     );
     let most = most.load(std::sync::atomic::Ordering::SeqCst);
     assert!(most > 2, "the server held at most {most} connections at once, from 2 threads");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A built server whose rounds crash on purpose, for every tenth request: each crash ends only its
+/// own round, closing its connection, and the server answers the other nine.
+#[test]
+fn a_server_whose_rounds_crash_answers_the_rest_natively() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("crashing-rounds")?;
+    let program = dir.join("crashing.fen");
+    std::fs::write(
+        &program,
+        "from std.net import NetError
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            if line == \"crash\":
+                nothing: list[int] = []
+                stdout.print(nothing[3])
+            conn.write(f\"{line}\\n\")?
+",
+    )?;
+    let executable = dir.join("crashing");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Command::new(&executable)
+        .env("FENNEC_THREADS", "2")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let mut printed = std::io::BufReader::new(server.stdout.take().expect("its output"));
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().unwrap_or(0);
+    let (mut answered, mut closed) = (0, 0);
+    for request in 1_u32..=30 {
+        let line = if request.is_multiple_of(10) { "crash".to_owned() } else { format!("request {request}") };
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        stream.write_all(format!("{line}\n").as_bytes())?;
+        let mut back = String::new();
+        let read = std::io::BufReader::new(stream).read_line(&mut back).unwrap_or(0);
+        if read == 0 {
+            closed += 1;
+        } else {
+            assert_eq!(back, format!("{line}\n"));
+            answered += 1;
+        }
+    }
+    server.kill()?;
+    let ended = server.wait_with_output()?;
+    let errors = String::from_utf8_lossy(&ended.stderr);
+    assert_eq!((answered, closed), (27, 3), "{errors}");
+    assert_eq!(errors.matches("error:").count(), 3, "each crash says why: {errors}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -6663,6 +6819,49 @@ fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
         .nth(1)
         .and_then(|number| number.parse::<u64>().ok());
     assert!(allocations.is_some_and(|count| count < 100), "{counts}");
+    Ok(())
+}
+
+/// A finished program goes in the store under its build's root hash, with its functions' hashes
+/// beside it, so building it again unchanged compiles and links nothing and gives the same bytes. A
+/// change to the program, or a release build of it, is a build of its own. See `docs/store.md`.
+#[test]
+fn an_unchanged_build_takes_its_program_from_the_store() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("stored")?;
+    let home = dir.join("home");
+    let source = "def main(stdout: Stdout):\n    stdout.print(\"stored\")\n";
+    std::fs::write(dir.join("main.fen"), source)?;
+    let build = |args: &[&str]| -> std::io::Result<(String, Vec<u8>)> {
+        let output = crate::executables::fennec_command()
+            .args(args)
+            .current_dir(&dir)
+            .env("FENNEC_HOME", &home)
+            .env_remove("FENNEC_NO_CACHE")
+            .output()?;
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        Ok((String::from_utf8_lossy(&output.stdout).into_owned(), std::fs::read(dir.join("built"))?))
+    };
+    let (first, program) = build(&["build", "main.fen", "-o", "built"])?;
+    let (again, same) = build(&["build", "main.fen", "-o", "built"])?;
+    assert!(first.contains("compiled 1 of 1"), "{first}");
+    assert!(again.contains("compiled 0 of 1") && again.contains("linked in 0 ms"), "{again}");
+    assert_eq!(program, same, "the program from the store is the one built");
+    let ran = Command::new(dir.join("built")).output()?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "stored\n");
+    let stored: Vec<String> =
+        std::fs::read_dir(home.join("cache").join(env!("CARGO_PKG_VERSION")).join("programs"))?
+            .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+            .collect::<Result<_, _>>()?;
+    assert_eq!(stored.len(), 2, "the program and its functions' hashes: {stored:?}");
+    std::fs::write(dir.join("main.fen"), source.replace("stored", "changed"))?;
+    let (changed, _) = build(&["build", "main.fen", "-o", "built"])?;
+    assert!(changed.contains("compiled 1 of 1"), "a changed program is built: {changed}");
+    let (released, _) = build(&["build", "--release", "main.fen", "-o", "built"])?;
+    assert!(!released.contains("linked in 0 ms"), "a release build is a build of its own: {released}");
+    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 
@@ -8700,6 +8899,39 @@ fn members_given_to_builtins_taking_a_union_match_the_interpreter() -> std::io::
     }
     same_as_the_interpreter_in_both_builds("members_given_to_builtins", MEMBERS_GIVEN_TO_BUILTINS)
 }
+
+/// A generic type built where one of it is expected takes its types from there: a `Box[int |
+/// str]` built from an int or a str, in a parameter, a name's type and a list of them.
+#[test]
+fn generic_types_built_where_one_is_expected_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("generics_expected", GENERICS_EXPECTED)
+}
+
+const GENERICS_EXPECTED: &str = r#"struct Box[T]:
+    value: T
+
+struct Held[T]:
+    items: list[Box[T]]
+    plain: list[T]
+
+def show(box: Box[int | str]) -> str:
+    value = box.value
+    if value is int: return f"int {value + 1}"
+    f"str {value}"
+
+def count(held: Held[int | str]) -> str:
+    f"{held.items.len()} {show(held.items[1])} {held.plain.len()}"
+
+def main(stdout: Stdout):
+    name = "x"
+    stdout.print(show(Box(value=3)), show(Box(value=name)))
+    stdout.print(count(Held(items=[Box(value=1), Box(value=name)], plain=[name, 2])))
+    kept: Box[int | str] = Box(value=4)
+    stdout.print(show(kept))
+"#;
 
 const MEMBERS_GIVEN_TO_BUILTINS: &str = r#"struct Circle:
     radius: float

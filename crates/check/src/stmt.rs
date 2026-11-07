@@ -44,11 +44,12 @@ impl FnCx<'_> {
                 self.expecting = self.tail.clone();
             }
             let this = self.stmt(stmt, last && used);
-            if matches!(stmt.kind, StmtKind::Expr(_))
-                && !(last && used)
-                && matches!(self.checker.settled(&this.ty), Type::Result(..))
-            {
-                self.error(unhandled(stmt.span));
+            if matches!(stmt.kind, StmtKind::Expr(_)) && !(last && used) && !this.exits {
+                match self.checker.settled(&this.ty) {
+                    Type::Result(..) => self.error(unhandled(stmt.span)),
+                    ty if gives_something(&ty) => self.error(unused(&ty, stmt.span)),
+                    _ => {}
+                }
             }
             // Code after leaving early never runs, but it's still checked.
             if !flow.exits {
@@ -509,4 +510,19 @@ fn names_read(expr: &Expr, reads: &mut Vec<String>) {
     if let ExprKind::Name(name) = &expr.kind {
         reads.push(name.clone());
     }
+}
+
+/// Whether a value is something, so a statement that gives it and drops it loses it.
+fn gives_something(ty: &Type) -> bool {
+    !matches!(ty, Type::Unit | Type::Unknown | Type::Var(_) | Type::None)
+}
+
+/// A statement's value, thrown away without saying so. Throwing it away could hide a mistake,
+/// like `sorted(scores)` for `scores.sort()`, so it's a fix to make by hand.
+fn unused(ty: &Type, span: Span) -> Diagnostic {
+    Diagnostic::new(format!("this gives back {}, and nothing uses it", crate::types::a(ty)), span).with_hint(
+        "use it, or throw it away on purpose with `_ = ...`",
+        Span { start: span.start, end: span.start },
+        "_ = ",
+    )
 }

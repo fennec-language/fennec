@@ -79,7 +79,7 @@ export def respond(notes: Notes, clock: Clock, entropy: Entropy, request: Reques
                 case Err(why):
                     problem(request, status=400, message=why.message)
         case "DELETE":
-            notes.remove(id)
+            _ = notes.remove(id)
             Response(status=204)
         case _:
             problem(
@@ -128,7 +128,7 @@ test "a note is made, read, changed and removed"(clock: Clock, entropy: Entropy)
 test "a search keeps the notes that have its words, oldest first"(clock: Clock, entropy: Entropy):
     notes = Notes()
     for title in ["fox den", "badger sett", "fox earth"]:
-        respond(
+        _ = respond(
             notes,
             clock,
             entropy,
@@ -158,7 +158,7 @@ test "what's wrong with a request is a JSON error"(clock: Clock, entropy: Entrop
 test "a big answer is gzipped for a client that takes it"(clock: Clock, entropy: Entropy):
     notes = Notes()
     for at in range(40):
-        respond(
+        _ = respond(
             notes,
             clock,
             entropy,

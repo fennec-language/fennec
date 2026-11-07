@@ -58,7 +58,7 @@ extend Parser:
             fail no_inline_ref(self.span())
         if word not in ["return", "fail", "yield", "assert", "break", "continue", "pass"]:
             return self.expr_or_assign()?
-        self.advance()
+        _ = self.advance()
         match word:
             case "return":
                 if self.at(.Newline) or self.at(.Eof) or self.at(.Dedent):
@@ -85,7 +85,7 @@ extend Parser:
         at = self.span()
         name = self.name("a name after `shared`")?
         target = Expr(kind=.Name(name), span=at)
-        self.expect_punct("=")?
+        _ = self.expect_punct("=")?
         value = self.expr()?
         ty = TypeExpr(name="shared", args=[], optional=False, span=word)
         .Assign(target, None, value, declare_mut=False, ty=ty)
@@ -97,14 +97,14 @@ extend Parser:
         Stmt(kind=kind, span=span)
 
     def mut_declaration(ref self) -> StmtKind:
-        self.advance()
+        _ = self.advance()
         target = self.expr()?
         if not is_name_expr(target):
             fail Diagnostic(message="`mut` declares a new name, like `mut count = 0`", span=target.span)
         mut ty: TypeExpr? = None
         if self.eat_punct(":"):
             ty = self.type_expr()?
-        self.expect_punct("=")?
+        _ = self.expect_punct("=")?
         value = self.expr()?
         .Assign(target, None, value, declare_mut=True, ty=ty)
 
@@ -113,7 +113,7 @@ extend Parser:
         mut target = self.expr()?
         if is_name_expr(target) and self.eat_punct(":"):
             ty = self.type_expr()?
-            self.expect_punct("=")?
+            _ = self.expect_punct("=")?
             value = self.expr()?
             return .Assign(target, None, value, declare_mut=False, ty=ty)
         if self.at_punct(","):
@@ -140,7 +140,7 @@ extend Parser:
             if self.eat_keyword("elif"):
                 branches.append(self.condition_and_block()?)
             elif self.eat_keyword("else"):
-                self.expect_punct(":")?
+                _ = self.expect_punct(":")?
                 otherwise = self.block()?
                 break
             else:
@@ -149,7 +149,7 @@ extend Parser:
 
     def condition_and_block(ref self) -> (Expr, list[Stmt]):
         cond = self.expr()?
-        self.expect_punct(":")?
+        _ = self.expect_punct(":")?
         (cond, self.block()?)
 
     def while_stmt(ref self) -> Stmt:
@@ -217,7 +217,7 @@ extend Parser:
                 span=value.span,
                 help="write `lock scores as current:` to read it, or `lock scores as ref current:` to change it",
             )
-        self.expect_punct(":")?
+        _ = self.expect_punct(":")?
         body = self.block()?
         Stmt(kind=.With(value, names=names, body=body, lock=lock), span=start.to(self.prev_span()))
 

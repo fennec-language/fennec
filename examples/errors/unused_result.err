@@ -1,0 +1,7 @@
+error: this gives back a list[int], and nothing uses it
+ --> examples/errors/unused_result.fen:5:5
+  |
+5 |     sorted(scores)
+  |     ^^^^^^^^^^^^^^
+  |
+  = fix: use it, or throw it away on purpose with `_ = ...`

@@ -162,13 +162,12 @@ impl Checker {
     /// standard library functions it reaches: the library's other code can't affect a run.
     /// `Scope::ReachedWithFields` also types every library type's fields, which lowering needs.
     pub(crate) fn run(mut self, scope: Scope) -> Result<Checked, Vec<Diagnostic>> {
-        let reached_only = scope != Scope::Everything;
         self.check_declarations();
         let keys: Vec<String> = self
             .program
             .functions
             .iter()
-            .filter(|(_, entry)| !(reached_only && entry.prelude))
+            .filter(|(_, entry)| scope == Scope::Everything || !entry.prelude)
             .map(|(key, _)| key.clone())
             .collect();
         for key in &keys {

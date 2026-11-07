@@ -1,0 +1,18 @@
+# Serves the notes API: `fennec run examples/projects/notes_api 8080`, then try
+# `curl -d '{"title": "fox"}' localhost:8080/notes`. With no port, it runs a short demo.
+from api import respond
+from notes import Notes
+from std.net import Request
+
+def main(net: Net, args: Args, stdout: Stdout, clock: Clock, entropy: Entropy):
+    notes = Notes()
+    if args.len() == 0:
+        made = respond(notes, clock, entropy, Request(method="POST", path="/notes", body="{\"title\": \"den\", \"body\": \"by the river\"}".encode()))
+        stdout.print(made.status, notes.count())
+        listed = respond(notes, clock, entropy, Request(method="GET", path="/notes", query={"q": "river"}))
+        stdout.print(listed.status, listed.headers.get("content-type") else "")
+        return
+    port = int(args[0]) else 8080
+    with net.listen(port)? as server:
+        stdout.print(f"serving notes on http://localhost:{server.port}")
+        server.serve(request => respond(notes, clock, entropy, request))

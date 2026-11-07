@@ -1,0 +1,117 @@
+# The API: each request in, one response out.
+#
+#   GET    /notes          every note, oldest first; `?q=words` keeps those that have them
+#   POST   /notes          makes a note from `{"title": ..., "body": ...}`
+#   GET    /notes/{id}     one note
+#   PUT    /notes/{id}     changes a note's title and body
+#   DELETE /notes/{id}     removes a note
+#
+# Answers are JSON. A client that sends `accept-encoding: gzip` gets a big answer gzipped.
+from std import compress, json, uuid
+from std.net import Request, Response
+from notes import Draft, Note, Notes
+
+## Answers bigger than this are gzipped for a client that takes it.
+GZIP_FROM = 1024
+
+## The error a client gets, as JSON.
+struct Problem:
+    error: str
+
+def answer(request: Request, status: int, text: str) -> Response:
+    mut headers = {"content-type": "application/json"}
+    if text.len() > GZIP_FROM and (request.headers.get("accept-encoding") else "").find("gzip") is not None:
+        headers["content-encoding"] = "gzip"
+        return Response(status=status, headers=headers, body=compress.gzip(text))
+    Response(status=status, headers=headers, body=text.encode())
+
+def problem(request: Request, status: int, message: str) -> Response:
+    answer(request, status=status, text=json.dumps(Problem(error=message)))
+
+## Answers one request, keeping notes in `notes`.
+export def respond(notes: Notes, clock: Clock, entropy: Entropy, request: Request) -> Response:
+    parts = [part for part in request.path.split("/") if part != ""]
+    if parts.len() == 0 or parts[0] != "notes": return problem(request, status=404, message="there's nothing here")
+    if parts.len() == 1:
+        match request.method:
+            case "GET":
+                words = request.query.get("q") else ""
+                return answer(request, status=200, text=json.dumps(notes.find(words)))
+            case "POST":
+                match json.loads[Draft](request.body.decode() else ""):
+                    case Ok(draft):
+                        now = clock.time()
+                        note = Note(id=str(uuid.v7(entropy, clock)), title=draft.title, body=draft.body, created=now, changed=now)
+                        notes.add(note)
+                        return answer(request, status=201, text=json.dumps(note))
+                    case Err(why):
+                        return problem(request, status=400, message=why.message)
+            case _:
+                return problem(request, status=405, message=f"/notes takes GET and POST, not {request.method}")
+    if parts.len() > 2: return problem(request, status=404, message="there's nothing here")
+    id = parts[1]
+    found = notes.get(id)
+    if found is None: return problem(request, status=404, message=f"there's no note {id}")
+    match request.method:
+        case "GET":
+            answer(request, status=200, text=json.dumps(found))
+        case "PUT":
+            match json.loads[Draft](request.body.decode() else ""):
+                case Ok(draft):
+                    changed = copy(found, title=draft.title, body=draft.body, changed=clock.time())
+                    notes.add(changed)
+                    answer(request, status=200, text=json.dumps(changed))
+                case Err(why):
+                    problem(request, status=400, message=why.message)
+        case "DELETE":
+            notes.remove(id)
+            Response(status=204)
+        case _:
+            problem(request, status=405, message=f"a note takes GET, PUT and DELETE, not {request.method}")
+
+## A request with a JSON body, as a client sends one.
+def sent(method: str, path: str, body = "") -> Request:
+    Request(method=method, path=path, body=body.encode())
+
+test "a note is made, read, changed and removed"(clock: Clock, entropy: Entropy):
+    notes = Notes()
+    made = respond(notes, clock, entropy, sent("POST", path="/notes", body="{\"title\": \"den\", \"body\": \"by the river\"}"))
+    assert made.status == 201
+    note = made.json[Note]()?
+    assert note.title == "den" and note.created == note.changed
+    assert str(note.created) == "2000-01-01T00:00:00Z"
+    clock.sleep(1s)
+    changed = respond(notes, clock, entropy, sent("PUT", path=f"/notes/{note.id}", body="{\"title\": \"den\", \"body\": \"by the lake\"}"))
+    assert changed.json[Note]()?.body == "by the lake"
+    assert str(changed.json[Note]()?.changed) == "2000-01-01T00:00:01Z"
+    assert respond(notes, clock, entropy, sent("GET", path=f"/notes/{note.id}")).json[Note]()?.body == "by the lake"
+    assert respond(notes, clock, entropy, sent("DELETE", path=f"/notes/{note.id}")).status == 204
+    assert respond(notes, clock, entropy, sent("GET", path=f"/notes/{note.id}")).status == 404
+    assert notes.count() == 0
+
+test "a search keeps the notes that have its words, oldest first"(clock: Clock, entropy: Entropy):
+    notes = Notes()
+    for title in ["fox den", "badger sett", "fox earth"]:
+        respond(notes, clock, entropy, sent("POST", path="/notes", body=f"{{\"title\": \"{title}\"}}"))
+        clock.sleep(1ms)
+    found = Request(method="GET", path="/notes", query={"q": "fox"})
+    titles = [note.title for note in respond(notes, clock, entropy, found).json[list[Note]]()?]
+    assert titles == ["fox den", "fox earth"]
+
+test "what's wrong with a request is a JSON error"(clock: Clock, entropy: Entropy):
+    notes = Notes()
+    bad = respond(notes, clock, entropy, sent("POST", path="/notes", body="{\"body\": \"no title\"}"))
+    assert bad.status == 400 and bad.json[Problem]()?.error == "`title` is missing"
+    assert respond(notes, clock, entropy, sent("PATCH", path="/notes")).status == 405
+    assert respond(notes, clock, entropy, sent("GET", path="/elsewhere")).status == 404
+    assert respond(notes, clock, entropy, sent("GET", path="/notes/nope")).json[Problem]()?.error == "there's no note nope"
+
+test "a big answer is gzipped for a client that takes it"(clock: Clock, entropy: Entropy):
+    notes = Notes()
+    for at in range(40):
+        respond(notes, clock, entropy, sent("POST", path="/notes", body=f"{{\"title\": \"note {at}\"}}"))
+    plain = respond(notes, clock, entropy, Request(method="GET", path="/notes"))
+    zipped = respond(notes, clock, entropy, Request(method="GET", path="/notes", headers={"accept-encoding": "gzip, br"}))
+    assert (plain.headers.get("content-encoding") else "") == "" and zipped.headers["content-encoding"] == "gzip"
+    assert compress.gunzip(zipped.body)? == plain.body
+    assert zipped.body.len() < plain.body.len() / 3

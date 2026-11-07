@@ -1,0 +1,36 @@
+# The notes, kept in memory while the server runs.
+from std.time import Time
+
+## One note. Its id is a UUID and its times are when it was made and last changed.
+export struct Note:
+    id: str
+    title: str
+    body: str
+    created: Time
+    changed: Time
+
+## What a client sends to make or change a note.
+export struct Draft:
+    title: str
+    body = ""
+
+## Every note, by id. It's `shared`, so each connection's task reaches the same notes.
+export shared Notes:
+    items = dict[str, Note]()
+
+    def add(ref self, note: Note):
+        self.items[note.id] = note
+
+    def get(self, id: str) -> Note?:
+        self.items.get(id)
+
+    def remove(ref self, id: str) -> bool:
+        (self.items.pop(id) else None) is not None
+
+    ## The notes whose title or body has `words` in it, oldest first.
+    def find(self, words: str) -> list[Note]:
+        found = [note for _, note in self.items.items() if words == "" or note.title.find(words) is not None or note.body.find(words) is not None]
+        sorted(found, key=note => note.created.nanos)
+
+    def count(self) -> int:
+        self.items.len()

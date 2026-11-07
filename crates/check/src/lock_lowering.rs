@@ -197,6 +197,10 @@ impl Lowering<'_> {
             | StmtKind::Yield(value)
             | StmtKind::Assert(value)
             | StmtKind::Return(Some(value)) => self.exprs(value),
+            StmtKind::Lend { value, otherwise } => {
+                self.exprs(value);
+                self.stmts(otherwise);
+            }
             StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue | StmtKind::Pass => {}
         }
     }

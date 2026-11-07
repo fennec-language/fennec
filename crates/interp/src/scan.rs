@@ -21,7 +21,10 @@ pub(crate) fn body_effects(body: &[Stmt]) -> (bool, bool) {
 
 fn stmt_effects(stmt: &Stmt, effects: &mut Effects) {
     match &stmt.kind {
-        StmtKind::Expr(expr) | StmtKind::Assert(expr) | StmtKind::Return(Some(expr)) => {
+        StmtKind::Expr(expr)
+        | StmtKind::Assert(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Lend { value: expr, .. } => {
             expr_effects(expr, effects);
         }
         StmtKind::Fail(expr) => {

@@ -1,6 +1,6 @@
 name: Suite report
 
-# Probe, not for merging: a Linux hello-world's startup before and after #789, against Rust's.
+# Probe, not for merging: the servers' and the pool's tests under ThreadSanitizer, on scheduler-servers.
 on:
   workflow_dispatch:
 
@@ -9,47 +9,27 @@ permissions:
 
 jobs:
   probe:
-    name: Startup probe (ubuntu-latest)
+    name: Servers under ThreadSanitizer (probe)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 40
+    env:
+      NIGHTLY: nightly-2026-10-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
-      - run: rustup component add llvm-tools-preview
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq valgrind || true
-      - name: Build fennec and the lean runtime before and after
+          ref: scheduler-servers
+      - name: Install the nightly compiler the sanitizers need
+        run: rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
+      - name: Run the servers' and the pool's tests
         run: |
-          for side in before:00a02ab70a39592af2647f8b7190162746ad9285 after:5777e017d942f6930e758326041bac0201c060a5; do
-            name=${side%%:*}; commit=${side#*:}
-            git worktree add -q ../$name $commit
-            (cd ../$name &&
-              cargo build -q --release --locked -p fennec -p fennec-runtime &&
-              cargo rustc -q --release --locked -p fennec-runtime --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1 &&
-              cp "$(find target/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime.bc &&
-              cargo rustc -q --release --locked -p fennec-runtime --features lean --target-dir target/lean --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1 &&
-              cp target/lean/release/libfennec_runtime.a target/release/libfennec_runtime_lean.a &&
-              cp "$(find target/lean/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime_lean.bc &&
-              ./target/release/fennec build --llvm --release bench/startup/empty.fen -o $GITHUB_WORKSPACE/hello_$name)
+          env TSAN_OPTIONS=halt_on_error=1:report_signal_unsafe=0 RUSTFLAGS=-Zsanitizer=thread \
+            cargo "+$NIGHTLY" test --locked -Zbuild-std --target x86_64-unknown-linux-gnu \
+            -p fennec-interp --features threads -- embed::serve embed::parallel
+      - name: The same, five times over, for races that show only sometimes
+        run: |
+          for i in 1 2 3 4 5; do
+            env TSAN_OPTIONS=halt_on_error=1:report_signal_unsafe=0 RUSTFLAGS=-Zsanitizer=thread \
+              cargo "+$NIGHTLY" test -q --locked -Zbuild-std --target x86_64-unknown-linux-gnu \
+              -p fennec-interp --features threads -- embed::serve embed::parallel 2>&1 | grep -E "test result|ThreadSanitizer|FAILED"
           done
-          rustc -C opt-level=3 bench/startup/empty.rs -o hello_rs
-          ls -l hello_before hello_after hello_rs
-      - name: Wall time and page faults, taking turns
-        run: |
-          python3 - <<'TIME'
-          import subprocess, time, statistics, os, resource
-          variants = ["hello_before", "hello_after", "hello_rs"]
-          times = {p: [] for p in variants}; faults = {p: [] for p in variants}
-          for _ in range(1500):
-              for p in variants:
-                  before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_minflt
-                  t = time.perf_counter(); subprocess.run(["./" + p], stdout=subprocess.DEVNULL); times[p].append(time.perf_counter() - t)
-                  faults[p].append(resource.getrusage(resource.RUSAGE_CHILDREN).ru_minflt - before)
-          for p in variants:
-              ts = sorted(times[p])
-              print(f"{p:13} best {ts[0]*1e3:.3f} ms  10th {ts[len(ts)//10]*1e3:.3f} ms  median {statistics.median(ts)*1e3:.3f} ms  faults {statistics.median(faults[p]):.0f}")
-          TIME
-      - name: Instructions
-        run: |
-          for p in hello_before hello_after hello_rs; do echo "== $p $(valgrind --tool=callgrind --callgrind-out-file=cg.$p ./$p 2>&1 >/dev/null | grep Collected)"; done

@@ -215,7 +215,13 @@ export def best(scores: list[Score]) -> int:
     max(score.points for score in scores)
 ```
 
-`export` marks what other kits can use, and goes on top-level things only. Inside a kit, every file sees everything. A `_name` field or method is hidden from everything but its type's own methods. Built.
+- `export` marks what other kits can use, and goes on top-level types and functions only. Without it, a name is private to its kit, and inside a kit every file sees everything. `fennec fix` rewrites the old `pub`. Built.
+- A `_name` field or method of a `struct` or `shared` is hidden from everything but its type's own methods. Tests get no special access. Built.
+- A top-level name never starts with `_`, since it's already private to its kit. That's a compile error, and `fennec fix` renames it everywhere. The standard library follows the same rule. Built.
+- Other kits match an exported type's fields by name: `case IoError(reason=r)`, `case Point(x=a, y=_)`, or `case IoError()` to match it without reading a field. Matching another kit's type by position is a compile error, and `fennec fix` adds the names. A kit's own code can still match by position, and cases with no fields, like `.Wait`, are unchanged. Built for the standard library's types.
+- Other kits build an exported type with named arguments only. Not built yet.
+- The automatic constructor sets the public fields, and `_` fields take their defaults. A `_` field with no default needs a named constructor, and a type nobody can build is a compile error. Not built yet.
+- So a kit can add a field with a default to a type it exports, and no other kit's code that builds or matches it breaks.
 
 ## Saving data
 
@@ -278,7 +284,6 @@ Each connection gets its own task, and a failure ends only that task. The wrappe
 | Float order | Keep one order, and measure x86 before calling it settled |
 | `x / 0.0` | Keep stopping the program |
 | `where` | A broken rule always stops the program |
-| Private fields | Allow them in a constructor inside the same kit; other kits use named constructors |
 | A shared method calling another | Refuse calls into a `shared` passed as a parameter |
 | `?` inside `parallel` | It ends only that task |
 | A scoped `ref` | Possibly `with units[target_id] as ref target:` |

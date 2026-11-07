@@ -8,7 +8,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 
 <p class="lede">Fennec comes with batteries included, like Python. Where Python has a module for something, Fennec's usually has the same name.</p>
 
-> **Partly built.** `math`, `game`, `layout`, `path`, `json`, `toml`, `pack`, `csv`, `collections`, `random`, `time`, `re`, `log`, `cli`, `net`, `process`, `crypto` and `uuid` work today, along with `Fs`, `Clock`, `Args`, `Stdin`, `Env`, `Entropy` and `Net`. Everything else below is planned, and the built modules don't have everything listed yet. See the [roadmap](/roadmap/).
+> **Partly built.** `math`, `game`, `layout`, `path`, `json`, `toml`, `pack`, `csv`, `base64`, `collections`, `random`, `time`, `re`, `log`, `cli`, `net`, `process`, `crypto` and `uuid` work today, along with `Fs`, `Clock`, `Args`, `Stdin`, `Env`, `Entropy` and `Net`. Everything else below is planned, and the built modules don't have everything listed yet. See the [roadmap](/roadmap/).
 
 ## What's in it
 

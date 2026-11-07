@@ -173,7 +173,7 @@ impl Lowering<'_> {
                 self.finish(Terminator::Jump(fail));
                 self.current = matched;
             }
-            Pattern::Variant { name, dotted, args } => {
+            Pattern::Variant { name, dotted, args, .. } => {
                 return self.variant((name, *dotted, args), (value, ty), fail, span);
             }
             Pattern::Tuple(parts) => {

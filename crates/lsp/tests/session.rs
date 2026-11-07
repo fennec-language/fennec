@@ -565,6 +565,28 @@ fn places(locations: &Json) -> Vec<(String, usize)> {
     found
 }
 
+/// An edit to a function's body is checked by itself, and what's asked about a place after it
+/// is answered from that quick check: a definition in another file, a local's type, and, from
+/// the whole program, every reference.
+#[test]
+fn after_an_edit_to_a_body_definitions_hovers_and_references_still_answer() {
+    let mut editor = Editor::new("after_edit").unwrap();
+    editor.open("src/main.fen", MAIN);
+    let edited = MAIN.replace("hit(fighter, 3)", "hit(fighter, 4)");
+    let published = editor.change("src/main.fen", &edited);
+    assert_eq!(for_file(&published, "main.fen"), Some(&[][..]));
+    let hit = editor.at("textDocument/definition", "src/main.fen", &edited, "hit(fighter", 1);
+    let hit = &hit.as_array().unwrap()[0];
+    assert_eq!(hit.get("uri"), Some(&Json::string(editor.uri("src/combat.fen"))));
+    assert_eq!(hit.at(&["range", "start"]), Some(&position(COMBAT, "hit(", 0)));
+    let hover = editor.at("textDocument/hover", "src/main.fen", &edited, "damage =", 0);
+    let shown = hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap_or("");
+    assert!(shown.contains("damage: int"), "{shown}");
+    let with = Json::object([("includeDeclaration", Json::Bool(true))]);
+    let params = params_at(&editor, "src/main.fen", &edited, "Fighter(", vec![("context", with)]);
+    assert_eq!(places(&editor.request("textDocument/references", params)).len(), 4);
+}
+
 #[test]
 fn references_reach_every_file_and_can_leave_out_the_declaration() {
     let mut editor = Editor::new("references").unwrap();

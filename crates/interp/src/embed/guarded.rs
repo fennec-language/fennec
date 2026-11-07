@@ -140,6 +140,9 @@ fn copied(state: &mut State, address: u64) -> Result<u64, Diagnostic> {
     let mut copies: HashMap<u64, u64> = HashMap::new();
     let mut left = Vec::new();
     let root = copy_of(state, address, &mut copies, &mut left)?;
+    if root == address {
+        copy_read_in(state, address, &mut copies, &mut left)?;
+    }
     while let Some(new) = left.pop() {
         for place in places_in(state, new)? {
             let block = state.heap.block(new).ok_or_else(|| lost(new))?;
@@ -154,6 +157,48 @@ fn copied(state: &mut State, address: u64) -> Result<u64, Diagnostic> {
         }
     }
     Ok(root)
+}
+
+/// For a value already in the current table, like a list made under a read lock: what it holds that
+/// it only found in a table being read, all the way down, gets its own copy here. Native code made
+/// such a value holding blocks of the `shared` value's table, whose counts went nowhere, as what's
+/// kept past a read lock is copied out. Without the copy, once the lock's let go, the runtime can't
+/// find those blocks, and a string of them prints as nothing.
+fn copy_read_in(
+    state: &mut State,
+    address: u64,
+    copies: &mut HashMap<u64, u64>,
+    left: &mut Vec<u64>,
+) -> Result<(), Diagnostic> {
+    if state.heap.reading.is_empty() {
+        return Ok(());
+    }
+    let mut seen = std::collections::HashSet::from([address]);
+    let mut kept = vec![address];
+    while let Some(here) = kept.pop() {
+        for place in places_in(state, here)? {
+            let held = state.heap.block(here).and_then(|block| block.get(place).copied()).unwrap_or(0);
+            if held == 0 || is_handle(held) {
+                continue;
+            }
+            let at = usize::try_from(held).unwrap_or(usize::MAX);
+            if state.heap.blocks.get(at).is_some() {
+                // Its own, so what it holds may be read in too.
+                if seen.insert(held) {
+                    kept.push(held);
+                }
+                continue;
+            }
+            if !state.heap.reading.iter().any(|table| table.get(at).is_some()) {
+                continue;
+            }
+            let copy = copy_of(state, held, copies, left)?;
+            if let Some(word) = state.heap.block_mut(here).and_then(|block| block.get_mut(place)) {
+                *word = copy;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The block in the copy for what's at `address`, added to `left` if it's new.

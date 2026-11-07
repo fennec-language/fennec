@@ -66,6 +66,9 @@ pub(crate) struct Checker {
     pub(crate) failing_steps: BTreeSet<(u32, u32)>,
     /// What each name for a standard library function written in Fennec means.
     pub(crate) std_names: BTreeMap<(u32, u32), String>,
+    /// The field each value given by position goes to, by the value's span, where that isn't
+    /// the field at its position: from outside a type, the `_` fields are skipped.
+    pub(crate) field_args: BTreeMap<(u32, u32), String>,
     /// The fields, in order, of each pattern written with them by name, by its case's span and
     /// the variant's name.
     pub(crate) named_patterns: BTreeMap<(u32, u32, String), Vec<String>>,
@@ -133,6 +136,7 @@ impl Checker {
         let mut diagnostics = std::mem::take(&mut program.problems);
         diagnostics.extend(crate::imports::unimported(module, &program));
         diagnostics.extend(crate::privacy::top_level_underscores(module));
+        diagnostics.extend(crate::privacy::unbuildable(module));
         Checker {
             program,
             states: BTreeMap::new(),
@@ -150,6 +154,7 @@ impl Checker {
             optional_steps: BTreeSet::new(),
             failing_steps: BTreeSet::new(),
             std_names: BTreeMap::new(),
+            field_args: BTreeMap::new(),
             named_patterns: BTreeMap::new(),
             native_formats: BTreeMap::new(),
             native_json_bodies: BTreeSet::new(),
@@ -211,41 +216,50 @@ impl Checker {
             self.body_rules();
         }
         if self.diagnostics.is_empty() {
-            let enums = self.enums();
-            let locals = std::mem::take(&mut self.locals);
-            let functions = self
-                .states
-                .into_iter()
-                .filter_map(|(key, state)| match state {
-                    State::Done(signature) => Some((key, signature)),
-                    State::Checking => None,
-                })
-                .collect();
-            let signatures =
-                Signatures { functions, structs, enums, errors, locals, ..Signatures::default() };
-            let types = Types { functions: self.typed };
-            return Ok(Checked {
-                signatures,
-                types,
-                cases: self.cases,
-                float_sums: self.float_sums,
-                defaults: self.defaults,
-                generator_types: self.generator_types,
-                not_equals: self.not_equals,
-                empty_collections: self.empty_collections,
-                array_zeros: self.array_zeros,
-                optional_steps: self.optional_steps,
-                failing_steps: self.failing_steps,
-                std_names: self.std_names,
-                named_patterns: self.named_patterns,
-                native_formats: self.native_formats,
-                native_json_bodies: self.native_json_bodies,
-            });
+            return Ok(self.checked(structs, errors));
         }
         let mut diagnostics = self.diagnostics;
         diagnostics.sort_by(|a, b| (a.span.start, &a.message).cmp(&(b.span.start, &b.message)));
         diagnostics.dedup();
         Err(diagnostics)
+    }
+
+    /// What a check that found nothing wrong gives back.
+    fn checked(
+        mut self,
+        structs: BTreeMap<String, crate::Struct>,
+        errors: BTreeMap<String, crate::Struct>,
+    ) -> Checked {
+        let enums = self.enums();
+        let locals = std::mem::take(&mut self.locals);
+        let functions = self
+            .states
+            .into_iter()
+            .filter_map(|(key, state)| match state {
+                State::Done(signature) => Some((key, signature)),
+                State::Checking => None,
+            })
+            .collect();
+        let signatures = Signatures { functions, structs, enums, errors, locals, ..Signatures::default() };
+        let types = Types { functions: self.typed };
+        Checked {
+            signatures,
+            types,
+            cases: self.cases,
+            float_sums: self.float_sums,
+            defaults: self.defaults,
+            generator_types: self.generator_types,
+            not_equals: self.not_equals,
+            empty_collections: self.empty_collections,
+            array_zeros: self.array_zeros,
+            optional_steps: self.optional_steps,
+            failing_steps: self.failing_steps,
+            std_names: self.std_names,
+            field_args: self.field_args,
+            named_patterns: self.named_patterns,
+            native_formats: self.native_formats,
+            native_json_bodies: self.native_json_bodies,
+        }
     }
 
     /// Reports types written in signatures and interfaces that don't mean anything, and

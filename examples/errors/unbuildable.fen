@@ -1,0 +1,10 @@
+# Only a type's own methods can set its `_` fields, so one with no default needs a method that
+# builds the type, or nothing can.
+struct Token:
+    _secret: str
+
+    def matches(self, guess: str) -> bool:
+        guess == self._secret
+
+def main(stdout: Stdout):
+    stdout.print("unreachable")

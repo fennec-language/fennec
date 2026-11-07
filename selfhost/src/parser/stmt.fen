@@ -87,7 +87,7 @@ extend Parser:
         value = self.or_expr()?
         mut otherwise = list[Stmt]()
         if self.eat_keyword("else"):
-            self.expect_punct(":")?
+            _ = self.expect_punct(":")?
             otherwise = self.block()?
         else:
             self.end_line()?

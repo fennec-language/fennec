@@ -10,25 +10,26 @@ your branch -> the gate on your machine -> a pull request to main -> merged -> C
 
 ## Landing
 
-1. Merge the latest `main` into your branch, so that the gate tests what will be on `main`:
+With everything committed on your branch, write what the pull request says in a file, and run:
 
-   ```sh
-   git fetch origin
-   git merge origin/main
-   ```
+```sh
+.github/scripts/open-pr.sh "What it does, in a line" body.md
+```
 
-2. Run the gate, with everything committed:
+It does the three steps below in order, and stops at the first that fails, with nothing pushed:
 
-   ```sh
-   .github/scripts/gate.sh
-   ```
+1. It merges the latest `main` into your branch, so that the gate tests what will be on `main`. A
+   merge that conflicts is undone, so your branch is as it was: merge `main` yourself, resolve it,
+   commit, and run it again.
+2. It runs the gate, `.github/scripts/gate.sh`. That checks formatting, runs clippy, every test and
+   every example and kit, and runs the JIT as x86-64 under Rosetta. It stops at the first failure and
+   prints that step's output. A test program that runs more than a minute or holds more than 4 GB is
+   stopped, and the gate says which. It takes four to five minutes when the build is warm.
+3. It pushes your branch, checks that origin has this very commit, and opens the pull request to
+   `main`. The coordinator merges it.
 
-   It checks formatting, runs clippy, every test and every example and kit, and runs the JIT as
-   x86-64 under Rosetta. It stops at the first failure and prints that step's output. A test program
-   that runs more than a minute or holds more than 4 GB is stopped, and the gate says which. It takes
-   four to five minutes when the build is warm.
-
-3. Open a pull request to `main`, and say that the gate passed. The coordinator merges it.
+Say in the text that the gate passed, and what you measured. Don't open a pull request by joining these
+steps by hand in one command: a failed merge or gate goes unnoticed that way, and has more than once.
 
 ## When CI on `main` fails
 

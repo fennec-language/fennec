@@ -132,7 +132,12 @@ jobs:
       - name: Install LLVM's tools
         if: runner.os == 'Linux'
         run: rustup component add llvm-tools-preview
+      # A failing or stopped run still saves what it built. Otherwise a red main saves nothing, and
+      # every run after it builds from nothing: after Windows' key changed, each of its runs did,
+      # until they ran out of time.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-on-failure: true
       # `fennec run` builds through LLVM where it can, linking the runtime library beside
       # `fennec`, so it's built first and the tests take the path users get.
       - name: Build the runtime library
@@ -327,6 +332,8 @@ jobs:
         run: zizmor --offline --min-severity low .github/workflows
       - name: The landing hook and helper, on a throwaway repository
         run: .github/scripts/test-landing.sh
+      - name: Opening a pull request, on a throwaway repository
+        run: .github/scripts/test-open-pr.sh
       # The installer runs as `sh` on machines Fennec has never seen, so it keeps to POSIX sh.
       - name: shellcheck the installer
         run: shellcheck --shell=sh site/public/install.sh

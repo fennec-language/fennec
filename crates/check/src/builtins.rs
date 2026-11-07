@@ -262,6 +262,7 @@ fn named_method(type_name: &str, name: &str) -> Option<Method> {
         ("Stdout", "print" | "write") => reads(&[], Type::Unit).any_args(),
         ("Stdout", "captured") => reads(&[], Type::Str),
         ("Clock", "now") => reads(&[], Type::named("Instant")),
+        ("Clock", "time") => reads(&[], Type::named("Time")),
         ("Args", "len") | ("Entropy", "seed") => reads(&[], Type::Int),
         ("Stdin", "lines") => reads(&[], Type::list(Type::Str)),
         ("Clock", "sleep") => reads(&[Type::named("Duration")], Type::Unit),

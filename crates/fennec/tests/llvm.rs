@@ -7702,9 +7702,8 @@ fn native_blocks_are_counted() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = format!(
-        "{SHARED_LEAVES_TREE}def main(stdout: Stdout):\n    stdout.print(count(build(5)))\n"
-    );
+    let source =
+        format!("{SHARED_LEAVES_TREE}def main(stdout: Stdout):\n    stdout.print(count(build(5)))\n");
     let counts = counts_of("native_blocks_counted", &source)?;
     assert!(count(&counts, "allocations") >= Some(31), "{counts}");
     assert!(count(&counts, "allocations") < Some(60), "{counts}");

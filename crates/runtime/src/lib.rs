@@ -433,6 +433,7 @@ export! {
     fennec_aot_test_done(a0: i64) => aot::test_done(a0);
     fennec_trace_at(a0: i64) => aot::trace_at(a0);
     fennec_trace_allocated(a0: i64) => aot::trace_allocated(a0);
+    fennec_counting() -> i64 => aot::counting();
     #[cfg(not(feature = "lean"))]
     fennec_aot_test_world(a0: i64) => aot::test_world(a0);
 }

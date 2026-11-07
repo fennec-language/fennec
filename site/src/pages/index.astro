@@ -6,10 +6,8 @@ import data from '../data/benchmarks.json';
 
 const base = import.meta.env.BASE_URL;
 const themes = { light: 'vitesse-light', dark: 'vitesse-dark' } as const;
-const { ci, builds, targets } = data;
-const percents = ci.kernels.map((kernel) => kernel.percent);
-const low = Math.round(Math.min(...percents));
-const high = Math.round(Math.max(...percents));
+const { suite, tests } = data;
+const [x86, arm] = suite.machines;
 
 const program = `def fib(n: int) -> int:
     if n < 2: return n
@@ -23,42 +21,57 @@ def main(stdout: Stdout):
 
 const pillars = [
   {
-    title: 'Rebuilds fast',
-    number: `${builds.one_function_s} s`,
-    caption: 'to rebuild 2,800 lines after changing one function',
-    body: `Compiled a function at a time and cached by content, so a change costs only what it touches. The first build of that code takes ${builds.first_s.toFixed(0)} s, which we still want much lower.`,
+    title: 'Builds almost instantly',
+    number: `${suite.fib_dev_build_ms} ms`,
+    caption: 'to build the fib benchmark natively, from an empty cache',
+    body: 'Compiled through LLVM a function at a time and cached by content, so a change costs only what it touches. A release build takes a few seconds, to optimize the whole program as one.',
   },
   {
-    title: 'Runs fast',
-    number: `${low}–${high}%`,
-    caption: "of its speed target today, in the JIT",
-    body: `Native code with no garbage collector. No benchmark meets its target yet. The goal is to beat each one, built with overflow checks as Fennec is, through one LLVM backend, which isn't finished.`,
+    title: 'Runs near native speed',
+    number: `${x86.time}%`,
+    caption: 'of hand-written C-class twins, across the suite',
+    body: `Release builds on x86-64 Linux in CI, and ${arm.time}% on Arm macOS, with overflow checks on both sides and no garbage collector. That's the whole run, startup included, and the work alone runs at ${x86.kernel}%. The goal is 110% on every kernel, and some aren't there yet.`,
   },
   {
-    title: 'Built for agents',
-    number: `<${builds.tests_unchanged_s} s`,
-    caption: 'to rerun tests when nothing they use changed',
-    body: 'It reads like typed Python, the language models know best, with one way to do each thing and errors that say how to fix them.',
+    title: 'Fully safe',
+    number: 'no unsafe',
+    caption: 'and nothing to switch it off',
+    body: 'If it compiles, it is memory-safe. There are no raw pointers, no unsafe blocks and no lifetimes to write. Data is plain values, and errors can’t be ignored.',
   },
 ];
 
 const design = [
   {
     title: 'Values and tables',
-    status: 'Mostly built',
+    status: 'Built',
     code: `mut units = Table[Unit]()
 ash = units.add(Unit())
 units[ash].health -= 10`,
-    body: 'No object graphs and no references to manage. Things that point at each other live in tables and hold an Id, and `ref` lets a loop or a function change one in place. Planned: an error for a copy that can go stale.',
+    body: 'A name holds its own value. Things that point at each other live in tables and hold an Id, and `ref` lets a loop or a function change yours. Planned: an error for a copy that can go stale.',
   },
   {
-    title: 'A lifetime is a block',
-    status: 'Being redesigned',
-    code: `with Lease(name="outer") as outer:
-    with Lease(name="inner") as inner:
-        use(outer, inner)
-# inner closes first, then outer`,
-    body: 'Any way out of a block closes what it opened, so there is nothing to annotate. Planned: several in one line, and a block’s last line as its value.',
+    title: 'Mistakes stopped early',
+    status: 'Built',
+    code: `target = units[target_id]
+target.health -= 10
+# error: \`target\` isn't mut`,
+    body: 'Changing a copy nobody reads, changing a list while looping over it, and using a generator twice are compile errors, each saying what to write instead.',
+  },
+  {
+    title: 'Unions and enums',
+    status: 'Built',
+    code: `type Shape = Circle | Square
+
+if shape is Circle:
+    stdout.print(shape.radius)`,
+    body: 'A union mixes types you already have, and an enum makes new cases. Both are held in place with a small tag, never boxed, and `match` must cover every case.',
+  },
+  {
+    title: 'Errors you can see',
+    status: 'Mostly built',
+    code: `score = load_score(path)?
+score = load_score(path) else 0`,
+    body: 'No exceptions. `fails Name` in the signature says how a function can fail, and `?` marks every line it can leave from. Planned: narrowing with `if x is Err(...)`.',
   },
   {
     title: 'Lazy streams',
@@ -68,67 +81,72 @@ big = (n for n in squares if n > 50)`,
     body: 'A pipeline reads like the steps it is, and handles input too big to hold. Using one twice is a compile error instead of quietly giving you nothing.',
   },
   {
-    title: 'Errors you can see',
-    status: 'Mostly built',
-    code: `score = load_score(path)?
-score = load_score(path) else 0`,
-    body: 'No exceptions, every line a function can leave from is marked, and `fails Name` in the signature says how it can fail. Planned: narrowing with `if x is Err(...)`.',
-  },
-  {
-    title: 'parallel and launch',
-    status: 'Partly built',
-    code: `for conn in parallel(server):
-    handle(conn, app)
-
-with launch(physics_loop) as physics:
-    physics.send(cmd)`,
-    body: 'One word for more cores, one for a long-running task, and no `async`. `parallel` runs on every core today, and `launch` is planned.',
-  },
-  {
-    title: 'shared, rarely',
-    status: 'Being redesigned',
-    code: `shared Cache:
-    _pages = dict[str, Page]()
-
-    def set(ref self, key: str, page: Page):
-        self._pages[key] = page`,
-    body: 'The one reference type, for the few things that really are shared. Its methods lock automatically, and a search for `shared` finds them all.',
-  },
-  {
-    title: 'export and _name',
+    title: 'parallel',
     status: 'Built',
-    code: `export struct Score:
-    points = 0
-    _best = 0`,
-    body: '`export` goes on top-level things only, and a big program splits into local kits. A `_name` field is hidden from everything but its type.',
+    code: `for ref particle in parallel(particles):
+    particle.position += particle.velocity
+
+for conn in parallel(server):
+    handle(conn)`,
+    body: 'One word for every core, and for every connection to a server, with no `async`. Each round changes only its own item, so data can’t race.',
   },
   {
-    title: 'Compile-time loops',
+    title: 'shared and lock',
     status: 'Planned',
-    code: `def write[T, W: Writer](x: T, ref out: W):
-    for f in fields(T):
-        out.field(f.name)
-        write(f.get(x), ref out)`,
-    body: 'No macros and no `derive`. One generic function will serialize any struct. JSON, TOML and `std.pack`, the default binary format, work today.',
+    code: `shared scores = Scores()
+
+lock scores as ref current:
+    current.best[name] = points`,
+    body: 'The new design: `shared T` is a type, reached only inside `lock`, and deadlocks can’t compile. A crash inside a lock puts everything back. Today’s `shared Name:` works, and `fennec fix` will rewrite it.',
+  },
+  {
+    title: 'launch and channels',
+    status: 'Planned',
+    code: `with launch((inbox) => audio(inbox, speakers)) as sounds:
+    sounds.send(.Play(name="jump", volume=0.8))?`,
+    body: 'A task runs beside you until its block ends, so none can leak. An enum is its protocol, and channels are always bounded.',
+  },
+  {
+    title: '@hot',
+    status: 'Built',
+    code: `@hot
+def update(ref particles: list[Particle], dt: float):
+    for ref particle in particles:
+        particle.position += particle.velocity * dt`,
+    body: 'Prove it or don’t compile. Anything that may allocate, copy or keep a check in a `@hot` function, or in what it calls, is an error that says why.',
+  },
+  {
+    title: 'Capabilities',
+    status: 'Built',
+    code: `def main(stdout: Stdout, fs: Fs):
+    stdout.print("hello")`,
+    body: 'A function reaches outside itself only through what’s in its signature, so there’s no global `print`, and tests get fakes.',
+  },
+  {
+    title: 'Saving data',
+    status: 'Built',
+    code: `text = json.dumps(world)
+back = json.loads[World](text)?`,
+    body: 'JSON, TOML and `std.pack` save any type whose fields can be saved, with nothing to derive. Planned: compile-time loops over a type.',
   },
   {
     title: 'One backend',
     status: 'Mostly built',
     code: `$ fennec run
-# per-function -O3 through LLVM,
+# built through LLVM a function at a time,
 # each function cached by content`,
-    body: 'What you run is what ships. Whole-program work comes only with `--release`. `fennec run` builds through LLVM, and says so when the JIT stands in for what LLVM can\'t build yet.',
+    body: 'What you run is what ships. `fennec build` always makes a native program, and `--release` optimizes it as a whole. `fennec run` says so when the JIT stands in for what LLVM can\'t build yet.',
   },
 ];
 ---
 
-<Base title="Fennec" description="Fennec is a safe, compiled language that reads like Python and is built for agents. In progress, with real numbers.">
+<Base title="Fennec" description="Fennec reads like Python, builds almost instantly, runs near native speed and is fully safe. In progress, with real numbers.">
   <div class="glow" aria-hidden="true"></div>
   <section class="hero wrap">
     <div class="intro">
       <span class="pill">In progress · not released yet</span>
       <h1>The fast language agents write and people can read.</h1>
-      <p class="lede">Compiled and safe, with no garbage collector. It reads like Python, and it's being built in the open, numbers included.</p>
+      <p class="lede">It reads like Python, builds almost instantly, runs near native speed, and is fully safe, with no <code>unsafe</code> and no garbage collector. It's being built in the open, numbers included.</p>
       <div class="actions">
         <a class="button primary" href={`${base}playground/`}>Try it →</a>
         <a class="button" href={`${base}tour/`}>Take the tour</a>
@@ -149,22 +167,22 @@ with launch(physics_loop) as physics:
       </div>
       <div class="meters">
         <div class="meter">
-          <strong>{builds.fib_first_s} s</strong>
-          <span>to build it</span>
+          <strong>{suite.fib_dev_build_ms} ms</strong>
+          <span>to build the fib benchmark</span>
         </div>
         <div class="meter">
-          <strong>&lt;{builds.tests_unchanged_s} s</strong>
+          <strong>&lt;{tests.unchanged_s} s</strong>
           <span>to retest, unchanged</span>
         </div>
         <div class="meter wide">
           <div class="meter-head">
-            <strong>{low}–{high}%</strong>
-            <span>of the speed target, across our benchmarks</span>
+            <strong>{x86.time}%</strong>
+            <span>of hand-written native speed, across the benchmarks</span>
           </div>
-          <div class="range" role="img" aria-label={`Today ${low} to ${high} percent of the speed target`}>
-            <span class="range-fill" style={`left: ${Math.min(low, 100)}%; width: ${Math.min(high, 100) - Math.min(low, 100)}%`}></span>
+          <div class="range" role="img" aria-label={`${x86.time} percent of the hand-written twins' speed`}>
+            <span class="range-fill" style={`left: 0; width: ${Math.min(x86.time, 100)}%`}></span>
           </div>
-          <span class="range-note">JIT today · its goal is {targets.jit}% on every benchmark, and we aren't there yet</span>
+          <span class="range-note">Release builds in CI on x86-64 Linux · {arm.time}% on Arm macOS · whole runs, startup included · the goal is 110%</span>
         </div>
       </div>
     </div>
@@ -186,7 +204,7 @@ with launch(physics_loop) as physics:
 
   <section class="wrap agents">
     <h2>The shape of the language</h2>
-    <p class="shape-note">The design is settled, and it isn't all built. Each piece says where it stands, and the <a href={`${base}tour/`}>tour</a> goes through them one at a time.</p>
+    <p class="shape-note">The design is settled, and it isn't all built. Each piece says where it stands, and the <a href={`${base}tour/`}>tour</a> goes through the whole language.</p>
     <div class="agent-grid">
       {
         design.map((piece) => (
@@ -209,7 +227,8 @@ with launch(physics_loop) as physics:
         <h3>Errors say how to fix them</h3>
         <pre><code>error: `area` gives back a float, so its
   return type has to be written
-  = help: `def area(radius: float) -> float:`
+  = help: write it after the parameters:
+    `def area(radius: float) -> float:`
 
 $ fennec fix
 fixed area.fen</code></pre>

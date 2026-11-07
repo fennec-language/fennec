@@ -8,7 +8,7 @@ description: How Fennec is designed so AI models write correct code on the first
 
 <p class="lede">A growing share of new code is written with AI help. Fennec is designed so a model's first attempt is likely to be right, and so its mistakes are caught by the compiler instead of by you.</p>
 
-> **Some of this is planned.** Much of it works today. Not built yet: `ignore`, `expect` and `todo()`, a required finish on types like `Transaction`, the check for weakened tests, the task suite, and the MCP server at the end of this page.
+> **Some of this is planned.** Most of it works today. Not built yet: `todo()`, a required finish on types like `Transaction`, the check for weakened tests, the task suite, `fennec context` and the MCP server. Each is marked where it comes up.
 
 ## A shape models already know
 
@@ -31,27 +31,25 @@ When a model reaches for something Fennec doesn't have, the compiler recognizes 
 | `if items:` | There's no truthiness. Write `if items.len() > 0:`. |
 | `raise NotFound(path)` | There are no exceptions. Write `fail NotFound(path)`, which returns the error. |
 | `try: ... except NotFound:` | Pass errors up with `?`, give a default with `else`, or handle them with `match`. |
-| `lambda x: x * 2` | Write `x => x * 2`. |
-| `print(value)` or `console.log(value)` | There's no global output. Write through the `Stdout` that `main` receives; to inspect a value, use a test. |
-| `class Boss(Enemy):` | There are no classes or inheritance. Use a `struct`, and an `enum` for different kinds of enemy. |
-| `def __add__(self, other):` | Write `def +(self, other):`. |
-| `if ready: label = "a"` / `else: label = "b"` | Set it once with an expression: `label = "a" if ready else "b"`. Names don't leak out of blocks. |
+| `print(value)` | There's no global `print`. A function reaches outside itself only through its signature: write `stdout.print(...)`. |
+
+**Planned:** the same kind of help for `lambda`, which is `x => x * 2` here, for `class`, which is a `struct` or an `enum`, for `def __add__`, which is `def +`, and for setting a name in both branches of an `if`, which is `label = "a" if ready else "b"`.
 
 ## Guardrails for the mistakes models actually make
 
 | The mistake | What stops it |
 | --- | --- |
 | Forgetting a value might be missing | An `Enemy?` can't be used until it's checked for `None`. |
-| Tangled shared state | Data is plain values in tables. The one reference type, `shared`, is rare and locks on every method. |
+| Tangled shared state | Data is plain values in tables. `shared` is rare, and every change to one takes its lock. |
 | Expecting a copy to change the original | A name always holds its own value, so changing a copy that nothing reads is a compile error whose fix writes to the original. Planned: a copy that can go stale is a compile error too. |
 | Changing a list while looping over it | A compile error naming the loop, saying to use `for ref` or loop over indexes. |
 | Ignoring an error | A call that can fail needs `?`, `else` or `match`. Discarding an error on purpose needs `ignore(result, "why")`. |
 | Assuming something can't fail | Asserting success needs `expect("reason")`, and an empty reason is rejected. |
-| Leaving a stub behind | `todo()` compiles in development builds and is an error in release builds. Unused values and dead code are errors. |
-| Forgetting the last step | A type can require that its value is consumed. A `Transaction` that's never committed or rolled back doesn't compile. |
+| Leaving a stub behind | Unused functions and types are lint errors. Planned: `todo()`, which compiles in development builds and is an error in release builds. |
+| Forgetting the last step | Planned: a type can require that it's finished, so a `Transaction` that's never committed doesn't compile. |
 | Silencing the compiler | No lint can be switched off inline. Exceptions go in project config, each with a written reason. |
 | Quietly adding I/O | A function can only use the filesystem, network or clock if it's given one, and that shows in its parameters. |
-| Writing slow code | Allocation is visible, the compiler warns about hidden copies in loops, and lints catch quadratic patterns like `in` on a list inside a loop. |
+| Writing slow code | A copy made on every round of a loop is a compile error, `fennec lint` hints at what may copy or allocate, and `@hot` proves a function does neither. |
 
 ## Signatures that tell the truth
 
@@ -59,26 +57,23 @@ A function's parameters say what it changes (`ref`) and what it can touch (capab
 
 ## Errors written to be fixed
 
-Every compiler error names the problem, explains why, and offers a fix that tools can apply automatically. Errors are also available as JSON, so an agent can read them directly.
+Every compiler error names the problem and says what to write instead. `fennec fix` applies the fixes that can't change what a program does, and leaves the rest as hints for you or the agent to make. Errors are also available as JSON, with `--json`, so an agent can read them directly.
 
 ```text
-error: `enemy` might be None
+error: this might be None
   --> src/combat.fen:14:5
    |
-12 |     enemy = world.enemies.get(target)
-   |             ------------------------- this can return None
-   |
 14 |     enemy.take_damage(10)
-   |     ^^^^^ used without checking
+   |     ^^^^^
    |
-   = fix: add `if enemy is None: return` above it, or wrap the call in `if enemy is not None:`
+   = help: end the chain with `else` and a default, like `x.name else ""`, or check with `if x is None:` first
 ```
 
 ## Testing with nothing to set up
 
-Tests are part of the language. There's no framework to choose, inputs for property tests are generated for any type, and tests get fake filesystems and clocks automatically. When testing is as easy as writing a comment, models write tests every time.
+Tests are part of the language. There's no framework to choose, inputs for property tests are made up for you, and tests get fake filesystems, clocks and networks automatically. When testing is as easy as writing a comment, models write tests every time.
 
-The test runner also reports tests that were deleted and assertions that were removed or loosened since the last commit, so a model can't quietly make a failing test pass by weakening it.
+**Planned:** the test runner will also report tests that were deleted and assertions that were removed or loosened since the last commit, so a model can't quietly make a failing test pass by weakening it.
 
 ## Measured, not guessed
 
@@ -92,7 +87,7 @@ Syntax decisions get settled with this data. When two designs are close, the one
 
 ## Tools for agents
 
-- Diagnostics as JSON, with automatic fixes.
-- The inferred signature of any function, on request.
-- A short guide for models that ships with each compiler version.
-- An MCP server so agents can build, test and look up types directly.
+- Diagnostics as JSON, with the edits `fennec fix` would make.
+- `fennec init`, which writes Fennec's guidance for agents into `AGENTS.md`.
+- A language server, for hover, go to definition and fixes.
+- **Planned:** `fennec context`, a kit's whole API sized for a prompt, and an MCP server so agents can build, test and look up types directly.

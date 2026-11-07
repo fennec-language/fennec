@@ -92,6 +92,38 @@ uppercased = [copy(person, name=person.name.upper()) for person in people]
 
 `copy(x, field=...)` makes a changed copy and re-runs `where` rules. Built: `replace` was its old name, and `fennec fix` moves it to `copy`. A plain `=` covers everything else, and the compiler skips the real copy when nobody can tell. A plain parameter can't change, so passing something huge costs nothing.
 
+## Sized numbers
+
+Not built yet.
+
+```fennec
+# the everyday types stay as they are: int is i64, float is f64
+count = 0
+ratio = 0.5
+
+# a literal takes the type it's going into, checked to fit
+speed: f32 = 1.5
+pixel: u8 = 255
+# error: 300 doesn't fit in u8
+pixel: u8 = 300
+
+# conversions are always written
+# you know it fits: if it doesn't, that's a bug, so it stops
+byte = u8(small)
+# it came from outside: it may not fit, so it fails cleanly
+level = u8.parse(text)?
+volume = u8.from(raw)?
+
+# overflow stops, as it does for int, unless you say otherwise
+hash = hash.wrapping_mul(16777619)
+```
+
+- There are ten: `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32` and `f64`. `int` is `i64` and `float` is `f64`. There's no 128-bit type and no platform-sized one, since `int` already indexes.
+- A literal with nothing to go by is an `int` or a `float`, as today.
+- Mixing types, like `i32 + i64`, is a compile error that says to convert one side. Widening is written too, as `i64(small)`, and can't fail.
+- Every sized type checks overflow, and a check is removed only where the compiler proves it can't fire. `wrapping_` and `saturating_` methods are for when you mean it.
+- `std.math`'s `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` are `f32`, with `DVec3` and the other `D` types for doubles. They're concrete types, not generic ones, and a generic version with an `f32` default could come later without breaking anything.
+
 ## Fixed-size arrays
 
 ```fennec

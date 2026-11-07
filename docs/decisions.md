@@ -308,9 +308,20 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 **There's no unwinding.** Errors are values, and a runtime failure such as overflow ends the program. Containing one to a single server task is the intent, under Concurrency. With no unwinding machinery, code is smaller and inlines better.
 
-**Math types are 32-bit.** `Vec3` and the other math types use 32-bit floats, and `float` stays 64-bit.
-*Why:* Twice the SIMD throughput for game math, while `float` stays accurate everywhere else.
-Not built yet: there's no 32-bit float in the language, so `std.math`'s `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` are `float` for now and are checked against glam's 64-bit types. Moving them is a change of field types once sized numbers are in.
+**There are ten sized number types: `i8` to `i64`, `u8` to `u64`, `f32` and `f64`.** `int` is `i64` and `float` is `f64`, and they stay the everyday types. There's no 128-bit type and no platform-sized one. Not built yet.
+*Why:* Game math, file formats, GPUs and hashes need exact sizes, and `int` already covers indexes.
+
+**A literal takes the type it's going into, and is checked to fit at compile time.** `speed: f32 = 1.5` needs nothing more, and `pixel: u8 = 300` is a compile error. With nothing to go by, a literal is an `int` or a `float`, as today. Not built yet.
+*Why:* There's nothing new to write, and a value that can't fit is caught before the program runs.
+
+**Conversions are always written, in two forms.** `u8(x)` stops the program if `x` doesn't fit, since that's a bug. `u8.from(x)?` and `u8.parse(text)?` fail cleanly, for anything from outside, and the standard library's decoders use only those. Mixing types, like `i32 + i64`, is a compile error that says to convert one side, and widening, like `i64(small)`, is written too. Not built yet.
+*Why:* Automatic mixing is where C and C++ get subtle bugs, and the two forms keep a bug apart from bad input, so a packet with too big a number can't stop a server.
+
+**Overflow on a sized type is checked, as on `int`.** A check is removed only where the compiler proves it can't fire, and `wrapping_` and `saturating_` methods are for when you mean it. Not built yet.
+*Why:* We're a safe language, so a small type mustn't wrap quietly.
+
+**Math types are 32-bit.** `std.math`'s `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` are concrete `f32` types, and `DVec3` and the other `D` types hold doubles. They're not generic: a generic version with an `f32` default could come later without breaking anything. Not built yet: until sized numbers are in, they're `float` and are checked against glam's 64-bit types.
+*Why:* Twice the SIMD throughput for game math, as glam, GLSL and GPUs have it, while `float` stays accurate everywhere else.
 
 **The compiler tells LLVM that names don't alias.** Exclusive `ref` access proves no two names point at the same memory, so every function gets that guarantee for free. Fortran's speed comes from the same guarantee.
 

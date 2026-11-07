@@ -163,6 +163,36 @@ fn no_module(name: &str, span: Span) -> Diagnostic {
         );
     }
     let modules: Vec<String> = MODULES.iter().map(|module| format!("std.{}", module.name)).collect();
-    Diagnostic::new(format!("there's no module called `{name}`"), span)
-        .with_help(format!("the standard library so far has {}", modules.join(", ")))
+    let diagnostic = Diagnostic::new(format!("there's no module called `{name}`"), span);
+    // A slip of a letter or two, like `std.compres`, is most likely the module it nearly spells.
+    match modules
+        .iter()
+        .filter(|module| letters_apart(module, name) <= 2)
+        .min_by_key(|module| letters_apart(module, name))
+    {
+        Some(meant) => diagnostic.with_help(format!("did you mean `{meant}`?")),
+        None => diagnostic.with_help(format!("the standard library so far has {}", modules.join(", "))),
+    }
+}
+
+/// How many letters it takes to change one name into the other: added, removed or changed.
+fn letters_apart(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, x) in a.chars().enumerate() {
+        let mut diagonal = row.first().copied().unwrap_or(0);
+        if let Some(first) = row.first_mut() {
+            *first = i + 1;
+        }
+        for (j, y) in b.iter().enumerate() {
+            let above = row.get(j + 1).copied().unwrap_or(0);
+            let left = row.get(j).copied().unwrap_or(0);
+            let best = (diagonal + usize::from(x != *y)).min(above + 1).min(left + 1);
+            diagonal = above;
+            if let Some(cell) = row.get_mut(j + 1) {
+                *cell = best;
+            }
+        }
+    }
+    row.last().copied().unwrap_or(0)
 }

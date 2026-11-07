@@ -21,7 +21,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | Networking | `net`: TCP, UDP, an HTTP client with TLS, and an HTTP server. `url`. Planned: WebSocket |
 | Security | `crypto`: BLAKE3 and SHA-256 hashes, HMAC and comparing secrets; `uuid`. Secure random bytes come from the `Entropy` capability |
 | Diagnostics | `log` |
-| Games | `math`'s `Vec3`, and `layout` for lists stored a field at a time. Planned: `Vec2`, `Vec4`, `Quat`, `Mat4` and `Simd` |
+| Games | `math`: `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4`, checked bit for bit against a widely used native math library. `layout` for lists stored a field at a time. Planned: `Simd`, and `audio` and `gpu` as kits |
 | Storage | Planned: `sql`, one interface, with drivers as first-party kits |
 
 ## Importing what you use

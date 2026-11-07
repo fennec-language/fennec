@@ -42,13 +42,13 @@ description: What Fennec does today, what's being built next, and the design que
 - `collections`: `Table` and `Id`, `Tree`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Deque`, `Heap`, `PriorityQueue` and `Counter`.
 - `json`, `toml` and `pack`, which save any type whose fields can be saved. `csv`, `base64` and `compress`.
 - `net`: TCP, UDP, an HTTP client with TLS, and an HTTP server.
-- `math`, `layout`, `path`, `fs`, `random`, `time`, `string`, `re`, `unicode`, `log`, `cli`, `url`, `process`, `crypto` and `uuid`.
+- `math`, with `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` for games. `layout`, `path`, `fs`, `random`, `time`, `string`, `re`, `unicode`, `log`, `cli`, `url`, `process`, `crypto` and `uuid`.
 
 Every example in the repository's `examples/` folder is a test, including its error messages, and the [language reference](/reference/) is generated from them.
 
 ## Next up
 
-- **Game math.** `Vec2`, `Vec4`, `Quat` and `Mat4` beside today's `Vec3`, and `Simd` for when a loop must use vectors.
+- **More game math.** 32-bit math types, and `Simd` for when a loop must use vectors.
 - **Wrapped C libraries for games.** Windows, input, audio and graphics, wrapped by the Fennec project behind safe APIs. Your own code never needs `unsafe`, because there isn't any.
 - **Hot reload,** so a running game picks up a change.
 - **Debug info and stack traces,** so a failure shows the calls that led to it.

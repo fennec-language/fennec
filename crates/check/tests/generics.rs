@@ -847,6 +847,14 @@ fn what_cant_be_saved_names_where_it_is_and_the_fixes() {
             "`Celled` isn't a `Deserializable`: `Celled.cell` is `shared`, which can't be saved @ loaded[Celled]()"
         ]
     );
+    // A collection that can't be saved says which field of what it holds is why.
+    let found = crate::in_main_after(SAVED, "stdout.print(loaded[list[Celled]]())\n");
+    assert_eq!(
+        found,
+        [
+            "a list[Celled] isn't a `Deserializable`: `Celled.cell` is `shared`, which can't be saved @ loaded[list[Celled]]()"
+        ]
+    );
 }
 
 /// A union is saved tagged with its member, so each member has to be told apart by its type's

@@ -1,5 +1,3 @@
-# decision: `shared Name:` is the only reference type.
-
 # A `shared` value is one cell that every name for it reaches. Its methods take its lock, so a
 # call can't race another. To change several together, `with` locks them all for the block, in
 # an order every block agrees on, and the block changes them through the names it gives them:

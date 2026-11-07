@@ -1,0 +1,48 @@
+# `std.unicode` knows what Unicode says of text: `category` gives a character's general
+# category, like `Lu` for an upper case letter, `nfc`, `nfd`, `nfkc` and `nfkd` give the four
+# normalization forms, and `casefold` folds case the full way, for comparing text that may be
+# written differently. Its tables are Unicode's own, at the version `version()` gives.
+from std import unicode
+
+## Whether two names are the same, however they're written: in any case, and with accents
+## made of one character or of a letter and a mark.
+def same_name(first: str, second: str) -> bool:
+    unicode.casefold(unicode.nfkc(first)) == unicode.casefold(unicode.nfkc(second))
+
+## How many letters text has, by Unicode's categories.
+def letters(text: str) -> int:
+    mut count = 0
+    for c in text:
+        if unicode.category(c).startswith("L"):
+            count += 1
+    count
+
+test "the four forms"():
+    composed = "é"
+    decomposed = "é"
+    assert composed != decomposed
+    assert unicode.nfc(decomposed) == composed and unicode.nfd(composed) == decomposed
+    assert unicode.nfkc("ﬁ") == "fi" and unicode.nfc("ﬁ") == "ﬁ"
+    assert unicode.nfd("한").codes() == [4370, 4449, 4523]
+    assert unicode.nfc("한") == "한"
+
+test "case folds the full way"():
+    assert unicode.casefold("Straße") == "strasse"
+    assert unicode.casefold("ΣΑΣ") == "σασ"
+    assert same_name("Ångström", b="ångström")
+
+test "categories"():
+    for c, category in [
+        ("A", "Lu"),
+        ("a", "Ll"),
+        ("5", "Nd"),
+        (" ", "Zs"),
+        ("é", "Ll"),
+        ("😀", "So"),
+    ]:
+        assert unicode.category(c) == category
+    assert letters("Fox 🦊 été!") == 6
+
+def main(stdout: Stdout):
+    stdout.print(unicode.version(), letters("Fennec 🦊"), same_name("RENARD", second="renard"))
+    stdout.print(unicode.nfd("ö").codes(), unicode.nfc("ö").codes())

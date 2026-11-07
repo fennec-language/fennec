@@ -235,7 +235,11 @@ pub extern "C" fn crypto_call(name: i64, count: i64, start: i64, end: i64) -> i6
         let count = usize::try_from(count).unwrap_or(0).min(state.inputs.len());
         let given = state.inputs.split_off(state.inputs.len() - count);
         let given: Vec<Value> = given.into_iter().map(Value::unpacked).collect();
-        let result = crate::stdlib::crypto::run(&name, &given, at)?;
+        let result = if name.starts_with("unicode.") {
+            crate::stdlib::unicode::run(&name, &given, at)?
+        } else {
+            crate::stdlib::crypto::run(&name, &given, at)?
+        };
         Ok(state.push(result))
     })
 }

@@ -7694,6 +7694,22 @@ fn a_case_with_no_fields_allocates_nothing() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A boxed enum only generated code meets is made outside the runtime's table, and a run that
+/// counts what it allocates still counts each one: a tree of 31 nodes is 31 allocations at least.
+#[test]
+fn native_blocks_are_counted() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = format!(
+        "{SHARED_LEAVES_TREE}def main(stdout: Stdout):\n    stdout.print(count(build(5)))\n"
+    );
+    let counts = counts_of("native_blocks_counted", &source)?;
+    assert!(count(&counts, "allocations") >= Some(31), "{counts}");
+    assert!(count(&counts, "allocations") < Some(60), "{counts}");
+    Ok(())
+}
+
 /// The shared block behaves as a block of its own would: compared, matched, printed, held in
 /// lists and dicts, and made and let go of on other threads.
 #[test]

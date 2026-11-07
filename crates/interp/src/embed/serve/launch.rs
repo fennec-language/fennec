@@ -16,7 +16,7 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -40,8 +40,8 @@ const FAILED: i64 = 2;
 
 /// What a task's launcher and the worker it runs on share.
 struct Launched {
-    /// Set when it's to stop.
-    stop: Arc<AtomicBool>,
+    /// How far it's been told to stop: `threads::STOPPING`, then `threads::STOPPED_HARD`.
+    stop: Arc<AtomicU8>,
     pool: &'static Pool,
     worker: usize,
     /// Its number on its worker, once it's started there.
@@ -124,7 +124,7 @@ pub(in crate::embed) fn launch_on(pool: &'static Pool, body: TaskBody, env: i64)
     });
     let Some((copy, lent)) = given else { return 0 };
     let launched = Arc::new(Launched {
-        stop: Arc::new(AtomicBool::new(false)),
+        stop: Arc::new(AtomicU8::new(0)),
         pool,
         worker,
         task: Mutex::new(None),
@@ -191,7 +191,7 @@ fn run(launched: &Launched, body: TaskBody, copy: Option<(u64, Box<crate::embed:
 /// reported, and it's a crash. A crash holding a lock leaves what it guards half changed, until
 /// rollback is emitted, so the program ends.
 fn crashed(launched: &Launched) -> i64 {
-    if launched.stop.load(Ordering::Acquire) {
+    if launched.stop.load(Ordering::Acquire) > 0 {
         with(|state| state.failure = None);
         super::super::set_failed(0);
         return ENDED;
@@ -221,7 +221,7 @@ pub extern "C" fn launch_end(task: i64, stop_after_ns: i64, failed: i64, failure
     let held = with(|state| state.failure.take());
     super::super::set_failed(0);
     if failed != 0 || threads::stopped() {
-        stop(&launched);
+        stop(&launched, threads::STOPPING);
     }
     let deadline = u64::try_from(stop_after_ns)
         .ok()
@@ -249,9 +249,10 @@ pub extern "C" fn launch_end(task: i64, stop_after_ns: i64, failed: i64, failure
     outcome.how
 }
 
-/// Cuts short every wait the task's in, and each it comes to.
-fn stop(launched: &Arc<Launched>) {
-    launched.stop.store(true, Ordering::Release);
+/// Cuts short every wait the task's in, and each it comes to: at `threads::STOPPING`, unless it's
+/// cleaning up after a crash, and at `threads::STOPPED_HARD`, whatever it's doing.
+fn stop(launched: &Arc<Launched>, level: u8) {
+    launched.stop.fetch_max(level, Ordering::AcqRel);
     let stopping = Arc::clone(launched);
     launched.pool.run_on(
         launched.worker,
@@ -263,9 +264,16 @@ fn stop(launched: &Arc<Launched>) {
     );
 }
 
-/// Waits for the task to end, stopping it at `deadline`: parked, in a task that can, and otherwise
-/// blocking. A launcher that's stopped itself stops its task at once.
+/// How long a stopped task's cleanup after a crash may still wait, before it's stopped hard: a
+/// rollback over the network, say. A cleanup can't hold a program's end up for longer.
+const CLEANUP_GRACE: Duration = Duration::from_secs(1);
+
+/// Waits for the task to end, stopping it at `deadline`, and hard once its grace is up: parked, in a
+/// task that can, and otherwise blocking. A launcher that's stopped itself stops its task at once.
 fn wait_for(launched: &Arc<Launched>, mut deadline: Option<Instant>) -> Outcome {
+    if launched.stop.load(Ordering::Acquire) > 0 {
+        deadline = Some(Instant::now() + CLEANUP_GRACE);
+    }
     loop {
         let mut end = launched.end.lock().unwrap_or_else(PoisonError::into_inner);
         if let End::Ended(_) = &*end {
@@ -285,11 +293,17 @@ fn wait_for(launched: &Arc<Launched>, mut deadline: Option<Instant>) -> Outcome 
             drop(launched.ended.wait(end).unwrap_or_else(PoisonError::into_inner));
             None
         };
-        // Its time's up, or the launcher's been stopped itself: the task's stopped, and waited for.
+        // Its time's up, or the launcher's been stopped itself: the task's stopped, and waited for,
+        // then stopped hard once its grace is up.
         let late = deadline.is_some_and(|deadline| deadline <= Instant::now());
         if matches!(parked, Some(Parked::TimedOut | Parked::Cancelled)) || late {
-            stop(launched);
-            deadline = None;
+            if launched.stop.load(Ordering::Acquire) == 0 {
+                stop(launched, threads::STOPPING);
+                deadline = Some(Instant::now() + CLEANUP_GRACE);
+            } else {
+                stop(launched, threads::STOPPED_HARD);
+                deadline = None;
+            }
         }
     }
 }

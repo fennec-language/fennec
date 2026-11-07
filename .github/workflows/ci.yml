@@ -615,6 +615,52 @@ jobs:
   # What `parallel` runs on real threads, built with the threads runtime, under AddressSanitizer
   # and ThreadSanitizer, at several thread counts and with every call forced onto the pool. Each
   # has to print what the interpreter prints, sorted, as output from bodies comes in call order.
+  # On Linux, a release build links its program on its own, with musl's C library in it, once the
+  # `musl` folder is beside `fennec`. Examples built that way must print their `.out` in an empty
+  # container, with nothing in it but the program.
+  static:
+    name: Release builds in an empty container
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      FENNEC_EXPECT_LLVM: 1
+      FENNEC_EXPECT_STATIC: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install musl's C compiler and LLVM's tools
+        run: |
+          sudo apt-get install -y -q musl-tools
+          rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build fennec, its runtime library, and the runtime libraries for musl
+        run: |
+          cargo build --locked -p fennec -p fennec-runtime
+          .github/scripts/musl-runtime.sh target/debug/musl --debug
+      - name: A release build needs nothing from the machine
+        run: cargo test --locked -p fennec --test fennec -- llvm::a_release_build_on_linux_needs_nothing_from_the_machine --exact
+      - name: Examples in an empty container
+        run: |
+          examples="hello game parallel_loops json_ids std_crypto"
+          mkdir empty
+          for example in $examples; do
+            ./target/debug/fennec build --release "examples/$example.fen" -o "empty/$example"
+          done
+          ./target/debug/fennec notices empty/hello | grep -q 'Rich Felker'
+          printf 'FROM scratch\nCOPY . /\n' > empty/Dockerfile
+          docker build -q -t fennec-empty empty
+          for example in $examples; do
+            # `parallel` prints in the order its tasks finish.
+            docker run --rm fennec-empty "/$example" | sort > printed.txt
+            if ! sort "examples/$example.out" | cmp -s printed.txt -; then
+              echo "::error::$example printed something different in an empty container"
+              exit 1
+            fi
+          done
+
   worker-sanitizers:
     name: Workers under ${{ matrix.name }}
     needs: changes
@@ -801,7 +847,7 @@ jobs:
   ok:
     name: CI passed
     if: always()
-    needs: [changes, lint, test, x86-mac, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, server-sanitizers, lean-runtime, asan, llvm-asan, parked-sanitizers]
+    needs: [changes, lint, test, x86-mac, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, server-sanitizers, lean-runtime, static, asan, llvm-asan, parked-sanitizers]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

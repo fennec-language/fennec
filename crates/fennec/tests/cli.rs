@@ -348,6 +348,17 @@ fn version_shows_the_fox() {
     assert_eq!(text(&output.stdout), format!("🦊 fennec {}\n", env!("CARGO_PKG_VERSION")));
 }
 
+/// A program with nothing in it that asks for a notice says so.
+#[test]
+fn notices_says_when_a_program_holds_none() {
+    let dir = scratch("notices").unwrap();
+    std::fs::write(dir.join("program"), b"\x7fELF and nothing else").unwrap();
+    let output = fennec_in(&dir, &["notices", "program"], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "program holds no third-party notices: nothing in it asks for one\n");
+}
+
 #[test]
 fn unknown_commands_show_usage() {
     let output = fennec(&["fly"], "").unwrap();

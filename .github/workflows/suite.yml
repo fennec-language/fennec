@@ -1,6 +1,6 @@
 name: Suite report
 
-# Probe, not for merging: where a Linux hello-world's startup goes, against Rust's.
+# Probe, not for merging: a Linux hello-world's startup before and after #789, against Rust's.
 on:
   workflow_dispatch:
 
@@ -11,65 +11,45 @@ jobs:
   probe:
     name: Startup probe (ubuntu-latest)
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - run: rustup component add llvm-tools-preview
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq strace linux-tools-common linux-tools-$(uname -r) || true
-      - name: Build fennec and the lean runtime with its bitcode
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq valgrind || true
+      - name: Build fennec and the lean runtime before and after
         run: |
-          cargo build --release --locked -p fennec -p fennec-runtime
-          cargo rustc --release --locked -p fennec-runtime --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
-          cp "$(find target/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime.bc
-          cargo rustc --release --locked -p fennec-runtime --features lean --target-dir target/lean --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
-          cp target/lean/release/libfennec_runtime.a target/release/libfennec_runtime_lean.a
-          cp "$(find target/lean/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime_lean.bc
-      - name: Build both hello-worlds
-        run: |
-          ./target/release/fennec build --llvm --release bench/startup/empty.fen -o hello_fen
+          for side in before:00a02ab70a39592af2647f8b7190162746ad9285 after:5777e017d942f6930e758326041bac0201c060a5; do
+            name=${side%%:*}; commit=${side#*:}
+            git worktree add -q ../$name $commit
+            (cd ../$name &&
+              cargo build -q --release --locked -p fennec -p fennec-runtime &&
+              cargo rustc -q --release --locked -p fennec-runtime --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1 &&
+              cp "$(find target/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime.bc &&
+              cargo rustc -q --release --locked -p fennec-runtime --features lean --target-dir target/lean --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1 &&
+              cp target/lean/release/libfennec_runtime.a target/release/libfennec_runtime_lean.a &&
+              cp "$(find target/lean/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime_lean.bc &&
+              ./target/release/fennec build --llvm --release bench/startup/empty.fen -o $GITHUB_WORKSPACE/hello_$name)
+          done
           rustc -C opt-level=3 bench/startup/empty.rs -o hello_rs
-          printf 'int main(void){return 0;}\n' > none.c && cc -O2 none.c -o hello_c
-          ls -l hello_fen hello_rs hello_c
-      - name: Libraries
-        run: |
-          for p in hello_fen hello_rs; do echo "== $p"; readelf -d $p | grep -E "NEEDED|FLAGS"; ldd $p; echo "relocations: $(readelf -r $p | wc -l)"; echo "dynamic symbols: $(readelf --dyn-syms $p | wc -l)"; done
-      - run: sudo apt-get install -y -qq valgrind || true
-      - name: The same hello-world with mimalloc reading options through getenv
-        env:
-          CFLAGS: "-DMI_DEFAULT_ARENA_RESERVE=65536 -DMI_USE_ENVIRON=0"
-        run: |
-          cargo rustc --release --locked -p fennec-runtime --features lean --target-dir target/env --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
-          cp target/release/libfennec_runtime_lean.a keep.a && cp target/release/libfennec_runtime_lean.bc keep.bc
-          cp target/env/release/libfennec_runtime.a target/release/libfennec_runtime_lean.a
-          cp "$(find target/env/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime_lean.bc
-          ./target/release/fennec build --llvm --release bench/startup/empty.fen -o hello_sys
-          cp keep.a target/release/libfennec_runtime_lean.a && cp keep.bc target/release/libfennec_runtime_lean.bc
-          MIMALLOC_VERBOSE=1 ./hello_sys 2>&1 | grep -E "arena_reserve|purge_delay"
+          ls -l hello_before hello_after hello_rs
       - name: Wall time and page faults, taking turns
         run: |
           python3 - <<'TIME'
           import subprocess, time, statistics, os, resource
-          variants = [("hello_fen", {}), ("hello_fen", {"FENNEC_PROBE_MAIN": "1"}), ("hello_sys", {}), ("hello_sys", {"FENNEC_PROBE_MAIN": "1"}),
-                      ("hello_rs", {}), ("hello_c", {})]
-          times = {i: [] for i in range(len(variants))}; faults = {i: [] for i in range(len(variants))}
-          for _ in range(1000):
-              for i, (p, env) in enumerate(variants):
-                  e = dict(os.environ); e.update(env)
+          variants = ["hello_before", "hello_after", "hello_rs"]
+          times = {p: [] for p in variants}; faults = {p: [] for p in variants}
+          for _ in range(1500):
+              for p in variants:
                   before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_minflt
-                  t = time.perf_counter(); subprocess.run(["./" + p], stdout=subprocess.DEVNULL, env=e); times[i].append(time.perf_counter() - t)
-                  faults[i].append(resource.getrusage(resource.RUSAGE_CHILDREN).ru_minflt - before)
-          for i, (p, env) in enumerate(variants):
-              ts = sorted(times[i])
-              print(f"{p:10} {str(env):30} best {ts[0]*1e3:.3f} ms  10th {ts[len(ts)//10]*1e3:.3f} ms  median {statistics.median(ts)*1e3:.3f} ms  faults {statistics.median(faults[i]):.0f}")
+                  t = time.perf_counter(); subprocess.run(["./" + p], stdout=subprocess.DEVNULL); times[p].append(time.perf_counter() - t)
+                  faults[p].append(resource.getrusage(resource.RUSAGE_CHILDREN).ru_minflt - before)
+          for p in variants:
+              ts = sorted(times[p])
+              print(f"{p:13} best {ts[0]*1e3:.3f} ms  10th {ts[len(ts)//10]*1e3:.3f} ms  median {statistics.median(ts)*1e3:.3f} ms  faults {statistics.median(faults[p]):.0f}")
           TIME
-      - name: Instructions by function
+      - name: Instructions
         run: |
-          for v in "hello_fen" "hello_sys" "hello_rs"; do
-            echo "== $v"
-            FENNEC_PROBE_MAIN=1 valgrind --tool=callgrind --callgrind-out-file=cg.$v ./$v > /dev/null 2> vg.$v.txt; grep -E "Collected" vg.$v.txt
-            callgrind_annotate --inclusive=yes cg.$v 2>/dev/null | head -45 | cut -c1-160
-            echo "-- self"
-            callgrind_annotate cg.$v 2>/dev/null | sed -n '1,40p' | cut -c1-160
-          done
+          for p in hello_before hello_after hello_rs; do echo "== $p $(valgrind --tool=callgrind --callgrind-out-file=cg.$p ./$p 2>&1 >/dev/null | grep Collected)"; done

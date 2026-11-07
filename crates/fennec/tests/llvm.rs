@@ -5069,7 +5069,7 @@ fn a_build_runs_parallel_on_every_core_unless_asked_not_to() -> std::io::Result<
     };
     let has_pool = |executable: &Path| -> std::io::Result<bool> {
         let symbols = Command::new("nm").arg(executable).output()?;
-        Ok(String::from_utf8_lossy(&symbols.stdout).contains("rayon_core"))
+        Ok(String::from_utf8_lossy(&symbols.stdout).contains("crossbeam_deque"))
     };
     let wanted = "199999 2\n";
     let every_core = built(None, "every-core")?;

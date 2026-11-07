@@ -9427,7 +9427,7 @@ test \"what it prints is kept\"(stdout: Stdout, clock: Clock):
 
 test \"a failure comes back as its case\"(net: Net):
     match net.connect(\"localhost\", 9001):
-        case Err(Refused(host, port)):
+        case Err(Refused(host=host, port=port)):
             assert host == \"localhost\" and port == 9001
         case _:
             assert False

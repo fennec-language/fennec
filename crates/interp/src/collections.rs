@@ -88,6 +88,17 @@ impl Interp<'_> {
         if let Value::Capability(Capability::Net) = receiver {
             return self.net_method(method, args, span);
         }
+        // `process.run` takes `cwd=`, `env=` and `input=`, which go on the method's name, sorted,
+        // with their values last, as native code has them: `run.cwd.input`.
+        let is_process = match receiver {
+            Value::Capability(capability) => *capability == Capability::Process,
+            Value::Limited(limited) => limited.capability == Capability::Process,
+            _ => false,
+        };
+        if is_process && method == "run" && args.iter().any(|arg| arg.name.is_some()) {
+            let (method, args) = crate::stdlib::process::options_on_name(method, args);
+            return self.read_method(receiver, &method, args, span);
+        }
         let args = plain(args, method, span)?;
         match (receiver, method, args.as_slice()) {
             (Value::Int(n), "abs", []) => {

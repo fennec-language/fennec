@@ -333,6 +333,7 @@ impl FnCx<'_> {
             _ if name == "sort" => &["key"],
             Some(owner) if waits_on_network(owner, name) => &["timeout"],
             Some("Net") if name == "udp" => &["port"],
+            Some("Process") if name == "run" => &["cwd", "env", "input"],
             Some("Net") if matches!(name, "get" | "post" | "request") => {
                 &["body", "headers", "params", "timeout"]
             }
@@ -425,7 +426,23 @@ impl FnCx<'_> {
                         );
                     }
                 }
-                Some(option @ ("headers" | "params")) if named.contains(&option) => {
+                Some("input") if named.contains(&"input") => {
+                    if !matches!(self.checker.settled(&ty), Type::Str | Type::Bytes) {
+                        self.error(
+                            mismatch("what the program reads", &Type::Str, &ty, arg.value.span)
+                                .with_help("`input=` is what the program reads from its standard input, as a `str` or `bytes`"),
+                        );
+                    }
+                }
+                Some("cwd") if named.contains(&"cwd") => {
+                    if !matches!(self.checker.settled(&ty), Type::Str) && !self.checker.fits(&Type::named("Path"), &ty) {
+                        self.error(
+                            mismatch("`cwd`", &Type::Str, &ty, arg.value.span)
+                                .with_help("`cwd=` is the folder the program runs in, as a `Path` or a `str`"),
+                        );
+                    }
+                }
+                Some(option @ ("headers" | "params" | "env")) if named.contains(&option) => {
                     let wanted = Type::Dict(Box::new(Type::Str), Box::new(Type::Str));
                     if !self.checker.fits(&wanted, &ty) {
                         self.error(mismatch(&format!("`{option}`"), &wanted, &ty, arg.value.span));

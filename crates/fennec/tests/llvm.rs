@@ -4902,9 +4902,7 @@ struct Saves:
 
 def write(fs: Fs, path: str, text: str) fails IoError:
     with fs.create(path)? as file:
-        match file.write_text(text):
-            case Err(problem): fail problem
-            case Ok(_): pass
+        file.write_text(text)?
 
 def read(saves: Saves, name: str) -> str fails IoError:
     mut text = \"\"
@@ -4962,31 +4960,34 @@ fn fs_declared_in_std_is_found_by_name_natively_as_in_the_interpreter() -> std::
     Ok(())
 }
 
-/// Writes a gigabyte through `fs.create`, a megabyte at a time. The file takes its name only when
-/// the block ends, synced, and what's written goes straight to the disk, so the program holds
-/// next to nothing however big the file grows.
-const GIGABYTE: &str = "\
+/// Writes `megabytes` through `fs.create`, a megabyte at a time. The file takes its name only
+/// when the block ends, synced, and what's written goes straight to the disk, so the program
+/// holds next to nothing however big the file grows.
+fn big_write(megabytes: usize) -> String {
+    format!(
+        "\
 def write_big(fs: Fs) -> int fails IoError:
     chunk = \"fennec \" * 142857 + \"fox\"
     with fs.create(\"big.txt\")? as file:
-        for _ in range(1024):
-            match file.write_text(chunk):
-                case Err(problem): fail problem
-                case Ok(_): pass
+        for _ in range({megabytes}):
+            file.write_text(chunk)?
     fs.metadata(\"big.txt\")?.size
 
 def main(stdout: Stdout, fs: Fs):
     stdout.print(write_big(fs) else -1)
-";
+"
+    )
+}
 
-#[test]
-fn a_gigabyte_written_a_chunk_at_a_time_holds_little_memory() -> std::io::Result<()> {
+/// Builds and runs `big_write(megabytes)`, checking the file came out whole, nothing was left
+/// beside it, and the program never held `most` bytes.
+fn writes_in_little_memory(name: &str, megabytes: usize, most: u64) -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let dir = folder("gigabyte-file")?;
+    let dir = folder(name)?;
     let program = dir.join("big.fen");
-    std::fs::write(&program, GIGABYTE)?;
+    std::fs::write(&program, big_write(megabytes))?;
     let executable = dir.join("big");
     let path = |file: &Path| file.display().to_string();
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
@@ -4996,17 +4997,32 @@ fn a_gigabyte_written_a_chunk_at_a_time_holds_little_memory() -> std::io::Result
         .filter_map(Result::ok)
         .any(|entry| entry.file_name().to_string_lossy().ends_with(".fennec-partial"));
     std::fs::remove_dir_all(&dir)?;
+    let size = megabytes * 1_000_002;
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),
-        "1024002048\n",
+        format!("{size}\n"),
         "{}",
         String::from_utf8_lossy(&ran.stderr)
     );
     assert!(!partial, "the file written beside big.txt was left behind");
     if let Some(peak) = peak {
-        assert!(peak < 200 * 1024 * 1024, "writing a gigabyte held {} MB", peak / (1024 * 1024));
+        assert!(peak < most, "writing {megabytes} MB held {} MB", peak / (1024 * 1024));
     }
     Ok(())
+}
+
+/// 64 MB, where a program starts at about 5 MB: one that held its chunks would show at once.
+#[test]
+fn a_big_file_written_a_chunk_at_a_time_holds_little_memory() -> std::io::Result<()> {
+    writes_in_little_memory("big-file", 64, 32 * 1024 * 1024)
+}
+
+/// The same with a gigabyte, run by hand: `cargo test -p fennec --test fennec -- --ignored
+/// a_gigabyte`. It's too much time and disk for every gate.
+#[test]
+#[ignore = "writes a gigabyte"]
+fn a_gigabyte_written_a_chunk_at_a_time_holds_little_memory() -> std::io::Result<()> {
+    writes_in_little_memory("gigabyte-file", 1024, 200 * 1024 * 1024)
 }
 
 /// What a program printed, and the most memory it held, where `/usr/bin/time` can say.
@@ -5044,9 +5060,7 @@ def work(fs: Fs, order: Order, at: int) -> int fails IoError:
         chunk = \"x\" * 1000000
         with fs.create(\"synced.txt\")? as file:
             for _ in range(64):
-                match file.write_text(chunk):
-                    case Err(problem): fail problem
-                    case Ok(_): pass
+                file.write_text(chunk)?
     order.finished(at)
     at
 

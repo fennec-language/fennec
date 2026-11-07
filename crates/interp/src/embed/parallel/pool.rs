@@ -279,6 +279,12 @@ impl Pool {
         mail.asleep.store(false, Ordering::SeqCst);
     }
 
+    /// Whether worker `at` has mail, or the pool has jobs waiting, for a task that's run its slice
+    /// to make way for.
+    pub(in crate::embed) fn has_work_for(&self, at: usize) -> bool {
+        self.mail.get(at).is_some_and(|mail| mail.any.load(Ordering::Acquire)) || !self.is_empty()
+    }
+
     fn is_empty(&self) -> bool {
         self.injector.is_empty() && self.stealers.iter().all(Stealer::is_empty)
     }

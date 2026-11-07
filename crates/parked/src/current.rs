@@ -73,6 +73,11 @@ pub(crate) fn stack_low() -> Option<usize> {
     RUNNING.get().map(|resumed| resumed.stack.low)
 }
 
+/// How big the stack of the task resumed on this thread is, if one is.
+pub(crate) fn stack_size() -> Option<usize> {
+    RUNNING.get().map(|resumed| resumed.stack.high.saturating_sub(resumed.stack.low))
+}
+
 /// A task running, from its resume until it suspends or ends. Dropping it puts back what was
 /// running before.
 pub(crate) struct Running {

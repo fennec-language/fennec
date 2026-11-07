@@ -170,15 +170,16 @@ fn immortal() -> String {
 }
 
 /// The start of every shim: on a thread whose failure flag isn't known yet, a worker running
-/// its first range, asks the runtime where this thread's flag is and how deep its stack goes,
-/// and notes its number. The program's thread has all three from `fennec_entry`. Everything else
-/// reads these as never changing, so the range runs in a function that's never inlined here: no
-/// such read can move above these stores.
+/// its first range, asks the runtime where this thread's flag is, and notes its number. The
+/// program's thread has both from `fennec_entry`. Then, for every range, it asks how deep its stack
+/// may go: a range whose body may wait runs as a parked task, on a stack of its own, so the
+/// worker's stack limit isn't its. Everything else reads these as never changing, so the range
+/// runs in a function that's never inlined here: no such read can move above these stores.
 const READY: &str = "entry:\n  %known = load ptr, ptr @fennec_failed\n  %fresh = icmp eq ptr %known, null\n  \
-    br i1 %fresh, label %ready, label %run\nready:\n  \
+    br i1 %fresh, label %ready, label %set_limit\nready:\n  \
     %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  \
-    store ptr %flag_at, ptr @fennec_failed\n  %limit = call i64 @fennec_aot_stack_limit()\n  \
-    store i64 %limit, ptr @fennec_stack_limit\n  store i64 %thread, ptr @fennec_thread\n  br label %run\nrun:\n";
+    store ptr %flag_at, ptr @fennec_failed\n  store i64 %thread, ptr @fennec_thread\n  br label %set_limit\nset_limit:\n  \
+    %stack_limit = call i64 @fennec_aot_stack_limit()\n  store i64 %stack_limit, ptr @fennec_stack_limit\n  br label %run\nrun:\n";
 
 /// What a range's closure gives back, which says which shim runs it.
 #[derive(Clone, Copy)]

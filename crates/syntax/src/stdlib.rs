@@ -33,6 +33,7 @@ modules! {
     base64,
     cli,
     collections,
+    compress,
     crypto,
     csv,
     fs,
@@ -47,8 +48,10 @@ modules! {
     process,
     random,
     re,
+    string,
     time,
     toml,
+    unicode,
     url,
     uuid,
 }

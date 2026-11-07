@@ -289,6 +289,13 @@ impl FnCx<'_> {
             let help = "write it as `return self.field[i]`, or use a plain `for ref`";
             self.error(Diagnostic::new(message, span).with_help(help));
         }
+        // The loop calls `len`, and `is_live` where there is one, so they're reached too, as the
+        // ones of a library type have to be when only what's reached is checked.
+        for counting in ["len", "is_live"] {
+            if let Some((counted, _)) = self.checker.program.method(name, counting) {
+                let _ = self.method_signature(&ty, &counted);
+            }
+        }
         self.method_signature(&ty, &key).map(|signature| signature.returns)
     }
 

@@ -1,0 +1,50 @@
+# Text is laid out with `str`'s own methods, which work like Python's: `ljust`, `rjust`,
+# `center` and `zfill` pad it, `removeprefix` and `removesuffix` trim it, `count` and `rfind`
+# look in it, and `capitalize` and `title` change its case. `std.string` wraps and indents it,
+# as Python's `textwrap` does, and names Python's sets of characters.
+from std import string
+
+## A table's row: the name padded on the left, the score on the right.
+def row(name: str, score: int) -> str:
+    name.ljust(10, fill=".") + str(score).rjust(6)
+
+test "padding goes on the side it says"():
+    assert "ab".ljust(4, fill=".") == "ab.." and "7".rjust(3) == "  7"
+    assert "ab".center(5, fill="*") == "**ab*" and "abc".center(6, fill="*") == "*abc**"
+    assert "-7".zfill(3) == "-07" and "42".zfill(5) == "00042"
+    assert "too long".ljust(3) == "too long"
+    assert row("fox", score=120) == "fox.......   120"
+
+test "trimming, counting and looking from the end"():
+    assert "game.fen".removesuffix(".fen") == "game" and "game.fen".removeprefix("x") == "game.fen"
+    assert "ababa".count("aba") == 1 and "aaa".count("") == 4
+    assert "abcabc".rfind("bc") == 4 and "abc".rfind("z") is None
+
+test "case changes by word"():
+    assert "fOX".capitalize() == "Fox" and "".capitalize() == ""
+    assert "red fox's den".title() == "Red Fox'S Den"
+    assert "été au lac".title() == "Été Au Lac"
+
+test "wrapping fills each line, and breaks a word too long for one"():
+    assert (
+        string.wrap("the quick brown fox jumps over the lazy dog", width=10)
+        == ["the quick", "brown fox", "jumps over", "the lazy", "dog"]
+    )
+    assert string.wrap("abcdefghij kl", width=4) == ["abcd", "efgh", "ij", "kl"]
+    assert string.wrap("   ", width=4) == []
+    assert string.fill("a b c", width=3) == "a b\nc"
+
+test "dedent and indent go both ways"():
+    assert string.dedent("    a\n      b\n\n    c") == "a\n  b\n\nc"
+    assert string.indent("a\n\nb", prefix="> ") == "> a\n\n> b"
+    assert string.dedent(string.indent("x\n  y", prefix="    ")) == "x\n  y"
+
+test "the sets of characters are Python's"():
+    assert string.ASCII_LETTERS == string.ASCII_LOWERCASE + string.ASCII_UPPERCASE
+    assert string.DIGITS.len() == 10 and string.HEX_DIGITS.len() == 22
+    assert string.PUNCTUATION.len() == 32 and string.WHITESPACE.len() == 6
+
+def main(stdout: Stdout):
+    for name, score in [("fox", 120), ("badger", 7)]:
+        stdout.print(row(name, score=score))
+    stdout.print(string.fill("Foxes live in dens they dig themselves, or take over.", width=24))

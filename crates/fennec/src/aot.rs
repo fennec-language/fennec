@@ -114,15 +114,20 @@ impl Runtime {
     /// the interpreter's runtime has, or the lean one isn't there. `FENNEC_LEAN_RUNTIME=0` asks
     /// for the interpreter's anyway, and `=1` for the lean one, which a program still needing
     /// the interpreter fails to link against.
-    fn for_program<'t>(lowered: &fennec_ir::Program, texts: impl IntoIterator<Item = &'t str>) -> Self {
+    fn for_program<'t>(
+        lowered: &fennec_ir::Program,
+        texts: impl IntoIterator<Item = &'t str>,
+        statically: bool,
+    ) -> Self {
         let set = |name: &str| std::env::var_os(name).filter(|on| !on.is_empty()).map(|on| on == "1");
         let threads = fennec_llvm::uses_parallel(lowered)
-            && set("FENNEC_THREADS_RUNTIME").unwrap_or_else(|| runtime_library(Self::Threads).is_ok());
+            && set("FENNEC_THREADS_RUNTIME")
+                .unwrap_or_else(|| runtime_library(Self::Threads, statically).is_ok());
         let (with_interpreter, lean) =
             if threads { (Self::Threads, Self::LeanThreads) } else { (Self::Plain, Self::Lean) };
         match set("FENNEC_LEAN_RUNTIME") {
             Some(true) => lean,
-            None if runtime_library(lean).is_ok() && !calls_the_interpreter(texts) => lean,
+            None if runtime_library(lean, statically).is_ok() && !calls_the_interpreter(texts) => lean,
             Some(false) | None => with_interpreter,
         }
     }
@@ -194,7 +199,7 @@ pub(crate) fn tests_executable(
         compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
             fennec_llvm::tests_entry(lowered, shared, image, bytes, tests)
         })?;
-    link_objects(&objects, output, runtime, false, tls)?;
+    link_objects(&objects, output, runtime, false, tls, false)?;
     Ok(emitted.shared.ran.iter().cloned().collect())
 }
 
@@ -221,7 +226,7 @@ pub(crate) fn tracing_executable(
         compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
             fennec_llvm::entry(lowered, shared, image, bytes)
         })?;
-    link_objects(&objects, output, runtime, false, tls)?;
+    link_objects(&objects, output, runtime, false, tls, false)?;
     Ok((emitted.shared.sites, emitted.lowered))
 }
 
@@ -263,7 +268,7 @@ fn linker_here() -> bool {
 /// Whether this machine can build through LLVM at all: its tools are there, and the runtime
 /// library is beside `fennec`. Without them, nothing about the program is the reason.
 pub(crate) fn llvm_ready() -> bool {
-    linker_here() && fennec_llvm::Tools::find().is_ok() && runtime_library(Runtime::Plain).is_ok()
+    linker_here() && fennec_llvm::Tools::find().is_ok() && runtime_library(Runtime::Plain, false).is_ok()
 }
 
 /// Builds a checked program through LLVM to `output`, or says why LLVM can't: a function it
@@ -276,11 +281,12 @@ pub(crate) fn executable(
     let started = Instant::now();
     let Compiled { objects, total, fresh, runtime, tls } = llvm_objects(program, release)?;
     let compiled = started.elapsed();
+    let statically = release && links_statically();
     // A release built with the runtime's bitcode has its Rust inside already.
-    let runtime_in = release && runtime_bitcode(runtime).is_some();
+    let runtime_in = release && runtime_bitcode(runtime, statically).is_some();
     // A missing runtime with threads fails here, so `fennec run` says so rather than quietly
     // taking another way.
-    let linked = link_objects(&objects, output, runtime, runtime_in, tls)?;
+    let linked = link_objects(&objects, output, runtime, runtime_in, tls, statically)?;
     Ok(Built { total, fresh, compiled, linked })
 }
 
@@ -412,8 +418,12 @@ fn compile_emitted(
     let mut image = fennec_llvm::Image::of(layouts, shared)?;
     let bytes = image_of(&mut image);
     let entry = entry_of(lowered, shared, &image, &bytes)?;
-    let runtime =
-        Runtime::for_program(lowered, units.iter().map(|unit| unit.text.as_str()).chain([entry.as_str()]));
+    let statically = release && links_statically();
+    let runtime = Runtime::for_program(
+        lowered,
+        units.iter().map(|unit| unit.text.as_str()).chain([entry.as_str()]),
+        statically,
+    );
     let home = fennec_build::fennec_home();
     let cache = home
         .as_deref()
@@ -421,7 +431,13 @@ fn compile_emitted(
         .map(fennec_build::Cache::new);
     let work = crate::own_temp("llvm");
     let built = if release {
-        fennec_llvm::compile_whole(&tools, units, &entry, &work, runtime_bitcode(runtime).as_deref())
+        fennec_llvm::compile_whole(
+            &tools,
+            units,
+            &entry,
+            &work,
+            runtime_bitcode(runtime, statically).as_deref(),
+        )
     } else {
         fennec_llvm::compile(&tools, units, &entry, cache.as_ref(), &work)
     };
@@ -442,8 +458,9 @@ fn link_objects(
     runtime: Runtime,
     runtime_in: bool,
     tls: bool,
+    statically: bool,
 ) -> Result<std::time::Duration, String> {
-    let runtime = runtime_library(runtime)?;
+    let runtime = runtime_library(runtime, statically)?;
     let work = crate::own_temp("link");
     std::fs::create_dir_all(&work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
     let mut paths = Vec::with_capacity(objects.len());
@@ -452,11 +469,19 @@ fn link_objects(
         std::fs::write(&path, object).map_err(|err| format!("couldn't write an object file: {err}"))?;
         paths.push(path);
     }
+    // A program linked on its own holds the notices musl's license asks to go with it.
+    if statically {
+        paths.push(crate::notices::object(&work)?);
+    }
     let started = Instant::now();
     let runtime = if runtime_in { c_parts(&runtime, &work)? } else { runtime };
-    let linked = linker(&paths, &runtime, output, tls)
-        .output()
-        .map_err(|err| format!("couldn't run the linker: {err}"))?;
+    let linked = if statically {
+        static_linker(&paths, &runtime, output)
+    } else {
+        linker(&paths, &runtime, output, tls)
+    }
+    .output()
+    .map_err(|err| format!("couldn't run the linker: {err}"))?;
     let took = started.elapsed();
     let _ = std::fs::remove_dir_all(&work);
     if linked.status.success() { Ok(took) } else { Err(link_failure(&linked)) }
@@ -482,6 +507,50 @@ fn linker(objects: &[PathBuf], runtime: &Path, output: &Path, tls: bool) -> Comm
         .args(if tls { TLS_LIBRARIES } else { &[] })
         // `FENNEC_SANITIZE` links in its sanitizer's runtime.
         .args(fennec_llvm::sanitize_flag())
+        .arg("-o")
+        .arg(output);
+    command
+}
+
+/// Whether a build links its program on its own, with musl's C library in it: on Linux, when the
+/// `musl` folder beside `fennec` has the runtime built for musl and musl's own start-up files.
+/// `FENNEC_STATIC=0` asks for a program linked against the system's C library anyway.
+fn links_statically() -> bool {
+    cfg!(target_os = "linux")
+        && std::env::var_os("FENNEC_STATIC").is_none_or(|on| on != "0")
+        && musl_folder().is_some_and(|musl| musl.join("self-contained/crt1.o").is_file())
+}
+
+/// The folder beside `fennec` with what a program linked on its own needs.
+fn musl_folder() -> Option<PathBuf> {
+    Some(std::env::current_exe().ok()?.with_file_name("musl"))
+}
+
+/// The system's linker, set to link objects with a runtime library built for musl, and with musl's
+/// own start-up files and C library, into an executable that needs nothing from the machine it
+/// runs on: no C library, and no loader.
+fn static_linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command {
+    let musl = musl_folder().unwrap_or_default().join("self-contained");
+    let mut command = Command::new("cc");
+    command
+        .args(["-static", "-no-pie", "-nostdlib", "-nostartfiles"])
+        .arg(musl.join("crt1.o"))
+        .arg(musl.join("crti.o"))
+        .arg(musl.join("crtbegin.o"))
+        .args(objects)
+        // musl's C library takes the compiler's helpers, like `__multf3` for a `long double` on
+        // arm64, from the runtime, or from `libgcc` when only the runtime's C parts are linked.
+        .arg("-Wl,--start-group")
+        .arg(runtime)
+        .arg(musl.join("libunwind.a"))
+        .arg(musl.join("libc.a"))
+        .arg("-lgcc")
+        .arg("-Wl,--end-group")
+        .arg(musl.join("crtend.o"))
+        .arg(musl.join("crtn.o"))
+        .args(["-Wl,--gc-sections", "-Wl,--eh-frame-hdr"])
+        // Nothing reads the notices, so dropping what's unused would drop them too.
+        .arg(format!("-Wl,--undefined={}", crate::notices::SYMBOL))
         .arg("-o")
         .arg(output);
     command
@@ -543,9 +612,8 @@ fn default_output(path: &str, program: &fennec_kit::Program) -> PathBuf {
 
 /// The runtime's bitcode, next to the `fennec` command, if it was built: see
 /// `Runtime::bitcode`.
-fn runtime_bitcode(runtime: Runtime) -> Option<PathBuf> {
-    let fennec = std::env::current_exe().ok()?;
-    Some(fennec.with_file_name(runtime.bitcode())).filter(|path| path.is_file())
+fn runtime_bitcode(runtime: Runtime, statically: bool) -> Option<PathBuf> {
+    Some(runtime_folder(statically).ok()?.join(runtime.bitcode())).filter(|path| path.is_file())
 }
 
 /// A copy of the runtime library with only its C objects: mimalloc and the compiler's helpers.
@@ -580,16 +648,23 @@ fn archiver() -> Command {
     }
 }
 
-/// The runtime library, next to the `fennec` command.
-fn runtime_library(runtime: Runtime) -> Result<PathBuf, String> {
+/// Where the runtime libraries are: next to the `fennec` command, or in the `musl` folder there
+/// for a program linked on its own.
+fn runtime_folder(statically: bool) -> Result<PathBuf, String> {
     let fennec =
         std::env::current_exe().map_err(|err| format!("couldn't find the `fennec` command: {err}"))?;
-    let path = fennec.with_file_name(runtime.library());
+    let beside = fennec.parent().map(Path::to_path_buf).unwrap_or_default();
+    Ok(if statically { beside.join("musl") } else { beside })
+}
+
+/// The runtime library, next to the `fennec` command, or in its `musl` folder.
+fn runtime_library(runtime: Runtime, statically: bool) -> Result<PathBuf, String> {
+    let path = runtime_folder(statically)?.join(runtime.library());
     if path.is_file() {
         Ok(path)
     } else {
         Err(format!(
-            "the runtime library `{}` should be next to `fennec`, at {}; build it with {}",
+            "the runtime library `{}` should be at {}; build it with {}",
             runtime.library(),
             path.display(),
             runtime.how_to_build()

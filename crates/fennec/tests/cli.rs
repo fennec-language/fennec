@@ -348,6 +348,17 @@ fn version_shows_the_fox() {
     assert_eq!(text(&output.stdout), format!("🦊 fennec {}\n", env!("CARGO_PKG_VERSION")));
 }
 
+/// A program with nothing in it that asks for a notice says so.
+#[test]
+fn notices_says_when_a_program_holds_none() {
+    let dir = scratch("notices").unwrap();
+    std::fs::write(dir.join("program"), b"\x7fELF and nothing else").unwrap();
+    let output = fennec_in(&dir, &["notices", "program"], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "program holds no third-party notices: nothing in it asks for one\n");
+}
+
 #[test]
 fn unknown_commands_show_usage() {
     let output = fennec(&["fly"], "").unwrap();
@@ -859,6 +870,23 @@ fn run_no_test_with_no_path_runs_the_kit_here() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(text(&output.stdout), "Hello from demo!\n");
+}
+
+/// The linter checks only what the program reaches of the standard library, and still finds what
+/// a function costs when it loops `for ref` over a library type, whose `len` the loop reaches.
+#[test]
+fn lint_finds_costs_past_a_loop_over_a_library_type() {
+    let source = "from std.collections import Grid\n\ndef main(stdout: Stdout):\n    \
+        mut grid = Grid.filled(width=2, height=2, value=1)\n    for ref cell in grid:\n        cell += 1\n    \
+        mut names = list[str]()\n    for n in range(3):\n        names.append(f\"{n}\")\n    stdout.print(names)\n";
+    let dir = scratch("lint_costs").unwrap();
+    let program = dir.join("game.fen");
+    std::fs::write(&program, source).unwrap();
+    let output = fennec(&["lint", "--json", &program.to_string_lossy()], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let printed = text(&output.stdout);
+    assert!(printed.contains("growing it with `list.append` may allocate"), "{printed}");
+    assert!(printed.contains("this f-string may allocate"), "{printed}");
 }
 
 #[test]

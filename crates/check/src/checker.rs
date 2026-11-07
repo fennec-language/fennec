@@ -21,6 +21,17 @@ enum State {
     Done(Signature),
 }
 
+/// How much of the standard library a check covers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scope {
+    /// All of it.
+    Everything,
+    /// Just the functions the program reaches.
+    Reached,
+    /// Just the functions the program reaches, and every type's fields.
+    ReachedWithFields,
+}
+
 pub(crate) struct Checker {
     pub(crate) program: Program,
     states: BTreeMap<String, State>,
@@ -152,15 +163,16 @@ impl Checker {
         }
     }
 
-    /// Checks everything, or for `reached_only`, the program's own code and just the
+    /// Checks everything, or for `Scope::Reached`, the program's own code and just the
     /// standard library functions it reaches: the library's other code can't affect a run.
-    pub(crate) fn run(mut self, reached_only: bool) -> Result<Checked, Vec<Diagnostic>> {
+    /// `Scope::ReachedWithFields` also types every library type's fields, which lowering needs.
+    pub(crate) fn run(mut self, scope: Scope) -> Result<Checked, Vec<Diagnostic>> {
         self.check_declarations();
         let keys: Vec<String> = self
             .program
             .functions
             .iter()
-            .filter(|(_, entry)| !(reached_only && entry.prelude))
+            .filter(|(_, entry)| scope == Scope::Everything || !entry.prelude)
             .map(|(key, _)| key.clone())
             .collect();
         for key in &keys {
@@ -180,7 +192,7 @@ impl Checker {
             .program
             .types
             .values()
-            .filter(|info| !(reached_only && info.prelude))
+            .filter(|info| !(scope == Scope::Reached && info.prelude))
             .map(|info| info.def.name.clone())
             .collect();
         for name in types {

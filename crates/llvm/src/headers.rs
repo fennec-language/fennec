@@ -324,6 +324,39 @@ impl Emit<'_, '_, '_> {
         (kind.clone(), value.to_owned(), false)
     }
 
+    /// `a == b` or `a != b` where a side may be an optional string's header, which is all zero for
+    /// `None`: two `None`s are the same, a `None` is like no string, and two strings compare as
+    /// strings. A `None`'s zero words read as a block at address 0, so the texts are compared only
+    /// when neither side is one.
+    pub(crate) fn maybe_text_binary(
+        &mut self,
+        op: BinOp,
+        (a, a_optional): (&str, bool),
+        (b, b_optional): (&str, bool),
+    ) -> String {
+        let a_none = if a_optional { self.header_is_none(a) } else { "false".to_owned() };
+        let b_none = if b_optional { self.header_is_none(b) } else { "false".to_owned() };
+        let (both, either) = (self.temp(), self.temp());
+        self.line(&format!("{both} = and i1 {a_none}, {b_none}"));
+        self.line(&format!("{either} = or i1 {a_none}, {b_none}"));
+        let (texts, done) = (self.label("maybe_texts"), self.label("maybe_compared"));
+        let start = self.current.clone();
+        self.line(&format!("br i1 {either}, label %{done}, label %{texts}"));
+        self.start_block(&texts);
+        let same = self.same_headers(a, b);
+        let texts_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let equal = self.temp();
+        self.line(&format!("{equal} = phi i1 [ {both}, %{start} ], [ {same}, %{texts_end} ]"));
+        if op == BinOp::Eq {
+            return equal;
+        }
+        let differs = self.temp();
+        self.line(&format!("{differs} = xor i1 {equal}, true"));
+        differs
+    }
+
     /// Whether an optional string's header is `None`: all zero, which no string is.
     pub(crate) fn header_is_none(&mut self, header: &str) -> String {
         let (first, last) = (self.header_word(header, 0), self.header_word(header, 2));

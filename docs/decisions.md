@@ -1380,7 +1380,7 @@ These are default lints, and the Den requires them.
 - **Typed standard library APIs** stop injection.
 - **The runtime is small, in-house and fuzzed continuously.**
 - **`fennec audit` is backed by a public advisory database.**
-- **Programs ship as one static binary in an empty container,** so there's no OS image full of other people's CVEs.
+- **Programs ship as one static binary in an empty container,** so there's no OS image full of other people's CVEs. Built on Linux: `fennec build --release` links a program with musl's C library and a runtime built for musl, so it needs no C library and no loader from the machine, and `FENNEC_STATIC=0` links one against the system's instead. Each such program holds musl's license notices as text, and `fennec notices <program>` prints them. A program that makes HTTPS requests still needs certificates to check against, so its container gets a CA bundle at `/etc/ssl/certs/ca-certificates.crt`. macOS can't do this, since every program there has to link `libSystem`.
 
 *Why:* Most CVEs in the languages people use today come from memory errors, deep dependency trees, injection and base images. Each item removes one of those. `SECURITY.md` states the same policy publicly.
 

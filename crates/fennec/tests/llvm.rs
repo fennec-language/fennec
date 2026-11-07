@@ -2199,6 +2199,19 @@ fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// A std module's exported constant, read through its module and imported by name, which
+/// natively are the same text.
+#[test]
+fn a_std_constant_reads_both_ways_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "std_constants",
+        "from std import string\nfrom std.string import DIGITS, PUNCTUATION\n\ndef main(stdout: Stdout):\n    stdout.print(string.DIGITS, DIGITS, string.DIGITS == DIGITS)\n    stdout.print(string.ASCII_LETTERS.len(), PUNCTUATION.len(), string.WHITESPACE.len())\n    stdout.print([c for c in \"a1b2\" if string.DIGITS.find(c) is not None])\n",
+    )
+}
+
 /// `list` of a capability, `round` to places, the codes of text, and clearing and taking keys out
 /// of dicts and sets.
 #[test]
@@ -5970,6 +5983,67 @@ fn a_release_build_optimized_as_a_whole_matches_the_jit() -> std::io::Result<()>
     Ok(())
 }
 
+/// On Linux, with the `musl` folder beside `fennec`, a release build is a program on its own: it
+/// asks for no loader and no shared library, so it runs in an empty container. Where that folder
+/// isn't there, nothing is checked, unless `FENNEC_EXPECT_STATIC` says it has to be.
+#[test]
+fn a_release_build_on_linux_needs_nothing_from_the_machine() -> std::io::Result<()> {
+    let musl = Path::new(env!("CARGO_BIN_EXE_fennec")).with_file_name("musl");
+    let here = cfg!(target_os = "linux") && musl.join("self-contained/crt1.o").is_file();
+    if std::env::var_os("FENNEC_EXPECT_STATIC").is_some_and(|expected| !expected.is_empty()) {
+        assert!(here, "FENNEC_EXPECT_STATIC is set, but there's no `musl` folder at {}", musl.display());
+    }
+    if !here || !ready() {
+        return Ok(());
+    }
+    let dir = folder("static")?;
+    let source = "def main(stdout: Stdout):\n    counts = {word: word.len() for word in \"a fox ran\".split()}\n    total = sum(n * 2 for n in parallel([1, 2, 3]))\n    stdout.print(counts, total)\n";
+    std::fs::write(dir.join("main.fen"), source)?;
+    let built = crate::executables::fennec_command()
+        .args(["build", "--release", "main.fen", "-o", "main"])
+        .current_dir(&dir)
+        .env("FENNEC_HOME", dir.join("home"))
+        .output()?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    // It holds musl's notices, which its license asks to go with every copy.
+    let notices =
+        crate::executables::fennec_command().args(["notices", "main"]).current_dir(&dir).output()?;
+    let notices = String::from_utf8_lossy(&notices.stdout);
+    assert!(notices.starts_with("musl libc") && notices.contains("Rich Felker"), "{notices}");
+    let program = std::fs::read(dir.join("main"))?;
+    // The kinds of segment that ask for a loader and for shared libraries.
+    let (interp, dynamic) = (3, 2);
+    let kinds = segment_kinds(&program);
+    assert!(!kinds.is_empty(), "the program isn't a 64-bit ELF file");
+    assert!(!kinds.contains(&interp) && !kinds.contains(&dynamic), "segment kinds {kinds:?}");
+    let empty = dir.join("empty");
+    std::fs::create_dir_all(&empty)?;
+    let ran = Command::new(dir.join("main")).env_clear().current_dir(&empty).output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "{\"a\": 1, \"fox\": 3, \"ran\": 3} 12\n");
+    Ok(())
+}
+
+/// The kind of each segment a little-endian 64-bit ELF file's program header names, or nothing
+/// when it isn't one.
+fn segment_kinds(elf: &[u8]) -> Vec<u32> {
+    let read = |at: usize, size: usize| -> Option<u64> {
+        let bytes = elf.get(at..at + size)?;
+        Some(bytes.iter().rev().fold(0, |value, byte| value << 8 | u64::from(*byte)))
+    };
+    let (Some(start), Some(each), Some(count)) = (read(0x20, 8), read(0x36, 2), read(0x38, 2)) else {
+        return Vec::new();
+    };
+    if elf.get(..5) != Some(b"\x7fELF\x02") {
+        return Vec::new();
+    }
+    (0..count)
+        .filter_map(|at| read(usize::try_from(start + at * each).ok()?, 4))
+        .filter_map(|kind| u32::try_from(kind).ok())
+        .collect()
+}
+
 /// Floats have one equality and hash everywhere: `0.0` is `-0.0`, and NaN is the same as any other
 /// NaN, whatever its sign. So this is held to what that decision says, on LLVM and the interpreter
 /// both. The JIT's `==` and keys don't follow it yet.
@@ -8827,6 +8901,33 @@ def main(stdout: Stdout):
     stdout.print(found, found.len())
     for item in found:
         stdout.print(item else "missing")
+"#,
+    )
+}
+
+/// `==` and `!=` on an optional string, against a string, another optional string or `None`:
+/// short and long strings, and `None`, whose header is all zero, on either side.
+#[test]
+fn optional_strings_compare_as_the_jit_does() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "optional_strings_compare",
+        r#"def first(words: list[str]) -> str?:
+    if words.len() > 0:
+        return words[0]
+    None
+
+def main(stdout: Stdout):
+    long = "a string long enough that it has a block of its own"
+    short = first(["kit"])
+    missing = first([])
+    held = first([long])
+    stdout.print(short == "kit", short != "kit", short == "vex", short == "")
+    stdout.print(missing == "kit", missing != "kit", missing == "", missing == None, short == None)
+    stdout.print(held == long, held == "a string long enough", held == short, missing == missing)
+    stdout.print(short == first(["kit"]), short != missing, "kit" == short, "" == missing)
 "#,
     )
 }

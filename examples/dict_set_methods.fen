@@ -10,6 +10,8 @@ def main(stdout: Stdout):
     stdout.print(stock)
     stock.update({})
     stdout.print(stock.setdefault("bolt", 100), stock.setdefault("cog", 2), stock)
+    # `remove` takes a key that may not be there, where `pop` fails like `stock[key]`.
+    stdout.print(stock.remove("cog"), stock.remove("cog"), stock.remove("wheel") else 0, stock)
 
     mut groups: dict[int, list[str]] = {}
     for word in ["a", "bb", "c", "dd"]:

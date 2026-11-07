@@ -494,6 +494,11 @@ impl Heap {
         self.owner_bits = owner_bits;
     }
 
+    /// How many tables are behind the current one: one for each write lock held with a table.
+    pub(super) fn tables_behind(&self) -> usize {
+        self.behind.len()
+    }
+
     /// Takes the current table back out, leaving the one behind it current.
     #[expect(
         clippy::unnecessary_box_returns,

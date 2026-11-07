@@ -2199,6 +2199,29 @@ fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// A builtin's value nothing keeps is still made and let go of natively, each on a line of its own,
+/// with what's printed after the same.
+#[test]
+fn a_value_nothing_keeps_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "discarded",
+        r#"def doubled(xs: list[int]) -> list[int]:
+    [x * 2 for x in xs]
+
+def main(stdout: Stdout):
+    scores = [3, 1, 2]
+    sorted(scores)
+    str(42)
+    "a,b".split(",")
+    doubled(scores)
+    stdout.print(scores, sorted(scores))
+"#,
+    )
+}
+
 /// A std module's exported constant, read through its module and imported by name, which
 /// natively are the same text.
 #[test]
@@ -2925,6 +2948,70 @@ def main(stdout: Stdout):
     stdout.print(balance(ana), balance(bo))
     lock log as lines:
         stdout.print(lines)
+";
+
+/// `with` sources, written in where they're used: a method one and a function one, one inside
+/// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
+/// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.
+#[test]
+fn with_sources_lend_to_their_callers_blocks_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("with_sources", WITH_SOURCES)
+}
+
+const WITH_SOURCES: &str = "error DbError:
+    why: str
+
+struct Log:
+    lines = list[str]()
+
+struct Db:
+    name: str
+
+    def session(self, user: str, ref log: Log) -> with str fails DbError:
+        if user == \"\":
+            fail DbError(why=\"who?\")
+        log.lines.append(f\"open {self.name} for {user}\")
+        lend f\"{self.name}:{user}\" else:
+            log.lines.append(f\"failed {user}\")
+        log.lines.append(f\"close {user}\")
+
+def scoped(ref log: Log, label: str) -> with int:
+    log.lines.append(f\"enter {label}\")
+    lend label.len()
+    log.lines.append(f\"leave {label}\")
+
+def check(n: int) -> int fails DbError:
+    if n == 3: fail DbError(why=\"three\")
+    n
+
+def first_big(db: Db, ref log: Log, limit: int) -> int fails DbError:
+    with db.session(\"ana\", ref log)? as session:
+        with scoped(ref log, session) as size:
+            for n in range(10):
+                if check(n)? + size > limit:
+                    return n
+    -1
+
+def count(db: Db, ref log: Log) -> int fails DbError:
+    mut total = 0
+    while True:
+        with db.session(\"bo\", ref log)? as session:
+            total += session.len()
+            if total > 10:
+                break
+    total
+
+def main(stdout: Stdout):
+    db = Db(name=\"main\")
+    mut log = Log()
+    stdout.print(first_big(db, ref log, limit=5) else -9)
+    stdout.print(first_big(db, ref log, limit=50) else -9)
+    stdout.print(count(db, ref log) else -9)
+    for line in log.lines:
+        stdout.print(line)
 ";
 
 /// Changing an item in place is only safe once the list is alone: another copy of the list

@@ -67,6 +67,11 @@ pub(crate) struct FnCx<'c> {
     /// The return type written in the signature, if any.
     pub(crate) declared: Option<Type>,
     pub(crate) generator: bool,
+    /// What a `with` source lends, from its `-> with T`, and how many `lend`s it has so far.
+    pub(crate) lends: Option<Type>,
+    pub(crate) lent: usize,
+    /// The spans of the values `with` blocks are taking now, where a source may be called.
+    pub(crate) with_values: Vec<(u32, u32)>,
     /// Whether it can fail, so it can give back a result it gets unhandled.
     pub(crate) fallible: bool,
     pub(crate) returns: Vec<Type>,
@@ -133,6 +138,9 @@ impl<'c> FnCx<'c> {
             report,
             declared: None,
             generator: false,
+            lends: None,
+            lent: 0,
+            with_values: Vec::new(),
             fallible: false,
             returns: Vec::new(),
             errors: Vec::new(),
@@ -219,6 +227,7 @@ impl<'c> FnCx<'c> {
         let entry = cx.checker.program.functions.get(key);
         cx.generics = entry.map(|entry| cx.checker.program.generics_of(entry)).unwrap_or_default();
         cx.declared = crate::program::written_ret(def).map(|ret| cx.resolve(ret));
+        cx.lends = cx.declared.as_ref().and_then(crate::lend::lent).cloned();
         cx.fails = def.fails.as_ref().map(|fails| cx.resolve(fails));
         if def.body.is_empty() {
             return cx.bodiless(def);
@@ -252,10 +261,15 @@ impl<'c> FnCx<'c> {
                 .into_iter()
                 .collect();
         }
-        cx.tail = if cx.generator { None } else { cx.declared.clone() };
-        let flow = cx.stmts(&def.body, true);
+        cx.tail = if cx.generator || cx.lends.is_some() { None } else { cx.declared.clone() };
+        let flow = cx.stmts(&def.body, cx.lends.is_none());
+        if cx.lends.is_some() {
+            cx.source_finished(def);
+        }
         // A body that always leaves early has an unknown value, which fits any type.
-        if let (Some(declared), Some(StmtKind::Expr(last))) =
+        if cx.lends.is_some() {
+            // A source gives back what it lends, through `lend`, and nothing from its body.
+        } else if let (Some(declared), Some(StmtKind::Expr(last))) =
             (&cx.declared, def.body.last().map(|stmt| &stmt.kind))
         {
             let declared = declared.clone();

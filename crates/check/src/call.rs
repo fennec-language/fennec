@@ -252,6 +252,7 @@ impl FnCx<'_> {
         let (signature, chosen) = self.instantiate(key, &signature, None, types, span);
         self.bind_args(name, &signature.params, args, span);
         self.check_bounds(chosen, span);
+        self.note_source(key, &signature.returns, false, span);
         signature.returns
     }
 
@@ -659,6 +660,7 @@ impl FnCx<'_> {
             );
         }
         self.bind_args(method, params, args, span);
+        self.note_source(key, &signature.returns, takes_self, span);
         signature.returns
     }
 

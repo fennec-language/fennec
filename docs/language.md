@@ -25,7 +25,7 @@ def main(stdout: Stdout):
     updated_health = target.health + 1
 ```
 
-There's no inline `ref`.
+There's no inline `ref`. The one function that may return a `ref` is a type's `ref` form of `def []`, which gives a place, so `units[i].health -= 1` works on your own types too.
 
 ## What you can declare
 
@@ -209,15 +209,15 @@ with fs.open("save.dat")? as file, net.connect(host)? as conn:
 # both are closed here, however the block ends
 ```
 
-The end of a `with` block is where what it lent finishes: a file closes and a transaction commits. A failure while finishing is the `with` statement's failure, covered by the `?` on its line, so `with fs.create(path)? as file:` covers both opening and finishing. Not built yet.
+The end of a `with` block is where what it lent finishes: a file closes and a transaction commits. A failure while finishing is the `with` statement's failure, covered by the `?` on its line, so `with fs.create(path)? as file:` covers both opening and finishing. Built for sources a program writes, as in `examples/sources.fen`; the standard library's files and transactions move to it next.
 
-- `with` lends you something for the length of a block, then takes it back. It's the only way to open files, sockets, servers and transactions.
+- `with` lends you something for the length of a block, then takes it back. It's the only way to open files, sockets, servers and transactions. Built for sources a program writes, below; the standard library's files and sockets move to them next.
 - What it lends can't escape the block: it can't be returned, stored outside it or put in a `shared`. A second name for it inside the block is fine.
 - A struct holding something borrowed is borrowed too, so a wrapper like `LineProtocol(conn=conn)` works inside the block and can't leak out.
 - `with conn.split() as reader, writer:` gives a connection's read and write sides, for one task reading while another writes.
 - `with` never locks.
 
-Writing your own takes `-> with T` and one `lend`. Setup goes above it and cleanup below:
+Writing your own takes `-> with T` and one `lend`, outside any loop. Setup goes above it and cleanup below. Built:
 
 ```fennec
 def transaction(self) -> with Transaction fails DbError:
@@ -239,11 +239,11 @@ with fs.create("save.dat")? as file:
     file.write_text(data)?
 ```
 
-- Code after `lend` runs when the caller's block succeeds, and it may fail. That failure becomes the `with` statement's failure. `return`, `break` and `continue` in the caller count as success, so an early `return` still runs the cleanup, and a failing cleanup makes the function fail.
-- `lend x else:` runs when the caller's block fails or crashes, and the block's own failure is the one that passes up.
-- There's nothing for the caller to finish by hand, like a `commit()` or a `close()`, and nothing to forget. Not built yet.
+- Code after `lend` runs when the caller's block succeeds, and it may fail. That failure becomes the `with` statement's failure. `return`, `break` and `continue` in the caller count as success, so an early `return` still runs the cleanup, and a failing cleanup makes the function fail. Built.
+- `lend x else:` runs when the caller's block fails or crashes, and the block's own failure is the one that passes up. Built for a failed block; running it on a crash, and letting the block's failure win over one in `else:`, aren't built yet.
+- There's nothing for the caller to finish by hand, like a `commit()` or a `close()`, and nothing to forget.
 - A source can't `lend` while it holds a lock it took. Opening a file inside a lock is fine.
-- A generator can `lend` each item, closed when that round of the loop ends: `def clients(server: Server) -> Iterator[with Connection]:`. That's how `for conn in parallel(server)` works, with each connection belonging to its own round's task.
+- A generator can `lend` each item, closed when that round of the loop ends: `def clients(server: Server) -> Iterator[with Connection]:`. That's how `for conn in parallel(server):` works, with each connection lent to its own round's task. It's a plain loop, not `for ref`, and a connection's methods take `self`.
 - Tasks started inside a `with` may borrow what it lent, since they always end first. From many tasks at once, only its read-only methods, like a server's `accept`.
 
 ### `launch` and channels
@@ -380,7 +380,7 @@ stream = fs.open(filename) else:
     return
 ```
 
-- `?` is only for failures, `else` ends a chain and can leave, and ignoring a returned value is an error.
+- `?` is only for failures, `else` ends a chain and can leave, and ignoring a returned value is an error, with `_ = call()` to discard one. Not built yet: `sorted(scores)` alone on a line still compiles.
 - `.Case` is required when the type is known, in values and in `case` patterns; `fennec fix` writes it. Built.
 - `fails A | B` combines failures from different places: `?` passes any of them up as it is, and a function type can say it too, as in `(str) -> int fails ParseError | RangeError`. Built.
 - An `else:` block must leave: it ends with `return`, `fail`, `continue` or `break`. Built.
@@ -425,6 +425,10 @@ Loading is safe on untrusted input:
 - `where` rules run again on load, so a value that breaks one fails the load. Built.
 - Unknown fields are refused unless `extra=` says otherwise: `json.loads[Settings](text, extra=.ignore)`. Built for JSON. TOML always refuses them, and doesn't take `extra=` yet. `std.pack` saves no field names, and refuses data packed from a different type.
 - Untrusted input has depth and size limits. `std.pack` limits nesting, each string's length and the total it reads, before allocating anything. Built. JSON and TOML limit nesting to 500 deep, and don't limit size, string length or collection length yet.
+
+## Calling C
+
+C is called only through the standard library and first-party kits, whose binding to C sits in reviewed runtime code. A program sees a safe API, like `with Window.open(...)? as window:`, and can't call C itself, so there's no `unsafe` in Fennec. Not built yet.
 
 ## Capabilities
 
@@ -526,3 +530,5 @@ def main(net: Net, fs: Fs, clock: Clock):
 | `where` | A broken rule always stops the program |
 | `?` inside `parallel` | It ends only that task |
 | A scoped `ref` | Possibly `with units[target_id] as ref target:` |
+| Event channels, for many listeners | `Events[T]` with `listen()`; `send` never waits, and a listener that falls behind fails unless it asks to drop the oldest |
+| How replay records which task reaches a `shared` value or a channel first | In recorded runs only, log the order of each lock and each channel delivery |

@@ -581,7 +581,7 @@ def report(shapes: list[Shape], stdout: Stdout):
 - A union mixes types that already exist, and an enum defines new cases. A union may have an enum type as a member.
 - A literal assigned to a union takes its default type: `3` is an `int`.
 - Built in the checker and the interpreter: writing unions, `is` and `match` with their narrowing and exhaustiveness, methods every member has, equality and hashing, and the mistakes above. A union is a dict key or set item when each type in it can be one, and it fits an interface every type in it fits. IR lowers unions; not built yet: the inline layout in native code (LLVM hands a function using one to the JIT, which hands it to the interpreter), and JSON's tags.
-- JSON always writes a union tagged with its member's type name, `{"Circle": {...}}` or `{"Tile": "Grass"}`, so loading is never ambiguous. The tag is the full name only when two members share a short name.
+- JSON always writes a union tagged with its member's type name, `{"Circle": {...}}` or `{"Tile": "Grass"}`, so loading is never ambiguous. The tag is the full name only when two members share a short name. Built for fields: one holding a union, as it is, in a list, a dict's values or an optional, saves tagged in JSON and TOML, and by where the member is among the union's in pack, and the JIT still writes it untagged. A member has to be a type's name alone, like `Circle` or `int`, so a union with `list[int]` in it isn't saved yet, nor is one in a set or a dict's keys, and a recursive union like `Json` isn't either.
 
 *Why:* Mixed lists stay fast and unboxed, and they read like a Python type hint. Unions add nothing new to learn beyond `is` and `match`.
 

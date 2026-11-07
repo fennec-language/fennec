@@ -278,8 +278,8 @@ This replaces IEEE comparison operators, and the rule that a struct with a float
 
 **Speed targets are measured against each benchmark's twin, fully optimized.** Every program in the benchmark suite also exists as idiomatic code in the fastest established systems language.
 - Release builds: 110% of the twin's speed.
-- The JIT: 80% to start, then 85%.
-- The interpreter: 10–30%.
+- The JIT, until it's removed: 80% to start, then 85%.
+- The interpreter, until it's removed: 10–30%.
 
 Benchmarks do realistic work that neither side's optimizer can delete.
 
@@ -1153,6 +1153,7 @@ from std.math import PI, sin
 
 SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]    # one full turn
 ```
+- A small evaluator inside the compiler works them out, once the interpreter is removed. Not built yet.
 - Evaluation has a build-time budget. A constant that goes over it is computed at startup instead, with a hint naming it.
 - It applies only to top-level constants.
 
@@ -1487,9 +1488,17 @@ tools = { path = "../tools" }
 **Fennec has no REPL.** Running a small file is already quick, and one can come back as a pure addition if people ask.
 *Why:* This is a compiled language written mostly by AI, and it needs to be readable, fast to build and fast to run.
 
-**Getting the tree-walking interpreter out of everything is the top goal, and it leaves one job at a time.** For now it keeps compile-time constants, fuzzing and the playground.
+**The interpreter is removed, and the JIT with it.** Before that, each job it does moves somewhere else:
+- **Code LLVM can't build** goes to zero, on the coverage lane's tracked list.
+- **The test fake network** moves into the runtime.
+- **Constants at compile time** are worked out by a small evaluator inside the compiler.
+- **The fuzzing reference** becomes pinned outputs and the native twins.
+- **The website playground** is compiled on a server with a cache that returns WebAssembly, the first small piece of the Den's builder.
 
-**Every example that builds natively must give the same output as the interpreter.** An example that's refused goes on a tracked list, which must reach zero.
+The commit before removal gets a tag, so the old engines can still be found. Not built yet. This replaces the rule that the interpreter keeps constants, fuzzing and the playground for now.
+*Why:* One engine is what ships and what's tested, so the interpreter's double work and its differences from native code go away.
+
+**Until then, every example that builds natively must give the same output as the interpreter.** An example that's refused goes on a tracked list, which must reach zero.
 
 **While it remains, the JIT aims for 80% of the speed of the benchmark suite's twins to start, then 85%, and no further.** Closing the rest is the release build's job. Optimizations that would slow the JIT's compiling to win the last few percent aren't made.
 *Why:* Development builds are for changing code and seeing it run at once. The 110% target applies to release builds.
@@ -1676,7 +1685,7 @@ The JIT loads them when the program runs, and release builds link them. The C st
 
 **An app allows each native kit by name:** `sqlite = { version = "1.2", native = true }`. A native kit's API still takes the capabilities it uses, `sqlite.open(fs, path)`, so its signatures stay honest.
 
-**The interpreter calls only the standard library's own OS layer, never a kit's `extern` functions.** The playground, the sandbox and compile-time evaluation can't run native kits; the error points to `fennec run`, which runs native code. Native kits' differential tests compare the JIT with release builds.
+**Until it's removed, the interpreter calls only the standard library's own OS layer, never a kit's `extern` functions.** The playground, the sandbox and compile-time evaluation can't run native kits; the error points to `fennec run`, which runs native code. Native kits' differential tests compare the JIT with release builds.
 
 ## Sandboxing
 
@@ -1686,7 +1695,7 @@ The JIT loads them when the program runs, and release builds link them. The C st
 **Capabilities are the sandbox's policy in every engine.** Sandboxed code can do only what the capabilities passed to its `main` allow, and it can't use `extern` or `unsafe`. A tool can show what a snippet asks for before running it: "this snippet wants `Net` and read access to `data/`".
 *Why:* That makes Fennec a good language for AI agents to write tool code in: typed, with every power declared up front.
 
-**The interpreter runs untrusted code for those tools, with limits.** It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs the playground and AI-written snippets, where starting instantly and being easy to sandbox matter more than speed. In the browser it runs as wasm, so the browser sandboxes it again.
+**Until it's removed, the interpreter runs untrusted code for those tools, with limits.** After that, the playground is compiled to WebAssembly on a server, and what runs Den tests and MCP snippets is still open. It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs the playground and AI-written snippets, where starting instantly and being easy to sandbox matter more than speed. In the browser it runs as wasm, so the browser sandboxes it again.
 
 **Untrusted code that needs native speed is compiled to WebAssembly and run in Wasmtime.** The development and release backends can both target wasm. Wasmtime already provides fuel, interruption and memory limits.
 *Why:* Wasmtime's sandbox is heavily hardened. Making our own JIT a security boundary would mean any compiler bug is an escape.
@@ -1729,7 +1738,7 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 - What replaces `xs.pair(i, j)`, and whether `f(ref xs[i], ref xs[j])` is always refused.
 - Whether a generator written right inside `sum` and the like can still change the names around it, now that comprehensions make new things.
 - How `fennec fix` handles the changes it can't make for you, since every breaking change is meant to ship with its own fix.
-- What takes over the sandbox and the test reference from the interpreter. Entries under Engines, Sandboxing, For AI and Kits on the Den still give them to it.
+- What runs Den tests and MCP snippets once the interpreter is removed. Entries under For AI and Kits on the Den still give that to the interpreter.
 - The API of `Graph`.
 - Whether kits can define their own annotations, like `@get("/todos/{id}")` on a plain function, so a router can build its table at compile time.
 - SQLite: whether and how Fennec includes it. Porting it isn't realistic.

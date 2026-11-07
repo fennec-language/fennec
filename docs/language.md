@@ -513,7 +513,7 @@ def main(net: Net, fs: Fs, clock: Clock):
 
 ## Building
 
-- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the JIT stands in and says so. Built.
+- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the JIT stands in and says so. Built. The JIT and the interpreter are then removed, once LLVM builds everything, and the commit before gets a tag. Not built yet.
 - `fennec build` makes a native program through LLVM, and `fennec build --release` optimizes the whole program as one. Built.
 
 ## Checks

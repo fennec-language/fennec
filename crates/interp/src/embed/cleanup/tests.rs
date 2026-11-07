@@ -1,0 +1,131 @@
+//! A crash held aside around its cleanup, as native code will on its way out of a function: on this
+//! thread, then in launched tasks that are stopped while they clean up. A task's body can't
+//! assert, as a panic in it would end the test run, so it notes what it saw for the test to check.
+
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
+
+use fennec_syntax::Span;
+
+use super::*;
+use crate::embed::capabilities::clock_sleep;
+use crate::embed::parallel::Pool;
+use crate::embed::serve::{launch_end, launch_on};
+use crate::embed::{Tables, fail_with, failed, finish, start};
+use crate::packed::Element;
+
+const SECONDS: i64 = 1_000_000_000;
+
+fn tables() -> Tables {
+    Tables { shapes: vec![Rc::new(Element::Str)], str_shape: 0, ..Tables::default() }
+}
+
+fn begin() {
+    start(&fennec_syntax::Module { items: Vec::new() }, tables(), crate::Inputs::default()).unwrap();
+}
+
+/// These tests' own pool, whose workers' runtimes have these tests' tables.
+fn pool() -> &'static Pool {
+    static POOL: std::sync::OnceLock<&'static Pool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let setup: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
+            let _ = start(&fennec_syntax::Module { items: Vec::new() }, tables(), crate::Inputs::default());
+        });
+        crate::embed::parallel::with_setup(2, &setup)
+    })
+}
+
+fn crash(message: &str) {
+    fail_with(Diagnostic::new(message, Span::default()));
+}
+
+fn failure() -> Option<String> {
+    with(|state| state.failure.as_ref().map(|failure| failure.message.clone()))
+}
+
+#[test]
+fn a_crash_is_held_aside_while_its_cleanup_runs_and_goes_on_after() {
+    begin();
+    crash("the block crashed");
+    let held = crash_hold();
+    assert!(!failed(), "the cleanup's calls run as normal");
+    assert_eq!(failure(), None);
+    crash_resume(held);
+    assert!(failed());
+    assert_eq!(failure().as_deref(), Some("the block crashed"));
+    finish();
+}
+
+#[test]
+fn a_cleanup_that_crashes_too_leaves_the_first_crash_going_on() {
+    begin();
+    crash("the block crashed");
+    let held = crash_hold();
+    crash("so did its cleanup");
+    crash_resume(held);
+    assert!(failed());
+    assert_eq!(failure().as_deref(), Some("the block crashed"));
+    finish();
+}
+
+#[test]
+fn cleanups_nest_innermost_first_each_holding_its_own_crash() {
+    begin();
+    crash("the block crashed");
+    let outer = crash_hold();
+    crash("the inner cleanup's block crashed");
+    let inner = crash_hold();
+    crash_resume(inner);
+    assert_eq!(failure().as_deref(), Some("the inner cleanup's block crashed"));
+    crash_resume(outer);
+    assert_eq!(failure().as_deref(), Some("the block crashed"));
+    finish();
+}
+
+static IN_GRACE: AtomicI64 = AtomicI64::new(0);
+
+/// Its long sleep is cut short by a stop, and its cleanup then sleeps a little, which the stop's
+/// grace lets it.
+extern "C" fn cleans_up_after_a_stop(_env: i64, _thread: i64) -> i64 {
+    clock_sleep(10 * SECONDS);
+    let cut = failed();
+    let held = crash_hold();
+    clock_sleep(SECONDS / 20);
+    let cleaned = !failed();
+    crash_resume(held);
+    IN_GRACE.store(if cut && cleaned { 1 } else { 2 }, Ordering::SeqCst);
+    0
+}
+
+#[test]
+fn a_stopped_task_s_cleanup_may_still_wait_within_its_grace() {
+    begin();
+    let task = launch_on(pool(), cleans_up_after_a_stop, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(task, SECONDS / 100, 0, &mut failure), 0, "it ends quietly");
+    assert_eq!(IN_GRACE.load(Ordering::SeqCst), 1);
+    finish();
+}
+
+static HARD: AtomicI64 = AtomicI64::new(0);
+
+/// A cleanup that would wait ten seconds, longer than the grace.
+extern "C" fn cleans_up_too_long(_env: i64, _thread: i64) -> i64 {
+    crash("the block crashed");
+    let held = crash_hold();
+    clock_sleep(10 * SECONDS);
+    HARD.store(if failed() { 1 } else { 2 }, Ordering::SeqCst);
+    crash_resume(held);
+    0
+}
+
+#[test]
+fn a_cleanup_that_outlasts_the_grace_is_stopped_hard() {
+    begin();
+    let task = launch_on(pool(), cleans_up_too_long, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(task, SECONDS / 100, 0, &mut failure), 0);
+    assert_eq!(HARD.load(Ordering::SeqCst), 1, "its wait was cut short after the grace");
+    finish();
+}

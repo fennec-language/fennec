@@ -980,7 +980,7 @@ impl Emit<'_, '_, '_> {
                             self.line(&format!("{equal} = icmp eq {text} {x}, {y}"));
                             equal
                         }
-                        Kind::Float => self.float_equal(BinOp::Eq, (&x, &y)),
+                        Kind::Float => self.float_compare(BinOp::Eq, (&x, &y)),
                         Kind::Str if self.headers() => self.same_headers(&x, &y),
                         Kind::Str => self.string_binary(BinOp::Eq, (&x, &y))?,
                         Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) => {
@@ -1028,8 +1028,12 @@ impl Emit<'_, '_, '_> {
                             self.line(&format!("{more} = icmp ugt i1 {x}, {y}"));
                         }
                         Kind::Float => {
-                            self.line(&format!("{less} = fcmp olt double {x}, {y}"));
-                            self.line(&format!("{more} = fcmp ogt double {x}, {y}"));
+                            let (is_less, is_more) = (
+                                self.float_compare(BinOp::Lt, (&x, &y)),
+                                self.float_compare(BinOp::Gt, (&x, &y)),
+                            );
+                            self.line(&format!("{less} = or i1 {is_less}, false"));
+                            self.line(&format!("{more} = or i1 {is_more}, false"));
                         }
                         Kind::Str => {
                             let order = self.on_blocks([&x, &y], |emit, [a, b]| emit.text_order(&a, &b));

@@ -1,7 +1,8 @@
 //! `missing-doc`: every exported item has a `##` comment of at least a line, saying what it's
 //! for: a function, a type with the fields and methods it shows, an interface with its methods, an
 //! alias or a constant. An exported type shows every field and method but its `_name` ones, since
-//! they have no `export` of their own. There's no fix, since only someone who knows what it's for
+//! they have no `export` of their own. A type's own doc covers its fields, which mostly say what
+//! they are by their names, so a field needs one of its own only when its type has none. There's no fix, since only someone who knows what it's for
 //! can write that. The parser drops `export`, so this reads it from the item's line, as
 //! `unused-item` does. An annotation can sit between the comment and what it documents.
 
@@ -73,6 +74,11 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
             Some(owner) => line_of(sources, owner).is_some_and(exported),
             None => exported((text, line_start)),
         };
+        let covered = kind == "field"
+            && owner.and_then(|owner| line_of(sources, owner)).is_some_and(|(text, at)| documented(text, at));
+        if covered {
+            continue;
+        }
         if public && !documented(text, line_start) {
             let diagnostic =
                 Diagnostic::new(format!("the exported {kind} `{name}` has no doc comment"), span)

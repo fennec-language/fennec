@@ -16,70 +16,54 @@ export struct Fs:
     _given: int
 
     ## A new file at `path` to write, in place of any file there, lent for a `with` block:
-    ## `with fs.create("save.txt")? as file:`. What's written goes to the file when the block
-    ## ends, all at once, and a failure writing it is the `with` line's. A block that fails writes
-    ## nothing, so there's never half a file.
+    ## `with fs.create("save.txt")? as file:`. What's written goes into a file of its own beside
+    ## `path`, which takes `path`'s place when the block ends, and a failure then is the `with`
+    ## line's. A block that fails leaves `path` as it was, so there's never half a file, and
+    ## nothing's held in memory however much is written.
     def create(self, path: str) -> with File fails IoError:
-        file = File.to_write(path)
-        lend file
-        self.write_bytes(path, file.written())?
+        file = self._create(path)?
+        lend file else:
+            self._discard(file)
+        self._finish(file)?
 
     ## The file at `path` to read, lent for a `with` block: `with fs.open("save.txt")? as file:`.
+    ## It's closed when the block ends.
     def open(self, path: str) -> with File fails IoError:
-        data = self.read_bytes(path)?
-        lend File.to_read(path, data)
+        file = self._open(path)?
+        lend file else:
+            self._discard(file)
+        self._finish(file)?
 
-## A file lent by `fs.create`, for writing, or by `fs.open`, for reading, for the length of a
-## `with` block, which ends with it closed. It's `shared`, so what the block writes is still there
-## for `fs.create` to write out when the block ends.
-export shared File:
-    _path: str
-    _writing = False
-    _data = bytes([])
-    _parts = list[bytes]()
+## A file lent by `fs.create`, to write, or by `fs.open`, to read, for the length of a `with`
+## block. Its methods written in Rust: `write(data)` writes `bytes` or a `str`'s UTF-8; `read()`
+## gives what's left as `bytes`; and `read_line()` gives the next line without its ending, or
+## `None` at the end. Each fails with an `IoError`, as a read of a file made to write does.
+export struct File:
+    _handle: int
 
-    ## A file to write at `path`, as `fs.create` lends one. Nothing reaches the disk but through
-    ## `fs.create`.
-    def to_write(path: str) -> File:
-        File(_path=path, _writing=True)
+    def write_text(self, text: str) fails IoError:
+        self.write(text)?
 
-    ## A file to read, holding `data`, as `fs.open` lends one.
-    def to_read(path: str, data: bytes) -> File:
-        File(_path=path, _data=data)
-
-    ## Where it is, as it was asked for.
-    def path(self) -> str:
-        self._path
-
-    ## Writes `text`, as its UTF-8 bytes.
-    def write_text(ref self, text: str) fails IoError:
-        self.write_bytes(text.encode())?
+    def write_bytes(self, data: bytes) fails IoError:
+        self.write(data)?
 
     ## Writes `text`, then a line break.
-    def write_line(ref self, text: str) fails IoError:
-        self.write_bytes(text.encode())?
-        self.write_bytes("\n".encode())?
+    def write_line(self, text: str) fails IoError:
+        self.write(text)?
+        self.write("\n")?
 
-    def write_bytes(ref self, data: bytes) fails IoError:
-        if not self._writing: fail IoError(reason=f"{self._path} was opened to read, not to write")
-        self._parts.append(data)
-
-    ## Everything written so far, in order.
-    def written(self) -> bytes:
-        mut all = bytes_builder()
-        for part in self._parts:
-            bytes_push_bytes(ref all, part)
-        all
-
-    ## All that's in it, as text.
+    ## What's left in it, as text.
     def read_text(self) -> str fails IoError:
-        data = self.read_bytes()?
-        data.decode() else fail IoError(reason=f"{self._path} isn't UTF-8 text")
+        data = self.read()?
+        data.decode() else fail IoError(reason="this file isn't UTF-8 text")
 
     def read_bytes(self) -> bytes fails IoError:
-        if self._writing: fail IoError(reason=f"{self._path} was made to write, not to read")
-        self._data
+        self.read()?
 
-    ## Its lines, without their line breaks.
-    def lines(self) -> list[str] fails IoError:
-        self.read_text()?.lines()
+    ## Each line left in it, without its line break, until the end or a failure. To tell those
+    ## apart, call `read_line()` instead.
+    def lines(self) -> Iterator[str]:
+        while True:
+            line = self.read_line() else None
+            if line is None: return
+            yield line

@@ -319,6 +319,14 @@ impl FnCx<'_> {
         let Some(method) = method(ty, name) else {
             return self.unusable(renamed_method(object, ty, name, span), args);
         };
+        // A `_` method is its type's own, written in Rust for the standard library's code, as a
+        // `_` field is.
+        if name.starts_with('_') && !span.in_prelude() {
+            let owner = ty.type_name().unwrap_or_default();
+            let message = format!("`{name}` is private to `{owner}`");
+            let help = format!("only the standard library's own code can reach `_` names: go through one of `{owner}`'s other methods");
+            return self.unusable(Diagnostic::new(message, span).with_help(help), args);
+        }
         if let Some(help) = test_only(ty, name)
             && !self.in_a_test()
         {

@@ -69,3 +69,11 @@ pub extern "C" fn sin(x: f64) -> f64 {
 pub extern "C" fn cos(x: f64) -> f64 {
     x.cos()
 }
+
+pub extern "C" fn tan(x: f64) -> f64 {
+    x.tan()
+}
+
+pub extern "C" fn acos(x: f64) -> f64 {
+    x.acos()
+}

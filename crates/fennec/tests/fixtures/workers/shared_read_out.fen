@@ -1,0 +1,32 @@
+## Values made under a `shared` value's read lock that hold its strings, read after the lock is let go.
+
+struct Note:
+    id: str
+
+shared Notes:
+    items = list[Note]()
+    tags = list[list[str]]()
+
+    def add(ref self, note: Note):
+        self.items.append(note)
+        self.tags.append([note.id, note.id + " again"])
+
+    def all(self) -> list[Note]:
+        [note for note in self.items]
+
+    def all_tags(self) -> list[list[str]]:
+        [tags for tags in self.tags]
+
+    def direct(self) -> list[Note]:
+        self.items
+
+def main(stdout: Stdout):
+    notes = Notes()
+    for n in parallel([1, 2, 3, 4]):
+        notes.add(Note(id=f"note {n}, long enough to live on the heap"))
+    for note in notes.all():
+        stdout.print(note.id)
+    for tags in notes.all_tags():
+        stdout.print(tags[1])
+    for note in notes.direct():
+        stdout.print(note.id, note.id.len())

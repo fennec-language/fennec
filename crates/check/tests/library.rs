@@ -191,6 +191,24 @@ fn imports_name_modules_and_names_that_exist() {
     );
 }
 
+/// One unknown module among several on an import line is the one problem: the others are
+/// imported, and the unknown name isn't reported again where it's used. A name a letter or two
+/// off a module's is taken to mean it.
+#[test]
+fn an_unknown_module_in_an_import_is_reported_once() {
+    let main = "stdout.print(json.dumps(1), compres.gzip('x'), json.dumps(2), time.Duration(nanos=1))";
+    assert_eq!(
+        with_imports("from std import compres, json, time", main),
+        ["there's no module called `std.compres` @ from std import compres, json, time"]
+    );
+    assert_eq!(
+        crate::helps(
+            "from std import compres, json\n\ndef main(stdout: Stdout):\n    stdout.print(json.dumps(1))\n"
+        ),
+        ["did you mean `std.compress`?"]
+    );
+}
+
 #[test]
 fn as_binds_an_import_under_another_name() {
     let program = "stdout.print(read_json[int]('1')?, read_toml[dict[str, int]]('a = 1')?, j.dumps(1), t.dumps({'a': 1}))";

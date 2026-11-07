@@ -7518,6 +7518,65 @@ fn a_type_holding_itself_through_a_list_allocates_no_block_of_its_own() -> std::
     Ok(())
 }
 
+/// A boxed enum's case with no fields is one block for the whole run, so making it allocates
+/// nothing.
+#[test]
+fn a_case_with_no_fields_allocates_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = format!(
+        "{SHARED_LEAVES_TREE}def main(stdout: Stdout):\n    mut leaves = []\n    for _ in range(1000):\n        leaves.append(Tree.Leaf)\n    stdout.print(leaves.len(), count(build(0)))\n"
+    );
+    let counts = counts_of("shared_leaves_counted", &source)?;
+    assert!(count(&counts, "allocations") < Some(30), "{counts}");
+    Ok(())
+}
+
+/// The shared block behaves as a block of its own would: compared, matched, printed, held in
+/// lists and dicts, and made and let go of on other threads.
+#[test]
+fn cases_with_no_fields_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit("shared_leaves", &format!("{SHARED_LEAVES_TREE}{SHARED_LEAVES_MAIN}"))
+}
+
+const SHARED_LEAVES_TREE: &str = "enum Tree:
+    Leaf
+    Node(left: Tree, right: Tree)
+
+def build(depth: int) -> Tree:
+    if depth == 0: return .Leaf
+    .Node(left=build(depth - 1), right=build(depth - 1))
+
+def count(tree: Tree) -> int:
+    match tree:
+        case .Leaf:
+            1
+        case .Node(left, right):
+            1 + count(left) + count(right)
+
+";
+
+const SHARED_LEAVES_MAIN: &str = r#"def main(stdout: Stdout):
+    mut leaves = [Tree.Leaf, build(1), Tree.Leaf]
+    stdout.print(count(build(10)), leaves[0] == leaves[2], leaves[0] == leaves[1], build(2) == build(2))
+    stdout.print(build(1), leaves[0])
+    mut named = {"leaf": Tree.Leaf, "node": build(1)}
+    named["leaf"] = build(2)
+    named["other"] = .Leaf
+    stdout.print(count(named["leaf"]), count(named["other"]), named["other"] == .Leaf)
+    mut trees = [build(n % 4) for n in range(64)]
+    for ref tree in parallel(trees):
+        tree = .Node(left=tree, right=.Leaf)
+    total = sum(count(tree) for tree in trees)
+    stdout.print(total)
+    leaves = []
+    stdout.print(leaves.len(), Tree.Leaf == build(0))
+"#;
+
 #[test]
 fn enums_holding_blocks_match_the_jit() -> std::io::Result<()> {
     if !ready() {

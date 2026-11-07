@@ -369,3 +369,14 @@ fn a_with_source_lends_once_to_a_with_block() {
         ["this `?` might not run, and in a source's block that isn't built yet"]
     );
 }
+
+/// What a source lends is the block's to use, `ref self` methods included: written `as ref` or
+/// not, it only can't leave the block.
+#[test]
+fn a_lent_value_takes_ref_self_calls() {
+    let empty: [&str; 0] = [];
+    let program = "struct Sink:\n    parts = list[str]()\n\n    def write(ref self, text: str):\n        self.parts.append(text)\n\n\
+        def sink() -> with Sink:\n    mut held = Sink()\n    lend held\n\n\
+        def main(stdout: Stdout):\n    with sink() as out:\n        out.write(\"a\")\n    with sink() as ref out:\n        out.write(\"b\")\n";
+    assert_eq!(problems(program), empty);
+}

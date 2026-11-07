@@ -4,6 +4,7 @@
 
 use std::rc::Rc;
 
+use super::toml_value::{MAX_DEPTH, too_deep};
 use super::{Cursor, Failure, Parsed, toml_value};
 use crate::value::Value;
 
@@ -94,7 +95,7 @@ pub(super) fn parse(text: &str) -> Parsed<Value> {
             Some('[') => current = header(&mut cursor, &mut root)?,
             Some(_) => {
                 let at = cursor.at;
-                let (keys, value) = key_value(&mut cursor)?;
+                let (keys, value) = key_value(&mut cursor, current.len())?;
                 let table = descend(&mut root, &current)
                     .ok_or(Failure { message: "this table can't be found again".to_owned(), at })?;
                 table.insert(&keys, value, at)?;
@@ -130,6 +131,10 @@ fn header(cursor: &mut Cursor<'_>, root: &mut Table) -> Parsed<Vec<String>> {
         return cursor.fail(format!("expected `{closing}` to end the header, but found {}", cursor.found()));
     }
     let Some((last, parents)) = keys.split_last() else { return cursor.fail("expected a key") };
+    // A header's tables nest as deep as its key has parts, so they count as nesting does.
+    if parents.len() > MAX_DEPTH {
+        return Err(Failure { message: too_deep(), at });
+    }
     let mut table = root;
     for key in parents {
         table = table.open(key, false, at)?;
@@ -160,15 +165,21 @@ fn defined() -> Table {
     Table { header: true, ..Table::default() }
 }
 
-/// `key = value`, where the key may be dotted.
-pub(super) fn key_value(cursor: &mut Cursor<'_>) -> Parsed<(Vec<String>, Value)> {
+/// `key = value`, where the key may be dotted, in a table `depth` tables deep. Each part of a
+/// dotted key before its last is a table the value is in, so the value is that much deeper.
+pub(super) fn key_value(cursor: &mut Cursor<'_>, depth: usize) -> Parsed<(Vec<String>, Value)> {
+    let at = cursor.at;
     let keys = key_path(cursor)?;
+    let deeper = depth + keys.len() - 1;
+    if deeper > MAX_DEPTH {
+        return Err(Failure { message: too_deep(), at });
+    }
     skip_spaces(cursor);
     if !cursor.eat('=') {
         return cursor.fail(format!("expected `=` after the key, but found {}", cursor.found()));
     }
     skip_spaces(cursor);
-    let value = toml_value::value(cursor, 0)?;
+    let value = toml_value::value(cursor, deeper)?;
     Ok((keys, value))
 }
 
@@ -264,6 +275,21 @@ mod tests {
             read("[a]\n[[a]]"),
             "`a` is already defined as something else, so it can't be `[[a]]` @ 4"
         );
+    }
+
+    #[test]
+    fn headers_dotted_keys_and_inline_tables_count_toward_the_nesting_limit() {
+        let too_deep = "arrays and tables nest more than 500 deep here";
+        assert_eq!(read(&format!("[{}a]", "a.".repeat(600))), format!("{too_deep} @ 0"));
+        assert_eq!(read(&format!("{}a = 1", "a.".repeat(600))), format!("{too_deep} @ 0"));
+        assert_eq!(
+            read(&format!("[{}a]\n{}b = 1", "a.".repeat(300), "b.".repeat(300))),
+            format!("{too_deep} @ 604")
+        );
+        let inline = format!("a = {}1{}", "{a = ".repeat(600), "}".repeat(600));
+        assert!(read(&inline).starts_with(too_deep), "{}", read(&inline));
+        // As deep as it may go, it's read.
+        assert!(read(&format!("[{}a]", "a.".repeat(500))).starts_with('{'));
     }
 
     #[test]

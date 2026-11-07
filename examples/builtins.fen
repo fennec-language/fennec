@@ -6,7 +6,7 @@ def square(n: int) -> int:
     n * n
 
 def checked(n: int):
-    if n < 0: fail IoError("it's negative")
+    if n < 0: fail IoError(reason="it's negative")
 
 def main(stdout: Stdout):
     # Converting between numbers. `int` truncates toward zero.

@@ -1032,6 +1032,35 @@ impl FnCx<'_> {
         Type::Named(owner)
     }
 
+    /// A value of another kit's type built with a field by position. A kit can add a field with
+    /// a default to a type it exports, anywhere among its fields, without breaking anyone who
+    /// builds it, so outside the kit every field is given by name, and `fennec fix` adds the names.
+    fn positional_elsewhere_built(
+        &mut self,
+        type_name: &str,
+        display: &str,
+        fields: &[Field],
+        args: &[Arg],
+        span: Span,
+    ) {
+        let elsewhere = self.checker.program.type_info(type_name).is_some_and(|info| info.prelude);
+        if !elsewhere || span.in_prelude() || args.iter().all(|arg| arg.name.is_some()) {
+            return;
+        }
+        let each: Vec<String> = fields.iter().map(|field| format!("{}=...", field.name)).collect();
+        let message = format!("`{display}` comes from another kit, so it's built with its fields named");
+        let help = format!(
+            "write `{display}({})`, and a field added to it never breaks this; `fennec fix` adds the names",
+            each.join(", ")
+        );
+        let mut diagnostic = Diagnostic::new(message, span).with_help(help);
+        for (field, arg) in fields.iter().zip(args).filter(|(_, arg)| arg.name.is_none()) {
+            let at = Span { start: arg.value.span.start, end: arg.value.span.start };
+            diagnostic = diagnostic.with_fix(at, format!("{}=", field.name));
+        }
+        self.error(diagnostic);
+    }
+
     /// Matches arguments to fields, positionally and by name. Returns whether every argument
     /// is written as a literal, so `where` rules can be checked when the value is made.
     fn build(&mut self, target: &Target<'_>, fields: &[Field], args: &[Arg], span: Span) -> bool {
@@ -1039,6 +1068,7 @@ impl FnCx<'_> {
         let display = case.map_or_else(|| type_name.to_owned(), |case| format!("{type_name}.{case}"));
         let mut given = vec![false; fields.len()];
         let mut unmatched_args = false;
+        self.positional_elsewhere_built(type_name, &display, fields, args, span);
         for (position, arg) in args.iter().enumerate() {
             let at = match &arg.name {
                 Some(name) => fields.iter().position(|field| &field.name == name),

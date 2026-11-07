@@ -3,7 +3,7 @@
 export struct Path:
     text: str
 
-    ## `Path("saves") / "slot1.json"` is the same as `.join`.
+    ## `Path(text="saves") / "slot1.json"` is the same as `.join`.
     def /(self, part: str) -> Path:
         self.join(part)
 

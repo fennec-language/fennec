@@ -10,7 +10,7 @@ import std.collections
 from std.re import Regex
 
 def first_word(text: str) -> str:
-    found = Regex(r"\w+").search(text)
+    found = Regex(pattern=r"\w+").search(text)
     found.text else ""
 
 def main(stdout: Stdout):

@@ -3,29 +3,32 @@
 from std.path import Path
 
 def main(stdout: Stdout, fs: Fs):
-    saves = Path("saves")
+    saves = Path(text="saves")
     slot = saves / "slot1.json"
     stdout.print(slot.text, slot.name(), slot.stem(), slot.extension())
-    stdout.print(slot.parent().text, slot.parent().parent().text, Path("/").parent().text)
+    stdout.print(slot.parent().text, slot.parent().parent().text, Path(text="/").parent().text)
 
-    sprite = Path("assets/sprites/../art/./fox.tar.gz")
+    sprite = Path(text="assets/sprites/../art/./fox.tar.gz")
     stdout.print(sprite.name(), sprite.stem(), sprite.extension())
     stdout.print(sprite.normalize().text, sprite.parts())
-    stdout.print(Path("../../levels/./one").normalize().text, Path("/a/../../b").normalize().text)
     stdout.print(
-        Path("a/..").normalize().text,
-        Path(".hidden").extension() == "",
-        Path("notes.").stem(),
+        Path(text="../../levels/./one").normalize().text,
+        Path(text="/a/../../b").normalize().text,
+    )
+    stdout.print(
+        Path(text="a/..").normalize().text,
+        Path(text=".hidden").extension() == "",
+        Path(text="notes.").stem(),
     )
 
     stdout.print(
-        Path("/home/ash").join("games").join("fox").text,
-        Path("logs/").join("today.txt").text,
+        Path(text="/home/ash").join("games").join("fox").text,
+        Path(text="logs/").join("today.txt").text,
     )
     stdout.print(
-        Path("ignored").join("/etc/hosts").text,
-        Path("/etc").is_absolute(),
+        Path(text="ignored").join("/etc/hosts").text,
+        Path(text="/etc").is_absolute(),
         slot.is_absolute(),
     )
-    stdout.print(slot == Path("saves/slot1.json"), slot)
-    stdout.print(fs.exists(Path("/")), fs.exists(Path("/").join("no such place")))
+    stdout.print(slot == Path(text="saves/slot1.json"), slot)
+    stdout.print(fs.exists(Path(text="/")), fs.exists(Path(text="/").join("no such place")))

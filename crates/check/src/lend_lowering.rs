@@ -124,7 +124,7 @@ impl Lowering<'_> {
                         _ => value,
                     };
                     match self.sources.get(&(call.span.start, call.span.end)) {
-                        Some(source) => self.expand(call, names, block.clone(), &source.clone(), stmt.span),
+                        Some(source) => self.expand(call, names, block, &source.clone(), stmt.span),
                         None => None,
                     }
                 }
@@ -172,7 +172,7 @@ impl Lowering<'_> {
         &mut self,
         call: &Expr,
         names: &[WithName],
-        block: Vec<Stmt>,
+        block: &[Stmt],
         source: &Source,
         at: Span,
     ) -> Option<Vec<Stmt>> {
@@ -198,7 +198,7 @@ impl Lowering<'_> {
         let caller_ret = self.returns.last().cloned().flatten();
         let mut caller = Caller { exit: &exit, returned: &returned, ways: Ways::default(), span: at };
         if !replace_lend(&mut body, &mut |value, otherwise| {
-            let mut block = block.clone();
+            let mut block = block.to_vec();
             let (place, binding) = match &value.kind {
                 ExprKind::Name(place) => (place.clone(), None),
                 _ => (lent_as.clone(), Some(assign(&lent_as, value, true, None))),

@@ -346,6 +346,11 @@ impl Heap {
         self.site = Some(site);
     }
 
+    /// Whether this heap counts what's allocated.
+    pub(super) fn counting(&self) -> bool {
+        self.counting
+    }
+
     /// Notes that `bytes` bytes were allocated, when anything will read it: every block made
     /// comes here, so the rest is out of its way.
     #[inline]

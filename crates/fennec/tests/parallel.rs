@@ -67,8 +67,15 @@ fn a_for_mut_over_parallel_and_its_kin_run_as_parallel_calls_natively() -> std::
     let run = fennec(&["run", &source], &dir)?;
     std::fs::remove_dir_all(&dir)?;
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&interpreted.stdout));
-    assert_eq!(String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&interpreted.stdout));
+    // Prints inside `parallel` follow real call order, which can differ between runs, so they're
+    // compared sorted (decisions.md): under `FENNEC_PARALLEL_STRESS` each item is a range of its own.
+    let sorted = |out: &[u8]| {
+        let mut lines: Vec<String> = String::from_utf8_lossy(out).lines().map(str::to_owned).collect();
+        lines.sort();
+        lines
+    };
+    assert_eq!(sorted(&ran.stdout), sorted(&interpreted.stdout));
+    assert_eq!(sorted(&run.stdout), sorted(&interpreted.stdout));
     // The `for mut`, the comprehension, the sum and the loop over `take`'s list: four calls, not
     // ordinary loops.
     let counts = String::from_utf8_lossy(&ran.stderr);
@@ -143,7 +150,10 @@ fn items_put_back_unchanged_stay_whole_with_text_inline_or_not() -> std::io::Res
 /// Enough units to be split among workers: a `for mut` and a sum over them.
 const ON_WORKERS: &str = include_str!("fixtures/workers/on_workers.fen");
 
-/// A range on a worker that recurses deeper than the worker's stack allows.
+/// A range on a worker that recurses deeper than the worker's stack allows. One item goes deep,
+/// late in the range so a worker other than the first takes it, and the rest are quick: with
+/// every item going deeper than the last, the workers made billions of calls before one was too
+/// deep, and the test took 39 seconds.
 const TOO_DEEP: &str = "\
 def deep(n: int) -> int:
     if n == 0:
@@ -152,7 +162,7 @@ def deep(n: int) -> int:
 
 def main(stdout: Stdout):
     xs = [n for n in range(50_000)]
-    stdout.print(sum(deep(x * 1_000) for x in parallel(xs)))
+    stdout.print(sum(deep(1_000_000_000 if x == 40_000 else x % 10) for x in parallel(xs)))
     stdout.print(\"after\")
 ";
 

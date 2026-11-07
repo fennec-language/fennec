@@ -240,7 +240,15 @@ pub fn trace_at(site: i64) {
     with(|state: &mut State| state.heap.trace_at(u32::try_from(site).unwrap_or(0)));
 }
 
-/// Native code built to trace what it costs made a block of its own, of this many bytes.
+/// Whether this run counts what it allocates: under `FENNEC_COUNTS`, after `count_allocations`,
+/// and in tests. Native code that makes blocks of its own reads it once, and says what it made
+/// through `trace_allocated` only when it's 1, so a plain run pays nothing to count.
+pub fn counting() -> i64 {
+    with(|state: &mut State| i64::from(state.heap.counting()))
+}
+
+/// Native code made a block of its own, of this many bytes: one built to trace what it costs, or
+/// one making blocks outside the runtime's table while `counting` says 1.
 pub fn trace_allocated(bytes: i64) {
     with(|state: &mut State| state.heap.allocated(u64::try_from(bytes).unwrap_or(0)));
 }

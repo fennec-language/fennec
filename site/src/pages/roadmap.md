@@ -10,25 +10,31 @@ description: What Fennec does today, what's being built next, and the design que
 
 ## Works today
 
-- `fennec run`, which runs the tests a change affects and then your program. `fennec test`, `fennec bench`, `fennec new`, `fennec init`, `fennec fmt`, `fennec check`, `fennec lint` (each with JSON for agents), `fennec fix` and a language server.
+- `fennec run`, which runs the tests a change affects and then your program. `fennec build`, `fennec test`, `fennec bench`, `fennec new`, `fennec init`, `fennec fmt`, `fennec check`, `fennec lint` (each with JSON for agents), `fennec fix` and a language server.
 - Programs over several files: a kit is a folder with a `kit.toml`, and its files import from each other.
-- Names and `mut`, functions with written return types, default parameters passed by name, nested functions and arrow functions.
-- Structs with defaults, methods, named constructors and `where` rules; enums and `match`; operators; interfaces and generics.
-- Errors with `error`, `fail`, `?`, `else`, `match` and `from`; optional values with `None` and `else`.
-- Lists, dicts, sets, tuples, comprehensions and slices. Structs work as dict keys with nothing to write.
-- Lazy generators, used once, with `yield` allowed inside `with`.
-- `with` and `def del`: any way out of a block closes what it opened.
-- Tables: `Table`, `Id` and `Tree`, and `SortedMap` on a B-tree.
+- Names and `mut`, functions with written return types, default parameters passed by name, nested functions and arrow functions. Constructor calls like `dict[str, int]()` as defaults, the only form for an empty collection.
+- `ref` for loops, parameters and `self`, with compile errors for changing a collection while it's looped over, for a copy made on every round of a loop, and for a local that's changed and then never read.
+- Structs with defaults, methods, named constructors and `where` rules; enums and `match`; union types, `Circle | Square`, narrowed with `is` and `match`; operators; interfaces and generics.
+- Errors with `error`, `fail`, `?`, `else`, `match` and `from`, and `fails Name` in signatures, with one `error` listing several cases. `?` is required wherever a failure passes up. Optional values with `None` and `else`.
+- Lists, dicts, sets, tuples, comprehensions and slices. Structs work as dict keys with nothing to write, and one with its own `def ==` is a compile error. `sum(xs, start=...)`.
+- Lazy generators, used once, with a second use a compile error wherever the compiler can see it.
+- Hard errors for positional calls that are easy to get backwards.
+- `export` on top-level things only, and `_name` hiding a field or method from everything but its type.
+- Fields named with any word, keywords included, like `from: str`.
+- `@hot`, which proves a function allocates nothing, copies nothing and keeps no checks it can't prove away, or doesn't compile.
+- One equality, order and hash for floats, with NaN equal to itself and sorted last.
+- `parallel` over collections and streams, on every core, with `for ref` through it and reductions that combine in a fixed order.
+- `shared Name:`, with methods that lock automatically, on real threads. It's being redesigned in places.
+- Tables: `Table`, `Id` and `Tree`, and `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Deque` and `Counter`.
+- The standard library: `math`, `layout`, `path`, `json`, `toml`, `pack`, `csv`, `collections`, `random`, `time`, `re`, `log`, `cli`, `net`, `process` and `crypto`. JSON takes `names=`, `extra=` and `@serialize(name=...)`.
 - A type checker that runs before every program and test.
-- The first standard library: `math`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re`.
-- Native code: `fennec run` uses a cached LLVM build, and says so in one line when LLVM can't build a program yet and the JIT runs it instead. `fennec build` compiles with Cranelift, and `fennec build --llvm` handles part of the language. Every example gives exactly the interpreter's output.
+- Native code through LLVM: `fennec run` builds a function at a time and caches each one, and `fennec build` makes a native program, with `--release` optimizing the whole program as one. Where LLVM can't build something yet, a JIT stands in and says so, and the interpreter runs the little that neither can.
 - Function-level caching of checked and compiled code, shared across runs.
 - Every example in the repository's `examples/` folder is a test, including its error messages, and the [language reference](/reference/) is generated from them.
 
 ## Next: speed and builds
 
-- One backend: LLVM, with per-function `-O3` and a function-level cache. Whole-program work happens only in `--release`.
-- LLVM becomes the default once about 90% of examples build natively. Removing Cranelift also takes a native `fennec test` harness and Windows linking. A program either builds natively or is refused, and refused examples go on a tracked list that must reach zero.
+- Everything on LLVM, so the JIT and the interpreter can go. What doesn't build natively yet is on a tracked list that must reach zero.
 - One content store per machine, with results named by hash and no `target` folders. `fennec run` makes real binaries in it.
 - A shared cache that only trusted builds can write to, and a clean rebuild in CI to check it against.
 - A tiny launcher that fetches the compiler a kit asks for. Pinned compilers never change by themselves.
@@ -37,43 +43,33 @@ description: What Fennec does today, what's being built next, and the design que
 
 Each of these is decided and not built.
 
-- `for mut` over user types, through `def len` and the `mut` form of `def []`.
-- A compile error for changing a collection while it's being looped over or written through.
-- `xs.pair(i, j)`, and compile errors for copies that can go stale and for a copy on every iteration of a loop.
-- A compile error for a local that's changed and then never read, returned or passed on.
-- `fails Name` in signatures, with one `error` listing several cases. `?` required wherever a failure passes up, narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
-- `xs.get(i)`, and `sum(xs, start=...)` replacing today's positional start.
-- `_name` hiding a field, and `export` on top-level things only.
-- Constructor calls like `dict[str, int]()` as defaults, giving the type as a literal does, and the only form for an empty collection.
-- Fields named with any word, keywords included, like `from: str`. Soft keywords like `type` and `match` work as field names today.
-- `names=` and `extra=` on `json.loads` and `json.dumps`, and `@serialize(name=...)`.
-- Union types, `Circle | Square`, inline with a one-byte tag, narrowed with `is` and `match`.
-- Hard errors for positional calls that are easy to get backwards.
+- A compile error for a copy that can go stale, which `copy(x)` makes on purpose.
+- Narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
+- `xs.get(i)`, which gives an optional when an index might not be there.
 - `fennec fix` applying only fixes that can't change what a program does, with the rest shown as hints to make by hand.
-- `with a() as x, b() as y:` and a block's last line as its value.
-- A compile error for a dict key struct with its own `def ==`.
-- `@hot`, which proves a function allocates nothing, copies nothing and has no leftover count checks, or doesn't compile. It replaces today's `noalloc def`.
-- One equality, order and hash for floats, with NaN equal to itself and sorted last, `x.approx(y, within=...)`, and `@fast_math`.
+- Sized numbers, like `i32`, `u8` and `f32`.
+- `x.approx(y, within=...)`, and `@fast_math`.
 
-## After that: concurrency and sharing
+## Being redesigned
 
-- `parallel` over collections and streams, on real cores, with `limit=`. Today it compiles for reading, and runs in order.
-- User types splitting for `parallel` through their positions, and `(f(x) for x in parallel(xs))` streaming results in order.
+- `with`, `def del` and how a thing is closed, including several in one line and a block's last line as its value.
+- Parts of `shared`.
+
+## After that: concurrency
+
+- `limit=` on `parallel`, and user types splitting for it through their positions.
 - `with launch(fn) as task:` for long-running tasks, and bounded channels with `send`, `pending()` and `for x in ch`.
 - Event channels, for many listeners each reading at its own pace.
-- One scheduler, with I/O multiplexed by the OS.
-- `shared Name:`, with methods that lock automatically.
-- A failure in a server task staying in that task, designed when servers are built.
+- A failure in a server task staying in that task.
 
 ## After that: libraries and C
 
-- Compile-time loops over a type, `Writer` and `Reader` for every format, annotations as data, and `std.pack`.
-- `SortedSet`, `Grid` and `Packed`.
+- Compile-time loops over a type, and `Writer` and `Reader` for every format built on them. `where` ranges, delta encoding and quantization in `std.pack`.
 - `Graph`, built on `Table` as `Tree` is.
-- `std.net`, `std.sql`, `std.process` and `std.crypto`.
+- `std.sql`.
 - `extern "C"` and `unsafe`, for what can't be written in Fennec, and first-party native kits.
 - SIMD and GPU types, and [the Den](/den/), Fennec's registry for kits.
-- A Fennec compiler written in Fennec.
+- A Fennec compiler written in Fennec. Its lexer, parser and checker are underway.
 
 ## Only if the evidence asks
 

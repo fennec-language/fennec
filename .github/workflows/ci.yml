@@ -112,7 +112,9 @@ jobs:
       matrix:
         os: ${{ fromJSON(github.event_name == 'merge_group' && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    # Windows' tests take about 13 minutes, and a build with no cache there 10 more. A job that
+    # runs out of time saves no cache, so the limit leaves room for a cold one.
+    timeout-minutes: 35
     # LLVM is the main backend, so on Linux and Windows its tests have to run: with LLVM's tools
     # from the toolchain's own `llvm-tools`, the LLVM rustc uses, a missing tool or runtime
     # library fails them instead of skipping them.
@@ -122,8 +124,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Fennec links programs with LLD and MinGW-w64's libraries on Windows, so it's built for them.
+      - name: Use Rust's gnullvm toolchain and llvm-mingw
+        if: runner.os == 'Windows'
+        shell: bash
+        run: .github/scripts/windows.sh toolchain
       - name: Install LLVM's tools
-        if: runner.os != 'macOS'
+        if: runner.os == 'Linux'
         run: rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # `fennec run` builds through LLVM where it can, linking the runtime library beside
@@ -140,12 +147,16 @@ jobs:
             dir="target/$(echo "$features" | tr , -)"
             name="fennec_runtime_$(echo "$features" | tr , _)"
             cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
-            if [ "$RUNNER_OS" = Windows ]; then
-              cp "$dir/debug/fennec_runtime.lib" "target/debug/$name.lib"
-            else
-              cp "$dir/debug/libfennec_runtime.a" "target/debug/lib$name.a"
-            fi
+            cp "$dir/debug/libfennec_runtime.a" "target/debug/lib$name.a"
           done
+      # The same `llvm` folder a release puts beside `fennec`: LLVM's tools, LLD and the libraries
+      # it links. The tests look for the tools themselves, from a folder deeper than `fennec`'s.
+      - name: Gather LLVM's tools and what they link
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          .github/scripts/windows.sh folder target/debug/llvm
+          echo "FENNEC_LLVM_BIN=$(cygpath -w "$PWD/target/debug/llvm/bin")" >> "$GITHUB_ENV"
       - run: cargo test --locked
       # Which tests passed. A pull request reads its own results, then the shared ones, and
       # keeps its own apart: GitHub never shows one pull request's cache to another run, so
@@ -316,6 +327,9 @@ jobs:
         run: zizmor --offline --min-severity low .github/workflows
       - name: The landing hook and helper, on a throwaway repository
         run: .github/scripts/test-landing.sh
+      # The installer runs as `sh` on machines Fennec has never seen, so it keeps to POSIX sh.
+      - name: shellcheck the installer
+        run: shellcheck --shell=sh site/public/install.sh
 
   bench:
     name: Benchmarks
@@ -424,25 +438,26 @@ jobs:
           built=0
           failed=0
           for program in examples/*.fen; do
-            for how in --llvm "--llvm --release"; do
-              # shellcheck disable=SC2086 # `$how` is two words for a release
-              if ! .github/scripts/within.sh 300 ./target/release/fennec build $how "$program" -o checked > /dev/null 2> built.txt; then
+            for how in dev release; do
+              release=()
+              [ "$how" = release ] && release=(--release)
+              if ! .github/scripts/within.sh 300 ./target/release/fennec build "${release[@]}" "$program" -o checked > /dev/null 2> built.txt; then
                 # Anything but a failed tool or link is the backend saying what it doesn't take yet.
                 grep -qE "linking failed|failed on|couldn't run|once trimmed|panicked|didn't finish" built.txt || continue
-                echo "::error::$program didn't build with $how"; cat built.txt; failed=1; continue
+                echo "::error::$program didn't build in $how"; cat built.txt; failed=1; continue
               fi
               if ! nm checked | grep -q __asan_report_load; then
-                echo "::error::$program built with $how without AddressSanitizer"; failed=1; continue
+                echo "::error::$program built in $how without AddressSanitizer"; failed=1; continue
               fi
               built=$((built + 1))
               ran=0
               .github/scripts/within.sh 120 ./checked > printed.txt 2> said.txt || ran=$?
               if [ "$ran" = 124 ]; then
-                echo "::error::$program built with $how didn't finish"; cat said.txt; failed=1
+                echo "::error::$program built in $how didn't finish"; cat said.txt; failed=1
               elif grep -q AddressSanitizer said.txt; then
-                echo "::error::$program built with $how touched memory it doesn't own"; cat said.txt; failed=1
+                echo "::error::$program built in $how touched memory it doesn't own"; cat said.txt; failed=1
               elif ! cmp -s printed.txt "${program%.fen}.out"; then
-                echo "::error::$program built with $how printed something different"; cat said.txt; failed=1
+                echo "::error::$program built in $how printed something different"; cat said.txt; failed=1
               fi
             done
           done
@@ -458,6 +473,39 @@ jobs:
           name: asan-fuzz-found
           path: found
           if-no-files-found: ignore
+
+  # The LLVM tests with every program they build instrumented by AddressSanitizer, so touching
+  # memory a program doesn't own stops its test. Native blocks, the ones generated code makes
+  # and frees itself outside the runtime's table, go through the system's allocator here, which
+  # the sanitizer watches, so one used after it's freed, or freed twice, is caught. The runtime
+  # library isn't instrumented here, since the tests build their own; the `asan` job covers it.
+  llvm-asan:
+    name: LLVM tests under AddressSanitizer
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      FENNEC_EXPECT_LLVM: 1
+      FENNEC_SANITIZE: address
+      ASAN_OPTIONS: detect_leaks=0:exitcode=86
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install LLVM's tools
+        run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build the runtime libraries
+        run: |
+          cargo build --locked -p fennec-runtime
+          for features in threads lean lean,threads; do
+            dir="target/$(echo "$features" | tr , -)"
+            name="fennec_runtime_$(echo "$features" | tr , _)"
+            cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
+            cp "$dir/debug/libfennec_runtime.a" "target/debug/lib$name.a"
+          done
+      - run: cargo test --locked -p fennec --test fennec 'llvm::'
 
   # Programs built with no interpreter in their runtime, as `fennec build` builds every program
   # whose code doesn't cross into it: nothing but what's listed may still need it, which fails at
@@ -493,7 +541,7 @@ jobs:
           failed=0
           for program in examples/*.fen bench/kernels/*.fen; do
             name=${program%.fen}
-            if ! ./target/release/fennec build --llvm "$program" -o checked > /dev/null 2> built.txt; then
+            if ! ./target/release/fennec build "$program" -o checked > /dev/null 2> built.txt; then
               # Anything but a failed link is the backend saying what it doesn't take yet.
               grep -qE "linking failed|Undefined symbols|undefined reference" built.txt || continue
               case "$still_needs" in
@@ -524,7 +572,7 @@ jobs:
           failed=0
           for program in crates/fennec/tests/fixtures/workers/*.fen examples/parallel_loops.fen examples/parallel_put_back.fen; do
             FENNEC_LEAN_RUNTIME='' FENNEC_THREADS_RUNTIME='' ./target/release/fennec run --interp "$program" 2> /dev/null | sort > wanted.txt
-            ./target/release/fennec build --llvm "$program" -o checked > /dev/null
+            ./target/release/fennec build "$program" -o checked > /dev/null
             for threads in 1 4 8; do
               if [ "$(FENNEC_THREADS=$threads timeout 120 ./checked 2> said.txt | sort)" != "$(cat wanted.txt)" ]; then
                 echo "::error::$program at $threads threads printed something different"; cat said.txt; failed=1
@@ -592,7 +640,7 @@ jobs:
           programs=$(grep -lE 'parallel\(' examples/*.fen | xargs grep -L Net)
           for program in $programs crates/fennec/tests/fixtures/workers/*.fen; do
             FENNEC_SANITIZE='' ./target/release/fennec run --interp "$program" 2> /dev/null | sort > wanted.txt
-            if ! ./target/release/fennec build --llvm "$program" -o checked > /dev/null 2> built.txt; then
+            if ! ./target/release/fennec build "$program" -o checked > /dev/null 2> built.txt; then
               echo "::error::$program didn't build"; cat built.txt; failed=1; continue
             fi
             nm checked | grep -q "$SYMBOL" || { echo "::error::$program built without the sanitizer"; failed=1; }
@@ -675,13 +723,30 @@ jobs:
           env "$OPTIONS" RUSTFLAGS="$FLAGS" RUSTDOCFLAGS="$FLAGS" cargo "+$NIGHTLY" test --locked \
             -Zbuild-std="$STD" --target x86_64-unknown-linux-gnu -p fennec-parked $FEATURES
 
+  # After each push to main, deletes the caches nothing will restore again, so the repository
+  # stays under GitHub's 10 GB and its builds keep the caches they start from: see the script.
+  prune-caches:
+    name: Prune caches
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: .github/scripts/prune-caches.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   # One status for branch protection to require, so adding jobs never means changing settings.
   # A job skipped because the change is only documentation counts as passed, and so do the two a
   # merge group can leave out; any other skip, failure or cancellation doesn't.
   ok:
     name: CI passed
     if: always()
-    needs: [changes, lint, test, x86-mac, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, lean-runtime, asan, parked-sanitizers]
+    needs: [changes, lint, test, x86-mac, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, lean-runtime, asan, llvm-asan, parked-sanitizers]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

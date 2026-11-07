@@ -10,16 +10,14 @@ description: Fennec's plan for speed, one LLVM backend with a function-level cac
 
 ## Today
 
-`fennec run` builds through LLVM one function at a time, and each function is cached by its content, so a change recompiles only what it touched. Where LLVM can't build a program yet, it says so in one line and the JIT, built on Cranelift, runs it instead. `fennec build` still compiles with Cranelift, and `fennec build --llvm` handles part of the language. The [benchmarks](/benchmarks/) show where this stands against its targets.
+`fennec run` builds through LLVM one function at a time, and each function is cached by its content, so a change recompiles only what it touched. Where LLVM can't build a program yet, it says so in one line and the JIT runs it instead. `fennec build` makes a native program through LLVM, the same build with `--release` optimizing the whole program as one. The [benchmarks](/benchmarks/) show where this stands against its targets.
 
 ## The plan: one backend
 
-**Planned.** These are decided, and not built yet.
-
-- **LLVM for everything,** with per-function `-O3`. There's no separate development engine, no tiering and no hot reload.
-- **`fennec run` makes real binaries** in a store, so what you try is what you ship.
-- **Whole-program optimization only in `--release`.** It's the one step that sees everything at once, so it's the one step you opt into.
-- **LLVM becomes the default** once about 90% of examples build natively. A program either builds natively or is refused. Removing Cranelift also takes a native `fennec test` harness and Windows linking.
+- **LLVM for everything,** with per-function `-O3`. It's the default today. There's no separate development engine, no tiering and no hot reload.
+- **Whole-program optimization only in `--release`.** It's the one step that sees everything at once, so it's the one step you opt into. Built.
+- **Planned: `fennec run` makes real binaries** in a store, so what you try is what you ship.
+- **Planned: the JIT and the interpreter go** once everything builds through LLVM. A program then either builds natively or is refused, and what doesn't build yet is on a tracked list that must reach zero.
 
 ## The plan: one store
 
@@ -35,7 +33,7 @@ description: Fennec's plan for speed, one LLVM backend with a function-level cac
 
 These come from the design, so they apply whichever backend runs:
 
-- A `mut` parameter is known to be the only way to reach its data, which most languages can't prove.
+- A `ref` parameter is known to be the only way to reach its data, which most languages can't prove.
 - Fields can be reordered and optional values packed, because nothing can observe where a value sits in memory.
 - No garbage collector, and flat data with no hidden pointers.
 
@@ -46,7 +44,7 @@ Fennec code never handles references, but the compiler uses them behind the scen
 | You write | What the compiler does |
 | --- | --- |
 | `describe(player)` | Passes a hidden read-only reference; no copy |
-| `apply_damage(mut player, 10)` | Passes a hidden exclusive reference |
+| `apply_damage(ref player, 10)` | Passes a hidden exclusive reference |
 | `b = a`, and `a` isn't used again | Moves it, for free |
 | `b = a`, and both are used | Shares the memory until one of them changes, then copies once |
 | Small values like `Vec3` | Copies them in registers, for free |
@@ -77,4 +75,4 @@ Each benchmark has a target: idiomatic code for the same work in the fastest est
 
 ## What costs nothing
 
-These exist only at compile time and have no runtime cost: `mut`, type inference, `?` and `else`, optional types, interfaces, tuples and capabilities.
+These exist only at compile time and have no runtime cost: `mut` and `ref`, type inference, `?` and `else`, optional types, interfaces, tuples and capabilities.

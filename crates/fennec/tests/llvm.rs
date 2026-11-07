@@ -11,12 +11,11 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
 }
 
-/// Whether this can run: this isn't Windows, where `fennec build` doesn't link, LLVM's tools and
-/// the runtime library are there, and mutation testing isn't under way, which would go past its
-/// time limit, as in `executables.rs`. Where `FENNEC_EXPECT_LLVM` is set, as CI's Linux test
-/// jobs set it, LLVM is the backend that has to work, so what's missing fails the test rather
-/// than skipping it.
-fn ready() -> bool {
+/// Whether this can run: LLVM's tools and the runtime library are there, and mutation testing
+/// isn't under way, which would go past its time limit, as in `executables.rs`. Where
+/// `FENNEC_EXPECT_LLVM` is set, as CI's Linux and Windows test jobs set it, LLVM is the backend
+/// that has to work, so what's missing fails the test rather than skipping it.
+pub(crate) fn ready() -> bool {
     let tools = fennec_llvm::Tools::find();
     let runtime = runtime_built();
     if std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty()) {
@@ -1472,6 +1471,47 @@ fn a_comprehension_replacing_its_source_says_what_a_new_list_would() -> std::io:
     same_as_the_interpreter_in_both_builds("replacing_its_source", REPLACING_ITS_SOURCE)
 }
 
+/// A list a counted loop fills once a turn, with room made for every turn and nothing else in
+/// the loop touching it, is filled with no room check. Every way that rule can fail keeps the
+/// check: the list shared or read in the loop, a count starting below 0 or from a variable,
+/// two appends a turn, and a loop inside another that makes the list each time round.
+#[test]
+fn lists_filled_within_their_room_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit("filled_within_room", FILLED_WITHIN_ROOM)
+}
+
+const FILLED_WITHIN_ROOM: &str = r#"def main(stdout: Stdout):
+    mut total = 0
+    for round in range(3):
+        numbers = [i * 2 + round for i in range(1000)]
+        names = [f"n{i}" for i in range(50)]
+        total += numbers[999] + numbers.len() + names[49].len()
+    stdout.print(total)
+    mut shared = []
+    mut seen = []
+    for i in range(6):
+        shared.append(i)
+        seen = shared
+    stdout.print(shared, seen)
+    below = [i for i in range(-3, 3)]
+    stdout.print(below)
+    start = 2
+    from_variable = [i for i in range(start, 8)]
+    stdout.print(from_variable)
+    mut twice = []
+    for i in range(4):
+        twice.append(i)
+        twice.append(i * 10)
+    stdout.print(twice)
+    mut read = []
+    for i in range(5):
+        read.append(read.len() + i)
+    stdout.print(read)
+"#;
+
 #[test]
 fn a_comprehension_replacing_its_source_makes_no_second_list() -> std::io::Result<()> {
     if !ready() {
@@ -2891,6 +2931,52 @@ def main(stdout: Stdout):
     )
 }
 
+/// An f-string made in one go from its pieces where they are: strings inline and in blocks,
+/// ASCII or not, ints at their ends, floats short and long, formats, values written out, and
+/// results that fit in a header and that don't, on both sides of 23 bytes.
+#[test]
+fn f_strings_made_in_one_go_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit("f_strings_in_one_go", F_STRINGS_IN_ONE_GO)
+}
+
+const F_STRINGS_IN_ONE_GO: &str = r#"struct Point:
+    x: int
+    y: int
+
+enum Shape:
+    Dot
+    Box(side: float)
+
+def main(stdout: Stdout):
+    short = "fóx"
+    long = "a string long enough that it can't be held inline, ünïcode too"
+    empty = ""
+    n = -9223372036854775807 - 1
+    big = 123456789012345678
+    tiny = 2.2250738585072014e-308
+    stdout.print(f"{short}")
+    stdout.print(f"{long}")
+    stdout.print(f"[{empty}]")
+    stdout.print(f"{n}|{big}|{0}")
+    stdout.print(f"{tiny}|{1.5}|{-0.0}|{1e300}")
+    stdout.print(f"{True} {False}")
+    stdout.print(f"{Point(x=1, y=2)} {Shape.Dot} {Shape.Box(side=2.5)}")
+    stdout.print(f"{[1, 2, 3]}")
+    stdout.print(f"{n:,}|{1.25:.3f}|{big:,}")
+    stdout.print(f"{short}{short}{short}{short}{short}{short}{short}{short}")
+    stdout.print(f"ünï{short}çø{long}{n}")
+    stdout.print(f"exactly twenty-three!{short}"[0:5])
+    stdout.print(f"{short} is {short.len()} chars")
+    mut total = 0
+    for i in range(1000):
+        line = f"{i}: {short}-{long}" if i % 2 == 0 else f"{i}{i}"
+        total += line.len()
+    stdout.print(total)
+"#;
+
 #[test]
 fn structs_tuples_and_formats_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -3196,47 +3282,7 @@ fn not_native_yet(path: &Path) -> bool {
     path.file_name().and_then(|name| name.to_str()).is_some_and(|name| NOT_NATIVE_YET.contains(&name))
 }
 
-/// How many builds the examples' tests run at once: one per core, up to 8. One at a time took 71
-/// seconds; 8 take 29, and holding under 100 megabytes each, stay well inside 4 gigabytes.
-fn builds_at_once() -> usize {
-    std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(8)
-}
-
-/// Runs `each` on every item, `builds_at_once()` at a time, each worker with its own number for a
-/// folder of its own. The results come back in the items' order.
-fn at_once<T: Sync, R: Send>(
-    items: &[T],
-    each: impl Fn(usize, &T) -> std::io::Result<R> + Sync,
-) -> std::io::Result<Vec<R>> {
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let done = std::sync::Mutex::new(Vec::with_capacity(items.len()));
-    std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..builds_at_once().min(items.len()))
-            .map(|worker| {
-                let (next, done, each) = (&next, &done, &each);
-                scope.spawn(move || -> std::io::Result<()> {
-                    loop {
-                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(item) = items.get(at) else { return Ok(()) };
-                        let result = each(worker, item)?;
-                        done.lock()
-                            .map_err(|_| std::io::Error::other("a worker panicked"))?
-                            .push((at, result));
-                    }
-                })
-            })
-            .collect();
-        for worker in workers {
-            worker.join().map_err(|_| std::io::Error::other("a worker panicked"))??;
-        }
-        Ok::<_, std::io::Error>(())
-    })?;
-    let mut done = done.into_inner().map_err(|_| std::io::Error::other("a worker panicked"))?;
-    done.sort_by_key(|(at, _)| *at);
-    Ok(done.into_iter().map(|(_, result)| result).collect())
-}
-
-/// Every example builds through LLVM and prints exactly what it should.
+/// Every example builds through LLVM, prints exactly what it should and finishes without failing.
 #[test]
 fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
     if !ready() {
@@ -3253,7 +3299,7 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
     }
     paths.sort();
     // What became of each: built and printed this, or refused with this.
-    let outcomes = at_once(&paths, |worker, path| {
+    let outcomes = crate::executables::at_once(&paths, |worker, path| {
         let home = dir.join(format!("home-{worker}"));
         let executable = dir.join(format!("example-{worker}"));
         let made = fennec(
@@ -3264,7 +3310,9 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
             return Ok(Err(String::from_utf8_lossy(&made.stderr).trim().to_owned()));
         }
         let ran = Command::new(&executable).output()?;
-        Ok(Ok(String::from_utf8_lossy(&ran.stdout).into_owned()))
+        // What it printed, or that it failed.
+        let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+        Ok(Ok(ran.status.success().then_some(printed)))
     })?;
     let (mut refused, mut wrong, mut now_native) = (Vec::new(), Vec::new(), Vec::new());
     for (path, outcome) in paths.iter().zip(outcomes) {
@@ -3272,15 +3320,16 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
             Ok(_) if not_native_yet(path) => now_native.push(path),
             Err(_) if not_native_yet(path) => {}
             Err(why) => refused.push(format!("{}: {why}", path.display())),
-            Ok(printed) if printed != std::fs::read_to_string(path.with_extension("out"))? => {
+            Ok(None) => wrong.push(path),
+            Ok(Some(printed)) if printed != std::fs::read_to_string(path.with_extension("out"))? => {
                 wrong.push(path);
             }
-            Ok(_) => {}
+            Ok(Some(_)) => {}
         }
     }
     std::fs::remove_dir_all(&dir)?;
     assert!(now_native.is_empty(), "these build natively now: take them off NOT_NATIVE_YET: {now_native:?}");
-    assert!(wrong.is_empty(), "printed the wrong thing: {wrong:?}");
+    assert!(wrong.is_empty(), "printed the wrong thing or failed: {wrong:?}");
     assert!(refused.is_empty(), "these don't build through LLVM:\n{}", refused.join("\n"));
     Ok(())
 }
@@ -3322,7 +3371,7 @@ fn every_program_builds_natively() -> std::io::Result<()> {
     programs.sort();
     let dir = folder("every_program")?;
     // What each said: nothing where it's all native code, or why it isn't.
-    let said = at_once(&programs, |worker, program| {
+    let said = crate::executables::at_once(&programs, |worker, program| {
         let said = fennec(
             &["dev", "fallbacks", "--llvm", &program.to_string_lossy()],
             &dir.join(format!("home-{worker}")),
@@ -4479,6 +4528,117 @@ fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `process.run`'s options in compiled code: what the program reads, the folder it runs in and
+/// variables it gets, on their own and together, and a narrowed `Process` still running only
+/// what it may when given them.
+const PROCESS_OPTIONS: &str = "\
+def main(stdout: Stdout, process: Process, fs: Fs):
+    fs.make_dir(\"inside\").expect(\"it works\")
+    stdout.print(process.run(\"cat\", [], input=\"one\\ntwo\\n\").expect(\"it works\").stdout)
+    stdout.print(process.run(\"pwd\", [], cwd=\"inside\").expect(\"it works\").stdout.endswith(\"/inside\\n\"))
+    stdout.print(process.run(\"printenv\", [\"FENNEC_FOX\"], env={\"FENNEC_FOX\": \"red\"}).expect(\"it works\").stdout)
+    all = process.run(
+        \"sh\", [\"-c\", \"cat; pwd; printenv FENNEC_FOX\"], input=\"in\\n\", cwd=\"inside\", env={\"FENNEC_FOX\": \"red\"}
+    ).expect(\"it works\")
+    stdout.print(all.stdout.startswith(\"in\\n\"), all.stdout.endswith(\"/inside\\nred\\n\"))
+    match process.run(\"pwd\", [], cwd=\"no-such-folder\"):
+        case Ok(_):
+            stdout.print(\"ran it\")
+        case Err(error):
+            stdout.print(error.message)
+    only = process.only(\"cat\")
+    stdout.print(only.run(\"cat\", [], input=\"narrowed\\n\").expect(\"it works\").stdout)
+    match only.run(\"pwd\", [], cwd=\"inside\"):
+        case Ok(_):
+            stdout.print(\"ran it\")
+        case Err(error):
+            stdout.print(error.message)
+    fs.remove(\"inside\").expect(\"it works\")
+";
+
+#[test]
+fn process_options_without_the_interpreter_match_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("process-options")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, PROCESS_OPTIONS)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output()?;
+    let interpreted = crate::executables::fennec_command()
+        .args(["run", "--interp", &path(&program)])
+        .env("FENNEC_HOME", &dir)
+        .current_dir(&dir)
+        .output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "one\ntwo\n\nTrue\nred\n\nTrue True\nthere's no folder `no-such-folder` to run it in\nnarrowed\n\nthis Process can run only `cat`, so it can't run `pwd`\n"
+    );
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
+/// `fs.walk` in compiled code, on a real tree holding a link back to its own top, which is
+/// listed and not gone into, and through an `Fs` narrowed to one folder.
+#[cfg(unix)]
+const WALKED: &str = "\
+def main(stdout: Stdout, fs: Fs):
+    for path in fs.walk(\"tree\").expect(\"it works\"):
+        stdout.print(path.text, fs.metadata(path).expect(\"it works\").is_dir)
+    only = fs.only(\"tree/b\")
+    stdout.print([path.text for path in only.walk(\"tree/b\").expect(\"it works\")])
+    match only.walk(\"tree\"):
+        case Ok(_):
+            stdout.print(\"walked it\")
+        case Err(_):
+            stdout.print(\"refused\")
+    match fs.walk(\"no such folder\"):
+        case Ok(_):
+            stdout.print(\"walked it\")
+        case Err(error):
+            stdout.print(error.reason != \"\")
+";
+
+#[test]
+#[cfg(unix)]
+fn walking_a_folder_without_the_interpreter_matches_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("walking")?;
+    for file in ["tree/b/c/deep.txt", "tree/a.txt", "tree/b/z.txt"] {
+        let at = dir.join(file);
+        std::fs::create_dir_all(at.parent().ok_or_else(|| std::io::Error::other("no folder"))?)?;
+        std::fs::write(at, "")?;
+    }
+    std::os::unix::fs::symlink("..", dir.join("tree/b/up"))?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, WALKED)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output()?;
+    let interpreted = crate::executables::fennec_command()
+        .args(["run", "--interp", &path(&program)])
+        .env("FENNEC_HOME", &dir)
+        .current_dir(&dir)
+        .output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "tree/a.txt False\ntree/b True\ntree/b/c True\ntree/b/c/deep.txt False\ntree/b/up True\ntree/b/z.txt False\n\
+         [\"tree/b/c\", \"tree/b/c/deep.txt\", \"tree/b/up\", \"tree/b/z.txt\"]\nrefused\nTrue\n"
+    );
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
 /// The real network, with no interpreter behind it: a server and a client on this machine, each
 /// way a call can come out, and looping over each.
 const REAL_NETWORK: &str = "from std.net import NetError, Connection
@@ -4840,6 +5000,49 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A release keeps LLVM's tools in `llvm/bin` beside `fennec`, and builds with them where there's
+/// no Rust toolchain to ask: here, a copy of `fennec` and its runtimes with nothing but the
+/// system's own folders on `PATH`. Without that folder, the same build can't find them.
+#[test]
+#[cfg(unix)]
+fn a_build_finds_llvm_s_tools_beside_fennec() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("shipped")?;
+    let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
+    for entry in std::fs::read_dir(fennec.parent().unwrap_or_else(|| Path::new(".")))? {
+        let path = entry?.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        if name == "fennec" || name.starts_with("libfennec_runtime") {
+            std::fs::copy(&path, dir.join(&name))?;
+        }
+    }
+    let tools = fennec_llvm::Tools::find().map_err(std::io::Error::other)?;
+    let program = dir.join("hello.fen");
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(\"built with what ships\")\n")?;
+    let build = |home: &str| {
+        Command::new(dir.join("fennec"))
+            .args(["build", "--llvm", &program.to_string_lossy(), "-o", &dir.join("hello").to_string_lossy()])
+            .env("PATH", "/usr/bin:/bin")
+            .env("FENNEC_HOME", dir.join(home))
+            .env_remove("FENNEC_LLVM_BIN")
+            .output()
+    };
+    let without = build("home-without")?;
+    std::fs::create_dir_all(dir.join("llvm/bin"))?;
+    for tool in ["opt", "llc", "llvm-link"] {
+        std::os::unix::fs::symlink(tools.folder().join(tool), dir.join("llvm/bin").join(tool))?;
+    }
+    let with = build("home-with")?;
+    let ran = Command::new(dir.join("hello")).output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!without.status.success(), "it built with no tools beside it and no toolchain");
+    assert!(with.status.success(), "{}", String::from_utf8_lossy(&with.stderr));
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "built with what ships\n");
+    Ok(())
+}
+
 /// With nothing asked, a program whose code doesn't cross into the interpreter is built with the
 /// runtime that leaves it out, and one that does is built with the runtime that has it, and runs.
 #[test]
@@ -4908,7 +5111,7 @@ fn a_build_runs_parallel_on_every_core_unless_asked_not_to() -> std::io::Result<
     };
     let has_pool = |executable: &Path| -> std::io::Result<bool> {
         let symbols = Command::new("nm").arg(executable).output()?;
-        Ok(String::from_utf8_lossy(&symbols.stdout).contains("rayon_core"))
+        Ok(String::from_utf8_lossy(&symbols.stdout).contains("crossbeam_deque"))
     };
     let wanted = "199999 2\n";
     let every_core = built(None, "every-core")?;
@@ -7533,6 +7736,21 @@ fn a_case_with_no_fields_allocates_nothing() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A boxed enum only generated code meets is made outside the runtime's table, and a run that
+/// counts what it allocates still counts each one: a tree of 31 nodes is 31 allocations at least.
+#[test]
+fn native_blocks_are_counted() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source =
+        format!("{SHARED_LEAVES_TREE}def main(stdout: Stdout):\n    stdout.print(count(build(5)))\n");
+    let counts = counts_of("native_blocks_counted", &source)?;
+    assert!(count(&counts, "allocations") >= Some(31), "{counts}");
+    assert!(count(&counts, "allocations") < Some(60), "{counts}");
+    Ok(())
+}
+
 /// The shared block behaves as a block of its own would: compared, matched, printed, held in
 /// lists and dicts, and made and let go of on other threads.
 #[test]
@@ -8203,7 +8421,7 @@ def named(present: bool) -> str?:
         return \"hi\"
     None
 ";
-    for (number, condition) in [
+    let conditions = [
         "1 + 1 == 3",
         "2 > 3",
         "2.5 <= 1.5",
@@ -8231,13 +8449,18 @@ def named(present: bool) -> str?:
         "1 == 1 and 1 == 2",
         "not True",
     ]
-    .iter()
+    .into_iter()
     .enumerate()
-    {
+    .collect::<Vec<_>>();
+    // Each builds on its own, so they build at once: one at a time took over a minute.
+    let outcomes = crate::executables::at_once(&conditions, |_, (number, condition)| {
         let source =
             format!("{setup}\ndef main(stdout: Stdout):\n    stdout.print(1)\n    assert {condition}\n");
-        let ((ours_out, ours_err, ours_code), (jit_out, jit_err, jit_code)) =
-            both(&format!("assert_{number}"), &source)?;
+        both(&format!("assert_{number}"), &source)
+    })?;
+    for ((_, condition), ((ours_out, ours_err, ours_code), (jit_out, jit_err, jit_code))) in
+        conditions.iter().zip(outcomes)
+    {
         assert_eq!((&ours_out, ours_code), (&jit_out, jit_code), "{condition}");
         assert_eq!(ours_err, jit_err, "{condition}");
     }

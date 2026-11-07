@@ -68,6 +68,9 @@ impl Emit<'_, '_, '_> {
 
     /// A new block of a boxed type, its shape's number read from a symbol.
     pub(crate) fn new_block(&mut self, id: u32) -> Result<String, String> {
+        if self.is_native(id) {
+            return self.new_native_block(id);
+        }
         let shape = self.shape_of(id)?;
         self.declare("declare ptr @fennec_alloc(i64) nounwind");
         let block = self.temp();
@@ -1725,6 +1728,21 @@ impl Emit<'_, '_, '_> {
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;
         let new_item = args.get(1).ok_or("no argument")?;
+        // Filled by a loop that never appends more than the room it made, with nothing else
+        // there touching the list: no room to check, and nobody else holds it. With no call
+        // left in the loop, LLVM keeps the length in a register while it fills.
+        if self.known.room_enough.contains(&local.0) {
+            let slot = self.slot(*local);
+            let (list, length, longer) = (self.temp(), self.temp(), self.temp());
+            self.line(&format!("{list} = load ptr, ptr {slot}"));
+            let length_at = self.offset(&list, u32::try_from(LIST_LENGTH).unwrap_or(0));
+            self.line(&format!("{length} = load i64, ptr {length_at}{LENGTH_ACCESS}"));
+            self.line(&format!("{longer} = add nuw nsw i64 {length}, 1"));
+            self.line(&format!("store i64 {longer}, ptr {length_at}{HEADER_ACCESS}"));
+            let memory = held.memory(self.module.layouts);
+            let at = self.item_address(&list, &memory, &length);
+            return self.fill(&held, new_item, &at, ITEM_ACCESS);
+        }
         self.declare("declare ptr @fennec_list_grow(ptr) nounwind");
         let slot = self.slot(*local);
         let (list, length, room_at, room) = (self.temp(), self.temp(), self.temp(), self.temp());

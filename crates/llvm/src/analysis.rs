@@ -88,6 +88,10 @@ pub(crate) struct Analysis {
     /// Lists such a loop fills with nothing but zeros, one a turn from a count starting at 0:
     /// made whole, already zero, with the appends left out.
     pub(crate) zero_filled: HashSet<usize>,
+    /// Lists such a loop appends to once a turn, at most as many times as the room made for
+    /// them, and that nothing else in the loop touches: an append never needs more room, and
+    /// the list is never shared while it's filled.
+    pub(crate) room_enough: HashSet<usize>,
     /// Copies, by block and place in it, whose source nothing reads again or leans on: the
     /// copy takes over its owner.
     last_copies: HashSet<(usize, usize)>,
@@ -547,6 +551,13 @@ fn denied(relation: u8) -> u8 {
 
 impl Guard {
     /// Whether it says anything about a local.
+    /// The local this says something about: the one on the left of its comparison.
+    fn about(&self) -> usize {
+        match *self {
+            Guard::Holds(x, _, _) | Guard::IfTrue(_, x, _, _) | Guard::IfFalse(_, x, _, _) => x,
+        }
+    }
+
     fn mentions(&self, local: usize) -> bool {
         let (flag, x, y) = match *self {
             Guard::Holds(x, _, y) => (None, x, y),
@@ -583,7 +594,7 @@ fn guarded_after(
     function: &Function,
     known: &mut std::collections::BTreeSet<Guard>,
     inst: &InstKind,
-    range: &dyn Fn(usize) -> Range,
+    (range, stepped): (&dyn Fn(usize) -> Range, &HashSet<usize>),
 ) {
     let mut written = Vec::new();
     visit(inst, |_| {}, |local| written.push(local.0));
@@ -645,10 +656,16 @@ fn guarded_after(
         }
         known.extend(
             new.into_iter()
-                .filter(|guard| !written.iter().any(|local| *local != flag && guard.mentions(*local))),
+                .filter(|guard| !written.iter().any(|local| *local != flag && guard.mentions(*local)))
+                .filter(|guard| stepped.contains(&guard.about())),
         );
     }
+    known.retain(|guard| stepped.contains(&guard.about()));
 }
+
+/// The most comparisons a block's way in may carry before `find_guarded_steps` gives up on
+/// its function, so working it out stays small, however many comparisons the function makes.
+const MOST_GUARDS: usize = 64;
 
 /// Steps made safe by a comparison on the way to them: `x + 1` where `x < y` holds can't pass the
 /// highest int, whatever `y` is, and `x - 1` where `x > y` holds can't pass the lowest. What
@@ -668,6 +685,20 @@ fn find_guarded_steps(
     if !function.blocks.iter().flat_map(|block| &block.insts).any(|inst| steps(&inst.kind)) {
         return;
     }
+    // Only what's said about a local a step reads can prove the step, so nothing else is kept:
+    // a function with many comparisons and bools would otherwise carry them all everywhere.
+    let stepped: HashSet<usize> = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.insts)
+        .filter(|inst| steps(&inst.kind))
+        .flat_map(|inst| match &inst.kind {
+            InstKind::Binary { lhs, rhs, .. } => {
+                [lhs, rhs].into_iter().filter_map(local_of).collect::<Vec<_>>()
+            }
+            _ => Vec::new(),
+        })
+        .collect();
     let count = function.blocks.len();
     // What holds on each way into each block, once that way's been worked out.
     let mut coming: Vec<HashMap<usize, BTreeSet<Guard>>> = vec![HashMap::new(); count];
@@ -684,12 +715,17 @@ fn find_guarded_steps(
                 })
             };
             let Some(mut state) = state else { continue };
+            // However it's kept small, what's known stays bounded: past this, no step here is
+            // proved by it, and every check stays.
+            if state.len() > MOST_GUARDS {
+                return;
+            }
             if let Some(slot) = entered.get_mut(at) {
                 *slot = Some(state.clone());
             }
             let range = |local: usize| range_of(facts, multi, &Operand::Local(LocalId(local)), at);
             for inst in &block.insts {
-                guarded_after(function, &mut state, &inst.kind, &range);
+                guarded_after(function, &mut state, &inst.kind, (&range, &stepped));
             }
             let outs: Vec<(usize, BTreeSet<Guard>)> = match &block.end {
                 Terminator::Branch { cond: Operand::Local(flag), then, otherwise } => {
@@ -777,7 +813,7 @@ fn find_guarded_steps(
                 let all = proved.entry(dest.0).or_insert(true);
                 *all &= holds;
             }
-            guarded_after(function, &mut state, &inst.kind, &range);
+            guarded_after(function, &mut state, &inst.kind, (&range, &stepped));
         }
     }
     known.safe.extend(proved.into_iter().filter(|(_, all)| *all).map(|(dest, _)| dest));
@@ -1265,6 +1301,9 @@ fn only_looks(inst: &InstKind, local: LocalId) -> bool {
                         | "intrinsics.text_byte"
                         | "intrinsics.text_size"
                         | "intrinsics.text_part"
+                        | "intrinsics.text_plain_end"
+                        | "intrinsics.text_escape_at"
+                        | "intrinsics.bytes_text"
                 )
         }
         _ => false,
@@ -1998,8 +2037,8 @@ fn find_aliases(function: &Function, known: &mut Analysis) {
 /// `[f(x) for x in range(n)]` is an empty list and a loop of appends.
 fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut Analysis) {
     for (at, block) in function.blocks.iter().enumerate() {
-        let Terminator::Jump(header) = &block.end else { continue };
-        let Some(header) = function.blocks.get(header.0) else { continue };
+        let Terminator::Jump(header_at) = &block.end else { continue };
+        let Some(header) = function.blocks.get(header_at.0) else { continue };
         let Terminator::Branch { cond: Operand::Local(cond), then, .. } = &header.end else { continue };
         let limit = header.insts.iter().find_map(|inst| match &inst.kind {
             InstKind::Binary { dest, op: BinOp::Lt, lhs: Operand::Local(count), rhs }
@@ -2024,12 +2063,119 @@ fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut 
             .iter()
             .any(|inst| matches!(&inst.kind, InstKind::MakeList { dest, items } if dest.0 == list && items.is_empty()));
         if made_here {
+            if appends_within_room(function, (block, header_at.0), then.0, list) {
+                known.room_enough.insert(list);
+            }
             known.reservations.insert(at, (list, limit));
             if fills_with_zeros(function, block, (header, body), list, known) {
                 known.zero_filled.insert(list);
             }
         }
     }
+}
+
+/// Whether the loop after `before`, at `header`, appends to `list` at most as many times as
+/// the room reserved for it: it counts up by 1 from a constant of 0 or more, set just before,
+/// to a limit nothing in the loop changes, so it turns at most `limit` times; its body, entered
+/// only from the header, appends once; and nothing else in the loop mentions the list, so it
+/// isn't grown, shared or changed any other way while it's filled.
+fn appends_within_room(
+    function: &Function,
+    (before, header_at): (&Block, usize),
+    body_at: usize,
+    list: usize,
+) -> bool {
+    let Some(header) = function.blocks.get(header_at) else { return false };
+    let Terminator::Branch { cond: Operand::Local(cond), .. } = &header.end else { return false };
+    let compare = header.insts.iter().find_map(|inst| match &inst.kind {
+        InstKind::Binary { dest, op: BinOp::Lt, lhs: Operand::Local(count), rhs } if dest == cond => {
+            Some((*count, rhs.clone()))
+        }
+        _ => None,
+    });
+    let Some((count, limit)) = compare else { return false };
+    if !function.counts.iter().any(|found| found.count == count && !found.down) {
+        return false;
+    }
+    let start = before.insts.iter().rev().find_map(|inst| match &inst.kind {
+        InstKind::Copy { dest, value } if *dest == count => Some(value.clone()),
+        _ => None,
+    });
+    if !matches!(start, Some(Operand::Int(start)) if start >= 0) {
+        return false;
+    }
+    let ways_in = function
+        .blocks
+        .iter()
+        .filter(|block| block.end.targets().iter().any(|next| next.0 == body_at))
+        .count();
+    if ways_in != 1 {
+        return false;
+    }
+    // The loop's own blocks: those its body reaches without going through the header again,
+    // that lead back to it. A loop around this one is left out: it isn't this loop's turn.
+    let reached = |from: usize, forward: bool| -> HashSet<usize> {
+        let mut seen = HashSet::from([from]);
+        let mut waiting = vec![from];
+        while let Some(at) = waiting.pop() {
+            if forward && at == header_at {
+                continue;
+            }
+            let next: Vec<usize> = if forward {
+                function
+                    .blocks
+                    .get(at)
+                    .map(|block| block.end.targets().iter().map(|target| target.0).collect())
+                    .unwrap_or_default()
+            } else {
+                function
+                    .blocks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, block)| block.end.targets().iter().any(|target| target.0 == at))
+                    .map(|(from, _)| from)
+                    .collect()
+            };
+            for block in next {
+                if seen.insert(block) {
+                    waiting.push(block);
+                }
+            }
+        }
+        seen
+    };
+    let (ahead, behind) = (reached(body_at, true), reached(header_at, false));
+    let looped: Vec<usize> = ahead.intersection(&behind).copied().chain([header_at]).collect();
+    let mut appends = 0;
+    for at in &looped {
+        let Some(block) = function.blocks.get(*at) else { return false };
+        for inst in &block.insts {
+            let (mut read, mut written) = (false, false);
+            visit(
+                &inst.kind,
+                |operand| read |= *operand == Operand::Local(LocalId(list)),
+                |local| {
+                    written |= local.0 == list;
+                },
+            );
+            let touched = read || written;
+            if let Operand::Local(stop) = &limit
+                && inst.kind.dest() == Some(*stop)
+            {
+                return false;
+            }
+            if !touched {
+                continue;
+            }
+            let appended = matches!(&inst.kind, InstKind::Builtin { name, args, .. }
+                if name == "list.append" && args.first() == Some(&Operand::Local(LocalId(list))) && args.len() == 2);
+            if !appended || *at != body_at {
+                return false;
+            }
+            appends += 1;
+        }
+    }
+    appends == 1
 }
 
 /// Whether a loop does nothing but append a zero to `list` each turn, counting up from 0 by 1,
@@ -2109,6 +2255,7 @@ impl Analysis {
             aliases: HashMap::new(),
             reservations: HashMap::new(),
             zero_filled: HashSet::new(),
+            room_enough: HashSet::new(),
             last_copies: HashSet::new(),
             enumerated: HashMap::new(),
             map_walks: HashMap::new(),
@@ -2827,6 +2974,37 @@ mod tests {
             "def go(ref world: World):\n    for ref unit in world.units:\n        world.log.append(unit.hp)\n        unit.tags.append(1)\n",
         ] {
             assert!(taken(body)?, "not taken: {body}");
+        }
+        Ok(())
+    }
+
+    /// Whether the one list a function called `go` fills is filled with no room check: the
+    /// list its comprehension makes, before it's given a name.
+    fn within_room(body: &str) -> Result<bool, String> {
+        let module = fennec_syntax::parse(body).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
+        let known = analyze(function, &|_| Vec::new(), &|_, _| false);
+        Ok(!known.room_enough.is_empty())
+    }
+
+    /// A comprehension over a count from 0 or more fills its list with no room check: room
+    /// for every turn is made first, and nothing else touches the list while it's filled. One
+    /// counting from below 0 or from a variable could outgrow its room, and one with a filter
+    /// appends somewhere other than its body's first block, so those keep the check.
+    #[test]
+    fn only_a_list_filled_within_its_room_skips_the_check() -> Result<(), String> {
+        let filled = |body: &str| format!("def go(n: int) -> int:\n{body}    xs.len()\n");
+        for body in ["    xs = [i * 2 for i in range(n)]\n", "    xs = [i for i in range(1, n)]\n"] {
+            assert!(within_room(&filled(body))?, "kept the check: {body}");
+        }
+        for body in [
+            "    xs = [i for i in range(-3, n)]\n",
+            "    start = n - 5\n    xs = [i for i in range(start, n)]\n",
+            "    xs = [i for i in range(n) if i % 2 == 0]\n",
+        ] {
+            assert!(!within_room(&filled(body))?, "skipped the check: {body}");
         }
         Ok(())
     }

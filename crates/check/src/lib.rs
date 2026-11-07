@@ -50,7 +50,7 @@ mod types;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use fennec_syntax::{Diagnostic, Expr, Module, Span};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, Module, Span};
 
 pub use messages::missing_method;
 pub use named::add_pattern_fixes;
@@ -241,22 +241,39 @@ pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnost
 /// for them. The rest stay as they were. Says whether anything changed. If the changed module
 /// doesn't check, which would be a mistake here, it's left as it was.
 pub fn route_formats_natively(module: &mut Module) -> bool {
-    if !imports_a_format(module) {
+    if !imports_a_format(module) && !sends_json(module) {
         return false;
     }
     let Ok(checked) = check_typed(module) else { return false };
-    if checked.native_formats.is_empty() {
+    if checked.native_formats.is_empty() && checked.native_json_bodies.is_empty() {
         return false;
     }
     let mut routed = module.clone();
     fennec_syntax::visit::exprs_mut(&mut routed, &mut |expr| {
+        // `net.post(url, json=value)` sends `json.native_dumps(value)`: the JSON text.
+        if let ExprKind::Call { args, .. } = &mut expr.kind {
+            for arg in args.iter_mut().filter(|arg| arg.name.as_deref() == Some("json")) {
+                let at = arg.value.span;
+                if checked.native_json_bodies.contains(&(at.start, at.end)) {
+                    // The call gets an empty span of its own: what the checker writes in, like
+                    // the defaults `native_dumps` leaves out, is kept by span, and the value's is
+                    // the value's.
+                    let call = Span { start: at.start, end: at.start };
+                    let placeholder = Expr { kind: ExprKind::Bool(false), span: at };
+                    let value = std::mem::replace(&mut arg.value, placeholder);
+                    let callee = Expr { kind: ExprKind::Name("json.native_dumps".to_owned()), span: call };
+                    let args = vec![fennec_syntax::Arg { name: None, is_mut: false, value }];
+                    arg.value = Expr { kind: ExprKind::Call { callee: Box::new(callee), args }, span: call };
+                }
+            }
+        }
         let Some(native) = checked.native_formats.get(&(expr.span.start, expr.span.end)) else { return };
-        if let fennec_syntax::ExprKind::Call { callee, .. } = &mut expr.kind {
+        if let ExprKind::Call { callee, .. } = &mut expr.kind {
             let named = match &mut callee.kind {
-                fennec_syntax::ExprKind::Index { object, .. } => object,
+                ExprKind::Index { object, .. } => object,
                 _ => callee,
             };
-            named.kind = fennec_syntax::ExprKind::Name(native.clone());
+            named.kind = ExprKind::Name(native.clone());
         }
     });
     if check_and_resolve(&mut routed).is_err() {
@@ -264,6 +281,18 @@ pub fn route_formats_natively(module: &mut Module) -> bool {
     }
     *module = routed;
     true
+}
+
+/// Whether a call is given `json=`, which only an HTTP call takes.
+fn sends_json(module: &Module) -> bool {
+    let mut sends = false;
+    let mut walked = module.clone();
+    fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
+        if let ExprKind::Call { args, .. } = &expr.kind {
+            sends |= args.iter().any(|arg| arg.name.as_deref() == Some("json"));
+        }
+    });
+    sends
 }
 
 fn imports_a_format(module: &Module) -> bool {
@@ -323,13 +352,13 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
                 fennec_syntax::visit::add_defaults(expr, defaults);
             }
             if let Some(function) = checked.std_names.get(&span) {
-                expr.kind = fennec_syntax::ExprKind::Name(function.clone());
+                expr.kind = ExprKind::Name(function.clone());
             }
             if checked.failing_steps.contains(&span) {
                 fennec_syntax::visit::none_on_failure(expr);
             }
             if checked.optional_steps.contains(&span)
-                && let fennec_syntax::ExprKind::Attr { optional, .. } = &mut expr.kind
+                && let ExprKind::Attr { optional, .. } = &mut expr.kind
             {
                 *optional = true;
             }
@@ -385,6 +414,8 @@ pub struct Checked {
     named_patterns: BTreeMap<(u32, u32, String), Vec<String>>,
     /// The format calls native code can make in Fennec, by the call's span.
     native_formats: BTreeMap<(u32, u32), String>,
+    /// The `json=` values of HTTP calls native code writes in Fennec, by the value's span.
+    native_json_bodies: BTreeSet<(u32, u32)>,
     /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
     not_equals: BTreeSet<(u32, u32)>,
     /// The fields and method calls on a value that might be missing, in a chain an `else`

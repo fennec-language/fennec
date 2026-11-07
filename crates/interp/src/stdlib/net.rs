@@ -299,8 +299,20 @@ impl Interp<'_> {
     /// `net.get(url)`, `net.post(url)` and `net.request(method, url)`.
     fn http_method(&mut self, method: &str, args: &[CallArg], span: Span) -> Result<Value, Diagnostic> {
         let plain: Vec<Value> = args.iter().filter(|arg| arg.name.is_none()).map(|arg| arg.value.clone()).collect();
-        let named: Vec<(&str, &Value)> =
-            args.iter().filter_map(|arg| arg.name.as_deref().map(|name| (name, &arg.value))).collect();
+        // `json=` is sent as its JSON text, which native code writes before the call.
+        let mut sent = None;
+        if let Some(arg) = args.iter().find(|arg| arg.name.as_deref() == Some("json")) {
+            let value = CallArg::plain(arg.value.clone(), arg.span);
+            sent = Some(self.format_builtin("json.dumps", vec![value], arg.span)?);
+        }
+        let named: Vec<(&str, &Value)> = args
+            .iter()
+            .filter_map(|arg| arg.name.as_deref().map(|name| (name, &arg.value)))
+            .map(|(name, value)| match &sent {
+                Some(text) if name == "json" => (name, text),
+                _ => (name, value),
+            })
+            .collect();
         let request = request_of(method, &plain, &named, span)?;
         if self.faked_net() {
             return Ok(self.fake_request(&request));
@@ -666,6 +678,7 @@ fn request_of(method: &str, plain: &[Value], named: &[(&str, &Value)], span: Spa
         body: Vec::new(),
         timeout: CONNECT_TIMEOUT,
     };
+    let sends_json = named.iter().any(|(name, _)| *name == "json");
     for (name, value) in named {
         match (*name, value) {
             ("timeout", value) => request.timeout = duration_of(value, span)?,
@@ -673,10 +686,15 @@ fn request_of(method: &str, plain: &[Value], named: &[(&str, &Value)], span: Spa
             ("body", Value::Bytes(data)) => request.body = data.to_vec(),
             ("params", Value::Dict(pairs)) => request.params = text_pairs(pairs, span)?,
             ("headers", Value::Dict(pairs)) => request.headers = text_pairs(pairs, span)?,
+            // Native code and `http_method` both give `json=` as the JSON text already.
+            ("json", Value::Str(text)) => request.body = text.as_bytes().to_vec(),
             (other, _) => {
                 return Err(Diagnostic::new(format!("this has no parameter called `{other}`"), span));
             }
         }
+    }
+    if sends_json && !request.headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("content-type")) {
+        request.headers.push(("content-type".to_owned(), "application/json".to_owned()));
     }
     Ok(request)
 }

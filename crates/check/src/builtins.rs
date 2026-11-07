@@ -336,7 +336,15 @@ impl FnCx<'_> {
             Some("Net") if name == "udp" => &["port"],
             Some("Process") if name == "run" => &["cwd", "env", "input"],
             Some("Net") if matches!(name, "get" | "post" | "request") => {
-                &["body", "headers", "params", "timeout"]
+                let given = |option: &str| args.iter().any(|arg| arg.name.as_deref() == Some(option));
+                if given("body") && given("json") {
+                    let message = "a request sends `body=` or `json=`, not both";
+                    self.error(
+                        Diagnostic::new(message, span)
+                            .with_help("`json=` sends a value as JSON, as its body"),
+                    );
+                }
+                &["body", "headers", "json", "params", "timeout"]
             }
             _ => &[],
         };
@@ -427,6 +435,7 @@ impl FnCx<'_> {
                         );
                     }
                 }
+                Some("json") if named.contains(&"json") => self.json_body(&ty, arg.value.span),
                 Some("input") if named.contains(&"input") => {
                     if !matches!(self.checker.settled(&ty), Type::Str | Type::Bytes) {
                         self.error(

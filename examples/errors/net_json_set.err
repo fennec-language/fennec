@@ -1,0 +1,5 @@
+error: JSON can't hold a set
+ --> examples/errors/net_json_set.fen:2:54
+  |
+2 |     sent = net.post("https://example.com/tags", json={"fox", "den"})
+  |                                                      ^^^^^^^^^^^^^^

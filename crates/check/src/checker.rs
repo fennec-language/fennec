@@ -72,6 +72,9 @@ pub(crate) struct Checker {
     /// The calls to `json` and `toml`'s `dumps` and `loads` whose type has its own `def serialize`
     /// or `def deserialize`, each with the function in std that does the same in Fennec.
     pub(crate) native_formats: BTreeMap<(u32, u32), String>,
+    /// The values given as `json=` to an HTTP call whose type has its own `def serialize`, which
+    /// native code writes through `json.native_dumps` before sending.
+    pub(crate) native_json_bodies: BTreeSet<(u32, u32)>,
     /// Each constant's type, once worked out. `None` while its value is being checked.
     pub(crate) const_types: BTreeMap<String, Option<Type>>,
     /// The functions being checked, innermost last.
@@ -149,6 +152,7 @@ impl Checker {
             std_names: BTreeMap::new(),
             named_patterns: BTreeMap::new(),
             native_formats: BTreeMap::new(),
+            native_json_bodies: BTreeSet::new(),
             const_types: BTreeMap::new(),
             checking: Vec::new(),
             revisit: BTreeSet::new(),
@@ -236,6 +240,7 @@ impl Checker {
                 std_names: self.std_names,
                 named_patterns: self.named_patterns,
                 native_formats: self.native_formats,
+                native_json_bodies: self.native_json_bodies,
             });
         }
         let mut diagnostics = self.diagnostics;

@@ -115,7 +115,8 @@ pub const CAN_FAIL: &[&str] = &[
 /// What an executable's program allocates through: its big blocks, and what the runtime
 /// allocates for itself while it works. With the `sanitize` feature it's the system's own,
 /// for an address sanitizer to watch.
-#[cfg(not(feature = "sanitize"))]
+// Probe: the system's allocator, to time startup on CI against mimalloc. Not for merging.
+#[cfg(any())]
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

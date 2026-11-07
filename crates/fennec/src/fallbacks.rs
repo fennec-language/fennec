@@ -69,6 +69,46 @@ pub(crate) fn checks(path: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `fennec dev waits [path]`: which functions of what `main` reaches may wait, and so would be
+/// compiled as state machines that can pause, as plain names and with blocking reads counted
+/// too, and the longest ways down to a wait.
+pub(crate) fn waits(path: &str) -> ExitCode {
+    let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
+    if !crate::run::check(&mut program) {
+        return ExitCode::FAILURE;
+    }
+    let mut reached = program.module.clone();
+    fennec_build::keep_what_main_reaches(&mut reached);
+    let lowered = match crate::aot::lowered_for_native(&reached) {
+        Ok(lowered) => lowered,
+        Err(why) => {
+            eprintln!("{why}");
+            return ExitCode::FAILURE;
+        }
+    };
+    for blocking in [false, true] {
+        let waits = fennec_llvm::may_wait(&lowered, blocking);
+        let (all, marked) = (waits.functions.len(), waits.marked.len());
+        let indirect = waits.marked.values().filter(|why| **why == fennec_llvm::Why::Indirectly).count();
+        let own = waits.marked.values().filter(|why| matches!(why, fennec_llvm::Why::Itself(_))).count();
+        let counted = if blocking { "with blocking reads" } else { "network, locks, sleeps and parallel" };
+        println!(
+            "{counted}: {marked} of {all} functions may wait ({own} wait themselves, {indirect} only through a function value or a generator)"
+        );
+        let mut chains: Vec<Vec<String>> = waits.marked.keys().map(|name| waits.chain(name)).collect();
+        chains.sort_by_key(|chain| std::cmp::Reverse(chain.len()));
+        for chain in chains.iter().take(3) {
+            let end = chain.last().and_then(|last| waits.marked.get(last));
+            let why = match end {
+                Some(fennec_llvm::Why::Itself(what)) => what.clone(),
+                _ => "a function value".to_owned(),
+            };
+            println!("  {} deep: {} ({why})", chain.len(), chain.join(" -> "));
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 /// `fennec dev fallbacks --llvm [path]`: what LLVM doesn't take yet in what `main` reaches, a
 /// line for each function, and how many there are.
 pub(crate) fn not_lowered(path: &str) -> ExitCode {

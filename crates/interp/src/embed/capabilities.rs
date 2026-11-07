@@ -198,8 +198,8 @@ pub extern "C" fn std_call(name: i64, ty: i64, count: i64, start: i64, end: i64)
 /// compiled code, needing nothing of the interpreter, as `call` does. What's still only written
 /// for the interpreter, the network's methods, compiled code calls `call` for.
 pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
-    attempt(|state: &mut State| {
-        let at = span(start, end);
+    let at = span(start, end);
+    let called = attempt(|state: &mut State| {
         let receiver = value_of(state, word);
         let name = u64::try_from(method)
             .ok()
@@ -210,15 +210,18 @@ pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, en
         let count = usize::try_from(count).unwrap_or(0).min(state.inputs.len());
         let given = state.inputs.split_off(state.inputs.len() - count);
         let given: Vec<Value> = given.into_iter().map(Value::unpacked).collect();
-        let result = match &receiver {
-            Value::Capability(capability) => native_method(*capability, &name, &given, at)?,
-            Value::Limited(limited) => narrowed(limited, &name, &given, &mut |capability, method, args| {
-                native_method(capability, method, args, at)
-            })?,
-            other => return Err(crate::methods::no_method(other, &name, at)),
-        };
-        Ok(state.push(result))
-    })
+        Ok(Some((receiver, name, given)))
+    });
+    let Some((receiver, name, given)) = called else { return 0 };
+    // The method runs with nothing borrowed, so a task waiting in it, on the network, can park.
+    let result = match &receiver {
+        Value::Capability(capability) => native_method(*capability, &name, &given, at),
+        Value::Limited(limited) => narrowed(limited, &name, &given, &mut |capability, method, args| {
+            native_method(capability, method, args, at)
+        }),
+        other => Err(crate::methods::no_method(other, &name, at)),
+    };
+    attempt(|state: &mut State| result.map(|value| state.push(value)))
 }
 
 /// `fennec_crypto_call(name, count, start, end)`: one of `std.crypto`'s functions, with the last

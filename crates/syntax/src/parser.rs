@@ -791,6 +791,17 @@ impl Parser {
     /// One type with no `|` around it, unless it's in parentheses, as in `(Circle | Square)?`.
     fn member_type(&mut self) -> Result<TypeExpr, Diagnostic> {
         let start = self.span();
+        // `shared Scores`: a value many tasks can reach, each inside a `lock`. A `?` after it
+        // makes the shared value optional: `shared Scores?` is `(shared Scores)?`.
+        if matches!(self.peek(), Tok::Name(word) if word == "shared")
+            && matches!(self.peek_at(1), Tok::Name(_) | Tok::P(Punct::LParen))
+        {
+            self.advance();
+            let mut held = self.member_type()?;
+            let optional = std::mem::take(&mut held.optional);
+            let span = start.to(self.prev_span());
+            return Ok(TypeExpr { name: "shared".to_owned(), args: vec![held], optional, span });
+        }
         let mut args = Vec::new();
         let name = if self.eat_kw(Kw::None) {
             "None".to_owned()

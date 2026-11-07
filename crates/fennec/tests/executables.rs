@@ -117,6 +117,47 @@ fn run(executable: &Path) -> std::io::Result<Output> {
     Command::new(executable).output()
 }
 
+/// How many builds the examples' tests run at once: one per core, up to 8. One at a time, LLVM's
+/// took 71 seconds and 8 take 29; holding under 100 megabytes each, they stay well inside 4
+/// gigabytes. `llvm.rs` uses this too.
+fn builds_at_once() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(8)
+}
+
+/// Runs `each` on every item, `builds_at_once()` at a time, each worker with its own number for a
+/// folder of its own. The results come back in the items' order.
+pub(crate) fn at_once<T: Sync, R: Send>(
+    items: &[T],
+    each: impl Fn(usize, &T) -> std::io::Result<R> + Sync,
+) -> std::io::Result<Vec<R>> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let done = std::sync::Mutex::new(Vec::with_capacity(items.len()));
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..builds_at_once().min(items.len()))
+            .map(|worker| {
+                let (next, done, each) = (&next, &done, &each);
+                scope.spawn(move || -> std::io::Result<()> {
+                    loop {
+                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(item) = items.get(at) else { return Ok(()) };
+                        let result = each(worker, item)?;
+                        done.lock()
+                            .map_err(|_| std::io::Error::other("a worker panicked"))?
+                            .push((at, result));
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().map_err(|_| std::io::Error::other("a worker panicked"))??;
+        }
+        Ok::<_, std::io::Error>(())
+    })?;
+    let mut done = done.into_inner().map_err(|_| std::io::Error::other("a worker panicked"))?;
+    done.sort_by_key(|(at, _)| *at);
+    Ok(done.into_iter().map(|(_, result)| result).collect())
+}
+
 /// A fresh folder for this test's executables.
 fn work_dir(test: &str) -> std::io::Result<PathBuf> {
     let work = std::env::temp_dir().join(format!("fennec-executables-{test}-{}", std::process::id()));
@@ -137,20 +178,34 @@ fn examples_build_to_executables_that_print_their_expected_output() {
     }
     assert!(runtime_built(), "couldn't build the runtime library");
     let work = work_dir("examples").unwrap();
-    for path in programs(&examples_dir()).unwrap() {
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    let paths = programs(&examples_dir()).unwrap();
+    // What went wrong with each, if anything.
+    let found = at_once(&paths, |_, path| {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let built = build(path, &work)?;
         if NOT_BUILT.contains(&name.as_str()) {
-            assert!(build(&path, &work).unwrap().is_err(), "{name} builds now: take it off `NOT_BUILT`");
-            continue;
+            return Ok(built.is_ok().then(|| format!("{name} builds now: take it off `NOT_BUILT`")));
         }
-        let executable = build(&path, &work).unwrap().unwrap_or_else(|built| {
-            panic!("{name} didn't build ({}):\n{}", built.status, String::from_utf8_lossy(&built.stderr))
-        });
-        let ran = run(&executable).unwrap();
-        let expected = fs::read_to_string(path.with_extension("out")).unwrap();
-        assert_eq!(String::from_utf8_lossy(&ran.stdout), expected, "{name} printed something different");
-        assert!(ran.status.success(), "{name} failed:\n{}", String::from_utf8_lossy(&ran.stderr));
-    }
+        let executable = match built {
+            Ok(executable) => executable,
+            Err(built) => {
+                let said = String::from_utf8_lossy(&built.stderr);
+                return Ok(Some(format!("{name} didn't build ({}):\n{said}", built.status)));
+            }
+        };
+        let ran = run(&executable)?;
+        let expected = fs::read_to_string(path.with_extension("out"))?;
+        Ok(if String::from_utf8_lossy(&ran.stdout) != expected {
+            Some(format!("{name} printed something different:\n{}", String::from_utf8_lossy(&ran.stdout)))
+        } else if !ran.status.success() {
+            Some(format!("{name} failed:\n{}", String::from_utf8_lossy(&ran.stderr)))
+        } else {
+            None
+        })
+    })
+    .unwrap();
+    let wrong: Vec<String> = found.into_iter().flatten().collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n\n"));
     let _ = fs::remove_dir_all(&work);
 }
 
@@ -162,24 +217,32 @@ fn failing_examples_fail_the_same_way_as_executables() {
     }
     assert!(runtime_built(), "couldn't build the runtime library");
     let work = work_dir("errors").unwrap();
-    let mut built = 0;
-    for path in programs(&examples_dir().join("errors")).unwrap() {
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    let paths = programs(&examples_dir().join("errors")).unwrap();
+    // For each that built, what was wrong with it, if anything.
+    let found = at_once(&paths, |_, path| {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
         // Most error examples are mistakes the checker catches, which don't build.
-        let Ok(executable) = build(&path, &work).unwrap() else { continue };
-        built += 1;
-        let ran = run(&executable).unwrap();
+        let Ok(executable) = build(path, &work)? else { return Ok(None) };
+        let ran = run(&executable)?;
         // `fennec run` runs an executable itself where LLVM builds the program, so the
         // interpreter is what an executable's failure is held to.
-        let interpreted = fennec_command().args(["run", "--interp"]).arg(&path).output().unwrap();
-        assert!(!ran.status.success(), "{name} should fail");
-        assert_eq!(
-            String::from_utf8_lossy(&ran.stderr),
-            String::from_utf8_lossy(&interpreted.stderr),
-            "{name} failed differently"
-        );
-        assert_eq!(ran.stdout, interpreted.stdout, "{name} printed something different before failing");
-    }
-    assert!(built > 0, "no error example built");
+        let interpreted = fennec_command().args(["run", "--interp"]).arg(path).output()?;
+        let (ours, theirs) =
+            (String::from_utf8_lossy(&ran.stderr), String::from_utf8_lossy(&interpreted.stderr));
+        Ok(Some(if ran.status.success() {
+            Some(format!("{name} should fail"))
+        } else if ours != theirs {
+            Some(format!("{name} failed differently:\n{ours}\nwhere the interpreter said\n{theirs}"))
+        } else if ran.stdout != interpreted.stdout {
+            Some(format!("{name} printed something different before failing"))
+        } else {
+            None
+        }))
+    })
+    .unwrap();
+    let built: Vec<Option<String>> = found.into_iter().flatten().collect();
+    assert!(!built.is_empty(), "no error example built");
+    let wrong: Vec<String> = built.into_iter().flatten().collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n\n"));
     let _ = fs::remove_dir_all(&work);
 }

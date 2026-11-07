@@ -3196,46 +3196,6 @@ fn not_native_yet(path: &Path) -> bool {
     path.file_name().and_then(|name| name.to_str()).is_some_and(|name| NOT_NATIVE_YET.contains(&name))
 }
 
-/// How many builds the examples' tests run at once: one per core, up to 8. One at a time took 71
-/// seconds; 8 take 29, and holding under 100 megabytes each, stay well inside 4 gigabytes.
-fn builds_at_once() -> usize {
-    std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(8)
-}
-
-/// Runs `each` on every item, `builds_at_once()` at a time, each worker with its own number for a
-/// folder of its own. The results come back in the items' order.
-fn at_once<T: Sync, R: Send>(
-    items: &[T],
-    each: impl Fn(usize, &T) -> std::io::Result<R> + Sync,
-) -> std::io::Result<Vec<R>> {
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let done = std::sync::Mutex::new(Vec::with_capacity(items.len()));
-    std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..builds_at_once().min(items.len()))
-            .map(|worker| {
-                let (next, done, each) = (&next, &done, &each);
-                scope.spawn(move || -> std::io::Result<()> {
-                    loop {
-                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(item) = items.get(at) else { return Ok(()) };
-                        let result = each(worker, item)?;
-                        done.lock()
-                            .map_err(|_| std::io::Error::other("a worker panicked"))?
-                            .push((at, result));
-                    }
-                })
-            })
-            .collect();
-        for worker in workers {
-            worker.join().map_err(|_| std::io::Error::other("a worker panicked"))??;
-        }
-        Ok::<_, std::io::Error>(())
-    })?;
-    let mut done = done.into_inner().map_err(|_| std::io::Error::other("a worker panicked"))?;
-    done.sort_by_key(|(at, _)| *at);
-    Ok(done.into_iter().map(|(_, result)| result).collect())
-}
-
 /// Every example builds through LLVM and prints exactly what it should.
 #[test]
 fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
@@ -3253,7 +3213,7 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
     }
     paths.sort();
     // What became of each: built and printed this, or refused with this.
-    let outcomes = at_once(&paths, |worker, path| {
+    let outcomes = crate::executables::at_once(&paths, |worker, path| {
         let home = dir.join(format!("home-{worker}"));
         let executable = dir.join(format!("example-{worker}"));
         let made = fennec(
@@ -3322,7 +3282,7 @@ fn every_program_builds_natively() -> std::io::Result<()> {
     programs.sort();
     let dir = folder("every_program")?;
     // What each said: nothing where it's all native code, or why it isn't.
-    let said = at_once(&programs, |worker, program| {
+    let said = crate::executables::at_once(&programs, |worker, program| {
         let said = fennec(
             &["dev", "fallbacks", "--llvm", &program.to_string_lossy()],
             &dir.join(format!("home-{worker}")),

@@ -1032,6 +1032,31 @@ impl FnCx<'_> {
         Type::Named(owner)
     }
 
+    /// Building a type from outside it when one of its `_` fields has no default, which only its
+    /// own methods can set: it's built through one of its named constructors.
+    fn built_elsewhere(&self, type_name: &str, field: &str, span: Span) -> Diagnostic {
+        let message = format!(
+            "`{type_name}` is built through its named constructors: only its own methods can set `{field}`"
+        );
+        let named: Vec<String> = self
+            .checker
+            .program
+            .type_info(type_name)
+            .map(|info| {
+                crate::privacy::named_constructors(&info.def)
+                    .iter()
+                    .map(|name| format!("`{type_name}.{name}(...)`"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let help = if named.is_empty() {
+            format!("`{field}` has no default, and `{type_name}` has no named constructor yet")
+        } else {
+            format!("use {}", named.join(" or "))
+        };
+        Diagnostic::new(message, span).with_help(help)
+    }
+
     /// Matches arguments to fields, positionally and by name. Returns whether every argument
     /// is written as a literal, so `where` rules can be checked when the value is made.
     fn build(&mut self, target: &Target<'_>, fields: &[Field], args: &[Arg], span: Span) -> bool {
@@ -1039,11 +1064,27 @@ impl FnCx<'_> {
         let display = case.map_or_else(|| type_name.to_owned(), |case| format!("{type_name}.{case}"));
         let mut given = vec![false; fields.len()];
         let mut unmatched_args = false;
+        // From outside the type, its automatic constructor sets only its public fields, so
+        // values given by position go to those.
+        let outside = !self.inside(type_name);
+        let settable: Vec<usize> = (0..fields.len())
+            .filter(|&at| !(outside && fields.get(at).is_some_and(|field| field.name.starts_with('_'))))
+            .collect();
         for (position, arg) in args.iter().enumerate() {
             let at = match &arg.name {
                 Some(name) => fields.iter().position(|field| &field.name == name),
-                None => Some(position),
+                None => settable.get(position).copied(),
             };
+            // A value given by position that skips a `_` field is written in by its field's name,
+            // so what runs the program puts it where the check did.
+            if arg.name.is_none()
+                && at != Some(position)
+                && let Some(field) = at.and_then(|at| fields.get(at))
+            {
+                self.checker
+                    .field_args
+                    .insert((arg.value.span.start, arg.value.span.end), field.name.clone());
+            }
             let expected = at
                 .and_then(|at| fields.get(at))
                 .map(|field| self.checker.field_type(type_name, case, &field.name).substitute(&target.given));
@@ -1053,7 +1094,11 @@ impl FnCx<'_> {
                 self.error(Diagnostic::new(message, arg.value.span));
             }
             let Some((field, slot)) = at.and_then(|at| fields.get(at).zip(given.get_mut(at))) else {
-                let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+                let names: Vec<&str> = settable
+                    .iter()
+                    .filter_map(|&at| fields.get(at))
+                    .map(|field| field.name.as_str())
+                    .collect();
                 self.error(unmatched(&display, ("field", "value"), &names, arg));
                 unmatched_args = true;
                 continue;
@@ -1070,10 +1115,13 @@ impl FnCx<'_> {
         }
         for (field, given) in fields.iter().zip(given) {
             if !given && field.default.is_none() && !unmatched_args {
-                self.error(
+                let problem = if outside && field.name.starts_with('_') {
+                    self.built_elsewhere(type_name, &field.name, span)
+                } else {
                     Diagnostic::new(format!("`{display}` needs a value for `{}`", field.name), span)
-                        .with_help(format!("pass it, like `{display}({}=...)`", field.name)),
-                );
+                        .with_help(format!("pass it, like `{display}({}=...)`", field.name))
+                };
+                self.error(problem);
             }
         }
         args.iter().all(|arg| {

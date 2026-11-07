@@ -378,7 +378,8 @@ fn nothing_outside_a_type_reaches_its_underscore_names() {
         ["`_audit` is private to `Account` @ account._audit()"]
     );
     assert_eq!(in_main("    forged = Account(owner=\"x\", _balance=100)\n"), [format!("{private} @ 100")]);
-    assert_eq!(in_main("    forged = Account(\"x\", 100)\n"), [format!("{private} @ 100")]);
+    // By position, values go to the public fields alone, so there's none left for `100`.
+    assert_eq!(in_main("    forged = Account(\"x\", 100)\n"), ["`Account` takes 1 value(s) @ 100"]);
     assert_eq!(in_main("    forged = copy(account, _balance=9)\n"), [format!("{private} @ 9")]);
     assert_eq!(
         in_main("    match account:\n        case Account(owner, balance): stdout.print(balance)\n"),
@@ -387,6 +388,50 @@ fn nothing_outside_a_type_reaches_its_underscore_names() {
     assert_eq!(
         problems(&format!("{ACCOUNT}extend Account:\n    def peek(self) -> int:\n        self._balance\n")),
         [format!("{private} @ self._balance")]
+    );
+}
+
+/// From outside a type, its automatic constructor sets its public fields, and its `_` fields
+/// take their defaults. One with no default is set by a named constructor, a method without
+/// `self` that builds one, and a type with neither can't be built at all.
+#[test]
+fn a_private_field_with_no_default_needs_a_named_constructor() {
+    let account = "struct Account:
+    _id: int
+    owner: str
+    _audit = list[str]()
+
+    def open(owner: str, id: int) -> Account:
+        Account(_id=id, owner=owner)
+
+struct Counter:
+    _count = 0
+    step: int
+
+";
+    let in_main = |body: &str| problems(&format!("{account}def main(stdout: Stdout):\n{body}"));
+    assert_eq!(
+        in_main("    stdout.print(Account.open(\"ana\", 7).owner, Counter(2).step)\n"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        in_main("    stdout.print(Account(owner=\"bo\").owner)\n"),
+        [
+            "`Account` is built through its named constructors: only its own methods can set `_id` @ Account(owner=\"bo\")"
+        ]
+    );
+    assert_eq!(
+        helps(&format!(
+            "{account}def main(stdout: Stdout):\n    stdout.print(Account(owner=\"bo\").owner)\n"
+        )),
+        ["use `Account.open(...)`"]
+    );
+    let sealed = "struct Sealed:\n    _key: str\n\n    def key(self) -> str:\n        self._key\n";
+    assert_eq!(
+        problems(sealed),
+        [
+            "nothing can build `Sealed`: `_key` has no default, and `Sealed` has no named constructor @ struct Sealed"
+        ]
     );
 }
 

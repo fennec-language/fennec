@@ -740,13 +740,37 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+  # Servers run on the `parallel` pool's workers, each with a poll and parked tasks of its own, and
+  # hand connections between workers: the runtime's own tests of that and of `parallel`'s pool,
+  # under ThreadSanitizer. Network programs aren't in the workers' job above, which needs no clients.
+  server-sanitizers:
+    name: Servers under ThreadSanitizer
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NIGHTLY: nightly-2026-10-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the nightly compiler the sanitizers need
+        run: rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Run the servers' and the pool's tests
+        run: |
+          env TSAN_OPTIONS=halt_on_error=1:report_signal_unsafe=0 RUSTFLAGS=-Zsanitizer=thread \
+            cargo "+$NIGHTLY" test --locked -Zbuild-std --target x86_64-unknown-linux-gnu \
+            -p fennec-interp --features threads --lib -- embed::serve embed::parallel
+
   # One status for branch protection to require, so adding jobs never means changing settings.
   # A job skipped because the change is only documentation counts as passed, and so do the two a
   # merge group can leave out; any other skip, failure or cancellation doesn't.
   ok:
     name: CI passed
     if: always()
-    needs: [changes, lint, test, x86-mac, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, lean-runtime, asan, llvm-asan, parked-sanitizers]
+    needs: [changes, lint, test, x86-mac, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, server-sanitizers, lean-runtime, asan, llvm-asan, parked-sanitizers]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

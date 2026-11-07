@@ -175,6 +175,12 @@ impl Lowering<'_> {
         (names, iter): (&[String], &Expr),
     ) -> Lowered<Operand> {
         let span = expr.span;
+        // Unlifted, going through a server's connections in order is a correct way to run one
+        // over `parallel(server)`, as a loop does.
+        let iter = match super::parallel::parallel_items(iter) {
+            Some(items) if self.type_at(items.span) == Some(Type::Named("Server".to_owned())) => items,
+            _ => iter,
+        };
         if kind == CompKind::Generator {
             return self.generator_expression(expr, (parts.elem, parts.cond), (names, iter));
         }

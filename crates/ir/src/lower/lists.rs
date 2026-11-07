@@ -441,8 +441,14 @@ impl Lowering<'_> {
         span: Span,
     ) -> Lowered<()> {
         // A `for mut` over `parallel(xs)` changes the items of `xs` where they are, and running
-        // its iterations in order is a correct way to run it.
-        let iter = if is_mut { super::parallel::parallel_items(iter).unwrap_or(iter) } else { iter };
+        // its iterations in order is a correct way to run it. So is going through a server's
+        // connections in order, when they aren't each given a task.
+        let in_order =
+            |items: &Expr| is_mut || self.type_at(items.span) == Some(Type::Named("Server".to_owned()));
+        let iter = match super::parallel::parallel_items(iter) {
+            Some(items) if in_order(items) => items,
+            _ => iter,
+        };
         if !is_mut && let Some(expansion) = self.expanded(names, iter, body) {
             return self.fused(expansion);
         }

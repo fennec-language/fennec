@@ -11,7 +11,8 @@ fn lowered(source: &str, options: Options) -> Result<Program, String> {
     Ok(program)
 }
 
-const OUTLINED: Options = Options { outline_parallel: true, stop_on_failed_main: false };
+const OUTLINED: Options =
+    Options { outline_parallel: true, stop_on_failed_main: false, serve_in_order: false };
 
 fn function_named<'p>(program: &'p Program, name: &str) -> Option<&'p Function> {
     program.functions.iter().find(|function| function.name == name)

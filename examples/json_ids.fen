@@ -45,7 +45,7 @@ test "a world with Ids loads back the same":
     ash = world.units.add(Unit(name="ash", health=10))
     gone = world.units.add(Unit(name="gone", health=1))
     vex = world.units.add(Unit(name="vex", health=8, target=ash))
-    world.units.remove(gone)
+    _ = world.units.remove(gone)
     kit = world.units.add(Unit(name="kit", health=5, target=vex))
     world.selected = [ash, kit]
     text = json.dumps(world)
@@ -64,8 +64,8 @@ test "a world with Ids loads back the same":
 test "an optional Id whose item has gone is saved as missing":
     mut world = World()
     gone = world.units.add(Unit(name="gone", health=1))
-    world.units.add(Unit(name="ash", health=10, target=gone))
-    world.units.remove(gone)
+    _ = world.units.add(Unit(name="ash", health=10, target=gone))
+    _ = world.units.remove(gone)
     assert (
         json.dumps(world)
         == "{\"units\": [{\"name\": \"ash\", \"health\": 10, \"target\": null}], \"selected\": []}"
@@ -121,8 +121,8 @@ test "an Id isn't taken for a removed one of another type in the same slot":
     mut camp = Camp()
     axe = camp.items.add(Item(name="axe"))
     gone = camp.units.add(Unit(name="gone", health=1))
-    camp.units.add(Unit(name="ash", health=10, target=gone))
-    camp.units.remove(gone)
+    _ = camp.units.add(Unit(name="ash", health=10, target=gone))
+    _ = camp.units.remove(gone)
     camp.best = axe
     assert (
         json.dumps(camp)
@@ -141,7 +141,7 @@ test "each load makes a Table of its own, so its Ids find nothing in another loa
 def main(stdout: Stdout):
     mut world = World()
     ash = world.units.add(Unit(name="ash", health=10))
-    world.units.add(Unit(name="vex", health=8, target=ash))
+    _ = world.units.add(Unit(name="vex", health=8, target=ash))
     world.selected = [ash]
     text = json.dumps(world)
     stdout.print(text)

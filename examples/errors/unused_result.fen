@@ -1,0 +1,6 @@
+# A value nobody uses is lost: `sorted` gives back a new list and leaves `scores` as it was.
+# `_ = ...` throws one away on purpose.
+def main(stdout: Stdout):
+    scores = [3, 1, 2]
+    sorted(scores)
+    stdout.print(scores)

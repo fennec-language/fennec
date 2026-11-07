@@ -93,6 +93,8 @@ pub struct Interp<'out> {
     /// Whether a function of the program has run here since this was last cleared. Native
     /// tests know what they ran only if everything ran natively.
     pub(crate) ran_program_code: bool,
+    /// The int `main` gave back, as itself or in an `Ok`, which the process exits with.
+    gave_back: i64,
     pub(crate) functions: HashMap<String, Rc<Callable>>,
     /// The constants at the top level of the program, by name.
     pub(crate) constants: HashMap<String, crate::constants::Constant>,
@@ -168,6 +170,7 @@ impl<'out> Interp<'out> {
     pub fn with_output(out: Box<dyn Write + 'out>) -> Result<Self, Diagnostic> {
         let mut interp = Interp {
             ran_program_code: false,
+            gave_back: 0,
             functions: HashMap::new(),
             constants: HashMap::new(),
             types: HashMap::new(),
@@ -448,8 +451,24 @@ impl<'out> Interp<'out> {
             Value::Err(error) => {
                 Err(Diagnostic::new(format!("`main` failed: {}", format::repr(&error)), main.def.span))
             }
+            Value::Int(code) => {
+                self.gave_back = code;
+                Ok(())
+            }
+            Value::Ok(given) => {
+                if let Value::Int(code) = given.as_ref() {
+                    self.gave_back = *code;
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
+    }
+
+    /// The exit code the int `main` gave back makes, 0 if it gave none: its lowest 8 bits, as
+    /// Unix takes them, on every system.
+    pub fn exit_code(&self) -> u8 {
+        u8::try_from(self.gave_back & 0xff).unwrap_or(0)
     }
 
     pub(crate) fn flush(&mut self) -> Result<(), Diagnostic> {

@@ -55,8 +55,8 @@ def raise_army(ref world: World, team: Team, columns: (int, int), rally: (int, i
             squads[placed % 2].append(id)
             placed += 1
     x, y = rally
-    world.form_squad(f"{team.name()} north", squads[0], rally)
-    world.form_squad(f"{team.name()} south", squads[1], (x, y + 4))
+    _ = world.form_squad(f"{team.name()} north", squads[0], rally)
+    _ = world.form_squad(f"{team.name()} south", squads[1], (x, y + 4))
     pass
 
 def report(stdout: Stdout, world: World, board: Scoreboard):

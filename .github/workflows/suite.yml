@@ -35,25 +35,26 @@ jobs:
       - name: Libraries
         run: |
           for p in hello_fen hello_rs; do echo "== $p"; readelf -d $p | grep -E "NEEDED|FLAGS"; ldd $p; echo "relocations: $(readelf -r $p | wc -l)"; echo "dynamic symbols: $(readelf --dyn-syms $p | wc -l)"; done
-      - name: System calls
+      - run: sudo apt-get install -y -qq time || true
+      - name: System calls, with wall time each
         run: |
-          for p in hello_fen hello_rs; do echo "== $p"; strace -f -c ./$p > /dev/null 2> sc.txt; cat sc.txt; done
-          echo "== hello_fen in order"; strace -f -r ./hello_fen 2>&1 > /dev/null | head -150
-          echo "== hello_rs in order"; strace -f -r ./hello_rs 2>&1 > /dev/null | head -80
-      - name: Page faults and counters
+          for p in hello_fen hello_rs; do echo "== $p"; strace -f -c -w ./$p > /dev/null 2> sc.txt; cat sc.txt; done
+          echo "== hello_fen on the main thread"; FENNEC_PROBE_MAIN=1 strace -f -c -w ./hello_fen > /dev/null 2> sc.txt; cat sc.txt
+      - name: Page faults
         run: |
-          for p in hello_fen hello_rs hello_c; do echo "== $p"; perf stat -e page-faults,minor-faults,major-faults,task-clock,context-switches ./$p 2>&1 >/dev/null | grep -E "faults|task-clock|switches" || /usr/bin/time -v ./$p 2>&1 >/dev/null | grep -E "faults|Maximum resident|Elapsed"; done
+          for v in "hello_fen" "hello_rs" "hello_c" "env FENNEC_PROBE_MAIN=1 ./hello_fen" "env FENNEC_PROBE_STACK_MB=64 ./hello_fen"; do echo "== $v"; case $v in env*) /usr/bin/time -v $v ;; *) /usr/bin/time -v ./$v ;; esac 2>&1 >/dev/null | grep -E "page faults|Maximum resident|context switches"; done
       - name: Wall time, taking turns
         run: |
-          python3 - hello_fen hello_rs hello_c <<'TIME'
-          import subprocess, sys, time, statistics, os
-          progs = sys.argv[1:]
-          variants = [(p, {}) for p in progs] + [("hello_fen", {"MIMALLOC_ARENA_RESERVE": "0"}), ("hello_fen", {"MIMALLOC_ALLOW_THP": "0"}), ("hello_fen", {"MIMALLOC_PURGE_DELAY": "-1"})]
+          python3 - <<'TIME'
+          import subprocess, time, statistics, os
+          variants = [("hello_fen", {}), ("hello_rs", {}), ("hello_c", {}), ("hello_fen", {"FENNEC_PROBE_MAIN": "1"}),
+                      ("hello_fen", {"FENNEC_PROBE_STACK_MB": "64"}), ("hello_fen", {"FENNEC_PROBE_STACK_MB": "8"})]
           times = {i: [] for i in range(len(variants))}
-          for _ in range(400):
+          for _ in range(1000):
               for i, (p, env) in enumerate(variants):
                   e = dict(os.environ); e.update(env)
                   t = time.perf_counter(); subprocess.run(["./" + p], stdout=subprocess.DEVNULL, env=e); times[i].append(time.perf_counter() - t)
           for i, (p, env) in enumerate(variants):
-              print(f"{p:10} {str(env):40} best {min(times[i])*1e3:.3f} ms  median {statistics.median(times[i])*1e3:.3f} ms")
+              ts = sorted(times[i])
+              print(f"{p:10} {str(env):36} best {ts[0]*1e3:.3f} ms  10th {ts[len(ts)//10]*1e3:.3f} ms  median {statistics.median(ts)*1e3:.3f} ms")
           TIME

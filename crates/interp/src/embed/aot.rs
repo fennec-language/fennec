@@ -62,7 +62,8 @@ pub fn run(entry: extern "C" fn(i64), length: i64, stop: fn(i32)) -> i32 {
     // On macOS `fennec build` links every executable with a main thread of `MAIN_STACK_BYTES`, so
     // the program runs there, with no thread to start. Elsewhere the main thread's stack is the
     // system's, so it gets a thread of its own.
-    if cfg!(target_os = "macos") {
+    // Probe only: run on the main thread, or a thread with a smaller stack, to time what each costs.
+    if cfg!(target_os = "macos") || std::env::var_os("FENNEC_PROBE_MAIN").is_some() {
         return match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(entry, &bytes))) {
             Ok((output, failure)) => report(&output, &failure),
             Err(_) => report(b"", "error: the program stopped unexpectedly\n"),
@@ -70,7 +71,7 @@ pub fn run(entry: extern "C" fn(i64), length: i64, stop: fn(i32)) -> i32 {
     }
     let ran = std::thread::scope(|scope| {
         std::thread::Builder::new()
-            .stack_size(STACK_BYTES)
+            .stack_size(std::env::var("FENNEC_PROBE_STACK_MB").ok().and_then(|mb| mb.parse::<usize>().ok()).map_or(STACK_BYTES, |mb| mb << 20))
             .spawn_scoped(scope, || execute(entry, &bytes))
             .map(std::thread::ScopedJoinHandle::join)
     });

@@ -260,10 +260,13 @@ pub enum StmtKind {
     Assert(Expr),
     /// `with value as name:`, or `with a, b as mut x, mut y:`, whose `value` is the tuple of
     /// what it holds and which names each one.
+    /// `with value as name:`, or, with `lock`, `lock value as ref name:`, which reaches a
+    /// `shared` value: `name` is what it holds, for the block.
     With {
         value: Expr,
         names: Vec<WithName>,
         body: Vec<Stmt>,
+        lock: bool,
     },
     Def(FnDef),
     Break,

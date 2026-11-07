@@ -28,6 +28,8 @@ mod imports;
 mod index;
 mod infer;
 mod keys;
+mod lock;
+mod lock_lowering;
 mod loops;
 mod lost;
 mod messages;
@@ -330,6 +332,7 @@ fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, 
 fn resolved(module: &mut Module, checked: Checked) -> Signatures {
     fennec_syntax::visit::type_fields_from_defaults(module);
     named::put_in_order(module, &checked.named_patterns);
+    lock_lowering::lower(module, &checked.shared_values);
     if !checked.cases.is_empty()
         || !checked.float_sums.is_empty()
         || !checked.generator_types.is_empty()
@@ -422,6 +425,8 @@ pub struct Checked {
     field_args: BTreeMap<(u32, u32), String>,
     /// The fields, in order, of each pattern written with them by name.
     named_patterns: BTreeMap<(u32, u32, String), Vec<String>>,
+    /// What each `shared name = value` holds, which lowering writes in.
+    shared_values: BTreeMap<(u32, u32), Type>,
     /// The format calls native code can make in Fennec, by the call's span.
     native_formats: BTreeMap<(u32, u32), String>,
     /// The `json=` values of HTTP calls native code writes in Fennec, by the value's span.

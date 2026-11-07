@@ -308,6 +308,13 @@ impl Program {
             "fails" => return self.fallible_returns(written, generics, depth),
             _ => {}
         }
+        // `shared Scores`: what it holds is any type.
+        if name == crate::lock::SHARED
+            && let [held] = written.args.as_slice()
+        {
+            let ty = crate::lock::shared(self.resolve_within(held, generics, depth)?);
+            return Ok(if written.optional { Type::optional(ty) } else { ty });
+        }
         let builtin = BUILT_IN_TYPES.contains(&name);
         let declared = generics.iter().any(|generic| generic == name)
             || self.types.contains_key(name)

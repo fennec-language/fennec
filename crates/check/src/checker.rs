@@ -72,6 +72,8 @@ pub(crate) struct Checker {
     /// The fields, in order, of each pattern written with them by name, by its case's span and
     /// the variant's name.
     pub(crate) named_patterns: BTreeMap<(u32, u32, String), Vec<String>>,
+    /// What each `shared name = value` holds, by the value's span.
+    pub(crate) shared_values: BTreeMap<(u32, u32), Type>,
     /// The calls to `json` and `toml`'s `dumps` and `loads` whose type has its own `def serialize`
     /// or `def deserialize`, each with the function in std that does the same in Fennec.
     pub(crate) native_formats: BTreeMap<(u32, u32), String>,
@@ -156,6 +158,7 @@ impl Checker {
             std_names: BTreeMap::new(),
             field_args: BTreeMap::new(),
             named_patterns: BTreeMap::new(),
+            shared_values: BTreeMap::new(),
             native_formats: BTreeMap::new(),
             native_json_bodies: BTreeSet::new(),
             const_types: BTreeMap::new(),
@@ -257,6 +260,7 @@ impl Checker {
             std_names: self.std_names,
             field_args: self.field_args,
             named_patterns: self.named_patterns,
+            shared_values: self.shared_values,
             native_formats: self.native_formats,
             native_json_bodies: self.native_json_bodies,
         }

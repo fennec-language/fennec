@@ -25,6 +25,9 @@ pub(crate) fn is_capability_type(ty: &Type) -> bool {
 impl Program {
     /// Whether a type is `shared`.
     pub(crate) fn is_shared(&self, ty: &Type) -> bool {
+        if crate::lock::held(ty).is_some() {
+            return true;
+        }
         let (Type::Named(name) | Type::Generic(name, _)) = ty else { return false };
         self.type_info(name).is_some_and(|info| info.def.shared)
     }
@@ -220,6 +223,17 @@ impl FnCx<'_> {
     /// name, which holds its lock, to write when it's `mut`.
     pub(crate) fn with_block(&mut self, value: &Expr, names: &[WithName], body: &[Stmt], used: bool) -> Flow {
         let ty = self.expr(value);
+        // A `shared T` is reached with `lock`, which gives what it holds.
+        let shared_values = match &ty {
+            Type::Tuple(types) => types.iter().any(|ty| crate::lock::held(ty).is_some()),
+            ty => crate::lock::held(ty).is_some(),
+        };
+        if shared_values {
+            self.error(
+                Diagnostic::new("a `shared` value is reached with `lock`, not `with`", value.span)
+                    .with_help("write `lock` in place of `with`: `lock scores as ref current:`"),
+            );
+        }
         let (items, types) = match (&value.kind, ty) {
             (ExprKind::Tuple(items), Type::Tuple(types)) if names.len() != 1 => {
                 (items.iter().collect(), types)

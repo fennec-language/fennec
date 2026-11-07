@@ -124,7 +124,7 @@ Tables are for large, flat data. An `Id` is an index, a generation and a tag for
 
 ## Sharing, resources and tasks
 
-Not built yet. Today's `shared Name:` declarations, `with x as ref y:` and `def del` still compile, and `fennec fix` rewrites them when this lands.
+Built so far: `shared T`, `shared name = value`, and `lock`, reaching a `shared` value only in a block, on every engine. A `lock` inside another `lock` is refused for now; take them together in one. The rest of this section isn't built yet. Today's `shared Name:` declarations, `with x as ref y:` and `def del` still compile, and `fennec fix` rewrites them when this lands.
 
 Four questions, each with its own words:
 
@@ -158,10 +158,10 @@ def main(stdout: Stdout):
     record(scores, "Ana", points=10)
 ```
 
-- `shared T` is a type, so it goes in fields and collections too: `dict[str, shared Room]`. It works on any type, and there's no `shared Name:` declaration.
+- `shared T` is a type, so it goes in fields and collections too: `dict[str, shared Room]`. It works on any type, and there's no `shared Name:` declaration. Built.
 - A `shared` value is made in a function, usually `main`, and passed to whoever needs it, like a capability. There's no top-level shared state, so a function's signature says what shared state it touches.
-- Making one from a plain value is written out, as `shared scores = Scores()`. A plain value never becomes `shared` at a call.
-- It's reached only inside `lock x as s:`, to read, or `lock x as ref s:`, to change. Any way out of the block releases it, `?`, `fail` and `return` included. Leaving with `fail` or `return` keeps the changes made so far, and only a crash undoes them, below.
+- Making one from a plain value is written out, as `shared scores = Scores()`. A plain value never becomes `shared` at a call. Built.
+- It's reached only inside `lock x as s:`, to read, or `lock x as ref s:`, to change. Any way out of the block releases it, `?`, `fail` and `return` included. Leaving with `fail` or `return` keeps the changes made so far, and only a crash undoes them, below. Built, apart from undoing a crash.
 - **No waiting inside a lock:** no channel receives, pool takes, network calls, `parallel`, or the end of a `with launch`. Printing and local files are fine. Wait first, then lock.
 - **Deadlocks can't compile.** Lock order is checked across the whole program, by where each `shared` value is made. Two values the compiler can't tell apart, like two accounts from one dict, are locked together in one statement: `lock accounts[from_id], accounts[to_id] as ref source, ref target:`. Locking the same value twice that way fails, rather than stopping the program.
 - Interfaces and function values are traced across the whole program, which is always compiled together, so nothing needs a `locks` annotation. An error names the implementation that takes the lock.

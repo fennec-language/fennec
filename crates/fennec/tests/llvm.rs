@@ -4833,6 +4833,60 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// The server `http_requests_go_through_native_code` asks: it answers three requests with the
+/// first line of each, and a 200 only for `/a`. It starts once the program is built, and gives up
+/// a minute later, so a program that stops asking fails the test rather than leaving it waiting.
+fn answer_three_requests(listener: &std::net::TcpListener) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    for _ in 0..3 {
+        let mut conn = loop {
+            match listener.accept() {
+                Ok((conn, _)) => break conn,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() > deadline {
+                        return Err(std::io::Error::other("the program stopped asking"));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        conn.set_nonblocking(false)?;
+        conn.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+        // The whole request, its body too: closing a connection with some of it unread resets
+        // it, and on Windows the program can lose the answer to that.
+        let mut asked = Vec::new();
+        let mut chunk = [0; 4096];
+        let mut wanted = None;
+        while wanted.is_none_or(|wanted| asked.len() < wanted) {
+            let read = std::io::Read::read(&mut conn, &mut chunk)?;
+            if read == 0 {
+                return Err(std::io::Error::other("the program closed a request part-way"));
+            }
+            asked.extend_from_slice(chunk.get(..read).unwrap_or_default());
+            let text = String::from_utf8_lossy(&asked);
+            if let Some(end) = text.find("\r\n\r\n") {
+                let length = text
+                    .get(..end)
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                    .and_then(|(_, length)| length.trim().parse::<usize>().ok());
+                wanted = Some(end + 4 + length.unwrap_or(0));
+            }
+        }
+        let asked = String::from_utf8_lossy(&asked).into_owned();
+        let first = asked.lines().next().unwrap_or_default();
+        let status = if first.contains("/a") { "200 OK" } else { "500 Oops" };
+        let why = if asked.contains("X-Mine: yes") { "mine" } else { "plain" };
+        let answer =
+            format!("HTTP/1.1 {status}\r\nX-Why: {why}\r\nContent-Length: {}\r\n\r\n{first}", first.len());
+        std::io::Write::write_all(&mut conn, answer.as_bytes())?;
+    }
+    Ok(())
+}
+
 /// HTTP natively against a server of the test's own: params, headers and a body go out, a status
 /// that isn't a 200 is an answer, and what can't be reached fails as a `NetError`.
 #[test]
@@ -4842,27 +4896,7 @@ fn http_requests_go_through_native_code() -> std::io::Result<()> {
     }
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
-    let server = std::thread::spawn(move || -> std::io::Result<()> {
-        for _ in 0..3 {
-            let (mut conn, _) = listener.accept()?;
-            let mut asked = Vec::new();
-            let mut chunk = [0; 4096];
-            while !String::from_utf8_lossy(&asked).contains("\r\n\r\n") {
-                let read = std::io::Read::read(&mut conn, &mut chunk)?;
-                asked.extend_from_slice(chunk.get(..read).unwrap_or_default());
-            }
-            let asked = String::from_utf8_lossy(&asked).into_owned();
-            let first = asked.lines().next().unwrap_or_default();
-            let status = if first.contains("/a") { "200 OK" } else { "500 Oops" };
-            let why = if asked.contains("X-Mine: yes") { "mine" } else { "plain" };
-            let answer = format!(
-                "HTTP/1.1 {status}\r\nX-Why: {why}\r\nContent-Length: {}\r\n\r\n{first}",
-                first.len()
-            );
-            std::io::Write::write_all(&mut conn, answer.as_bytes())?;
-        }
-        Ok(())
-    });
+    listener.set_nonblocking(true)?;
     let source = format!(
         r#"from std.net import NetError
 
@@ -4898,6 +4932,7 @@ def main(net: Net, stdout: Stdout):
     let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("http"));
     let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let server = std::thread::spawn(move || answer_three_requests(&listener));
     let ours = outcome(&Command::new(&executable).output()?);
     std::fs::remove_dir_all(&dir)?;
     server.join().map_err(|_| std::io::Error::other("the test's server panicked"))??;

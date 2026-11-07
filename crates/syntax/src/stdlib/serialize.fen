@@ -1,6 +1,6 @@
 ## Where a type's `def serialize(self, ref out: Serializer)` writes what it saves. Each format
 ## has its own, and one `def serialize` serves them all.
-interface Serializer:
+export interface Serializer:
     def int(ref self, value: int)
     def float(ref self, value: float)
     def bool(ref self, value: bool)
@@ -68,13 +68,13 @@ interface Serializer:
     def some[T: Serializable](ref self, x: T)
 
 ## What can be saved.
-interface Serializable:
+export interface Serializable:
     def serialize(self, ref out: Serializer)
 
 ## Where a type's `def deserialize(ref src: Deserializer) -> Self fails ParseError` reads what was saved. Each
 ## format has its own, and one `def deserialize` serves them all. Each read fails with a
 ## `ParseError` saying where.
-interface Deserializer:
+export interface Deserializer:
     def int(ref self) -> int fails ParseError
     def float(ref self) -> float fails ParseError
     def bool(ref self) -> bool fails ParseError
@@ -157,7 +157,7 @@ interface Deserializer:
     def end_member(ref self) fails ParseError
 
 ## What can be loaded.
-interface Deserializable:
+export interface Deserializable:
     def deserialize(ref src: Deserializer) -> Self fails ParseError
 
 extend int:

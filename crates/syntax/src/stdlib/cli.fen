@@ -1,5 +1,5 @@
 ## Arguments a program wasn't given in a way it understands. `message` says what's wrong.
-error CliError:
+export error CliError:
     message: str
 
 ## One flag, option or positional argument a program takes.
@@ -16,7 +16,7 @@ struct CliArg:
     many = False
 
 ## The arguments a program was given, read the way its `Cli` describes.
-struct CliArgs:
+export struct CliArgs:
     flags: set[str] = set()
     values: dict[str, str] = {}
     rest: list[str] = []
@@ -44,7 +44,7 @@ struct CliArgs:
 ## ```
 ## Options are written `--name value`, `--name=value` or `-n value`. Flags take no value, and
 ## short ones can be written together, `-lv`. Everything after `--` is positional.
-struct Cli:
+export struct Cli:
     name: str
     about = ""
     takes: list[CliArg] = []

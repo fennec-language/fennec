@@ -13,7 +13,7 @@
 ## test's server is done once no connection is waiting.
 
 ## A failure of the network, with a case for each way it fails. `message()` says it in words.
-error NetError:
+export error NetError:
     ## No host has that name.
     NotFound(host: str)
     ## The host is there, but nothing listens on that port.
@@ -50,7 +50,7 @@ error NetError:
 
 ## What a server answered. A 404 is an answer like any other, so `ok()` says which it was. Its
 ## `text()`, written in Rust, gives the body as text, with anything that isn't text replaced.
-struct Response:
+export struct Response:
     status: int
     ## By their names in lower case.
     headers = dict[str, str]()
@@ -64,7 +64,7 @@ struct Response:
 ## or empty bytes once the other side is done; `read_line()` gives the next line without its
 ## ending, or `None` at the end; `write(data)` sends `bytes` or a `str`; and `close()`. Reads
 ## wait as long as it takes, unless given `timeout=`.
-shared Connection:
+export shared Connection:
     _handle: int
     ## The other side's address, like `"127.0.0.1:52811"`.
     peer: str
@@ -81,7 +81,7 @@ shared Connection:
         self.close()
 
 ## One datagram, and the address it came from, like `"127.0.0.1:52811"`, which `send_to` answers.
-struct Packet:
+export struct Packet:
     data: bytes
     sender: str
 
@@ -89,7 +89,7 @@ struct Packet:
 ## `receive()` gives the next `Packet`, waiting as long as it takes unless given `timeout=`;
 ## `send_to(data, address)` sends `bytes` or a `str` to an address like `"127.0.0.1:9001"`; and
 ## `close()`.
-shared UdpSocket:
+export shared UdpSocket:
     _handle: int
     ## The port it listens on: the one asked for, or the one the system picked for port 0.
     port: int
@@ -106,7 +106,7 @@ shared UdpSocket:
 
 ## A TCP port being listened on. Looping over it gives each connection as it arrives, and
 ## `accept()` waits for the next one.
-shared Server:
+export shared Server:
     _handle: int
     ## The port it listens on: the one asked for, or the one the system picked for port 0.
     port: int
@@ -124,14 +124,14 @@ shared Server:
     ## with the 4xx status that says so, without calling `respond`.
     def serve(self, respond: (Request) -> Response, timeout: Duration = 30s):
         for connection in parallel(self):
-            _ = _answer_all(connection, respond, timeout)
+            _ = answer_all(connection, respond, timeout)
 
     def del(self):
         self.close()
 
 ## An HTTP request a server was sent: its method, like `"GET"`, its path without the query, the
 ## query's parameters, its headers by their names in lower case, and its body.
-struct Request:
+export struct Request:
     method: str
     path: str
     query = dict[str, str]()
@@ -143,31 +143,31 @@ struct Request:
         self.body.decode() else ""
 
 ## The most a request's headers may hold, in lines and in bytes, and the most its body may be.
-_MOST_HEADERS = 100
-_MOST_HEADER_BYTES = 16384
-_MOST_BODY = 10485760
+MOST_HEADERS = 100
+MOST_HEADER_BYTES = 16384
+MOST_BODY = 10485760
 
 ## What reading a request gave: one to answer, one the server answers itself, or the end.
-enum _Read:
+enum RequestRead:
     Got(request: Request, keep: bool)
     Bad(status: int, reason: str)
     Done
 
 ## Answers each request on a connection until it's closed or asks to be.
-def _answer_all(
+def answer_all(
     connection: Connection,
     respond: (Request) -> Response,
     timeout: Duration,
 ) fails NetError:
     while True:
-        match _read_request(connection, timeout)?:
+        match read_request(connection, timeout)?:
             case .Got(request, keep):
-                _write_response(connection, respond(request), keep)?
+                write_response(connection, respond(request), keep)?
                 if not keep:
                     connection.close()
                     return
             case .Bad(status, reason):
-                _write_response(connection, Response(status=status, body=reason.encode()), False)?
+                write_response(connection, Response(status=status, body=reason.encode()), False)?
                 connection.close()
                 return
             case .Done:
@@ -175,7 +175,7 @@ def _answer_all(
                 return
 
 ## The next request on a connection.
-def _read_request(connection: Connection, timeout: Duration) -> _Read fails NetError:
+def read_request(connection: Connection, timeout: Duration) -> RequestRead fails NetError:
     first = connection.read_line(timeout=timeout)? else return .Done
     if first == "": return .Done
     parts = first.split(" ")
@@ -192,7 +192,7 @@ def _read_request(connection: Connection, timeout: Duration) -> _Read fails NetE
         if line == "": break
         size += line.len()
         lines += 1
-        if lines > _MOST_HEADERS or size > _MOST_HEADER_BYTES:
+        if lines > MOST_HEADERS or size > MOST_HEADER_BYTES:
             return .Bad(status=431, reason="the headers are too big")
         colon = line.find(":") else return .Bad(status=400, reason="a header has no `:`")
         headers[line[:colon].strip().lower()] = line[colon + 1:].strip()
@@ -205,7 +205,7 @@ def _read_request(connection: Connection, timeout: Duration) -> _Read fails NetE
             reason="the content length isn't a number",
         )
         if length < 0: return .Bad(status=400, reason="the content length is negative")
-        if length > _MOST_BODY: return .Bad(status=413, reason="the body is too big")
+        if length > MOST_BODY: return .Bad(status=413, reason="the body is too big")
         while body.len() < length:
             more = connection.read(length - body.len(), timeout=timeout)?
             if more.len() == 0: return .Bad(status=400, reason="the body ended early")
@@ -223,13 +223,13 @@ def _read_request(connection: Connection, timeout: Duration) -> _Read fails NetE
             if pair == "": continue
             equals = pair.find("=")
             if equals is None:
-                query[_unquoted(pair, True)] = ""
+                query[unquoted(pair, True)] = ""
             else:
-                query[_unquoted(pair[:equals], True)] = _unquoted(pair[equals + 1:], True)
+                query[unquoted(pair[:equals], True)] = unquoted(pair[equals + 1:], True)
     .Got(
         request=Request(
             method=parts[0],
-            path=_unquoted(path, False),
+            path=unquoted(path, False),
             query=query,
             headers=headers,
             body=body,
@@ -239,7 +239,7 @@ def _read_request(connection: Connection, timeout: Duration) -> _Read fails NetE
 
 ## Text from a URL, with `%41` the byte it names, and in a query, `+` a space. Anything that
 ## doesn't decode stays as it was.
-def _unquoted(text: str, plus: bool) -> str:
+def unquoted(text: str, plus: bool) -> str:
     if text.find("%") is None and (not plus or text.find("+") is None): return text
     raw = text.encode()
     mut out: list[int] = []
@@ -252,25 +252,25 @@ def _unquoted(text: str, plus: bool) -> str:
         elif (
             b == 37
             and at + 2 < raw.len()
-            and _hex_digit(raw[at + 1]) >= 0
-            and _hex_digit(raw[at + 2]) >= 0
+            and hex_digit(raw[at + 1]) >= 0
+            and hex_digit(raw[at + 2]) >= 0
         ):
-            out.append(_hex_digit(raw[at + 1]) * 16 + _hex_digit(raw[at + 2]))
+            out.append(hex_digit(raw[at + 1]) * 16 + hex_digit(raw[at + 2]))
             at += 3
         else:
             out.append(b)
             at += 1
     bytes(out).decode() else text
 
-def _hex_digit(b: int) -> int:
+def hex_digit(b: int) -> int:
     if b >= 48 and b <= 57: return b - 48
     if b >= 97 and b <= 102: return b - 87
     if b >= 65 and b <= 70: return b - 55
     -1
 
 ## Writes a response, saying the connection closes after it when it does.
-def _write_response(connection: Connection, response: Response, keep: bool) fails NetError:
-    mut head = f"HTTP/1.1 {response.status} {_reason(response.status)}\r\n"
+def write_response(connection: Connection, response: Response, keep: bool) fails NetError:
+    mut head = f"HTTP/1.1 {response.status} {reason_phrase(response.status)}\r\n"
     for name, value in response.headers.items():
         lower = name.lower()
         if lower != "content-length" and lower != "connection":
@@ -284,7 +284,7 @@ def _write_response(connection: Connection, response: Response, keep: bool) fail
         connection.write(response.body)?
 
 ## The words that go with a status.
-def _reason(status: int) -> str:
+def reason_phrase(status: int) -> str:
     match status:
         case 200:
             "OK"

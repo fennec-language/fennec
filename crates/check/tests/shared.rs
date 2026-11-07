@@ -326,6 +326,11 @@ fn a_with_source_lends_once_to_a_with_block() {
         "{errors}def opened(name: str) -> with str fails Oops:\n    _ = risky()?\n    lend name + \"!\" else:\n        pass\n\ndef sized(name: str) -> int fails Oops:\n    with opened(name)? as text:\n        return text.len()\n    0\n"
     );
     assert_eq!(problems(&good), empty);
+    // A last line after a block that always returns still takes the return type.
+    let after = format!(
+        "{errors}def opened(name: str) -> with str fails Oops:\n    lend name\n\ndef named(name: str) -> list[str] fails Oops:\n    with opened(name)? as text:\n        return [text]\n    []\n"
+    );
+    assert_eq!(problems(&after), empty);
     let found = |body: &str| -> Vec<String> {
         problems(&format!("{errors}{body}"))
             .iter()

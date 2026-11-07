@@ -105,7 +105,8 @@ pub(crate) fn narrowed(
             let allowed = limited.allowed.iter().filter(|name| ***name == **program).cloned().collect();
             Ok(Limited::to(Capability::Process, allowed))
         }
-        (Capability::Process, "run") => {
+        // `run.cwd` and the like are `run` with options, and run only what it may.
+        (Capability::Process, run) if run == "run" || run.starts_with("run.") => {
             let Some(Value::Str(program)) = args.first() else {
                 return call(Capability::Process, method, args);
             };

@@ -39,6 +39,13 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
             std::fs::write(path.as_ref(), data).map(|()| Value::Unit)
         }
         ("list_dir", [Value::Str(path)]) => return Ok(list_dir(path)),
+        ("walk", [Value::Str(path)]) => {
+            let mut found = Vec::new();
+            return Ok(match walk_into(path, &mut found) {
+                Ok(()) => paths_of(&found),
+                Err(err) => io_error(&err.to_string()),
+            });
+        }
         ("make_dir", [Value::Str(path)]) => std::fs::create_dir_all(path.as_ref()).map(|()| Value::Unit),
         ("remove", [Value::Str(path)]) => remove(path).map(|()| Value::Unit),
         ("metadata", [Value::Str(path)]) => std::fs::metadata(path.as_ref()).map(|found| {
@@ -52,8 +59,8 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
                 ],
             )
         }),
-        ("exists" | "read_text" | "write_text" | "read_bytes" | "write_bytes" | "list_dir" | "make_dir" | "remove"
-        | "metadata", _) => {
+        ("exists" | "read_text" | "write_text" | "read_bytes" | "write_bytes" | "list_dir" | "walk" | "make_dir"
+        | "remove" | "metadata", _) => {
             return Err(Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span));
         }
         _ => return Err(no_method(&Value::Capability(Capability::Fs), method, span)),
@@ -78,20 +85,43 @@ fn list_dir(folder: &str) -> Value {
         }
     }
     names.sort();
-    paths_in(folder, names)
+    paths_in(folder, &names)
 }
 
 /// The paths of the things called `names` in a folder.
-pub(crate) fn paths_in(folder: &str, names: Vec<String>) -> Value {
-    let paths = names.into_iter().map(|name| {
-        let text = if folder.is_empty() || folder.ends_with('/') {
-            format!("{folder}{name}")
-        } else {
-            format!("{folder}/{name}")
-        };
-        Value::made("Path", vec![("text", Value::str(&text))])
-    });
+pub(crate) fn paths_in(folder: &str, names: &[String]) -> Value {
+    paths_of(&names.iter().map(|name| joined(folder, name)).collect::<Vec<_>>())
+}
+
+/// A result holding a list of `Path`s.
+pub(crate) fn paths_of(texts: &[String]) -> Value {
+    let paths = texts.iter().map(|text| Value::made("Path", vec![("text", Value::str(text))]));
     Value::Ok(Rc::new(Value::list(paths.collect())))
+}
+
+/// The path of the thing called `name` in `folder`.
+pub(crate) fn joined(folder: &str, name: &str) -> String {
+    if folder.is_empty() || folder.ends_with('/') { format!("{folder}{name}") } else { format!("{folder}/{name}") }
+}
+
+/// Every path under `folder`, onto `found`: each folder's before what's in it, and each folder's
+/// things sorted by name, as `list_dir` gives them. A link to a folder is listed but not gone
+/// into, so a loop of links can't go on forever.
+fn walk_into(folder: &str, found: &mut Vec<String>) -> std::io::Result<()> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(folder)? {
+        names.push(entry?.file_name().to_string_lossy().into_owned());
+    }
+    names.sort();
+    for name in names {
+        let path = joined(folder, &name);
+        let is_folder = std::fs::symlink_metadata(&path)?.is_dir();
+        found.push(path.clone());
+        if is_folder {
+            walk_into(&path, found)?;
+        }
+    }
+    Ok(())
 }
 
 /// A failed result holding an `IoError`.

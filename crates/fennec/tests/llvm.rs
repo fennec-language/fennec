@@ -11,12 +11,11 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
 }
 
-/// Whether this can run: this isn't Windows, where `fennec build` doesn't link, LLVM's tools and
-/// the runtime library are there, and mutation testing isn't under way, which would go past its
-/// time limit, as in `executables.rs`. Where `FENNEC_EXPECT_LLVM` is set, as CI's Linux test
-/// jobs set it, LLVM is the backend that has to work, so what's missing fails the test rather
-/// than skipping it.
-fn ready() -> bool {
+/// Whether this can run: LLVM's tools and the runtime library are there, and mutation testing
+/// isn't under way, which would go past its time limit, as in `executables.rs`. Where
+/// `FENNEC_EXPECT_LLVM` is set, as CI's Linux and Windows test jobs set it, LLVM is the backend
+/// that has to work, so what's missing fails the test rather than skipping it.
+pub(crate) fn ready() -> bool {
     let tools = fennec_llvm::Tools::find();
     let runtime = runtime_built();
     if std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty()) {
@@ -4484,6 +4483,116 @@ fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
             .env("FENNEC_HOME", &dir),
     )?;
     std::fs::remove_dir_all(&dir)?;
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
+/// `process.run`'s options in compiled code: what the program reads, the folder it runs in and
+/// variables it gets, on their own and together, and a narrowed `Process` still running only
+/// what it may when given them.
+const PROCESS_OPTIONS: &str = "\
+def main(stdout: Stdout, process: Process, fs: Fs):
+    fs.make_dir(\"inside\").expect(\"it works\")
+    stdout.print(process.run(\"cat\", [], input=\"one\\ntwo\\n\").expect(\"it works\").stdout)
+    stdout.print(process.run(\"pwd\", [], cwd=\"inside\").expect(\"it works\").stdout.endswith(\"/inside\\n\"))
+    stdout.print(process.run(\"printenv\", [\"FENNEC_FOX\"], env={\"FENNEC_FOX\": \"red\"}).expect(\"it works\").stdout)
+    all = process.run(
+        \"sh\", [\"-c\", \"cat; pwd; printenv FENNEC_FOX\"], input=\"in\\n\", cwd=\"inside\", env={\"FENNEC_FOX\": \"red\"}
+    ).expect(\"it works\")
+    stdout.print(all.stdout.startswith(\"in\\n\"), all.stdout.endswith(\"/inside\\nred\\n\"))
+    match process.run(\"pwd\", [], cwd=\"no-such-folder\"):
+        case Ok(_):
+            stdout.print(\"ran it\")
+        case Err(error):
+            stdout.print(error.message)
+    only = process.only(\"cat\")
+    stdout.print(only.run(\"cat\", [], input=\"narrowed\\n\").expect(\"it works\").stdout)
+    match only.run(\"pwd\", [], cwd=\"inside\"):
+        case Ok(_):
+            stdout.print(\"ran it\")
+        case Err(error):
+            stdout.print(error.message)
+    fs.remove(\"inside\").expect(\"it works\")
+";
+
+#[test]
+fn process_options_without_the_interpreter_match_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("process-options")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, PROCESS_OPTIONS)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output()?;
+    let interpreted = crate::executables::fennec_command()
+        .args(["run", "--interp", &path(&program)])
+        .env("FENNEC_HOME", &dir)
+        .current_dir(&dir)
+        .output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "one\ntwo\n\nTrue\nred\n\nTrue True\nthere's no folder `no-such-folder` to run it in\nnarrowed\n\nthis Process can run only `cat`, so it can't run `pwd`\n"
+    );
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
+/// `fs.walk` in compiled code, on a real tree holding a link back to its own top, which is
+/// listed and not gone into, and through an `Fs` narrowed to one folder.
+const WALKED: &str = "\
+def main(stdout: Stdout, fs: Fs):
+    for path in fs.walk(\"tree\").expect(\"it works\"):
+        stdout.print(path.text, fs.metadata(path).expect(\"it works\").is_dir)
+    only = fs.only(\"tree/b\")
+    stdout.print([path.text for path in only.walk(\"tree/b\").expect(\"it works\")])
+    match only.walk(\"tree\"):
+        case Ok(_):
+            stdout.print(\"walked it\")
+        case Err(_):
+            stdout.print(\"refused\")
+    match fs.walk(\"no such folder\"):
+        case Ok(_):
+            stdout.print(\"walked it\")
+        case Err(error):
+            stdout.print(error.reason != \"\")
+";
+
+#[test]
+#[cfg(unix)]
+fn walking_a_folder_without_the_interpreter_matches_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("walking")?;
+    for file in ["tree/b/c/deep.txt", "tree/a.txt", "tree/b/z.txt"] {
+        let at = dir.join(file);
+        std::fs::create_dir_all(at.parent().ok_or_else(|| std::io::Error::other("no folder"))?)?;
+        std::fs::write(at, "")?;
+    }
+    std::os::unix::fs::symlink("..", dir.join("tree/b/up"))?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, WALKED)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output()?;
+    let interpreted = crate::executables::fennec_command()
+        .args(["run", "--interp", &path(&program)])
+        .env("FENNEC_HOME", &dir)
+        .current_dir(&dir)
+        .output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "tree/a.txt False\ntree/b True\ntree/b/c True\ntree/b/c/deep.txt False\ntree/b/up True\ntree/b/z.txt False\n\
+         [\"tree/b/c\", \"tree/b/c/deep.txt\", \"tree/b/up\", \"tree/b/z.txt\"]\nrefused\nTrue\n"
+    );
     assert_eq!(outcome(&ran), outcome(&interpreted));
     Ok(())
 }

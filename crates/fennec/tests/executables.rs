@@ -34,9 +34,10 @@ pub(crate) fn runtime_built() -> bool {
     })
 }
 
-/// The runtime library's file name, as Cargo names a static library here.
-pub(crate) fn runtime_file() -> &'static str {
-    if cfg!(windows) { "fennec_runtime.lib" } else { "libfennec_runtime.a" }
+/// The runtime library's file name, as Cargo names a static library on every platform Fennec
+/// builds for, Windows's GNU target among them.
+pub(crate) const fn runtime_file() -> &'static str {
+    "libfennec_runtime.a"
 }
 
 /// Whether the runtime library is beside the `fennec` these tests run, which is where it's looked
@@ -74,7 +75,7 @@ fn runtime_variant_built(features: &str, folder: &str, name: &str) -> bool {
         .status()
         .is_ok_and(|status| status.success());
     let library = own.join(profile).join(runtime_file());
-    let file = if cfg!(windows) { format!("{name}.lib") } else { format!("lib{name}.a") };
+    let file = format!("lib{name}.a");
     // Copied under another name and then renamed, so a build linking it at that moment, in this
     // test run or another, finds the old library or the new one and never half of one.
     let copying = beside.join(format!("{file}.{}.copying", std::process::id()));
@@ -186,7 +187,8 @@ const FAILS_DIFFERENTLY: &[(&str, &str)] = &[
 #[test]
 #[cfg_attr(windows, ignore = "on Windows, `llvm.rs` builds and runs the examples")]
 fn failing_examples_fail_the_same_way_as_executables() {
-    if under_mutants() {
+    // `fennec build` is LLVM's, so this runs where LLVM's tests do.
+    if under_mutants() || !crate::llvm::ready() {
         return;
     }
     assert!(runtime_built(), "couldn't build the runtime library");

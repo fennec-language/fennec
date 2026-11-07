@@ -81,6 +81,18 @@ impl Interp<'_> {
                     None => Err(no_method(&receiver, method, span)),
                 };
             }
+            // A capability declared in std, like `Fs` in `fs.fen`, has methods written in Fennec
+            // as well as its builtin ones, as `Connection` does.
+            Value::Capability(_) => {
+                // Nothing imports the module a capability given to `main` is declared in.
+                let name = receiver.type_name();
+                self.load_std_providing(&name)?;
+                let function = self.type_info(&name).and_then(|info| info.methods.get(method).cloned());
+                if let Some(function) = function {
+                    drop(receiver);
+                    return self.call_method(object, &function, args, span);
+                }
+            }
             _ => {}
         }
         if let Some(function) = self.built_in_method(&receiver, method) {

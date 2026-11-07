@@ -5,7 +5,7 @@ use super::Module;
 
 pub(crate) const MODULE: Module = Module {
     name: "fs",
-    names: &["Fs", "Metadata"],
+    names: &["Fs", "File", "Metadata"],
     source: include_str!("fs.fen"),
     gives: &[("metadata", "Metadata"), ("list_dir", "Path"), ("walk", "Path")],
 };

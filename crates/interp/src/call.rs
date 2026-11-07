@@ -71,6 +71,15 @@ impl Interp<'_> {
                     let args = self.eval_args(args)?;
                     return self.call_value(&function, args, span);
                 }
+                // A std source written in where it's used, like `fs.create`, can name a std type
+                // that nothing has imported, like `File`.
+                if let ExprKind::Name(param) = &object.kind
+                    && object.span.in_prelude()
+                    && self.frame.get(param).is_none()
+                    && self.lookup(param, object.span).is_err()
+                {
+                    self.load_std_providing(param)?;
+                }
                 // It passed the checker and is nothing here, so it's a type parameter, and types
                 // don't exist while this runs.
                 if let ExprKind::Name(param) = &object.kind

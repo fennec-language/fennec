@@ -222,9 +222,9 @@ fn a_run_checking_only_what_it_reaches_compiles_the_same() {
                     loop {
                         let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some(path) = paths.get(at) else { return };
-                        if let Some(difference) = compiled_differently(path, cache, &format!("reached-{at}"))
-                        {
-                            differ.lock().unwrap().push(difference);
+                        match compiled_differently(path, cache, &format!("reached-{at}")) {
+                            Ok(None) => {}
+                            Ok(Some(difference)) | Err(difference) => differ.lock().unwrap().push(difference),
                         }
                     }
                 })
@@ -238,31 +238,36 @@ fn a_run_checking_only_what_it_reaches_compiles_the_same() {
 
 /// How a program compiles differently as a whole and checking only what it reaches, if it does,
 /// with its two runs at once. A run of it as a whole that fails leaves nothing to compare.
-fn compiled_differently(path: &Path, cache: &fennec_build::Cache, name: &str) -> Option<String> {
-    let source = fs::read_to_string(path).unwrap();
-    let mut module = fennec_syntax::parse(&source).unwrap();
-    let signatures = fennec_check::check_to_run(&mut module).unwrap();
+fn compiled_differently(
+    path: &Path,
+    cache: &fennec_build::Cache,
+    name: &str,
+) -> Result<Option<String>, String> {
+    let shown = path.display();
+    let source = fs::read_to_string(path).map_err(|err| format!("{shown}: {err}"))?;
+    let mut module = fennec_syntax::parse(&source).map_err(|err| format!("{shown}: {}", err.message))?;
+    let signatures = fennec_check::check_to_run(&mut module).map_err(|_| format!("{shown} doesn't check"))?;
     let (whole, reached) = std::thread::scope(|scope| {
         let whole = std::thread::Builder::new()
             .stack_size(1 << 28)
-            .spawn_scoped(scope, || fennec_jit::run_with_report(&module, &mut Vec::new()))
-            .unwrap();
+            .spawn_scoped(scope, || fennec_jit::run_with_report(&module, &mut Vec::new()).ok())
+            .map_err(|err| err.to_string())?;
         let inputs = fennec_interp::Inputs::default();
         let reached =
             fennec_jit::run_cached(&module, Some(&signatures), &mut Vec::new(), inputs, cache, name);
-        (whole.join().unwrap(), reached)
-    });
-    let whole = whole.ok()?;
-    let reached = reached.unwrap();
+        let whole = whole.join().map_err(|_| format!("{shown}: the run as a whole panicked"))?;
+        Ok::<_, String>((whole, reached))
+    })?;
+    let Some(whole) = whole else { return Ok(None) };
+    let reached = reached.map_err(|_| format!("{shown}: the run checking what it reaches failed"))?;
     // A std iter the reached run fused away, and only that, is left out of the whole one.
     let mut whole_interpreted = whole.interpreted.clone();
     whole_interpreted
         .retain(|key| !FUSED_STD_ITERS.contains(&key.as_str()) || reached.interpreted.contains(key));
     let reached = (reached.interpreted, reached.handed_over, reached.with_frames);
     let whole = (whole_interpreted, whole.handed_over, whole.with_frames);
-    (reached != whole).then(|| {
-        format!("{} compiled differently:\n  reached {reached:?}\n  whole {whole:?}", path.display())
-    })
+    Ok((reached != whole)
+        .then(|| format!("{shown} compiled differently:\n  reached {reached:?}\n  whole {whole:?}")))
 }
 
 #[test]

@@ -235,7 +235,7 @@ fn capabilities_and_errors_need_no_import() {
         def read(fs: Fs, path: str):
             match fs.read_text(path):
                 case Ok(text): text
-                case IoError(reason): reason
+                case IoError(reason=reason): reason
 
         def main(stdout: Stdout, fs: Fs, clock: Clock):
             stdout.print(read(fs, 'a.txt'), InvalidValue('no'), ParseError('no', 1, 1), clock.now())

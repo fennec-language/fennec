@@ -30,6 +30,7 @@ macro_rules! modules {
 }
 
 modules! {
+    base64,
     cli,
     collections,
     crypto,

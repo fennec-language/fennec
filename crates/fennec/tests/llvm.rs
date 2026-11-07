@@ -7999,7 +7999,7 @@ fn parallel_bodies_that_wait_match_the_jit() -> std::io::Result<()> {
     }
     same_as_the_jit(
         "parallel_waiting",
-        r#"from std.time import Clock
+        r"from std.time import Clock
 
 def rest(clock: Clock, x: int) -> int:
     clock.sleep(1ms)
@@ -8013,7 +8013,7 @@ def main(stdout: Stdout, clock: Clock):
     rested = [rest(clock, x) for x in parallel(xs)]
     doubled = [x * 2 for x in parallel(xs)]
     stdout.print(xs, rested, doubled, sum(rest(clock, x) for x in parallel(xs)))
-"#,
+",
     )
 }
 

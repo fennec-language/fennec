@@ -29,7 +29,7 @@ test "the four forms"():
 test "case folds the full way"():
     assert unicode.casefold("Straße") == "strasse"
     assert unicode.casefold("ΣΑΣ") == "σασ"
-    assert same_name("Ångström", b="ångström")
+    assert same_name("Ångström", second="ångström")
 
 test "categories"():
     for c, category in [

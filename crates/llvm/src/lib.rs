@@ -49,6 +49,7 @@ mod json;
 mod kinds;
 mod lists;
 mod locks;
+mod native;
 mod parallel;
 mod random;
 mod regex;
@@ -84,6 +85,9 @@ pub struct Shared {
     pub elements: BTreeMap<String, ListItem>,
     /// Each boxed type's symbol for its shape's number, and its layout's number.
     pub shapes: BTreeMap<String, u32>,
+    /// The boxed types whose blocks generated code makes and frees itself, outside the runtime's
+    /// table: see `native`.
+    pub native: BTreeSet<u32>,
     /// Each kind of dict's symbol for its shape's number, and what it holds.
     pub dicts: BTreeMap<String, (Word, Word)>,
     /// Whether each function sets a flag saying it ran, for a test to say what it ran. A function

@@ -4803,6 +4803,49 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A release keeps LLVM's tools in `llvm/bin` beside `fennec`, and builds with them where there's
+/// no Rust toolchain to ask: here, a copy of `fennec` and its runtimes with nothing but the
+/// system's own folders on `PATH`. Without that folder, the same build can't find them.
+#[test]
+#[cfg(unix)]
+fn a_build_finds_llvm_s_tools_beside_fennec() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("shipped")?;
+    let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
+    for entry in std::fs::read_dir(fennec.parent().unwrap_or_else(|| Path::new(".")))? {
+        let path = entry?.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        if name == "fennec" || name.starts_with("libfennec_runtime") {
+            std::fs::copy(&path, dir.join(&name))?;
+        }
+    }
+    let tools = fennec_llvm::Tools::find().map_err(std::io::Error::other)?;
+    let program = dir.join("hello.fen");
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(\"built with what ships\")\n")?;
+    let build = |home: &str| {
+        Command::new(dir.join("fennec"))
+            .args(["build", "--llvm", &program.to_string_lossy(), "-o", &dir.join("hello").to_string_lossy()])
+            .env("PATH", "/usr/bin:/bin")
+            .env("FENNEC_HOME", dir.join(home))
+            .env_remove("FENNEC_LLVM_BIN")
+            .output()
+    };
+    let without = build("home-without")?;
+    std::fs::create_dir_all(dir.join("llvm/bin"))?;
+    for tool in ["opt", "llc", "llvm-link"] {
+        std::os::unix::fs::symlink(tools.folder().join(tool), dir.join("llvm/bin").join(tool))?;
+    }
+    let with = build("home-with")?;
+    let ran = Command::new(dir.join("hello")).output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!without.status.success(), "it built with no tools beside it and no toolchain");
+    assert!(with.status.success(), "{}", String::from_utf8_lossy(&with.stderr));
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "built with what ships\n");
+    Ok(())
+}
+
 /// With nothing asked, a program whose code doesn't cross into the interpreter is built with the
 /// runtime that leaves it out, and one that does is built with the runtime that has it, and runs.
 #[test]

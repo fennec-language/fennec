@@ -1,0 +1,4 @@
+select name from players where name = ? and score > ?
+["str ash'; drop table players; --", "int 10"]
+score desc
+name >10

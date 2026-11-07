@@ -292,6 +292,7 @@ extend Parser:
             case .Duration(nanos): ExprKind.Duration(nanos)
             case .Str(text): ExprKind.Str(text)
             case .FStr(parts): ExprKind.FStr(fstring_parts(parts)?)
+            case .TStr(parts): return template(parts, span)?
             case .Name(name): ExprKind.Name(name)
             case .Keyword(word): self.keyword_atom(word, span)?
             case .Punct(text):
@@ -410,23 +411,90 @@ def fstring_parts(parts: list[FPart]) -> list[FStrPart]:
         match part:
             case .Text(text): parsed.append(FStrPart.Text(text))
             case .Code(source, offset, spec):
-                if source.strip() == "":
-                    fail Diagnostic(
-                        message="this f-string has an empty `{}`",
-                        span=Span(start=offset, end=offset + 1),
-                        help="put an expression inside, or write `{{` for a literal brace",
-                    )
-                # Lexed on its own, a leading space would read as indentation.
-                code = source.lstrip()
-                skipped = byte_length(source[:source.len() - code.len()])
-                mut parser = Parser.over(lex(code, offset + skipped)?)
-                expr = parser.expr()?
-                _ = parser.eat(.Newline)
-                if not parser.at(.Eof):
-                    fail parser.unexpected("`}`")
-                parser.check_old_mut()?
-                parsed.append(FStrPart.Code(expr, spec))
+                parsed.append(FStrPart.Code(interpolated(source, offset, "f-string")?, spec))
     parsed
+
+## The expression written in an f-string's or template's `{}`, from the source the lexer kept.
+def interpolated(source: str, offset: int, what: str) -> Expr:
+    if source.strip() == "":
+        fail Diagnostic(
+            message=f"this {what} has an empty `{{}}`",
+            span=Span(start=offset, end=offset + 1),
+            help="put an expression inside, or write `{{` for a literal brace",
+        )
+    # Lexed on its own, a leading space would read as indentation.
+    code = source.lstrip()
+    skipped = byte_length(source[:source.len() - code.len()])
+    mut parser = Parser.over(lex(code, offset + skipped)?)
+    expr = parser.expr()?
+    _ = parser.eat(.Newline)
+    if not parser.at(.Eof):
+        fail parser.unexpected("`}`")
+    parser.check_old_mut()?
+    expr
+
+## A template string's parts, written in as the `Template` call that builds it, holding the
+## text between each `{}` and each value apart. Mirrors `crates/syntax/src/parser/template.rs`.
+def template(parts: list[FPart], span: Span) -> Expr:
+    mut strings = list[str]()
+    mut values = list[Expr]()
+    mut expressions = list[str]()
+    mut specs = list[str]()
+    mut text = ""
+    for part in parts:
+        match part:
+            case .Text(more): text += more
+            case .Code(source, offset, spec):
+                strings.append(text)
+                text = ""
+                values.append(interpolated(source, offset, "template")?)
+                expressions.append(source)
+                specs.append(spec else "")
+    strings.append(text)
+    mut made = Made(span=span)
+    # The values come first, so what's said about them, like a list that mixes types, points at
+    # nearly the whole string.
+    values_list = Expr(kind=.List(values), span=made.next())
+    callee = Expr(kind=.Name("Template"), span=made.next())
+    strings_list = made.texts(strings)
+    expressions_list = made.texts(expressions)
+    specs_list = made.texts(specs)
+    args = [
+        Arg(name="strings", is_mut=False, value=strings_list),
+        Arg(name="values", is_mut=False, value=values_list),
+        Arg(name="expressions", is_mut=False, value=expressions_list),
+        Arg(name="format_specs", is_mut=False, value=specs_list),
+    ]
+    Expr(kind=.Call(callee, args), span=span)
+
+## Spans for the expressions a template string is written in as, which nothing's written for:
+## first those starting where it starts, longest first, then those ending where it ends, then
+## the empty ones at each end. None is the span of anything written in the string's `{}`s.
+struct Made:
+    span: Span
+    at = 0
+
+    def next(ref self) -> Span:
+        start = self.span.start
+        end = self.span.end
+        inner = max(end - start - 1, 0)
+        at = self.at
+        self.at += 1
+        if at < inner:
+            return Span(start=start, end=start + inner - at)
+        if at < 2 * inner:
+            return Span(start=start + 1 + at - inner, end=end)
+        if at == 2 * inner:
+            return Span(start=start, end=start)
+        Span(start=end, end=end)
+
+    ## A list of text written in the source, as string literals.
+    def texts(ref self, texts: list[str]) -> Expr:
+        span = self.next()
+        mut items = list[Expr]()
+        for text in texts:
+            items.append(Expr(kind=.Str(text), span=self.next()))
+        Expr(kind=.List(items), span=span)
 
 ## Whether a statement leaves where it is: what an `else:` block has to end with.
 def leaves_by(kind: StmtKind) -> bool:

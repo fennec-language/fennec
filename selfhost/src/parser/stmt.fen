@@ -293,7 +293,7 @@ def starts_value(tok: Tok) -> bool:
         case .Float(_): True
         case .Duration(_): True
         case .Str(_): True
-        case .FStr(_): True
+        case .FStr(_) | .TStr(_): True
         case .Keyword(word): word in ["True", "False", "None", "not"]
         case .Punct(text): text in ["(", "[", "{", ".", "-"]
         case _: False

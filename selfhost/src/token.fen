@@ -17,6 +17,8 @@ enum Tok:
     Duration(nanos: int)
     Str(text: str)
     FStr(parts: list[FPart])
+    ## A template string, `t"..."`: lexed like an f-string, built as a `Template`.
+    TStr(parts: list[FPart])
     ## A hard keyword, like `def`. Soft keywords such as `match` stay names.
     Keyword(word: str)
     Punct(text: str)

@@ -40,6 +40,7 @@ def describe_tok(tok: Tok) -> str:
         case .Duration(nanos): f"duration {nanos}"
         case .Str(text): f"str {quoted(text)}"
         case .FStr(parts): "fstr " + " | ".join([describe_fpart(part) for part in parts])
+        case .TStr(parts): "tstr " + " | ".join([describe_fpart(part) for part in parts])
         case .Keyword(word): f"keyword {word}"
         case .Punct(text): f"punct {text}"
         case .Newline: "newline"

@@ -1,0 +1,7 @@
+error: `strings` should be a list[LiteralStr], but this is a list[str]
+  --> examples/errors/template_built_by_hand.fen:10:41
+   |
+10 |     stdout.print(count(Template(strings=texts, values=[], expressions=[], format_specs=[])))
+   |                                         ^^^^^
+   |
+   = help: a `LiteralStr` is text written in quotes here in the source, or such text joined with `+`; an f-string or a `str` made while the program runs isn't one, so pass what changes as a value instead

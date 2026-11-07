@@ -315,6 +315,7 @@ fn starts_value(tok: &Tok) -> bool {
             | Tok::Duration(_)
             | Tok::Str(_)
             | Tok::FStr(_)
+            | Tok::TStr(_)
             | Tok::Kw(Kw::True | Kw::False | Kw::None | Kw::Not)
             | Tok::P(Punct::LParen | Punct::LBracket | Punct::LBrace | Punct::Dot | Punct::Minus)
     )

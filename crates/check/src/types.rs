@@ -20,6 +20,11 @@ pub enum Type {
     Int,
     Float,
     Str,
+    /// `LiteralStr`: a `str` written in the source as a literal, or literals joined with `+`,
+    /// never one made while the program runs. It goes anywhere a `str` does, but a `str` never
+    /// goes where it's asked for. Only the checker has it: what's given to the engines writes
+    /// it as `str`.
+    LiteralStr,
     /// Binary data: a run of bytes, each an int from 0 to 255.
     Bytes,
     List(Box<Type>),
@@ -106,6 +111,7 @@ impl Type {
             Type::Int => "int".to_owned(),
             Type::Float => "float".to_owned(),
             Type::Str => "str".to_owned(),
+            Type::LiteralStr => "LiteralStr".to_owned(),
             Type::Bytes => "bytes".to_owned(),
             Type::List(_) => "list".to_owned(),
             Type::Buffer(_) => "Buffer".to_owned(),
@@ -125,6 +131,18 @@ impl Type {
         }
     }
 
+    /// The same type with each `LiteralStr` in it a `str`: what a value is once it's used for
+    /// anything but going where a `LiteralStr` is asked for, and what the engines are given.
+    #[must_use]
+    pub fn without_literal(&self) -> Type {
+        self.map(&mut |part| matches!(part, Type::LiteralStr).then_some(Type::Str))
+    }
+
+    /// Whether a `LiteralStr` is anywhere in this type.
+    pub(crate) fn has_literal(&self) -> bool {
+        matches!(self, Type::LiteralStr) || self.children().iter().any(|child| child.has_literal())
+    }
+
     /// Whether this is a list, str, bytes, dict or set: something with a length.
     pub(crate) fn is_collection(&self) -> bool {
         matches!(
@@ -133,6 +151,7 @@ impl Type {
                 | Type::Buffer(_)
                 | Type::Array(..)
                 | Type::Str
+                | Type::LiteralStr
                 | Type::Bytes
                 | Type::Dict(..)
                 | Type::Set(_)
@@ -205,7 +224,7 @@ impl Type {
             Type::Float => Some("float"),
             Type::Bool => Some("bool"),
             Type::Bytes => Some("bytes"),
-            Type::Str => Some("str"),
+            Type::Str | Type::LiteralStr => Some("str"),
             Type::List(_) => Some("list"),
             Type::Buffer(_) => Some("Buffer"),
             Type::Array(..) => Some("array"),
@@ -248,6 +267,15 @@ impl Type {
         }
     }
 
+    /// A type written as a plain name, with nothing in brackets: `int`, `float`, `bool`, `str`,
+    /// `LiteralStr` or `bytes`.
+    pub(crate) fn plain(name: &str) -> Option<Type> {
+        match name {
+            "LiteralStr" => Some(Type::LiteralStr),
+            name => Type::built_in(name),
+        }
+    }
+
     /// The built-in type `self` is in a method the standard library gives it, like `str`.
     pub(crate) fn built_in(name: &str) -> Option<Type> {
         match name {
@@ -282,7 +310,7 @@ impl Type {
             items.iter().map(Type::source).collect::<Option<Vec<_>>>().map(|items| items.join(", "))
         };
         Some(match self {
-            Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes => self.kind(),
+            Type::Int | Type::Float | Type::Bool | Type::Str | Type::LiteralStr | Type::Bytes => self.kind(),
             Type::None => "None".to_owned(),
             Type::List(item) => format!("list[{}]", item.source()?),
             Type::Buffer(item) => format!("Buffer[{}]", item.source()?),

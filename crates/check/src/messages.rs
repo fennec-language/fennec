@@ -154,6 +154,10 @@ pub(crate) fn needless_mut(function: &str, span: Span) -> Diagnostic {
 }
 
 /// A value of the wrong type for a parameter or field.
+/// What a `LiteralStr` is, for where a `str` was given instead.
+pub(crate) const LITERAL_HELP: &str = "a `LiteralStr` is text written in quotes here in the source, or such text joined with `+`; \
+     an f-string or a `str` made while the program runs isn't one, so pass what changes as a value instead";
+
 pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -> Diagnostic {
     if actual.maybe_none() && !expected.maybe_none() {
         return might_be_none(span);
@@ -164,6 +168,7 @@ pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -
     let diagnostic =
         Diagnostic::new(format!("{what} should be {}, but this is {}", a(expected), a(actual)), span);
     match (expected, actual) {
+        (expected, _) if expected.has_literal() => diagnostic.with_help(LITERAL_HELP),
         (Type::Float, Type::Int) => {
             diagnostic.with_help("write it with a decimal point, like `1.0`, or convert it with float(...)")
         }

@@ -57,6 +57,10 @@ fn tok(tok: &Tok) -> String {
             let parts: Vec<String> = parts.iter().map(fpart).collect();
             format!("fstr {}", parts.join(" | "))
         }
+        Tok::TStr(parts) => {
+            let parts: Vec<String> = parts.iter().map(fpart).collect();
+            format!("tstr {}", parts.join(" | "))
+        }
         Tok::Kw(kw) => format!("keyword {}", kw.text()),
         Tok::P(punct) => format!("punct {}", punct.text()),
         Tok::Newline => "newline".to_owned(),

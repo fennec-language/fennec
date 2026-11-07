@@ -390,6 +390,7 @@ impl Parser {
             Tok::Duration(nanos) => ExprKind::Duration(nanos),
             Tok::Str(text) => ExprKind::Str(text),
             Tok::FStr(parts) => ExprKind::FStr(fstring_parts(parts)?),
+            Tok::TStr(parts) => return super::template::template(parts, span),
             Tok::Kw(Kw::True) => ExprKind::Bool(true),
             Tok::Kw(Kw::False) => ExprKind::Bool(false),
             Tok::Kw(Kw::None) => ExprKind::None,
@@ -505,30 +506,35 @@ fn fstring_parts(parts: Vec<FPart>) -> Result<Vec<FStrPart>, Diagnostic> {
         .map(|part| match part {
             FPart::Text(text) => Ok(FStrPart::Text(text)),
             FPart::Expr { source, offset, spec } => {
-                if source.trim().is_empty() {
-                    return Err(Diagnostic::new(
-                        "this f-string has an empty `{}`",
-                        Span { start: offset, end: offset + 1 },
-                    )
-                    .with_help("put an expression inside, or write `{{` for a literal brace"));
-                }
-                // Lexed on its own, a leading space would read as indentation.
-                let trimmed = source.trim_start();
-                let skipped = source.len() - trimmed.len();
-                let offset = Span::new(skipped, skipped).shifted(offset).start;
-                let mut parser = Parser::new(lex(trimmed, offset)?);
-                let expr = parser.expr()?;
-                parser.eat(&Tok::Newline);
-                if !parser.at(&Tok::Eof) {
-                    return Err(parser.unexpected("`}`"));
-                }
-                if let Some(old_mut) = parser.old_mut_error() {
-                    return Err(old_mut);
-                }
-                Ok(FStrPart::Expr { expr, spec })
+                Ok(FStrPart::Expr { expr: interpolated(&source, offset, "f-string")?, spec })
             }
         })
         .collect()
+}
+
+/// The expression written in an f-string's or template's `{}`, from the source the lexer kept.
+pub(super) fn interpolated(source: &str, offset: u32, what: &str) -> Result<Expr, Diagnostic> {
+    if source.trim().is_empty() {
+        return Err(Diagnostic::new(
+            format!("this {what} has an empty `{{}}`"),
+            Span { start: offset, end: offset + 1 },
+        )
+        .with_help("put an expression inside, or write `{{` for a literal brace"));
+    }
+    // Lexed on its own, a leading space would read as indentation.
+    let trimmed = source.trim_start();
+    let skipped = source.len() - trimmed.len();
+    let offset = Span::new(skipped, skipped).shifted(offset).start;
+    let mut parser = Parser::new(lex(trimmed, offset)?);
+    let expr = parser.expr()?;
+    parser.eat(&Tok::Newline);
+    if !parser.at(&Tok::Eof) {
+        return Err(parser.unexpected("`}`"));
+    }
+    if let Some(old_mut) = parser.old_mut_error() {
+        return Err(old_mut);
+    }
+    Ok(expr)
 }
 
 /// What a default that leaves parses to: a `match` with one case, holding the statements that

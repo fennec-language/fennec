@@ -17,6 +17,8 @@ pub(crate) enum Tok {
     Duration(i64),
     Str(String),
     FStr(Vec<FPart>),
+    /// A template string, `t"..."`: lexed like an f-string, built as a `Template`.
+    TStr(Vec<FPart>),
     Kw(Kw),
     P(Punct),
     Newline,

@@ -22,11 +22,16 @@ pub(crate) enum Member {
 impl FnCx<'_> {
     /// An expression's type, recorded for the typed tree.
     pub(crate) fn expr(&mut self, expr: &Expr) -> Type {
-        let ty = match self.expecting.take() {
+        let expected = self.expecting.take();
+        // A `LiteralStr` is one only where one is asked for: used for anything else, like
+        // `name = literal`, it's a `str`.
+        let literal = expected.as_ref().is_some_and(|expected| self.checker.settled(expected).has_literal());
+        let ty = match expected {
             Some(expected) => self.expected_kind(expr, &expected),
             None => self.expr_kind(expr),
         };
         let ty = self.checker.settled(&ty);
+        let ty = if literal { ty } else { ty.without_literal() };
         if crate::lend::lent(&ty).is_some()
             && matches!(expr.kind, ExprKind::Call { .. } | ExprKind::Try { .. })
             && !self.with_values.contains(&(expr.span.start, expr.span.end))
@@ -84,20 +89,7 @@ impl FnCx<'_> {
                 let (left, right) = (self.expr(lhs), self.expr(rhs));
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
-            ExprKind::Cond { then, cond, otherwise } => {
-                self.condition(cond, "if");
-                self.track(cond);
-                let before = self.snapshot();
-                self.narrow(&not_none(cond, true));
-                self.narrow_members(&crate::stmt::members(cond, true));
-                let then = self.expr(then);
-                self.restore(&before);
-                self.narrow(&not_none(cond, false));
-                self.narrow_members(&crate::stmt::members(cond, false));
-                let otherwise = self.expr(otherwise);
-                self.restore(&before);
-                self.join_or_report(&[then, otherwise], span, "the two sides of this `if` give")
-            }
+            ExprKind::Cond { then, cond, otherwise } => self.cond_value((then, cond, otherwise), None, span),
             ExprKind::Else { value, default } => self.else_value(value, default, span),
             ExprKind::Try { value, context } => self.try_value(value, context.as_deref(), span),
             ExprKind::Call { callee, args } => self.call(callee, args, span),
@@ -396,6 +388,36 @@ impl FnCx<'_> {
         }
     }
 
+    /// `a if c else b`, each side narrowed by the condition. Where a `LiteralStr` is `expected`,
+    /// each side is checked as one, and it's one when both are.
+    pub(crate) fn cond_value(
+        &mut self,
+        (then, cond, otherwise): (&Expr, &Expr, &Expr),
+        expected: Option<&Type>,
+        span: Span,
+    ) -> Type {
+        self.condition(cond, "if");
+        self.track(cond);
+        let before = self.snapshot();
+        let side = |cx: &mut Self, value: &Expr, holds: bool| {
+            cx.narrow(&not_none(cond, holds));
+            cx.narrow_members(&crate::stmt::members(cond, holds));
+            let ty = match expected {
+                Some(expected) => cx.expr_as(value, expected),
+                None => cx.expr(value),
+            };
+            cx.restore(&before);
+            ty
+        };
+        let then = side(self, then, true);
+        let otherwise = side(self, otherwise, false);
+        if matches!((&then, &otherwise), (Type::LiteralStr, Type::LiteralStr)) {
+            return Type::LiteralStr;
+        }
+        let sides = [then.without_literal(), otherwise.without_literal()];
+        self.join_or_report(&sides, span, "the two sides of this `if` give")
+    }
+
     pub(crate) fn binary(
         &mut self,
         op: BinOp,
@@ -405,6 +427,11 @@ impl FnCx<'_> {
         spans: (Span, Span),
     ) -> Type {
         let (left, right) = self.settle_sides(left, right);
+        // Literals joined are a literal; with anything else a `LiteralStr` is a `str`.
+        if op == BinOp::Add && matches!((&left, &right), (Type::LiteralStr, Type::LiteralStr)) {
+            return Type::LiteralStr;
+        }
+        let (left, right) = (left.without_literal(), right.without_literal());
         match op {
             BinOp::Eq | BinOp::NotEq => {
                 if !self.own_equality(&left, &right, op, span, spans.1) {

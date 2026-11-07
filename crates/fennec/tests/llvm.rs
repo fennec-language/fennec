@@ -12,10 +12,10 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
 }
 
 /// Whether this can run: LLVM's tools and the runtime library are there, and mutation testing
-/// isn't under way, which would go past its time limit, as in `executables.rs`. Where `FENNEC_EXPECT_LLVM` is set, as CI's Linux test
-/// jobs set it, LLVM is the backend that has to work, so what's missing fails the test rather
-/// than skipping it.
-fn ready() -> bool {
+/// isn't under way, which would go past its time limit, as in `executables.rs`. Where
+/// `FENNEC_EXPECT_LLVM` is set, as CI's Linux and Windows test jobs set it, LLVM is the backend
+/// that has to work, so what's missing fails the test rather than skipping it.
+pub(crate) fn ready() -> bool {
     let tools = fennec_llvm::Tools::find();
     let runtime = runtime_built();
     if std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty()) {

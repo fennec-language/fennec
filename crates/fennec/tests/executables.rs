@@ -187,7 +187,8 @@ const FAILS_DIFFERENTLY: &[(&str, &str)] = &[
 #[test]
 #[cfg_attr(windows, ignore = "on Windows, `llvm.rs` builds and runs the examples")]
 fn failing_examples_fail_the_same_way_as_executables() {
-    if under_mutants() {
+    // `fennec build` is LLVM's, so this runs where LLVM's tests do.
+    if under_mutants() || !crate::llvm::ready() {
         return;
     }
     assert!(runtime_built(), "couldn't build the runtime library");

@@ -277,7 +277,7 @@ def main(stdout: Stdout):
     units[ash].health -= 10
     stdout.print(units[ash].health, units[vex].target == ash)
 
-    _ = units.remove(ash)
+    units.remove(ash)
     # None: a stale Id finds nothing
     stdout.print(units.get(ash))
 ```

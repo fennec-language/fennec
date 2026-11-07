@@ -424,7 +424,7 @@ fn failing_tests_report_the_same_natively_and_in_the_interpreter() {
             test \"passes\":\n    assert double(2) == 4\n\n\
             test \"compares wrongly\":\n    assert double(2) == 5\n\n\
             test \"plain condition\":\n    assert double(2) > 5 or double(1) == 9\n\n\
-            test \"fails with an error\":\n    _ = risky(3)?\n    assert True\n\n\
+            test \"fails with an error\":\n    risky(3)?\n    assert True\n\n\
             test \"overflows\":\n    big = 9223372036854775807\n    assert double(big) == 0\n\n\
             test \"indexes past the end\":\n    items = [1]\n    assert items[double(2)] == 1\n\n\
             test \"passes after failures\":\n    assert double(1) == 2\n";

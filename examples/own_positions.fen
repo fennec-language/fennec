@@ -82,7 +82,7 @@ def main(stdout: Stdout):
     mut queue = Deque[int]()
     for i in range(5):
         queue.append(i)
-    _ = queue.popleft()
+    queue.popleft()
     queue.append(9)
     for ref item in queue:
         item *= 2

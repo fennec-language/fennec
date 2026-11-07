@@ -18,7 +18,7 @@ extend Parser:
     def match_expr(ref self) -> Expr:
         start = self.advance().span
         subject = self.or_expr()?
-        _ = self.expect_punct(":")?
+        self.expect_punct(":")?
         self.expect_block_start()?
         mut arms = []
         while not self.eat(.Dedent) and not self.at(.Eof):
@@ -27,7 +27,7 @@ extend Parser:
             arm_start = self.advance().span
             pattern = self.pattern()?
             guard = self.guard()?
-            _ = self.expect_punct(":")?
+            self.expect_punct(":")?
             body = self.block()?
             arms.append(MatchArm(pattern=pattern, guard=guard, body=body, span=arm_start.to(self.prev_span())))
         self.block_ended = True
@@ -98,7 +98,7 @@ extend Parser:
                 items.append(self.pattern()?)
                 if not self.eat_punct(","):
                     break
-            _ = self.expect_punct(")")?
+            self.expect_punct(")")?
             return .Tuple(items)
         self.pos -= 1
         fail self.unexpected("a pattern")
@@ -125,7 +125,7 @@ extend Parser:
                 args.append(self.pattern()?)
                 if not self.eat_punct(","):
                     break
-            _ = self.expect_punct(")")?
+            self.expect_punct(")")?
         (args, fields)
 
 def literal(kind: ExprKind, span: Span) -> Pattern:

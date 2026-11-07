@@ -46,7 +46,7 @@ extend Parser:
     def leaving(ref self) -> Expr:
         start = self.span()
         word = self.peek()
-        _ = self.advance()
+        self.advance()
         kind: StmtKind = match word:
             case .Keyword("continue"): .Continue
             case .Keyword("break"): .Break
@@ -190,7 +190,7 @@ extend Parser:
             op = term_op(self.peek())
             if op is None:
                 break
-            _ = self.advance()
+            self.advance()
             lhs = binary(op, lhs=lhs, rhs=self.unary()?)
         lhs
 
@@ -274,7 +274,7 @@ extend Parser:
 
     ## The `for names in iter if cond` part of a comprehension, after its element.
     def comprehension(ref self, kind: CompKind, elem: Expr, value: Expr?) -> Expr:
-        _ = self.advance()
+        self.advance()
         names = self.loop_names()?
         iter = self.or_expr()?
         mut cond = None
@@ -370,7 +370,7 @@ extend Parser:
             mut pairs = [(first, first_value)]
             while self.eat_punct(",") and not self.at_punct("}"):
                 key = self.expr()?
-                _ = self.expect_punct(":")?
+                self.expect_punct(":")?
                 pairs.append((key, self.expr()?))
             return Expr(kind=.Dict(pairs), span=start.to(self.expect_punct("}")?))
         mut items = [first]
@@ -421,7 +421,7 @@ def fstring_parts(parts: list[FPart]) -> list[FStrPart]:
                 skipped = byte_length(source[:source.len() - code.len()])
                 mut parser = Parser.over(lex(code, offset + skipped)?)
                 expr = parser.expr()?
-                _ = parser.eat(.Newline)
+                parser.eat(.Newline)
                 if not parser.at(.Eof):
                     fail parser.unexpected("`}`")
                 parser.check_old_mut()?

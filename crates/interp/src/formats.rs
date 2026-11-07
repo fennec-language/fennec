@@ -264,26 +264,13 @@ impl Interp<'_> {
         args: Vec<CallArg>,
         span: Span,
     ) -> Result<Value, Diagnostic> {
-        let read = self.typed_read(name, ty, args, span);
-        // How this call reads is over once it has, however it ended: text that doesn't parse
-        // leaves `names=` and `extra=` set for the next read to take as its own.
-        self.reading = Reading::default();
-        read
-    }
-
-    /// `typed_loads` with this call's `names=` and `extra=` still set.
-    fn typed_read(
-        &mut self,
-        name: &str,
-        ty: &TypeExpr,
-        args: Vec<CallArg>,
-        span: Span,
-    ) -> Result<Value, Diagnostic> {
         let read = self.format_builtin(name, args, span)?;
         let Value::Ok(value) = read else { return Ok(read) };
         self.tables_read.clear();
         self.load_tags.clear();
         let read = self.decode(value.as_ref().clone(), ty, "", span);
+        // How this call reads is over once it has.
+        self.reading = Reading::default();
         match read.and_then(|value| self.check_ids(&value, ty).map(|()| value)) {
             Ok(value) => Ok(Value::Ok(Rc::new(value))),
             Err(message) => {

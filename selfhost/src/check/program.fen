@@ -108,7 +108,7 @@ struct Program:
             methods = f"{type_def.name}."
             for key in copy(self.functions).keys():
                 if self.functions[key].prelude and key.startswith(methods):
-                    _ = self.functions.pop(key)
+                    self.functions.pop(key)
         for method in type_def.methods:
             self.add_method(type_def.name, method, prelude, [])
         self.types[type_def.name] = TypeInfo(kind=kind, type_def=type_def, prelude=prelude)

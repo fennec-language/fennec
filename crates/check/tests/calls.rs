@@ -37,11 +37,11 @@ fn arguments_match_parameters() {
             width * height
 
         def main(stdout: Stdout):
-            _ = area(1.0, 2.0)
-            _ = area(height=1.0, width=2.0)
-            _ = area(1.0, 2.0, 3.0)
-            _ = area(1.0)
-            _ = area(1.0, width=2.0)
+            area(1.0, 2.0)
+            area(height=1.0, width=2.0)
+            area(1.0, 2.0, 3.0)
+            area(1.0)
+            area(1.0, width=2.0)
             area(1.0, deep=2.0)
     ";
     assert_eq!(
@@ -65,9 +65,9 @@ fn arguments_have_the_parameters_types() {
             speed
 
         def main(stdout: Stdout):
-            _ = scale(1, [1], None)
-            _ = scale(1.0, ['a'], 'x')
-            _ = scale(1.0, [], 3)
+            scale(1, [1], None)
+            scale(1.0, ['a'], 'x')
+            scale(1.0, [], 3)
             scale(speed=1.0, items=[1], name=None)
     ";
     assert_eq!(
@@ -92,13 +92,13 @@ fn arguments_have_the_parameters_types() {
 #[test]
 fn structs_get_every_field_without_a_default() {
     let program = "
-        _ = Enemy(name='Ash')
-        _ = Enemy('Ash', 50)
-        _ = Enemy(health=5)
-        _ = Enemy(name='Ash', hp=5)
-        _ = Enemy('Ash', 50, 3)
-        _ = Enemy('Ash', name='Kit')
-        _ = Enemy(name=5)
+        Enemy(name='Ash')
+        Enemy('Ash', 50)
+        Enemy(health=5)
+        Enemy(name='Ash', hp=5)
+        Enemy('Ash', 50, 3)
+        Enemy('Ash', name='Kit')
+        Enemy(name=5)
     ";
     assert_eq!(
         with_types(program),
@@ -122,7 +122,7 @@ fn enum_cases_are_built_by_name() {
         .Triangle
         .Point
         Shape.Hexagon(1)
-        _ = .Circle(radius=1)
+        .Circle(radius=1)
     ";
     assert_eq!(
         with_types(program),
@@ -155,8 +155,8 @@ fn named_constructors_and_methods_exist() {
         a.explode()
         Enemy.heal(1)
         Enemy.at
-        _ = a.heal()
-        _ = a.heal(1, 2)
+        a.heal()
+        a.heal(1, 2)
     ";
     assert_eq!(
         with_types(program),
@@ -247,9 +247,9 @@ fn builtin_methods_take_the_right_arguments() {
         items.sort(key=n => -n)
         items.append(1, 2)
         items.insert(1)
-        _ = items.pop(key=1)
-        _ = items.count(by=1)
-        _ = 'a b'.split(' ', 1)
+        items.pop(key=1)
+        items.count(by=1)
+        'a b'.split(' ', 1)
         stdout.print(1, 2, 3)
     ";
     assert_eq!(
@@ -267,16 +267,16 @@ fn builtin_methods_take_the_right_arguments() {
 #[test]
 fn builtins_take_the_right_arguments() {
     let program = "
-        _ = [1].len(2)
-        _ = sorted([1], key=n => n, reverse=True)
-        _ = sum([1], key=n => n)
-        _ = range(1, 2, 3, 4)
-        _ = range('a')
+        [1].len(2)
+        sorted([1], key=n => n, reverse=True)
+        sum([1], key=n => n)
+        range(1, 2, 3, 4)
+        range('a')
         5.len()
         zip([1])
-        _ = set()
-        _ = round(1.5, 2)
-        _ = any([1])
+        set()
+        round(1.5, 2)
+        any([1])
         ignore(1)
     ";
     assert_eq!(
@@ -301,10 +301,10 @@ fn builtins_take_the_right_arguments() {
 fn copy_with_fields_changes_fields_that_exist() {
     let program = "
         enemy = Enemy(name='Ash')
-        _ = copy(enemy, health=5)
-        _ = copy(enemy, hp=5)
-        _ = copy(enemy, health='x')
-        _ = replace(enemy, health=6)
+        copy(enemy, health=5)
+        copy(enemy, hp=5)
+        copy(enemy, health='x')
+        replace(enemy, health=6)
     ";
     assert_eq!(
         with_types(program),
@@ -405,7 +405,7 @@ fn result_expect_needs_a_reason() {
 
         def main(stdout: Stdout):
             stdout.print(risky(1).expect('it is small') + 1)
-            _ = risky(1).expect()
+            risky(1).expect()
             risky(1).expect(5)
     ";
     assert_eq!(

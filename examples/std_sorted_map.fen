@@ -106,7 +106,7 @@ test "a copy is independent":
         map[key] = key
     saved = map
     for key in range(50):
-        _ = map.remove(key)
+        map.remove(key)
     map[1000] = 1
     assert saved.len() == 100 and saved.keys() == range(100)
     assert map.len() == 51 and map.first() == (50, 50)

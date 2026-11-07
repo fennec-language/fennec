@@ -40,6 +40,41 @@ fn run_prints_the_programs_output() {
     assert_eq!(text(&output.stdout), "Hello, Fennec\n");
 }
 
+/// What the linter finds doesn't stop a run, and it's on standard error, so what the program prints
+/// is all of standard output. A run of the same code again shows it again, from the cache. `--jit`
+/// chooses an engine, to compare it with another, so it shows only the program's own output.
+#[test]
+fn run_shows_lints_on_standard_error_and_still_runs() {
+    let dir = scratch("run_lints").unwrap();
+    std::fs::write(
+        dir.join("game.fen"),
+        "def main(stdout: Stdout):\n    mut speed = 4\n    stdout.print(speed)\n",
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        crate::executables::fennec_command()
+            .args(args)
+            .current_dir(&dir)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap()
+    };
+    for time in ["first", "again"] {
+        let output = run(&["run", "game.fen"]);
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        assert_eq!(text(&output.stdout), "4\n", "{time}");
+        let said = text(&output.stderr);
+        assert!(
+            said.contains("needless-mut") && said.contains("1 lints, 1 of which `fennec fix` can fix"),
+            "{time}: {said}"
+        );
+    }
+    let jit = run(&["run", "--jit", "game.fen"]);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!((text(&jit.stdout), text(&jit.stderr)), ("4\n".to_owned(), String::new()));
+}
+
 /// The README's sample is the first Fennec code most people see, so it has to run as it's
 /// shown, formatted and with nothing for the linter to say.
 #[test]

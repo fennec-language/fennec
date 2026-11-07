@@ -184,7 +184,7 @@ fn arrow_function_parameters_can_change() {
     let program = "
         mut enemies = Table[Enemy]()
         id = enemies.add(Enemy())
-        _ = enemies.modify(id, enemy => enemy.take_damage(5))
+        enemies.modify(id, enemy => enemy.take_damage(5))
     ";
     let declarations = format!("from std.collections import Table\n{ENEMY}");
     assert_eq!(crate::in_main_after(&declarations, program), Vec::<String>::new());
@@ -224,7 +224,7 @@ fn methods_that_change_their_value_need_a_mut_place() {
         stdout.print(enemy.is_alive())
         mut hero = Enemy()
         hero.take_damage(1)
-        _ = Enemy().take_damage(1)
+        Enemy().take_damage(1)
         enemy[0] = 5
         hero[0] = 5
     ";
@@ -260,8 +260,7 @@ fn builtin_methods_that_change_a_value_need_a_mut_place() {
         "pool.clear()",
     ];
     for call in changing {
-        // What a change gives back is thrown away on purpose, so only `mut` is in question.
-        let program = format!("items = [1]\ntable = {{1: 2}}\nbag = {{1}}\npool = Table[int]()\n_ = {call}");
+        let program = format!("items = [1]\ntable = {{1: 2}}\nbag = {{1}}\npool = Table[int]()\n{call}");
         let name = call.split('.').next().unwrap_or_default();
         let problems = crate::in_main_after("from std.collections import Table", &program);
         assert_eq!(problems, [format!("`{name}` isn't mut @ {name}")], "{call}");

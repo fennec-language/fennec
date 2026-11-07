@@ -269,11 +269,11 @@ def chain_test(size: int) -> int:
     mut planner = Planner(variables=[], constraints=[])
     places = [planner.variable(0) for _ in range(size + 1)]
     for i in range(size):
-        _ = planner.add(
+        planner.add(
             Constraint(kind=.Equal, strength=REQUIRED, first=places[i], second=places[i + 1]),
         )
     last = places[size]
-    _ = planner.add(Constraint(kind=.Stay, strength=STRONG_DEFAULT, first=last))
+    planner.add(Constraint(kind=.Stay, strength=STRONG_DEFAULT, first=last))
     edit = planner.add(Constraint(kind=.Edit, strength=PREFERRED, first=places[0]))
     plan = planner.plan_from([edit])
     mut total = 0
@@ -297,8 +297,8 @@ def projection_test(size: int) -> int:
         target = planner.variable(i)
         sources.append(source)
         targets.append(target)
-        _ = planner.add(Constraint(kind=.Stay, strength=NORMAL, first=source))
-        _ = planner.add(
+        planner.add(Constraint(kind=.Stay, strength=NORMAL, first=source))
+        planner.add(
             Constraint(
                 kind=.Scale,
                 strength=REQUIRED,

@@ -6,16 +6,11 @@ use super::{Cursor, Failure, Parsed, hex_char};
 use crate::value::Value;
 
 /// How deeply arrays and inline tables may nest, so bad input can't overflow the stack.
-pub(super) const MAX_DEPTH: usize = 500;
-
-/// What text nested past `MAX_DEPTH` fails with, as std's own reader says it.
-pub(super) fn too_deep() -> String {
-    format!("arrays and tables nest more than {MAX_DEPTH} deep here")
-}
+const MAX_DEPTH: usize = 500;
 
 pub(super) fn value(cursor: &mut Cursor<'_>, depth: usize) -> Parsed<Value> {
     if depth > MAX_DEPTH {
-        return cursor.fail(too_deep());
+        return cursor.fail(format!("arrays and tables nest more than {MAX_DEPTH} deep here"));
     }
     let rest = cursor.rest();
     match cursor.peek() {
@@ -186,10 +181,9 @@ fn inline_table(cursor: &mut Cursor<'_>, depth: usize) -> Parsed<Value> {
         skip_blank_lines(cursor);
         let at = cursor.at;
         if depth >= MAX_DEPTH {
-            return cursor.fail(too_deep());
+            return cursor.fail(format!("arrays and tables nest more than {MAX_DEPTH} deep here"));
         }
-        // What's in an inline table is a table deeper than the table is.
-        let (keys, item) = key_value(cursor, depth + 1)?;
+        let (keys, item) = key_value(cursor)?;
         table.insert(&keys, item, at)?;
         skip_blank_lines(cursor);
         if cursor.eat('}') {

@@ -16,8 +16,8 @@
 
 use fennec_interp::embed::guarded::rollback;
 use fennec_interp::embed::{
-    aot, bytes, capabilities, channels, checks, cleanup, dicts, eval, guarded, heap, io, json, lists, names,
-    numbers, objects, parallel, regex, serve, strings, temps, text, threads,
+    aot, bytes, capabilities, channels, checks, dicts, eval, guarded, heap, io, json, lists, names, numbers,
+    objects, parallel, regex, serve, strings, temps, text, threads,
 };
 
 /// The exported functions that can fail, setting the flag `fennec_aot_failed_flag` gives the
@@ -226,8 +226,6 @@ export! {
     fennec_lock_forget(a0: u64) => threads::lock_forget(a0);
     fennec_launch(a0: serve::TaskBody, a1: i64) -> i64 => serve::launch(a0, a1);
     fennec_channel_new(a0: i64) -> i64 => channels::channel_new(a0);
-    fennec_crash_hold() -> i64 => cleanup::crash_hold();
-    fennec_crash_resume(a0: i64) => cleanup::crash_resume(a0);
     fennec_channel_send(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => channels::channel_send(a0, a1, a2, a3);
     fennec_channel_receive(a0: i64, a1: i64, a2: &mut i64) -> i64 => channels::channel_receive(a0, a1, a2);
     fennec_channel_close(a0: i64) => channels::channel_close(a0);

@@ -450,30 +450,6 @@ fn a_type_another_std_module_imports_still_needs_its_own_import() {
     assert_eq!(problems(imported), Vec::<String>::new());
 }
 
-/// A value nobody uses is an error, since dropping it is usually a mistake, like `sorted(xs)`
-/// for `xs.sort()`. `_ = ...` throws one away on purpose, and a function's last line is what it
-/// gives back.
-#[test]
-fn a_value_nobody_uses_is_an_error() {
-    let empty: [&str; 0] = [];
-    assert_eq!(
-        in_main("xs = [3, 1]\nsorted(xs)\nxs.len()\nstdout.print(xs)\n"),
-        [
-            "this gives back a list[int], and nothing uses it @ sorted(xs)",
-            "this gives back an int, and nothing uses it @ xs.len()",
-        ]
-    );
-    assert_eq!(
-        in_main("mut xs = [3, 1]\n_ = sorted(xs)\nxs.sort()\nxs.append(2)\nstdout.print(xs)\n"),
-        empty
-    );
-    assert_eq!(problems("def last(xs: list[int]) -> int:\n    xs.len()\n"), empty);
-    assert_eq!(
-        in_main("mut xs = [1]\nfor x in [1, 2]:\n    xs.pop()\nstdout.print(xs)\n"),
-        ["this gives back an int?, and nothing uses it @ xs.pop()"]
-    );
-}
-
 #[test]
 fn each_underscore_throws_away_what_its_given_whatever_its_type() {
     let empty: [&str; 0] = [];

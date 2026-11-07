@@ -459,9 +459,7 @@ fn an_exported_item_says_what_it_is_for() {
         assert_eq!(missing(source), 2, "{source}");
     }
     let inside = "## A unit.\nexport struct Unit:\n    size: int\n    _hidden = 0\n\n    def grown(self) -> int:\n        self.size + 1\n";
-    assert_eq!(missing(inside), 1, "its method: the type's doc covers its fields");
-    let undocumented = "export struct Note:\n    title: str\n    body: str\n";
-    assert_eq!(missing(undocumented), 3, "a type with no doc, and each of its fields");
+    assert_eq!(missing(inside), 2, "its field and its method");
 }
 
 #[test]
@@ -473,8 +471,6 @@ fn a_private_item_or_one_with_a_doc_says_nothing() {
         "## Spawns one.\n## It's always the same one.\nexport def spawn() -> int:\n    1\n",
         "## Spawns one.\n@inline\nexport def spawn() -> int:\n    1\n",
         "## A unit.\nexport struct Unit:\n    ## How big it is.\n    size: int\n\n    ## How big it would be.\n    def grown(self) -> int:\n        self.size + 1\n",
-        // A documented type covers its fields.
-        "## A note someone wrote.\nexport struct Note:\n    title: str\n    body: str\n",
         // `export` inside text says nothing.
         "def spawn() -> str:\n    \"export def\"\n",
     ] {

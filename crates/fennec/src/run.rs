@@ -29,6 +29,12 @@ pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode 
     {
         return failed;
     }
+    // What the linter finds doesn't stop a run, so iteration stays fast, but it's shown first, on
+    // standard error. `--jit` and `--interp` choose an engine, to compare one with another, so
+    // what they print is the program's alone.
+    if matches!(engine, Engine::Native | Engine::Untested) {
+        eprint!("{}", crate::lint::errors_remembered(path));
+    }
     let prepared = if engine == Engine::Interpreter { whole(path) } else { reached(path) };
     let (program, signatures) = match prepared {
         Ok(prepared) => prepared,

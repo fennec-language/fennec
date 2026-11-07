@@ -147,11 +147,11 @@ def main(stdout: Stdout):
     mut more = fresh()
     more.numbers.append(4)
     more.points.append(Point(x=7, y=1.0))
-    _ = more.add(1, "one")
+    more.add(1, "one")
     more.items[0].near.append(50)
     stdout.print(more.first_big(), more.points, more.points.len())
     stdout.print(more.mean_near(), more.numbers, more.items[0].near, more.points)
-    _ = more.points.pop()
+    more.points.pop()
     stdout.print(more.points, more.first_big())
     stdout.print(
         describe(.Group(parts=[Shape.Dot, Shape.Line(length=2)], names=["a"])),

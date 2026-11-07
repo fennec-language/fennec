@@ -78,7 +78,7 @@ def main(stdout: Stdout):
         stdout.print(name_of(shape), shape)
     mut holders = [fresh(), fresh()]
     holders[0].pair = (5, "five")
-    _ = holders[1].bump()
+    holders[1].bump()
     stdout.print(holders[0].pair, holders[1].pair, holders[1].total)
 
     # A value handed over as an object stays as it was, whatever native code does next.

@@ -143,7 +143,7 @@ struct Lexer:
             self.push(.Indent, line_start)
             return
         while width < self.indents[-1]:
-            _ = self.indents.pop()
+            self.indents.pop()
             self.push(.Dedent, line_start)
         if width != self.indents[-1]:
             fail Diagnostic(
@@ -156,7 +156,7 @@ struct Lexer:
         self.pos = self.chars.len()
         self.newline(self.pos)
         while self.indents.len() > 1:
-            _ = self.indents.pop()
+            self.indents.pop()
             self.push(.Dedent, self.pos)
         self.push(.Eof, self.pos)
 

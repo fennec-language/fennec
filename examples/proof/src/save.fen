@@ -23,7 +23,7 @@ test "a saved world loads back the same":
     a = world.spawn("ash", .Red, .Soldier, (0, 0))
     b = world.spawn("vex", .Blue, .Archer, (2, 0))
     c = world.spawn("kit", .Red, .Medic, (1, 0))
-    _ = world.form_squad("first", [a, c], (0, 1))
+    world.form_squad("first", [a, c], (0, 1))
     world.units[a].target = b
     world.units[b].health = 20
     world.units[c].items = [Item(name="bandage", heals=15)]

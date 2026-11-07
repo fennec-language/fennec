@@ -20,8 +20,6 @@ def main(stdout: Stdout):
     stdout.print(sorted(names, key=name => name.len()))
     stdout.print(max(names, key=name => name.len()))
     stdout.print(names[0], names[-1], "kit" in names, "fox" not in names)
-    # `get` is for a place that may not be there, where `names[9]` stops the program.
-    stdout.print(names.get(1), names.get(-4), names.get(4), names.get(-5), names.get(9) else "none")
 
     mut grid = [0, 0, 0]
     grid[1] = 5

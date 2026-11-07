@@ -409,11 +409,11 @@ fn dicts_and_sets_have_methods_the_standard_library_writes() {
     );
     assert_eq!(in_main("scores = {'a': 1}\nscores.update({})"), ["`scores` isn't mut @ scores"]);
     assert_eq!(
-        in_main("_ = {1}.union({'a'})"),
+        in_main("{1}.union({'a'})"),
         ["`other` should be a set[int], but this is a set[str] @ {\"a\"}"]
     );
     assert_eq!(
-        in_main("_ = {1}.is_subset([1])"),
+        in_main("{1}.is_subset([1])"),
         ["`other` should be a set[int], but this is a list[int] @ [1]"]
     );
 }

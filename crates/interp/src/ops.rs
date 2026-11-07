@@ -156,7 +156,7 @@ fn float_arithmetic(op: BinOp, a: f64, b: f64, span: Span) -> Result<Value, Diag
         BinOp::Div => a / b,
         BinOp::FloorDiv => (a / b).floor(),
         BinOp::Mod => a - b * (a / b).floor(),
-        _ => a.powf(b),
+        _ => crate::embed::lists::float_power(a, b),
     }))
 }
 

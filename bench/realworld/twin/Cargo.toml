@@ -29,7 +29,9 @@ path = "game_math_check.rs"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.145"
 bincode = "=1.3.3"
-glam = "=0.33.12"
+# With `libm`, glam's float functions are the `libm` crate's, as Fennec's are on every platform,
+# so the two give the same bits on any machine.
+glam = { version = "=0.33.12", features = ["libm"] }
 
 # As the suite's Rust twins are built, overflow checks on, with the whole program in one unit.
 [profile.release]

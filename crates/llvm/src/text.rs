@@ -764,8 +764,15 @@ impl Emit<'_, '_, '_> {
         let header = crate::headers::HEADER;
         let made = match (&kind, spec) {
             (Kind::Str, None) => None,
-            (Kind::Int | Kind::Float, None) => {
-                let (call, ty) = if kind == Kind::Int { ("int", "i64") } else { ("float", "double") };
+            (Kind::Int, None) => {
+                let (place, made) = (self.place_for_text(), self.temp());
+                self.int_header_helper();
+                self.line(&format!("call void @fen_int_header(ptr {place}, i64 {held})"));
+                self.line(&format!("{made} = load {header}, ptr {place}"));
+                Some(made)
+            }
+            (Kind::Float, None) => {
+                let (call, ty) = ("float", "double");
                 self.declare(&format!(
                     "declare void @fennec_{call}_header(ptr sret({header}) align 8, {ty}) nounwind"
                 ));
@@ -1134,12 +1141,104 @@ impl Emit<'_, '_, '_> {
         self.leave_if(&failed);
     }
 
+    /// Defines `@fen_int_header(out, n)`, which writes `n`'s decimal text into the inline header
+    /// at `out`, as `fennec_int_header` does: no call, so LLVM can fold it into where it's used.
+    /// It counts the digits from the highest bit set, then writes them from the last, two at a
+    /// time from a table of the hundred pairs.
+    pub(crate) fn int_header_helper(&mut self) {
+        use crate::headers::HEADER;
+        self.declare("declare i64 @llvm.ctlz.i64(i64, i1)");
+        self.module.add_helper(
+            "fen_int_header",
+            format!(
+                "@fen_pow10 = private unnamed_addr constant [20 x i64] [i64 1, i64 10, i64 100, i64 1000, i64 10000, i64 100000, i64 1000000, i64 10000000, i64 100000000, i64 1000000000, i64 10000000000, i64 100000000000, i64 1000000000000, i64 10000000000000, i64 100000000000000, i64 1000000000000000, i64 10000000000000000, i64 100000000000000000, i64 1000000000000000000, i64 10000000000000000000]
+@fen_digit_pairs = private unnamed_addr constant [200 x i8] c\"00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899\"
+
+define internal void @fen_int_header(ptr %out, i64 %n) #0 {{
+entry:
+  store {HEADER} zeroinitializer, ptr %out
+  %negative = icmp slt i64 %n, 0
+  %flipped = sub i64 0, %n
+  %size = select i1 %negative, i64 %flipped, i64 %n
+  %some = or i64 %size, 1
+  %zeros = call i64 @llvm.ctlz.i64(i64 %some, i1 true)
+  %bits = sub nuw nsw i64 64, %zeros
+  %scaled = mul nuw nsw i64 %bits, 1233
+  %guess = lshr i64 %scaled, 12
+  %power_at = getelementptr inbounds [20 x i64], ptr @fen_pow10, i64 0, i64 %guess
+  %power = load i64, ptr %power_at
+  %below = icmp ult i64 %size, %power
+  %less = zext i1 %below to i64
+  %counted = sub i64 %guess, %less
+  %digits_or_none = add i64 %counted, 1
+  %no_digits = icmp eq i64 %digits_or_none, 0
+  %digits = select i1 %no_digits, i64 1, i64 %digits_or_none
+  %sign = zext i1 %negative to i64
+  %length = add nuw nsw i64 %digits, %sign
+  br i1 %negative, label %minus, label %pairs
+minus:
+  store i8 45, ptr %out
+  br label %pairs
+pairs:
+  %left = phi i64 [ %size, %entry ], [ %size, %minus ], [ %rest, %pair ]
+  %end = phi i64 [ %length, %entry ], [ %length, %minus ], [ %pair_at, %pair ]
+  %more = icmp uge i64 %left, 100
+  br i1 %more, label %pair, label %last
+pair:
+  %rest = udiv i64 %left, 100
+  %hundreds = mul i64 %rest, 100
+  %two = sub i64 %left, %hundreds
+  %pair_at = sub i64 %end, 2
+  %two_at = shl nuw nsw i64 %two, 1
+  %from = getelementptr inbounds i8, ptr @fen_digit_pairs, i64 %two_at
+  %both = load i16, ptr %from, align 1
+  %to = getelementptr inbounds i8, ptr %out, i64 %pair_at
+  store i16 %both, ptr %to, align 1
+  br label %pairs
+last:
+  %tens = icmp uge i64 %left, 10
+  br i1 %tens, label %last_two, label %last_one
+last_two:
+  %last_at = sub i64 %end, 2
+  %last_pair_at = shl nuw nsw i64 %left, 1
+  %last_from = getelementptr inbounds i8, ptr @fen_digit_pairs, i64 %last_pair_at
+  %last_both = load i16, ptr %last_from, align 1
+  %last_to = getelementptr inbounds i8, ptr %out, i64 %last_at
+  store i16 %last_both, ptr %last_to, align 1
+  br label %tagged
+last_one:
+  %one_at = sub i64 %end, 1
+  %narrow = trunc i64 %left to i8
+  %digit = add i8 %narrow, 48
+  %one_to = getelementptr inbounds i8, ptr %out, i64 %one_at
+  store i8 %digit, ptr %one_to
+  br label %tagged
+tagged:
+  %tag = or i64 %length, 128
+  %tag_byte = trunc i64 %tag to i8
+  %tag_at = getelementptr inbounds i8, ptr %out, i64 23
+  store i8 %tag_byte, ptr %tag_at
+  ret void
+}}
+
+"
+            ),
+        );
+    }
+
     /// `str(value)`.
     pub(crate) fn text_of_value(&mut self, dest: LocalId, value: &Operand, span: Span) -> Result<(), String> {
         let (held, kind) = self.operand(value)?;
         let temp = self.temp();
-        if self.headers() && matches!(kind, Kind::Int | Kind::Float) {
-            let (call, ty) = if kind == Kind::Int { ("int", "i64") } else { ("float", "double") };
+        if self.headers() && kind == Kind::Int {
+            let place = self.place_for_text();
+            self.int_header_helper();
+            self.line(&format!("call void @fen_int_header(ptr {place}, i64 {held})"));
+            self.line(&format!("{temp} = load {}, ptr {place}", crate::headers::HEADER));
+            return self.assign(dest, &temp);
+        }
+        if self.headers() && kind == Kind::Float {
+            let (call, ty) = ("float", "double");
             let header = crate::headers::HEADER;
             self.declare(&format!(
                 "declare void @fennec_{call}_header(ptr sret({header}) align 8, {ty}) nounwind"

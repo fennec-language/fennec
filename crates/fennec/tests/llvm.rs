@@ -6317,12 +6317,12 @@ def main(stdout: Stdout):
     nan = 1e300 * 1e300 - 1e300 * 1e300
     other = -nan
     one = 1.0
-    stdout.print(same(zero, minus), same(nan, nan), same(nan, other), same(nan, one), same(one, one))
-    stdout.print(different(zero, minus), different(nan, other), different(nan, one))
-    stdout.print(less(minus, zero), less(zero, minus), less(one, nan), less(nan, one), less(nan, other))
-    stdout.print(most(minus, zero), most(nan, other), most(nan, one), most(one, nan))
-    stdout.print(more(nan, one), more(one, nan), more(nan, other), more(zero, minus))
-    stdout.print(least(nan, one), least(one, nan), least(nan, other), least(minus, zero))
+    stdout.print(same(zero, b=minus), same(nan, b=nan), same(nan, b=other), same(nan, b=one), same(one, b=one))
+    stdout.print(different(zero, b=minus), different(nan, b=other), different(nan, b=one))
+    stdout.print(less(minus, b=zero), less(zero, b=minus), less(one, b=nan), less(nan, b=one), less(nan, b=other))
+    stdout.print(most(minus, b=zero), most(nan, b=other), most(nan, b=one), most(one, b=nan))
+    stdout.print(more(nan, b=one), more(one, b=nan), more(nan, b=other), more(zero, b=minus))
+    stdout.print(least(nan, b=one), least(one, b=nan), least(nan, b=other), least(minus, b=zero))
     stdout.print(zero == -0.0, nan == 1.0, 1.0 == nan, nan != 1.0, 1.0 != nan)
     stdout.print(nan < 1.0, 1.0 < nan, nan <= 1.0, 1.0 <= nan, nan > 1.0, 1.0 > nan, nan >= 1.0, 1.0 >= nan)
     stdout.print(Pair(x=zero, y=nan) == Pair(x=minus, y=other), Pair(x=1.0, y=nan) == Pair(x=1.0, y=2.0))

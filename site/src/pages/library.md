@@ -22,7 +22,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | Security | `crypto`: BLAKE3 and SHA-256 hashes, HMAC and comparing secrets; `uuid`. Secure random bytes come from the `Entropy` capability |
 | Storage | `sql`: one interface, with drivers as first-party kits |
 | Diagnostics | `log`, `profile`, `test` |
-| Games | `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat4`, `simd`, `layout`; later `audio` and `gpu` |
+| Games | `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` in `math` today, checked against glam; `simd`, `layout`; later `audio` and `gpu` |
 
 ## Importing what you use
 

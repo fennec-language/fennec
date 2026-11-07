@@ -625,6 +625,16 @@ pub(crate) fn what_stops_saving(
     checker: &mut Checker,
     ty: &Type,
 ) -> Option<(String, String, String, String)> {
+    // What a collection or an optional holds is what stops it, as `Note` does in `list[Note]`.
+    match ty {
+        Type::List(inner) | Type::Set(inner) | Type::Optional(inner) | Type::Table(inner) => {
+            return what_stops_saving(checker, inner);
+        }
+        Type::Dict(key, value) => {
+            return what_stops_saving(checker, key).or_else(|| what_stops_saving(checker, value));
+        }
+        _ => {}
+    }
     let name = ty.type_name()?.to_owned();
     stops_in(checker, &name, &name, &mut Vec::new())
 }

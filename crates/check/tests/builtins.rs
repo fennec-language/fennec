@@ -24,6 +24,13 @@ fn methods_of_built_in_values_give_back_their_types() {
     plus_one(setup, "'a'.strip()", "can't use `+` on a str and an int");
     plus_one(setup, "'a'.startswith('a')", "can't use `+` on a bool and an int");
     plus_one(setup, "[1].count(1) / 2", "can't mix int and float in `+`");
+    // `/` between ints gives a float, which is likely why it meets an int.
+    let help =
+        |body: &str| helps(&format!("def main(stdout: Stdout):\n    n = 1\n    stdout.print({body})\n"));
+    let floor = "`/` always gives a float, even between ints; `//` divides ints and gives an int";
+    assert_eq!(help("n < 7 / 3"), [floor]);
+    assert_eq!(help("n + 7 / 3"), [floor]);
+    assert_eq!(help("n < 2.5 + 1.0"), ["convert one side with float(...) or int(...)"]);
     plus_one(setup, "pool.modify(id, n => n)", "can't use `+` on a bool and an int");
     plus_one(setup, "stdout.write('a')", "can't use `+` on nothing and an int");
 }

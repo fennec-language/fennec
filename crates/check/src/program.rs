@@ -1,7 +1,7 @@
 //! A program's declarations: its functions, methods, types and aliases, together with the
 //! standard library's. Function bodies are looked at later, one function at a time.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fennec_syntax::{
     Diagnostic, FnDef, Generic, Import, Imported, Interface, Item, Module, Span, TestDef, TypeDef, TypeExpr,
@@ -63,7 +63,7 @@ pub(crate) struct Program {
     /// Standard library functions written in Fennec, by the name they're imported under.
     pub(crate) std_functions: BTreeMap<String, String>,
     /// Standard library types imported by name, like `Deque` from `std.collections`.
-    pub(crate) imported_types: std::collections::BTreeSet<String>,
+    pub(crate) imported_types: BTreeSet<String>,
     /// Imported modules, by the name they're used under, like `json` in `json.loads(...)`.
     pub(crate) modules: BTreeMap<String, &'static str>,
     /// What the standard library's own code imports as modules, which only that code sees.
@@ -71,6 +71,9 @@ pub(crate) struct Program {
     /// Problems found while adding declarations: imports of modules or names that don't
     /// exist, and methods that can't be added.
     pub(crate) problems: Vec<Diagnostic>,
+    /// The names an import that failed would have bound, which aren't reported again where
+    /// they're used.
+    pub(crate) failed_imports: BTreeSet<String>,
     aliases: BTreeMap<String, TypeExpr>,
 }
 
@@ -127,7 +130,34 @@ impl Program {
         }
         let imported = match fennec_syntax::std_import(import) {
             Ok(imported) => imported,
+            // One unknown name among several, as in `from std import compres, json`, is reported
+            // alone: the others are imported as if each had its own line, and a name that
+            // failed isn't reported again wherever it's used.
+            Err(_) if import.names.len() > 1 => {
+                for (at, name) in import.names.iter().enumerate() {
+                    let one = Import {
+                        names: vec![name.clone()],
+                        aliases: vec![import.aliases.get(at).cloned().flatten()],
+                        ..import.clone()
+                    };
+                    match fennec_syntax::std_import(&one) {
+                        Ok(_) => self.add_import(&one),
+                        Err(problem) => {
+                            let bound = one
+                                .bound()
+                                .next()
+                                .map_or_else(|| name.clone(), |(_, alias)| alias.to_owned());
+                            self.failed_imports.insert(bound);
+                            self.problems.push(problem);
+                        }
+                    }
+                }
+                return;
+            }
             Err(problem) => {
+                if let Some((_, alias)) = import.bound().next() {
+                    self.failed_imports.insert(alias.to_owned());
+                }
                 self.problems.push(problem);
                 return;
             }

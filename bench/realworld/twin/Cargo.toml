@@ -1,6 +1,6 @@
-# The twins of the kernels in `bench/realworld`. Not part of the workspace: serde, serde_json
-# and bincode are here only to be measured against, pinned so a change in the numbers is a
-# change in Fennec.
+# The twins of the kernels in `bench/realworld`. Not part of the workspace: serde, serde_json,
+# bincode and glam are here only to be measured or checked against, pinned so a change in the
+# numbers is a change in Fennec.
 [package]
 name = "fennec-realworld-twins"
 version = "0.0.0"
@@ -17,10 +17,19 @@ path = "json_typed.rs"
 name = "pack_typed"
 path = "pack_typed.rs"
 
+[[bin]]
+name = "game_math"
+path = "game_math.rs"
+
+[[bin]]
+name = "game_math_check"
+path = "game_math_check.rs"
+
 [dependencies]
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.145"
 bincode = "=1.3.3"
+glam = "=0.33.12"
 
 # As the suite's Rust twins are built, overflow checks on, with the whole program in one unit.
 [profile.release]

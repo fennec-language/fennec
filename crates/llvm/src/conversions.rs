@@ -96,6 +96,12 @@ impl Emit<'_, '_, '_> {
             ("math.cos", [value], [Some(Kind::Float | Kind::Int)]) => {
                 dest.and_then(|dest| self.turned(dest, "fennec_cos", value))
             }
+            ("math.tan", [value], [Some(Kind::Float | Kind::Int)]) => {
+                dest.and_then(|dest| self.turned(dest, "fennec_tan", value))
+            }
+            ("math.acos", [value], [Some(Kind::Float | Kind::Int)]) => {
+                dest.and_then(|dest| self.turned(dest, "fennec_acos", value))
+            }
             ("int", [value], [Some(Kind::Int)]) | ("float", [value], [Some(Kind::Float)]) => {
                 dest.and_then(|dest| self.copy(dest, value))
             }
@@ -478,7 +484,8 @@ impl Emit<'_, '_, '_> {
         })
     }
 
-    /// `math.sin` and `math.cos`, by the runtime, so they round as the interpreter's do.
+    /// `math.sin`, `math.cos`, `math.tan` and `math.acos`, by the runtime, so they round as the
+    /// interpreter's do.
     fn turned(&mut self, dest: LocalId, function: &str, value: &Operand) -> Result<(), String> {
         let (value, kind) = self.operand(value)?;
         let angle = if kind == Kind::Int {

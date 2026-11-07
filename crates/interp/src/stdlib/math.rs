@@ -11,7 +11,7 @@ use crate::ops;
 use crate::value::Value;
 
 pub(crate) const MODULE: Module = Module {
-    functions: &["math.ceil", "math.cos", "math.floor", "math.sin", "math.sqrt"],
+    functions: &["math.acos", "math.ceil", "math.cos", "math.floor", "math.sin", "math.sqrt", "math.tan"],
     call,
     constant,
     methods: &[],
@@ -39,6 +39,9 @@ fn call(_: &mut Interp<'_>, name: &str, args: Vec<CallArg>, span: Span) -> Resul
         "math.ceil" => to_int(&Value::Float(x.ceil()), span),
         "math.sin" => Ok(Value::Float(x.sin())),
         "math.cos" => Ok(Value::Float(x.cos())),
+        "math.tan" => Ok(Value::Float(x.tan())),
+        // Past -1 or 1 there's no angle, so it's NaN, as everywhere.
+        "math.acos" => Ok(Value::Float(x.acos())),
         _ if x < 0.0 => Err(Diagnostic::new("can't take the square root of a negative number", span)),
         _ => Ok(Value::Float(x.sqrt())),
     }

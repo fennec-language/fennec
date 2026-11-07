@@ -77,6 +77,43 @@ struct Run {
     owners: Mutex<HashMap<u64, i64>>,
     /// What the ranges printed on workers, each range's whole, as they finish.
     printed: Mutex<Vec<u8>>,
+    /// Says when the last range on the pool has finished, to the calling thread waiting for it.
+    done: pool::Latch,
+    /// A reduction's result, when its ranges ran on the pool: None if it failed.
+    reduced: Mutex<Option<i64>>,
+}
+
+/// What a loop's or a comprehension's range runs: copied into each job, so it owns what it uses.
+#[derive(Clone, Copy)]
+enum Leaf {
+    For(Body, i64),
+    /// A comprehension's body, its `env`, and the list it writes into.
+    Map(MapBody, i64, i64),
+}
+
+impl Leaf {
+    fn run(self, from: usize, to: usize, thread: i64) -> i64 {
+        match self {
+            Leaf::For(body, env) => body(env, number(from), number(to), thread),
+            Leaf::Map(body, env, out) => body(env, number(from), number(to), thread, out),
+        }
+    }
+}
+
+/// A reduction's range that's split in two on the pool: the partials of its halves, as they
+/// finish, and where its own goes once it's combined from them.
+struct Node {
+    from: usize,
+    halves: Mutex<[Half; 2]>,
+    up: Option<(Arc<Node>, usize)>,
+}
+
+/// Where one half of a split reduction is.
+#[derive(Clone, Copy)]
+enum Half {
+    Running,
+    /// Its partial, or None if it failed.
+    Done(Option<i64>),
 }
 
 impl Run {
@@ -90,6 +127,8 @@ impl Run {
             made: Mutex::new(Vec::new()),
             owners: Mutex::new(HashMap::new()),
             printed: Mutex::new(Vec::new()),
+            done: pool::Latch::one(),
+            reduced: Mutex::new(None),
         }
     }
 
@@ -170,7 +209,106 @@ impl Run {
             return;
         }
         let middle = from + (to - from) / 2;
-        pool::join(|| self.each((from, middle), leaf), || self.each((middle, to), leaf));
+        self.each((from, middle), leaf);
+        self.each((middle, to), leaf);
+    }
+
+    /// Starts a loop's or a comprehension's ranges on the pool, from the calling thread.
+    fn each_on_start(self: &Arc<Self>, pool: &'static pool::Pool, length: usize, leaf: Leaf) {
+        let run = Arc::clone(self);
+        pool.push(Box::new(move || run.each_on(pool, (0, length), leaf)));
+    }
+
+    /// Runs one range of a call on the pool: halving it as `each` does, it hands each right half
+    /// to the pool and goes on with the left, so the ranges are the same as on one thread.
+    fn each_on(self: &Arc<Self>, pool: &'static pool::Pool, (from, mut to): (usize, usize), leaf: Leaf) {
+        while to - from > self.chunk && from <= self.stop.load(Ordering::Relaxed) {
+            let middle = from + (to - from) / 2;
+            self.done.more();
+            let run = Arc::clone(self);
+            pool.push(Box::new(move || run.each_on(pool, (middle, to), leaf)));
+            to = middle;
+        }
+        if from <= self.stop.load(Ordering::Relaxed) && from < to {
+            let since = self.range_starts();
+            let failed = leaf.run(from, to, i64::from(super::threads::index())) != 0;
+            self.keep_made(since);
+            if failed {
+                self.failed(from);
+            }
+        }
+        self.done.finished();
+    }
+
+    /// Runs one range of a reduction on the pool: halving it as `reduce` does, it hands each
+    /// right half to the pool and goes on with the left. Each half's partial goes to its range
+    /// above, and whichever half finishes second combines them, so they combine in the same tree
+    /// as on one thread.
+    fn reduce_on(
+        self: &Arc<Self>,
+        pool: &'static pool::Pool,
+        (from, mut to): (usize, usize),
+        mut up: Option<(Arc<Node>, usize)>,
+        steps: (ReduceBody, Combine, i64),
+    ) {
+        while to - from > self.chunk && from <= self.stop.load(Ordering::Relaxed) {
+            let middle = from + (to - from) / 2;
+            let node = Arc::new(Node { from, halves: Mutex::new([Half::Running; 2]), up: up.take() });
+            let (run, right) = (Arc::clone(self), Some((Arc::clone(&node), 1)));
+            pool.push(Box::new(move || run.reduce_on(pool, (middle, to), right, steps)));
+            up = Some((node, 0));
+            to = middle;
+        }
+        let partial = self.reduce((from, to), steps);
+        self.reduced_up(up, partial, steps);
+    }
+
+    /// Passes a range's partial up: combined with its other half's once that's in too, all the
+    /// way to the whole, which ends the call.
+    fn reduced_up(
+        &self,
+        mut up: Option<(Arc<Node>, usize)>,
+        mut partial: Option<i64>,
+        steps: (ReduceBody, Combine, i64),
+    ) {
+        while let Some((node, side)) = up {
+            let both = {
+                let mut halves = node.halves.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(half) = halves.get_mut(side) {
+                    *half = Half::Done(partial);
+                }
+                match *halves {
+                    [Half::Done(left), Half::Done(right)] => Some((left, right)),
+                    _ => None,
+                }
+            };
+            // The other half isn't in yet, and its thread goes on up from here when it is.
+            let Some((left, right)) = both else { return };
+            partial = self.combined(node.from, left, right, steps);
+            up = node.up.as_ref().map(|(above, side)| (Arc::clone(above), *side));
+        }
+        *self.reduced.lock().unwrap_or_else(PoisonError::into_inner) = partial;
+        self.done.finished();
+    }
+
+    /// Two halves' partials combined, the earlier first: None if either failed, or this does.
+    fn combined(
+        &self,
+        from: usize,
+        left: Option<i64>,
+        right: Option<i64>,
+        steps: (ReduceBody, Combine, i64),
+    ) -> Option<i64> {
+        let (_, combine, env) = steps;
+        let mut combined = 0;
+        let since = self.range_starts();
+        let failed = combine(env, left?, right?, &mut combined) != 0;
+        self.keep_made(since);
+        if failed {
+            self.failed(from);
+            return None;
+        }
+        Some(combined)
     }
 
     /// A reduction over `from..to`: each range's partial, combined with the next in order.
@@ -192,17 +330,9 @@ impl Run {
             return Some(partial);
         }
         let middle = from + (to - from) / 2;
-        let (left, right) =
-            pool::join(|| self.reduce((from, middle), steps), || self.reduce((middle, to), steps));
-        let mut combined = 0;
-        let since = super::threads::made_so_far();
-        let failed = combine(env, left?, right?, &mut combined) != 0;
-        self.keep_made(since);
-        if failed {
-            self.failed(from);
-            return None;
-        }
-        Some(combined)
+        let left = self.reduce((from, middle), steps);
+        let right = self.reduce((middle, to), steps);
+        self.combined(from, left, right, (body, combine, env))
     }
 }
 
@@ -225,9 +355,52 @@ pub extern "C" fn parallel_for(list: i64, body: Body, env: i64) -> i64 {
     counted();
     let Some((length, words)) = with(|state| extent(state, list)) else { return 0 };
     let run = Run::new(chunk(words));
-    let leaf = |from: usize, to: usize, thread: i64| body(env, number(from), number(to), thread);
-    pool::install(&run, length * words, || run.each((0, length), &leaf));
-    run.finish()
+    run_each(run, length, words, Leaf::For(body, env))
+}
+
+/// Runs a loop's or a comprehension's ranges, on the pool when it's worth it, then passes the
+/// failure up: 1 if there was one, else 0.
+fn run_each(run: Run, length: usize, words: usize, leaf: Leaf) -> i64 {
+    let Some(pool) = pool::for_call(length * words) else {
+        run.each((0, length), &|from, to, thread| leaf.run(from, to, thread));
+        return run.finish();
+    };
+    let run = Arc::new(run);
+    pool::install(&run, || run.each_on_start(pool, length, leaf), &run.done);
+    alone(run).finish()
+}
+
+/// The call's ranges, once the last job has let go of them: a worker can still be dropping its
+/// share for an instant after saying it finished.
+fn alone(mut run: Arc<Run>) -> Run {
+    loop {
+        match Arc::try_unwrap(run) {
+            Ok(run) => return run,
+            Err(shared) => {
+                run = shared;
+                std::thread::yield_now();
+            }
+        }
+    }
+}
+
+/// A reduction's ranges run on `pool`, combined in the tree `reduce` uses: what they come to,
+/// with the call's ranges to finish.
+fn reduce_on_pool(
+    run: Run,
+    pool: &'static pool::Pool,
+    length: usize,
+    steps: (ReduceBody, Combine, i64),
+) -> (Option<i64>, Run) {
+    let run = Arc::new(run);
+    let start = || {
+        let started = Arc::clone(&run);
+        pool.push(Box::new(move || started.reduce_on(pool, (0, length), None, steps)));
+    };
+    pool::install(&run, start, &run.done);
+    let run = alone(run);
+    let reduced = run.reduced.lock().unwrap_or_else(PoisonError::into_inner).take();
+    (reduced, run)
 }
 
 /// `fennec_parallel_map(list, body, env, element) -> list`: `[f(x) for x in parallel(list)]`.
@@ -238,9 +411,7 @@ pub extern "C" fn parallel_map(list: i64, body: MapBody, env: i64, element: i64)
     let Some((length, words)) = with(|state| extent(state, list)) else { return 0 };
     let out = super::lists::new(element, number(length));
     let run = Run::new(chunk(words));
-    let leaf = |from: usize, to: usize, thread: i64| body(env, number(from), number(to), thread, out);
-    pool::install(&run, length * words, || run.each((0, length), &leaf));
-    if run.finish() != 0 {
+    if run_each(run, length, words, Leaf::Map(body, env, out)) != 0 {
         super::heap::free(out);
         return 0;
     }
@@ -266,7 +437,14 @@ pub extern "C" fn parallel_reduce(
     // A reduction's leaves depend on the length alone, so the interpreter, which doesn't know
     // native items' sizes, combines in the same order.
     let run = Run::new(crate::builtins::REDUCE_LEAF);
-    let reduced = pool::install(&run, length * words, || run.reduce((0, length), (body, combine, env)));
+    let steps = (body, combine, env);
+    let Some(pool) = pool::for_call(length * words) else {
+        if let Some(reduced) = run.reduce((0, length), steps) {
+            *result = reduced;
+        }
+        return run.finish();
+    };
+    let (reduced, run) = reduce_on_pool(run, pool, length, steps);
     if let Some(reduced) = reduced {
         *result = reduced;
     }
@@ -299,12 +477,38 @@ mod pool {
 
     pub(super) fn settle(_changes: std::collections::HashMap<u64, i64>) {}
 
-    pub(super) fn install<R>(_run: &super::Run, _words: usize, run: impl FnOnce() -> R) -> R {
-        run()
+    /// Without threads, nothing waits for jobs, which run where they're pushed.
+    #[derive(Default)]
+    pub(super) struct Latch;
+
+    impl Latch {
+        pub(super) fn one() -> Latch {
+            Latch
+        }
+
+        #[expect(clippy::unused_self, reason = "it stands in for the threads build's latch")]
+        pub(super) fn more(&self) {}
+
+        #[expect(clippy::unused_self, reason = "it stands in for the threads build's latch")]
+        pub(super) fn finished(&self) {}
     }
 
-    pub(super) fn join<A, B>(first: impl FnOnce() -> A, second: impl FnOnce() -> B) -> (A, B) {
-        (first(), second())
+    /// Without threads, there's no pool: `for_call` never gives one.
+    pub(super) struct Pool;
+
+    impl Pool {
+        #[expect(clippy::unused_self, reason = "it stands in for the threads build's pool")]
+        pub(super) fn push(&self, job: Box<dyn FnOnce() + Send>) {
+            job();
+        }
+    }
+
+    pub(super) fn for_call(_words: usize) -> Option<&'static Pool> {
+        None
+    }
+
+    pub(super) fn install(_call: &super::Run, start: impl FnOnce(), _done: &Latch) {
+        start();
     }
 
     /// Without threads, a stream's reader runs every chunk itself.
@@ -409,10 +613,10 @@ mod tests {
 
     /// `sum(1.0 / float(n + 1) for n in parallel(range(ITEMS)))`'s bits, on a pool of `threads`.
     fn harmonic_on(threads: usize) -> u64 {
-        let reduced = super::pool::on_threads(threads, || {
-            let run = super::Run::new(crate::builtins::REDUCE_LEAF);
-            run.reduce((0, usize::try_from(ITEMS).unwrap()), (harmonic, add, 0))
-        });
+        let pool = super::pool::with_threads(threads);
+        let run = super::Run::new(crate::builtins::REDUCE_LEAF);
+        let (reduced, _) =
+            super::reduce_on_pool(run, pool, usize::try_from(ITEMS).unwrap(), (harmonic, add, 0));
         reduced.unwrap().cast_unsigned()
     }
 

@@ -8309,7 +8309,7 @@ def named(present: bool) -> str?:
         return \"hi\"
     None
 ";
-    for (number, condition) in [
+    let conditions = [
         "1 + 1 == 3",
         "2 > 3",
         "2.5 <= 1.5",
@@ -8337,13 +8337,18 @@ def named(present: bool) -> str?:
         "1 == 1 and 1 == 2",
         "not True",
     ]
-    .iter()
+    .into_iter()
     .enumerate()
-    {
+    .collect::<Vec<_>>();
+    // Each builds on its own, so they build at once: one at a time took over a minute.
+    let outcomes = crate::executables::at_once(&conditions, |_, (number, condition)| {
         let source =
             format!("{setup}\ndef main(stdout: Stdout):\n    stdout.print(1)\n    assert {condition}\n");
-        let ((ours_out, ours_err, ours_code), (jit_out, jit_err, jit_code)) =
-            both(&format!("assert_{number}"), &source)?;
+        both(&format!("assert_{number}"), &source)
+    })?;
+    for ((_, condition), ((ours_out, ours_err, ours_code), (jit_out, jit_err, jit_code))) in
+        conditions.iter().zip(outcomes)
+    {
         assert_eq!((&ours_out, ours_code), (&jit_out, jit_code), "{condition}");
         assert_eq!(ours_err, jit_err, "{condition}");
     }

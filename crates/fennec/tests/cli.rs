@@ -40,6 +40,28 @@ fn run_prints_the_programs_output() {
     assert_eq!(text(&output.stdout), "Hello, Fennec\n");
 }
 
+/// The README's sample is the first Fennec code most people see, so it has to run as it's
+/// shown, formatted and with nothing for the linter to say.
+#[test]
+fn the_readme_sample_runs() {
+    let readme = std::fs::read_to_string(repo().join("README.md")).unwrap();
+    let taste = readme.split("## A taste").nth(1).expect("the README has a section `## A taste`");
+    let sample = taste
+        .split_once("```python\n")
+        .and_then(|(_, rest)| rest.split_once("```"))
+        .map(|(code, _)| code)
+        .expect("`## A taste` starts with a ```python block");
+    let dir = scratch("readme").unwrap();
+    std::fs::write(dir.join("taste.fen"), sample).unwrap();
+    for command in [&["run", "taste.fen"][..], &["fmt", "--check", "taste.fen"], &["lint", "taste.fen"]] {
+        let output = fennec_in(&dir, command, "").unwrap();
+        assert!(output.status.success(), "`fennec {}` failed:\n{}", command.join(" "), text(&output.stderr));
+        if command[0] == "run" {
+            assert_eq!(text(&output.stdout), "95\n");
+        }
+    }
+}
+
 /// Skirmish, the proof program in `examples/proof`, is the biggest Fennec program there is, so
 /// what breaks it has to fail here: it checks, passes its tests, and prints its `.out` file in
 /// both engines.

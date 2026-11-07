@@ -9115,6 +9115,28 @@ fn none_in_a_tuple_matches_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// A name narrowed to `None`, like `x` after `x = None`, prints and formats as `None`, as in the
+/// interpreter. LLVM refused it once, and the JIT still gets it wrong (#572).
+#[test]
+fn a_name_narrowed_to_none_prints_as_the_interpreter_does() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "narrowed_none",
+        r#"def main(stdout: Stdout):
+    mut x: int? = 5
+    stdout.print(x)
+    x = None
+    stdout.print(x)
+    stdout.print(f"[{x}]", str(x), x is None)
+    mut s: str? = "kit"
+    s = None
+    stdout.print(s, f"{s}")
+"#,
+    )
+}
+
 #[test]
 fn optional_strings_in_lists_match_the_jit() -> std::io::Result<()> {
     if !ready() {

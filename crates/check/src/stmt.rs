@@ -51,9 +51,15 @@ impl FnCx<'_> {
                     _ => {}
                 }
             }
-            // Code after leaving early never runs, but it's still checked.
+            // Code after leaving early never runs, but it's still checked. A value it ends on
+            // isn't the block's, but takes what's expected of it where it can, so `[]` there
+            // knows what it holds.
             if !flow.exits {
                 flow = this;
+            } else if last && used {
+                if let Some(tail) = self.tail.clone() {
+                    _ = self.checker.fits(&tail, &this.ty);
+                }
             }
         }
         flow
@@ -265,7 +271,11 @@ impl FnCx<'_> {
         } else {
             Type::Unit
         };
-        Flow { ty, exits: paths.is_empty() }
+        // An `if` that leaves on every path has no value, like any other way of leaving.
+        if paths.is_empty() {
+            return Flow::exit();
+        }
+        Flow { ty, exits: false }
     }
 
     fn while_stmt(&mut self, cond: &Expr, body: &[Stmt]) -> Flow {

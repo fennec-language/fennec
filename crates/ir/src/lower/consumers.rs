@@ -99,9 +99,22 @@ impl Lowering<'_> {
         matches!(self.type_at(value.span), Some(Type::List(item)) if !matches!(*item, Type::Int | Type::Float))
     }
 
-    /// Whether what's written gives a generator.
+    /// Whether what's written gives a generator, or is a type with an `iter` of its own, which a
+    /// `for` loop goes through the same way: `list(queue)` is the list of what `queue.iter()` gives.
     fn gives_items(&self, value: &Expr) -> bool {
-        matches!(self.type_at(value.span), Some(Type::Iterator(_)))
+        match self.type_at(value.span) {
+            Some(Type::Iterator(_)) => true,
+            Some(ty) => self.own_iter_items(&ty).is_some(),
+            None => false,
+        }
+    }
+
+    /// What a type's own `iter` gives, when it has one that's a generator.
+    pub(super) fn own_iter_items(&self, ty: &Type) -> Option<Type> {
+        let Type::Named(name) = ty else { return None };
+        let (_, found) = self.resolve(&format!("{name}.iter"), &[Some(ty.clone())], None)?;
+        let Type::Iterator(item) = found.returns else { return None };
+        Some(*item)
     }
 
     /// The arguments for what uses every item of a generator and works on a list: the

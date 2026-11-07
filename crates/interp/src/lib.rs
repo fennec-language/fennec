@@ -11,6 +11,7 @@ mod buffer;
 mod builtins;
 mod call;
 mod collections;
+mod compress;
 mod constants;
 pub mod embed;
 mod entropy;

@@ -457,9 +457,9 @@ impl FnCx<'_> {
                         self.error(mismatch("`port`", &Type::Int, &ty, arg.value.span));
                     }
                 }
-                Some("indent") if named.contains(&"indent") => {
+                Some(option @ ("indent" | "level")) if named.contains(&option) => {
                     if !self.checker.fits(&Type::Int, &ty) {
-                        self.error(mismatch("`indent`", &Type::Int, &ty, arg.value.span));
+                        self.error(mismatch(&format!("`{option}`"), &Type::Int, &ty, arg.value.span));
                     }
                 }
                 Some(option @ ("names" | "extra")) if named.contains(&option) => {

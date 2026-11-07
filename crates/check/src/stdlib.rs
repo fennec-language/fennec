@@ -47,6 +47,7 @@ macro_rules! modules {
 }
 
 modules! {
+    compress,
     crypto,
     fs,
     json,

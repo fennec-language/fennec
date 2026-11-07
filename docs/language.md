@@ -200,7 +200,7 @@ with db.transaction()? as tx:
 ```
 
 - `lend x else:` runs when the caller's block fails, and a failure there is reported with the caller's. `return`, `break` and `continue` in the caller count as success.
-- Nothing after `lend` may fail on the success path. A type can require its caller to finish it, like `tx.commit()?`, and a wrapper around such a type requires finishing too.
+- Nothing after `lend` may fail on the success path. A type can require its caller to finish it, like `tx.commit()?`, and a wrapper around such a type requires finishing too. The compiler works this out from a `lend` whose cleanup can fail, so there's no marker to write. A written file is one, finished with `close()?`, so a failed write can't be hidden by an automatic close. Not built yet.
 - A source can't `lend` while it holds a lock it took. Opening a file inside a lock is fine.
 - A generator can `lend` each item, closed when that round of the loop ends: `def clients(server: Server) -> Iterator[with Connection]:`. That's how `for conn in parallel(server)` works, with each connection belonging to its own round's task.
 - Tasks started inside a `with` may borrow what it lent, since they always end first. From many tasks at once, only its read-only methods, like a server's `accept`.
@@ -250,7 +250,7 @@ with Database.open(net, url, pool_size=10)? as db:
 
 ### When tasks stop or crash
 
-- When a `with launch` block ends normally, the task's inbox closes and the task drains it. If it's still running after `stop_after`, every wait it's in is cut short, socket and stdin reads included. A block that failed cuts them short at once.
+- When a `with launch` block ends normally, the task's inbox closes and the task drains it. If it's still running after `stop_after`, every wait it's in is cut short, socket and stdin reads included. A wait cut short by a stop ends the task quietly, with no failure reported, since the stop was asked for. Not built yet. A block that failed cuts them short at once.
 - A task's failure comes out where its `with launch` block ends, and a crash comes out as `Crashed`. A crash ends only its own task. The HTTP server answers that request with a 500.
 - **A crash inside `lock x as ref s:` rolls back.** The runtime puts back every value the block changed, in reverse order, and then releases the lock, so nobody ever sees a half-change. Only crashes roll back, since `fail` and `return` keep their changes. There's nothing to write and no new failure type, and a lock is never left poisoned.
 - The compiler saves the old value before each write in such a block, and skips the saves where it proves the block can't crash, so most lock bodies cost nothing extra. Values taken out are freed when the block ends.
@@ -378,6 +378,14 @@ back = json.loads[World](text)?
 - A `Table` saves as a list of its items in order, and an `Id` as where its item is in that list. Loading makes a new `Table`, and every `Id` loaded with it finds its item there. An `Id` has to be in a `Table` saved with it. Built.
 - A union saves tagged with its member's type name, as in `{"Circle": {"radius": 1.0}}`. Built.
 
+Loading is safe on untrusted input:
+
+- A load always makes fresh values, never a link to anything already in the program. Built.
+- Every `Id` resolves within its own document, and each `Table` carries a tag that's never reused, so an `Id` from one `Table` finds nothing in another of the same type. Built.
+- `where` rules run again on load, so a value that breaks one fails the load. Built.
+- Unknown fields are refused unless `extra=` says otherwise: `json.loads[Settings](text, extra=.ignore)`. Built for JSON. TOML always refuses them, and doesn't take `extra=` yet. `std.pack` saves no field names, and refuses data packed from a different type.
+- Untrusted input has depth and size limits. `std.pack` limits nesting, each string's length and the total it reads, before allocating anything. Built. JSON and TOML limit nesting to 500 deep, and don't limit size, string length or collection length yet.
+
 ## Capabilities
 
 ```fennec
@@ -458,6 +466,12 @@ def main(net: Net, fs: Fs, clock: Clock):
 - `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the JIT stands in and says so. Built.
 - `fennec build` makes a native program through LLVM, and `fennec build --release` optimizes the whole program as one. Built.
 
+## Checks
+
+- Every check stays, unless the compiler proves it can't fail: overflow, bounds, missing keys and divide by zero. A proven check is removed in every function, not only in `@hot` ones. Built.
+- `@hot` allows a leftover overflow check, and refuses any leftover bounds, key or divide check as a compile error that says why. Built.
+- Speed never comes from dropping a check: there's no unchecked arithmetic and no switch that turns checks off.
+
 ## Speed
 
 - Everyday builds stay fast, and release builds can take as long as they need.
@@ -473,6 +487,3 @@ def main(net: Net, fs: Fs, clock: Clock):
 | `where` | A broken rule always stops the program |
 | `?` inside `parallel` | It ends only that task |
 | A scoped `ref` | Possibly `with units[target_id] as ref target:` |
-| Closing written files | A written file is a type its caller must finish, with `close()?` |
-| How a type says it must be finished | Inferred from a `lend` whose cleanup can fail, with no marker |
-| A wait cut short by a stop | Ends the task quietly, with no failure reported |

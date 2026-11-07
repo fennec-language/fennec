@@ -673,7 +673,7 @@ def transaction(self) -> with Transaction fails DbError:
 **Nothing after `lend` may fail on the success path.** Finishing that can fail is a method the caller calls and checks, like `tx.commit()?`.
 *Why:* A cleanup failure after the caller's block has succeeded has nowhere to go, so it would be lost.
 
-**A type can require its finish, and wrappers inherit it.** For a type like a buffered writer or a transaction, ending the block on the success path without calling its finishing method is a compile error: "`tx` ended without `commit()`". A type holding one requires finishing too. How a type marks this is still open.
+**A type can require its finish, and wrappers inherit it.** For a type like a buffered writer or a transaction, ending the block on the success path without calling its finishing method is a compile error: "`tx` ended without `commit()`". A type holding one requires finishing too. The compiler infers it from a `lend` whose cleanup can fail, with no marker, and a written file is one, finished with `close()?`. Not built yet.
 *Why:* Cleanup that fails with nowhere to report the error silently loses data.
 
 **A source can't `lend` while it holds a lock it took.** Opening a file inside a lock is fine.
@@ -1012,7 +1012,7 @@ with launch((inbox) => audio(inbox, speakers), stop_after=5s) as sounds:
 **`TaskGroup` holds tasks whose number is known only at run time.** It's in `std.concurrent`, written in plain Fennec, and stops them all when its block ends.
 *Why:* Every task still belongs to a block you can see, whether it's one or a thousand.
 
-**Stopping a task drains it, then cuts it short.** When a `with launch` block ends normally, the task's inbox closes and the task finishes what's in it. If it's still running after `stop_after`, every wait it's in is cut short, socket and stdin reads included. A block that failed cuts them short at once.
+**Stopping a task drains it, then cuts it short.** When a `with launch` block ends normally, the task's inbox closes and the task finishes what's in it. If it's still running after `stop_after`, every wait it's in is cut short, socket and stdin reads included. A block that failed cuts them short at once. A wait cut short by a stop ends the task quietly, with no failure reported.
 *Why:* A normal end never loses queued work, which would make tests flaky, and a stuck task can't hang its parent forever.
 
 **A task's failure comes out where its `with launch` ends, and a crash comes out as `Crashed`.** A crash ends only its own task, and the HTTP server answers that request with a 500.
@@ -1694,8 +1694,6 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 - How an `Id` is used across servers, which is expected at the simulation level.
 - How an `Id`'s tag and generation behave across a restart, which decides what a saved `Id` means.
 - How `std.pack` data evolves: a lock file of past layouts with automatic migration rules, as Avro does. It comes later and adds to v1 without breaking it.
-- How a type marks that its finishing method must be called. The pick is to infer it from a `lend` whose cleanup can fail, with no marker.
-- What a wait cut short by a stop gives the task. The pick is that it ends the task quietly, with no failure reported.
 - How C is called with no `unsafe` and no `def del`.
 - Whether the `ref` form of `def []` counts as returning a `ref`, which is otherwise refused.
 - How a task changes an item from a stream. `for ref conn in parallel(server):` is written here, but `for ref` needs positions, and a plain name can't be handed to a `ref`.

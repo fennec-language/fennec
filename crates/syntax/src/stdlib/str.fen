@@ -33,6 +33,77 @@ extend str:
                 found.append(part)
         found
 
+    ## The text with `fill` after it to make it `width` characters, as it is if it's that long
+    ## already: `"ab".ljust(4, fill=".")` is `"ab.."`.
+    def ljust(self, width: int, fill = " ") -> str:
+        self + fill * (width - self.len())
+
+    ## The text with `fill` before it to make it `width` characters: `"7".rjust(3)` is `"  7"`.
+    def rjust(self, width: int, fill = " ") -> str:
+        fill * (width - self.len()) + self
+
+    ## The text in the middle of `width` characters, with `fill` either side, one more on the
+    ## left when they can't be even and `width` is odd, as Python puts it.
+    def center(self, width: int, fill = " ") -> str:
+        pad = width - self.len()
+        if pad <= 0: return self
+        left = pad // 2 + (1 if pad % 2 == 1 and width % 2 == 1 else 0)
+        fill * left + self + fill * (pad - left)
+
+    ## The text with zeros before it to make it `width` characters, after a sign if it starts
+    ## with one: `"-7".zfill(3)` is `"-07"`.
+    def zfill(self, width: int) -> str:
+        if self.startswith("-") or self.startswith("+"):
+            return self[:1] + "0" * (width - self.len()) + self[1:]
+        "0" * (width - self.len()) + self
+
+    ## The text without `prefix` at its start, or as it is if it doesn't start with it.
+    def removeprefix(self, prefix: str) -> str:
+        self[prefix.len():] if self.startswith(prefix) else self
+
+    ## The text without `suffix` at its end, or as it is if it doesn't end with it.
+    def removesuffix(self, suffix: str) -> str:
+        self[:self.len() - suffix.len()] if suffix != "" and self.endswith(suffix) else self
+
+    ## How many times `part` is in the text, not counting ones that overlap. "" is counted
+    ## between every two characters and at each end.
+    def count(self, part: str) -> int:
+        if part == "": return self.len() + 1
+        mut found = 0
+        mut rest = self
+        while True:
+            at = rest.find(part) else -1
+            if at < 0: return found
+            found += 1
+            rest = rest[at + part.len():]
+
+    ## Where the last `part` in the text starts, or `None` if it isn't there.
+    def rfind(self, part: str) -> int?:
+        mut found: int? = None
+        mut start = 0
+        while True:
+            at = self[start:].find(part) else -1
+            if at < 0: return found
+            found = start + at
+            start += at + 1
+            if start > self.len(): return found
+
+    ## The text with its first character upper case and the rest lower: `"fOX"` is `"Fox"`.
+    def capitalize(self) -> str:
+        if self == "": return ""
+        self[:1].upper() + self[1:].lower()
+
+    ## Each word upper case first and lower after, a word being letters after anything else:
+    ## `"red fox's den"` is `"Red Fox'S Den"`, as Python writes it.
+    def title(self) -> str:
+        mut out = list[str]()
+        mut after_letter = False
+        for c in self:
+            letter = c.upper() != c.lower()
+            out.append((c.lower() if after_letter else c.upper()) if letter else c)
+            after_letter = letter
+        "".join(out)
+
 ## Where a type's `def str(self, ref out: StrWriter)` writes how it prints. `print`, `str(x)`
 ## and f-strings call it, and so does printing a collection that holds the type.
 export struct StrWriter:

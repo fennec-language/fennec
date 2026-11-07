@@ -47,6 +47,7 @@ modules! {
     process,
     random,
     re,
+    string,
     time,
     toml,
 }

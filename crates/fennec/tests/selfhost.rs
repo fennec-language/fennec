@@ -441,23 +441,42 @@ fn compare(mode: &str, rust_dump: fn(&str) -> String) -> Result<(), String> {
 }
 
 /// Checks LLVM's build of the self-hosted front end on every file in `corpus` against
-/// `rust_dump`. Returns a report of what differs.
+/// `rust_dump`. Returns a report of what differs. Where LLVM can't build it, as under coverage,
+/// what runs it is the JIT, so it's the JIT's sample instead: on every file, the JIT took minutes
+/// there, and the JIT's own check would run the same again.
 fn on_llvm_against_rust(
     work: &Path,
     mode: &str,
     corpus: &[PathBuf],
     rust_dump: fn(&str) -> String,
 ) -> Result<(), String> {
+    if built()?.is_none() {
+        return jit_sample_against_rust(work, mode, corpus, rust_dump);
+    }
     let every: Vec<&PathBuf> = corpus.iter().collect();
     against_rust(work, mode, corpus, &every, on_llvm()?, rust_dump).map_err(|first| {
         format!("the self-hosted {mode} differ from Rust's for {first}\n\n{}", mirror_hint(mode))
     })
 }
 
-/// Checks the self-hosted front end on the JIT, on a sample of the files in
-/// `corpus`, against `rust_dump`. LLVM's build is checked on all of them, so this needs none
-/// of its own. Returns a report of what differs.
+/// Checks the self-hosted front end on the JIT, on a sample of the files in `corpus`, against
+/// `rust_dump`. LLVM's build is checked on all of them, so this needs none of its own. Where LLVM
+/// can't build it, `on_llvm_against_rust` has checked this sample already, and this does nothing.
+/// Returns a report of what differs.
 fn on_the_jit_against_rust(
+    work: &Path,
+    mode: &str,
+    corpus: &[PathBuf],
+    rust_dump: fn(&str) -> String,
+) -> Result<(), String> {
+    if built()?.is_none() {
+        return Ok(());
+    }
+    jit_sample_against_rust(work, mode, corpus, rust_dump)
+}
+
+/// The JIT's check of its sample of `corpus` against `rust_dump`.
+fn jit_sample_against_rust(
     work: &Path,
     mode: &str,
     corpus: &[PathBuf],

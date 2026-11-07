@@ -2433,6 +2433,33 @@ mod tests {
             .map_or_else(String::new, |unit| unit.text))
     }
 
+    /// A program's image describes the shapes of what it makes and what those hold, not the
+    /// standard library's other types, with strings' shape right after them.
+    #[test]
+    fn an_image_has_shapes_only_for_what_the_program_makes() -> Result<(), String> {
+        let named = |image: &crate::Image, wanted: &str| {
+            image.tables.shapes.iter().any(|shape| match shape.as_ref() {
+                fennec_interp::packed::Element::Enum { name, .. }
+                | fennec_interp::packed::Element::Struct { name, .. } => &**name == wanted,
+                _ => false,
+            })
+        };
+        let hello = "def main(stdout: Stdout):\n    stdout.print(1)\n";
+        let (_, shared, layouts) = emit(&lowered(hello)?)?;
+        let image = crate::Image::of(&layouts, &shared)?;
+        // Types that hold themselves through lists keep their numbers as kinds of item, so they
+        // and what they hold stay, and strings' shape comes last.
+        let shapes = image.tables.shapes.len();
+        assert!(shapes <= 2 * layouts.all_through_lists().len() + 1, "{shapes} of {} layouts", layouts.len());
+        assert_eq!(image.tables.str_shape, u64::try_from(shapes - 1).unwrap_or(0));
+        let points = "struct Point:\n    x: int\n    y: int\n\nstruct Unused:\n    x: int\n\ndef main(stdout: Stdout):\n    points = [Point(x=1, y=2), Point(x=3, y=4)]\n    stdout.print(points[1].x)\n";
+        let (_, shared, layouts) = emit(&lowered(points)?)?;
+        let image = crate::Image::of(&layouts, &shared)?;
+        assert!(named(&image, "Point"), "{:?}", image.tables.shapes);
+        assert!(!named(&image, "Unused"), "{:?}", image.tables.shapes);
+        Ok(())
+    }
+
     #[test]
     fn arguments_and_the_clock_need_no_interpreter() -> Result<(), String> {
         let source = "\

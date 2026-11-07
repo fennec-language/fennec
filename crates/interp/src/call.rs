@@ -98,7 +98,12 @@ impl Interp<'_> {
                 if let ExprKind::Attr { object: receiver, name, optional } = &object.kind
                     && self.module_member(receiver, name, object.span).is_none()
                 {
-                    return self.method_call(receiver, name, *optional, args, span);
+                    if name == "json" {
+                        self.json_type = index.as_type();
+                    }
+                    let answer = self.method_call(receiver, name, *optional, args, span);
+                    self.json_type = None;
+                    return answer;
                 }
                 if let Some(made) = self.made_collection(callee, (object, index), args, span) {
                     return made;

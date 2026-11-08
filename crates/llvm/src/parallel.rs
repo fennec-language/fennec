@@ -632,19 +632,6 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    /// A parked task's stack limit, read again after anything that can park: other tasks have run
-    /// on this thread since.
-    pub(crate) fn stack_limit_again(&mut self) {
-        if !self.on_workers() {
-            return;
-        }
-        self.declare(stack_limit_global(self.module.threads));
-        self.declare("declare i64 @fennec_aot_stack_limit()");
-        let limit = self.temp();
-        self.line(&format!("{limit} = call i64 @fennec_aot_stack_limit()"));
-        self.line(&format!("store i64 {limit}, ptr @fennec_stack_limit"));
-    }
-
     /// `parallel.for(list, range)`: each range of the list's positions, as the runtime splits
     /// them.
     fn parallel_for(&mut self, list: &Operand, range: &Operand) -> Result<(), String> {

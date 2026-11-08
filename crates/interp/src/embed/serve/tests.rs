@@ -719,3 +719,16 @@ mod tls {
         assert!(server(CHAIN, "not pem").is_err());
     }
 }
+
+/// Running out of file descriptors leaves connections waiting that the poll won't announce again,
+/// and a connection that gave up before it was accepted leaves the rest waiting too.
+#[test]
+fn a_failure_to_accept_doesnt_strand_what_waits_behind_it() {
+    use std::io::{Error, ErrorKind};
+
+    use super::{AfterAccept, accept_failed};
+    assert_eq!(accept_failed(&Error::from(ErrorKind::ConnectionAborted)), AfterAccept::Next);
+    assert_eq!(accept_failed(&Error::from(ErrorKind::Interrupted)), AfterAccept::Next);
+    assert_eq!(accept_failed(&Error::from_raw_os_error(24)), AfterAccept::Later);
+    assert_eq!(accept_failed(&Error::from(ErrorKind::WouldBlock)), AfterAccept::Stop);
+}

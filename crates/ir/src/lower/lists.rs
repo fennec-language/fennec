@@ -330,9 +330,41 @@ impl Lowering<'_> {
         Ok(Operand::Local(dest))
     }
 
+    /// Whether a value of this type is a `Secret` or has one in it. `seen` are the types looked at.
+    pub(super) fn holds_secret(&self, held: &Type, seen: &mut Vec<Type>) -> bool {
+        match held {
+            Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::Table(item) => {
+                return self.holds_secret(item, seen);
+            }
+            Type::Dict(first, second) | Type::Result(first, second) => {
+                return self.holds_secret(first, seen) || self.holds_secret(second, seen);
+            }
+            Type::Tuple(items) => return items.iter().any(|item| self.holds_secret(item, seen)),
+            Type::Named(_) | Type::Generic(..) => {}
+            _ => return false,
+        }
+        let held = self.concrete(held);
+        if seen.contains(&held) {
+            return false;
+        }
+        seen.push(held.clone());
+        let name = held.to_string();
+        if name.starts_with("Secret[") {
+            return true;
+        }
+        let mut within: Vec<Type> = self
+            .struct_fields(&name)
+            .map(|fields| fields.into_iter().map(|(_, ty)| ty).collect())
+            .unwrap_or_default();
+        if let Some(found) = self.context.enums.get(name.as_str()) {
+            within.extend(found.cases.iter().flat_map(|case| case.fields.iter().map(|(_, ty)| ty.clone())));
+        }
+        within.iter().any(|ty| self.holds_secret(ty, seen))
+    }
+
     /// Has a function made for each type that writes its own text within a value of type `held`,
     /// for the runtime to call as it writes the value. `seen` are the types looked at already.
-    fn own_texts_within(&mut self, held: &Type, seen: &mut Vec<Type>, span: Span) -> Lowered<()> {
+    pub(super) fn own_texts_within(&mut self, held: &Type, seen: &mut Vec<Type>, span: Span) -> Lowered<()> {
         match held {
             Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::Table(item) => {
                 return self.own_texts_within(item, seen, span);
@@ -347,6 +379,8 @@ impl Lowering<'_> {
             Type::Named(_) | Type::Generic(..) => {}
             _ => return Ok(()),
         }
+        // An enum's field as it's declared is `Secret[str]`, not yet the copy the program uses.
+        let held = &self.concrete(held);
         if seen.contains(held) {
             return Ok(());
         }

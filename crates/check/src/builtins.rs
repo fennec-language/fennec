@@ -259,7 +259,7 @@ fn waits_on_network(type_name: &str, name: &str) -> bool {
     matches!(
         (type_name, name),
         ("Net", "connect")
-            | ("Connection", "read" | "read_line")
+            | ("Connection", "read" | "read_line" | "start_tls")
             | ("Server", "accept")
             | ("UdpSocket", "receive")
     )
@@ -331,6 +331,31 @@ fn private_method(ty: &Type, name: &str, span: Span) -> Option<Diagnostic> {
 }
 
 impl FnCx<'_> {
+    /// `process.run` takes a program and its arguments, or one template.
+    fn process_run_given(&mut self, given: &[(Type, Span)], span: Span) {
+        // A template with no values says nothing of what its values are, so this does.
+        let text_template = Type::Generic("Template".to_owned(), vec![Type::Str]);
+        let first = given.first().map(|(ty, _)| self.checker.settled(ty));
+        if matches!(&first, Some(Type::Generic(name, _)) if name == "Template")
+            && let [(ty, _)] = given
+        {
+            self.checker.fits(&text_template, ty);
+        }
+        let open = |ty: &Type| matches!(ty, Type::Unknown | Type::Var(_));
+        let fits = match (first.as_ref(), given.len()) {
+            (Some(Type::Str), 2) => true,
+            (Some(ty), 1) => matches!(ty, Type::Generic(name, _) if name == "Template") || open(ty),
+            (Some(ty), 2) => open(ty),
+            _ => false,
+        };
+        if !fits {
+            let message =
+                "`run` takes the program, then its arguments as a list, never one string a shell would split";
+            let help = "like `process.run(\"git\", [\"log\", \"--oneline\"])`, or `process.run(\"ls\", [])` for none, or a template, `process.run(t\"git log {name}\")`";
+            self.error(Diagnostic::new(message, span).with_help(help));
+        }
+    }
+
     /// Why a builtin method can't be called here, if it can't: it's private to the standard
     /// library, or it's for a test's own fakes and this isn't a test.
     fn refused_method(&self, ty: &Type, name: &str, span: Span) -> Option<Diagnostic> {
@@ -355,32 +380,28 @@ impl FnCx<'_> {
         if let Some(refused) = self.refused_method(ty, name, span) {
             return self.unusable(refused, args);
         }
+        self.note_capability_wait(ty, name, span);
         if method.changes {
-            let what = format!(
-                "`{name}` changes it, so call it on something held in a mut name, like `items.{name}(...)`"
-            );
-            self.mut_place(object, &what);
+            self.mut_place(object, &format!("`{name}` changes it, so call it on something held in a mut name, like `items.{name}(...)`"));
         }
         let named: &[&str] = match ty.type_name() {
             _ if name == "sort" => &["key"],
+            Some("Net") if name == "connect" => &["timeout", "tls"],
+            Some("Net") if name == "listen" => &["tls"],
             Some(owner) if waits_on_network(owner, name) => &["timeout"],
             Some("Net") if name == "udp" => &["port"],
             Some("Process") if name == "run" => &["cwd", "env", "input"],
             Some("Net") if matches!(name, "get" | "post" | "request") => {
-                let given = |option: &str| args.iter().any(|arg| arg.name.as_deref() == Some(option));
-                if given("body") && given("json") {
-                    let message = "a request sends `body=` or `json=`, not both";
-                    self.error(
-                        Diagnostic::new(message, span)
-                            .with_help("`json=` sends a value as JSON, as its body"),
-                    );
-                }
+                self.one_request_body(args, span);
                 &["body", "headers", "json", "params", "timeout"]
             }
             _ => &[],
         };
         let plain = self.builtin_args(name, args, named, &method.receives, span);
         self.no_secret_printed(ty, name, &plain);
+        if *ty == Type::named("Process") && name == "run" {
+            self.process_run_given(&plain, span);
+        }
         if (name == "write" && *ty == Type::named("Connection")
             || name == "send_to" && *ty == Type::named("UdpSocket"))
             && let [(data, at), ..] = plain.as_slice()
@@ -391,11 +412,8 @@ impl FnCx<'_> {
                     .with_help("a connection sends `bytes`, or a `str` as its UTF-8 bytes"),
             );
         }
-        if name == "run" && *ty == Type::named("Process") && plain.len() != 2 {
-            let message =
-                "`run` takes the program, then its arguments as a list, never one string a shell would split";
-            let help = "like `process.run(\"git\", [\"log\", \"--oneline\"])`, or `process.run(\"ls\", [])` for none";
-            self.error(Diagnostic::new(message, span).with_help(help));
+        if name == "run" && *ty == Type::named("Process") {
+            // Checked by `process_run_given`, above.
         } else if plain.len() < method.arity.0 || plain.len() > method.arity.1 {
             self.error(wrong_args(name, span));
         }
@@ -493,6 +511,7 @@ impl FnCx<'_> {
                         self.error(mismatch(&format!("`{option}`"), &wanted, &ty, arg.value.span));
                     }
                 }
+                Some("tls") if named.contains(&"tls") => self.tls_option(name, &ty, arg.value.span),
                 Some("port") if named.contains(&"port") => {
                     if !self.checker.fits(&Type::Int, &ty) {
                         self.error(mismatch("`port`", &Type::Int, &ty, arg.value.span));
@@ -518,6 +537,25 @@ impl FnCx<'_> {
         }
         plain.extend(start);
         plain
+    }
+
+    fn one_request_body(&mut self, args: &[Arg], span: Span) {
+        let given = |option: &str| args.iter().any(|arg| arg.name.as_deref() == Some(option));
+        if given("body") && given("json") {
+            let message = "a request sends `body=` or `json=`, not both";
+            self.error(
+                Diagnostic::new(message, span).with_help("`json=` sends a value as JSON, as its body"),
+            );
+        }
+    }
+
+    /// `tls=`: whether `connect` uses TLS, and the `Certificate` a server shows, if any.
+    fn tls_option(&mut self, method: &str, ty: &Type, span: Span) {
+        let wanted =
+            if method == "connect" { Type::Bool } else { Type::optional(Type::named("Certificate")) };
+        if !self.checker.fits(&wanted, ty) {
+            self.error(mismatch("`tls`", &wanted, ty, span));
+        }
     }
 
     /// `names=` and `extra=` take a case of `JsonNames` and `JsonExtra`, like `.camel_case`.
@@ -763,7 +801,11 @@ impl FnCx<'_> {
                 Type::Bool
             }
             "reversed" if first == Type::Str => Type::Str,
-            "sorted" | "list" | "parallel" | "reversed" => Type::list(items(self)),
+            "parallel" => {
+                self.note_wait("`parallel`", span);
+                Type::list(items(self))
+            }
+            "sorted" | "list" | "reversed" => Type::list(items(self)),
             "set" => Type::Set(Box::new(items(self))),
             "enumerate" => {
                 let pairs = Type::Tuple(vec![Type::Int, items(self)]);

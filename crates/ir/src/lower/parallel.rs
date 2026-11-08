@@ -63,9 +63,10 @@ fn liftable(body: &[Stmt]) -> bool {
         StmtKind::If { branches, otherwise } => {
             branches.iter().all(|(_, block)| liftable(block)) && otherwise.as_deref().is_none_or(liftable)
         }
-        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
-            liftable(body)
-        }
+        StmtKind::While { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::With { body, .. }
+        | StmtKind::OnFailure { body, .. } => liftable(body),
         _ => true,
     }) && !tries(body)
 }
@@ -78,9 +79,10 @@ fn no_returning(body: &[Stmt]) -> bool {
             branches.iter().all(|(_, block)| no_returning(block))
                 && otherwise.as_deref().is_none_or(no_returning)
         }
-        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
-            no_returning(body)
-        }
+        StmtKind::While { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::With { body, .. }
+        | StmtKind::OnFailure { body, .. } => no_returning(body),
         _ => true,
     })
 }
@@ -385,7 +387,7 @@ impl Lowering<'_> {
         let cause = self.temporary(*error);
         let name = "parallel.serve_failure".to_owned();
         self.emit(InstKind::Builtin { dest: Some(cause), name, args: Vec::new(), changes: false }, span);
-        self.return_error(Operand::Local(cause), span)?;
+        self.pass_up_error(Operand::Local(cause), span)?;
         self.current = on;
         Ok(())
     }
@@ -483,7 +485,7 @@ impl Lowering<'_> {
         let cause = self.temporary(error.clone());
         let name = "parallel.failure".to_owned();
         self.emit(InstKind::Builtin { dest: Some(cause), name, args: Vec::new(), changes: false }, span);
-        self.return_error(Operand::Local(cause), span)?;
+        self.pass_up_error(Operand::Local(cause), span)?;
         self.current = on;
         Ok(())
     }
@@ -523,9 +525,10 @@ impl Lowering<'_> {
                 branches.iter().any(|(_, block)| self.writes_outside(block, item))
                     || otherwise.as_deref().is_some_and(|block| self.writes_outside(block, item))
             }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
-                self.writes_outside(body, item)
-            }
+            StmtKind::While { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::With { body, .. }
+            | StmtKind::OnFailure { body, .. } => self.writes_outside(body, item),
             _ => false,
         })
     }

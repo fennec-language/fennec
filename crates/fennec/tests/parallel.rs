@@ -526,6 +526,104 @@ fn a_connection_can_be_written_while_another_task_reads_it() -> std::io::Result<
     Ok(())
 }
 
+/// Runs a fixture on 1, 2, 4 and 8 threads and checks what it printed, in any order.
+fn fixture_prints(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let built = build_on_threads(&dir, source, name)?;
+    matches_on_workers(&built, name, Some(0), wanted)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A task's stack limit is its own again after any wait, not that of whatever ran on its thread
+/// meanwhile, however it waited.
+#[test]
+fn a_tasks_stack_limit_is_its_own_after_a_wait() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/workers/stack_limit_after_a_wait.fen");
+    fixture_prints(
+        "stack_limit_after_a_wait",
+        source,
+        "first 1 51\nsecond 2 51\nfirst 3 51\nsecond 4 51\ndone\n",
+    )
+}
+
+/// A stop ends the task it was for: being stopped in a sleep is that task's failure, and doesn't
+/// show up in whichever task its thread runs next.
+#[test]
+fn a_stopped_task_keeps_its_failure_to_itself() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/workers/stopped_task_keeps_its_failure.fen");
+    fixture_prints(
+        "stopped_task_keeps_its_failure",
+        source,
+        "the stopped one is over\nother ended fine 20000\ndone\n",
+    )
+}
+
+/// A dict's values go with it across a lock and into a task, as its strings do: a list held in one
+/// is the thread's own copy, not the address of a block another thread may reuse.
+#[test]
+fn a_dicts_lists_are_copied_across_a_lock_and_into_a_task() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-dict-lists-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/shared_dict_of_lists.fen");
+    let built = build_on_threads(&dir, source, "shared_dict_of_lists")?;
+    let first = "[100, 101, 102, 103, 104, 105, 106, 107]";
+    let second = "[200, 201, 202, 203, 204, 205, 206, 207]";
+    let wanted = format!("lock {first} {second}\n5000\ntask {first} {second}\n");
+    matches_on_workers(&built, "shared_dict_of_lists", Some(0), &wanted)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A task's end takes only the blocks it still has: one it freed, whose address another task on its
+/// worker then got for a block of its own, stays with that task.
+#[test]
+fn a_task_ending_leaves_another_tasks_blocks_alone() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-task-blocks-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/task_end_keeps_others_blocks.fen");
+    let built = build_on_threads(&dir, source, "task_end_keeps_others_blocks")?;
+    let base = "the same long text for both tasks, more than twenty three bytes in all";
+    let size = 2 * base.len() + 1;
+    let start = base.get(..12).unwrap_or_default();
+    let joined = size + 1;
+    let wanted = format!(
+        "A freed, length {size}\nB built {size}\nA ends\nB holds: {size} [ {start} ]\n\
+         B joined: {joined} [ {start} ]\nB same: True\n{base}{base}2\n"
+    );
+    matches_on_workers(&built, "task_end_keeps_others_blocks", Some(0), &wanted)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// Long strings with the same text are equal, whichever threads made them.
+#[test]
+fn long_strings_made_on_different_threads_are_equal() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-equal-strings-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/equal_long_strings.fen");
+    let built = build_on_threads(&dir, source, "equal_long_strings")?;
+    matches_on_workers(&built, "equal_long_strings", Some(0), "equal 1\nfound 5\n")?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// What a read lock's method makes holding a `shared` value's strings, a list made under it among
 /// them, is the reader's own once the lock is let go: each string prints, and isn't blank.
 #[test]

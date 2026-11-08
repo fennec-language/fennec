@@ -148,7 +148,11 @@ fn a_native_sleep_is_recorded_and_a_replay_without_it_stops() -> std::io::Result
         &fennec_command().args(["replay", &log.to_string_lossy()]).current_dir(&dir).output_within()?,
     );
     assert_ne!(woke.2, Some(0));
-    assert!(woke.1.contains("asked for `Clock.time`, where its recording asked for `Clock.sleep`"), "{}", woke.1);
+    assert!(
+        woke.1.contains("asked for `Clock.time`, where its recording asked for `Clock.sleep`"),
+        "{}",
+        woke.1
+    );
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

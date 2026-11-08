@@ -427,6 +427,12 @@ impl Heap {
         }
     }
 
+    /// Its live blocks, by how many words each takes, the statics among them.
+    #[cfg(any(test, feature = "threads"))]
+    pub(crate) fn live_by_size(&self) -> std::collections::BTreeMap<usize, usize> {
+        self.blocks.sizes()
+    }
+
     pub(crate) fn live(&self) -> usize {
         self.blocks.len().saturating_sub(self.statics)
     }

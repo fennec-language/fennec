@@ -97,6 +97,11 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     super::ROUND_FAILED
 }
 
+/// How many connections this worker is serving now.
+pub(in crate::embed) fn connections() -> usize {
+    CONNS.with_borrow(HashMap::len)
+}
+
 /// `fennec_net_serve_failure()`: the value of the failure the last `fennec_net_serve` on this thread
 /// passed up, giving back 2, now this thread's own.
 pub extern "C" fn net_serve_failure() -> i64 {

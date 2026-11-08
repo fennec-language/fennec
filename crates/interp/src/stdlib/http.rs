@@ -318,8 +318,14 @@ impl Stream {
         }
     }
 
-    /// Reads some, by the time left. Nothing read means the other side is done.
-    fn read_by(&mut self, into: &mut [u8], deadline: Instant, timeout: Duration) -> Result<usize, Failure> {
+    /// Reads some, by the time left. Nothing read means the other side is done, and `cut_off` says
+    /// whether it went without saying so.
+    fn read_by(
+        &mut self,
+        into: &mut [u8],
+        (deadline, timeout): (Instant, Duration),
+        cut_off: &mut bool,
+    ) -> Result<usize, Failure> {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Err(Failure::TimedOut(timeout));
@@ -331,8 +337,12 @@ impl Stream {
         };
         match read {
             Ok(count) => Ok(count),
-            // A server that hangs up without saying goodbye first has still said what it had.
-            Err(error) if error.kind() == ErrorKind::UnexpectedEof => Ok(0),
+            // A server that hangs up without saying goodbye first has still said what it had. Only
+            // an answer with no other way to say it's whole needs the goodbye.
+            Err(error) if error.kind() == ErrorKind::UnexpectedEof => {
+                *cut_off = true;
+                Ok(0)
+            }
             Err(error) => Err(failure_of(&error, timeout)),
         }
     }
@@ -358,13 +368,15 @@ struct Reader<'s> {
     at: usize,
     deadline: Instant,
     timeout: Duration,
+    /// Whether TLS ended with no word from the other side that it was finished.
+    cut_off: bool,
 }
 
 impl Reader<'_> {
     /// Reads more in. False once the other side is done.
     fn more(&mut self) -> Result<bool, Failure> {
         let mut chunk = [0; 16 * 1024];
-        let read = self.stream.read_by(&mut chunk, self.deadline, self.timeout)?;
+        let read = self.stream.read_by(&mut chunk, (self.deadline, self.timeout), &mut self.cut_off)?;
         self.held.extend_from_slice(chunk.get(..read).unwrap_or_default());
         Ok(read > 0)
     }
@@ -406,6 +418,9 @@ impl Reader<'_> {
     /// Everything until the other side is done.
     fn all(&mut self) -> Result<Vec<u8>, Failure> {
         while self.more()? {}
+        if self.cut_off {
+            return Err(Failure::Tls("the connection was cut off before the answer ended".to_owned()));
+        }
         let taken = self.rest().to_vec();
         self.at = self.held.len();
         Ok(taken)
@@ -434,7 +449,7 @@ fn read_answer(
     deadline: Instant,
     timeout: Duration,
 ) -> Result<Answer, Failure> {
-    let mut reader = Reader { stream, held: Vec::new(), at: 0, deadline, timeout };
+    let mut reader = Reader { stream, held: Vec::new(), at: 0, deadline, timeout, cut_off: false };
     let (status, headers) = loop {
         let (status, headers) = read_head(&mut reader)?;
         // `100 Continue` and the like say something's coming.
@@ -767,6 +782,60 @@ pub(crate) mod tls {
 
 #[cfg(test)]
 mod tests {
+    /// TLS that ends with what it had, then the other side gone without saying it's finished.
+    struct CutOff {
+        tcp: std::net::TcpStream,
+        left: &'static [u8],
+    }
+
+    impl Read for CutOff {
+        fn read(&mut self, into: &mut [u8]) -> std::io::Result<usize> {
+            if self.left.is_empty() {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            let count = self.left.len().min(into.len());
+            let (now, later) = self.left.split_at(count);
+            into[..count].copy_from_slice(now);
+            self.left = later;
+            Ok(count)
+        }
+    }
+
+    impl Write for CutOff {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl super::Secure for CutOff {
+        fn tcp(&self) -> &std::net::TcpStream {
+            &self.tcp
+        }
+    }
+
+    /// An answer that lasts until the connection closes has only the closing to say it's whole, and
+    /// over TLS a closing nobody said was coming may be someone cutting it short.
+    #[test]
+    fn an_answer_read_to_the_end_fails_if_tls_was_cut_off() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let tcp = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let mut stream = super::Stream::Secure(Box::new(CutOff { tcp, left: b"half of an answ" }));
+        let timeout = Duration::from_secs(5);
+        let mut reader = super::Reader {
+            stream: &mut stream,
+            held: Vec::new(),
+            at: 0,
+            deadline: std::time::Instant::now() + timeout,
+            timeout,
+            cut_off: false,
+        };
+        assert!(matches!(reader.all(), Err(Failure::Tls(_))));
+    }
+
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::time::Duration;

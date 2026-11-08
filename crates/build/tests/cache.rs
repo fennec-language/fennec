@@ -73,7 +73,7 @@ fn an_entry_another_build_wrote_is_never_read() {
     assert_eq!(cache.read("llvm", "same key"), None);
     cache.write("llvm", "same key", b"this build's").unwrap();
     assert_eq!(cache.read("llvm", "same key").as_deref(), Some(&b"this build's"[..]));
-    // And it's the first a cleanup removes, however recently it was used.
+    // Used before this build's entry, it's the first a cleanup over the cap removes.
     cache.cleanup(20).unwrap();
     assert!(!other.exists());
     assert_eq!(cache.read("llvm", "same key").as_deref(), Some(&b"this build's"[..]));
@@ -81,29 +81,93 @@ fn an_entry_another_build_wrote_is_never_read() {
 }
 
 #[test]
-fn cleanup_drops_old_versions_then_the_least_recently_used() {
+fn cleanup_drops_the_least_recently_used_whichever_build_wrote_them() {
     let home = home("over").unwrap();
     let cache = Cache::new(&home);
-    let old = home.join("cache").join("0.0.0-old").join("functions").join("x");
-    entry(&old, 300, 1).unwrap();
+    let other = home.join("cache").join("0.0.0-other").join("functions").join("x");
+    entry(&other, 300, 1).unwrap();
     entry(&cache.path("functions", "oldest"), 300, 300).unwrap();
     entry(&cache.path("functions", "middle"), 300, 200).unwrap();
     entry(&cache.path("functions", "newest"), 300, 100).unwrap();
 
-    // 1,200 bytes against a cap of 1,000: down to 800, so two entries go.
+    // 1,200 bytes against a cap of 1,000: down to 800, so two entries go. Another build used a
+    // second ago may be one in use elsewhere, so it isn't put first.
     let cleanup = cache.cleanup(1_000).unwrap();
     assert_eq!(cleanup, Cleanup { removed: 2, freed: 600, size: 600, skipped: false });
-    assert!(!old.exists(), "another version's entries go first, however recently used");
-    assert!(!home.join("cache").join("0.0.0-old").exists(), "its emptied folder goes too");
+    assert!(other.exists(), "another build's entry used a second ago stays");
     assert!(!cache.path("functions", "oldest").exists());
-    assert!(cache.path("functions", "middle").exists());
+    assert!(!cache.path("functions", "middle").exists());
     assert!(cache.path("functions", "newest").exists());
     assert!(!home.join("cache").join("cleanup.lock").exists(), "the lock is released");
 
-    // Emptying this version's folders leaves them, since a command may be writing into one.
+    // Emptying this build's folders leaves them, since a command may be writing into one, while
+    // another build's emptied folder goes.
     cache.cleanup(0).unwrap();
     assert!(!cache.path("functions", "newest").exists());
     assert!(home.join("cache").join(FOLDER).join("functions").is_dir());
+    assert!(!home.join("cache").join("0.0.0-other").exists());
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+/// The cap is for the whole cache: many builds' folders, each well under it, are cut down
+/// together, the least recently used entries first whichever folder they're in.
+#[test]
+fn the_cap_is_for_every_build_folder_together() {
+    let home = home("builds").unwrap();
+    let cache = Cache::new(&home);
+    let build = |at: usize| home.join("cache").join(format!("{}-{at:064}", fennec_build::VERSION));
+    // Five other builds and this one, 200 bytes each, each used a minute later than the last.
+    for at in 0..5_u64 {
+        entry(&build(usize::try_from(at).unwrap()).join("llvm").join("f"), 200, 600 - at * 60).unwrap();
+    }
+    entry(&cache.path("llvm", "f"), 200, 1).unwrap();
+    assert_eq!(cache.size(), 1_200);
+
+    // A cap of 1,000 for all of them: down to 800, so the two least recently used go.
+    let cleanup = cache.cleanup(1_000).unwrap();
+    assert_eq!(cleanup, Cleanup { removed: 2, freed: 400, size: 800, skipped: false });
+    assert!(!build(0).exists() && !build(1).exists(), "the two used longest ago went, folders and all");
+    assert!((2..5).all(|at| build(at).join("llvm").join("f").exists()));
+    assert!(cache.path("llvm", "f").exists());
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+/// Another build's folder that's gone unused for a day goes whole, even with the cache under its
+/// cap; this build's folder stays however long it's been, and so does a build used in the day.
+#[test]
+fn a_build_folder_unused_for_a_day_goes_whole() {
+    let home = home("unused").unwrap();
+    let cache = Cache::new(&home);
+    let day = fennec_build::UNUSED_BUILD.as_secs();
+    let gone = home.join("cache").join("0.0.1");
+    entry(&gone.join("llvm").join("a"), 100, day + 60).unwrap();
+    entry(&gone.join("programs").join("b"), 100, day + 3_600).unwrap();
+    let used = home.join("cache").join("0.0.1-used");
+    // One entry used in the day keeps its whole folder.
+    entry(&used.join("llvm").join("a"), 100, day + 3_600).unwrap();
+    entry(&used.join("llvm").join("b"), 100, 60).unwrap();
+    entry(&cache.path("llvm", "a"), 100, day * 7).unwrap();
+
+    let cleanup = cache.cleanup(1_000_000).unwrap();
+    assert_eq!(cleanup, Cleanup { removed: 2, freed: 200, size: 300, skipped: false });
+    assert!(!gone.exists());
+    assert!(used.join("llvm").join("a").exists() && used.join("llvm").join("b").exists());
+    assert!(cache.path("llvm", "a").exists());
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+/// A command starts a cleanup once none has run for an hour, and only one command of those that
+/// follow does. A new cache only gets marked.
+#[test]
+fn a_cleanup_is_due_once_an_hour() {
+    let home = home("due").unwrap();
+    let cache = Cache::new(&home);
+    assert!(!cache.cleanup_due(), "a new cache has nothing to clean");
+    assert!(!cache.cleanup_due());
+    let mark = home.join("cache").join("cleaned");
+    entry(&mark, 0, fennec_build::CLEANUP_EVERY.as_secs() + 60).unwrap();
+    assert!(cache.cleanup_due());
+    assert!(!cache.cleanup_due(), "the one that said yes marked it");
     std::fs::remove_dir_all(&home).unwrap();
 }
 

@@ -341,11 +341,6 @@ struct State {
     inputs: Vec<Value>,
     /// Each name's number in the name table, for telling types apart.
     name_ids: HashMap<String, i64>,
-    /// The path `objects::put` changes, built a step at a time.
-    path: Option<Place>,
-    /// A `return`, or a failure `?` or `fail` passes up, from code the interpreter ran,
-    /// which native code must now carry out.
-    leaving: Option<crate::exec::Flow>,
     heap: heap::Heap,
     /// The block of each plain capability, by its kind, once it's been asked for.
     capabilities: Vec<i64>,
@@ -431,9 +426,7 @@ pub fn start(mut tables: Tables, inputs: crate::Inputs) {
         regexes: crate::stdlib::re::Regexes::default(),
         temps: Vec::new(),
         inputs: Vec::new(),
-        leaving: None,
         name_ids,
-        path: None,
         heap: heap::Heap::new(std::mem::take(&mut tables.statics)).planned(&tables.shapes, &tables.elements),
         capabilities: Vec::new(),
         world: None,
@@ -819,7 +812,7 @@ pub mod temps {
     pub extern "C" fn err(error: i64, start: i64, end: i64) -> i64 {
         attempt(|state: &mut State| {
             let error = state.take(error);
-            check_error(&error, span(start, end))?;
+            super::check_error(&error, span(start, end))?;
             Ok(state.push(Value::Err(std::rc::Rc::new(error))))
         })
     }
@@ -861,7 +854,7 @@ pub mod eval {
     pub extern "C" fn at_call(start: i64, end: i64) {
         with(|state| {
             if let Some(failure) = state.failure.take() {
-                state.failure = Some(at_failed_call(failure, span(start, end)));
+                state.failure = Some(super::at_failed_call(failure, span(start, end)));
             }
         });
     }
@@ -877,27 +870,6 @@ pub mod eval {
             let value = state.take(value);
             state.inputs.push(value);
         });
-    }
-
-    /// Whether the code the interpreter just ran is leaving the function: 0 when it isn't,
-    /// 1 for a `return`, 2 for a failure passing up.
-    pub extern "C" fn leaving() -> i8 {
-        with(|state| match state.leaving {
-            None | Some(Flow::Normal(_) | Flow::Break | Flow::Continue | Flow::Yield(_)) => 0,
-            Some(Flow::Return(_)) => 1,
-            Some(Flow::PassUp(_)) => 2,
-        })
-    }
-
-    /// The value the function is leaving with.
-    pub extern "C" fn left() -> i64 {
-        with(|state| {
-            let value = match state.leaving.take() {
-                Some(Flow::Return(value) | Flow::PassUp(value) | Flow::Normal(value)) => value,
-                _ => Value::Unit,
-            };
-            state.push(value)
-        })
     }
 
     /// Fails because no case of a `match` matches its value.

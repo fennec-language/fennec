@@ -112,14 +112,3 @@ pub(crate) fn read(
     }
 }
 
-/// `Buffer[T]()` or `Buffer[T](capacity=n)`.
-pub(crate) fn make(args: &[CallArg], span: Span) -> Result<Value, Diagnostic> {
-    let room = match args {
-        [] => 0,
-        [CallArg { name: Some(name), value: Value::Int(room), .. }] if name == "capacity" => {
-            usize::try_from(*room).unwrap_or(0)
-        }
-        _ => return Err(Diagnostic::new("`Buffer` was called with the wrong arguments", span)),
-    };
-    Ok(Value::Buffer(Rc::new(Buffer::with_room(room))))
-}

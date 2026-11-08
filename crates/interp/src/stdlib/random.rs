@@ -4,16 +4,8 @@
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Module, no_constants};
-use crate::collections::plain;
 use crate::value::Value;
 
-pub(crate) const MODULE: Module = Module {
-    functions: &["random.random_choice", "random.random_float", "random.random_int"],
-    call,
-    constant: no_constants,
-    methods: &[],
-};
 
 /// The `n`th 64-bit number of `seed`'s sequence.
 pub(crate) fn splitmix(seed: i64, n: i64) -> u64 {

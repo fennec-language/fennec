@@ -9,7 +9,6 @@ use std::rc::Rc;
 
 use fennec_syntax::{Field, Span, TypeExpr};
 
-;
 use crate::ops::to_float;
 use crate::value::{Id, Slot, Table, Value};
 

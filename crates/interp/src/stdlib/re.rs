@@ -7,17 +7,9 @@ use std::rc::Rc;
 use fennec_re::{Anchor, Captures, Regex};
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Module, no_constants};
-use crate::collections::{plain, split_key};
 use crate::methods::no_method;
 use crate::value::{Instance, Value};
 
-pub(crate) const MODULE: Module = Module {
-    functions: &["re.is_regex"],
-    call,
-    constant: no_constants,
-    methods: &[("Regex", method)],
-};
 
 /// Part of a replacement: text as written, or what a group caught.
 enum Part {

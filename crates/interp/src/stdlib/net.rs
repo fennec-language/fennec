@@ -14,21 +14,10 @@ use std::time::{Duration, Instant};
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Module, http, no_constants, no_functions};
+use super::http;
 use crate::methods::no_method;
 use crate::value::{Capability, Instance, Value};
 
-pub(crate) const MODULE: Module = Module {
-    functions: &[],
-    call: no_functions,
-    constant: no_constants,
-    methods: &[
-        ("Connection", connection_method),
-        ("Server", server_method),
-        ("UdpSocket", udp_method),
-        ("Response", response_method),
-    ],
-};
 
 /// How long connecting waits unless told otherwise.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -386,24 +375,6 @@ fn fresh_handle(taken: &HashMap<i64, Socket>) -> i64 {
 #[cfg(target_arch = "wasm32")]
 fn fresh_handle(taken: &HashMap<i64, Socket>) -> i64 {
     i64::try_from(taken.len()).unwrap_or(i64::MAX) + 1
-}
-
-/// The arguments, and the `Duration` given as `timeout=`, if it was. `net.udp(port=…)` is the port
-/// as the last argument.
-fn with_timeout(args: Vec<CallArg>, method: &str, span: Span) -> Result<(Vec<Value>, Option<Duration>), Diagnostic> {
-    let mut plain = Vec::new();
-    let mut timeout = None;
-    for arg in args {
-        match arg.name.as_deref() {
-            None => plain.push(arg.value),
-            Some("port") if method == "udp" => plain.push(arg.value),
-            Some("timeout") => timeout = Some(duration_of(&arg.value, span)?),
-            Some(other) => {
-                return Err(Diagnostic::new(format!("`{method}` has no parameter called `{other}`"), arg.span));
-            }
-        }
-    }
-    Ok((plain, timeout))
 }
 
 fn duration_of(value: &Value, span: Span) -> Result<Duration, Diagnostic> {

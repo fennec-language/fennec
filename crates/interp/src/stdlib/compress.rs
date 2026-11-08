@@ -6,24 +6,9 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Module, no_constants};
 use crate::compress as codec;
-use crate::collections::plain;
 use crate::value::Value;
 
-pub(crate) const MODULE: Module = Module {
-    functions: &[
-        "compress.deflate",
-        "compress.gunzip",
-        "compress.gzip",
-        "compress.inflate",
-        "compress.unzlib",
-        "compress.zlib",
-    ],
-    call,
-    constant: no_constants,
-    methods: &[],
-};
 
 /// One of these functions, which need nothing of the interpreter.
 pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic> {

@@ -10,26 +10,8 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Module, no_constants};
-use crate::collections::plain;
 use crate::value::Value;
 
-pub(crate) const MODULE: Module = Module {
-    functions: &[
-        "crypto._add",
-        "crypto._end",
-        "crypto._start",
-        "crypto.blake3",
-        "crypto.derive_key",
-        "crypto.equal",
-        "crypto.hmac_sha256",
-        "crypto.keyed_blake3",
-        "crypto.sha256",
-    ],
-    call,
-    constant: no_constants,
-    methods: &[],
-};
 
 /// The bytes of a str or bytes value.
 fn bytes_of(value: &Value) -> Option<&[u8]> {

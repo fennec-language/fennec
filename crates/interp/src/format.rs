@@ -52,7 +52,6 @@ pub(crate) fn repr_with(value: &Value, own: &mut dyn FnMut(&Instance) -> Option<
     match value {
         Value::Unit | Value::Lent(_) => String::new(),
         Value::Shared(cell) => repr_with(&cell.borrow(), own),
-        Value::Generator(generator) => format!("<{}>", generator.label()),
         Value::None => "None".to_owned(),
         Value::Bool(true) => "True".to_owned(),
         Value::Bool(false) => "False".to_owned(),

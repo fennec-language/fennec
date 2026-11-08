@@ -3,13 +3,6 @@
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Module, no_constants};
 use crate::value::Value;
 
-pub(crate) const MODULE: Module = Module {
-    functions: &["toml.dumps", "toml.loads"],
-    call,
-    constant: no_constants,
-    methods: &[],
-};
 

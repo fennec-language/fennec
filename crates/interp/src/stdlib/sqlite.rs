@@ -13,16 +13,9 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Module, no_constants, no_functions};
 use crate::methods::no_method;
 use crate::value::{Instance, Value};
 
-pub(crate) const MODULE: Module = Module {
-    functions: &[],
-    call: no_functions,
-    constant: no_constants,
-    methods: &[("Database", method), ("Transaction", method)],
-};
 
 /// The `Err` holding the case of `SqlError` a failure is.
 fn failed(case: &str, reason: &str) -> Value {

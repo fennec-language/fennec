@@ -10,35 +10,6 @@ use crate::methods::no_method;
 use crate::ops;
 use crate::value::{Capability, Value};
 
-/// Splits off a `key=` argument; any other named or `mut` argument is an error.
-pub(crate) fn split_key(
-    args: Vec<CallArg>,
-    function: &str,
-) -> Result<(Vec<Value>, Option<Value>), Diagnostic> {
-    let mut values = Vec::with_capacity(args.len());
-    let mut key = None;
-    for arg in args {
-        match arg.name.as_deref() {
-            Some("key") => key = Some(arg.value),
-            Some(other) => {
-                return Err(Diagnostic::new(
-                    format!("`{function}` has no parameter called `{other}`"),
-                    arg.span,
-                ));
-            }
-            None => values.push(arg.value),
-        }
-    }
-    Ok((values, key))
-}
-
-pub(crate) fn plain(args: Vec<CallArg>, method: &str, span: Span) -> Result<Vec<Value>, Diagnostic> {
-    match split_key(args, method)? {
-        (values, None) => Ok(values),
-        (_, Some(_)) => Err(Diagnostic::new(format!("`{method}` doesn't take `key`"), span)),
-    }
-}
-
 fn wrong_args(method: &str, span: Span) -> Diagnostic {
     Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span)
 }

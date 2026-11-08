@@ -1,0 +1,7 @@
+error: this generator changes `rng`, a name around it
+ --> examples/errors/generator_changes_around.fen:5:9
+  |
+5 |     sum(rng.randint(1, high=6) for _ in range(count))
+  |         ^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: a generator only reads, since its items are made as they're asked for: change it in a loop

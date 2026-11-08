@@ -34,6 +34,30 @@ fn names_in(stmts: &[Stmt]) -> HashMap<String, usize> {
     counts
 }
 
+/// Whether an expression might change a name from outside a loop over `names`: it gives a call
+/// a `ref`, or calls a method on an outside name, which may change it. Moved into a generator,
+/// that's an error, since a generator only reads.
+fn may_change_around(expr: &Expr, names: &[String]) -> bool {
+    let mut changes = false;
+    fennec_syntax::visit::in_expr(&mut expr.clone(), &mut |part| {
+        if let ExprKind::Call { callee, args } = &part.kind {
+            let outside_method = matches!(&callee.kind, ExprKind::Attr { object, .. }
+                if root(object).is_some_and(|root| !names.iter().any(|name| name == root)));
+            changes |= outside_method || args.iter().any(|arg| arg.is_mut);
+        }
+    });
+    changes
+}
+
+/// The name a place starts from: `units` in `units[i].hp`.
+fn root(expr: &Expr) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Name(name) => Some(name),
+        ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => root(object),
+        _ => None,
+    }
+}
+
 fn count(counts: &HashMap<String, usize>, name: &str) -> usize {
     counts.get(name).copied().unwrap_or(0)
 }
@@ -120,6 +144,7 @@ fn built_by_loop(declare: &Stmt, loop_stmt: &Stmt, function: &FnDef, sources: &S
     let StmtKind::For { names, is_mut: false, iter, body } = &loop_stmt.kind else { return None };
     // A sum or a list built by the loop is only added to, never read inside it.
     let only_built = count(&names_in(body), name) <= 1;
+    let looped = names;
     let names = names.join(", ");
     let iter = moved(sources, iter)?;
     let (rule, built) = match &value.kind {
@@ -138,15 +163,15 @@ fn built_by_loop(declare: &Stmt, loop_stmt: &Stmt, function: &FnDef, sources: &S
                 return None;
             };
             let to_total = matches!(&target.kind, ExprKind::Name(target) if target == name);
-            if !to_total {
+            if !to_total || may_change_around(added, looped) {
                 return None;
             }
             ("manual-builtin", format!("sum({} for {names} in {iter})", moved(sources, added)?))
         }
-        ExprKind::Bool(false) => (
-            "manual-builtin",
-            format!("any({} for {names} in {iter})", moved(sources, found_when(body, name)?)?),
-        ),
+        ExprKind::Bool(false) => {
+            let cond = found_when(body, name).filter(|cond| !may_change_around(cond, looped))?;
+            ("manual-builtin", format!("any({} for {names} in {iter})", moved(sources, cond)?))
+        }
         ExprKind::Index { object, index } if matches!(index.kind, ExprKind::Int(0)) => {
             let ExprKind::Name(list) = &object.kind else { return None };
             ("manual-builtin", extreme(loop_stmt, name, list, function)?)

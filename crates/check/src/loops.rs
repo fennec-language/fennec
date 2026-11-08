@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, FnDef, Span, Stmt, StmtKind};
+use fennec_syntax::{Arg, CompKind, Diagnostic, Expr, ExprKind, FnDef, Span, Stmt, StmtKind};
 
 use crate::Body;
 use crate::builtins;
@@ -129,6 +129,7 @@ pub(crate) fn check_function(
     };
     loops.loops_in(&def.body, checker.typed.get(key));
     loops.arguments_changing_their_call(&def.body, checker.typed.get(key));
+    loops.generators_in(&def.body, checker.typed.get(key));
     loops.problems
 }
 
@@ -204,6 +205,52 @@ impl Loops<'_, '_> {
         }
         for inner in crate::effects::children(expr) {
             self.argument_changes_in(inner, body);
+        }
+    }
+
+    /// Reports each generator expression, like `sum(bump(ref count) for x in xs)`, that changes a
+    /// name around it. Its items are made as they're asked for, so when each change happens would
+    /// depend on what takes them: a generator only reads.
+    fn generators_in(&mut self, stmts: &[Stmt], body: Option<&Body>) {
+        for stmt in stmts {
+            for expr in exprs(stmt) {
+                self.generators_in_expr(expr, body);
+            }
+            for block in blocks(stmt) {
+                self.generators_in(block, body);
+            }
+            if let StmtKind::Lend { otherwise, .. } = &stmt.kind {
+                self.generators_in(otherwise, body);
+            }
+        }
+    }
+
+    fn generators_in_expr(&mut self, expr: &Expr, body: Option<&Body>) {
+        if let ExprKind::Comprehension { kind: CompKind::Generator, elem, value, names, cond, .. } =
+            &expr.kind
+        {
+            let mut changed = Vec::new();
+            for part in std::iter::once(elem.as_ref()).chain(value.as_deref()).chain(cond.as_deref()) {
+                self.written_changes(part, body, &mut changed);
+                given_as_ref(part, &mut changed);
+            }
+            let around = changed.into_iter().find(|(place, _, _)| !names.contains(&place.root));
+            if let Some((place, _, span)) = around {
+                let message = format!("this generator changes `{}`, a name around it", place.root);
+                self.problems.push(
+                    Diagnostic::new(message, span).with_help(
+                        "a generator only reads, since its items are made as they're asked for: change it in a loop",
+                    ),
+                );
+            }
+        }
+        if let ExprKind::Match { arms, .. } = &expr.kind {
+            for arm in arms {
+                self.generators_in(&arm.body, body);
+            }
+        }
+        for inner in crate::effects::children(expr) {
+            self.generators_in_expr(inner, body);
         }
     }
 
@@ -495,6 +542,21 @@ fn overlapping_arguments(callee: &Expr, args: &[Arg], problems: &mut Vec<Diagnos
         earlier.push((given, &arg.value, arg.is_mut));
     }
     picked_by_a_mut_argument(callee, args, problems);
+}
+
+/// Every place an expression gives a call as `ref`, which the call may give a new value, with the
+/// call's span.
+fn given_as_ref<'e>(expr: &'e Expr, found: &mut Vec<(Place, &'e Expr, Span)>) {
+    if let ExprKind::Call { args, .. } = &expr.kind {
+        for arg in args.iter().filter(|arg| arg.is_mut) {
+            if let Some(given) = place(&arg.value) {
+                found.push((given, &arg.value, expr.span));
+            }
+        }
+    }
+    for inner in crate::effects::children(expr) {
+        given_as_ref(inner, found);
+    }
 }
 
 /// Whether two places are written with different indexes that are known as written, like `xs[0]`

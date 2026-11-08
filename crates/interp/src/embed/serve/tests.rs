@@ -75,7 +75,7 @@ fn run(workers: usize, handler: &Handler, clients: impl FnOnce(SocketAddr) + Sen
         });
     };
     let pool = crate::embed::parallel::with_setup(workers, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>));
-    let served = serve(listener, pool, None, handler, (started, None));
+    let served = serve(listener, pool, None, handler, (started, None, None));
     if let Ok(Err(panic)) = ran.recv() {
         std::panic::resume_unwind(panic);
     }
@@ -432,7 +432,7 @@ fn what_a_parked_task_printed_comes_out_while_another_task_runs() {
         });
     };
     let pool = crate::embed::parallel::with_setup(2, &setup);
-    let served = serve(listener, pool, None, &printing(), (started, None));
+    let served = serve(listener, pool, None, &printing(), (started, None, None));
     super::super::finish();
     if let Ok(Err(panic)) = ran.recv() {
         std::panic::resume_unwind(panic);
@@ -514,7 +514,7 @@ fn run_until_it_ends(handler: &Handler, clients: impl FnOnce(SocketAddr) + Send 
         });
     };
     let pool = crate::embed::parallel::with_setup(2, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>));
-    let served = serve(listener, pool, None, handler, (started, None));
+    let served = serve(listener, pool, None, handler, (started, None, None));
     *ended.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
     ended.1.notify_all();
     if let Ok(Err(panic)) = ran.recv() {
@@ -620,4 +620,103 @@ fn a_round_that_never_waits_makes_way_for_a_connection_that_arrives_meanwhile() 
         assert_eq!(back, "pong\n");
         assert_eq!(spun, "spun\n");
     });
+}
+
+/// A served connection with TLS: its handshake is done before its round runs, its reads and writes
+/// go through it, and one that fails its handshake closes without its round running.
+mod tls {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use rustls::pki_types::CertificateDer;
+    use rustls::pki_types::ServerName;
+    use rustls::pki_types::pem::PemObject as _;
+    use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
+
+    use super::{Conn, Handler, Served, Stopper, listener, serve};
+    use crate::stdlib::http::tls::server;
+
+    const CA: &[u8] = include_bytes!("../../stdlib/testdata/tls-test-ca.pem");
+    const CHAIN: &str = include_str!("../../stdlib/testdata/tls-test-chain.pem");
+    const KEY: &str = include_str!("../../stdlib/testdata/tls-test-key.pem");
+
+    fn client() -> Arc<ClientConfig> {
+        let mut roots = RootCertStore::empty();
+        for certificate in CertificateDer::pem_slice_iter(CA) {
+            roots.add(certificate.unwrap()).unwrap();
+        }
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        Arc::new(config)
+    }
+
+    static ROUNDS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Answers each line it's sent with the same line.
+    fn echo() -> Handler {
+        Arc::new(|mut conn: Conn| {
+            ROUNDS.fetch_add(1, Ordering::SeqCst);
+            while let Ok(Some(mut line)) = conn.read_line(Some(Duration::from_secs(10))) {
+                line.push(b'\n');
+                if conn.write(&line).is_err() {
+                    return 1;
+                }
+            }
+            0
+        })
+    }
+
+    #[test]
+    fn a_served_connection_shakes_hands_before_its_round_and_talks_through_tls() {
+        ROUNDS.store(0, Ordering::SeqCst);
+        let (listening, address) = listener();
+        let (sent, ran) = std::sync::mpsc::channel();
+        let started = move |stopper: Stopper| {
+            std::thread::spawn(move || {
+                let went = std::panic::catch_unwind(|| {
+                    // A client that doesn't speak TLS fails its handshake, and no round runs for it.
+                    let mut plain = std::net::TcpStream::connect(address).unwrap();
+                    plain.write_all(b"this isn't TLS\n").unwrap();
+                    plain.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                    let mut closed = Vec::new();
+                    let _ = std::io::Read::read_to_end(&mut plain, &mut closed);
+                    assert_eq!(ROUNDS.load(Ordering::SeqCst), 0, "a round ran with no handshake");
+                    let tcp = std::net::TcpStream::connect(address).unwrap();
+                    tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                    let name = ServerName::try_from("localhost").unwrap();
+                    let connection = ClientConnection::new(client(), name).unwrap();
+                    let mut stream = BufReader::new(StreamOwned::new(connection, tcp));
+                    for line in ["one", "two"] {
+                        stream.get_mut().write_all(format!("{line}\n").as_bytes()).unwrap();
+                        stream.get_mut().flush().unwrap();
+                        let mut back = String::new();
+                        stream.read_line(&mut back).unwrap();
+                        assert_eq!(back, format!("{line}\n"));
+                    }
+                    assert_eq!(ROUNDS.load(Ordering::SeqCst), 1);
+                });
+                stopper.stop();
+                let _ = sent.send(went);
+            });
+        };
+        let pool = crate::embed::parallel::with_setup(1, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>));
+        let Ok(tls) = server(CHAIN, KEY) else { panic!("the certificate didn't load") };
+        let served: Served = serve(listening, pool, None, &echo(), (started, None, Some(tls)));
+        if let Ok(Err(panic)) = ran.recv() {
+            std::panic::resume_unwind(panic);
+        }
+        assert_eq!(served.connections, 2);
+    }
+
+    #[test]
+    fn a_chain_or_key_that_cant_be_read_fails() {
+        assert!(server("not pem", KEY).is_err());
+        assert!(server(CHAIN, "not pem").is_err());
+    }
 }

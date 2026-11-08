@@ -329,6 +329,37 @@ fn for_mut_needs_a_mut_place() {
     );
 }
 
+/// `for at, ref item in enumerate(items)` changes each item where it is, with its position: it
+/// takes a place, as `for ref` does, and `ref` goes only before the second name, only with
+/// `enumerate`.
+#[test]
+fn enumerate_with_ref_changes_each_item_where_it_is() {
+    let program = "
+        def bump(ref scores: list[int], fixed: list[int], ref more: dict[str, int]):
+            for at, ref score in enumerate(scores):
+                score += at
+            for at, ref score in enumerate(fixed):
+                score += at
+            for at, ref one in enumerate(range(3)):
+                one += at
+            for key, ref value in more.items():
+                pass
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "`fixed` isn't `ref` @ fixed",
+            "`for ref` changes each item, so loop over something held in a mut name @ range(3)",
+            "`ref` with two names is for `enumerate(items)` @ more.items()",
+        ]
+    );
+    let grows = "def bump(ref scores: list[int]):\n    for at, ref score in enumerate(scores):\n        scores.append(at)\n";
+    assert_eq!(problems(grows), ["you can't change `scores` while looping over it @ scores.append(at)"]);
+    let first =
+        "def bump(ref scores: list[int]):\n    for ref at, score in enumerate(scores):\n        pass\n";
+    assert_eq!(problems(first), ["parse: `ref` goes before the name whose item changes"]);
+}
+
 #[test]
 fn with_names_can_be_mut() {
     let program = "

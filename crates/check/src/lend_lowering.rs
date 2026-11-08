@@ -84,7 +84,7 @@ thread_local! {
 
 /// Where a lowering writes something of its own: a span covering nothing, its own, so the
 /// types the program is checked again with, found by span, are never another's.
-fn here(_near: Span) -> Span {
+pub(crate) fn here(_near: Span) -> Span {
     let at = NEXT.with(|next| {
         let at = next.get();
         next.set(at - 1);
@@ -93,17 +93,17 @@ fn here(_near: Span) -> Span {
     Span { start: at, end: at }
 }
 
-fn name(name: &str, span: Span) -> Expr {
+pub(crate) fn name(name: &str, span: Span) -> Expr {
     Expr { kind: ExprKind::Name(name.to_owned()), span: here(span) }
 }
 
-fn assign(target: &str, value: Expr, declare_mut: bool, ty: Option<TypeExpr>) -> Stmt {
+pub(crate) fn assign(target: &str, value: Expr, declare_mut: bool, ty: Option<TypeExpr>) -> Stmt {
     let span = value.span;
     let kind = StmtKind::Assign { target: name(target, span), op: None, value, declare_mut, ty };
     Stmt { kind, span: here(span) }
 }
 
-fn int(value: i64, span: Span) -> Expr {
+pub(crate) fn int(value: i64, span: Span) -> Expr {
     Expr { kind: ExprKind::Int(value), span: here(span) }
 }
 
@@ -114,7 +114,7 @@ fn exits_by(exit: &str, kind: i64, span: Span) -> Expr {
     Expr { kind: ExprKind::Binary { op: fennec_syntax::BinOp::Eq, lhs, rhs }, span: here(span) }
 }
 
-fn stmt(kind: StmtKind, span: Span) -> Stmt {
+pub(crate) fn stmt(kind: StmtKind, span: Span) -> Stmt {
     Stmt { kind, span: here(span) }
 }
 

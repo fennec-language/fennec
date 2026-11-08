@@ -2066,6 +2066,35 @@ fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `for at, ref item in enumerate(items)` changes each item where it is, natively as in the
+/// interpreter: numbers, structs and lists, a `continue` that still counts what it skips, and a
+/// nested one over the items' own lists.
+#[test]
+fn enumerate_with_ref_changes_items_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("enumerate_ref", ENUMERATE_REF)
+}
+
+const ENUMERATE_REF: &str = r"struct Unit:
+    health: int
+    tags: list[int]
+
+def main(stdout: Stdout):
+    mut scores = [1, 2, 3]
+    for at, ref score in enumerate(scores):
+        score += at * 10
+    mut units = [Unit(health=1, tags=[]), Unit(health=2, tags=[7])]
+    for at, ref unit in enumerate(units):
+        if at == 0:
+            continue
+        unit.health *= at + 10
+        for place, ref tag in enumerate(unit.tags):
+            tag += place + at
+    stdout.print(scores, units[0].health, units[1].health, units[1].tags)
+";
+
 /// `isdigit`, native on headers, says what std's says: inline and in a block, empty, digits
 /// outside ASCII, and a digit beside something that isn't.
 #[test]

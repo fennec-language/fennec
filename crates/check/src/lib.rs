@@ -19,6 +19,7 @@ mod call;
 mod checker;
 mod constants;
 mod effects;
+mod enumerate_lowering;
 mod expect;
 mod expr;
 mod extend;
@@ -397,7 +398,8 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
     // again, so the signatures and types given back are those of what runs.
     let sources_written = lend_lowering::lower(module, &checked.sources);
-    if (lock_lowering::lower(module, &checked.shared_values) || sources_written)
+    let counted = enumerate_lowering::lower(module);
+    if (lock_lowering::lower(module, &checked.shared_values) || sources_written || counted)
         && let Ok(again) = checker::Checker::new(module).run(checker::Scope::Everything)
     {
         return resolved(module, again);

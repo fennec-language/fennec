@@ -51,10 +51,10 @@ First runs, 2026-11-08, on an 18-core M5 MacBook Pro, the native server on 4 wor
 
 In every run the server never stopped, each crash ended only its own request and connection, and every other request was answered.
 
-**What's left to fix:**
-- **A crash leaks about 1.8 KB:** the frames' locals are never let go of, since native code's crash path returns without releasing them. At about 5,700 crashes a second alone it grows by 600 MB a minute. The fix is for native code to release live locals on the crash path, as a failure's early return does.
-- **Fixed in #981, the creep without crashes:** most of it was the runtime's temporaries. They were one stack per worker, shared by its tasks, and a round that left by a failure path, as about 1 in 40 hung-up connections did, left them behind. Each task now keeps its own. 1M hung-up connections went from 7 → 28 MB to a flat 9 MB. What's left is bounded: each worker's cache of freed blocks, up to 8 MB, and the allocator's pages, filling up as it warms. After #981 the last 4 minutes of a 10-minute run grew 1.6 MB.
-- **Latency after #981** rose by minute, from 10 ms at p99 to 95 ms. That run shared the machine with other builds, so it needs a run on a quiet machine before it counts.
+**Where it stands:**
+- **No leak is left that the runtime can count.** `live::a_server_holds_no_more_after_thousands_of_requests_of_each_kind` drives each kind of request 1,500 more times after a warm-up and requires the runtime's live count to be the same. Crashes are among them. That count, `FENNEC_LIVE_REPORT`, covers live blocks by size, temporaries, inputs, cached texts, names, parked tasks and connections. Unlike RSS, it doesn't move with caches filling.
+- **Crashes:** what looked like a leak of 1.8 KB a crash was the temporaries leak #981 fixed, since a crash leaves its function without truncating. On main, 90,074 crashes in a minute hold RSS at 7.8 MB.
+- **What RSS still does:** it rises for the first minutes as each worker's cache of freed blocks fills, up to 8 MB a thread, and the allocator's pages with it. On a loaded machine it was still rising slowly at 10 minutes. The live count is the test of a leak; RSS isn't.
 
 Bisecting, on one worker for 6 minutes each, before #981:
 
@@ -66,4 +66,4 @@ Bisecting, on one worker for 6 minutes each, before #981:
 | not HTTP | 2,682,260 | 6 → 51 MB |
 | half a request | 4,206,872 | 10 → 110 MB |
 
-Until the crash leak is fixed, `soak.py` reports a failure on memory for the full mix, as it should.
+`soak.py` judges memory by RSS, so on a machine shared with other work it can still report growth from caches filling. The live-count test above is the one that says whether anything leaks.

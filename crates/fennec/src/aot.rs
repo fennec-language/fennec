@@ -61,10 +61,6 @@ enum Runtime {
     /// The one built with `threads`, whose pool runs `parallel`'s ranges on workers. Its
     /// counts are atomic, so only programs that use `parallel` pay for it.
     Threads,
-    /// With no interpreter in it.
-    Lean,
-    /// With no interpreter in it, for `parallel`.
-    LeanThreads,
 }
 
 impl Runtime {
@@ -73,8 +69,6 @@ impl Runtime {
         match self {
             Self::Plain => "libfennec_runtime.a",
             Self::Threads => "libfennec_runtime_threads.a",
-            Self::Lean => "libfennec_runtime_lean.a",
-            Self::LeanThreads => "libfennec_runtime_lean_threads.a",
         }
     }
 
@@ -84,8 +78,6 @@ impl Runtime {
         match self {
             Self::Plain => "libfennec_runtime.bc",
             Self::Threads => "libfennec_runtime_threads.bc",
-            Self::Lean => "libfennec_runtime_lean.bc",
-            Self::LeanThreads => "libfennec_runtime_lean_threads.bc",
         }
     }
 
@@ -96,12 +88,6 @@ impl Runtime {
             Self::Threads => {
                 "`cargo build -p fennec-runtime --features threads --target-dir target/threads`, copying it there"
             }
-            Self::Lean => {
-                "`cargo build -p fennec-runtime --features lean --target-dir target/lean`, copying it there"
-            }
-            Self::LeanThreads => {
-                "`cargo build -p fennec-runtime --features lean,threads --target-dir target/lean-threads`, copying it there"
-            }
         }
     }
 
@@ -109,41 +95,13 @@ impl Runtime {
     /// runtime is there, so its loops run on every core and a server's connections each get a
     /// task. `FENNEC_THREADS_RUNTIME=0` asks for the plain one anyway, which runs them in order,
     /// and `=1` for the threads one, which fails if it isn't there.
-    ///
-    /// The lean one, with no interpreter in it, unless the program's code calls something only
-    /// the interpreter's runtime has, or the lean one isn't there. `FENNEC_LEAN_RUNTIME=0` asks
-    /// for the interpreter's anyway, and `=1` for the lean one, which a program still needing
-    /// the interpreter fails to link against.
-    fn for_program<'t>(
-        lowered: &fennec_ir::Program,
-        texts: impl IntoIterator<Item = &'t str>,
-        statically: bool,
-    ) -> Self {
+    fn for_program(lowered: &fennec_ir::Program, statically: bool) -> Self {
         let set = |name: &str| std::env::var_os(name).filter(|on| !on.is_empty()).map(|on| on == "1");
         let threads = fennec_llvm::uses_parallel(lowered)
             && set("FENNEC_THREADS_RUNTIME")
                 .unwrap_or_else(|| runtime_library(Self::Threads, statically).is_ok());
-        let (with_interpreter, lean) =
-            if threads { (Self::Threads, Self::LeanThreads) } else { (Self::Plain, Self::Lean) };
-        match set("FENNEC_LEAN_RUNTIME") {
-            Some(true) => lean,
-            None if runtime_library(lean, statically).is_ok() && !calls_the_interpreter(texts) => lean,
-            Some(false) | None => with_interpreter,
-        }
+        if threads { Self::Threads } else { Self::Plain }
     }
-}
-
-/// Whether LLVM text calls anything only the runtime with the interpreter exports.
-fn calls_the_interpreter<'t>(texts: impl IntoIterator<Item = &'t str>) -> bool {
-    let only: std::collections::HashSet<&str> =
-        fennec_interp::embed::INTERPRETER_EXPORTS.iter().copied().collect();
-    texts.into_iter().any(|text| {
-        text.split('@').skip(1).any(|after| {
-            let name =
-                after.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).next().unwrap_or_default();
-            only.contains(name)
-        })
-    })
 }
 
 /// Whether `--cpu baseline` asked for code any machine of its architecture runs.
@@ -534,11 +492,7 @@ fn compile_emitted(
     let bytes = image_of(&mut image);
     let entry = entry_of(lowered, shared, &image, &bytes)?;
     let statically = release && links_statically();
-    let runtime = Runtime::for_program(
-        lowered,
-        units.iter().map(|unit| unit.text.as_str()).chain([entry.as_str()]),
-        statically,
-    );
+    let runtime = Runtime::for_program(lowered, statically);
     let home = fennec_build::fennec_home();
     let cache = home
         .as_deref()

@@ -26,7 +26,6 @@ pub mod codec;
 pub mod dicts;
 pub mod guarded;
 pub mod heap;
-pub mod json;
 pub mod layout;
 pub mod lists;
 pub mod notes;
@@ -124,16 +123,11 @@ pub mod threads;
 use std::collections::HashMap;
 
 use crate::format;
-#[cfg(not(feature = "lean"))]
-use crate::interp::Interp;
 use crate::place::Place;
-use crate::scope::Frame;
 use crate::value::{Capability, Value};
 
 pub use heap::{Counts, count_allocations};
 pub use tests::next_test;
-#[cfg(not(feature = "lean"))]
-pub use tests::ran_in_interpreter;
 
 /// What the compiler registers before a program runs: the names, text and syntax its
 /// native code refers to by number.
@@ -298,16 +292,12 @@ fn write_kept_output_on_panic() {
 }
 
 struct State {
-    #[cfg(not(feature = "lean"))]
-    interp: Interp<'static>,
     output: Output,
     regexes: crate::stdlib::re::Regexes,
     tables: Tables,
     temps: Vec<Value>,
     /// The inputs of the next expression or statement native code hands over.
     inputs: Vec<Value>,
-    /// The names the last pattern that matched binds.
-    bindings: Vec<(String, Value)>,
     /// Each name's number in the name table, for telling types apart.
     name_ids: HashMap<String, i64>,
     /// The path `objects::put` changes, built a step at a time.
@@ -315,12 +305,6 @@ struct State {
     /// A `return`, or a failure `?` or `fail` passes up, from code the interpreter ran,
     /// which native code must now carry out.
     leaving: Option<crate::exec::Flow>,
-    /// The frames of the native functions that called the running one.
-    callers: Vec<Frame>,
-    /// Emptied frames, kept to reuse for later calls.
-    spare_frames: Vec<Frame>,
-    /// Names' text by their number, shared by every frame that declares them.
-    shared_names: Vec<Option<Rc<str>>>,
     heap: heap::Heap,
     /// The block of each plain capability, by its kind, once it's been asked for.
     capabilities: Vec<i64>,
@@ -385,78 +369,23 @@ fn capability(kind: i64) -> Capability {
     }
 }
 
-/// The runtime's exports only the one with the interpreter has: native code calling any of these
-/// can't link against the lean runtime. The runtime's own tests check it's exactly those.
-pub const INTERPRETER_EXPORTS: &[&str] = &[
-    "fennec_enter",
-    "fennec_leave",
-    "fennec_push_scope",
-    "fennec_pop_scope",
-    "fennec_declare",
-    "fennec_assign",
-    "fennec_get",
-    "fennec_take",
-    "fennec_put_back",
-    "fennec_declare_capability",
-    "fennec_expr",
-    "fennec_stmt",
-    "fennec_matches",
-    "fennec_bind",
-    "fennec_print_value",
-    "fennec_print_spec",
-    "fennec_items",
-    "fennec_next",
-    "fennec_binary",
-    "fennec_field",
-    "fennec_index",
-    "fennec_path_get",
-    "fennec_put",
-    "fennec_put_item",
-    "fennec_entries",
-    "fennec_make_instance",
-    "fennec_value_text",
-    "fennec_spec_text",
-    "fennec_make_variant",
-    "fennec_case_of",
-    "fennec_json_dumps",
-    "fennec_json_loads",
-    "fennec_capability_call",
-    "fennec_std_call",
-    "fennec_toml_dumps",
-    "fennec_toml_loads",
-];
-
 /// Sets up the runtime to run `module` with `tables` and `inputs`, replacing any earlier
 /// run's.
 pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Result<(), Diagnostic> {
     let output = Output(Rc::default(), inputs.live);
     OUTPUT.set(Some(output.clone()));
     let (program, arguments) = (inputs.program.clone(), inputs.arguments.clone());
-    #[cfg(not(feature = "lean"))]
-    let interp = {
-        let mut interp = Interp::with_output(Box::new(output.clone()))?;
-        interp.give(inputs);
-        interp.load(module)?;
-        interp
-    };
-    #[cfg(feature = "lean")]
     let _ = (module, inputs);
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
     set_failed(0);
     STATE.set(Some(State {
-        #[cfg(not(feature = "lean"))]
-        interp,
         output,
         regexes: crate::stdlib::re::Regexes::default(),
         temps: Vec::new(),
         inputs: Vec::new(),
-        bindings: Vec::new(),
         leaving: None,
         name_ids,
         path: None,
-        callers: Vec::new(),
-        spare_frames: Vec::new(),
-        shared_names: Vec::new(),
         heap: heap::Heap::new(std::mem::take(&mut tables.statics)).planned(&tables.shapes, &tables.elements),
         capabilities: Vec::new(),
         world: None,
@@ -473,7 +402,6 @@ pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Resu
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Leftovers {
     pub temps: usize,
-    pub frames: usize,
     /// Boxed values' blocks no one released.
     pub boxes: usize,
     /// What the run allocated and copied.
@@ -517,12 +445,8 @@ fn finish_run(leave: bool) -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
             state.temps.clear();
             state.let_go();
             aot::report_sites(&state.heap.sites);
-            let leftovers = Leftovers {
-                temps: state.temps.len(),
-                frames: state.callers.len(),
-                boxes: state.heap.live(),
-                counts: state.heap.counts,
-            };
+            let leftovers =
+                Leftovers { temps: state.temps.len(), boxes: state.heap.live(), counts: state.heap.counts };
             let finished = (state.output.0.take(), state.failure.take(), leftovers);
             if leave {
                 // Kept until the process ends, which gives back all of it at once.
@@ -624,11 +548,6 @@ impl State {
 
     /// Lets go of the blocks whose last lent copy has been dropped.
     fn let_go(&mut self) {
-        #[cfg(not(feature = "lean"))]
-        if let Err(failure) = self.interp.clean_up_abandoned() {
-            self.failure.get_or_insert(failure);
-            set_failed(1);
-        }
         loop {
             let blocks = crate::value::blocks_let_go();
             if blocks.is_empty() {
@@ -647,12 +566,6 @@ impl State {
         self.expanded(value).unpacked()
     }
 
-    /// Moves a temporary out for a name to hold, which may be packed but not lent.
-    fn take_held(&mut self, at: i64) -> Value {
-        let value = self.take_raw(at);
-        self.expanded(value)
-    }
-
     /// Moves a temporary out as it is, packed or not, for a name to hold.
     fn take_raw(&mut self, at: i64) -> Value {
         usize::try_from(at)
@@ -661,146 +574,8 @@ impl State {
             .map_or(Value::Unit, |slot| std::mem::replace(slot, Value::Unit))
     }
 
-    /// A name from the table, without copying it.
-    fn name_ref(tables: &Tables, id: i64) -> &str {
-        usize::try_from(id).ok().and_then(|id| tables.names.get(id)).map_or("", String::as_str)
-    }
-
-    /// A name's text from the table, shared rather than copied.
-    fn shared_name(&mut self, id: i64) -> Rc<str> {
-        let at = usize::try_from(id).unwrap_or(0);
-        if let Some(Some(name)) = self.shared_names.get(at) {
-            return Rc::clone(name);
-        }
-        let name: Rc<str> = Rc::from(Self::name_ref(&self.tables, id));
-        if self.shared_names.len() <= at {
-            self.shared_names.resize(at + 1, None);
-        }
-        if let Some(slot) = self.shared_names.get_mut(at) {
-            *slot = Some(Rc::clone(&name));
-        }
-        name
-    }
-
     fn name(&self, id: i64) -> String {
         usize::try_from(id).ok().and_then(|id| self.tables.names.get(id)).cloned().unwrap_or_default()
-    }
-}
-
-/// Values of the names a native function holds.
-pub mod names {
-    use super::{Frame, Value, with};
-
-    /// Starts a native function's frame.
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn enter() {
-        with(|state| {
-            let fresh = state.spare_frames.pop().unwrap_or_else(Frame::new);
-            let frame = std::mem::replace(&mut state.interp.frame, fresh);
-            state.callers.push(frame);
-        });
-    }
-
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn leave() {
-        with(|state| {
-            if let Some(frame) = state.callers.pop() {
-                let mut done = std::mem::replace(&mut state.interp.frame, frame);
-                if state.spare_frames.len() < SPARE_FRAMES {
-                    done.reset();
-                    state.spare_frames.push(done);
-                }
-            }
-        });
-    }
-
-    /// How many emptied frames are kept for reuse.
-    const SPARE_FRAMES: usize = 64;
-
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn push_scope() {
-        with(|state| state.interp.frame.push());
-    }
-
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn pop_scope() {
-        with(|state| state.interp.frame.pop());
-    }
-
-    /// Creates a name holding a temporary's value.
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn declare(name: i64, value: i64, is_mut: i8) {
-        with(|state| {
-            let value = state.take_held(value);
-            let name = state.shared_name(name);
-            state.interp.frame.declare_shared(name, value, is_mut != 0);
-        });
-    }
-
-    /// Changes what a name holds.
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn assign(name: i64, value: i64) {
-        with(|state| {
-            let value = state.take_held(value);
-            let name = state.shared_name(name);
-            if let Some(binding) = state.interp.frame.get_mut(&name) {
-                binding.value = value;
-            }
-        });
-    }
-
-    /// A temporary with a copy of a name's value. Copies share memory until one changes.
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn get(name: i64) -> i64 {
-        with(|state| {
-            let name = state.shared_name(name);
-            let value = state.interp.frame.get(&name).map_or(Value::Unit, |binding| binding.value.clone());
-            state.push(value)
-        })
-    }
-
-    /// Moves a name's value into a temporary, for a `mut` argument that's put back after.
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn take(name: i64) -> i64 {
-        with(|state| {
-            let name = state.shared_name(name);
-            let value = state
-                .interp
-                .frame
-                .get_mut(&name)
-                .map_or(Value::Unit, |binding| std::mem::replace(&mut binding.value, Value::Unit));
-            state.push(value)
-        })
-    }
-
-    /// Copies a `mut` parameter's final value back into the name the caller passed, in the
-    /// caller's frame. Runs just before the function leaves.
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn put_back(caller_name: i64, param: i64) {
-        with(|state| {
-            let param = state.shared_name(param);
-            let caller_name = state.shared_name(caller_name);
-            let value = state
-                .interp
-                .frame
-                .get_mut(&param)
-                .map_or(Value::Unit, |binding| std::mem::replace(&mut binding.value, Value::Unit));
-            if let Some(binding) = state.callers.last_mut().and_then(|frame| frame.get_mut(&caller_name)) {
-                binding.value = value;
-            }
-        });
-    }
-
-    /// Declares a capability `main` was given, so interpreted code can use it: a capability's
-    /// block, or a kind, 0 for `Stdout`, 1 for `Fs`, 2 for `Clock`, 3 for `Args`, 4 for
-    /// `Stdin`, 5 for `Process`, 6 for `Entropy`, 7 for `Net` and 8 for `Env`.
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn declare_capability(name: i64, kind: i64) {
-        with(|state| {
-            let name = state.name(name);
-            let capability = super::capabilities::value_of(state, kind);
-            state.interp.frame.declare(&name, capability, false);
-        });
     }
 }
 
@@ -1059,61 +834,6 @@ pub mod eval {
         });
     }
 
-    #[cfg(not(feature = "lean"))]
-    fn bind_inputs(state: &mut State) {
-        state.interp.frame.push();
-        for (index, value) in std::mem::take(&mut state.inputs).into_iter().enumerate() {
-            state.interp.frame.declare(&input_name(index), value, true);
-        }
-    }
-
-    /// Evaluates a registered expression with the inputs handed over.
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn expr(id: i64, start: i64, end: i64) -> i64 {
-        attempt(|state: &mut State| {
-            let expr = usize::try_from(id).ok().and_then(|id| state.tables.exprs.get(id)).cloned();
-            let expr = expr.ok_or_else(|| Diagnostic::new("the JIT lost an expression", span(start, end)))?;
-            bind_inputs(state);
-            let result = state.interp.eval(&expr).map_err(|failure| repoint(failure, span(start, end)));
-            state.interp.frame.pop();
-            let value = match result {
-                Err(diagnostic) if diagnostic.message == crate::interp::PASSING_UP => {
-                    state.leaving = state.interp.passing_up.take();
-                    Value::Unit
-                }
-                other => other?,
-            };
-            Ok(state.push(value))
-        })
-    }
-
-    /// Runs a registered statement with the inputs handed over.
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn stmt(id: i64, start: i64, end: i64) {
-        attempt(|state: &mut State| {
-            let stmt = usize::try_from(id).ok().and_then(|id| state.tables.stmts.get(id)).cloned();
-            let stmt = stmt.ok_or_else(|| Diagnostic::new("the JIT lost a statement", span(start, end)))?;
-            bind_inputs(state);
-            let result = state.interp.exec(&stmt).map_err(|failure| repoint(failure, span(start, end)));
-            state.interp.frame.pop();
-            match result {
-                Err(diagnostic) if diagnostic.message == crate::interp::PASSING_UP => {
-                    state.leaving = state.interp.passing_up.take();
-                    Ok(())
-                }
-                Ok(Flow::Normal(_)) => Ok(()),
-                Ok(flow @ (Flow::Return(_) | Flow::PassUp(_))) => {
-                    state.leaving = Some(flow);
-                    Ok(())
-                }
-                Ok(Flow::Break | Flow::Continue | Flow::Yield(_)) => {
-                    Err(Diagnostic::new("the JIT can't run this statement here", span(start, end)))
-                }
-                Err(diagnostic) => Err(diagnostic),
-            }
-        });
-    }
-
     /// Whether the code the interpreter just ran is leaving the function: 0 when it isn't,
     /// 1 for a `return`, 2 for a failure passing up.
     pub extern "C" fn leaving() -> i8 {
@@ -1133,35 +853,6 @@ pub mod eval {
             };
             state.push(value)
         })
-    }
-
-    /// Whether a value matches a registered pattern. When it does, its bindings wait for
-    /// `bind`.
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn matches(value: i64, pattern: i64, start: i64, end: i64) -> i8 {
-        attempt(|state: &mut State| {
-            let pattern = usize::try_from(pattern).ok().and_then(|id| state.tables.patterns.get(id)).cloned();
-            let pattern =
-                pattern.ok_or_else(|| Diagnostic::new("the JIT lost a pattern", span(start, end)))?;
-            let value = state.temp(value);
-            Ok(match state.interp.matches(&pattern, &value, span(start, end))? {
-                Some(bindings) => {
-                    state.bindings = bindings;
-                    1
-                }
-                None => 0,
-            })
-        })
-    }
-
-    /// Declares the names the last pattern that matched binds.
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn bind() {
-        with(|state| {
-            for (name, value) in std::mem::take(&mut state.bindings) {
-                state.interp.frame.declare(&name, value, false);
-            }
-        });
     }
 
     /// Fails because no case of a `match` matches its value.
@@ -1222,77 +913,10 @@ pub mod io {
         });
     }
 
-    /// Prints a value as `stdout.print` shows it.
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn print_value(value: i64) {
-        attempt(|state: &mut State| {
-            let value = state.temp(value);
-            let text = state.interp.shown(&value, Span::default())?;
-            write(state, &text)
-        });
-    }
-
     /// Prints the value in a block, read from the block.
     pub extern "C" fn print_block(address: i64) {
         let shown = super::heap::shown::shown(u64::try_from(address).unwrap_or(0));
-        attempt(|state: &mut State| write(state, &shown?));
-    }
-
-    /// Prints a value with an f-string format spec, like `.1f` or `,`.
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn print_spec(value: i64, spec: i64, start: i64, end: i64) {
-        attempt(|state: &mut State| {
-            let spec = usize::try_from(spec).ok().and_then(|at| state.tables.strings.get(at)).cloned();
-            let value = state.temp(value);
-            let text = state.interp.shown_spec(
-                &value,
-                spec.as_deref().unwrap_or_default(),
-                super::span(start, end),
-            )?;
-            write(state, &text)
-        });
-    }
-
-    /// The items a `for` loop walks through, as a list.
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn items(value: i64, start: i64, end: i64) -> i64 {
-        attempt(|state: &mut State| {
-            let value = state.temp(value);
-            let span = super::span(start, end);
-            if let Value::Generator(generator) = &value {
-                crate::generators::start(generator, span)?;
-                return Ok(state.push(value));
-            }
-            let items = state.interp.iterate(value, span)?;
-            Ok(state.push(Value::list(items)))
-        })
-    }
-
-    /// The next item of what `items` gave: -1 at the end, the item's temporary doubled, or
-    /// doubled plus one for a generator's failure, for native code to pass up.
-    #[cfg(not(feature = "lean"))]
-    pub extern "C" fn next(items: i64, at: i64, can_pass: i64, start: i64, end: i64) -> i64 {
-        attempt(|state: &mut State| {
-            let span = super::span(start, end);
-            match state.temp(items) {
-                Value::List(items) => Ok(usize::try_from(at)
-                    .ok()
-                    .and_then(|at| items.get(at))
-                    .cloned()
-                    .map_or(-1, |item| state.push(item) << 1)),
-                Value::Generator(generator) => match state.interp.pull(&generator, span)? {
-                    crate::generators::Pulled::Item(item) => Ok(state.push(item) << 1),
-                    crate::generators::Pulled::Done => Ok(-1),
-                    crate::generators::Pulled::Failed(failure) if can_pass != 0 => {
-                        Ok((state.push(failure) << 1) | 1)
-                    }
-                    crate::generators::Pulled::Failed(failure) => {
-                        Err(crate::generators::nowhere_to_pass(&failure, span))
-                    }
-                },
-                _ => Ok(-1),
-            }
-        })
+        attempt(|state: &mut State| write(state, &shown));
     }
 
     /// How many items a list from `items` has.

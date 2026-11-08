@@ -201,7 +201,7 @@ fn a_list_of_items_with_no_fields_reads_back_with_every_item() {
     finish();
     let Value::List(items) = read.unpacked() else { panic!("a list") };
     assert_eq!(items.len(), 2);
-    assert_eq!(shown.unwrap(), "[Empty(), Empty()]");
+    assert_eq!(shown, "[Empty(), Empty()]");
 }
 
 /// The bases where `pow` has special cases, and some where it hasn't.

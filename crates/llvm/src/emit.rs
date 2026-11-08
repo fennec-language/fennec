@@ -2000,14 +2000,14 @@ impl Emit<'_, '_, '_> {
                 self.regex_builtin(dest, name, args, span)
             }
             "json.dumps" | "json.loads" | "toml.dumps" | "toml.loads" => {
-                self.json_builtin(dest, name, args, span)
+                Err(crate::json::not_saved_natively(name))
             }
             named
                 if ["json.dumps.", "json.loads.", "toml.dumps.", "toml.loads."]
                     .iter()
                     .any(|format| named.starts_with(format)) =>
             {
-                self.std_call(dest, name, args, span)
+                Err(crate::json::not_saved_natively(name))
             }
             pure if pure.starts_with("crypto.")
                 || pure.starts_with("compress.")

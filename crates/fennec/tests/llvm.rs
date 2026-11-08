@@ -9417,10 +9417,13 @@ fn results_print_like_the_jit() -> std::io::Result<()> {
     }
     same_as_the_jit(
         "results_print",
-        r#"def check(n: int) -> Result[int, str]:
+        r#"error NotPositive:
+    n: int
+
+def check(n: int) -> Result[int, NotPositive]:
     if n > 0:
         return Ok(n)
-    Err("not positive")
+    Err(NotPositive(n))
 
 def main(stdout: Stdout):
     stdout.print(check(3), check(-1))

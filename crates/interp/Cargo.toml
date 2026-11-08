@@ -22,6 +22,7 @@ libm.workspace = true
 getrandom.workspace = true
 rustls.workspace = true
 rustls-platform-verifier.workspace = true
+rusqlite.workspace = true
 
 [lints]
 workspace = true

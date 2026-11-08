@@ -20,6 +20,7 @@ fn what_a_capability_gives_reads_back_as_it_was() {
         fields: vec![(Rc::from("path"), Value::str("gone.txt"))],
         is_error: true,
         cause: Some(Value::Int(2)),
+        notes: None,
     }));
     let dict =
         Value::Dict(Rc::new(crate::pairs::Pairs::from(vec![(Value::str("PATH"), Value::str("/bin"))])));

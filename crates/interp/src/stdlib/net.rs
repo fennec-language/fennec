@@ -282,7 +282,7 @@ impl Interp<'_> {
             case: None,
             fields: vec![(Rc::from("_handle"), Value::Int(handle))],
             is_error: false,
-            cause: None,
+            cause: None, notes: None,
         };
         match kind {
             "Connection" => self.connection_method(&socket, method, args, span),

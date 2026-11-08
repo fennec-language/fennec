@@ -44,6 +44,7 @@ modules! {
     process,
     random,
     re,
+    sqlite,
     toml,
     unicode,
 }

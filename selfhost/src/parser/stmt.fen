@@ -205,7 +205,7 @@ extend Parser:
         names
 
     ## `with game as ref current:`, or several at once: `with a as ref x, b as ref y:`, or
-    ## `with a, b as x, y:`.
+    ## `with a, b as x, y:`, or one source's tuple split: `with conn.split() as reader, writer:`.
     ## `with a as x:`, or, for `lock`, `lock a as ref x:`, which takes `shared` values.
     def with_stmt(ref self, lock: bool) -> Stmt:
         start = self.advance().span
@@ -233,7 +233,8 @@ extend Parser:
             for item in items:
                 span = span.to(item.span)
             value = Expr(kind=.Tuple(items), span=span)
-        if names.len() > 0 and names.len() != held:
+        # One value with several names splits what a source lends: `with conn.split() as r, w:`.
+        if names.len() > 0 and names.len() != held and (held != 1 or lock):
             mut span = value.span
             for name in names:
                 span = span.to(name.span)

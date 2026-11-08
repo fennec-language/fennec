@@ -61,7 +61,6 @@ fn lint(sources: &Sources, call: Span, value: &Expr, message: &str) -> Option<Li
 }
 
 pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
-    let named: Vec<&str> = CONVERSIONS.into_iter().filter(|name| !redefined(module, name)).collect();
     let mut calls: Vec<(String, Span, Expr)> = Vec::new();
     let mut shown: HashSet<(u32, u32)> = HashSet::new();
     let mut walked = module.clone();
@@ -74,12 +73,19 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
             }
         }
         if let Some((name, value)) = conversion(expr)
-            && named.contains(&name)
+            && CONVERSIONS.contains(&name)
             && !expr.span.in_prelude()
         {
             calls.push((name.to_owned(), expr.span, value.clone()));
         }
     });
+    // Whether a program names a conversion as its own takes a while to find out, so it waits
+    // until there's a call to one.
+    let named: Vec<&str> = CONVERSIONS
+        .into_iter()
+        .filter(|name| calls.iter().any(|(called, ..)| called == name) && !redefined(module, name))
+        .collect();
+    calls.retain(|(called, ..)| named.contains(&called.as_str()));
     if calls.is_empty() {
         return Vec::new();
     }

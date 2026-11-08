@@ -7545,6 +7545,31 @@ fn launched_tasks_run_beside_their_block_natively() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A channel that couldn't hold a message fails where it's made, rather than quietly holding one.
+#[test]
+fn a_channel_of_no_size_fails_where_its_made() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("channel-no-size")?;
+    let program = dir.join("none.fen");
+    std::fs::write(
+        &program,
+        "from std.concurrent import Channel\n\ndef main(stdout: Stdout):\n    with Channel[int].open(size=0) as ch:\n        stdout.print(\"made\")\n",
+    )?;
+    let executable = dir.join("none");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!ran.status.success());
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert!(said.contains("a channel has to hold at least 1 message, but its size is 0"), "{said}");
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "");
+    Ok(())
+}
+
 /// A channel's messages cross it as the runtime holds them, of each kind: a number, a string long
 /// enough for a block, a struct held in place, and a list. A receive or a send that waits past its
 /// timeout fails as `Timeout`.
@@ -7567,6 +7592,28 @@ def numbers(stdout: Stdout) fails Closed | Timeout:
         ch.send(7)?
         ch.send(8)?
         stdout.print(ch.receive()?, ch.receive()?)
+
+def signs(stdout: Stdout) fails Closed | Timeout:
+    with Channel[int].open(size=2) as ints:
+        ints.send(-7)?
+        stdout.print(ints.receive()?)
+    with Channel[float].open(size=2) as floats:
+        floats.send(-1.5)?
+        stdout.print(floats.receive()?)
+    with Channel[u64].open(size=2) as big:
+        half: u64 = 9223372036854775807
+        big.send(half + half + 1)?
+        stdout.print(big.receive()?)
+    with Channel[f32].open(size=2) as small:
+        tenth: f32 = -0.1
+        small.send(tenth)?
+        stdout.print(small.receive()?)
+    with Channel[int].open(size=1) as waits:
+        match waits.receive(timeout=Duration(nanos=-5)):
+            case Ok(n):
+                stdout.print(\"got\", n)
+            case Err(problem):
+                stdout.print(\"at once:\", problem)
 
 def words(stdout: Stdout) fails Closed | Timeout:
     with Channel[str].open(size=4) as ch:
@@ -7601,6 +7648,7 @@ def waits(stdout: Stdout) fails Closed | Timeout:
 
 def main(stdout: Stdout) fails Closed | Timeout:
     numbers(stdout)?
+    signs(stdout)?
     words(stdout)?
     jobs(stdout)?
     lists(stdout)?
@@ -7609,7 +7657,7 @@ def main(stdout: Stdout) fails Closed | Timeout:
     )?;
     assert_eq!(
         printed,
-        "7 8\nhi 50\nfirst 3\n[1.5, 2.5]\nempty: Timeout(waited=Duration(nanos=2000000))\nfull: Timeout(waited=Duration(nanos=2000000))\n"
+        "7 8\n-7\n-1.5\n18446744073709551615\n-0.1\nat once: Timeout(waited=Duration(nanos=-5))\nhi 50\nfirst 3\n[1.5, 2.5]\nempty: Timeout(waited=Duration(nanos=2000000))\nfull: Timeout(waited=Duration(nanos=2000000))\n"
     );
     Ok(())
 }
@@ -8599,6 +8647,115 @@ fn pack_loads_an_earlier_version_of_a_type_by_its_names() -> std::io::Result<()>
     assert_eq!(
         printed,
         "ana 7.0 1 [\"a\", \"b\"] (5, \"five\") text c-1\n[(1, 2, 0), (3, 4, 0)]\n[\"a\", \"b\", \"c\"] 0\nangry 3 none\nTrue\n`rank` isn't in the data, and has no default, at byte 282\n`name` was saved as text, not an int, at byte 234\n`mood` was saved as `NoAngry.Angry`, a case `NoAngry` doesn't have now, at byte 244\n`code` isn't in the type now, and holds a `Code`, which saves itself its own way, so where it ends can't be found, at byte 267\n`pair` was saved as a tuple of 2 items, not 3, at byte 255\nloaded this was packed from a different `After`, at byte 4\n282 60\n"
+    );
+    Ok(())
+}
+
+/// What the next test builds: many small values in one stream, read in order, by name, fed a
+/// byte at a time, cut off, and two `Packer`s' bytes one after the other.
+const PACK_STREAMS: &str = r#"from std import pack
+from std.pack import Packer, Unpacker
+
+enum Kind:
+    Move
+    Say(text: str)
+
+struct Event:
+    who: int
+    kind: Kind
+
+## The next version: a field added with a default, and the cases moved.
+enum NewKind:
+    Say(text: str)
+    Move
+
+struct NewEvent:
+    who: int
+    kind: NewKind
+    round = 0
+
+def main(stdout: Stdout):
+    mut out = Packer()
+    for at in range(100):
+        out.add(Event(who=at, kind=Kind.Move if at % 2 == 0 else Kind.Say(text="hi")))
+    data = out.bytes()
+    one = pack.dumps(Event(who=1, kind=.Move))
+    stdout.print("stream", data.len(), "one value alone", one.len(), "a hundred alone", one.len() * 100)
+    mut src = Unpacker.of(data)
+    mut total = 0
+    mut said = 0
+    while True:
+        event = src.next[Event]()? else break
+        total += event.who
+        if event.kind != .Move:
+            said += 1
+    stdout.print(total, said)
+    # Read as the next version, by name.
+    mut later = Unpacker.of(data)
+    mut rounds = 0
+    mut moves = 0
+    while True:
+        event = later.next[NewEvent]()? else break
+        rounds += event.round
+        if event.kind == .Move:
+            moves += 1
+    stdout.print(rounds, moves)
+    # The next version adds to the same file: each value reads by its own layout.
+    mut more = Packer()
+    more.add(NewEvent(who=500, kind=.Say(text="new"), round=3))
+    mixed = data + more.bytes()
+    mut both = Unpacker.of(mixed)
+    mut count = 0
+    mut last = NewEvent(who=0, kind=.Move)
+    while True:
+        event = both.next[NewEvent]()? else break
+        count += 1
+        last = event
+    stdout.print(count, last.who, last.round)
+    # A stream fed a byte at a time gives each value once all of it has come.
+    mut fed = Unpacker.stream()
+    mut got = 0
+    for at in range(data.len()):
+        fed.feed(data[at:at + 1])
+        while True:
+            _ = fed.next[Event]()? else break
+            got += 1
+    stdout.print("fed", got)
+    # Cut off, bytes that are all there are fail.
+    mut cut = Unpacker.of(data[0:data.len() - 1])
+    mut read = 0
+    mut failed = ""
+    while True:
+        match cut.next[Event]():
+            case Ok(found):
+                if found is None: break
+                read += 1
+            case Err(error):
+                failed = error.message
+                break
+    stdout.print(read, failed)
+    # `take` gives what's new since the last, to send.
+    mut sending = Packer()
+    sending.add(Event(who=1, kind=.Move))
+    first = sending.take()
+    sending.add(Event(who=2, kind=.Move))
+    second = sending.take()
+    stdout.print(first.len(), second.len())
+"#;
+
+/// A `pack.Packer` writes each type's layout once, so a hundred small values take an eighth of
+/// what a hundred `dumps` do. A `pack.Unpacker` reads them back in order, or by name as the next
+/// version of the type, from a file another `Packer` added to, or fed a byte at a time; bytes cut
+/// off fail after the last whole value.
+#[test]
+fn pack_streams_write_each_layout_once() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("pack_streams", PACK_STREAMS)?;
+    assert_eq!(
+        printed,
+        "stream 638 one value alone 53 a hundred alone 5300\n4950 50\n0 50\n101 500 3\nfed 100\n99 the data ends too soon, at byte 637\n56 4\n"
     );
     Ok(())
 }

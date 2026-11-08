@@ -254,7 +254,12 @@ fn changed_directly(body: &[Stmt]) -> HashSet<String> {
             }
         }
         if let ExprKind::Call { callee, args } = &expr.kind {
-            if let ExprKind::Attr { object, .. } = &callee.kind {
+            // `src.next[Event]()` calls a method as `src.next()` does, with its type given.
+            let method = match &callee.kind {
+                ExprKind::Index { object, .. } => object,
+                _ => callee,
+            };
+            if let ExprKind::Attr { object, .. } = &method.kind {
                 found.extend(root(object).map(str::to_owned));
             }
             for arg in args.iter().filter(|arg| arg.is_mut) {

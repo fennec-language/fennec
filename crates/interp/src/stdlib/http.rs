@@ -46,19 +46,31 @@ struct Url {
     target: String,
 }
 
+/// A URL as a message can say it: with any name and password in it taken out.
+fn without_password(url: &str) -> String {
+    let after_scheme = url.find("://").map_or(0, |at| at + 3);
+    let rest = url.get(after_scheme..).unwrap_or("");
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest.get(..end).and_then(|authority| authority.rfind('@')) {
+        Some(at) => format!("{}{}", url.get(..after_scheme).unwrap_or(""), rest.get(at + 1..).unwrap_or("")),
+        None => url.to_owned(),
+    }
+}
+
 fn parse_url(url: &str) -> Result<Url, Failure> {
-    let bad = || Failure::Other(format!("`{url}` isn't a URL like `https://example.com/path`"));
+    let shown = without_password(url);
+    let bad = || Failure::Other(format!("`{shown}` isn't a URL like `https://example.com/path`"));
     let (scheme, rest) = url.split_once("://").ok_or_else(bad)?;
     let secure = match scheme.to_ascii_lowercase().as_str() {
         "http" => false,
         "https" => true,
-        _ => return Err(Failure::Other(format!("`{url}` isn't `http` or `https`"))),
+        _ => return Err(Failure::Other(format!("`{shown}` isn't `http` or `https`"))),
     };
     let without_fragment = rest.split_once('#').map_or(rest, |(before, _)| before);
     let path_at = without_fragment.find(['/', '?']).unwrap_or(without_fragment.len());
     let (authority, target) = without_fragment.split_at(path_at);
     if authority.contains('@') {
-        return Err(Failure::Other(format!("`{url}` has a name and password in it; use `headers=`")));
+        return Err(Failure::Other(format!("`{shown}` has a name and password in it; use `headers=`")));
     }
     let (host, port) = match authority.strip_prefix('[') {
         Some(after) => {
@@ -138,12 +150,15 @@ pub(crate) fn send(request: &Request) -> Result<Answer, Failure> {
     let first = parse_url(&url)?;
     for _ in 0..=MOST_REDIRECTS {
         let at = parse_url(&url)?;
-        // What says who's asking goes only to the host it was written for.
-        let same_host = at.host == first.host;
+        // What says who's asking goes only to the site it was written for: the same scheme, host
+        // and port. A name the program made up could be a key, so only what's known to be
+        // harmless goes anywhere else.
+        let same_site =
+            at.secure == first.secure && at.port == first.port && at.host.eq_ignore_ascii_case(&first.host);
         let headers = request
             .headers
             .iter()
-            .filter(|(name, _)| same_host || !is_private(name))
+            .filter(|(name, _)| same_site || is_harmless(name))
             .map(|(name, value)| (name.as_str(), value.as_str()));
         let answer = once(&at, &method, headers, body, (deadline, request.timeout))?;
         if !matches!(answer.status, 301 | 302 | 303 | 307 | 308) {
@@ -161,8 +176,11 @@ pub(crate) fn send(request: &Request) -> Result<Answer, Failure> {
     Err(Failure::Other(format!("`{}` redirects more than {MOST_REDIRECTS} times", request.url)))
 }
 
-fn is_private(name: &str) -> bool {
-    name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("cookie")
+/// Whether a header says nothing about who's asking, so it can follow a redirect to another site.
+fn is_harmless(name: &str) -> bool {
+    ["accept", "accept-encoding", "accept-language", "content-type", "user-agent"]
+        .iter()
+        .any(|harmless| name.eq_ignore_ascii_case(harmless))
 }
 
 /// One request and its answer, on a connection of its own.
@@ -1021,7 +1039,7 @@ mod tests {
             params: Vec::new(),
             headers: vec![
                 ("Authorization".to_owned(), "secret".to_owned()),
-                ("X-Other".to_owned(), "kept".to_owned()),
+                ("User-Agent".to_owned(), "kept".to_owned()),
             ],
             body: Vec::new(),
             timeout: Duration::from_secs(5),
@@ -1030,7 +1048,48 @@ mod tests {
         done.join().unwrap();
         let asked = there_done.join().unwrap();
         assert!(!asked.first().unwrap().contains("secret"), "{asked:?}");
-        assert!(asked.first().unwrap().contains("X-Other: kept"), "{asked:?}");
+        assert!(asked.first().unwrap().contains("User-Agent: kept"), "{asked:?}");
+    }
+
+    /// Another port on the same host is another site, as far as who's asking goes.
+    #[test]
+    fn a_redirect_to_another_port_leaves_behind_every_header_but_the_harmless() {
+        let (there, there_done) = serving(vec!["HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_owned()]);
+        let (port, done) = serving(vec![format!(
+            "HTTP/1.1 301 Moved\r\nLocation: http://127.0.0.1:{there}/\r\nContent-Length: 0\r\n\r\n"
+        )]);
+        let answer = send(&Request {
+            method: "GET".to_owned(),
+            url: format!("http://127.0.0.1:{port}/"),
+            params: Vec::new(),
+            headers: vec![
+                ("Authorization".to_owned(), "secret".to_owned()),
+                ("X-Api-Key".to_owned(), "also-secret".to_owned()),
+                ("Accept".to_owned(), "text/plain".to_owned()),
+            ],
+            body: Vec::new(),
+            timeout: Duration::from_secs(5),
+        });
+        assert_eq!(answer.ok().unwrap().status, 200);
+        done.join().unwrap();
+        let asked = there_done.join().unwrap();
+        let request = asked.first().unwrap();
+        assert!(!request.contains("secret"), "{asked:?}");
+        assert!(request.contains("Accept: text/plain"), "{asked:?}");
+    }
+
+    /// A name and password in a URL are refused, and the message doesn't repeat them.
+    #[test]
+    fn a_url_with_a_password_in_it_is_not_repeated_in_the_failure() {
+        for url in ["http://me:hunter2@example.com/", "ftp://me:hunter2@example.com/"] {
+            let failed = parse_url(url).err().map(|failure| match failure {
+                Failure::Other(why) => why,
+                _ => String::new(),
+            });
+            let why = failed.unwrap();
+            assert!(!why.contains("hunter2"), "{why}");
+            assert!(why.contains("example.com"), "{why}");
+        }
     }
 
     #[test]

@@ -8978,6 +8978,68 @@ fn printed_by(name: &str, source: &str) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
 }
 
+/// What the next test builds: failed asserts and a failing `main`, each holding a secret. The
+/// text is put together on a line of its own, since a diagnostic shows the line it points at.
+const SECRET_SHOWN: &str = r#"from std.crypto import Secret
+
+struct Login:
+    name: str
+    password: Secret[str]
+
+error Refused:
+    Denied(token: Secret[str])
+
+def word() -> Secret[str]:
+    Secret.of("hun" + "ter2")
+
+def signs_in() fails Refused:
+    fail .Denied(token=word())
+
+test "the secret itself"():
+    assert word() == Secret.of("other")
+
+test "in a list"():
+    assert [word()] == [Secret.of("other")]
+
+test "in a tuple"():
+    assert (1, word()) == (2, Secret.of("other"))
+
+test "in a struct"():
+    assert Login(name="a", password=word()) == Login(name="b", password=word())
+
+def main():
+    _ = Login(name="a", password=word())
+    signs_in()?
+"#;
+
+/// A `Secret` stays hidden where a program says what went wrong: both sides of a failed `assert`,
+/// inside a list, a tuple and a struct, and the failure that ends `main`.
+#[test]
+fn a_secret_stays_hidden_in_what_a_failure_says() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("secret_shown")?;
+    let program = dir.join("secret_shown.fen");
+    std::fs::write(&program, SECRET_SHOWN)?;
+    let path = program.to_string_lossy().into_owned();
+    let tested = fennec(&["test", &path], &dir)?;
+    let tests_said =
+        format!("{}{}", String::from_utf8_lossy(&tested.stdout), String::from_utf8_lossy(&tested.stderr));
+    assert!(tests_said.contains("0 passed, 4 failed"), "{tests_said}");
+    assert!(!tests_said.contains("hunter2"), "{tests_said}");
+    assert_eq!(tests_said.matches("Secret(hidden)").count(), 8, "{tests_said}");
+    let executable = dir.join("secret_shown");
+    let built = fennec(&["build", "--llvm", &path, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    let main_said = String::from_utf8_lossy(&ran.stderr).into_owned();
+    assert!(main_said.contains("Refused.Denied(token=Secret(hidden))"), "{main_said}");
+    assert!(!main_said.contains("hunter2"), "{main_said}");
+    Ok(())
+}
+
 /// Replacing a file keeps what was true of it: who can read it, and that a link stays a link to
 /// the file it points at. What's being written is never readable by more than the file was.
 #[cfg(unix)]

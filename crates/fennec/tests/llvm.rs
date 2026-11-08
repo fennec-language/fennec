@@ -401,6 +401,47 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// `else:` after a call that gives nothing back when it doesn't fail, as `conn.write(...)` does:
+/// the block runs only when it fails, leaving by `continue`, `break` or `return`. It once wasn't
+/// lowered, as "a value of type nothing".
+#[test]
+fn else_after_a_call_that_gives_nothing_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "else_on_nothing",
+        "error Odd:
+    n: int
+
+def check(n: int) fails Odd:
+    if n % 2 == 1:
+        fail Odd(n=n)
+
+def first_odd(limit: int) -> int:
+    mut at = 0
+    while at < limit:
+        check(at) else:
+            return at
+        at += 1
+    -1
+
+def main(stdout: Stdout):
+    mut kept = 0
+    for n in range(6):
+        check(n) else:
+            continue
+        kept += 1
+    mut seen = 0
+    for n in [2, 4, 5, 6]:
+        check(n) else:
+            break
+        seen += 1
+    stdout.print(kept, seen, first_odd(10), first_odd(0))
+",
+    )
+}
+
 /// `units[at].tags.append(x)` with the list in a local: the inner list goes on growing in place,
 /// and what's shared with it, at any level, doesn't change.
 /// What a program printed, how it ended and its first error line, built with LLVM and in dev

@@ -12,7 +12,10 @@
 ## rows = db.query[Entry](t"select path, size from entries where size > {least}")?
 ## ```
 ##
-## `std.sqlite` is the first database under it.
+## `std.sqlite` is the first database under it. A driver turns what its database sends back into
+## `SqlRows`, and `rows_as` reads them into the type asked for, the same way for every driver.
+
+from std.intrinsics import new_tag
 
 ## What can go into a query, as a parameter. A `bool` goes in as 1 or 0.
 export type SqlValue = int | float | str | bytes | bool
@@ -44,3 +47,204 @@ export interface Sql:
 
     ## Runs a query and gives each row it found as a `T`.
     def query[T: Deserializable](self, query: Template[SqlValue]) -> list[T] fails SqlError
+
+## What a query found, as a driver hands it over: each row's cells in column order, one row after
+## another. `kinds` says what each cell holds: 0 for null, 1 an int, 2 a float, 3 text and 4
+## bytes, and `at` where it is in the list of its kind. A driver fills one and gives it to
+## `rows_as`, which reads each row into the type the query asked for.
+export struct SqlRows:
+    columns: list[str]
+    kinds: list[int]
+    at: list[int]
+    ints: list[int]
+    floats: list[float]
+    texts: list[str]
+    blobs: list[bytes]
+
+## Each row as a `T`: a struct's fields by the columns' names, or a single column as a value of
+## its own. A column that doesn't fit, a field with no column and a column with no field each fail
+## with `SqlError.Column`, naming it.
+export def rows_as[T: Deserializable](rows: SqlRows) -> list[T] fails SqlError:
+    width = rows.columns.len()
+    count = 0 if width == 0 else rows.kinds.len() // width
+    mut src = SqlRowReader(_rows=rows, _width=width)
+    mut found = list[T]()
+    for row in range(count):
+        src._row = row
+        src._cell = 0
+        src._in_record = False
+        match T.deserialize(ref src):
+            case Ok(value):
+                found.append(value)
+            case Err(err):
+                # A field with no column says so with no line, and its name as the message.
+                if err.line < 0:
+                    fail .Column(
+                        name=err.message,
+                        reason="the query gives no column for this field",
+                    )
+                fail .Column(name=src._column(), reason=err.message)
+    found
+
+## Reads a row into a value, through its `deserialize`: a struct's fields by the columns' names,
+## or a single column as a value of its own.
+struct SqlRowReader:
+    _rows: SqlRows
+    _width: int
+    _row = 0
+    ## The column being read, in the row.
+    _cell = 0
+    _in_record = False
+    _type = ""
+    _field = 0
+
+    def _column(self) -> str:
+        self._rows.columns[self._cell] if self._cell < self._width else ""
+
+    def _bad(self, message: str) -> ParseError:
+        ParseError(message=message, line=self._row + 1, column=self._cell + 1)
+
+    ## Where the cell being read is, in the lists of `SqlRows`, after checking there's one.
+    def _here(self) -> int fails ParseError:
+        if not self._in_record and self._width != 1:
+            fail self._bad(
+                f"a row of {self._width} columns can't be read as one value: read it into a struct",
+            )
+        self._row * self._width + self._cell
+
+    def _kind(self) -> int fails ParseError:
+        self._rows.kinds[self._here()?]
+
+    def _wrong(self, kind: int, wanted: str) -> ParseError:
+        held = ["null", "an int", "a float", "text", "bytes"][kind]
+        self._bad(f"it holds {held}, not {wanted}")
+
+    def int(ref self) -> int fails ParseError:
+        kind = self._kind()?
+        if kind != 1: fail self._wrong(kind, "an int")
+        self._rows.ints[self._rows.at[self._here()?]]
+
+    def float(ref self) -> float fails ParseError:
+        kind = self._kind()?
+        at = self._rows.at[self._here()?]
+        if kind == 1: return float(self._rows.ints[at])
+        if kind != 2: fail self._wrong(kind, "a float")
+        self._rows.floats[at]
+
+    def bool(ref self) -> bool fails ParseError:
+        kind = self._kind()?
+        if kind != 1: fail self._wrong(kind, "a bool")
+        n = self._rows.ints[self._rows.at[self._here()?]]
+        if n != 0 and n != 1: fail self._bad(f"it holds {n}, and a bool is 0 or 1")
+        n == 1
+
+    def text(ref self) -> str fails ParseError:
+        kind = self._kind()?
+        if kind != 3: fail self._wrong(kind, "text")
+        self._rows.texts[self._rows.at[self._here()?]]
+
+    def bytes(ref self) -> bytes fails ParseError:
+        kind = self._kind()?
+        at = self._rows.at[self._here()?]
+        if kind == 3: return self._rows.texts[at].encode()
+        if kind != 4: fail self._wrong(kind, "bytes")
+        self._rows.blobs[at]
+
+    def none(ref self) -> bool fails ParseError:
+        self._kind()? == 0
+
+    def value[T: Deserializable](ref self) -> T fails ParseError:
+        T.deserialize(ref self)?
+
+    def sequence[T: Deserializable](ref self) -> list[T] fails ParseError:
+        fail self._bad("a column holds one value, not a list")
+
+    def map[K: Deserializable, V: Deserializable](ref self) -> list[(K, V)] fails ParseError:
+        fail self._bad("a column holds one value, not a dict")
+
+    def items(ref self, name: str, count: int) fails ParseError:
+        fail self._bad(f"a column holds one value, not a `{name}`")
+
+    def item[T: Deserializable](ref self) -> T fails ParseError:
+        fail self._bad("a column holds one value, not a tuple")
+
+    def end_items(ref self) fails ParseError:
+        pass
+
+    def record(ref self, name: str) fails ParseError:
+        if self._in_record: fail self._bad(f"a column holds one value, not a `{name}`")
+        self._in_record = True
+        self._type = name
+        self._cell = -1
+
+    def next_field(ref self, fields: list[(str, str)]) -> bool fails ParseError:
+        self._cell += 1
+        if self._cell >= self._width: return False
+        name = self._column()
+        for at, field in enumerate(fields):
+            if field[0] != "" and field[0] == name:
+                self._field = at
+                return True
+        fail self._bad(f"`{self._type}` has no field called `{name}`")
+
+    def field_at(self) -> int:
+        self._field
+
+    def missing(self, name: str) -> ParseError:
+        ParseError(message=name, line=-1, column=0)
+
+    def rule(self, message: str) -> ParseError:
+        self._bad(message)
+
+    def at_item(self, at: int, message: str) -> ParseError:
+        self._bad(f"item {at} {message}")
+
+    def here(self, message: str) -> ParseError:
+        self._bad(message)
+
+    def saw_id(ref self, kind: str, position: int):
+        pass
+
+    def saw_table(ref self, kind: str, count: int):
+        pass
+
+    def tag(ref self, kind: str) -> int:
+        new_tag()
+
+    ## A null in a field that isn't optional fails, saying so, rather than taking its default.
+    def none_next(ref self) -> bool:
+        False
+
+    def exact(self) -> bool:
+        False
+
+    def ordered(ref self, name: str) -> bool fails ParseError:
+        False
+
+    def end_ordered(ref self):
+        pass
+
+    def map_count(ref self) -> int fails ParseError:
+        -1
+
+    def end_map(ref self):
+        pass
+
+    ## A case with no data, by its name as text.
+    def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+        held = self.text()?
+        for at, case in enumerate(cases):
+            if case[0] == held:
+                if case[1]: fail self._bad(f"`{name}.{held}` has data, which a column can't hold")
+                return at
+        fail self._bad(f"`{held}` isn't a case of `{name}`")
+
+    def end_case(ref self) fails ParseError:
+        pass
+
+    def member(ref self, names: list[str]) -> int fails ParseError:
+        union = " | ".join(names)
+        fail self._bad(f"a column can't hold a `{union}` yet")
+
+    def end_member(ref self) fails ParseError:
+        pass

@@ -309,61 +309,58 @@ fn file_method(
     crate::replay::value(format_args!("File.{method}"), span, || real_file(*handle, method, &args, span))
 }
 
-impl Interp<'_> {
-    pub(crate) fn fs_method(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+/// A method of the real `Fs`. A test's fake one is `fake_method`, which `TestWorld::method` runs.
+pub(crate) fn fs_method(method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
         let paths: Vec<Value> = args.iter().map(path_text).collect();
         if let ("only", [Value::Str(folder)]) = (method, paths.as_slice()) {
             return Ok(crate::limits::Limited::to(Capability::Fs, vec![Rc::from(crate::limits::absolute(folder))]));
         }
-        if self.world.as_ref().is_some_and(|world| !world.real()) {
-            match (method, paths.as_slice()) {
-                ("_create", [Value::Str(path), _]) => {
-                    let file = OpenFile::FakeWriting { target: path.to_string(), data: Vec::new() };
-                    return Ok(Value::Ok(Rc::new(lent(file))));
-                }
-                ("_open", [Value::Str(_)]) => {
-                    let read = self.fake_fs("read_bytes", &paths, span);
-                    return match read {
-                        Some(Ok(Value::Ok(data))) => match data.as_ref() {
-                            Value::Bytes(data) => {
-                                let file = OpenFile::FakeReading { data: data.to_vec(), at: 0 };
-                                Ok(Value::Ok(Rc::new(lent(file))))
-                            }
-                            _ => Ok(io_error("the fake file system gave something that isn't bytes")),
-                        },
-                        Some(other) => other,
-                        None => Ok(io_error("there's no fake file system here")),
-                    };
-                }
-                ("_sqlite_open", [Value::Str(path)]) => {
-                    if let Some(world) = self.world.as_mut() {
-                        return Ok(world.open_database(path));
-                    }
-                }
-                ("_finish", [file]) => {
-                    let mut written = Ok(());
-                    let done = finish(file, &mut |target, data| {
-                        let given = [Value::str(target), Value::Bytes(Rc::from(data.to_vec()))];
-                        written = match self.fake_fs("write_bytes", &given, span) {
-                            Some(Ok(Value::Ok(_))) => Ok(()),
-                            Some(Ok(failed)) => Err(crate::format::repr(&failed)),
-                            Some(Err(problem)) => Err(problem.message),
-                            None => Err("there's no fake file system here".to_owned()),
-                        };
-                        Ok(())
-                    });
-                    return Ok(match done.and(written) {
-                        Ok(()) => Value::Ok(Rc::new(Value::Unit)),
-                        Err(reason) => io_error(&reason),
-                    });
-                }
-                _ => {}
-            }
-        }
-        if let Some(faked) = self.fake_fs(method, &paths, span) {
-            return faked;
-        }
         real_fs(method, &paths, span)
+}
+
+/// A method of a test's fake `Fs`, on paths as `path_text` gives them, with its files in memory,
+/// or nothing if the arguments are wrong.
+pub(crate) fn fake_method(
+    world: &mut crate::fakes::TestWorld,
+    method: &str,
+    paths: &[Value],
+    span: Span,
+) -> Option<Result<Value, Diagnostic>> {
+    match (method, paths) {
+        ("_create", [Value::Str(path), _]) => {
+            let file = OpenFile::FakeWriting { target: path.to_string(), data: Vec::new() };
+            Some(Ok(Value::Ok(Rc::new(lent(file)))))
+        }
+        ("_open", [Value::Str(_)]) => Some(match world.fs("read_bytes", paths, span) {
+            Some(Ok(Value::Ok(data))) => match data.as_ref() {
+                Value::Bytes(data) => {
+                    let file = OpenFile::FakeReading { data: data.to_vec(), at: 0 };
+                    Ok(Value::Ok(Rc::new(lent(file))))
+                }
+                _ => Ok(io_error("the fake file system gave something that isn't bytes")),
+            },
+            Some(other) => other,
+            None => Ok(io_error("there's no fake file system here")),
+        }),
+        ("_sqlite_open", [Value::Str(path)]) => Some(Ok(world.open_database(path))),
+        ("_finish", [file]) => {
+            let mut written = Ok(());
+            let done = finish(file, &mut |target, data| {
+                let given = [Value::str(target), Value::Bytes(Rc::from(data.to_vec()))];
+                written = match world.fs("write_bytes", &given, span) {
+                    Some(Ok(Value::Ok(_))) => Ok(()),
+                    Some(Ok(failed)) => Err(crate::format::repr(&failed)),
+                    Some(Err(problem)) => Err(problem.message),
+                    None => Err("there's no fake file system here".to_owned()),
+                };
+                Ok(())
+            });
+            Some(Ok(match done.and(written) {
+                Ok(()) => Value::Ok(Rc::new(Value::Unit)),
+                Err(reason) => io_error(&reason),
+            }))
+        }
+        _ => world.fs(method, paths, span),
     }
 }
 

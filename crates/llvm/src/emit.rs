@@ -467,13 +467,16 @@ impl<'p> Module<'_, 'p> {
             saving: crate::rollback::saving_handles(function),
             saving_slots: HashMap::new(),
             wrote_prop: false,
-            leave_after_rollback: None,
+            leave_after_crash: None,
         };
-        // A function with `lock ... as ref` blocks leaves on every failure through `prop`, where
-        // a crash puts back what the blocks it's inside changed.
-        let leave_after_rollback = (!emit.saving.is_empty() && emit.failed != "unreachable")
+        // A function with `lock ... as ref` blocks, or that owns anything, leaves on every failure
+        // through `prop`, where a crash puts back what the blocks it's inside changed and lets go
+        // of what the function owns, as a return does.
+        let owns_any =
+            (0..emit.kinds.len()).any(|at| emit.owns(LocalId(at)) || emit.owns_inline(LocalId(at)));
+        let leave_after_crash = ((!emit.saving.is_empty() || owns_any) && emit.failed != "unreachable")
             .then(|| std::mem::replace(&mut emit.failed, "br label %prop".to_owned()));
-        emit.leave_after_rollback = leave_after_rollback;
+        emit.leave_after_crash = leave_after_crash;
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
             (emit.allocas, emit.out, emit.cold, emit.failed, emit.needs_prop && !emit.wrote_prop);
@@ -551,9 +554,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) saving_slots: HashMap<usize, String>,
     /// Whether the way out on a failure, `prop`, is written already, with what a crash puts back.
     wrote_prop: bool,
-    /// How the function leaves on a failure once `prop` has put back what it changed, when every
-    /// failure goes through `prop`.
-    leave_after_rollback: Option<String>,
+    /// How the function leaves on a failure once `prop` has put back what it changed and let go
+    /// of what it owns, when every failure goes through `prop`.
+    leave_after_crash: Option<String>,
     /// What the next way out on a failure is for, when what writes it says.
     check_kind: Option<(Span, Option<CheckKind>)>,
     /// Items of lists, by field path and index, known to be inside their lists here.
@@ -831,10 +834,15 @@ impl Emit<'_, '_, '_> {
             }
             self.terminator(&block.end)?;
         }
-        // A crash inside a `lock ... as ref` block puts back what it changed before leaving.
-        if let Some(leave) = self.leave_after_rollback.clone() {
+        // A crash inside a `lock ... as ref` block puts back what it changed before leaving, and a
+        // crash anywhere lets go of what the function owns, so a server whose rounds crash keeps
+        // nothing of theirs.
+        if let Some(leave) = self.leave_after_crash.clone() {
             self.start_block("prop");
-            self.roll_back_on_crash()?;
+            if !self.saving.is_empty() {
+                self.roll_back_on_crash()?;
+            }
+            self.release_locals(None);
             self.line(&leave);
             self.wrote_prop = true;
         }
@@ -1902,9 +1910,9 @@ impl Emit<'_, '_, '_> {
         }
         let first = args.first();
         match name {
-            // A test's `Stdout` is a fake that keeps what's printed, which the runtime holds.
-            "Stdout.print" if !self.module.shared.traced => self.print(args.get(1..).unwrap_or_default()),
-            "Stdout.write" if !self.module.shared.traced => self.write(args.get(1..).unwrap_or_default()),
+            // A test's `Stdout` keeps what's printed, which the runtime does as it prints.
+            "Stdout.print" => self.print(args.get(1..).unwrap_or_default()),
+            "Stdout.write" => self.write(args.get(1..).unwrap_or_default()),
             "array.new" => self.new_array(dest.ok_or("an array made for nothing")?, args),
             "list.len" => {
                 if let Some(Operand::Local(local)) = first

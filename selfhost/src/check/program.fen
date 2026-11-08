@@ -395,9 +395,9 @@ def wrong_type_args(written: TypeExpr, wanted: int) -> Diagnostic:
 
 def unknown_type(name: str, span: Span) -> Diagnostic:
     mut help = f"declare it, like `struct {name}:`, or check the spelling"
-    if name in ["f32", "f64", "double"]:
-        help = "write `float`"
-    elif name in ["i32", "i64", "usize", "long"]:
+    if name in ["double", "f16"]:
+        help = "write `float`, or `f32` for 32 bits"
+    elif name in ["usize", "isize", "long"]:
         help = "write `int`"
     elif name in ["string", "String"]:
         help = "write `str`"

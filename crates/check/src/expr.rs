@@ -86,7 +86,7 @@ impl FnCx<'_> {
                 self.is_member(lhs, member, rhs.span)
             }
             ExprKind::Binary { op, lhs, rhs } => {
-                let (left, right) = (self.expr(lhs), self.expr(rhs));
+                let (left, right) = self.operands(lhs, rhs);
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
             ExprKind::Cond { then, cond, otherwise } => self.cond_value((then, cond, otherwise), None, span),
@@ -476,6 +476,11 @@ impl FnCx<'_> {
             }
             (Type::Int, Type::Int) => Type::Int,
             (Type::Float, Type::Float) => Type::Float,
+            (Type::Sized(num), Type::Sized(other)) if num == other => self.sized_arithmetic(op, &left, span),
+            _ if sizes_mixed(&left, &right) => {
+                self.error(mixed_sizes(op, &left, &right, span));
+                Type::Unknown
+            }
             (Type::Str, Type::Str) if op == BinOp::Add => Type::Str,
             (Type::Bytes, Type::Bytes) if op == BinOp::Add => Type::Bytes,
             (Type::List(a), Type::List(b)) if op == BinOp::Add => {
@@ -502,6 +507,16 @@ impl FnCx<'_> {
                 Type::Unknown
             }
         }
+    }
+
+    /// An operator between two numbers of one size, which gives that size. `/` always gives a
+    /// float, between integers of any size as between ints, and `//` keeps the size.
+    fn sized_arithmetic(&mut self, op: BinOp, ty: &Type, span: Span) -> Type {
+        if op == BinOp::Div && !matches!(ty, Type::Sized(num) if num.is_float()) {
+            self.int_divisions.insert((span.start, span.end));
+            return Type::Float;
+        }
+        ty.clone()
     }
 
     /// Both sides of an operator, settled. A side still being worked out takes the other
@@ -557,12 +572,26 @@ impl FnCx<'_> {
             (Type::Int, Type::Float) | (Type::Float, Type::Int) => {
                 diagnostic.with_help("convert one side with float(...) or int(...)")
             }
+            _ if sizes_mixed(left, right) => diagnostic.with_help(convert_help(right)),
             _ => diagnostic.with_help("compare values of the same type"),
         });
     }
 
-    /// `&`, `|`, `^`, `<<` and `>>`, which only work on ints.
+    /// `&`, `|`, `^`, `<<` and `>>`, which only work on ints, both sides of one size.
     fn bits(&mut self, op: BinOp, left: &Type, right: &Type, span: Span) -> Type {
+        if let Type::Sized(num) = left
+            && !num.is_float()
+        {
+            // A shift's amount can be an integer of any size: what's shifted keeps its own.
+            let shift = matches!(op, BinOp::ShiftLeft | BinOp::ShiftRight)
+                && matches!(right, Type::Int | Type::Sized(_))
+                && !matches!(right, Type::Sized(by) if by.is_float());
+            if left == right || *right == Type::Unknown || shift {
+                return left.clone();
+            }
+            self.error(mixed_sizes(op, left, right, span));
+            return Type::Unknown;
+        }
         for side in [left, right] {
             if !matches!(side, Type::Int | Type::Unknown) {
                 self.error(not_bits(op, op.symbol(), side, span));
@@ -626,6 +655,7 @@ impl FnCx<'_> {
         }
         match (left, right) {
             (Type::Unknown, _) | (_, Type::Unknown) => {}
+            _ if sizes_mixed(left, right) => self.error(mixed_sizes(op, left, right, span)),
             (Type::Int, Type::Float) | (Type::Float, Type::Int) => {
                 let help = self.mix_help(spans);
                 self.error(
@@ -669,6 +699,14 @@ impl FnCx<'_> {
             | (UnaryOp::Not, Type::Bool)
             | (UnaryOp::Neg, Type::Int | Type::Float)
             | (UnaryOp::BitNot, Type::Int) => ty,
+            (UnaryOp::Neg, Type::Sized(num)) if !num.is_unsigned() => ty,
+            (UnaryOp::BitNot, Type::Sized(num)) if !num.is_float() => ty,
+            (UnaryOp::Neg, Type::Sized(_)) => {
+                let message = format!("can't negate {}, which is never below 0", a(&ty));
+                let help = "convert it to a signed size first, like `i64(x)`";
+                self.error(Diagnostic::new(message, span).with_help(help));
+                Type::Unknown
+            }
             (UnaryOp::Not, _) => {
                 self.error(
                     Diagnostic::new(format!("`not` needs a bool, but this is {}", article(&ty.kind())), span)
@@ -1072,4 +1110,25 @@ fn else_steps(expr: &Expr, steps: &mut Vec<(u32, u32)>) {
         ExprKind::Index { object, .. } => else_steps(object, steps),
         _ => {}
     }
+}
+
+/// Whether two number types of different sizes meet, one of them `int`, `float` or another size:
+/// sizes never mix on their own.
+fn sizes_mixed(left: &Type, right: &Type) -> bool {
+    let number = |ty: &Type| matches!(ty, Type::Int | Type::Float | Type::Sized(_));
+    left != right
+        && number(left)
+        && number(right)
+        && (matches!(left, Type::Sized(_)) || matches!(right, Type::Sized(_)))
+}
+
+/// What to write to make one side the other's size.
+fn convert_help(to: &Type) -> String {
+    format!("convert one side, like `{to}(x)`: numbers of different sizes never mix on their own")
+}
+
+/// An operator between numbers of different sizes, like `i32 + i64`.
+fn mixed_sizes(op: BinOp, left: &Type, right: &Type, span: Span) -> Diagnostic {
+    Diagnostic::new(format!("can't mix {left} and {right} in `{}`", op.symbol()), span)
+        .with_help(convert_help(left))
 }

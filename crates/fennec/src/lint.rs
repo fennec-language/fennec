@@ -110,6 +110,7 @@ fn lints_of(program: &fennec_kit::Program) -> Vec<fennec_lint::Lint> {
     if program.manifest.is_some() {
         found.extend(fennec_lint::kit_lints(&program.module));
     }
+    found.retain(|lint| program.is_own(lint.diagnostic.span));
     found.sort_by_key(|lint| (lint.diagnostic.span.start, lint.rule));
     found
 }
@@ -316,7 +317,8 @@ fn within(
     let (module, sources) = (&program.module, &program.sources);
     let mut by_file: HashMap<String, Vec<Shown>> = HashMap::new();
     let found = fennec_lint::within_files(module, sources, program.manifest.is_some(), wanted);
-    for lint in found.into_iter().filter(|lint| lint.severity == fennec_lint::Severity::Error) {
+    let found = found.into_iter().filter(|lint| program.is_own(lint.diagnostic.span));
+    for lint in found.filter(|lint| lint.severity == fennec_lint::Severity::Error) {
         let (file, _, base) = sources.file_at(lint.diagnostic.span)?;
         by_file.entry(file.to_owned()).or_default().push(Shown {
             at: lint.diagnostic.span.start.saturating_sub(base),
@@ -346,6 +348,7 @@ fn errors_of(
     whole.extend(fennec_lint::needless_conversions(module, sources));
     whole.extend(fennec_lint::double_lookups(module, sources));
     whole.extend(fennec_lint::self_compares(module, sources));
+    whole.retain(|lint| program.is_own(lint.diagnostic.span));
     for lint in whole.into_iter().filter(|lint| lint.severity == fennec_lint::Severity::Error) {
         let fixable = !lint.diagnostic.fixes.is_empty();
         errors.push((

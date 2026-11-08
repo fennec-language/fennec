@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::manifest::valid_name;
+use fennec_deps::valid_name;
 
 /// Creates a kit in a new folder `dir`, named after the folder.
 pub fn create(dir: &Path) -> Result<String, String> {

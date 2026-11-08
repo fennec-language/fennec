@@ -177,7 +177,8 @@ name = "fennec-deps"
 version = "0.0.1"
 dependencies = [
  "fennec-blake3",
- "fennec-kit",
+ "fennec-build",
+ "fennec-syntax",
 ]
 
 [[package]]
@@ -242,6 +243,7 @@ name = "fennec-kit"
 version = "0.0.1"
 dependencies = [
  "fennec-check",
+ "fennec-deps",
  "fennec-syntax",
 ]
 

@@ -358,12 +358,12 @@ struct Unit:
     tags: list[int]
     hp: int
 
-def maybe(at: int) -> int:
+def maybe(at: int) -> int fails Bad:
     if at == 1:
         fail Bad("from a call")
     at
 
-def by_fail(ref units: list[Unit], at: int) -> int:
+def by_fail(ref units: list[Unit], at: int) -> int fails Bad:
     for ref unit in units:
         unit.tags.append(at)
         unit.hp += 1
@@ -371,7 +371,7 @@ def by_fail(ref units: list[Unit], at: int) -> int:
             fail Bad("stop")
     0
 
-def by_try(ref units: list[Unit]) -> int:
+def by_try(ref units: list[Unit]) -> int fails Bad:
     for ref unit in units:
         unit.tags.append(8)
         unit.hp += maybe(unit.hp)?
@@ -386,7 +386,7 @@ def main(stdout: Stdout):
     same_as_the_jit("failing_out_of_for_mut", shared)?;
     // Out of two loops at once. The JIT stops here with "expected an int", so this one's held to
     // what the interpreter prints.
-    let nested = "error Bad:\n    why: str\n\ndef nested(ref grid: list[list[int]]) -> int:\n    for ref row in grid:\n        for ref cell in row:\n            cell += 1\n            if cell == 5:\n                fail Bad(\"inner\")\n    0\n\ndef main(stdout: Stdout):\n    mut grid = [[1, 2], [4, 7], [9]]\n    stdout.print(nested(ref grid) else -3, grid)\n";
+    let nested = "error Bad:\n    why: str\n\ndef nested(ref grid: list[list[int]]) -> int fails Bad:\n    for ref row in grid:\n        for ref cell in row:\n            cell += 1\n            if cell == 5:\n                fail Bad(\"inner\")\n    0\n\ndef main(stdout: Stdout):\n    mut grid = [[1, 2], [4, 7], [9]]\n    stdout.print(nested(ref grid) else -3, grid)\n";
     let dir = folder("failing_out_of_two_loops")?;
     let program = dir.join("two_loops.fen");
     std::fs::write(&program, nested)?;
@@ -1999,7 +1999,7 @@ enum Token:
 def total(units: list[Unit]) -> int:
     sum(unit.hp for unit in units)
 
-def by_fail(ref units: list[Unit]) -> int:
+def by_fail(ref units: list[Unit]) -> int fails Bad:
     for ref unit in units:
         unit.tags.append(9)
         unit.hp += 1
@@ -4327,32 +4327,32 @@ fn generators_that_fail_match_the_jit() -> std::io::Result<()> {
 error Named:
     who: str
 
-def checked(limit: int) -> Iterator[int]:
+def checked(limit: int) -> Iterator[int] fails TooBig:
     for n in range(5):
         if n >= limit: fail TooBig(at=n)
         yield n
 
-def named(limit: int) -> Iterator[str]:
+def named(limit: int) -> Iterator[str] fails Named:
     for n in range(5):
         if n >= limit: fail Named(who=f"a long name for number {n} in a block")
         yield str(n)
 
-def either(limit: int) -> Iterator[int]:
+def either(limit: int) -> Iterator[int] fails Named | TooBig:
     if limit == 0: fail Named(who="none")
     for n in range(limit):
         if n == 2: fail TooBig(at=n)
         yield n
 
-def total(limit: int) -> int:
+def total(limit: int) -> int fails TooBig:
     sum(n for n in checked(limit)?)
 
-def joined(limit: int) -> str:
+def joined(limit: int) -> str fails Named:
     mut out = ""
     for word in named(limit)?:
         out = out + word
     out
 
-def looped(limit: int) -> int:
+def looped(limit: int) -> int fails Named | TooBig:
     mut count = 0
     for n in either(limit)?:
         count = count + n + 1
@@ -4499,7 +4499,7 @@ def first_over(limit: int, over: int) -> int:
         if n > over: return n
     0
 
-def half(n: int) -> int:
+def half(n: int) -> int fails Fault:
     if n % 2 == 1: fail Fault(f"{n} is odd")
     n // 2
 
@@ -4531,7 +4531,7 @@ def main(stdout: Stdout):
     )?;
     same_message_as_the_jit(
         "expect",
-        "error Fault:\n    reason: str\n\ndef half(n: int) -> int:\n    if n % 2 == 1: fail Fault(\"odd\")\n    n // 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(4).expect(\"four is even\"))\n    stdout.print(half(3).expect(\"three is even\"))\n",
+        "error Fault:\n    reason: str\n\ndef half(n: int) -> int fails Fault:\n    if n % 2 == 1: fail Fault(\"odd\")\n    n // 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(4).expect(\"four is even\"))\n    stdout.print(half(3).expect(\"three is even\"))\n",
     )
 }
 
@@ -5061,7 +5061,7 @@ struct Bag:
     at: Point
     count = 0
 
-def load(text: str) -> Bag:
+def load(text: str) -> Bag fails ParseError:
     json.loads[Bag](text)?
 
 def main(stdout: Stdout):
@@ -6480,7 +6480,7 @@ fn a_program_that_makes_no_requests_links_no_tls() -> std::io::Result<()> {
 }
 
 /// A program built with no interpreter in its runtime prints what it should and has none of the
-/// interpreter in it, and one still needing the interpreter fails to link rather than to run.
+/// interpreter in it.
 #[test]
 fn a_lean_runtime_leaves_the_interpreter_out() -> std::io::Result<()> {
     if !ready() || !crate::executables::lean_runtime_built() {
@@ -6529,21 +6529,6 @@ def main(stdout: Stdout, args: Args, process: Process):
         assert!(!symbols.contains("6Interp11with_output"), "the interpreter is still linked");
     }
 
-    let needs = dir.join("needs.fen");
-    std::fs::write(
-        &needs,
-        "\
-from std import json
-from std.collections import Packed
-
-def main(stdout: Stdout):
-    stdout.print(json.dumps(Packed.of([[1, 2]])))
-",
-    )?;
-    let refused = lean(&needs, &dir.join("needs"))?;
-    assert!(!refused.status.success(), "it linked without the interpreter");
-    let said = String::from_utf8_lossy(&refused.stderr);
-    assert!(said.contains("fennec_json"), "{said}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -6591,10 +6576,10 @@ fn a_build_finds_llvm_s_tools_beside_fennec() -> std::io::Result<()> {
     Ok(())
 }
 
-/// With nothing asked, a program whose code doesn't cross into the interpreter is built with the
-/// runtime that leaves it out, and one that does is built with the runtime that has it, and runs.
+/// With nothing asked, a program is built with the runtime that leaves the interpreter out. No
+/// program's code crosses into the interpreter any more, so none is built with the one that has it.
 #[test]
-fn a_build_leaves_the_interpreter_out_unless_the_program_needs_it() -> std::io::Result<()> {
+fn a_build_leaves_the_interpreter_out() -> std::io::Result<()> {
     if !ready() || !crate::executables::lean_runtime_built() {
         return Ok(());
     }
@@ -6621,15 +6606,9 @@ fn a_build_leaves_the_interpreter_out_unless_the_program_needs_it() -> std::io::
         String::from_utf8_lossy(&Command::new(&lean).output_within()?.stdout),
         "[1, 2] {\"key\": 3}\n"
     );
-    let needs = built(
-        "from std import json\nfrom std.collections import Packed\n\ndef main(stdout: Stdout):\n    stdout.print(json.dumps(Packed.of([[1, 2]])))\n",
-        "needs",
-    )?;
-    assert!(Command::new(&needs).output_within()?.status.success());
     // A Windows executable has no symbols to look through.
     if !cfg!(windows) {
         assert!(!has_interpreter(&lean)?, "the interpreter is still linked");
-        assert!(has_interpreter(&needs)?, "a program that needs the interpreter lost it");
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -7193,6 +7172,74 @@ def main(stdout: Stdout):
         String::from_utf8_lossy(&ran.stdout),
         "[{\"x\": 1, \"tags\": [\"a\"]}] [Spot(x=1, tags=[\"a\"])]\nSpot(x=2, tags=[])\n\
          {\"cells\": [[1, 2]], \"scores\": {\"a\": 1, \"b\": 2}, \"seen\": [1, 3], \"queue\": [\"go\"]} True\n"
+    );
+    Ok(())
+}
+
+/// A tuple saves as an array of its items, as in Python's `json.dumps`, and loads back, through
+/// std's readers and writers in Fennec, with no interpreter linked: in a list, in a field, inside
+/// another tuple, in an enum's case, as a dict's and a `SortedMap`'s keys, with an item that's
+/// always `None`, and through TOML and `std.pack` too. An array of the wrong length doesn't load.
+#[test]
+fn tuples_save_and_load_natively() -> std::io::Result<()> {
+    if !ready() || !crate::executables::lean_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("tuples-lean")?;
+    let program = dir.join("tuples.fen");
+    std::fs::write(
+        &program,
+        "\
+from std import json, pack, toml
+from std.collections import SortedMap
+
+enum Order:
+    Hold
+    Move(to: (int, int))
+
+struct Path:
+    steps: list[(int, str)]
+    at: (int, (int, int))
+
+def main(stdout: Stdout):
+    path = Path(steps=[(1, \"a\"), (2, \"b\")], at=(3, (4, 5)))
+    text = json.dumps(path)
+    stdout.print(text)
+    stdout.print(json.loads[Path](text) else Path(steps=[], at=(0, (0, 0))))
+    orders = [Order.Hold, Order.Move(to=(2, 3))]
+    stdout.print(json.dumps(orders), (json.loads[list[Order]](json.dumps(orders)) else []) == orders)
+    corners = {(0, 0): \"start\", (3, 4): \"end\"}
+    stdout.print(json.dumps(corners), (json.loads[dict[(int, int), str]](json.dumps(corners)) else {}) == corners)
+    mut by_side = SortedMap[(int, int), str]()
+    by_side[(2, 0)] = \"b\"
+    by_side[(1, 0)] = \"a\"
+    stdout.print(json.dumps(by_side))
+    stdout.print(json.dumps((1, None, \"x\")))
+    stdout.print(json.loads[list[(int, int)]](\"[[1, 2, 3]]\") else [(0, 0)])
+    stdout.print((toml.loads[Path](toml.dumps(path)) else path) == path)
+    stdout.print((pack.loads[Path](pack.dumps(path)) else Path(steps=[], at=(0, (0, 0)))) == path)
+",
+    )?;
+    let executable = dir.join("tuples");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_LEAN_RUNTIME", "1")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "{\"steps\": [[1, \"a\"], [2, \"b\"]], \"at\": [3, [4, 5]]}\n\
+         Path(steps=[(1, \"a\"), (2, \"b\")], at=(3, (4, 5)))\n\
+         [\"Hold\", {\"Move\": {\"to\": [2, 3]}}] True\n\
+         [[[0, 0], \"start\"], [[3, 4], \"end\"]] True\n\
+         [[[1, 0], \"a\"], [[2, 0], \"b\"]]\n\
+         [1, null, \"x\"]\n\
+         [(0, 0)]\n\
+         True\n\
+         True\n"
     );
     Ok(())
 }
@@ -9051,11 +9098,11 @@ error Wrapped:
 error Inner:
     what: str
 
-def inner(n: int) -> int:
+def inner(n: int) -> int fails Inner:
     if n > 1: fail Inner(what="too many")
     n
 
-def outer(n: int) -> int:
+def outer(n: int) -> int fails Wrapped:
     inner(n)? from Wrapped(why="inner failed")
 
 def main(stdout: Stdout):
@@ -11331,7 +11378,7 @@ fn a_main_giving_back_a_result_matches_the_jit() -> std::io::Result<()> {
     }
     same_as_the_jit(
         "main_gives_back",
-        r#"def number(text: str) -> int:
+        r#"def number(text: str) -> int fails InvalidValue:
     int(text)?
 
 def main(stdout: Stdout):
@@ -11358,20 +11405,20 @@ error TooWeak:
 error Plain:
     code: int
 
-def weak(level: int) -> int:
+def weak(level: int) -> int fails TooWeak:
     if level < 5: fail TooWeak(level)
     level
 
-def named(name: str) -> str:
+def named(name: str) -> str fails NotFound:
     if name == "": fail NotFound(name)
     name
 
-def challenge(name: str, level: int) -> str:
+def challenge(name: str, level: int) -> str fails NotFound | TooWeak:
     who = named(name)?
     power = weak(level)?
     f"{who} at {power}"
 
-def three(name: str, level: int, code: int) -> str:
+def three(name: str, level: int, code: int) -> str fails NotFound | Plain | TooWeak:
     if code > 0: fail Plain(code)
     challenge(name, level)?
 
@@ -11428,7 +11475,7 @@ fn an_unhandled_error_of_a_set_fails_like_the_jit() -> std::io::Result<()> {
 error TooWeak:
     level: int
 
-def pick(level: int) -> int:
+def pick(level: int) -> int fails NotFound | TooWeak:
     if level < 0: fail NotFound(\"x\")
     if level < 5: fail TooWeak(level)
     level
@@ -11449,7 +11496,7 @@ fn a_main_giving_back_an_error_fails_like_the_jit() -> std::io::Result<()> {
     }
     same_message_as_the_jit(
         "main_gives_back_an_error",
-        r#"def number(text: str) -> int:
+        r#"def number(text: str) -> int fails InvalidValue:
     int(text)?
 
 def main(stdout: Stdout):
@@ -11560,6 +11607,15 @@ struct Words:
         -1
 
     def end_map(ref self):
+        pass
+
+    def items(ref self, name: str, count: int) fails ParseError:
+        pass
+
+    def item[T: Deserializable](ref self) -> T fails ParseError:
+        T.deserialize(ref self)?
+
+    def end_items(ref self) fails ParseError:
         pass
 
     def none(ref self) -> bool fails ParseError:
@@ -11891,7 +11947,7 @@ fn numbers_and_sets_from_text_match_the_jit() -> std::io::Result<()> {
         "numbers_from_text",
         r#"from std.re import Regex
 
-def add(a: str, b: str) -> int:
+def add(a: str, b: str) -> int fails InvalidValue:
     int(a)? + int(b)?
 
 def main(stdout: Stdout):

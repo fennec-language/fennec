@@ -212,6 +212,20 @@ impl Program {
         self.types.get(name)
     }
 
+    /// `Result[T, E]`, whose `E` is an error, as `fail` takes.
+    fn result_written(
+        &self,
+        written: &TypeExpr,
+        value: Box<Type>,
+        error: Box<Type>,
+    ) -> Result<Type, Diagnostic> {
+        if !self.can_fail_with(&error) {
+            let span = written.args.get(1).map_or(written.span, |error| error.span);
+            return Err(not_an_error("a `Result` fails with an error", &error, span));
+        }
+        Ok(Type::Result(value, error))
+    }
+
     /// Whether something can fail with a value of type `ty`, as `fail` and `Err(...)` take:
     /// an `error` type, several of them, or a type not known yet.
     pub(crate) fn can_fail_with(&self, ty: &Type) -> bool {
@@ -391,14 +405,7 @@ impl Program {
             "Iterator" => Type::Iterator(arg()),
             "set" => Type::Set(arg()),
             "dict" => Type::Dict(arg(), arg()),
-            "Result" => {
-                let (value, error) = (arg(), arg());
-                if !self.can_fail_with(&error) {
-                    let span = written.args.get(1).map_or(written.span, |error| error.span);
-                    return Err(not_an_error("a `Result` fails with an error", &error, span));
-                }
-                Type::Result(value, error)
-            }
+            "Result" => self.result_written(written, arg(), arg())?,
             "tuple" => Type::Tuple(args),
             "->" => {
                 let mut params = args;

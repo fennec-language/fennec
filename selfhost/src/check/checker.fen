@@ -48,6 +48,7 @@ struct Checker:
             for param in function.params:
                 self.check_param(param.ty, names)
             self.check_written(function.ret, names)
+            self.check_written(function.fails, names)
             self.check_bounds(function.generics)
         for name, interface in self.program.interfaces.items():
             for method in interface.methods:

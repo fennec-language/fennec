@@ -66,7 +66,7 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     if let Some(rounds) = call.as_ref().and_then(|call| crate::replay::taken_at(&call.name(), "accept")) {
         return replayed(rounds, body, env, call.as_ref());
     }
-    let Some(listener) = crate::stdlib::net::take_listener(server) else {
+    let Some((listener, tls)) = crate::stdlib::net::take_listener(server) else {
         return fail("this server isn't open to serve".to_owned());
     };
     if let Err(error) = listener.set_nonblocking(true) {
@@ -93,7 +93,7 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     let started = |stopper| STOPPERS.lock().unwrap_or_else(PoisonError::into_inner).push(stopper);
     super::super::write_kept_output();
     let lent = threads::lend();
-    let finished = super::serve(listener, pool, Some(&lent), &handler, (started, call.as_ref()));
+    let finished = super::serve(listener, pool, Some(&lent), &handler, (started, call.as_ref(), tls));
     threads::take_back(lent);
     threads::settle(finished.owners);
     let failure = passed.lock().unwrap_or_else(PoisonError::into_inner).take();

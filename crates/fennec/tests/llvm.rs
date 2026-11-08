@@ -2873,6 +2873,19 @@ fn an_index_outside_an_array_fails_like_the_interpreter() -> std::io::Result<()>
     Ok(())
 }
 
+/// A failure inside the standard library's own code is said to be where the program called it,
+/// not somewhere in the standard library, as the interpreter says it: here `swap`'s index.
+#[test]
+fn a_failure_inside_std_points_at_the_call_like_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "std_failure_at_the_call",
+        "def shuffled(xs: list[int]) -> list[int]:\n    mut out = xs\n    out.swap(0, 7)\n    out\n\ndef main(stdout: Stdout):\n    stdout.print(shuffled([1, 2, 3]))\n",
+    )
+}
+
 /// An array of numbers is kept where it is, so math on one in a loop allocates nothing.
 #[test]
 fn an_array_of_numbers_allocates_nothing() -> std::io::Result<()> {

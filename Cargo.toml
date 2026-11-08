@@ -90,6 +90,7 @@ fennec-bench = { path = "crates/bench" }
 fennec-blake3 = { path = "crates/blake3" }
 fennec-build = { path = "crates/build" }
 fennec-check = { path = "crates/check" }
+fennec-deps = { path = "crates/deps" }
 fennec-dist = { path = "crates/dist" }
 fennec-launcher = { path = "crates/launcher" }
 fennec-count = { path = "crates/count" }

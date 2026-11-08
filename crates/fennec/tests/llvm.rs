@@ -10040,6 +10040,35 @@ fn none_in_a_tuple_matches_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// A value of a union like `int | str`, read from a field or a list's item, prints and formats as
+/// itself, a string member unquoted, as in the interpreter: by `print`, `str` and an f-string.
+/// Inside a list it's shown quoted, as any string in a list is.
+#[test]
+fn a_unions_value_from_a_field_or_an_item_prints_as_itself() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "union_text",
+        r#"struct Box[T]:
+    value: T
+
+def main(stdout: Stdout):
+    held: int | str = "ash"
+    boxed: Box[int | str] = Box(value="ash")
+    items: list[int | str] = ["ash", 1]
+    stdout.print(held, boxed.value, items[0], items[1], items)
+    stdout.print(f"{boxed.value} {items[0]}", str(items[0]), str(boxed.value).len())
+    numbers: Box[int | str] = Box(value=3)
+    floats: Box[float | str] = Box(value=1.5)
+    flags: list[bool | str] = [True, "no"]
+    lists: Box[list[int] | str] = Box(value=[1, 2])
+    stdout.print(numbers.value, floats.value, flags[0], flags[1], lists.value, flags)
+    stdout.print(f"{numbers.value}|{floats.value}|{flags[1]}|{lists.value}", str(lists.value))
+"#,
+    )
+}
+
 /// A name narrowed to `None`, like `x` after `x = None`, prints and formats as `None`, as in the
 /// interpreter. LLVM refused it once, and the JIT still gets it wrong (#572).
 #[test]

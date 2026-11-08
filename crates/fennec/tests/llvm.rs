@@ -8205,6 +8205,161 @@ fn printed_by(name: &str, source: &str) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
 }
 
+/// A Postgres message from a server: its type, its length, its body.
+fn postgres_message(kind: u8, body: &[u8]) -> Vec<u8> {
+    let mut message = vec![kind];
+    message.extend_from_slice(&u32::try_from(body.len() + 4).unwrap_or(0).to_be_bytes());
+    message.extend_from_slice(body);
+    message
+}
+
+/// A server's `Authentication` message of the type `code`, then `rest`.
+fn postgres_auth(code: u32, rest: &[u8]) -> Vec<u8> {
+    let mut body = code.to_be_bytes().to_vec();
+    body.extend_from_slice(rest);
+    postgres_message(b'R', &body)
+}
+
+/// What a server says when it's ready for a query.
+fn postgres_ready() -> Vec<u8> {
+    postgres_message(b'Z', b"I")
+}
+
+/// A query's whole answer, ending in the tag `tag`.
+fn postgres_answer(tag: &str) -> Vec<u8> {
+    let mut tagged = tag.as_bytes().to_vec();
+    tagged.push(0);
+    [
+        postgres_message(b'1', b""),
+        postgres_message(b'2', b""),
+        postgres_message(b'n', b""),
+        postgres_message(b'C', &tagged),
+        postgres_ready(),
+    ]
+    .concat()
+}
+
+/// Reads what a client sends up to where it waits for an answer, and gives its messages' types,
+/// or nothing once it's gone. The first thing it sends has no type.
+fn postgres_flight(stream: &mut std::net::TcpStream, first: bool) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let mut kinds = Vec::new();
+    loop {
+        let mut kind = [0_u8; 1];
+        if !first {
+            stream.read_exact(&mut kind).ok()?;
+        }
+        let mut size = [0_u8; 4];
+        stream.read_exact(&mut size).ok()?;
+        let mut body = vec![0_u8; usize::try_from(u32::from_be_bytes(size)).ok()?.checked_sub(4)?];
+        stream.read_exact(&mut body).ok()?;
+        kinds.push(kind[0]);
+        if first || kind[0] == b'p' || kind[0] == b'S' {
+            return Some(kinds);
+        }
+        if kind[0] == b'X' {
+            return None;
+        }
+    }
+}
+
+/// A server on a port of its own that gives each of `answers` in turn, one for each time the
+/// client waits, then hangs up. It gives back the port, and how many passwords it was sent.
+fn postgres_scripted(answers: Vec<Vec<u8>>) -> std::io::Result<(u16, std::sync::mpsc::Receiver<usize>)> {
+    use std::io::Write as _;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let (done, passwords) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else { return };
+        let mut sent = 0;
+        for (at, answer) in answers.iter().enumerate() {
+            let Some(kinds) = postgres_flight(&mut stream, at == 0) else { break };
+            sent += kinds.iter().filter(|kind| **kind == b'p').count();
+            if stream.write_all(answer).is_err() {
+                break;
+            }
+        }
+        // What comes after the script, like a password it asked for, or the goodbye.
+        while let Some(kinds) = postgres_flight(&mut stream, false) {
+            sent += kinds.iter().filter(|kind| **kind == b'p').count();
+        }
+        let _ = done.send(sent);
+    });
+    Ok((port, passwords))
+}
+
+/// What the next test builds: `connect`, a transaction and a query, against each port it's given.
+const POSTGRES_SCRIPTED: &str = r#"from std import postgres
+from std.crypto import Secret
+from std.sql import SqlError
+
+def run(port: int, weak: bool, net: Net, entropy: Entropy) fails SqlError:
+    with postgres.connect(net, entropy, host="127.0.0.1", user="u", database="d", password=Secret.of("pw"), port=port, allow_weak_sign_in=weak)? as db:
+        with db.transaction()? as tx:
+            _ = tx.execute(t"select 1")?
+
+def main(stdout: Stdout, net: Net, entropy: Entropy):
+    for at, port in enumerate(PORTS):
+        match run(port, weak=at >= STRICT, net=net, entropy=entropy):
+            case Ok(_):
+                stdout.print("went through")
+            case Err(error):
+                stdout.print(error.message())
+"#;
+
+/// A server can't trick the driver. A commit the server answers with `ROLLBACK` fails. A server
+/// that was given a password has to prove it knows it: one that claims to have checked SCRAM
+/// without doing the exchange is refused, and so is one that lets the client in with no proof or
+/// asks for the password as it is, which is then never sent.
+#[test]
+fn postgres_does_not_believe_a_server_that_has_not_proved_itself() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let signed_in = [postgres_auth(0, b""), postgres_ready()].concat();
+    let sasl = postgres_auth(10, b"SCRAM-SHA-256\0\0");
+    // The signature of nothing under an empty key, which is what a check before the exchange
+    // compared with.
+    let forged = postgres_auth(12, b"v=thNnmggU2ex3L5XXeMNfxf8Wl8STcVZTxscSFEKSxa0=");
+    let works = |tag: &str| vec![postgres_answer("BEGIN"), postgres_answer("SELECT 1"), postgres_answer(tag)];
+    let after = |first: Vec<Vec<u8>>, tag: &str| [first, works(tag)].concat();
+    let cleartext = postgres_auth(3, b"");
+    let scripts = vec![
+        // With a password, and SCRAM not done: these are refused.
+        after(vec![signed_in.clone()], "COMMIT"),
+        after(vec![sasl, [forged, signed_in.clone()].concat()], "COMMIT"),
+        after(vec![cleartext.clone(), signed_in.clone()], "COMMIT"),
+        // Asked for the weak ways: these go through, up to what the commit says.
+        after(vec![signed_in.clone()], "ROLLBACK"),
+        after(vec![signed_in.clone()], "COMMIT"),
+        after(vec![cleartext, signed_in], "COMMIT"),
+    ];
+    let mut ports = Vec::new();
+    let mut passwords = Vec::new();
+    for script in scripts {
+        let (port, sent) = postgres_scripted(script)?;
+        ports.push(port.to_string());
+        passwords.push(sent);
+    }
+    let source =
+        POSTGRES_SCRIPTED.replace("PORTS", &format!("[{}]", ports.join(", "))).replace("STRICT", "3");
+    let printed = printed_by("postgres_scripted", &source)?;
+    assert_eq!(
+        printed,
+        "the server let us in without proving it knows the password: `allow_weak_sign_in=True` accepts that\n\
+         the server sent its SCRAM proof before the exchange\n\
+         the server asks for the password as it is, so it wasn't sent: `allow_weak_sign_in=True` sends it\n\
+         the transaction wasn't kept: the server answered the commit with `ROLLBACK`, as it does when something in it failed\n\
+         went through\n\
+         went through\n"
+    );
+    let sent: Vec<usize> = passwords.iter().map(|sent| sent.recv().unwrap_or(99)).collect();
+    assert_eq!(sent[2], 0, "the password went to a server that asked for it as it is");
+    assert_eq!(sent[5], 1, "the password wasn't sent when asked to send it as it is");
+    Ok(())
+}
+
 /// What the next test builds: a round trip, then bytes `std.pack` should refuse.
 const PACK_MESSAGES: &str = r#"from std import pack
 from std.pack import Limits

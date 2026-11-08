@@ -183,6 +183,10 @@ impl FnCx<'_> {
         if matches!(name, "len" | "abs") || builtins::is_builtin(name) {
             return Some(self.call_global(name, callee, args, span));
         }
+        // `with launch(...)`, the one place `launch` is written.
+        if name == "launch" {
+            return Some(self.launch(args, span));
+        }
         None
     }
 

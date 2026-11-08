@@ -179,7 +179,7 @@ An `Id` is local to its process's `Table`. To name something across servers, sen
 
 ## Sharing, resources and tasks
 
-Built so far: `shared T`, `shared name = value` and `lock`, on every engine, with a crash inside `lock x as ref` rolled back; `with` sources a program writes, with `lend`; and server rounds for `parallel(server)`. A `lock` inside another `lock` is refused for now: take them together in one. Not built yet: `launch`, `Inbox`, `TaskGroup`, `Channel` in the language, and pools, as the lines below say. Today's `shared Name:` declarations, `with x as ref y:` and `def del` still compile, and `fennec fix` rewrites them.
+Built so far: `shared T`, `shared name = value` and `lock`, on every engine, with a crash inside `lock x as ref` rolled back; `with` sources a program writes, with `lend`; and server rounds for `parallel(server)`. A `lock` inside another `lock` is refused for now: take them together in one. `with launch`, `Channel`, `Inbox` and `Sender` check, as the lines below say. Not built yet: running them natively, `TaskGroup`, and pools. Today's `shared Name:` declarations, `with x as ref y:` and `def del` still compile, and `fennec fix` rewrites them.
 
 Four questions, each with its own words:
 
@@ -288,7 +288,7 @@ def audio(inbox: Inbox[Sound], speakers: Speakers):
                 speakers.stop_all()
 
 def main(speakers: Speakers, input: Input):
-    with launch((inbox) => audio(inbox, speakers), stop_after=5s) as sounds:
+    with launch((inbox) => audio(inbox, speakers), stop_after=5s)? as sounds:
         for frame in input.frames():
             if frame.jumped:
                 sounds.send(.Play(name="jump", volume=0.8))?
@@ -296,7 +296,8 @@ def main(speakers: Speakers, input: Input):
 
 - `launch` runs a function alongside you until its `with` block ends, so no task outlives the code that started it. It's only ever written as `with launch(...)`.
 - The arrow is the call you'd write anyway. `launch`'s own options, `stop_after=` and `inbox_size=`, sit outside it.
-- A parameter typed `Inbox[T]` makes `launch` create the channel: the task gets the receiving end and you get the sending end, as `sounds`. The enum is the protocol, so you can only send real cases and the task must handle each one. A task with no messages takes no inbox: `with launch(() => autosave(rooms, fs, clock)):`.
+- A parameter typed `Inbox[T]` makes `launch` create the channel: the task gets the receiving end and you get the sending end, as `sounds`. The enum is the protocol, so you can only send real cases and the task must handle each one. A task with no messages takes no inbox: `with launch(() => autosave(rooms, fs, clock))?:`.
+- The `?` on its line covers the task: `with launch(...)` fails with the task's errors and `Crashed`, from `std.concurrent`, where the block ends. `inbox_size=` is 16 unless given. Checked, and written in around `std.intrinsics`' `launch` and `launch_end`. Native code for those is the LLVM lane's next step, and the interpreter refuses them.
 - `TaskGroup`, from `std.concurrent`, holds a number of tasks known only at run time, and stops them all when its block ends.
 - Channels are always bounded, and `send` waits when one is full. Both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. A channel you set up yourself is `with Channel[Job](size=64) as jobs:`. The runtime's half is built. `std.concurrent` has `Channel[T]`, its ends `Inbox[T]` and `Sender[T]`, and the errors `Closed`, `Timeout` and `Crashed`, written in Fennec over channel intrinsics. `with Channel[Job].open(size=64) as jobs:` checks, and so do `send`, `receive` and `for job in jobs`. Not built yet: native code for the intrinsics, and the shorter `Channel[Job](size=64)`.
 - A channel delivers each message to one receiver by default, as a work queue. `to=.Every` gives every listener every message, as in `with Channel[Hit](size=1024, to=.Every) as hits:`, and receiving reads the same either way, `for hit in hits`. With `.Every`, `send` never waits, and a listener that falls behind fails loudly, unless it asked for `when_behind=.DropOldest`. There's no separate events type. Not built yet.
@@ -561,7 +562,7 @@ def autosave(rooms: shared dict[str, Room], fs: Fs, clock: Clock) fails IoError:
 def main(net: Net, fs: Fs, clock: Clock):
     shared rooms = dict[str, Room]()
     with Database.open(net, "postgres://localhost/chat", pool_size=10)? as db:
-        with launch(() => autosave(rooms, fs, clock), stop_after=5s):
+        with launch(() => autosave(rooms, fs, clock), stop_after=5s)?:
             with net.listen(9000)? as server:
                 # each connection gets its own task, and closes when its round ends
                 for conn in parallel(server):

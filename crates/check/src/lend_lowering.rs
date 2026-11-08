@@ -31,8 +31,12 @@ pub(crate) struct Source {
 }
 
 /// Writes in every `with` over a source in `module`, saying whether there were any.
-pub(crate) fn lower(module: &mut Module, sources: &BTreeMap<(u32, u32), Source>) -> bool {
-    if sources.is_empty() {
+pub(crate) fn lower(
+    module: &mut Module,
+    sources: &BTreeMap<(u32, u32), Source>,
+    launches: &BTreeMap<(u32, u32), crate::launch::Launch>,
+) -> bool {
+    if sources.is_empty() && launches.is_empty() {
         return false;
     }
     NEXT.with(|next| next.set(Span::PRELUDE - 1));
@@ -43,7 +47,7 @@ pub(crate) fn lower(module: &mut Module, sources: &BTreeMap<(u32, u32), Source>)
         }
     });
     COPIES.with(|copies| copies.set(lowest));
-    let mut lowering = Lowering { sources, made: 0, returns: Vec::new() };
+    let mut lowering = Lowering { sources, launches, made: 0, returns: Vec::new() };
     for item in &mut module.items {
         match item {
             Item::Function(def) => lowering.function(def),
@@ -147,6 +151,8 @@ fn discards_apart_again(module: &mut Module) {
 
 struct Lowering<'s> {
     sources: &'s BTreeMap<(u32, u32), Source>,
+    /// Each `with launch(...)`, which is written in as a source made for it.
+    launches: &'s BTreeMap<(u32, u32), crate::launch::Launch>,
     /// How many have been written in, which makes each one's hidden names its own.
     made: usize,
     /// The return type written for each function being walked, innermost last.
@@ -253,9 +259,14 @@ impl Lowering<'_> {
                         ExprKind::Try { value: inner, context: None } => inner.as_ref(),
                         _ => value,
                     };
-                    match self.sources.get(&(call.span.start, call.span.end)) {
-                        Some(source) => self.expand(call, names, block, &source.clone(), stmt.span),
-                        None => None,
+                    let at = (call.span.start, call.span.end);
+                    match (self.sources.get(&at).cloned(), self.launches.get(&at)) {
+                        (Some(source), _) => self.expand(call, names, block, &source, stmt.span),
+                        (None, Some(launch)) => crate::launch::source(launch).and_then(|source| {
+                            let options = crate::launch::options_only(call);
+                            self.expand(&options, names, block, &source, stmt.span)
+                        }),
+                        (None, None) => None,
                     }
                 }
                 _ => None,
@@ -312,7 +323,8 @@ impl Lowering<'_> {
         let held = match names {
             [held] => held.clone(),
             [first, ..] => WithName { name: format!("{}__split", first.name), ..first.clone() },
-            [] => return None,
+            // A `with` with no name still runs what's lent, as `with launch(() => work())?:` does.
+            [] => WithName { name: "unnamed__held".to_owned(), is_mut: false, span: at },
         };
         self.made += 1;
         let suffix = format!("__lend{}", self.made);

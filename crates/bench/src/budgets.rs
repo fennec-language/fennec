@@ -50,8 +50,10 @@ const INSTRUCTIONS_A_SECOND: u64 = 6_700_000_000;
 /// What an edit's verdict may run: a second.
 const MOST_VERDICT_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND;
 
-/// Not met yet: after an edit, `fennec run` checks all of the program again before it builds the
-/// one function that changed, and on the big kit that's most of the time it takes.
+/// Not met yet: after an edit, `fennec run` checks and lints only the files that changed, but then
+/// compiles the function, links a new executable and starts it, and on macOS the first start of a
+/// new executable alone takes longer than this. Meeting it takes loading changed functions into a
+/// running program instead.
 const EDIT_RUN: Budget =
     Budget { name: "edit to run, one function", limit: Duration::from_millis(50), enforced: false };
 

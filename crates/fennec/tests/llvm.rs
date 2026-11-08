@@ -6846,6 +6846,98 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// A round that crashes lets go of everything its functions own on the way out, as a failure
+/// does: 10,000 crashing rounds, each holding a string, a list and a dict, leave the server's
+/// memory where it was. A crash once left them all behind, about 1.8 KB a round.
+#[test]
+fn rounds_that_crash_keep_nothing_of_theirs() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("crash-leaks")?;
+    let program = dir.join("leaks.fen");
+    std::fs::write(
+        &program,
+        "from std.net import NetError
+
+def overflowed(n: int) -> int:
+    big = 9223372036854775000
+    big + n * 1000
+
+def answer(line: str) -> str:
+    words = [f\"{line} {at}\" for at in range(8)]
+    seen = {word: word.len() for word in words}
+    said = f\"{words} {seen.len()}\"
+    f\"{overflowed(line.len())} {said}\"
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            conn.write(answer(line))?
+",
+    )?;
+    let executable = dir.join("leaks");
+    let mut command = crate::executables::fennec_command();
+    command.args([
+        "build",
+        "--llvm",
+        "--release",
+        &program.to_string_lossy(),
+        "-o",
+        &executable.to_string_lossy(),
+    ]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "2")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().unwrap_or(0);
+    // Four at a time, so 10,000 rounds take seconds.
+    let crash = |rounds: u32| -> std::io::Result<()> {
+        let each = || -> std::io::Result<()> {
+            for _ in 0..rounds / 4 {
+                let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+                stream.write_all(b"a line long enough to need a block of its own\n")?;
+                let mut back = String::new();
+                let read = std::io::BufReader::new(stream).read_line(&mut back).unwrap_or(0);
+                assert_eq!(read, 0, "a crashing round answered: {back}");
+            }
+            Ok(())
+        };
+        std::thread::scope(|scope| {
+            let clients: Vec<_> = (0..4).map(|_| scope.spawn(each)).collect();
+            clients.into_iter().try_for_each(|client| client.join().unwrap_or(Ok(())))
+        })
+    };
+    let resident = || -> std::io::Result<u64> {
+        let said = Command::new("ps").args(["-o", "rss=", "-p", &server.0.id().to_string()]).output()?;
+        Ok(String::from_utf8_lossy(&said.stdout).trim().parse().unwrap_or(0))
+    };
+    // What the first rounds make for good, like the runtime's pools, is there before the count.
+    crash(2_000)?;
+    let before = resident()?;
+    crash(10_000)?;
+    let after = resident()?;
+    std::fs::remove_dir_all(&dir)?;
+    // 10,000 leaked rounds would be about 18 MB.
+    assert!(after < before + 4_096, "the server grew from {before} KB to {after} KB");
+    Ok(())
+}
+
 /// A round that fails, by `fail` or `?`, stops the server, and its failure passes up out of the
 /// loop to the function serving, which handles it. The rounds before it were answered. Natively a
 /// round's failure once only ended that round, as a crash does.
@@ -7837,7 +7929,7 @@ fn an_unchanged_build_takes_its_program_from_the_store() -> std::io::Result<()> 
     let ran = Command::new(dir.join("built")).output()?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "stored\n");
     let stored: Vec<String> =
-        std::fs::read_dir(home.join("cache").join(env!("CARGO_PKG_VERSION")).join("programs"))?
+        std::fs::read_dir(home.join("cache").join(fennec_build::FOLDER).join("programs"))?
             .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
             .collect::<Result<_, _>>()?;
     assert_eq!(stored.len(), 2, "the program and its functions' hashes: {stored:?}");

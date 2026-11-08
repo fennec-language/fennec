@@ -13,7 +13,7 @@ This page is the store's format, so that the launcher and a shared cache can rea
 ```
 ~/.fennec/
   cache/
-    <version>/            one folder per Fennec version, like 0.0.1
+    <version>-<build>/    one folder per build of Fennec, like 0.0.1-1f0c…: its version and a hash of all its source
       <kind>/<name>       one entry
     cleanup.lock          held while a cleanup runs
   work/                   commands' scratch work, like a build's objects before they're linked
@@ -23,8 +23,9 @@ This page is the store's format, so that the launcher and a shared cache can rea
   llvm-version            which version of LLVM they are
 ```
 
-An entry is a file. Its kind is the folder it's in, and its name is a hash. Each version keeps entries
-of its own, so two versions never read each other's.
+An entry is a file. Its kind is the folder it's in, and its name is a hash. Each build keeps entries
+of its own, so two builds never read each other's, even of one version: a key that left out something
+the compiler does would otherwise bring back what an older compiler made.
 
 ## Two sorts of entry
 
@@ -34,7 +35,7 @@ what a shared cache can hold.
 
 | kind | holds | named by |
 |---|---|---|
-| `llvm` | one function compiled to an object file | the Fennec version, the compiler pipeline, and the function's text as LLVM reads it |
+| `llvm` | one function compiled to an object file | the build of Fennec, the compiler pipeline, and the function's text as LLVM reads it |
 | `file-rows` | a file's definitions and the hash of each, for telling what an edit changed | the file's text |
 
 **An entry about one program on this machine** is named by a hash of the program's absolute path, so
@@ -61,8 +62,8 @@ Hashes are BLAKE3, written as 64 lowercase hex digits, and an entry about a prog
 - Reading an entry sets its modified time, at most once every ten minutes, and that's how cleanup
   knows what was used least recently. Access times aren't reliable enough on every system.
 - The store has one size cap: 1 GiB, or `FENNEC_CACHE_CAP` in bytes. When it's over, cleanup removes
-  entries until it's at four fifths of the cap, other versions' entries first and then the least
-  recently used, and removes other versions' folders it empties.
+  entries until it's at four fifths of the cap, other builds' entries first and then the least
+  recently used, and removes other builds' folders it empties.
 - The build daemon runs cleanup when it starts and every five minutes after, while it's idle. Only
   cleanup takes a lock, so two never run at once, and one that died leaves a lock that's taken over
   after ten minutes.

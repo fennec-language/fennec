@@ -1,5 +1,11 @@
-//! The cache in `~/.fennec/cache`: one folder per Fennec version, entries written whole, and
+//! The cache in `~/.fennec/cache`: one folder per build of Fennec, entries written whole, and
 //! a cleanup that keeps it under a size cap.
+//!
+//! A build is named by its version and a hash of all of its source (`FENNEC_BUILD`), so no entry
+//! one build wrote is ever read by another. A key that leaves out something the compiler does,
+//! like the flags it hands LLVM, then can't bring back what an older compiler made: a changed
+//! compiler starts from an empty cache, and the old build's entries are the first a cleanup
+//! removes.
 //!
 //! An entry is written to a temporary file and renamed into place, so a reader never sees half
 //! of one, and reading and writing take no locks. Reading an entry sets its modified time,
@@ -11,8 +17,11 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-/// This Fennec's version. Each version's entries live in a folder of their own.
+/// This Fennec's version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The folder this build's entries live in, `<version>-<hash of all its source>`.
+pub const FOLDER: &str = concat!(env!("CARGO_PKG_VERSION"), "-", env!("FENNEC_BUILD"));
 
 /// The cache's size cap unless `FENNEC_CACHE_CAP` sets one, in bytes.
 pub const DEFAULT_CAP: u64 = 1 << 30;
@@ -58,9 +67,9 @@ impl Cache {
         std::env::var("FENNEC_CACHE_CAP").ok().and_then(|text| text.parse().ok()).unwrap_or(DEFAULT_CAP)
     }
 
-    /// Where an entry of this version lives: `cache/<version>/<kind>/<name>`.
+    /// Where an entry of this build lives: `cache/<version>-<build>/<kind>/<name>`.
     pub fn path(&self, kind: &str, name: &str) -> PathBuf {
-        self.root.join(VERSION).join(kind).join(name)
+        self.root.join(FOLDER).join(kind).join(name)
     }
 
     /// Reads an entry, and marks it as just used.
@@ -98,7 +107,7 @@ impl Cache {
         let mut found = Vec::new();
         let Ok(versions) = std::fs::read_dir(&self.root) else { return found };
         for version in versions.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()) {
-            let current = version.file_name().is_some_and(|name| name == VERSION);
+            let current = version.file_name().is_some_and(|name| name == FOLDER);
             files(&version, current, &mut found);
         }
         found
@@ -137,7 +146,7 @@ impl Cache {
     fn remove_empty_versions(&self) {
         let Ok(versions) = std::fs::read_dir(&self.root) else { return };
         for version in versions.flatten().map(|entry| entry.path()) {
-            if version.is_dir() && version.file_name().is_some_and(|name| name != VERSION) {
+            if version.is_dir() && version.file_name().is_some_and(|name| name != FOLDER) {
                 remove_empty_folders(&version);
             }
         }

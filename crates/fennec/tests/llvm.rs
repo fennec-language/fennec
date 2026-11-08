@@ -7929,7 +7929,7 @@ fn an_unchanged_build_takes_its_program_from_the_store() -> std::io::Result<()> 
     let ran = Command::new(dir.join("built")).output()?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "stored\n");
     let stored: Vec<String> =
-        std::fs::read_dir(home.join("cache").join(env!("CARGO_PKG_VERSION")).join("programs"))?
+        std::fs::read_dir(home.join("cache").join(fennec_build::FOLDER).join("programs"))?
             .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
             .collect::<Result<_, _>>()?;
     assert_eq!(stored.len(), 2, "the program and its functions' hashes: {stored:?}");

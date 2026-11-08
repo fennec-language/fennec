@@ -584,6 +584,16 @@ impl Lowering<'_> {
                 if matches!(ty, Type::Result(..)) && name == "expect" {
                     return Some(("result.expect".to_owned(), Some(object.as_ref()), false));
                 }
+                // An error's notes, one pair of builtins for every `error` type that doesn't
+                // write its own: `error.add_note` changes the error it's called on.
+                let an_error = matches!(ty, Type::Errors(_))
+                    || owner_name(ty).is_some_and(|owner| {
+                        signatures.error_type(owner).is_some()
+                            && signatures.get(&format!("{owner}.{name}")).is_none()
+                    });
+                if matches!(name.as_str(), "notes" | "add_note") && an_error {
+                    return Some((format!("error.{name}"), Some(object.as_ref()), name == "add_note"));
+                }
                 let changes = fennec_check::builtin_method_changes(ty, name)?;
                 let owner = owner_name(ty)?;
                 let written = signatures.get(&format!("{owner}.{name}")).is_some();

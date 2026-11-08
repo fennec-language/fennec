@@ -1,0 +1,47 @@
+# A query to Postgres goes as the extended protocol's messages: the template's text with `$1` for
+# each value, then the values apart, so no value can change what the text means. What comes back
+# is turned into rows by each column's type, ready to read into a struct.
+from std import sql
+from std.postgres import PgMessage, failure_of, query_messages, rows_of
+
+def main(stdout: Stdout):
+    path = "a.txt'; drop table entries; --"
+    sent = query_messages(t"select path, size from entries where path = {path} and size > {10}")
+    # Each message is its type, then its length: Parse, Bind, Describe, Execute and Sync.
+    mut messages = list[str]()
+    mut at = 0
+    while at < sent.len():
+        size = (sent[at + 1] << 24) | (sent[at + 2] << 16) | (sent[at + 3] << 8) | sent[at + 4]
+        kind = bytes([sent[at]]).decode() else ""
+        messages.append(f"{kind} {size}")
+        at += 1 + size
+    stdout.print(messages)
+    # The query's text holds `$1` and `$2`, never the values.
+    whole = sent.decode() else ""
+    stdout.print("$1" in whole, "$2" in whole, "drop table entries" in whole[0:60])
+    # What a server sends back: two columns, text and int8, three rows, one with a null size.
+    columns = PgMessage.Columns(names=["path", "size"], types=[25, 20])
+    rows = [
+        PgMessage.Row(cells=["a.txt".encode(), "12".encode()], present=[True, True]),
+        PgMessage.Row(cells=["b.txt".encode(), bytes([])], present=[True, False]),
+        PgMessage.Row(cells=["c.txt".encode(), "-3".encode()], present=[True, True]),
+    ]
+    match columns:
+        case .Columns(names=names, types=types):
+            made = rows_of(names, types=types, rows=rows) else sql.SqlRows(
+                columns=[],
+                kinds=[],
+                at=[],
+                ints=[],
+                floats=[],
+                texts=[],
+                blobs=[],
+            )
+            stdout.print(made.columns, made.kinds, made.ints, made.texts)
+        case _:
+            pass
+    # A broken `unique` rule comes back as `Constraint`, with the server's words and code.
+    stdout.print(
+        failure_of({"C": "23505", "M": "duplicate key value violates unique constraint"}).message(),
+    )
+    stdout.print(failure_of({"C": "40P01", "M": "deadlock detected"}).message())

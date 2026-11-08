@@ -13,7 +13,7 @@
 from std import base64, crypto
 from std.crypto import Secret
 from std.intrinsics import bytes_text
-from std.sql import SqlError
+from std.sql import SqlError, SqlRows, SqlValue
 
 ## The protocol's version, 3.0, as a startup message gives it.
 PROTOCOL = 196608
@@ -99,6 +99,10 @@ struct PgWriter:
 
     def byte(ref self, value: int):
         self._body.append(value)
+
+    def int16(ref self, n: int):
+        self._body.append((n >> 8) & 255)
+        self._body.append(n & 255)
 
     def int32(ref self, n: int):
         for shift in [24, 16, 8, 0]:
@@ -357,3 +361,163 @@ def unhex(hex: str) -> bytes:
 def nibble(digit: int) -> int:
     # `0` to `9`, then `a` to `f`.
     digit - 48 if digit < 97 else digit - 87
+
+## The messages that run one query with the extended protocol: parse the template's text, with
+## `$1` for each value, bind the values, describe the rows it gives, run it, then sync. Each value
+## is sent apart from the text, as a parameter, so it can never change what the text means: an
+## int, a float or text as text, and bytes as they are.
+export def query_messages(query: Template[SqlValue]) -> bytes:
+    mut text = ""
+    for at, part in enumerate(query.strings):
+        text += part
+        if at < query.values.len():
+            text += f"${at + 1}"
+    mut parse = PgWriter()
+    parse.text("")
+    parse.text(text)
+    parse.int16(query.values.len())
+    for value in query.values:
+        parse.int32(type_of(value))
+    mut bind = PgWriter()
+    bind.text("")
+    bind.text("")
+    bind.int16(query.values.len())
+    for value in query.values:
+        # 1 for bytes as they are, 0 for everything else as text.
+        bind.int16(1 if value is bytes else 0)
+    bind.int16(query.values.len())
+    for value in query.values:
+        data = written_value(value)
+        bind.int32(data.len())
+        bind.bytes(data)
+    # Every column comes back as text.
+    bind.int16(0)
+    mut describe = PgWriter()
+    describe.byte(80)
+    describe.text("")
+    mut execute = PgWriter()
+    execute.text("")
+    execute.int32(0)
+    parse.done(80) + bind.done(66) + describe.done(68) + execute.done(69) + PgWriter().done(83)
+
+## The number of Postgres's type for a value: `int8`, `float8`, `text`, `bytea` or `bool`.
+def type_of(value: SqlValue) -> int:
+    # A bool is what's none of the others.
+    mut found = 16
+    if value is int:
+        found = 20
+    if value is float:
+        found = 701
+    if value is str:
+        found = 25
+    if value is bytes:
+        found = 17
+    found
+
+## A value as its parameter's bytes.
+def written_value(value: SqlValue) -> bytes:
+    # A bool is what's none of the others.
+    mut found = ("t" if value == True else "f").encode()
+    if value is int:
+        found = str(value).encode()
+    if value is float:
+        found = float_text(value).encode()
+    if value is str:
+        found = value.encode()
+    if value is bytes:
+        found = value
+    found
+
+## A float as Postgres reads one: its digits, or its words for what isn't a number.
+def float_text(value: float) -> str:
+    if value.is_nan(): return "NaN"
+    if value == 1e308 * 10.0: return "Infinity"
+    if value == -1e308 * 10.0: return "-Infinity"
+    str(value)
+
+## The rows a query gave, from its columns and each row as text, ready for `sql.rows_as`. Each
+## cell is read by its column's type: ints and bools as ints, floats as floats, `bytea` as bytes,
+## and everything else as text.
+export def rows_of(
+    names: list[str],
+    types: list[int],
+    rows: list[PgMessage],
+) -> SqlRows fails SqlError:
+    mut found = SqlRows(columns=names, kinds=[], at=[], ints=[], floats=[], texts=[], blobs=[])
+    for each in rows:
+        match each:
+            case .Row(cells=cells, present=present):
+                if cells.len() != names.len():
+                    fail SqlError.Failed(
+                        reason=f"the server sent a row of {cells.len()} cells for {names.len()} columns",
+                    )
+                for at, cell in enumerate(cells):
+                    add_cell(ref found, types[at] if at < types.len() else 25, cell, present[at])?
+            case _:
+                pass
+    found
+
+def add_cell(ref rows: SqlRows, kind: int, cell: bytes, there: bool) fails SqlError:
+    if not there:
+        rows.kinds.append(0)
+        rows.at.append(0)
+        return
+    text = cell.decode() else fail SqlError.Failed(reason="the server sent a cell that isn't UTF-8")
+    # `bool`, then `int8`, `int2` and `int4`, `float4` and `float8`, and `bytea`.
+    if kind == 16:
+        rows.kinds.append(1)
+        rows.at.append(rows.ints.len())
+        rows.ints.append(1 if text == "t" else 0)
+    elif kind == 20 or kind == 21 or kind == 23:
+        rows.kinds.append(1)
+        rows.at.append(rows.ints.len())
+        rows.ints.append(
+            int(text) else fail SqlError.Failed(reason=f"the server sent `{text}` as an int"),
+        )
+    elif kind == 700 or kind == 701:
+        rows.kinds.append(2)
+        rows.at.append(rows.floats.len())
+        rows.floats.append(float_of(text)?)
+    elif kind == 17:
+        rows.kinds.append(4)
+        rows.at.append(rows.blobs.len())
+        rows.blobs.append(hex_bytes(text)?)
+    else:
+        rows.kinds.append(3)
+        rows.at.append(rows.texts.len())
+        rows.texts.append(text)
+
+def float_of(text: str) -> float fails SqlError:
+    if text == "NaN": return 0.0 / 0.0
+    if text == "Infinity": return 1e308 * 10.0
+    if text == "-Infinity": return -1e308 * 10.0
+    float(text) else fail SqlError.Failed(reason=f"the server sent `{text}` as a float")
+
+## `bytea` as Postgres writes it as text: `\x`, then two hex digits a byte.
+def hex_bytes(text: str) -> bytes fails SqlError:
+    digits = text.encode()
+    if digits.len() < 2 or digits[0] != 92 or digits[1] != 120 or digits.len() % 2 != 0:
+        fail SqlError.Failed(reason="the server sent bytes that aren't in hex")
+    mut out = list[int]()
+    for at in range(1, digits.len() // 2):
+        high = hex_digit(digits[2 * at])?
+        out.append(high * 16 + hex_digit(digits[2 * at + 1])?)
+    bytes(out)
+
+def hex_digit(digit: int) -> int fails SqlError:
+    # `0` to `9`, `a` to `f` and `A` to `F`.
+    if digit >= 48 and digit <= 57: return digit - 48
+    if digit >= 97 and digit <= 102: return digit - 87
+    if digit >= 65 and digit <= 70: return digit - 55
+    fail SqlError.Failed(reason="the server sent bytes that aren't in hex")
+
+## A failure the server sent, as the `SqlError` it is: class `23`, a broken rule, is `Constraint`,
+## a serialization failure or a deadlock is `Busy`, and anything else is `Failed`, each with the
+## server's own message and code.
+export def failure_of(fields: dict[str, str]) -> SqlError:
+    code = fields.get("C") else ""
+    said = fields.get("M") else "the server failed with no message"
+    reason = f"{said} ({code})" if code != "" else said
+    if code.startswith("23"): return SqlError.Constraint(reason=reason)
+    if code == "40001" or code == "40P01": return SqlError.Busy(reason=reason)
+    SqlError.Failed(reason=reason)

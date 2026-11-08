@@ -520,6 +520,9 @@ struct TomlParser:
             if not float_ok(unsigned): fail self.bad_at(unknown, at)
             match float(without_underscores(token)):
                 case Ok(x):
+                    # TOML writes `inf` for that. A number too big for a float didn't say it.
+                    if x == 1e308 * 10.0 or x == -1e308 * 10.0:
+                        fail self.bad_at(f"`{token}` is too big for a float", at)
                     return .Float(x=x)
                 case Err(_):
                     fail self.bad_at(unknown, at)

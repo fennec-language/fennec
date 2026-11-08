@@ -340,7 +340,9 @@ impl Lowering<'_> {
         if !params.is_empty() {
             return Err("`launch` given a task that takes something".to_owned());
         }
-        let key = format!("{}.launch@{}", self.name, span.start);
+        // Each `with launch` is written in from the same source, so its span is the same as the
+        // others': what this function has lifted so far tells them apart.
+        let key = format!("{}.launch@{}.{}", self.name, span.start, self.lifted.len());
         let instance =
             FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
         let mut task = Lowering::new(&instance, self.context, self.body, Type::Int);

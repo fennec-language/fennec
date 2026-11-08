@@ -240,6 +240,11 @@ impl Accounts {
         Accounts { lent, stop: Some(stop), replay: crate::replay::child(), ..Accounts::default() }
     }
 
+    /// Which task it is, in a recording or a replay, for something else to say from here on.
+    pub(in crate::embed) fn take_replay(&mut self) -> Option<crate::replay::Task> {
+        self.replay.take()
+    }
+
     /// Whether nothing's left in them: a range that ended has handed everything over.
     pub(crate) fn is_empty(&self) -> bool {
         self.made.is_empty() && self.lent.is_none() && self.lent_owners.is_empty() && self.printed.is_empty()

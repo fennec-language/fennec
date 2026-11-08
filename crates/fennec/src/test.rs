@@ -11,9 +11,9 @@
 //! `fennec run` does this first, for the tests a change affects, unless told not to.
 //!
 //! Tests run through LLVM's cached dev build, in worker processes on every core (see
-//! `llvm_tests`). A test LLVM can't build yet, or that failed, since the JIT says more about why,
-//! runs on the JIT, and a property test in the interpreter, which shrinks what it failed for.
-//! `--jit` leaves LLVM out.
+//! `llvm_tests`). A failing property test's input is shrunk there to the simplest that fails. A
+//! test LLVM can't take runs on the JIT, or the interpreter, which no example's does. `--jit`
+//! leaves LLVM out.
 
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -183,7 +183,6 @@ fn run_plan(
     let cache = cache.as_ref().map(|(cache, program)| (cache, program.as_str()));
     let mut outcomes = Vec::new();
     let mut wanted = wanted;
-    let mut failed_through_llvm = Vec::new();
     let mut ran_through_llvm = HashMap::new();
     // Tests with real capabilities take what they're given, which only the interpreter does.
     if !options.jit && crate::aot::llvm_ready() {
@@ -195,7 +194,6 @@ fn run_plan(
         }
         outcomes = through_llvm.outcomes;
         wanted = through_llvm.left;
-        failed_through_llvm = through_llvm.failed;
         ran_through_llvm = through_llvm.ran;
     }
     let mut native = fennec_jit::run_tests(&program.module, &signatures, &wanted, cache);
@@ -209,7 +207,6 @@ fn run_plan(
             }
         }
     }
-    disagreed(&mut outcomes, failed_through_llvm);
     // Workers finish in any order, and a report reads in the order the tests are written.
     let place = |name: &str| graph.tests().position(|test| test == name);
     outcomes.sort_by_key(|outcome| place(&outcome.name));
@@ -258,21 +255,6 @@ fn run_plan(
     let passed = outcomes.len() + unchanged.len() - failed;
     say_totals(options, (passed, failed), (outcomes.len(), unchanged.len()));
     if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
-}
-
-/// A test that failed through LLVM and passed the other way is a bug in one of them, so it fails.
-fn disagreed(
-    outcomes: &mut [fennec_interp::TestOutcome],
-    failed_through_llvm: Vec<(String, fennec_syntax::Diagnostic)>,
-) {
-    for (name, failure) in failed_through_llvm {
-        if let Some(outcome) =
-            outcomes.iter_mut().find(|outcome| outcome.name == name && outcome.failure.is_none())
-        {
-            let message = format!("this test fails through LLVM and passes on the JIT: {}", failure.message);
-            outcome.failure = Some(fennec_syntax::Diagnostic { message, ..failure });
-        }
-    }
 }
 
 /// The line of totals, or when a program runs next, nothing unless a test failed.

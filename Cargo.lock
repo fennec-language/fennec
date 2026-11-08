@@ -402,6 +402,14 @@ name = "fennec-count"
 version = "0.0.1"
 
 [[package]]
+name = "fennec-dist"
+version = "0.0.1"
+dependencies = [
+ "fennec-blake3",
+ "ring",
+]
+
+[[package]]
 name = "fennec-fmt"
 version = "0.0.1"
 dependencies = [

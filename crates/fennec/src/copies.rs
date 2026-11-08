@@ -1,12 +1,14 @@
 //! `fennec dev copies [path]`: every place a program may copy a large value or allocate, with
 //! why. Code that runs in loops comes first, since that's where it costs the most.
 //!
-//! `fennec dev copies --run [path]` also runs the program and says what it actually did, which
-//! is how to show that a hot path copies and allocates nothing. What it prints is left out.
+//! `fennec dev copies --run [path]` also builds the program through LLVM, runs it and says what it
+//! actually did, which is how to show that a hot path copies and allocates nothing. What it prints
+//! is left out.
 
 use std::process::ExitCode;
 
-/// What the report says, then what a run of the program did.
+/// What the report says, then what a run of the program did, built through LLVM and run with
+/// `FENNEC_COUNTS`, which has the runtime say at the end what it allocated and copied.
 pub(crate) fn copies_in_a_run(path: &str) -> ExitCode {
     let code = copies(path);
     if code != ExitCode::SUCCESS {
@@ -16,20 +18,68 @@ pub(crate) fn copies_in_a_run(path: &str) -> ExitCode {
     if !crate::run::check(&mut program) {
         return ExitCode::FAILURE;
     }
-    fennec_interp::embed::count_allocations();
-    match fennec_jit::run_with_report(&program.module, &mut std::io::sink()) {
-        Ok(report) => {
-            println!("{}", ran(&report.counts));
-            if !report.interpreted.is_empty() || report.handed_over > 0 {
-                println!("only native code is counted, and part of this program ran in the interpreter");
-            }
+    let work = crate::own_temp("copies");
+    if let Err(err) = std::fs::create_dir_all(&work) {
+        eprintln!("error: couldn't make {}: {err}", work.display());
+        return ExitCode::FAILURE;
+    }
+    let counted = counted_run(&program, &work);
+    let _ = std::fs::remove_dir_all(&work);
+    match counted {
+        Ok(counts) => {
+            println!("{}", ran(&counts));
             ExitCode::SUCCESS
         }
-        Err(fennec_jit::JitError::Failed(diagnostic) | fennec_jit::JitError::Unsupported(diagnostic)) => {
-            eprint!("{}", program.sources.render(&diagnostic));
+        Err(message) => {
+            eprint!("{message}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Builds a checked program in `work` and runs it, giving what it allocated and copied.
+fn counted_run(
+    program: &fennec_kit::Program,
+    work: &std::path::Path,
+) -> Result<fennec_interp::embed::Counts, String> {
+    let executable = work.join(format!("counted{}", std::env::consts::EXE_SUFFIX));
+    crate::aot::executable(program, &executable, false).map_err(|why| format!("error: {why}\n"))?;
+    let ran = std::process::Command::new(&executable)
+        .env("FENNEC_COUNTS", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|err| format!("error: couldn't run the program: {err}\n"))?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    if !ran.status.success() {
+        return Err(said.into_owned());
+    }
+    said.lines()
+        .rev()
+        .find_map(counts_in)
+        .ok_or_else(|| format!("error: the run didn't say what it allocated\n{said}"))
+}
+
+/// The counts in the line a run under `FENNEC_COUNTS` ends with.
+fn counts_in(line: &str) -> Option<fennec_interp::embed::Counts> {
+    let mut counts = fennec_interp::embed::Counts::default();
+    let mut words = line.split(' ');
+    if !line.starts_with("copies ") {
+        return None;
+    }
+    while let (Some(name), Some(number)) = (words.next(), words.next()) {
+        let number = number.parse().ok()?;
+        match name {
+            "copies" => counts.copies = number,
+            "copied_bytes" => counts.copied_bytes = number,
+            "largest_copy" => counts.largest_copy = number,
+            "allocations" => counts.allocations = number,
+            "allocated_bytes" => counts.allocated_bytes = number,
+            _ => {}
+        }
+    }
+    Some(counts)
 }
 
 /// What a run did, in a line.

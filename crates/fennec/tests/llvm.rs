@@ -9182,6 +9182,34 @@ fn generic_types_built_where_one_is_expected_match_the_interpreter() -> std::io:
     same_as_the_interpreter_in_both_builds("generics_expected", GENERICS_EXPECTED)
 }
 
+/// A generic function whose type parameter is only in an `Iterator[T]` it's given works out
+/// what `T` is from the iterator. It once couldn't, so the build left the caller to the JIT.
+#[test]
+fn a_generic_over_an_iterator_takes_its_type_from_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "generic_iterator",
+        r#"def count[T](items: Iterator[T]) -> int:
+    mut n = 0
+    for _ in items:
+        n += 1
+    n
+
+def last_of[T](items: Iterator[T], otherwise: T) -> T:
+    mut last = otherwise
+    for item in items:
+        last = item
+    last
+
+def main(stdout: Stdout):
+    stdout.print(count(x * 2 for x in range(10)), count(s for s in ["a", "b"]))
+    stdout.print(count(f for f in [1.5, 2.5, 3.5]), last_of((w for w in ["p", "q"]), otherwise="none"))
+"#,
+    )
+}
+
 const GENERICS_EXPECTED: &str = r#"struct Box[T]:
     value: T
 

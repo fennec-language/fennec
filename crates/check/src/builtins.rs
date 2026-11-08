@@ -13,7 +13,7 @@ use crate::{ParamType, Signature};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most). Standard library
 /// functions, like `json.loads`, are in `stdlib`, and exist only once imported.
-const BUILTINS: [(&str, usize, usize); 30] = [
+const BUILTINS: [(&str, usize, usize); 31] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("all", 1, 1),
@@ -28,6 +28,7 @@ const BUILTINS: [(&str, usize, usize); 30] = [
     ("u16", 1, 1),
     ("u32", 1, 1),
     ("u64", 1, 1),
+    ("f32", 1, 1),
     ("ignore", 2, 2),
     ("copy", 1, 1),
     ("int", 1, 1),
@@ -47,8 +48,8 @@ const BUILTINS: [(&str, usize, usize); 30] = [
 ];
 
 /// Builtins whose arguments have to be plain values, not results or optionals.
-const NEEDS_VALUES: [&str; 11] =
-    ["float", "int", "range", "round", "i8", "i16", "i32", "u8", "u16", "u32", "u64"];
+const NEEDS_VALUES: [&str; 12] =
+    ["float", "int", "range", "round", "i8", "i16", "i32", "u8", "u16", "u32", "u64", "f32"];
 
 pub(crate) fn is_builtin(name: &str) -> bool {
     BUILTINS.iter().any(|(builtin, ..)| *builtin == name) || stdlib::function(name).is_some()
@@ -667,6 +668,14 @@ impl FnCx<'_> {
                 }
                 Type::Unit
             }
+            // `f32(x)`: the `f32` nearest a number.
+            "f32" => {
+                if !matches!(first, Type::Int | Type::Float | Type::Sized(_) | Type::Unknown) {
+                    let message = format!("`f32(...)` converts a number, not {}", a(&first));
+                    self.error(Diagnostic::new(message, at));
+                }
+                Type::Sized(crate::types::Num::F32)
+            }
             // `u8(x)`: an integer of another size as this one, which stops the program if it
             // doesn't fit. What comes from outside goes through `u8.from(x)?` or `u8.parse(s)?`.
             name if let Some(num) = crate::types::Num::named(name) => {
@@ -687,10 +696,10 @@ impl FnCx<'_> {
                 Type::Sized(num)
             }
             "int" | "float" => {
-                let sized_integer = matches!(first, Type::Sized(num) if !num.is_float());
-                if !sized_integer
-                    && !matches!(first, Type::Int | Type::Float | Type::Str | Type::Bool | Type::Unknown)
-                {
+                if !matches!(
+                    first,
+                    Type::Sized(_) | Type::Int | Type::Float | Type::Str | Type::Bool | Type::Unknown
+                ) {
                     let message = format!("`{name}` converts a number or text, not {}", a(&first));
                     self.error(Diagnostic::new(message, at));
                 }

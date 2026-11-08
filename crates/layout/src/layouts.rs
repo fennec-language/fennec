@@ -462,14 +462,20 @@ impl Layouts {
         holds: bool,
     ) -> Option<Ty> {
         Some(match ty {
-            Type::Int | Type::Sized(_) => Ty::Int,
+            Type::Int => Ty::Int,
+            Type::Sized(fennec_check::Num::U64) => Ty::U64,
+            Type::Sized(fennec_check::Num::F32) => Ty::F32,
+            Type::Sized(_) => Ty::Int,
             Type::Float => Ty::Float,
             Type::Bool => Ty::Bool,
             Type::Named(inner) => Ty::Struct(self.add(sources, inner, visiting)?),
             Type::Str if holds && self.in_place.counted_fields => Ty::Str,
             Type::List(item) if holds && self.in_place.counted_fields => {
                 let item = match item.as_ref() {
-                    Type::Int | Type::Sized(_) => Ty::Int,
+                    Type::Int => Ty::Int,
+                    Type::Sized(fennec_check::Num::U64) => Ty::U64,
+                    Type::Sized(fennec_check::Num::F32) => Ty::F32,
+                    Type::Sized(_) => Ty::Int,
                     Type::Float => Ty::Float,
                     Type::Bool => Ty::Bool,
                     Type::Str => Ty::Str,
@@ -607,7 +613,10 @@ impl Layouts {
     /// How native code holds a value of a type the checker worked out.
     pub fn ty(&self, ty: &Type) -> Ty {
         match ty {
-            Type::Int | Type::Sized(_) => Ty::Int,
+            Type::Int => Ty::Int,
+            Type::Sized(fennec_check::Num::U64) => Ty::U64,
+            Type::Sized(fennec_check::Num::F32) => Ty::F32,
+            Type::Sized(_) => Ty::Int,
             Type::Float => Ty::Float,
             Type::Bool => Ty::Bool,
             Type::Unit => Ty::Unit,
@@ -692,7 +701,10 @@ fn has_param(ty: &Type) -> bool {
 /// How a boxed type's field is held, given the numbers the boxed types will have.
 fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type) -> Ty {
     match ty {
-        Type::Int | Type::Sized(_) => Ty::Int,
+        Type::Int => Ty::Int,
+        Type::Sized(fennec_check::Num::U64) => Ty::U64,
+        Type::Sized(fennec_check::Num::F32) => Ty::F32,
+        Type::Sized(_) => Ty::Int,
         Type::Float => Ty::Float,
         Type::Bool => Ty::Bool,
         Type::Str => Ty::Str,

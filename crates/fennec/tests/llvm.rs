@@ -2350,8 +2350,56 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A `u64` natively is unsigned all the way up: arithmetic, comparisons, shifts and `~` on its
+/// 64 bits. An `f32` is rounded to 32 bits after each operation, and prints as the shortest text
+/// that reads back as the same `f32`. Both go in structs, lists, f-strings with a format, `str`,
+/// and conversions either way.
+#[test]
+fn u64_and_f32_work_out_as_their_sizes_say() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "u64_and_f32",
+        "struct Pixel:
+    hash: u64
+    level: f32
+
+def mixed(text: str) -> u64:
+    mut hash = u64(7347990519673328018) * 2 + 1
+    for c in text:
+        hash = (hash ^ u64(c.code())) >> 1
+    hash
+
+def scaled(by: f32) -> f32:
+    by * 2.0
+
+def main(stdout: Stdout):
+    half: u64 = 9223372036854775807
+    top = half + half + 1
+    stdout.print(top, top // 10, top % 10, top > half, top >> 60, ~top, top / 2)
+    one: f32 = 1.0
+    third = one / 3.0
+    stdout.print(third, float(third), scaled(third), third * 3.0 == 1.0, -third, f32(16777217))
+    p = Pixel(hash=top - 5, level=third)
+    stdout.print(p, f\"{p.hash} {p.level:.3f} {p.hash:,} {p.level:.0f}\", [p.hash, u64(5)], [third, f32(2)])
+    stdout.print(str(top), str(third), int(f32(2.75)), float(top), u8(u64(200)), mixed(\"hi\"))
+",
+    )?;
+    assert_eq!(
+        printed,
+        "18446744073709551615 1844674407370955161 5 True 15 0 9.223372036854776e+18\n\
+         0.33333334 0.3333333432674408 0.6666667 True -0.33333334 16777216.0\n\
+         Pixel(hash=18446744073709551610, level=0.33333334) 18446744073709551610 0.333 \
+         18,446,744,073,709,551,610 0 [18446744073709551610, 5] [0.33333334, 2.0]\n\
+         18446744073709551615 0.33333334 2 1.8446744073709552e+19 200 3673995259836664039\n"
+    );
+    Ok(())
+}
+
 /// What doesn't fit a size stops the program, saying which size and what it holds: arithmetic
-/// past either end, a negation, the one division that grows, and a conversion that doesn't fit.
+/// past either end, a negation, the one division that grows, and a conversion that doesn't fit,
+/// a `u64` too big for an `int` among them.
 #[test]
 fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
     if !ready() {
@@ -2372,6 +2420,21 @@ fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
         (
             "n = -1\n    stdout.print(u32(n))",
             "error: it doesn't fit in u32, which holds 0 to 4294967295: -1".to_owned(),
+        ),
+        ("z: u64 = 0\n    stdout.print(z - 1)", overflow("a u64", "0 to 18446744073709551615")),
+        (
+            "h: u64 = 9223372036854775807\n    stdout.print(h * 3)",
+            overflow("a u64", "0 to 18446744073709551615"),
+        ),
+        (
+            "n = -1\n    stdout.print(u64(n))",
+            "error: it doesn't fit in u64, which holds 0 to 18446744073709551615: -1".to_owned(),
+        ),
+        (
+            "h: u64 = 9223372036854775807\n    stdout.print(int(h + 1))",
+            "error: it doesn't fit in int, which holds -9223372036854775808 to 9223372036854775807: \
+             9223372036854775808"
+                .to_owned(),
         ),
     ]
     .into_iter()

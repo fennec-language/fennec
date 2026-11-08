@@ -2893,7 +2893,7 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
     // A connection's or server's method runs in the runtime too.
     capability
         // `u8(x)` stops the program when `x` doesn't fit.
-        || fennec_check::Num::named(name).is_some()
+        || fennec_check::Num::named(name).is_some_and(|num| !num.is_float())
         || is_socket_method(name)
         || name.starts_with("crypto.")
         || name.starts_with("compress.")

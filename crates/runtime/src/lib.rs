@@ -12,7 +12,7 @@
 use fennec_interp::embed::guarded::rollback;
 use fennec_interp::embed::{
     aot, bytes, capabilities, channels, checks, cleanup, dicts, eval, guarded, heap, io, lists, notes,
-    numbers, objects, parallel, regex, serve, strings, temps, text, threads,
+    numbers, parallel, regex, serve, strings, temps, text, threads,
 };
 
 /// The build of Fennec this library is from, after a marker, which `fennec` reads out of the

@@ -4,7 +4,7 @@
 fn first_error(body: &str) -> Option<(String, Option<String>)> {
     let source = format!("def main(stdout: Stdout):\n    {body}\n");
     let module = fennec_syntax::parse(&source).ok()?;
-    let diagnostic = fennec_interp::run(&module, &mut Vec::new()).err()?;
+    let diagnostic = fennec_check::check(&module).err()?.into_iter().next()?;
     Some((diagnostic.message, diagnostic.help))
 }
 

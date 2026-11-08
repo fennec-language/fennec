@@ -1,6 +1,4 @@
-//! Direct operations on objects: reading fields, operators, indexing, telling types apart for
-//! method calls, and changing a part of a name in place. Each is one call, with no syntax to
-//! build or walk.
+//! The numbers native code passes for operators.
 
 use fennec_syntax::BinOp;
 

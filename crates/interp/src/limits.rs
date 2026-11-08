@@ -8,9 +8,8 @@
 
 use std::rc::Rc;
 
-use fennec_syntax::{Diagnostic, Span};
+use fennec_syntax::Diagnostic;
 
-use crate::interp::Interp;
 use crate::stdlib::fs::path_text;
 use crate::value::{Capability, Value};
 
@@ -76,42 +75,6 @@ fn with_links_followed(path: &str) -> String {
 /// Whether `path` is `folder` or inside it, both absolute.
 fn inside(path: &str, folder: &str) -> bool {
     path == folder || folder == "/" || path.strip_prefix(folder).is_some_and(|rest| rest.starts_with('/'))
-}
-
-impl Interp<'_> {
-    pub(crate) fn limited_method(
-        &mut self,
-        limited: &Rc<Limited>,
-        method: &str,
-        args: &[Value],
-        span: Span,
-    ) -> Result<Value, Diagnostic> {
-        narrowed(limited, method, args, &mut |capability, method, args| {
-            // A test's capabilities are fakes, narrowed like any others.
-            if let Some(world) = self.world.as_mut()
-                && let Some(done) = world.method(capability, method, args, span)
-            {
-                return done;
-            }
-            match capability {
-                Capability::Process => self.process_method(method, args, span),
-                Capability::Fs => crate::stdlib::fs::fs_method(method, args, span),
-                other => self.call_capability(other, method, args, span),
-            }
-        })
-    }
-
-    /// A method of a capability that `only` doesn't narrow.
-    fn call_capability(
-        &mut self,
-        capability: Capability,
-        method: &str,
-        args: &[Value],
-        span: Span,
-    ) -> Result<Value, Diagnostic> {
-        let args = args.iter().map(|value| crate::call::CallArg::plain(value.clone(), span)).collect();
-        self.read_method(&Value::Capability(capability), method, args, span)
-    }
 }
 
 /// Runs a method of a whole capability.

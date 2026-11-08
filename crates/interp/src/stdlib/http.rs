@@ -8,7 +8,6 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-#[cfg(not(target_arch = "wasm32"))]
 use super::net::SecureStream;
 use super::net::{Failure, TlsServer};
 
@@ -282,7 +281,6 @@ static WITH_TLS: OnceLock<WithTls> = OnceLock::new();
 
 /// Says TLS is wanted: compiled code that makes a request calls this first, and so does the
 /// `fennec` command, for the interpreter.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn use_tls() {
     WITH_TLS.get_or_init(|| tls::wrap);
     RAW_TLS.get_or_init(|| tls::raw);
@@ -291,15 +289,12 @@ pub fn use_tls() {
 
 /// A raw connection with TLS over it, as `net.connect(host, port, tls=True)` makes: the TCP
 /// connection, its host's name, and how long the handshake may take.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) type RawTls = fn(TcpStream, &str, Duration) -> Result<Box<dyn SecureStream>, Failure>;
 
-#[cfg(not(target_arch = "wasm32"))]
 static RAW_TLS: OnceLock<RawTls> = OnceLock::new();
 
 /// Puts TLS over a raw connection, with its handshake done, checking the certificate against what
 /// the system trusts: or says why it can't be.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn raw_secured(
     tcp: TcpStream,
     host: &str,
@@ -312,25 +307,16 @@ pub(crate) fn raw_secured(
 }
 
 /// What a server's certificate chain and private key, as PEM text, make: `net.listen`'s TLS.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) type ServerTlsFrom = fn(&str, &str) -> Result<Arc<dyn TlsServer>, Failure>;
 
-#[cfg(not(target_arch = "wasm32"))]
 static SERVER_TLS: OnceLock<ServerTlsFrom> = OnceLock::new();
 
 /// A server's TLS from its certificate chain and private key, or why there can't be one.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn server_tls(chain: &str, key: &str) -> Result<Arc<dyn TlsServer>, Failure> {
     let Some(server) = SERVER_TLS.get() else {
         return Err(Failure::Tls("this program was built without TLS: build it with LLVM".to_owned()));
     };
     server(chain, key)
-}
-
-/// A server's TLS, which the playground has no network for.
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn server_tls(_chain: &str, _key: &str) -> Result<Arc<dyn TlsServer>, Failure> {
-    Err(Failure::Tls("the playground has no network".to_owned()))
 }
 
 /// Puts TLS over a connection, or says why it can't be.
@@ -544,7 +530,6 @@ fn failure_of(error: &std::io::Error, timeout: Duration) -> Failure {
 
 /// TLS, which always checks certificates, with what the operating system trusts. The playground
 /// has no network, so it has no TLS either.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod tls {
     use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
     use std::net::TcpStream;

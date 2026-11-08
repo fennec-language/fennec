@@ -3,30 +3,7 @@
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Module, no_constants};
-use crate::call::CallArg;
-use crate::collections::plain;
-use crate::interp::Interp;
 use crate::value::Value;
-
-pub(crate) const MODULE: Module = Module {
-    functions: &[
-        "unicode.casefold",
-        "unicode.category",
-        "unicode.nfc",
-        "unicode.nfd",
-        "unicode.nfkc",
-        "unicode.nfkd",
-        "unicode.version",
-    ],
-    call,
-    constant: no_constants,
-    methods: &[],
-};
-
-fn call(_: &mut Interp<'_>, name: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
-    run(name, &plain(args, name, span)?, span)
-}
 
 /// One of these functions, which need nothing of the interpreter.
 pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic> {

@@ -426,27 +426,6 @@ fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, 
     Ok(resolved(module, checked))
 }
 
-/// What a checked program uses that the interpreter can't run: a value of any sized number type,
-/// which it would hold as an `int` or a `float`, missing where one overflows. Native code runs them.
-#[must_use]
-pub fn interpreter_refuses(signatures: &Signatures) -> Option<Diagnostic> {
-    fn holds(ty: &Type) -> bool {
-        matches!(ty, Type::Sized(_)) || ty.children().into_iter().any(holds)
-    }
-    let found = signatures.types.functions.values().flat_map(|body| &body.exprs);
-    let ((start, end), ty) = found
-        // The standard library's own code, as the sized numbers' functions, isn't the program's.
-        // A std `with` source written in where it's used keeps std's spans too, so a sized value
-        // only inside one would pass here; none has one today.
-        .filter(|((start, end), ty)| !Span { start: *start, end: *end }.in_prelude() && holds(ty))
-        .min_by_key(|((start, end), _)| (*start, *end))?;
-    let span = Span { start: *start, end: *end };
-    Some(
-        Diagnostic::new(format!("the interpreter can't run sized numbers like {ty}"), span)
-            .with_help("build it with `fennec build`, or run it with `fennec run`, which builds it natively"),
-    )
-}
-
 /// A call the checker sent to a standard library function, like `sum` of a list of floats to
 /// `math.fixed_sum`, needs that function's module where it runs, though the program may never have
 /// imported it: it's imported under a name of its own, which nothing written can reach or clash

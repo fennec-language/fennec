@@ -8,37 +8,7 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Module, no_constants, no_functions};
-use crate::interp::Interp;
-use crate::methods::no_method;
-use crate::value::{Capability, Value};
-
-pub(crate) const MODULE: Module = Module { functions: &[], call: no_functions, constant: no_constants, methods: &[] };
-
-impl Interp<'_> {
-    pub(crate) fn process_method(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
-        // A test's fake `Process` is `TestWorld::process`.
-        match (method, args) {
-            (run, _) if run == "run" || run.starts_with("run.") => {
-                let (program, arguments, options) = run_of(run, args, span)?;
-                self.start_program(&program, &arguments, &options)
-            }
-            ("only", [Value::Str(program)]) => Ok(crate::limits::Limited::to(Capability::Process, vec![Rc::clone(program)])),
-            ("ran", []) => Ok(Value::list(Vec::new())),
-            ("script", _) => Err(wrong(method, span)),
-            _ => Err(no_method(&Value::Capability(Capability::Process), method, span)),
-        }
-    }
-
-    /// Runs `program` and waits for it, keeping what it writes.
-    fn start_program(&mut self, program: &str, arguments: &[String], options: &Options) -> Result<Value, Diagnostic> {
-        // A prompt this program printed shows before the other program starts.
-        self.flush()?;
-        Ok(run_program(program, arguments, options))
-    }
-
-
-}
+use crate::value::Value;
 
 /// What `run` was given besides the program and its arguments: what the program reads from its
 /// standard input, the folder it runs in, and variables it gets on top of this program's own.
@@ -47,21 +17,6 @@ pub(crate) struct Options {
     input: Option<Vec<u8>>,
     cwd: Option<String>,
     env: Vec<(String, String)>,
-}
-
-/// `process.run`'s named arguments, moved onto its name in the order of their names, with their
-/// values after the plain ones: `run(…, input=a, cwd=b)` is `run.cwd.input` given `…, b, a`.
-pub(crate) fn options_on_name(method: &str, args: Vec<crate::call::CallArg>) -> (String, Vec<crate::call::CallArg>) {
-    let (mut named, mut plain): (Vec<_>, Vec<_>) = args.into_iter().partition(|arg| arg.name.is_some());
-    named.sort_by(|first, second| first.name.cmp(&second.name));
-    let mut name = method.to_owned();
-    for arg in &mut named {
-        name.push('.');
-        name.push_str(arg.name.as_deref().unwrap_or_default());
-        arg.name = None;
-    }
-    plain.extend(named);
-    (name, plain)
 }
 
 /// The words of a `process.run(t"...")`: its text split at spaces, with each value part of the
@@ -96,7 +51,11 @@ pub(crate) fn words_of(template: &Value) -> Option<Vec<String>> {
 
 /// The program, its arguments and the options of a call to `run`, named as `options_on_name`
 /// names it.
-pub(crate) fn run_of(method: &str, args: &[Value], span: Span) -> Result<(String, Vec<String>, Options), Diagnostic> {
+pub(crate) fn run_of(
+    method: &str,
+    args: &[Value],
+    span: Span,
+) -> Result<(String, Vec<String>, Options), Diagnostic> {
     let names: Vec<&str> = method.split('.').skip(1).collect();
     let (plain, given) = args.split_at(args.len().saturating_sub(names.len()));
     let (program, arguments) = match plain {
@@ -123,12 +82,16 @@ pub(crate) fn run_of(method: &str, args: &[Value], span: Span) -> Result<(String
             ("input", Value::Str(text)) => options.input = Some(text.as_bytes().to_vec()),
             ("input", Value::Bytes(data)) => options.input = Some(data.to_vec()),
             ("cwd", folder) => {
-                let Value::Str(folder) = crate::stdlib::fs::path_text(folder) else { return Err(wrong("run", span)) };
+                let Value::Str(folder) = crate::stdlib::fs::path_text(folder) else {
+                    return Err(wrong("run", span));
+                };
                 options.cwd = Some(folder.to_string());
             }
             ("env", Value::Dict(pairs)) => {
                 for (key, value) in pairs.iter() {
-                    let (Value::Str(key), Value::Str(value)) = (key, value) else { return Err(wrong("run", span)) };
+                    let (Value::Str(key), Value::Str(value)) = (key, value) else {
+                        return Err(wrong("run", span));
+                    };
                     options.env.push((key.to_string(), value.to_string()));
                 }
             }

@@ -126,7 +126,6 @@ pub mod threads;
 use std::collections::HashMap;
 
 use crate::format;
-use crate::place::Place;
 use crate::value::{Capability, Value};
 
 pub use heap::{Counts, count_allocations};
@@ -384,12 +383,8 @@ struct State {
     /// The inputs of the next expression or statement native code hands over.
     inputs: Vec<Value>,
     /// Each name's number in the name table, for telling types apart.
+    #[cfg(any(test, feature = "threads"))]
     name_ids: HashMap<String, i64>,
-    /// The path `objects::put` changes, built a step at a time.
-    path: Option<Place>,
-    /// A `return`, or a failure `?` or `fail` passes up, from code the interpreter ran,
-    /// which native code must now carry out.
-    leaving: Option<crate::exec::Flow>,
     heap: heap::Heap,
     /// The block of each plain capability, by its kind, once it's been asked for.
     capabilities: Vec<i64>,
@@ -471,6 +466,7 @@ pub fn start(mut tables: Tables, inputs: crate::Inputs) {
         PROGRAM_WRITES.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     OUTPUT.set(Some(output.clone()));
+    #[cfg(any(test, feature = "threads"))]
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
     set_failed(0);
     STATE.set(Some(State {
@@ -478,9 +474,8 @@ pub fn start(mut tables: Tables, inputs: crate::Inputs) {
         regexes: crate::stdlib::re::Regexes::default(),
         temps: Vec::new(),
         inputs: Vec::new(),
-        leaving: None,
+        #[cfg(any(test, feature = "threads"))]
         name_ids,
-        path: None,
         heap: heap::Heap::new(std::mem::take(&mut tables.statics)).planned(&tables.shapes, &tables.elements),
         capabilities: Vec::new(),
         world: None,
@@ -666,10 +661,6 @@ impl State {
             .ok()
             .and_then(|at| self.temps.get_mut(at))
             .map_or(Value::Unit, |slot| std::mem::replace(slot, Value::Unit))
-    }
-
-    fn name(&self, id: i64) -> String {
-        usize::try_from(id).ok().and_then(|id| self.tables.names.get(id)).cloned().unwrap_or_default()
     }
 }
 
@@ -866,7 +857,7 @@ pub mod temps {
     pub extern "C" fn err(error: i64, start: i64, end: i64) -> i64 {
         attempt(|state: &mut State| {
             let error = state.take(error);
-            crate::exec::check_error(&error, span(start, end))?;
+            super::check_error(&error, span(start, end))?;
             Ok(state.push(Value::Err(std::rc::Rc::new(error))))
         })
     }
@@ -901,16 +892,14 @@ pub mod temps {
 
 /// Running the parts of a program that native code hands to the interpreter.
 pub mod eval {
-    use super::{State, Value, attempt, span, with};
-    use crate::call::at_call as repoint;
-    use crate::exec::Flow;
+    use super::{State, attempt, span, with};
     use fennec_syntax::Diagnostic;
 
     /// Reports a failure inside the standard library where the program called it.
     pub extern "C" fn at_call(start: i64, end: i64) {
         with(|state| {
             if let Some(failure) = state.failure.take() {
-                state.failure = Some(repoint(failure, span(start, end)));
+                state.failure = Some(super::at_failed_call(failure, span(start, end)));
             }
         });
     }
@@ -926,27 +915,6 @@ pub mod eval {
             let value = state.take(value);
             state.inputs.push(value);
         });
-    }
-
-    /// Whether the code the interpreter just ran is leaving the function: 0 when it isn't,
-    /// 1 for a `return`, 2 for a failure passing up.
-    pub extern "C" fn leaving() -> i8 {
-        with(|state| match state.leaving {
-            None | Some(Flow::Normal(_) | Flow::Break | Flow::Continue | Flow::Yield(_)) => 0,
-            Some(Flow::Return(_)) => 1,
-            Some(Flow::PassUp(_)) => 2,
-        })
-    }
-
-    /// The value the function is leaving with.
-    pub extern "C" fn left() -> i64 {
-        with(|state| {
-            let value = match state.leaving.take() {
-                Some(Flow::Return(value) | Flow::PassUp(value) | Flow::Normal(value)) => value,
-                _ => Value::Unit,
-            };
-            state.push(value)
-        })
     }
 
     /// Fails because no case of a `match` matches its value.
@@ -1040,5 +1008,24 @@ pub mod io {
             };
             state.push(item.unwrap_or(Value::Unit))
         })
+    }
+}
+
+/// A failure inside the standard library is reported where the program called it.
+fn at_failed_call(mut diagnostic: Diagnostic, call: Span) -> Diagnostic {
+    if diagnostic.span.in_prelude() && !call.in_prelude() {
+        diagnostic.span = call;
+    }
+    diagnostic
+}
+
+/// Checks a value can be failed with: it must be declared with `error`.
+fn check_error(value: &Value, span: Span) -> Result<(), Diagnostic> {
+    match value {
+        Value::Instance(instance) if instance.is_error => Ok(()),
+        other => {
+            Err(Diagnostic::new(format!("`fail` needs an error, but this is a {}", other.type_name()), span)
+                .with_help("declare error types with `error`, like `error NotFound:`"))
+        }
     }
 }

@@ -806,18 +806,11 @@ mod tests {
     }
 
     #[test]
-    fn a_float_sum_has_the_same_bits_on_any_number_of_threads_and_in_the_interpreter() {
+    fn a_float_sum_has_the_same_bits_on_any_number_of_threads() {
         begin();
         let bits = harmonic_on(1);
         assert_eq!(harmonic_on(2), bits);
         assert_eq!(harmonic_on(8), bits);
-        let source = format!(
-            "def main(stdout: Stdout):\n    stdout.print(sum(1.0 / float(n + 1) for n in parallel(range({ITEMS}))))\n"
-        );
-        let mut out = Vec::new();
-        crate::run(&fennec_syntax::parse(&source).unwrap(), &mut out).unwrap();
-        let interpreted: f64 = String::from_utf8(out).unwrap().trim().parse().unwrap();
-        assert_eq!(interpreted.to_bits(), bits);
         // Summed left to right, it rounds differently: the tree is what makes them agree.
         let in_order: f64 = (0..ITEMS).map(|n| 1.0 / crate::ops::to_float(n + 1)).sum();
         assert_ne!(in_order.to_bits(), bits);

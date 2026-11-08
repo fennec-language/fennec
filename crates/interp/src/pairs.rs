@@ -116,18 +116,6 @@ impl Pairs {
         }
         self.items.push((key, value));
     }
-
-    /// Takes a key out, giving back its value.
-    pub(crate) fn remove(&mut self, key: &Value) -> Option<Value> {
-        let place = self.find(key)?;
-        *self.index.get_mut() = None;
-        Some(self.items.remove(place).1)
-    }
-
-    pub(crate) fn clear(&mut self) {
-        *self.index.get_mut() = None;
-        self.items.clear();
-    }
 }
 
 /// A hash that's the same for any two values `==` says are equal.

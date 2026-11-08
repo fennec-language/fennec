@@ -85,10 +85,11 @@ export struct Sender[T]:
     def send(self, message: T, timeout: Duration? = None) fails Closed | Timeout:
         sent(channel_send[T](self._channel, message, nanos_of(timeout)), timeout)?
 
-## How long to wait, in nanoseconds, as the runtime takes it: -1 for as long as it takes.
+## How long to wait, in nanoseconds, as the runtime takes it: -1 for as long as it takes. A
+## negative `timeout` has already run out, so it doesn't wait at all.
 def nanos_of(timeout: Duration?) -> int:
     if timeout is None: return -1
-    timeout.nanos
+    max(timeout.nanos, 0)
 
 ## What a send's answer means: 0 sent, 1 closed, 2 timed out.
 def sent(answer: int, timeout: Duration?) fails Closed | Timeout:

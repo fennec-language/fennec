@@ -90,9 +90,20 @@ impl Channel {
     }
 }
 
-/// `fennec_channel_new(size)`: an open channel holding at most `size` messages, at least one.
+/// A channel's size, or the failure of one that couldn't hold a message.
+fn size_of(size: i64) -> Option<usize> {
+    let held = usize::try_from(size).ok().filter(|size| *size > 0);
+    if held.is_none() {
+        let message = format!("a channel has to hold at least 1 message, but its size is {size}");
+        super::fail_with(Diagnostic::new(message, Span::default()));
+    }
+    held
+}
+
+/// `fennec_channel_new(size)`: an open channel holding at most `size` messages. A size below 1
+/// fails.
 pub extern "C" fn channel_new(size: i64) -> i64 {
-    let size = usize::try_from(size).unwrap_or(1).max(1);
+    let Some(size) = size_of(size) else { return 0 };
     let channel = Channel {
         size,
         replay: crate::replay::place("c"),

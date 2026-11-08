@@ -96,7 +96,7 @@ for at, name in enumerate(names): ...
 for at, ref score in enumerate(scores): ...
 ```
 
-- `enumerate` takes anything you can loop over and gives `(index, value)`. Built. `for i, ref x in enumerate(xs)` needs `xs` to have positions, `len` and `[]`, and isn't built yet.
+- `enumerate` takes anything you can loop over and gives `(index, value)`. Built. `for i, ref x in enumerate(xs)` needs `xs` to have positions, `len` and `[]`, as `for ref` does. Built.
 - `ref` over a generator is a compile error, since its items are made one at a time and aren't anywhere to change. Built.
 - `items()` is for keyed things: a dict, a `Table`, and your own types that give `len`, `[]` and `key(i)`. Built for dicts and `Table`s.
 - Looping over a dict gives its keys, as in Python, and `keys()`, `values()` and `items()` stay. Built.

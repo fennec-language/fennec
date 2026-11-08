@@ -371,6 +371,7 @@ impl FnCx<'_> {
             _ => &[],
         };
         let plain = self.builtin_args(name, args, named, &method.receives, span);
+        self.no_secret_printed(ty, name, &plain);
         if (name == "write" && *ty == Type::named("Connection")
             || name == "send_to" && *ty == Type::named("UdpSocket"))
             && let [(data, at), ..] = plain.as_slice()
@@ -565,6 +566,11 @@ impl FnCx<'_> {
         }
         if name == "sum" {
             return self.sum(args, &plain, span);
+        }
+        if name == "str" {
+            for (given, at) in &plain {
+                self.not_a_secret(given, "`str` of this", *at);
+            }
         }
         let result = self.builtin_result(name, &plain, span);
         let keyed = args.iter().any(|arg| arg.name.as_deref() == Some("key"));

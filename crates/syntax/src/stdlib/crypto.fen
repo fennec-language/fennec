@@ -51,3 +51,28 @@ def sha256_of_bytes_list(chunks: list[bytes]) -> str:
     for chunk in chunks:
         crypto._add(handle, chunk)
     crypto._end(handle)
+
+## Something that has to stay secret, like a password, a token or a key: `Secret[str]` or
+## `Secret[bytes]`. Printing one, putting it in an f-string, making text of it with `str()`, and
+## saving it are compile errors, and so is showing anything that holds one. What it holds comes out
+## only through `expose_secret()`, so searching for that name finds every place a secret is read.
+##
+## ```fennec
+## token = Secret.of(env.get("API_TOKEN") else "")
+## headers = {"authorization": f"Bearer {token.expose_secret()}"}
+## ```
+export struct Secret[T]:
+    _value: T
+
+    ## A secret holding `value`.
+    def of(value: T) -> Secret[T]:
+        Secret(_value=value)
+
+    ## What it holds, to use where it's needed, like a request's header. The name says a secret
+    ## is being read, here and nowhere else.
+    def expose_secret(self) -> T:
+        self._value
+
+    ## However it's printed, as through a generic function's `T`, it shows only that it's there.
+    def str(self, ref out: StrWriter):
+        out.write("Secret(hidden)")

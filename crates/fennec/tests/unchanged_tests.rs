@@ -506,6 +506,37 @@ fn failing_tests_say_why_through_llvm_as_on_the_jit_and_run_once() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A property test that fails through LLVM makes what it failed for as simple as it can there, as
+/// the interpreter does, and says the same: ints, words, lists, bools, two inputs at once, and a
+/// test with capabilities, which gets new fakes for each attempt.
+#[test]
+fn failing_property_tests_shrink_through_llvm_as_on_the_jit() {
+    if !llvm_here() {
+        return;
+    }
+    let dir = scratch("llvm-shrinking").unwrap();
+    let text = "test \"small ints\" for n: int:\n    assert n < 10\n\n\
+                test \"negative ints\" for n: int:\n    assert n > -7\n\n\
+                test \"short words\" for word: str:\n    assert word.len() < 3\n\n\
+                test \"short lists\" for items: list[int]:\n    assert items.len() < 2\n\n\
+                test \"flags\" for flag: bool:\n    assert not flag\n\n\
+                test \"two at once\" for a: int, b: int:\n    assert a + b < 50\n\n\
+                test \"passes\" for n: int:\n    assert n == n\n\n\
+                test \"files\" (fs: Fs) for n: int:\n    assert not fs.exists(\"seen\")\n    _ = fs.write_text(\"seen\", \"1\")\n    assert n < 100\n";
+    std::fs::write(dir.join("game.fen"), text).unwrap();
+    let jit = run_tests(&dir, &["--all", "--jit"]).unwrap();
+    let llvm = run_tests(&dir, &["--all", "--verbose"]).unwrap();
+    let said = String::from_utf8_lossy(&llvm.stderr);
+    assert!(said.contains("note: 8 of 8 tests ran through LLVM"), "{said}");
+    assert!(said.contains("it failed for a = 0, b = 50"), "{said}");
+    let shown: String = said.split_inclusive('\n').filter(|line| !line.starts_with("note: ")).collect();
+    assert_eq!(shown, String::from_utf8_lossy(&jit.stderr));
+    let printed = stdout(&llvm);
+    let failed: String = printed.split_inclusive('\n').filter(|line| !line.starts_with("  ✓")).collect();
+    assert_eq!(failed, stdout(&jit));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn a_test_llvm_cannot_build_runs_another_way() {
     if !llvm_here() {

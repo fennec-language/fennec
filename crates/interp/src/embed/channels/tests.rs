@@ -234,3 +234,149 @@ fn a_parked_receive_times_out_and_a_stop_cuts_one_short() {
     assert_eq!(STOPPED.load(Ordering::SeqCst), 1, "the stop cut the wait short");
     finish();
 }
+
+fn failure() -> Option<String> {
+    with(|state| state.failure.take().map(|failure| failure.message))
+}
+
+#[test]
+fn every_listener_gets_every_message_sent_after_it_started_listening() {
+    begin();
+    let channel = channel_new_every(8);
+    channel_send(channel, 1, 0, FOREVER);
+    let (first, second) = (channel_listen(channel, 0), channel_listen(channel, 0));
+    assert_ne!(first, second);
+    for word in [2, 3] {
+        assert_eq!(channel_send(channel, word, 0, FOREVER), DONE);
+    }
+    for listener in [first, second] {
+        assert_eq!(receive(listener, FOREVER), (DONE, 2));
+        assert_eq!(receive(listener, FOREVER), (DONE, 3));
+        assert_eq!(receive(listener, MILLISECOND), (TIMED_OUT, 0));
+    }
+    channel_free(channel);
+    finish();
+}
+
+#[test]
+fn sending_never_waits_and_a_listener_that_falls_behind_fails_loudly() {
+    begin();
+    let channel = channel_new_every(2);
+    let behind = channel_listen(channel, 0);
+    for word in 1..=5 {
+        assert_eq!(channel_send(channel, word, 0, FOREVER), DONE, "full, it still doesn't wait");
+    }
+    assert!(!crate::embed::failed());
+    receive(behind, FOREVER);
+    assert!(crate::embed::failed());
+    let said = failure().unwrap_or_default();
+    assert!(said.contains("missing 3 messages") && said.contains("when_behind=.DropOldest"), "{said}");
+    crate::embed::clear_failure();
+    channel_free(channel);
+    finish();
+}
+
+#[test]
+fn a_listener_that_drops_the_oldest_goes_on_from_what_is_kept() {
+    begin();
+    let channel = channel_new_every(2);
+    let skipping = channel_listen(channel, 1);
+    for word in 1..=5 {
+        channel_send(channel, word, 0, FOREVER);
+    }
+    assert_eq!(receive(skipping, FOREVER), (DONE, 4));
+    assert_eq!(receive(skipping, FOREVER), (DONE, 5));
+    assert!(!crate::embed::failed());
+    channel_free(channel);
+    finish();
+}
+
+#[test]
+fn each_listener_gets_a_copy_of_its_own_of_a_message_holding_blocks() {
+    begin();
+    let before = blocks();
+    let channel = channel_new_every(4);
+    let (first, second) = (channel_listen(channel, 0), channel_listen(channel, 0));
+    let sent = list(&["for", "every listener"]);
+    channel_send(channel, sent, 1, FOREVER);
+    heap::free(sent);
+    let (_, one) = receive(first, FOREVER);
+    let (_, other) = receive(second, FOREVER);
+    assert_ne!(one, other);
+    assert_eq!(lines(one), ["for", "every listener"]);
+    assert_eq!(lines(other), ["for", "every listener"]);
+    for received in [one, other] {
+        with(|state| heap::release(state, u64::try_from(received).unwrap()));
+    }
+    channel_free(channel);
+    assert_eq!(blocks(), before, "nothing's left behind, the copy the channel kept included");
+    finish();
+}
+
+#[test]
+fn a_closed_channel_to_every_lets_each_listener_drain_then_says_so() {
+    begin();
+    let channel = channel_new_every(4);
+    let listener = channel_listen(channel, 0);
+    channel_send(channel, 7, 0, FOREVER);
+    channel_close(channel);
+    assert_eq!(channel_send(channel, 8, 0, FOREVER), CLOSED);
+    assert_eq!(receive(listener, FOREVER), (DONE, 7));
+    assert_eq!(receive(listener, FOREVER), (CLOSED, 0));
+    channel_free(channel);
+    assert_eq!(receive(listener, FOREVER), (CLOSED, 0), "a freed channel's listeners act as closed");
+    finish();
+}
+
+#[test]
+fn listening_to_a_work_queue_is_receiving_from_it() {
+    begin();
+    let channel = channel_new(2);
+    assert_eq!(channel_listen(channel, 0), channel);
+    channel_free(channel);
+    finish();
+}
+
+static LISTENERS: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
+static HEARD: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
+
+extern "C" fn first_listens(_env: i64, _thread: i64) -> i64 {
+    listens(0)
+}
+
+extern "C" fn second_listens(_env: i64, _thread: i64) -> i64 {
+    listens(1)
+}
+
+/// Adds up all it hears, parked while it waits, until the channel's closed.
+fn listens(which: usize) -> i64 {
+    let listener = LISTENERS[which].load(Ordering::SeqCst);
+    let mut value = 0;
+    while channel_receive(listener, PATIENCE, &mut value) == DONE {
+        HEARD[which].fetch_add(value, Ordering::SeqCst);
+    }
+    0
+}
+
+#[test]
+fn two_tasks_listening_each_hear_everything_sent() {
+    begin();
+    let channel = channel_new_every(128);
+    for (which, slot) in LISTENERS.iter().enumerate() {
+        slot.store(channel_listen(channel, 0), Ordering::SeqCst);
+        HEARD[which].store(0, Ordering::SeqCst);
+    }
+    let tasks = [launch(first_listens), launch(second_listens)];
+    for word in 1..=100 {
+        assert_eq!(channel_send(channel, word, 0, FOREVER), DONE);
+    }
+    channel_close(channel);
+    for task in tasks {
+        assert_eq!(end(task), 0);
+    }
+    channel_free(channel);
+    for heard in &HEARD {
+        assert_eq!(heard.load(Ordering::SeqCst), (1..=100).sum::<i64>());
+    }
+    finish();
+}

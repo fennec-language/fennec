@@ -173,6 +173,38 @@ pub fn test_ran(flag: i64) {
     RAN.with_borrow_mut(|ran| ran.push(flag));
 }
 
+thread_local! {
+    /// Whether an attempt of a property test's shrinking failed since it was last asked.
+    static ATTEMPT_FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// What a failed property test's simplest failing input was, shown as the interpreter shows it.
+    static FAILED_FOR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// `fennec_aot_attempt_failed()`: an attempt of a property test's shrinking failed, so its failure
+/// is cleared, as one test's is before the next, and noted for `attempt_passed`.
+#[cfg(not(feature = "lean"))]
+pub fn attempt_failed() {
+    let _ = super::next_test();
+    ATTEMPT_FAILED.set(true);
+}
+
+/// `fennec_aot_attempt_passed()`: whether the attempt just made passed, starting the next afresh.
+pub fn attempt_passed() -> i8 {
+    i8::from(!ATTEMPT_FAILED.replace(false))
+}
+
+/// `fennec_aot_failed_for(text)`: what the property test failing next was given, for its report.
+pub fn failed_for(text: i64) {
+    let given = with(|state: &mut State| {
+        u64::try_from(text)
+            .ok()
+            .and_then(|address| state.heap.block(address))
+            .filter(|block| heap::is_text(state, block))
+            .map(heap::block_text)
+    });
+    FAILED_FOR.set(given);
+}
+
 /// Starts a test: one that takes capabilities gets fakes in a world of its own, with nothing left
 /// by the one before, as `run_case` gives the interpreter's.
 #[cfg(not(feature = "lean"))]
@@ -188,7 +220,19 @@ pub fn test_world(fakes: i64) {
 #[cfg(not(feature = "lean"))]
 pub fn test_done(number: i64) {
     let ran: Vec<String> = RAN.take().iter().map(ToString::to_string).collect();
-    let line = test_line(number, super::next_test().as_ref(), &ran);
+    let failure = super::next_test().map(|failure| match FAILED_FOR.take() {
+        // What a property test that failed was given, once shrinking found the simplest.
+        Some(given) => {
+            let help = match &failure.help {
+                Some(help) => format!("it failed for {given}; {help}"),
+                None => format!("it failed for {given}"),
+            };
+            fennec_syntax::Diagnostic { help: Some(help), ..failure }
+        }
+        None => failure,
+    });
+    FAILED_FOR.take();
+    let line = test_line(number, failure.as_ref(), &ran);
     let mut out = std::io::stdout();
     let _ = writeln!(out, "{line}").and_then(|()| out.flush());
 }

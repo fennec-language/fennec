@@ -507,10 +507,6 @@ fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Res
 /// tuple, a dict, a list by `insert`, a closure, a struct, an optional and a comprehension.
 #[test]
 fn a_stored_value_keeps_what_it_held() -> std::io::Result<()> {
-/// An assignment goes left to right: the place written is the one named before the value runs,
-/// and `+=` adds to what was there before it, whatever the value changes by `ref`.
-#[test]
-fn an_assignment_goes_left_to_right() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -520,6 +516,17 @@ fn an_assignment_goes_left_to_right() -> std::io::Result<()> {
         "([1, 2], 1) [9, 2]\n{\"k\": [1, 2]} [9, 2]\n[[1, 2], [0]] [9, 2]\n3 [9, 2]\n{\"k\": [1, 2]} [9, 2]\n\
          Box(item=[1, 2]) [9, 2]\n[1, 2] [9, 2]\n{\"k\": [1, 2]} [1, 2] [9, 2]\n\
          (\"text that is long enough to live in a block\", 2) 44\n[[1, 2], [1, 2]] [9, 2]\n",
+    )
+}
+
+/// An assignment goes left to right: the place written is the one named before the value runs,
+/// and `+=` adds to what was there before it, whatever the value changes by `ref`.
+#[test]
+fn an_assignment_goes_left_to_right() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
         "assignment_order",
         "struct Total:
     v: int
@@ -2558,17 +2565,6 @@ def main(stdout: Stdout):
     Ok(())
 }
 
-/// `%` on floats is exact, however much bigger the left side is, with the sign of the right.
-#[test]
-fn a_float_remainder_is_exact() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    prints_in_both_builds(
-        "float_remainder",
-        "def number(x: float) -> float:\n    x\n\ndef main(stdout: Stdout):\n    stdout.print(number(1e17) % 3.0, number(5.5) % 0.1, number(-7.5) % 2.0, number(7.5) % -2.0)\n    stdout.print(number(6.0) % 3.0, number(1e300) % 7.0, number(0.3) % 0.1)\n",
-        "1.0 0.0999999999999997 0.5 -0.5\n0.0 1.0 0.09999999999999998\n",
-    )
 /// What a function does to a local through `ref` counts as a write. The proofs that take a bounds
 /// or an overflow check away can't rest on the local's value from before the call.
 const REF_WRITES: &str = "def neg(ref at: int):
@@ -2644,6 +2640,10 @@ fn a_write_through_ref_undoes_what_was_proved() -> std::io::Result<()> {
                 }
             }
         }
+    }
+    Ok(())
+}
+
 /// A division's check against 0 only goes when the divisor can't become 0 after what proved it.
 #[test]
 fn a_divisor_written_again_is_still_checked() -> std::io::Result<()> {
@@ -2671,6 +2671,8 @@ fn a_divisor_written_again_is_still_checked() -> std::io::Result<()> {
         );
     }
     Ok(())
+}
+
 /// A number written on the left of a `u64` or an `f32` is that size, so what's worked out is too:
 /// unsigned on all 64 bits, and rounded to 32.
 #[test]
@@ -2697,6 +2699,19 @@ def main(stdout: Stdout):
         dir,
         source,
         "0 100 5.421010862427522e-18 True False\n16777216.0 1677721.6 True 1.1920929e-07\n",
+    )
+}
+
+/// `%` on floats is exact, however much bigger the left side is, with the sign of the right.
+#[test]
+fn a_float_remainder_is_exact() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "float_remainder",
+        "def number(x: float) -> float:\n    x\n\ndef main(stdout: Stdout):\n    stdout.print(number(1e17) % 3.0, number(5.5) % 0.1, number(-7.5) % 2.0, number(7.5) % -2.0)\n    stdout.print(number(6.0) % 3.0, number(1e300) % 7.0, number(0.3) % 0.1)\n",
+        "1.0 0.0999999999999997 0.5 -0.5\n0.0 1.0 0.09999999999999998\n",
     )
 }
 

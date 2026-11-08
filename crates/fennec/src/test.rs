@@ -186,8 +186,10 @@ fn run_plan(
     let mut failed_through_llvm = Vec::new();
     let mut ran_through_llvm = HashMap::new();
     // Tests with real capabilities take what they're given, which only the interpreter does.
-    if !options.jit && options.run != Run::Real && crate::aot::llvm_ready() {
-        let through_llvm = crate::llvm_tests::run(&program.module, &wanted, &|name| graph.defines(name));
+    if !options.jit && crate::aot::llvm_ready() {
+        let real = options.run == Run::Real;
+        let through_llvm =
+            crate::llvm_tests::run(&program.module, &wanted, &|name| graph.defines(name), real);
         if options.verbose {
             say_how_llvm_went(&through_llvm, wanted.len());
         }

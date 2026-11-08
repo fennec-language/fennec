@@ -476,6 +476,110 @@ fn same_as_the_interpreter_in_both_builds(name: &str, source: &str) -> std::io::
     Ok(())
 }
 
+/// What a program prints, built in dev and `--release` both, is `wanted`.
+fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join(name));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            wanted,
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A value stored into another keeps what it held when a name it came from changes after: in a
+/// tuple, a dict, a list by `insert`, a closure, a struct, an optional and a comprehension.
+#[test]
+fn a_stored_value_keeps_what_it_held() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "stored_values_keep_theirs",
+        include_str!("fixtures/stored_values_keep_theirs.fen"),
+        "([1, 2], 1) [9, 2]\n{\"k\": [1, 2]} [9, 2]\n[[1, 2], [0]] [9, 2]\n3 [9, 2]\n{\"k\": [1, 2]} [9, 2]\n\
+         Box(item=[1, 2]) [9, 2]\n[1, 2] [9, 2]\n{\"k\": [1, 2]} [1, 2] [9, 2]\n\
+         (\"text that is long enough to live in a block\", 2) 44\n[[1, 2], [1, 2]] [9, 2]\n",
+    )
+}
+
+/// An assignment goes left to right: the place written is the one named before the value runs,
+/// and `+=` adds to what was there before it, whatever the value changes by `ref`.
+#[test]
+fn an_assignment_goes_left_to_right() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "assignment_order",
+        "struct Total:
+    v: int
+
+def inc(ref i: int) -> int:
+    i += 1
+    i * 10
+
+def text(ref k: str) -> int:
+    k = \"b\"
+    5
+
+def bump(ref t: Total) -> int:
+    t.v = 10
+    2
+
+def main(stdout: Stdout):
+    mut xs = [0, 0, 0]
+    mut i = 0
+    xs[i] = inc(ref i)
+    stdout.print(xs, i)
+
+    mut m = {\"a\": 1, \"b\": 2}
+    mut k = \"a\"
+    m[k] = text(ref k)
+    stdout.print(m, k)
+
+    mut a = [[0, 0], [0, 0]]
+    mut r = 0
+    a[r][r] = inc(ref r)
+    stdout.print(a, r)
+
+    mut t = Total(v=0)
+    t.v += bump(ref t)
+    stdout.print(t)
+
+    mut u = Total(v=0)
+    u.v = u.v + bump(ref u)
+    stdout.print(u)
+
+    mut ys = [1, 2]
+    mut j = 0
+    ys[j] += inc(ref j)
+    stdout.print(ys, j)
+
+    mut n = 1
+    n += inc(ref n)
+    stdout.print(n)
+",
+        "[10, 0, 0] 1\n{\"a\": 5, \"b\": 2} b\n[[10, 0], [0, 0]] 1\nTotal(v=2)\nTotal(v=2)\n[11, 2] 1\n21\n",
+    )
+}
+
 /// Each kind of local passed by `mut` and used again, with what could be remembered about it
 /// before the call: where an index points, a length, a read held across the change, a dict's
 /// entry, how far a string's been read, what a loop or a closure holds, a number known to fit.
@@ -2461,6 +2565,156 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// What a function does to a local through `ref` counts as a write. The proofs that take a bounds
+/// or an overflow check away can't rest on the local's value from before the call.
+const REF_WRITES: &str = "def neg(ref at: int):
+    at = -3
+
+def bump(ref x: int):
+    x = 9223372036854775807
+
+def drop(ref x: int):
+    x = -9223372036854775807 - 1
+
+def past_the_end(xs: list[int]) -> int:
+    mut at = 0
+    neg(ref at)
+    mut total = 0
+    while at + 2 <= xs.len():
+        total += xs[at] + xs[at + 1]
+        at += 2
+    total
+
+def after_a_guard(x0: int, b: int) -> int:
+    mut x = x0
+    if x < b:
+        bump(ref x)
+        return x + 1
+    0
+
+def down_after_a_guard(x0: int, b: int) -> int:
+    mut x = x0
+    if x > b:
+        drop(ref x)
+        return x - 1
+    0
+
+";
+
+#[test]
+fn a_write_through_ref_undoes_what_was_proved() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, call, wanted) in [
+        ("ref_negative_index", "past_the_end([1, 2, 3, 4])", Ok("15\n")),
+        ("ref_after_a_guard", "after_a_guard(1, b=5)", Err("error: this calculation overflows an int")),
+        (
+            "ref_down_after_a_guard",
+            "down_after_a_guard(5, b=1)",
+            Err("error: this calculation overflows an int"),
+        ),
+    ] {
+        let source = format!("{REF_WRITES}def main(stdout: Stdout):\n    stdout.print({call})\n");
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let dir = folder(name)?;
+            let program = dir.join(format!("{name}.fen"));
+            std::fs::write(&program, &source)?;
+            let output = dir.join(name);
+            let (from, to) = (program.to_string_lossy().into_owned(), output.to_string_lossy().into_owned());
+            let args: Vec<&str> =
+                ["build"].into_iter().chain(how.iter().copied()).chain([from.as_str(), "-o", &to]).collect();
+            let built = fennec(&args, &dir)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&output).output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            match wanted {
+                Ok(printed) => assert_eq!(String::from_utf8_lossy(&ran.stdout), printed, "{name} {how:?}"),
+                Err(said) => {
+                    assert!(!ran.status.success(), "{name} {how:?}");
+                    assert_eq!(
+                        String::from_utf8_lossy(&ran.stderr).lines().next(),
+                        Some(said),
+                        "{name} {how:?}"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A division's check against 0 only goes when the divisor can't become 0 after what proved it.
+#[test]
+fn a_divisor_written_again_is_still_checked() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def n() -> int:\n    7\n\ndef main(stdout: Stdout):\n    v = (n() % 5) + 1\n    mut d = float(v)\n    d = 0.0\n    stdout.print(1.0 / d)\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("divisor_written_again")?;
+        let program = dir.join("divides.fen");
+        std::fs::write(&program, source)?;
+        let output = dir.join("divides");
+        let (from, to) = (program.to_string_lossy().into_owned(), output.to_string_lossy().into_owned());
+        let args: Vec<&str> =
+            ["build"].into_iter().chain(how.iter().copied()).chain([from.as_str(), "-o", &to]).collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert!(!ran.status.success(), "{how:?}: {}", String::from_utf8_lossy(&ran.stdout));
+        assert!(
+            String::from_utf8_lossy(&ran.stderr).contains("division by zero"),
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// A number written on the left of a `u64` or an `f32` is that size, so what's worked out is too:
+/// unsigned on all 64 bits, and rounded to 32.
+#[test]
+fn a_number_on_the_left_takes_the_size_on_the_right() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = "literal_left_of_a_size";
+    let source = "def big() -> u64:
+    half: u64 = 9223372036854775807
+    half + half
+
+def large() -> f32:
+    f: f32 = 16777216.0
+    f
+
+def main(stdout: Stdout):
+    b = big()
+    stdout.print(100 // b, 100 % b, 100 / b, 100 < b, 100 == b)
+    f = large()
+    stdout.print(1.0 + f, 0.1 * f, 1.0 < f, 2.0 / f)
+";
+    prints_in_both_builds(
+        dir,
+        source,
+        "0 100 5.421010862427522e-18 True False\n16777216.0 1677721.6 True 1.1920929e-07\n",
+    )
+}
+
+/// `%` on floats is exact, however much bigger the left side is, with the sign of the right.
+#[test]
+fn a_float_remainder_is_exact() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "float_remainder",
+        "def number(x: float) -> float:\n    x\n\ndef main(stdout: Stdout):\n    stdout.print(number(1e17) % 3.0, number(5.5) % 0.1, number(-7.5) % 2.0, number(7.5) % -2.0)\n    stdout.print(number(6.0) % 3.0, number(1e300) % 7.0, number(0.3) % 0.1)\n",
+        "1.0 0.0999999999999997 0.5 -0.5\n0.0 1.0 0.09999999999999998\n",
+    )
+}
+
 /// What doesn't fit a size stops the program, saying which size and what it holds: arithmetic
 /// past either end, a negation, the one division that grows, and a conversion that doesn't fit,
 /// a `u64` too big for an `int` among them.
@@ -2486,6 +2740,23 @@ fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
             "error: it doesn't fit in u32, which holds 0 to 4294967295: -1".to_owned(),
         ),
         ("z: u64 = 0\n    stdout.print(z - 1)", overflow("a u64", "0 to 18446744073709551615")),
+        ("stdout.print(5 - u64(6))", overflow("a u64", "0 to 18446744073709551615")),
+        (
+            "h: u64 = 9223372036854775807\n    stdout.print(4 * h)",
+            overflow("a u64", "0 to 18446744073709551615"),
+        ),
+        (
+            "x: u8 = 200\n    n = 9\n    stdout.print(x >> n)",
+            "error: can't shift u8 by a count outside 0 to 7".to_owned(),
+        ),
+        (
+            "x: u8 = 16\n    n = 60\n    stdout.print(x << n)",
+            "error: can't shift u8 by a count outside 0 to 7".to_owned(),
+        ),
+        (
+            "x: i32 = 2\n    n = 63\n    stdout.print(x << n)",
+            "error: can't shift i32 by a count outside 0 to 31".to_owned(),
+        ),
         (
             "h: u64 = 9223372036854775807\n    stdout.print(h * 3)",
             overflow("a u64", "0 to 18446744073709551615"),
@@ -7657,6 +7928,37 @@ fn a_channel_of_no_size_fails_where_its_made() -> std::io::Result<()> {
     let said = String::from_utf8_lossy(&ran.stderr);
     assert!(said.contains("a channel has to hold at least 1 message, but its size is 0"), "{said}");
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "");
+    Ok(())
+}
+
+/// Each `with launch` in a function has its own `stop_after`, whatever another one was given.
+#[test]
+fn the_second_launch_in_a_function_keeps_its_stop_after() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("second_stop_after")?;
+    let program = dir.join("stops.fen");
+    std::fs::write(
+        &program,
+        "from std.concurrent import Crashed\n\ndef sleeper(clock: Clock, stdout: Stdout):\n    start = clock.time()\n    clock.sleep(3s)\n    stdout.print((clock.time() - start).nanos < 2_000_000_000)\n\ndef other(clock: Clock):\n    clock.sleep(10ms)\n\ndef main(clock: Clock, stdout: Stdout) fails Crashed:\n    with launch(() => other(clock))?:\n        with launch(() => sleeper(clock, stdout), stop_after=20ms)?:\n            pass\n    stdout.print(\"done\")\n",
+    )?;
+    let executable = dir.join("stops");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "True\ndone\n",
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
     Ok(())
 }
 

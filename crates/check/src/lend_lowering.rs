@@ -437,10 +437,11 @@ impl Lowering<'_> {
         if !given.is_empty() {
             retype(&mut written, &given);
             retype(&mut body, &given);
-            // Types are found by span, and each call gives the body types of its own, so each
-            // written-in copy of a generic source's text gets spans of its own.
-            moved_apart(&mut written, &mut body);
         }
+        // Types are found by span, and each call gives the body types of its own, as `None` for a
+        // parameter one call leaves out and another gives, so each written-in copy of a source's
+        // text gets spans of its own.
+        moved_apart(&mut written, &mut body);
         // The caller's name for what's lent: the source's own name for it, when it lends one,
         // so the block's changes are what the source's cleanup sees, or else a name of its own,
         // apart from the source's hidden ones.

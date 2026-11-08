@@ -331,6 +331,31 @@ fn private_method(ty: &Type, name: &str, span: Span) -> Option<Diagnostic> {
 }
 
 impl FnCx<'_> {
+    /// `process.run` takes a program and its arguments, or one template.
+    fn process_run_given(&mut self, given: &[(Type, Span)], span: Span) {
+        // A template with no values says nothing of what its values are, so this does.
+        let text_template = Type::Generic("Template".to_owned(), vec![Type::Str]);
+        let first = given.first().map(|(ty, _)| self.checker.settled(ty));
+        if matches!(&first, Some(Type::Generic(name, _)) if name == "Template")
+            && let [(ty, _)] = given
+        {
+            self.checker.fits(&text_template, ty);
+        }
+        let open = |ty: &Type| matches!(ty, Type::Unknown | Type::Var(_));
+        let fits = match (first.as_ref(), given.len()) {
+            (Some(Type::Str), 2) => true,
+            (Some(ty), 1) => matches!(ty, Type::Generic(name, _) if name == "Template") || open(ty),
+            (Some(ty), 2) => open(ty),
+            _ => false,
+        };
+        if !fits {
+            let message =
+                "`run` takes the program, then its arguments as a list, never one string a shell would split";
+            let help = "like `process.run(\"git\", [\"log\", \"--oneline\"])`, or `process.run(\"ls\", [])` for none, or a template, `process.run(t\"git log {name}\")`";
+            self.error(Diagnostic::new(message, span).with_help(help));
+        }
+    }
+
     /// Why a builtin method can't be called here, if it can't: it's private to the standard
     /// library, or it's for a test's own fakes and this isn't a test.
     fn refused_method(&self, ty: &Type, name: &str, span: Span) -> Option<Diagnostic> {
@@ -374,6 +399,9 @@ impl FnCx<'_> {
         };
         let plain = self.builtin_args(name, args, named, &method.receives, span);
         self.no_secret_printed(ty, name, &plain);
+        if *ty == Type::named("Process") && name == "run" {
+            self.process_run_given(&plain, span);
+        }
         if (name == "write" && *ty == Type::named("Connection")
             || name == "send_to" && *ty == Type::named("UdpSocket"))
             && let [(data, at), ..] = plain.as_slice()
@@ -384,11 +412,8 @@ impl FnCx<'_> {
                     .with_help("a connection sends `bytes`, or a `str` as its UTF-8 bytes"),
             );
         }
-        if name == "run" && *ty == Type::named("Process") && plain.len() != 2 {
-            let message =
-                "`run` takes the program, then its arguments as a list, never one string a shell would split";
-            let help = "like `process.run(\"git\", [\"log\", \"--oneline\"])`, or `process.run(\"ls\", [])` for none";
-            self.error(Diagnostic::new(message, span).with_help(help));
+        if name == "run" && *ty == Type::named("Process") {
+            // Checked by `process_run_given`, above.
         } else if plain.len() < method.arity.0 || plain.len() > method.arity.1 {
             self.error(wrong_args(name, span));
         }

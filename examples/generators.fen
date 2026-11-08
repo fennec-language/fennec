@@ -110,9 +110,12 @@ def main(stdout: Stdout):
         stdout.print(letter, n)
     stdout.print(list(enumerate(n * 2 for n in range(2))))
 
-    # Written right inside what uses it, it can change the names around it.
+    # A generator only reads: what changes the names around it is a loop.
     mut count = 0
-    stdout.print(sum(bump(ref count) for _ in range(3)), count)
+    mut total = 0
+    for _ in range(3):
+        total += bump(ref count)
+    stdout.print(total, count)
 
     leaves_early(stdout)
     for n in holding(stdout):

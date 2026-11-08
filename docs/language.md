@@ -114,7 +114,7 @@ uppercased = [copy(person, name=person.name.upper()) for person in people]
 
 ## Sized numbers
 
-Built: all ten run natively, apart from the few gaps the list below names. The interpreter can't run them, so `fennec test` refuses them for now.
+Built: all ten run natively, apart from the few gaps the list below names.
 
 ```fennec
 # the everyday types stay as they are: int is i64, float is f64
@@ -581,7 +581,7 @@ def main(net: Net, fs: Fs, clock: Clock):
 ## Building
 
 - `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, it says why, as `fennec build` does, and `fennec test` fails the tests that reach it. Built: `fennec` has no interpreter. The JIT is removed, and the commit before got the tag `before-jit-interpreter-removal`. Built.
-- A native program carries no interpreter: `fennec build` links one runtime with no interpreter in it, and the program's syntax isn't in the image, so a hello-world is about 1.1 MB. Built. The interpreter still stands in for `fennec run` and runs `fennec test`, and goes from `fennec` itself next. Not built yet.
+- A native program carries no interpreter: `fennec build` links one runtime with no interpreter in it, and the program's syntax isn't in the image, so a hello-world is about 1.1 MB. Built.
 - The launcher runs the toolchain a kit asks for, `fennec = "0.4.2"` in `kit.toml`, pinned by its signed manifest's hash in `kit.lock`. It fetches one only when it's missing, and never with `--offline`, and only `fennec update` moves a pin. Built, as `fennec-launcher` for now. No release keys are made yet, so nothing it fetches verifies today.
 - A release's archives are the same bytes however often and wherever they're built, so anyone can build one again from its tag and check it against the signed manifest. CI builds each platform twice and compares them. Built.
 - `fennec build` makes a native program through LLVM, and `fennec build --release` optimizes the whole program as one. Built.

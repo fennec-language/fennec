@@ -1,0 +1,13 @@
+source c5fb6abcd755ef2221378882b53aa2fe58ce0801136cd376cee76dda057f230b
+code 0
+stdout 177
+tree/a.txt False
+tree/b True
+tree/b/c True
+tree/b/c/deep.txt False
+tree/b/up True
+tree/b/z.txt False
+["tree/b/c", "tree/b/c/deep.txt", "tree/b/up", "tree/b/z.txt"]
+refused
+True
+stderr 0

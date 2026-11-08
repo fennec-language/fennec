@@ -207,7 +207,7 @@ impl Renamer<'_> {
                     self.pattern(arg);
                 }
             }
-            Pattern::Wildcard | Pattern::Bind(_) | Pattern::Literal(_) => {}
+            Pattern::Wildcard | Pattern::Bind(_) | Pattern::RefBind(_) | Pattern::Literal(_) => {}
         }
     }
 }

@@ -1,0 +1,14 @@
+source 123fda4612bdd57ffcc2232518f1fbbbbfb69fb33f525fbb4ce07e39d4b8ae13
+code 0
+stdout 156
+True True True False True
+False False True True
+True False False True True True
+True False
+False
+True False
+True True False
+True True
+True True
+False False
+stderr 0

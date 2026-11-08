@@ -1,0 +1,12 @@
+source b39a98f4e738d536c93909dca22c852cc5aac1c5723866dfaf01d764fa07a62c
+code 1
+stdout 9
+8.322067
+stderr 260
+error: this calculation overflows an int
+  --> <dir>/product_too_big.fen:11:18
+   |
+11 |     stdout.print(big * 3037000500)
+   |                  ^^^^^^^^^^^^^^^^
+   |
+   = help: ints are 64-bit; check the values involved, or use floats for very large numbers

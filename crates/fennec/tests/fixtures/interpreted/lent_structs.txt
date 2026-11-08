@@ -1,0 +1,8 @@
+source 11368cee58f3d20db309f53796201e380a92f9e6b56d55fbd5ac8c27abfcb227
+code 0
+stdout 66
+after the block: ["a"]
+after the block: ["b"]
+["start", "c"]
+made
+stderr 0

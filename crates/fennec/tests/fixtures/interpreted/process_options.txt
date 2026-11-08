@@ -1,0 +1,15 @@
+source 696c6f8b1abfd552f525e6cc55e0b9eb3a5da974339acddf32fc82df6d60dc7c
+code 0
+stdout 142
+one
+two
+
+True
+red
+
+True True
+there's no folder `no-such-folder` to run it in
+narrowed
+
+this Process can run only `cat`, so it can't run `pwd`
+stderr 0

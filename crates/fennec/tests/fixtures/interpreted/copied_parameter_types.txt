@@ -1,0 +1,8 @@
+source d5c86d9a7ffb1fd54d5fe797a7b9e3930994e8dfc63db0434af5b0c7bc6dd926
+code 0
+stdout 34
+hi
+nothing
+kept!
+["later"] ["x!"]
+stderr 0

@@ -1,0 +1,26 @@
+source 96fdf8674c5641713337052b929e733607320b099716a6ac879a3ac617a020c6
+code 0
+stdout 727
+[1, -2, 3]
+[1.5, 2.0, 1e+30, 0.1]
+[True, False]
+["plain", "with \"quotes\"", "line\nbreak", "été", ""]
+[[1], [], [2, 3]]
+[(1, "a"), (2, "b")]
+[(1,)]
+[Point(x=1, y=0.5), Point(x=0, y=0.5)]
+[Named(name="n", tags=["a", "b"], near=Point(x=3, y=0.5), next=None), Named(name="mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm", tags=[], near=Point(x=0, y=0.5), next="ssssssssssssssssssssssssssssssssssssssss")]
+[Named(name="n", tags=["a", "b"], near=Point(x=3, y=0.5), next=None)]
+[Empty()]
+[Shape.Dot, Shape.Circle(radius=1.5, label="c"), Shape.Box(corner=Point(x=0, y=0.5))]
+{"a": 1, "long key that isn't inline, at all, in any way": 2}
+{}
+{1, 2}
+{"a", "b"}
+set()
+[1, None]
+["a", None]
+[Point(x=0, y=0.5), None]
+Table(["a", "c"])
+[Id(0)]
+stderr 0

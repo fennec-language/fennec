@@ -116,10 +116,12 @@ jobs:
           else
             cargo_home="${CARGO_HOME:-$HOME/.cargo}"
             flags="--remap-path-prefix=$PWD=/fennec --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup"
-            # macOS's linker names a program by a hash of what it links, which otherwise takes in
-            # what differs from one machine to another, though the program's bytes don't.
+            # macOS's linker names a program by a hash of it before it's stripped, which notes
+            # where each object it linked was and when it was made: the checkout's path is taken
+            # out of those, and their times are zero.
             if [ "$RUNNER_OS" = macOS ]; then
-              flags="$flags -C link-arg=-Wl,-reproducible"
+              flags="$flags -C link-arg=-Wl,-reproducible -C link-arg=-Wl,-oso_prefix,$PWD/"
+              echo "ZERO_AR_DATE=1" >> "$GITHUB_ENV"
             fi
             echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
             echo "CFLAGS_${TARGET//-/_}=-ffile-prefix-map=$cargo_home=/cargo -ffile-prefix-map=$PWD=/fennec" >> "$GITHUB_ENV"

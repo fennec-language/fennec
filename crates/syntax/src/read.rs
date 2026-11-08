@@ -89,6 +89,10 @@ fn stmt(stmt: &Stmt, change: &mut dyn FnMut(&Expr)) {
             expr(value, change);
             stmts(body, change);
         }
+        StmtKind::OnFailure { cleanup, body, .. } => {
+            stmts(cleanup, change);
+            stmts(body, change);
+        }
         StmtKind::Def(def) => function(def, change),
         StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue | StmtKind::Pass => {}
     }

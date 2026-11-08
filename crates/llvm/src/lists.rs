@@ -460,6 +460,7 @@ impl Emit<'_, '_, '_> {
     fn take_place(&mut self, value: LocalId, span: Span) -> Result<(), String> {
         let (at, kind, access) = self.walk_place(value, true, span)?;
         self.place_homes.insert(value.0, (at.clone(), kind.clone(), access));
+        self.note_place_out(value, &at);
         self.read_into(value, &kind, &at, access)
     }
 
@@ -474,6 +475,18 @@ impl Emit<'_, '_, '_> {
         let function = self.function;
         let place = self.known.place_taken(function, value).ok_or("a place that isn't taken")?;
         let root = place.root;
+        // What a call changes through it is put back by a crash or a failure, if it's a lock's.
+        if taking && !self.saving.is_empty() {
+            let fields: Vec<String> = place
+                .steps
+                .iter()
+                .map_while(|step| match step {
+                    PlaceStep::Field(name) => Some(name.clone()),
+                    PlaceStep::Item(_) => None,
+                })
+                .collect();
+            self.save_along(root, &fields)?;
+        }
         let mut kind = self.kind_of(root)?.clone();
         let mut at = self.slot(root);
         let mut along: Vec<String> = Vec::new();
@@ -536,14 +549,61 @@ impl Emit<'_, '_, '_> {
         block
     }
 
+    /// While a place is out, in a function a crash lets go of what it owns, where it goes back to
+    /// is kept beside the function's locals, for the crash to put it back there: what holds it
+    /// still has the address of what's been changed, maybe moved or freed, since.
+    fn note_place_out(&mut self, value: LocalId, at: &str) {
+        if !self.lets_go_after_crash() {
+            return;
+        }
+        let slot = if let Some(slot) = self.places_out.get(&value.0) {
+            slot.clone()
+        } else {
+            let slot = self.label("%place");
+            let _ = writeln!(self.allocas, "  {slot} = alloca ptr");
+            let _ = writeln!(self.allocas, "  store ptr null, ptr {slot}");
+            self.places_out.insert(value.0, slot.clone());
+            slot
+        };
+        self.line(&format!("store ptr {at}, ptr {slot}"));
+    }
+
+    /// Where a crash leaves the function: each place still out goes back, before what holds it is
+    /// let go of.
+    pub(crate) fn put_places_back_after_crash(&mut self) -> Result<(), String> {
+        let mut out: Vec<(usize, String)> =
+            self.places_out.iter().map(|(value, slot)| (*value, slot.clone())).collect();
+        out.sort_unstable();
+        for (value, slot) in out {
+            let (_, kind, access) = self.place_homes.get(&value).cloned().ok_or("a place never taken out")?;
+            let (home, is_out) = (self.temp(), self.temp());
+            self.line(&format!("{home} = load ptr, ptr {slot}"));
+            self.line(&format!("{is_out} = icmp ne ptr {home}, null"));
+            let (back, next) = (self.label("crash_place"), self.label("crash_placed"));
+            self.line(&format!("br i1 {is_out}, label %{back}, label %{next}"));
+            self.start_block(&back);
+            self.store_place(LocalId(value), (&home, &kind, access))?;
+            self.line(&format!("br label %{next}"));
+            self.start_block(&next);
+        }
+        Ok(())
+    }
+
     fn put_place_back(&mut self, value: LocalId) -> Result<(), String> {
         let (at, kind, access) = self.place_homes.get(&value.0).cloned().ok_or("a place never taken out")?;
-        let (held, _) = self.value_for(&Operand::Local(value), &kind)?;
+        if let Some(slot) = self.places_out.get(&value.0).cloned() {
+            self.line(&format!("store ptr null, ptr {slot}"));
+        }
+        self.store_place(value, (&at, &kind, access))
+    }
+
+    fn store_place(&mut self, value: LocalId, (at, kind, access): (&str, &Kind, &str)) -> Result<(), String> {
+        let (held, _) = self.value_for(&Operand::Local(value), kind)?;
         if kind.counted() {
-            let text = self.text_of(&kind);
+            let text = self.text_of(kind);
             self.line(&format!("store {text} {held}, ptr {at}{access}"));
         } else {
-            self.store_field(&kind, &held, &at, access);
+            self.store_field(kind, &held, at, access);
         }
         Ok(())
     }
@@ -1554,6 +1614,9 @@ impl Emit<'_, '_, '_> {
         value: &Operand,
         span: Span,
     ) -> Result<(), String> {
+        if !self.saving.is_empty() {
+            self.save_along(object, path)?;
+        }
         let kind = self.place_kind(object, path)?;
         if let Some(shape) = self.array_shape(&kind) {
             return self.array_set((object, path), shape, index, value, span);

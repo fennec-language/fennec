@@ -443,6 +443,11 @@ impl Resolver<'_> {
                 self.expr(iter);
                 self.stmts(body);
             }
+            StmtKind::OnFailure { name, cleanup, body } => {
+                self.bind(name);
+                self.stmts(cleanup);
+                self.stmts(body);
+            }
             StmtKind::With { value, names, body, .. } => {
                 for held in names {
                     self.bind(&held.name);

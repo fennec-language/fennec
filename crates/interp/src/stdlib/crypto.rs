@@ -10,28 +10,7 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Module, no_constants};
-use crate::call::CallArg;
-use crate::collections::plain;
-use crate::interp::Interp;
 use crate::value::Value;
-
-pub(crate) const MODULE: Module = Module {
-    functions: &[
-        "crypto._add",
-        "crypto._end",
-        "crypto._start",
-        "crypto.blake3",
-        "crypto.derive_key",
-        "crypto.equal",
-        "crypto.hmac_sha256",
-        "crypto.keyed_blake3",
-        "crypto.sha256",
-    ],
-    call,
-    constant: no_constants,
-    methods: &[],
-};
 
 /// The bytes of a str or bytes value.
 fn bytes_of(value: &Value) -> Option<&[u8]> {
@@ -49,10 +28,6 @@ fn hex(bytes: &[u8]) -> Value {
         let _ = write!(text, "{byte:02x}");
     }
     Value::str(&text)
-}
-
-fn call(_: &mut Interp<'_>, name: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
-    run(name, &plain(args, name, span)?, span)
 }
 
 /// A hash being worked out a piece at a time, for `blake3` or `sha256` of chunks, by its handle.
@@ -83,7 +58,8 @@ fn hashing(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic
             Ok(Value::Int(handle))
         }
         ("crypto._add", [Value::Int(handle), data]) => {
-            let data = bytes_of(data).ok_or_else(|| Diagnostic::new("a chunk to hash is text or bytes", span))?;
+            let data =
+                bytes_of(data).ok_or_else(|| Diagnostic::new("a chunk to hash is text or bytes", span))?;
             match open.get_mut(handle) {
                 Some(Hashing::Blake3(hasher)) => {
                     hasher.update(data);

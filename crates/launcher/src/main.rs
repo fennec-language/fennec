@@ -2,10 +2,12 @@
 //!
 //! ```text
 //! fennec [--offline] <command>...       runs the command with the kit's toolchain
+//! fennec +<version> <command>...        runs it with that version, in a kit or not, this once
+//! fennec --version <version> <command>...  the version for a script outside a kit
+//! fennec default [<version>]            says or sets the version for scripts outside a kit
 //! fennec toolchain list                 the toolchains installed, and the default
 //! fennec toolchain install <version>
 //! fennec toolchain remove <version>
-//! fennec toolchain default <version>    the one run outside a kit
 //! fennec update [--latest]              pins the kit to the version kit.toml asks for, or the newest,
 //!                                       then has that toolchain pin the kit's dependencies
 //! fennec --latest                       the newest release, the only thing that asks
@@ -19,15 +21,11 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use fennec_launcher::{Launcher, RELEASES, TARGET};
+use fennec_launcher::{Asked, Launcher, Pick, RELEASES, TARGET};
 
 fn main() -> ExitCode {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    let offline = args.first().is_some_and(|first| first == "--offline");
-    if offline {
-        args.remove(0);
-    }
-    match launched(&args, offline || std::env::var_os("FENNEC_OFFLINE").is_some()) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match launched(Asked::read(&args)) {
         Ok(code) => code,
         Err(why) => {
             eprintln!("error: {why}");
@@ -36,7 +34,9 @@ fn main() -> ExitCode {
     }
 }
 
-fn launched(args: &[String], offline: bool) -> Result<ExitCode, String> {
+fn launched(asked: Asked) -> Result<ExitCode, String> {
+    let offline = asked.offline || std::env::var_os("FENNEC_OFFLINE").is_some();
+    let args = asked.command.as_slice();
     let home = match std::env::var_os("FENNEC_HOME") {
         Some(home) => PathBuf::from(home),
         None => std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
@@ -50,6 +50,14 @@ fn launched(args: &[String], offline: bool) -> Result<ExitCode, String> {
         trusted: fennec_dist::release_keys()?,
         target: TARGET.to_owned(),
     };
+    let here = || std::env::current_dir().map_err(|err| format!("couldn't tell which folder this is: {err}"));
+    match asked.pick {
+        Some(Pick::JustThisOnce(version)) => return hand_off(&launcher.exactly(&version)?, args, offline),
+        Some(Pick::OutsideAKit(version)) => {
+            return hand_off(&launcher.outside_a_kit(&here()?, &version)?, args, offline);
+        }
+        None => {}
+    }
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     match words.as_slice() {
         ["toolchain", "list"] => {
@@ -62,26 +70,24 @@ fn launched(args: &[String], offline: bool) -> Result<ExitCode, String> {
         }
         ["toolchain", "install", version] => launcher.ensure(version, None).map(|_| ExitCode::SUCCESS),
         ["toolchain", "remove", version] => launcher.remove(version).map(|()| ExitCode::SUCCESS),
-        ["toolchain", "default", version] => launcher.set_default(version).map(|()| ExitCode::SUCCESS),
+        ["default", version] => launcher.set_default(version).map(|()| ExitCode::SUCCESS),
+        ["default"] => {
+            println!("{}", launcher.default_version().ok_or(fennec_launcher::NO_DEFAULT)?);
+            Ok(ExitCode::SUCCESS)
+        }
         ["--latest"] => {
             println!("{}", launcher.latest()?);
             Ok(ExitCode::SUCCESS)
         }
         ["update"] | ["update", "--latest"] => {
-            let here = std::env::current_dir()
-                .map_err(|err| format!("couldn't tell which folder this is: {err}"))?;
+            let here = here()?;
             print!("{}", launcher.update(&here, words.len() == 2)?);
             hand_off(&launcher.toolchain_for(&here)?, &["update".to_owned()], offline)
         }
-        ["toolchain", ..] => Err(
-            "`fennec toolchain` takes `list`, `install <version>`, `remove <version>` or `default <version>`"
-                .to_owned(),
-        ),
-        _ => {
-            let here = std::env::current_dir()
-                .map_err(|err| format!("couldn't tell which folder this is: {err}"))?;
-            hand_off(&launcher.toolchain_for(&here)?, args, offline)
+        ["toolchain", ..] => {
+            Err("`fennec toolchain` takes `list`, `install <version>` or `remove <version>`".to_owned())
         }
+        _ => hand_off(&launcher.toolchain_for(&here()?)?, args, offline),
     }
 }
 

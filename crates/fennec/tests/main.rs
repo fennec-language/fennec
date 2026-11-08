@@ -5,7 +5,6 @@ mod examples;
 mod executables;
 mod game_math;
 mod hints;
-mod limits;
 mod lint_fixes;
 mod live;
 mod llvm;

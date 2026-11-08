@@ -3,8 +3,6 @@
 
 use std::rc::Rc;
 
-use fennec_syntax::{Expr, FnDef};
-
 #[derive(Clone, Debug)]
 pub(crate) enum Value {
     /// What a function returns when it has nothing to return.
@@ -17,12 +15,8 @@ pub(crate) enum Value {
     /// Binary data, each byte from 0 to 255.
     Bytes(Rc<[u8]>),
     List(Rc<Vec<Value>>),
-    /// `Buffer[T]`: its items and its room (see `crate::buffer`).
-    Buffer(Rc<crate::buffer::Buffer>),
     /// A list native code packed into flat memory. The interpreter unpacks it to use it.
     Packed(Rc<crate::packed::Packed>),
-    /// A generator: items one at a time, as they're asked for, once.
-    Generator(Rc<crate::generators::Generator>),
     /// A native value, not yet looked inside, as native code's temporaries and cells hold it.
     /// The interpreter never sees one: temporaries are expanded before it's handed them.
     Lent(Rc<Lent>),
@@ -32,17 +26,10 @@ pub(crate) enum Value {
     Set(Rc<Vec<Value>>),
     /// A struct, an error, or an enum case.
     Instance(Rc<Instance>),
-    /// A `shared` value: a counted handle to one cell. Copying the handle shares the cell.
-    Shared(Rc<std::cell::RefCell<Value>>),
     Ok(Rc<Value>),
     Err(Rc<Value>),
     Table(Rc<Table>),
     Id(Id),
-    /// A type used as a value, as in `Enemy.at(...)` or `Table[Enemy]()`.
-    Type(Rc<str>),
-    Function(Rc<Callable>),
-    Builtin(&'static str),
-    Lambda(Rc<Lambda>),
     Capability(Capability),
     /// A capability narrowed with `only`, which reaches less than the whole capability.
     Limited(Rc<crate::limits::Limited>),
@@ -117,75 +104,12 @@ impl Instance {
     pub(crate) fn field(&self, name: &str) -> Option<&Value> {
         self.fields.iter().find(|(field, _)| field.as_ref() == name).map(|(_, value)| value)
     }
-
-    pub(crate) fn field_mut(&mut self, name: &str) -> Option<&mut Value> {
-        self.fields.iter_mut().find(|(field, _)| field.as_ref() == name).map(|(_, value)| value)
-    }
-}
-
-/// A function's definition: the standard library's, held where it was parsed once for the
-/// whole process, or a program's own. The standard library's isn't copied for each runtime.
-#[derive(Clone, Debug)]
-pub(crate) enum Def {
-    Std(&'static FnDef),
-    Own(Rc<FnDef>),
-}
-
-impl std::ops::Deref for Def {
-    type Target = FnDef;
-
-    fn deref(&self) -> &FnDef {
-        match self {
-            Def::Std(def) => def,
-            Def::Own(def) => def,
-        }
-    }
-}
-
-/// A function: top-level, nested (with the names it captured), or a method.
-#[derive(Debug)]
-pub(crate) struct Callable {
-    pub(crate) def: Def,
-    pub(crate) captured: Vec<(String, Value)>,
-    /// Whether it can fail and whether it's a generator, worked out the first time it's asked,
-    /// so loading a function the program never calls costs nothing more.
-    effects: std::cell::OnceCell<(bool, bool)>,
-}
-
-impl Callable {
-    pub(crate) fn new(def: Def, captured: Vec<(String, Value)>) -> Callable {
-        Callable { def, captured, effects: std::cell::OnceCell::new() }
-    }
-
-    fn effects(&self) -> (bool, bool) {
-        *self.effects.get_or_init(|| crate::scan::body_effects(&self.def.body))
-    }
-
-    /// Whether it can fail: its body contains `fail` or `?`.
-    pub(crate) fn fallible(&self) -> bool {
-        self.effects().0
-    }
-
-    /// Whether it's a generator: its body contains `yield`.
-    pub(crate) fn generator(&self) -> bool {
-        self.effects().1
-    }
-}
-
-/// An arrow function, with the names it could see when it was created.
-#[derive(Debug)]
-pub(crate) struct Lambda {
-    pub(crate) params: Vec<String>,
-    pub(crate) body: Expr,
-    pub(crate) captured: Vec<(String, Value)>,
 }
 
 /// Slots that hand out generational IDs, so a stale ID never finds the wrong thing.
 #[derive(Clone, Debug)]
 pub(crate) struct Table {
     pub(crate) slots: Vec<Slot>,
-    /// No slot below this one is free, so finding the first free slot needn't look at them.
-    free_from: usize,
     /// Which `Table` this is, so an `Id` from another finds nothing in it. A copy keeps it, since
     /// it holds the same items in the same slots.
     pub(crate) tag: u64,
@@ -261,7 +185,7 @@ impl Table {
     }
 
     pub(crate) fn tagged(slots: Vec<Slot>, tag: u64) -> Table {
-        Table { slots, free_from: 0, tag }
+        Table { slots, tag }
     }
 
     pub(crate) fn get(&self, id: Id) -> Option<&Value> {
@@ -272,61 +196,6 @@ impl Table {
             .get(id.at())
             .filter(|slot| slot.generation == id.generation)
             .and_then(|slot| slot.value.as_ref())
-    }
-
-    pub(crate) fn get_mut(&mut self, id: Id) -> Option<&mut Value> {
-        if id.tag != self.tag {
-            return None;
-        }
-        self.slots
-            .get_mut(id.at())
-            .filter(|slot| slot.generation == id.generation)
-            .and_then(|slot| slot.value.as_mut())
-    }
-
-    /// What finding nothing for `id` says when it has to be there.
-    pub(crate) fn missing(&self, id: Id) -> &'static str {
-        if id.tag == self.tag {
-            "this Id refers to something that's been removed"
-        } else {
-            "this Id is from another Table"
-        }
-    }
-
-    /// Puts a value in the first free slot, or a new one.
-    pub(crate) fn insert(&mut self, value: Value) -> Id {
-        // A slot at the last generation an `Id` can hold is retired: used again, an old `Id`
-        // would find what's new there.
-        let free = self
-            .slots
-            .iter()
-            .enumerate()
-            .skip(self.free_from)
-            .find(|(_, slot)| slot.value.is_none() && slot.generation < u32::MAX);
-        let at = free.map(|(at, _)| at);
-        self.free_from = at.unwrap_or(self.slots.len()) + 1;
-        if let Some(slot) = at.and_then(|at| self.slots.get_mut(at)) {
-            slot.generation += 1;
-            slot.value = Some(value);
-            return Id::new(self.free_from - 1, slot.generation, self.tag);
-        }
-        self.slots.push(Slot { generation: 0, value: Some(value) });
-        Id::new(self.slots.len() - 1, 0, self.tag)
-    }
-
-    pub(crate) fn remove(&mut self, id: Id) -> Option<Value> {
-        if id.tag != self.tag {
-            return None;
-        }
-        let removed = self
-            .slots
-            .get_mut(id.at())
-            .filter(|slot| slot.generation == id.generation)
-            .and_then(|slot| slot.value.take());
-        if removed.is_some() {
-            self.free_from = self.free_from.min(id.at());
-        }
-        removed
     }
 
     /// Live entries, in slot order.
@@ -410,7 +279,6 @@ impl Value {
     pub(crate) fn type_name(&self) -> String {
         match self {
             Value::Unit => "nothing".to_owned(),
-            Value::Shared(cell) => cell.borrow().type_name(),
             Value::None => "None".to_owned(),
             Value::Bool(_) => "bool".to_owned(),
             Value::Int(_) => "int".to_owned(),
@@ -418,9 +286,7 @@ impl Value {
             Value::Str(_) => "str".to_owned(),
             Value::Bytes(_) => "bytes".to_owned(),
             Value::List(_) | Value::Packed(_) => "list".to_owned(),
-            Value::Buffer(_) => "Buffer".to_owned(),
             Value::Lent(_) => "value".to_owned(),
-            Value::Generator(_) => "generator".to_owned(),
             Value::Tuple(_) => "tuple".to_owned(),
             Value::Dict(_) => "dict".to_owned(),
             Value::Set(_) => "set".to_owned(),
@@ -428,8 +294,6 @@ impl Value {
             Value::Ok(_) | Value::Err(_) => "result".to_owned(),
             Value::Table(_) => "Table".to_owned(),
             Value::Id(_) => "Id".to_owned(),
-            Value::Type(_) => "type".to_owned(),
-            Value::Function(_) | Value::Builtin(_) | Value::Lambda(_) => "function".to_owned(),
             Value::Capability(Capability::Stdout) => "Stdout".to_owned(),
             Value::Capability(Capability::Fs) => "Fs".to_owned(),
             Value::Capability(Capability::Clock) => "Clock".to_owned(),
@@ -445,20 +309,16 @@ impl Value {
 }
 
 impl PartialEq for Value {
-    #[expect(clippy::match_same_arms, reason = "each arm compares a different type")]
     fn eq(&self, other: &Value) -> bool {
         match (self, other) {
             (Value::Unit, Value::Unit) | (Value::None, Value::None) => true,
             (Value::Lent(a), Value::Lent(b)) => a.address == b.address,
-            (Value::Generator(a), Value::Generator(b)) => Rc::ptr_eq(a, b),
-            (Value::Shared(a), Value::Shared(b)) => Rc::ptr_eq(a, b),
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => floats_same(*a, *b),
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::List(a), Value::List(b)) | (Value::Tuple(a), Value::Tuple(b)) => a == b,
-            (Value::Buffer(a), Value::Buffer(b)) => a == b,
             (Value::Set(a), Value::Set(b)) => a.len() == b.len() && a.iter().all(|item| b.contains(item)),
             (Value::Dict(a), Value::Dict(b)) => {
                 a.len() == b.len() && a.iter().all(|(key, value)| b.get(key) == Some(value))
@@ -469,10 +329,6 @@ impl PartialEq for Value {
             (Value::Ok(a), Value::Ok(b)) | (Value::Err(a), Value::Err(b)) => a == b,
             (Value::Table(a), Value::Table(b)) => a == b,
             (Value::Id(a), Value::Id(b)) => a == b,
-            (Value::Type(a), Value::Type(b)) => a == b,
-            (Value::Function(a), Value::Function(b)) => Rc::ptr_eq(a, b),
-            (Value::Builtin(a), Value::Builtin(b)) => a == b,
-            (Value::Lambda(a), Value::Lambda(b)) => Rc::ptr_eq(a, b),
             (Value::Capability(a), Value::Capability(b)) => a == b,
             _ => false,
         }
@@ -481,18 +337,7 @@ impl PartialEq for Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{Id, Slot, Table, Value};
-
-    /// A slot freed at the last generation an `Id` can hold is never used again, so no `Id`'s
-    /// generation comes round to one an old `Id` has.
-    #[test]
-    fn a_slot_at_its_last_generation_is_retired() {
-        let mut table = Table::new(vec![Slot { generation: u32::MAX, value: None }]);
-        let added = table.insert(Value::Int(1));
-        assert_eq!(added.at(), 1);
-        let old = Id { slot: 0, generation: u32::MAX, tag: table.tag };
-        assert!(table.get(old).is_none());
-    }
+    use super::Id;
 
     /// An `Id`'s key packs its slot above its generation, and comes back the same.
     #[test]

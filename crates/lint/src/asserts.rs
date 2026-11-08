@@ -54,8 +54,7 @@ fn is_expect(expr: &Expr) -> bool {
 
 /// Each `.expect(...)` in a function, its nested functions included.
 fn expects(def: &FnDef, found: &mut Vec<Lint>) {
-    let mut walked = def.clone();
-    fennec_syntax::visit::in_function(&mut walked, &mut |expr| {
+    fennec_syntax::read::in_function(def, &mut |expr| {
         if is_expect(expr) {
             let diagnostic = Diagnostic::new("a kit's code doesn't decide to stop the program", expr.span)
                 .with_help("give the failure back with `?`, and let the caller decide what to do with it");

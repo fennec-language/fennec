@@ -1,6 +1,5 @@
-//! Diagnostics the checker shares with the interpreter. The wording matches what the
-//! interpreter says when it finds the same mistake while running, so a mistake reads the
-//! same whichever one catches it.
+//! Diagnostics the checker shares among its passes, so a mistake reads the same wherever it's
+//! caught.
 
 use fennec_syntax::{Diagnostic, Span};
 

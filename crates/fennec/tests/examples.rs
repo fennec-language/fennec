@@ -1,7 +1,7 @@
-//! Every program in `examples/` runs and prints exactly its `.out` file, and every program in
-//! `examples/errors/` fails with exactly its `.err` file, whether the type checker or the
-//! interpreter catches the mistake. The examples are the language's working specification,
-//! so the site and the compiler can't drift apart.
+//! Every program in `examples/errors/` that the checker catches fails with exactly its `.err`
+//! file. `llvm.rs` holds every example to its `.out`, and `executables.rs` holds what fails while
+//! running to its `.err`. The examples are the language's working specification, so the site and
+//! the compiler can't drift apart.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,81 +22,34 @@ fn programs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// Runs a program the way `fennec run` does: its output, or its rendered errors.
-fn run(source: &str, shown_as: &str) -> Result<String, String> {
-    let mut module =
-        fennec_syntax::parse(source).map_err(|diagnostic| diagnostic.render(shown_as, source))?;
-    fennec_check::check_and_resolve(&mut module).map_err(|diagnostics| {
-        let rendered: Vec<String> =
-            diagnostics.iter().map(|diagnostic| diagnostic.render(shown_as, source)).collect();
-        rendered.join("\n")
-    })?;
-    let mut out = Vec::new();
-    fennec_interp::run(&module, &mut out).map_err(|diagnostic| diagnostic.render(shown_as, source))?;
-    Ok(String::from_utf8_lossy(&out).into_owned())
+/// What the checker says of a program, rendered, or `None` when it passes.
+fn check_errors(source: &str, shown_as: &str) -> Option<String> {
+    let mut module = match fennec_syntax::parse(source) {
+        Ok(module) => module,
+        Err(diagnostic) => return Some(diagnostic.render(shown_as, source)),
+    };
+    let diagnostics = fennec_check::check_and_resolve(&mut module).err()?;
+    let rendered: Vec<String> =
+        diagnostics.iter().map(|diagnostic| diagnostic.render(shown_as, source)).collect();
+    Some(rendered.join("\n"))
 }
 
-/// Runs a program's `test` blocks, returning each failure, rendered.
-fn failing_tests(source: &str, shown_as: &str) -> Result<Vec<String>, String> {
-    let render = |diagnostic: fennec_syntax::Diagnostic| diagnostic.render(shown_as, source);
-    let mut module = fennec_syntax::parse(source).map_err(render)?;
-    // What runs a module needs it resolved, as `fennec test` does.
-    fennec_check::check_and_resolve(&mut module)
-        .map_err(|problems| problems.into_iter().map(render).collect::<Vec<_>>().join("\n"))?;
-    let mut out = std::io::sink();
-    let mut interp = fennec_interp::Interp::new(&mut out).map_err(render)?;
-    interp.load(&module).map_err(render)?;
-    Ok(interp
-        .run_tests()
-        .into_iter()
-        .filter_map(|outcome| outcome.failure.map(|failure| format!("{}: {}", outcome.name, render(failure))))
-        .collect())
-}
-
-/// Runs a test on a stack as big as `fennec run` gives programs, so examples can nest calls
-/// as deeply as the language allows.
-fn on_big_stack(test: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
-    let worker = std::thread::Builder::new().stack_size(512 * 1024 * 1024).spawn(test)?;
-    if let Err(panic) = worker.join() {
-        std::panic::resume_unwind(panic);
-    }
-    Ok(())
-}
-
+/// One a program can only make at run time is `executables.rs`'s to compare.
 #[test]
-fn examples_print_their_expected_output() {
-    on_big_stack(|| {
-        let paths = programs(&examples_dir()).unwrap();
-        assert!(!paths.is_empty(), "no examples found");
-        for path in paths {
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            let source = fs::read_to_string(&path).unwrap();
-            let expected = fs::read_to_string(path.with_extension("out")).unwrap();
-            let actual = run(&source, &format!("examples/{name}"))
-                .unwrap_or_else(|err| panic!("{name} failed:\n{err}"));
-            assert_eq!(actual, expected, "{name} printed something different");
-            let failures = failing_tests(&source, &format!("examples/{name}")).unwrap();
-            assert!(failures.is_empty(), "{name} has failing tests:\n{}", failures.join("\n"));
-        }
-    })
-    .unwrap();
-}
-
-#[test]
-fn error_examples_fail_with_their_expected_message() {
-    on_big_stack(|| {
-        let paths = programs(&examples_dir().join("errors")).unwrap();
-        assert!(!paths.is_empty(), "no error examples found");
-        for path in paths {
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            let source = fs::read_to_string(&path).unwrap();
-            let expected = fs::read_to_string(path.with_extension("err")).unwrap();
-            let actual =
-                run(&source, &format!("examples/errors/{name}")).expect_err(&format!("{name} should fail"));
+fn error_examples_the_checker_catches_fail_with_their_expected_message() {
+    let paths = programs(&examples_dir().join("errors")).unwrap();
+    assert!(!paths.is_empty(), "no error examples found");
+    let mut caught = 0;
+    for path in paths {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let source = fs::read_to_string(&path).unwrap();
+        let expected = fs::read_to_string(path.with_extension("err")).unwrap();
+        if let Some(actual) = check_errors(&source, &format!("examples/errors/{name}")) {
             assert_eq!(actual, expected, "{name} failed with a different message");
+            caught += 1;
         }
-    })
-    .unwrap();
+    }
+    assert!(caught > 100, "only {caught} error examples were caught by the checker");
 }
 
 #[test]

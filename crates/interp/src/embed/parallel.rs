@@ -615,6 +615,9 @@ pub extern "C" fn parallel_stream_waiting(list: i64, body: MapBody, env: i64, el
 mod pool {
     //! Without threads, every range runs on the calling thread, one after another.
 
+    /// Without threads, no task parks.
+    pub extern "C" fn on_task_resume(_set: extern "C" fn(i64)) {}
+
     /// Without threads, there are no workers to set up.
     pub fn set_worker_setup(_setup: Box<dyn Fn() + Send + Sync>) {}
 
@@ -711,7 +714,7 @@ use pool::{Latch, Pool};
 pub(in crate::embed) use pool::{Latch, Pool, for_server, here};
 #[cfg(any(test, feature = "threads"))]
 pub use pool::{has_worker_setup, run_worker_setup};
-pub use pool::{set_worker_setup, stack_limit};
+pub use pool::{on_task_resume, set_worker_setup, stack_limit};
 
 #[cfg(test)]
 mod tests {
@@ -803,18 +806,11 @@ mod tests {
     }
 
     #[test]
-    fn a_float_sum_has_the_same_bits_on_any_number_of_threads_and_in_the_interpreter() {
+    fn a_float_sum_has_the_same_bits_on_any_number_of_threads() {
         begin();
         let bits = harmonic_on(1);
         assert_eq!(harmonic_on(2), bits);
         assert_eq!(harmonic_on(8), bits);
-        let source = format!(
-            "def main(stdout: Stdout):\n    stdout.print(sum(1.0 / float(n + 1) for n in parallel(range({ITEMS}))))\n"
-        );
-        let mut out = Vec::new();
-        crate::run(&fennec_syntax::parse(&source).unwrap(), &mut out).unwrap();
-        let interpreted: f64 = String::from_utf8(out).unwrap().trim().parse().unwrap();
-        assert_eq!(interpreted.to_bits(), bits);
         // Summed left to right, it rounds differently: the tree is what makes them agree.
         let in_order: f64 = (0..ITEMS).map(|n| 1.0 / crate::ops::to_float(n + 1)).sum();
         assert_ne!(in_order.to_bits(), bits);

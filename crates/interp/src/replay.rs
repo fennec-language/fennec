@@ -47,6 +47,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::Write as _;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use fennec_syntax::{Diagnostic, Span};
@@ -290,12 +291,21 @@ static MODE: OnceLock<Mode> = OnceLock::new();
 fn mode() -> &'static Mode {
     MODE.get_or_init(|| {
         if let Some(path) = std::env::var_os("FENNEC_REPLAY") {
-            return playing(Path::new(&path)).unwrap_or(Mode::Off);
+            return opened("replay", Path::new(&path), playing(Path::new(&path)));
         }
         match std::env::var_os("FENNEC_RECORD") {
-            Some(path) => recording(Path::new(&path)).unwrap_or(Mode::Off),
+            Some(path) => opened("record to", Path::new(&path), recording(Path::new(&path))),
             None => Mode::Off,
         }
+    })
+}
+
+/// The mode a log was opened for. A run that was asked to record or replay and can't says so and
+/// stops: going on live would look as if it had worked.
+fn opened(doing: &str, path: &Path, mode: std::io::Result<Mode>) -> Mode {
+    mode.unwrap_or_else(|error| {
+        let _ = writeln!(std::io::stderr(), "error: couldn't {doing} {}: {error}", path.display());
+        crate::embed::aot::stop_now(1)
     })
 }
 
@@ -477,8 +487,16 @@ pub(crate) fn word(call: &str, live: impl FnOnce() -> i64) -> Result<i64, String
 
 fn log(file: &Mutex<std::fs::File>, task: &str, call: &str, payload: &[u8]) {
     // Written at once, so a run that crashes or is killed leaves what it took.
-    let _ = file.lock().unwrap_or_else(PoisonError::into_inner).write_all(&entry(task, call, payload));
+    let wrote = file.lock().unwrap_or_else(PoisonError::into_inner).write_all(&entry(task, call, payload));
+    // Said once: the run goes on, but what it records from here can't be replayed.
+    if let Err(error) = wrote
+        && !LOG_FAILED.swap(true, Ordering::Relaxed)
+    {
+        let _ = writeln!(std::io::stderr(), "warning: this run's recording stopped: {error}");
+    }
 }
+
+static LOG_FAILED: AtomicBool = AtomicBool::new(false);
 
 /// One entry of a log.
 fn entry(task: &str, call: &str, payload: &[u8]) -> Vec<u8> {

@@ -4,7 +4,7 @@
 use std::cmp::Ordering;
 use std::rc::Rc;
 
-use fennec_syntax::{BinOp, Diagnostic, Span, UnaryOp};
+use fennec_syntax::{BinOp, Diagnostic, Span};
 
 use crate::value::Value;
 
@@ -12,23 +12,6 @@ pub(crate) fn to_float(n: i64) -> f64 {
     #[expect(clippy::cast_precision_loss, reason = "int to float is allowed to round, as in Python")]
     let x = n as f64;
     x
-}
-
-pub(crate) fn unary(op: UnaryOp, value: Value, span: Span) -> Result<Value, Diagnostic> {
-    match (op, value) {
-        (UnaryOp::Neg, Value::Int(n)) => n.checked_neg().map(Value::Int).ok_or_else(|| overflow(span)),
-        (UnaryOp::Neg, Value::Float(x)) => Ok(Value::Float(-x)),
-        (UnaryOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
-        (UnaryOp::Not, other) => {
-            Err(Diagnostic::new(format!("`not` needs a bool, but this is a {}", other.type_name()), span)
-                .with_help("Fennec has no truthiness: compare explicitly, like `items.len() == 0`"))
-        }
-        (UnaryOp::BitNot, Value::Int(n)) => Ok(Value::Int(!n)),
-        (UnaryOp::Neg, other) => Err(Diagnostic::new(format!("can't negate a {}", other.type_name()), span)),
-        (UnaryOp::BitNot, other) => {
-            Err(Diagnostic::new(format!("`~` works on ints, but this is a {}", other.type_name()), span))
-        }
-    }
 }
 
 pub(crate) fn binary(op: BinOp, lhs: Value, rhs: Value, span: Span) -> Result<Value, Diagnostic> {
@@ -47,41 +30,18 @@ pub(crate) fn binary(op: BinOp, lhs: Value, rhs: Value, span: Span) -> Result<Va
         BinOp::Is | BinOp::IsNot => is_none(op, &lhs, &rhs, span),
         BinOp::In => contains(&rhs, &lhs, span).map(Value::Bool),
         BinOp::NotIn => contains(&rhs, &lhs, span).map(|found| Value::Bool(!found)),
-        // `and` and `or` never get here: they short-circuit, so `Interp::eval` runs them.
+        // `and` and `or` never get here: they short-circuit, and compiled code branches on them.
         _ => arithmetic(op, lhs, rhs, span),
     }
 }
 
 fn is_none(op: BinOp, lhs: &Value, rhs: &Value, span: Span) -> Result<Value, Diagnostic> {
-    // `s is Circle`: which member of a union a value holds.
-    let member = match rhs {
-        Value::Type(name) => Some(name.as_ref()),
-        Value::Builtin(name @ ("int" | "float" | "bool" | "str" | "bytes")) => Some(*name),
-        _ => None,
-    };
-    if let Some(member) = member {
-        return Ok(Value::Bool(holds(lhs, member) == (op == BinOp::Is)));
-    }
     if *rhs != Value::None {
         return Err(
             Diagnostic::new("`is` only compares with None", span).with_help("use `==` to compare values")
         );
     }
     Ok(Value::Bool((*lhs == Value::None) == (op == BinOp::Is)))
-}
-
-/// Whether a value is of the type named `member`, a struct's or enum's name or a built-in one.
-fn holds(value: &Value, member: &str) -> bool {
-    match value {
-        Value::Instance(instance) => instance.type_name.as_ref() == member,
-        Value::Shared(cell) => holds(&cell.borrow(), member),
-        Value::Int(_) => member == "int",
-        Value::Float(_) => member == "float",
-        Value::Bool(_) => member == "bool",
-        Value::Str(_) => member == "str",
-        Value::Bytes(_) => member == "bytes",
-        _ => false,
-    }
 }
 
 fn arithmetic(op: BinOp, lhs: Value, rhs: Value, span: Span) -> Result<Value, Diagnostic> {
@@ -213,9 +173,6 @@ pub(crate) fn index(object: &Value, index: &Value, span: Span) -> Result<Value, 
     match object {
         Value::List(items) => position(*at, items.len(), span)
             .and_then(|at| items.get(at).cloned().ok_or_else(|| Diagnostic::new("index out of range", span))),
-        Value::Buffer(buffer) => position(*at, buffer.items.len(), span).and_then(|at| {
-            buffer.items.get(at).cloned().ok_or_else(|| Diagnostic::new("index out of range", span))
-        }),
         Value::Str(text) if let Some(found) = ascii_index(text, *at, span) => found,
         Value::Str(text) => {
             let count = text.chars().count();
@@ -252,46 +209,6 @@ pub(crate) fn position(at: i64, len: usize, span: Span) -> Result<usize, Diagnos
         .ok()
         .filter(|&resolved| resolved < len)
         .ok_or_else(|| Diagnostic::new(format!("index {at} is out of range for length {len}"), span))
-}
-
-/// `value[start:end]`, with Python's rules: negative positions count from the end, and
-/// positions past either end are clamped.
-pub(crate) fn slice(
-    value: &Value,
-    start: Option<&Value>,
-    end: Option<&Value>,
-    span: Span,
-) -> Result<Value, Diagnostic> {
-    let len = match value {
-        Value::List(items) | Value::Tuple(items) => items.len(),
-        Value::Buffer(buffer) => buffer.items.len(),
-        Value::Str(text) => text.chars().count(),
-        Value::Bytes(data) => data.len(),
-        other => return Err(Diagnostic::new(format!("a {} can't be sliced", other.type_name()), span)),
-    };
-    let bound = |at: Option<&Value>, default: usize| -> Result<usize, Diagnostic> {
-        match at {
-            None => Ok(default),
-            Some(Value::Int(at)) => {
-                let len_i = i64::try_from(len).unwrap_or(i64::MAX);
-                let at = if *at < 0 { at + len_i } else { *at };
-                Ok(usize::try_from(at.clamp(0, len_i)).unwrap_or(0))
-            }
-            Some(other) => Err(Diagnostic::new(
-                format!("a slice position must be an int, not a {}", other.type_name()),
-                span,
-            )),
-        }
-    };
-    let (from, to) = (bound(start, 0)?, bound(end, len)?);
-    let to = to.max(from);
-    Ok(match value {
-        Value::List(items) => Value::list(items.get(from..to).unwrap_or(&[]).to_vec()),
-        Value::Tuple(items) => Value::tuple(items.get(from..to).unwrap_or(&[]).to_vec()),
-        Value::Str(text) => Value::str(&text.chars().skip(from).take(to - from).collect::<String>()),
-        Value::Bytes(data) => Value::Bytes(Rc::from(data.get(from..to).unwrap_or(&[]))),
-        _ => Value::Unit,
-    })
 }
 
 #[cfg(test)]

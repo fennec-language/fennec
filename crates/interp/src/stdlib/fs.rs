@@ -9,14 +9,8 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Module, no_constants, no_functions};
-use crate::call::CallArg;
-use crate::interp::Interp;
 use crate::methods::no_method;
-use crate::value::{Capability, Instance, Value};
-
-pub(crate) const MODULE: Module =
-    Module { functions: &[], call: no_functions, constant: no_constants, methods: &[("File", file_method)] };
+use crate::value::{Capability, Value};
 
 /// A file `fs.create` or `fs.open` has lent, by the handle its `File` holds. One being written
 /// goes into a file of its own beside where it's going, which takes that place when its block
@@ -86,12 +80,81 @@ fn temporary_beside(target: &Path) -> PathBuf {
     target.with_file_name(format!(".{name}.{}.{}.fennec-partial", std::process::id(), *made))
 }
 
+/// Where writing to `path` really puts a file: what a link points at, so the link stays a link.
+fn through_links(path: &Path) -> std::io::Result<PathBuf> {
+    match std::fs::symlink_metadata(path) {
+        Ok(found) if found.file_type().is_symlink() => std::fs::canonicalize(path),
+        _ => Ok(path.to_path_buf()),
+    }
+}
+
+/// A new file beside `target` to write, which nothing else can already be: a name someone else
+/// made first, or a link waiting there, is passed over. It has `target`'s permissions before
+/// anything's in it, so what's being written is never readable by more than the file was.
+fn new_beside(target: &Path) -> std::io::Result<(std::fs::File, PathBuf)> {
+    let replaced = std::fs::metadata(target).ok();
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if replaced.is_some() {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut last = std::io::Error::from(std::io::ErrorKind::AlreadyExists);
+    for _ in 0..32 {
+        let temporary = temporary_beside(target);
+        match options.open(&temporary) {
+            Ok(file) => {
+                if let Some(replaced) = &replaced {
+                    file.set_permissions(replaced.permissions())?;
+                }
+                return Ok((file, temporary));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => last = err,
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last)
+}
+
+/// Whether a file can be replaced by renaming another over it: not a device or a pipe, which
+/// have to be written to where they are.
+fn replaceable(target: &Path) -> bool {
+    std::fs::metadata(target).map_or(true, |found| found.is_file())
+}
+
+/// `fs.write_text` and `fs.write_bytes`: the whole file takes the old one's place at once, so a
+/// reader never sees half of it. Where that can't be done, as for a device or in a folder this
+/// program can't add to, it's written where it is.
+fn write_whole(path: &str, data: &[u8]) -> std::io::Result<()> {
+    let target = through_links(Path::new(path))?;
+    if !replaceable(&target) {
+        return std::fs::write(target, data);
+    }
+    let (mut file, temporary) = match new_beside(&target) {
+        Ok(made) => made,
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            return std::fs::write(target, data);
+        }
+        Err(err) => return Err(err),
+    };
+    let done = file.write_all(data).and_then(|()| std::fs::rename(&temporary, &target));
+    if done.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    done
+}
+
 /// `fs._create(path, durable)`: a new file beside `path` to write.
 fn create(path: &str, durable: bool) -> Value {
-    let target = PathBuf::from(path);
+    let given = PathBuf::from(path);
     let made = blocking(move || {
-        let temporary = temporary_beside(&target);
-        std::fs::File::create(&temporary).map(|file| (file, temporary, target)).map_err(|err| err.to_string())
+        let target = through_links(&given).map_err(|err| err.to_string())?;
+        if !replaceable(&target) {
+            return Err(format!("`{}` isn't a file that can be replaced", target.display()));
+        }
+        let (file, temporary) = new_beside(&target).map_err(|err| err.to_string())?;
+        Ok((file, temporary, target))
     });
     match made {
         Ok((file, temporary, target)) => {
@@ -114,7 +177,12 @@ fn open(path: &str) -> Value {
 /// A file written takes its target's place: everything written is on the disk first, and the
 /// rename is too, after, unless it was made with `durable=False`. Anything left is thrown away
 /// when that fails, leaving the target as it was.
-fn finish_writing(out: &mut BufWriter<std::fs::File>, temporary: &Path, target: &Path, durable: bool) -> Result<(), String> {
+fn finish_writing(
+    out: &mut BufWriter<std::fs::File>,
+    temporary: &Path,
+    target: &Path,
+    durable: bool,
+) -> Result<(), String> {
     let done = (|| {
         out.flush()?;
         if durable {
@@ -157,7 +225,9 @@ fn finish(file: &Value, fake: &mut FakeWrite<'_>) -> Result<(), String> {
         return fake(&target, &data);
     }
     blocking(move || match &mut *file.lock().unwrap_or_else(PoisonError::into_inner) {
-        OpenFile::Writing { out, temporary, target, durable } => finish_writing(out, temporary, target, *durable),
+        OpenFile::Writing { out, temporary, target, durable } => {
+            finish_writing(out, temporary, target, *durable)
+        }
         _ => Ok(()),
     })
 }
@@ -194,15 +264,17 @@ pub(crate) fn real_file(handle: i64, method: &str, args: &[Value], span: Span) -
         _ => None,
     };
     let method = match (method, &data, size) {
-        ("write", Some(_), _) | ("read" | "read_line" | "sync", None, None) | ("read_chunk", None, Some(_)) => {
-            method.to_owned()
-        }
+        ("write", Some(_), _)
+        | ("read" | "read_line" | "sync", None, None)
+        | ("read_chunk", None, Some(_)) => method.to_owned(),
         ("read_chunk", None, None) => {
             return Err(Diagnostic::new("`read_chunk` takes how many bytes to read, 0 or more", span));
         }
         _ => return Err(Diagnostic::new(format!("a File has no method `{method}` that takes these"), span)),
     };
-    let done = blocking(move || file_work(&mut file.lock().unwrap_or_else(PoisonError::into_inner), &method, data, size));
+    let done = blocking(move || {
+        file_work(&mut file.lock().unwrap_or_else(PoisonError::into_inner), &method, data, size)
+    });
     Ok(match done {
         Ok(Given::Nothing) => Value::Ok(Rc::new(Value::Unit)),
         Ok(Given::Data(data)) => Value::Ok(Rc::new(Value::Bytes(Rc::from(data)))),
@@ -216,7 +288,12 @@ pub(crate) fn real_file(handle: i64, method: &str, args: &[Value], span: Span) -
 }
 
 /// The work of a `File`'s method, which may wait on the disk.
-fn file_work(file: &mut OpenFile, method: &str, data: Option<Vec<u8>>, size: Option<usize>) -> Result<Given, String> {
+fn file_work(
+    file: &mut OpenFile,
+    method: &str,
+    data: Option<Vec<u8>>,
+    size: Option<usize>,
+) -> Result<Given, String> {
     let io = |err: std::io::Error| err.to_string();
     match (method, file) {
         ("write", OpenFile::Writing { out, .. }) => {
@@ -294,30 +371,6 @@ fn line_text(mut line: Vec<u8>) -> Result<String, String> {
     String::from_utf8(line).map_err(|_| "this line isn't UTF-8 text".to_owned())
 }
 
-/// `File`'s methods written in Rust, as the interpreter calls them.
-fn file_method(
-    _: &mut Interp<'_>,
-    file: &Instance,
-    method: &str,
-    args: Vec<CallArg>,
-    span: Span,
-) -> Result<Value, Diagnostic> {
-    let Some(Value::Int(handle)) = file.field("_handle") else {
-        return Err(no_method(&Value::str("File"), method, span));
-    };
-    let args: Vec<Value> = args.into_iter().map(|arg| arg.value).collect();
-    crate::replay::value(format_args!("File.{method}"), span, || real_file(*handle, method, &args, span))
-}
-
-/// A method of the real `Fs`. A test's fake one is `fake_method`, which `TestWorld::method` runs.
-pub(crate) fn fs_method(method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
-        let paths: Vec<Value> = args.iter().map(path_text).collect();
-        if let ("only", [Value::Str(folder)]) = (method, paths.as_slice()) {
-            return Ok(crate::limits::Limited::to(Capability::Fs, vec![Rc::from(crate::limits::absolute(folder))]));
-        }
-        real_fs(method, &paths, span)
-}
-
 /// A method of a test's fake `Fs`, on paths as `path_text` gives them, with its files in memory,
 /// or nothing if the arguments are wrong.
 pub(crate) fn fake_method(
@@ -384,7 +437,7 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
         }
         ("write_text" | "write_bytes", [Value::Str(path), data @ (Value::Str(_) | Value::Bytes(_))]) => {
             let (path, data) = (path.to_string(), bytes_of(data).to_vec());
-            done(blocking(move || std::fs::write(path, data).map_err(io)), |()| Value::Unit)
+            done(blocking(move || write_whole(&path, &data).map_err(io)), |()| Value::Unit)
         }
         ("list_dir", [Value::Str(path)]) => {
             let folder = path.to_string();
@@ -416,7 +469,9 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
         ("metadata", [Value::Str(path)]) => {
             let path = path.to_string();
             let found = blocking(move || {
-                std::fs::metadata(path).map(|found| (found.len(), found.is_file(), found.is_dir())).map_err(io)
+                std::fs::metadata(path)
+                    .map(|found| (found.len(), found.is_file(), found.is_dir()))
+                    .map_err(io)
             });
             done(found, |(size, is_file, is_dir)| {
                 Value::made(
@@ -437,8 +492,11 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
             discard(file);
             Value::Unit
         }
-        ("exists" | "read_text" | "write_text" | "read_bytes" | "write_bytes" | "list_dir" | "walk" | "make_dir"
-        | "remove" | "metadata" | "_create" | "_open" | "_sqlite_open", _) => return wrong(),
+        (
+            "exists" | "read_text" | "write_text" | "read_bytes" | "write_bytes" | "list_dir" | "walk"
+            | "make_dir" | "remove" | "metadata" | "_create" | "_open" | "_sqlite_open",
+            _,
+        ) => return wrong(),
         _ => return Err(no_method(&Value::Capability(Capability::Fs), method, span)),
     })
 }
@@ -451,11 +509,22 @@ fn done<T>(result: Result<T, String>, made: impl FnOnce(T) -> Value) -> Value {
     }
 }
 
+/// A file's name as text. One that isn't text fails: changing it would name another file.
+fn name_of(name: std::ffi::OsString, folder: &str) -> std::io::Result<String> {
+    name.into_string().map_err(|odd| {
+        let shown = odd.to_string_lossy().into_owned();
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("a name in `{folder}` isn't UTF-8: {shown}"),
+        )
+    })
+}
+
 /// The names of what's in a folder, sorted so every system lists them in the same order.
 fn names_in(folder: &str) -> std::io::Result<Vec<String>> {
     let mut names = Vec::new();
     for entry in std::fs::read_dir(folder)? {
-        names.push(entry?.file_name().to_string_lossy().into_owned());
+        names.push(name_of(entry?.file_name(), folder)?);
     }
     names.sort();
     Ok(names)
@@ -474,7 +543,11 @@ pub(crate) fn paths_of(texts: &[String]) -> Value {
 
 /// The path of the thing called `name` in `folder`.
 pub(crate) fn joined(folder: &str, name: &str) -> String {
-    if folder.is_empty() || folder.ends_with('/') { format!("{folder}{name}") } else { format!("{folder}/{name}") }
+    if folder.is_empty() || folder.ends_with('/') {
+        format!("{folder}{name}")
+    } else {
+        format!("{folder}/{name}")
+    }
 }
 
 /// Every path under `folder`, onto `found`: each folder's before what's in it, and each folder's
@@ -483,7 +556,7 @@ pub(crate) fn joined(folder: &str, name: &str) -> String {
 fn walk_into(folder: &str, found: &mut Vec<String>) -> std::io::Result<()> {
     let mut names = Vec::new();
     for entry in std::fs::read_dir(folder)? {
-        names.push(entry?.file_name().to_string_lossy().into_owned());
+        names.push(name_of(entry?.file_name(), folder)?);
     }
     names.sort();
     for name in names {
@@ -504,7 +577,11 @@ pub(crate) fn io_error(reason: &str) -> Value {
 
 /// Removes a file, or a folder if it's empty.
 fn remove(path: &str) -> std::io::Result<()> {
-    if std::fs::symlink_metadata(path)?.is_dir() { std::fs::remove_dir(path) } else { std::fs::remove_file(path) }
+    if std::fs::symlink_metadata(path)?.is_dir() {
+        std::fs::remove_dir(path)
+    } else {
+        std::fs::remove_file(path)
+    }
 }
 
 /// A `Path`'s text, or a `str` as it is.

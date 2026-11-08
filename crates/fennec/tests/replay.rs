@@ -122,6 +122,41 @@ fn a_replay_that_asks_for_other_inputs_than_its_recording_stops_naming_both() ->
     Ok(())
 }
 
+const NAP: &str = "from std.time import Duration
+
+def main(stdout: Stdout, clock: Clock):
+    clock.sleep(Duration.millis(5))
+    stdout.print(clock.time())
+";
+
+/// Native code's `clock.sleep` is in its recording, so a replay of a program that no longer sleeps
+/// there stops, naming both.
+#[test]
+fn a_native_sleep_is_recorded_and_a_replay_without_it_stops() -> std::io::Result<()> {
+    if !runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("nap")?;
+    let program = dir.join("nap.fen");
+    std::fs::write(&program, NAP)?;
+    let log = dir.join("nap.log");
+    let (recorded, replayed) = recorded_and_replayed(&program, None, b"", &log)?;
+    assert_eq!(recorded.2, Some(0), "{}", recorded.1);
+    assert_eq!(replayed, recorded);
+    std::fs::write(&program, NAP.replace("    clock.sleep(Duration.millis(5))\n", ""))?;
+    let woke = outcome(
+        &fennec_command().args(["replay", &log.to_string_lossy()]).current_dir(&dir).output_within()?,
+    );
+    assert_ne!(woke.2, Some(0));
+    assert!(
+        woke.1.contains("asked for `Clock.time`, where its recording asked for `Clock.sleep`"),
+        "{}",
+        woke.1
+    );
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Whether an example runs more than one task, whose order between them isn't recorded yet, or
 /// serves until it's stopped, so its run doesn't end by itself.
 fn several_tasks_or_serves(source: &str) -> bool {

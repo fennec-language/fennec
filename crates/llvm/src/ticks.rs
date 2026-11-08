@@ -105,7 +105,6 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store i64 {TICKS}, ptr %ticks"));
         let parked = self.temp();
         self.line(&format!("{parked} = call i64 @fennec_task_tick()"));
-        self.stack_limit_again();
         self.line(&format!("br label %{ticked}"));
         self.start_block(&ticked);
     }

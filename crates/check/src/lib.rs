@@ -441,8 +441,10 @@ pub fn interpreter_refuses(signatures: &Signatures) -> Option<Diagnostic> {
         matches!(ty, Type::Sized(_)) || ty.children().into_iter().any(holds)
     }
     let found = signatures.types.functions.values().flat_map(|body| &body.exprs);
-    let ((start, end), ty) =
-        found.filter(|(_, ty)| holds(ty)).min_by_key(|((start, end), _)| (*start, *end))?;
+    let ((start, end), ty) = found
+        // The standard library's own code, as the sized numbers' functions, isn't the program's.
+        .filter(|((start, end), ty)| !Span { start: *start, end: *end }.in_prelude() && holds(ty))
+        .min_by_key(|((start, end), _)| (*start, *end))?;
     let span = Span { start: *start, end: *end };
     Some(
         Diagnostic::new(format!("the interpreter can't run sized numbers like {ty}"), span)
@@ -466,8 +468,10 @@ fn sized_value(signatures: &Signatures) -> Option<Diagnostic> {
         matches!(ty, Type::Sized(Num::U64 | Num::F32)) || ty.children().into_iter().any(holds)
     }
     let found = signatures.types.functions.values().flat_map(|body| &body.exprs);
-    let ((start, end), ty) =
-        found.filter(|(_, ty)| holds(ty)).min_by_key(|((start, end), _)| (*start, *end))?;
+    let ((start, end), ty) = found
+        // The standard library's own code, as the sized numbers' functions, isn't the program's.
+        .filter(|((start, end), ty)| !Span { start: *start, end: *end }.in_prelude() && holds(ty))
+        .min_by_key(|((start, end), _)| (*start, *end))?;
     let span = Span { start: *start, end: *end };
     Some(
         Diagnostic::new(format!("sized numbers like {ty} aren't built yet past the checker"), span)

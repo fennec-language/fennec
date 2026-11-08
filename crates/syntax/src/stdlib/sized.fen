@@ -27,7 +27,9 @@ extend i32:
     ## `x` as an i32, or an `InvalidValue` when it doesn't fit.
     def from(x: int) -> i32 fails InvalidValue:
         if x < -2147483648 or x > 2147483647:
-            fail InvalidValue(message=f"{x} doesn't fit in i32, which holds -2147483648 to 2147483647")
+            fail InvalidValue(
+                message=f"{x} doesn't fit in i32, which holds -2147483648 to 2147483647",
+            )
         i32(x)
 
     ## The i32 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.

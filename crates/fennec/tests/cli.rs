@@ -2504,25 +2504,19 @@ fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
     Ok(())
 }
 
-/// A program using a sized number checks as far as its types go, but a run and a build refuse it
-/// before anything's lowered, since nothing past the checker takes sized numbers yet.
+/// A plain run builds a program with an `f32` or a `u64` natively, as it does any other.
 #[test]
-fn a_build_refuses_sized_numbers_until_they_run() -> std::io::Result<()> {
+fn a_run_builds_u64_and_f32_natively() -> std::io::Result<()> {
     let dir = std::env::temp_dir().join(format!("fennec_build_sized_{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let program = dir.join("sized.fen");
-    std::fs::write(&program, "def main(stdout: Stdout):\n    x: u64 = 1\n    stdout.print(x)\n")?;
-    let program = program.to_string_lossy().into_owned();
-    let executable = dir.join("sized").to_string_lossy().into_owned();
-    for command in [vec!["build", &program, "-o", &executable], vec!["run", &program]] {
-        let refused = fennec(&command, "")?;
-        assert!(!refused.status.success(), "{command:?}");
-        let said = text(&refused.stderr);
-        assert!(
-            said.starts_with("error: sized numbers like u64 aren't built yet past the checker"),
-            "{command:?}: {said}"
-        );
-    }
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    x: u64 = 1\n    y: f32 = 0.1\n    stdout.print(x, y + 0.2)\n",
+    )?;
+    let ran = fennec(&["run", &program.to_string_lossy()], "")?;
+    assert!(ran.status.success(), "{}", text(&ran.stderr));
+    assert_eq!(text(&ran.stdout), "1 0.3\n");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

@@ -111,8 +111,28 @@ impl Emit<'_, '_, '_> {
             ("int", [value], [Some(Kind::Int)]) | ("float", [value], [Some(Kind::Float)]) => {
                 dest.and_then(|dest| self.copy(dest, value))
             }
-            (sized, [value], [Some(Kind::Int)]) if fennec_check::Num::named(sized).is_some() => {
-                dest.and_then(|dest| self.sized_from(dest, sized, value, span))
+            // `f32(x)`: the f32 nearest a number.
+            ("f32", [value], [Some(Kind::Int | Kind::Float | Kind::U64 | Kind::F32)]) => {
+                dest.and_then(|dest| self.nearest_f32(dest, value))
+            }
+            ("float", [value], [Some(Kind::F32)]) | ("u64", [value], [Some(Kind::U64)]) => {
+                dest.and_then(|dest| self.copy(dest, value))
+            }
+            ("float", [value], [Some(Kind::U64)]) => dest.and_then(|dest| {
+                let (word, _) = self.operand(value)?;
+                let float = self.temp();
+                self.line(&format!("{float} = uitofp i64 {word} to double"));
+                self.assign(dest, &float)
+            }),
+            ("int", [value], [Some(Kind::F32)]) => {
+                dest.and_then(|dest| self.float_to_int(dest, value, None, span))
+            }
+            (sized, [value], [Some(from @ (Kind::Int | Kind::U64))])
+                if fennec_check::Num::named(sized).is_some_and(|num| !num.is_float())
+                    || (sized == "int" && *from == Kind::U64) =>
+            {
+                let from = from.clone();
+                dest.and_then(|dest| self.sized_from(dest, sized, value, &from, span))
             }
             ("max" | "min", [list], [Some(Kind::List(_))]) => {
                 dest.and_then(|dest| self.extreme_of_list(dest, name, list, None, span))
@@ -238,13 +258,32 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `u8(x)`: an integer as one of a size, which stops the program, saying so, if it doesn't fit.
-    fn sized_from(&mut self, dest: LocalId, name: &str, value: &Operand, span: Span) -> Result<(), String> {
-        let num = fennec_check::Num::named(name).ok_or("no such size")?;
-        let (least, most) = num.range().ok_or("a size that isn't an integer")?;
+    /// `int(x)` of a `u64` is one too.
+    fn sized_from(
+        &mut self,
+        dest: LocalId,
+        name: &str,
+        value: &Operand,
+        from: &Kind,
+        span: Span,
+    ) -> Result<(), String> {
+        let (least, most) = match fennec_check::Num::named(name) {
+            Some(num) => num.range().ok_or("a size that isn't an integer")?,
+            None => (i128::from(i64::MIN), i128::from(i64::MAX)),
+        };
         let (word, _) = self.operand(value)?;
-        let (shifted, bad) = (self.temp(), self.temp());
-        self.line(&format!("{shifted} = sub i64 {word}, {least}"));
-        self.line(&format!("{bad} = icmp ugt i64 {shifted}, {}", most - least));
+        let bad = self.temp();
+        if *from == Kind::U64 {
+            // A `u64` is never below 0, so only its top can be too much.
+            self.line(&format!("{bad} = icmp ugt i64 {word}, {most}"));
+        } else if most > i128::from(i64::MAX) {
+            // Any int at least 0 fits in a `u64`.
+            self.line(&format!("{bad} = icmp slt i64 {word}, 0"));
+        } else {
+            let shifted = self.temp();
+            self.line(&format!("{shifted} = sub i64 {word}, {least}"));
+            self.line(&format!("{bad} = icmp ugt i64 {shifted}, {}", most - least));
+        }
         let (stops, fits) = (self.label("too_big"), self.label("fits"));
         self.line(&format!("br i1 {bad}, label %{stops}, label %{fits}, !prof !0"));
         self.start_block(&stops);
@@ -252,6 +291,24 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br label %{fits}"));
         self.start_block(&fits);
         self.assign(dest, &word)
+    }
+
+    /// `f32(x)`: the nearest `f32`, held as the `float` it is exactly.
+    fn nearest_f32(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
+        let (number, kind) = self.operand(value)?;
+        // An int rounds straight to an `f32`: through a `float` it could round twice.
+        let to = match kind {
+            Kind::Int => "sitofp i64",
+            Kind::U64 => "uitofp i64",
+            _ => {
+                let nearest = self.rounded_to_f32(&number);
+                return self.assign(dest, &nearest);
+            }
+        };
+        let (narrow, nearest) = (self.temp(), self.temp());
+        self.line(&format!("{narrow} = {to} {number} to float"));
+        self.line(&format!("{nearest} = fpext float {narrow} to double"));
+        self.assign(dest, &nearest)
     }
 
     /// `int(text)` or `float(text)`: `Ok` with the number, or `Err` with an `InvalidValue`.

@@ -64,6 +64,10 @@ impl Lowering<'_> {
         if matches!(value, Operand::Int(_)) && matches!(to, Type::Sized(_)) {
             return Ok(value);
         }
+        // A float written out where an `f32` goes is the nearest `f32`.
+        if let (Operand::Float(written), Type::Sized(fennec_check::Num::F32)) = (&value, to) {
+            return Ok(Operand::Float(nearest_f32(*written)));
+        }
         match to {
             Type::Optional(inner) => {
                 let value = self.coerce(value, inner, span)?;
@@ -466,4 +470,10 @@ fn stop_on_failure(function: &mut Function, span: Span) {
         added.push(Block { insts: Vec::new(), end: Terminator::Return(None) });
     }
     function.blocks.extend(added);
+}
+
+/// The `f32` nearest a float, as the float it is exactly.
+#[expect(clippy::cast_possible_truncation, reason = "rounding to the nearest f32 is what's meant")]
+pub(crate) fn nearest_f32(value: f64) -> f64 {
+    f64::from(value as f32)
 }

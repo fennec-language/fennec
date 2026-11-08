@@ -251,8 +251,14 @@ const CELL_SHAPE: u64 = SHAPE_BITS - 1;
 /// through the runtime (see `threads`).
 pub const OWNER_SHIFT: u32 = 48;
 
+/// Where a block's shape word holds which task on its thread made it, in the bits below the thread.
+const TASK_SHIFT: u32 = 24;
+
+/// The bits of a shape word that say which task made a block.
+const TASK_BITS: u64 = ((1 << OWNER_SHIFT) - 1) & !SHAPE_BITS;
+
 /// The bits of a shape word that say the shape.
-pub const SHAPE_BITS: u64 = (1 << OWNER_SHIFT) - 1;
+pub const SHAPE_BITS: u64 = (1 << TASK_SHIFT) - 1;
 
 /// Whether a block is a `shared` value's own, by the number in its shape word.
 pub(super) fn is_handle_block(block: &[u64]) -> bool {
@@ -264,7 +270,15 @@ pub(crate) fn shape_word(block: &[u64]) -> Option<u64> {
     block.get(1).map(|word| word & SHAPE_BITS)
 }
 
-/// Sets the thread a block was made by, in its shape word.
+/// A task's mark for the blocks it makes, from its number on its thread, never 0, which is what a
+/// thread makes outside any task. Two tasks alive together could only share one after one of them
+/// has seen 16 million others start on its thread.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn task_mark(task: u64) -> u64 {
+    ((task % (TASK_BITS >> TASK_SHIFT)) + 1) << TASK_SHIFT
+}
+
+/// Sets the thread and task a block was made by, in its shape word.
 pub(super) fn mark_owner(block: &mut [u64], owner_bits: u64) {
     if let Some(word) = block.get_mut(1) {
         *word = (*word & SHAPE_BITS) | owner_bits;
@@ -476,7 +490,7 @@ impl Heap {
     pub(crate) fn insert(&mut self, mut block: Box<[u64]>) -> i64 {
         self.allocated(u64::try_from(block.len()).unwrap_or(0) * 8);
         let address = block.as_ptr().addr();
-        if self.owner_bits != 0 {
+        if self.owner_bits >> OWNER_SHIFT != 0 {
             mark_owner(&mut block, self.owner_bits);
             // What's made under a lock stays with what the lock guards, and a server's tasks hand
             // nothing over.
@@ -500,17 +514,29 @@ impl Heap {
     /// Puts `made` in place of the blocks this heap's made since it last handed them over, and
     /// those in `made`'s place: for a parked range, which keeps its own.
     #[cfg(any(test, feature = "threads"))]
-    pub(super) fn swap_made(&mut self, made: &mut Vec<u64>) {
+    pub(super) fn swap_made(&mut self, made: &mut Vec<u64>, task: &mut u64) {
         std::mem::swap(&mut self.made, made);
+        // The main thread's blocks hold no thread's number, and it doesn't hand any over.
+        if self.owner_bits >> OWNER_SHIFT != 0 {
+            let was = self.owner_bits & TASK_BITS;
+            self.owner_bits = (self.owner_bits & !TASK_BITS) | *task;
+            *task = was;
+        }
     }
 
     /// Takes every block this heap made after it had made `since`, and that doesn't live for
     /// the whole run, for another thread's heap to adopt: what a task made that outlives it.
     pub(crate) fn hand_over(&mut self, since: usize) -> Vec<Box<[u64]>> {
         let mut handed = Vec::new();
+        let task = self.owner_bits & TASK_BITS;
         for address in self.made.split_off(since.min(self.made.len())) {
+            // An address it freed may have come back as another task's block.
+            let block = self.block(address);
+            if block.and_then(|block| block.get(1)).is_none_or(|word| word & TASK_BITS != task) {
+                continue;
+            }
+            let lives = block.and_then(<[u64]>::first).is_some_and(|count| *count < IMMORTAL);
             self.forget_place(address);
-            let lives = self.block(address).and_then(<[u64]>::first).is_some_and(|count| *count < IMMORTAL);
             if lives && let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(at))
             {
                 handed.push(block);
@@ -1533,7 +1559,9 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
         // Compare the lengths and the bytes in use, not the room to grow.
         let length = left.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
         let text = TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + length.div_ceil(8);
-        return left.get(1..4) == right.get(1..4) && left.get(text.clone()) == right.get(text);
+        return shape_word(left) == shape_word(right)
+            && left.get(2..4) == right.get(2..4)
+            && left.get(text.clone()) == right.get(text);
     }
     if super::dicts::is_dict(state, left) {
         return super::dicts::equal(state, left, right);

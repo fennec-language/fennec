@@ -108,7 +108,11 @@ pub(crate) struct Checker {
     previous: BTreeMap<String, Signature>,
     /// The functions that used each function's signature, so they're checked again when it
     /// changes.
-    callers: BTreeMap<String, BTreeSet<String>>,
+    pub(crate) callers: BTreeMap<String, BTreeSet<String>>,
+    /// What each function waits on itself: a network call, a sleep, a channel.
+    pub(crate) waits: BTreeMap<String, String>,
+    /// The calls made inside lock bodies, judged once every function's waits are known.
+    pub(crate) lock_calls: Vec<crate::waits::LockCall>,
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
@@ -188,6 +192,8 @@ impl Checker {
             revisit: BTreeSet::new(),
             previous: BTreeMap::new(),
             callers: BTreeMap::new(),
+            waits: BTreeMap::new(),
+            lock_calls: Vec::new(),
             diagnostics,
         }
     }
@@ -213,6 +219,7 @@ impl Checker {
             self.check_implicit_methods();
         }
         self.revisit_cycles();
+        self.waits_under_locks();
         self.fails_unsaid();
         for name in self.program.constants.keys().cloned().collect::<Vec<_>>() {
             self.constant_type(&name);
@@ -748,7 +755,7 @@ impl Checker {
 
     /// The function a nested function is in, all the way out: nested functions are checked
     /// again with the function around them, which gives them the names they read.
-    fn outermost(&self, key: &str) -> String {
+    pub(crate) fn outermost(&self, key: &str) -> String {
         let mut key = key.to_owned();
         while let Some(entry) = self.program.functions.get(&key)
             && entry.owner.is_none()

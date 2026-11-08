@@ -114,7 +114,7 @@ uppercased = [copy(person, name=person.name.upper()) for person in people]
 
 ## Sized numbers
 
-Built: all ten run natively, apart from the few gaps the list below names. The interpreter can't run them, so `fennec test` refuses them for now.
+Built: all ten run natively, apart from the few gaps the list below names.
 
 ```fennec
 # the everyday types stay as they are: int is i64, float is f64
@@ -218,7 +218,7 @@ def main(stdout: Stdout):
 - A `shared` value is made in a function, usually `main`, and passed to whoever needs it, like a capability. There's no top-level shared state, so a function's signature says what shared state it touches.
 - Making one from a plain value is written out, as `shared scores = Scores()`. A plain value never becomes `shared` at a call. Built.
 - It's reached only inside `lock x as s:`, to read, or `lock x as ref s:`, to change. Any way out of the block releases it, `?`, `fail` and `return` included. Leaving with `return`, `break` or `continue` keeps the changes made so far, and a crash undoes them, below. Built. A `fail` or `?` leaving `lock ... as ref` will undo them too. Not built yet: today it keeps them.
-- **No waiting inside a lock:** no channel receives, pool takes, network calls, `parallel`, or the end of a `with launch`. Printing and local files are fine. Wait first, then lock.
+- **No waiting inside a lock:** no channel sends or receives, pool takes, network calls, `clock.sleep`, `parallel`, a `lend`, or the end of a `with launch`. Printing and local files are fine. Wait first, then lock. It's a compile error, traced across the whole program through calls, methods and interfaces, however many calls down the wait is. Built. A call through a function value held in a name isn't followed yet.
 - **Deadlocks can't compile.** Lock order is checked across the whole program, by where each `shared` value is made. Two values the compiler can't tell apart, like two accounts from one dict, are locked together in one statement: `lock accounts[from_id], accounts[to_id] as ref source, ref target:`. Locking the same value twice that way fails, rather than stopping the program.
 - Interfaces and function values are traced across the whole program, which is always compiled together, so nothing needs a `locks` annotation. An error names the implementation that takes the lock.
 - A `shared` value holds plain values and other `shared` values, never something borrowed from a `with`. It never holds one of its own type, and never forms a cycle, so a tree uses a `Table` and `Id`s. It can't store a function that captures a `shared` value.
@@ -455,7 +455,7 @@ back = json.loads[World](text)?
 - A `Table` saves as a list of its items in order, and an `Id` as where its item is in that list. Loading makes a new `Table`, and every `Id` loaded with it finds its item there. An `Id` has to be in a `Table` saved with it. Built.
 - A union saves tagged with its member's type name, as in `{"Circle": {"radius": 1.0}}`. Built.
 - `@skip` and `@serialize(name="uid")` on a field say how it's saved. Built. A kit may define annotations of its own for fields, which generic code reads through `fields(T)`, and neither is built yet. A function takes only `@hot`, so routes are registered in plain code, as in `router.get("/todos/{id}", show_todo)`.
-- A `Secret[str]`, from `std.crypto`, can't be saved, printed or logged, and its text comes out only through `expose_secret()`, whose name says so. Printing one, an f-string or `str()` of one, and saving one in any format are compile errors, and so is doing any of those to something that holds one. Printed through a generic function's `T`, it shows `Secret(hidden)`. `==` on two secrets compares them in constant time, so its timing never says where they differ, and a secret of anything but text or bytes can't be compared. Built. `Secret.of(text)` makes one, and `Secret[bytes]` holds a key. A server's `Certificate`, from `std.net`, holds its private key as one, beside its chain of certificates.
+- A `Secret[str]`, from `std.crypto`, can't be saved, printed or logged, and its text comes out only through `expose_secret()`, whose name says so. Printing one, an f-string or `str()` of one, and saving one in any format are compile errors, and so is doing any of those to something that holds one. Printed through a generic function's `T`, in a failed `assert` or in the failure that ends `main`, it shows `Secret(hidden)`. `==` on two secrets compares them in constant time, so its timing never says where they differ, and a secret of anything but text or bytes can't be compared. Built. `Secret.of(text)` makes one, and `Secret[bytes]` holds a key. A server's `Certificate`, from `std.net`, holds its private key as one, beside its chain of certificates.
 
 Loading is safe on untrusted input:
 
@@ -463,7 +463,7 @@ Loading is safe on untrusted input:
 - Every `Id` resolves within its own document, and each `Table` carries a tag that's never reused, so an `Id` from one `Table` finds nothing in another of the same type. Built.
 - `where` rules run again on load, so a value that breaks one fails the load. Built.
 - Unknown fields are refused unless `extra=` says otherwise: `json.loads[Settings](text, extra=.ignore)`. Built for JSON. TOML always refuses them, and doesn't take `extra=` yet. `std.pack` loads data from an earlier version of a type by its fields' names: a field the data has and the type doesn't is passed over, a field the type has and the data doesn't takes its default, and one with no default fails the load, naming it. Cases and union members are found by name too, and an `int` field that's a `float` now reads as one. Built. Each value from `dumps` carries its type's layout, its field and case names. A `pack.Packer` writes many values with each layout once, and `pack.Unpacker` reads them back, from a file or fed from a stream. A lock file of past layouts will let even single values leave the layout out.
-- Untrusted input has depth and size limits. `std.pack` limits nesting, each string's length and the total it reads, before allocating anything. Built. JSON and TOML limit nesting to 500 deep, and don't limit size, string length or collection length yet.
+- Untrusted input has depth and size limits. `std.pack` limits nesting, each string's length, the total it reads and how many items that take no bytes it makes, so bytes can't ask for far more memory than they are. Built. JSON and TOML limit nesting to 500 deep, and don't limit size, string length or collection length yet.
 
 ## Templates
 
@@ -582,7 +582,7 @@ def main(net: Net, fs: Fs, clock: Clock):
 ## Building
 
 - `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, it says why, as `fennec build` does, and `fennec test` fails the tests that reach it. Built: `fennec` has no interpreter. The JIT is removed, and the commit before got the tag `before-jit-interpreter-removal`. Built.
-- A native program carries no interpreter: `fennec build` links one runtime with no interpreter in it, and the program's syntax isn't in the image, so a hello-world is about 1.1 MB. Built. The interpreter still stands in for `fennec run` and runs `fennec test`, and goes from `fennec` itself next. Not built yet.
+- A native program carries no interpreter: `fennec build` links one runtime with no interpreter in it, and the program's syntax isn't in the image, so a hello-world is about 1.1 MB. Built.
 - The launcher runs the toolchain a kit asks for, `fennec = "0.4.2"` in `kit.toml`, pinned by its signed manifest's hash in `kit.lock`. It fetches one only when it's missing, and never with `--offline`, and only `fennec update` moves a pin. Built, as `fennec-launcher` for now. No release keys are made yet, so nothing it fetches verifies today.
 - A release's archives are the same bytes however often and wherever they're built, so anyone can build one again from its tag and check it against the signed manifest. CI builds each platform twice and compares them. Built.
 - `fennec build` makes a native program through LLVM, and `fennec build --release` optimizes the whole program as one. Built.

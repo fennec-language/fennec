@@ -217,7 +217,10 @@ impl Moving<'_> {
                     self.block(body);
                 }
             }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+            StmtKind::While { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::With { body, .. }
+            | StmtKind::OnFailure { body, .. } => {
                 self.block(body);
             }
             _ => {}

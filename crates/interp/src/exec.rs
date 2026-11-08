@@ -96,6 +96,8 @@ impl Interp<'_> {
             }
             StmtKind::If { branches, otherwise } => self.if_stmt(branches, otherwise.as_deref()),
             StmtKind::While { cond, body } => self.while_loop(cond, body),
+            // Only native code has failures that leave from inside what's called.
+            StmtKind::OnFailure { body, .. } => self.exec_block(body),
             StmtKind::For { names, is_mut, iter, body } => self.for_loop(names, *is_mut, iter, body),
             // The `mut` form of `def []` says where its item is.
             StmtKind::Return(Some(value)) if self.naming_place == Some(self.depth) => {

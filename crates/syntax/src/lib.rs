@@ -10,6 +10,7 @@ pub mod fuse;
 mod lexer;
 mod modules;
 mod parser;
+pub mod read;
 pub mod rename;
 mod sources;
 mod span;

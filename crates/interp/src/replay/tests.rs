@@ -165,6 +165,7 @@ fn tasks_take_their_turns_at_a_place_in_the_recorded_order() {
                 let got =
                     turn_in(&player, ("0:c0", what), Duration::from_secs(5), std::thread::yield_now).unwrap();
                 order.lock().unwrap().push((name, got));
+                end_turn(&player, "0:c0");
             }
         })
     };
@@ -184,6 +185,7 @@ fn a_turn_the_recording_doesnt_have_is_a_divergence() {
     let why = turn_in(&player, ("0:c0", "close"), Duration::ZERO, std::thread::yield_now);
     assert!(why.is_err_and(|why| why.contains("`0 close`") && why.contains("`0 send`")));
     assert_eq!(turn_in(&player, ("0:c0", "send"), Duration::ZERO, std::thread::yield_now), Ok(0));
+    end_turn(&player, "0:c0");
     let why = turn_in(&player, ("0:c0", "send"), Duration::ZERO, std::thread::yield_now).unwrap_err();
     assert!(why.contains("nothing more"), "{why}");
 }

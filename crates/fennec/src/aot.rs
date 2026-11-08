@@ -274,6 +274,13 @@ pub(crate) fn llvm_ready() -> bool {
     linker_here() && fennec_llvm::Tools::find().is_ok() && runtime_library(Runtime::Plain, false).is_ok()
 }
 
+/// Why the plain runtime library beside `fennec` can't be used when it's there: it's from another
+/// build of Fennec. `None` when it's fine, or isn't there at all.
+pub(crate) fn stale_runtime() -> Option<String> {
+    let path = runtime_folder(false).ok()?.join(Runtime::Plain.library());
+    path.is_file().then(|| runtime_library(Runtime::Plain, false).err()).flatten()
+}
+
 /// Builds a checked program through LLVM to `output`, or says why LLVM can't: a function it
 /// doesn't take yet, or a tool or library that isn't there.
 pub(crate) fn executable(
@@ -771,11 +778,20 @@ fn runtime_folder(statically: bool) -> Result<PathBuf, String> {
     Ok(if statically { beside.join("musl") } else { beside })
 }
 
-/// The runtime library, next to the `fennec` command, or in its `musl` folder.
+/// The runtime library, next to the `fennec` command, or in its `musl` folder. One built from
+/// other source than this `fennec` is refused, saying how to build it again, since linking a
+/// program with it fails in ways that say nothing about why.
 fn runtime_library(runtime: Runtime, statically: bool) -> Result<PathBuf, String> {
     let path = runtime_folder(statically)?.join(runtime.library());
     if path.is_file() {
-        Ok(path)
+        match stamp_of(&path) {
+            Some(build) if build != env!("FENNEC_BUILD") => Err(format!(
+                "the runtime library `{}` is from another build of Fennec than this `fennec`: build it again with {}, or install both again with `.github/scripts/install.sh` from the Fennec checkout",
+                path.display(),
+                runtime.how_to_build()
+            )),
+            _ => Ok(path),
+        }
     } else {
         Err(format!(
             "the runtime library `{}` should be at {}; build it with {}",
@@ -786,8 +802,50 @@ fn runtime_library(runtime: Runtime, statically: bool) -> Result<PathBuf, String
     }
 }
 
+/// The build a runtime library's bytes are stamped with: the 64 hex digits after its marker.
+fn stamp_in(bytes: &[u8]) -> Option<String> {
+    let marker = ["fennec-runtime-", "build:"].concat().into_bytes();
+    let at = bytes.windows(marker.len()).position(|window| window == marker.as_slice())? + marker.len();
+    let hex = std::str::from_utf8(bytes.get(at..at + 64)?).ok()?;
+    hex.bytes().all(|digit| digit.is_ascii_hexdigit()).then(|| hex.to_owned())
+}
+
+/// The build of Fennec a runtime library is from, as its stamp says, or `None` when it has none,
+/// like one from before stamps. Reading a library whole takes a while, so what it says is kept in the
+/// store by the file's path, size and when it changed.
+fn stamp_of(path: &Path) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let changed = metadata.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    let name =
+        fennec_blake3::hash(format!("{}\n{}\n{changed}", path.display(), metadata.len()).as_bytes()).to_hex();
+    let cache = crate::run::cache();
+    if let Some(kept) = cache.as_ref().and_then(|cache| cache.read("runtime-stamps", &name)) {
+        return String::from_utf8(kept).ok().filter(|build| !build.is_empty());
+    }
+    let build = stamp_in(&std::fs::read(path).ok()?);
+    if let Some(cache) = &cache {
+        // A store that can't be written only means reading the library again next time.
+        let _ = cache.write("runtime-stamps", &name, build.as_deref().unwrap_or("").as_bytes());
+    }
+    build
+}
+
 #[cfg(test)]
 mod tests {
+    /// A runtime library's stamp is read from among its bytes, and one with none, or with a
+    /// marker that isn't followed by a build's hash, has no stamp.
+    #[test]
+    fn a_runtime_librarys_stamp_is_read_from_its_bytes() {
+        let build = "7e45e88e148429f54d5c3f2e10f914c2c9be0b18e8026e3c3290c9a9f7371d37";
+        let library =
+            [b"\x00archive\x7f".as_slice(), b"fennec-runtime-build:", build.as_bytes(), b"fennec_fail"]
+                .concat();
+        assert_eq!(super::stamp_in(&library).as_deref(), Some(build));
+        assert_eq!(super::stamp_in(b"an old library with no stamp"), None);
+        assert_eq!(super::stamp_in(b"fennec-runtime-build:short"), None);
+        assert_eq!(super::stamp_in(&[b"fennec-runtime-build:".as_slice(), &[b'z'; 64]].concat()), None);
+    }
+
     /// The main thread's stack an executable is linked with on macOS is the one the runtime
     /// counts on to run the program there.
     #[test]

@@ -2973,10 +2973,10 @@ fn with_launch_lowers() {
 /// brackets, which reads as one type, and the program checks again and lowers.
 #[test]
 fn a_task_failing_several_ways_lowers() {
-    let source = "from std.concurrent import Channel, Closed, Crashed, Timeout\n\n\
+    let source = "from std.concurrent import Channel, Closed, Crashed, Timeout, channel\n\n\
         def tell(replies: Channel[int]) fails Closed | Timeout:\n    replies.send(1)?\n\n\
         def main(stdout: Stdout) fails Closed | Crashed | Timeout:\n    \
-        with Channel[int].open(size=4) as replies:\n        with launch(() => tell(replies))?:\n            pass\n        \
+        with channel[int](size=4) as replies:\n        with launch(() => tell(replies))?:\n            pass\n        \
         stdout.print(replies.receive()?)\n";
     let program = lowered(source).unwrap();
     assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);

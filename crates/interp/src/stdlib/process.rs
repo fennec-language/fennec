@@ -17,27 +17,14 @@ pub(crate) const MODULE: Module = Module { functions: &[], call: no_functions, c
 
 impl Interp<'_> {
     pub(crate) fn process_method(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
-        let faked = self.world.as_ref().is_some_and(|world| !world.real());
+        // A test's fake `Process` is `TestWorld::process`.
         match (method, args) {
             (run, _) if run == "run" || run.starts_with("run.") => {
                 let (program, arguments, options) = run_of(run, args, span)?;
-                if faked {
-                    return Ok(self.fake_run(&program, arguments));
-                }
                 self.start_program(&program, &arguments, &options)
             }
-            ("script", [Value::Str(program), output @ Value::Instance(_)]) if faked => {
-                if let Some(world) = &mut self.world {
-                    world.scripts.insert(program.to_string(), output.clone());
-                }
-                Ok(Value::Unit)
-            }
             ("only", [Value::Str(program)]) => Ok(crate::limits::Limited::to(Capability::Process, vec![Rc::clone(program)])),
-            ("ran", []) => {
-                let ran = self.world.as_ref().map(|world| world.ran.clone()).unwrap_or_default();
-                let lists = ran.iter().map(|run| Value::list(run.iter().map(|part| Value::str(part)).collect()));
-                Ok(Value::list(lists.collect()))
-            }
+            ("ran", []) => Ok(Value::list(Vec::new())),
             ("script", _) => Err(wrong(method, span)),
             _ => Err(no_method(&Value::Capability(Capability::Process), method, span)),
         }
@@ -50,23 +37,6 @@ impl Interp<'_> {
         Ok(run_program(program, arguments, options))
     }
 
-    /// What a test's fake `Process` gives back for `program`: what the test scripted for it,
-    /// or a `ProcessError` saying nothing was.
-    fn fake_run(&mut self, program: &str, arguments: Vec<String>) -> Value {
-        let scripted = self.world.as_mut().and_then(|world| {
-            let mut run = vec![program.to_owned()];
-            run.extend(arguments);
-            world.ran.push(run);
-            world.scripts.get(program).cloned()
-        });
-        if let Some(output) = scripted {
-            return Value::Ok(Rc::new(output));
-        }
-        let message = format!(
-            "the test's fake Process has nothing scripted for `{program}`: give it what to answer with `process.script(\"{program}\", Output(...))`"
-        );
-        process_error(program, &message)
-    }
 
 }
 

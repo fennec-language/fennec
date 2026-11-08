@@ -281,6 +281,11 @@ impl<'c> FnCx<'c> {
         // A function that leaves with a bare `return` gives back nothing, so the value its
         // last line happens to have is dropped.
         let bare = !values.is_empty() && values.iter().all(|ty| *ty == Type::Unit);
+        if let (false, false, Some(StmtKind::Expr(last))) =
+            (bare, cx.lends.is_some(), def.body.last().map(|stmt| &stmt.kind))
+        {
+            cx.passes_up_unmarked(last, &flow.ty);
+        }
         if !flow.exits && bare {
             if let (Type::Result(..), Some(last)) = (cx.checker.settled(&flow.ty), def.body.last()) {
                 cx.error(crate::messages::unhandled(last.span));
@@ -373,6 +378,33 @@ impl<'c> FnCx<'c> {
     pub(crate) fn written_type(&self, written: &fennec_syntax::TypeExpr) -> Option<Type> {
         let names: Vec<String> = self.generics.iter().map(|generic| generic.name.clone()).collect();
         self.checker.program.resolve_in(written, &names).ok()
+    }
+
+    /// Reports a failure passed up with no `?`: `return load(path)`, or a last line `load(path)`,
+    /// gives back what can fail as it is. `?` is how a failure passes up, everywhere, so the
+    /// reader sees each place one can. `return Err(...)`, and a function that says it gives back
+    /// a `Result`, give back a value.
+    pub(crate) fn passes_up_unmarked(&mut self, value: &Expr, actual: &Type) {
+        if !matches!(self.checker.settled(actual), Type::Result(..))
+            || !(self.fallible || self.declared.is_none())
+            || self.generator
+            || matches!(self.declared, Some(Type::Result(..)))
+        {
+            return;
+        }
+        match &value.kind {
+            ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Name(name) if name == "Err" || name == "Ok") =>
+                {}
+            ExprKind::Match { .. } | ExprKind::Cond { .. } => {}
+            _ => {
+                let end = Span { start: value.span.end, end: value.span.end };
+                self.error(
+                    Diagnostic::new("this can fail, and a failure passes up only with `?`", value.span)
+                        .with_help("write `?` after it: `fennec fix` makes this change")
+                        .with_fix(end, "?"),
+                );
+            }
+        }
     }
 
     /// Checks a value returned from a function whose return type is written.

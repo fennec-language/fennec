@@ -1902,9 +1902,9 @@ impl Emit<'_, '_, '_> {
         }
         let first = args.first();
         match name {
-            // A test's `Stdout` is a fake that keeps what's printed, which the runtime holds.
-            "Stdout.print" if !self.module.shared.traced => self.print(args.get(1..).unwrap_or_default()),
-            "Stdout.write" if !self.module.shared.traced => self.write(args.get(1..).unwrap_or_default()),
+            // A test's `Stdout` keeps what's printed, which the runtime does as it prints.
+            "Stdout.print" => self.print(args.get(1..).unwrap_or_default()),
+            "Stdout.write" => self.write(args.get(1..).unwrap_or_default()),
             "array.new" => self.new_array(dest.ok_or("an array made for nothing")?, args),
             "list.len" => {
                 if let Some(Operand::Local(local)) = first

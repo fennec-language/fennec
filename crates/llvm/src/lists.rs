@@ -1303,7 +1303,8 @@ impl Emit<'_, '_, '_> {
             }
             return Ok(());
         }
-        let inside = matches!(object, Operand::Local(local) if self.known.inside(*local, index));
+        let inside = matches!(object, Operand::Local(local) if self.known.inside(*local, index))
+            || self.known.guarded_read(self.at);
         if let Operand::Local(local) = object
             && self.is_id_map(&self.kind_of(*local)?.clone())
         {

@@ -90,10 +90,16 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     let Some(pool) = super::super::parallel::for_server() else {
         return fail("couldn't serve: this program has no workers to serve on".to_owned());
     };
-    let started = |stopper| STOPPERS.lock().unwrap_or_else(PoisonError::into_inner).push(stopper);
+    let id = Cell::new(None);
+    let started = |stopper: Stopper| {
+        id.set(Some(stopper.id()));
+        STOPPERS.lock().unwrap_or_else(PoisonError::into_inner).push(stopper);
+    };
     super::super::write_kept_output();
     let lent = threads::lend();
     let finished = super::serve(listener, pool, Some(&lent), &handler, (started, call.as_ref(), tls));
+    // Ended, it's nothing left to stop.
+    STOPPERS.lock().unwrap_or_else(PoisonError::into_inner).retain(|stopper| Some(stopper.id()) != id.get());
     threads::take_back(lent);
     threads::settle(finished.owners);
     let failure = passed.lock().unwrap_or_else(PoisonError::into_inner).take();

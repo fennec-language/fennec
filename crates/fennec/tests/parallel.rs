@@ -483,6 +483,43 @@ fn workers_take_turns_at_shared_values_holding_blocks() -> std::io::Result<()> {
     Ok(())
 }
 
+/// When a server's loop ends, the blocks it lent to its rounds come back, so what runs next can
+/// read and lend them.
+#[test]
+fn what_a_server_borrowed_comes_back_when_it_ends() -> std::io::Result<()> {
+    use std::io::{BufRead as _, BufReader, Read as _};
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-after-server-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/blocks_after_a_server.fen");
+    let built = build_on_threads(&dir, source, "blocks_after_a_server")?;
+    for threads in ["1", "2", "4"] {
+        let mut server = Command::new(&built)
+            .env("FENNEC_THREADS", threads)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        let mut out = BufReader::new(server.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
+        let mut port = String::new();
+        out.read_line(&mut port)?;
+        let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        let mut back = String::new();
+        BufReader::new(stream).read_line(&mut back)?;
+        let mut rest = String::new();
+        out.read_to_string(&mut rest)?;
+        assert!(server.wait()?.success(), "on {threads} threads");
+        assert_eq!(
+            rest, "word number long enough to sit in a block of its own 3!\n5001 x\n",
+            "on {threads} threads"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Runs a built server on `threads` threads, says `lines` to it, one connection each, and waits at
 /// most 15 seconds for it to end, the connections staying open. Gives back what it printed after its
 /// port, and its exit code.

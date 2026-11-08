@@ -471,7 +471,8 @@ struct Server {
     id: u64,
     handler: Handler,
     /// What the thread serving it lends its tasks.
-    lent: Option<Arc<super::table::Table>>,
+    /// Taken back when the call serving ends, so that its table comes back whoever holds this.
+    lent: Mutex<Option<Arc<super::table::Table>>>,
     /// Which worker the next connection goes to, in turn.
     next: AtomicUsize,
     /// What each worker served, added in as it leaves, and the count of those still serving.
@@ -633,7 +634,7 @@ impl Io {
 
     /// Joins a server: its tasks can read what's lent, and the worker given its listener accepts.
     fn join(&mut self, server: Arc<Server>, mut listener: Option<TcpListener>) {
-        super::threads::serving_starts(server.lent.clone());
+        super::threads::serving_starts(server.lent.lock().unwrap_or_else(PoisonError::into_inner).clone());
         if let Some(listener) = &mut listener
             && self.poll.registry().register(listener, server.token(), Interest::READABLE).is_err()
         {
@@ -1225,6 +1226,11 @@ pub struct Stopper {
 }
 
 impl Stopper {
+    /// Which server it stops.
+    pub(super) fn id(&self) -> u64 {
+        self.server.id
+    }
+
     pub fn stop(&self) {
         let id = self.server.id;
         for at in 0..self.pool.threads() {
@@ -1247,7 +1253,7 @@ pub(super) fn serve(
     let server = Arc::new(Server {
         id: NEXT_SERVER.fetch_add(1, Ordering::Relaxed),
         handler: Arc::clone(handler),
-        lent: lent.cloned(),
+        lent: Mutex::new(lent.cloned()),
         next: AtomicUsize::new(0),
         total: Mutex::new(Served::default()),
         left: Latch::of(workers),
@@ -1265,6 +1271,7 @@ pub(super) fn serve(
     }
     started(Stopper { server: Arc::clone(&server), pool });
     server.left.wait();
+    server.lent.lock().unwrap_or_else(PoisonError::into_inner).take();
     std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
@@ -1282,7 +1289,7 @@ pub(super) fn serve_replayed(
     let server = Arc::new(Server {
         id: NEXT_SERVER.fetch_add(1, Ordering::Relaxed),
         handler: unused,
-        lent: lent.cloned(),
+        lent: Mutex::new(lent.cloned()),
         next: AtomicUsize::new(0),
         total: Mutex::new(Served::default()),
         left: Latch::of(workers),
@@ -1304,6 +1311,7 @@ pub(super) fn serve_replayed(
         pool.run_on(to, Box::new(move |io: &mut Io| io.take_recorded(id, n)));
     }
     server.left.wait();
+    server.lent.lock().unwrap_or_else(PoisonError::into_inner).take();
     std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
 }
 

@@ -265,9 +265,28 @@ def main(net: Net, stdout: Stdout):
 
 A crash in one connection's task ends only that task, and the server keeps serving.
 
+## A task beside you
+
+`with launch(...)` runs a function beside the block until the block ends, so no task outlives the code that started it. A parameter typed `Inbox[T]` gives the task a channel, and the `as` name is its sending end. The `?` on the line covers the task's own failures and `Crashed`:
+
+```fennec
+from std.concurrent import Inbox, Crashed, Closed, Timeout
+
+def total(inbox: Inbox[int], stdout: Stdout):
+    stdout.print(sum(number for number in inbox))
+
+def main(stdout: Stdout) fails Crashed | Closed | Timeout:
+    with launch((inbox) => total(inbox, stdout), stop_after=1s)? as numbers:
+        for number in range(5):
+            numbers.send(number)?
+    stdout.print("after")
+```
+
+When the block ends, the task's inbox closes, the task sums what it was sent and prints `10`, and only then does `after` print. Channels are always bounded, so `send` waits when the task falls behind. This builds natively; the interpreter refuses it.
+
 ## Hashing
 
-`std.crypto` gives `blake3` and `sha256` as lowercase hex, for text or `bytes`, plus `keyed_blake3`, `hmac_sha256`, `derive_key` and `equal`, which compares secrets in constant time. The same bytes give the same hash on every machine, so a hash names its content, as `name_of` does above. A password or a key goes in a `Secret`, as `Secret.of(text)`: printing it, putting it in an f-string and saving it are compile errors, and `expose_secret()` is the one way to read it, so a search for that name finds every use.
+`std.crypto` gives `blake3` and `sha256` as lowercase hex, for text or `bytes`, plus `keyed_blake3`, `hmac_sha256`, `derive_key` and `equal`, which compares secrets in constant time. The same bytes give the same hash on every machine, so a hash names its content, as `name_of` does above. A password or a key goes in a `Secret`, as `Secret.of(text)`: printing it, putting it in an f-string and saving it are compile errors, and `expose_secret()` is the one way to read it, so a search for that name finds every use. `==` on two secrets compares them in constant time, as `equal` does, so checking a password or a token is just `==`.
 
 `blake3` and `sha256` also take a list or an iterator of text or `bytes`, and hash the chunks in turn, so a large file hashes as it's read, never in memory whole:
 
@@ -390,5 +409,6 @@ Builds go through LLVM a function at a time and are cached, so an edit rebuilds 
 ## Not there yet
 
 These are decided and planned, and `docs/language.md` says where each one stands:
-- `launch` and `Channel` for long-running tasks;
-- sized numbers like `u8` and `f32`.
+- `TaskGroup`, for a number of tasks known only at run time, and pools;
+- `u64` and `f32`, and `wrapping_` and `saturating_` methods: `i8` to `i32` and `u8` to `u32` already run natively;
+- notes on errors in native code: today a program that uses them runs in the interpreter, which says so.

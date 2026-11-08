@@ -36,6 +36,26 @@ impl FnCx<'_> {
         }
     }
 
+    /// `==` on a `Secret` compares in constant time, which works for text and bytes: a secret of
+    /// anything else is refused there rather than compared some way that could leak timing.
+    pub(crate) fn secrets_compared(&mut self, left: &Type, at: Span) {
+        let ty = self.checker.settled(left);
+        if ty.type_name() != Some(SECRET) {
+            return;
+        }
+        let Some(inside) = ty.type_args().into_iter().next() else { return };
+        let held = self.checker.settled(&inside);
+        if matches!(held, Type::Str | Type::Bytes | Type::Unknown | Type::Var(_) | Type::Param(_)) {
+            return;
+        }
+        let message = format!(
+            "`==` compares secrets in constant time, which it can do for text or bytes, not {}",
+            crate::types::a(&held)
+        );
+        let fix = "hold it as text or bytes, or compare what `expose_secret()` gives";
+        self.error(Diagnostic::new(message, at).with_help(fix));
+    }
+
     /// Where a `Secret` is in a value of this type, as a path from it, or "" when it's one itself.
     fn secret_in(&mut self, ty: &Type, path: &str, open: &mut Vec<String>) -> Option<String> {
         if let Some(name) = ty.type_name() {

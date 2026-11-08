@@ -51,6 +51,7 @@ mod kinds;
 mod lists;
 mod locks;
 mod native;
+mod notes;
 mod parallel;
 mod random;
 mod regex;
@@ -198,7 +199,21 @@ fn laid_out(program: &Program, blocks: Option<&Layouts>) -> Layouts {
         let slots: Vec<_> = def.slots.iter().map(|slot| kinds::canon_in(blocks, slot)).collect();
         (def.name.clone(), generator_definition(&kinds::canon_in(blocks, &def.item), None, &slots))
     });
-    let definitions: Vec<(String, Written)> = structs
+    // An error's notes are a word of its own, last: 0, as `None`, until one is added.
+    let notes = || {
+        let ty = fennec_check::Type::Optional(Box::new(fennec_check::Type::List(Box::new(
+            fennec_check::Type::Str,
+        ))));
+        (fennec_interp::packed::NOTES.to_owned(), kinds::canon_in(blocks, &ty), None)
+    };
+    let errors = program.errors.iter().map(|def| {
+        let mut written = fields(&def.fields);
+        written.push(notes());
+        (def.name.clone(), Written::Struct(written))
+    });
+    let definitions: Vec<(String, Written)> = program
+        .structs
+        .iter()
         .map(|def| {
             let written = if def.shared {
                 Written::Cell(fields(&def.fields))
@@ -207,6 +222,7 @@ fn laid_out(program: &Program, blocks: Option<&Layouts>) -> Layouts {
             };
             (def.name.clone(), written)
         })
+        .chain(errors)
         .chain(program.enums.iter().map(enums))
         .chain(named)
         .chain(generators)

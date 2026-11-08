@@ -351,7 +351,8 @@ struct State {
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
-    static FLAGS: Flags = const { Flags { failed: Cell::new(0), lock_held: Cell::new(0) } };
+    static FLAGS: Flags =
+        const { Flags { failed: Cell::new(0), lock_held: Cell::new(0), replaying: Cell::new(0) } };
 }
 
 /// What native code reads and writes on this thread without a call, through the one address.
@@ -363,6 +364,10 @@ struct Flags {
     /// The word of the `shared` value's lock this thread holds, if any, at 8 bytes in. Others held
     /// beside it are in `threads`.
     lock_held: Cell<u64>,
+    /// 1 while this run is recorded or replayed, at 16 bytes in, and 0 otherwise: native code
+    /// taking a `shared` value's lock reads it, and calls `fennec_replay_lock` and
+    /// `fennec_replay_locked` only when it's 1, so a normal run pays one load.
+    replaying: Cell<u64>,
 }
 
 fn set_failed(failed: u8) {
@@ -380,9 +385,13 @@ pub(crate) fn failed() -> bool {
     FLAGS.with(|flags| flags.failed.get() != 0)
 }
 
-/// Where the failure flag is.
+/// Where the failure flag is. Native code asks on each thread before it reads it, so this is
+/// where the thread's word saying whether the run is recorded or replayed is set.
 pub fn failed_flag() -> usize {
-    FLAGS.with(|flags| std::ptr::from_ref(flags).addr())
+    FLAGS.with(|flags| {
+        flags.replaying.set(u64::from(crate::replay::active()));
+        std::ptr::from_ref(flags).addr()
+    })
 }
 
 /// The capability native code means by `kind`: 0 for `Stdout`, 1 for `Fs`, 2 for `Clock`,

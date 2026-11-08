@@ -2103,6 +2103,56 @@ fn the_daemon_keeps_the_cache_under_its_cap() {
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 
+/// Aged by `seconds`: the file's modified time, which is how the cache knows when it was used.
+fn aged(path: &Path, seconds: u64) -> std::io::Result<()> {
+    let used = std::time::SystemTime::now() - std::time::Duration::from_secs(seconds);
+    std::fs::File::options().write(true).open(path)?.set_modified(used)
+}
+
+/// With no daemon, a command starts a cleanup once none has run for an hour, which removes another
+/// build's folder that's gone unused for a day; `fennec cache clean` runs one when asked.
+#[test]
+fn a_command_cleans_the_cache_hourly_with_no_daemon() {
+    let (kit, home) = small_kit("cache-hourly").unwrap();
+    let old = home.join("cache").join("0.0.1").join("llvm").join("x");
+    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+    std::fs::write(&old, vec![0_u8; 1_000]).unwrap();
+    aged(&old, 2 * 24 * 60 * 60).unwrap();
+    let mark = home.join("cache").join("cleaned");
+    std::fs::write(&mark, "").unwrap();
+    aged(&mark, 2 * 60 * 60).unwrap();
+    let fennec = |args: &[&str]| {
+        crate::executables::fennec_command()
+            .args(args)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", &home)
+            .env("FENNEC_NO_DAEMON", "1")
+            .output()
+            .unwrap()
+    };
+    assert!(fennec(&["dev", "changes"]).status.success());
+    let cleaned = (0..250).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        !old.parent().unwrap().exists()
+    });
+    assert!(cleaned, "a build folder unused for two days should go once a cleanup is due");
+
+    // The background cleanup may still be letting go of its lock, and one asked for meanwhile
+    // would say so.
+    let _ = (0..250).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        !home.join("cache").join("cleanup.lock").exists()
+    });
+    let asked = fennec(&["cache", "clean"]);
+    assert!(asked.status.success());
+    assert!(
+        text(&asked.stdout).starts_with("🦊 cache: removed 0 entries, 0.0 MB; it holds "),
+        "{}",
+        text(&asked.stdout)
+    );
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
 #[test]
 fn dev_fallbacks_says_when_everything_is_native() {
     let output = fennec(&["dev", "fallbacks", "bench/kernels/fib.fen"], "").unwrap();

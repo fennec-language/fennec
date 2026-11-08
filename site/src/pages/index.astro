@@ -92,19 +92,19 @@ for conn in parallel(server):
   },
   {
     title: 'shared and lock',
-    status: 'Planned',
+    status: 'Mostly built',
     code: `shared scores = Scores()
 
 lock scores as ref current:
     current.best[name] = points`,
-    body: 'The new design: `shared T` is a type, reached only inside `lock`, and deadlocks can’t compile. A crash inside a lock puts everything back. Today’s `shared Name:` works, and `fennec fix` will rewrite it.',
+    body: '`shared T` is a type, reached only inside `lock`, and a crash inside a lock puts everything back. Planned: lock order checked across the whole program, so deadlocks can’t compile.',
   },
   {
     title: 'launch and channels',
-    status: 'Planned',
-    code: `with launch((inbox) => audio(inbox, speakers)) as sounds:
+    status: 'Mostly built',
+    code: `with launch((inbox) => audio(inbox, speakers))? as sounds:
     sounds.send(.Play(name="jump", volume=0.8))?`,
-    body: 'A task runs beside you until its block ends, so none can leak. An enum is its protocol, and channels are always bounded.',
+    body: 'A task runs beside you until its block ends, so none can leak, and the `?` on its line covers its failures. An enum is its protocol, and channels are always bounded. Built natively. Planned: `TaskGroup` and pools.',
   },
   {
     title: '@hot',
@@ -135,7 +135,7 @@ back = json.loads[World](text)?`,
     code: `$ fennec run
 # built through LLVM a function at a time,
 # each function cached by content`,
-    body: 'What you run is what ships. `fennec build` always makes a native program, and `--release` optimizes it as a whole. `fennec run` says so when the interpreter stands in for what LLVM can\'t build yet.',
+    body: 'What you run is what ships. `fennec build` always makes a native program, with no interpreter in it, and `--release` optimizes it as a whole. `fennec run` says so when the interpreter stands in for what LLVM can\'t build yet.',
   },
 ];
 ---

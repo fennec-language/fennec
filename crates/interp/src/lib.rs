@@ -1,6 +1,5 @@
-//! Fennec's first engine: a tree-walking interpreter that runs a parsed module directly.
-//! It exists to run real programs while the typed bytecode interpreter and native
-//! compilers are built.
+//! The code of the runtime library Fennec's compiled programs link against: values, the heap,
+//! capabilities and the parts of the standard library written here. `fennec-runtime` exports it.
 
 mod buffer;
 mod builtins;

@@ -2,7 +2,6 @@
 
 use fennec_syntax::BinOp;
 
-
 /// The operators native code passes by number, in order.
 const BINARY: [BinOp; 17] = [
     BinOp::Add,
@@ -29,4 +28,3 @@ const BINARY: [BinOp; 17] = [
 pub fn binary_code(op: BinOp) -> Option<i64> {
     BINARY.iter().position(|known| *known == op).and_then(|at| i64::try_from(at).ok())
 }
-

@@ -5,7 +5,6 @@ use fennec_syntax::{Diagnostic, Span};
 
 use crate::value::Value;
 
-
 /// One of these functions, which need nothing of the interpreter.
 pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic> {
     use crate::unicode::{casefolded, category, normalized};

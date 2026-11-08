@@ -10,7 +10,6 @@ use fennec_syntax::{Diagnostic, Span};
 
 use crate::value::Value;
 
-
 /// What `run` was given besides the program and its arguments: what the program reads from its
 /// standard input, the folder it runs in, and variables it gets on top of this program's own.
 #[derive(Default)]
@@ -22,7 +21,11 @@ pub(crate) struct Options {
 
 /// The program, its arguments and the options of a call to `run`, named as `options_on_name`
 /// names it.
-pub(crate) fn run_of(method: &str, args: &[Value], span: Span) -> Result<(String, Vec<String>, Options), Diagnostic> {
+pub(crate) fn run_of(
+    method: &str,
+    args: &[Value],
+    span: Span,
+) -> Result<(String, Vec<String>, Options), Diagnostic> {
     let names: Vec<&str> = method.split('.').skip(1).collect();
     let (plain, given) = args.split_at(args.len().saturating_sub(names.len()));
     let [Value::Str(program), Value::List(items)] = plain else { return Err(wrong("run", span)) };
@@ -37,12 +40,16 @@ pub(crate) fn run_of(method: &str, args: &[Value], span: Span) -> Result<(String
             ("input", Value::Str(text)) => options.input = Some(text.as_bytes().to_vec()),
             ("input", Value::Bytes(data)) => options.input = Some(data.to_vec()),
             ("cwd", folder) => {
-                let Value::Str(folder) = crate::stdlib::fs::path_text(folder) else { return Err(wrong("run", span)) };
+                let Value::Str(folder) = crate::stdlib::fs::path_text(folder) else {
+                    return Err(wrong("run", span));
+                };
                 options.cwd = Some(folder.to_string());
             }
             ("env", Value::Dict(pairs)) => {
                 for (key, value) in pairs.iter() {
-                    let (Value::Str(key), Value::Str(value)) = (key, value) else { return Err(wrong("run", span)) };
+                    let (Value::Str(key), Value::Str(value)) = (key, value) else {
+                        return Err(wrong("run", span));
+                    };
                     options.env.push((key.to_string(), value.to_string()));
                 }
             }

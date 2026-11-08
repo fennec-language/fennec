@@ -9,7 +9,6 @@ use fennec_syntax::{Diagnostic, Span};
 use crate::compress as codec;
 use crate::value::Value;
 
-
 /// One of these functions, which need nothing of the interpreter.
 pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic> {
     let (function, level) = match name.strip_suffix(".level") {
@@ -17,7 +16,9 @@ pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Dia
             let Some(Value::Int(level)) = values.get(1) else {
                 return Err(Diagnostic::new(format!("`{function}`'s `level` is an int"), span));
             };
-            let Ok(level) = u8::try_from(*level).map_err(drop).and_then(|level| if level <= 9 { Ok(level) } else { Err(()) })
+            let Ok(level) = u8::try_from(*level)
+                .map_err(drop)
+                .and_then(|level| if level <= 9 { Ok(level) } else { Err(()) })
             else {
                 return Err(Diagnostic::new(format!("`level` is from 0 to 9, not {level}"), span)
                     .with_help("0 stores it as it is, 6 is the usual, and 9 tries hardest"));

@@ -3,7 +3,6 @@
 
 use std::rc::Rc;
 
-
 #[derive(Clone, Debug)]
 pub(crate) enum Value {
     /// What a function returns when it has nothing to return.
@@ -105,7 +104,6 @@ impl Instance {
     pub(crate) fn field(&self, name: &str) -> Option<&Value> {
         self.fields.iter().find(|(field, _)| field.as_ref() == name).map(|(_, value)| value)
     }
-
 }
 
 /// Slots that hand out generational IDs, so a stale ID never finds the wrong thing.

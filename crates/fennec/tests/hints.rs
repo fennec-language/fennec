@@ -16,7 +16,7 @@ fn methods_from_other_languages_point_to_fennec_ones() {
         ("\" x \".trim()", "a str has no method `trim`", "use `strip()`"),
         ("\"x\".toUpperCase()", "a str has no method `toUpperCase`", "use `upper()`"),
         ("\"X\".to_lowercase()", "a str has no method `to_lowercase`", "use `lower()`"),
-        ("stdout.println(1)", "a Stdout has no method `println`", "use `stdout.print(...)`"),
+        ("stdout.println(1)", "`Stdout` has no method `println`", "use `stdout.print(...)`"),
         (
             "[1].copy()",
             "a list has no method `copy`",
@@ -58,7 +58,7 @@ fn conditions_need_bools() {
         ("if [1]:\n        pass", "`if` needs a bool, but this is a list", "write `x.len() > 0`"),
         (
             "if 1:\n        pass",
-            "`if` needs a bool, but this is a int",
+            "`if` needs a bool, but this is an int",
             "compare explicitly, like `count > 0`",
         ),
     ];

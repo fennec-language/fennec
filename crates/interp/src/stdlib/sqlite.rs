@@ -11,9 +11,7 @@
 
 use std::rc::Rc;
 
-
 use crate::value::Value;
-
 
 /// The `Err` holding the case of `SqlError` a failure is.
 fn failed(case: &str, reason: &str) -> Value {
@@ -117,8 +115,11 @@ mod real {
                 return Ok(file.clone());
             }
             if self.folder.is_none() {
-                let made =
-                    std::env::temp_dir().join(format!("fennec-test-databases-{}-{}", std::process::id(), self.test));
+                let made = std::env::temp_dir().join(format!(
+                    "fennec-test-databases-{}-{}",
+                    std::process::id(),
+                    self.test
+                ));
                 std::fs::create_dir_all(&made)?;
                 self.folder = Some(made);
             }
@@ -132,8 +133,9 @@ mod real {
     /// A new connection, which never waits on a lock itself: see the module's comment.
     fn connect(place: &Place) -> rusqlite::Result<Connection> {
         // Serialized: SQLite takes a lock of its own around each call, as well as ours.
-        let flags =
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
         let (Place::File(path) | Place::Test(path)) = place;
         let conn = Connection::open_with_flags(path, flags)?;
         // Readers go on while a writer writes, and a commit is on the disk before it's done,
@@ -352,7 +354,9 @@ mod real {
             let deadline = Instant::now() + length;
             let token = crate::embed::serve::next_token();
             while Instant::now() < deadline {
-                if crate::embed::serve::park_on(token, Some(deadline)) == crate::embed::serve::Parked::Cancelled {
+                if crate::embed::serve::park_on(token, Some(deadline))
+                    == crate::embed::serve::Parked::Cancelled
+                {
                     return;
                 }
             }
@@ -415,7 +419,10 @@ mod real {
                     Ok(Err(column)) => Value::Err(Rc::new(Value::made_case(
                         "SqlError",
                         "Column",
-                        vec![("name", Value::str(&column)), ("reason", Value::str("it holds text that isn't UTF-8"))],
+                        vec![
+                            ("name", Value::str(&column)),
+                            ("reason", Value::str("it holds text that isn't UTF-8")),
+                        ],
                     ))),
                     Err(err) => sql_failed(&err),
                 }
@@ -469,7 +476,8 @@ mod real {
         OPEN.lock().unwrap_or_else(PoisonError::into_inner).remove(&handle);
         let (opened, conn) = (Arc::clone(opened), Arc::clone(conn));
         blocking(move || {
-            let conn = Arc::into_inner(conn).map(|conn| conn.into_inner().unwrap_or_else(PoisonError::into_inner));
+            let conn =
+                Arc::into_inner(conn).map(|conn| conn.into_inner().unwrap_or_else(PoisonError::into_inner));
             let Some(conn) = conn else { return };
             if undo || !conn.is_autocommit() {
                 let _ = conn.execute_batch("rollback");

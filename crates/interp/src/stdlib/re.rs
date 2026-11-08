@@ -7,8 +7,6 @@ use std::rc::Rc;
 use fennec_re::Regex;
 use fennec_syntax::{Diagnostic, Span};
 
-
-
 /// Part of a replacement: text as written, or what a group caught.
 enum Part {
     Text(String),

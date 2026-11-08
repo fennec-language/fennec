@@ -538,7 +538,7 @@ jobs:
           echo "$built builds ran under AddressSanitizer"
           [ "$built" -ge 40 ] || { echo "::error::only $built builds ran"; failed=1; }
           exit "$failed"
-      - name: Fuzz programs built through LLVM against the interpreter
+      - name: Fuzz programs built through LLVM
         run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run llvm --seed 1 --inputs 150 --seconds 300 --found found
       - name: Keep what fuzzing found
         if: failure()
@@ -614,7 +614,6 @@ jobs:
               echo "::error::$name didn't link"; cat built.txt; failed=1
               continue
             fi
-            if nm checked | grep -q 5Interp; then echo "::error::$name has the interpreter in it"; failed=1; fi
             built=$((built + 1))
             if [ -f "${program%.fen}.out" ]; then
               timeout 120 ./checked < /dev/null > printed.txt 2> said.txt || true

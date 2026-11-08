@@ -18,7 +18,6 @@ use super::http;
 use crate::methods::no_method;
 use crate::value::{Capability, Value};
 
-
 /// How long connecting waits unless told otherwise.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -147,9 +146,12 @@ impl Fake {
         let done = match (kind, method, args) {
             ("Connection", "read", [Value::Int(count)]) => {
                 let count = bytes_asked(*count, span)?;
-                self.read(handle, Some(count), span)?.map(|data| Value::Bytes(Rc::from(data.unwrap_or_default())))
+                self.read(handle, Some(count), span)?
+                    .map(|data| Value::Bytes(Rc::from(data.unwrap_or_default())))
             }
-            ("Connection", "read_line", []) => self.read(handle, None, span)?.map(|line| line_value(line.as_deref())),
+            ("Connection", "read_line", []) => {
+                self.read(handle, None, span)?.map(|line| line_value(line.as_deref()))
+            }
             ("Connection", "write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
                 self.write(handle, data_of(data)).map(|()| Value::Unit)
             }
@@ -202,7 +204,9 @@ impl Fake {
                 "the test's fake `Net` reaches only the test's own servers, at `localhost`, not `{host}`"
             )));
         }
-        let Some(server) = fake.servers.iter().find(|(_, (taken, _))| *taken == port).map(|(server, _)| *server) else {
+        let Some(server) =
+            fake.servers.iter().find(|(_, (taken, _))| *taken == port).map(|(server, _)| *server)
+        else {
             return Err(Failure::Refused(host.to_owned(), port));
         };
         let (client, other_end) = (fake.handle(), fake.handle());
@@ -213,7 +217,10 @@ impl Fake {
         if let Some((_, waiting)) = fake.servers.get_mut(&server) {
             waiting.push_back((other_end, client_peer));
         }
-        Ok(("Connection", vec![("_handle", Value::Int(client)), ("peer", Value::str(&format!("localhost:{port}")))]))
+        Ok((
+            "Connection",
+            vec![("_handle", Value::Int(client)), ("peer", Value::str(&format!("localhost:{port}")))],
+        ))
     }
 
     pub(crate) fn udp(&mut self, port: u16) -> Result<Made, Failure> {
@@ -231,13 +238,19 @@ impl Fake {
 
     /// The next packet for a socket in a test. With none waiting, none can come, since nothing
     /// else runs while a test waits.
-    pub(crate) fn receive(&mut self, handle: i64, span: Span) -> Result<Result<(Vec<u8>, String), Failure>, Diagnostic> {
+    pub(crate) fn receive(
+        &mut self,
+        handle: i64,
+        span: Span,
+    ) -> Result<Result<(Vec<u8>, String), Failure>, Diagnostic> {
         let fake = self;
         let Some((port, waiting)) = fake.udp.get_mut(&handle) else { return Ok(Err(Failure::Closed)) };
         match waiting.pop_front() {
             Some(packet) => Ok(Ok(packet)),
             None => Err(waits_forever(
-                &format!("this socket on port {port} in the test's fake network would wait forever for a packet"),
+                &format!(
+                    "this socket on port {port} in the test's fake network would wait forever for a packet"
+                ),
                 span,
             )),
         }
@@ -275,7 +288,12 @@ impl Fake {
     }
 
     /// The next `count` bytes, or with no count the next line, of a connection in a test.
-    pub(crate) fn read(&mut self, handle: i64, count: Option<usize>, span: Span) -> Result<Result<Option<Vec<u8>>, Failure>, Diagnostic> {
+    pub(crate) fn read(
+        &mut self,
+        handle: i64,
+        count: Option<usize>,
+        span: Span,
+    ) -> Result<Result<Option<Vec<u8>>, Failure>, Diagnostic> {
         let fake = self;
         let Some(stream) = fake.streams.get_mut(&handle) else { return Ok(Err(Failure::Closed)) };
         let take = match count {
@@ -295,7 +313,9 @@ impl Fake {
         }
         let wanted = if count.is_some() { "anything" } else { "a whole line" };
         Err(waits_forever(
-            &format!("this connection in the test's fake network would wait forever for {wanted}: write to its other end first"),
+            &format!(
+                "this connection in the test's fake network would wait forever for {wanted}: write to its other end first"
+            ),
             span,
         ))
     }
@@ -346,7 +366,9 @@ impl Failure {
     pub(crate) fn of(error: &std::io::Error, waited: Option<Duration>) -> Failure {
         match error.kind() {
             ErrorKind::WouldBlock | ErrorKind::TimedOut => Failure::TimedOut(waited.unwrap_or_default()),
-            ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted => Failure::Closed,
+            ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted => {
+                Failure::Closed
+            }
             _ => Failure::Other(error.to_string()),
         }
     }
@@ -393,7 +415,12 @@ fn waits_forever(what: &str, span: Span) -> Diagnostic {
 
 /// `net.connect(host, port)`, `net.listen(port)` and `net.udp()` on the real network: needing nothing of the
 /// interpreter, for native code too.
-pub(crate) fn real_net(method: &str, args: &[Value], timeout: Option<Duration>, span: Span) -> Result<Value, Diagnostic> {
+pub(crate) fn real_net(
+    method: &str,
+    args: &[Value],
+    timeout: Option<Duration>,
+    span: Span,
+) -> Result<Value, Diagnostic> {
     let found = match (method, args) {
         ("connect", [Value::Str(host), Value::Int(port)]) => {
             connect(host, port_of(*port, span)?, timeout.unwrap_or(CONNECT_TIMEOUT), false)
@@ -481,7 +508,12 @@ pub(crate) fn real_udp(
 
 /// A request from what a call gave: its URL, with the method first for `net.request`, and its
 /// named arguments.
-fn request_of(method: &str, plain: &[Value], named: &[(&str, &Value)], span: Span) -> Result<http::Request, Diagnostic> {
+fn request_of(
+    method: &str,
+    plain: &[Value],
+    named: &[(&str, &Value)],
+    span: Span,
+) -> Result<http::Request, Diagnostic> {
     let (method, url) = match (method, plain) {
         ("get", [Value::Str(url)]) => ("GET".to_owned(), url),
         ("post", [Value::Str(url)]) => ("POST".to_owned(), url),
@@ -665,14 +697,19 @@ fn connect(host: &str, port: u16, timeout: Duration, tls: bool) -> Result<Made, 
 }
 
 /// TLS over a connection just made, its certificate checked against what the system trusts.
-fn secured(stream: &TcpStream, host: &str, timeout: Duration) -> Result<Box<BufReader<http::tls::Secured>>, Failure> {
+fn secured(
+    stream: &TcpStream,
+    host: &str,
+    timeout: Duration,
+) -> Result<Box<BufReader<http::tls::Secured>>, Failure> {
     let tcp = stream.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
     Ok(Box::new(BufReader::new(http::raw_secured(tcp, host, timeout)?)))
 }
 
 /// A connection to `host` on `port`, looked up and connected, blocking its thread.
 fn connected(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, String), Failure> {
-    let addresses: Vec<_> = (host, port).to_socket_addrs().map_err(|_| Failure::NotFound(host.to_owned()))?.collect();
+    let addresses: Vec<_> =
+        (host, port).to_socket_addrs().map_err(|_| Failure::NotFound(host.to_owned()))?.collect();
     if addresses.is_empty() {
         return Err(Failure::NotFound(host.to_owned()));
     }
@@ -680,7 +717,8 @@ fn connected(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, Str
     for address in addresses {
         match TcpStream::connect_timeout(&address, timeout) {
             Ok(stream) => {
-                let peer = stream.peer_addr().map_or_else(|_| format!("{host}:{port}"), |peer| peer.to_string());
+                let peer =
+                    stream.peer_addr().map_or_else(|_| format!("{host}:{port}"), |peer| peer.to_string());
                 return Ok((stream, peer));
             }
             Err(error) => {
@@ -698,7 +736,9 @@ fn connected(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, Str
 fn keep_stream(socket: TcpStream, peer: String, secured: Option<Secured>) -> Result<i64, Failure> {
     let reading = match secured {
         Some(secured) => Reading::Tls(secured),
-        None => Reading::Plain(BufReader::new(socket.try_clone().map_err(|error| Failure::Other(error.to_string()))?)),
+        None => Reading::Plain(BufReader::new(
+            socket.try_clone().map_err(|error| Failure::Other(error.to_string()))?,
+        )),
     };
     let stream = Stream { peer, socket, reader: Mutex::new(reading), writing: Mutex::new(()) };
     Ok(open(|open| {
@@ -767,7 +807,10 @@ fn write(handle: i64, mut data: &[u8]) -> Result<(), Failure> {
     let _writing = stream.writing.lock().unwrap_or_else(PoisonError::into_inner);
     if let Reading::Tls(secured) = &mut *stream.reader.lock().unwrap_or_else(PoisonError::into_inner) {
         let secured = secured.get_mut();
-        return secured.write_all(data).and_then(|()| secured.flush()).map_err(|error| Failure::of(&error, None));
+        return secured
+            .write_all(data)
+            .and_then(|()| secured.flush())
+            .map_err(|error| Failure::of(&error, None));
     }
     let mut socket = &stream.socket;
     // A read parked on this connection's other end can have made the socket not block, so a full
@@ -933,7 +976,9 @@ fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failu
                     Err(error) if error.kind() == ErrorKind::WouldBlock && started.elapsed() < limit => {
                         std::thread::sleep(Duration::from_millis(5));
                     }
-                    Err(error) if error.kind() == ErrorKind::WouldBlock => break Err(Failure::TimedOut(limit)),
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        break Err(Failure::TimedOut(limit));
+                    }
                     Err(error) => break Err(Failure::of(&error, Some(limit))),
                 }
             };
@@ -992,7 +1037,9 @@ fn receive(handle: i64, timeout: Option<Duration>) -> Result<(Vec<u8>, String), 
         if left.is_zero() {
             return Err(Failure::TimedOut(timeout.unwrap_or_default()));
         }
-        udp.socket.set_read_timeout(Some(left.min(UDP_LOOKS_EVERY))).map_err(|error| Failure::of(&error, timeout))?;
+        udp.socket
+            .set_read_timeout(Some(left.min(UDP_LOOKS_EVERY)))
+            .map_err(|error| Failure::of(&error, timeout))?;
         match udp.socket.recv_from(&mut data) {
             Ok((size, sender)) => {
                 data.truncate(size);
@@ -1000,7 +1047,11 @@ fn receive(handle: i64, timeout: Option<Duration>) -> Result<(Vec<u8>, String), 
             }
             // Windows says this of a packet this socket sent earlier that nothing took. Nothing's
             // wrong with the socket, and UDP doesn't say what's lost.
-            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::ConnectionReset) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::ConnectionReset
+                ) => {}
             Err(error) => return Err(Failure::of(&error, timeout)),
         }
     }
@@ -1178,7 +1229,9 @@ pub(crate) mod tests {
                 let mut first = [0; 1];
                 let _ = std::io::Read::read(&mut secured, &mut first);
                 let started = std::time::Instant::now();
-                while !ready.load(std::sync::atomic::Ordering::SeqCst) && started.elapsed() < Duration::from_secs(5) {
+                while !ready.load(std::sync::atomic::Ordering::SeqCst)
+                    && started.elapsed() < Duration::from_secs(5)
+                {
                     std::thread::sleep(Duration::from_millis(1));
                 }
                 let _ = secured.write_all(b"late\n");
@@ -1186,10 +1239,13 @@ pub(crate) mod tests {
                 std::thread::sleep(Duration::from_millis(200));
             });
             let tcp = connected_to(port);
-            let Ok(secured) = handshake(tcp.try_clone().unwrap(), "localhost", Duration::from_secs(10), client_config()) else {
+            let Ok(secured) =
+                handshake(tcp.try_clone().unwrap(), "localhost", Duration::from_secs(10), client_config())
+            else {
                 panic!("the handshake failed");
             };
-            let handle = keep_stream(tcp, "server".to_owned(), Some(Box::new(BufReader::new(secured)))).ok().unwrap();
+            let handle =
+                keep_stream(tcp, "server".to_owned(), Some(Box::new(BufReader::new(secured)))).ok().unwrap();
             assert!(write(handle, b"x").is_ok());
             handle
         }
@@ -1199,9 +1255,11 @@ pub(crate) mod tests {
         fn a_tls_connection_reads_and_writes_lines() {
             let (port, server) = serving();
             let tcp = connected_to(port);
-            let secured = handshake(tcp.try_clone().unwrap(), "localhost", Duration::from_secs(10), client_config());
+            let secured =
+                handshake(tcp.try_clone().unwrap(), "localhost", Duration::from_secs(10), client_config());
             let Ok(secured) = secured else { panic!("the handshake failed") };
-            let handle = keep_stream(tcp, "server".to_owned(), Some(Box::new(BufReader::new(secured)))).ok().unwrap();
+            let handle =
+                keep_stream(tcp, "server".to_owned(), Some(Box::new(BufReader::new(secured)))).ok().unwrap();
             assert!(write(handle, b"ping\n").is_ok());
             let back = read_line(handle, Some(Duration::from_secs(10)));
             assert_eq!(back.ok().flatten().as_deref(), Some(&b"pong\n"[..]));
@@ -1214,7 +1272,8 @@ pub(crate) mod tests {
         #[test]
         fn a_certificate_for_another_name_is_refused() {
             let (port, server) = serving();
-            let got = handshake(connected_to(port), "fennec.example", Duration::from_secs(10), client_config());
+            let got =
+                handshake(connected_to(port), "fennec.example", Duration::from_secs(10), client_config());
             assert!(matches!(got, Err(Failure::Tls(_))), "the handshake didn't fail as TLS");
             drop(got);
             assert!(server.join().unwrap().is_err());

@@ -135,4 +135,3 @@ pub(crate) fn from_hex(text: &str) -> Result<Vec<u8>, usize> {
     }
     Ok(bytes)
 }
-

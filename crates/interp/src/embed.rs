@@ -616,7 +616,6 @@ impl State {
             .and_then(|at| self.temps.get_mut(at))
             .map_or(Value::Unit, |slot| std::mem::replace(slot, Value::Unit))
     }
-
 }
 
 /// Temporaries: making them, and dropping them when they're done with.

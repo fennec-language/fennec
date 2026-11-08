@@ -2,9 +2,6 @@
 //! sequence depends only on the seed and `n`, so it's the same on every machine and can be
 //! drawn without keeping any state.
 
-
-
-
 /// The `n`th 64-bit number of `seed`'s sequence.
 pub(crate) fn splitmix(seed: i64, n: i64) -> u64 {
     const GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;

@@ -12,7 +12,6 @@ use fennec_syntax::{Diagnostic, Span};
 use crate::methods::no_method;
 use crate::value::{Capability, Value};
 
-
 /// A file `fs.create` or `fs.open` has lent, by the handle its `File` holds. One being written
 /// goes into a file of its own beside where it's going, which takes that place when its block
 /// ends. A test's fake files are held in memory, and go into its fake file system then.
@@ -109,7 +108,12 @@ fn open(path: &str) -> Value {
 /// A file written takes its target's place: everything written is on the disk first, and the
 /// rename is too, after, unless it was made with `durable=False`. Anything left is thrown away
 /// when that fails, leaving the target as it was.
-fn finish_writing(out: &mut BufWriter<std::fs::File>, temporary: &Path, target: &Path, durable: bool) -> Result<(), String> {
+fn finish_writing(
+    out: &mut BufWriter<std::fs::File>,
+    temporary: &Path,
+    target: &Path,
+    durable: bool,
+) -> Result<(), String> {
     let done = (|| {
         out.flush()?;
         if durable {
@@ -152,7 +156,9 @@ fn finish(file: &Value, fake: &mut FakeWrite<'_>) -> Result<(), String> {
         return fake(&target, &data);
     }
     blocking(move || match &mut *file.lock().unwrap_or_else(PoisonError::into_inner) {
-        OpenFile::Writing { out, temporary, target, durable } => finish_writing(out, temporary, target, *durable),
+        OpenFile::Writing { out, temporary, target, durable } => {
+            finish_writing(out, temporary, target, *durable)
+        }
         _ => Ok(()),
     })
 }
@@ -189,15 +195,17 @@ pub(crate) fn real_file(handle: i64, method: &str, args: &[Value], span: Span) -
         _ => None,
     };
     let method = match (method, &data, size) {
-        ("write", Some(_), _) | ("read" | "read_line" | "sync", None, None) | ("read_chunk", None, Some(_)) => {
-            method.to_owned()
-        }
+        ("write", Some(_), _)
+        | ("read" | "read_line" | "sync", None, None)
+        | ("read_chunk", None, Some(_)) => method.to_owned(),
         ("read_chunk", None, None) => {
             return Err(Diagnostic::new("`read_chunk` takes how many bytes to read, 0 or more", span));
         }
         _ => return Err(Diagnostic::new(format!("a File has no method `{method}` that takes these"), span)),
     };
-    let done = blocking(move || file_work(&mut file.lock().unwrap_or_else(PoisonError::into_inner), &method, data, size));
+    let done = blocking(move || {
+        file_work(&mut file.lock().unwrap_or_else(PoisonError::into_inner), &method, data, size)
+    });
     Ok(match done {
         Ok(Given::Nothing) => Value::Ok(Rc::new(Value::Unit)),
         Ok(Given::Data(data)) => Value::Ok(Rc::new(Value::Bytes(Rc::from(data)))),
@@ -211,7 +219,12 @@ pub(crate) fn real_file(handle: i64, method: &str, args: &[Value], span: Span) -
 }
 
 /// The work of a `File`'s method, which may wait on the disk.
-fn file_work(file: &mut OpenFile, method: &str, data: Option<Vec<u8>>, size: Option<usize>) -> Result<Given, String> {
+fn file_work(
+    file: &mut OpenFile,
+    method: &str,
+    data: Option<Vec<u8>>,
+    size: Option<usize>,
+) -> Result<Given, String> {
     let io = |err: std::io::Error| err.to_string();
     match (method, file) {
         ("write", OpenFile::Writing { out, .. }) => {
@@ -387,7 +400,9 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
         ("metadata", [Value::Str(path)]) => {
             let path = path.to_string();
             let found = blocking(move || {
-                std::fs::metadata(path).map(|found| (found.len(), found.is_file(), found.is_dir())).map_err(io)
+                std::fs::metadata(path)
+                    .map(|found| (found.len(), found.is_file(), found.is_dir()))
+                    .map_err(io)
             });
             done(found, |(size, is_file, is_dir)| {
                 Value::made(
@@ -408,8 +423,11 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
             discard(file);
             Value::Unit
         }
-        ("exists" | "read_text" | "write_text" | "read_bytes" | "write_bytes" | "list_dir" | "walk" | "make_dir"
-        | "remove" | "metadata" | "_create" | "_open" | "_sqlite_open", _) => return wrong(),
+        (
+            "exists" | "read_text" | "write_text" | "read_bytes" | "write_bytes" | "list_dir" | "walk"
+            | "make_dir" | "remove" | "metadata" | "_create" | "_open" | "_sqlite_open",
+            _,
+        ) => return wrong(),
         _ => return Err(no_method(&Value::Capability(Capability::Fs), method, span)),
     })
 }
@@ -445,7 +463,11 @@ pub(crate) fn paths_of(texts: &[String]) -> Value {
 
 /// The path of the thing called `name` in `folder`.
 pub(crate) fn joined(folder: &str, name: &str) -> String {
-    if folder.is_empty() || folder.ends_with('/') { format!("{folder}{name}") } else { format!("{folder}/{name}") }
+    if folder.is_empty() || folder.ends_with('/') {
+        format!("{folder}{name}")
+    } else {
+        format!("{folder}/{name}")
+    }
 }
 
 /// Every path under `folder`, onto `found`: each folder's before what's in it, and each folder's
@@ -475,7 +497,11 @@ pub(crate) fn io_error(reason: &str) -> Value {
 
 /// Removes a file, or a folder if it's empty.
 fn remove(path: &str) -> std::io::Result<()> {
-    if std::fs::symlink_metadata(path)?.is_dir() { std::fs::remove_dir(path) } else { std::fs::remove_file(path) }
+    if std::fs::symlink_metadata(path)?.is_dir() {
+        std::fs::remove_dir(path)
+    } else {
+        std::fs::remove_file(path)
+    }
 }
 
 /// A `Path`'s text, or a `str` as it is.

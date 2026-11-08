@@ -2,9 +2,7 @@
 //! and seeds for `Random`. In a test, `Entropy` is a fake whose output is fixed, so every run
 //! of the test draws the same bytes in the same order.
 
-
 use fennec_syntax::{Diagnostic, Span};
-
 
 /// The seed of the fake's bytes, which are `SplitMix64` drawn in order.
 const FAKE_SEED: i64 = 0;

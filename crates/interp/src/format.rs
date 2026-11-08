@@ -1,8 +1,6 @@
 //! Turning values into text: how `stdout.print` shows them, and f-string format specs like
 //! `{coins:,}` and `{health:.1f}`.
 
-
-
 use crate::value::{Instance, Value};
 
 /// The text `stdout.print` and `str()` produce.
@@ -206,4 +204,3 @@ fn thousands(number: &str) -> String {
         None => format!("{sign}{grouped}"),
     }
 }
-

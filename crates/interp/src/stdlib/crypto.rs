@@ -12,7 +12,6 @@ use fennec_syntax::{Diagnostic, Span};
 
 use crate::value::Value;
 
-
 /// The bytes of a str or bytes value.
 fn bytes_of(value: &Value) -> Option<&[u8]> {
     match value {
@@ -59,7 +58,8 @@ fn hashing(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic
             Ok(Value::Int(handle))
         }
         ("crypto._add", [Value::Int(handle), data]) => {
-            let data = bytes_of(data).ok_or_else(|| Diagnostic::new("a chunk to hash is text or bytes", span))?;
+            let data =
+                bytes_of(data).ok_or_else(|| Diagnostic::new("a chunk to hash is text or bytes", span))?;
             match open.get_mut(handle) {
                 Some(Hashing::Blake3(hasher)) => {
                     hasher.update(data);

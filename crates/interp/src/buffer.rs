@@ -2,9 +2,6 @@
 //! follows the runtime's rule for a list's block exactly, so `capacity()` gives the same
 //! number whichever way a program runs.
 
-
-
-
 /// The fewest items a new buffer or list has room for.
 pub(crate) const MIN_ROOM: usize = 4;
 
@@ -14,4 +11,3 @@ pub(crate) const MIN_ROOM: usize = 4;
 pub(crate) fn grown_room(count: usize, more: usize) -> usize {
     (2 * count).max(count + more)
 }
-

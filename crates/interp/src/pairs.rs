@@ -116,7 +116,6 @@ impl Pairs {
         }
         self.items.push((key, value));
     }
-
 }
 
 /// A hash that's the same for any two values `==` says are equal.

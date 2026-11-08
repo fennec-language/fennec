@@ -1,0 +1,74 @@
+# `std.postgres` speaks Postgres's messages with no network of its own: the client's are bytes to
+# send, and a `PgReader` is fed what a server sent and gives back each whole message, however the
+# bytes arrive. Here the server's bytes are written out by hand, as a server sends them.
+from std.postgres import PgMessage, PgReader, password, startup, terminate
+
+## A server's message: its type, its length, then its body.
+def sent(kind: str, body: list[int]) -> list[int]:
+    size = body.len() + 4
+    [kind.encode()[0], (size >> 24) & 255, (size >> 16) & 255, (size >> 8) & 255, size & 255] + body
+
+## Text as a message holds it, ended by a zero byte.
+def text(value: str) -> list[int]:
+    mut out = list[int]()
+    for byte in value.encode():
+        out.append(byte)
+    out + [0]
+
+def shown(message: PgMessage) -> str:
+    match message:
+        case .AuthOk:
+            "signed in"
+        case .AuthCleartext:
+            "wants the password"
+        case .Setting(name=name, value=value):
+            f"setting {name} = {value}"
+        case .Ready(status=status):
+            f"ready, {status}"
+        case .Columns(names=names, types=types):
+            f"columns {names} of types {types}"
+        case .Row(cells=cells, present=present):
+            texts = [cell.decode() else "" for cell in cells]
+            f"row {texts}, there: {present}"
+        case .Done(tag=tag):
+            f"done: {tag}"
+        case .Failed(fields=fields):
+            state = fields.get("C") else ""
+            why = fields.get("M") else ""
+            f"failed: {state} {why}"
+        case _:
+            "something else"
+
+def main(stdout: Stdout):
+    hello = startup("hoard", database="index")
+    stdout.print(hello.len(), hello[0:8])
+    stdout.print(password("swordfish"), terminate())
+    mut server = sent("R", [0, 0, 0, 3])
+    server = server + sent("R", [0, 0, 0, 0])
+    server = server + sent("S", text("server_version") + text("17.2"))
+    server = server + sent("Z", text("I")[0:1])
+    # Two columns, `path` of type text (25) and `size` of type int8 (20), then a row whose size is null.
+    mut described = (
+        [0, 2] + text("path") + [0, 0, 0, 0, 0, 0, 0, 0, 0, 25, 255, 255, 255, 255, 255, 255, 0, 0]
+    )
+    described = (
+        described + text("size") + [0, 0, 0, 0, 0, 0, 0, 0, 0, 20, 0, 8, 255, 255, 255, 255, 0, 0]
+    )
+    server = server + sent("T", described)
+    server = server + sent("D", [0, 2, 0, 0, 0, 5] + text("a.txt")[0:5] + [255, 255, 255, 255])
+    server = server + sent("C", text("SELECT 1"))
+    missing = "relation x does not exist"
+    server = (
+        server + sent("E", [83] + text("ERROR") + [67] + text("42P01") + [77] + text(missing) + [0])
+    )
+    written = bytes(server)
+    # Fed a few bytes at a time, it gives each message once it's whole.
+    mut reader = PgReader()
+    mut at = 0
+    while at < written.len():
+        reader.feed(written[at:at + 7 if at + 7 < written.len() else written.len()])
+        at += 7
+        while True:
+            message = reader.next() else break
+            if message is None: break
+            stdout.print(shown(message))

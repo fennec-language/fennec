@@ -475,6 +475,18 @@ impl Emit<'_, '_, '_> {
         let function = self.function;
         let place = self.known.place_taken(function, value).ok_or("a place that isn't taken")?;
         let root = place.root;
+        // What a call changes through it is put back by a crash or a failure, if it's a lock's.
+        if taking && !self.saving.is_empty() {
+            let fields: Vec<String> = place
+                .steps
+                .iter()
+                .map_while(|step| match step {
+                    PlaceStep::Field(name) => Some(name.clone()),
+                    PlaceStep::Item(_) => None,
+                })
+                .collect();
+            self.save_along(root, &fields)?;
+        }
         let mut kind = self.kind_of(root)?.clone();
         let mut at = self.slot(root);
         let mut along: Vec<String> = Vec::new();
@@ -1600,6 +1612,9 @@ impl Emit<'_, '_, '_> {
         value: &Operand,
         span: Span,
     ) -> Result<(), String> {
+        if !self.saving.is_empty() {
+            self.save_along(object, path)?;
+        }
         let kind = self.place_kind(object, path)?;
         if let Some(shape) = self.array_shape(&kind) {
             return self.array_set((object, path), shape, index, value, span);

@@ -468,6 +468,7 @@ impl<'p> Module<'_, 'p> {
             saving: crate::rollback::saving_handles(function),
             on_crash: crate::rollback::given_back_on_crash(function),
             saving_slots: HashMap::new(),
+            rolled_back: HashSet::new(),
             wrote_prop: false,
             leave_after_crash: None,
         };
@@ -558,6 +559,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// For each of those handles, a flag that's set while its lock is held, for a crash to know
     /// which to put back.
     pub(crate) saving_slots: HashMap<usize, String>,
+    /// The locks to write whose changes a failure has just put back, for their unlock to know.
+    pub(crate) rolled_back: HashSet<usize>,
     /// Whether the way out on a failure, `prop`, is written already, with what a crash puts back.
     wrote_prop: bool,
     /// How the function leaves on a failure once `prop` has put back what it changed and let go
@@ -2104,6 +2107,10 @@ impl Emit<'_, '_, '_> {
             channel if channel.starts_with("intrinsics.channel_") => self.channel_builtin(dest, name, args),
             "intrinsics.launch" | "intrinsics.launch_take" => self.launch_builtin(dest, name, args),
             "error.add_note" | "error.notes" => self.notes_builtin(dest, name, args),
+            "lock.roll_back" => {
+                let [handle] = args else { return Err("a lock to put back that isn't one".to_owned()) };
+                self.roll_back_on_failure(handle)
+            }
             // A list of a list's items is the list, shared until one changes.
             "parallel" | "list"
                 if args.len() == 1

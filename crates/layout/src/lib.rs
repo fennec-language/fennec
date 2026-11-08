@@ -11,7 +11,9 @@ use fennec_interp::packed::Element;
 
 mod layouts;
 
-pub use layouts::{Case, Field, Layout, Layouts, WORD, Written, WrittenField, generator_definition};
+pub use layouts::{
+    Case, Field, Layout, Layouts, WORD, Written, WrittenField, closure_definition, generator_definition,
+};
 
 /// How native code holds a value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -36,8 +38,8 @@ pub enum Ty {
     /// `bytes`: the address of a block the runtime owns, shared by every copy. Only layouts made
     /// by `Layouts::from_definitions` use it.
     Bytes,
-    /// A generator: the address of its block. Only layouts made by `Layouts::from_definitions`
-    /// use it.
+    /// A generator or a closure: the address of its block, whose own shape says what it keeps.
+    /// Only layouts made by `Layouts::from_definitions` use it.
     Gen,
     /// A dict with these keys and values: the address of a block the runtime owns, shared
     /// by every copy until one changes it.

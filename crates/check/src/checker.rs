@@ -198,6 +198,9 @@ impl Checker {
                 self.check_function(key);
             }
         }
+        if scope == Scope::ReachedWithFields {
+            self.check_implicit_methods();
+        }
         self.revisit_cycles();
         for name in self.program.constants.keys().cloned().collect::<Vec<_>>() {
             self.constant_type(&name);
@@ -236,6 +239,24 @@ impl Checker {
         diagnostics.sort_by(|a, b| (a.span.start, &a.message).cmp(&(b.span.start, &b.message)));
         diagnostics.dedup();
         Err(diagnostics)
+    }
+
+    /// Checks the standard library's methods that lowering calls where a program names none:
+    /// printing a value calls its type's `str`, `sorted` its `<`, a `for` its `iter`, and so
+    /// on. Lowering finds them by their signatures, so a type's own way would be passed over.
+    fn check_implicit_methods(&mut self) {
+        let implicit: Vec<String> = self
+            .program
+            .functions
+            .iter()
+            .filter(|(key, entry)| entry.prelude && entry.owner.is_some() && lowering_calls(key, entry))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in &implicit {
+            if !self.states.contains_key(key) {
+                self.check_function(key);
+            }
+        }
     }
 
     /// What a check that found nothing wrong gives back.
@@ -985,6 +1006,31 @@ fn missing_return_type(def: &FnDef, value: &Type, generator: bool, fixable: bool
     Diagnostic::new(message, def.span)
         .with_help(format!("write it after the parameters: `{signature} -> {written}:`"))
         .with_fix(end, format!(" -> {written}"))
+}
+
+/// Whether lowering may call a standard library method that a program never names: an
+/// operator's, a protocol's like `str`, `iter` or `len`, or any of `StrWriter`'s, which a type's
+/// own `str` is given.
+fn lowering_calls(key: &str, entry: &FnEntry) -> bool {
+    const PROTOCOLS: [&str; 11] = [
+        "str",
+        "iter",
+        "len",
+        "is_live",
+        "del",
+        "hash",
+        "serialize",
+        "deserialize",
+        "contains",
+        "in",
+        "own_text",
+    ];
+    if entry.owner.as_deref() == Some("StrWriter") {
+        return true;
+    }
+    let method = key.rsplit_once('.').map_or(key, |(_, method)| method);
+    PROTOCOLS.contains(&method)
+        || method.chars().next().is_some_and(|first| !first.is_alphanumeric() && first != '_')
 }
 
 #[cfg(test)]

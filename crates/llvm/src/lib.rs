@@ -184,6 +184,12 @@ fn laid_out(program: &Program, blocks: Option<&Layouts>) -> Layouts {
         kinds::define_named(&def.item, blocks, &mut named);
         def.slots.iter().for_each(|slot| kinds::define_named(slot, blocks, &mut named));
     }
+    // When the runtime holds closures, each closure's block is laid out like a boxed struct's.
+    let closures = if closures::runtime_holds_closures(program) {
+        closures::closure_layouts(program, blocks)
+    } else {
+        Vec::new()
+    };
     // A generator's block is laid out like a boxed struct's, its header first.
     let generators = program.generators.iter().map(|def| {
         let slots: Vec<_> = def.slots.iter().map(|slot| kinds::canon_in(blocks, slot)).collect();
@@ -201,6 +207,7 @@ fn laid_out(program: &Program, blocks: Option<&Layouts>) -> Layouts {
         .chain(program.enums.iter().map(enums))
         .chain(named)
         .chain(generators)
+        .chain(closures)
         .collect();
     Layouts::from_definitions(&definitions)
 }

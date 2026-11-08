@@ -1,6 +1,6 @@
-# How many of each example's tests `fennec test` runs on the JIT or the interpreter instead of
+# How many of each example's tests `fennec test` runs in the interpreter instead of
 # through LLVM, because LLVM can't build what they reach yet, or for another reason
 # `crates/fennec/src/llvm_tests.rs` gives. An example not listed runs all its tests through LLVM.
-# `every_example_tested_through_llvm_says_and_traces_what_it_does_on_the_jit` holds these exactly:
+# `every_example_tested_through_llvm_passes_and_keeps_what_it_ran` holds these exactly:
 # a count that goes up fails it, and one that goes down is lowered here. `fennec test --verbose`
 # says the first reason for a program.

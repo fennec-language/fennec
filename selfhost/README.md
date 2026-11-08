@@ -19,8 +19,7 @@ same dumps:
 
 `crates/fennec/tests/selfhost.rs` checks that both front ends print exactly the same dump for
 every example, every error example, every file of the example kits, the standard library's
-Fennec sources and this kit's own source, built through LLVM, and for a sample of them on the
-JIT. For the checker it compares the kinds of diagnostics ported so far (`CHECK_KINDS`), so a
+Fennec sources and this kit's own source, built through LLVM. For the checker it compares the kinds of diagnostics ported so far (`CHECK_KINDS`), so a
 program the Rust checker accepts must get no complaint from the self-hosted one either.
 
 ## Running it
@@ -57,8 +56,8 @@ line that line is about.
    to an error that isn't listed needs nothing here.
 5. **Run the test:** `cargo test -p fennec --test fennec selfhost`. It runs both front ends
    over every example, every error example, the example kits, the standard library and
-   `selfhost/` itself, built through LLVM, and over a sample of them on the JIT, which is
-   much slower. LLVM's build fails if a function in `selfhost/` isn't native code.
+   `selfhost/` itself, built through LLVM. LLVM's build fails if a function in `selfhost/`
+   isn't native code.
 
 Fennec code here has to pass the type checker too, so a stricter checker can break `selfhost/`
 itself: `fennec run selfhost` then fails before it prints anything, with the checker's own

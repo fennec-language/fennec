@@ -1,0 +1,10 @@
+source 73088e116a1deadf16945fae18467630977ab2a3a15984d5f73c4411b12fd5c6
+code 1
+stdout 7
+before
+stderr 84
+error: division by zero
+ --> <dir>/zero.fen:2:5
+  |
+2 |     10 // n
+  |     ^^^^^^^

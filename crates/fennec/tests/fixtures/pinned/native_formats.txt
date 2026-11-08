@@ -1,0 +1,61 @@
+source f2a1302fd3b98096754d8d5b6b093d6b10d13354469648f708e655a56b97263a
+code 0
+stdout 1025
+{"name": "Ash \"the\" fox\n", "level": 3, "kind": {"Owl": {"wise": true}}, "pet": null, "at": {"x": 1, "y": 2.5}, "tags": ["a", "é"], "stats": {"hp": 10}}
+[
+  {
+    "name": "Ash \"the\" fox\n",
+    "level": 3,
+    "kind": {
+      "Owl": {
+        "wise": true
+      }
+    },
+    "pet": null,
+    "at": {
+      "x": 1,
+      "y": 2.5
+    },
+    "tags": [
+      "a",
+      "é"
+    ],
+    "stats": {
+      "hp": 10
+    }
+  },
+  {
+    "name": "Ash \"the\" fox\n",
+    "level": 3,
+    "kind": {
+      "Owl": {
+        "wise": true
+      }
+    },
+    "pet": null,
+    "at": {
+      "x": 1,
+      "y": 2.5
+    },
+    "tags": [
+      "a",
+      "é"
+    ],
+    "stats": {
+      "hp": 10
+    }
+  }
+]
+True True
+`level` is missing
+`name` should be a str, but it's an int
+`Unit` has no field "extra", but the text has one
+expected `,` or `]` after the value, but found the end of the text, at line 1, column 6
+`[1]` should be an int, but it's a str
+Spot(x=2, y=2.5)
+x = 4
+y = 2.5
+
+Spot(x=4, y=2.5)
+`x` should be an int, but it's a str
+stderr 0

@@ -221,7 +221,7 @@ impl Lowering<'_> {
 
     /// Leaves the function with an error, as any way of leaving does: `for mut` loops write their
     /// items back, and `with` blocks clean up.
-    fn return_error(&mut self, error: Operand, span: Span) -> Lowered<()> {
+    pub(super) fn return_error(&mut self, error: Operand, span: Span) -> Lowered<()> {
         let dest = self.temporary(self.returns.clone());
         self.emit(InstKind::MakeErr { dest, error }, span);
         self.leave(Some(Operand::Local(dest)), span)

@@ -1,0 +1,35 @@
+source dbcb6281000fc8e533a0f4a99e7c302e85bbbdccdbf45bf9a0dc42b34c3b4749
+code 0
+stdout 1521
+blank
+Token.Blank
+word short
+Token.Word(text="short")
+word a string long enough that it can't be held inline
+Token.Word(text="a string long enough that it can't be held inline")
+num 7
+Token.Num(value=7)
+a string long enough that it can't be held inline: 3 items, first 1
+Token.Many(items=[1, 2, 3], label="a string long enough that it can't be held inline")
+num 1 word a string long enough that it can't be held inline!
+word a string long enough that it can't be held inline! word changed
+word a long string number 999 that doesn't fit inline
+[True, True, False, True, True, True, True, False, True]
+word a string long enough that it can't be held inline True tag
+Holder(token=Token.Word(text="a string long enough that it can't be held inline"), tag="tag", size=3)
+100 num 9 word item number 49 long enough not to be held inline word item number 99 long enough not to be held inline
+First.Named(name="other") First.Named(name="a string long enough that it can't be held inline")
+Wrap.Who(person=Person(name="a string long enough that it can't be held inline", age=3))
+Wrap.Empty
+Wrap.Inner(token=Token.Word(text="a string long enough that it can't be held inline"))
+True False
+None
+Token.Word(text="a string long enough that it can't be held inline")
+word a string long enough that it can't be held inline
+Token.Word(text="short")
+word short
+Token.Many(items=[3], label="label")
+label: 1 items, first 3
+Token.Many(items=[3], label="label")
+Person(name="somebody with a name long enough to be a block of its own", age=1)
+stderr 0

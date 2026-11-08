@@ -233,3 +233,20 @@ fn a_module_the_library_imports_isnt_a_name_in_programs() {
     let text = "def main(stdout: Stdout):\n    stdout.print(math.sqrt(4.0))\n";
     assert_eq!(problems(text), ["`math` doesn't exist @ math"]);
 }
+
+/// A program about to be lowered is checked as far as it reaches, and also through what
+/// lowering calls where the program names nothing: a type's own `str` when it's printed, and
+/// `StrWriter`'s methods, which that `str` is given.
+#[test]
+fn a_program_to_emit_is_checked_through_what_lowering_calls() {
+    let source = "from std.collections import Deque\n\n\
+        def main(stdout: Stdout):\n    queue = Deque.of([1, 2])\n    stdout.print(f\"{queue}\")\n";
+    let mut module = fennec_syntax::parse(source).unwrap();
+    fennec_check::check_to_run(&mut module).unwrap();
+    let signatures = fennec_check::check_to_emit(&module).unwrap();
+    for implicit in ["Deque.str", "StrWriter.text"] {
+        assert!(signatures.get(implicit).is_some(), "{implicit} isn't checked");
+    }
+    // What nothing reaches, and lowering never calls on its own, isn't.
+    assert!(signatures.get("Deque.appendleft").is_none());
+}

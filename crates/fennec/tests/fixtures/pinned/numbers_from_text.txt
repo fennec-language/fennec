@@ -1,0 +1,20 @@
+source 27b03c52758eb3e60055b516b794dfdc0b0d2b51d14f41af23e4a90234abd665
+code 0
+stdout 362
+42
+-7
+"4x2" isn't an int
+"" isn't an int
+"99999999999999999999" isn't an int
+2.5
+1000.0
+"nope" isn't a float
+"a \"quoted\" value long enough for a block" isn't a float
+12 -1 0.5 -1.5
+3 -1
+[0-9]+
+this pattern isn't valid: this `[` is never closed (at character 0)
+["h", "é", "l", "l", "o"] [] 4 True set()
+{3, 1, 2} {"b", "a", "a key long enough for a block"}
+2
+stderr 0

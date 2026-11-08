@@ -1,0 +1,9 @@
+source 257445ab93e241c684b8f3f73952df2bda2c7170354e751549e581b3ba70e32c
+code 0
+stdout 48
+ash 2 1.5
+di 6 4.5
+cy -1 3.5
+ash! cy 2 True
+7 3
+stderr 0

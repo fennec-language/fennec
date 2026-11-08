@@ -1,0 +1,18 @@
+source cda8432849c2a7de8c31aa7bde74051877ceda8b5b39e452e6679221513abc74
+code 0
+stdout 379
+3 1 1.5 -0.0 b long enough for a block
+3 1 2.5 apple True
+(2, "b") (1, 1.5)
+bbb c
+1 1.5 2
+Money(cents=2) Money(cents=9) Money(cents=2) Money(cents=5)
+True False True False True False
+True True False True True
+[1, 3, 2] [1, 2, 3, 2]
+["a", "c"]
+[Spot(x=3, y=4)]
+[(1, "a")]
+0.479425538604203 0.8775825618903728 0.8414709848078965 1.0
+5 2.5 True False [1, 2] Spot(x=1, y=2) (1, "a")
+stderr 0

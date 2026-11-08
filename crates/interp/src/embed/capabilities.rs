@@ -403,9 +403,18 @@ pub extern "C" fn clock_time() -> i64 {
 }
 
 /// `clock.sleep(duration)`, by the nanoseconds of a `Duration`. What's been printed comes out
-/// first, as it does before anything else that waits.
+/// first, as it does before anything else that waits. It's recorded like the clock's readings,
+/// so a replay doesn't wait it out, and a replay that sleeps where its recording didn't stops.
 pub extern "C" fn clock_sleep(nanos: i64) {
     super::write_kept_output();
+    recorded_word("Clock.sleep", || {
+        wait(nanos);
+        0
+    });
+}
+
+/// Waits a sleep out: by parking, for a task, so its thread runs others meanwhile.
+fn wait(nanos: i64) {
     let length = std::time::Duration::from_nanos(u64::try_from(nanos).unwrap_or(0));
     #[cfg(any(test, feature = "threads"))]
     if super::serve::can_park() {

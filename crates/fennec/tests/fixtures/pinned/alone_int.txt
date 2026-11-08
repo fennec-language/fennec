@@ -1,0 +1,10 @@
+source bd0a86af950d3633f8e9d83d3dc25749a8de159b61f7f0d32c4d78b9578c7717
+code 1
+stdout 2
+0
+stderr 153
+error: can't turn a float into an int
+ --> <dir>/alone_int.fen:6:18
+  |
+6 |     stdout.print(int(1e300 * 1e300))
+  |                  ^^^^^^^^^^^^^^^^^^

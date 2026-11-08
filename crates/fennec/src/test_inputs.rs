@@ -79,8 +79,8 @@ impl<'m> Inputs<'m> {
     }
 
     /// The function giving a value's simpler values to try, in the order `simpler` in the
-    /// interpreter's `testing.rs` gives them, written if it hasn't been, or None for a type only the
-    /// interpreter shrinks yet.
+    /// interpreter's `testing.rs` gives them, written if it hasn't been, or None for a type whose
+    /// values can't be made here.
     pub(crate) fn simpler_for(&mut self, ty: &TypeExpr) -> Option<String> {
         let shown = written(ty);
         if let Some(name) = self.simpler.get(&shown) {
@@ -98,9 +98,14 @@ impl<'m> Inputs<'m> {
                     "    if value.len() == 0:\n        return []\n    mut options: list[{shown}] = [[]]\n    for skip in range(value.len()):\n        options.append(value[:skip] + value[skip + 1:])\n    options\n"
                 )
             }
-            // Floats, tuples, structs and optionals, the interpreter doesn't shrink yet, or not as
-            // simply. Shrinking structs by their fields comes once the interpreter is gone.
-            _ => return None,
+            // Toward 0, as a whole number first.
+            ("float", [], false) => "    if value == 0.0:\n        return []\n    if value % 1.0 == 0.0:\n        return [0.0]\n    whole = value - value % 1.0\n    if value < 0.0:\n        return [0.0, whole + 1.0]\n    [0.0, whole]\n".to_owned(),
+            // Tuples, structs and optionals have nothing simpler, as the interpreter has it.
+            // Shrinking structs by their fields comes once the interpreter is gone.
+            _ => {
+                self.function_for(ty)?;
+                "    []\n".to_owned()
+            }
         };
         let name = format!("{PREFIX}simpler_{}", self.simpler.len());
         self.simpler.insert(shown.clone(), name.clone());

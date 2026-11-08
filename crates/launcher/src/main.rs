@@ -6,11 +6,12 @@
 //! fennec toolchain install <version>
 //! fennec toolchain remove <version>
 //! fennec toolchain default <version>    the one run outside a kit
-//! fennec update [--latest]              pins the kit to the version kit.toml asks for, or the newest
+//! fennec update [--latest]              pins the kit to the version kit.toml asks for, or the newest,
+//!                                       then has that toolchain pin the kit's dependencies
 //! fennec --latest                       the newest release, the only thing that asks
 //! ```
 //!
-//! `--offline`, or `FENNEC_OFFLINE`, never fetches. `FENNEC_DIST` is where releases come from, a
+//! `--offline`, or `FENNEC_OFFLINE`, never fetches, and the toolchain is told so too. `FENNEC_DIST` is where releases come from, a
 //! mirror's address or a folder, and `FENNEC_HOME` where they go.
 #![expect(clippy::print_stdout, reason = "the launcher lists toolchains")]
 #![expect(clippy::print_stderr, reason = "and says why it couldn't run one")]
@@ -70,7 +71,7 @@ fn launched(args: &[String], offline: bool) -> Result<ExitCode, String> {
             let here = std::env::current_dir()
                 .map_err(|err| format!("couldn't tell which folder this is: {err}"))?;
             print!("{}", launcher.update(&here, words.len() == 2)?);
-            Ok(ExitCode::SUCCESS)
+            hand_off(&launcher.toolchain_for(&here)?, &["update".to_owned()], offline)
         }
         ["toolchain", ..] => Err(
             "`fennec toolchain` takes `list`, `install <version>`, `remove <version>` or `default <version>`"
@@ -79,25 +80,34 @@ fn launched(args: &[String], offline: bool) -> Result<ExitCode, String> {
         _ => {
             let here = std::env::current_dir()
                 .map_err(|err| format!("couldn't tell which folder this is: {err}"))?;
-            hand_off(&launcher.toolchain_for(&here)?, args)
+            hand_off(&launcher.toolchain_for(&here)?, args, offline)
         }
     }
 }
 
 /// Runs the toolchain's `fennec` in place of this process, with the same arguments.
 #[cfg(unix)]
-fn hand_off(command: &std::path::Path, args: &[String]) -> Result<ExitCode, String> {
+fn hand_off(command: &std::path::Path, args: &[String], offline: bool) -> Result<ExitCode, String> {
     use std::os::unix::process::CommandExt as _;
-    let err = std::process::Command::new(command).args(args).exec();
+    let err = toolchain(command, args, offline).exec();
     Err(format!("couldn't run {}: {err}", command.display()))
 }
 
 /// Runs the toolchain's `fennec`, with the same arguments, and exits as it does.
 #[cfg(not(unix))]
-fn hand_off(command: &std::path::Path, args: &[String]) -> Result<ExitCode, String> {
-    let status = std::process::Command::new(command)
-        .args(args)
+fn hand_off(command: &std::path::Path, args: &[String], offline: bool) -> Result<ExitCode, String> {
+    let status = toolchain(command, args, offline)
         .status()
         .map_err(|err| format!("couldn't run {}: {err}", command.display()))?;
     Ok(status.code().and_then(|code| u8::try_from(code).ok()).map_or(ExitCode::FAILURE, ExitCode::from))
+}
+
+/// The toolchain's `fennec` with the arguments, told to fetch nothing when the launcher was.
+fn toolchain(command: &std::path::Path, args: &[String], offline: bool) -> std::process::Command {
+    let mut toolchain = std::process::Command::new(command);
+    toolchain.args(args);
+    if offline {
+        toolchain.env("FENNEC_OFFLINE", "1");
+    }
+    toolchain
 }

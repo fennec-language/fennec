@@ -126,6 +126,7 @@ dependencies = [
  "fennec-build",
  "fennec-check",
  "fennec-count",
+ "fennec-deps",
  "fennec-fmt",
  "fennec-interp",
  "fennec-ir",
@@ -170,6 +171,14 @@ dependencies = [
 [[package]]
 name = "fennec-count"
 version = "0.0.1"
+
+[[package]]
+name = "fennec-deps"
+version = "0.0.1"
+dependencies = [
+ "fennec-blake3",
+ "fennec-kit",
+]
 
 [[package]]
 name = "fennec-dist"

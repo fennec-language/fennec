@@ -1523,6 +1523,7 @@ tools = { path = "../tools" }
 ```
 - A kit with git or path dependencies can't be published to the Den, so they never spread into other people's trees.
 - Capabilities are enforced as for any other code.
+- Built: `kit.toml` reads both, with `folder` for a kit inside a repository, like the first-party kits in this repository's `kits/`. `fennec update` fetches a kit from git into `~/.fennec/kits/<hash>` without checking anything out, and pins it in `kit.lock` by the hash of its `kit.toml` and `src`. A kit from a path isn't pinned, and a kit from git can't name one. Importing from them isn't built yet.
 
 *Why:* Go's convenience for private code, while public code stays on the checked Den. An app may already use C in its own code, and a game engine split into local kits (`../engine`) needs C for Metal and Vulkan; the Den fence still stops that C from spreading. Capabilities mean even unreviewed code can't touch files or the network unless it's handed `Fs` or `Net`.
 

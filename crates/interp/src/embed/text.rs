@@ -376,7 +376,7 @@ mod tests {
             text_headers: true,
             ..Tables::default()
         };
-        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
     }
 
     fn header(text: &str) -> [u64; 3] {
@@ -531,7 +531,7 @@ mod tests {
             Rc::new(Element::Str),
         ];
         let tables = Tables { shapes, str_shape: 2, text_headers: true, ..Tables::default() };
-        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let before = live();
         let long = "a name too long for any header";
         let fill = |block: i64, words: &[u64]| {

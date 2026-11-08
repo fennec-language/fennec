@@ -175,13 +175,6 @@ pub(crate) fn threads_runtime_built() -> bool {
     *BUILT.get_or_init(|| runtime_variant_built("threads", "threads", "fennec_runtime_threads"))
 }
 
-/// The runtime library with no interpreter in it, which `fennec build` takes when
-/// `FENNEC_LEAN_RUNTIME=1` asks, next to `fennec` as `libfennec_runtime_lean.a`.
-pub(crate) fn lean_runtime_built() -> bool {
-    static BUILT: OnceLock<bool> = OnceLock::new();
-    *BUILT.get_or_init(|| runtime_variant_built("lean", "lean", "fennec_runtime_lean"))
-}
-
 /// Builds the runtime library with `features`, in a folder of its own named `folder`, beside the
 /// plain build's `target/debug`, and puts it next to `fennec` as `name`.
 fn runtime_variant_built(features: &str, folder: &str, name: &str) -> bool {

@@ -45,6 +45,7 @@ modules! {
     net,
     pack,
     path,
+    postgres,
     process,
     random,
     re,

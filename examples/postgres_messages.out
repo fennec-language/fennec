@@ -1,0 +1,10 @@
+35 bytes([0, 0, 0, 35, 0, 3, 0, 0])
+bytes([112, 0, 0, 0, 14, 115, 119, 111, 114, 100, 102, 105, 115, 104, 0]) bytes([88, 0, 0, 0, 4])
+wants the password
+signed in
+setting server_version = 17.2
+ready, I
+columns ["path", "size"] of types [25, 20]
+row ["a.txt", ""], there: [True, False]
+done: SELECT 1
+failed: 42P01 relation x does not exist

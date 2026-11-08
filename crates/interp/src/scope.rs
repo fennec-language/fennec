@@ -50,22 +50,6 @@ impl Frame {
         }
     }
 
-    /// Creates a name whose text is shared, so creating it doesn't copy the text.
-    pub(crate) fn declare_shared(&mut self, name: Rc<str>, value: Value, is_mut: bool) {
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.push(Binding { name, value, is_mut });
-        }
-    }
-
-    /// Empties the frame for another call, keeping its memory.
-    pub(crate) fn reset(&mut self) {
-        self.scopes.truncate(1);
-        match self.scopes.first_mut() {
-            Some(names) => names.clear(),
-            None => self.scopes.push(Vec::new()),
-        }
-    }
-
     /// Every name in sight, for an arrow function to capture.
     pub(crate) fn visible(&self) -> Vec<(String, Value)> {
         self.scopes

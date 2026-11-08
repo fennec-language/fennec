@@ -24,7 +24,7 @@ export "$cc_variable=${!cc_variable:-musl-gcc}"
 
 rustup target add "$target" > /dev/null
 mkdir -p "$out/self-contained"
-for features in "" threads lean lean,threads; do
+for features in "" threads; do
     dir="target/musl-${features:-plain}"
     dir="${dir//,/-}"
     name="libfennec_runtime${features:+_${features//,/_}}"

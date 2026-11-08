@@ -87,7 +87,7 @@ mod tests {
 
     fn begin() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
-        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
     }
 
     fn text(address: i64) -> String {
@@ -144,7 +144,7 @@ mod tests {
             elements: vec![lost_layout(), Rc::new(Element::Str)],
             ..Tables::default()
         };
-        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let before = with(|state| state.heap.live());
         let errors = Value::list(vec![lost("no disk", &["while saving", "twice"]), lost("no disk", &[])]);
         let pushed = with(|state| state.push(errors));

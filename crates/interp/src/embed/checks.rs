@@ -21,7 +21,11 @@ pub extern "C" fn stop(message: i64, start: i64, end: i64) {
             .and_then(|at| state.heap.block(at))
             .map_or_else(String::new, super::heap::block_text)
     });
-    super::fail_with(Diagnostic::new(text, span));
+    // A help to show under it comes after a mark.
+    match text.split_once(fennec_syntax::HELP_MARK) {
+        Some((message, help)) => super::fail_with(Diagnostic::new(message, span).with_help(help)),
+        None => super::fail_with(Diagnostic::new(text, span)),
+    }
 }
 
 /// Fails a comparison in an `assert`, saying what each side was, given as strings.

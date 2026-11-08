@@ -555,7 +555,7 @@ impl Lowering<'_> {
         let value = self.expr(iter)?;
         if let Type::Iterator(item) = &ty {
             let known = known_generator(iter, &|key| self.context.generators.contains_key(key));
-            return self.through_generator(names, (value, (**item).clone()), known, span, body);
+            return self.through_generator(names, (value, (**item).clone()), known, (span, iter.span), body);
         }
         if ty == Type::Str && back.is_none() {
             return self.through_text(names, value, span, body);
@@ -577,7 +577,7 @@ impl Lowering<'_> {
                     let kind = InstKind::Call { dest: Some(generated), function, args: vec![value] };
                     self.emit(kind, span);
                     let source = (Operand::Local(generated), (**item).clone());
-                    return self.through_generator(names, source, None, span, body);
+                    return self.through_generator(names, source, None, (span, iter.span), body);
                 }
                 let Type::List(item) = found.returns else {
                     return Err(format!("it has a `for` loop over {name}"));

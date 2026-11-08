@@ -4,6 +4,10 @@ use std::fmt::Write as _;
 
 use crate::span::Span;
 
+/// Between a message native code stops with and the help shown under it: what native code writes
+/// in one string, the runtime shows as an error and its help.
+pub const HELP_MARK: &str = "\u{1}help\u{1}";
+
 /// A problem in a Fennec program: what's wrong, where, and how to fix it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {

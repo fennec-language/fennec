@@ -22,7 +22,7 @@ fn method(type_name: &str, name: &str) -> Option<Method> {
     };
     Some(match (type_name, name) {
         ("Database" | "Transaction", "_execute") => reads(&query(), fails(Type::Int)),
-        ("Database" | "Transaction", "_query") => reads(&query(), fails(Type::named("SqliteRows"))),
+        ("Database" | "Transaction", "_query") => reads(&query(), fails(Type::named("SqlRows"))),
         // A transaction on a connection of its own, with the database's writer taken.
         ("Database", "_begin") => reads(&[], fails(Type::named("Transaction"))),
         ("Database", "_close") | ("Transaction", "_rollback") => reads(&[], Type::Unit),

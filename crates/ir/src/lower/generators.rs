@@ -53,6 +53,9 @@ fn parts(returns: &Type) -> Lowered<(Type, Option<Type>)> {
 }
 
 /// The name of the function that resumes a generator.
+/// The help under the error for a generator used twice, as the interpreter gives it.
+const USED_ONCE: &str = "a generator can be used once: `list(...)` keeps its items to use again";
+
 pub(super) fn resume_name(generator: &str) -> String {
     format!("{generator}.resume")
 }
@@ -513,13 +516,13 @@ impl<'a> Lowering<'a> {
         names: &[String],
         (generator, item): (Operand, Type),
         known: Option<String>,
-        span: Span,
+        (span, used_at): (Span, Span),
         body: F,
     ) -> Lowered<()>
     where
         F: FnOnce(&mut Self) -> Lowered<()>,
     {
-        self.start_generator(&generator, span);
+        self.start_generator(&generator, used_at);
         let (head, then, done, exit) =
             (self.new_block(), self.new_block(), self.new_block(), self.new_block());
         self.finish(Terminator::Jump(head));
@@ -556,7 +559,7 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    /// A generator can be used once.
+    /// A generator can be used once, at `span`, which is what names it.
     fn start_generator(&mut self, generator: &Operand, span: Span) {
         let started = self.temporary(Type::Bool);
         self.emit(
@@ -566,7 +569,10 @@ impl<'a> Lowering<'a> {
         let (then, otherwise) = (self.new_block(), self.new_block());
         self.finish(Terminator::Branch { cond: Operand::Local(started), then, otherwise });
         self.current = then;
-        self.finish(Terminator::Stop { message: "this generator has already been used".to_owned(), span });
+        // What's after the marker is the help the runtime shows under the error.
+        let message =
+            format!("this generator has already been used{}{}", fennec_syntax::HELP_MARK, USED_ONCE);
+        self.finish(Terminator::Stop { message, span });
         self.current = otherwise;
         let kind = InstKind::SetSlot {
             generator: generator.clone(),

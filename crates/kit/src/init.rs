@@ -6,8 +6,8 @@
 
 use std::path::Path;
 
-use crate::manifest::valid_name;
 use crate::starter;
+use fennec_deps::valid_name;
 
 /// Fennec's block for `AGENTS.md`, markers included.
 pub const GUIDANCE: &str = include_str!("guidance.md");

@@ -16,7 +16,7 @@ targets = [
 ignore = []
 
 [licenses]
-# Cranelift is Apache-2.0 with the LLVM exception, which only loosens Apache-2.0's terms.
+# Apache-2.0 with the LLVM exception only loosens Apache-2.0's terms.
 # Zlib is as permissive as MIT, and so are ISC, which `ring` and `rustls-webpki` use, BSD-3-Clause,
 # which `subtle` uses, and CDLA-Permissive-2.0, which `webpki-root-certs` uses. That one's only a
 # dependency of the TLS verifier on wasm, where Fennec doesn't build the verifier.
@@ -41,14 +41,10 @@ ignore = true
 multiple-versions = "deny"
 wildcards = "deny"
 allow-wildcard-paths = true
-# Cranelift's and corosensei's own dependencies pull in older copies of these. Remove each once
-# they catch up.
+# Dependencies' own dependencies pull in older copies of these. Remove each once they catch up.
 skip = [
-    { crate = "bitflags@1.3.2", reason = "region, through cranelift-jit" },
     { crate = "getrandom@0.2.17", reason = "ring, through rustls" },
-    { crate = "hashbrown@0.16.1", reason = "gimli, through cranelift-codegen" },
-    { crate = "mach2@0.4.3", reason = "region, through cranelift-jit" },
-    { crate = "windows-sys@0.52.0", reason = "region, through cranelift-jit" },
+    { crate = "windows-sys@0.52.0", reason = "ring, through rustls" },
     { crate = "windows-sys@0.59.0", reason = "corosensei's Windows stacks, through fennec-parked" },
 ]
 

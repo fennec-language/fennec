@@ -1,0 +1,9 @@
+source d67d8a964c4e61e8acd80e1050b709d26f09695029295a119d0ddcd3fe651eba
+code 1
+stdout 0
+stderr 135
+error: can't insert at 3 in a list of length 1
+ --> <dir>/list_insert_past.fen:3:5
+  |
+3 |     ns.insert(3, 2)
+  |     ^^^^^^^^^^^^^^^

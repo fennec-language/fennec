@@ -1,0 +1,12 @@
+source f22ead2cb460816f1af1a06b7decb5b27d4e5ffe38e66ba9e2182b085be2d53f
+code 1
+stdout 2
+1
+stderr 213
+error: this assertion failed
+  --> <dir>/assert_14.fen:31:12
+   |
+31 |     assert named(False) is not None
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: the left side is None and the right side is None

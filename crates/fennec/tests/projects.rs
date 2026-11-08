@@ -1,11 +1,10 @@
-//! Every kit in `examples/projects/` runs and prints exactly its `.out` file, in the
-//! interpreter and the JIT, and passes its tests. Every kit in `examples/projects/errors/`
+//! Every kit in `examples/projects/` runs and prints exactly its `.out` file in the interpreter,
+//! and passes its tests. Every kit in `examples/projects/errors/`
 //! fails with exactly its `.err` file, which names the file the problem is in.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use fennec_jit::JitError;
 use fennec_kit::{Entry, Program};
 
 fn projects_dir() -> PathBuf {
@@ -41,26 +40,6 @@ fn run(dir: &Path, shown_as: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
-/// Runs a kit as native code, the way `fennec run --jit` does.
-fn run_jit(dir: &Path, shown_as: &str) -> Result<String, String> {
-    let program = load(dir, shown_as, Entry::Main)?;
-    let mut out = Vec::new();
-    match fennec_jit::run_with_report(&program.module, &mut out) {
-        Ok(report) => {
-            assert_eq!(
-                (report.leftover_temps, report.leftover_frames),
-                (0, 0),
-                "{shown_as} left things behind"
-            );
-            Ok(String::from_utf8_lossy(&out).into_owned())
-        }
-        Err(JitError::Failed(diagnostic)) => Err(program.sources.render(&diagnostic)),
-        Err(JitError::Unsupported(why)) => {
-            Err(format!("{shown_as} should compile natively, but: {}", why.message))
-        }
-    }
-}
-
 /// Runs a test on a stack as big as `fennec run` gives programs.
 fn on_big_stack(test: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
     let worker = std::thread::Builder::new().stack_size(512 * 1024 * 1024).spawn(test)?;
@@ -70,13 +49,8 @@ fn on_big_stack(test: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Kits the JIT doesn't take yet, with why. `fennec run --jit` runs them in the interpreter, and
-/// `every_program_builds_natively` checks them as native code. A listed kit the JIT takes fails
-/// below, so the list only ever shrinks.
-const NOT_JIT_YET: &[(&str, &str)] = &[("notes_api", "`Notes` is `shared`")];
-
 #[test]
-fn projects_print_their_expected_output_in_every_engine() {
+fn projects_print_their_expected_output() {
     on_big_stack(|| {
         let dir = projects_dir();
         let names = kits(&dir).unwrap();
@@ -87,13 +61,6 @@ fn projects_print_their_expected_output_in_every_engine() {
             let actual =
                 run(&dir.join(&name), &shown_as).unwrap_or_else(|err| panic!("{name} failed:\n{err}"));
             assert_eq!(actual, expected, "{name} printed something different");
-            let on_jit = run_jit(&dir.join(&name), &shown_as);
-            if let Some((_, why)) = NOT_JIT_YET.iter().find(|(kit, _)| *kit == name) {
-                let said = on_jit.expect_err(&format!("{name} runs on the JIT now; take it off NOT_JIT_YET"));
-                assert!(said.contains(why), "{name} isn't taken by the JIT for a new reason: {said}");
-            } else {
-                assert_eq!(on_jit, Ok(expected), "{name} ran differently as native code");
-            }
 
             let program = load(&dir.join(&name), &shown_as, Entry::Everything).unwrap();
             let mut out = std::io::sink();
@@ -110,7 +77,7 @@ fn projects_print_their_expected_output_in_every_engine() {
 }
 
 #[test]
-fn error_projects_fail_with_their_expected_message_in_every_engine() {
+fn error_projects_fail_with_their_expected_message() {
     on_big_stack(|| {
         let dir = projects_dir().join("errors");
         let names = kits(&dir).unwrap();
@@ -120,9 +87,6 @@ fn error_projects_fail_with_their_expected_message_in_every_engine() {
             let expected = fs::read_to_string(dir.join(format!("{name}.err"))).unwrap();
             let actual = run(&dir.join(&name), &shown_as).expect_err(&format!("{name} should fail"));
             assert_eq!(actual, expected, "{name} failed with a different message");
-            let native =
-                run_jit(&dir.join(&name), &shown_as).expect_err(&format!("{name} should fail natively"));
-            assert_eq!(native, expected, "{name} failed differently as native code");
         }
     })
     .unwrap();

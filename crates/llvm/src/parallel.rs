@@ -188,6 +188,9 @@ enum Shape {
     Each,
     /// `(from, to, out) -> ()`: a comprehension's range, putting items into `out`.
     Into,
+    /// `(from, to, out) -> int`: a comprehension's range whose items can fail, giving back 0, or
+    /// 2 when it handed a failure over.
+    IntoFailing,
     /// `(from, to) -> int` or `-> float`: a sum's range, giving back its partial.
     Partial { float: bool },
     /// `(conn) -> ()`: a server's task for a connection, on a stack of its own.
@@ -199,6 +202,7 @@ impl Shape {
         match self {
             Shape::Each => "@fen_parallel_range",
             Shape::Into => "@fen_parallel_range_into",
+            Shape::IntoFailing => "@fen_parallel_range_into_failing",
             Shape::Partial { float: false } => "@fen_parallel_partial_int",
             Shape::Partial { float: true } => "@fen_parallel_partial_float",
             Shape::Task => "@fen_parallel_task",
@@ -214,6 +218,7 @@ impl Shape {
         let (extra, args, call, keep) = match self {
             Shape::Each | Shape::Task => ("", "", "call swiftcc void", String::new()),
             Shape::Into => (", i64 %out", ", ptr %into", "call swiftcc void", String::new()),
+            Shape::IntoFailing => (", i64 %out", ", ptr %into", "%ended = call swiftcc i64", String::new()),
             Shape::Partial { float: false } => (
                 ", ptr %partial",
                 "",
@@ -227,7 +232,17 @@ impl Shape {
                 "  %bits = bitcast double %got to i64\n  store i64 %bits, ptr %partial\n".to_owned(),
             ),
         };
-        let into = if matches!(self, Shape::Into) { "  %into = inttoptr i64 %out to ptr\n" } else { "" };
+        let into = if matches!(self, Shape::Into | Shape::IntoFailing) {
+            "  %into = inttoptr i64 %out to ptr\n"
+        } else {
+            ""
+        };
+        // A crash is 1, with the failure flag set; otherwise what the range gave back, if it says.
+        let result = if matches!(self, Shape::IntoFailing) {
+            "%result = select i1 %bad, i64 1, i64 %ended"
+        } else {
+            "%result = zext i1 %bad to i64"
+        };
         let params = format!("i64 %env, i64 %from, i64 %to, i64 %thread{extra}");
         let running = format!("@\"{}.run\"", name.trim_start_matches('@'));
         format!(
@@ -235,7 +250,7 @@ impl Shape {
              %closure = inttoptr i64 %env to ptr\n{into}  %code_at = getelementptr inbounds i8, ptr %closure, i64 {CODE}\n  \
              %code = load ptr, ptr %code_at\n  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n  \
              {call} %code(ptr %closure, i64 %from, i64 %to{args}, ptr swifterror %failed)\n{keep}  \
-             %held = load ptr, ptr %failed\n  %bad = icmp ne ptr %held, null\n  %result = zext i1 %bad to i64\n  \
+             %held = load ptr, ptr %failed\n  %bad = icmp ne ptr %held, null\n  {result}\n  \
              ret i64 %result\n}}\n\n\
              define internal i64 {name}({params}) #0 {{\n{READY}  \
              %result = call i64 {running}(i64 %env, i64 %from, i64 %to, i64 %thread{extra})\n  ret i64 %result\n}}\n\n"
@@ -363,7 +378,28 @@ impl Emit<'_, '_, '_> {
                 Ok(())
             }
             ("parallel.for", [list, range]) => self.parallel_for(list, range),
-            ("parallel.serve", [server, task]) => self.parallel_serve(server, task),
+            ("parallel.serve", [server, task]) => self.parallel_serve(dest, server, task),
+            // A comprehension whose items can fail made no list when one failed with a value.
+            ("parallel.map_failed", [list]) => {
+                let (list, _) = self.operand(list)?;
+                let none = self.temp();
+                self.line(&format!("{none} = icmp eq ptr {list}, null"));
+                self.assign(dest.ok_or("a test no one keeps")?, &none)
+            }
+            ("parallel.failure", []) => {
+                self.declare("declare i64 @fennec_parallel_failure() nounwind");
+                let (number, block) = (self.temp(), self.temp());
+                self.line(&format!("{number} = call i64 @fennec_parallel_failure()"));
+                self.line(&format!("{block} = inttoptr i64 {number} to ptr"));
+                self.take_handed_failure(dest.ok_or("a failure no one keeps")?, &block)
+            }
+            ("parallel.serve_failure", []) => {
+                self.declare("declare i64 @fennec_net_serve_failure() nounwind");
+                let (number, block) = (self.temp(), self.temp());
+                self.line(&format!("{number} = call i64 @fennec_net_serve_failure()"));
+                self.line(&format!("{block} = inttoptr i64 {number} to ptr"));
+                self.take_handed_failure(dest.ok_or("a failure no one keeps")?, &block)
+            }
             ("parallel.peer", [Operand::Local(conn)]) => {
                 let (handle, _) = self.operand(&Operand::Local(*conn))?;
                 self.socket_method(dest, &handle, "Connection.peer", &[], span)
@@ -435,8 +471,14 @@ impl Emit<'_, '_, '_> {
         Ok((list, env))
     }
 
-    /// `parallel.serve(server, task)`: each connection a task of the runtime's, until it's stopped.
-    fn parallel_serve(&mut self, server: &Operand, task: &Operand) -> Result<(), String> {
+    /// `parallel.serve(server, task)`: each connection a task of the runtime's, until it's stopped,
+    /// giving back 2 when a round failed and passed its failure up.
+    fn parallel_serve(
+        &mut self,
+        dest: Option<LocalId>,
+        server: &Operand,
+        task: &Operand,
+    ) -> Result<(), String> {
         let handle = self.socket_handle(server)?;
         let (closure, _) = self.operand(task)?;
         let env = self.temp();
@@ -446,7 +488,54 @@ impl Emit<'_, '_, '_> {
         let done = self.temp();
         self.line(&format!("{done} = call i64 @fennec_net_serve(i64 {handle}, ptr {shim}, i64 {env})"));
         self.leave_if_failed();
+        match dest {
+            Some(dest) => self.assign(dest, &done),
+            None => Ok(()),
+        }
+    }
+
+    /// `task.failed(error)`: hands a task's failure over to whoever's waiting for it, as a block of
+    /// the runtime's, before the task gives back that it failed. A failure held in place goes in a
+    /// block of its own type.
+    pub(crate) fn hand_over_failure(&mut self, error: &Operand) -> Result<(), String> {
+        let (value, kind) = self.operand(error)?;
+        let block = match kind {
+            Kind::Struct(id) | Kind::Enum(id) => {
+                let block = self.new_block(id)?;
+                let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+                self.store_field(&kind, &value, &fields, "");
+                self.retain_inline(&kind, &fields);
+                block
+            }
+            Kind::Boxed(_) => {
+                self.retain(&value);
+                value
+            }
+            other => {
+                return Err(format!("a task fails with a {other:?}, which this backend doesn't take yet"));
+            }
+        };
+        self.declare("declare void @fennec_task_failed(i64) nounwind");
+        let number = self.temp();
+        self.line(&format!("{number} = ptrtoint ptr {block} to i64"));
+        self.line(&format!("call void @fennec_task_failed(i64 {number})"));
         Ok(())
+    }
+
+    /// A failure a task handed over, now this thread's own, as the local `dest`: read out of its
+    /// block when it's held in place, the block then let go of.
+    fn take_handed_failure(&mut self, dest: LocalId, block: &str) -> Result<(), String> {
+        let kind = self.kind_of(dest)?.clone();
+        match kind {
+            Kind::Struct(_) | Kind::Enum(_) => {
+                let fields = self.offset(block, crate::lists::FIELDS_OFFSET);
+                self.read_into(dest, &kind, &fields, "")?;
+                self.release(block);
+                Ok(())
+            }
+            Kind::Boxed(_) => self.assign(dest, block),
+            other => Err(format!("a task fails with a {other:?}, which this backend doesn't take yet")),
+        }
     }
 
     /// A parked task's stack limit, read again after anything that can park: other tasks have run
@@ -484,7 +573,10 @@ impl Emit<'_, '_, '_> {
         let symbol = element_symbol(self.module.layouts, item);
         self.module.shared.elements.insert(symbol.clone(), item);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
-        let shim = self.shim(Shape::Into);
+        // A range whose items can fail gives back how it ended.
+        let (_, kind) = self.operand(range)?;
+        let fails = matches!(kind, Kind::Closure(_, returns) if *returns == Kind::Int);
+        let shim = self.shim(if fails { Shape::IntoFailing } else { Shape::Into });
         self.declare(&format!("declare ptr @{call}(ptr, ptr, i64, i64) nounwind"));
         let (element, made) = (self.temp(), self.temp());
         self.line(&format!("{element} = load i64, ptr @\"{symbol}\", !invariant.load !1"));

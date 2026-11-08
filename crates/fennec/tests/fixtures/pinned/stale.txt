@@ -1,0 +1,11 @@
+source eebd7a964fe5c22cab8b89ced93042df8031ab47398d9464dff019ca0c59d8e9
+code 1
+stdout 0
+stderr 205
+error: this Id refers to something that's been removed
+ --> <dir>/stale.fen:7:18
+  |
+7 |     stdout.print(names[fox])
+  |                  ^^^^^^^^^^
+  |
+  = help: use `.get(id)`, which gives None instead

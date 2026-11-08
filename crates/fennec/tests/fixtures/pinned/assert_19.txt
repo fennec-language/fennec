@@ -1,0 +1,12 @@
+source 6d92bc0fb93e0802d2433abc5a550a54d8bdc811c5ef5a956f4d011da864eee3
+code 1
+stdout 2
+1
+stderr 186
+error: this assertion failed
+  --> <dir>/assert_19.fen:31:12
+   |
+31 |     assert 3 in [1, 2]
+   |            ^^^^^^^^^^^
+   |
+   = help: the left side is 3 and the right side is [1, 2]

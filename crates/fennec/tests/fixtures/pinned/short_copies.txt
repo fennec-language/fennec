@@ -1,0 +1,113 @@
+source ab47fcc2bc6940287cf1db18c5cb5a8ce08dfc8af26e220036a727c457b5007c
+code 0
+stdout 10861
+0   ! !  [] 0:
+   True
+1 a d a! !a ad [a] 1:a
+a a     a True
+2 ab de ab! !ab abde [ab] 2:ab
+ab ab     ab True
+3 abc def abc! !abc abcdef [abc] 3:abc
+abc abc     abc True
+4 abcd defg abcd! !abcd abcddefg [abcd] 4:abcd
+abcd abcd     abcd True
+5 abcde defgh abcde! !abcde abcdedefgh [abcde] 5:abcde
+abcde abcde     abcde True
+6 abcdef defghi abcdef! !abcdef abcdefdefghi [abcdef] 6:abcdef
+abcdef abcdef     abcdef True
+7 abcdefg defghij abcdefg! !abcdefg abcdefgdefghij [abcdefg] 7:abcdefg
+abcdefg abcdefg     abcdefg True
+8 abcdefgh defghijk abcdefgh! !abcdefgh abcdefghdefghijk [abcdefgh] 8:abcdefgh
+abcdefgh abcdefgh     abcdefgh True
+9 abcdefghi defghijkl abcdefghi! !abcdefghi abcdefghidefghijkl [abcdefghi] 9:abcdefghi
+abcdefghi abcdefghi     abcdefghi True
+10 abcdefghij defghijklm abcdefghij! !abcdefghij abcdefghijdefghijklm [abcdefghij] 10:abcdefghij
+abcdefghij abcdefghij     abcdefghij True
+11 abcdefghijk defghijklmn abcdefghijk! !abcdefghijk abcdefghijkdefghijklmn [abcdefghijk] 11:abcdefghijk
+abcdefghijk abcdefghijk     abcdefghijk True
+12 abcdefghijkl defghijklmno abcdefghijkl! !abcdefghijkl abcdefghijkldefghijklmno [abcdefghijkl] 12:abcdefghijkl
+abcdefghijkl abcdefghijkl     abcdefghijkl True
+13 abcdefghijklm defghijklmnop abcdefghijklm! !abcdefghijklm abcdefghijklmdefghijklmnop [abcdefghijklm] 13:abcdefghijklm
+abcdefghijklm abcdefghijklm     abcdefghijklm True
+14 abcdefghijklmn defghijklmnopq abcdefghijklmn! !abcdefghijklmn abcdefghijklmndefghijklmnopq [abcdefghijklmn] 14:abcdefghijklmn
+abcdefghijklmn abcdefghijklmn     abcdefghijklmn True
+15 abcdefghijklmno defghijklmnopqr abcdefghijklmno! !abcdefghijklmno abcdefghijklmnodefghijklmnopqr [abcdefghijklmno] 15:abcdefghijklmno
+abcdefghijklmno abcdefghijklmno     abcdefghijklmno True
+16 abcdefghijklmnop defghijklmnopqrs abcdefghijklmnop! !abcdefghijklmnop abcdefghijklmnopdefghijklmnopqrs [abcdefghijklmnop] 16:abcdefghijklmnop
+abcdefghijklmnop abcdefghijklmnop     abcdefghijklmnop True
+17 abcdefghijklmnopq defghijklmnopqrst abcdefghijklmnopq! !abcdefghijklmnopq abcdefghijklmnopqdefghijklmnopqrst [abcdefghijklmnopq] 17:abcdefghijklmnopq
+abcdefghijklmnopq abcdefghijklmnopq     abcdefghijklmnopq True
+18 abcdefghijklmnopqr defghijklmnopqrstu abcdefghijklmnopqr! !abcdefghijklmnopqr abcdefghijklmnopqrdefghijklmnopqrstu [abcdefghijklmnopqr] 18:abcdefghijklmnopqr
+abcdefghijklmnopqr abcdefghijklmnopqr     abcdefghijklmnopqr True
+19 abcdefghijklmnopqrs defghijklmnopqrstuv abcdefghijklmnopqrs! !abcdefghijklmnopqrs abcdefghijklmnopqrsdefghijklmnopqrstuv [abcdefghijklmnopqrs] 19:abcdefghijklmnopqrs
+abcdefghijklmnopqrs abcdefghijklmnopqrs     abcdefghijklmnopqrs True
+20 abcdefghijklmnopqrst defghijklmnopqrstuvw abcdefghijklmnopqrst! !abcdefghijklmnopqrst abcdefghijklmnopqrstdefghijklmnopqrstuvw [abcdefghijklmnopqrst] 20:abcdefghijklmnopqrst
+abcdefghijklmnopqrst abcdefghijklmnopqrst     abcdefghijklmnopqrst True
+21 abcdefghijklmnopqrstu defghijklmnopqrstuvwx abcdefghijklmnopqrstu! !abcdefghijklmnopqrstu abcdefghijklmnopqrstudefghijklmnopqrstuvwx [abcdefghijklmnopqrstu] 21:abcdefghijklmnopqrstu
+abcdefghijklmnopqrstu abcdefghijklmnopqrstu     abcdefghijklmnopqrstu True
+22 abcdefghijklmnopqrstuv defghijklmnopqrstuvwxy abcdefghijklmnopqrstuv! !abcdefghijklmnopqrstuv abcdefghijklmnopqrstuvdefghijklmnopqrstuvwxy [abcdefghijklmnopqrstuv] 22:abcdefghijklmnopqrstuv
+abcdefghijklmnopqrstuv abcdefghijklmnopqrstuv     abcdefghijklmnopqrstuv True
+23 abcdefghijklmnopqrstuvw defghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvw! !abcdefghijklmnopqrstuvw abcdefghijklmnopqrstuvwdefghijklmnopqrstuvwxyz [abcdefghijklmnopqrstuvw] 23:abcdefghijklmnopqrstuvw
+abcdefghijklmnopqrstuvw abcdefghijklmnopqrstuvw     abcdefghijklmnopqrstuvw True
+24 abcdefghijklmnopqrstuvwx defghijklmnopqrstuvwxyz0 abcdefghijklmnopqrstuvwx! !abcdefghijklmnopqrstuvwx abcdefghijklmnopqrstuvwxdefghijklmnopqrstuvwxyz0 [abcdefghijklmnopqrstuvwx] 24:abcdefghijklmnopqrstuvwx
+abcdefghijklmnopqrstuvwx abcdefghijklmnopqrstuvwx     abcdefghijklmnopqrstuvwx True
+25 abcdefghijklmnopqrstuvwxy defghijklmnopqrstuvwxyz01 abcdefghijklmnopqrstuvwxy! !abcdefghijklmnopqrstuvwxy abcdefghijklmnopqrstuvwxydefghijklmnopqrstuvwxyz01 [abcdefghijklmnopqrstuvwxy] 25:abcdefghijklmnopqrstuvwxy
+abcdefghijklmnopqrstuvwxy abcdefghijklmnopqrstuvwxy     abcdefghijklmnopqrstuvwxy True
+26 abcdefghijklmnopqrstuvwxyz defghijklmnopqrstuvwxyz012 abcdefghijklmnopqrstuvwxyz! !abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyzdefghijklmnopqrstuvwxyz012 [abcdefghijklmnopqrstuvwxyz] 26:abcdefghijklmnopqrstuvwxyz
+abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz     abcdefghijklmnopqrstuvwxyz True
+0   ! !  [] 0:
+   True
+1 h l h! !h hl [h] 1:h
+h h     h True
+2 hé lo hé! !hé hélo [hé] 2:hé
+hé hé     hé True
+3 hél lo  hél! !hél héllo  [hél] 3:hél
+hél hél     hél True
+4 héll lo w héll! !héll hélllo w [héll] 4:héll
+héll héll     héll True
+5 héllo lo wö héllo! !héllo héllolo wö [héllo] 5:héllo
+héllo héllo     héllo True
+6 héllo  lo wör héllo ! !héllo  héllo lo wör [héllo ] 6:héllo 
+héllo héllo      héllo False
+7 héllo w lo wörl héllo w! !héllo w héllo wlo wörl [héllo w] 7:héllo w
+héllo w héllo w     héllo w True
+8 héllo wö lo wörld héllo wö! !héllo wö héllo wölo wörld [héllo wö] 8:héllo wö
+héllo wö héllo wö     héllo wö True
+9 héllo wör lo wörld  héllo wör! !héllo wör héllo wörlo wörld  [héllo wör] 9:héllo wör
+héllo wör héllo wör     héllo wör True
+10 héllo wörl lo wörld ü héllo wörl! !héllo wörl héllo wörllo wörld ü [héllo wörl] 10:héllo wörl
+héllo wörl héllo wörl     héllo wörl True
+11 héllo wörld lo wörld ün héllo wörld! !héllo wörld héllo wörldlo wörld ün [héllo wörld] 11:héllo wörld
+héllo wörld héllo wörld     héllo wörld True
+12 héllo wörld  lo wörld ünï héllo wörld ! !héllo wörld  héllo wörld lo wörld ünï [héllo wörld ] 12:héllo wörld 
+héllo wörld héllo wörld      héllo wörld False
+13 héllo wörld ü lo wörld ünï  héllo wörld ü! !héllo wörld ü héllo wörld ülo wörld ünï  [héllo wörld ü] 13:héllo wörld ü
+héllo wörld ü héllo wörld ü     héllo wörld ü True
+14 héllo wörld ün lo wörld ünï ç héllo wörld ün! !héllo wörld ün héllo wörld ünlo wörld ünï ç [héllo wörld ün] 14:héllo wörld ün
+héllo wörld ün héllo wörld ün     héllo wörld ün True
+15 héllo wörld ünï lo wörld ünï çà héllo wörld ünï! !héllo wörld ünï héllo wörld ünïlo wörld ünï çà [héllo wörld ünï] 15:héllo wörld ünï
+héllo wörld ünï héllo wörld ünï     héllo wörld ünï True
+16 héllo wörld ünï  lo wörld ünï çà  héllo wörld ünï ! !héllo wörld ünï  héllo wörld ünï lo wörld ünï çà  [héllo wörld ünï ] 16:héllo wörld ünï 
+héllo wörld ünï héllo wörld ünï      héllo wörld ünï False
+17 héllo wörld ünï ç lo wörld ünï çà ñ héllo wörld ünï ç! !héllo wörld ünï ç héllo wörld ünï çlo wörld ünï çà ñ [héllo wörld ünï ç] 17:héllo wörld ünï ç
+héllo wörld ünï ç héllo wörld ünï ç     héllo wörld ünï ç True
+18 héllo wörld ünï çà lo wörld ünï çà ñé héllo wörld ünï çà! !héllo wörld ünï çà héllo wörld ünï çàlo wörld ünï çà ñé [héllo wörld ünï çà] 18:héllo wörld ünï çà
+héllo wörld ünï çà héllo wörld ünï çà     héllo wörld ünï çà True
+19 héllo wörld ünï çà  lo wörld ünï çà ñé  héllo wörld ünï çà ! !héllo wörld ünï çà  héllo wörld ünï çà lo wörld ünï çà ñé  [héllo wörld ünï çà ] 19:héllo wörld ünï çà 
+héllo wörld ünï çà héllo wörld ünï çà      héllo wörld ünï çà False
+20 héllo wörld ünï çà ñ lo wörld ünï çà ñé ß héllo wörld ünï çà ñ! !héllo wörld ünï çà ñ héllo wörld ünï çà ñlo wörld ünï çà ñé ß [héllo wörld ünï çà ñ] 20:héllo wörld ünï çà ñ
+héllo wörld ünï çà ñ héllo wörld ünï çà ñ     héllo wörld ünï çà ñ True
+21 héllo wörld ünï çà ñé lo wörld ünï çà ñé ßø héllo wörld ünï çà ñé! !héllo wörld ünï çà ñé héllo wörld ünï çà ñélo wörld ünï çà ñé ßø [héllo wörld ünï çà ñé] 21:héllo wörld ünï çà ñé
+héllo wörld ünï çà ñé héllo wörld ünï çà ñé     héllo wörld ünï çà ñé True
+22 héllo wörld ünï çà ñé  lo wörld ünï çà ñé ßø  héllo wörld ünï çà ñé ! !héllo wörld ünï çà ñé  héllo wörld ünï çà ñé lo wörld ünï çà ñé ßø  [héllo wörld ünï çà ñé ] 22:héllo wörld ünï çà ñé 
+héllo wörld ünï çà ñé héllo wörld ünï çà ñé      héllo wörld ünï çà ñé False
+23 héllo wörld ünï çà ñé ß lo wörld ünï çà ñé ßø å héllo wörld ünï çà ñé ß! !héllo wörld ünï çà ñé ß héllo wörld ünï çà ñé ßlo wörld ünï çà ñé ßø å [héllo wörld ünï çà ñé ß] 23:héllo wörld ünï çà ñé ß
+héllo wörld ünï çà ñé ß héllo wörld ünï çà ñé ß     héllo wörld ünï çà ñé ß True
+24 héllo wörld ünï çà ñé ßø lo wörld ünï çà ñé ßø åæ héllo wörld ünï çà ñé ßø! !héllo wörld ünï çà ñé ßø héllo wörld ünï çà ñé ßølo wörld ünï çà ñé ßø åæ [héllo wörld ünï çà ñé ßø] 24:héllo wörld ünï çà ñé ßø
+héllo wörld ünï çà ñé ßø héllo wörld ünï çà ñé ßø     héllo wörld ünï çà ñé ßø True
+25 héllo wörld ünï çà ñé ßø  lo wörld ünï çà ñé ßø åæ héllo wörld ünï çà ñé ßø ! !héllo wörld ünï çà ñé ßø  héllo wörld ünï çà ñé ßø lo wörld ünï çà ñé ßø åæ [héllo wörld ünï çà ñé ßø ] 25:héllo wörld ünï çà ñé ßø 
+héllo wörld ünï çà ñé ßø héllo wörld ünï çà ñé ßø      héllo wörld ünï çà ñé ßø False
+26 héllo wörld ünï çà ñé ßø å lo wörld ünï çà ñé ßø åæ héllo wörld ünï çà ñé ßø å! !héllo wörld ünï çà ñé ßø å héllo wörld ünï çà ñé ßø ålo wörld ünï çà ñé ßø åæ [héllo wörld ünï çà ñé ßø å] 26:héllo wörld ünï çà ñé ßø å
+héllo wörld ünï çà ñé ßø å héllo wörld ünï çà ñé ßø å     héllo wörld ünï çà ñé ßø å True
+a block long enough that it isn't a header at all: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx 402
+stderr 0

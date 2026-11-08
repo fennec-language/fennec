@@ -1,0 +1,6 @@
+source d065f89ccec82e827e94e9147a193eca3b8c0c1a951c48afb75c57dca0989c59
+code 0
+stdout 152
+-1 [Unit(tags=[1, 9], hp=1), Unit(tags=[2, 9], hp=2), Unit(tags=[3], hp=5)]
+-2 [Unit(tags=[1, 8], hp=0), Unit(tags=[2, 8], hp=1), Unit(tags=[3], hp=5)]
+stderr 0

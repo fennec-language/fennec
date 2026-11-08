@@ -8712,6 +8712,80 @@ fn pack_streams_write_each_layout_once() -> std::io::Result<()> {
     Ok(())
 }
 
+/// What the next test builds: a few bytes that ask for millions of values made from nothing.
+const PACK_BOMB: &str = r#"from std import pack
+
+struct Hollow:
+    @skip
+    note = "nothing saved"
+
+struct Big:
+    one = 1
+    two = 2
+    three = 3
+    four = 4
+    five = 5
+    six = 6
+
+## `n` as `std.pack` writes a length.
+def varint(n: int) -> list[int]:
+    mut rest = n
+    mut out = list[int]()
+    while rest >= 128:
+        out.append((rest & 127) | 128)
+        rest = rest >> 7
+    out.append(rest)
+    out
+
+## Bytes that ask for `count` items that each take no bytes, from `start`, the header and a layout.
+def asking(start: bytes, count: int) -> bytes:
+    start + bytes(varint(count))
+
+def said[T](found: Result[T, ParseError]) -> str:
+    match found:
+        case Ok(_):
+            return "loaded"
+        case Err(error):
+            return error.message
+
+def main(stdout: Stdout):
+    empty = pack.dumps([Hollow()])
+    start = empty[0:empty.len() - 1]
+    # The same shape: a list of what saves nothing.
+    stdout.print(said(pack.loads[list[Hollow]](asking(start, 2_000_000))))
+    # A layout written by hand, of structs with no fields, loaded by name into a bigger struct.
+    layout = "l S 0".encode()
+    named = bytes([70, 80, 75, 50, 1, 2, 3, 4, 5, 6, 7, 8, layout.len()]) + layout
+    stdout.print(said(pack.loads[list[Big]](asking(named, 2_000_000))))
+    # What's honest loads.
+    stdout.print(said(pack.loads[list[Hollow]](asking(start, 1000))))
+    stdout.print(said(pack.loads[list[Big]](asking(named, 1000))))
+    # The limit is the program's to set.
+    small = pack.Limits(empty=10)
+    stdout.print(said(pack.loads[list[Hollow]](asking(start, 100), limits=small)))
+    # Fields filled from defaults count against the items a load may read.
+    few = pack.Limits(length=500)
+    one_byte = "l S 1 x b".encode()
+    filled = bytes([70, 80, 75, 50, 1, 2, 3, 4, 5, 6, 7, 8, one_byte.len()]) + one_byte + bytes(varint(100)) + bytes([1 for _ in range(100)])
+    stdout.print(said(pack.loads[list[Big]](filled, limits=few)))
+"#;
+
+/// Bytes can't ask for far more memory than they are. Items that take no bytes count against
+/// `Limits.empty`, whether the data is read in order or by name, and fields filled from their
+/// defaults count against the items a load may read.
+#[test]
+fn pack_refuses_values_made_from_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("pack_bomb", PACK_BOMB)?;
+    assert_eq!(
+        printed,
+        "it holds more than the limit of 65536 items that take no bytes, at byte 21\nit holds more than the limit of 65536 items that take no bytes, at byte 21\nloaded\nloaded\nit holds more than the limit of 10 items that take no bytes, at byte 19\nit holds more than the limit of 500 items, at byte 90\n"
+    );
+    Ok(())
+}
+
 /// What the next test builds: a type saved as a union's member, written by hand as generated code will be.
 const UNION_MEMBERS: &str = r#"from std import json, pack, toml
 

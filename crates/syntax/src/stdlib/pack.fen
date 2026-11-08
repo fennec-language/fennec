@@ -54,7 +54,9 @@ export def dumps[T: Serializable](value: T, exact = False) -> bytes:
 export def loads[T: Deserializable](data: bytes, limits: Limits? = None) -> T fails ParseError:
     held = limits else Limits()
     mut src = PackReader(_data=data, _most_deep=held.depth, _longest=held.length)
-    if not src._header(shape_hash[T](), type_name[T]())?: return by_name[T](src)?
+    if not src._header(shape_hash[T](), type_name[T]())?:
+        layout = data[src._layout_at:src._layout_end]
+        return by_name[T](src, layout=layout, at=src._layout_at)?
     match read_value[T](ref src):
         case Ok(value):
             value
@@ -69,9 +71,238 @@ export def loads[T: Deserializable](data: bytes, limits: Limits? = None) -> T fa
             _ = again._header(shape_hash[T](), type_name[T]())?
             read_value[T](ref again)?
 
-## A `T` from data saved from another shape of it, by the names in the layout saved with it.
-def by_name[T: Deserializable](raw: PackReader) -> T fails ParseError:
-    mut src = PackByName(_raw=raw)
+## Values one after another, as a file or a stream holds them. Each type's layout goes once,
+## before the first value of it, and each value after it says which layout it has, by where that
+## is among the layouts so far, and how long it is. So a stream of small values costs a byte or two
+## each beyond the values themselves.
+##
+## ```fennec
+## mut out = pack.Packer()
+## for entry in entries:
+##     out.add(entry)
+## fs.write_bytes(path, out.bytes())?
+## ```
+##
+## The bytes start with `FPKS`, or `FPKT` with `Table`s slot for slot. Then each record starts
+## with a varint: 0, then a layout's shape number and its text; or which layout a value has, then
+## the value's length and the value. A layout's place `at` is written as `at + 1`, passing over 70,
+## the `F` that starts `FPKS`: so what another `Packer` wrote can follow, as a file run after run
+## adds to, and its header starts a new set of layouts.
+## The first byte of what a `Packer` writes, `F`, which no record starts with but a header.
+HEADER = 70
+
+export struct Packer:
+    _exact = False
+    _out = bytes_builder()
+    ## The number for the shape of each layout written, in order.
+    _shapes = list[int]()
+    ## How much of what's written `take` has given already.
+    _taken = 0
+
+    ## A packer that saves `Table`s slot for slot, as `dumps(value, exact=True)` does.
+    def exact() -> Packer:
+        Packer(_exact=True)
+
+    ## Adds `value`, after its type's layout if it's the first value of its type.
+    def add[T: Serializable](ref self, value: T):
+        if self._out.len() == 0:
+            for b in [HEADER, 80, 75, 84 if self._exact else 83]:
+                bytes_push(ref self._out, b)
+        shape = shape_hash[T]()
+        mut at = -1
+        for seen, known in enumerate(self._shapes):
+            if known == shape:
+                at = seen
+        mut head = PackWriter()
+        if at < 0:
+            at = self._shapes.len()
+            self._shapes.append(shape)
+            head._varint(0)
+            head._word(shape)
+            head.text(layout[T]())
+        body = packed(value, self._exact)
+        head._varint(at + 1 if at + 1 < HEADER else at + 2)
+        head._varint(body.len())
+        bytes_push_bytes(ref self._out, head._done())
+        bytes_push_bytes(ref self._out, body)
+
+    ## Everything added so far, as a file holds it.
+    def bytes(self) -> bytes:
+        self._out[0:self._out.len()]
+
+    ## What's been added since the last `take`, to send on a stream.
+    def take(ref self) -> bytes:
+        part = self._out[self._taken:self._out.len()]
+        self._taken = self._out.len()
+        part
+
+## Reads what a `Packer` wrote, a value at a time: in order when it was written from the type it's
+## read as, and by its layout's names when it was written from another shape of it, like an
+## earlier version of the program's type.
+##
+## ```fennec
+## mut src = pack.Unpacker.of(fs.read_bytes(path)?)
+## while True:
+##     entry = src.next[Entry]()? else break
+## ```
+export struct Unpacker:
+    _data = bytes(list[int]())
+    _at = 0
+    ## Whether more may come, through `feed`, so a value cut off at the end waits for it.
+    _streaming = False
+    ## Whether a header has been read, which has to come first.
+    _started = False
+    _exact = False
+    _limits = Limits()
+    ## Each layout read so far, and the number for its shape.
+    _shapes = list[int]()
+    _layouts = list[bytes]()
+
+    ## Reads `data`, all a `Packer` wrote: bytes that end partway through a value fail.
+    def of(data: bytes, limits: Limits? = None) -> Unpacker:
+        Unpacker(_data=data, _limits=limits else Limits())
+
+    ## Reads a stream, given to it with `feed` as it comes: a value that's only partly come waits for
+    ## the rest.
+    def stream(limits: Limits? = None) -> Unpacker:
+        Unpacker(_streaming=True, _limits=limits else Limits())
+
+    ## Gives it more of the stream.
+    def feed(ref self, more: bytes):
+        self._data = self._data[self._at:self._data.len()] + more
+        self._at = 0
+
+    def _fail(self, at: int, message: str) -> ParseError:
+        ParseError(message=f"{message}, at byte {at}", line=0, column=0)
+
+    ## A varint at `at`, and where what's after it starts, or -1 there if the bytes end first.
+    def _varint(self, at: int) -> (int, int) fails ParseError:
+        mut n = 0
+        mut shift = 0
+        mut place = at
+        while place < self._data.len():
+            b = self._data[place]
+            if shift > 63 or (shift == 63 and b > 1): fail self._fail(at, "a number is too long")
+            n = n | ((b & 127) << shift)
+            place += 1
+            if b < 128: return (n, place)
+            shift += 7
+        (0, -1)
+
+    ## `None` when what's left ends partway, on a stream that has more to come, and a failure in
+    ## bytes that are all there are.
+    def _cut_off(self) -> bool fails ParseError:
+        if self._streaming: return True
+        fail self._fail(self._data.len(), "the data ends too soon")
+
+    ## The next value, as a `T`, or `None` when there's no more: at the end of the bytes, or on a
+    ## stream until more is fed. It fails if the next value isn't one a `T` loads from.
+    def next[T: Deserializable](ref self) -> T? fails ParseError:
+        while True:
+            at = self._at
+            left = self._data.len() - at
+            if left == 0: return None
+            if not self._started and self._data[at] != HEADER:
+                fail self._fail(at, "these aren't values a `pack.Packer` wrote")
+            tag, after = self._varint(at)?
+            if after < 0:
+                _ = self._cut_off()?
+                return None
+            if tag == HEADER:
+                # What a `Packer` wrote starts here, with layouts of its own.
+                if left < 4:
+                    _ = self._cut_off()?
+                    return None
+                mode = self._data[at + 3]
+                if (
+                    self._data[at + 1] != 80
+                    or self._data[at + 2] != 75
+                    or (mode != 83 and mode != 84)
+                ):
+                    fail self._fail(at, "these aren't values a `pack.Packer` wrote")
+                self._exact = mode == 84
+                self._started = True
+                self._shapes = list[int]()
+                self._layouts = list[bytes]()
+                self._at = at + 4
+                continue
+            if tag == 0:
+                # A layout, for the values after it that say its place.
+                if after + 8 > self._data.len():
+                    _ = self._cut_off()?
+                    return None
+                mut shape = 0
+                for place in range(8):
+                    shape = shape | (self._data[after + place] << (8 * place))
+                size, start = self._varint(after + 8)?
+                if start < 0 or size > self._data.len() - start:
+                    _ = self._cut_off()?
+                    return None
+                self._shapes.append(shape)
+                self._layouts.append(self._data[start:start + size])
+                self._at = start + size
+                continue
+            place = tag - 1 if tag < HEADER else tag - 2
+            if place >= self._layouts.len():
+                fail self._fail(at, f"a value has layout {place}, which hasn't come")
+            size, start = self._varint(after)?
+            if start < 0 or size > self._data.len() - start:
+                _ = self._cut_off()?
+                return None
+            body = self._data[start:start + size]
+            self._at = start + size
+            if self._shapes[place] == shape_hash[T]():
+                return in_order[T](body, self._exact, self._limits)?
+            held = self._limits
+            raw = PackReader(
+                _data=body,
+                _exact=self._exact,
+                _most_deep=held.depth,
+                _longest=held.length,
+                _items_left=held.length,
+            )
+            return by_name[T](raw, layout=self._layouts[place], at=0)?
+        None
+
+## `value` with no header, as a `Packer` writes it after its layout.
+def packed[T: Serializable](value: T, exact: bool) -> bytes:
+    mut out = PackWriter(_exact=exact)
+    value.serialize(ref out)
+    if not out._wants_tables: return out._done()
+    # It holds `Id`s, so where each one's item is comes first, and every one's checked.
+    found = found_tables(value, exact)
+    mut again = PackWriter(_exact=exact, _tables=found.positions(), _tags=found.tags(), _found=True)
+    value.serialize(ref again)
+    again._done()
+
+## A `T` from `body`, a value with no header written from a `T`, read in order.
+def in_order[T: Deserializable](body: bytes, exact: bool, held: Limits) -> T fails ParseError:
+    mut src = PackReader(
+        _data=body,
+        _exact=exact,
+        _most_deep=held.depth,
+        _longest=held.length,
+        _items_left=held.length,
+    )
+    match read_value[T](ref src):
+        case Ok(value):
+            value
+        case Err(_):
+            # Read again keeping track of where it is, which a load that works never pays for.
+            mut again = PackReader(
+                _data=body,
+                _exact=exact,
+                _most_deep=held.depth,
+                _longest=held.length,
+                _items_left=held.length,
+                _explain=True,
+            )
+            read_value[T](ref again)?
+
+## A `T` from data saved from another shape of it, by the names in `layout`, the one saved with it,
+## which starts at byte `at`.
+def by_name[T: Deserializable](raw: PackReader, layout: bytes, at: int) -> T fails ParseError:
+    mut src = PackByName(_raw=raw, _layout=layout, _layout_at=at)
     src._read_layout()?
     value = src.value[T]()?
     if src._raw._at != src._raw._data.len(): fail src._raw._fail("there's more after the value")
@@ -573,6 +804,9 @@ CASE = 99
 ## had: each value as the layout saved with it says it was written, and each field by its name.
 struct PackByName:
     _raw: PackReader
+    ## The layout the data was saved with, and where it was.
+    _layout: bytes
+    _layout_at = 0
     ## What each value in the layout is, as the letter it's written with, what it holds, in order,
     ## and their names: a struct's fields, an enum's cases and a union's members.
     _kinds = list[int]()
@@ -594,18 +828,18 @@ struct PackByName:
 
     def _bad_layout(self) -> ParseError:
         self._raw._fail_at(
-            self._raw._layout_at,
+            self._layout_at,
             "the layout saved with the data isn't one `std.pack` writes",
         )
 
     ## The next word of the layout.
     def _word(ref self) -> str fails ParseError:
         start = self._at
-        end = self._raw._layout_end
+        end = self._layout.len()
         mut at = start
-        while at < end and self._raw._data[at] != 32:
+        while at < end and self._layout[at] != 32:
             at += 1
-        word = bytes_text(self._raw._data, start, at)
+        word = bytes_text(self._layout, start, at)
         if text_size(word) == 0: fail self._bad_layout()
         self._at = at + 1
         word
@@ -623,10 +857,10 @@ struct PackByName:
     def _read_layout(ref self) fails ParseError:
         # The first is an int, which the slots of a `Table` saved slot for slot are read as.
         self._made(INT)
-        self._at = self._raw._layout_at
+        self._at = 0
         mut open = list[int]()
         self._expect = self._node(ref open, 0)?
-        if self._at < self._raw._layout_end: fail self._bad_layout()
+        if self._at < self._layout.len(): fail self._bad_layout()
 
     def _made(ref self, kind: int) -> int:
         self._kinds.append(kind)

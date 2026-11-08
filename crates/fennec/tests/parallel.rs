@@ -11,13 +11,10 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output_before(FENNEC_DEADLINE)
 }
 
-/// What the interpreter gave for the program `{name}.fen` in `dir`, pinned before it left the
-/// command (see `crate::llvm::interpreted_by`), with `dir` written as `<dir>`.
+/// What the interpreter gave for the program `{name}.fen` in `dir`, pinned before it was removed
+/// (see `crate::llvm::interpreted_by`).
 fn interpreted(dir: &Path, name: &str) -> std::io::Result<crate::llvm::Outcome> {
-    let program = dir.join(format!("{name}.fen"));
-    crate::llvm::interpreted_by(dir, &program, &format!("parallel_{name}"), || {
-        fennec(&["run", "--interp", &program.to_string_lossy()], dir)
-    })
+    crate::llvm::interpreted_by(&dir.join(format!("{name}.fen")), &format!("parallel_{name}"))
 }
 
 /// What a native run printed, said and gave back, with `dir` written as `<dir>`.

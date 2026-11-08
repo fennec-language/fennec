@@ -76,12 +76,51 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn lock(&mut self, handle: &Operand, write: bool, span: Span) -> Result<(), String> {
         let (word, cell, plain) = self.lock_word(handle)?;
         let write = if write { "true" } else { "false" };
-        self.take_word(&word, write, span);
-        self.entered(&cell, write, &plain.to_string());
+        self.take_and_enter((&word, &cell), write, &plain.to_string(), span);
         if self.saves_changes(handle) {
             self.rollback_begin(handle, &cell);
         }
         Ok(())
+    }
+
+    /// Takes the lock at `word`, the word of `cell`, and enters the cell, to write if `write`, an
+    /// `i1`, is true. While the run is recorded or replayed, the runtime is asked first whether
+    /// it's this task's turn, and told once it's taken, so a replay takes locks in the order the
+    /// recording did.
+    fn take_and_enter(&mut self, (word, cell): (&str, &str), write: &str, plain: &str, span: Span) {
+        let replaying = self.module.threads.then(|| self.replaying());
+        if let Some(replaying) = &replaying {
+            self.if_replaying(replaying, "fennec_replay_lock", cell, write);
+        }
+        self.take_word(word, write, span);
+        self.entered(cell, write, plain);
+        if let Some(replaying) = &replaying {
+            self.if_replaying(replaying, "fennec_replay_locked", cell, write);
+        }
+    }
+
+    /// Whether this run is recorded or replayed, an `i1`: the word after the lock this thread
+    /// holds, beside its failure flag.
+    fn replaying(&mut self) -> String {
+        let flag = self.failure_flag();
+        let at = self.offset(&flag, 16);
+        let (word, on) = (self.temp(), self.temp());
+        self.line(&format!("{word} = load i64, ptr {at}"));
+        self.line(&format!("{on} = icmp ne i64 {word}, 0"));
+        on
+    }
+
+    /// Calls the runtime's `call` with the cell and whether it's to write, when `replaying`.
+    fn if_replaying(&mut self, replaying: &str, call: &str, cell: &str, write: &str) {
+        self.declare(&format!("declare void @{call}(ptr, i64) nounwind"));
+        let (asks, done) = (self.label("replay_turn"), self.label("replay_done"));
+        self.line(&format!("br i1 {replaying}, label %{asks}, label %{done}, !prof !0"));
+        self.start_block(&asks);
+        let wide = self.temp();
+        self.line(&format!("{wide} = zext i1 {write} to i64"));
+        self.line(&format!("call void @{call}(ptr {cell}, i64 {wide})"));
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
     }
 
     /// Takes the lock at `word`, to write if `write`, an `i1`, is true.
@@ -259,8 +298,7 @@ impl Emit<'_, '_, '_> {
             self.sort_by_address(&mut held);
         }
         for (word, cell, write, plain) in &held {
-            self.take_word(word, write, span);
-            self.entered(cell, write, plain);
+            self.take_and_enter((word, cell), write, plain, span);
         }
         for (handle, _) in handles {
             if self.saves_changes(handle) {

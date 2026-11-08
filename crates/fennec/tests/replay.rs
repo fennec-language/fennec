@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::Duration;
 
-use crate::executables::{Within, fennec_command};
+use crate::executables::{Within, fennec_command, threads_runtime_built};
 use crate::llvm::ready;
 
 /// How long one recording or replay of an example may take.
@@ -189,6 +189,157 @@ fn a_parallel_call_whose_ranges_take_inputs_replays_identically() -> std::io::Re
                 .output_within()?,
         );
         assert_eq!(replayed, recorded, "replayed with FENNEC_THREADS={threads}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const SERVER: &str = "from std.net import NetError
+
+shared Total:
+    bytes = 0
+
+    def add(ref self, count: int):
+        self.bytes += count
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    total = Total()
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            if line == \"stop\":
+                break
+            total.add(line.len())
+            conn.write(f\"{line.len()}\\n\")?
+    stdout.print(total.bytes)
+";
+
+/// A native server's rounds are each a task named by its connection, and a replay runs them again
+/// with no socket, each reading what its connection sent, until the recording runs out.
+#[test]
+fn a_recorded_server_replays_its_rounds_with_no_network() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("server")?;
+    let program = dir.join("server.fen");
+    std::fs::write(&program, SERVER)?;
+    let log = dir.join("server.log");
+    let mut record = fennec_command()
+        .args(["run", "--record", &log.to_string_lossy()])
+        .arg(&program)
+        .env("FENNEC_THREADS", "4")
+        .current_dir(&dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let mut out =
+        std::io::BufReader::new(record.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
+    let mut port = String::new();
+    std::io::BufRead::read_line(&mut out, &mut port)?;
+    let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+    for n in 0..20 {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        std::io::Write::write_all(&mut stream, format!("hello {}\n", "x".repeat(n)).as_bytes())?;
+        let mut back = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut back)?;
+        assert_eq!(back.trim(), (6 + n).to_string());
+    }
+    let mut stopping = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    std::io::Write::write_all(&mut stopping, b"stop\n")?;
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut out, &mut rest)?;
+    let status = record.wait()?;
+    assert!(status.success(), "the recorded server failed");
+    let recorded = format!("{port}\n{rest}");
+    assert_eq!(rest.trim(), (0..20).map(|n| 6 + n).sum::<usize>().to_string());
+    for threads in ["4", "1"] {
+        let replayed = fennec_command()
+            .env("FENNEC_THREADS", threads)
+            .args(["replay", &log.to_string_lossy()])
+            .current_dir(&dir)
+            .output_within()?;
+        let printed = String::from_utf8_lossy(&replayed.stdout);
+        assert_eq!(
+            printed,
+            recorded,
+            "replayed with FENNEC_THREADS={threads}: {}",
+            String::from_utf8_lossy(&replayed.stderr)
+        );
+        assert!(replayed.status.success(), "{}", String::from_utf8_lossy(&replayed.stderr));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// Two tasks taking turns at one `shared` value, as they come.
+const TWO_TASKS_ONE_LOCK: &str = "from std.concurrent import Crashed
+
+struct Order:
+    seen = list[str]()
+
+def add(order: shared Order, text: str):
+    lock order as ref held:
+        held.seen.append(text)
+
+def takes(order: shared Order, name: str):
+    for at in range(600):
+        add(order, f\"{name}{at} \")
+
+def main(stdout: Stdout) fails Crashed:
+    shared order = Order()
+    with launch(() => takes(order, \"a\"))?:
+        with launch(() => takes(order, \"b\"))?:
+            pass
+    lock order as held:
+        stdout.print(held.seen.len(), \"\".join(held.seen))
+";
+
+/// Ranges of a `parallel` call taking turns at one `shared` value.
+const RANGES_ONE_LOCK: &str = "struct Order:
+    seen = list[int]()
+
+def visit(order: shared Order, at: int) -> int:
+    lock order as ref held:
+        held.seen.append(at)
+    at
+
+def main(stdout: Stdout):
+    shared order = Order()
+    done = [visit(order, at) for at in parallel(range(32))]
+    lock order as held:
+        stdout.print(done.len(), held.seen)
+";
+
+/// Tasks contending for one `shared` value take its lock in the order the recording did, however
+/// many threads the replay is given, so what they left in it reads the same.
+#[test]
+fn tasks_contending_for_a_lock_replay_the_order_they_took_it() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("lock-order")?;
+    for (name, source) in [("two_tasks", TWO_TASKS_ONE_LOCK), ("ranges", RANGES_ONE_LOCK)] {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let log = dir.join(format!("{name}.log"));
+        let mut record = fennec_command();
+        record.env("FENNEC_THREADS", "4").env("FENNEC_PARALLEL_STRESS", "1");
+        record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+        let recorded = outcome(&record.output_before(DEADLINE)?);
+        assert_eq!(recorded.2, Some(0), "{name}: {}", recorded.1);
+        for threads in ["1", "4", "1", "4", "7"] {
+            let replayed = outcome(
+                &fennec_command()
+                    .env("FENNEC_THREADS", threads)
+                    .env("FENNEC_PARALLEL_STRESS", "1")
+                    .args(["replay", &log.to_string_lossy()])
+                    .current_dir(&dir)
+                    .output_before(DEADLINE)?,
+            );
+            assert_eq!(replayed, recorded, "{name}, replayed with FENNEC_THREADS={threads}");
+        }
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())

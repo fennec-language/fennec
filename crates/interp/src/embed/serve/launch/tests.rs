@@ -529,3 +529,43 @@ fn a_launched_task_s_environment_goes_back_to_the_allocator_when_it_ends() {
     heap::free(env);
     finish();
 }
+
+static TLS_WORKER: std::sync::OnceLock<&'static Pool> = std::sync::OnceLock::new();
+static TLS_BESIDE_RAN: AtomicBool = AtomicBool::new(false);
+static TLS_HANDLE: AtomicI64 = AtomicI64::new(0);
+static TLS_READ: AtomicI64 = AtomicI64::new(-1);
+
+/// Reads a line from a TLS connection whose server only answers once the task beside it has run.
+extern "C" fn reads_a_tls_line(_env: i64, _thread: i64) -> i64 {
+    let handle = TLS_HANDLE.load(Ordering::SeqCst);
+    let read = crate::stdlib::net::real_connection(
+        handle,
+        "read_line",
+        &[],
+        Some(Duration::from_secs(10)),
+        Span::default(),
+    );
+    TLS_READ.store(i64::from(matches!(read, Ok(crate::value::Value::Ok(_)))), Ordering::SeqCst);
+    ENDED
+}
+
+extern "C" fn runs_beside(_env: i64, _thread: i64) -> i64 {
+    TLS_BESIDE_RAN.store(true, Ordering::SeqCst);
+    ENDED
+}
+
+/// A read waiting on a TLS connection parks its task, so its thread runs others meanwhile: the
+/// server here only answers once the task beside it has run on the same thread.
+#[test]
+fn a_task_waiting_to_read_a_tls_connection_lets_others_run_on_its_thread() {
+    begin();
+    let worker = one_worker(&TLS_WORKER);
+    TLS_HANDLE.store(crate::stdlib::net::tests::tls::connected_once_ready(&TLS_BESIDE_RAN), Ordering::SeqCst);
+    let reading = launch_on(worker, reads_a_tls_line, 0);
+    let beside = launch_on(worker, runs_beside, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(beside, -1, 0, &mut failure), ENDED);
+    assert_eq!(launch_end(reading, -1, 0, &mut failure), ENDED);
+    assert_eq!(TLS_READ.load(Ordering::SeqCst), 1, "the read didn't get its line");
+    finish();
+}

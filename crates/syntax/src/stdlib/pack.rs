@@ -5,7 +5,7 @@ use super::Module;
 
 pub(crate) const MODULE: Module = Module {
     name: "pack",
-    names: &["dumps", "loads", "Limits", "PackWriter", "PackReader"],
+    names: &["dumps", "loads", "Limits", "PackWriter", "PackReader", "Packer", "Unpacker"],
     source: include_str!("pack.fen"),
     gives: &[],
 };

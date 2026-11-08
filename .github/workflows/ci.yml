@@ -274,6 +274,49 @@ jobs:
           done
       - run: cargo test --locked -p fennec --test fennec 'llvm::'
 
+  # `std.postgres` against a real server, which only Linux runners can host.
+  postgres:
+    name: Postgres against a real server
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true' && github.event_name != 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: fennec
+          POSTGRES_PASSWORD: fennec-test
+          POSTGRES_DB: fennec
+        ports:
+          - 127.0.0.1:55432:5432
+        options: >-
+          --health-cmd "pg_isready -U fennec"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    env:
+      FENNEC_EXPECT_LLVM: 1
+      # A password for this throwaway container, and nothing else.
+      FENNEC_TEST_POSTGRES: postgres://fennec:fennec-test@127.0.0.1:55432/fennec
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install LLVM's tools
+        run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build the runtime libraries
+        run: |
+          cargo build --locked -p fennec-runtime
+          for features in threads; do
+            dir="target/$(echo "$features" | tr , -)"
+            name="fennec_runtime_$(echo "$features" | tr , _)"
+            cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
+            cp "$dir/debug/libfennec_runtime.a" "target/debug/lib$name.a"
+          done
+      - run: cargo test --locked -p fennec --test fennec 'llvm::postgres_'
+
   # Only a report, of tests `test` runs too, so a merge group leaves it out. The pull request
   # and the push to main each have it.
   coverage:
@@ -292,12 +335,11 @@ jobs:
           tool: cargo-llvm-cov@0.9.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # `tee` would hide a failing test without `pipefail`, which `shell: bash` turns on. The
-      # tests that link programs look for the runtime library beside `fennec`, which isn't where
-      # llvm-cov builds it, so they run in the test jobs instead.
+      # tests that mostly link programs, rather than run the compiler, are the test jobs' to run.
       - name: Measure coverage
         shell: bash
         run: |
-          cargo llvm-cov --locked --summary-only -- --skip llvm:: --skip executables:: | tee coverage.txt
+          cargo llvm-cov --locked --summary-only -- --skip llvm:: --skip executables:: --skip parallel:: --skip replay:: --skip live:: | tee coverage.txt
       - name: Show coverage on the run's summary page
         run: |
           {

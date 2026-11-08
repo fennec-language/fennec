@@ -49,35 +49,14 @@ fn same_message_as_the_jit(name: &str, source: &str) -> std::io::Result<()> {
 }
 
 /// What the program printed, its errors and its exit code on the interpreter, as pinned in
-/// `tests/fixtures/interpreted` before the interpreter left the command.
+/// `tests/fixtures/interpreted` before the interpreter was removed.
 fn interpreted(name: &str, source: &str) -> std::io::Result<Outcome> {
-    let dir = folder(&format!("{name}_interpreted"))?;
-    let done = interpreted_in(&dir, name, source);
-    std::fs::remove_dir_all(&dir)?;
-    done
+    pinned_in("interpreted", name, source)
 }
 
-/// The same, for a program already written to `dir` as `{name}.fen`. With
-/// `FENNEC_PIN_INTERPRETED` set, it's pinned from `fennec run --interp`.
-pub(crate) fn interpreted_in(dir: &Path, name: &str, source: &str) -> std::io::Result<Outcome> {
-    let program = dir.join(format!("{name}.fen"));
-    if !program.exists() {
-        std::fs::write(&program, source)?;
-    }
-    interpreted_by(dir, &program, name, || fennec(&["run", "--interp", &program.to_string_lossy()], dir))
-}
-
-/// What the interpreter gave for the program at `program`, which ran in `dir`, pinned as `name`.
-/// With `FENNEC_PIN_INTERPRETED` set, it's pinned from `run`, `fennec run --interp` as the test ran
-/// it.
-pub(crate) fn interpreted_by(
-    dir: &Path,
-    program: &Path,
-    name: &str,
-    run: impl FnOnce() -> std::io::Result<Output>,
-) -> std::io::Result<Outcome> {
-    let source = std::fs::read_to_string(program)?;
-    pinned_in("interpreted", name, &source, || Ok(apart_from(dir, outcome(&run()?))))
+/// What the interpreter gave for the program at `program`, pinned as `name` (see `interpreted`).
+pub(crate) fn interpreted_by(program: &Path, name: &str) -> std::io::Result<Outcome> {
+    pinned_in("interpreted", name, &std::fs::read_to_string(program)?)
 }
 
 /// What the program printed, its errors and its exit code, built with LLVM, and what the JIT gave.
@@ -109,7 +88,20 @@ fn pinned(
     source: &str,
     reference: impl FnOnce() -> std::io::Result<Outcome>,
 ) -> std::io::Result<Outcome> {
-    pinned_in("pinned", name, source, reference)
+    // With `FENNEC_PIN_OUTPUTS` set, it's written from `reference`, the build's own outcome, which
+    // then has to be checked by reading it: a new test's expected outcome is decided before it's
+    // built, not copied from it.
+    if std::env::var_os("FENNEC_PIN_OUTPUTS").is_some() {
+        let (out, err, code) = reference()?;
+        let code = code.map_or_else(|| "none".to_owned(), |code| code.to_string());
+        let hash = fennec_blake3::hash(source.as_bytes()).to_hex();
+        let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pinned");
+        std::fs::create_dir_all(&folder)?;
+        let text =
+            format!("source {hash}\ncode {code}\nstdout {}\n{out}stderr {}\n{err}", out.len(), err.len());
+        std::fs::write(folder.join(format!("{name}.txt")), text)?;
+    }
+    pinned_in("pinned", name, source)
 }
 
 /// An outcome with the folder it ran in written as `<dir>`, so it reads the same wherever it ran.
@@ -122,30 +114,12 @@ pub(crate) fn apart_from(dir: &Path, (out, err, code): Outcome) -> Outcome {
 }
 
 /// The outcome pinned for program `name` in `tests/fixtures/{kind}`. One pinned for other source
-/// than `source` is out of date, as is a missing one, and the test says so. With
-/// `FENNEC_PIN_OUTPUTS` set (`FENNEC_PIN_INTERPRETED` for the interpreter's), it's written from
-/// `reference`, which then has to be checked by reading it: a new test's expected outcome is
-/// decided before it's built, not copied from it.
-fn pinned_in(
-    kind: &str,
-    name: &str,
-    source: &str,
-    reference: impl FnOnce() -> std::io::Result<Outcome>,
-) -> std::io::Result<Outcome> {
-    let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(kind);
-    let file = folder.join(format!("{name}.txt"));
+/// than `source` is out of date, as is a missing one, and the test says so: what the program should
+/// do is then checked by hand and written there.
+fn pinned_in(kind: &str, name: &str, source: &str) -> std::io::Result<Outcome> {
+    let file =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(kind).join(format!("{name}.txt"));
     let hash = fennec_blake3::hash(source.as_bytes()).to_hex();
-    // The interpreter's answers are written only when asked for by name, so pinning the JIT's
-    // missing ones from the build never writes over them.
-    let asked = if kind == "interpreted" { "FENNEC_PIN_INTERPRETED" } else { "FENNEC_PIN_OUTPUTS" };
-    if std::env::var_os(asked).is_some() {
-        let (out, err, code) = reference()?;
-        let code = code.map_or_else(|| "none".to_owned(), |code| code.to_string());
-        std::fs::create_dir_all(&folder)?;
-        let text =
-            format!("source {hash}\ncode {code}\nstdout {}\n{out}stderr {}\n{err}", out.len(), err.len());
-        std::fs::write(&file, text)?;
-    }
     let text = std::fs::read_to_string(&file).unwrap_or_default();
     let read = read_pinned(&text).filter(|(pinned_for, _)| *pinned_for == hash);
     read.map(|(_, outcome)| outcome).ok_or_else(|| {
@@ -426,7 +400,7 @@ def main(stdout: Stdout):
     let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ours = apart_from(&dir, outcome(&Command::new(&executable).output_within()?));
-    let interpreted = interpreted_in(&dir, "two_loops", nested)?;
+    let interpreted = interpreted("two_loops", nested)?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(ours, interpreted);
     assert_eq!(ours.0, "-3 [[2, 3], [5, 7], [9]]\n");
@@ -485,7 +459,7 @@ fn same_as_the_interpreter_in_both_builds(name: &str, source: &str) -> std::io::
     std::fs::write(&program, source)?;
     let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
     let output = executable.to_string_lossy().into_owned();
-    let (wanted_out, wanted_err, wanted_code) = interpreted_in(&dir, name, source)?;
+    let (wanted_out, wanted_err, wanted_code) = interpreted(name, source)?;
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let args: Vec<&str> = ["build"]
             .into_iter()
@@ -3297,9 +3271,7 @@ fn a_with_taking_one_cell_twice_ends_the_program() -> std::io::Result<()> {
         let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
         assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
         let ran = outcome(&Command::new(&executable).output_within()?);
-        let interpreted = interpreted_by(&dir, &program, &format!("taken_twice_{name}"), || {
-            fennec(&["run", "--interp", &path(&program)], &dir)
-        })?;
+        let interpreted = interpreted_by(&program, &format!("taken_twice_{name}"))?;
         assert_eq!(apart_from(&dir, ran.clone()), interpreted, "{name}");
         assert_eq!(ran.2, Some(1), "{name}");
         assert_eq!(ran.0, "before 21\n", "{name}");
@@ -3386,9 +3358,7 @@ fn every_name_for_a_shared_value_sees_it_change() -> std::io::Result<()> {
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
-    let interpreted = interpreted_by(&dir, &program, "shared_names", || {
-        fennec(&["run", "--interp", &path(&program)], &dir)
-    })?;
+    let interpreted = interpreted_by(&program, "shared_names")?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
     Ok(())
@@ -3912,9 +3882,7 @@ fn own_text_inside_other_values_is_written_by_native_code() -> std::io::Result<(
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
-    let interpreted = interpreted_by(&dir, &program, "own_text_inside", || {
-        fennec(&["run", "--interp", &path(&program)], &dir)
-    })?;
+    let interpreted = interpreted_by(&program, "own_text_inside")?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
     Ok(())
@@ -3991,9 +3959,7 @@ fn values_read_from_their_blocks_show_as_they_do_in_the_interpreter() -> std::io
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
-    let interpreted = interpreted_by(&dir, &program, "shown_values", || {
-        fennec(&["run", "--interp", &path(&program)], &dir)
-    })?;
+    let interpreted = interpreted_by(&program, "shown_values")?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
     Ok(())
@@ -4008,7 +3974,7 @@ fn same_as_the_interpreter(name: &str, source: &str) -> std::io::Result<()> {
     let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ours = apart_from(&dir, outcome(&Command::new(&executable).output_within()?));
-    let interpreted = interpreted_in(&dir, name, source)?;
+    let interpreted = interpreted(name, source)?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(ours, interpreted);
     Ok(())
@@ -5586,9 +5552,7 @@ def main(stdout: Stdout, args: Args, clock: Clock):
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).args(["one", "two"]).output_within()?;
-    let interpreted = interpreted_by(&dir, &program, "arguments_and_clock", || {
-        fennec(&["run", "--interp", &path(&program), "one", "two"], &dir)
-    })?;
+    let interpreted = interpreted_by(&program, "arguments_and_clock")?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "2 True\none\ntwo\none two\nTrue\n");
     assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
@@ -5657,13 +5621,7 @@ fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
         command.current_dir(&dir).output_given(b"first\r\nsecond\n", FENNEC_DEADLINE)
     };
     let ran = with_lines(&mut Command::new(&executable))?;
-    let interpreted = interpreted_by(&dir, &program, "stdin_lines", || {
-        with_lines(
-            crate::executables::fennec_command()
-                .args(["run", "--interp", &path(&program)])
-                .env("FENNEC_HOME", &dir),
-        )
-    })?;
+    let interpreted = interpreted_by(&program, "stdin_lines")?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
     Ok(())
@@ -5727,13 +5685,7 @@ fn fs_declared_in_std_is_found_by_name_natively_as_in_the_interpreter() -> std::
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).current_dir(&dir).output_within()?;
-    let interpreted = interpreted_by(&dir, &program, "fs_by_name", || {
-        crate::executables::fennec_command()
-            .args(["run", "--interp", &path(&program)])
-            .env("FENNEC_HOME", &dir)
-            .current_dir(&dir)
-            .output_within()
-    })?;
+    let interpreted = interpreted_by(&program, "fs_by_name")?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),
@@ -6288,6 +6240,164 @@ fn sqlite_from_parallel_rounds_keeps_every_write() -> std::io::Result<()> {
     Ok(())
 }
 
+/// What the next test builds: everything `std.postgres` does, against the server
+/// `FENNEC_TEST_POSTGRES` names, or, with none, against a port nothing listens on.
+const POSTGRES_SERVER: &str = r#"from std import postgres
+from std.crypto import Secret
+from std.sql import SqlError
+
+struct Entry:
+    path: str
+    size: int
+    weight: float
+    blob: bytes
+    seen: bool
+
+struct Count:
+    total: int
+
+struct PathOnly:
+    missing: str
+
+## What a query's failure was, by its case and whether it says what's wrong.
+def said(failure: SqlError) -> str:
+    match failure:
+        case .Constraint(reason=reason):
+            return f"constraint {reason.len() > 0}"
+        case .Column(name=name, reason=reason):
+            return f"column {name}: {reason}"
+        case .Busy():
+            return "busy"
+        case .Failed(reason=reason):
+            return f"failed {reason.len() > 0}"
+
+def rows_in(db: postgres.PgDatabase) -> int fails SqlError:
+    db.query[Count](t"select count(*) as total from fennec_entries")?[0].total
+
+## Adds a row in a transaction, then fails, so it's rolled back.
+def adds_then_fails(db: postgres.PgDatabase) fails SqlError:
+    with db.transaction()? as tx:
+        path = "rolled back"
+        none = bytes([])
+        _ = tx.execute(t"insert into fennec_entries values ({path}, {1}, {1.0}, {none}, {True})")?
+        fail .Failed(reason="stop")
+
+## Where a server is, as `postgres://user:password@host:port/database` says.
+struct Server:
+    host: str
+    port: int
+    user: str
+    database: str
+    secret: Secret[str]
+
+def run(server: Server, stdout: Stdout, net: Net, entropy: Entropy) fails SqlError:
+    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=server.secret, port=server.port)? as db:
+        # A temporary table is this connection's own, so runs at once can't meet.
+        _ = db.execute(t"create temp table fennec_entries (path text primary key, size bigint, weight double precision, blob bytea, seen boolean)")?
+        for at in range(3):
+            path = f"p{at}"
+            size = at * 10
+            weight = float(at) * 0.5
+            blob = bytes([at, 255])
+            seen = at % 2 == 0
+            stdout.print(db.execute(t"insert into fennec_entries values ({path}, {size}, {weight}, {blob}, {seen})")?)
+        least = 10
+        for entry in db.query[Entry](t"select path, size, weight, blob, seen from fennec_entries where size >= {least} order by path")?:
+            stdout.print(entry.path, entry.size, entry.weight, entry.blob.len(), entry.blob[1], entry.seen)
+        # A value can't change what the query means, whatever it says.
+        evil = "x'); drop table fennec_entries; --"
+        none = bytes([])
+        _ = db.execute(t"insert into fennec_entries values ({evil}, {0}, {0.0}, {none}, {False})")?
+        stdout.print(rows_in(db)?)
+        # Failures say what they are, and the connection goes on.
+        path = "p0"
+        match db.execute(t"insert into fennec_entries values ({path}, {0}, {0.0}, {none}, {False})"):
+            case Ok(_):
+                stdout.print("inserted twice")
+            case Err(error):
+                stdout.print(said(error))
+        match db.execute(t"select from no_such_table"):
+            case Ok(_):
+                stdout.print("no error")
+            case Err(error):
+                stdout.print(said(error))
+        match db.query[PathOnly](t"select path from fennec_entries"):
+            case Ok(_):
+                stdout.print("read a column that isn't there")
+            case Err(error):
+                stdout.print(said(error))
+        # A transaction that fails changes nothing; one that ends is kept.
+        match adds_then_fails(db):
+            case Ok(_):
+                stdout.print("no failure")
+            case Err(error):
+                stdout.print(said(error), rows_in(db)?)
+        kept = "kept"
+        with db.transaction()? as tx:
+            stdout.print(tx.execute(t"update fennec_entries set path = {kept} where path = {path}")?)
+        stdout.print(rows_in(db)?, db.query[Count](t"select count(*) as total from fennec_entries where path = {kept}")?[0].total)
+
+## Signs in with `secret`, and says how it went.
+def signing_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy) -> str:
+    match signed_in(server, secret=secret, net=net, entropy=entropy):
+        case Ok(_):
+            return "signed in"
+        case Err(error):
+            return error.message()
+
+def signed_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy) fails SqlError:
+    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=secret, port=server.port)? as db:
+        _ = db.execute(t"select 1")?
+
+def main(stdout: Stdout, net: Net, entropy: Entropy, env: Env):
+    # With no server to use, it's a port nothing listens on, and only connecting is tried.
+    address = (env.get("FENNEC_TEST_POSTGRES") else "postgres://nobody:nothing@127.0.0.1:1/none").split("//")[1]
+    who = address.split("@")[0]
+    place = address.split("@")[1]
+    rest = place.split(":")[1]
+    server = Server(
+        host=place.split(":")[0],
+        port=int(rest.split("/")[0]) else 5432,
+        user=who.split(":")[0],
+        database=rest.split("/")[1],
+        secret=Secret.of(who.split(":")[1]),
+    )
+    match run(server, stdout=stdout, net=net, entropy=entropy):
+        case Ok(_):
+            pass
+        case Err(error):
+            stdout.print(error.message().startswith(f"couldn't connect to {server.host}:{server.port}"))
+            return
+    stdout.print("28P01" in signing_in(server, secret=Secret.of("not the password"), net=net, entropy=entropy))
+    stdout.print(signing_in(server, secret=None, net=net, entropy=entropy))
+"#;
+
+/// `std.postgres` signs in to a real server with SCRAM, runs queries with their values as
+/// parameters, reads rows into structs, says what failed, and keeps or rolls back a transaction.
+/// It needs `FENNEC_TEST_POSTGRES`, like `postgres://user:password@127.0.0.1:5432/database`. With
+/// none set it says so, and only checks the driver builds and a refused connection is reported.
+#[test]
+fn postgres_works_against_a_real_server() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("postgres_server", POSTGRES_SERVER)?;
+    if std::env::var_os("FENNEC_TEST_POSTGRES").is_none() {
+        eprintln!(
+            "skipped the real server: set FENNEC_TEST_POSTGRES to postgres://user:password@host:port/database"
+        );
+        assert_eq!(printed, "True\n");
+        return Ok(());
+    }
+    assert_eq!(
+        printed,
+        "1\n1\n1\np1 10 0.5 2 255 False\np2 20 1.0 2 255 True\n4\nconstraint True\nfailed True\n\
+         column path: `PathOnly` has no field called `path`\nfailed True 4\n1\n4 1\nTrue\n\
+         the server asks for a password, and `connect` wasn't given one\n"
+    );
+    Ok(())
+}
+
 /// `process.run`'s options in compiled code: what the program reads, the folder it runs in and
 /// variables it gets, on their own and together, and a narrowed `Process` still running only
 /// what it may when given them.
@@ -6329,13 +6439,7 @@ fn process_options_without_the_interpreter_match_it() -> std::io::Result<()> {
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).current_dir(&dir).output_within()?;
-    let interpreted = interpreted_by(&dir, &program, "process_options", || {
-        crate::executables::fennec_command()
-            .args(["run", "--interp", &path(&program)])
-            .env("FENNEC_HOME", &dir)
-            .current_dir(&dir)
-            .output_before(FENNEC_DEADLINE)
-    })?;
+    let interpreted = interpreted_by(&program, "process_options")?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),
@@ -6386,13 +6490,7 @@ fn walking_a_folder_without_the_interpreter_matches_it() -> std::io::Result<()> 
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).current_dir(&dir).output_within()?;
-    let interpreted = interpreted_by(&dir, &program, "walked", || {
-        crate::executables::fennec_command()
-            .args(["run", "--interp", &path(&program)])
-            .env("FENNEC_HOME", &dir)
-            .current_dir(&dir)
-            .output_before(FENNEC_DEADLINE)
-    })?;
+    let interpreted = interpreted_by(&program, "walked")?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),
@@ -8546,6 +8644,115 @@ fn pack_loads_an_earlier_version_of_a_type_by_its_names() -> std::io::Result<()>
     Ok(())
 }
 
+/// What the next test builds: many small values in one stream, read in order, by name, fed a
+/// byte at a time, cut off, and two `Packer`s' bytes one after the other.
+const PACK_STREAMS: &str = r#"from std import pack
+from std.pack import Packer, Unpacker
+
+enum Kind:
+    Move
+    Say(text: str)
+
+struct Event:
+    who: int
+    kind: Kind
+
+## The next version: a field added with a default, and the cases moved.
+enum NewKind:
+    Say(text: str)
+    Move
+
+struct NewEvent:
+    who: int
+    kind: NewKind
+    round = 0
+
+def main(stdout: Stdout):
+    mut out = Packer()
+    for at in range(100):
+        out.add(Event(who=at, kind=Kind.Move if at % 2 == 0 else Kind.Say(text="hi")))
+    data = out.bytes()
+    one = pack.dumps(Event(who=1, kind=.Move))
+    stdout.print("stream", data.len(), "one value alone", one.len(), "a hundred alone", one.len() * 100)
+    mut src = Unpacker.of(data)
+    mut total = 0
+    mut said = 0
+    while True:
+        event = src.next[Event]()? else break
+        total += event.who
+        if event.kind != .Move:
+            said += 1
+    stdout.print(total, said)
+    # Read as the next version, by name.
+    mut later = Unpacker.of(data)
+    mut rounds = 0
+    mut moves = 0
+    while True:
+        event = later.next[NewEvent]()? else break
+        rounds += event.round
+        if event.kind == .Move:
+            moves += 1
+    stdout.print(rounds, moves)
+    # The next version adds to the same file: each value reads by its own layout.
+    mut more = Packer()
+    more.add(NewEvent(who=500, kind=.Say(text="new"), round=3))
+    mixed = data + more.bytes()
+    mut both = Unpacker.of(mixed)
+    mut count = 0
+    mut last = NewEvent(who=0, kind=.Move)
+    while True:
+        event = both.next[NewEvent]()? else break
+        count += 1
+        last = event
+    stdout.print(count, last.who, last.round)
+    # A stream fed a byte at a time gives each value once all of it has come.
+    mut fed = Unpacker.stream()
+    mut got = 0
+    for at in range(data.len()):
+        fed.feed(data[at:at + 1])
+        while True:
+            _ = fed.next[Event]()? else break
+            got += 1
+    stdout.print("fed", got)
+    # Cut off, bytes that are all there are fail.
+    mut cut = Unpacker.of(data[0:data.len() - 1])
+    mut read = 0
+    mut failed = ""
+    while True:
+        match cut.next[Event]():
+            case Ok(found):
+                if found is None: break
+                read += 1
+            case Err(error):
+                failed = error.message
+                break
+    stdout.print(read, failed)
+    # `take` gives what's new since the last, to send.
+    mut sending = Packer()
+    sending.add(Event(who=1, kind=.Move))
+    first = sending.take()
+    sending.add(Event(who=2, kind=.Move))
+    second = sending.take()
+    stdout.print(first.len(), second.len())
+"#;
+
+/// A `pack.Packer` writes each type's layout once, so a hundred small values take an eighth of
+/// what a hundred `dumps` do. A `pack.Unpacker` reads them back in order, or by name as the next
+/// version of the type, from a file another `Packer` added to, or fed a byte at a time; bytes cut
+/// off fail after the last whole value.
+#[test]
+fn pack_streams_write_each_layout_once() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("pack_streams", PACK_STREAMS)?;
+    assert_eq!(
+        printed,
+        "stream 638 one value alone 53 a hundred alone 5300\n4950 50\n0 50\n101 500 3\nfed 100\n99 the data ends too soon, at byte 637\n56 4\n"
+    );
+    Ok(())
+}
+
 /// What the next test builds: a type saved as a union's member, written by hand as generated code will be.
 const UNION_MEMBERS: &str = r#"from std import json, pack, toml
 
@@ -9060,7 +9267,7 @@ def main(stdout: Stdout):
     let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ours = apart_from(&dir, outcome(&Command::new(&executable).output()?));
-    let interpreted = interpreted_in(&dir, "floats_ordered_as_decided", source)?;
+    let interpreted = interpreted("floats_ordered_as_decided", source)?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(ours, interpreted);
     assert_eq!(
@@ -9195,7 +9402,7 @@ def main(stdout: Stdout):
     let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ours = apart_from(&dir, outcome(&Command::new(&executable).output_within()?));
-    let interpreted = interpreted_in(&dir, "floats_as_decided", source)?;
+    let interpreted = interpreted("floats_as_decided", source)?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(ours, interpreted);
     assert_eq!(
@@ -11767,9 +11974,7 @@ fn a_failing_main_ends_as_on_the_interpreter() -> std::io::Result<()> {
         let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
         assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
         let ran = Command::new(&executable).output_within()?;
-        let interpreted = interpreted_by(&dir, &program, &format!("failing_main_{name}"), || {
-            fennec(&["run", "--interp", &path(&program)], &dir)
-        })?;
+        let interpreted = interpreted_by(&program, &format!("failing_main_{name}"))?;
         assert_eq!(apart_from(&dir, outcome(&ran)), interpreted, "{name}");
         assert_eq!(ran.status.code(), Some(1), "{name}");
     }
@@ -11814,9 +12019,7 @@ fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
         let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
         assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
         let ran = Command::new(&executable).output_within()?;
-        let interpreted = interpreted_by(&dir, &program, &format!("error_notes_{name}"), || {
-            fennec(&["run", "--interp", &path(&program)], &dir)
-        })?;
+        let interpreted = interpreted_by(&program, &format!("error_notes_{name}"))?;
         assert_eq!(apart_from(&dir, outcome(&ran)), interpreted, "{name}");
         let said = String::from_utf8_lossy(&ran.stderr);
         assert!(said.contains(note), "{name}: {said}");

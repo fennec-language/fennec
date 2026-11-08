@@ -879,6 +879,7 @@ fn mut_on_a_local_nothing_changes_goes() {
         "def f() -> int:\n    mut n = 0\n    m, n = pair()\n    m + n\n",
         "def f() -> int:\n    mut w = W(xs=[1])\n    mut part = w.xs\n    mut deeper = part\n    deeper[0] = 2\n    w.xs[0]\n",
         "def f(s: S) -> int:\n    mut at = s\n    match at:\n        case .A(inner):\n            at = inner\n        case _:\n            pass\n    1\n",
+        "def f(s: S) -> int:\n    mut src = s\n    src.next[int]() else 0\n",
     ];
     for source in changed {
         assert_eq!(rules(source), NONE, "{source}");

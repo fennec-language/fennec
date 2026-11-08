@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::executables::{Within, fennec_command, runtime_built};
+use crate::executables::{Within, fennec_command, runtime_built, threads_runtime_built};
 
 /// How many requests warm the server up, and how many more must leave nothing behind.
 const WARM: usize = 300;
@@ -201,7 +201,7 @@ fn changed(kinds: &[&str]) -> std::io::Result<Vec<String>> {
 
 #[test]
 fn a_server_holds_no_more_after_thousands_of_requests_of_each_kind() -> std::io::Result<()> {
-    if !runtime_built() {
+    if !runtime_built() || !threads_runtime_built() {
         return Ok(());
     }
     let grew = changed(&["count", "stats", "note", "duplicate", "file", "garbage", "hangup", "crash"])?;

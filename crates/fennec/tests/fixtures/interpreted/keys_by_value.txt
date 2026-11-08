@@ -1,0 +1,14 @@
+source d0abf1411de6d3be4971c3c82087ddb6621ad8aa95113e8e1f76fc1aa87531c1
+code 0
+stdout 387
+[1] [2] True False
+{(1, "one"): [1], (2, "a long string in its own block"): [9], (3, "three"): [3], (4, "four"): []} 4 3 [3] None
+[1] [(2, "a long string in its own block"), (3, "three"), (4, "four")] False True
+(2, "a long string in its own block") [9]
+(3, "three") [3]
+(4, "four") []
+2 True 2
+{Tag.Plain, Tag.Label(text="yz")} 2 True True
+{(0.0, 1): "b", (1.5, 2): "c"} 2 b
+20 187 199
+stderr 0

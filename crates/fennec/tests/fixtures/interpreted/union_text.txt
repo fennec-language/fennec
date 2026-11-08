@@ -1,0 +1,8 @@
+source ad651d0b89a7cbab513e57dc7a7411c8d010cc0180c411df6d4ddc42b607ec2d
+code 0
+stdout 96
+ash ash ash 1 ["ash", 1]
+ash ash ash 3
+3 1.5 True no [1, 2] [True, "no"]
+3|1.5|no|[1, 2] [1, 2]
+stderr 0

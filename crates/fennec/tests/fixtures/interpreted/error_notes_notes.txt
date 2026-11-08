@@ -1,0 +1,17 @@
+source 604718a1562135d4cc4e8098fd71fb9137bf1e50e75fde67be83fe5a35fea060
+code 1
+stdout 219
+[] Missing(path="(none)")
+["first", "second"] ["first"] True Missing(path="(none)")
+Missing(path="(none)") Missing(path="(none)")
+["while loading long name", "second line\nand a third"] Broken(code=9, why="too long")
+2
+stderr 256
+error: `main` failed: Broken(code=10, why="too long")
+note: while loading a long one
+note: second line
+  and a third
+  --> <dir>/notes.fen:29:1
+   |
+29 | def main(stdout: Stdout) fails Missing | Broken:
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,17 @@
+source 4e3da8a94249c0f1e989d8c81b23f8f1b0dca245dc12b78e19d4124b8abe801c
+code 0
+stdout 58
+4
+6
+42
+3
+4
+5
+39 6
+6 7
+11
+10 6
+[2, 3, 4]
+made
+[39, 40, 41]
+stderr 0

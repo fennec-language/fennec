@@ -1,0 +1,14 @@
+source a47f3b73658edc606c2a279f9c3cceff7c0ffd89d749af2a3138aa542c5e502f
+code 0
+stdout 91
+got 1
+left the loop
+next
+got 1
+left the second loop
+next
+got 1
+got 2
+left the third loop
+1
+stderr 0

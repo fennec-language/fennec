@@ -1,0 +1,13 @@
+source 7869e18a7f9d2ba4a9f38181538b49fa3c81571476bdda8b3053a8fa47c9acea
+code 0
+stdout 371
+4518000
+138000
+4564500
+1 [1, 2, 3] [1] unit 1 with a name too long to sit inline
+2 [2, 3, 4] [2] unit 2 with a name too long to sit inline
+3 [3, 4, 5] [3] unit 3 with a name too long to sit inline
+4 [4, 5, 6] [4] unit 4 with a name too long to sit inline
+5 [5, 6, 7] [5] unit 5 with a name too long to sit inline
+6 [6, 7, 8] [6] unit 6 with a name too long to sit inline
+stderr 0

@@ -1,0 +1,10 @@
+source b9951df2faeb66d4f2114f2cfd52097e3445d3de2a8f10c73c74e8e77820b076
+code 1
+stdout 0
+stderr 250
+error: this was expected to succeed (x is there), but it failed: Missing(path="x")
+note: looked everywhere
+  --> <dir>/expected.fen:10:18
+   |
+10 |     stdout.print(load("x").expect("x is there"))
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

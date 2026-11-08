@@ -1,0 +1,20 @@
+source fbeb587f2201ce27b02e8a11d485e0baa6de2f32cdda37c20423d5eb7e67f58b
+code 0
+stdout 108
+True 0
+False 1
+6 1
+6 2
+left 1 2
+skipped 1 2
+skipped 1 3
+True
+True
+False
+True 0
+False 1
+in 0
+True
+in 1
+False
+stderr 0

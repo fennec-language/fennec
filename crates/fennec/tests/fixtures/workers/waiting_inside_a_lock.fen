@@ -4,9 +4,10 @@ struct Tally:
     name = "none yet"
     total = 0
 
-def sleeps(counts: shared Tally, clock: Clock):
+# Waiting inside a lock is refused when the program is checked, so the only way a task in a lock
+# could be parked is a long loop's turn.
+def names(counts: shared Tally):
     lock counts as ref current:
-        clock.sleep(20ms)
         current.name = "a name that is long enough to need a block of its own"
 
 def runs_long(counts: shared Tally):
@@ -18,10 +19,10 @@ def runs_long(counts: shared Tally):
             total += turn % 3
         current.total = total
 
-def main(clock: Clock, stdout: Stdout) fails Crashed:
+def main(stdout: Stdout) fails Crashed:
     shared counts = Tally()
-    with launch(() => sleeps(counts, clock))?:
-        with launch(() => sleeps(counts, clock))?:
+    with launch(() => names(counts))?:
+        with launch(() => names(counts))?:
             pass
     with launch(() => runs_long(counts))?:
         with launch(() => runs_long(counts))?:

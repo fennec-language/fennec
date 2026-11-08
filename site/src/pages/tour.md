@@ -1020,7 +1020,7 @@ def update(ref particles: list[Particle], dt: float):
         particle.position += particle.velocity * dt
 ```
 
-Floats have one equality, order and hash: NaN equals itself and sorts last, and `0.0` equals `-0.0`. There are no fused operations, and `sin`, `cos`, `exp`, `log` and `**` come from one library on every platform, so a float result is the same bits on every machine. **Planned:** `@fast_math`, which opts one function out of that, and `a.approx(b, within=...)`, which compares computed values with a tolerance.
+Floats have one equality, order and hash: NaN equals itself and sorts last, and `0.0` equals `-0.0`. There are no fused operations, and `sin`, `cos`, `exp`, `log` and `**` come from one library on every platform, so a float result is the same bits on every machine. There's no `@fast_math` to opt out, since replays and lockstep games depend on those bits, and speed comes from checks the compiler proves it can remove instead. **Planned:** `a.approx(b, within=...)`, which compares computed values with a tolerance.
 
 ## C libraries
 

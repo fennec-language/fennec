@@ -457,7 +457,7 @@ fn a_name_that_hides_a_mut_one_says_so() {
 }
 
 #[test]
-fn a_generator_kept_for_later_cant_change_whats_around_it() {
+fn a_generator_cant_change_whats_around_it() {
     let empty: [&str; 0] = [];
     let bump = "def bump(ref k: int) -> int:\n    k += 1\n    k\n";
     let told = |name: &str, at: &str| {
@@ -470,12 +470,21 @@ fn a_generator_kept_for_later_cant_change_whats_around_it() {
     let looped =
         "mut k = 1\nfor one in (bump(ref k) for x in range(3)):\n    stdout.print(one)\nstdout.print(k)\n";
     assert_eq!(crate::in_main_after(bump, looped), told("k", "k"));
+    // Written right inside what uses it, it only reads too.
+    let around = |at: &str| vec![format!("this generator changes `k`, a name around it @ {at}")];
     for used in ["sum", "min", "max", "sorted", "list", "set"] {
         let body = format!("mut k = 1\nstdout.print({used}(bump(ref k) for x in range(3)), k)\n");
-        assert_eq!(crate::in_main_after(bump, &body), empty, "{body}");
+        assert_eq!(crate::in_main_after(bump, &body), around("bump(ref k)"), "{body}");
     }
     let asked = "mut k = 1\nstdout.print(any(bump(ref k) > 9 for x in range(3)), k)\n";
-    assert_eq!(crate::in_main_after(bump, asked), empty);
+    assert_eq!(crate::in_main_after(bump, asked), around("bump(ref k)"));
+    let method = "mut xs = [1, 2]\nstdout.print(sum(xs.pop() else 0 for x in range(2)), xs)\n";
+    assert_eq!(
+        crate::in_main_after(bump, method),
+        ["this generator changes `xs`, a name around it @ xs.pop()"]
+    );
+    let own = "xs = [[1], [2]]\nstdout.print(sum(inner.len() for inner in xs))\n";
+    assert_eq!(crate::in_main_after(bump, own), empty);
     let read = "k = 1\ng = (k + x for x in range(3))\nstdout.print(list(g))\n";
     assert_eq!(crate::in_main_after(bump, read), empty);
 }

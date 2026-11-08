@@ -9344,6 +9344,27 @@ fn a_list_of_a_union_holds_its_items_in_place() -> std::io::Result<()> {
 /// A `parallel` call whose body may wait goes to the runtime's `_waiting` entry points, and
 /// runs as one whose body only computes does: here a loop, a comprehension and a sum whose
 /// ranges sleep, beside ones that don't.
+/// A `parallel` comprehension whose item can fail, like `[save(fs.read(path)?)? for path in
+/// parallel(paths)]`, builds natively, and fails as the interpreter does: what it fails with has
+/// no way out of the runtime's ranges yet, so its items are made in order.
+#[test]
+fn a_parallel_comprehension_whose_item_can_fail_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "parallel_tries",
+        r#"def doubled(text: str) -> int fails InvalidValue:
+    int(text)? * 2
+
+def main(stdout: Stdout) fails InvalidValue:
+    texts = ["1", "2", "3"]
+    stdout.print([doubled(t)? for t in parallel(texts)], sum(int(t)? for t in parallel(texts)))
+    stdout.print([int(t)? for t in parallel(["4", "x"])])
+"#,
+    )
+}
+
 #[test]
 fn parallel_bodies_that_wait_match_the_jit() -> std::io::Result<()> {
     if !ready() {

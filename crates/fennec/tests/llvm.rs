@@ -11413,9 +11413,7 @@ fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
         let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
         assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
         let ran = Command::new(&executable).output_within()?;
-        let interpreted = interpreted_by(&dir, &program, &format!("error_notes_{name}"), || {
-            fennec(&["run", "--interp", &path(&program)], &dir)
-        })?;
+        let interpreted = interpreted_by(&program, &format!("error_notes_{name}"))?;
         assert_eq!(apart_from(&dir, outcome(&ran)), interpreted, "{name}");
         let said = String::from_utf8_lossy(&ran.stderr);
         assert!(said.contains(note), "{name}: {said}");

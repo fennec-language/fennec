@@ -8603,6 +8603,115 @@ fn pack_loads_an_earlier_version_of_a_type_by_its_names() -> std::io::Result<()>
     Ok(())
 }
 
+/// What the next test builds: many small values in one stream, read in order, by name, fed a
+/// byte at a time, cut off, and two `Packer`s' bytes one after the other.
+const PACK_STREAMS: &str = r#"from std import pack
+from std.pack import Packer, Unpacker
+
+enum Kind:
+    Move
+    Say(text: str)
+
+struct Event:
+    who: int
+    kind: Kind
+
+## The next version: a field added with a default, and the cases moved.
+enum NewKind:
+    Say(text: str)
+    Move
+
+struct NewEvent:
+    who: int
+    kind: NewKind
+    round = 0
+
+def main(stdout: Stdout):
+    mut out = Packer()
+    for at in range(100):
+        out.add(Event(who=at, kind=Kind.Move if at % 2 == 0 else Kind.Say(text="hi")))
+    data = out.bytes()
+    one = pack.dumps(Event(who=1, kind=.Move))
+    stdout.print("stream", data.len(), "one value alone", one.len(), "a hundred alone", one.len() * 100)
+    mut src = Unpacker.of(data)
+    mut total = 0
+    mut said = 0
+    while True:
+        event = src.next[Event]()? else break
+        total += event.who
+        if event.kind != .Move:
+            said += 1
+    stdout.print(total, said)
+    # Read as the next version, by name.
+    mut later = Unpacker.of(data)
+    mut rounds = 0
+    mut moves = 0
+    while True:
+        event = later.next[NewEvent]()? else break
+        rounds += event.round
+        if event.kind == .Move:
+            moves += 1
+    stdout.print(rounds, moves)
+    # The next version adds to the same file: each value reads by its own layout.
+    mut more = Packer()
+    more.add(NewEvent(who=500, kind=.Say(text="new"), round=3))
+    mixed = data + more.bytes()
+    mut both = Unpacker.of(mixed)
+    mut count = 0
+    mut last = NewEvent(who=0, kind=.Move)
+    while True:
+        event = both.next[NewEvent]()? else break
+        count += 1
+        last = event
+    stdout.print(count, last.who, last.round)
+    # A stream fed a byte at a time gives each value once all of it has come.
+    mut fed = Unpacker.stream()
+    mut got = 0
+    for at in range(data.len()):
+        fed.feed(data[at:at + 1])
+        while True:
+            _ = fed.next[Event]()? else break
+            got += 1
+    stdout.print("fed", got)
+    # Cut off, bytes that are all there are fail.
+    mut cut = Unpacker.of(data[0:data.len() - 1])
+    mut read = 0
+    mut failed = ""
+    while True:
+        match cut.next[Event]():
+            case Ok(found):
+                if found is None: break
+                read += 1
+            case Err(error):
+                failed = error.message
+                break
+    stdout.print(read, failed)
+    # `take` gives what's new since the last, to send.
+    mut sending = Packer()
+    sending.add(Event(who=1, kind=.Move))
+    first = sending.take()
+    sending.add(Event(who=2, kind=.Move))
+    second = sending.take()
+    stdout.print(first.len(), second.len())
+"#;
+
+/// A `pack.Packer` writes each type's layout once, so a hundred small values take an eighth of
+/// what a hundred `dumps` do. A `pack.Unpacker` reads them back in order, or by name as the next
+/// version of the type, from a file another `Packer` added to, or fed a byte at a time; bytes cut
+/// off fail after the last whole value.
+#[test]
+fn pack_streams_write_each_layout_once() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("pack_streams", PACK_STREAMS)?;
+    assert_eq!(
+        printed,
+        "stream 638 one value alone 53 a hundred alone 5300\n4950 50\n0 50\n101 500 3\nfed 100\n99 the data ends too soon, at byte 637\n56 4\n"
+    );
+    Ok(())
+}
+
 /// What the next test builds: a type saved as a union's member, written by hand as generated code will be.
 const UNION_MEMBERS: &str = r#"from std import json, pack, toml
 

@@ -8467,12 +8467,7 @@ fn the_second_launch_in_a_function_keeps_its_stop_after() -> std::io::Result<()>
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).current_dir(&dir).output_within()?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(
-        String::from_utf8_lossy(&ran.stdout),
-        "done\n",
-        "{}",
-        String::from_utf8_lossy(&ran.stderr)
-    );
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "done\n", "{}", String::from_utf8_lossy(&ran.stderr));
     Ok(())
 }
 

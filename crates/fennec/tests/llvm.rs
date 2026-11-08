@@ -476,6 +476,49 @@ fn same_as_the_interpreter_in_both_builds(name: &str, source: &str) -> std::io::
     Ok(())
 }
 
+/// What a program prints, built in dev and `--release` both, is `wanted`.
+fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join(name));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            wanted,
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A value stored into another keeps what it held when a name it came from changes after: in a
+/// tuple, a dict, a list by `insert`, a closure, a struct, an optional and a comprehension.
+#[test]
+fn a_stored_value_keeps_what_it_held() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "stored_values_keep_theirs",
+        include_str!("fixtures/stored_values_keep_theirs.fen"),
+        "([1, 2], 1) [9, 2]\n{\"k\": [1, 2]} [9, 2]\n[[1, 2], [0]] [9, 2]\n3 [9, 2]\n{\"k\": [1, 2]} [9, 2]\n\
+         Box(item=[1, 2]) [9, 2]\n[1, 2] [9, 2]\n{\"k\": [1, 2]} [1, 2] [9, 2]\n\
+         (\"text that is long enough to live in a block\", 2) 44\n[[1, 2], [1, 2]] [9, 2]\n",
+    )
+}
+
 /// Each kind of local passed by `mut` and used again, with what could be remembered about it
 /// before the call: where an index points, a length, a read held across the change, a dict's
 /// entry, how far a string's been read, what a loop or a closure holds, a number known to fit.

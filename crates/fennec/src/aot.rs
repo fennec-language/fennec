@@ -104,11 +104,10 @@ impl Runtime {
         let set = |name: &str| std::env::var_os(name).filter(|on| !on.is_empty()).map(|on| on == "1");
         match set("FENNEC_THREADS_RUNTIME") {
             Some(true) => Ok(Self::Threads),
-            Some(false) => Ok(Self::Plain),
             None if runtime_folder(statically)?.join(Self::Threads.library()).is_file() => {
                 runtime_library(Self::Threads, statically).map(|_| Self::Threads)
             }
-            None => Ok(Self::Plain),
+            Some(false) | None => Ok(Self::Plain),
         }
     }
 }

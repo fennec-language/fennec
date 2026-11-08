@@ -3950,6 +3950,37 @@ def main(stdout: Stdout):
     )
 }
 
+/// A generator copied into the loop over it holds each argument as its parameter's type: a `str`
+/// given for a `str?` is an optional in the copy. The copy once held it as the argument's type,
+/// so the build left `main` to the JIT, as it read `str` as `str?`.
+#[test]
+fn a_copied_generator_holds_its_arguments_as_its_parameters_types() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "copied_parameter_types",
+        r#"def or_else(word: str?) -> Iterator[str]:
+    yield word else "nothing"
+
+def when_given(word: str?) -> Iterator[str]:
+    if word is not None:
+        yield f"{word}!"
+
+def main(stdout: Stdout):
+    for word in or_else("hi"):
+        stdout.print(word)
+    for word in or_else(None):
+        stdout.print(word)
+    maybe: str? = "kept"
+    for word in when_given(maybe):
+        stdout.print(word)
+    held = or_else("later")
+    stdout.print(list(held), list(when_given("x")))
+"#,
+    )
+}
+
 #[test]
 fn generators_that_fail_match_the_jit() -> std::io::Result<()> {
     if !ready() {

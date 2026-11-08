@@ -284,6 +284,19 @@ impl Lowering<'_> {
                 .map(|instance| instance.subst);
             Some((key, body, subst))
         });
+        if let Some((key, _, subst)) = &copied
+            && let Some(raw) = self.context.signatures.get(&self.context.base_key(key))
+        {
+            let signature = match subst {
+                Some(subst) => self.context.instantiate(raw, subst),
+                None => raw.clone(),
+            };
+            for (fresh, param) in &expansion.params {
+                if let Some(found) = signature.params.iter().find(|each| each.name == *param) {
+                    self.bound.insert(fresh.clone(), found.ty.clone());
+                }
+            }
+        }
         let copying = copied.is_some();
         self.copied.extend(copied);
         self.scopes.push(HashMap::new());

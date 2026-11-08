@@ -1,0 +1,10 @@
+source 7149d4867a6f4d78af5d0b8f017c5de05a931ea7dcfc2cbacab31d2e3082f2fd
+code 1
+stdout 2
+2
+stderr 125
+error: division by zero
+ --> <dir>/given_mut_fails_4.fen:8:18
+  |
+8 |     stdout.print(10 // n)
+  |                  ^^^^^^^

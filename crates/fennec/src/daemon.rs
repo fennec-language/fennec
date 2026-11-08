@@ -2,9 +2,11 @@
 //! it, keeping the build engine's state in memory between commands. It's never needed for
 //! correctness: when it can't be reached or started, a command does the work itself.
 //!
-//! A command connects to `~/.fennec/daemon/<version>.sock` (see `unix::socket_path`), sends `fennec <version>` and its
-//! request one line each, and reads back its exit code and what to print. The socket is named
-//! by version, so a command never talks to a daemon from another version.
+//! A command connects to `~/.fennec/daemon/<version>-<build>.sock` (see `unix::socket_path`), sends
+//! `fennec <version> <build>` and its request one line each, and reads back its exit code and what to
+//! print. The build is the hash of all of Fennec's source (`FENNEC_BUILD`), so a command never talks
+//! to a daemon built from other source, even of the same version, which would answer with what an
+//! older compiler does.
 //!
 //! The daemon owns the cache in `~/.fennec/cache`: it keeps it under its cap (1 GiB, or
 //! `FENNEC_CACHE_CAP` bytes) when it starts and every five minutes after, while it's idle.
@@ -21,6 +23,10 @@ use std::process::ExitCode;
 
 #[cfg(unix)]
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The hash of all of this build's source, which the daemon must share with a command it answers.
+#[cfg(unix)]
+const BUILD: &str = env!("FENNEC_BUILD");
 
 /// What a command prints, and how it exits.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -124,20 +130,30 @@ mod unix {
 
     use fennec_build::Cache;
 
-    use super::{Outcome, VERSION};
+    use super::{BUILD, Outcome, VERSION};
     use crate::changes::Snapshots;
 
     /// Where the daemon listens: in Fennec's folder, unless that path is too long for a socket
     /// (about 100 bytes on macOS), in which case the user's runtime folder or the temp folder,
     /// named by a hash of Fennec's folder.
     fn socket_path(home: &Path) -> PathBuf {
-        let preferred = home.join("daemon").join(format!("{VERSION}.sock"));
+        let preferred =
+            home.join("daemon").join(format!("{VERSION}-{}.sock", BUILD.get(..16).unwrap_or(BUILD)));
         if preferred.as_os_str().len() < 100 {
             return preferred;
         }
         let hash = fennec_blake3::hash(home.to_string_lossy().as_bytes()).to_hex();
         let folder = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
-        folder.join(format!("fennec-{}-{VERSION}.sock", hash.get(..16).unwrap_or(&hash)))
+        folder.join(format!(
+            "fennec-{}-{VERSION}-{}.sock",
+            hash.get(..16).unwrap_or(&hash),
+            BUILD.get(..16).unwrap_or(BUILD)
+        ))
+    }
+
+    /// The first line of every request: the version and build of the `fennec` asking.
+    fn header() -> String {
+        format!("fennec {VERSION} {BUILD}")
     }
 
     /// How often the daemon checks the cache against its cap.
@@ -176,7 +192,7 @@ mod unix {
 
     pub(super) fn send(home: &Path, request: &[&str]) -> Option<Outcome> {
         let mut stream = UnixStream::connect(socket_path(home)).ok()?;
-        let message = format!("fennec {VERSION}\n{}\n", request.join("\n"));
+        let message = format!("{}\n{}\n", header(), request.join("\n"));
         stream.write_all(message.as_bytes()).ok()?;
         stream.shutdown(std::net::Shutdown::Write).ok()?;
         let mut reply = String::new();
@@ -187,7 +203,7 @@ mod unix {
     /// Opens a language server session: after `lsp`, the connection carries its messages.
     pub(super) fn open_session(home: &Path) -> Option<UnixStream> {
         let mut stream = UnixStream::connect(socket_path(home)).ok()?;
-        stream.write_all(format!("fennec {VERSION}\nlsp\n").as_bytes()).ok()?;
+        stream.write_all(format!("{}\nlsp\n", header()).as_bytes()).ok()?;
         Some(stream)
     }
 
@@ -276,7 +292,7 @@ mod unix {
         if reader.read_line(&mut header).is_err() || reader.read_line(&mut kind).is_err() {
             return;
         }
-        if header.trim_end() == format!("fennec {VERSION}") && kind.trim_end() == "lsp" {
+        if header.trim_end() == self::header() && kind.trim_end() == "lsp" {
             language_server(&mut reader, &mut writer, state);
             return;
         }
@@ -311,8 +327,11 @@ mod unix {
 
     fn handle(request: &str, state: &mut State) -> Outcome {
         let mut lines = request.lines();
-        if lines.next() != Some(&format!("fennec {VERSION}")) {
-            return Outcome::failure(format!("error: this daemon is Fennec {VERSION}\n"));
+        if lines.next() != Some(&header()) {
+            return Outcome::failure(format!(
+                "error: this daemon is Fennec {VERSION} built from other source, {}\n",
+                BUILD.get(..16).unwrap_or(BUILD)
+            ));
         }
         match (lines.next(), lines.next()) {
             (Some("status"), _) => Outcome {
@@ -340,6 +359,41 @@ mod unix {
                 crate::changes::report(Path::new(path), &state.home.clone(), &mut state.snapshots)
             }
             _ => Outcome::failure(format!("error: the daemon doesn't know the request `{request}`\n")),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::collections::HashMap;
+        use std::path::Path;
+        use std::time::Instant;
+
+        use super::{BUILD, State, VERSION, handle, socket_path};
+
+        /// A daemon answers only a command of its own build: one of the same version built from
+        /// other source would get what an older compiler does.
+        #[test]
+        fn a_daemon_answers_only_its_own_build() {
+            let home = Path::new("/home/fennec/.fennec");
+            let socket = socket_path(home);
+            let named = format!("{VERSION}-{}.sock", BUILD.get(..16).unwrap_or(BUILD));
+            assert_eq!(socket, home.join("daemon").join(named));
+            let mut state = State {
+                home: home.to_path_buf(),
+                snapshots: HashMap::new(),
+                served: 0,
+                started: Instant::now(),
+                last_work: Instant::now(),
+                sessions: 0,
+                stopping: false,
+            };
+            let own = handle(&format!("fennec {VERSION} {BUILD}\nstatus\n"), &mut state);
+            assert!(own.stdout.starts_with("running: Fennec"), "{own:?}");
+            for other in [format!("fennec {VERSION}"), format!("fennec {VERSION} {}", "0".repeat(64))] {
+                let refused = handle(&format!("{other}\nstatus\n"), &mut state);
+                assert_eq!(refused.code, 1, "{other}");
+                assert!(refused.stderr.contains("built from other source"), "{refused:?}");
+            }
         }
     }
 }

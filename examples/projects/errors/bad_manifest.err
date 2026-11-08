@@ -6,13 +6,13 @@ error: kit.toml has no key called `versoin`
   |
   = help: kit.toml has `name`, `version` and `fennec`
 
-error: dependencies aren't supported yet
+error: `lasers` asks for a version from the Den, which isn't built yet
  --> examples/projects/errors/bad_manifest/kit.toml:6:1
   |
 6 | lasers = "1.0.0"
   | ^^^^^^^^^^^^^^^^
   |
-  = help: for now a kit is the files under its `src` folder; leave `[dependencies]` empty
+  = help: for now a kit comes from git or a path: write `name = { git = "https://...", commit = "<its whole hash>" }`, or `name = { path = "../name" }`
 
 error: kit.toml needs `version`
  --> examples/projects/errors/bad_manifest/kit.toml:1:1

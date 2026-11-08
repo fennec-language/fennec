@@ -1,0 +1,16 @@
+source 2b344cb8a54ec938b88533a120f62ac5a2150a4682f129915ae3fc5d35553281
+code 0
+stdout 516
+note 1, long enough to live on the heap
+note 2, long enough to live on the heap
+note 3, long enough to live on the heap
+note 4, long enough to live on the heap
+note 1, long enough to live on the heap again
+note 2, long enough to live on the heap again
+note 3, long enough to live on the heap again
+note 4, long enough to live on the heap again
+note 1, long enough to live on the heap 39
+note 2, long enough to live on the heap 39
+note 3, long enough to live on the heap 39
+note 4, long enough to live on the heap 39
+stderr 0

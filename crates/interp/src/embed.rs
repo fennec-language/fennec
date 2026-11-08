@@ -28,6 +28,8 @@ pub mod guarded;
 pub mod heap;
 pub mod layout;
 pub mod lists;
+#[cfg(any(test, feature = "threads"))]
+pub(crate) mod live;
 pub mod notes;
 pub mod numbers;
 pub mod objects;

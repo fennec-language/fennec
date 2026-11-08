@@ -1,0 +1,7 @@
+source d0fc27357a990a6c6f364db89a94a1a7f9ad3e5a4203dbb33c422b773d0fd31d
+code 0
+stdout 28
+int 4 str x
+2 str x 2
+int 5
+stderr 0

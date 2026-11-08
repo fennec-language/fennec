@@ -1,0 +1,8 @@
+source 0f99e1e3e8a76933ff66ea1ce2641cc7ab253d0226ce1c528f8ded047c188e1e
+code 0
+stdout 62
+["kit", [1, 2]]
+["kit", [1, 2]]
+["a", [3]]
+[(1, "one"), True]
+stderr 0

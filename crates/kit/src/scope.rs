@@ -492,7 +492,7 @@ impl Resolver<'_> {
     fn pattern(&mut self, pattern: &mut Pattern, span: Span) {
         match pattern {
             Pattern::Wildcard => {}
-            Pattern::Bind(name) => self.bind(name),
+            Pattern::Bind(name) | Pattern::RefBind(name) => self.bind(name),
             Pattern::Literal(expr) => self.expr(expr),
             Pattern::Variant { name, dotted, args, .. } => {
                 if !*dotted {

@@ -463,6 +463,10 @@ pub struct MatchArm {
 pub enum Pattern {
     Wildcard,
     Bind(String),
+    /// `ref clicks` in `case .Button(ref clicks):`: a name for the field itself, so the case's
+    /// body changes it in what the `match` is over. Once checked, it's written in as a plain name
+    /// whose value is put back where the case ends.
+    RefBind(String),
     Literal(Expr),
     /// `.Circle(radius)` (`dotted`), or `NotFound(path)`, `Ok(value)`, `Err(error)`. Written by
     /// name, as `IoError(reason=r)`, `fields` names each of `args`. The checker then puts them

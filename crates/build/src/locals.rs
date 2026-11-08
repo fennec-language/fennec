@@ -139,7 +139,7 @@ fn names_bound_in(expr: &mut Expr) -> Vec<&String> {
 
 fn pattern_names<'p>(pattern: &'p Pattern, found: &mut Vec<&'p String>) {
     match pattern {
-        Pattern::Bind(name) => found.push(name),
+        Pattern::Bind(name) | Pattern::RefBind(name) => found.push(name),
         Pattern::Variant { args, .. } | Pattern::Tuple(args) | Pattern::Or(args) => {
             for arg in args {
                 pattern_names(arg, found);
@@ -151,7 +151,7 @@ fn pattern_names<'p>(pattern: &'p Pattern, found: &mut Vec<&'p String>) {
 
 fn pattern_binding(pattern: &mut Pattern, each: &mut dyn FnMut(&mut String)) {
     match pattern {
-        Pattern::Bind(name) => each(name),
+        Pattern::Bind(name) | Pattern::RefBind(name) => each(name),
         Pattern::Variant { args, .. } | Pattern::Tuple(args) | Pattern::Or(args) => {
             for arg in args {
                 pattern_binding(arg, each);

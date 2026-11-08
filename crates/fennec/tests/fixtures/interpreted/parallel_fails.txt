@@ -1,0 +1,9 @@
+source db5d075ccf690d75b67ff1f844ac49defc398c11f09d3200ab3eae76eadeba8e
+code 1
+stdout 0
+stderr 171
+error: division by zero
+ --> <dir>/fails.fen:3:22
+  |
+3 |     stdout.print(sum(100 // (77_777 - x) for x in parallel(xs)) > 0)
+  |                      ^^^^^^^^^^^^^^^^^^

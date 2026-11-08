@@ -171,6 +171,15 @@ impl<'a> Analyzer<'_, 'a> {
             {
                 Role::Operand
             }
+            // A keyword after a `.` is a name there, as in `u8.from(x)`.
+            TokenKind::Keyword
+                if at
+                    .checked_sub(1)
+                    .and_then(|before| self.tok(before))
+                    .is_some_and(|before| before.text == ".") =>
+            {
+                Role::Operand
+            }
             TokenKind::Keyword => Role::Keyword,
             TokenKind::Name if self.soft_keyword(at, tok.text, after_operand, block) => Role::Keyword,
             TokenKind::Punct => self.punct_role(at, tok.text, prev),

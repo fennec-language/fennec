@@ -64,6 +64,15 @@ fn a_keyword_method_name_is_written_tight() {
     );
 }
 
+/// A keyword after a `.` is a name, written tight as one: `u8.from(x)`, and `def from` too.
+#[test]
+fn a_keyword_after_a_dot_is_written_as_a_name() {
+    check(
+        "extend u8:\n    def from (x: int) -> u8:\n        u8(x)\n\ndef f() -> u8:\n    u8.from (3) else u8.from(4)\n",
+        "extend u8:\n    def from(x: int) -> u8:\n        u8(x)\n\ndef f() -> u8:\n    u8.from(3) else u8.from(4)\n",
+    );
+}
+
 #[test]
 fn match_arms_go_on_their_own_lines() {
     check(

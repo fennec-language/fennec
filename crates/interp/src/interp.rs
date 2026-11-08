@@ -336,6 +336,11 @@ impl<'out> Interp<'out> {
 
     /// Adds an extension's methods to its type, as if they were written in its declaration.
     fn extend_type<'m>(&mut self, extension: &'m Extension, keep: &impl Keep<'m>) -> Result<(), Diagnostic> {
+        // The sized numbers' functions in the standard library: the interpreter doesn't run sized
+        // numbers, and refuses a program that uses them before it gets here.
+        if matches!(extension.name.as_str(), "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "u64" | "f32") {
+            return Ok(());
+        }
         if BUILT_IN_OWNERS.contains(&extension.name.as_str()) {
             let methods = self.built_in_methods.entry(extension.name.clone()).or_default();
             for method in &extension.methods {

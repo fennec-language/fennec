@@ -38,7 +38,8 @@ def built_in_interfaces() -> list[str]:
 
 def built_in_types() -> list[str]:
     [
-        "int", "float", "bool", "str", "LiteralStr", "bytes", "None", "nothing", "list", "array", "SoaList",
+        "int", "float", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "bool", "str",
+        "LiteralStr", "bytes", "None", "nothing", "list", "array", "SoaList",
         "Iterator", "set", "dict", "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin",
         "Process", "Entropy", "Net", "Env", "Result", "->",
     ]
@@ -130,7 +131,7 @@ struct Program:
             name
             in [
                 "int", "float", "bool", "bytes", "str", "list", "dict", "set", "Optional", "Id",
-                "Table",
+                "Table", "i8", "i16", "i32", "u8", "u16", "u32", "u64", "f32",
             ]
         ):
             # The standard library gives built-in types methods, like `str`'s `def *`.

@@ -160,6 +160,14 @@ impl Emit<'_, '_, '_> {
                 self.declare("declare void @fennec_print_float(double) nounwind");
                 self.line(&format!("call void @fennec_print_float(double {value})"));
             }
+            Kind::U64 => {
+                self.declare("declare void @fennec_print_u64(i64) nounwind");
+                self.line(&format!("call void @fennec_print_u64(i64 {value})"));
+            }
+            Kind::F32 => {
+                self.declare("declare void @fennec_print_f32(double) nounwind");
+                self.line(&format!("call void @fennec_print_f32(double {value})"));
+            }
             Kind::Bool => {
                 self.declare("declare void @fennec_print_bool(i8) nounwind");
                 let wide = self.temp();
@@ -228,6 +236,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{text} = call ptr @fennec_float_text(double {value})"));
                 Ok(text)
             }
+            Kind::U64 | Kind::F32 => Ok(self.sized_text(value, kind)),
             // Holding strings or lists, or an enum's fields, it's written by the runtime, from a
             // block made of it. So is an array, which is written as a list.
             Kind::Struct(id) | Kind::Enum(id)
@@ -272,7 +281,9 @@ impl Emit<'_, '_, '_> {
                     let name = self.literal(&format!("{}(", layout.name.trim_end_matches('\'')));
                     text = self.joined(&text, &name, false);
                 }
-                for (at, field) in layout.fields.iter().enumerate() {
+                // An error's notes aren't shown with its fields.
+                let shown = layout.fields.iter().filter(|field| !fennec_interp::packed::hidden(&field.name));
+                for (at, field) in shown.enumerate() {
                     let field_kind = Kind::from_ty(self.module.layouts, field.ty)
                         .ok_or("a field this backend doesn't take yet")?;
                     let label = match (at, tuple) {
@@ -338,7 +349,24 @@ impl Emit<'_, '_, '_> {
     /// Ends the program, saying what `main` failed with. What the IR ends this block with is
     /// never reached, so it goes in a block of its own.
     pub(crate) fn main_failed(&mut self, error: &Operand, span: Span) -> Result<(), String> {
-        self.failed_with("`main` failed: ", error, span)
+        let (value, kind) = self.operand(error)?;
+        let shown = self.shown_text(&value, &kind)?;
+        let start = self.literal("`main` failed: ");
+        let text = self.joined(&start, &shown, true);
+        // Its notes go under it, a line each.
+        let text = match self.notes_word(error)? {
+            Some(word) => {
+                self.declare("declare ptr @fennec_notes_shown(i64) nounwind");
+                let notes = self.temp();
+                self.line(&format!("{notes} = call ptr @fennec_notes_shown(i64 {word})"));
+                self.joined(&text, &notes, true)
+            }
+            None => text,
+        };
+        self.stop_with(&text, span);
+        let after = self.label("stopped");
+        self.start_block(&after);
+        Ok(())
     }
 
     /// Ends the program or a server's task, saying `start` and what it failed with. What the IR ends
@@ -509,6 +537,7 @@ impl Emit<'_, '_, '_> {
 
     /// Two strings joined into a new one, letting go of the first and, if it's owned, the second.
     fn joined(&mut self, first: &str, second: &str, second_owned: bool) -> String {
+        self.declare("declare ptr @fennec_str_concat(ptr, ptr) nounwind");
         let text = self.temp();
         self.line(&format!("{text} = call ptr @fennec_str_concat(ptr {first}, ptr {second})"));
         self.release(first);
@@ -541,6 +570,7 @@ impl Emit<'_, '_, '_> {
                     self.declare("declare ptr @fennec_float_text(double) nounwind");
                     self.line(&format!("{temp} = call ptr @fennec_float_text(double {value})"));
                 }
+                Kind::U64 | Kind::F32 => return Ok(self.sized_text(&value, &kind)),
                 Kind::Str if self.headers() => return Ok(self.owned_text_block(&value)),
                 Kind::Str => {
                     self.retain(&value);
@@ -576,6 +606,15 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!(
                     "{temp} = call ptr @fennec_float_spec_text(double {value}, ptr {spec}, i64 {from}, i64 {to})"
                 ));
+            }
+            Kind::U64 | Kind::F32 => {
+                let (call, ty) = if kind == Kind::U64 { ("u64", "i64") } else { ("f32", "double") };
+                self.declare(&format!("declare ptr @fennec_{call}_spec_text({ty}, ptr, i64, i64) nounwind"));
+                self.line(&format!(
+                    "{temp} = call ptr @fennec_{call}_spec_text({ty} {value}, ptr {spec}, i64 {from}, i64 {to})"
+                ));
+                // A spec it doesn't take yet fails it.
+                self.leave_if_failed();
             }
             other => {
                 return Err(format!("it formats a {other:?} by a spec, which this backend doesn't take yet"));
@@ -1253,6 +1292,16 @@ tagged:
         );
     }
 
+    /// A new string with a `u64`'s or an `f32`'s text: unsigned, or the shortest that reads back
+    /// as the same `f32`.
+    fn sized_text(&mut self, value: &str, kind: &Kind) -> String {
+        let (call, ty) = if *kind == Kind::U64 { ("u64", "i64") } else { ("f32", "double") };
+        self.declare(&format!("declare ptr @fennec_{call}_text({ty}) nounwind"));
+        let text = self.temp();
+        self.line(&format!("{text} = call ptr @fennec_{call}_text({ty} {value})"));
+        text
+    }
+
     /// `str(value)`.
     pub(crate) fn text_of_value(&mut self, dest: LocalId, value: &Operand, span: Span) -> Result<(), String> {
         let (held, kind) = self.operand(value)?;
@@ -1264,8 +1313,12 @@ tagged:
             self.line(&format!("{temp} = load {}, ptr {place}", crate::headers::HEADER));
             return self.assign(dest, &temp);
         }
-        if self.headers() && kind == Kind::Float {
-            let (call, ty) = ("float", "double");
+        if self.headers() && matches!(kind, Kind::Float | Kind::U64 | Kind::F32) {
+            let (call, ty) = match kind {
+                Kind::U64 => ("u64", "i64"),
+                Kind::F32 => ("f32", "double"),
+                _ => ("float", "double"),
+            };
             let header = crate::headers::HEADER;
             self.declare(&format!(
                 "declare void @fennec_{call}_header(ptr sret({header}) align 8, {ty}) nounwind"
@@ -1285,6 +1338,10 @@ tagged:
             Kind::Float => {
                 self.declare("declare ptr @fennec_float_text(double) nounwind");
                 self.line(&format!("{temp} = call ptr @fennec_float_text(double {held})"));
+            }
+            Kind::U64 | Kind::F32 => {
+                let text = self.sized_text(&held, &kind);
+                return self.assign(dest, &text);
             }
             Kind::Str => {
                 self.retain_value(&held, &Kind::Str);

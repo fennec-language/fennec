@@ -25,6 +25,7 @@ mod run;
 mod test;
 mod test_inputs;
 mod trace;
+mod upkeep;
 mod verdict;
 
 /// A path in Fennec's `work` folder for this command's own scratch work, named so that nothing
@@ -66,6 +67,7 @@ const USAGE: &str = "usage:
   fennec lsp                the language server, for editors, over standard input and output
   fennec notices <program>  the third-party notices a program built by `fennec build` holds
   fennec daemon <action>    the build daemon: `status` or `stop`; commands start it
+  fennec cache clean        keep the cache under its cap now; commands do it by themselves hourly
   fennec --version          show the version
 
   path is a .fen file, or a kit's folder; it defaults to the current folder";
@@ -98,7 +100,13 @@ fn main() -> ExitCode {
     let Some(args) = arguments() else {
         return ExitCode::FAILURE;
     };
-    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    if !matches!(words.as_slice(), ["cache" | "daemon", ..]) {
+        upkeep::start_if_due();
+    }
+    match words.as_slice() {
+        ["cache", "clean"] => upkeep::clean(false),
+        ["cache", "clean", "--quiet"] => upkeep::clean(true),
         ["run"] => run(run::Engine::Native, ".", &[]),
         ["run", "--no-test"] => run(run::Engine::Untested, ".", &[]),
         ["run", "--no-test", path, arguments @ ..] => run(run::Engine::Untested, path, arguments),

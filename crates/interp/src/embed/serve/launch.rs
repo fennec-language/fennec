@@ -167,7 +167,10 @@ fn run(launched: &Launched, body: TaskBody, copy: Option<(u64, Box<crate::embed:
     let how = if how == CRASHED { crashed(launched) } else { how };
     if env != 0 {
         attempt(|state: &mut State| {
+            // What it was given was made on the thread that launched it.
+            let was = state.heap.freeing(heap::Freed::GivenBack);
             heap::release(state, env);
+            state.heap.freeing(was);
             Ok(())
         });
     }

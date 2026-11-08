@@ -357,10 +357,20 @@ struct Lexer:
                 text += c
                 self.pos += 2
             elif c == "{":
+                mut part = self.fstring_code(start)?
+                # `{hp=}` shows what's written and then its value: `hp=100`.
+                match part:
+                    case .Code(source, offset, spec):
+                        shown = shown_as_written(source)
+                        if shown is not None:
+                            text += source
+                            part = .Code(shown, offset, spec)
+                    case .Text(_):
+                        pass
                 if text != "":
                     parts.append(FPart.Text(text))
                     text = ""
-                parts.append(self.fstring_code(start)?)
+                parts.append(part)
             elif c == "}":
                 fail Diagnostic(
                     message="`}` without a matching `{`",
@@ -397,6 +407,18 @@ struct Lexer:
         code_end = spec_start else end
         spec = self.text(spec_start + 1, end) if spec_start is not None else None
         .Code(self.text(code_start, code_end), self.offset(code_start), spec)
+
+## What an f-string's `{expression=}` shows: written out with its `=`, as in Python, the
+## expression before the `=`, or `None` for a plain `{expression}`. A `=` that ends `==`, `!=`,
+## `<=` or `>=` is the comparison's own.
+def shown_as_written(source: str) -> str?:
+    trimmed = source.rstrip()
+    if not trimmed.endswith("="):
+        return None
+    before = trimmed.removesuffix("=")
+    if before.strip() == "" or before.endswith("=") or before.endswith("!") or before.endswith("<") or before.endswith(">"):
+        return None
+    before
 
 ## How many nanoseconds a unit of time is, or 0 when it isn't one. Minutes are `min`, so `m`
 ## is never a unit.

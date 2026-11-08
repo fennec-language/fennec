@@ -122,17 +122,12 @@ fn sized_integers_convert_when_written_out() {
     );
 }
 
-/// A program using an `f32` or a `u64` checks, but isn't run or built yet: nothing past the
-/// checker takes them, and running one as a `float` or an `int` would give other answers.
+/// A program using an `f32` or a `u64` checks all the way to where it's built.
 #[test]
-fn sized_numbers_are_refused_past_the_checker() {
-    let source =
-        "def main(stdout: Stdout):\n    mut speed: f32 = 1.5\n    speed += 1.0\n    stdout.print(speed)\n";
+fn f32_and_u64_check_to_run() {
+    let source = "def main(stdout: Stdout):\n    mut speed: f32 = 1.5\n    speed += 1.0\n    big: u64 = 3\n    stdout.print(speed, big)\n";
     let mut module = fennec_syntax::parse(source).expect("it parses");
-    assert!(fennec_check::check(&module).is_ok());
-    let refused = fennec_check::check_to_run(&mut module).err().unwrap_or_default();
-    let said: Vec<String> = refused.iter().map(|problem| problem.message.clone()).collect();
-    assert_eq!(said, ["sized numbers like f32 aren't built yet past the checker"]);
+    assert!(fennec_check::check_to_run(&mut module).is_ok());
 }
 
 /// A number literal takes the size it goes into, checked to fit: a name's declared type, a

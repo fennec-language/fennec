@@ -18,6 +18,21 @@ pub(crate) fn display(value: &Value) -> String {
     }
 }
 
+/// A failure as it's shown when nothing handled it: the error, then each of its notes on a
+/// line of its own under it, as `note: ...`, a note's later lines indented under its first.
+pub(crate) fn failure(error: &Value) -> String {
+    let mut text = repr(error);
+    if let Value::Instance(instance) = error
+        && let Some(notes) = &instance.notes
+    {
+        for note in notes.iter() {
+            text.push_str("\nnote: ");
+            text.push_str(&note.replace('\n', "\n  "));
+        }
+    }
+    text
+}
+
 /// The text a value shows inside a collection: strings are quoted.
 pub(crate) fn repr(value: &Value) -> String {
     repr_with(value, &mut |_| None)

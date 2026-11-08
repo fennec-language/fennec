@@ -17,7 +17,7 @@ use std::rc::Rc;
 use fennec_syntax::Diagnostic;
 
 use super::{State, Tables, attempt, span, with};
-use crate::packed::Element;
+use crate::packed::{Element, Fields};
 use crate::value::{Instance, Lent, Value};
 
 mod freeing;
@@ -925,6 +925,16 @@ pub(super) fn holds_floats(element: &Element) -> bool {
     }
 }
 
+/// Whether a kind is an error's, with a place for notes.
+fn holds_notes(element: &Element) -> bool {
+    let noted = |fields: &Fields| fields.iter().any(|(field, _)| field.as_ref() == crate::packed::NOTES);
+    match element {
+        Element::Struct { fields, .. } => noted(fields),
+        Element::Enum { cases, .. } => cases.iter().any(|(_, fields)| noted(fields)),
+        _ => false,
+    }
+}
+
 pub(super) fn holds_blocks(element: &Element) -> bool {
     match element {
         Element::Boxed(_)
@@ -1262,11 +1272,7 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
             Value::list(fields.iter().map(|(_, element)| read(state, element, words)).collect())
         }
         Element::Struct { name, fields } => {
-            let fields = fields
-                .iter()
-                .filter(|(field, _)| field.as_ref() != crate::packed::LOCK)
-                .map(|(field, element)| (Rc::clone(field), read(state, element, words)));
-            let value = instance(name, None, fields.collect());
+            let value = instance(name, None, read_fields(state, fields, words));
             // An error's block is laid out like a struct's, so its type says which it is.
             #[cfg(not(feature = "lean"))]
             let error = state
@@ -1290,13 +1296,30 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
             let mut mine = (&mut *words).take(*size);
             let at = usize::try_from(word(&mut mine)).unwrap_or(0);
             let (case, fields) = cases.get(at).or_else(|| cases.first()).cloned().unwrap_or_default();
-            let fields =
-                fields.iter().map(|(field, element)| (Rc::clone(field), read(state, element, &mut mine)));
-            let value = named::interpreted(name, instance(name, Some(case), fields.collect()));
+            let fields = read_fields(state, &fields, &mut mine);
+            let value = named::interpreted(name, instance(name, Some(case), fields));
             mine.for_each(drop);
             value
         }
     }
+}
+
+/// A struct's or a case's fields, read in order. A field the layout keeps for itself is read
+/// past, except an error's notes, which are kept apart from its fields, under `NOTES`, for
+/// `instance` to take out.
+fn read_fields<'w>(
+    state: &State,
+    fields: &Fields,
+    words: &mut dyn Iterator<Item = &'w u64>,
+) -> Vec<(Rc<str>, Value)> {
+    let mut read_ones = Vec::with_capacity(fields.len());
+    for (field, element) in fields {
+        let value = read(state, element, words);
+        if field.as_ref() == crate::packed::NOTES || !crate::packed::hidden(field) {
+            read_ones.push((Rc::clone(field), value));
+        }
+    }
+    read_ones
 }
 
 /// The name the interpreter gives instances of a layout: a generic type's layout is named
@@ -1305,9 +1328,27 @@ fn type_name(layout: &str) -> &str {
     layout.split_once('[').map_or(layout, |(name, _)| name)
 }
 
-fn instance(name: &Rc<str>, case: Option<Rc<str>>, fields: Vec<(Rc<str>, Value)>) -> Value {
+fn instance(name: &Rc<str>, case: Option<Rc<str>>, mut fields: Vec<(Rc<str>, Value)>) -> Value {
     let type_name = if name.contains('[') { Rc::from(type_name(name)) } else { Rc::clone(name) };
-    Value::Instance(Rc::new(Instance { type_name, case, fields, is_error: false, cause: None }))
+    // Only an error's layout has notes, so a value with them is an error.
+    let noted = fields.iter().position(|(field, _)| field.as_ref() == crate::packed::NOTES);
+    let notes = noted.and_then(|at| match fields.remove(at).1.unpacked() {
+        Value::List(notes) if !notes.is_empty() => Some(Rc::new(
+            notes
+                .iter()
+                .filter_map(|note| if let Value::Str(note) = note { Some(Rc::clone(note)) } else { None })
+                .collect(),
+        )),
+        _ => None,
+    });
+    Value::Instance(Rc::new(Instance {
+        type_name,
+        case,
+        fields,
+        is_error: noted.is_some(),
+        cause: None,
+        notes,
+    }))
 }
 
 /// A new block owned once, with a temporary's value, failing like the interpreter when the
@@ -1401,11 +1442,7 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
         {
             // An error is written like a struct: native code holds it as a block of its layout.
             for (field, element) in fields {
-                if field.as_ref() == crate::packed::LOCK {
-                    words.push(0);
-                } else {
-                    write(state, element, instance.field(field)?, words)?;
-                }
+                write_field(state, instance, field, element, words)?;
             }
         }
         (Element::Enum { name, cases, words: size }, Value::Instance(instance))
@@ -1416,13 +1453,40 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
             let start = words.len();
             words.push(u64::try_from(at).ok()?);
             for (field, element) in &cases.get(at)?.1 {
-                write(state, element, instance.field(field)?, words)?;
+                write_field(state, instance, field, element, words)?;
             }
             words.resize(start + size, 0);
         }
         _ => return None,
     }
     Some(())
+}
+
+/// One of an instance's fields, written where its layout puts it. A lock starts as 0, and so do
+/// an error's notes until it has some.
+fn write_field(
+    state: &mut State,
+    instance: &Instance,
+    field: &str,
+    element: &Element,
+    words: &mut Vec<u64>,
+) -> Option<()> {
+    match field {
+        crate::packed::NOTES => match &instance.notes {
+            Some(notes) => {
+                write(state, element, &Value::list(notes.iter().cloned().map(Value::Str).collect()), words)
+            }
+            None => {
+                words.push(0);
+                Some(())
+            }
+        },
+        crate::packed::LOCK => {
+            words.push(0);
+            Some(())
+        }
+        _ => write(state, element, instance.field(field)?, words),
+    }
 }
 
 /// Whether two blocks hold equal values: the same bits, field by field, and equal boxed
@@ -1510,8 +1574,9 @@ fn same_tables(state: &State, fields: &[(Rc<str>, Element)], left: &[u64], right
 /// Whether two values of a kind, laid out as words, are equal: the same plain words, and
 /// equal blocks where they hold blocks.
 pub(super) fn same_words(state: &State, element: &Element, left: &[u64], right: &[u64]) -> bool {
-    // A float's bits don't say what's equal, so one with floats in it compares by its values.
-    if holds_floats(element) {
+    // A float's bits don't say what's equal, so one with floats in it compares by its values,
+    // as does an error, whose notes don't count.
+    if holds_floats(element) || holds_notes(element) {
         return read(state, element, &mut left.iter()) == read(state, element, &mut right.iter());
     }
     let mut boxed = Vec::new();

@@ -17,7 +17,7 @@
 use fennec_interp::embed::guarded::rollback;
 use fennec_interp::embed::{
     aot, bytes, capabilities, channels, checks, cleanup, dicts, eval, guarded, heap, io, json, lists, names,
-    numbers, objects, parallel, regex, serve, strings, temps, text, threads,
+    notes, numbers, objects, parallel, regex, serve, strings, temps, text, threads,
 };
 
 /// The build of Fennec this library is from, after a marker, which `fennec` reads out of the
@@ -367,6 +367,9 @@ export! {
     fennec_int_spec_text(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::int_spec_text(a0, a1, a2, a3);
     fennec_str_strip(a0: i64, a1: i64) -> i64 => strings::strip(a0, a1);
     fennec_str_join(a0: i64, a1: i64) -> i64 => strings::join(a0, a1);
+    fennec_notes_add(a0: i64, a1: i64) -> i64 => notes::add(a0, a1);
+    fennec_notes_list(a0: i64) -> i64 => notes::list(a0);
+    fennec_notes_shown(a0: i64) -> i64 => notes::shown(a0);
     fennec_list_slice(a0: i64, a1: i64, a2: i64) -> i64 => lists::slice(a0, a1, a2);
     fennec_set_remove(a0: i64, a1: i64, a2: i8, a3: i64, a4: i64) -> i64 => dicts::set_remove(a0, a1, a2, a3, a4);
     fennec_set_remove_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i8, a5: i64, a6: i64) -> i64 => dicts::set_remove_header(a0, a1, a2, a3, a4, a5, a6);

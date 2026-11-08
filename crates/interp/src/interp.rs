@@ -449,7 +449,7 @@ impl<'out> Interp<'out> {
         self.flush()?;
         match result {
             Value::Err(error) => {
-                Err(Diagnostic::new(format!("`main` failed: {}", format::repr(&error)), main.def.span))
+                Err(Diagnostic::new(format!("`main` failed: {}", format::failure(&error)), main.def.span))
             }
             Value::Int(code) => {
                 self.gave_back = code;
@@ -521,6 +521,34 @@ mod tests {
         let mut out = Vec::new();
         super::run(&module, &mut out).unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "True True\n");
+    }
+
+    const NOTED: &str = "error Lost:\n    why: str\n\nerror Gone:\n    Missing(name: str)\n    Closed\n\ndef main(stdout: Stdout) -> int fails Lost:\n    mut lost = Lost(why=\"no disk\")\n    stdout.print(lost.notes())\n    lost.add_note(\"while saving\")\n    lost.add_note(\"the cleanup failed:\\nGone.Closed\")\n    mut gone = Gone.Missing(name=\"a\")\n    gone.add_note(\"looked twice\")\n    stdout.print(lost, lost == Lost(why=\"no disk\"), gone.notes(), gone)\n    fail lost\n";
+
+    /// An error's notes are read and added to, never seen by `==` or printing, and print under it
+    /// when it reaches `main`, a note's later lines indented under its first.
+    #[test]
+    fn notes_print_under_a_failure_that_reaches_main() {
+        let module = fennec_syntax::parse(NOTED).unwrap();
+        let mut out = Vec::new();
+        let error = super::run(&module, &mut out).unwrap_err();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "[]\nLost(why=\"no disk\") True [\"looked twice\"] Gone.Missing(name=\"a\")\n"
+        );
+        assert_eq!(
+            error.message,
+            "`main` failed: Lost(why=\"no disk\")\nnote: while saving\nnote: the cleanup failed:\n  Gone.Closed"
+        );
+    }
+
+    /// `add_note` changes the error, so it needs a `mut` name.
+    #[test]
+    fn adding_a_note_needs_a_mut_name() {
+        let source = "error Lost:\n    why: str\n\ndef main(stdout: Stdout):\n    lost = Lost(why=\"x\")\n    lost.add_note(\"y\")\n";
+        let module = fennec_syntax::parse(source).unwrap();
+        let error = super::run(&module, &mut Vec::new()).unwrap_err();
+        assert!(error.message.contains("mut name"), "{}", error.message);
     }
 
     #[test]

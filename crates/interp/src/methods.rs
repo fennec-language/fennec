@@ -101,6 +101,10 @@ impl Interp<'_> {
                         drop(receiver);
                         self.call_method(object, &function, args, span)
                     }
+                    None if instance.is_error && matches!(method, "notes" | "add_note") => {
+                        drop(receiver);
+                        self.note_method(object, method, args, span)
+                    }
                     None if let Some(call) = crate::stdlib::methods_of(&instance.type_name) => {
                         let args = self.eval_args(args)?;
                         call(self, instance, method, args, span)
@@ -134,6 +138,40 @@ impl Interp<'_> {
         }
         let args = self.eval_args(args)?;
         self.read_method(&receiver, method, args, span)
+    }
+
+    /// `error.notes()`, the notes added to an error, oldest first, and `error.add_note(text)`,
+    /// which adds one to the error a `mut` name holds. Every error type has both, unless it
+    /// writes its own.
+    fn note_method(
+        &mut self,
+        object: &Expr,
+        method: &str,
+        args: &[Arg],
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        if method == "notes" {
+            let error = self.eval(object)?;
+            crate::collections::plain(self.eval_args(args)?, method, span)?;
+            let notes = match &error {
+                Value::Instance(instance) => instance.notes.as_deref().cloned().unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            return Ok(Value::list(notes.into_iter().map(Value::Str).collect()));
+        }
+        let what =
+            "`add_note` changes it, so call it on something held in a mut name, like `error.add_note(...)`";
+        let place = self.mut_place(object, what)?;
+        let args = crate::collections::plain(self.eval_args(args)?, method, span)?;
+        let [Value::Str(note)] = args.as_slice() else {
+            return Err(Diagnostic::new("`add_note` takes the note's text, a `str`", span));
+        };
+        let mut error = self.take(&place)?;
+        if let Value::Instance(instance) = &mut error {
+            Rc::make_mut(Rc::make_mut(instance).notes.get_or_insert_default()).push(Rc::clone(note));
+        }
+        self.put(&place, error)?;
+        Ok(Value::Unit)
     }
 
     /// `Type.name(...)`: an enum case, or a named constructor.
@@ -227,7 +265,7 @@ fn expect(result: Value, args: &[CallArg], span: Span) -> Result<Value, Diagnost
         Value::Err(error) => Err(Diagnostic::new(
             format!(
                 "this was expected to succeed ({reason}), but it failed: {}",
-                crate::format::repr(&error)
+                crate::format::failure(&error)
             ),
             span,
         )),

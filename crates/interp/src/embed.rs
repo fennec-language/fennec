@@ -29,6 +29,7 @@ pub mod heap;
 pub mod json;
 pub mod layout;
 pub mod lists;
+pub mod notes;
 pub mod numbers;
 pub mod objects;
 pub mod parallel;
@@ -905,7 +906,7 @@ pub mod temps {
             }
             match result {
                 Value::Err(error) => Err(Diagnostic::new(
-                    format!("`main` failed: {}", crate::format::repr(&error)),
+                    format!("`main` failed: {}", crate::format::failure(&error)),
                     span(start, end),
                 )),
                 Value::Ok(given) => {

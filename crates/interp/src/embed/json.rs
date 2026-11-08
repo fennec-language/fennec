@@ -188,6 +188,7 @@ mod tests {
                 fields,
                 is_error: false,
                 cause: None,
+                notes: None,
             }))
         };
         let tag = crate::value::new_tag();
@@ -218,8 +219,14 @@ mod tests {
         };
         start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
         let fields = vec![(Rc::from("value"), Value::Int(4))];
-        let held =
-            Instance { type_name: Rc::from("Holder"), case: None, fields, is_error: false, cause: None };
+        let held = Instance {
+            type_name: Rc::from("Holder"),
+            case: None,
+            fields,
+            is_error: false,
+            cause: None,
+            notes: None,
+        };
         let original = Value::Instance(Rc::new(held));
         let value = with(|state| Some(state.push(original.clone()))).unwrap();
         let block = heap::from_value(value, 0, 0, 0);

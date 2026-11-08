@@ -77,7 +77,7 @@ Each of these is decided and not built.
 - Narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
 - `case .Button(ref clicks):` to change a field inside an enum.
 - `{x=}` in f-strings.
-- `x.approx(y, within=...)`, and `@fast_math`.
+- `x.approx(y, within=...)`.
 - Units of measure, as structs whose operators are chosen by their right-hand type, with no new syntax.
 - Notes on errors, so a cleanup that fails after a failure doesn't hide either one.
 - `Secret[str]` in `std.crypto`, which can't be printed, logged or saved.

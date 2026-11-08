@@ -54,7 +54,7 @@ for ref unit in units: ...
 for unit_id, unit in units.items(): ...
 for unit_id, ref unit in units.items(): ...
 ```
-`enumerate` takes anything you can loop over and gives `(index, value)`, and `for i, ref x in enumerate(xs)` is allowed when `xs` has positions, `len` and `[]`. `ref` over a generator is a compile error. `items()` is for keyed things: a dict, a `Table`, and a user type that gives `len`, `[]` and `key(i)`. Looping over a dict gives its keys, as in Python, and `keys()`, `values()` and `items()` stay. Built, apart from `ref` with `enumerate` and `items()` on a user type.
+`enumerate` takes anything you can loop over and gives `(index, value)`, and `for i, ref x in enumerate(xs)` is allowed when `xs` has positions, `len` and `[]`. `ref` over a generator is a compile error. `items()` is for keyed things: a dict, a `Table`, and a user type that gives `len`, `[]` and `key(i)`. Looping over a dict gives its keys, as in Python, and `keys()`, `values()` and `items()` stay. Built, apart from `items()` on a user type.
 *Why:* `enumerate` is what Python people expect, a generator's items aren't anywhere to change, and the compiler's own tables need an `Id` and a `ref` in one loop.
 
 Adding and removing happen outside the loop. In a plain loop the item is a plain value, so the body can write to other items through the collection:
@@ -260,8 +260,8 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 This replaces IEEE comparison operators, and the rule that a struct with a float field can't be a dict key. Built: `==`, hashing, sorting and `<` all follow it. A "never NaN" analysis is planned, so a comparison of values that can't be NaN costs what IEEE's does.
 *Why:* Floats compare, sort, hash and key consistently. Measured with LLVM, every benchmark kernel stayed within ±0.4% of IEEE's instruction count once comparisons against a constant compile to one comparison, and vectorizing was unchanged.
 
-**Floats give the same results on every platform.** There are no fused operations and no fast-math outside an opt-in, and `sin`, `cos` and the rest are in the stdlib rather than the platform's math library. `@fast_math` on a function opts out. This replaces `with fast_math():`.
-*Why:* It makes lockstep multiplayer and replays possible. It costs a little, and only in math-heavy code, which can opt out.
+**Floats give the same results on every platform and every build.** There are no fused operations, except a fused multiply-add written as `.fma`, and `sin`, `cos` and the rest are in the stdlib rather than the platform's math library. There's no `@fast_math` and no other way to opt out. Speed comes from checks the compiler proves it can remove. This replaces `@fast_math` on a function, and before it `with fast_math():`.
+*Why:* Replays and lockstep multiplayer depend on the same bits everywhere, and an opt-out would break that for every function it reaches.
 
 **Parallel reductions combine in a fixed order.** `sum(... for e in parallel(xs))` combines its parts in a tree whose leaves are ranges of at most 1,024 positions, set by the length alone, never by element size or thread count. So the interpreter and native code give identical bits for a float sum.
 *Why:* Float results don't drift between runs or machines.

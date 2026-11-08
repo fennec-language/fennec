@@ -10,6 +10,8 @@ description: A walk through the whole of Fennec, from values and tables to failu
 
 > **What you can trust on this page.** Fennec is in progress. Every plain code sample here compiles today, and a test checks that it does. Anything that doesn't yet sits under a **Planned** label: that part of the design is decided but not built, so don't expect it to run.
 
+To build a real program, read [the guide](https://github.com/fennec-language/fennec/blob/main/docs/guide.md), which writes a small source control tool from start to finish.
+
 ## Hello
 
 ```fennec
@@ -543,7 +545,11 @@ def main(stdout: Stdout):
 - `ignore(result, "why")` throws a failure away on purpose, and `result.expect("why")` says it can't fail. Both need a reason.
 - A run-time bug is different from a failure. `xs[i]` out of range stops the program with a clear message, because there's nothing sensible to handle.
 
-**Planned:** `if result is Err(NotFound):`, which checks one failure and narrows the rest; a compile error for ignoring a returned value, with `_ = call()` to mean it; and `xs.get(i)`, which gives an optional when an index might not be there.
+- Ignoring a returned value is a compile error, and `_ = call()` throws one away on purpose.
+- `xs.get(i)` gives an optional, for an index that might not be there.
+- There's no `exit()`. A failure out of `main` prints to stderr and exits with code 1, and `def main(...) -> int:` exits with the `int` it gives back.
+
+**Planned:** `if result is Err(NotFound):`, which checks one failure and narrows the rest.
 
 ## Collections
 
@@ -591,6 +597,22 @@ def main(stdout: Stdout):
 
 `std.collections` also has `SortedSet`, `Grid`, `Packed`, `Deque`, `Heap`, `PriorityQueue`, `Counter` and `Tree`, and a sum can start somewhere other than zero, as in `sum(prices, start=1.5)`.
 
+A `Graph` holds nodes and the edges between them by `Id`, built on a `Table`, so there are no references to tangle:
+
+```fennec
+from std.collections import Graph
+
+def main(stdout: Stdout):
+    mut imports = Graph[str, str]()
+    main_id = imports.add_node("main")
+    api = imports.add_node("api")
+    json = imports.add_node("json")
+    imports.add_edge(from_id=main_id, to_id=api, edge="respond")
+    imports.add_edge(from_id=api, to_id=json, edge="dumps")
+    order = imports.topological_order() else []
+    stdout.print([imports[id] for id in order])
+```
+
 ## Strings
 
 `str` is UTF-8 text that works like Python's: f-strings with format specs, slicing, `split`, `strip`, `join`, `startswith`, `in` and the rest.
@@ -609,6 +631,29 @@ def main(stdout: Stdout):
 ```
 
 `bytes` is a separate type for binary data, and text read from outside is checked once, when it's decoded. **Planned:** `{x=}`, which prints `x=` and the value.
+
+A t-string, `t"..."`, makes a `Template`, as in Python 3.14. It keeps the text you wrote apart from the values, so a value can never become part of a query, a page or a command:
+
+```fennec
+type SqlValue = int | str
+
+def placeholders(query: Template[SqlValue]) -> str:
+    mut sent = ""
+    for at, text in enumerate(query.strings):
+        sent += text
+        if at < query.values.len():
+            sent += "?"
+    sent
+
+def main(stdout: Stdout):
+    # a name someone else chose is a value, never part of the text
+    name = "ash'; drop table players; --"
+    query: Template[SqlValue] = t"select score from players where name = {name}"
+    stdout.print(placeholders(query), query.values)
+```
+
+- A `str` is never a `Template`, so an f-string where one is wanted is a compile error.
+- `LiteralStr` is text written in the source: a literal, literals joined with `+`, or a choice between them. It goes anywhere a `str` goes, but text read while the program runs is never one.
 
 ## Generators and streaming
 
@@ -675,31 +720,15 @@ def main(net: Net, stdout: Stdout):
                 case Ok(_): stdout.print(f"{conn.peer} left")
 ```
 
+Each connection closes when its round ends, however it ends. A failure that passes up out of a round stops the server and cuts the others short, as `?` does in any loop, so handle it in the body, as `match` does here. `break` stops taking connections and lets the running rounds finish, and a crash ends only its own round.
+
 **Planned:** `limit=` on `parallel`.
 
 ## Sharing, resources and tasks
 
 Most programs share nothing. A typical game's main loop owns the world and passes `ref world` down.
 
-**What works today.** `shared Name:` declares a type that's shared rather than copied. Its `ref self` methods take its lock, and `with` takes several at once:
-
-```fennec
-shared Account:
-    total = 0
-
-    def deposit(ref self, amount: int):
-        self.total += amount
-
-def transfer(source: Account, destination: Account, amount: int):
-    # both locked for the block
-    with source as ref from_account, destination as ref to_account:
-        from_account.total -= amount
-        to_account.total += amount
-```
-
-`with` also opens connections and servers, and closes them however the block ends.
-
-**Planned: a new design.** It replaces `shared Name:`, and `fennec fix` will rewrite today's code when it lands. It answers four questions, each with its own words:
+It answers four questions, each with its own words:
 
 | Question | Words |
 | --- | --- |
@@ -708,13 +737,13 @@ def transfer(source: Account, destination: Account, amount: int):
 | When does it go back? | `with` |
 | Who talks to whom? | `launch`, channels |
 
-Every borrow lives in a block you can see, so there are no lifetimes to write.
+Every borrow lives in a block you can see, so there are no lifetimes to write. Today's `shared Name:` declarations and `with x as ref y:` still compile, and `fennec fix` rewrites them.
 
 ### `shared` and `lock`
 
-**Planned.** `shared T` is a type, so it works on any type and goes in fields and collections too, like `dict[str, shared Room]`. It's reached only inside `lock`:
+`shared T` is a type, so it works on any type and goes in fields and collections too, like `dict[str, shared Room]`. It's reached only inside `lock`:
 
-```fennec planned
+```fennec
 struct Scores:
     best = dict[str, int]()
 
@@ -727,44 +756,67 @@ def best_of(scores: shared Scores, name: str) -> int:
     # many tasks can read it at once
     lock scores as current:
         return current.best.get(name) else 0
+    0
 
 def main(stdout: Stdout):
     shared scores = Scores()
     record(scores, "Ana", points=10)
+    stdout.print(best_of(scores, "Ana"))
 ```
 
 - A `shared` value is made in a function, usually `main`, and passed to whoever needs it, like a capability. There's no top-level shared state, so a function's signature says what shared state it touches.
 - Any way out of a `lock` block releases it. Leaving with `fail` or `return` keeps the changes made so far.
-- **No waiting inside a lock:** no channel receives, network calls or `parallel`. Printing and local files are fine. Wait first, then lock.
-- **Deadlocks can't compile.** Lock order is checked across the whole program. Two values the compiler can't tell apart are locked together in one statement: `lock accounts[from_id], accounts[to_id] as ref source, ref target:`.
+- A crash inside `lock x as ref s:` rolls back: every value the block changed is put back before the lock is released, so nobody ever sees a half-change. There's nothing to write, and a lock is never left poisoned.
+- Two values locked at once go in one statement, `lock source, target as ref payer, ref payee:`, and a `lock` inside another is refused for now.
 - A `shared` value never holds one of its own type and never forms a cycle, so a tree uses a `Table` and `Id`s. Its memory is freed when the last holder lets go, with no cleanup code.
+- **Planned:** lock order checked across the whole program, and a compile error for waiting inside a lock, on a channel or the network.
 
 ### `with` and `lend`
 
-**Planned.** `with` lends you something for the length of a block, then takes it back. It's the only way to open files, sockets, servers and transactions.
+`with` lends you something for the length of a block, then takes it back. Files are opened this way:
 
-```fennec planned
-with fs.open("save.dat")? as file, net.connect(host)? as conn:
-    data = file.read_text()?
-    conn.write_line(data)?
-# both are closed here, however the block ends
+```fennec
+def save(fs: Fs, path: str, scores: list[int]) fails IoError:
+    # the new file takes the path's place only when the block ends, synced to the disk
+    with fs.create(path)? as file:
+        for score in scores:
+            file.write_line(str(score))?
+
+def load(fs: Fs, path: str) -> list[int] fails IoError:
+    mut found = list[int]()
+    with fs.open(path)? as file:
+        for line in file.lines():
+            found.append(int(line) else 0)
+    found
 ```
 
-What it lends can't escape the block, and a struct holding something borrowed is borrowed too. Writing your own takes `-> with T` and one `lend`, with setup above it and cleanup below:
+- The end of the block is where the file finishes. The `?` on the `with` line covers both opening it and finishing it, so there's no `close()` to forget.
+- A block that fails leaves the old file as it was, so there's never half a file. `durable=False` skips waiting for the disk, and `file.sync()?` puts what's written there at any point.
+- `fs.open` reads in `lines()` or `chunks(size)`, so a file bigger than memory is fine.
+- What a `with` lends can't escape the block, and a struct holding something borrowed is borrowed too.
 
-```fennec planned
-def transaction(self) -> with Transaction fails DbError:
-    with self._pool.take()? as conn:
-        conn.begin()?
-        # the caller's block runs here, with the transaction lent to it
-        lend Transaction(_conn=conn) else:
-            # the caller's block failed
-            conn.rollback()
+Writing your own takes `-> with T` and one `lend`, with setup above it, cleanup below, and `lend x else:` for when the caller's block fails:
 
-with db.transaction()? as tx:
-    tx.insert(order)?
-    tx.commit()?
+```fennec
+struct Ledger:
+    lines = list[str]()
+
+def entry(ref ledger: Ledger, name: str) -> with str:
+    ledger.lines.append(f"open {name}")
+    # the caller's block runs here
+    lend name.upper() else:
+        # the caller's block failed
+        ledger.lines.append(f"undo {name}")
+    ledger.lines.append(f"close {name}")
+
+def main(stdout: Stdout):
+    mut ledger = Ledger()
+    with entry(ref ledger, "ana") as label:
+        stdout.print(label)
+    stdout.print(ledger.lines)
 ```
+
+Code after `lend` runs when the caller's block succeeds, and if it fails, that's the `with` statement's failure. An early `return` still runs it.
 
 ### `launch` and channels
 
@@ -791,13 +843,10 @@ def main(speakers: Speakers, input: Input):
 ```
 
 - A parameter typed `Inbox[T]` makes `launch` create the channel: the task gets the receiving end and you get the sending end. The enum is the protocol, so you can only send real cases and the task must handle each one.
-- Channels are always bounded, and `send` waits when one is full. `send` and `receive` take `timeout=`.
+- Channels are always bounded, and `send` waits when one is full. `send` and `receive` take `timeout=`. `to=.Every` gives every listener every message.
 - `TaskGroup` holds a number of tasks known only at run time, and stops them all when its block ends.
 - Pools, like a database's connections, are written in plain Fennec, so nothing can leak or be used twice.
-
-### When a task crashes
-
-**Planned.** A crash ends only its own task, and comes out where its `with launch` block ends. A crash inside `lock x as ref s:` rolls back: every value the block changed is put back before the lock is released, so nobody ever sees a half-change. There's nothing to write, and a lock is never left poisoned. The compiler skips the saving where it proves a block can't crash, so most lock bodies cost nothing extra.
+- A task's crash comes out as `Crashed` where its `with launch` block ends.
 
 Not in the language at all: `del`, destructors, moves, lifetimes, `unsafe` and global state.
 
@@ -971,7 +1020,7 @@ def update(ref particles: list[Particle], dt: float):
         particle.position += particle.velocity * dt
 ```
 
-Floats have one equality, order and hash: NaN equals itself and sorts last, and `0.0` equals `-0.0`. There are no fused operations, so results stay the same on every machine. **Planned:** `@fast_math`, which opts one function out of that, and `a.approx(b, within=...)`, which compares computed values with a tolerance.
+Floats have one equality, order and hash: NaN equals itself and sorts last, and `0.0` equals `-0.0`. There are no fused operations, and `sin`, `cos`, `exp`, `log` and `**` come from one library on every platform, so a float result is the same bits on every machine. **Planned:** `@fast_math`, which opts one function out of that, and `a.approx(b, within=...)`, which compares computed values with a tolerance.
 
 ## C libraries
 
@@ -979,16 +1028,14 @@ Floats have one equality, order and hash: NaN equals itself and sorts last, and 
 
 ## Building
 
-- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the JIT stands in and says so.
+- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the JIT stands in and says so. **Planned:** once LLVM builds everything, the JIT and the interpreter are removed.
 - `fennec build` makes a native program through LLVM, and `fennec build --release` optimizes the whole program as one. On Linux, a release build is one static program that needs nothing from the machine.
 
-## Still to decide
+## Decided lately
 
-| Question | Current pick |
-| --- | --- |
-| Failing exit code | A clean way to print a friendly message and still exit with failure |
-| Float order | Keep one order, and measure x86 before calling it settled |
-| `x / 0.0` | Keep stopping the program |
-| `where` | A broken rule always stops the program |
-| `?` inside `parallel` | It ends only that task |
-| A scoped `ref` | Possibly `with units[target_id] as ref target:` |
+- **Failing out of `main`** prints to stderr and exits with code 1, and `main` can return an exit code.
+- **Floats have one order,** with NaN equal to itself and sorted last.
+- **`x / 0.0` stops the program,** as Python's `ZeroDivisionError` does.
+- **A broken `where` rule** stops the program in code, and fails cleanly when data is loaded.
+- **`?` inside `parallel`** passes a failure up out of the loop, as anywhere else.
+- **There's no scoped `ref`.** Write directly, `units[target_id].health -= 1`, or call a method.

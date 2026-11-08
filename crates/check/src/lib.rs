@@ -443,6 +443,8 @@ pub fn interpreter_refuses(signatures: &Signatures) -> Option<Diagnostic> {
     let found = signatures.types.functions.values().flat_map(|body| &body.exprs);
     let ((start, end), ty) = found
         // The standard library's own code, as the sized numbers' functions, isn't the program's.
+        // A std `with` source written in where it's used keeps std's spans too, so a sized value
+        // only inside one would pass here; none has one today.
         .filter(|((start, end), ty)| !Span { start: *start, end: *end }.in_prelude() && holds(ty))
         .min_by_key(|((start, end), _)| (*start, *end))?;
     let span = Span { start: *start, end: *end };

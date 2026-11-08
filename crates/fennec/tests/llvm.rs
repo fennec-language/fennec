@@ -2426,6 +2426,38 @@ fn sized_integers_from_outside_fail_cleanly() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `wrapping_` arithmetic goes round past either end, as the size's bits do, and `saturating_`
+/// stops at the nearest end, for each size; a u32's product past what an int holds included.
+#[test]
+fn sized_integers_wrap_or_saturate_when_asked() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "sized_wrapping",
+        "def main(stdout: Stdout):
+    a: u8 = 250
+    b: u8 = 10
+    stdout.print(a.wrapping_add(b), a.saturating_add(b), b.wrapping_sub(a), b.saturating_sub(a), a.wrapping_mul(b))
+    low: i8 = -128
+    stdout.print(low.wrapping_sub(1), low.saturating_sub(1), low.wrapping_mul(-1), low.saturating_mul(-1))
+    big: u32 = 4294967295
+    stdout.print(big.wrapping_mul(big), big.saturating_mul(2), big.wrapping_add(1), u32(65536).wrapping_mul(65536))
+    small: i32 = -2147483648
+    stdout.print(small.wrapping_mul(small), small.saturating_mul(small), small.wrapping_sub(1))
+    mut hash: u32 = 2166136261
+    for byte in [104, 105]:
+        hash = u32(int(hash) ^ byte).wrapping_mul(16777619)
+    stdout.print(hash)
+",
+    )?;
+    assert_eq!(
+        printed,
+        "4 255 16 0 196\n127 -128 -128 127\n1 4294967295 0 0\n0 2147483647 2147483647\n1748694682\n"
+    );
+    Ok(())
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {

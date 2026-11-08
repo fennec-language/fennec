@@ -59,7 +59,23 @@ pub enum Step {
 /// Suspends the running task until it's resumed, asking for `request`. With no task running
 /// on this thread, it gives back `None`, and the caller should wait as a plain thread would.
 pub fn park(request: Request) -> Option<Wake> {
-    current::suspend(request)
+    let woken = current::suspend(request);
+    if woken.is_some()
+        && let Some(hook) = ON_RESUME.get()
+    {
+        hook();
+    }
+    woken
+}
+
+/// What's run on a task's own stack each time it comes back from parking.
+static ON_RESUME: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+
+/// Has `hook` run on a task's own stack each time it comes back from parking: the one place that
+/// sees every wait end, for what belongs to the task but is held per thread. Only the first call
+/// counts.
+pub fn on_resume(hook: fn()) {
+    let _ = ON_RESUME.set(hook);
 }
 
 /// The lowest address of the running task's stack, for what checks how far its stack has grown.

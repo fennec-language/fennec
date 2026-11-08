@@ -42,10 +42,16 @@ pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode 
     };
     // Where LLVM's tools or the runtime library aren't there, the JIT runs it without a word:
     // that's this machine, not the program. Only LLVM turning the program down is said.
-    if matches!(engine, Engine::Native | Engine::Untested) && crate::aot::llvm_ready() {
-        match built_and_run(&program, path, arguments) {
-            Ok(code) => return code,
-            Err(why) => eprintln!("note: running this with the JIT, since LLVM can't build it: {why}"),
+    if matches!(engine, Engine::Native | Engine::Untested) {
+        if crate::aot::llvm_ready() {
+            match built_and_run(&program, path, arguments) {
+                Ok(code) => return code,
+                Err(why) => eprintln!("note: running this with the JIT, since LLVM can't build it: {why}"),
+            }
+        } else if let Some(why) = crate::aot::stale_runtime() {
+            // A runtime library that's there but from other source is the build's to fix, not
+            // this machine's, so it's said.
+            eprintln!("note: running this with the JIT, since {why}");
         }
     }
     let module = &program.module;

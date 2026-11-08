@@ -7929,7 +7929,7 @@ fn an_unchanged_build_takes_its_program_from_the_store() -> std::io::Result<()> 
     let ran = Command::new(dir.join("built")).output()?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "stored\n");
     let stored: Vec<String> =
-        std::fs::read_dir(home.join("cache").join(env!("CARGO_PKG_VERSION")).join("programs"))?
+        std::fs::read_dir(home.join("cache").join(fennec_build::FOLDER).join("programs"))?
             .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
             .collect::<Result<_, _>>()?;
     assert_eq!(stored.len(), 2, "the program and its functions' hashes: {stored:?}");
@@ -9506,6 +9506,59 @@ def main(stdout: Stdout):
     us = [U(1.5), U(2.0), U(-0.25)]
     stdout.print(sum(u.h for u in us), sum(u.h for u in us if u.h > 0.0))
     stdout.print(sum((u.h for u in us), start=1.0), sum(1 if u.h > 0.0 else 0 for u in us))
+",
+    )
+}
+
+/// A list taken 8 items a turn into 8 totals, as a fixed-order float sum is, whose reads its
+/// `while at + 8 <= n` guard keeps in range without checks: the same totals, at every length
+/// round a multiple of 8, and a read past the end still stops the program.
+#[test]
+fn a_list_taken_eight_items_a_turn_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "eight_a_turn",
+        r"def eights(items: list[float]) -> float:
+    n = items.len()
+    mut a0 = 0.0
+    mut a1 = 0.0
+    mut a2 = 0.0
+    mut a3 = 0.0
+    mut a4 = 0.0
+    mut a5 = 0.0
+    mut a6 = 0.0
+    mut a7 = 0.0
+    mut at = 0
+    while at + 8 <= n:
+        a0 += items[at]
+        a1 += items[at + 1]
+        a2 += items[at + 2]
+        a3 += items[at + 3]
+        a4 += items[at + 4]
+        a5 += items[at + 5]
+        a6 += items[at + 6]
+        a7 += items[at + 7]
+        at += 8
+    while at < n:
+        a0 += items[at]
+        at += 1
+    ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7))
+
+def past(items: list[float]) -> float:
+    mut at = 0
+    mut total = 0.0
+    while at + 2 <= items.len():
+        total += items[at] + items[at + 2]
+        at += 2
+    total
+
+def main(stdout: Stdout):
+    for length in [0, 1, 7, 8, 9, 15, 16, 17, 1000]:
+        xs = [float(i) * 0.1 + 1.0 / float(i + 3) for i in range(length)]
+        stdout.print(length, eights(xs))
+    stdout.print(past([1.0, 2.0, 3.0, 4.0]))
 ",
     )
 }

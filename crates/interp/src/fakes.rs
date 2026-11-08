@@ -9,8 +9,7 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span};
 
-use crate::interp::Interp;
-use crate::value::Value;
+use crate::value::{Capability, Value};
 
 enum Node {
     File(Vec<u8>),
@@ -199,15 +198,47 @@ fn parent(key: &str) -> &str {
     key.rsplit_once('/').map_or("", |(parent, _)| parent)
 }
 
-impl Interp<'_> {
-    /// A method of the fake `Fs`, or nothing if `fs` isn't fake or the arguments are wrong.
-    pub(crate) fn fake_fs(
+impl TestWorld {
+    /// A method of a test's capability, as the interpreter and native code both run it, or nothing
+    /// where the world leaves that to the real capability: with `fennec test --real`, all but
+    /// `stdout.captured()`, and `only`, which narrows what it's given.
+    pub(crate) fn method(
+        &mut self,
+        capability: Capability,
+        method: &str,
+        args: &[Value],
+        span: Span,
+    ) -> Option<Result<Value, Diagnostic>> {
+        if capability == Capability::Stdout && method == "captured" {
+            return Some(Ok(Value::str(self.printed())));
+        }
+        if self.real() || method == "only" {
+            return None;
+        }
+        match capability {
+            Capability::Fs => {
+                let paths: Vec<Value> = args.iter().map(crate::stdlib::fs::path_text).collect();
+                crate::stdlib::fs::fake_method(self, method, &paths, span)
+            }
+            Capability::Clock => Some(self.clock(method, args, span)),
+            Capability::Entropy => Some(self.entropy(method, args, span)),
+            Capability::Env => Some(self.env(method, args, span)),
+            Capability::Process => self.process(method, args, span),
+            Capability::Net => Some(self.net.net_method(method, args, span)),
+            Capability::Stdout | Capability::Stdin | Capability::Args => None,
+        }
+    }
+
+    /// A method of the fake `Fs` on paths as `path_text` gives them, or nothing if the
+    /// arguments are wrong.
+    pub(crate) fn fs(
         &mut self,
         method: &str,
         paths: &[Value],
         span: Span,
     ) -> Option<Result<Value, Diagnostic>> {
-        let world = self.world.as_mut().filter(|world| !world.real())?;
+        let _ = span;
+        let world = self;
         let done = match (method, paths) {
             ("exists", [Value::Str(path)]) => {
                 let key = key(path);
@@ -242,12 +273,10 @@ impl Interp<'_> {
                 });
             }
             ("metadata", [Value::Str(path)]) => {
-                return Some(match metadata(world, path) {
-                    Ok(fields) => {
-                        self.make_value("Metadata", fields, span).map(|found| Value::Ok(Rc::new(found)))
-                    }
-                    Err(reason) => Ok(crate::stdlib::fs::io_error(&reason)),
-                });
+                return Some(Ok(match metadata(world, path) {
+                    Ok(fields) => Value::Ok(Rc::new(Value::made("Metadata", fields))),
+                    Err(reason) => crate::stdlib::fs::io_error(&reason),
+                }));
             }
             _ => return None,
         };
@@ -255,6 +284,121 @@ impl Interp<'_> {
             Ok(value) => Ok(Value::Ok(Rc::new(value))),
             Err(reason) => Ok(crate::stdlib::fs::io_error(&reason)),
         })
+    }
+
+    /// The fake `Clock`, which stands still but for sleeping, which passes no time at all.
+    fn clock(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+        match (method, args) {
+            ("now", []) => Ok(Value::made("Instant", vec![("nanos", Value::Int(self.now()))])),
+            ("time", []) => {
+                let nanos = crate::collections::FAKE_TIME.saturating_add(self.now());
+                Ok(Value::made("Time", vec![("nanos", Value::Int(nanos))]))
+            }
+            ("sleep", [Value::Instance(duration)]) if duration.type_name.as_ref() == "Duration" => {
+                let nanos = match duration.field("nanos") {
+                    Some(Value::Int(nanos)) => u64::try_from(*nanos).unwrap_or(0),
+                    _ => 0,
+                };
+                self.sleep(nanos);
+                Ok(Value::Unit)
+            }
+            ("now" | "sleep" | "time", _) => {
+                Err(Diagnostic::new(format!("wrong arguments to `{method}`"), span))
+            }
+            _ => Err(crate::methods::no_method(&Value::Capability(Capability::Clock), method, span)),
+        }
+    }
+
+    /// The fake `Entropy`'s next `count` bytes, the same in every run.
+    pub(crate) fn draw(&mut self, count: usize) -> Vec<u8> {
+        let start = self.entropy_drawn;
+        self.entropy_drawn += count;
+        (start..start + count).map(crate::entropy::fake_byte).collect()
+    }
+
+    fn entropy(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+        match (method, args) {
+            ("bytes", [Value::Int(count)]) => {
+                let Ok(count) = usize::try_from(*count) else {
+                    return Err(Diagnostic::new(format!("`bytes` can't give {count} bytes"), span)
+                        .with_help("give it how many bytes you want, 0 or more"));
+                };
+                Ok(Value::Bytes(Rc::from(self.draw(count))))
+            }
+            ("seed", []) => {
+                let word: [u8; 8] = self
+                    .draw(8)
+                    .try_into()
+                    .map_err(|_| Diagnostic::new("the operating system gave too few bytes", span))?;
+                Ok(Value::Int(i64::from_le_bytes(word)))
+            }
+            ("bytes" | "seed", _) => Err(Diagnostic::new(format!("wrong arguments to `{method}`"), span)),
+            _ => Err(crate::methods::no_method(&Value::Capability(Capability::Entropy), method, span)),
+        }
+    }
+
+    /// The fake `Env`, holding only what the test set.
+    pub(crate) fn env(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+        match (method, args) {
+            ("get", [Value::Str(name)]) => {
+                Ok(self.variables.get(name.as_ref()).map_or(Value::None, |value| Value::str(value)))
+            }
+            ("all", []) => Ok(crate::env::dict_of(
+                self.variables.iter().map(|(name, value)| (name.as_str(), value.as_str())),
+            )),
+            ("set", [Value::Str(name), Value::Str(value)]) => {
+                self.variables.insert(name.to_string(), value.to_string());
+                Ok(Value::Unit)
+            }
+            ("get" | "all" | "set", _) => {
+                Err(Diagnostic::new(format!("wrong arguments to `{method}`"), span))
+            }
+            _ => Err(crate::methods::no_method(&Value::Capability(Capability::Env), method, span)),
+        }
+    }
+
+    /// The fake `Process`, which runs nothing and gives back what the test scripted, or nothing
+    /// for a method it leaves to the real one.
+    pub(crate) fn process(
+        &mut self,
+        method: &str,
+        args: &[Value],
+        span: Span,
+    ) -> Option<Result<Value, Diagnostic>> {
+        Some(match (method, args) {
+            (run, _) if run == "run" || run.starts_with("run.") => {
+                crate::stdlib::process::run_of(run, args, span)
+                    .map(|(program, arguments, _)| self.run(&program, arguments))
+            }
+            ("script", [Value::Str(program), output @ Value::Instance(_)]) => {
+                self.scripts.insert(program.to_string(), output.clone());
+                Ok(Value::Unit)
+            }
+            ("ran", []) => {
+                let lists =
+                    self.ran.iter().map(|run| Value::list(run.iter().map(|part| Value::str(part)).collect()));
+                Ok(Value::list(lists.collect()))
+            }
+            ("script", _) => {
+                Err(Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span))
+            }
+            _ => return None,
+        })
+    }
+
+    /// What the fake `Process` gives back for `program`: what the test scripted for it, or a
+    /// `ProcessError` saying nothing was.
+    pub(crate) fn run(&mut self, program: &str, arguments: Vec<String>) -> Value {
+        let mut run = vec![program.to_owned()];
+        run.extend(arguments);
+        self.ran.push(run);
+        if let Some(output) = self.scripts.get(program).cloned() {
+            return Value::Ok(Rc::new(output));
+        }
+        let message = format!(
+            "the test's fake Process has nothing scripted for `{program}`: give it what to answer with `process.script(\"{program}\", Output(...))`"
+        );
+        crate::stdlib::process::process_error(program, &message)
     }
 }
 

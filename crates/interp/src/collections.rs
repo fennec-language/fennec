@@ -6,7 +6,6 @@ use std::rc::Rc;
 use fennec_syntax::{Diagnostic, Span};
 
 use crate::call::CallArg;
-use crate::fakes::TestWorld;
 use crate::format;
 use crate::interp::Interp;
 use crate::methods::no_method;
@@ -56,14 +55,20 @@ impl Interp<'_> {
         args: &[Value],
         span: Span,
     ) -> Result<Value, Diagnostic> {
+        // A test's capabilities are fakes, which native code runs too.
+        if let Some(world) = self.world.as_mut()
+            && let Some(done) = world.method(capability, method, args, span)
+        {
+            return done;
+        }
         match capability {
             Capability::Stdout => self.stdout_method(method, args, span),
-            Capability::Fs => self.fs_method(method, args, span),
+            Capability::Fs => crate::stdlib::fs::fs_method(method, args, span),
             Capability::Clock => self.clock_method(method, args, span),
             Capability::Stdin => self.stdin_method(method, args, span),
             Capability::Process => self.process_method(method, args, span),
-            Capability::Entropy => self.entropy_method(method, args, span),
-            Capability::Env => self.env_method(method, args, span),
+            Capability::Entropy => crate::entropy::entropy_method(method, args, span),
+            Capability::Env => crate::env::env_method(method, args, span),
             Capability::Args | Capability::Net => {
                 Err(no_method(&Value::Capability(capability), method, span))
             }
@@ -225,7 +230,6 @@ impl Interp<'_> {
         let ending = match (method, &self.world) {
             ("print", _) => "\n",
             ("write", _) => "",
-            ("captured", Some(world)) => return Ok(Value::str(world.printed())),
             _ => return Err(no_method(&Value::Capability(Capability::Stdout), method, span)),
         };
         let text = args.iter().map(|arg| self.shown(arg, span)).collect::<Result<Vec<_>, _>>()?.join(" ");
@@ -266,10 +270,9 @@ impl Interp<'_> {
 
     /// `clock.now()` reads the monotonic clock; `clock.sleep(duration)` waits.
     fn clock_method(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
-        let fixed = self.world.as_ref().filter(|world| !world.real()).map(TestWorld::now);
         match (method, args) {
             ("now", []) => {
-                let nanos = fixed.unwrap_or_else(monotonic_nanos);
+                let nanos = monotonic_nanos();
                 self.make_value("Instant", vec![("nanos", Value::Int(nanos))], span)
             }
             ("sleep", [Value::Instance(duration)]) if duration.type_name.as_ref() == "Duration" => {
@@ -277,14 +280,11 @@ impl Interp<'_> {
                     Some(Value::Int(nanos)) => u64::try_from(*nanos).unwrap_or(0),
                     _ => 0,
                 };
-                match &mut self.world {
-                    Some(world) if !world.real() => world.sleep(nanos),
-                    _ => std::thread::sleep(std::time::Duration::from_nanos(nanos)),
-                }
+                std::thread::sleep(std::time::Duration::from_nanos(nanos));
                 Ok(Value::Unit)
             }
             ("time", []) => {
-                let nanos = fixed.map_or_else(wall_nanos, |elapsed| FAKE_TIME.saturating_add(elapsed));
+                let nanos = wall_nanos();
                 self.make_value("Time", vec![("nanos", Value::Int(nanos))], span)
             }
             ("now" | "sleep" | "time", _) => Err(wrong_args(method, span)),

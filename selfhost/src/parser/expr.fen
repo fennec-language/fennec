@@ -132,7 +132,7 @@ extend Parser:
         if self.eat_keyword("not"):
             operand = self.not_expr()?
             return Expr(kind=.Unary(.Not, operand), span=start.to(operand.span))
-        self.comparison()
+        self.comparison()?
 
     ## Comparisons chain as in Python: `a < b <= c` means `a < b and b <= c`.
     def comparison(ref self) -> Expr fails Diagnostic:

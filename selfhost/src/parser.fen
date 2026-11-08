@@ -11,7 +11,7 @@ from ast import Annotation, Module, Item, FnDef, Generic, Param, TypeExpr, TypeD
 ## Parses a whole `.fen` file, where only declarations may sit at the top level.
 def parse(source: str) -> Module fails Diagnostic:
     mut parser = Parser.over(lex(source, 0)?)
-    parser.module()
+    parser.module()?
 
 ## Tokens to a syntax tree, by recursive descent: declarations first, then statements,
 ## expressions, and `match` patterns.

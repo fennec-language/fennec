@@ -1033,9 +1033,21 @@ fn missing_return_type(def: &FnDef, value: &Type, generator: bool, fixable: bool
     let signature = format!("def {}({})", def.name, params.join(", "));
     let (what, written) = match value {
         Type::Iterator(item) if generator => {
-            (format!("yields {}", a(item)), item.source().map(|item| format!("Iterator[{item}]")))
+            (format!("yields {}", a(item)), item.source().map(|item| format!(" -> Iterator[{item}]")))
         }
-        value => (format!("gives back {}", a(value)), value.source()),
+        // What can fail says so with `fails`, as `-> int fails IoError`, not as a `Result`.
+        Type::Result(held, error) => {
+            let failure = match error.as_ref() {
+                Type::Errors(names) => Some(names.join(" | ")),
+                other => other.source(),
+            };
+            let written = failure.and_then(|failure| match held.as_ref() {
+                Type::Unit => Some(format!(" fails {failure}")),
+                held => held.source().map(|held| format!(" -> {held} fails {failure}")),
+            });
+            (format!("gives back {}", a(value)), written)
+        }
+        value => (format!("gives back {}", a(value)), value.source().map(|value| format!(" -> {value}"))),
     };
     let message = format!("`{}` {what}, so its return type has to be written", def.name);
     let Some(written) = written.filter(|_| fixable) else {
@@ -1045,8 +1057,8 @@ fn missing_return_type(def: &FnDef, value: &Type, generator: bool, fixable: bool
     };
     let end = Span { start: def.span.end, end: def.span.end };
     Diagnostic::new(message, def.span)
-        .with_help(format!("write it after the parameters: `{signature} -> {written}:`"))
-        .with_fix(end, format!(" -> {written}"))
+        .with_help(format!("write it after the parameters: `{signature}{written}:`"))
+        .with_fix(end, written)
 }
 
 /// Whether lowering may call a standard library method that a program never names: an

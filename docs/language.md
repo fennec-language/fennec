@@ -411,6 +411,7 @@ stream = fs.open(filename) else:
 
 - A `match` over what something that can fail gives back handles both its value and its failure, or has `case _:`, as a `match` over an enum handles every case. A failure is handled with `case Err(error):`, or one case for each error it can fail with. Built.
 - There's no `exit()`. `fail` out of `main` prints the failure to stderr and exits with code 1, which is built. `main` may also return an `int` as the exit code, which is built too. Nothing else can end the process.
+- A failure passes up only with `?`, so every place one can is marked: `return load(path)` and a last line `load(path)` in a function that fails are compile errors, and `fennec fix` adds the `?`. `return Err(...)`, and a function that says it gives back a `Result`, give back a value. Built for `def`s; a lambda's body still passes one up as it is.
 - `?` means the same everywhere, `parallel` included: a failure in one round passes up out of the loop once the other rounds stop. Built. To let one piece fail alone, handle it in the body, with `match` or `else: continue`. `break` stops new rounds from starting and lets the running ones finish, and a failure passing up cuts them short, like a failed `launch`. Each connection a server lends closes when its round ends, however it ends. Built. `server.serve(handler)` turns a handler's failure into a 500, in plain Fennec. Not built yet: today's handler can't fail.
 - `?` is only for failures, `else` ends a chain and can leave, and ignoring a returned value is an error, with `_ = call()` to discard one. Built.
 - `.Case` is required when the type is known, in values and in `case` patterns; `fennec fix` writes it. Built.
@@ -589,7 +590,7 @@ def main(net: Net, fs: Fs, clock: Clock):
 ## Speed
 
 - Everyday builds stay fast, and release builds can take as long as they need.
-- `sum()` over floats, `dot()`, and `std.math`'s vector and matrix reductions add in one fixed pattern, 8 running totals combined pairwise, so they're fast, the same bits on every platform, and more accurate than adding left to right. Not built yet: today they add left to right. `math.fma(a, b, c)` rounds `a * b + c` once, the same everywhere. Not built yet.
+- `sum()` over floats, `dot()`, and `std.math`'s vector and matrix reductions add in one fixed pattern, 8 running totals combined pairwise, so they're fast, the same bits on every platform, and more accurate than adding left to right. Built for `sum`, over a list or one item at a time, and for `math.dot(a, b)` over lists. `std.math`'s sums of four, as in `Vec4.dot` and `Mat4`'s products, keep glam's left-to-right order, which is as fixed, so they match glam bit for bit. `math.fma(a, b, c)` rounds `a * b + c` once, the same everywhere. Not built yet.
 - `@hot` turns a hidden copy into a compile error, and the tracer shows where each copy happens and why. Built: anything that may allocate or copy in a `@hot` function, or in what it calls, is an error that says why, and so is any check native code keeps there, like an index it can't place inside its list. An overflow check the compiler can't prove away stays, as the safety net it is everywhere.
 
 ## Still to decide

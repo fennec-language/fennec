@@ -184,12 +184,29 @@ fn ignored_results_are_mistakes() {
 }
 
 #[test]
-fn a_function_gives_back_its_last_result_unhandled() {
+fn a_function_passes_a_failure_up_only_with_a_question_mark() {
     let program = "
         def passthrough(n: int):
             risky(n)
+
+        def early(n: int):
+            if n > 0:
+                return risky(n)
+            risky(n)?
     ";
-    assert_eq!(problems(&format!("{RISKY}\n{}", crate::dedent(program))), Vec::<String>::new());
+    let program = format!("{}\n{}", crate::dedent(RISKY), crate::dedent(program));
+    assert_eq!(
+        problems(&program),
+        [
+            "this can fail, and a failure passes up only with `?` @ risky(n)",
+            "`early` returns a result of int and an int @ def early(n: int)",
+            "this can fail, and a failure passes up only with `?` @ risky(n)"
+        ]
+    );
+    let module = fennec_syntax::parse(&program).unwrap();
+    let diagnostics = fennec_check::check(&module).err().unwrap_or_default();
+    let fixed = fennec_syntax::apply_fixes(&program, 0, &diagnostics).unwrap();
+    assert_eq!(fixed.matches("risky(n)?").count(), 3, "{fixed}");
 }
 
 #[test]
@@ -366,7 +383,7 @@ fn only_the_error_fails_names_can_escape() {
 fn a_result_passed_on_adds_its_errors_to_the_functions() {
     let program = "error Bad:\n    why: str\n\nerror Worse:\n    why: str\n\ndef inner(n: int) -> int:\n    \
                    if n < 0:\n        fail Bad(why=\"neg\")\n    n\n\ndef outer(n: int) -> int:\n    if n > 9:\n        \
-                   fail Worse(why=\"big\")\n    inner(n)\n";
+                   fail Worse(why=\"big\")\n    inner(n)?\n";
     let errors = fennec_check::Type::Errors(vec!["Bad".to_owned(), "Worse".to_owned()]);
     assert_eq!(
         crate::returns(program, "outer"),

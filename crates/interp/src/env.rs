@@ -7,42 +7,23 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span};
 
-use crate::interp::Interp;
 use crate::methods::no_method;
 use crate::pairs::Pairs;
 use crate::value::{Capability, Value};
 
-impl Interp<'_> {
-    pub(crate) fn env_method(
-        &mut self,
-        method: &str,
-        args: &[Value],
-        span: Span,
-    ) -> Result<Value, Diagnostic> {
-        let fake = self.world.as_mut().filter(|world| !world.real());
-        match (method, args, fake) {
-            ("get", [Value::Str(name)], Some(world)) => {
-                Ok(world.variables.get(name.as_ref()).map_or(Value::None, |value| Value::str(value)))
-            }
-            ("get", [Value::Str(name)], None) => Ok(variable(name)),
-            ("all", [], Some(world)) => {
-                Ok(dict_of(world.variables.iter().map(|(name, value)| (name.as_str(), value.as_str()))))
-            }
-            ("all", [], None) => Ok(variables()),
-            ("set", [Value::Str(name), Value::Str(value)], Some(world)) => {
-                world.variables.insert(name.to_string(), value.to_string());
-                Ok(Value::Unit)
-            }
-            ("set", [Value::Str(_), Value::Str(_)], None) => {
-                Err(Diagnostic::new("`set` changes only a test's fake `Env`", span).with_help(
-                    "with `fennec test --real`, `env` is the real environment, which a test can't change",
-                ))
-            }
-            ("get" | "all" | "set", _, _) => {
-                Err(Diagnostic::new(format!("wrong arguments to `{method}`"), span))
-            }
-            _ => Err(no_method(&Value::Capability(Capability::Env), method, span)),
+/// A method of the real `Env`. A test's fake one is `TestWorld::env`.
+pub(crate) fn env_method(method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    // A test's fake `Env` is `TestWorld::env`.
+    match (method, args) {
+        ("get", [Value::Str(name)]) => Ok(variable(name)),
+        ("all", []) => Ok(variables()),
+        ("set", [Value::Str(_), Value::Str(_)]) => {
+            Err(Diagnostic::new("`set` changes only a test's fake `Env`", span).with_help(
+                "with `fennec test --real`, `env` is the real environment, which a test can't change",
+            ))
         }
+        ("get" | "all" | "set", _) => Err(Diagnostic::new(format!("wrong arguments to `{method}`"), span)),
+        _ => Err(no_method(&Value::Capability(Capability::Env), method, span)),
     }
 }
 
@@ -62,7 +43,7 @@ pub(crate) fn variables() -> Value {
 }
 
 /// A `dict[str, str]` of `pairs`, in their order.
-fn dict_of<'a>(pairs: impl Iterator<Item = (&'a str, &'a str)>) -> Value {
+pub(crate) fn dict_of<'a>(pairs: impl Iterator<Item = (&'a str, &'a str)>) -> Value {
     let mut built = Pairs::default();
     for (name, value) in pairs {
         built.set(Value::str(name), Value::str(value));

@@ -3,6 +3,7 @@
 use fennec_syntax::Diagnostic;
 
 use super::{STATE, set_failed};
+#[cfg(not(feature = "lean"))]
 use crate::scope::Frame;
 
 /// Whether a function of the program ran in the interpreter since this was last asked.
@@ -15,7 +16,6 @@ pub fn ran_in_interpreter() -> bool {
 
 /// Ends one test of several run on this thread, giving back how it failed, if it did, and
 /// clearing what a failure left behind so the next one starts clean.
-#[cfg(not(feature = "lean"))]
 pub fn next_test() -> Option<Diagnostic> {
     set_failed(0);
     STATE.with_borrow_mut(|state| {
@@ -28,7 +28,10 @@ pub fn next_test() -> Option<Diagnostic> {
             state.path = None;
             state.leaving = None;
             state.callers.clear();
-            state.interp.frame = Frame::new();
+            #[cfg(not(feature = "lean"))]
+            {
+                state.interp.frame = Frame::new();
+            }
         }
         failure
     })

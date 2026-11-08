@@ -538,6 +538,95 @@ export struct Mat4:
             w_axis=column3 * scale,
         )
 
+## How `sum` adds a list of floats, written out here so the order is plain: the sum of `items`,
+## then `start`, with item `at` going into running total `at % 8`, and the eight added pairwise
+## at the end, `((0 + 1) + (2 + 3)) + ((4 + 5) + (6 + 7))`. A sum one item at a time adds in the
+## same order, so the two give the same bits, on every platform and engine. Eight totals lose less
+## to rounding than one does on a long sum, and the eight adds of a round don't wait on each
+## other, so the compiler can do them at once with no change to the order. `sum` is the way to
+## call it.
+def fixed_sum(items: list[float], start = 0.0) -> float:
+    n = items.len()
+    mut a0 = 0.0
+    mut a1 = 0.0
+    mut a2 = 0.0
+    mut a3 = 0.0
+    mut a4 = 0.0
+    mut a5 = 0.0
+    mut a6 = 0.0
+    mut a7 = 0.0
+    mut at = 0
+    while at + 8 <= n:
+        a0 += items[at]
+        a1 += items[at + 1]
+        a2 += items[at + 2]
+        a3 += items[at + 3]
+        a4 += items[at + 4]
+        a5 += items[at + 5]
+        a6 += items[at + 6]
+        a7 += items[at + 7]
+        at += 8
+    # The last few, each into the total its place says, as above.
+    left = n - at
+    if left > 0:
+        a0 += items[at]
+    if left > 1:
+        a1 += items[at + 1]
+    if left > 2:
+        a2 += items[at + 2]
+    if left > 3:
+        a3 += items[at + 3]
+    if left > 4:
+        a4 += items[at + 4]
+    if left > 5:
+        a5 += items[at + 5]
+    if left > 6:
+        a6 += items[at + 6]
+    start + (((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7)))
+
+## The sum of `a[at] * b[at]` at each place, added in the order `sum` adds floats in, so it's
+## `sum(a[at] * b[at] for at in range(a.len()))` to the bit. `a` and `b` have to be the same length.
+export def dot(a: list[float], b: list[float]) -> float:
+    assert a.len() == b.len()
+    n = a.len()
+    mut a0 = 0.0
+    mut a1 = 0.0
+    mut a2 = 0.0
+    mut a3 = 0.0
+    mut a4 = 0.0
+    mut a5 = 0.0
+    mut a6 = 0.0
+    mut a7 = 0.0
+    mut at = 0
+    while at + 8 <= n:
+        a0 += a[at] * b[at]
+        a1 += a[at + 1] * b[at + 1]
+        a2 += a[at + 2] * b[at + 2]
+        a3 += a[at + 3] * b[at + 3]
+        a4 += a[at + 4] * b[at + 4]
+        a5 += a[at + 5] * b[at + 5]
+        a6 += a[at + 6] * b[at + 6]
+        a7 += a[at + 7] * b[at + 7]
+        at += 8
+    # The last few, each into the total its place says, as above.
+    left = n - at
+    if left > 0:
+        a0 += a[at] * b[at]
+    if left > 1:
+        a1 += a[at + 1] * b[at + 1]
+    if left > 2:
+        a2 += a[at + 2] * b[at + 2]
+    if left > 3:
+        a3 += a[at + 3] * b[at + 3]
+    if left > 4:
+        a4 += a[at + 4] * b[at + 4]
+    if left > 5:
+        a5 += a[at + 5] * b[at + 5]
+    if left > 6:
+        a6 += a[at + 6] * b[at + 6]
+    # Added to 0.0 last, as `sum` adds its start.
+    0.0 + (((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7)))
+
 ## The value `amount` of the way from `start` to `end`: `lerp(0.0, 10.0, 0.5)` is `5.0`.
 export def lerp(start: float, end: float, amount: float) -> float:
     start + (end - start) * amount

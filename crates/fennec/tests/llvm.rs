@@ -6332,11 +6332,13 @@ fn the_proof_program_built_with_llvm_prints_its_out_file() -> std::io::Result<()
         let output = executable.to_string_lossy().into_owned();
         let args: Vec<&str> =
             ["build"].into_iter().chain(how.iter().copied()).chain(["-o", &output]).collect();
+        // A whole kit, as a release too: on CI's x86-64 Mac, run under Rosetta, building it once
+        // took past the usual deadline, which is there to catch a hang, not to time a build.
         let built = crate::executables::fennec_command()
             .args(&args)
             .env("FENNEC_HOME", &dir)
             .current_dir(&proof)
-            .output_before(FENNEC_DEADLINE)?;
+            .output_before(FENNEC_DEADLINE * 3)?;
         assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
         let ran = Command::new(&executable).output_within()?;
         assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));

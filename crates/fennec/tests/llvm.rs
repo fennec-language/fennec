@@ -8253,6 +8253,48 @@ fn printed_by(name: &str, source: &str) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
 }
 
+/// Replacing a file keeps what was true of it: who can read it, and that a link stays a link to
+/// the file it points at. What's being written is never readable by more than the file was.
+#[cfg(unix)]
+#[test]
+fn replacing_a_file_keeps_its_mode_and_goes_through_a_link() -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    if !ready() {
+        return Ok(());
+    }
+    let place = std::env::temp_dir().join(format!("fennec-fs-safety-{}", std::process::id()));
+    std::fs::create_dir_all(&place)?;
+    let mode_of = |name: &str| -> std::io::Result<u32> {
+        Ok(std::fs::metadata(place.join(name))?.permissions().mode() & 0o777)
+    };
+    let set_mode = |name: &str, mode: u32| {
+        std::fs::set_permissions(place.join(name), std::fs::Permissions::from_mode(mode))
+    };
+    std::fs::write(place.join("secret.txt"), "old")?;
+    set_mode("secret.txt", 0o600)?;
+    std::fs::write(place.join("shared.txt"), "old")?;
+    set_mode("shared.txt", 0o664)?;
+    std::fs::write(place.join("real.txt"), "old")?;
+    std::os::unix::fs::symlink(place.join("real.txt"), place.join("link.txt"))?;
+    let folder = place.to_string_lossy().into_owned();
+    let source = format!(
+        "def main(fs: Fs) fails IoError:\n    with fs.create(\"{folder}/secret.txt\")? as file:\n        file.write_text(\"new\")?\n    with fs.create(\"{folder}/link.txt\")? as file:\n        file.write_text(\"new\")?\n    fs.write_text(\"{folder}/shared.txt\", \"new\")?\n"
+    );
+    printed_by("fs_safety", &source)?;
+    let (secret, shared) = (mode_of("secret.txt")?, mode_of("shared.txt")?);
+    let real = std::fs::read_to_string(place.join("real.txt"))?;
+    let still_a_link = std::fs::symlink_metadata(place.join("link.txt"))?.file_type().is_symlink();
+    let contents = std::fs::read_to_string(place.join("secret.txt"))?;
+    let left: Vec<_> = std::fs::read_dir(&place)?.filter_map(Result::ok).map(|entry| entry.file_name()).collect();
+    std::fs::remove_dir_all(&place)?;
+    assert_eq!(secret, 0o600, "the mode of a file fs.create replaced");
+    assert_eq!(shared, 0o664, "the mode of a file fs.write_text replaced");
+    assert!(still_a_link, "a link fs.create wrote through");
+    assert_eq!((real.as_str(), contents.as_str()), ("new", "new"));
+    assert_eq!(left.len(), 4, "something was left behind: {left:?}");
+    Ok(())
+}
+
 /// What the next test builds: a round trip, then bytes `std.pack` should refuse.
 const PACK_MESSAGES: &str = r#"from std import pack
 from std.pack import Limits

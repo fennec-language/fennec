@@ -86,12 +86,79 @@ fn temporary_beside(target: &Path) -> PathBuf {
     target.with_file_name(format!(".{name}.{}.{}.fennec-partial", std::process::id(), *made))
 }
 
+/// Where writing to `path` really puts a file: what a link points at, so the link stays a link.
+fn through_links(path: &Path) -> std::io::Result<PathBuf> {
+    match std::fs::symlink_metadata(path) {
+        Ok(found) if found.file_type().is_symlink() => std::fs::canonicalize(path),
+        _ => Ok(path.to_path_buf()),
+    }
+}
+
+/// A new file beside `target` to write, which nothing else can already be: a name someone else
+/// made first, or a link waiting there, is passed over. It has `target`'s permissions before
+/// anything's in it, so what's being written is never readable by more than the file was.
+fn new_beside(target: &Path) -> std::io::Result<(std::fs::File, PathBuf)> {
+    let replaced = std::fs::metadata(target).ok();
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if replaced.is_some() {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut last = std::io::Error::from(std::io::ErrorKind::AlreadyExists);
+    for _ in 0..32 {
+        let temporary = temporary_beside(target);
+        match options.open(&temporary) {
+            Ok(file) => {
+                if let Some(replaced) = &replaced {
+                    file.set_permissions(replaced.permissions())?;
+                }
+                return Ok((file, temporary));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => last = err,
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last)
+}
+
+/// Whether a file can be replaced by renaming another over it: not a device or a pipe, which
+/// have to be written to where they are.
+fn replaceable(target: &Path) -> bool {
+    std::fs::metadata(target).map_or(true, |found| found.is_file())
+}
+
+/// `fs.write_text` and `fs.write_bytes`: the whole file takes the old one's place at once, so a
+/// reader never sees half of it. Where that can't be done, as for a device or in a folder this
+/// program can't add to, it's written where it is.
+fn write_whole(path: &str, data: &[u8]) -> std::io::Result<()> {
+    let target = through_links(Path::new(path))?;
+    if !replaceable(&target) {
+        return std::fs::write(target, data);
+    }
+    let (mut file, temporary) = match new_beside(&target) {
+        Ok(made) => made,
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return std::fs::write(target, data),
+        Err(err) => return Err(err),
+    };
+    let done = file.write_all(data).and_then(|()| std::fs::rename(&temporary, &target));
+    if done.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    done
+}
+
 /// `fs._create(path, durable)`: a new file beside `path` to write.
 fn create(path: &str, durable: bool) -> Value {
-    let target = PathBuf::from(path);
+    let given = PathBuf::from(path);
     let made = blocking(move || {
-        let temporary = temporary_beside(&target);
-        std::fs::File::create(&temporary).map(|file| (file, temporary, target)).map_err(|err| err.to_string())
+        let target = through_links(&given).map_err(|err| err.to_string())?;
+        if !replaceable(&target) {
+            return Err(format!("`{}` isn't a file that can be replaced", target.display()));
+        }
+        let (file, temporary) = new_beside(&target).map_err(|err| err.to_string())?;
+        Ok((file, temporary, target))
     });
     match made {
         Ok((file, temporary, target)) => {
@@ -384,7 +451,7 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
         }
         ("write_text" | "write_bytes", [Value::Str(path), data @ (Value::Str(_) | Value::Bytes(_))]) => {
             let (path, data) = (path.to_string(), bytes_of(data).to_vec());
-            done(blocking(move || std::fs::write(path, data).map_err(io)), |()| Value::Unit)
+            done(blocking(move || write_whole(&path, &data).map_err(io)), |()| Value::Unit)
         }
         ("list_dir", [Value::Str(path)]) => {
             let folder = path.to_string();
@@ -451,11 +518,19 @@ fn done<T>(result: Result<T, String>, made: impl FnOnce(T) -> Value) -> Value {
     }
 }
 
+/// A file's name as text. One that isn't text fails: changing it would name another file.
+fn name_of(name: std::ffi::OsString, folder: &str) -> std::io::Result<String> {
+    name.into_string().map_err(|odd| {
+        let shown = odd.to_string_lossy().into_owned();
+        std::io::Error::new(std::io::ErrorKind::InvalidData, format!("a name in `{folder}` isn't UTF-8: {shown}"))
+    })
+}
+
 /// The names of what's in a folder, sorted so every system lists them in the same order.
 fn names_in(folder: &str) -> std::io::Result<Vec<String>> {
     let mut names = Vec::new();
     for entry in std::fs::read_dir(folder)? {
-        names.push(entry?.file_name().to_string_lossy().into_owned());
+        names.push(name_of(entry?.file_name(), folder)?);
     }
     names.sort();
     Ok(names)
@@ -483,7 +558,7 @@ pub(crate) fn joined(folder: &str, name: &str) -> String {
 fn walk_into(folder: &str, found: &mut Vec<String>) -> std::io::Result<()> {
     let mut names = Vec::new();
     for entry in std::fs::read_dir(folder)? {
-        names.push(entry?.file_name().to_string_lossy().into_owned());
+        names.push(name_of(entry?.file_name(), folder)?);
     }
     names.sort();
     for name in names {

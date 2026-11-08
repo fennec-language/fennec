@@ -3920,6 +3920,36 @@ def main(stdout: Stdout):
 }
 
 /// A generator that fails: what asks for its next item gets the failure, by whichever error.
+/// What a generator yields is kept across its stops even when nothing else reads it: a name a
+/// generator expression captures, yielded as it is, and a parameter a generator yields. Natively
+/// they came out empty once, as the stops saved only what the rest of the body read.
+#[test]
+fn a_generator_yielding_a_name_it_was_given_keeps_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "yields_a_name",
+        r#"def joined(parts: Iterator[str]) -> str:
+    mut whole = ""
+    for part in parts:
+        whole = whole + part
+    whole
+
+def repeat(word: str, times: int) -> Iterator[str]:
+    for _ in range(times):
+        yield word
+
+def main(stdout: Stdout):
+    small = "ab"
+    big = "a string long enough to live in a block"
+    n = 7
+    stdout.print(joined(small for _ in range(3)), joined(big for _ in range(2)).len())
+    stdout.print(joined(repeat("kit", times=2)), sum(n for _ in range(4)), list(n for _ in range(2)))
+"#,
+    )
+}
+
 #[test]
 fn generators_that_fail_match_the_jit() -> std::io::Result<()> {
     if !ready() {

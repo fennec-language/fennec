@@ -136,7 +136,9 @@ impl<'a> Lowering<'a> {
     ) -> Lowered<Vec<Function>> {
         let generating = self.generating.take().ok_or("a generator with nothing yielded")?;
         let name = self.name.clone();
-        let live = self.live_in();
+        // What each `yield` gives back is read there, so a value read nowhere else, like a name
+        // the generator was given, is kept across every stop too.
+        let live = self.live_in(&generating.yields);
         let live_at = |block: crate::BlockId| live.get(block.0).cloned().unwrap_or_default();
         let body = crate::BlockId(1);
         // The first local is the block itself, which is always there.
@@ -197,13 +199,9 @@ impl<'a> Lowering<'a> {
     }
 
     /// Which locals each block needs from before it.
-    fn live_in(&self) -> Vec<BTreeSet<LocalId>> {
-        let yielded: HashMap<usize, &Operand> = self
-            .generating
-            .iter()
-            .flat_map(|generating| &generating.yields)
-            .map(|stop| (stop.block.0, &stop.value))
-            .collect();
+    fn live_in(&self, yields: &[Yield]) -> Vec<BTreeSet<LocalId>> {
+        let yielded: HashMap<usize, &Operand> =
+            yields.iter().map(|stop| (stop.block.0, &stop.value)).collect();
         let mut live: Vec<BTreeSet<LocalId>> = vec![BTreeSet::new(); self.blocks.len()];
         loop {
             let mut changed = false;

@@ -262,7 +262,8 @@ fn source_text(launch: &Launch) -> Option<(String, Option<String>)> {
         channel("        intrinsics.channel_free(channel__made)"),
         channel("    intrinsics.channel_close(channel__made)"),
         Some("    mut nanos__made = -1".to_owned()),
-        Some("    if stop_after is not None: nanos__made = stop_after.nanos".to_owned()),
+        // A negative one has already run out: -1 would be no limit at all.
+        Some("    if stop_after is not None: nanos__made = max(stop_after.nanos, 0)".to_owned()),
         Some("    mut why__made = 0".to_owned()),
         Some(format!(
             "    failed__made = intrinsics.launch_end[{ended}](started__made, nanos__made, False, ref why__made)"

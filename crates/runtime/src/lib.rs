@@ -29,6 +29,8 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_dict_pop",
     "fennec_dict_pop_header",
     "fennec_stop",
+    "fennec_channel_new",
+    "fennec_channel_new_every",
     "fennec_bytes_of_list",
     "fennec_assert_sides",
     "fennec_list_sorted_with",

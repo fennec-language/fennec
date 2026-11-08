@@ -458,6 +458,7 @@ impl<'p> Module<'_, 'p> {
             alone_fields: Vec::new(),
             taken_items: HashMap::new(),
             place_homes: HashMap::new(),
+            places_out: HashMap::new(),
             at: (usize::MAX, usize::MAX),
             check_kind: None,
             inside_items: Vec::new(),
@@ -544,6 +545,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Where a place taken out for a call goes back to: the address, what's held there, and how
     /// it's marked for LLVM.
     pub(crate) place_homes: HashMap<usize, (String, Kind, &'static str)>,
+    /// For each place taken out to change, the stack slot saying where it goes back while it's out.
+    pub(crate) places_out: HashMap<usize, String>,
     /// The instruction being written: its block, and its place in it.
     pub(crate) at: (usize, usize),
     /// The handles of the `lock ... as ref` blocks whose changes are saved, for a crash to put
@@ -836,6 +839,7 @@ impl Emit<'_, '_, '_> {
         // nothing of theirs.
         if let Some(leave) = self.leave_after_crash.clone() {
             self.start_block("prop");
+            self.put_places_back_after_crash()?;
             if !self.saving.is_empty() {
                 self.roll_back_on_crash()?;
             }
@@ -844,6 +848,11 @@ impl Emit<'_, '_, '_> {
             self.wrote_prop = true;
         }
         Ok(())
+    }
+
+    /// Whether a crash in this function lets go of what it owns, rather than leaving it.
+    pub(crate) fn lets_go_after_crash(&self) -> bool {
+        self.leave_after_crash.is_some()
     }
 
     /// A new slot on this function's stack.
@@ -1458,8 +1467,12 @@ impl Emit<'_, '_, '_> {
             let found = self.dict_contains(op, lhs, rhs)?;
             return self.assign(dest, &found);
         }
-        let (a, kind) = self.operand(lhs)?;
+        let (a, mut kind) = self.operand(lhs)?;
         let (mut b, mut b_kind) = self.operand(rhs)?;
+        // A number written out takes the size of what's beside it, so the arithmetic is that size's.
+        if matches!(lhs, Operand::Int(_) | Operand::Float(_)) && matches!(b_kind, Kind::U64 | Kind::F32) {
+            kind = b_kind.clone();
+        }
         // `None` beside an optional string is that string's `None`: a header all zero.
         if *rhs == Operand::None && kind == Kind::MaybeText {
             (b, b_kind) = ("zeroinitializer".to_owned(), Kind::MaybeText);
@@ -1604,10 +1617,20 @@ impl Emit<'_, '_, '_> {
                 temp
             }
             BinOp::ShiftLeft | BinOp::ShiftRight => {
-                if !matches!(rhs, Operand::Int(0..64)) {
+                // A shift by as many bits as the type has, or more, stops the program.
+                let sized = self.sized(dest);
+                let width = sized.map_or(64, |num| i64::from(num.bits()));
+                if !matches!(rhs, Operand::Int(count) if (0..width).contains(count)) {
                     let outside = self.temp();
-                    self.line(&format!("{outside} = icmp uge i64 {b}, 64"));
-                    self.fail_if(&outside, fennec_interp::embed::checks::BAD_SHIFT, span);
+                    self.line(&format!("{outside} = icmp uge i64 {b}, {width}"));
+                    match sized {
+                        Some(num) => {
+                            let said =
+                                format!("can't shift {} by a count outside 0 to {}", num.name(), width - 1);
+                            self.stop_if(&outside, &said, span);
+                        }
+                        None => self.fail_if(&outside, fennec_interp::embed::checks::BAD_SHIFT, span),
+                    }
                 }
                 let word = if op == BinOp::ShiftLeft { "shl" } else { "ashr" };
                 let temp = self.temp();
@@ -1792,8 +1815,11 @@ impl Emit<'_, '_, '_> {
                     self.line(&format!("{zero} = fcmp oeq double {b}, {}", float_text(0.0)));
                     self.fail_if(&zero, DIVISION_BY_ZERO, span);
                 }
-                if op != BinOp::Div {
-                    return Ok(self.float_floor(op, (a, b)));
+                if op == BinOp::Mod {
+                    return Ok(self.float_remainder((a, b)));
+                }
+                if op == BinOp::FloorDiv {
+                    return Ok(self.float_floor((a, b)));
                 }
                 "fdiv"
             }
@@ -1810,18 +1836,32 @@ impl Emit<'_, '_, '_> {
         Ok(temp)
     }
 
-    /// `a // b` or `a % b` on floats, rounding toward negative infinity.
-    fn float_floor(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
+    /// `a // b` on floats, rounding toward negative infinity.
+    fn float_floor(&mut self, (a, b): (&str, &str)) -> String {
         self.declare("declare double @llvm.floor.f64(double)");
         let (ratio, floor) = (self.temp(), self.temp());
         self.line(&format!("{ratio} = fdiv double {a}, {b}"));
         self.line(&format!("{floor} = call double @llvm.floor.f64(double {ratio})"));
-        if op == BinOp::FloorDiv {
-            return floor;
-        }
-        let (times, rest) = (self.temp(), self.temp());
-        self.line(&format!("{times} = fmul double {floor}, {b}"));
-        self.line(&format!("{rest} = fsub double {a}, {times}"));
+        floor
+    }
+
+    /// `a % b` on floats: exact, with the sign of `b`. Worked out from `a / b` it would lose what's
+    /// left once `a` is much bigger than `b`.
+    fn float_remainder(&mut self, (a, b): (&str, &str)) -> String {
+        let zero = float_text(0.0);
+        let (left, some, left_below, b_below) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{left} = frem double {a}, {b}"));
+        self.line(&format!("{some} = fcmp une double {left}, {zero}"));
+        self.line(&format!("{left_below} = fcmp olt double {left}, {zero}"));
+        self.line(&format!("{b_below} = fcmp olt double {b}, {zero}"));
+        let (differ, shifts, moved, signed, rest) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{differ} = xor i1 {left_below}, {b_below}"));
+        self.line(&format!("{shifts} = and i1 {some}, {differ}"));
+        self.line(&format!("{moved} = fadd double {left}, {b}"));
+        self.line(&format!("{signed} = select i1 {shifts}, double {moved}, double {left}"));
+        // Nothing left is 0.0, whichever way it came.
+        self.line(&format!("{rest} = select i1 {some}, double {signed}, double {zero}"));
         rest
     }
 
@@ -2900,6 +2940,23 @@ def main(stdout: Stdout):
     fn a_loop_count_needs_no_overflow_check() -> Result<(), String> {
         let source = "def main(stdout: Stdout):\n    for i in range(3):\n        stdout.print(i)\n";
         assert!(!text_of(source, "main")?.contains("with.overflow"));
+        Ok(())
+    }
+
+    /// A place taken out for a `ref` call goes back where it was before a crash lets go of what
+    /// holds it: what holds it has the address of what the call may have moved or freed.
+    #[test]
+    fn a_crash_puts_a_place_that_is_out_back_first() -> Result<(), String> {
+        let source = "struct Inner:\n    name: list[int]\n\nstruct Wrap:\n    r: Inner\n\ndef grow(ref xs: list[int], at: int):\n    xs.append(at)\n    empty: list[int] = []\n    xs[0] = empty[at]\n\ndef handle(at: int) -> int:\n    mut w = Wrap(r=Inner(name=[1]))\n    grow(ref w.r.name, at=at)\n    w.r.name.len()\n\ndef main(stdout: Stdout):\n    stdout.print(handle(0))\n";
+        let text = text_of(source, "handle")?;
+        let prop = text.find("prop:").ok_or("no way out on a crash")?;
+        let put_back =
+            text.get(prop..).and_then(|rest| rest.find("crash_place")).ok_or_else(|| text.clone())?;
+        let let_go = text
+            .get(prop..)
+            .and_then(|rest| rest.find("@fen_owner_gone").or_else(|| rest.find("add i64 %")))
+            .unwrap_or(usize::MAX);
+        assert!(put_back < let_go, "{text}");
         Ok(())
     }
 

@@ -265,6 +265,12 @@ impl Tree {
             StmtKind::Fail(value) => self.node("fail", span, |tree| tree.expr(value)),
             StmtKind::Yield(value) => self.node("yield", span, |tree| tree.expr(value)),
             StmtKind::Assert(value) => self.node("assert", span, |tree| tree.expr(value)),
+            StmtKind::OnFailure { name, cleanup, body } => {
+                self.node(&format!("on failure as {name}"), span, |tree| {
+                    tree.stmts(cleanup);
+                    tree.stmts(body);
+                });
+            }
             StmtKind::With { value, names, body, lock } => {
                 let mut label = if *lock { "lock" } else { "with" }.to_owned();
                 for (at, held) in names.iter().enumerate() {

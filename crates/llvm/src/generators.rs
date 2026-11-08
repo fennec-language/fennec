@@ -296,6 +296,8 @@ impl<'p> Emit<'_, '_, 'p> {
         self.line(&format!("{text} = call ptr @fennec_block_text(ptr {error})"));
         let prefix = self.literal(&format!("this was expected to succeed ({reason}), but it failed: "));
         self.line(&format!("{message} = call ptr @fennec_str_concat(ptr {prefix}, ptr {text})"));
+        // Its notes go under it, a line each.
+        let message = self.with_notes_under(&message, &at, &held)?;
         self.stop_with(&message, span);
         self.start_block(&ok);
         match dest {

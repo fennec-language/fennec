@@ -1185,6 +1185,22 @@ fn word_value(state: &State, word: Word, bits: u64) -> Value {
 
 /// A new block owned once holding a dict the interpreter holds, if every key and value is of
 /// the kind the shape says.
+/// The name of a tuple key's shape, from its items: `(int, str)`, or `(Spot, (int, int))`. A key
+/// holds only what can be one, so each item is a number, a string, a bool, a plain struct or enum,
+/// or a tuple of those.
+fn tuple_name(items: &[Value]) -> Option<String> {
+    let names: Vec<String> = items
+        .iter()
+        .map(|item| match item {
+            Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) => Some(item.type_name()),
+            Value::Instance(instance) => Some(instance.type_name.to_string()),
+            Value::Tuple(inner) => tuple_name(inner),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    Some(format!("({})", names.join(", ")))
+}
+
 pub(super) fn write(state: &mut State, shape: u64, value: &Value) -> Option<i64> {
     let layout = shape_layout(state, shape)?;
     let (key_word, value_word) = (layout.key, layout.value);
@@ -1206,6 +1222,11 @@ pub(super) fn write(state: &mut State, shape: u64, value: &Value) -> Option<i64>
             (Word::Nothing, Value::Unit) => 0,
             (Word::Plain(_), Value::Instance(instance)) => {
                 let shape = super::heap::shape_named(state, &instance.type_name)?;
+                u64::try_from(super::heap::write_block(state, shape, value)?).ok()?
+            }
+            // A tuple's shape is named by its items' types, as `(int, str)`.
+            (Word::Plain(_), Value::Tuple(items)) => {
+                let shape = super::heap::shape_named(state, &tuple_name(items)?)?;
                 u64::try_from(super::heap::write_block(state, shape, value)?).ok()?
             }
             (Word::Block(number), value) => {

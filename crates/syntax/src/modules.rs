@@ -26,6 +26,10 @@ pub fn importable_type(name: &str) -> Option<&'static str> {
 /// Whether `name` is one of a module's own top-level names, written in Fennec without `export`.
 /// The standard library is one kit, so its other modules may import it, and a program may not.
 fn kept_inside(module: &str, name: &str) -> bool {
+    // A `_` name is the module's own, as a `_` field or method is.
+    if name.starts_with('_') {
+        return true;
+    }
     let Some(source) = MODULES.iter().find(|known| known.name == module).map(|known| known.source) else {
         return false;
     };

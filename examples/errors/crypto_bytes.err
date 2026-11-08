@@ -1,4 +1,4 @@
-error: `sha256` takes a str or bytes, but this is an int
+error: `sha256` takes a str or bytes, or a list or iterator of them, but this is an int
  --> examples/errors/crypto_bytes.fen:4:25
   |
 4 |     stdout.print(sha256(42))

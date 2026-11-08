@@ -32,19 +32,22 @@ description: What Fennec does today, what's being built next, and the design que
 - `export` on top-level things, and `_name` hiding a field or method from everything but its type.
 - Durations like `30s` and `200ms`, raw strings, constants worked out at compile time, and `embed`.
 - `@hot`, which proves a function allocates nothing, copies nothing and keeps no checks it can't prove away, or doesn't compile.
-- One equality, order and hash for floats.
-- `parallel` over collections, streams and a server's connections, on every core, with reductions that combine in a fixed order.
-- `shared Name:` with methods that take its lock, and `with` for connections and servers. Both get a new design, below.
+- One equality, order and hash for floats, with NaN sorted last, and the same bits on every platform.
+- A compile error for ignoring a returned value, with `_ = call()` to mean it. `xs.get(i)` for an index that might not be there. `main` returning an exit code.
+- t-strings, `t"..."`, which keep the text apart from the values, and `LiteralStr`, text written in the source.
+- `parallel` over collections, streams and a server's connections, on every core, with reductions that combine in a fixed order. Each server round closes its connection when it ends, a failure passing up stops the server, and a crash ends only its own round.
+- `shared T` and `lock`, with a crash inside `lock x as ref` rolled back so nobody sees a half-change.
+- `with` and `lend`, for sources of your own and for files: `fs.create` puts a file in place only when its block ends, synced to the disk, and `fs.open` reads in lines or chunks.
 - Capabilities: `Stdout`, `Stdin`, `Args`, `Fs`, `Clock`, `Env`, `Entropy`, `Process` and `Net`.
 
 **The standard library**
 
-- `collections`: `Table` and `Id`, `Tree`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Deque`, `Heap`, `PriorityQueue` and `Counter`.
+- `collections`: `Table` and `Id`, `Tree`, `Graph`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Deque`, `Heap`, `PriorityQueue` and `Counter`.
 - `json`, `toml` and `pack`, which save any type whose fields can be saved. `csv`, `base64` and `compress`.
 - `net`: TCP, UDP, an HTTP client with TLS, and an HTTP server.
 - `math`, with `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` for games. `layout`, `path`, `fs`, `random`, `time`, `string`, `re`, `unicode`, `log`, `cli`, `url`, `process`, `crypto` and `uuid`.
 
-Every example in the repository's `examples/` folder is a test, including its error messages, and the [language reference](/reference/) is generated from them.
+[The guide](https://github.com/fennec-language/fennec/blob/main/docs/guide.md) walks through building a real program with all of this. Every example in the repository's `examples/` folder is a test, including its error messages, and the [language reference](/reference/) is generated from them.
 
 ## Next up
 
@@ -55,14 +58,14 @@ Every example in the repository's `examples/` folder is a test, including its er
 - **Sized number types,** like `i32`, `u8` and `f32`.
 - **Kit dependencies and [the Den](/den/),** Fennec's registry for kits.
 - **Cross-compiling and WebAssembly.**
-- **The concurrency design:** `shared` as a type with `lock`, `with` and `lend`, `launch` and channels, keeper pools, and rollback when a task crashes inside a lock. The [tour](/tour/#sharing-resources-and-tasks) describes it.
-- **A docs rewrite.**
+- **The rest of the concurrency design:** `launch` and channels, keeper pools, lock order checked across the whole program, and no waiting inside a lock. The [tour](/tour/#sharing-resources-and-tasks) describes it.
+- **`std.sqlite`,** which takes t-strings, so SQL injection can't be written.
+- **Hashing a file in chunks,** with `blake3(file.chunks(n))`.
 
 ## Next: speed and builds
 
-- Everything on LLVM, so the JIT and the interpreter can go. What doesn't build natively yet is on a tracked list that must reach zero.
+- Everything on LLVM, so the JIT and the interpreter can go. Before they do, what doesn't build natively goes to zero, the test fake network moves into the runtime, constants get a small evaluator in the compiler, fuzzing checks against pinned outputs and the native twins, and the playground compiles to WebAssembly on a server. The commit before removal gets a tag.
 - Every kernel at 110% of its hand-written twin. The [benchmarks](/benchmarks/) show where each one stands.
-- One content store per machine, with results named by hash and no `target` folders.
 - A shared cache that only trusted builds can write to, checked by a clean rebuild in CI.
 - A tiny launcher that fetches the compiler a kit asks for. Pinned compilers never change by themselves.
 
@@ -71,9 +74,7 @@ Every example in the repository's `examples/` folder is a test, including its er
 Each of these is decided and not built.
 
 - A compile error for a copy that can go stale, which `copy(x)` makes on purpose.
-- A compile error for ignoring a returned value.
 - Narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
-- `xs.get(i)`, which gives an optional when an index might not be there.
 - `case .Button(ref clicks):` to change a field inside an enum.
 - `{x=}` in f-strings.
 - `x.approx(y, within=...)`, and `@fast_math`.
@@ -82,8 +83,7 @@ Each of these is decided and not built.
 ## After that
 
 - Compile-time loops over a type, and `Writer` and `Reader` for every format built on them. `where` ranges, delta encoding and quantization in `std.pack`.
-- `Graph`, built on `Table` as `Tree` is.
-- `std.sql`, and WebSocket in `std.net`.
+- WebSocket in `std.net`.
 - GPU kernels written as plain functions.
 - `fennec context`, a kit's whole API sized for a prompt, and an MCP server for agents.
 - A Fennec compiler written in Fennec. Its lexer, parser and checker are underway.
@@ -98,10 +98,9 @@ Never in the language: `del`, destructors, moves, lifetimes, `unsafe` and global
 
 These are still being decided. Decisions already made, and why, are in [the language page](https://github.com/fennec-language/fennec/blob/main/docs/language.md) and [the design decisions](https://github.com/fennec-language/fennec/blob/main/docs/decisions.md).
 
-- A clean way to print a friendly message and still exit with failure.
-- Whether `x / 0.0` keeps stopping the program.
-- How replay records the order tasks reach a `shared` value or a channel.
 - Whether kits can define their own annotations.
-- The API of `Graph`.
-- The exact syntax for property tests, and for units of measure.
+- How `std.pack` data changes from one version of a program to the next.
+- How an `Id` is used across servers.
+- The syntax for units of measure.
 - The file extension (currently `.fen`).
+- `Secret[str]`, which can't be printed or logged.

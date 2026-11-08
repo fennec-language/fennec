@@ -269,14 +269,18 @@ A crash in one connection's task ends only that task, and the server keeps servi
 
 `std.crypto` gives `blake3` and `sha256` as lowercase hex, for text or `bytes`, plus `keyed_blake3`, `hmac_sha256`, `derive_key` and `equal`, which compares secrets in constant time. The same bytes give the same hash on every machine, so a hash names its content, as `name_of` does above.
 
-**Planned:** hashing anything you can loop over that gives bytes, so a large file hashes chunk by chunk without being read into memory first:
+`blake3` and `sha256` also take a list or an iterator of text or `bytes`, and hash the chunks in turn, so a large file hashes as it's read, never in memory whole:
 
-```fennec planned
-with fs.open(path)? as file:
-    hash = blake3(file.chunks(65536))
+```fennec
+from std.crypto import blake3
+
+## A file's hash, read 64 KB at a time.
+def hash_of(fs: Fs, path: str) -> str fails IoError:
+    mut hash = ""
+    with fs.open(path)? as file:
+        hash = blake3(file.chunks(65536))
+    hash
 ```
-
-`file.chunks` is built, and `blake3` taking them isn't yet. Until then, hash the whole file's bytes: `blake3(fs.read_bytes(path)?)`.
 
 ## Templates and SQLite
 
@@ -368,7 +372,6 @@ Builds go through LLVM a function at a time and are cached, so an edit rebuilds 
 ## Not there yet
 
 These are decided and planned, and `docs/language.md` says where each one stands:
-- hashing over chunks;
 - `std.sqlite`;
 - `launch` and `Channel` for long-running tasks;
 - sized numbers like `u8` and `f32`.

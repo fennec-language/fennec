@@ -3920,6 +3920,36 @@ def main(stdout: Stdout):
 }
 
 /// A generator that fails: what asks for its next item gets the failure, by whichever error.
+/// What a generator yields is kept across its stops even when nothing else reads it: a name a
+/// generator expression captures, yielded as it is, and a parameter a generator yields. Natively
+/// they came out empty once, as the stops saved only what the rest of the body read.
+#[test]
+fn a_generator_yielding_a_name_it_was_given_keeps_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "yields_a_name",
+        r#"def joined(parts: Iterator[str]) -> str:
+    mut whole = ""
+    for part in parts:
+        whole = whole + part
+    whole
+
+def repeat(word: str, times: int) -> Iterator[str]:
+    for _ in range(times):
+        yield word
+
+def main(stdout: Stdout):
+    small = "ab"
+    big = "a string long enough to live in a block"
+    n = 7
+    stdout.print(joined(small for _ in range(3)), joined(big for _ in range(2)).len())
+    stdout.print(joined(repeat("kit", times=2)), sum(n for _ in range(4)), list(n for _ in range(2)))
+"#,
+    )
+}
+
 #[test]
 fn generators_that_fail_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -4688,8 +4718,8 @@ def main(stdout: Stdout):
     Ok(())
 }
 
-/// JSON read into dicts, by string, int and plain struct keys, and a dict a capability gives back,
-/// as the JIT has them.
+/// JSON read into dicts, by string, int, plain struct and tuple keys, and a dict a capability
+/// gives back, as the JIT has them.
 #[test]
 fn json_into_dicts_matches_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -4711,6 +4741,10 @@ def main(stdout: Stdout, env: Env):
     stdout.print(back == spots, back[Spot(x=0, y=0)])
     wrong = json.loads[dict[str, int]]("[1, 2]") else {"none": 0}
     stdout.print(wrong)
+    corners = {(0, 0): "start", (3, 4): "end"}
+    stdout.print(json.loads[dict[(int, int), str]](json.dumps(corners)) else {}, corners)
+    placed = {(Spot(x=1, y=2), "a"): 1}
+    stdout.print((json.loads[dict[(Spot, str), int]](json.dumps(placed)) else {}) == placed)
     stdout.print(env.all().get("PATH") is not None)
 "#;
     for (name, how) in [("json_dicts", &["--llvm"][..]), ("json_dicts_release", &["--llvm", "--release"][..])]
@@ -5023,6 +5057,63 @@ fn a_big_file_written_a_chunk_at_a_time_holds_little_memory() -> std::io::Result
 #[ignore = "writes a gigabyte"]
 fn a_gigabyte_written_a_chunk_at_a_time_holds_little_memory() -> std::io::Result<()> {
     writes_in_little_memory("gigabyte-file", 1024, 200 * 1024 * 1024)
+}
+
+/// Writes 64 MB, then hashes it as it's read, a megabyte at a time, with `blake3` and `sha256`
+/// of the file's chunks. The hashes are those of the whole text, and the program never holds
+/// more than a few chunks.
+const HASH_BIG_FILE: &str = "\
+from std.crypto import blake3, sha256
+
+def hashes(fs: Fs) -> list[str] fails IoError:
+    chunk = \"fennec \" * 142857 + \"fox\"
+    with fs.create(\"big.txt\")? as file:
+        for _ in range(64):
+            file.write_text(chunk)?
+    mut found = list[str]()
+    with fs.open(\"big.txt\")? as file:
+        found.append(blake3(file.chunks(1000000)))
+    with fs.open(\"big.txt\")? as file:
+        found.append(sha256(file.chunks(1000000)))
+    found
+
+def main(stdout: Stdout, fs: Fs):
+    for found in hashes(fs) else []:
+        stdout.print(found)
+";
+
+/// The BLAKE3 and SHA-256 of `HASH_BIG_FILE`'s text, as the whole text hashed elsewhere gives
+/// them.
+const BIG_FILE_HASHES: &str = "\
+b90b9707076bbeb116e530ba67192a831f21a039eaba115c14e0f3cac0b23586
+e37d10b0cfad1de842e395ddc89deef2c86d9abe99d363ad67bd21b919128e69
+";
+
+/// 64 MB hashed as it's read holds next to nothing, as writing it does.
+#[test]
+fn a_big_file_hashed_a_chunk_at_a_time_holds_little_memory() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("hash-big-file")?;
+    let program = dir.join("hash.fen");
+    std::fs::write(&program, HASH_BIG_FILE)?;
+    let executable = dir.join("hash");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (ran, peak) = with_peak_memory(&executable, &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        BIG_FILE_HASHES,
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    if let Some(peak) = peak {
+        assert!(peak < 32 * 1024 * 1024, "hashing 64 MB held {} MB", peak / (1024 * 1024));
+    }
+    Ok(())
 }
 
 /// What a program printed, and the most memory it held, where `/usr/bin/time` can say.
@@ -9228,6 +9319,27 @@ fn a_list_of_a_union_holds_its_items_in_place() -> std::io::Result<()> {
 /// A `parallel` call whose body may wait goes to the runtime's `_waiting` entry points, and
 /// runs as one whose body only computes does: here a loop, a comprehension and a sum whose
 /// ranges sleep, beside ones that don't.
+/// A `parallel` comprehension whose item can fail, like `[save(fs.read(path)?)? for path in
+/// parallel(paths)]`, builds natively, and fails as the interpreter does: what it fails with has
+/// no way out of the runtime's ranges yet, so its items are made in order.
+#[test]
+fn a_parallel_comprehension_whose_item_can_fail_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "parallel_tries",
+        r#"def doubled(text: str) -> int fails InvalidValue:
+    int(text)? * 2
+
+def main(stdout: Stdout) fails InvalidValue:
+    texts = ["1", "2", "3"]
+    stdout.print([doubled(t)? for t in parallel(texts)], sum(int(t)? for t in parallel(texts)))
+    stdout.print([int(t)? for t in parallel(["4", "x"])])
+"#,
+    )
+}
+
 #[test]
 fn parallel_bodies_that_wait_match_the_jit() -> std::io::Result<()> {
     if !ready() {

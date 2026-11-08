@@ -85,6 +85,13 @@ fn no_returning(body: &[Stmt]) -> bool {
     })
 }
 
+/// Whether an expression uses `?` outside a nested function's own body.
+fn expr_tries(expr: &Expr) -> bool {
+    let mut found = false;
+    visit::in_expr(&mut expr.clone(), &mut |seen| found |= matches!(seen.kind, ExprKind::Try { .. }));
+    found
+}
+
 /// Whether a body uses `?` outside a nested function's own body.
 fn tries(body: &[Stmt]) -> bool {
     let mut found = false;
@@ -327,6 +334,11 @@ impl Lowering<'_> {
         gives: Gives<'_>,
     ) -> Option<Lowered<Operand>> {
         let (true, [name], None) = (self.context.options.outline_parallel, names, cond) else { return None };
+        // An item that can fail, like `save(fs.read(path)?)?`, isn't lifted yet: what it fails with
+        // has no way out of the runtime's ranges, so it's made in order here instead.
+        if expr_tries(elem) {
+            return None;
+        }
         let (items, item) = self.parallel_list(iter)?;
         let ty = self.type_at(expr.span)?;
         let runs = match (&ty, gives) {

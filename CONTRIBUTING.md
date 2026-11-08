@@ -4,6 +4,8 @@ Fennec is early and changes quickly. Ideas, bug reports and pull requests are we
 
 ## Building and testing
 
+`.github/scripts/install.sh` installs a working `fennec` from your checkout into `~/.fennec/bin`, or a folder you name, with every runtime library built from the same source. Working in the checkout, build the command and its runtime library together, `cargo build -p fennec -p fennec-runtime`: each runtime library is stamped with the build of Fennec it's from, and `fennec` refuses one from other source, saying what to run.
+
 The compiler has no dependencies beyond Rust's standard library. The Rust version is pinned in `rust-toolchain.toml`, and rustup installs it on first use.
 
 ```bash

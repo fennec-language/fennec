@@ -16,13 +16,13 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | --- | --- |
 | Basics | `math`, `random`, `time`, `string`, `re`, `unicode` |
 | Collections | `collections`: `Table` and its `Id`s, `Tree`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Deque`, `Heap`, `PriorityQueue`, `Counter` and `Graph` |
-| Files and the OS | `fs`, `path`, `process`, `cli`, and environment variables through `Env` |
+| Files and the OS | `fs`, with files opened by `with`, `path`, `process`, `cli`, and environment variables through `Env` |
 | Data formats | `json`, `toml`, `pack`, `csv`, `base64`, `compress` |
 | Networking | `net`: TCP, UDP, an HTTP client with TLS, and an HTTP server. `url`. Planned: WebSocket |
-| Security | `crypto`: BLAKE3 and SHA-256 hashes, HMAC and comparing secrets; `uuid`. Secure random bytes come from the `Entropy` capability |
+| Security | `crypto`: BLAKE3 and SHA-256 hashes, HMAC and comparing secrets; `uuid`; `Template`, which every t-string makes. Secure random bytes come from the `Entropy` capability |
 | Diagnostics | `log` |
 | Games | `math`: `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4`, checked bit for bit against a widely used native math library. `layout` for lists stored a field at a time. Planned: `Simd`, and `audio` and `gpu` as kits |
-| Storage | Planned: `sql`, one interface, with drivers as first-party kits |
+| Storage | Planned: `sqlite`, which takes t-strings so SQL injection can't be written |
 
 ## Importing what you use
 

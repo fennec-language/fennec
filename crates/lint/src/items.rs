@@ -7,10 +7,11 @@
 //! when any of its cases is written, since `.Case` names a case without its enum. `main`, an
 //! item marked `export`, which another kit may use, and a name starting with `_` are left alone.
 
+use std::collections::HashMap;
+
 use fennec_syntax::{Diagnostic, Item, Module, Sources, Span};
 
 use crate::Lint;
-use crate::dead::has_word;
 
 /// The item's name, what kind of item it is, and the names whose use keeps it.
 fn named(item: &Item) -> Option<(&str, &str, Vec<&str>)> {
@@ -58,19 +59,48 @@ fn public(text: &str, first: usize) -> bool {
     text.get(first..).is_some_and(|line| line.trim_start().starts_with("export "))
 }
 
-/// Whether any of `names` is written in the program's files outside the item's own lines.
-fn used(sources: &Sources, path: &str, (from, to): (usize, usize), names: &[&str]) -> bool {
-    sources.files().any(|(file, text)| {
-        let elsewhere = if file == path {
-            format!("{}{}", text.get(..from).unwrap_or(""), text.get(to..).unwrap_or(""))
-        } else {
-            text.to_owned()
-        };
-        names.iter().any(|name| has_word(&elsewhere, name))
-    })
+/// Where each word is written in the program's files: a word is a run of letters, digits and
+/// `_`, as a name is. Each place is its file and where in it the word starts. Made once, so
+/// finding whether an item is used costs the same however many items there are.
+fn words(sources: &Sources) -> HashMap<&str, Vec<(&str, usize)>> {
+    let mut found: HashMap<&str, Vec<(&str, usize)>> = HashMap::new();
+    for (path, text) in sources.files() {
+        let mut start = None;
+        for (at, ch) in text.char_indices().chain([(text.len(), ' ')]) {
+            let in_word = ch.is_alphanumeric() || ch == '_';
+            match (in_word, start) {
+                (true, None) => start = Some(at),
+                (false, Some(from)) => {
+                    if let Some(word) = text.get(from..at) {
+                        found.entry(word).or_default().push((path, from));
+                    }
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+    }
+    found
+}
+
+/// Whether any of `names` is written in the program's files outside the item's own lines, which
+/// are `from..to` of the file at `path`. They start and end at the start of a line, so no word
+/// runs across either end.
+fn used(
+    words: &HashMap<&str, Vec<(&str, usize)>>,
+    path: &str,
+    (from, to): (usize, usize),
+    names: &[&str],
+) -> bool {
+    names
+        .iter()
+        .filter_map(|name| words.get(name))
+        .flatten()
+        .any(|(file, at)| *file != path || !(from..to).contains(at))
 }
 
 pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
+    let words = words(sources);
     let mut found = Vec::new();
     for item in &module.items {
         let Some((name, kind, names)) = named(item) else { continue };
@@ -85,7 +115,7 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
         let Some((path, text, base)) = sources.file_at(span) else { continue };
         let Ok(start) = usize::try_from(span.start - base) else { continue };
         let Some((from, first, to)) = lines_of(text, start) else { continue };
-        if public(text, first) || used(sources, path, (from, to), &names) {
+        if public(text, first) || used(&words, path, (from, to), &names) {
             continue;
         }
         let at = |offset: usize| u32::try_from(offset).ok().map(|offset| base + offset);

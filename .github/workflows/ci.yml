@@ -661,6 +661,38 @@ jobs:
             fi
           done
 
+  # The one command that installs a working `fennec` from a checkout, `.github/scripts/install.sh`,
+  # tried as someone would: installed, then used from a new kit outside the checkout with Rust's
+  # toolchain out of reach, every runtime library from the same source as `fennec`.
+  install:
+    name: Install from a checkout
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: .github/scripts/install.sh "$RUNNER_TEMP/fennec"
+      - name: Use it from a new kit, with nothing but what was installed
+        run: |
+          reach="$RUNNER_TEMP/fennec:$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE 'cargo|rustup' | paste -sd: -)"
+          cd "$RUNNER_TEMP"
+          try() {
+            env PATH="$reach" RUSTUP_HOME="$RUNNER_TEMP/no-rustup" CARGO_HOME="$RUNNER_TEMP/no-cargo" \
+              FENNEC_HOME="$RUNNER_TEMP/fennec-home" "$@"
+          }
+          try fennec new demo
+          cd demo
+          [ "$(try fennec run)" = "Hello from demo!" ]
+          try fennec test
+          try fennec build --release -o "$RUNNER_TEMP/demo-program"
+          [ "$("$RUNNER_TEMP/demo-program")" = "Hello from demo!" ]
+          # Everything it linked with was built from the same source, so nothing was stale.
+          ! try fennec run 2>&1 | grep -q "another build of Fennec"
+
   worker-sanitizers:
     name: Workers under ${{ matrix.name }}
     needs: changes
@@ -847,7 +879,7 @@ jobs:
   ok:
     name: CI passed
     if: always()
-    needs: [changes, lint, test, x86-mac, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, server-sanitizers, lean-runtime, static, asan, llvm-asan, parked-sanitizers]
+    needs: [changes, lint, test, x86-mac, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, server-sanitizers, lean-runtime, static, install, asan, llvm-asan, parked-sanitizers]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

@@ -20,6 +20,11 @@ use fennec_interp::embed::{
     numbers, objects, parallel, regex, serve, strings, temps, text, threads,
 };
 
+/// The build of Fennec this library is from, after a marker, which `fennec` reads out of the
+/// library's file to tell one built from other source. Kept by `#[used]`, since nothing calls it.
+#[used]
+static BUILD_STAMP: &str = concat!("fennec-runtime-build:", env!("FENNEC_BUILD"));
+
 /// The exported functions that can fail, setting the flag `fennec_aot_failed_flag` gives the
 /// address of, which stays the same for the whole run. Generated code has to check it after
 /// calling one of these, and needn't after any other.

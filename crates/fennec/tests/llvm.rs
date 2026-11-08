@@ -8978,6 +8978,60 @@ fn printed_by(name: &str, source: &str) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
 }
 
+/// Small things that gave a wrong answer rather than saying so: a `Path` going up from `..`, text
+/// base64 can't have written, a day a month doesn't have, and a delimiter that could never match.
+/// `Path.inside` joins a path from outside so it can't leave the folder.
+#[test]
+fn small_std_answers_are_right_or_refused() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "small_answers",
+        r#"from std import base64, csv, toml
+from std.path import Path
+
+def said[T](found: Result[T, InvalidValue]) -> str:
+    match found:
+        case Ok(_):
+            return "loaded"
+        case Err(_):
+            return "refused"
+
+def said_toml(text: str) -> str:
+    match toml.loads[dict[str, str]](text):
+        case Ok(_):
+            return "loaded"
+        case Err(_):
+            return "refused"
+
+def main(stdout: Stdout):
+    stdout.print(said(base64.decode("aGk=")), said(base64.decode("aGl=")), said(base64.decode("aA==")), said(base64.decode("aB==")))
+    stdout.print(Path("..").parent(), Path("a/..").parent(), Path("a/b").parent())
+    root = Path("static")
+    for asked in ["/a/b.txt", "a.txt", "/../secret", "a/../../b", "a\x00b", "a\\b"]:
+        match root.inside(asked):
+            case Ok(found):
+                stdout.print(found)
+            case Err(_):
+                stdout.print("refused")
+    stdout.print(said_toml("d = 2024-02-29\n"), said_toml("d = 2023-02-29\n"), said_toml("d = 2024-02-30\n"), said_toml("d = 2024-04-31\n"))
+    match csv.loads("a;;b\n", delimiter=";;"):
+        case Ok(_):
+            stdout.print("loaded")
+        case Err(_):
+            stdout.print("refused")
+    stdout.print("a".ljust(4, fill="x"), "a".rjust(4, fill="x"), "a".center(3, fill="x"))
+    stdout.print("a".ljust(4, fill="xy"), "a".rjust(4, fill="xy"), "a".center(5, fill="xy"))
+"#,
+    )?;
+    assert_eq!(
+        printed,
+        "loaded refused loaded refused\nPath(text=\"../..\") Path(text=\"a/../..\") Path(text=\"a\")\nPath(text=\"static/a/b.txt\")\nPath(text=\"static/a.txt\")\nrefused\nrefused\nrefused\nrefused\nloaded refused refused refused\nrefused\naxxx xxxa xax\naxyx xyxa xyaxy\n"
+    );
+    Ok(())
+}
+
 /// A response's headers are a real dict, however many times a header came. Those that can be
 /// joined are, as HTTP says, and `Set-Cookie`, which can't, has all its values in `set_cookies`.
 #[test]

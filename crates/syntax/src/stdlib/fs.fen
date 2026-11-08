@@ -66,16 +66,16 @@ export struct File:
 
     ## What's left in it, `size` bytes at a time, the last chunk shorter: for reading a file far
     ## bigger than memory, as `blake3(file.chunks(1_000_000))` will.
-    def chunks(self, size: int) -> Iterator[bytes]:
+    def chunks(self, size: int) -> Iterator[bytes] fails IoError:
         while True:
-            chunk = self.read_chunk(size) else bytes([])
+            chunk = self.read_chunk(size)?
             if chunk.len() == 0: return
             yield chunk
 
     ## Each line left in it, without its line break, until the end or a failure. To tell those
     ## apart, call `read_line()` instead.
-    def lines(self) -> Iterator[str]:
+    def lines(self) -> Iterator[str] fails IoError:
         while True:
-            line = self.read_line() else None
+            line = self.read_line()?
             if line is None: return
             yield line

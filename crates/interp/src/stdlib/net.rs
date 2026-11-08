@@ -386,13 +386,6 @@ fn duration_of(value: &Value, span: Span) -> Result<Duration, Diagnostic> {
     Err(Diagnostic::new("`timeout` should be a `Duration`", span))
 }
 
-fn handle_of(instance: &Instance) -> i64 {
-    match instance.field("_handle") {
-        Some(Value::Int(handle)) => *handle,
-        _ => -1,
-    }
-}
-
 fn port_of(port: i64, span: Span) -> Result<u16, Diagnostic> {
     u16::try_from(port)
         .map_err(|_| Diagnostic::new(format!("{port} isn't a port: ports go from 0 to 65535"), span))

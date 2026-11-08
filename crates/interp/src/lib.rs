@@ -11,7 +11,6 @@ mod entropy;
 mod env;
 mod fakes;
 mod format;
-mod formats;
 mod inputs;
 mod limits;
 mod methods;

@@ -116,9 +116,6 @@ impl Instance {
         self.fields.iter().find(|(field, _)| field.as_ref() == name).map(|(_, value)| value)
     }
 
-    pub(crate) fn field_mut(&mut self, name: &str) -> Option<&mut Value> {
-        self.fields.iter_mut().find(|(field, _)| field.as_ref() == name).map(|(_, value)| value)
-    }
 }
 
 /// A function's definition: the standard library's, held where it was parsed once for the
@@ -151,23 +148,6 @@ pub(crate) struct Callable {
 }
 
 impl Callable {
-    pub(crate) fn new(def: Def, captured: Vec<(String, Value)>) -> Callable {
-        Callable { def, captured, effects: std::cell::OnceCell::new() }
-    }
-
-    fn effects(&self) -> (bool, bool) {
-        *self.effects.get_or_init(|| crate::scan::body_effects(&self.def.body))
-    }
-
-    /// Whether it can fail: its body contains `fail` or `?`.
-    pub(crate) fn fallible(&self) -> bool {
-        self.effects().0
-    }
-
-    /// Whether it's a generator: its body contains `yield`.
-    pub(crate) fn generator(&self) -> bool {
-        self.effects().1
-    }
 }
 
 /// An arrow function, with the names it could see when it was created.
@@ -270,61 +250,6 @@ impl Table {
             .get(id.at())
             .filter(|slot| slot.generation == id.generation)
             .and_then(|slot| slot.value.as_ref())
-    }
-
-    pub(crate) fn get_mut(&mut self, id: Id) -> Option<&mut Value> {
-        if id.tag != self.tag {
-            return None;
-        }
-        self.slots
-            .get_mut(id.at())
-            .filter(|slot| slot.generation == id.generation)
-            .and_then(|slot| slot.value.as_mut())
-    }
-
-    /// What finding nothing for `id` says when it has to be there.
-    pub(crate) fn missing(&self, id: Id) -> &'static str {
-        if id.tag == self.tag {
-            "this Id refers to something that's been removed"
-        } else {
-            "this Id is from another Table"
-        }
-    }
-
-    /// Puts a value in the first free slot, or a new one.
-    pub(crate) fn insert(&mut self, value: Value) -> Id {
-        // A slot at the last generation an `Id` can hold is retired: used again, an old `Id`
-        // would find what's new there.
-        let free = self
-            .slots
-            .iter()
-            .enumerate()
-            .skip(self.free_from)
-            .find(|(_, slot)| slot.value.is_none() && slot.generation < u32::MAX);
-        let at = free.map(|(at, _)| at);
-        self.free_from = at.unwrap_or(self.slots.len()) + 1;
-        if let Some(slot) = at.and_then(|at| self.slots.get_mut(at)) {
-            slot.generation += 1;
-            slot.value = Some(value);
-            return Id::new(self.free_from - 1, slot.generation, self.tag);
-        }
-        self.slots.push(Slot { generation: 0, value: Some(value) });
-        Id::new(self.slots.len() - 1, 0, self.tag)
-    }
-
-    pub(crate) fn remove(&mut self, id: Id) -> Option<Value> {
-        if id.tag != self.tag {
-            return None;
-        }
-        let removed = self
-            .slots
-            .get_mut(id.at())
-            .filter(|slot| slot.generation == id.generation)
-            .and_then(|slot| slot.value.take());
-        if removed.is_some() {
-            self.free_from = self.free_from.min(id.at());
-        }
-        removed
     }
 
     /// Live entries, in slot order.

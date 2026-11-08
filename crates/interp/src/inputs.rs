@@ -33,23 +33,6 @@ impl Default for Inputs {
     }
 }
 
-/// The inputs as the interpreter keeps them.
-pub(crate) struct Given {
-    program: Rc<str>,
-    arguments: Vec<Value>,
-    stdin: Box<dyn BufRead + Send>,
-}
-
-impl From<Inputs> for Given {
-    fn from(inputs: Inputs) -> Self {
-        Given {
-            program: Rc::from(inputs.program),
-            arguments: inputs.arguments.iter().map(|arg| Value::str(arg)).collect(),
-            stdin: inputs.stdin,
-        }
-    }
-}
-
 /// Every line of input, without its line ending.
 pub(crate) fn lines_of(input: &mut dyn BufRead, span: Span) -> Result<Value, Diagnostic> {
     let mut lines = Vec::new();

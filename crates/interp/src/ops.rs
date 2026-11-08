@@ -14,23 +14,6 @@ pub(crate) fn to_float(n: i64) -> f64 {
     x
 }
 
-pub(crate) fn unary(op: UnaryOp, value: Value, span: Span) -> Result<Value, Diagnostic> {
-    match (op, value) {
-        (UnaryOp::Neg, Value::Int(n)) => n.checked_neg().map(Value::Int).ok_or_else(|| overflow(span)),
-        (UnaryOp::Neg, Value::Float(x)) => Ok(Value::Float(-x)),
-        (UnaryOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
-        (UnaryOp::Not, other) => {
-            Err(Diagnostic::new(format!("`not` needs a bool, but this is a {}", other.type_name()), span)
-                .with_help("Fennec has no truthiness: compare explicitly, like `items.len() == 0`"))
-        }
-        (UnaryOp::BitNot, Value::Int(n)) => Ok(Value::Int(!n)),
-        (UnaryOp::Neg, other) => Err(Diagnostic::new(format!("can't negate a {}", other.type_name()), span)),
-        (UnaryOp::BitNot, other) => {
-            Err(Diagnostic::new(format!("`~` works on ints, but this is a {}", other.type_name()), span))
-        }
-    }
-}
-
 pub(crate) fn binary(op: BinOp, lhs: Value, rhs: Value, span: Span) -> Result<Value, Diagnostic> {
     match op {
         BinOp::Eq => Ok(Value::Bool(lhs == rhs)),
@@ -252,46 +235,6 @@ pub(crate) fn position(at: i64, len: usize, span: Span) -> Result<usize, Diagnos
         .ok()
         .filter(|&resolved| resolved < len)
         .ok_or_else(|| Diagnostic::new(format!("index {at} is out of range for length {len}"), span))
-}
-
-/// `value[start:end]`, with Python's rules: negative positions count from the end, and
-/// positions past either end are clamped.
-pub(crate) fn slice(
-    value: &Value,
-    start: Option<&Value>,
-    end: Option<&Value>,
-    span: Span,
-) -> Result<Value, Diagnostic> {
-    let len = match value {
-        Value::List(items) | Value::Tuple(items) => items.len(),
-        Value::Buffer(buffer) => buffer.items.len(),
-        Value::Str(text) => text.chars().count(),
-        Value::Bytes(data) => data.len(),
-        other => return Err(Diagnostic::new(format!("a {} can't be sliced", other.type_name()), span)),
-    };
-    let bound = |at: Option<&Value>, default: usize| -> Result<usize, Diagnostic> {
-        match at {
-            None => Ok(default),
-            Some(Value::Int(at)) => {
-                let len_i = i64::try_from(len).unwrap_or(i64::MAX);
-                let at = if *at < 0 { at + len_i } else { *at };
-                Ok(usize::try_from(at.clamp(0, len_i)).unwrap_or(0))
-            }
-            Some(other) => Err(Diagnostic::new(
-                format!("a slice position must be an int, not a {}", other.type_name()),
-                span,
-            )),
-        }
-    };
-    let (from, to) = (bound(start, 0)?, bound(end, len)?);
-    let to = to.max(from);
-    Ok(match value {
-        Value::List(items) => Value::list(items.get(from..to).unwrap_or(&[]).to_vec()),
-        Value::Tuple(items) => Value::tuple(items.get(from..to).unwrap_or(&[]).to_vec()),
-        Value::Str(text) => Value::str(&text.chars().skip(from).take(to - from).collect::<String>()),
-        Value::Bytes(data) => Value::Bytes(Rc::from(data.get(from..to).unwrap_or(&[]))),
-        _ => Value::Unit,
-    })
 }
 
 #[cfg(test)]

@@ -1205,16 +1205,6 @@ pub(super) fn lent_block(
     i64::try_from(lent.address).ok()
 }
 
-/// The name of the type of a struct or enum a temporary is lent.
-pub(super) fn lent_type(state: &State, value: &Value) -> Option<Rc<str>> {
-    let Value::Lent(lent) = value else { return None };
-    let shape = usize::try_from(shape_word(state.heap.block(lent.address)?)?).ok()?;
-    match state.tables.shapes.get(shape)?.as_ref() {
-        Element::Struct { name, .. } | Element::Enum { name, .. } => Some(Rc::clone(name)),
-        _ => None,
-    }
-}
-
 pub(super) fn read_block(state: &State, address: u64) -> Value {
     let at = usize::try_from(address).unwrap_or(0);
     // A string only changes in place by growing, so a text of the same length is current.

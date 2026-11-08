@@ -35,15 +35,6 @@ pub(crate) fn repr(value: &Value) -> String {
     repr_with(value, &mut |_| None)
 }
 
-/// Like `display`, with `own` giving the text of a value whose type writes its own with
-/// `def str`, wherever it sits.
-pub(crate) fn display_with(value: &Value, own: &mut dyn FnMut(&Instance) -> Option<String>) -> String {
-    match value {
-        Value::Str(text) => text.to_string(),
-        other => repr_with(other, own),
-    }
-}
-
 /// Like `repr`, with `own` as in `display_with`.
 pub(crate) fn repr_with(value: &Value, own: &mut dyn FnMut(&Instance) -> Option<String>) -> String {
     let mut join = |items: &mut dyn Iterator<Item = &Value>| {

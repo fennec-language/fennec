@@ -289,15 +289,6 @@ fn line_text(mut line: Vec<u8>) -> Result<String, String> {
     String::from_utf8(line).map_err(|_| "this line isn't UTF-8 text".to_owned())
 }
 
-/// A method of the real `Fs`. A test's fake one is `fake_method`, which `TestWorld::method` runs.
-pub(crate) fn fs_method(method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
-        let paths: Vec<Value> = args.iter().map(path_text).collect();
-        if let ("only", [Value::Str(folder)]) = (method, paths.as_slice()) {
-            return Ok(crate::limits::Limited::to(Capability::Fs, vec![Rc::from(crate::limits::absolute(folder))]));
-        }
-        real_fs(method, &paths, span)
-}
-
 /// A method of a test's fake `Fs`, on paths as `path_text` gives them, with its files in memory,
 /// or nothing if the arguments are wrong.
 pub(crate) fn fake_method(

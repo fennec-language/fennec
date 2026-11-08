@@ -614,9 +614,6 @@ impl State {
             .map_or(Value::Unit, |slot| std::mem::replace(slot, Value::Unit))
     }
 
-    fn name(&self, id: i64) -> String {
-        usize::try_from(id).ok().and_then(|id| self.tables.names.get(id)).cloned().unwrap_or_default()
-    }
 }
 
 /// Temporaries: making them, and dropping them when they're done with.

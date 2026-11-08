@@ -38,10 +38,6 @@ pub(crate) fn monotonic_nanos() -> i64 {
     i64::try_from(clock_start().elapsed().as_nanos()).unwrap_or(i64::MAX)
 }
 
-fn lookup(pairs: &crate::pairs::Pairs, key: &Value) -> Option<Value> {
-    pairs.get(key).cloned()
-}
-
 pub(crate) fn str_method(text: &str, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
     let words = |parts: Vec<&str>| Value::list(parts.into_iter().map(Value::str).collect());
     Ok(match (method, args) {
@@ -100,15 +96,6 @@ pub(crate) fn str_method(text: &str, method: &str, args: &[Value], span: Span) -
     })
 }
 
-/// `data.hex()` and `data.hex(sep)`.
-fn bytes_hex(data: &[u8], args: &[Value], span: Span) -> Result<Value, Diagnostic> {
-    match args {
-        [] => Ok(Value::str(&hex(data, ""))),
-        [Value::Str(sep)] => Ok(Value::str(&hex(data, sep))),
-        _ => Err(wrong_args("hex", span)),
-    }
-}
-
 /// Each byte as two lowercase hex digits, with `sep` between bytes.
 pub(crate) fn hex(data: &[u8], sep: &str) -> String {
     let mut out = String::with_capacity(data.len() * (2 + sep.len()));
@@ -151,7 +138,3 @@ pub(crate) fn from_hex(text: &str) -> Result<Vec<u8>, usize> {
     Ok(bytes)
 }
 
-/// `x.abs()` or `x.is_nan()`.
-fn float_method(x: f64, method: &str) -> Value {
-    if method == "abs" { Value::Float(x.abs()) } else { Value::Bool(x.is_nan()) }
-}

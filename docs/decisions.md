@@ -1153,7 +1153,7 @@ from std.math import PI, sin
 
 SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]    # one full turn
 ```
-- A small evaluator inside the compiler works them out, once the interpreter is removed. Not built yet.
+- A small evaluator inside the compiler works them out, over the code a build makes of them. A constant reaching what it doesn't do yet, like a generator or a `shared` value, is computed at startup instead, as one over the budget is.
 - Evaluation has a build-time budget. A constant that goes over it is computed at startup instead, with a hint naming it.
 - It applies only to top-level constants.
 

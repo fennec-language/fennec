@@ -18,7 +18,6 @@ use std::fmt::Write as _;
 
 use fennec_syntax::{Item, Module};
 
-use crate::Types;
 use crate::types::Type;
 
 /// The function written for a tuple type's `serialize` or `deserialize`, by `method`: the type is
@@ -45,20 +44,22 @@ pub fn tuple_function(method: &str, tuple: &Type) -> String {
     name
 }
 
-/// Writes in the functions that save and load each tuple type the program's code holds, and says
-/// whether it wrote any, for the program to be checked again.
-pub(crate) fn lower(module: &mut Module, types: &Types) -> bool {
-    if !crate::saving::uses_saving(module) {
+/// Writes in the functions that save and load each tuple type reached from what the program saves,
+/// and says whether it wrote any, for the program to be checked again. `saved` is every type the
+/// check asked whether it saves or loads.
+pub(crate) fn lower(module: &mut Module, saved: &BTreeSet<Type>) -> bool {
+    if !crate::saving::uses_saving(module)
+        || !saved.iter().any(|ty| ty.type_name().is_some() || holds_tuple(ty))
+    {
         return false;
     }
+    let mut checker = crate::checker::Checker::new(module);
     let mut tuples = BTreeSet::new();
-    for (_, body) in types.iter() {
-        for ty in body.exprs.values().chain(body.names.values()) {
-            collect(ty, &mut tuples);
-        }
+    let mut open = BTreeSet::new();
+    for ty in saved {
+        reach(&mut checker, ty, &mut tuples, &mut open);
     }
     // Only those whose items can all be saved: the rest can't be, so nothing calls for them.
-    let checker = crate::checker::Checker::new(module);
     tuples.retain(|tuple| {
         let Type::Tuple(items) = tuple else { return false };
         // A union is saved through a type made for it, which an item can't be changed to yet.
@@ -67,6 +68,9 @@ pub(crate) fn lower(module: &mut Module, types: &Types) -> bool {
                 .iter()
                 .all(|item| *item == Type::None || crate::saving::saved(&checker, item, &BTreeSet::new()))
     });
+    if tuples.is_empty() {
+        return false;
+    }
     let written: BTreeSet<String> = module
         .items
         .iter()
@@ -106,17 +110,45 @@ pub(crate) fn lower(module: &mut Module, types: &Types) -> bool {
     true
 }
 
-/// Each tuple type inside `ty`, itself included, whose items are all types a program can write.
-fn collect(ty: &Type, tuples: &mut BTreeSet<Type>) {
+/// Whether a type holds a tuple anywhere in it.
+fn holds_tuple(ty: &Type) -> bool {
+    matches!(ty, Type::Tuple(_)) || ty.children().iter().any(|child| holds_tuple(child))
+}
+
+/// Notes each tuple type in `ty` and in what it holds: its items, a collection's, a type's type
+/// arguments, and the fields of a type of the program's own, once each.
+fn reach(
+    checker: &mut crate::checker::Checker,
+    ty: &Type,
+    tuples: &mut BTreeSet<Type>,
+    open: &mut BTreeSet<String>,
+) {
     for child in ty.children() {
-        collect(child, tuples);
+        reach(checker, child, tuples, open);
     }
-    // A tuple of one item is only ever the checker's own, never a program's.
+    // One of a single item can't be saved (see `Generic::fits_interface`).
     if let Type::Tuple(items) = ty
         && items.len() > 1
         && written_plainly(ty)
     {
         tuples.insert(ty.clone());
+    }
+    let Some(name) = ty.type_name().map(str::to_owned) else { return };
+    if !open.insert(ty.to_string()) {
+        return;
+    }
+    let Some(def) = checker.program.type_info(&name).map(|info| info.def.clone()) else { return };
+    let given: Vec<(String, Type)> =
+        def.generics.iter().map(|generic| generic.name.clone()).zip(ty.type_args().iter().cloned()).collect();
+    let fields = def.fields.iter().map(|field| (None, field.name.clone()));
+    let in_cases = def
+        .cases
+        .iter()
+        .flat_map(|case| case.fields.iter().map(|field| (Some(case.name.clone()), field.name.clone())));
+    let all: Vec<(Option<String>, String)> = fields.chain(in_cases).collect();
+    for (case, field) in all {
+        let held = checker.field_type(&name, case.as_deref(), &field).substitute(&given);
+        reach(checker, &held, tuples, open);
     }
 }
 

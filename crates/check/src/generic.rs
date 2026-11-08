@@ -192,12 +192,21 @@ impl FnCx<'_> {
     }
 
     pub(crate) fn fits_interface(&mut self, ty: &Type, interface: &str) -> Result<(), (String, String)> {
+        if matches!(interface, "Serializable" | "Deserializable") {
+            self.checker.saved_types.insert(ty.clone());
+        }
         // A tuple saves and loads as an array of its items, when each of them does (see
         // `tuple_lowering`).
         if let Type::Tuple(items) = ty
             && matches!(interface, "Serializable" | "Deserializable")
             && !items.is_empty()
         {
+            if items.len() == 1 {
+                return Err((
+                    format!("`{ty}` is a tuple of one item, which can't be saved yet"),
+                    "save the item itself".to_owned(),
+                ));
+            }
             if items.iter().any(crate::saving::holds_union) {
                 return Err((
                     format!("`{ty}` holds a union, which a tuple can't save yet"),

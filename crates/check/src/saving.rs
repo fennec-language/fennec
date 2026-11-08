@@ -190,8 +190,9 @@ pub(crate) fn saved(checker: &Checker, ty: &Type, generated: &BTreeSet<String>) 
         }
         Type::Dict(key, value) => saved(checker, key, generated) && saved(checker, value, generated),
         // A tuple is saved as an array of its items (see `tuple_lowering`).
+        // One of a single item can't be (see `Generic::fits_interface`).
         Type::Tuple(items) => {
-            !items.is_empty()
+            items.len() > 1
                 && !items.iter().any(holds_union)
                 && items.iter().all(|item| saved(checker, item, generated))
         }

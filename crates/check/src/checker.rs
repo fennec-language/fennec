@@ -84,6 +84,9 @@ pub(crate) struct Checker {
     pub(crate) opened_apart: BTreeSet<(u32, u32)>,
     /// Each `with launch(...)`, by the call's span, which lowering writes in as a source.
     pub(crate) launches: BTreeMap<(u32, u32), crate::launch::Launch>,
+    /// Each `match` with a `ref` case, by its span: for each of its cases, the fields of the case
+    /// it matches when it has a `ref`, which lowering puts back where the case ends.
+    pub(crate) ref_matches: BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>,
     /// The calls to `json` and `toml`'s `dumps` and `loads` whose type has its own `def serialize`
     /// or `def deserialize`, each with the function in std that does the same in Fennec.
     pub(crate) native_formats: BTreeMap<(u32, u32), String>,
@@ -176,6 +179,7 @@ impl Checker {
             sources: BTreeMap::new(),
             opened_apart: BTreeSet::new(),
             launches: BTreeMap::new(),
+            ref_matches: BTreeMap::new(),
             native_formats: BTreeMap::new(),
             native_json_bodies: BTreeSet::new(),
             saved_types: BTreeSet::new(),
@@ -317,6 +321,7 @@ impl Checker {
             sources,
             opened_apart: self.opened_apart,
             launches,
+            ref_matches: self.ref_matches,
             native_formats: self.native_formats,
             native_json_bodies: self.native_json_bodies,
             saved_types,

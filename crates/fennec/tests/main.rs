@@ -7,6 +7,7 @@ mod game_math;
 mod hints;
 mod limits;
 mod lint_fixes;
+mod live;
 mod llvm;
 mod lsp;
 mod parallel;

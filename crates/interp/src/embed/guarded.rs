@@ -54,6 +54,8 @@ struct Slot {
     held: RwLock<Held>,
     /// How many handles there are to it.
     handles: AtomicU64,
+    /// Its name as a place where tasks meet, in a recording or a replay.
+    replay: Option<Arc<str>>,
 }
 
 type Slots = HashMap<u64, Arc<Slot>, BuildHasherDefault<AddressHasher>>;
@@ -304,7 +306,11 @@ pub extern "C" fn shared_new(cell: i64) -> i64 {
         }
         state.heap.blocks.insert(block);
         let table = state.heap.leave_table();
-        let slot = Slot { held: RwLock::new(Held::Free(table)), handles: AtomicU64::new(count) };
+        let slot = Slot {
+            held: RwLock::new(Held::Free(table)),
+            handles: AtomicU64::new(count),
+            replay: crate::replay::place("s"),
+        };
         tables(|tables| tables.insert(address, Arc::new(slot)));
         // The counts it held of what it was given go, with their copies in the table.
         for old in held.into_iter().filter(|old| *old != 0) {
@@ -451,6 +457,28 @@ fn settle(state: &mut State, cell: u64) -> Result<(), Diagnostic> {
         }
     }
     Ok(())
+}
+
+/// What taking a lock is called in a recording: reading or writing.
+fn taking(write: i64) -> &'static str {
+    if write == 0 { "read" } else { "write" }
+}
+
+/// `fennec_replay_lock(cell, write)`: in a replay, waits for this task's turn to take `cell`'s
+/// lock, to write if `write` is 1. Native code calls it before trying for the lock, only while the
+/// run is recorded or replayed. A replay that's diverged fails.
+pub extern "C" fn replay_lock(cell: i64, write: i64) {
+    let place = with_slot(u64::try_from(cell).unwrap_or(0), |slot| slot.replay.clone()).flatten();
+    if let Err(why) = crate::replay::turn(place.as_deref(), taking(write)) {
+        super::fail_with(Diagnostic::new(why, Span::default()));
+    }
+}
+
+/// `fennec_replay_locked(cell, write)`: in a recording, logs that this task has taken `cell`'s
+/// lock, called with it held, so the log has the order the lock was taken in.
+pub extern "C" fn replay_locked(cell: i64, write: i64) {
+    let place = with_slot(u64::try_from(cell).unwrap_or(0), |slot| slot.replay.clone()).flatten();
+    crate::replay::met(place.as_deref(), taking(write), 0);
 }
 
 /// `fennec_shared_wait()`: a lock's word is taken, and native code has tried for a while. What this

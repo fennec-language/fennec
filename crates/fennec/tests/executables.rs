@@ -287,7 +287,6 @@ fn work_dir(test: &str) -> std::io::Result<PathBuf> {
 const FAILS_DIFFERENTLY: &[(&str, &str)] = &[
     ("expect_without_reason.fen", "native code doesn't check `expect`'s reason isn't blank, and runs on"),
     ("ignore_without_reason.fen", "native code doesn't check `ignore`'s reason isn't blank, and runs on"),
-    ("random_choice_empty.fen", "native code points at the standard library, not at the call"),
     (
         "change_missing_key.fen",
         "native code underlines all of `+=`, as `llvm.rs` notes, and adds a help line",

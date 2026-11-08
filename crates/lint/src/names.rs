@@ -86,7 +86,7 @@ fn is_upper(name: &str) -> bool {
 /// The names a pattern binds.
 fn pattern_names<'m>(pattern: &'m Pattern, found: &mut Vec<&'m str>) {
     match pattern {
-        Pattern::Bind(name) => found.push(name),
+        Pattern::Bind(name) | Pattern::RefBind(name) => found.push(name),
         Pattern::Variant { args: items, .. } | Pattern::Tuple(items) | Pattern::Or(items) => {
             for item in items {
                 pattern_names(item, found);

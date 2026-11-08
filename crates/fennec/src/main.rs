@@ -12,6 +12,7 @@ mod changes;
 mod copies;
 mod copy_rule;
 mod daemon;
+mod dependencies;
 mod fallbacks;
 mod fix;
 mod fmt;
@@ -56,6 +57,8 @@ const USAGE: &str = "usage:
   fennec test --verbose [path]  list the tests that pass too, not only failures and the summary
   fennec bench [path]       run its `bench` blocks: instructions and times, against the last run
   fennec new <name>         start a kit in a new folder
+  fennec update             pin the kit's dependencies from git to the commits kit.toml names,
+                            fetching the ones not fetched yet, and say what changed
   fennec init               set up this folder: a kit if it's new, and Fennec's guidance in AGENTS.md
   fennec fmt [path...]      format files in place: a kit, a folder or a .fen file
   fennec fmt --check        list the files that aren't formatted, and fail if any aren't
@@ -124,6 +127,7 @@ fn main() -> ExitCode {
         ["bench"] => bench::bench("."),
         ["bench", path] => bench::bench(path),
         ["new", path] => new(path),
+        ["update"] => dependencies::update("."),
         ["init"] => init(),
         ["fmt", rest @ ..] => fmt::fmt(rest),
         ["lint"] => on_big_stack(lint::lint, "."),

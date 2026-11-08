@@ -2170,6 +2170,64 @@ fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `case .Button(ref clicks):` changes the field inside the enum the `match` is over, natively as
+/// in the interpreter: a case that finishes, one that leaves by `return`, and one that fails, each
+/// putting the case back, and a `_` field kept as it was.
+#[test]
+fn ref_cases_change_fields_where_they_are_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("ref_cases", REF_CASES)
+}
+
+const REF_CASES: &str = r#"error TooMany:
+    clicks: int
+
+enum Kind:
+    Button(clicks: int, label: str)
+    Slider(value: float)
+    Empty
+
+struct Widget:
+    kind: Kind
+
+def click(ref widgets: list[Widget], widget_id: int, times: int) -> int:
+    match widgets[widget_id].kind:
+        case .Button(ref clicks, label):
+            clicks += times
+            if clicks > 5:
+                return clicks
+            clicks += 1
+        case .Slider(ref value):
+            value *= 2.0
+        case _:
+            pass
+    0
+
+def capped(ref kind: Kind) fails TooMany:
+    match kind:
+        case .Button(ref clicks, _):
+            clicks += 10
+            if clicks > 12: fail TooMany(clicks)
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    mut widgets = [Widget(kind=.Button(clicks=0, label="ok")), Widget(kind=.Slider(value=1.5)), Widget(kind=.Empty)]
+    stdout.print(click(ref widgets, 0, 2), click(ref widgets, 0, 3), click(ref widgets, 1, 0), click(ref widgets, 2, 0))
+    stdout.print(widgets[0].kind, widgets[1].kind, widgets[2].kind)
+    mut kind = Kind.Button(clicks=1, label="go")
+    first = match capped(ref kind):
+        case Ok(_): "fine"
+        case Err(failure): f"{failure}"
+    second = match capped(ref kind):
+        case Ok(_): "fine"
+        case Err(failure): f"{failure}"
+    stdout.print(first, second)
+    stdout.print(kind)
+"#;
+
 /// `for at, ref item in enumerate(items)` changes each item where it is, natively as in the
 /// interpreter: numbers, structs and lists, a `continue` that still counts what it skips, and a
 /// nested one over the items' own lists.
@@ -2972,6 +3030,19 @@ fn an_index_outside_an_array_fails_like_the_interpreter() -> std::io::Result<()>
         same_as_the_interpreter_in_both_builds(name, &source)?;
     }
     Ok(())
+}
+
+/// A failure inside the standard library's own code is said to be where the program called it,
+/// not somewhere in the standard library, as the interpreter says it: here `swap`'s index.
+#[test]
+fn a_failure_inside_std_points_at_the_call_like_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "std_failure_at_the_call",
+        "def shuffled(xs: list[int]) -> list[int]:\n    mut out = xs\n    out.swap(0, 7)\n    out\n\ndef main(stdout: Stdout):\n    stdout.print(shuffled([1, 2, 3]))\n",
+    )
 }
 
 /// An array of numbers is kept where it is, so math on one in a loop allocates nothing.

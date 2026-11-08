@@ -1,4 +1,5 @@
-//! `kit.toml`, which marks a kit's root: its name, its version and the Fennec it needs.
+//! `kit.toml`, which marks a kit's root: its name, its version, the Fennec it needs, and the kits
+//! it depends on.
 //!
 //! This reads only the few keys a kit has so far, with a small reader of its own.
 //! TODO: switch to `std.toml` (`crates/interp/src/formats/toml.rs`) and keep these checks on
@@ -14,6 +15,25 @@ pub struct Manifest {
     pub version: String,
     /// The Fennec toolchain the kit is built with.
     pub fennec: String,
+    /// The kits in its `[dependencies]` table, in the order it lists them.
+    pub dependencies: Vec<Dependency>,
+}
+
+/// A kit another kit depends on, by the name it imports it as.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dependency {
+    pub name: String,
+    pub source: Source,
+}
+
+/// Where a dependency comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// A git repository at one commit, named by its whole hash, never a branch or a tag, which can
+    /// move. `folder` is the kit's folder inside the repository, when it isn't at the top.
+    Git { url: String, commit: String, folder: Option<String> },
+    /// A folder on this machine, relative to the kit that names it: work in progress.
+    Path(String),
 }
 
 impl Manifest {
@@ -27,8 +47,15 @@ const KEYS: &str = "`name`, `version` and `fennec`";
 
 /// Reads `kit.toml`'s text, whose spans start at `base`.
 pub(crate) fn parse(text: &str, base: u32) -> Result<Manifest, Vec<Diagnostic>> {
-    let mut reader =
-        Reader { base, errors: Vec::new(), table: None, name: None, version: None, fennec: None };
+    let mut reader = Reader {
+        base,
+        errors: Vec::new(),
+        table: None,
+        name: None,
+        version: None,
+        fennec: None,
+        dependencies: Vec::new(),
+    };
     let mut offset = 0;
     for line in text.split_inclusive('\n') {
         reader.line(line.trim_end_matches(['\n', '\r']), offset);
@@ -48,6 +75,7 @@ pub(crate) fn parse(text: &str, base: u32) -> Result<Manifest, Vec<Diagnostic>> 
         name: take(reader.name.take(), "name", "\"my_game\""),
         version: take(reader.version.take(), "version", "\"0.1.0\""),
         fennec: take(reader.fennec.take(), "fennec", &format!("\"{}\"", env!("CARGO_PKG_VERSION"))),
+        dependencies: std::mem::take(&mut reader.dependencies),
     };
     if reader.errors.is_empty() { Ok(manifest) } else { Err(reader.errors) }
 }
@@ -76,6 +104,7 @@ struct Reader {
     name: Option<String>,
     version: Option<String>,
     fennec: Option<String>,
+    dependencies: Vec<Dependency>,
 }
 
 impl Reader {
@@ -117,9 +146,13 @@ impl Reader {
 
     fn entry(&mut self, key: &str, value: &str, span: Span) {
         if self.table.is_some() {
-            self.errors.push(Diagnostic::new("dependencies aren't supported yet", span).with_help(
-                "for now a kit is the files under its `src` folder; leave `[dependencies]` empty",
-            ));
+            match dependency(key, value) {
+                Ok(dependency) if self.dependencies.iter().any(|other| other.name == dependency.name) => {
+                    self.errors.push(Diagnostic::new(format!("`{key}` is listed twice"), span));
+                }
+                Ok(dependency) => self.dependencies.push(dependency),
+                Err((message, help)) => self.errors.push(Diagnostic::new(message, span).with_help(help)),
+            }
             return;
         }
         let text = string(value);
@@ -157,6 +190,131 @@ impl Reader {
             self.errors.push(Diagnostic::new(format!("`{key}` is set twice"), span));
         }
     }
+}
+
+const DEPENDENCY_HELP: &str = "write `name = { git = \"https://...\", commit = \"<its whole hash>\" }`, or `name = { path = \"../name\" }`";
+
+/// One line of `[dependencies]`: `physics = { git = "...", commit = "..." }`, with a `folder` when
+/// the kit isn't at the top of its repository, or `tools = { path = "../tools" }`.
+fn dependency(name: &str, value: &str) -> Result<Dependency, (String, String)> {
+    if !valid_name(name) {
+        return Err((
+            format!("`{name}` can't name a kit"),
+            "a kit's name is lowercase letters, digits and `_`, starting with a letter".to_owned(),
+        ));
+    }
+    if string(value).is_some() {
+        return Err((
+            format!("`{name}` asks for a version from the Den, which isn't built yet"),
+            format!("for now a kit comes from git or a path: {DEPENDENCY_HELP}"),
+        ));
+    }
+    let Some(pairs) = inline_table(value) else {
+        return Err((format!("`{name}` should be a table in braces"), DEPENDENCY_HELP.to_owned()));
+    };
+    let get = |key: &str| pairs.iter().find(|(had, _)| had == key).map(|(_, value)| value.clone());
+    if let Some((key, _)) =
+        pairs.iter().find(|(key, _)| !matches!(key.as_str(), "git" | "commit" | "folder" | "path"))
+    {
+        return Err((format!("a dependency has no key called `{key}`"), DEPENDENCY_HELP.to_owned()));
+    }
+    let source = match (get("git"), get("commit"), get("folder"), get("path")) {
+        (Some(url), Some(commit), folder, None) => {
+            if url.is_empty()
+                || url.starts_with('-')
+                || url.contains("::")
+                || url.contains(char::is_whitespace)
+            {
+                return Err((
+                    format!("`{url}` isn't a git repository's address"),
+                    "give it as `https://...`, `ssh://...` or `git@host:path`".to_owned(),
+                ));
+            }
+            if !whole_commit(&commit) {
+                return Err((
+                    format!("`{commit}` isn't a commit's whole hash"),
+                    "a dependency is pinned to the commit's whole hash, 40 hex digits as `git rev-parse` gives it, never a branch, a tag or a short hash, which can change or name more than one".to_owned(),
+                ));
+            }
+            if let Some(folder) = &folder
+                && !plain_folder(folder)
+            {
+                return Err((
+                    format!("`{folder}` isn't a folder inside the repository"),
+                    "give it from the repository's top, like `kits/postgres`".to_owned(),
+                ));
+            }
+            Source::Git { url, commit, folder }
+        }
+        (None, None, None, Some(path)) if !path.is_empty() => Source::Path(path),
+        (None, Some(_), _, None) | (None, _, Some(_), None) => {
+            return Err((
+                format!("`{name}` has a `commit` or a `folder` but no `git`"),
+                DEPENDENCY_HELP.to_owned(),
+            ));
+        }
+        (Some(_), None, _, None) => {
+            return Err((
+                format!("`{name}` needs the `commit` it's pinned to"),
+                "add `commit = \"<its whole hash>\"`: a dependency from git is pinned to one commit"
+                    .to_owned(),
+            ));
+        }
+        (Some(_), _, _, Some(_)) => {
+            return Err((format!("`{name}` has both `git` and `path`"), "give one or the other".to_owned()));
+        }
+        _ => {
+            return Err((
+                format!("`{name}` says where it comes from with `git` or `path`"),
+                DEPENDENCY_HELP.to_owned(),
+            ));
+        }
+    };
+    Ok(Dependency { name: name.to_owned(), source })
+}
+
+/// Whether a commit is named by its whole hash: 40 lowercase hex digits, or 64 in a repository
+/// that uses SHA-256.
+fn whole_commit(commit: &str) -> bool {
+    matches!(commit.len(), 40 | 64) && commit.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Whether a folder inside a repository is given plainly, from its top: no `..`, `.`, empty
+/// parts, leading `/` or spaces.
+fn plain_folder(folder: &str) -> bool {
+    !folder.is_empty()
+        && !folder.contains(char::is_whitespace)
+        && folder
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != ".." && !part.contains('\\'))
+}
+
+/// The pairs of an inline table of strings, `{ key = "value", other = "value" }`, or None when
+/// it isn't one.
+fn inline_table(value: &str) -> Option<Vec<(String, String)>> {
+    let mut rest = value.trim().strip_prefix('{')?.strip_suffix('}')?.trim();
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    while !rest.is_empty() {
+        let (key, after) = rest.split_once('=')?;
+        let key = key.trim();
+        let after = after.trim_start().strip_prefix('"')?;
+        let end = after.find('"')?;
+        let text = after.get(..end)?;
+        if text.contains('\\') || pairs.iter().any(|(had, _)| had == key) || key.is_empty() {
+            return None;
+        }
+        pairs.push((key.to_owned(), text.to_owned()));
+        rest = after.get(end + 1..)?.trim_start();
+        if let Some(next) = rest.strip_prefix(',') {
+            rest = next.trim_start();
+            if rest.is_empty() {
+                return None;
+            }
+        } else if !rest.is_empty() {
+            return None;
+        }
+    }
+    Some(pairs)
 }
 
 /// Whether a kit asking for Fennec `version` needs a newer one than this.

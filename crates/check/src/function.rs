@@ -72,6 +72,9 @@ pub(crate) struct FnCx<'c> {
     pub(crate) lent: usize,
     /// The spans of the values `with` blocks are taking now, where a source may be called.
     pub(crate) with_values: Vec<(u32, u32)>,
+    /// The `match`es written as statements of their own, which may change what they're over
+    /// through a `ref` case.
+    pub(crate) statement_matches: Vec<(u32, u32)>,
     /// Whether it can fail, so it can give back a result it gets unhandled.
     pub(crate) fallible: bool,
     pub(crate) returns: Vec<Type>,
@@ -141,6 +144,7 @@ impl<'c> FnCx<'c> {
             lends: None,
             lent: 0,
             with_values: Vec::new(),
+            statement_matches: Vec::new(),
             fallible: false,
             returns: Vec::new(),
             errors: Vec::new(),

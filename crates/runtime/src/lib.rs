@@ -227,6 +227,8 @@ export! {
     fennec_lock_forget(a0: u64) => threads::lock_forget(a0);
     fennec_launch(a0: serve::TaskBody, a1: i64) -> i64 => serve::launch(a0, a1);
     fennec_channel_new(a0: i64) -> i64 => channels::channel_new(a0);
+    fennec_channel_new_every(a0: i64) -> i64 => channels::channel_new_every(a0);
+    fennec_channel_listen(a0: i64, a1: i64) -> i64 => channels::channel_listen(a0, a1);
     fennec_crash_hold() -> i64 => cleanup::crash_hold();
     fennec_crash_resume(a0: i64) => cleanup::crash_resume(a0);
     fennec_channel_send(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => channels::channel_send(a0, a1, a2, a3);

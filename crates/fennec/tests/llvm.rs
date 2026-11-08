@@ -2461,6 +2461,85 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// What a function does to a local through `ref` counts as a write. The proofs that take a bounds
+/// or an overflow check away can't rest on the local's value from before the call.
+const REF_WRITES: &str = "def neg(ref at: int):
+    at = -3
+
+def bump(ref x: int):
+    x = 9223372036854775807
+
+def drop(ref x: int):
+    x = -9223372036854775807 - 1
+
+def past_the_end(xs: list[int]) -> int:
+    mut at = 0
+    neg(ref at)
+    mut total = 0
+    while at + 2 <= xs.len():
+        total += xs[at] + xs[at + 1]
+        at += 2
+    total
+
+def after_a_guard(x0: int, b: int) -> int:
+    mut x = x0
+    if x < b:
+        bump(ref x)
+        return x + 1
+    0
+
+def down_after_a_guard(x0: int, b: int) -> int:
+    mut x = x0
+    if x > b:
+        drop(ref x)
+        return x - 1
+    0
+
+";
+
+#[test]
+fn a_write_through_ref_undoes_what_was_proved() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, call, wanted) in [
+        ("ref_negative_index", "past_the_end([1, 2, 3, 4])", Ok("15\n")),
+        ("ref_after_a_guard", "after_a_guard(1, b=5)", Err("error: this calculation overflows an int")),
+        (
+            "ref_down_after_a_guard",
+            "down_after_a_guard(5, b=1)",
+            Err("error: this calculation overflows an int"),
+        ),
+    ] {
+        let source = format!("{REF_WRITES}def main(stdout: Stdout):\n    stdout.print({call})\n");
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let dir = folder(name)?;
+            let program = dir.join(format!("{name}.fen"));
+            std::fs::write(&program, &source)?;
+            let output = dir.join(name);
+            let (from, to) = (program.to_string_lossy().into_owned(), output.to_string_lossy().into_owned());
+            let args: Vec<&str> =
+                ["build"].into_iter().chain(how.iter().copied()).chain([from.as_str(), "-o", &to]).collect();
+            let built = fennec(&args, &dir)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&output).output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            match wanted {
+                Ok(printed) => assert_eq!(String::from_utf8_lossy(&ran.stdout), printed, "{name} {how:?}"),
+                Err(said) => {
+                    assert!(!ran.status.success(), "{name} {how:?}");
+                    assert_eq!(
+                        String::from_utf8_lossy(&ran.stderr).lines().next(),
+                        Some(said),
+                        "{name} {how:?}"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// What doesn't fit a size stops the program, saying which size and what it holds: arithmetic
 /// past either end, a negation, the one division that grows, and a conversion that doesn't fit,
 /// a `u64` too big for an `int` among them.

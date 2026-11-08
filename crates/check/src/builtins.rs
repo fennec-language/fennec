@@ -668,33 +668,7 @@ impl FnCx<'_> {
                 }
                 Type::Unit
             }
-            // `f32(x)`: the `f32` nearest a number.
-            "f32" => {
-                if !matches!(first, Type::Int | Type::Float | Type::Sized(_) | Type::Unknown) {
-                    let message = format!("`f32(...)` converts a number, not {}", a(&first));
-                    self.error(Diagnostic::new(message, at));
-                }
-                Type::Sized(crate::types::Num::F32)
-            }
-            // `u8(x)`: an integer of another size as this one, which stops the program if it
-            // doesn't fit. What comes from outside goes through `u8.from(x)?` or `u8.parse(s)?`.
-            name if let Some(num) = crate::types::Num::named(name) => {
-                let integer = |ty: &Type| {
-                    matches!(ty, Type::Int | Type::Unknown) || matches!(ty, Type::Sized(n) if !n.is_float())
-                };
-                if !integer(&first) {
-                    let message = format!("`{name}(...)` converts an integer, not {}", a(&first));
-                    let help = match self.checker.settled(&first) {
-                        Type::Str => format!("read it as an int first: `{name}(int(text)?)`"),
-                        Type::Float => {
-                            format!("make it a whole number first: `{name}(round(x))` or `{name}(int(x))`")
-                        }
-                        _ => format!("give `{name}` an integer"),
-                    };
-                    self.error(Diagnostic::new(message, at).with_help(help));
-                }
-                Type::Sized(num)
-            }
+            name if let Some(num) = crate::types::Num::named(name) => self.sized_conversion(num, &first, at),
             "int" | "float" => {
                 if !matches!(
                     first,
@@ -713,6 +687,34 @@ impl FnCx<'_> {
             "round" => self.math(name, &types, span),
             _ => self.collection_builtin(name, plain, span),
         }
+    }
+
+    /// `f32(x)`, the `f32` nearest a number, or `u8(x)`, an integer of another size as this one,
+    /// which stops the program if it doesn't fit. What comes from outside goes through
+    /// `u8.from(x)?` or `u8.parse(s)?`.
+    fn sized_conversion(&mut self, num: crate::types::Num, first: &Type, at: Span) -> Type {
+        let name = num.name();
+        if num.is_float() {
+            if !matches!(first, Type::Int | Type::Float | Type::Sized(_) | Type::Unknown) {
+                let message = format!("`{name}(...)` converts a number, not {}", a(first));
+                self.error(Diagnostic::new(message, at));
+            }
+            return Type::Sized(num);
+        }
+        let integer =
+            matches!(first, Type::Int | Type::Unknown) || matches!(first, Type::Sized(n) if !n.is_float());
+        if !integer {
+            let message = format!("`{name}(...)` converts an integer, not {}", a(first));
+            let help = match self.checker.settled(first) {
+                Type::Str => format!("read it as an int first: `{name}(int(text)?)`"),
+                Type::Float => {
+                    format!("make it a whole number first: `{name}(round(x))` or `{name}(int(x))`")
+                }
+                _ => format!("give `{name}` an integer"),
+            };
+            self.error(Diagnostic::new(message, at).with_help(help));
+        }
+        Type::Sized(num)
     }
 
     /// `round` and `std.math`'s functions, which take numbers.

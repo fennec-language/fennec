@@ -48,7 +48,10 @@ tools = { path = "../tools" }
 - `fennec update` fetches each kit from git that isn't fetched yet and pins it in `kit.lock` by the hash of its files. It says what each moved pin changes, file by file. Nothing else changes `kit.lock`, and a `kit.toml` that names another commit than `kit.lock` pins is an error until you run it.
 - Fetching runs nothing: a kit has no install or build scripts, nothing is checked out, and only `kit.toml` and `src` are taken. A fetched kit is kept in `~/.fennec/kits/`, so the network is only needed for one that isn't there yet, and `--offline` refuses to fetch at all.
 - A kit from a path isn't pinned, since it's work in progress. A kit from git can't name a path.
-- Importing from a dependency is the next step, not built yet.
+
+`import physics` reaches the kit's `src/lib.fen`, and `import physics.shapes` its `src/shapes.fen`, and `from physics import Body` works as it does for a kit's own files. A kit imports only what its own `kit.toml` names, so a dependency's dependencies stay its own.
+
+Each kit keeps its own names: a program's `Circle` and a dependency's `Circle` are different types, and neither gets in the other's way. Another kit reaches only what's marked `export`. A dependency's tests and lints are its own, so `fennec test` and `fennec lint` leave them out, and a change to `kit.lock`, or to a kit from a path, is seen by the next run.
 
 ## `main` and capabilities
 

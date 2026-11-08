@@ -36,6 +36,13 @@ pub(crate) fn lower(module: &mut Module, sources: &BTreeMap<(u32, u32), Source>)
         return false;
     }
     NEXT.with(|next| next.set(Span::PRELUDE - 1));
+    let mut lowest = u32::MAX;
+    fennec_syntax::visit::exprs_mut(module, &mut |expr| {
+        if expr.span.start >= COPIES_FROM {
+            lowest = lowest.min(expr.span.start);
+        }
+    });
+    COPIES.with(|copies| copies.set(lowest));
     let mut lowering = Lowering { sources, made: 0, returns: Vec::new() };
     for item in &mut module.items {
         match item {
@@ -150,6 +157,41 @@ thread_local! {
     /// The next span for something a lowering writes, counting down from just below the
     /// standard library's, where no program's text reaches.
     static NEXT: std::cell::Cell<u32> = const { std::cell::Cell::new(Span::PRELUDE - 1) };
+    /// Where the next copy of a generic source's text goes, counting down from the top: still
+    /// the standard library's, so it keeps its own privacy, but past where its text reaches.
+    static COPIES: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
+}
+
+/// Where copies of std text go: far past the end of the standard library's own text.
+const COPIES_FROM: u32 = Span::PRELUDE + (1 << 30);
+
+/// Moves the standard library's text in a written-in copy of a generic source to spans of its own,
+/// each where it was against the rest, below every copy made so far.
+fn moved_apart(written: &mut [Stmt], body: &mut [Stmt]) {
+    let (mut low, mut high) = (u32::MAX, 0);
+    for part in [&mut *written, &mut *body] {
+        fennec_syntax::visit::in_stmts(part, &mut |expr| {
+            if expr.span.in_prelude() && expr.span.start < COPIES_FROM {
+                low = low.min(expr.span.start);
+                high = high.max(expr.span.end);
+            }
+        });
+    }
+    if low > high {
+        return;
+    }
+    let base = COPIES.with(|copies| {
+        let base = copies.get().saturating_sub(high - low + 1);
+        copies.set(base);
+        base
+    });
+    for part in [written, body] {
+        fennec_syntax::visit::in_stmts(part, &mut |expr| {
+            if expr.span.in_prelude() && expr.span.start < COPIES_FROM {
+                expr.span = Span { start: expr.span.start - low + base, end: expr.span.end - low + base };
+            }
+        });
+    }
 }
 
 /// Where a lowering writes something of its own: a span covering nothing, its own, so the
@@ -288,6 +330,9 @@ impl Lowering<'_> {
         if !given.is_empty() {
             retype(&mut written, &given);
             retype(&mut body, &given);
+            // Types are found by span, and each call gives the body types of its own, so each
+            // written-in copy of a generic source's text gets spans of its own.
+            moved_apart(&mut written, &mut body);
         }
         // The caller's name for what's lent: the source's own name for it, when it lends one,
         // so the block's changes are what the source's cleanup sees, or else a name of its own,

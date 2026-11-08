@@ -190,6 +190,7 @@ impl Pool {
         loop {
             self.read_mail(at, &mut io);
             io.run_ready();
+            io.publish_live(false);
             for range in STARTING.take() {
                 io.start_range(range);
             }
@@ -213,6 +214,8 @@ impl Pool {
                 std::thread::yield_now();
                 io.poll_now();
             } else {
+                // Going idle, its counts are what it holds between bursts of work.
+                io.publish_live(true);
                 self.sleep(at, &mut io);
                 idle = 0;
             }

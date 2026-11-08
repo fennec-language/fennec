@@ -72,7 +72,12 @@ pub fn check(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
 /// about to be lowered: the standard library's functions are checked only when the module
 /// reaches them, or lowering uses them without the program naming them.
 pub fn check_to_emit(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
-    checked_typed_in(module, checker::Scope::ReachedWithFields).map(Checked::into_signatures)
+    let signatures =
+        checked_typed_in(module, checker::Scope::ReachedWithFields).map(Checked::into_signatures)?;
+    match sized_value(&signatures) {
+        Some(diagnostic) => Err(vec![diagnostic]),
+        None => Ok(signatures),
+    }
 }
 
 /// Checks a parsed module. Returns the signatures and the type of every expression and
@@ -425,6 +430,13 @@ fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, 
         Some(diagnostic) => Err(vec![diagnostic]),
         None => Ok(signatures),
     }
+}
+
+/// What a checked program uses that only the checker takes so far, which nothing can run or
+/// build yet: a value of a sized number type.
+#[must_use]
+pub fn not_built_yet(signatures: &Signatures) -> Option<Diagnostic> {
+    sized_value(signatures)
 }
 
 /// The first value of a sized number type in a program about to run or be built, which only the

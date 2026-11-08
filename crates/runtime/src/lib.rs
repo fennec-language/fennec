@@ -244,6 +244,7 @@ export! {
     fennec_dict_pop_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i64, a5: i64) -> i64 => dicts::pop_header(a0, a1, a2, a3, a4, a5);
     fennec_stop(a0: i64, a1: i64, a2: i64) => checks::stop(a0, a1, a2);
     fennec_bytes_new(a0: i64) -> i64 => bytes::new(a0);
+    fennec_bytes_constant(a0: i64) -> i64 => bytes::constant(a0);
     fennec_bytes_builder() -> i64 => bytes::builder();
     fennec_bytes_grow(a0: i64, a1: i64) -> i64 => bytes::grow(a0, a1);
     fennec_bytes_of_list(a0: i64, a1: i64, a2: i64) -> i64 => bytes::of_list(a0, a1, a2);

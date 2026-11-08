@@ -10,6 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -34,10 +35,18 @@ type Passed = Arc<Mutex<Option<(u64, Box<crate::embed::table::Table>)>>>;
 thread_local! {
     /// The connections this I/O worker serves, by the number native code holds.
     static CONNS: RefCell<HashMap<i64, Conn>> = RefCell::new(HashMap::new());
-    static NEXT: Cell<i64> = const { Cell::new(1) };
     /// The failure the last `fennec_net_serve` on this thread passed up, for
     /// `fennec_net_serve_failure`.
     static PASSED_UP: Cell<i64> = const { Cell::new(0) };
+}
+
+/// The number the next connection served gets. There's one count for the whole process: a number
+/// sent to a task on another worker isn't in that worker's table, and so is refused, rather than
+/// naming another client there.
+static NEXT: AtomicI64 = AtomicI64::new(1);
+
+pub(super) fn next_handle() -> i64 {
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// The servers running, so they can be stopped.
@@ -76,8 +85,7 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     let passed: Passed = Arc::new(Mutex::new(None));
     let passing = Arc::clone(&passed);
     let handler: Handler = Arc::new(move |conn: Conn| {
-        let handle = NEXT.get();
-        NEXT.set(handle + 1);
+        let handle = next_handle();
         CONNS.with_borrow_mut(|conns| conns.insert(handle, conn));
         let result = body(env, handle, i64::from(threads::index()));
         // Its task is done with it: dropping it closes it.
@@ -162,7 +170,10 @@ fn pass_up(passed: &Passed) {
 
 /// Runs `call` on a served connection taken out of the table, so nothing stays borrowed while
 /// it waits, and puts it back. A connection that isn't there is closed.
-fn on_conn<T>(conn: i64, call: impl FnOnce(&mut Conn) -> Result<T, Failure>) -> Result<T, NetFailure> {
+pub(super) fn on_conn<T>(
+    conn: i64,
+    call: impl FnOnce(&mut Conn) -> Result<T, Failure>,
+) -> Result<T, NetFailure> {
     let Some(mut taken) = CONNS.with_borrow_mut(|conns| conns.remove(&conn)) else {
         return Err(NetFailure::Closed);
     };

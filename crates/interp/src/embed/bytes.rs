@@ -4,7 +4,7 @@
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::heap::{block_text, text_address};
+use super::heap::{IMMORTAL, block_text, text_address};
 use super::{State, fail_with, with};
 use crate::collections::{from_hex, hex, hex_problem};
 use crate::value::Value;
@@ -109,6 +109,21 @@ pub extern "C" fn new(length: i64) -> i64 {
     with(|state| {
         let block = with_room(state, usize::try_from(length).unwrap_or(0));
         state.heap.insert(block)
+    })
+}
+
+/// `fennec_bytes_constant(length)`: a block for `embed`'s bytes, with room for `length`, which
+/// lives for the whole run on the thread that asks: native code keeps one per thread and never
+/// lets it go, so no task's end may take it away.
+pub extern "C" fn constant(length: i64) -> i64 {
+    with(|state| {
+        let mut block = with_room(state, usize::try_from(length).unwrap_or(0));
+        if let Some(count) = block.first_mut() {
+            *count = IMMORTAL;
+        }
+        let address = i64::try_from(block.as_ptr().addr()).unwrap_or(0);
+        state.heap.adopt(&mut vec![block]);
+        address
     })
 }
 

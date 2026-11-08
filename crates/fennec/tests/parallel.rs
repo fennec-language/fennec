@@ -483,6 +483,27 @@ fn workers_take_turns_at_shared_values_holding_blocks() -> std::io::Result<()> {
     Ok(())
 }
 
+/// What `embed` gives lives for the whole run, so every task gets all of it, not just the first.
+#[test]
+fn every_task_reads_what_was_embedded() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-embed-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("embed_in_tasks.txt"), "embedded")?;
+    let source = include_str!("fixtures/workers/embed_in_tasks.fen");
+    let built = build_on_threads(&dir, source, "embed_in_tasks")?;
+    matches_on_workers(
+        &built,
+        "embed_in_tasks",
+        Some(0),
+        "first 8 16 16\nsecond 8 16 16\nthird 8 16 16\ndone\n",
+    )?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// What a read lock's method makes holding a `shared` value's strings, a list made under it among
 /// them, is the reader's own once the lock is let go: each string prints, and isn't blank.
 #[test]

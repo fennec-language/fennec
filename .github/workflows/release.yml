@@ -89,6 +89,8 @@ jobs:
       # which takes the toolchain `rust-toolchain.toml` names when it's first used.
       - name: Set up the container
         if: matrix.platform.container
+        # Before the checkout, so not in the second copy's folder, which isn't there yet.
+        working-directory: .
         run: |
           dnf install -y -q gcc gcc-c++ make git tar gzip findutils diffutils
           curl -sSfL --retry 3 https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path

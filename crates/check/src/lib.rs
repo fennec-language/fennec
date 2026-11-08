@@ -68,22 +68,29 @@ pub fn check(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
     check_typed(module).map(Checked::into_signatures)
 }
 
+/// Like `check`, for a module `check_to_build` has resolved and trimmed to what `main` reaches,
+/// about to be lowered: the standard library's functions are checked only when the module
+/// reaches them, or lowering uses them without the program naming them.
+pub fn check_to_emit(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
+    checked_typed_in(module, checker::Scope::ReachedWithFields).map(Checked::into_signatures)
+}
+
 /// Checks a parsed module. Returns the signatures and the type of every expression and
 /// name, or every problem found, in source order.
 pub fn check_typed(module: &Module) -> Result<Checked, Vec<Diagnostic>> {
+    checked_typed_in(module, checker::Scope::Everything)
+}
+
+fn checked_typed_in(module: &Module, scope: checker::Scope) -> Result<Checked, Vec<Diagnostic>> {
     library_parses()?;
     let names = own_type_names(module);
     let mut renamed = module.clone();
     hide_interface_params(&mut renamed);
     if names.is_empty() {
-        return checker::Checker::new(&renamed)
-            .run(checker::Scope::Everything)
-            .map_err(|problems| as_written(problems, &names));
+        return checker::Checker::new(&renamed).run(scope).map_err(|problems| as_written(problems, &names));
     }
     fennec_syntax::rename::rename_types(&mut renamed, &names);
-    checker::Checker::new(&renamed)
-        .run(checker::Scope::Everything)
-        .map_err(|problems| as_written(problems, &names))
+    checker::Checker::new(&renamed).run(scope).map_err(|problems| as_written(problems, &names))
 }
 
 /// The types a program declares with the same name as a standard library type, each with the

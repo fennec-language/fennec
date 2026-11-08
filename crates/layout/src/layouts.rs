@@ -623,7 +623,8 @@ impl Layouts {
                 Block::of(self.ty(inner)).map_or(Ty::Obj, Ty::Maybe)
             }
             Type::Bytes if self.native_buffers => Ty::Bytes,
-            Type::Iterator(_) if self.native_buffers => Ty::Gen,
+            // A generator or a closure: a block whose own shape says what it keeps.
+            Type::Iterator(_) | Type::Arrow(..) if self.native_buffers => Ty::Gen,
             // `None` itself, as a tuple can hold: an optional that's never anything else.
             Type::None if self.native_buffers => Ty::Maybe(Block::Bytes),
             Type::Named(name) => match (Cap::named(name), self.id(name)) {
@@ -699,7 +700,7 @@ fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type)
             Cap::named(name).map_or(Ty::Obj, Ty::Cap)
         }
         Type::Bytes if layouts.native_buffers => Ty::Bytes,
-        Type::Iterator(_) if layouts.native_buffers => Ty::Gen,
+        Type::Iterator(_) | Type::Arrow(..) if layouts.native_buffers => Ty::Gen,
         Type::None if layouts.native_buffers => Ty::Maybe(Block::Bytes),
         Type::Named(name) => match (reserved.get(name), layouts.id(name)) {
             (Some(id), _) => Ty::Boxed(*id),
@@ -849,6 +850,20 @@ pub fn generator_definition(item: &Type, failure: Option<&Type>, slots: &[Type])
     ];
     for (at, slot) in slots.iter().enumerate() {
         fields.push(field(&format!("\0slot{at}"), slot));
+    }
+    Written::Generator(fields)
+}
+
+/// A closure's block, when the runtime holds closures: the code it calls and the code native code
+/// lets go of it with, then the values it captured, in order. Each field's offset counts from the
+/// first word after the block's count and shape, so the code is at 16 bytes and the first capture
+/// at 32, as native code reads them.
+#[must_use]
+pub fn closure_definition(captures: &[Type]) -> Written {
+    let field = |name: String, ty: &Type| (name, ty.clone(), None);
+    let mut fields = vec![field("\0code".to_owned(), &Type::Int), field("\0let_go".to_owned(), &Type::Int)];
+    for (at, capture) in captures.iter().enumerate() {
+        fields.push(field(format!("\0capture{at}"), capture));
     }
     Written::Generator(fields)
 }

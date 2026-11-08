@@ -4196,6 +4196,67 @@ def main(stdout: Stdout):
     )
 }
 
+/// Closures kept where the runtime reads them, as a list's items and in a generator's block, come
+/// out as the interpreter gives them: appended, read in a loop and by index, shared by a copy of
+/// the list, popped, replaced, and captured by a generator that calls one. Natively a list of
+/// closures and a generator keeping one were left to the JIT, as the runtime couldn't hold them.
+#[test]
+fn closures_kept_in_lists_and_generators_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "closures_kept",
+        r#"def add(x: int) -> int:
+    x + 1
+
+def mul(x: int) -> int:
+    x * 2
+
+def made(k: int) -> (int) -> int:
+    def plus(x: int) -> int:
+        x + k
+    plus
+
+def counted(word: str) -> Iterator[int]:
+    def size(x: int) -> int:
+        x + word.len()
+    for n in range(3):
+        yield size(n)
+
+def apply_each(change: (int) -> int, limit: int) -> Iterator[int]:
+    for n in range(limit):
+        yield change(n)
+
+def main(stdout: Stdout):
+    mut fs: list[(int) -> int] = []
+    fs.append(add)
+    fs.append(mul)
+    name = "a string long enough to live in a block"
+    def named(x: int) -> int:
+        x + name.len()
+    fs.append(named)
+    for k in range(3):
+        fs.append(made(k))
+    for f in fs:
+        stdout.print(f(3))
+    stdout.print(fs[2](0), fs.len())
+    copied = fs
+    fs.append(add)
+    stdout.print(copied.len(), fs.len())
+    last = fs.pop()
+    if last is not None:
+        stdout.print(last(10))
+    fs[0] = mul
+    stdout.print(fs[0](5), copied[0](5))
+    stdout.print(list(counted("xy")))
+    held = apply_each(named, limit=3)
+    stdout.print("made")
+    stdout.print(list(held))
+"#,
+    )
+}
+
 #[test]
 fn generators_that_fail_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -5435,6 +5496,62 @@ fn a_task_writing_a_file_lets_the_others_answer() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A `parallel` comprehension whose items can fail runs on every thread, and the failure that
+/// passes up is the first in the list's order, as it is when the items are made in order: here
+/// 70007, though 71007 and others fail too. Natively it was once made in order, on one thread.
+const FAILING_ITEMS: &str = "\
+error TooBig:
+    at: int
+    why: str
+
+def checked(x: int) -> int fails TooBig:
+    if x > 70_000 and x % 1000 == 7:
+        fail TooBig(at=x, why=\"a reason long enough to live in a block of its own\")
+    x * 2
+
+def all_of(xs: list[int]) -> list[int] fails TooBig:
+    [checked(x)? for x in parallel(xs)]
+
+def main(stdout: Stdout):
+    small = [i for i in range(50_000)]
+    big = [i for i in range(100_000)]
+    match all_of(small):
+        case Ok(made):
+            stdout.print(made.len(), made[49_999])
+        case Err(error):
+            stdout.print(\"failed\", error.at)
+    match all_of(big):
+        case Ok(made):
+            stdout.print(made.len())
+        case Err(error):
+            stdout.print(\"failed\", error.at, error.why)
+";
+
+#[test]
+fn a_parallel_comprehension_whose_items_fail_passes_up_the_first() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("failing-items")?;
+    let program = dir.join("failing.fen");
+    std::fs::write(&program, FAILING_ITEMS)?;
+    let executable = dir.join("failing");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let wanted = "50000 99998\nfailed 70007 a reason long enough to live in a block of its own\n";
+    for _ in 0..5 {
+        let ran = Command::new(&executable).current_dir(&dir).env("FENNEC_THREADS", "4").output_within()?;
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{}", String::from_utf8_lossy(&ran.stderr));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// What the next test runs: `std.sqlite` in a test, on the fake `Fs`.
 const SQLITE_TESTS: &str = r#"from std import sqlite
 from std.sql import SqlError
@@ -5599,10 +5716,25 @@ test "a folder that isn't there fails it"(fs: Fs):
             assert reason != ""
         case _:
             assert False
+
+test "outside a transaction, a query reads what was there before it"(fs: Fs):
+    with sqlite.open(fs, "snapshot.db")? as db:
+        _ = db.execute(t"create table if not exists notes (text text)")?
+        _ = db.execute(t"delete from notes")?
+        old = "old"
+        _ = db.execute(t"insert into notes values ({old})")?
+        with db.transaction()? as tx:
+            new = "new"
+            _ = tx.execute(t"insert into notes values ({new})")?
+            assert db.query[str](t"select text from notes")? == ["old"]
+            assert tx.query[str](t"select text from notes order by text")? == ["new", "old"]
+        assert db.query[str](t"select text from notes order by text")? == ["new", "old"]
+    fs.remove("snapshot.db")?
 "#;
 
 /// The same tests pass on a test's fake `Fs` and, with `--real`, on files: a database written,
-/// closed and opened again, its file there to see, and a folder that isn't there failing it.
+/// closed and opened again, its file there to see, a folder that isn't there failing it, and a
+/// query outside a transaction reading what was there before it while it's still going.
 #[test]
 fn sqlite_tests_pass_alike_on_a_fake_fs_and_on_files() -> std::io::Result<()> {
     if !ready() {
@@ -5621,10 +5753,12 @@ fn sqlite_tests_pass_alike_on_a_fake_fs_and_on_files() -> std::io::Result<()> {
             .current_dir(&dir)
             .output_before(FENNEC_DEADLINE)?;
         let (shown, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
-        assert!(ran.status.success() && shown.contains("3 passed, 0 failed"), "{how:?}: {shown}{said}");
+        assert!(ran.status.success() && shown.contains("4 passed, 0 failed"), "{how:?}: {shown}{said}");
     }
     // Nothing's left of the database on the disk.
-    assert!(!dir.join("real.db").exists() && !dir.join("memory.db").exists());
+    for left in ["real.db", "memory.db", "snapshot.db", "snapshot.db-wal"] {
+        assert!(!dir.join(left).exists(), "{left} is left");
+    }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -6652,6 +6786,93 @@ def main(net: Net, stdout: Stdout) fails NetError:
     assert_eq!((answered, closed), (27, 3), "{errors}");
     assert_eq!(errors.matches("error:").count(), 3, "each crash says why: {errors}");
     std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A round that fails, by `fail` or `?`, stops the server, and its failure passes up out of the
+/// loop to the function serving, which handles it. The rounds before it were answered. Natively a
+/// round's failure once only ended that round, as a crash does.
+#[test]
+fn a_server_round_that_fails_passes_its_failure_up_natively() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("failing-rounds")?;
+    let program = dir.join("failing.fen");
+    std::fs::write(
+        &program,
+        "from std.net import NetError
+
+error Refused:
+    line: str
+
+def checked(line: str) -> str fails Refused:
+    if line == \"refuse\":
+        fail Refused(line=line)
+    line
+
+def serve(net: Net, stdout: Stdout) -> int fails NetError | Refused:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            conn.write(f\"{checked(line)?}\\n\")?
+    0
+
+def main(net: Net, stdout: Stdout):
+    match serve(net, stdout):
+        case Ok(_):
+            stdout.print(\"served\")
+        case Err(error):
+            stdout.print(\"failed:\", error)
+",
+    )?;
+    let executable = dir.join("failing");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "2")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().unwrap_or(0);
+    let ask = |line: &str| -> std::io::Result<String> {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        stream.write_all(format!("{line}\n").as_bytes())?;
+        let mut back = String::new();
+        std::io::BufReader::new(stream).read_line(&mut back).unwrap_or(0);
+        Ok(back)
+    };
+    for request in 1..=3 {
+        assert_eq!(ask(&format!("request {request}"))?, format!("request {request}\n"));
+    }
+    assert_eq!(ask("refuse")?, "");
+    // It ends by itself: nothing here kills it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = server.0.try_wait()? {
+            break status;
+        }
+        assert!(std::time::Instant::now() <= deadline, "the server kept going after a round failed");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut printed, &mut rest)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(status.code(), Some(0), "{rest}");
+    assert_eq!(rest, "failed: Refused(line=\"refuse\")\n");
     Ok(())
 }
 
@@ -11534,6 +11755,48 @@ test \"this one goes too far\" for value: int:
     assert!(said.contains("it failed for value = 500"), "{said}");
     assert!(!said.contains("through LLVM and passes"), "{said}");
     std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A failing property test shrinks a float, a struct and an input whose body passes a failure up
+/// through LLVM, as the interpreter does, rather than running again another way.
+#[test]
+fn every_failing_property_test_shrinks_through_llvm() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("test_shrinking_all")?;
+    let program = dir.join("shrinking.fen");
+    std::fs::write(
+        &program,
+        "\
+struct Point:
+    x: int
+    y: int
+
+def parsed(text: str) -> int fails InvalidValue:
+    int(text)?
+
+test \"floats stay small\" for x: float:
+    assert x < 3.5
+
+test \"points stay near\" for p: Point:
+    assert p.x < 50
+
+test \"texts are numbers\" for text: str:
+    n = parsed(text)?
+    assert n >= 0
+",
+    )?;
+    let path = program.to_string_lossy().into_owned();
+    let ran = fennec(&["test", "--all", "--verbose", &path], &dir)?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!ran.status.success(), "{said}");
+    assert!(said.contains("3 of 3 tests ran through LLVM"), "{said}");
+    assert!(said.contains("it failed for x = 9.0;"), "{said}");
+    assert!(said.contains("it failed for p = Point(x="), "{said}");
+    assert!(said.contains("it failed for text = \"\""), "{said}");
     Ok(())
 }
 

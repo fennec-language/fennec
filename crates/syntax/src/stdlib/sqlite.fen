@@ -18,7 +18,9 @@
 ## A transaction takes the database's one writer when it starts, so two never undo each other's
 ## work, and another writer waits up to 5 seconds for it before failing with `Busy`.
 ##
-## In a test, each path is a database in memory, fresh for each test, and `--real` uses files.
+## In a test, each path is a database of the test's own, fresh for each test, in a temporary
+## folder that's gone when the test ends. It's a WAL file as a real one is, so a test sees what a
+## program would. `--real` uses the paths themselves.
 
 from std.intrinsics import new_tag
 from std.sql import SqlError, SqlValue

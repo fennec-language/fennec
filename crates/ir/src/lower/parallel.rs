@@ -86,6 +86,31 @@ fn no_returning(body: &[Stmt]) -> bool {
 }
 
 /// Whether an expression uses `?` outside a nested function's own body.
+/// The names what a range runs mentions, and what its function gives back.
+fn named_in(runs: &Runs<'_>) -> (Vec<String>, Type) {
+    let mut names = Vec::new();
+    let mut record = |seen: &mut Expr| {
+        if let ExprKind::Name(found) = &seen.kind {
+            names.push(found.clone());
+        }
+    };
+    let returns = match runs {
+        Runs::Body(body, _) => {
+            visit::in_stmts(&mut body.to_vec(), &mut record);
+            Type::Unit
+        }
+        Runs::Each(elem, _) => {
+            visit::in_expr(&mut (*elem).clone(), &mut record);
+            Type::Unit
+        }
+        Runs::Sum(elem, ty) => {
+            visit::in_expr(&mut (*elem).clone(), &mut record);
+            ty.clone()
+        }
+    };
+    (names, returns)
+}
+
 fn expr_tries(expr: &Expr) -> bool {
     let mut found = false;
     visit::in_expr(&mut expr.clone(), &mut |seen| found |= matches!(seen.kind, ExprKind::Try { .. }));
@@ -137,6 +162,9 @@ const OUT: &str = "\0parallel.out";
 /// What a server's round gives back, for the runtime: it ended normally or by `continue`, so the
 /// server goes on.
 const ROUND_ON: i64 = 0;
+/// It failed, handing its failure's value over first: the server stops, the other rounds are cut
+/// short, and the loop fails with it.
+const ROUND_FAILED: i64 = 2;
 /// It ended by `break`: the server takes no more connections, and lets the running rounds finish.
 const ROUND_BREAK: i64 = 3;
 
@@ -165,7 +193,7 @@ impl Lowering<'_> {
         if is_mut && !matches!(&items.kind, ExprKind::Name(list) if self.lookup(list).is_some()) {
             return None;
         }
-        let lifted = self.lift(name, (items, item), &Runs::Body(body, is_mut), span);
+        let lifted = self.lift(name, (items, item), (&Runs::Body(body, is_mut), None), span);
         Some(lifted.map(|(list, range)| {
             let args = vec![list, range];
             let call =
@@ -204,7 +232,7 @@ impl Lowering<'_> {
 
     /// Lifts a server's loop body into a function of a connection, and that into the closure the
     /// runtime runs for each, which takes the connection's handle, makes its `Connection`, and
-    /// stops its task with any failure the body passes up.
+    /// hands over any failure the body passes up, which the loop then fails with.
     fn lift_task(&mut self, name: &str, server: &Expr, body: &[Stmt], span: Span) -> Lowered<()> {
         let server = self.expr(server)?;
         let mut names = Vec::new();
@@ -273,7 +301,7 @@ impl Lowering<'_> {
         let result = task.temporary(returns.clone());
         task.emit(InstKind::Call { dest: Some(result), function: inner, args }, span);
         let code = if let Type::Result(_, error) = &returns {
-            task.stop_task_on_failure(result, error, span);
+            task.hand_over_failure(result, error, span)?;
             let code = task.temporary(Type::Int);
             task.emit(InstKind::GetOk { dest: code, value: Operand::Local(result) }, span);
             code
@@ -286,8 +314,28 @@ impl Lowering<'_> {
         let arrow = Type::Arrow(vec![Type::Int], Box::new(Type::Int));
         let closure = self.make_closure(key, &captures, arrow, span);
         let args = vec![server, Operand::Local(closure)];
-        let call = InstKind::Builtin { dest: None, name: "parallel.serve".to_owned(), args, changes: false };
+        let ended = self.temporary(Type::Int);
+        let call =
+            InstKind::Builtin { dest: Some(ended), name: "parallel.serve".to_owned(), args, changes: false };
         self.emit(call, span);
+        self.pass_up_round_failure(ended, span)
+    }
+
+    /// After serving: a round's failure passes up out of the loop, as a `?` would, when serving
+    /// gave back that one failed.
+    fn pass_up_round_failure(&mut self, ended: LocalId, span: Span) -> Lowered<()> {
+        let Type::Result(_, error) = self.returns.clone() else { return Ok(()) };
+        let failed = self.temporary(Type::Bool);
+        let (lhs, rhs) = (Operand::Local(ended), Operand::Int(ROUND_FAILED));
+        self.emit(InstKind::Binary { dest: failed, op: BinOp::Eq, lhs, rhs }, span);
+        let (up, on) = (self.new_block(), self.new_block());
+        self.finish(crate::Terminator::Branch { cond: Operand::Local(failed), then: up, otherwise: on });
+        self.current = up;
+        let cause = self.temporary(*error);
+        let name = "parallel.serve_failure".to_owned();
+        self.emit(InstKind::Builtin { dest: Some(cause), name, args: Vec::new(), changes: false }, span);
+        self.return_error(Operand::Local(cause), span)?;
+        self.current = on;
         Ok(())
     }
 
@@ -301,9 +349,9 @@ impl Lowering<'_> {
         self.leave(Some(Operand::Int(code)), span)
     }
 
-    /// What a server's task does with a failure its body passed up: ends only itself, saying what
-    /// it was.
-    fn stop_task_on_failure(&mut self, result: LocalId, error: &Type, span: Span) {
+    /// What a server's task does with a failure its body passed up: hands its value over, and
+    /// gives back that the round failed.
+    fn hand_over_failure(&mut self, result: LocalId, error: &Type, span: Span) -> Lowered<()> {
         let (failed, cause) = (self.temporary(Type::Bool), self.temporary(error.clone()));
         self.emit(InstKind::IsErr { dest: failed, value: Operand::Local(result) }, span);
         let (stops, goes_on) = (self.new_block(), self.new_block());
@@ -319,9 +367,9 @@ impl Lowering<'_> {
             InstKind::Builtin { dest: None, name: "task.failed".to_owned(), args, changes: false },
             span,
         );
-        let message = "this connection's task failed".to_owned();
-        self.finish(crate::Terminator::Stop { message, span });
+        self.leave(Some(Operand::Int(ROUND_FAILED)), span)?;
         self.current = goes_on;
+        Ok(())
     }
 
     /// `[f(x) for x in parallel(xs)]` or `sum(f(x) for x in parallel(xs))`, lifted, when the
@@ -334,11 +382,13 @@ impl Lowering<'_> {
         gives: Gives<'_>,
     ) -> Option<Lowered<Operand>> {
         let (true, [name], None) = (self.context.options.outline_parallel, names, cond) else { return None };
-        // An item that can fail, like `save(fs.read(path)?)?`, isn't lifted yet: what it fails with
-        // has no way out of the runtime's ranges, so it's made in order here instead.
-        if expr_tries(elem) {
-            return None;
-        }
+        // An item that can fail, like `save(fs.read(path)?)?`, makes a list whose failure passes
+        // up, as `?` does. A sum of them isn't lifted yet, so it's made in order here instead.
+        let fails = match (expr_tries(elem), &self.returns, gives) {
+            (false, ..) => None,
+            (true, Type::Result(_, error), Gives::List) => Some((**error).clone()),
+            (true, ..) => return None,
+        };
         let (items, item) = self.parallel_list(iter)?;
         let ty = self.type_at(expr.span)?;
         let runs = match (&ty, gives) {
@@ -346,7 +396,7 @@ impl Lowering<'_> {
             (Type::Int | Type::Float, Gives::Sum(_)) => Runs::Sum(elem, ty.clone()),
             _ => return None,
         };
-        let lifted = self.lift(name, (items, item), &runs, expr.span);
+        let lifted = self.lift(name, (items, item), (&runs, fails.as_ref()), expr.span);
         Some(lifted.and_then(|(list, range)| {
             let dest = self.temporary(ty.clone());
             let (name, args) = match gives {
@@ -362,8 +412,52 @@ impl Lowering<'_> {
             };
             let call = InstKind::Builtin { dest: Some(dest), name: name.to_owned(), args, changes: false };
             self.emit(call, expr.span);
+            if let Some(error) = &fails {
+                self.pass_up_range_failure(dest, error, expr.span)?;
+            }
             Ok(Operand::Local(dest))
         }))
+    }
+
+    /// After a `parallel` comprehension whose items can fail: the failure a range handed over
+    /// passes up, as a `?` would, when the call made no list.
+    fn pass_up_range_failure(&mut self, made: LocalId, error: &Type, span: Span) -> Lowered<()> {
+        let failed = self.temporary(Type::Bool);
+        let args = vec![Operand::Local(made)];
+        let name = "parallel.map_failed".to_owned();
+        self.emit(InstKind::Builtin { dest: Some(failed), name, args, changes: false }, span);
+        let (up, on) = (self.new_block(), self.new_block());
+        self.finish(crate::Terminator::Branch { cond: Operand::Local(failed), then: up, otherwise: on });
+        self.current = up;
+        let cause = self.temporary(error.clone());
+        let name = "parallel.failure".to_owned();
+        self.emit(InstKind::Builtin { dest: Some(cause), name, args: Vec::new(), changes: false }, span);
+        self.return_error(Operand::Local(cause), span)?;
+        self.current = on;
+        Ok(())
+    }
+
+    /// The function the runtime runs for a range whose items can fail: it calls `inner` with
+    /// everything it's given, hands over a failure that passes up, and gives back how it ended.
+    fn handing_over(
+        &mut self,
+        key: &str,
+        (inner, inner_returns): (&str, Type),
+        (params, error): (Vec<(&str, Type)>, &Type),
+        span: Span,
+    ) -> Lowered<()> {
+        let instance =
+            FunctionInstance { base: self.base.clone(), name: key.to_owned(), subst: self.subst.clone() };
+        let mut range = Lowering::new(&instance, self.context, self.body, Type::Int);
+        let count = params.len();
+        let args = params.into_iter().map(|(name, ty)| Operand::Local(range.declare(name, ty))).collect();
+        range.scopes.push(HashMap::new());
+        let result = range.temporary(inner_returns);
+        range.emit(InstKind::Call { dest: Some(result), function: inner.to_owned(), args }, span);
+        range.hand_over_failure(result, error, span)?;
+        range.leave(Some(Operand::Int(ROUND_ON)), span)?;
+        self.lifted.extend(range.finished(count, Vec::new()));
+        Ok(())
     }
 
     /// Whether `body` assigns to a name from outside it other than `item`, at any depth.
@@ -401,7 +495,7 @@ impl Lowering<'_> {
         &mut self,
         name: &str,
         (items, item): (&Expr, Type),
-        runs: &Runs<'_>,
+        (runs, fails): (&Runs<'_>, Option<&Type>),
         span: Span,
     ) -> Lowered<(Operand, Operand)> {
         // The list first, as it's written before the body, then what the body captures.
@@ -417,31 +511,20 @@ impl Lowering<'_> {
             };
             self.emit(own, span);
         }
-        let mut names = Vec::new();
-        let mut record = |seen: &mut Expr| {
-            if let ExprKind::Name(found) = &seen.kind {
-                names.push(found.clone());
-            }
-        };
-        let returns = match runs {
-            Runs::Body(body, _) => {
-                visit::in_stmts(&mut body.to_vec(), &mut record);
-                Type::Unit
-            }
-            Runs::Each(elem, _) => {
-                visit::in_expr(&mut (*elem).clone(), &mut record);
-                Type::Unit
-            }
-            Runs::Sum(elem, ty) => {
-                visit::in_expr(&mut (*elem).clone(), &mut record);
-                ty.clone()
-            }
-        };
+        let (names, returns) = named_in(runs);
         let captures = self.captures(names, &[name]);
         let key = format!("{}.parallel@{}", self.name, span.start);
+        // A range whose items can fail is a function that can, called by the one the runtime runs,
+        // which hands its failure over and gives back that it failed.
+        let (inner, inner_returns) = match fails {
+            Some(error) => {
+                (format!("{key}.inner"), Type::Result(Box::new(Type::Unit), Box::new(error.clone())))
+            }
+            None => (key.clone(), returns.clone()),
+        };
         let instance =
-            FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
-        let mut lifted = Lowering::new(&instance, self.context, self.body, returns.clone());
+            FunctionInstance { base: self.base.clone(), name: inner.clone(), subst: self.subst.clone() };
+        let mut lifted = Lowering::new(&instance, self.context, self.body, inner_returns.clone());
         for (captured, local) in &captures {
             lifted.declare(captured, self.local_type(*local));
         }
@@ -462,6 +545,17 @@ impl Lowering<'_> {
         lifted.end_function(span)?;
         let count = captures.len() + 1 + params.len();
         self.lifted.extend(lifted.finished(count, Vec::new()));
+        let returns = match fails {
+            Some(error) => {
+                let types: Vec<Type> = captures.iter().map(|(_, local)| self.local_type(*local)).collect();
+                let names =
+                    captures.iter().map(|(captured, _)| captured.as_str()).chain([LIST, FROM, TO, OUT]);
+                let types = types.into_iter().chain([list_ty.clone()]).chain(params.iter().cloned());
+                self.handing_over(&key, (&inner, inner_returns), (names.zip(types).collect(), error), span)?;
+                Type::Int
+            }
+            None => returns,
+        };
         let mut held_values: Vec<(String, LocalId)> = captures;
         let list_local = match &list {
             Operand::Local(local) => *local,

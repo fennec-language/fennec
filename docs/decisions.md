@@ -108,6 +108,7 @@ def heal(hero: Hero):
 **Named fallbacks, used only on evidence.** There's no `Frozen[T]` and no `with pool()`.
 - A limited `View[T]`, if having no stored views costs more than about 10–15% on parser, zero-copy server and B-tree benchmarks.
 - Tighter lock patterns, if a B-tree benchmark fails.
+- Running independent writes at the same time on their own, with no `parallel` or `launch` written, if programs show they need it. This was an open question until 2026-11-07, when Chris moved it here.
 
 *Why:* All of them are additions that break nothing later. `Frozen[T]` adds nothing while a plain value can already cross tasks for one count bump.
 
@@ -187,6 +188,9 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 *Why:* Game engines, compilers, graph libraries and servers use the same generational-handle pattern. IDs are small plain values, so they're cheap to copy and can be saved or sent anywhere. A cycle of them is just numbers, with nothing counted, so it can't leak. A stale ID that silently became `None` would hide bugs, so the short form is the loud one.
 
 **An `Id` crosses the network as a plain compact value, and there's no `NetId` type.** A client keeps its own table from a server's `Id` to its local entity. An `Id` is never a secret or a permission: a server authorizes every action, even if every `Id` is known.
+
+**An `Id` is local to its process's `Table`, and across servers a program sends its own key.** A key is a value the program chose, like a player's name or a number it hands out, and each server finds its own `Id` from it, the way a client keeps a table from a server's `Id`. Built, in the sense that matters: each `Table` carries a tag that's never reused, so an `Id` from another `Table`, in this process or any other, finds nothing. This settles how an `Id` is used across servers. Chris decided this on 2026-11-07.
+*Why:* An `Id` is an index and a generation into one process's memory, so it means nothing to another server. A key the program owns says what it means, survives restarts, and needs nothing new in the language.
 
 ## Collections
 
@@ -411,6 +415,9 @@ if result is Err(NotFound):
 This replaces the earlier rules that errors are inferred and `fails` is optional.
 *Why:* A reader sees at a glance how a function can fail and every line where it can leave. Swallowed errors are how reliable-looking programs go wrong.
 
+**An error carries notes, a `list[str]`, as Python's exceptions have since PEP 678.** Every `error Name:` type has `failure.add_note(text)`, which needs a `mut` place, and `failure.notes() -> list[str]`. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure is added to the block's as a note, in its printed form, so neither is lost. A failure that reaches `main` prints each note under it as `note: ...`. Notes are left out of `==`, hashing, printing and saving, and a failure with none costs one empty word. Not built yet: today an error has no `add_note`, and a failing `else:` replaces the block's failure.
+*Why:* When cleanup fails after a failure, the first failure is usually the cause and the second is the clue, so both have to reach the reader. Notes as text need no new kind of type.
+
 **There's no `exit()`.** `fail` out of `main` prints the failure to stderr and exits with code 1, and `main` may return an `int` as the exit code. Nothing else can end the process. Built.
 *Why:* A program ends in one visible place, and no library can stop the process behind its caller's back.
 
@@ -530,10 +537,26 @@ extend list[T: Eq]:
 extend list[T: Ordered]:
     def sort(ref self): ...
 ```
-`count` exists only on lists whose elements can be compared with `==`, and `sort` only on lists whose elements can be ordered. Two methods with the same name on one type are an error, wherever they're written. The editor, `fennec doc` and `fennec context` list every method of a type in one place.
+`count` exists only on lists whose elements can be compared with `==`, and `sort` only on lists whose elements can be ordered. Two methods with the same name on one type are an error, wherever they're written, apart from an operator defined for different right-hand types, as below. The editor, `fennec doc` and `fennec context` list every method of a type in one place.
 *Why:* A type that many responsibilities attach to, like a parser, an interpreter or a game's `World`, is otherwise one huge file, or its methods become free functions with noisier calls. Swift, C#, Kotlin and Go all let a type's methods live in several files. Keeping it to the kit's own types means no one can change a type they don't own.
 
-**Units of measure are types.** Meters, pixels, seconds and radians can't be mixed by accident, and multiplying or dividing them gives the right unit. They're erased at compile time, so they cost nothing at run time. The syntax is still open.
+**Units of measure are types.** Meters, pixels, seconds and radians can't be mixed by accident, and multiplying or dividing them gives the right unit. They need no new syntax: a unit is a struct holding its number, and its operators say what each combination gives, using one operator for each right-hand type. Chris decided this on 2026-11-07, which settles the syntax. Built: a unit struct with one operator of each kind, like `Meters + Meters`. Not built yet: a second operator of the same kind, like `Meters / float` beside `Meters / Seconds`, which waits for operators chosen by their right-hand type; today it's refused as a duplicate method.
+```fennec
+# Planned: the second `def /` is refused today
+struct Meters:
+    value: float
+
+    def +(self, other: Meters) -> Meters:
+        Meters(value=self.value + other.value)
+
+    # a distance over a time gives a speed
+    def /(self, time: Seconds) -> Speed:
+        Speed(value=self.value / time.value)
+
+    # a distance over a plain number is still a distance
+    def /(self, parts: float) -> Meters:
+        Meters(value=self.value / parts)
+```
 *Why:* Game code mixes up degrees and radians, and world and screen space, constantly. F# has had units since 2009, and no mainstream language has followed.
 
 **They're called interfaces, not protocols.** `interface Shape:` declares one, and a type fits it by having its methods, with nothing to declare.
@@ -570,7 +593,7 @@ def write[T, W: Writer](x: T, ref out: W):
         out.field(f.name)
         write(f.get(x), ref out)
 ```
-- `fields(T)` gives a struct's fields, each with its name, type and value. `cases(T)` gives an enum's cases. `*Cs` is a list of types, as in `world.query(Position, Velocity)`. `if T is int:` is decided at compile time.
+- `fields(T)` gives a struct's fields, each with its name, type, value and annotations. `cases(T)` gives an enum's cases. `*Cs` is a list of types, as in `world.query(Position, Velocity)`. `if T is int:` is decided at compile time. Not built yet: today `fields` doesn't exist, and formats get their fields from the compiler.
 - Each set of types gets its own specialized copy, whatever the build.
 - There are no macros, no `derive` and no generating code from text. There's no I/O at compile time beyond `embed`, which reads a file that's part of the build, and no new types can be invented.
 - New declarations, like a client struct from an API schema, come from separate programs that write `.fen` files.
@@ -578,7 +601,11 @@ def write[T, W: Writer](x: T, ref out: W):
 *Why:* It covers serialization, SQL rows, CLI parsing, ECS queries and test helpers, and the checker sees ordinary code. With no I/O, builds stay deterministic and cacheable, and a kit can't run anything on your machine while it compiles, which closes a real supply-chain hole.
 
 **Annotations are data, read at compile time.** `@serialize(name="uid")` on a field says something a generic function can read. An annotation never wraps or changes what it's on.
-*Why:* A few things can't be said any other way, like a field's name in someone else's format, and data can't hide behavior.
+- A kit may define its own annotations for fields, like `@column("todo_id")` for a database kit, and generic code reads them through `fields(T)`.
+- A function takes only the language's own: `@hot`, and std's `@intrinsic`. A kit can't define one for functions, so a route is registered in plain code, `router.get("/todos/{id}", show_todo)`, as a function value, and the table it builds is ordinary data.
+- Built: `@skip` and `@serialize` on fields, and refusing any other annotation, on a field or a function, with an error that lists the ones there are. Not built yet: annotations a kit defines, `fields(T)`, and a router in `std`.
+- Chris decided the kit and function rules on 2026-11-07, which settles whether kits can define annotations.
+*Why:* A few things can't be said any other way, like a field's name in someone else's format, and data can't hide behavior. On a field, an annotation only describes data. On a function, it would invite decorators that change what a call does out of sight, and a route list in plain code is already one place to read every route.
 
 **Generic Fennec code compiles to a copy for each type, in every build.** A generic function or type is copied for each set of types a program uses it with, before any backend sees it, so `[T: Shape]` and `shape: Shape` compile the same and every call is direct. Development and release builds lower the same copies, and each is cached by a hash of its text. A program can ask for up to 2,000 copies. The runtime's own list and dict operations are still shared by design, taking an element number, since they're runtime code, not generic Fennec code. This corrects the entry that said generics compile the way Swift's do, with development builds sharing one copy.
 *Why:* One rule for every build, with no hidden dispatch in Fennec code, so what runs while editing is what ships.
@@ -795,6 +822,7 @@ There's no per-format override, like a `def json` method on a type; one `def ser
 - Every pack stream or file carries a fingerprint: a compile-time hash of the exact layout of every type reachable from what's sent, its types, fields and cases, in order. A mismatch is an error value, never misread bytes.
 - `where` ranges shrink values: a field that's `where hp >= 0 and hp <= 100` takes one byte.
 - Delta encoding is built in, and quantization is opt-in.
+- Data from an earlier version of a program loads into the new one: fields are matched by name, and a field the data doesn't have takes its default, as hot reload does. A field with no default that the data doesn't have fails the load. A lock file of past layouts comes later, adding to v1 without breaking it. Chris decided this on 2026-11-07, which settles how `std.pack` data evolves. Not built yet: today `std.pack` writes fields by position, with no names, so data packed from a different type is refused.
 
 *Why:* Saves and network messages are where games and servers feel size most, and the types already say most of what a compact format needs to know.
 
@@ -840,6 +868,9 @@ def play(ref conn: Connection, ref world: World) fails NetError:
 **`std.process`, `std.crypto`, `std.log`, `std.cli` and `std.csv` are in `std` too.**
 
 **`std.crypto` holds hashing, including BLAKE3, so there's no separate `std.hash`.** `blake3` and the other hashes take any iterable of bytes, so a file or a stream hashes without being read into one block first. Built: `blake3` and `sha256` take text, `bytes`, or a list or iterator of either, so `blake3(file.chunks(1_000_000))` hashes a file a megabyte at a time. The keyed hashes and HMAC still take text or `bytes`.
+
+**`Secret[str]` in `std.crypto` holds text that can't be printed, logged or saved.** Printing one, putting it in an f-string, a log line or a failure's message, and saving it in any format are compile errors. The text comes out only through one method, whose name says it's revealing a secret, so every place that reads it can be found by searching for that name. Chris decided this on 2026-11-07. Not built yet: `std.crypto` has no `Secret` today.
+*Why:* Keys and passwords often leak through logs and error messages, and a type the compiler checks catches that where it's written, not after it ships.
 
 **First-party kits, not `std`:** `fennec/ml`, database drivers, windowing and input for games, and image formats.
 
@@ -979,6 +1010,9 @@ A big program that wants walls between its own parts splits into local kits in o
 
 **A kit is a folder with a `kit.toml` and its code under `src`.** `src/main.fen` holds `main`, and the module `enemies.ai` is the file `src/enemies/ai.fen`. `kit.toml` has `name`, `version`, `edition` and `fennec`, the toolchain the kit is built with (see Toolchain). Until the launcher exists, a kit asking for a newer Fennec than the one running is an error. Its `[dependencies]` table names kits from the Den, or from git or a path (see Supply chain). `fennec run` and `fennec test` with no file run the kit around the current folder; `fennec test` runs the tests in every file under `src`.
 *Why:* One layout means no configuration, and finding a module's file needs no search.
+
+**The file extension is `.fen`, and that's closed.** Built. Chris closed the question on 2026-11-07.
+*Why:* It's short and already in every kit, tool and editor setting, so changing it would cost everyone and buy nothing.
 
 **A file uses another file's names only after importing them.** `from enemies import spawn` brings in names, and `import physics` brings in the module, used as `physics.step`. For a module in a folder, `import world.physics` is used as `world.physics.step`, and `from world import physics` as `physics.step`. A file's own names need no import.
 *Why:* Where every name comes from is visible in the file that uses it, for people and for AI.
@@ -1686,11 +1720,4 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 
 ## Still open
 
-- How an `Id` is used across servers, which is expected at the simulation level.
-- How `std.pack` data evolves: a lock file of past layouts with automatic migration rules, as Avro does. It comes later and adds to v1 without breaking it.
-- Whether kits can define their own annotations, like `@get("/todos/{id}")` on a plain function, so a router can build its table at compile time.
-- SQLite: whether and how Fennec includes it. Porting it isn't realistic.
-- Whether independent writes, not just reads, should overlap automatically.
-- The syntax for units of measure.
-- The file extension (currently `.fen`).
-- `Secret[str]`, which can't be printed or logged.
+Nothing right now.

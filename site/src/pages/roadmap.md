@@ -78,7 +78,11 @@ Each of these is decided and not built.
 - `case .Button(ref clicks):` to change a field inside an enum.
 - `{x=}` in f-strings.
 - `x.approx(y, within=...)`, and `@fast_math`.
-- Units of measure.
+- Units of measure, as structs whose operators are chosen by their right-hand type, with no new syntax.
+- Notes on errors, so a cleanup that fails after a failure doesn't hide either one.
+- `Secret[str]` in `std.crypto`, which can't be printed, logged or saved.
+- `std.pack` data from an earlier version of a program loading into the new one, with fields matched by name and new fields taking their defaults.
+- Annotations a kit defines for fields, read by generic code.
 
 ## After that
 
@@ -90,17 +94,10 @@ Each of these is decided and not built.
 
 ## Only if the evidence asks
 
-These stay out unless measurements show they're needed: a limited `View[T]` for stored views, and tighter lock patterns. `select` on channels, handles that move between tasks, and results returned from tasks wait until real programs need them.
+These stay out unless measurements show they're needed: a limited `View[T]` for stored views, tighter lock patterns, and independent writes running at the same time with nothing written to ask for it. `select` on channels, handles that move between tasks, and results returned from tasks wait until real programs need them.
 
 Never in the language: `del`, destructors, moves, lifetimes, `unsafe` and global state.
 
 ## Open questions
 
-These are still being decided. Decisions already made, and why, are in [the language page](https://github.com/fennec-language/fennec/blob/main/docs/language.md) and [the design decisions](https://github.com/fennec-language/fennec/blob/main/docs/decisions.md).
-
-- Whether kits can define their own annotations.
-- How `std.pack` data changes from one version of a program to the next.
-- How an `Id` is used across servers.
-- The syntax for units of measure.
-- The file extension (currently `.fen`).
-- `Secret[str]`, which can't be printed or logged.
+None right now. Decisions already made, and why, are in [the language page](https://github.com/fennec-language/fennec/blob/main/docs/language.md) and [the design decisions](https://github.com/fennec-language/fennec/blob/main/docs/decisions.md).

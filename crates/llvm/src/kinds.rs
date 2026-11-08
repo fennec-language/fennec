@@ -266,6 +266,8 @@ pub(crate) fn element_symbol(layouts: &Layouts, item: ListItem) -> String {
         ListItem::Int => "e_int".to_owned(),
         ListItem::Float => "e_float".to_owned(),
         ListItem::Bool => "e_bool".to_owned(),
+        ListItem::U64 => "e_u64".to_owned(),
+        ListItem::F32 => "e_f32".to_owned(),
         ListItem::Struct(id) => format!("e_s_{}", layouts.get(id).map_or("?", |layout| layout.name.as_str())),
         ListItem::Str => "e_str".to_owned(),
         ListItem::Boxed(id) => format!("e_b_{}", layouts.get(id).map_or("?", |layout| layout.name.as_str())),

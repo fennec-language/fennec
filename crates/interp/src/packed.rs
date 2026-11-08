@@ -18,6 +18,11 @@ pub enum Element {
     Int,
     Float,
     Bool,
+    /// A `u64`, its bits in a word: shown unsigned.
+    U64,
+    /// An `f32`, in a word as the `f64` that's exactly its value: shown as the shortest text that
+    /// reads back as that `f32`.
+    F32,
     /// A struct, with its fields in the order they're written.
     Struct {
         name: Rc<str>,
@@ -120,11 +125,20 @@ impl Packed {
     }
 }
 
+/// A float rounded to the nearest `f32`, held as the `f64` that's exactly it.
+#[expect(clippy::cast_possible_truncation, reason = "rounding to an f32 is what's asked")]
+pub(crate) fn as_f32(x: f64) -> f64 {
+    f64::from(x as f32)
+}
+
 fn pack_item(element: &Element, item: &Value, words: &mut Vec<u64>) -> Option<()> {
     match (element, item) {
-        (Element::Int, Value::Int(n)) => words.push(u64::from_ne_bytes(n.to_ne_bytes())),
+        // The interpreter holds a `u64` as an `int` of the same bits, and an `f32` as the float
+        // that's exactly it.
+        (Element::Int | Element::U64, Value::Int(n)) => words.push(u64::from_ne_bytes(n.to_ne_bytes())),
         (Element::Float, Value::Float(x)) => words.push(x.to_bits()),
         (Element::Bool, Value::Bool(b)) => words.push(u64::from(*b)),
+        (Element::F32, Value::Float(x)) => words.push(as_f32(*x).to_bits()),
         (Element::Struct { name, fields }, Value::Instance(instance))
             if instance.type_name == *name && instance.case.is_none() && !instance.is_error =>
         {
@@ -152,8 +166,8 @@ fn pack_item(element: &Element, item: &Value, words: &mut Vec<u64>) -> Option<()
 fn unpack_item<'w>(element: &Element, words: &mut dyn Iterator<Item = &'w u64>) -> Value {
     let word = |words: &mut dyn Iterator<Item = &'w u64>| words.next().copied().unwrap_or(0);
     match element {
-        Element::Int => Value::Int(i64::from_ne_bytes(word(words).to_ne_bytes())),
-        Element::Float => Value::Float(f64::from_bits(word(words))),
+        Element::Int | Element::U64 => Value::Int(i64::from_ne_bytes(word(words).to_ne_bytes())),
+        Element::Float | Element::F32 => Value::Float(f64::from_bits(word(words))),
         Element::Bool => Value::Bool(word(words) != 0),
         element if element.is_optional_text() => {
             words.take(3).for_each(drop);

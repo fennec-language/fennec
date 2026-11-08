@@ -348,7 +348,11 @@ pub extern "C" fn float_header(x: f64) -> Text {
     if let Some(words) = plain_float(x) {
         return Text { words };
     }
-    let text = crate::format::display(&crate::value::Value::Float(x));
+    header_of(&crate::format::display(&crate::value::Value::Float(x)))
+}
+
+/// A string's header for `text`: inline when it fits, and otherwise a block's.
+fn header_of(text: &str) -> Text {
     if text.len() <= INLINE_BYTES {
         return Text { words: inline(text.as_bytes()) };
     }
@@ -356,6 +360,16 @@ pub extern "C" fn float_header(x: f64) -> Text {
         let address = text_from_bytes(state, text.as_bytes(), text.len()).cast_unsigned();
         Text { words: [address, u64::try_from(text.len()).unwrap_or(0), 0] }
     })
+}
+
+/// `fennec_u64_header(n)`: a `u64`'s text, unsigned, as a header. It always fits inline.
+pub extern "C" fn u64_header(n: i64) -> Text {
+    header_of(&n.cast_unsigned().to_string())
+}
+
+/// `fennec_f32_header(x)`: an `f32`'s text, the shortest that reads back as it, as a header.
+pub extern "C" fn f32_header(x: f64) -> Text {
+    header_of(&crate::format::float32(x))
 }
 
 #[cfg(test)]

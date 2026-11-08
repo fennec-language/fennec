@@ -2734,11 +2734,14 @@ fn find_last_copies(function: &Function, known: &mut Analysis) {
 /// Whether anything a function does itself can fail. Calling something counts, since a call is
 /// where the stack is checked.
 pub(crate) fn is_socket_method(name: &str) -> bool {
-    // A `File` lent by `fs.create` or `fs.open` is a handle into the runtime, as a socket is.
+    // A `File` lent by `fs.create` or `fs.open` is a handle into the runtime, as a socket is, and
+    // so are SQLite's `Database` and `Transaction`.
     name.starts_with("Connection.")
         || name.starts_with("Server.")
         || name.starts_with("UdpSocket.")
         || name.starts_with("File.")
+        || name.starts_with("Database.")
+        || name.starts_with("Transaction.")
 }
 
 /// Whether a builtin can fail where it runs: in the runtime, or by a check of its own.

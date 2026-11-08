@@ -13,8 +13,10 @@
 //! the smallest input that still fails the same way, and kept in `found/<target>/`. The tests
 //! run everything kept there, so a failure stays fixed.
 //!
-//! Running with no targets named runs every one but `llvm`, which needs `fennec` beside this
-//! program and LLVM's tools, so it runs only when named.
+//! `llvm`, `json`, `toml` and `utf8` build what they run natively, so they need `fennec` beside this
+//! program and LLVM's tools. Running with no targets named runs every one but `llvm`, which builds
+//! every input twice and runs only when named, and leaves out the other three, saying so, where
+//! nothing can be built.
 #![expect(clippy::print_stdout, reason = "the fuzzer reports what it finds")]
 #![expect(clippy::print_stderr, reason = "the fuzzer reports how it was misused")]
 
@@ -87,7 +89,7 @@ fn one(name: &str, file: &Path) -> Result<ExitCode, String> {
     Ok(on_big_stack(move || (target.run)(&input)))
 }
 
-/// Prints the program an input to the `jit` target writes, or with `llvm` that target's, since
+/// Prints the program an input writes, or with `llvm` the `llvm` target's, since
 /// that input is only choices.
 fn show(file: &Path, written: fn(&[u8]) -> String) -> Result<ExitCode, String> {
     let input = std::fs::read(file).map_err(|err| format!("{}: {err}", file.display()))?;
@@ -157,11 +159,16 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
     let options = options(args)?;
     let everything = targets::TARGETS.iter().chain(std::iter::once(&targets::UTF8));
     let chosen: Vec<&Target> = if options.names.is_empty() {
-        everything.collect()
+        let built = llvm::ready().is_ok();
+        if !built {
+            println!("{}: left out, since nothing can be built natively here", targets::NATIVE.join(", "));
+        }
+        everything.filter(|target| built || !targets::NATIVE.contains(&target.name)).collect()
     } else {
         options.names.iter().map(|name| target_named(name)).collect::<Result<_, _>>()?
     };
-    if chosen.iter().any(|target| target.name == targets::LLVM.name) {
+    if chosen.iter().any(|target| target.name == targets::LLVM.name || targets::NATIVE.contains(&target.name))
+    {
         llvm::ready()?;
     }
     let fennec_fuzz = std::env::current_exe().map_err(|err| err.to_string())?;

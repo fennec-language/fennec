@@ -64,11 +64,15 @@ fn expects(def: &FnDef, found: &mut Vec<Lint>) {
     });
 }
 
+/// Whether a program declares a function or method named `expect`, nested ones too.
+pub(crate) fn declares_expect(module: &Module) -> bool {
+    functions(module).iter().any(|def| def.name == "expect")
+}
+
 /// Each `.expect(...)` in a kit's code outside `main` and its tests: a library gives a failure
 /// back for its caller to handle. A kit that declares a method named `expect` itself is left
 /// alone, since the lint can't tell its calls from the standard one.
-pub(crate) fn in_kit(module: &Module) -> Vec<Lint> {
-    let declares_expect = functions(module).iter().any(|def| def.name == "expect");
+pub(crate) fn in_kit(module: &Module, declares_expect: bool) -> Vec<Lint> {
     if declares_expect {
         return Vec::new();
     }

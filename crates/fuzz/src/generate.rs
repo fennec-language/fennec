@@ -1,10 +1,10 @@
-//! Writing valid programs from bytes, to run on both engines. Each byte chooses something, so
+//! Writing valid programs from bytes, to build both ways. Each byte chooses something, so
 //! fewer bytes make a smaller program, and cutting a failing input down cuts down the program.
 //! Every loop is bounded, so every program ends.
 //!
 //! Most programs are written so that nothing fails, since a run that stops at its first overflow
 //! tests little: numbers stay small and indexes stay in range. One in eight isn't, to compare how
-//! the engines fail.
+//! the builds fail.
 
 use std::fmt::Write as _;
 

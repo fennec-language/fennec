@@ -29,6 +29,8 @@ fn method(type_name: &str, name: &str) -> Option<Method> {
         ("Fs", "_open") => reads(&[path()], io(Type::named("File"))),
         ("Fs", "_finish") => reads(&[Type::named("File")], io(Type::Unit)),
         ("Fs", "_discard") => reads(&[Type::named("File")], Type::Unit),
+        // What `sqlite.open` is written with: the database at `path`.
+        ("Fs", "_sqlite_open") => reads(&[path()], io(Type::named("Database"))),
         // `bytes`, or a `str` as its UTF-8.
         ("File", "write") => reads(&[Type::Unknown], io(Type::Unit)),
         ("File", "read") => reads(&[], io(Type::Bytes)),

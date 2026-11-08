@@ -436,7 +436,7 @@ jobs:
   # Programs built through LLVM, with their code and the runtime library instrumented by
   # AddressSanitizer, so touching memory they don't own stops them. Every example LLVM takes runs,
   # both ways it builds, and must print its `.out`. Then a fixed fuzzing run compares random
-  # programs against the interpreter. Leaks aren't checked: the runtime leaves freeing at exit
+  # programs built both ways. Leaks aren't checked: the runtime leaves freeing at exit
   # to the system.
   asan:
     name: AddressSanitizer on LLVM-built programs

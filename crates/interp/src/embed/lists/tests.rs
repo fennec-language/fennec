@@ -20,6 +20,7 @@ fn unit(name: &str, hp: i64) -> Value {
         fields,
         is_error: false,
         cause: None,
+        notes: None,
     }))
 }
 
@@ -111,6 +112,7 @@ fn items_holding_a_string_in_an_enum_case_own_it_only_in_that_case() {
             fields,
             is_error: false,
             cause: None,
+            notes: None,
         }))
     };
     let before = live();

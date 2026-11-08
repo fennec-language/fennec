@@ -237,7 +237,7 @@ def main(stdout: Stdout):
 /// many threads the replay is given, so what they left in it reads the same.
 #[test]
 fn tasks_contending_for_a_lock_replay_the_order_they_took_it() -> std::io::Result<()> {
-    if !runtime_built() || !crate::executables::threads_runtime_built() {
+    if !ready() || !crate::executables::threads_runtime_built() {
         return Ok(());
     }
     let dir = folder("lock-order")?;

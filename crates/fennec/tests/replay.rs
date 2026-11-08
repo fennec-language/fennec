@@ -1,12 +1,14 @@
 //! `fennec run --record` and `fennec replay`: a recorded run of a single-task program, replayed,
-//! prints exactly what it printed, from the inputs it logged, in both engines. A replay that asks
-//! for something its recording doesn't have next stops, saying both.
+//! prints exactly what it printed, from the inputs it logged. A replay that asks for something its
+//! recording doesn't have next stops, saying both. Skipped where native code can't be built, as
+//! `llvm.rs` is.
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::Duration;
 
-use crate::executables::{Within, fennec_command, runtime_built};
+use crate::executables::{Within, fennec_command, threads_runtime_built};
+use crate::llvm::ready;
 
 /// How long one recording or replay of an example may take.
 const DEADLINE: Duration = Duration::from_secs(120);
@@ -29,17 +31,11 @@ fn outcome(ran: &Output) -> Outcome {
     )
 }
 
-/// Records a run of `program` with `engine` (`--interp`, or nothing for native code) and `input`
-/// on its standard input, then replays it, giving back both outcomes.
-fn recorded_and_replayed(
-    program: &Path,
-    engine: Option<&str>,
-    input: &[u8],
-    log: &Path,
-) -> std::io::Result<(Outcome, Outcome)> {
+/// Records a run of `program` with `input` on its standard input, then replays it, giving back both
+/// outcomes.
+fn recorded_and_replayed(program: &Path, input: &[u8], log: &Path) -> std::io::Result<(Outcome, Outcome)> {
     let mut record = fennec_command();
     record.args(["run", "--record", &log.to_string_lossy()]);
-    record.args(engine);
     record.arg(program).arg("given").current_dir(program.parent().unwrap_or(Path::new(".")));
     let recorded = record.output_given(input, DEADLINE)?;
     // With nothing on standard input, so what it read can only come from the recording.
@@ -62,34 +58,34 @@ def main(stdout: Stdout, clock: Clock, entropy: Entropy, args: Args, env: Env):
 ";
 
 #[test]
-fn a_run_using_the_clock_and_random_numbers_replays_identically_in_both_engines() -> std::io::Result<()> {
+fn a_run_using_the_clock_and_random_numbers_replays_identically() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
     let dir = folder("dice")?;
     let program = dir.join("dice.fen");
     std::fs::write(&program, DICE)?;
-    let engines: &[Option<&str>] =
-        if runtime_built() { &[Some("--interp"), None] } else { &[Some("--interp")] };
-    for engine in engines {
-        let log = dir.join("dice.log");
-        let (recorded, replayed) = recorded_and_replayed(&program, *engine, b"", &log)?;
-        assert_eq!(recorded.2, Some(0), "{engine:?}: {}", recorded.1);
-        assert_eq!(replayed, recorded, "{engine:?}");
-        // Another run draws other numbers at another time: the replay's are the recording's.
-        let again = outcome(
-            &fennec_command().args(["run"]).args(*engine).arg(&program).arg("given").output_within()?,
-        );
-        assert_ne!(again.0, recorded.0, "{engine:?}: a fresh run printed the same");
-    }
+    let log = dir.join("dice.log");
+    let (recorded, replayed) = recorded_and_replayed(&program, b"", &log)?;
+    assert_eq!(recorded.2, Some(0), "{}", recorded.1);
+    assert_eq!(replayed, recorded);
+    // Another run draws other numbers at another time: the replay's are the recording's.
+    let again = outcome(&fennec_command().args(["run"]).arg(&program).arg("given").output_within()?);
+    assert_ne!(again.0, recorded.0, "a fresh run printed the same");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 
 #[test]
 fn a_replay_that_asks_for_other_inputs_than_its_recording_stops_naming_both() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
     let dir = folder("diverges")?;
     let program = dir.join("dice.fen");
     std::fs::write(&program, DICE)?;
     let log = dir.join("dice.log");
-    let (recorded, _) = recorded_and_replayed(&program, Some("--interp"), b"", &log)?;
+    let (recorded, _) = recorded_and_replayed(&program, b"", &log)?;
     assert_eq!(recorded.2, Some(0), "{}", recorded.1);
     // One more reading of the clock than was recorded, before the time.
     std::fs::write(
@@ -133,14 +129,14 @@ def main(stdout: Stdout, clock: Clock):
 /// there stops, naming both.
 #[test]
 fn a_native_sleep_is_recorded_and_a_replay_without_it_stops() -> std::io::Result<()> {
-    if !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let dir = folder("nap")?;
     let program = dir.join("nap.fen");
     std::fs::write(&program, NAP)?;
     let log = dir.join("nap.log");
-    let (recorded, replayed) = recorded_and_replayed(&program, None, b"", &log)?;
+    let (recorded, replayed) = recorded_and_replayed(&program, b"", &log)?;
     assert_eq!(recorded.2, Some(0), "{}", recorded.1);
     assert_eq!(replayed, recorded);
     std::fs::write(&program, NAP.replace("    clock.sleep(Duration.millis(5))\n", ""))?;
@@ -169,31 +165,30 @@ const DRAWN: &str = "def main(stdout: Stdout, clock: Clock, entropy: Entropy):
 /// workers as it was recorded with, whatever the replay is told.
 #[test]
 fn a_parallel_call_whose_ranges_take_inputs_replays_identically() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
     let dir = folder("drawn")?;
     let program = dir.join("drawn.fen");
     std::fs::write(&program, DRAWN)?;
-    let engines: &[Option<&str>] =
-        if runtime_built() { &[Some("--interp"), None] } else { &[Some("--interp")] };
-    for engine in engines {
-        let log = dir.join("drawn.log");
-        let mut record = fennec_command();
-        // Every item a range of its own, on the pool, so the ranges take turns on the threads.
-        record.env("FENNEC_THREADS", "4").env("FENNEC_PARALLEL_STRESS", "1");
-        record.args(["run", "--record", &log.to_string_lossy()]);
-        record.args(*engine).arg(&program).current_dir(&dir);
-        let recorded = outcome(&record.output_within()?);
-        assert_eq!(recorded.2, Some(0), "{engine:?}: {}", recorded.1);
-        for threads in ["4", "1", "7", "4", "2"] {
-            let replayed = outcome(
-                &fennec_command()
-                    .env("FENNEC_THREADS", threads)
-                    .env("FENNEC_PARALLEL_STRESS", "1")
-                    .args(["replay", &log.to_string_lossy()])
-                    .current_dir(&dir)
-                    .output_within()?,
-            );
-            assert_eq!(replayed, recorded, "{engine:?}, replayed with FENNEC_THREADS={threads}");
-        }
+    let log = dir.join("drawn.log");
+    let mut record = fennec_command();
+    // Every item a range of its own, on the pool, so the ranges take turns on the threads.
+    record.env("FENNEC_THREADS", "4").env("FENNEC_PARALLEL_STRESS", "1");
+    record.args(["run", "--record", &log.to_string_lossy()]);
+    record.arg(&program).current_dir(&dir);
+    let recorded = outcome(&record.output_within()?);
+    assert_eq!(recorded.2, Some(0), "{}", recorded.1);
+    for threads in ["4", "1", "7", "4", "2"] {
+        let replayed = outcome(
+            &fennec_command()
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_PARALLEL_STRESS", "1")
+                .args(["replay", &log.to_string_lossy()])
+                .current_dir(&dir)
+                .output_within()?,
+        );
+        assert_eq!(replayed, recorded, "replayed with FENNEC_THREADS={threads}");
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -224,7 +219,7 @@ def main(net: Net, stdout: Stdout) fails NetError:
 /// with no socket, each reading what its connection sent, until the recording runs out.
 #[test]
 fn a_recorded_server_replays_its_rounds_with_no_network() -> std::io::Result<()> {
-    if !runtime_built() {
+    if !ready() || !threads_runtime_built() {
         return Ok(());
     }
     let dir = folder("server")?;
@@ -286,6 +281,9 @@ fn several_tasks_or_serves(source: &str) -> bool {
 
 #[test]
 fn every_single_task_example_replays_exactly_as_it_ran() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let mut programs = Vec::new();
     for entry in std::fs::read_dir(&examples)? {
@@ -318,7 +316,7 @@ fn every_single_task_example_replays_exactly_as_it_ran() -> std::io::Result<()> 
                             .map(|stem| stem.to_string_lossy().into_owned())
                             .unwrap_or_default();
                         let log = dir.join(format!("{name}.log"));
-                        match recorded_and_replayed(program, Some("--interp"), b"a line\nanother\n", &log) {
+                        match recorded_and_replayed(program, b"a line\nanother\n", &log) {
                             Ok((recorded, replayed)) if recorded == replayed => {}
                             Ok((recorded, replayed)) => {
                                 found.push(format!("{name}: recorded {recorded:?}\n  replayed {replayed:?}"));

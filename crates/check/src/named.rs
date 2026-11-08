@@ -73,7 +73,7 @@ fn in_order(pattern: &mut Pattern, span: Span, fields: &BTreeMap<(u32, u32, Stri
                 in_order(item, span, fields);
             }
         }
-        Pattern::Wildcard | Pattern::Bind(_) | Pattern::Literal(_) => {}
+        Pattern::Wildcard | Pattern::Bind(_) | Pattern::RefBind(_) | Pattern::Literal(_) => {}
     }
 }
 

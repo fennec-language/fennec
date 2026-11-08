@@ -1,0 +1,10 @@
+source f6e0049ae0c91aeab07cc0a6bb183265d029f96266b1efb695c84a74a5dba38f
+code 1
+stdout 2
+1
+stderr 156
+error: index 100 is out of range for length 3
+  --> <dir>/given_mut_fails_5.fen:10:22
+   |
+10 |         stdout.print(xs[i])
+   |                      ^^^^^

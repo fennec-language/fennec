@@ -1,0 +1,11 @@
+source fb05e2dc8431904bf8de420043fbea5e6982e25834b5ec33d4e1f06f37ea40cb
+code 0
+stdout 239
+3 3 3 three was last
+0 1 4 4 4
+6 0 6
+8 1
+1 100 ["one", "two", "three", "from a copy", "through a list", "through a copied list", "in a loop", "in a loop", "inside with"]
+[100] 0
+Log(lines=["in a loop"], count=1, note="in a loop was last")
+stderr 0

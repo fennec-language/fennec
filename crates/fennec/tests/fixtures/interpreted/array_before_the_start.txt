@@ -1,0 +1,9 @@
+source 7d57527d8c18bfd0e8a32e1ff9bf1b9e657380cbffcf3074b980227b434d146d
+code 1
+stdout 0
+stderr 165
+error: index -4 is out of range for length 3
+ --> <dir>/array_before_the_start.fen:4:18
+  |
+4 |     stdout.print(values[at + 0])
+  |                  ^^^^^^^^^^^^^^

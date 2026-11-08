@@ -1,0 +1,6 @@
+source 26881738cd509cb08b2c7c043b0e3c2395c2e944ad2d678cf717f9e69c07fdbc
+code 0
+stdout 51
+["a 2 2", "b 1 1", "c 0 0"] 0
+["x 1 1", "y 0 0"] 0
+stderr 0

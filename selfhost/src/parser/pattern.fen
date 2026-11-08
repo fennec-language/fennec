@@ -74,6 +74,9 @@ extend Parser:
                     return literal(.Bool(word == "True"), token.span)
                 if word == "None":
                     return literal(.Nothing, token.span)
+                # `case .Button(ref clicks):` changes the field where it is.
+                if word == "ref":
+                    return .RefBind(self.name("a name after `ref`")?)
                 self.pos -= 1
                 fail self.unexpected("a pattern")
             case .Punct(text): self.punct_pattern(text, token.span)?

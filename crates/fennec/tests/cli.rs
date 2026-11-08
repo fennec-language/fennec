@@ -2032,6 +2032,72 @@ fn stops(dir: &Path, home: &Path) -> bool {
     })
 }
 
+/// `fennec update` pins a kit from git in kit.lock, and says so; run again, it has nothing to do.
+#[test]
+fn fennec_update_pins_a_kit_from_git() {
+    let dir = scratch("update").unwrap();
+    let repository = dir.join("physics");
+    std::fs::create_dir_all(repository.join("src")).unwrap();
+    std::fs::write(
+        repository.join("kit.toml"),
+        "name = \"physics\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n",
+    )
+    .unwrap();
+    std::fs::write(repository.join("src/lib.fen"), "").unwrap();
+    let git = |args: &[&str]| {
+        let done = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args([
+                "-c",
+                "user.name=Fennec",
+                "-c",
+                "user.email=fennec@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(done.status.success(), "{}", text(&done.stderr));
+        text(&done.stdout).trim().to_owned()
+    };
+    git(&["init", "--quiet"]);
+    git(&["add", "--all"]);
+    git(&["commit", "--quiet", "-m", "physics"]);
+    let commit = git(&["rev-parse", "HEAD"]);
+    let kit = dir.join("game");
+    std::fs::create_dir_all(kit.join("src")).unwrap();
+    std::fs::write(
+        kit.join("kit.toml"),
+        format!(
+            "name = \"game\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\nphysics = {{ git = \"file:///{}\", commit = \"{commit}\" }}\n",
+            repository.display().to_string().replace('\\', "/").trim_start_matches('/')
+        ),
+    )
+    .unwrap();
+    std::fs::write(kit.join("src/main.fen"), "def main():\n    pass\n").unwrap();
+    let update = || {
+        crate::executables::fennec_command()
+            .arg("update")
+            .current_dir(&kit)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_OFFLINE")
+            .output()
+            .unwrap()
+    };
+    let first = update();
+    assert!(first.status.success(), "{}", text(&first.stderr));
+    assert!(
+        text(&first.stdout).starts_with("kit.lock: `physics` pinned to file://"),
+        "{}",
+        text(&first.stdout)
+    );
+    assert!(std::fs::read_to_string(kit.join("kit.lock")).unwrap().contains(&format!(" {commit}\n")));
+    assert_eq!(text(&update().stdout), "kit.lock pins every dependency already\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[cfg(unix)]
 fn small_kit(name: &str) -> std::io::Result<(PathBuf, PathBuf)> {
     let dir = scratch(name)?;

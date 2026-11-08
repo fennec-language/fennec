@@ -1,0 +1,16 @@
+[package]
+name = "fennec-deps"
+description = "A kit's dependencies: from git pinned to a commit or from a path, pinned by hash in kit.lock, fetched without running anything"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+fennec-blake3.workspace = true
+fennec-kit.workspace = true
+
+[lints]
+workspace = true

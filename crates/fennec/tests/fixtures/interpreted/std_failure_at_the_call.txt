@@ -1,0 +1,9 @@
+source a0405be22bd719f53a7838b1ff5df88be553fc5f415e8ffd657008ae8bfe65a1
+code 1
+stdout 0
+stderr 137
+error: index 7 is out of range for length 3
+ --> <dir>/std_failure_at_the_call.fen:3:5
+  |
+3 |     out.swap(0, 7)
+  |     ^^^^^^^^^^^^^^

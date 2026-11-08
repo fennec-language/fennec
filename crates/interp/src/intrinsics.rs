@@ -71,7 +71,7 @@ pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagn
         }
         ("float_of_bits", [Value::Int(bits)]) => Ok(Value::Float(f64::from_bits(bits.cast_unsigned()))),
         // What a type is, which only native code knows as it runs.
-        ("shape_hash" | "type_name", []) => Err(Diagnostic::new(
+        ("shape_hash" | "layout" | "type_name", []) => Err(Diagnostic::new(
             "this saves or loads through a format written in Fennec, like `std.pack`, which needs native code",
             span,
         )

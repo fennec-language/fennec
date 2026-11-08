@@ -496,6 +496,21 @@ impl Io {
         !self.servers.is_empty() || !self.waiting.is_empty()
     }
 
+    /// What this worker's runtime holds, and the tasks and connections it keeps, for
+    /// `FENNEC_LIVE_REPORT` (see `live`).
+    pub(in crate::embed) fn publish_live(&self, now: bool) {
+        super::live::publish(now, || {
+            let mut counts = super::live::of_this_thread();
+            counts.tasks = self.accounts.len()
+                + self.temporaries.len()
+                + self.waiting.len()
+                + self.ready.len()
+                + self.owners.len();
+            counts.connections = calls::connections();
+            counts
+        });
+    }
+
     /// Whether a task is ready to run.
     pub(in crate::embed) fn has_ready(&self) -> bool {
         !self.ready.is_empty()

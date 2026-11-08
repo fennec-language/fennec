@@ -1,0 +1,10 @@
+source 3c0ca164089a4cc00fb2e8662c9b4f698b70576217c9806474b0f3a6be86ee5c
+code 1
+stdout 12
+[2, 4, 6] 6
+stderr 200
+error: `main` failed: InvalidValue(message="\"x\" isn't an int")
+ --> <dir>/parallel_tries.fen:4:1
+  |
+4 | def main(stdout: Stdout) fails InvalidValue:
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -9832,7 +9832,7 @@ def main(stdout: Stdout):
     stdout.print(who)
 "#;
 
-/// The same enums read and written as JSON, and as what a result holds.
+/// The same enums read and written as JSON, and an error with cases as what a result holds.
 const ENUMS_IN_JSON_AND_RESULTS: &str = r#"from std import json
 
 
@@ -9841,7 +9841,7 @@ enum Token:
     Word(text: str)
     Num(value: int)
 
-enum Failure:
+error Failure:
     Plain
     Why(reason: str)
 

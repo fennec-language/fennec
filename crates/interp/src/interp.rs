@@ -548,7 +548,7 @@ mod tests {
         let source = "error Lost:\n    why: str\n\ndef main(stdout: Stdout):\n    lost = Lost(why=\"x\")\n    lost.add_note(\"y\")\n";
         let module = fennec_syntax::parse(source).unwrap();
         let error = super::run(&module, &mut Vec::new()).unwrap_err();
-        assert!(error.message.contains("mut name"), "{}", error.message);
+        assert_eq!(error.message, "`lost` isn't mut");
     }
 
     #[test]

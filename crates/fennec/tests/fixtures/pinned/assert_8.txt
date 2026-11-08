@@ -1,0 +1,12 @@
+source 163e8d93e36e8714fa84768c66dcdc77e82ae34b74d2a36d774d6c95e2b4dff0
+code 1
+stdout 2
+1
+stderr 290
+error: this assertion failed
+  --> <dir>/assert_8.fen:31:12
+   |
+31 |     assert Point(x=1, label="p") == Point(x=2, label="q")
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: the left side is Point(x=1, label="p") and the right side is Point(x=2, label="q")

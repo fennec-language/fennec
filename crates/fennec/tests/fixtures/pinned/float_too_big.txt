@@ -1,0 +1,9 @@
+source e4c6376019f5ccd5b1ff7f66d691ac86e5c8a5ef11855c71fa1b5ee69da6455b
+code 1
+stdout 0
+stderr 167
+error: can't turn a float into an int
+ --> <dir>/float_too_big.fen:3:18
+  |
+3 |     stdout.print(int(huge * huge / huge))
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^

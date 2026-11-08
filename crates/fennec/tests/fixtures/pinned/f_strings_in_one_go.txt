@@ -1,0 +1,18 @@
+source 91655c02ccd0b471b99a684e3a99b2c0dd2e19455b936b7377bb0a6d7f7742e6
+code 0
+stdout 438
+fóx
+a string long enough that it can't be held inline, ünïcode too
+[]
+-9223372036854775808|123456789012345678|0
+2.2250738585072014e-308|1.5|-0.0|1e+300
+True False
+Point(x=1, y=2) Shape.Dot Shape.Box(side=2.5)
+[1, 2, 3]
+-9,223,372,036,854,775,808|1.250|123,456,789,012,345,678
+fóxfóxfóxfóxfóxfóxfóxfóx
+ünïfóxçøa string long enough that it can't be held inline, ünïcode too-9223372036854775808
+exact
+fóx is 3 chars
+38335
+stderr 0

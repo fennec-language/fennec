@@ -57,7 +57,6 @@ The target itself is 100%. Each engine aims for its own share of it:
 | Engine | Aim |
 |---|---|
 | LLVM's release builds, which the suite measures | 110% of target |
-| The JIT, on its way out | 80% now, 85% later |
 | The interpreter | 10–30% |
 
 The goal across the suite is 95% of target. Reports show it against both twins: unchecked, which is what's pinned today, and built with overflow checks, as Fennec is. Those checks cost Rust itself about 5% by cycles and 9% by instructions. The checked twins come when the tool adds them.
@@ -102,9 +101,8 @@ Java's includes the JVM starting and its JIT warming up, as it does for anyone r
 program. Kernel time is what each program says its own work took: with `--time`, it prints
 one more line, `kernel-ns N`, from a monotonic clock started at the beginning of its work.
 The Rust, Go and Java twins take `--time` themselves; Java runs its work once first, to warm
-its JIT up, and times the second run. A Fennec kernel stays as it is, since the JIT doesn't
-run the clock or the arguments natively and the fallback check holds kernels to that: the
-suite builds it from a copy whose `main` adds the same two lines. Without `--time`, each does
+its JIT up, and times the second run. A Fennec kernel stays as it is: the suite builds it
+from a copy whose `main` adds the same two lines. Without `--time`, each does
 the same work and prints the same thing as ever. The report leads
 with kernel time, and shows each language's startup, a hello-world's best run from
 `bench/startup/empty.*`, beside it. Rust is still the twin the LLVM backend is held to: a Go or Java twin

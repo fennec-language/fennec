@@ -1,0 +1,26 @@
+source 6253fcec73531226689352ce6c98ebca6c9843b2cde6dcf28f79b3cdd8eadb13
+code 0
+stdout 228
+168 7 True False -1
+0 168
+a 2
+fennec 1
+fox 2
+6 2 False
+3 True False
+13
+1 one
+2 two
+0 5.5
+1 6.5
+1 x
+2 y
+6 2.0 False True
+3 2
+1 a
+abcdef 6 bc True True
+5 0 [False, True, False] [7]
+True False True True True True True
+True False
+6
+stderr 0

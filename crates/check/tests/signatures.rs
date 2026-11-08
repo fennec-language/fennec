@@ -93,7 +93,7 @@ fn functions_that_can_fail_return_results() {
             a(n)? + 1
 
         def d(n: int):
-            a(n)
+            a(n)?
 
         def e(n: int) -> int:
             a(n)?
@@ -111,7 +111,7 @@ fn functions_that_can_fail_return_results() {
     assert_eq!(returns(program, "g"), Ok(result(Type::Unit, oops)));
     let signatures = check(program).unwrap();
     assert!(signatures.get("a").unwrap().can_fail);
-    assert!(!signatures.get("d").unwrap().can_fail);
+    assert!(signatures.get("d").unwrap().can_fail);
 }
 
 #[test]
@@ -373,7 +373,7 @@ fn values_from_several_places_combine() {
         def d(n: int) -> int:
             if n > 1:
                 fail Oops('x')
-            a(n)
+            a(n)?
     ";
     let both = Type::Errors(vec!["Oops".to_owned(), "Other".to_owned()]);
     assert_eq!(returns(program, "c"), Ok(result(optional(Type::Int), both)));
@@ -436,7 +436,7 @@ fn only_the_value_a_function_ends_with_is_checked_against_its_return_type() {
 
         def d(n: int) -> int:
             x = risky(n)?
-            risky(x)
+            risky(x)?
     ";
     assert_eq!(problems(program), ["this is the result of something that can fail @ risky(n)"]);
 }

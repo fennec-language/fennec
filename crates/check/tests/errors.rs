@@ -100,6 +100,38 @@ fn question_mark_else_and_match_get_the_value_out() {
     assert_eq!(problems(&format!("{RISKY}\n{}", crate::dedent(program))), Vec::<String>::new());
 }
 
+/// A `match` over what something that can fail gives back handles its value and its failure, or
+/// has `case _`, as any `match` handles every case: a failure would otherwise stop the program.
+#[test]
+fn a_match_over_a_result_handles_the_value_and_the_failure() {
+    let found =
+        |arms: &str| problems(&format!("{RISKY}\ndef f(n: int) -> int:\n    match risky(n):\n{arms}"));
+    let empty: [&str; 0] = [];
+    assert_eq!(
+        found("        case Ok(value): value\n"),
+        ["this `match` doesn't handle the failure @ risky(n)"]
+    );
+    assert_eq!(
+        found("        case Err(error): 0\n"),
+        ["this `match` doesn't handle the value it gives when it works @ risky(n)"]
+    );
+    // A guarded case might not be taken, so it covers nothing.
+    assert_eq!(
+        found("        case Ok(value): value\n        case Err(error) if n > 0: 0\n"),
+        ["this `match` doesn't handle the failure @ risky(n)"]
+    );
+    assert_eq!(found("        case Ok(value): value\n        case Oops(why): why.len()\n"), empty);
+    assert_eq!(found("        case Ok(value): value\n        case _: 0\n"), empty);
+    assert_eq!(found("        case Ok(value): value\n        case Err(_): 0\n"), empty);
+    // Several errors are handled one by one, an enum's case by case.
+    let several = "error Gone:\n    path: str\n\nerror Bad:\n    Empty\n    Long(size: int)\n\n\
+        def load(n: int) -> int fails Gone | Bad:\n    if n == 0: fail Gone(path=\"a\")\n    if n == 1: fail .Empty\n    n\n\n\
+        def f(n: int) -> int:\n    match load(n):\n        case Ok(value): value\n        case Err(Gone(path)): 0\n        case Err(.Empty): 1\n";
+    assert_eq!(problems(several), ["this `match` doesn't handle the failure @ load(n)"]);
+    let all = format!("{several}        case Err(.Long(size)): size\n");
+    assert_eq!(problems(&all), empty);
+}
+
 #[test]
 fn ignored_results_are_mistakes() {
     let program = "
@@ -124,12 +156,29 @@ fn ignored_results_are_mistakes() {
 }
 
 #[test]
-fn a_function_gives_back_its_last_result_unhandled() {
+fn a_function_passes_a_failure_up_only_with_a_question_mark() {
     let program = "
         def passthrough(n: int):
             risky(n)
+
+        def early(n: int):
+            if n > 0:
+                return risky(n)
+            risky(n)?
     ";
-    assert_eq!(problems(&format!("{RISKY}\n{}", crate::dedent(program))), Vec::<String>::new());
+    let program = format!("{}\n{}", crate::dedent(RISKY), crate::dedent(program));
+    assert_eq!(
+        problems(&program),
+        [
+            "this can fail, and a failure passes up only with `?` @ risky(n)",
+            "`early` returns a result of int and an int @ def early(n: int)",
+            "this can fail, and a failure passes up only with `?` @ risky(n)"
+        ]
+    );
+    let module = fennec_syntax::parse(&program).unwrap();
+    let diagnostics = fennec_check::check(&module).err().unwrap_or_default();
+    let fixed = fennec_syntax::apply_fixes(&program, 0, &diagnostics).unwrap();
+    assert_eq!(fixed.matches("risky(n)?").count(), 3, "{fixed}");
 }
 
 #[test]
@@ -306,7 +355,7 @@ fn only_the_error_fails_names_can_escape() {
 fn a_result_passed_on_adds_its_errors_to_the_functions() {
     let program = "error Bad:\n    why: str\n\nerror Worse:\n    why: str\n\ndef inner(n: int) -> int:\n    \
                    if n < 0:\n        fail Bad(why=\"neg\")\n    n\n\ndef outer(n: int) -> int:\n    if n > 9:\n        \
-                   fail Worse(why=\"big\")\n    inner(n)\n";
+                   fail Worse(why=\"big\")\n    inner(n)?\n";
     let errors = fennec_check::Type::Errors(vec!["Bad".to_owned(), "Worse".to_owned()]);
     assert_eq!(
         crate::returns(program, "outer"),

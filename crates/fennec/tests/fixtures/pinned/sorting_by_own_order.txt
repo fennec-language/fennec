@@ -1,0 +1,7 @@
+source 12dbb8ffeefdd224af1127af5f8b15b997ea9cb7a093556fa40cc37c5a54fbb5
+code 0
+stdout 43
+["bo", "vex", "ash", "kit"]
+0 ["one"]
+True
+stderr 0

@@ -1,0 +1,8 @@
+source a200a0a8d71568c43d46d6c1b59892f5e20a06360f0f20cf3742ad137dad8274
+code 0
+stdout 57
+["b"]
+uno
+a value longer than twenty-three bytes
+missing
+stderr 0

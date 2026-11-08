@@ -574,3 +574,53 @@ fn a_round_that_fails_stops_the_server_and_cuts_the_others_short() {
     assert!(!had_to_stop, "the server ended by itself");
     assert_eq!(served.connections, 2);
 }
+
+static STOP_SPIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A round that's sent "spin" computes, ticking every few thousand turns as native code does,
+/// until it's told to stop; any other line is answered "pong" at once.
+fn spins_or_pongs() -> Handler {
+    Arc::new(|mut conn: Conn| {
+        let line = conn.read_line(None).ok().flatten().unwrap_or_default();
+        if line == b"spin" {
+            let started = std::time::Instant::now();
+            let mut x = 1_u64;
+            let mut turns = 0_u64;
+            while !STOP_SPIN.load(std::sync::atomic::Ordering::SeqCst)
+                && started.elapsed() < Duration::from_secs(20)
+            {
+                x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                turns += 1;
+                if turns.is_multiple_of(4096) {
+                    super::task_tick();
+                }
+            }
+            std::hint::black_box(x);
+            return i64::from(conn.write(b"spun\n").is_err());
+        }
+        i64::from(conn.write(b"pong\n").is_err())
+    })
+}
+
+/// A round that computes without ever waiting makes way at its ticks, so on a single worker
+/// another connection that arrives while it spins is still answered.
+#[test]
+fn a_round_that_never_waits_makes_way_for_a_connection_that_arrives_meanwhile() {
+    STOP_SPIN.store(false, std::sync::atomic::Ordering::SeqCst);
+    run(1, &spins_or_pongs(), |address| {
+        let mut spinner = std::net::TcpStream::connect(address).unwrap();
+        spinner.write_all(b"spin\n").unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let mut pinger = std::net::TcpStream::connect(address).unwrap();
+        pinger.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        pinger.write_all(b"ping\n").unwrap();
+        let mut back = String::new();
+        let answered = BufReader::new(pinger).read_line(&mut back);
+        STOP_SPIN.store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut spun = String::new();
+        BufReader::new(spinner).read_line(&mut spun).unwrap();
+        assert!(answered.is_ok(), "the ping wasn't answered while the round spun: {answered:?}");
+        assert_eq!(back, "pong\n");
+        assert_eq!(spun, "spun\n");
+    });
+}

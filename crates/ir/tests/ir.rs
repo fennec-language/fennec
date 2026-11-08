@@ -2838,9 +2838,9 @@ const DIAL_ERROR: &str = "error DialError:
 
 def connect(host: str, port: int) -> int fails DialError:
     if host == \"\":
-        fail DialError.NotFound(host)
+        fail .NotFound(host)
     if port == 0:
-        fail DialError.Closed
+        fail .Closed
     port
 
 def described(port: int) -> str:

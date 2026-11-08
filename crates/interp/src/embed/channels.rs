@@ -90,9 +90,20 @@ impl Channel {
     }
 }
 
-/// `fennec_channel_new(size)`: an open channel holding at most `size` messages, at least one.
+/// A channel's size, or the failure of one that couldn't hold a message.
+fn size_of(size: i64) -> Option<usize> {
+    let held = usize::try_from(size).ok().filter(|size| *size > 0);
+    if held.is_none() {
+        let message = format!("a channel has to hold at least 1 message, but its size is {size}");
+        super::fail_with(Diagnostic::new(message, Span::default()));
+    }
+    held
+}
+
+/// `fennec_channel_new(size)`: an open channel holding at most `size` messages. A size below 1
+/// fails.
 pub extern "C" fn channel_new(size: i64) -> i64 {
-    let size = usize::try_from(size).unwrap_or(1).max(1);
+    let Some(size) = size_of(size) else { return 0 };
     let channel = Channel {
         size,
         replay: crate::replay::place("c"),
@@ -121,7 +132,8 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
         Turn::Goes => -1,
         Turn::Gives(code) => return code,
     };
-    let address = u64::try_from(value).unwrap_or(0);
+    // A word's bits go across as they are: a negative number or float is as good as any.
+    let address = u64::from_ne_bytes(value.to_ne_bytes());
     let message = if is_block != 0 && address != 0 {
         let copied = attempt(|state: &mut State| guarded::copied_for_task(state, address).map(Some));
         let Some((copy, table)) = copied else { return DONE };
@@ -198,7 +210,7 @@ pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64
             drop(queue);
             wake(waiting);
             channel.changed.notify_all();
-            *value = i64::try_from(taken(message)).unwrap_or(0);
+            *value = i64::from_ne_bytes(taken(message).to_ne_bytes());
             return DONE;
         }
         if queue.closed {

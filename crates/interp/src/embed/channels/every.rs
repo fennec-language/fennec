@@ -46,10 +46,10 @@ fn listening_to<T>(use_it: impl FnOnce(&mut HashMap<i64, i64>) -> T) -> T {
     use_it(LISTENING.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(HashMap::new))
 }
 
-/// `fennec_channel_new_every(size)`: an open channel to `.Every`, keeping the last `size` messages,
-/// at least one.
+/// `fennec_channel_new_every(size)`: an open channel to `.Every`, keeping the last `size` messages.
+/// A size below 1 fails.
 pub extern "C" fn channel_new_every(size: i64) -> i64 {
-    let size = usize::try_from(size).unwrap_or(1).max(1);
+    let Some(size) = super::size_of(size) else { return 0 };
     let queue = Queue { every: Some(Listeners::default()), ..Queue::default() };
     let channel = Channel {
         size,
@@ -155,7 +155,7 @@ pub(super) fn receive(channel: &Channel, listener: i64, timeout_ns: i64, value: 
             };
             super::met(channel, "receive", DONE);
             drop(queue);
-            *value = i64::try_from(super::taken(message)).unwrap_or(0);
+            *value = i64::from_ne_bytes(super::taken(message).to_ne_bytes());
             return DONE;
         }
         if queue.closed {

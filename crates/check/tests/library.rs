@@ -251,16 +251,16 @@ fn a_program_to_emit_is_checked_through_what_lowering_calls() {
     assert!(signatures.get("Deque.appendleft").is_none());
 }
 
-/// `std.concurrent`'s channels check, and `with Channel[Job].open(size=4) as jobs:`, a generic
-/// source called through its type, is written in where it's used with `Job` for its `T`, so what
-/// runs is the source's own body.
+/// `std.concurrent`'s channels check, and `with channel[Job](size=4) as jobs:`, a generic source,
+/// is written in where it's used with `Job` for its `T`, so what runs is the source's own body. A
+/// `Channel` is only made that way: its constructor's private.
 #[test]
 fn a_channel_opens_through_its_generic_source() {
-    let source = "from std.concurrent import Channel, Closed, Inbox, Sender, Timeout\n\n\
+    let source = "from std.concurrent import Closed, Inbox, Sender, Timeout, channel\n\n\
         enum Job:\n    Build(name: str)\n    Stop\n\n\
         def drain(inbox: Inbox[Job]) -> int:\n    mut count = 0\n    for job in inbox:\n        match job:\n            \
         case .Build(name):\n                count += name.len()\n            case .Stop:\n                return count\n    count\n\n\
-        def main(stdout: Stdout) fails Closed | Timeout:\n    with Channel[Job].open(size=4) as jobs:\n        \
+        def main(stdout: Stdout) fails Closed | Timeout:\n    with channel[Job](size=4) as jobs:\n        \
         sender: Sender[Job] = jobs.sender()\n        sender.send(.Build(name=\"core\"))?\n        jobs.send(.Stop, timeout=1s)?\n        \
         stdout.print(drain(jobs.inbox()))\n";
     let mut module = fennec_syntax::parse(source).unwrap();
@@ -280,9 +280,34 @@ fn a_channel_opens_through_its_generic_source() {
     }
     assert_eq!(
         problems(
-            "from std.concurrent import Channel\n\ndef main():\n    with Channel[int, str].open(size=1) as jobs:\n        pass\n"
+            "from std.concurrent import channel\n\ndef main():\n    with channel[int, str](size=1) as jobs:\n        pass\n"
         ),
-        ["`Channel` takes 1 type in brackets, but this gives 2 @ int, str"]
+        ["`channel` takes 1 type in brackets, but this gives 2 @ channel[int, str](size=1)"]
+    );
+    let made = problems(
+        "from std.concurrent import Channel\n\ndef main():\n    jobs = Channel[int](_channel=1)\n    _ = jobs\n",
+    );
+    assert_eq!(made.len(), 1, "{made:?}");
+    assert!(made[0].contains("`_channel`"), "{made:?}");
+}
+
+/// A static method called through a generic type with its type written: the type's parameters
+/// come from the brackets, and a wrong count says so.
+#[test]
+fn a_static_method_takes_its_types_from_the_type_written() {
+    let boxes = "struct Boxed[T]:\n    items: list[T]\n\n    def empty() -> Boxed[T]:\n        Boxed[T](items=[])\n\n";
+    let empty: [&str; 0] = [];
+    assert_eq!(
+        problems(&format!(
+            "{boxes}def main(stdout: Stdout):\n    held = Boxed[int].empty()\n    stdout.print(held.items.len())\n"
+        )),
+        empty
+    );
+    assert_eq!(
+        problems(&format!(
+            "{boxes}def main(stdout: Stdout):\n    held = Boxed[int, str].empty()\n    stdout.print(held.items.len())\n"
+        )),
+        ["`Boxed` takes 1 type in brackets, but this gives 2 @ int, str"]
     );
 }
 

@@ -83,6 +83,10 @@ impl FnCx<'_> {
                 let expected = match written {
                     Some(written) => self.written_type(written),
                     None if op.is_none() => self.declared_type(name),
+                    // `query += " where id = 1"` keeps a `LiteralStr` one when what's added is.
+                    None if op == Some(BinOp::Add) => {
+                        self.declared_type(name).filter(|ty| matches!(ty, Type::LiteralStr))
+                    }
                     None => None,
                 };
                 let ty = match &expected {
@@ -118,7 +122,12 @@ impl FnCx<'_> {
                 self.own_indexes_can_write(target);
                 let current = self.place_type(target);
                 self.record(target.span, &current);
-                let mut ty = if op.is_none() { self.expr_as(value, &current) } else { self.expr(value) };
+                let adds_literal = op == Some(BinOp::Add) && matches!(current, Type::LiteralStr);
+                let mut ty = if op.is_none() || adds_literal {
+                    self.expr_as(value, &current)
+                } else {
+                    self.expr(value)
+                };
                 if let Some(op) = op {
                     ty = self.binary(op, &current, &ty, target.span, (target.span, value.span));
                 }
@@ -221,7 +230,11 @@ impl FnCx<'_> {
                     format!("`{name}` holds {}, so it can't be given {}", a(&declared), a(&ty)),
                     span,
                 )
-                .with_help(format!("a name keeps one type: use a new name for {}", a(&ty))),
+                .with_help(if matches!(declared, Type::LiteralStr) {
+                    crate::messages::LITERAL_HELP.to_owned()
+                } else {
+                    format!("a name keeps one type: use a new name for {}", a(&ty))
+                }),
             );
             return;
         }

@@ -257,6 +257,7 @@ mod unix {
                     // nothing else is going on.
                     if cleanup_due(last_cleanup.map(|last| last.elapsed())) {
                         let _ = cache.cleanup(Cache::cap());
+                        fennec_build::sweep_work(home, fennec_build::WORK_KEPT);
                         last_cleanup = Some(Instant::now());
                     }
                     std::thread::sleep(Duration::from_millis(20));

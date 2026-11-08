@@ -29,6 +29,11 @@ impl FnCx<'_> {
         if let Some(ty) = self.union_literal(expr, expected) {
             return ty;
         }
+        if matches!(self.checker.settled(expected).without_none(), Type::LiteralStr)
+            && let Some(ty) = self.literal_str(expr)
+        {
+            return ty;
+        }
         match &expr.kind {
             ExprKind::Variant(case) => {
                 let owner = self.case_owner(case, expected, expr.span);
@@ -93,6 +98,28 @@ impl FnCx<'_> {
         }
     }
 
+    /// What's written where a `LiteralStr` goes, if it's one by how it's written: a string
+    /// literal, literals joined with `+`, or `a if c else b` of them. Anything else, like a name typed `LiteralStr`, is
+    /// one by its type.
+    fn literal_str(&mut self, expr: &Expr) -> Option<Type> {
+        match &expr.kind {
+            ExprKind::Str(_) => Some(Type::LiteralStr),
+            ExprKind::Binary { op: op @ fennec_syntax::BinOp::Add, lhs, rhs } => {
+                let left = self.expr_as(lhs, &Type::LiteralStr);
+                let right = self.expr_as(rhs, &Type::LiteralStr);
+                if matches!((&left, &right), (Type::LiteralStr, Type::LiteralStr)) {
+                    return Some(Type::LiteralStr);
+                }
+                let sides = (left.without_literal(), right.without_literal());
+                Some(self.binary(*op, &sides.0, &sides.1, expr.span, (lhs.span, rhs.span)))
+            }
+            ExprKind::Cond { then, cond, otherwise } => {
+                Some(self.cond_value((then, cond, otherwise), Some(&Type::LiteralStr), expr.span))
+            }
+            _ => None,
+        }
+    }
+
     /// The types for a generic struct's parameters, where `name` builds one and `expected` is
     /// one of the same struct, like `Box[int | str]` where `Box(value=1)` goes.
     fn expected_generics(&mut self, name: &str, expected: &Type) -> Option<Vec<Type>> {
@@ -116,7 +143,10 @@ impl FnCx<'_> {
     /// item as one.
     fn union_literal(&mut self, expr: &Expr, expected: &Type) -> Option<Type> {
         let union = |checker: &mut crate::checker::Checker, ty: &Type| {
-            matches!(checker.settled(ty).without_none(), Type::Union(_) | Type::Generic(..))
+            matches!(
+                checker.settled(ty).without_none(),
+                Type::Union(_) | Type::Generic(..) | Type::LiteralStr
+            )
         };
         match (&expr.kind, self.checker.settled(expected).without_none()) {
             (ExprKind::List(items), Type::List(item)) if union(self.checker, &item) => {
@@ -235,7 +265,11 @@ impl FnCx<'_> {
         let got = self.expr_as(each, item);
         if !self.checker.fits(item, &got) {
             let message = format!("this holds {}, not {}", a(item), a(&got));
-            self.error(Diagnostic::new(message, each.span));
+            let mut diagnostic = Diagnostic::new(message, each.span);
+            if matches!(item, Type::LiteralStr) {
+                diagnostic = diagnostic.with_help(crate::messages::LITERAL_HELP);
+            }
+            self.error(diagnostic);
         }
     }
 

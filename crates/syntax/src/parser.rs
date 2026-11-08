@@ -4,6 +4,7 @@
 mod expr;
 mod pattern;
 mod stmt;
+mod template;
 
 use crate::ast::{
     Case, ExprKind, Extension, Field, FnDef, Generic, Import, Interface, Item, Module, Param, Stmt, StmtKind,
@@ -901,7 +902,7 @@ fn describe(tok: &Tok) -> String {
         Tok::Name(name) => format!("`{name}`"),
         Tok::Int(_) | Tok::Float(_) => "a number".to_owned(),
         Tok::Duration(_) => "a duration".to_owned(),
-        Tok::Str(_) | Tok::FStr(_) => "a string".to_owned(),
+        Tok::Str(_) | Tok::FStr(_) | Tok::TStr(_) => "a string".to_owned(),
         Tok::Kw(kw) => format!("`{}`", kw.text()),
         Tok::P(punct) => format!("`{}`", punct.text()),
         Tok::Newline => "the end of the line".to_owned(),

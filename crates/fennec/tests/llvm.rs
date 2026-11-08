@@ -8773,6 +8773,46 @@ fn members_given_to_builtins_taking_a_union_match_the_interpreter() -> std::io::
     same_as_the_interpreter_in_both_builds("members_given_to_builtins", MEMBERS_GIVEN_TO_BUILTINS)
 }
 
+/// A template string builds natively as the interpreter runs it: its text, its values of a
+/// union, each value's expression and format spec, a `LiteralStr` picked by a conditional and
+/// joined with `+`, and a template with no values.
+#[test]
+fn template_strings_build_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("templates", TEMPLATES)
+}
+
+const TEMPLATES: &str = r#"type SqlValue = int | str
+
+def placeholders(query: Template[SqlValue]) -> str:
+    mut sent = ""
+    for at, text in enumerate(query.strings):
+        sent += text
+        if at < query.values.len():
+            value = query.values[at]
+            if value is int:
+                sent += f"<int {value}>"
+            else:
+                sent += f"<str {value}>"
+    sent
+
+def order(up: bool) -> LiteralStr:
+    "asc" if up else "desc"
+
+def main(stdout: Stdout):
+    name = "ash"
+    least = 10
+    stdout.print(placeholders(t"select {name} where score > {least} order by score"))
+    stdout.print(placeholders(t"no values"), placeholders(t"{least}{name}"))
+    column: LiteralStr = "score " + order(False)
+    stdout.print(column)
+    shown: Template[SqlValue] = t"{name:>5} and {least}"
+    for part in shown.interpolations():
+        stdout.print(part.expression, part.format_spec)
+"#;
+
 /// A generic type built where one of it is expected takes its types from there: a `Box[int |
 /// str]` built from an int or a str, in a parameter, a name's type and a list of them.
 #[test]

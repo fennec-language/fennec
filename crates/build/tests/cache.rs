@@ -117,3 +117,20 @@ fn a_cache_that_cant_be_written_says_so() {
     assert!(cleanup.is_err(), "taking the lock failed, so cleanup can't be said to have run: {cleanup:?}");
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+/// What a command stopped before it tidied up leaves in `work` goes once it's old, and what a
+/// command working now has there stays.
+#[test]
+fn old_scratch_work_is_swept_and_current_work_stays() -> std::io::Result<()> {
+    let home = home("sweep")?;
+    entry(&home.join("work/fennec-llvm-1-a-0/f0.ll"), 10, 0)?;
+    let left = home.join("work/fennec-llvm-2-b-0");
+    entry(&left.join("f0.ll"), 10, 7200)?;
+    File::options().read(true).open(&left)?.set_modified(SystemTime::now() - Duration::from_secs(7200))?;
+    entry(&home.join("work/fennec-run-3-c-0"), 10, 7200)?;
+    assert_eq!(fennec_build::sweep_work(&home, fennec_build::WORK_KEPT), 2);
+    assert!(home.join("work/fennec-llvm-1-a-0/f0.ll").is_file(), "current work stays");
+    assert!(!left.exists() && !home.join("work/fennec-run-3-c-0").exists());
+    assert_eq!(fennec_build::sweep_work(&home.join("nowhere"), Duration::ZERO), 0);
+    std::fs::remove_dir_all(&home)
+}

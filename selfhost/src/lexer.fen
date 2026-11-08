@@ -69,7 +69,9 @@ struct Lexer:
             elif c == "\"":
                 self.string(start)?
             elif c == "f" and self.peek(1) == "\"":
-                self.fstring(start)?
+                self.fstring(start, template=False)?
+            elif c == "t" and self.peek(1) == "\"":
+                self.fstring(start, template=True)?
             elif c == "r" and self.peek(1) == "\"":
                 self.raw_string(start)?
             elif is_digit(c):
@@ -339,7 +341,9 @@ struct Lexer:
                     span=self.span(at),
                 )
 
-    def fstring(ref self, start: int):
+    ## An f-string, or a template string when `template`: the same text and `{}`s, built as a
+    ## `Template` instead of joined.
+    def fstring(ref self, start: int, template: bool):
         self.pos += 2
         mut parts = []
         mut text = ""
@@ -369,7 +373,7 @@ struct Lexer:
         self.pos += 1
         if text != "":
             parts.append(FPart.Text(text))
-        self.push(.FStr(parts), start)
+        self.push(.TStr(parts) if template else .FStr(parts), start)
 
     ## Reads `{expression}` or `{expression:spec}` inside an f-string.
     def fstring_code(ref self, start: int) -> FPart:

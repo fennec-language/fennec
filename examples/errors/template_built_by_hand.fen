@@ -1,0 +1,10 @@
+type SqlValue = int | str
+
+def count(query: Template[SqlValue]) -> int:
+    query.values.len()
+
+def main(stdout: Stdout):
+    name = "ash"
+    # The text a database runs can't be made while the program runs: write `t"..."` instead.
+    texts = [f"select * from players where name = '{name}'"]
+    stdout.print(count(Template(strings=texts, values=[], expressions=[], format_specs=[])))

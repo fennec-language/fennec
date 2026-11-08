@@ -395,6 +395,80 @@ fn text_repeats_with_its_own_operator() {
     );
 }
 
+/// A `LiteralStr` is text written in quotes in the source, or such text joined with `+`. It goes
+/// anywhere a `str` does, but a `str` never goes where one is asked for: an f-string, a `str`
+/// made while running, or a name holding a literal that isn't typed `LiteralStr`.
+#[test]
+fn only_text_written_in_the_source_is_a_literal_str() {
+    let program = "
+        struct Query:
+            sql: LiteralStr
+            parts: list[LiteralStr]
+
+        def query(sql: LiteralStr) -> int:
+            sql.len()
+
+        def named() -> LiteralStr:
+            'select ' + 'name'
+
+        def main(stdout: Stdout):
+            name = 'ash'
+            kept: LiteralStr = 'select 3'
+            mut grown: LiteralStr = 'a'
+            grown += ' b'
+            stdout.print(query('select 1'), query('select ' + '2'), query(kept), query(grown))
+            stdout.print(query(kept + ' where 1'), query(named()), kept.upper(), f'{kept}!')
+            stdout.print(Query(sql=named(), parts=['x', 'y' + 'z']).parts[0] + name)
+            copied = kept
+            stdout.print(query(f'select {name}'), query(name), query(copied), query(kept + name))
+            stdout.print(Query(sql='a', parts=['b', name]))
+            grown = name
+    ";
+    let wanted = "`sql` should be a LiteralStr, but this is a str";
+    assert_eq!(
+        problems(program),
+        [
+            format!("{wanted} @ f\"select {{name}}\""),
+            format!("{wanted} @ name"),
+            format!("{wanted} @ copied"),
+            format!("{wanted} @ kept + name"),
+            "this holds a LiteralStr, not a str @ name".to_owned(),
+            "`grown` holds a LiteralStr, so it can't be given a str @ grown".to_owned(),
+        ]
+    );
+}
+
+/// `t"..."` builds a `Template`, its values checked against what the template's `T` is where it
+/// goes, and its text `LiteralStr`s: an f-string is never a `Template`, and one built by hand
+/// can't take text made while running.
+#[test]
+fn a_template_string_checks_its_values_where_it_goes() {
+    let program = "
+        type SqlValue = int | str
+
+        def count(query: Template[SqlValue]) -> int:
+            query.values.len()
+
+        def main(stdout: Stdout):
+            name = 'ash'
+            price = 1.5
+            kept: Template[SqlValue] = t'select {name} where {price > 1.0}'
+            stdout.print(count(t'select {name}, {1}'), count(t'no values'), count(kept))
+            stdout.print(t'{name}!'.strings, t'{name:>5}'.format_specs[0])
+            stdout.print(count(t'select {price}'), count(f'select {name}'))
+            stdout.print(count(Template(strings=[f'{name}'], values=[], expressions=[], format_specs=[])))
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "this holds an int | str, not a bool @ price > 1.0",
+            "this holds an int | str, not a float @ price",
+            "`query` should be a Template[int | str], but this is a str @ f\"select {name}\"",
+            "this holds a LiteralStr, not a str @ f\"{name}\"",
+        ]
+    );
+}
+
 #[test]
 fn a_types_own_equality_has_to_give_back_a_bool() {
     let text = "struct Pair:\n    a: int\n\n    def ==(self, other: Pair) -> int:\n        1\n\ndef main(stdout: Stdout):\n    stdout.print(Pair(a=1) == Pair(a=2))\n";

@@ -371,11 +371,7 @@ impl FnCx<'_> {
             _ => &[],
         };
         let plain = self.builtin_args(name, args, named, &method.receives, span);
-        if *ty == Type::named("Stdout") && matches!(name, "print" | "write") {
-            for (given, at) in &plain {
-                self.not_a_secret(given, "printing this", *at);
-            }
-        }
+        self.no_secret_printed(ty, name, &plain);
         if (name == "write" && *ty == Type::named("Connection")
             || name == "send_to" && *ty == Type::named("UdpSocket"))
             && let [(data, at), ..] = plain.as_slice()

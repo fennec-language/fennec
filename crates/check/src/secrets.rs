@@ -27,6 +27,15 @@ impl FnCx<'_> {
         self.error(Diagnostic::new(message, at).with_help(help));
     }
 
+    /// What `Stdout.print` and `Stdout.write` are given is shown, so none of it can be a secret.
+    pub(crate) fn no_secret_printed(&mut self, ty: &Type, method: &str, given: &[(Type, Span)]) {
+        if *ty == Type::named("Stdout") && matches!(method, "print" | "write") {
+            for (given, at) in given {
+                self.not_a_secret(given, "printing this", *at);
+            }
+        }
+    }
+
     /// Where a `Secret` is in a value of this type, as a path from it, or "" when it's one itself.
     fn secret_in(&mut self, ty: &Type, path: &str, open: &mut Vec<String>) -> Option<String> {
         if let Some(name) = ty.type_name() {
@@ -53,7 +62,10 @@ impl FnCx<'_> {
     fn secret_in_fields(&mut self, name: &str, path: &str, open: &mut Vec<String>) -> Option<String> {
         let def = self.checker.program.type_info(name)?.def.clone();
         let fields = def.fields.iter().map(|field| (None, field));
-        let in_cases = def.cases.iter().flat_map(|case| case.fields.iter().map(|field| (Some(case.name.as_str()), field)));
+        let in_cases = def
+            .cases
+            .iter()
+            .flat_map(|case| case.fields.iter().map(|field| (Some(case.name.as_str()), field)));
         for (case, field) in fields.chain(in_cases) {
             let ty = self.checker.field_type(name, case, &field.name);
             let place = if path.is_empty() { field.name.clone() } else { format!("{path}.{}", field.name) };

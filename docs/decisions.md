@@ -774,7 +774,7 @@ error: `Character` can't be saved: `Character.inventory.on_change` is a function
    = fix: `@skip` the field `on_change`, with a default
    = fix: write `def serialize` and `def deserialize` for `Inventory`
 ```
-A `shared` value, a function value, a `Secret[str]` and an `Instant` are the values that can't be saved.
+A `shared` value, a function value, a `Secret[str]` and an `Instant` are the values that can't be saved. Built: each is refused by name, with what to save instead.
 *Why:* The name matches `@serialize`, and never collides with game words like `save` and `load`. Collections reach their natural shapes through the same public protocol any type can use, which replaces the idea that `std` collections map to those shapes inside `std`.
 
 **Structs mirror the wire format.** In JSON:
@@ -878,7 +878,7 @@ def play(ref conn: Connection, ref world: World) fails NetError:
 
 **`std.crypto` holds hashing, including BLAKE3, so there's no separate `std.hash`.** `blake3` and the other hashes take any iterable of bytes, so a file or a stream hashes without being read into one block first. Built: `blake3` and `sha256` take text, `bytes`, or a list or iterator of either, so `blake3(file.chunks(1_000_000))` hashes a file a megabyte at a time. The keyed hashes and HMAC still take text or `bytes`.
 
-**`Secret[str]` in `std.crypto` holds text that can't be printed, logged or saved.** Printing one, putting it in an f-string, a log line or a failure's message, and saving it in any format are compile errors. The text comes out only through one method, whose name says it's revealing a secret, so every place that reads it can be found by searching for that name. Chris decided this on 2026-11-07. Not built yet: `std.crypto` has no `Secret` today.
+**`Secret[str]` in `std.crypto` holds text that can't be printed, logged or saved.** Printing one, putting it in an f-string, a log line or a failure's message, and saving it in any format are compile errors. The text comes out only through one method, whose name says it's revealing a secret, so every place that reads it can be found by searching for that name. Chris decided this on 2026-11-07. Built: `Secret.of(value)` makes a `Secret[str]` or a `Secret[bytes]`, and `expose_secret()` is the one method that reads it. Printing it, an f-string or `str()` of it, and `json`, `toml` and `pack` saving it are compile errors, which name the field when it's inside a struct. A log line takes text, so a secret only reaches one through those. Printed some other way, as through a generic function's `T`, it shows `Secret(hidden)`.
 *Why:* Keys and passwords often leak through logs and error messages, and a type the compiler checks catches that where it's written, not after it ships.
 
 **First-party kits, not `std`:** `fennec/ml`, database drivers, windowing and input for games, and image formats.

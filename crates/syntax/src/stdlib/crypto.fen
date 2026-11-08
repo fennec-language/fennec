@@ -76,4 +76,3 @@ export struct Secret[T]:
     ## However it's printed, as through a generic function's `T`, it shows only that it's there.
     def str(self, ref out: StrWriter):
         out.write("Secret(hidden)")
-

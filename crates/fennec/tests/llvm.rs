@@ -7589,6 +7589,20 @@ fn a_failure_out_of_a_lock_puts_back_every_kind_of_write() -> std::io::Result<()
     )
 }
 
+/// A whole field holding an enum with blocks in it, or a struct, optional or tuple holding one, is
+/// put back when the block fails, whichever case it held and whichever it was given.
+#[test]
+fn a_failure_out_of_a_lock_puts_back_an_enum_field() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_failure_enum_fields",
+        include_str!("fixtures/lock_failure_enum_fields.fen"),
+        "kinds that kept a change: 0\n",
+    )
+}
+
 /// A `str` parameter written under a lock counts as a string where it's kept, on a worker too.
 #[test]
 fn a_str_parameter_written_under_a_lock() -> std::io::Result<()> {

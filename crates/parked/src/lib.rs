@@ -78,6 +78,12 @@ pub fn on_resume(hook: fn()) {
     let _ = ON_RESUME.set(hook);
 }
 
+/// Whether the running task has been cancelled, so parking gives back at once and it can't wait for
+/// anything.
+pub fn is_cancelled() -> bool {
+    current::is_cancelled()
+}
+
 /// The lowest address of the running task's stack, for what checks how far its stack has grown.
 /// With no task running on this thread, `None`.
 pub fn stack_low() -> Option<usize> {

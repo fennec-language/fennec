@@ -8978,6 +8978,172 @@ fn printed_by(name: &str, source: &str) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
 }
 
+/// `process.run(t"...")` runs what the template says, its words split at the spaces in the text
+/// written in the source. A value is part of one argument however much it holds, so it can't add
+/// an argument or start a command. Text written beside a value is that argument too.
+#[test]
+fn process_run_takes_a_template_and_a_value_stays_one_argument() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "process_template",
+        r#"from std.process import ProcessError
+
+def main(process: Process, stdout: Stdout) fails ProcessError:
+    name = "a b; rm -rf /"
+    # The line break in the text is a space between words, so the format is `[%s]`.
+    shown = process.run(t"printf [%s]\n one {name} --who={name}")?
+    stdout.print(shown.stdout)
+    empty = ""
+    stdout.print(process.run(t"printf [%s]\n {empty} x{empty}")?.stdout)
+    stdout.print(process.run(t"cat", input="fed in")?.stdout)
+    narrow = process.only("printf")
+    stdout.print(narrow.run(t"printf ok")?.stdout)
+    match narrow.run(t"cat"):
+        case Ok(_):
+            stdout.print("ran")
+        case Err(error):
+            stdout.print(error.program)
+"#,
+    )?;
+    assert_eq!(printed, "[one][a b; rm -rf /][--who=a b; rm -rf /]\n[][x]\nfed in\nok\ncat\n");
+    Ok(())
+}
+
+/// Small things that gave a wrong answer rather than saying so: a `Path` going up from `..`, text
+/// base64 can't have written, a day a month doesn't have, and a delimiter that could never match.
+/// `Path.inside` joins a path from outside so it can't leave the folder.
+#[test]
+fn small_std_answers_are_right_or_refused() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "small_answers",
+        r#"from std import base64, csv, toml
+from std.path import Path
+
+def said[T](found: Result[T, InvalidValue]) -> str:
+    match found:
+        case Ok(_):
+            return "loaded"
+        case Err(_):
+            return "refused"
+
+def said_toml(text: str) -> str:
+    match toml.loads[dict[str, str]](text):
+        case Ok(_):
+            return "loaded"
+        case Err(_):
+            return "refused"
+
+def main(stdout: Stdout):
+    stdout.print(said(base64.decode("aGk=")), said(base64.decode("aGl=")), said(base64.decode("aA==")), said(base64.decode("aB==")))
+    stdout.print(Path("..").parent(), Path("a/..").parent(), Path("a/b").parent())
+    root = Path("static")
+    for asked in ["/a/b.txt", "a.txt", "/../secret", "a/../../b", "a\x00b", "a\\b"]:
+        match root.inside(asked):
+            case Ok(found):
+                stdout.print(found)
+            case Err(_):
+                stdout.print("refused")
+    stdout.print(said_toml("d = 2024-02-29\n"), said_toml("d = 2023-02-29\n"), said_toml("d = 2024-02-30\n"), said_toml("d = 2024-04-31\n"))
+    match csv.loads("a;;b\n", delimiter=";;"):
+        case Ok(_):
+            stdout.print("loaded")
+        case Err(_):
+            stdout.print("refused")
+    stdout.print("a".ljust(4, fill="x"), "a".rjust(4, fill="x"), "a".center(3, fill="x"))
+    stdout.print("a".ljust(4, fill="xy"), "a".rjust(4, fill="xy"), "a".center(5, fill="xy"))
+"#,
+    )?;
+    assert_eq!(
+        printed,
+        "loaded refused loaded refused\nPath(text=\"../..\") Path(text=\"a/../..\") Path(text=\"a\")\nPath(text=\"static/a/b.txt\")\nPath(text=\"static/a.txt\")\nrefused\nrefused\nrefused\nrefused\nloaded refused refused refused\nrefused\naxxx xxxa xax\naxyx xyxa xyaxy\n"
+    );
+    Ok(())
+}
+
+/// A response's headers are a real dict, however many times a header came. Those that can be
+/// joined are, as HTTP says, and `Set-Cookie`, which can't, has all its values in `set_cookies`.
+#[test]
+fn a_header_sent_twice_is_one_entry_and_keeps_every_value() -> std::io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    if !ready() {
+        return Ok(());
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let server = std::thread::spawn(move || -> std::io::Result<()> {
+        let (mut stream, _) = listener.accept()?;
+        let mut asked = [0_u8; 4096];
+        let _ = stream.read(&mut asked)?;
+        stream.write_all(
+            b"HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\nX-Tag: one\r\nX-Tag: two\r\nContent-Length: 0\r\n\r\n",
+        )
+    });
+    let source = format!(
+        "def main(net: Net, stdout: Stdout) fails NetError:\n    answer = net.get(\"http://127.0.0.1:{port}/\")?\n    stdout.print(answer.headers.len())\n    stdout.print(answer.headers[\"x-tag\"])\n    stdout.print(answer.set_cookies)\n"
+    )
+    .replace("def main", "from std.net import NetError\n\ndef main");
+    let printed = printed_by("headers_twice", &source)?;
+    server.join().map_err(|_| std::io::Error::other("the server stopped"))??;
+    assert_eq!(printed, "3\none, two\n[\"a=1\", \"b=2\"]\n");
+    Ok(())
+}
+
+/// SQLite turns a NaN into NULL, so a program's value would quietly become no value. It's refused.
+#[test]
+fn sqlite_refuses_a_nan() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let place = std::env::temp_dir().join(format!("fennec-sqlite-nan-{}.db", std::process::id()));
+    let path = place.to_string_lossy().into_owned();
+    let source = format!(
+        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{path}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float(\"nan\") else 0.0\n        match db.execute(t\"insert into m values ({{nan}})\"):\n            case Ok(_):\n                stdout.print(\"stored\")\n            case Err(error):\n                stdout.print(error.message())\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
+    );
+    let printed = printed_by("sqlite_nan", &source)?;
+    for ending in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{path}{ending}"));
+    }
+    assert_eq!(printed, "NaN can't be stored: SQLite would turn it into NULL\n1\n");
+    Ok(())
+}
+
+/// A URL prints as it was written, and a host can't hold what would make it another host.
+#[test]
+fn a_url_prints_as_written_and_a_host_stays_a_host() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "url_strict",
+        r#"from std import url
+
+def main(stdout: Stdout):
+    for text in ["mailto:a@b", "/a%2Fb", "/%ff", "http://x/a%20b", "file:///x", "https://me@example.com:8/a?b=1#c"]:
+        match url.parse(text):
+            case Ok(found):
+                stdout.print(str(found) == text, str(found))
+            case Err(error):
+                stdout.print("refused", text, error.message)
+    for text in ["http://a@b@c/", "http://good.com%2f.evil.com/", "http://a%40b/"]:
+        match url.parse(text):
+            case Ok(found):
+                stdout.print("host", found.host)
+            case Err(_):
+                stdout.print("refused")
+"#,
+    )?;
+    assert_eq!(
+        printed,
+        "True mailto:a@b\nTrue /a%2Fb\nTrue /%ff\nTrue http://x/a%20b\nTrue file:///x\nTrue https://me@example.com:8/a?b=1#c\nrefused\nrefused\nrefused\n"
+    );
+    Ok(())
+}
+
 /// What the next test builds: failed asserts and a failing `main`, each holding a secret. The
 /// text is put together on a line of its own, since a diagnostic shows the line it points at.
 const SECRET_SHOWN: &str = r#"from std.crypto import Secret

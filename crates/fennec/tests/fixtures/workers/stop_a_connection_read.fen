@@ -1,0 +1,19 @@
+from std.net import NetError, Connection
+from std.concurrent import Crashed
+
+def reader(conn: Connection, stdout: Stdout) fails NetError:
+    line = conn.read_line()? else "none"
+    stdout.print("reader got", line)
+
+def serving(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            with launch(() => reader(conn, stdout), stop_after=100ms)?:
+                pass
+            stdout.print("the block ended")
+            break
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    serving(net, stdout)?
+    stdout.print("after")

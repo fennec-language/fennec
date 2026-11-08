@@ -490,7 +490,9 @@ fn overlapping_arguments(callee: &Expr, args: &[Arg], problems: &mut Vec<Diagnos
         if let Some((_, other, is_mut)) = clash {
             let (first, second) = (written(other, *is_mut), written(&arg.value, arg.is_mut));
             let message = format!("{first} and {second} overlap");
-            problems.push(Diagnostic::new(message, arg.value.span).with_help(OVERLAP_FIX));
+            let items = arg.is_mut && *is_mut && first != second && given.steps.contains(&None);
+            let help = if items { ITEMS_FIX } else { OVERLAP_FIX };
+            problems.push(Diagnostic::new(message, arg.value.span).with_help(help));
         } else if let Some((_, called_on)) = held {
             let (first, second) = (written(&arg.value, true), written(called_on, false));
             let message = format!("{first} overlaps {second}, which this method is called on");
@@ -566,8 +568,12 @@ fn reads(expr: &Expr, changed: &Place) -> bool {
 const ARGUMENT_CHANGES_FIX: &str =
     "make that change on the line before, keeping what it gives back in a name, and pass the name";
 
-const OVERLAP_FIX: &str = "a `ref` argument needs its place to itself, so two items of one collection are \
-never both `ref`: give the other `copy(...)` of what it reads, or make the changes one at a time";
+const OVERLAP_FIX: &str = "a `ref` argument needs its place to itself: give the other `copy(...)` of what \
+it reads, or make the changes one at a time";
+
+/// Two `ref`s into one collection, at indexes written apart or not.
+const ITEMS_FIX: &str = "two items of one collection are never both `ref`, even at different indexes: \
+make the changes one at a time";
 
 /// An argument that names a place, in backticks as it's written.
 fn written(expr: &Expr, is_mut: bool) -> String {

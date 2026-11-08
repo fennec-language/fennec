@@ -483,6 +483,28 @@ fn workers_take_turns_at_shared_values_holding_blocks() -> std::io::Result<()> {
     Ok(())
 }
 
+/// What one task printed before it told another comes out before what the other prints then.
+#[test]
+fn printing_keeps_its_order_across_a_channel() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-print-order-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/print_order_across_a_channel.fen");
+    let built = build_on_threads(&dir, source, "print_order")?;
+    for threads in ["1", "2", "4"] {
+        let ran = Command::new(&built).env("FENNEC_THREADS", threads).output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "1 first prints, then sends\n2 second, after it was told 1\n3 first again, after the reply 1\ndone\n",
+            "on {threads} threads"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// What a read lock's method makes holding a `shared` value's strings, a list made under it among
 /// them, is the reader's own once the lock is let go: each string prints, and isn't blank.
 #[test]

@@ -125,6 +125,8 @@ fn deadline(timeout_ns: i64) -> Option<Instant> {
 /// or as long as it takes for -1. Gives back 0 when it's sent, 1 when the channel's closed, and 2
 /// when it timed out. A stop cuts the wait short, failing it.
 pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_ns: i64) -> i64 {
+    // What this task printed comes before anything whoever takes this goes on to print.
+    super::write_kept_output();
     let Some(channel) = find(channel) else { return CLOSED };
     // In a replay, it waits its turn, and a send that didn't go through doesn't wait again.
     let timeout_ns = match replayed(&channel, "send") {

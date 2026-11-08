@@ -139,7 +139,7 @@ hash = hash.wrapping_mul(16777619)
 
 - There are ten: `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32` and `f64`. `int` is `i64` and `float` is `f64`. There's no 128-bit type and no platform-sized one, since `int` already indexes.
 - A literal with nothing to go by is an `int` or a `float`, as today.
-- Mixing types, like `i32 + i64`, is a compile error that says to convert one side. Widening is written too, as `i64(small)`, and can't fail.
+- Mixing types, like `i32 + i64`, is a compile error that says to convert one side. Widening is written too, as `i64(small)`, and can't fail. Built in the checker: the ten types, `i64` as `int` and `f64` as `float`, the mixing errors, and literals taking the size they go into, checked to fit. `/` gives a `float` between integers of any one size, as between ints, and `//` keeps the size. Conversions and native code for the sized types aren't built yet, so a program using one checks but doesn't run or build, and a `u64` literal above the largest `int` can't be written yet.
 - Every sized type checks overflow, and a check is removed only where the compiler proves it can't fire. `wrapping_` and `saturating_` methods are for when you mean it.
 - Floats give the same bits on every platform. Arithmetic and `sqrt` are exact in IEEE 754, and `sin`, `cos`, `tan`, `acos`, `exp`, `log` and `**` are computed by one library, `libm`, on arm64, x86-64, Windows and WebAssembly alike, so replays and lockstep multiplayer agree. Each platform's own C library rounds some of these differently in the last bit. Built.
 - Floats have one total order: NaN equals itself and sorts last, and `<` agrees with `sorted`. Built: `==`, hashing, sorting and `<` all follow it. A "never NaN" analysis is planned, to recover the cost where a value can't be NaN.
@@ -452,7 +452,7 @@ back = json.loads[World](text)?
 - A `Table` saves as a list of its items in order, and an `Id` as where its item is in that list. Loading makes a new `Table`, and every `Id` loaded with it finds its item there. An `Id` has to be in a `Table` saved with it. Built.
 - A union saves tagged with its member's type name, as in `{"Circle": {"radius": 1.0}}`. Built.
 - `@skip` and `@serialize(name="uid")` on a field say how it's saved. Built. A kit may define annotations of its own for fields, which generic code reads through `fields(T)`, and neither is built yet. A function takes only `@hot`, so routes are registered in plain code, as in `router.get("/todos/{id}", show_todo)`.
-- A `Secret[str]`, from `std.crypto`, can't be saved, printed or logged, and its text comes out only through a method whose name says so. Not built yet.
+- A `Secret[str]`, from `std.crypto`, can't be saved, printed or logged, and its text comes out only through `expose_secret()`, whose name says so. Printing one, an f-string or `str()` of one, and saving one in any format are compile errors, and so is doing any of those to something that holds one. Printed through a generic function's `T`, it shows `Secret(hidden)`. Built. `Secret.of(text)` makes one, and `Secret[bytes]` holds a key.
 
 Loading is safe on untrusted input:
 

@@ -17,8 +17,12 @@ pub enum Type {
     /// The type of `None` on its own.
     None,
     Bool,
+    /// `int`, which is also `i64`: one type, written either way.
     Int,
+    /// `float`, which is also `f64`.
     Float,
+    /// A number of another size: `i8` to `i32`, `u8` to `u64`, or `f32`.
+    Sized(Num),
     Str,
     /// `LiteralStr`: a `str` written in the source as a literal, or literals joined with `+`,
     /// never one made while the program runs. It goes anywhere a `str` does, but a `str` never
@@ -67,6 +71,79 @@ pub enum Type {
     Var(u32),
 }
 
+/// The sizes of number besides `int` and `float`, which are `i64` and `f64`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Num {
+    I8,
+    I16,
+    I32,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+}
+
+impl Num {
+    /// Every size, in the order they're listed.
+    pub const ALL: [Num; 8] = [Num::I8, Num::I16, Num::I32, Num::U8, Num::U16, Num::U32, Num::U64, Num::F32];
+
+    /// The name it's written with.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Num::I8 => "i8",
+            Num::I16 => "i16",
+            Num::I32 => "i32",
+            Num::U8 => "u8",
+            Num::U16 => "u16",
+            Num::U32 => "u32",
+            Num::U64 => "u64",
+            Num::F32 => "f32",
+        }
+    }
+
+    /// How many bits it has.
+    #[must_use]
+    pub fn bits(self) -> u32 {
+        match self {
+            Num::I8 | Num::U8 => 8,
+            Num::I16 | Num::U16 => 16,
+            Num::I32 | Num::U32 | Num::F32 => 32,
+            Num::U64 => 64,
+        }
+    }
+
+    /// Whether it's a float.
+    #[must_use]
+    pub fn is_float(self) -> bool {
+        self == Num::F32
+    }
+
+    /// Whether it's an integer that can't be negative.
+    #[must_use]
+    pub fn is_unsigned(self) -> bool {
+        matches!(self, Num::U8 | Num::U16 | Num::U32 | Num::U64)
+    }
+
+    /// The least and greatest integer it holds, for an integer size.
+    #[must_use]
+    pub fn range(self) -> Option<(i128, i128)> {
+        let bits = self.bits();
+        match self {
+            Num::F32 => None,
+            _ if self.is_unsigned() => Some((0, (1_i128 << bits) - 1)),
+            _ => Some((-(1_i128 << (bits - 1)), (1_i128 << (bits - 1)) - 1)),
+        }
+    }
+
+    /// The size written with this name.
+    #[must_use]
+    pub fn named(name: &str) -> Option<Num> {
+        Num::ALL.into_iter().find(|num| num.name() == name)
+    }
+}
+
 impl Type {
     pub(crate) fn list(item: Type) -> Type {
         Type::List(Box::new(item))
@@ -110,6 +187,7 @@ impl Type {
             Type::Bool => "bool".to_owned(),
             Type::Int => "int".to_owned(),
             Type::Float => "float".to_owned(),
+            Type::Sized(num) => num.name().to_owned(),
             Type::Str => "str".to_owned(),
             Type::LiteralStr => "LiteralStr".to_owned(),
             Type::Bytes => "bytes".to_owned(),
@@ -279,8 +357,9 @@ impl Type {
     /// The built-in type `self` is in a method the standard library gives it, like `str`.
     pub(crate) fn built_in(name: &str) -> Option<Type> {
         match name {
-            "int" => Some(Type::Int),
-            "float" => Some(Type::Float),
+            "int" | "i64" => Some(Type::Int),
+            "float" | "f64" => Some(Type::Float),
+            name if Num::named(name).is_some() => Num::named(name).map(Type::Sized),
             "bool" => Some(Type::Bool),
             "bytes" => Some(Type::Bytes),
             "str" => Some(Type::Str),
@@ -310,7 +389,13 @@ impl Type {
             items.iter().map(Type::source).collect::<Option<Vec<_>>>().map(|items| items.join(", "))
         };
         Some(match self {
-            Type::Int | Type::Float | Type::Bool | Type::Str | Type::LiteralStr | Type::Bytes => self.kind(),
+            Type::Int
+            | Type::Float
+            | Type::Sized(_)
+            | Type::Bool
+            | Type::Str
+            | Type::LiteralStr
+            | Type::Bytes => self.kind(),
             Type::None => "None".to_owned(),
             Type::List(item) => format!("list[{}]", item.source()?),
             Type::Buffer(item) => format!("Buffer[{}]", item.source()?),
@@ -347,6 +432,7 @@ impl Type {
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Type::Sized(num) => f.write_str(num.name()),
             Type::List(item) => write!(f, "list[{item}]"),
             Type::Buffer(item) => write!(f, "Buffer[{item}]"),
             Type::Array(item, size) => write!(f, "array[{item}, {size}]"),
@@ -400,6 +486,16 @@ pub(crate) fn article(name: &str) -> String {
     // when it gives back nothing has no type name to show.
     if name == "bytes" || name == "nothing" {
         return name.to_owned();
+    }
+    // Sizes are read letter by letter: "a u8", "an f32".
+    if let Some(num) = Num::named(name) {
+        return if num == Num::F32 {
+            format!("an {name}")
+        } else if num.is_unsigned() {
+            format!("a {name}")
+        } else {
+            format!("an {name}")
+        };
     }
     if name.starts_with(['a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U']) {
         format!("an {name}")

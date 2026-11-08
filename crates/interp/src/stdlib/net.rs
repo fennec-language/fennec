@@ -6,7 +6,7 @@
 //! says why, and a server with no connection waiting is done.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
@@ -50,8 +50,16 @@ const UDP_LOOKS_EVERY: Duration = Duration::from_millis(100);
 struct Stream {
     peer: String,
     socket: TcpStream,
-    reader: Mutex<BufReader<TcpStream>>,
+    reader: Mutex<Reading>,
     writing: Mutex<()>,
+}
+
+/// What a connection reads through: the socket itself, or TLS over it, which writes through the
+/// same, so a TLS connection's reads and writes take turns.
+enum Reading {
+    Plain(BufReader<TcpStream>),
+    #[cfg(not(target_arch = "wasm32"))]
+    Tls(Box<BufReader<http::tls::Secured>>),
 }
 
 /// A real UDP socket. Only one thread reads at a time, as how long a read waits is the socket's.
@@ -669,13 +677,17 @@ impl Interp<'_> {
 pub(crate) fn real_net(method: &str, args: &[Value], timeout: Option<Duration>, span: Span) -> Result<Value, Diagnostic> {
     let found = match (method, args) {
         ("connect", [Value::Str(host), Value::Int(port)]) => {
-            connect(host, port_of(*port, span)?, timeout.unwrap_or(CONNECT_TIMEOUT))
+            connect(host, port_of(*port, span)?, timeout.unwrap_or(CONNECT_TIMEOUT), false)
+        }
+        // `tls=True`, which native code keeps on the method's name.
+        ("connect.tls" | "connect", [Value::Str(host), Value::Int(port), Value::Bool(tls)]) => {
+            connect(host, port_of(*port, span)?, timeout.unwrap_or(CONNECT_TIMEOUT), *tls)
         }
         ("listen", [Value::Int(port)]) => listen(port_of(*port, span)?),
         ("udp", []) => udp(0),
         // Native code keeps a named argument on the method's name.
         ("udp" | "udp.port", [Value::Int(port)]) => udp(port_of(*port, span)?),
-        ("connect" | "listen" | "udp" | "udp.port", _) => return Err(wrong(method, span)),
+        ("connect" | "connect.tls" | "listen" | "udp" | "udp.port", _) => return Err(wrong(method, span)),
         _ => return Err(no_method(&Value::Capability(Capability::Net), method, span)),
     };
     Ok(made_or_failed(found))
@@ -835,7 +847,7 @@ fn in_order<'a>(name: &'a str, args: &[Value]) -> (&'a str, Vec<Value>) {
     let (plain, last) = args.split_at(args.len().saturating_sub(named.len()));
     let mut ordered = plain.to_vec();
     let params: &[&str] = match method {
-        "connect" => &["host", "port"],
+        "connect" => &["host", "port", "tls"],
         "listen" | "udp" => &["port"],
         _ => &[],
     };
@@ -915,17 +927,34 @@ pub(crate) fn failed(failure: &Failure) -> Value {
     Value::Err(Rc::new(Value::made_case("NetError", case, fields)))
 }
 
-fn connect(host: &str, port: u16, timeout: Duration) -> Result<Made, Failure> {
-    // A task parks while its lookup and connect wait, on a thread that may block, rather than
-    // holding its worker.
-    let (stream, peer) = if task_parks() {
-        let host = host.to_owned();
-        off_thread(move || connected(&host, port, timeout))?
-    } else {
-        connected(host, port, timeout)?
+fn connect(host: &str, port: u16, timeout: Duration, tls: bool) -> Result<Made, Failure> {
+    // A task parks while its lookup, connect and handshake wait, on a thread that may block,
+    // rather than holding its worker.
+    let opened = move |host: &str| {
+        let (stream, peer) = connected(host, port, timeout)?;
+        let secured = if tls { Some(secured(&stream, host, timeout)?) } else { None };
+        Ok::<_, Failure>((stream, peer, secured))
     };
-    let handle = keep_stream(stream, peer.clone())?;
+    let (stream, peer, secured) = if task_parks() {
+        let host = host.to_owned();
+        off_thread(move || opened(&host))?
+    } else {
+        opened(host)?
+    };
+    let handle = keep_stream(stream, peer.clone(), secured)?;
     Ok(connection_made((handle, peer)))
+}
+
+/// TLS over a connection just made, its certificate checked against what the system trusts.
+#[cfg(not(target_arch = "wasm32"))]
+fn secured(stream: &TcpStream, host: &str, timeout: Duration) -> Result<Box<BufReader<http::tls::Secured>>, Failure> {
+    let tcp = stream.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
+    Ok(Box::new(BufReader::new(http::raw_secured(tcp, host, timeout)?)))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn secured(_stream: &TcpStream, _host: &str, _timeout: Duration) -> Result<std::convert::Infallible, Failure> {
+    Err(Failure::Tls("the playground has no network".to_owned()))
 }
 
 /// A connection to `host` on `port`, looked up and connected, blocking its thread.
@@ -953,15 +982,27 @@ fn connected(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, Str
     Err(failure)
 }
 
-fn keep_stream(socket: TcpStream, peer: String) -> Result<i64, Failure> {
-    let reader = socket.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
-    let stream = Stream { peer, socket, reader: Mutex::new(BufReader::new(reader)), writing: Mutex::new(()) };
+fn keep_stream(socket: TcpStream, peer: String, secured: Option<Secured>) -> Result<i64, Failure> {
+    let reading = match secured {
+        #[cfg(not(target_arch = "wasm32"))]
+        Some(secured) => Reading::Tls(secured),
+        #[cfg(target_arch = "wasm32")]
+        Some(never) => match never {},
+        None => Reading::Plain(BufReader::new(socket.try_clone().map_err(|error| Failure::Other(error.to_string()))?)),
+    };
+    let stream = Stream { peer, socket, reader: Mutex::new(reading), writing: Mutex::new(()) };
     Ok(open(|open| {
         let handle = fresh_handle(open);
         open.insert(handle, Socket::Stream(Arc::new(stream)));
         handle
     }))
 }
+
+/// TLS over a connection, as `secured` makes it.
+#[cfg(not(target_arch = "wasm32"))]
+type Secured = Box<BufReader<http::tls::Secured>>;
+#[cfg(target_arch = "wasm32")]
+type Secured = std::convert::Infallible;
 
 fn listen(port: u16) -> Result<Made, Failure> {
     let listener = TcpListener::bind(("0.0.0.0", port)).map_err(|error| match error.kind() {
@@ -1001,12 +1042,7 @@ fn read(handle: i64, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>,
     }
     let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
     let mut data = vec![0; count];
-    let read = if socket_parks() {
-        parked(&mut reader, timeout, |reader| reader.read(&mut data))?
-    } else {
-        wait_at_most(reader.get_ref(), timeout)?;
-        reader.read(&mut data).map_err(|error| Failure::of(&error, timeout))?
-    };
+    let read = reading(&stream.socket, &mut reader, timeout, |reader| reader.read(&mut data))?;
     data.truncate(read);
     Ok(data)
 }
@@ -1016,19 +1052,18 @@ fn read_line(handle: i64, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, 
     let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
     let mut line = Vec::new();
     // What a read cut short by having to wait got is kept in `line`, and the next adds to it.
-    let read = if socket_parks() {
-        parked(&mut reader, timeout, |reader| reader.read_until(b'\n', &mut line))?;
-        line.len()
-    } else {
-        wait_at_most(reader.get_ref(), timeout)?;
-        reader.read_until(b'\n', &mut line).map_err(|error| Failure::of(&error, timeout))?
-    };
-    Ok((read > 0).then_some(line))
+    reading(&stream.socket, &mut reader, timeout, |reader| reader.read_until(b'\n', &mut line))?;
+    Ok((!line.is_empty()).then_some(line))
 }
 
 fn write(handle: i64, mut data: &[u8]) -> Result<(), Failure> {
     let stream = stream(handle)?;
     let _writing = stream.writing.lock().unwrap_or_else(PoisonError::into_inner);
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Reading::Tls(secured) = &mut *stream.reader.lock().unwrap_or_else(PoisonError::into_inner) {
+        let secured = secured.get_mut();
+        return secured.write_all(data).and_then(|()| secured.flush()).map_err(|error| Failure::of(&error, None));
+    }
     let mut socket = &stream.socket;
     // A read parked on this connection's other end can have made the socket not block, so a full
     // buffer says so here, and this waits for room.
@@ -1053,7 +1088,7 @@ pub(crate) fn fetch_line(host: &str, port: u16) -> Result<Vec<u8>, Failure> {
     } else {
         connected(host, port, Duration::from_secs(10))?
     };
-    let handle = keep_stream(stream, peer)?;
+    let handle = keep_stream(stream, peer, None)?;
     let line = read_line(handle, Some(Duration::from_secs(10)));
     close(handle);
     line?.ok_or(Failure::Closed)
@@ -1090,15 +1125,45 @@ fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R
     }
 }
 
+/// Runs `read` on a connection, plain or through TLS: parked if it has to wait in a task, and
+/// otherwise waiting at most `timeout`.
+fn reading<T>(
+    socket: &TcpStream,
+    reader: &mut Reading,
+    timeout: Option<Duration>,
+    mut read: impl FnMut(&mut dyn BufRead) -> std::io::Result<T>,
+) -> Result<T, Failure> {
+    match reader {
+        Reading::Plain(plain) => read_on(socket, plain, timeout, |reader| read(reader)),
+        #[cfg(not(target_arch = "wasm32"))]
+        Reading::Tls(secured) => read_on(socket, &mut **secured, timeout, |reader| read(reader)),
+    }
+}
+
+/// `reading`, on one kind of reader.
+fn read_on<R: BufRead, T>(
+    socket: &TcpStream,
+    reader: &mut R,
+    timeout: Option<Duration>,
+    mut read: impl FnMut(&mut R) -> std::io::Result<T>,
+) -> Result<T, Failure> {
+    if socket_parks() {
+        return parked(socket, reader, timeout, read);
+    }
+    wait_at_most(socket, timeout)?;
+    read(reader).map_err(|error| Failure::of(&error, timeout))
+}
+
 /// Runs a read that may have to wait, in a task that parks rather than block: with the socket not
 /// blocking, `read` is tried, and each time it would block, the task parks until the socket's
 /// readable or `timeout` passes. The socket blocks again after.
-fn parked<T>(
-    reader: &mut BufReader<TcpStream>,
+fn parked<R, T>(
+    socket: &TcpStream,
+    reader: &mut R,
     timeout: Option<Duration>,
-    mut read: impl FnMut(&mut BufReader<TcpStream>) -> std::io::Result<T>,
+    mut read: impl FnMut(&mut R) -> std::io::Result<T>,
 ) -> Result<T, Failure> {
-    reader.get_ref().set_nonblocking(true).map_err(|error| Failure::Other(error.to_string()))?;
+    socket.set_nonblocking(true).map_err(|error| Failure::Other(error.to_string()))?;
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     let done = loop {
         match read(reader) {
@@ -1107,7 +1172,7 @@ fn parked<T>(
                 if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
                     break Err(Failure::TimedOut(timeout.unwrap_or_default()));
                 }
-                if park_until_readable(reader.get_ref(), deadline) {
+                if park_until_readable(socket, deadline) {
                     break Err(Failure::TimedOut(timeout.unwrap_or_default()));
                 }
             }
@@ -1115,7 +1180,7 @@ fn parked<T>(
             Err(error) => break Err(Failure::of(&error, timeout)),
         }
     };
-    let blocking = reader.get_ref().set_nonblocking(false);
+    let blocking = socket.set_nonblocking(false);
     let done = done?;
     blocking.map_err(|error| Failure::Other(error.to_string()))?;
     Ok(done)
@@ -1175,7 +1240,7 @@ fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failu
     let (stream, peer) = accepted;
     stream.set_nonblocking(false).map_err(|error| Failure::Other(error.to_string()))?;
     let peer = peer.to_string();
-    Ok((keep_stream(stream, peer.clone())?, peer))
+    Ok((keep_stream(stream, peer.clone(), None)?, peer))
 }
 
 /// The next connection a server takes, by its handle, for a server taking them one at a time.
@@ -1290,7 +1355,7 @@ fn trim_line(line: &[u8]) -> &[u8] {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{Failure, Made, close, receive, udp};
     use crate::value::Value;
 
@@ -1319,5 +1384,151 @@ mod tests {
         let limit = std::time::Duration::from_millis(5);
         assert!(matches!(receive(handle, Some(limit)), Err(Failure::TimedOut(after)) if after == limit));
         close(handle);
+    }
+
+    pub(crate) mod tls {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        use std::net::{TcpListener, TcpStream};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use rustls::pki_types::pem::PemObject as _;
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+        use rustls::{ClientConfig, RootCertStore, ServerConfig, ServerConnection, StreamOwned};
+
+        use super::super::http::tls::handshake;
+        use super::super::{Failure, close, keep_stream, read_line, write};
+
+        const CA: &[u8] = include_bytes!("testdata/tls-test-ca.pem");
+        const CHAIN: &[u8] = include_bytes!("testdata/tls-test-chain.pem");
+        const KEY: &[u8] = include_bytes!("testdata/tls-test-key.pem");
+
+        fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+            Arc::new(rustls::crypto::ring::default_provider())
+        }
+
+        /// A client that trusts only the tests' own certificate authority.
+        fn client_config() -> Arc<ClientConfig> {
+            let mut roots = RootCertStore::empty();
+            for certificate in CertificateDer::pem_slice_iter(CA) {
+                roots.add(certificate.unwrap()).unwrap();
+            }
+            let config = ClientConfig::builder_with_provider(provider())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            Arc::new(config)
+        }
+
+        /// A server on a port of its own, with the tests' certificate for `localhost`, that answers
+        /// one line on one connection with `pong`.
+        fn serving() -> (u16, std::thread::JoinHandle<Result<String, String>>) {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let chain: Vec<CertificateDer<'static>> =
+                    CertificateDer::pem_slice_iter(CHAIN).map(Result::unwrap).collect();
+                let key = PrivateKeyDer::from_pem_slice(KEY).unwrap();
+                let config = ServerConfig::builder_with_provider(provider())
+                    .with_safe_default_protocol_versions()
+                    .unwrap()
+                    .with_no_client_auth()
+                    .with_single_cert(chain, key)
+                    .unwrap();
+                let (tcp, _) = listener.accept().unwrap();
+                let connection = ServerConnection::new(Arc::new(config)).unwrap();
+                let mut reader = BufReader::new(StreamOwned::new(connection, tcp));
+                let mut line = String::new();
+                reader.read_line(&mut line).map_err(|error| error.to_string())?;
+                let secured = reader.get_mut();
+                secured.write_all(b"pong\n").map_err(|error| error.to_string())?;
+                secured.flush().map_err(|error| error.to_string())?;
+                Ok(line)
+            });
+            (port, server)
+        }
+
+        fn connected_to(port: u16) -> TcpStream {
+            TcpStream::connect(("127.0.0.1", port)).unwrap()
+        }
+
+        /// A TLS connection's handle, to a server that answers its one line only once `ready` is
+        /// set, for a test that a read waiting for it parks.
+        pub(crate) fn connected_once_ready(ready: &'static std::sync::atomic::AtomicBool) -> i64 {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                let chain: Vec<CertificateDer<'static>> =
+                    CertificateDer::pem_slice_iter(CHAIN).map(Result::unwrap).collect();
+                let config = ServerConfig::builder_with_provider(provider())
+                    .with_safe_default_protocol_versions()
+                    .unwrap()
+                    .with_no_client_auth()
+                    .with_single_cert(chain, PrivateKeyDer::from_pem_slice(KEY).unwrap())
+                    .unwrap();
+                let (tcp, _) = listener.accept().unwrap();
+                let connection = ServerConnection::new(Arc::new(config)).unwrap();
+                let mut secured = StreamOwned::new(connection, tcp);
+                // The handshake's done by the first read, which waits for the client to write.
+                let mut first = [0; 1];
+                let _ = std::io::Read::read(&mut secured, &mut first);
+                let started = std::time::Instant::now();
+                while !ready.load(std::sync::atomic::Ordering::SeqCst) && started.elapsed() < Duration::from_secs(5) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let _ = secured.write_all(b"late\n");
+                let _ = secured.flush();
+                std::thread::sleep(Duration::from_millis(200));
+            });
+            let tcp = connected_to(port);
+            let Ok(secured) = handshake(tcp.try_clone().unwrap(), "localhost", Duration::from_secs(10), client_config()) else {
+                panic!("the handshake failed");
+            };
+            let handle = keep_stream(tcp, "server".to_owned(), Some(Box::new(BufReader::new(secured)))).ok().unwrap();
+            assert!(write(handle, b"x").is_ok());
+            handle
+        }
+
+        /// A connection with TLS over it reads and writes as a plain one does.
+        #[test]
+        fn a_tls_connection_reads_and_writes_lines() {
+            let (port, server) = serving();
+            let tcp = connected_to(port);
+            let secured = handshake(tcp.try_clone().unwrap(), "localhost", Duration::from_secs(10), client_config());
+            let Ok(secured) = secured else { panic!("the handshake failed") };
+            let handle = keep_stream(tcp, "server".to_owned(), Some(Box::new(BufReader::new(secured)))).ok().unwrap();
+            assert!(write(handle, b"ping\n").is_ok());
+            let back = read_line(handle, Some(Duration::from_secs(10)));
+            assert_eq!(back.ok().flatten().as_deref(), Some(&b"pong\n"[..]));
+            close(handle);
+            assert_eq!(server.join().unwrap().unwrap(), "ping\n");
+        }
+
+        /// The certificate is for `localhost`, so a connection that asked for anything else fails:
+        /// checking can't be left out, whatever the host.
+        #[test]
+        fn a_certificate_for_another_name_is_refused() {
+            let (port, server) = serving();
+            let got = handshake(connected_to(port), "fennec.example", Duration::from_secs(10), client_config());
+            assert!(matches!(got, Err(Failure::Tls(_))), "the handshake didn't fail as TLS");
+            drop(got);
+            assert!(server.join().unwrap().is_err());
+        }
+
+        /// A client that doesn't trust the certificate's authority refuses it.
+        #[test]
+        fn a_certificate_from_an_authority_nobody_trusts_is_refused() {
+            let (port, server) = serving();
+            let config = ClientConfig::builder_with_provider(provider())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(RootCertStore::empty())
+                .with_no_client_auth();
+            let got = handshake(connected_to(port), "localhost", Duration::from_secs(10), Arc::new(config));
+            assert!(matches!(got, Err(Failure::Tls(_))), "the handshake didn't fail as TLS");
+            drop(got);
+            assert!(server.join().unwrap().is_err());
+        }
     }
 }

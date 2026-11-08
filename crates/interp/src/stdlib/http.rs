@@ -246,6 +246,25 @@ static WITH_TLS: OnceLock<WithTls> = OnceLock::new();
 #[cfg(not(target_arch = "wasm32"))]
 pub fn use_tls() {
     WITH_TLS.get_or_init(|| tls::wrap);
+    RAW_TLS.get_or_init(|| tls::raw);
+}
+
+/// A raw connection with TLS over it, as `net.connect(host, port, tls=True)` makes: the TCP
+/// connection, its host's name, and how long the handshake may take.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type RawTls = fn(TcpStream, &str, Duration) -> Result<tls::Secured, Failure>;
+
+#[cfg(not(target_arch = "wasm32"))]
+static RAW_TLS: OnceLock<RawTls> = OnceLock::new();
+
+/// Puts TLS over a raw connection, with its handshake done, checking the certificate against what
+/// the system trusts: or says why it can't be.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn raw_secured(tcp: TcpStream, host: &str, timeout: Duration) -> Result<tls::Secured, Failure> {
+    let Some(raw) = RAW_TLS.get() else {
+        return Err(Failure::Tls("this program was built without TLS: build it with LLVM".to_owned()));
+    };
+    raw(tcp, host, timeout)
 }
 
 /// Puts TLS over a connection, or says why it can't be.
@@ -445,7 +464,7 @@ fn failure_of(error: &std::io::Error, timeout: Duration) -> Failure {
 /// TLS, which always checks certificates, with what the operating system trusts. The playground
 /// has no network, so it has no TLS either.
 #[cfg(not(target_arch = "wasm32"))]
-mod tls {
+pub(crate) mod tls {
     use std::net::TcpStream;
     use std::sync::{Arc, OnceLock};
     use std::time::{Duration, Instant};
@@ -480,6 +499,39 @@ mod tls {
             })
             .clone()
             .map_err(Failure::Tls)
+    }
+
+    /// A raw connection with TLS over it: what `net.connect(host, port, tls=True)` reads and writes.
+    pub(crate) type Secured = StreamOwned<ClientConnection, TcpStream>;
+
+    /// A raw connection with TLS over it, its handshake done against what the system trusts, in at
+    /// most `timeout`. The socket's left blocking, with no timeouts of its own.
+    pub(super) fn raw(tcp: TcpStream, host: &str, timeout: Duration) -> Result<Secured, Failure> {
+        handshake(tcp, host, timeout, config()?)
+    }
+
+    /// `raw`, trusting what `config` does: tests trust a certificate authority of their own.
+    pub(crate) fn handshake(
+        tcp: TcpStream,
+        host: &str,
+        timeout: Duration,
+        config: Arc<ClientConfig>,
+    ) -> Result<Secured, Failure> {
+        let name = ServerName::try_from(host.to_owned())
+            .map_err(|_| Failure::Tls(format!("`{host}` can't be checked against a certificate")))?;
+        let mut connection =
+            ClientConnection::new(config, name).map_err(|error| Failure::Tls(error.to_string()))?;
+        let mut tcp = tcp;
+        let deadline = Instant::now() + timeout;
+        while connection.is_handshaking() {
+            let left = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1));
+            tcp.set_read_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
+            tcp.set_write_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
+            connection.complete_io(&mut tcp).map_err(|error| failure_of(&error, timeout))?;
+        }
+        tcp.set_read_timeout(None).map_err(|error| Failure::of(&error, None))?;
+        tcp.set_write_timeout(None).map_err(|error| Failure::of(&error, None))?;
+        Ok(StreamOwned::new(connection, tcp))
     }
 
     /// A TCP connection with TLS over it, with its handshake done.

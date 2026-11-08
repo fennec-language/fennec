@@ -9157,6 +9157,45 @@ fn printed_by(name: &str, source: &str) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
 }
 
+/// JSON and TOML refuse what they'd have to guess at, rather than loading something the text
+/// didn't say: a number too big for a float, a struct's field given twice, a dict's int key
+/// written any way but its plain digits, and a key that isn't in quotes.
+#[test]
+fn json_and_toml_refuse_what_they_would_have_to_guess_at() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "json_strict",
+        r#"from std import json, toml
+
+struct Point:
+    x: int
+    y = 0
+
+def said[T](found: Result[T, ParseError]) -> str:
+    match found:
+        case Ok(_):
+            return "loaded"
+        case Err(_):
+            return "refused"
+
+def main(stdout: Stdout):
+    stdout.print(said(json.loads[float]("1e400")), said(json.loads[float]("-1e400")), said(json.loads[float]("1e300")))
+    stdout.print(said(toml.loads[dict[str, float]]("a = 1e400\n")), said(toml.loads[dict[str, float]]("a = 1e300\n")))
+    stdout.print(said(json.loads[Point]("{\"x\": 1, \"x\": 2}")), said(json.loads[Point]("{\"x\": 1, \"y\": 2}")))
+    for key in ["1", "-1", "+1", "01", " 1"]:
+        stdout.print(said(json.loads[dict[int, int]](f"{{\"{key}\": 2}}")))
+    stdout.print(said(json.loads[dict[int, int]]("{1: 2}")))
+"#,
+    )?;
+    assert_eq!(
+        printed,
+        "refused refused loaded\nrefused loaded\nrefused loaded\nloaded\nloaded\nrefused\nrefused\nrefused\nrefused\n"
+    );
+    Ok(())
+}
+
 /// `process.run(t"...")` runs what the template says, its words split at the spaces in the text
 /// written in the source. A value is part of one argument however much it holds, so it can't add
 /// an argument or start a command. Text written beside a value is that argument too.

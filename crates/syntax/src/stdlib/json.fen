@@ -696,6 +696,9 @@ struct JsonReader:
     ## found, since text usually has them in order. Each object it's inside keeps its own here.
     _hint = 0
     _hints = list[int]()
+    ## The fields a struct being read has had so far, a bit each, and the same for those it's in.
+    _seen = 0
+    _seens = list[int]()
     _ids = IdsSeen()
     _tags = dict[str, int]()
     ## For each tuple being read, inside one another: its type, where its array starts, how many
@@ -785,7 +788,14 @@ struct JsonReader:
             key = self.text()?
             match int(key):
                 case Ok(n):
-                    return n
+                    # Two ways to write one key would merge into one entry.
+                    if str(n) == key: return n
+                    if not self._explain: fail no_reason()
+                    fail ParseError(
+                        message=f"{self._where()} has the key \"{key}\", which isn't how that int is written",
+                        line=0,
+                        column=0,
+                    )
                 case Err(_):
                     if not self._explain: fail no_reason()
                     fail ParseError(
@@ -867,6 +877,14 @@ struct JsonReader:
             b = text_byte(self._source, at)
         match float(text_part(self._source, start, at)):
             case Ok(x):
+                # A number too big for a float would come out as infinity, which isn't what it said.
+                if x == 1e308 * 10.0 or x == -1e308 * 10.0:
+                    if not self._explain: fail no_reason()
+                    fail ParseError(
+                        message=f"{self._where()} is too big for a float",
+                        line=0,
+                        column=0,
+                    )
                 self._at = at
                 return x
             case Err(_):
@@ -1050,6 +1068,8 @@ struct JsonReader:
             return found
         while True:
             start = self._at
+            # A key is always in quotes.
+            if self._space() != 34: fail self._misfit("a key in quotes")
             self._in_key = True
             key = K.deserialize(ref self)?
             self._in_key = False
@@ -1133,6 +1153,8 @@ struct JsonReader:
             self._case_owner = ""
         self._hints.append(self._hint)
         self._hint = 0
+        self._seens.append(self._seen)
+        self._seen = 0
 
     def next_field(ref self, fields: list[(str, str)]) -> bool fails ParseError:
         if self._explain:
@@ -1144,6 +1166,7 @@ struct JsonReader:
                 self._at += 1
                 self._depth -= 1
                 self._hint = self._hints.pop() else 0
+                self._seen = self._seens.pop() else 0
                 return False
             if self._explain and self._extra == .error:
                 self._unknown_first(fields)?
@@ -1154,6 +1177,7 @@ struct JsonReader:
                 self._at += 1
                 self._depth -= 1
                 self._hint = self._hints.pop() else 0
+                self._seen = self._seens.pop() else 0
                 return False
             if b != 44: fail no_reason()
             self._at += 1
@@ -1162,6 +1186,7 @@ struct JsonReader:
             if at >= 0:
                 self._place = at
                 self._hint = at + 1
+                self._once(at, fields)?
                 return True
         key = self.text()?
         if self._space() != 58: fail no_reason()
@@ -1201,10 +1226,25 @@ struct JsonReader:
         -1
 
     ## Takes in a field's key: which of `fields` it is, or what's done with a key none has.
+    ## Fails if field `at` of a struct has come before: which one to believe would be a guess.
+    ## A struct of more fields than a word has bits doesn't check past those.
+    def _once(ref self, at: int, fields: list[(str, str)]) fails ParseError:
+        if at >= 62: return
+        bit = 1 << at
+        if self._seen & bit != 0:
+            if not self._explain: fail no_reason()
+            fail ParseError(
+                message=f"{self._where()} has `{fields[at][0]}` twice",
+                line=0,
+                column=0,
+            )
+        self._seen = self._seen | bit
+
     def _named(ref self, key: str, fields: list[(str, str)]) -> bool fails ParseError:
         at = self._place_of(key, fields)
         if at >= 0:
             self._place = at
+            self._once(at, fields)?
             if self._explain:
                 self._path.append(key)
             return True

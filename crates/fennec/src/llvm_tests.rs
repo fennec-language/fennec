@@ -196,6 +196,23 @@ fn given_real_name(name: &str) -> Option<String> {
     name.strip_prefix(PREFIX).map(|rest| format!("{TEST_FUNCTION}{rest}"))
 }
 
+/// A bench block as a function, and a `main` that runs it between two readings of the clock and
+/// prints the nanoseconds between them, or given an argument, does all of that but run it. None for
+/// a block that passes a failure up, which a `main` here doesn't take yet.
+pub(crate) fn timing_functions(block: &TestDef) -> Option<Vec<FnDef>> {
+    let tried = if passes_failures_up(block) { "?" } else { "" };
+    let source = format!(
+        "def {PREFIX}main(clock: Clock, args: Args, stdout: Stdout):\n    started = clock.now()\n    \
+         if args.len() == 0:\n        {PREFIX}bench(){tried}\n    stdout.print((clock.now() - started).nanos)\n"
+    );
+    let mut made = functions_in(&source, block.span.start)?;
+    if let Some(main) = made.first_mut() {
+        "main".clone_into(&mut main.name);
+    }
+    made.push(as_function(format!("{TEST_FUNCTION}bench"), block));
+    Some(made)
+}
+
 /// The functions in some source, with the names no program can write.
 fn functions_in(source: &str, start: u32) -> Option<Vec<FnDef>> {
     let parsed = fennec_syntax::parse_at(source, start).ok()?;

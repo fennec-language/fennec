@@ -56,8 +56,8 @@ impl<'p> Check<'p> {
                 let wanted = self.local(*dest);
                 let allowed = match op {
                     UnaryOp::Not => matches!(wanted, Some(Type::Bool)),
-                    UnaryOp::Neg => matches!(wanted, Some(Type::Int | Type::Float)),
-                    UnaryOp::BitNot => matches!(wanted, Some(Type::Int)),
+                    UnaryOp::Neg => matches!(wanted, Some(Type::Int | Type::Float | Type::Sized(_))),
+                    UnaryOp::BitNot => matches!(wanted, Some(Type::Int | Type::Sized(_))),
                 };
                 if !allowed {
                     self.problems.push(format!("`{inst}` on the wrong type"));
@@ -382,22 +382,32 @@ impl<'p> Check<'p> {
 
     fn binary(&mut self, inst: &InstKind, dest: LocalId, op: BinOp, (lhs, rhs): (&Operand, &Operand)) {
         let result = self.local(dest);
-        let left = self.function.type_of(lhs);
+        let mut left = self.function.type_of(lhs);
+        // A number written out beside a sized one is of its size.
+        if matches!(lhs, Operand::Int(_))
+            && let Some(Type::Sized(num)) = self.function.type_of(rhs)
+        {
+            left = Some(Type::Sized(num));
+        }
+        let shift = matches!(op, BinOp::ShiftLeft | BinOp::ShiftRight);
         self.operand(lhs, left.as_ref(), "left side");
-        self.operand(rhs, left.as_ref(), "right side");
+        // A shift's amount can be an integer of any size.
+        let amount = if shift && matches!(left, Some(Type::Sized(_))) { None } else { left.as_ref() };
+        self.operand(rhs, amount, "right side");
         let Some(left) = left else { return };
         let wanted = match op {
             BinOp::Eq | BinOp::NotEq => Some(Type::Bool),
             BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq if plainly_ordered(&left) => Some(Type::Bool),
             BinOp::Div if left == Type::Int => Some(Type::Float),
+            BinOp::Div if matches!(left, Type::Sized(num) if !num.is_float()) => Some(Type::Float),
             BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::ShiftLeft | BinOp::ShiftRight
-                if left == Type::Int =>
+                if matches!(left, Type::Int) || matches!(left, Type::Sized(num) if !num.is_float()) =>
             {
-                Some(Type::Int)
+                Some(left.clone())
             }
             BinOp::Add if matches!(left, Type::Str | Type::Bytes | Type::List(_)) => Some(left.clone()),
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow
-                if matches!(left, Type::Int | Type::Float) =>
+                if matches!(left, Type::Int | Type::Float | Type::Sized(_)) =>
             {
                 Some(left.clone())
             }
@@ -538,6 +548,9 @@ impl<'p> Check<'p> {
     fn operand(&mut self, operand: &Operand, wanted: Option<&Type>, what: &str) {
         match self.function.type_of(operand) {
             None => self.problems.push(format!("uses {operand}, which doesn't exist")),
+            // A number written out goes where a sized one does, as the checker found it fits.
+            Some(Type::Int)
+                if matches!(operand, Operand::Int(_)) && matches!(wanted, Some(Type::Sized(_))) => {}
             Some(ty) if wanted.is_some_and(|wanted| !fits(wanted, &ty)) => {
                 self.problems.push(format!("{what} `{operand}` has the wrong type"));
             }
@@ -549,7 +562,7 @@ impl<'p> Check<'p> {
 /// Whether `<` and so on on a type are the engines' own, not a method.
 pub(crate) fn plainly_ordered(ty: &Type) -> bool {
     match ty {
-        Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes => true,
+        Type::Int | Type::Float | Type::Sized(_) | Type::Bool | Type::Str | Type::Bytes => true,
         Type::List(item) => plainly_ordered(item),
         Type::Tuple(items) => items.iter().all(plainly_ordered),
         _ => false,

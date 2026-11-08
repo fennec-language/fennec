@@ -69,7 +69,7 @@ pub(crate) fn run_logged(
         eprint!("{}", crate::lint::errors_remembered(path));
     }
     let prepared = if engine == Engine::Interpreter { whole(path) } else { reached(path) };
-    let (program, _) = match prepared {
+    let (program, signatures) = match prepared {
         Ok(prepared) => prepared,
         Err(code) => return code,
     };
@@ -95,6 +95,10 @@ pub(crate) fn run_logged(
     {
         eprintln!("error: couldn't open the recording: {err}");
         return ExitCode::FAILURE;
+    }
+    // What the interpreter would get wrong, it refuses, rather than run.
+    if let Some(refused) = fennec_check::interpreter_refuses(&signatures) {
+        return reject(&program, &[refused]);
     }
     // Not locked: native code writes to standard output itself as the program runs.
     let mut out = BufWriter::new(std::io::stdout());

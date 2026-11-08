@@ -2417,7 +2417,7 @@ fn a_build_refuses_sized_numbers_until_they_run() -> std::io::Result<()> {
     let dir = std::env::temp_dir().join(format!("fennec_build_sized_{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let program = dir.join("sized.fen");
-    std::fs::write(&program, "def main(stdout: Stdout):\n    x: u8 = 1\n    stdout.print(x)\n")?;
+    std::fs::write(&program, "def main(stdout: Stdout):\n    x: u64 = 1\n    stdout.print(x)\n")?;
     let program = program.to_string_lossy().into_owned();
     let executable = dir.join("sized").to_string_lossy().into_owned();
     for command in [vec!["build", &program, "-o", &executable], vec!["run", &program]] {
@@ -2425,10 +2425,45 @@ fn a_build_refuses_sized_numbers_until_they_run() -> std::io::Result<()> {
         assert!(!refused.status.success(), "{command:?}");
         let said = text(&refused.stderr);
         assert!(
-            said.starts_with("error: sized numbers like u8 aren't built yet past the checker"),
+            said.starts_with("error: sized numbers like u64 aren't built yet past the checker"),
             "{command:?}: {said}"
         );
     }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// The interpreter would hold a `u8` as an `int` and miss where it overflows, so it refuses one,
+/// and so does `fennec test`, which may run tests there. A plain run builds it natively, where
+/// the overflow stops the program.
+#[test]
+fn the_interpreter_refuses_sized_numbers() -> std::io::Result<()> {
+    let dir = std::env::temp_dir().join(format!("fennec_interp_sized_{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("pixel.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    mut pixel: u8 = 255\n    pixel += 1\n    stdout.print(pixel)\n",
+    )?;
+    let program = program.to_string_lossy().into_owned();
+    for command in [vec!["run", "--interp", &program], vec!["test", &program]] {
+        let refused = fennec(&command, "")?;
+        assert!(!refused.status.success(), "{command:?}");
+        let said = text(&refused.stderr);
+        assert!(
+            said.starts_with("error: the interpreter can't run sized numbers like u8"),
+            "{command:?}: {said}"
+        );
+        assert!(!text(&refused.stdout).contains("256"), "{command:?}");
+    }
+    let ran = fennec(&["run", &program], "")?;
+    assert!(!ran.status.success());
+    assert!(
+        text(&ran.stderr).contains("this calculation overflows a u8, which holds 0 to 255"),
+        "{}",
+        text(&ran.stderr)
+    );
+    assert!(!text(&ran.stdout).contains("256"));
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

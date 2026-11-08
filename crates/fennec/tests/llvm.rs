@@ -2274,6 +2274,84 @@ fn a_product_that_overflows_still_fails_as_on_the_interpreter() -> std::io::Resu
     Ok(())
 }
 
+/// Sized integers natively: arithmetic, floor division and remainder as `int`'s, `~` within an
+/// unsigned size's width, shifts by an `int`, conversions written out, lists of them, and `/`
+/// giving a float. The interpreter doesn't take sized numbers, so the outcomes are written here.
+#[test]
+fn sized_integers_work_out_as_their_sizes_say() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "sized_integers",
+        "def mix(a: u8, b: u8) -> u8:
+    u8((u16(a) * 7 + u16(b)) % 251)
+
+def main(stdout: Stdout):
+    mut pixel: u8 = 250
+    pixel += 5
+    low: i8 = -100
+    small: i32 = 70000
+    big = small * 3
+    stdout.print(pixel, low, small, big, ~pixel, -low, pixel >> 2, low // 3, low % 7)
+    mut acc: u8 = 0
+    for k in range(10):
+        acc = mix(acc, b=u8(k))
+    stdout.print(acc, int(acc) + 1000, u16(pixel) * 200, small / 7)
+    bytes: list[u8] = [1, 2, 255]
+    stdout.print(bytes, bytes[2] == 255, i32(low) * 1000, 3 * i32(low) < 0)
+",
+    )?;
+    assert_eq!(
+        printed,
+        "255 -100 70000 210000 0 100 63 -34 5\n22 1022 51000 10000.0\n[1, 2, 255] True -100000 True\n"
+    );
+    Ok(())
+}
+
+/// What doesn't fit a size stops the program, saying which size and what it holds: arithmetic
+/// past either end, a negation, the one division that grows, and a conversion that doesn't fit.
+#[test]
+fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let overflow =
+        |size: &str, range: &str| format!("error: this calculation overflows {size}, which holds {range}");
+    for (at, (body, said)) in [
+        ("x: i8 = -128\n    stdout.print(-x)", overflow("an i8", "-128 to 127")),
+        ("big: i32 = 2147483647\n    stdout.print(big + 1)", overflow("an i32", "-2147483648 to 2147483647")),
+        ("m: i32 = -2147483648\n    stdout.print(m // -1)", overflow("an i32", "-2147483648 to 2147483647")),
+        ("p: u16 = 300\n    stdout.print(p * p)", overflow("a u16", "0 to 65535")),
+        ("z: u8 = 0\n    stdout.print(z - 1)", overflow("a u8", "0 to 255")),
+        (
+            "n = 300\n    stdout.print(u8(n))",
+            "error: it doesn't fit in u8, which holds 0 to 255: 300".to_owned(),
+        ),
+        (
+            "n = -1\n    stdout.print(u32(n))",
+            "error: it doesn't fit in u32, which holds 0 to 4294967295: -1".to_owned(),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let name = format!("sized_overflow_{at}");
+        let dir = folder(&name)?;
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("def main(stdout: Stdout):\n    {body}\n"))?;
+        let executable = dir.join(&name);
+        let built =
+            fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert!(!ran.status.success(), "{body}");
+        assert_eq!(String::from_utf8_lossy(&ran.stderr).lines().next(), Some(said.as_str()), "{body}");
+    }
+    Ok(())
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {

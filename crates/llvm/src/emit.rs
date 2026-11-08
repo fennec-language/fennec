@@ -1608,10 +1608,20 @@ impl Emit<'_, '_, '_> {
                 temp
             }
             BinOp::ShiftLeft | BinOp::ShiftRight => {
-                if !matches!(rhs, Operand::Int(0..64)) {
+                // A shift by as many bits as the type has, or more, stops the program.
+                let sized = self.sized(dest);
+                let width = sized.map_or(64, |num| i64::from(num.bits()));
+                if !matches!(rhs, Operand::Int(count) if (0..width).contains(count)) {
                     let outside = self.temp();
-                    self.line(&format!("{outside} = icmp uge i64 {b}, 64"));
-                    self.fail_if(&outside, fennec_interp::embed::checks::BAD_SHIFT, span);
+                    self.line(&format!("{outside} = icmp uge i64 {b}, {width}"));
+                    match sized {
+                        Some(num) => {
+                            let said =
+                                format!("can't shift {} by a count outside 0 to {}", num.name(), width - 1);
+                            self.stop_if(&outside, &said, span);
+                        }
+                        None => self.fail_if(&outside, fennec_interp::embed::checks::BAD_SHIFT, span),
+                    }
                 }
                 let word = if op == BinOp::ShiftLeft { "shl" } else { "ashr" };
                 let temp = self.temp();

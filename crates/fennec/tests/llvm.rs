@@ -2731,6 +2731,18 @@ fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
             overflow("a u64", "0 to 18446744073709551615"),
         ),
         (
+            "x: u8 = 200\n    n = 9\n    stdout.print(x >> n)",
+            "error: can't shift u8 by a count outside 0 to 7".to_owned(),
+        ),
+        (
+            "x: u8 = 16\n    n = 60\n    stdout.print(x << n)",
+            "error: can't shift u8 by a count outside 0 to 7".to_owned(),
+        ),
+        (
+            "x: i32 = 2\n    n = 63\n    stdout.print(x << n)",
+            "error: can't shift i32 by a count outside 0 to 31".to_owned(),
+        ),
+        (
             "h: u64 = 9223372036854775807\n    stdout.print(h * 3)",
             overflow("a u64", "0 to 18446744073709551615"),
         ),

@@ -483,6 +483,39 @@ fn workers_take_turns_at_shared_values_holding_blocks() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A crash under a read lock gives the lock back and ends only that task, as one under `as ref` does.
+#[test]
+fn a_crash_under_a_read_lock_ends_only_its_task() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-read-crash-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/crash_under_a_read_lock.fen");
+    let built = build_on_threads(&dir, source, "crash_under_a_read_lock")?;
+    let wanted = "failed: Crashed(why=\"the task crashed\")\n2\n";
+    matches_on_workers(&built, "crash_under_a_read_lock", Some(0), wanted)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A task holding a lock stays on its thread until it lets go, however long it runs or waits: what
+/// says it's in a lock is its thread's, so another task run there would seem to hold the lock too.
+#[test]
+fn a_task_holding_a_lock_is_not_parked() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-lock-park-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/waiting_inside_a_lock.fen");
+    let built = build_on_threads(&dir, source, "waiting_inside_a_lock")?;
+    let wanted = "a name that is long enough to need a block of its own 300000000\n";
+    matches_on_workers(&built, "waiting_inside_a_lock", Some(0), wanted)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// When a server's loop ends, the blocks it lent to its rounds come back, so what runs next can
 /// read and lend them.
 #[test]

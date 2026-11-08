@@ -466,16 +466,17 @@ impl<'p> Module<'_, 'p> {
             pair_slots: HashMap::new(),
             walks: HashMap::new(),
             saving: crate::rollback::saving_handles(function),
+            on_crash: crate::rollback::given_back_on_crash(function),
             saving_slots: HashMap::new(),
             wrote_prop: false,
             leave_after_crash: None,
         };
-        // A function with `lock ... as ref` blocks, or that owns anything, leaves on every failure
-        // through `prop`, where a crash puts back what the blocks it's inside changed and lets go
-        // of what the function owns, as a return does.
+        // A function with locks a crash gives back, or that owns anything, leaves on every failure
+        // through `prop`, where a crash puts back what the blocks it's inside changed, gives their
+        // locks back and lets go of what the function owns, as a return does.
         let owns_any =
             (0..emit.kinds.len()).any(|at| emit.owns(LocalId(at)) || emit.owns_inline(LocalId(at)));
-        let leave_after_crash = ((!emit.saving.is_empty() || owns_any) && emit.failed != "unreachable")
+        let leave_after_crash = ((!emit.on_crash.is_empty() || owns_any) && emit.failed != "unreachable")
             .then(|| std::mem::replace(&mut emit.failed, "br label %prop".to_owned()));
         emit.leave_after_crash = leave_after_crash;
         emit.body()?;
@@ -552,6 +553,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// The handles of the `lock ... as ref` blocks whose changes are saved, for a crash to put
     /// back, by local.
     pub(crate) saving: Vec<usize>,
+    /// The handles a crash leaving this function gives back the locks of: those that save, and read locks.
+    pub(crate) on_crash: Vec<usize>,
     /// For each of those handles, a flag that's set while its lock is held, for a crash to know
     /// which to put back.
     pub(crate) saving_slots: HashMap<usize, String>,
@@ -840,7 +843,7 @@ impl Emit<'_, '_, '_> {
         if let Some(leave) = self.leave_after_crash.clone() {
             self.start_block("prop");
             self.put_places_back_after_crash()?;
-            if !self.saving.is_empty() {
+            if !self.on_crash.is_empty() {
                 self.roll_back_on_crash()?;
             }
             self.release_locals(None);

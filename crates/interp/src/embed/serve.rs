@@ -1007,6 +1007,7 @@ fn accept_failed(error: &std::io::Error) -> AfterAccept {
 pub(crate) fn can_park() -> bool {
     fennec_parked::stack_low().is_some()
         && !super::state_is_borrowed()
+        && !super::threads::holds_locks()
         && REGISTRY.with_borrow(Option::is_some)
         && super::parallel::here().is_some()
 }

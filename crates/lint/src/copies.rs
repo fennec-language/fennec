@@ -64,7 +64,7 @@ pub(crate) fn places(module: &Module) -> HashSet<(u32, u32)> {
         for stmt in stmts {
             let named = match &stmt.kind {
                 StmtKind::Assign { value, declare_mut: true, .. } => Some(value),
-                StmtKind::For { is_mut: true, iter, .. } => Some(iter),
+                StmtKind::For { is_mut: true, iter, .. } => Some(crate::dead::parallel_items(iter)),
                 _ => None,
             };
             if let Some(value) = named {

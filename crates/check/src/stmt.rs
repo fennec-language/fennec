@@ -96,7 +96,10 @@ impl FnCx<'_> {
             }
             StmtKind::For { names, is_mut, iter, body } => {
                 self.loops += 1;
-                self.for_stmt(names, *is_mut, iter, body, stmt.span);
+                match names.as_slice() {
+                    [at, item] if *is_mut => self.enumerate_ref((at, item), iter, body, stmt.span),
+                    _ => self.for_stmt(names, *is_mut, iter, body, stmt.span),
+                }
                 self.loops -= 1;
                 Flow::unit()
             }
@@ -368,6 +371,51 @@ impl FnCx<'_> {
         let before = self.snapshot();
         self.push(false);
         self.bind_names(names, &item, is_mut, (iter.span, span));
+        self.stmts(body, false);
+        self.pop();
+        let after = self.snapshot();
+        self.merge(&[before, after]);
+    }
+
+    /// `for at, ref item in enumerate(items):`: each item changed where it is, with its position.
+    /// `items` needs positions, as a `for ref` over it does. Once checked, it's written in as a
+    /// `for ref` that counts.
+    fn enumerate_ref(&mut self, (at, item): (&str, &str), iter: &Expr, body: &[Stmt], span: Span) {
+        let positions = match &iter.kind {
+            ExprKind::Call { callee, args }
+                if let [arg] = args.as_slice()
+                    && matches!(&callee.kind, ExprKind::Name(name) if name == "enumerate")
+                    && self.lookup("enumerate").is_none()
+                    && !self.checker.program.functions.contains_key("enumerate")
+                    && arg.name.is_none()
+                    && !arg.is_mut =>
+            {
+                Some(&arg.value)
+            }
+            _ => None,
+        };
+        let Some(items) = positions else {
+            self.error(
+                Diagnostic::new("`ref` with two names is for `enumerate(items)`", iter.span)
+                    .with_help("write `for at, ref item in enumerate(items):`, or `for ref item in items:`"),
+            );
+            return self.for_stmt(&[at.to_owned(), item.to_owned()], false, iter, body, span);
+        };
+        self.mut_place(items, "`for ref` changes each item, so loop over something held in a mut name");
+        let held = self.peek_type(items);
+        let item_ty = if let Some(item) = self.positions_item(&held, false, items.span) {
+            self.expr(items);
+            item
+        } else {
+            let ty = self.expr(items);
+            self.item_type(&ty, items.span)
+        };
+        self.record(iter.span, &Type::Iterator(Box::new(Type::Tuple(vec![Type::Int, item_ty.clone()]))));
+        self.forget_changed_in(body);
+        let before = self.snapshot();
+        self.push(false);
+        self.declare_as(at, Type::Int, false, Origin::Loop, span);
+        self.declare_as(item, item_ty, true, Origin::Loop, span);
         self.stmts(body, false);
         self.pop();
         let after = self.snapshot();

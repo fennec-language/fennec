@@ -132,6 +132,34 @@ fn a_match_over_a_result_handles_the_value_and_the_failure() {
     assert_eq!(problems(&all), empty);
 }
 
+/// A function that can fail says so in its signature, with `fails`, and `fennec fix` writes
+/// it: with its return type, with nothing given back, and with several errors. `main` doesn't,
+/// since nothing calls it.
+#[test]
+fn a_function_that_can_fail_says_fails() {
+    let program = "error TooBig:\n    limit: int\n\nerror Empty:\n    pass\n\n\
+        def word(n: int) -> str:\n    if n > 2: fail TooBig(limit=2)\n    \"w\"\n\n\
+        def check(n: int):\n    if n > 2: fail TooBig(limit=2)\n\n\
+        def both(n: int) -> int:\n    if n == 0: fail Empty()\n    _ = word(n)?\n    n\n\n\
+        def main(stdout: Stdout):\n    stdout.print(word(1)?)\n";
+    assert_eq!(
+        crate::problems_as_written(program),
+        [
+            "`word` can fail with TooBig, so its signature says `fails TooBig` @ def word(n: int) -> str",
+            "`check` can fail with TooBig, so its signature says `fails TooBig` @ def check(n: int)",
+            "`both` can fail with Empty | TooBig, so its signature says `fails Empty | TooBig` @ def both(n: int) -> int",
+        ]
+    );
+    let module = fennec_syntax::parse(program).unwrap();
+    let diagnostics = fennec_check::check(&module).err().unwrap_or_default();
+    let fixed = fennec_syntax::apply_fixes(program, 0, &diagnostics).unwrap();
+    for written in ["-> str fails TooBig:", "def check(n: int) fails TooBig:", "-> int fails Empty | TooBig:"]
+    {
+        assert!(fixed.contains(written), "{fixed}");
+    }
+    assert_eq!(crate::problems_as_written(&fixed), Vec::<String>::new());
+}
+
 #[test]
 fn ignored_results_are_mistakes() {
     let program = "
@@ -231,8 +259,8 @@ const NET_ERROR: &str =
 #[test]
 fn an_error_with_cases_fails_and_is_matched_like_an_enum() {
     let text = format!(
-        "{NET_ERROR}def connect(host: str, port: int) -> int:\n    if host == \"\":\n        \
-         fail DialError.NotFound(host)\n    if port == 0:\n        fail DialError.Closed\n    port\n\n\
+        "{NET_ERROR}def connect(host: str, port: int) -> int fails DialError:\n    if host == \"\":\n        \
+         fail .NotFound(host)\n    if port == 0:\n        fail .Closed\n    port\n\n\
          def described(port: int) -> str:\n    match connect(\"db\", port):\n        \
          case Err(Refused(host, port)): f\"refused {{host}}:{{port}}\"\n        \
          case Err(NotFound(host)): f\"no {{host}}\"\n        case Err(error): f\"failed: {{error}}\"\n        \

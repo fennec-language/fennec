@@ -11,33 +11,33 @@ struct Node:
     next: Node?
     names: list[str]
 
-def word(n: int) -> str:
+def word(n: int) -> str fails TooBig:
     if n > 2: fail TooBig(limit=2)
     f"w{n}"
 
-def words(n: int) -> list[str]:
+def words(n: int) -> list[str] fails TooBig:
     spelled = [word(i)? for i in range(n)]
     spelled
 
-def node(n: int) -> Node:
+def node(n: int) -> Node fails TooBig:
     if n > 3: fail TooBig(limit=3)
     if n == 0: return Node(value=0, next=None, names=[])
     inner = node(n - 1)?
     Node(value=n, next=inner, names=words(n)?)
 
-def wrapped(n: int) -> str:
+def wrapped(n: int) -> str fails Wrapped:
     text = word(n)? from Wrapped(why="word failed")
     text + "!"
 
 struct Maker:
     made = 0
 
-    def make(ref self, n: int) -> str:
+    def make(ref self, n: int) -> str fails TooBig:
         self.made += 1
         if n > 2: fail TooBig(limit=n)
         word(n)?
 
-    def twice(ref self, n: int) -> list[str]:
+    def twice(ref self, n: int) -> list[str] fails TooBig:
         [self.make(n)?, self.make(n + 1)?]
 
 def main(stdout: Stdout):

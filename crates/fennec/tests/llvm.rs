@@ -358,12 +358,12 @@ struct Unit:
     tags: list[int]
     hp: int
 
-def maybe(at: int) -> int:
+def maybe(at: int) -> int fails Bad:
     if at == 1:
         fail Bad("from a call")
     at
 
-def by_fail(ref units: list[Unit], at: int) -> int:
+def by_fail(ref units: list[Unit], at: int) -> int fails Bad:
     for ref unit in units:
         unit.tags.append(at)
         unit.hp += 1
@@ -371,7 +371,7 @@ def by_fail(ref units: list[Unit], at: int) -> int:
             fail Bad("stop")
     0
 
-def by_try(ref units: list[Unit]) -> int:
+def by_try(ref units: list[Unit]) -> int fails Bad:
     for ref unit in units:
         unit.tags.append(8)
         unit.hp += maybe(unit.hp)?
@@ -1999,7 +1999,7 @@ enum Token:
 def total(units: list[Unit]) -> int:
     sum(unit.hp for unit in units)
 
-def by_fail(ref units: list[Unit]) -> int:
+def by_fail(ref units: list[Unit]) -> int fails Bad:
     for ref unit in units:
         unit.tags.append(9)
         unit.hp += 1
@@ -4327,32 +4327,32 @@ fn generators_that_fail_match_the_jit() -> std::io::Result<()> {
 error Named:
     who: str
 
-def checked(limit: int) -> Iterator[int]:
+def checked(limit: int) -> Iterator[int] fails TooBig:
     for n in range(5):
         if n >= limit: fail TooBig(at=n)
         yield n
 
-def named(limit: int) -> Iterator[str]:
+def named(limit: int) -> Iterator[str] fails Named:
     for n in range(5):
         if n >= limit: fail Named(who=f"a long name for number {n} in a block")
         yield str(n)
 
-def either(limit: int) -> Iterator[int]:
+def either(limit: int) -> Iterator[int] fails Named | TooBig:
     if limit == 0: fail Named(who="none")
     for n in range(limit):
         if n == 2: fail TooBig(at=n)
         yield n
 
-def total(limit: int) -> int:
+def total(limit: int) -> int fails TooBig:
     sum(n for n in checked(limit)?)
 
-def joined(limit: int) -> str:
+def joined(limit: int) -> str fails Named:
     mut out = ""
     for word in named(limit)?:
         out = out + word
     out
 
-def looped(limit: int) -> int:
+def looped(limit: int) -> int fails Named | TooBig:
     mut count = 0
     for n in either(limit)?:
         count = count + n + 1
@@ -4499,7 +4499,7 @@ def first_over(limit: int, over: int) -> int:
         if n > over: return n
     0
 
-def half(n: int) -> int:
+def half(n: int) -> int fails Fault:
     if n % 2 == 1: fail Fault(f"{n} is odd")
     n // 2
 
@@ -4531,7 +4531,7 @@ def main(stdout: Stdout):
     )?;
     same_message_as_the_jit(
         "expect",
-        "error Fault:\n    reason: str\n\ndef half(n: int) -> int:\n    if n % 2 == 1: fail Fault(\"odd\")\n    n // 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(4).expect(\"four is even\"))\n    stdout.print(half(3).expect(\"three is even\"))\n",
+        "error Fault:\n    reason: str\n\ndef half(n: int) -> int fails Fault:\n    if n % 2 == 1: fail Fault(\"odd\")\n    n // 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(4).expect(\"four is even\"))\n    stdout.print(half(3).expect(\"three is even\"))\n",
     )
 }
 
@@ -5061,7 +5061,7 @@ struct Bag:
     at: Point
     count = 0
 
-def load(text: str) -> Bag:
+def load(text: str) -> Bag fails ParseError:
     json.loads[Bag](text)?
 
 def main(stdout: Stdout):
@@ -8975,11 +8975,11 @@ error Wrapped:
 error Inner:
     what: str
 
-def inner(n: int) -> int:
+def inner(n: int) -> int fails Inner:
     if n > 1: fail Inner(what="too many")
     n
 
-def outer(n: int) -> int:
+def outer(n: int) -> int fails Wrapped:
     inner(n)? from Wrapped(why="inner failed")
 
 def main(stdout: Stdout):
@@ -11199,7 +11199,7 @@ fn a_main_giving_back_a_result_matches_the_jit() -> std::io::Result<()> {
     }
     same_as_the_jit(
         "main_gives_back",
-        r#"def number(text: str) -> int:
+        r#"def number(text: str) -> int fails InvalidValue:
     int(text)?
 
 def main(stdout: Stdout):
@@ -11226,20 +11226,20 @@ error TooWeak:
 error Plain:
     code: int
 
-def weak(level: int) -> int:
+def weak(level: int) -> int fails TooWeak:
     if level < 5: fail TooWeak(level)
     level
 
-def named(name: str) -> str:
+def named(name: str) -> str fails NotFound:
     if name == "": fail NotFound(name)
     name
 
-def challenge(name: str, level: int) -> str:
+def challenge(name: str, level: int) -> str fails NotFound | TooWeak:
     who = named(name)?
     power = weak(level)?
     f"{who} at {power}"
 
-def three(name: str, level: int, code: int) -> str:
+def three(name: str, level: int, code: int) -> str fails NotFound | Plain | TooWeak:
     if code > 0: fail Plain(code)
     challenge(name, level)?
 
@@ -11296,7 +11296,7 @@ fn an_unhandled_error_of_a_set_fails_like_the_jit() -> std::io::Result<()> {
 error TooWeak:
     level: int
 
-def pick(level: int) -> int:
+def pick(level: int) -> int fails NotFound | TooWeak:
     if level < 0: fail NotFound(\"x\")
     if level < 5: fail TooWeak(level)
     level
@@ -11317,7 +11317,7 @@ fn a_main_giving_back_an_error_fails_like_the_jit() -> std::io::Result<()> {
     }
     same_message_as_the_jit(
         "main_gives_back_an_error",
-        r#"def number(text: str) -> int:
+        r#"def number(text: str) -> int fails InvalidValue:
     int(text)?
 
 def main(stdout: Stdout):
@@ -11759,7 +11759,7 @@ fn numbers_and_sets_from_text_match_the_jit() -> std::io::Result<()> {
         "numbers_from_text",
         r#"from std.re import Regex
 
-def add(a: str, b: str) -> int:
+def add(a: str, b: str) -> int fails InvalidValue:
     int(a)? + int(b)?
 
 def main(stdout: Stdout):

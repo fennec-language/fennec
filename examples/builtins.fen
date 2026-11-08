@@ -5,7 +5,7 @@ from std.math import PI, ceil, cos, floor, sin, sqrt
 def square(n: int) -> int:
     n * n
 
-def checked(n: int):
+def checked(n: int) fails IoError:
     if n < 0: fail IoError("it's negative")
 
 def main(stdout: Stdout):

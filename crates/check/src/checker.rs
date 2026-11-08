@@ -202,6 +202,7 @@ impl Checker {
             self.check_implicit_methods();
         }
         self.revisit_cycles();
+        self.fails_unsaid();
         for name in self.program.constants.keys().cloned().collect::<Vec<_>>() {
             self.constant_type(&name);
         }
@@ -585,6 +586,46 @@ impl Checker {
         // mustn't settle it.
         signature.returns = forget_vars(&returns);
         self.states.insert(key.to_owned(), State::Done(signature));
+    }
+
+    /// Reports each function that can fail without saying so, once every function's errors are
+    /// known: a signature says how a function can fail, so a reader sees it there. `main` is the
+    /// exception, since nothing calls it and a failure out of it is printed, and so is a `test`.
+    /// A `def` with no arrow that gives back a value has its `fails` written with its type, by
+    /// `missing_return_type`.
+    fn fails_unsaid(&mut self) {
+        let mut found = Vec::new();
+        for (key, entry) in &self.program.functions {
+            let def = &entry.def;
+            // A `test` block, and the function LLVM's tests make of one, have no signature.
+            let test = key.starts_with("test \"") || key.starts_with("test:");
+            if entry.prelude || def.fails.is_some() || def.name == "main" || test {
+                continue;
+            }
+            let Some(State::Done(signature)) = self.states.get(key) else { continue };
+            let Type::Result(value, error) = &signature.returns else { continue };
+            // One that says it gives back a `Result` gives back a value.
+            if def.ret.as_ref().is_some_and(|ret| ret.name == "Result")
+                || def.ret.is_none() && **value != Type::Unit
+            {
+                continue;
+            }
+            let said = match self.settled(error) {
+                Type::Named(name) => name,
+                Type::Errors(names) => names.join(" | "),
+                _ => continue,
+            };
+            let end = def.ret.as_ref().map_or(def.span.end, |ret| ret.span.end);
+            found.push(
+                Diagnostic::new(
+                    format!("`{}` can fail with {said}, so its signature says `fails {said}`", def.name),
+                    def.span,
+                )
+                .with_help("write it after the return type: `fennec fix` makes this change")
+                .with_fix(Span { start: end, end }, format!(" fails {said}")),
+            );
+        }
+        self.diagnostics.extend(found);
     }
 
     /// Reports a `fails E` that doesn't name an error, or a body that can fail with an error

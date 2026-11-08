@@ -1,4 +1,4 @@
-def save(path: str):
+def save(path: str) fails IoError:
     if path == "": fail IoError("there's nowhere to save")
 
 def main(stdout: Stdout):

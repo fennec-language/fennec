@@ -14,7 +14,7 @@ extend Enemy:
 error Dodged:
     name: str
 
-def hit(ref enemy: enemies.Enemy, amount: int) -> int:
+def hit(ref enemy: enemies.Enemy, amount: int) -> int fails Dodged:
     if amount == 0: fail Dodged(enemy.name)
     enemy.health -= amount
     enemy.health

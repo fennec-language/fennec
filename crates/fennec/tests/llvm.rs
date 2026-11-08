@@ -3950,6 +3950,109 @@ def main(stdout: Stdout):
     )
 }
 
+/// What closures and generators capture, of each kind, comes out as the interpreter gives it:
+/// a closure giving back what it captured as it is, generator expressions yielding a captured
+/// string, struct, list, bool, int or float, nested generators and generators with `while`,
+/// comprehensions inside generators and the other way round, and a closure inside a generator.
+#[test]
+fn captures_of_every_kind_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "captures",
+        r#"struct Pair:
+    name: str
+    count: int
+
+def joined(parts: Iterator[str]) -> str:
+    mut whole = ""
+    for part in parts:
+        whole = whole + part
+    whole
+
+def apply(change: (int) -> str, x: int) -> str:
+    change(x)
+
+def twice(word: str) -> Iterator[str]:
+    yield word
+    yield word
+
+def outer(word: str, times: int) -> Iterator[str]:
+    for w in twice(word):
+        for _ in range(times):
+            yield w
+
+def counting(word: str, limit: int) -> Iterator[str]:
+    mut n = 0
+    while n < limit:
+        yield word
+        n += 1
+
+def main(stdout: Stdout):
+    small = "ab"
+    big = "a string long enough to live in a block"
+    n = 7
+    pair = Pair(name="kit", count=2)
+    items = [1, 2]
+    flag = True
+    # closures returning a captured value as it is
+    stdout.print(apply((x) => small, 1), apply((x) => big, 1).len(), apply((x) => str(n), 1))
+    stdout.print(apply((x) => pair.name, 0), apply((x) => f"{items}", 0))
+    # generator expressions yielding captures as they are, of each kind
+    stdout.print(list(pair for _ in range(2)), list(items for _ in range(2)), list(flag for _ in range(2)))
+    stdout.print(list(n for _ in range(2)), list(1.5 for _ in range(2)), joined(pair.name for _ in range(2)))
+    # nested generators and generator functions
+    stdout.print(joined(outer("xy", times=2)), joined(counting(small, limit=3)))
+    stdout.print(joined(w for w in twice(small)), joined(small for w in twice("q")))
+    # comprehensions inside generators, and generators inside comprehensions
+    stdout.print(list([small, w] for w in twice("z")), [joined(small for _ in range(k)) for k in range(3)])
+    stdout.print(joined(s for s in [small, big] if s.len() < 5), sum(n for _ in range(3)))
+    # a closure inside a generator, and a generator inside a closure
+    stdout.print(joined(apply((x) => small, 0) for _ in range(2)), apply((x) => joined(small for _ in range(x)), 2))
+"#,
+    )
+}
+
+/// A generator made in one place and read in another keeps what it captured: one returned from a
+/// function, one held before it's read, and one made each time round a loop.
+#[test]
+fn generators_kept_for_later_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "kept_generators",
+        r#"def joined(parts: Iterator[str]) -> str:
+    mut whole = ""
+    for part in parts:
+        whole = whole + part
+    whole
+
+def words_of(word: str, times: int) -> Iterator[str]:
+    (word for _ in range(times))
+
+def later(word: str) -> Iterator[str]:
+    made = word + "!"
+    (made for _ in range(2))
+
+def main(stdout: Stdout):
+    small = "ab"
+    held = words_of(small, times=3)
+    stdout.print("before")
+    stdout.print(joined(held), joined(later("hey")))
+    mut gens: list[str] = []
+    for word in ["p", "qq"]:
+        gens.append(joined(word for _ in range(2)))
+    stdout.print(gens)
+    mut total = 0
+    for k in range(3):
+        total += sum(k for _ in range(2))
+    stdout.print(total)
+"#,
+    )
+}
+
 #[test]
 fn generators_that_fail_match_the_jit() -> std::io::Result<()> {
     if !ready() {

@@ -3,6 +3,13 @@ enum Shape:
     Rect(width: float, height: float)
     Point
 
+error Failed:
+    why: str
+
+## An error with a case named as one of `Shape`'s is.
+error Lost:
+    Point
+
 def name_int(n: int) -> str:
     match n:
         case 0:
@@ -42,7 +49,7 @@ def name_maybe(n: int?) -> str:
         case _:
             "something"
 
-def outcome(result: Result[int, str]) -> str:
+def outcome(result: Result[int, Failed]) -> str:
     match result:
         case Ok(0):
             "nothing"
@@ -72,7 +79,7 @@ def main(stdout: Stdout):
     )
     stdout.print(name_maybe(None), name_maybe(0))
     stdout.print(name_str("fox"), name_str("cat"), name_bool(True), name_bool(False))
-    stdout.print(outcome(Ok(0)), outcome(Ok(5)), outcome(Err("no")))
+    stdout.print(outcome(Ok(0)), outcome(Ok(5)), outcome(Err(Failed(why="no"))))
     stdout.print(width(.Rect(width=2.0, height=1.0)), width(.Point), width(.Circle(radius=1.0)))
 
     # A tuple pattern has as many parts as the tuple it matches.
@@ -94,7 +101,7 @@ def main(stdout: Stdout):
             stdout.print("no numbers")
 
     # A plain name never matches an error, so a forgotten error can't pass as a value.
-    broken: Result[int, str] = Err("broken")
+    broken: Result[int, Failed] = Err(Failed(why="broken"))
     match broken:
         case value:
             stdout.print(f"got {value}")
@@ -102,7 +109,7 @@ def main(stdout: Stdout):
             stdout.print("an error")
 
     # A dotted case never looks inside an error.
-    pointless: Result[Shape, Shape] = Err(Shape.Point)
+    pointless: Result[Shape, Lost] = Err(Lost.Point)
     match pointless:
         case .Point:
             stdout.print("a point")

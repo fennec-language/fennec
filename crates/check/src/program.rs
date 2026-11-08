@@ -212,6 +212,30 @@ impl Program {
         self.types.get(name)
     }
 
+    /// `Result[T, E]`, whose `E` is an error, as `fail` takes.
+    fn result_written(
+        &self,
+        written: &TypeExpr,
+        value: Box<Type>,
+        error: Box<Type>,
+    ) -> Result<Type, Diagnostic> {
+        if !self.can_fail_with(&error) {
+            let span = written.args.get(1).map_or(written.span, |error| error.span);
+            return Err(not_an_error("a `Result` fails with an error", &error, span));
+        }
+        Ok(Type::Result(value, error))
+    }
+
+    /// Whether something can fail with a value of type `ty`, as `fail` and `Err(...)` take:
+    /// an `error` type, several of them, or a type not known yet.
+    pub(crate) fn can_fail_with(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Errors(_) | Type::Param(_) | Type::Unknown | Type::Var(_) => true,
+            Type::Union(members) => members.iter().all(|member| self.can_fail_with(member)),
+            other => self.kind_of(other) == Some(TypeKind::Error),
+        }
+    }
+
     pub(crate) fn kind_of(&self, ty: &Type) -> Option<TypeKind> {
         match ty {
             Type::Named(name) => self.type_info(name).map(|info| info.kind),
@@ -381,7 +405,7 @@ impl Program {
             "Iterator" => Type::Iterator(arg()),
             "set" => Type::Set(arg()),
             "dict" => Type::Dict(arg(), arg()),
-            "Result" => Type::Result(arg(), arg()),
+            "Result" => self.result_written(written, arg(), arg())?,
             "tuple" => Type::Tuple(args),
             "->" => {
                 let mut params = args;
@@ -569,6 +593,12 @@ fn wrong_type_args(written: &TypeExpr, wanted: usize) -> Diagnostic {
         format!("`{name}` needs {wanted} type{} in brackets", if wanted == 1 { "" } else { "s" })
     };
     Diagnostic::new(message, written.span).with_help(format!("write it like `{example}`"))
+}
+
+/// Something other than an error where only an error goes: `Result[int, str]`, `Err("no")`.
+pub(crate) fn not_an_error(what: &str, ty: &Type, span: Span) -> Diagnostic {
+    Diagnostic::new(format!("{what}, but this is {}", crate::types::a(ty)), span)
+        .with_help("declare one with `error`, like `error Failed:` with a `why: str` field, as `fail` takes")
 }
 
 pub(crate) fn unknown_type(name: &str, span: Span) -> Diagnostic {

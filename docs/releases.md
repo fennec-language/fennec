@@ -26,7 +26,7 @@ There are three release keys:
 | a toolchain | 1 of the 3 keys | `fennec-toolchain` |
 | the launcher | 2 of the 3, from different keys | `fennec-launcher` |
 
-The launcher is what checks everything else, so one stolen key can't replace it. Each kind is signed in its own namespace, so a toolchain's signature never counts for a launcher. **The 2-of-3 rule for the launcher is waiting on Chris's final OK.** It's one number in `crates/dist/src/lib.rs`.
+The launcher is what checks everything else, so one stolen key can't replace it. Each kind is signed in its own namespace, so a toolchain's signature never counts for a launcher. **The 2-of-3 rule for the launcher is locked:** Chris decided it on 2026-11-08, along with CI never signing. It's one number in `crates/dist/src/lib.rs`.
 
 ## Making the keys, once
 

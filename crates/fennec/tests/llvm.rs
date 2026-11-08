@@ -8153,6 +8153,17 @@ def changed(data: bytes, at: int, to: int) -> bytes:
         items.append(to if b == at else data[b])
     bytes(items)
 
+## Where the value starts: after the header, and the layout saved with it.
+def body(data: bytes) -> int:
+    mut at = 12
+    mut n = 0
+    mut shift = 0
+    while data[at] >= 128:
+        n = n | ((data[at] & 127) << shift)
+        shift += 7
+        at += 1
+    at + 1 + (n | (data[at] << shift))
+
 def main(stdout: Stdout):
     units = [
         Unit(name="ash", health=10, kind=.Soldier, at=Place(x=0, y=-3), items=[Item(name="axe", weight=2.25)]),
@@ -8171,7 +8182,7 @@ def main(stdout: Stdout):
     back = pack.loads[list[Unit]](data) else []
     stdout.print(data.len(), back == units, back[1].name, back[1].at.x, back[1].tags, back[0].items[0].weight)
     stdout.print(pack.loads[float](pack.dumps(-0.1)) else 0.0, pack.loads[str](pack.dumps("")) else "x")
-    stdout.print(said(pack.loads[list[Item]](data)))
+    stdout.print(said(pack.loads[list[Place]](data)))
     stdout.print(said(pack.loads[list[Unit]](data[0:data.len() - 1])))
     stdout.print(said(pack.loads[int](bytes([1, 2, 3]))))
     stdout.print(said(pack.loads[int](pack.dumps(5) + bytes([0]))))
@@ -8181,15 +8192,16 @@ def main(stdout: Stdout):
         deep = Link(next=deep)
     stdout.print(said(pack.loads[Link](pack.dumps(deep), limits=Limits(depth=4))), said(pack.loads[Link](pack.dumps(deep))))
     medic = pack.dumps(Kind.Medic)
-    stdout.print(said(pack.loads[Kind](changed(medic, at=12, to=9))))
-    stdout.print(said(pack.loads[bool](changed(pack.dumps(True), at=12, to=2))))
+    stdout.print(said(pack.loads[Kind](changed(medic, at=body(medic), to=9))))
+    truth = pack.dumps(True)
+    stdout.print(said(pack.loads[bool](changed(truth, at=body(truth), to=2))))
     one = pack.dumps(Guarded(points=1))
     # The points, 1, are the zigzag byte 2, and 1 is -1.
-    stdout.print(said(pack.loads[Guarded](changed(one, at=12, to=1))))
+    stdout.print(said(pack.loads[Guarded](changed(one, at=body(one), to=1))))
 "#;
 
 /// `std.pack` reads back what it wrote, ints at both ends, a name that isn't ASCII, a case with
-/// data and a dict among them, and says why bytes don't load: a type of another shape, bytes
+/// data and a dict among them, and says why bytes don't load: a type needing a field they lack, bytes
 /// that end too soon or go on past it, ones it didn't write, a length or a depth over the
 /// limit, a case or a bool that doesn't exist, and a `where` rule broken.
 #[test]
@@ -8200,17 +8212,7 @@ fn pack_reads_back_what_it_wrote_and_says_why_other_bytes_do_not_load() -> std::
     let printed = printed_by("pack_messages", PACK_MESSAGES)?;
     assert_eq!(
         printed,
-        "105 True vëx -9223372036854775808 {\"a\": 1, \"b\": -1} 2.25\n\
-         -0.1 \n\
-         this was packed from a different `list[Item]`, at byte 4\n\
-         the data ends too soon, at byte 104\n\
-         these aren't bytes `std.pack` wrote, at byte 0\n\
-         there's more after the value, at byte 13\n\
-         a length is over the limit of 4, at byte 12\n\
-         it nests deeper than the limit of 4, at byte 16 loaded\n\
-         `Kind` has no case 9, at byte 12\n\
-         a bool should be 0 or 1, at byte 12\n\
-         Guarded.points breaks its `where` rule, at byte 13\n"
+        "245 True vëx -9223372036854775808 {\"a\": 1, \"b\": -1} 2.25\n-0.1 \n`x` isn't in the data, and has no default, at byte 177\nthe data ends too soon, at byte 244\nthese aren't bytes `std.pack` wrote, at byte 0\nthere's more after the value, at byte 15\na length is over the limit of 4, at byte 14\nit nests deeper than the limit of 4, at byte 31 loaded\n`Kind` has no case 9, at byte 51\na bool should be 0 or 1, at byte 14\nGuarded.points breaks its `where` rule, at byte 26\n"
     );
     Ok(())
 }
@@ -8243,6 +8245,17 @@ def tried(data: bytes, limits: Limits) -> int:
         case Err(_):
             return 0
 
+## Where the value starts: after the header, and the layout saved with it.
+def body(data: bytes) -> int:
+    mut at = 12
+    mut n = 0
+    mut shift = 0
+    while data[at] >= 128:
+        n = n | ((data[at] & 127) << shift)
+        shift += 7
+        at += 1
+    at + 1 + (n | (data[at] << shift))
+
 def main(stdout: Stdout):
     tail = Node(name="tail", shape=.Dot, data=bytes([0, 255]), weights=[], names={})
     node = Node(
@@ -8270,6 +8283,12 @@ def main(stdout: Stdout):
             changed[at] = (seed >> 16) & 255
             loaded += tried(bytes(changed), Limits())
             loaded += tried(bytes(changed), small)
+            # With the number for its shape changed too, it's read by the names in its layout,
+            # which may be the byte changed.
+            if at != 4:
+                changed[4] = changed[4] ^ 1
+                loaded += tried(bytes(changed), Limits())
+                runs += 1
             runs += 2
     stdout.print("changed", runs, loaded > 0)
     # Bytes from a seed after a good header.
@@ -8278,12 +8297,21 @@ def main(stdout: Stdout):
         seed = step(seed)
         size = (seed >> 8) % 64
         mut random = list[int]()
-        for at in range(12):
+        for at in range(body(good)):
             random.append(items[at])
         for _ in range(size):
             seed = step(seed)
             random.append((seed >> 16) & 255)
         loaded += tried(bytes(random), Limits())
+        # A layout from a seed, read by its names, since the number for its shape is changed.
+        mut named = list[int]()
+        for at in range(12):
+            named.append(items[at] ^ 1 if at == 4 else items[at])
+        named.append(size)
+        for _ in range(size + 16):
+            seed = step(seed)
+            named.append(seed >> 16 & 255 if seed % 3 == 0 else [83, 32, 49, 108, 105, 115, 69, 111, 114, 48][(seed >> 12) % 10])
+        loaded += tried(bytes(named), Limits())
     stdout.print("random", loaded >= 0)
 "#;
 
@@ -8296,7 +8324,184 @@ fn pack_loads_of_changed_and_random_bytes_fail_without_crashing() -> std::io::Re
         return Ok(());
     }
     let printed = printed_by("pack_fuzz", PACK_FUZZ)?;
-    assert_eq!(printed, "59 1 1\ntruncated 0\nchanged 4720 True\nrandom True\n");
+    assert_eq!(printed, "169 1 1\ntruncated 0\nchanged 20240 True\nrandom True\n");
+    Ok(())
+}
+
+/// What the next test builds: a type saved, then loaded as the next version of it.
+const PACK_VERSIONS: &str = r#"from std import pack
+
+enum Mood:
+    Calm
+    Angry(level: int)
+    Gone
+
+struct Spot:
+    x: int
+    y: int
+
+## Saves itself, as text.
+struct Code:
+    text: str
+
+    def serialize(self, ref out: Serializer):
+        out.text(self.text)
+
+    def deserialize(ref src: Deserializer) -> Code fails ParseError:
+        Code(text=src.text()?)
+
+struct Node:
+    name: str
+    next: Node? = None
+
+struct Before:
+    name: str
+    health: int
+    tags: list[str]
+    mood: Mood
+    dropped: dict[str, int]
+    spots: list[Spot]
+    pair: (int, str)
+    either: int | str
+    code: Code
+    chain: Node
+    later: Mood? = None
+
+enum NewMood:
+    Gone
+    Calm
+    Angry(level: int, reason = "none")
+
+struct NewSpot:
+    y: int
+    x: int
+    z = 0
+
+struct NewNode:
+    name: str
+    depth = 0
+    next: NewNode? = None
+
+struct After:
+    name: str
+    health: float
+    mood: NewMood
+    tags: list[str]
+    spots: list[NewSpot]
+    pair: (int, str)
+    either: str | int
+    code: Code
+    chain: NewNode
+    level = 1
+    later: NewMood? = None
+
+struct NeedsRank:
+    name: str
+    code: Code
+    rank: int
+
+struct NameAsInt:
+    name: int
+
+enum NoAngry:
+    Calm
+    Gone
+
+struct MoodGone:
+    mood: NoAngry
+
+struct NoCode:
+    name: str
+
+struct ShortPair:
+    pair: (int, str, bool)
+
+## Each name down the chain.
+def names(node: NewNode) -> list[str]:
+    rest = node.next else NewNode(name="")
+    if rest.name == "": return [node.name]
+    [node.name] + names(rest)
+
+def said[T](found: Result[T, ParseError]) -> str:
+    match found:
+        case Ok(_):
+            return "loaded"
+        case Err(error):
+            return error.message
+
+def main(stdout: Stdout):
+    chain = Node(name="a", next=Node(name="b", next=Node(name="c")))
+    old = Before(
+        name="ana",
+        health=7,
+        tags=["a", "b"],
+        mood=.Angry(level=3),
+        dropped={"x": 1},
+        spots=[Spot(x=1, y=2), Spot(x=3, y=4)],
+        pair=(5, "five"),
+        either="text",
+        code=Code(text="c-1"),
+        chain=chain,
+        later=.Gone,
+    )
+    data = pack.dumps(old)
+    match pack.loads[After](data):
+        case Ok(found):
+            stdout.print(found.name, found.health, found.level, found.tags, found.pair, found.either, found.code.text)
+            stdout.print([(spot.x, spot.y, spot.z) for spot in found.spots])
+            stdout.print(names(found.chain), found.chain.depth)
+            match found.mood:
+                case .Angry(level, reason):
+                    stdout.print("angry", level, reason)
+                case _:
+                    stdout.print("other")
+            stdout.print(found.later == .Gone)
+        case Err(error):
+            stdout.print("failed:", error.message)
+    stdout.print(said(pack.loads[NeedsRank](data)))
+    stdout.print(said(pack.loads[NameAsInt](data)))
+    stdout.print(said(pack.loads[MoodGone](data)))
+    stdout.print(said(pack.loads[NoCode](data)))
+    stdout.print(said(pack.loads[ShortPair](data)))
+    # Data from before layouts loads into the same shape, and only that.
+    first = without_layout(data)
+    stdout.print(said(pack.loads[Before](first)), said(pack.loads[After](first)))
+    stdout.print(data.len(), first.len())
+
+## The same data as `FPK1` wrote it: the header, then the value, with no layout between.
+def without_layout(data: bytes) -> bytes:
+    mut at = 12
+    mut n = 0
+    mut shift = 0
+    while data[at] >= 128:
+        n = n | ((data[at] & 127) << shift)
+        shift += 7
+        at += 1
+    start = at + 1 + (n | (data[at] << shift))
+    mut items = [70, 80, 75, 49]
+    for place in range(4, 12):
+        items.append(data[place])
+    for place in range(start, data.len()):
+        items.append(data[place])
+    bytes(items)
+"#;
+
+/// `std.pack` loads data saved from an earlier version of a type by its names: fields moved,
+/// dropped and added with defaults, an `int` that's a `float` now, cases moved and given new
+/// fields, union members moved, a type inside itself, and one that saves itself, read as it
+/// reads. A field with no default that the data lacks, a value of another kind, a case that's
+/// gone, a tuple of another size, and a dropped field only its own type can pass over each fail,
+/// naming the field. Data from before layouts loads into the same shape only.
+#[test]
+fn pack_loads_an_earlier_version_of_a_type_by_its_names() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("pack_versions", PACK_VERSIONS)?;
+    assert_eq!(
+        printed,
+        "ana 7.0 1 [\"a\", \"b\"] (5, \"five\") text c-1\n[(1, 2, 0), (3, 4, 0)]\n[\"a\", \"b\", \"c\"] 0\nangry 3 none\nTrue\n`rank` isn't in the data, and has no default, at byte 282\n`name` was saved as text, not an int, at byte 234\n`mood` was saved as `NoAngry.Angry`, a case `NoAngry` doesn't have now, at byte 244\n`code` isn't in the type now, and holds a `Code`, which saves itself its own way, so where it ends can't be found, at byte 267\n`pair` was saved as a tuple of 2 items, not 3, at byte 255\nloaded this was packed from a different `After`, at byte 4\n282 60\n"
+    );
     Ok(())
 }
 
@@ -8350,6 +8555,17 @@ def said[T](found: Result[T, ParseError]) -> str:
         case Err(error):
             return error.message
 
+## Where the value starts: after the header, and the layout saved with it.
+def body(data: bytes) -> int:
+    mut at = 12
+    mut n = 0
+    mut shift = 0
+    while data[at] >= 128:
+        n = n | ((data[at] & 127) << shift)
+        shift += 7
+        at += 1
+    at + 1 + (n | (data[at] << shift))
+
 def main(stdout: Stdout):
     scene = Scene(shapes=[Shape(kind=0, circle=Circle(radius=1.5)), Shape(kind=1, square=Square(side=2.0)), Shape(count=7)])
     text = json.dumps(scene)
@@ -8369,7 +8585,7 @@ def main(stdout: Stdout):
     mut items = list[int]()
     for at in range(data.len()):
         items.append(data[at])
-    items[13] = 9
+    items[body(data) + 1] = 9
     stdout.print(said(pack.loads[Scene](bytes(items))))
 "#;
 
@@ -8384,7 +8600,7 @@ fn union_members_are_saved_tagged_in_every_format() -> std::io::Result<()> {
     let printed = printed_by("union_members", UNION_MEMBERS)?;
     assert_eq!(
         printed,
-        "{\"shapes\": [{\"Circle\": {\"radius\": 1.5}}, {\"Square\": {\"side\": 2.0}}, {\"int\": 7}]}\nTrue\n[[shapes]]\n\n[shapes.Circle]\nradius = 1.5\n\n[[shapes]]\n\n[shapes.Square]\nside = 2.0\n\n[[shapes]]\nint = 7\n\nTrue\nTrue\n`shapes[0]` is \"Triangle\", which is none of `Circle | Square | int`\n`shapes[0]` should be a Circle | Square | int, but it's an int\n`shapes[0]` is \"Triangle\", which is none of `Circle | Square | int`\n`Circle | Square | int` has no member 9, at byte 13\n"
+        "{\"shapes\": [{\"Circle\": {\"radius\": 1.5}}, {\"Square\": {\"side\": 2.0}}, {\"int\": 7}]}\nTrue\n[[shapes]]\n\n[shapes.Circle]\nradius = 1.5\n\n[[shapes]]\n\n[shapes.Square]\nside = 2.0\n\n[[shapes]]\nint = 7\n\nTrue\nTrue\n`shapes[0]` is \"Triangle\", which is none of `Circle | Square | int`\n`shapes[0]` should be a Circle | Square | int, but it's an int\n`shapes[0]` is \"Triangle\", which is none of `Circle | Square | int`\n`Circle | Square | int` has no member 9, at byte 34\n"
     );
     Ok(())
 }
@@ -8482,6 +8698,17 @@ def changed(data: bytes, at: int, to: int) -> bytes:
         items.append(to if b == at else data[b])
     bytes(items)
 
+## Where the value starts: after the header, and the layout saved with it.
+def body(data: bytes) -> int:
+    mut at = 12
+    mut n = 0
+    mut shift = 0
+    while data[at] >= 128:
+        n = n | ((data[at] & 127) << shift)
+        shift += 7
+        at += 1
+    at + 1 + (n | (data[at] << shift))
+
 def main(stdout: Stdout):
     mut world = World()
     ash = world.units.add(Unit(name="ash"))
@@ -8510,10 +8737,10 @@ def main(stdout: Stdout):
     _ = same.units.add(Unit(name="fox"))
     stdout.print(pack.dumps(same, exact=True) == pack.dumps(world, exact=True))
     # What doesn't load.
-    stdout.print(said(pack.loads[World](changed(data, at=18, to=9))))
-    stdout.print(said(pack.loads[World](changed(exact, at=12, to=2))))
-    stdout.print(said(pack.loads[World](changed(exact, at=32, to=20))))
-    stdout.print(said(pack.loads[World](changed(exact, at=13, to=200))))
+    stdout.print(said(pack.loads[World](changed(data, at=body(data) + 6, to=9))))
+    stdout.print(said(pack.loads[World](changed(exact, at=body(exact), to=2))))
+    stdout.print(said(pack.loads[World](changed(exact, at=body(exact) + 20, to=20))))
+    stdout.print(said(pack.loads[World](changed(exact, at=body(exact) + 1, to=200))))
     # Every truncation fails, and every byte changed loads or fails, in both modes.
     mut seed = 11
     for good in [data, exact]:
@@ -8549,7 +8776,7 @@ fn pack_saves_tables_by_position_and_slot_for_slot() -> std::io::Result<()> {
     let printed = printed_by("pack_tables", PACK_TABLES)?;
     assert_eq!(
         printed,
-        "28 2 True True\nvex -\nkit vex\n39 69 2 kit\nTrue False\nTrue\n`units[0].target` is out of range, at byte 19\n`units` has 1 slot in use but 0 items, at byte 16\n`selected[0]` is item 10 of `units`, which has only 3\nthe data ends too soon, at byte 19\ntruncated 0 changed 840\ntruncated 0 changed 1170\n"
+        "84 2 True True\nvex -\nkit vex\n95 88 2 kit\nTrue False\nTrue\n`units[0].target` is out of range, at byte 75\n`units` has 1 slot in use but 0 items, at byte 72\n`selected[0]` is item 10 of `units`, which has only 3\nthe data ends too soon, at byte 75\ntruncated 0 changed 2520\ntruncated 0 changed 2850\n"
     );
     Ok(())
 }

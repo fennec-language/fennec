@@ -18,12 +18,6 @@ pub(crate) fn grown_room(count: usize, more: usize) -> usize {
     (2 * count).max(count + more)
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct Buffer {
-    pub(crate) items: Vec<Value>,
-    pub(crate) room: usize,
-}
-
 /// Buffers are equal when their items are: how much room each has doesn't matter.
 impl PartialEq for Buffer {
     fn eq(&self, other: &Self) -> bool {

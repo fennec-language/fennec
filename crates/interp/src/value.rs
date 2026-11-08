@@ -17,8 +17,6 @@ pub(crate) enum Value {
     /// Binary data, each byte from 0 to 255.
     Bytes(Rc<[u8]>),
     List(Rc<Vec<Value>>),
-    /// `Buffer[T]`: its items and its room (see `crate::buffer`).
-    Buffer(Rc<crate::buffer::Buffer>),
     /// A list native code packed into flat memory. The interpreter unpacks it to use it.
     Packed(Rc<crate::packed::Packed>),
     /// A native value, not yet looked inside, as native code's temporaries and cells hold it.
@@ -30,17 +28,10 @@ pub(crate) enum Value {
     Set(Rc<Vec<Value>>),
     /// A struct, an error, or an enum case.
     Instance(Rc<Instance>),
-    /// A `shared` value: a counted handle to one cell. Copying the handle shares the cell.
-    Shared(Rc<std::cell::RefCell<Value>>),
     Ok(Rc<Value>),
     Err(Rc<Value>),
     Table(Rc<Table>),
     Id(Id),
-    /// A type used as a value, as in `Enemy.at(...)` or `Table[Enemy]()`.
-    Type(Rc<str>),
-    Function(Rc<Callable>),
-    Builtin(&'static str),
-    Lambda(Rc<Lambda>),
     Capability(Capability),
     /// A capability narrowed with `only`, which reaches less than the whole capability.
     Limited(Rc<crate::limits::Limited>),
@@ -118,14 +109,6 @@ impl Instance {
 
 }
 
-/// A function's definition: the standard library's, held where it was parsed once for the
-/// whole process, or a program's own. The standard library's isn't copied for each runtime.
-#[derive(Clone, Debug)]
-pub(crate) enum Def {
-    Std(&'static FnDef),
-    Own(Rc<FnDef>),
-}
-
 impl std::ops::Deref for Def {
     type Target = FnDef;
 
@@ -135,27 +118,6 @@ impl std::ops::Deref for Def {
             Def::Own(def) => def,
         }
     }
-}
-
-/// A function: top-level, nested (with the names it captured), or a method.
-#[derive(Debug)]
-pub(crate) struct Callable {
-    pub(crate) def: Def,
-    pub(crate) captured: Vec<(String, Value)>,
-    /// Whether it can fail and whether it's a generator, worked out the first time it's asked,
-    /// so loading a function the program never calls costs nothing more.
-    effects: std::cell::OnceCell<(bool, bool)>,
-}
-
-impl Callable {
-}
-
-/// An arrow function, with the names it could see when it was created.
-#[derive(Debug)]
-pub(crate) struct Lambda {
-    pub(crate) params: Vec<String>,
-    pub(crate) body: Expr,
-    pub(crate) captured: Vec<(String, Value)>,
 }
 
 /// Slots that hand out generational IDs, so a stale ID never finds the wrong thing.
@@ -333,7 +295,6 @@ impl Value {
     pub(crate) fn type_name(&self) -> String {
         match self {
             Value::Unit => "nothing".to_owned(),
-            Value::Shared(cell) => cell.borrow().type_name(),
             Value::None => "None".to_owned(),
             Value::Bool(_) => "bool".to_owned(),
             Value::Int(_) => "int".to_owned(),
@@ -341,7 +302,6 @@ impl Value {
             Value::Str(_) => "str".to_owned(),
             Value::Bytes(_) => "bytes".to_owned(),
             Value::List(_) | Value::Packed(_) => "list".to_owned(),
-            Value::Buffer(_) => "Buffer".to_owned(),
             Value::Lent(_) => "value".to_owned(),
             Value::Tuple(_) => "tuple".to_owned(),
             Value::Dict(_) => "dict".to_owned(),
@@ -350,8 +310,6 @@ impl Value {
             Value::Ok(_) | Value::Err(_) => "result".to_owned(),
             Value::Table(_) => "Table".to_owned(),
             Value::Id(_) => "Id".to_owned(),
-            Value::Type(_) => "type".to_owned(),
-            Value::Function(_) | Value::Builtin(_) | Value::Lambda(_) => "function".to_owned(),
             Value::Capability(Capability::Stdout) => "Stdout".to_owned(),
             Value::Capability(Capability::Fs) => "Fs".to_owned(),
             Value::Capability(Capability::Clock) => "Clock".to_owned(),
@@ -372,14 +330,12 @@ impl PartialEq for Value {
         match (self, other) {
             (Value::Unit, Value::Unit) | (Value::None, Value::None) => true,
             (Value::Lent(a), Value::Lent(b)) => a.address == b.address,
-            (Value::Shared(a), Value::Shared(b)) => Rc::ptr_eq(a, b),
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => floats_same(*a, *b),
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::List(a), Value::List(b)) | (Value::Tuple(a), Value::Tuple(b)) => a == b,
-            (Value::Buffer(a), Value::Buffer(b)) => a == b,
             (Value::Set(a), Value::Set(b)) => a.len() == b.len() && a.iter().all(|item| b.contains(item)),
             (Value::Dict(a), Value::Dict(b)) => {
                 a.len() == b.len() && a.iter().all(|(key, value)| b.get(key) == Some(value))
@@ -390,10 +346,6 @@ impl PartialEq for Value {
             (Value::Ok(a), Value::Ok(b)) | (Value::Err(a), Value::Err(b)) => a == b,
             (Value::Table(a), Value::Table(b)) => a == b,
             (Value::Id(a), Value::Id(b)) => a == b,
-            (Value::Type(a), Value::Type(b)) => a == b,
-            (Value::Function(a), Value::Function(b)) => Rc::ptr_eq(a, b),
-            (Value::Builtin(a), Value::Builtin(b)) => a == b,
-            (Value::Lambda(a), Value::Lambda(b)) => Rc::ptr_eq(a, b),
             (Value::Capability(a), Value::Capability(b)) => a == b,
             _ => false,
         }

@@ -30,41 +30,18 @@ pub(crate) fn binary(op: BinOp, lhs: Value, rhs: Value, span: Span) -> Result<Va
         BinOp::Is | BinOp::IsNot => is_none(op, &lhs, &rhs, span),
         BinOp::In => contains(&rhs, &lhs, span).map(Value::Bool),
         BinOp::NotIn => contains(&rhs, &lhs, span).map(|found| Value::Bool(!found)),
-        // `and` and `or` never get here: they short-circuit, so `Interp::eval` runs them.
+        // `and` and `or` never get here: they short-circuit, and compiled code branches on them.
         _ => arithmetic(op, lhs, rhs, span),
     }
 }
 
 fn is_none(op: BinOp, lhs: &Value, rhs: &Value, span: Span) -> Result<Value, Diagnostic> {
-    // `s is Circle`: which member of a union a value holds.
-    let member = match rhs {
-        Value::Type(name) => Some(name.as_ref()),
-        Value::Builtin(name @ ("int" | "float" | "bool" | "str" | "bytes")) => Some(*name),
-        _ => None,
-    };
-    if let Some(member) = member {
-        return Ok(Value::Bool(holds(lhs, member) == (op == BinOp::Is)));
-    }
     if *rhs != Value::None {
         return Err(
             Diagnostic::new("`is` only compares with None", span).with_help("use `==` to compare values")
         );
     }
     Ok(Value::Bool((*lhs == Value::None) == (op == BinOp::Is)))
-}
-
-/// Whether a value is of the type named `member`, a struct's or enum's name or a built-in one.
-fn holds(value: &Value, member: &str) -> bool {
-    match value {
-        Value::Instance(instance) => instance.type_name.as_ref() == member,
-        Value::Shared(cell) => holds(&cell.borrow(), member),
-        Value::Int(_) => member == "int",
-        Value::Float(_) => member == "float",
-        Value::Bool(_) => member == "bool",
-        Value::Str(_) => member == "str",
-        Value::Bytes(_) => member == "bytes",
-        _ => false,
-    }
 }
 
 fn arithmetic(op: BinOp, lhs: Value, rhs: Value, span: Span) -> Result<Value, Diagnostic> {
@@ -196,9 +173,6 @@ pub(crate) fn index(object: &Value, index: &Value, span: Span) -> Result<Value, 
     match object {
         Value::List(items) => position(*at, items.len(), span)
             .and_then(|at| items.get(at).cloned().ok_or_else(|| Diagnostic::new("index out of range", span))),
-        Value::Buffer(buffer) => position(*at, buffer.items.len(), span).and_then(|at| {
-            buffer.items.get(at).cloned().ok_or_else(|| Diagnostic::new("index out of range", span))
-        }),
         Value::Str(text) if let Some(found) = ascii_index(text, *at, span) => found,
         Value::Str(text) => {
             let count = text.chars().count();

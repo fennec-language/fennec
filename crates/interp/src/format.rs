@@ -42,7 +42,6 @@ pub(crate) fn repr_with(value: &Value, own: &mut dyn FnMut(&Instance) -> Option<
     };
     match value {
         Value::Unit | Value::Lent(_) => String::new(),
-        Value::Shared(cell) => repr_with(&cell.borrow(), own),
         Value::None => "None".to_owned(),
         Value::Bool(true) => "True".to_owned(),
         Value::Bool(false) => "False".to_owned(),
@@ -54,7 +53,6 @@ pub(crate) fn repr_with(value: &Value, own: &mut dyn FnMut(&Instance) -> Option<
             format!("bytes([{}])", numbers.join(", "))
         }
         Value::List(items) => format!("[{}]", join(&mut items.iter())),
-        Value::Buffer(buffer) => format!("Buffer([{}])", join(&mut buffer.items.iter())),
         Value::Packed(packed) => repr_with(&packed.unpack(), own),
         Value::Tuple(items) if items.len() == 1 => format!("({},)", join(&mut items.iter())),
         Value::Tuple(items) => format!("({})", join(&mut items.iter())),
@@ -75,10 +73,6 @@ pub(crate) fn repr_with(value: &Value, own: &mut dyn FnMut(&Instance) -> Option<
         Value::Err(inner) => format!("Err({})", repr_with(inner, own)),
         Value::Table(map) => format!("Table([{}])", join(&mut map.entries().map(|(_, value)| value))),
         Value::Id(id) => format!("Id({})", id.slot),
-        Value::Type(name) => format!("<type {name}>"),
-        Value::Function(function) => format!("<function {}>", function.def.name),
-        Value::Builtin(name) => format!("<builtin {name}>"),
-        Value::Lambda(_) => "<function>".to_owned(),
         Value::Capability(_) | Value::Limited(_) => format!("<{}>", value.type_name()),
     }
 }

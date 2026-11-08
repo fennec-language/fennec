@@ -114,15 +114,43 @@ Everything on disk goes through `fs`:
 
 Each failure is an `IoError`.
 
-**Planned:** files opened with `with`, which close themselves at the end of the block. `fs.create` writes a new file and puts it in place at the end of the block, after syncing it to disk, so a crash halfway through never leaves half a file:
+To write a file a piece at a time, or read one too big for memory, open it with `with`:
 
-```fennec planned
-# the `?` covers opening the file and finishing it at the block's end
-with fs.create(".hoard/HEAD")? as file:
-    file.write_text(hash)?
+```fennec
+## Points HEAD at a snapshot's hash.
+def set_head(fs: Fs, hash: str) fails IoError:
+    # the new HEAD takes the old one's place only when the block ends, synced to the disk
+    with fs.create(".hoard/HEAD")? as file:
+        file.write_line(hash)?
+
+## Each path listed in an ignore file, one a line.
+def ignored(fs: Fs) -> list[str] fails IoError:
+    mut found = list[str]()
+    with fs.open(".hoardignore")? as file:
+        for line in file.lines():
+            if line != "": found.append(line)
+    found
+
+## How many bytes a file holds, read a chunk at a time.
+def size_of(fs: Fs, path: str) -> int fails IoError:
+    mut total = 0
+    with fs.open(path)? as file:
+        for chunk in file.chunks(65536):
+            total += chunk.len()
+    total
+
+## A log line that doesn't matter if the power goes, written without waiting for the disk.
+def note(fs: Fs, text: str) fails IoError:
+    with fs.create(".hoard/last.log", durable=False)? as file:
+        file.write_line(text)?
+        # or put what's written so far on the disk now
+        file.sync()?
 ```
 
-Until then, write a whole file with `fs.write_text` or `fs.write_bytes`.
+- `fs.create` writes into a file of its own beside the path, which takes the path's place only when the block ends, synced to the disk. A block that fails leaves the old file as it was, so there's never half a file.
+- `durable=False` skips waiting for the disk, for a file that doesn't matter if the power goes, and `file.sync()?` puts what's written on the disk at any point.
+- `fs.open` reads with `lines()` or `chunks(size)`, and `read_text()` or `read_bytes()` for what's left. A file opened to read can't be written, and one made to write can't be read.
+- The `?` on the `with` line covers both opening the file and finishing it at the block's end. There's no `close()`.
 
 ## Shared state with `shared` and `lock`
 
@@ -245,14 +273,45 @@ A crash in one connection's task ends only that task, and the server keeps servi
 
 ```fennec planned
 with fs.open(path)? as file:
-    hash = blake3(file.chunks(size=65536))
+    hash = blake3(file.chunks(65536))
 ```
 
-Until then, hash the whole file's bytes: `blake3(fs.read_bytes(path)?)`.
+`file.chunks` is built, and `blake3` taking them isn't yet. Until then, hash the whole file's bytes: `blake3(fs.read_bytes(path)?)`.
 
-## SQLite with t-strings
+## Templates and SQLite
 
-**Planned.** `std.sqlite` doesn't exist yet, and neither do t-strings. A query will be a `t"..."` template, which keeps its text and its values apart, so a value can never become SQL:
+A t-string, `t"..."`, makes a `Template`, as in Python 3.14. It keeps the text you wrote apart from the values, so a value can never become part of a query, a page or a command:
+
+```fennec
+type SqlValue = int | str
+
+## The query as a database receives it: the text with a `?` for each value.
+def placeholders(query: Template[SqlValue]) -> str:
+    mut sent = ""
+    for at, text in enumerate(query.strings):
+        sent += text
+        if at < query.values.len():
+            sent += "?"
+    sent
+
+## A column to sort by: the input chooses between texts written here, so it's a `LiteralStr`.
+def order_column(by_size: bool) -> LiteralStr:
+    "size" if by_size else "path"
+
+def main(stdout: Stdout):
+    # a path someone else chose is a value, never part of the query's text
+    path = "a.txt'; drop table entries; --"
+    query: Template[SqlValue] = t"select hash from entries where path = {path}"
+    stdout.print(placeholders(query))
+    stdout.print(query.values)
+    stdout.print(order_column(by_size=True))
+```
+
+- The values' type comes from where the template goes: here each `{}` has to be a `SqlValue`.
+- A `str` is never a `Template`, so an f-string where one is wanted is a compile error.
+- `LiteralStr` is text written in the source: a literal, literals joined with `+`, or a choice between literals. It goes anywhere a `str` goes, but text read while the program runs is never one, so input can only choose between texts you wrote.
+
+**Planned:** `std.sqlite`, which takes these templates:
 
 ```fennec planned
 from std import sqlite
@@ -263,7 +322,7 @@ with sqlite.open(fs, ".hoard/index.db")? as db:
         stdout.print(row["hash"])
 ```
 
-A plain `str` is never a template, so building a query by joining strings is a compile error. Until it lands, keep an index in a `shared` dict, as above, and save it with `std.json` or `std.pack`.
+Until it lands, keep an index in a `shared` dict, as above, and save it with `std.json` or `std.pack`.
 
 ## Tests
 
@@ -309,8 +368,7 @@ Builds go through LLVM a function at a time and are cached, so an edit rebuilds 
 ## Not there yet
 
 These are decided and planned, and `docs/language.md` says where each one stands:
-- `with` on files, with `fs.open` and `fs.create`;
 - hashing over chunks;
-- `std.sqlite` and t-strings;
+- `std.sqlite`;
 - `launch` and `Channel` for long-running tasks;
 - sized numbers like `u8` and `f32`.

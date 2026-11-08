@@ -10,6 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -33,11 +34,19 @@ type Passed = Arc<Mutex<Option<(u64, Box<crate::embed::table::Table>)>>>;
 
 thread_local! {
     /// The connections this I/O worker serves, by the number native code holds.
-    static CONNS: RefCell<HashMap<i64, Conn>> = RefCell::new(HashMap::new());
-    static NEXT: Cell<i64> = const { Cell::new(1) };
+    static CONNS: RefCell<HashMap<i64, Rc<Conn>>> = RefCell::new(HashMap::new());
     /// The failure the last `fennec_net_serve` on this thread passed up, for
     /// `fennec_net_serve_failure`.
     static PASSED_UP: Cell<i64> = const { Cell::new(0) };
+}
+
+/// The number the next connection served gets. There's one count for the whole process: a number
+/// sent to a task on another worker isn't in that worker's table, and so is refused, rather than
+/// naming another client there.
+static NEXT: AtomicI64 = AtomicI64::new(1);
+
+pub(super) fn next_handle() -> i64 {
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// The servers running, so they can be stopped.
@@ -76,9 +85,8 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     let passed: Passed = Arc::new(Mutex::new(None));
     let passing = Arc::clone(&passed);
     let handler: Handler = Arc::new(move |conn: Conn| {
-        let handle = NEXT.get();
-        NEXT.set(handle + 1);
-        CONNS.with_borrow_mut(|conns| conns.insert(handle, conn));
+        let handle = next_handle();
+        CONNS.with_borrow_mut(|conns| conns.insert(handle, Rc::new(conn)));
         let result = body(env, handle, i64::from(threads::index()));
         // Its task is done with it: dropping it closes it.
         CONNS.with_borrow_mut(|conns| conns.remove(&handle));
@@ -90,10 +98,16 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     let Some(pool) = super::super::parallel::for_server() else {
         return fail("couldn't serve: this program has no workers to serve on".to_owned());
     };
-    let started = |stopper| STOPPERS.lock().unwrap_or_else(PoisonError::into_inner).push(stopper);
+    let id = Cell::new(None);
+    let started = |stopper: Stopper| {
+        id.set(Some(stopper.id()));
+        STOPPERS.lock().unwrap_or_else(PoisonError::into_inner).push(stopper);
+    };
     super::super::write_kept_output();
     let lent = threads::lend();
     let finished = super::serve(listener, pool, Some(&lent), &handler, (started, call.as_ref(), tls));
+    // Ended, it's nothing left to stop.
+    STOPPERS.lock().unwrap_or_else(PoisonError::into_inner).retain(|stopper| Some(stopper.id()) != id.get());
     threads::take_back(lent);
     threads::settle(finished.owners);
     let failure = passed.lock().unwrap_or_else(PoisonError::into_inner).take();
@@ -162,13 +176,11 @@ fn pass_up(passed: &Passed) {
 
 /// Runs `call` on a served connection taken out of the table, so nothing stays borrowed while
 /// it waits, and puts it back. A connection that isn't there is closed.
-fn on_conn<T>(conn: i64, call: impl FnOnce(&mut Conn) -> Result<T, Failure>) -> Result<T, NetFailure> {
-    let Some(mut taken) = CONNS.with_borrow_mut(|conns| conns.remove(&conn)) else {
+pub(super) fn on_conn<T>(conn: i64, call: impl FnOnce(&Conn) -> Result<T, Failure>) -> Result<T, NetFailure> {
+    let Some(shared) = CONNS.with_borrow(|conns| conns.get(&conn).cloned()) else {
         return Err(NetFailure::Closed);
     };
-    let result = call(&mut taken);
-    CONNS.with_borrow_mut(|conns| conns.insert(conn, taken));
-    result.map_err(|failure| match failure {
+    call(&shared).map_err(|failure| match failure {
         Failure::TimedOut(after) => NetFailure::TimedOut(after),
         Failure::Closed => NetFailure::Closed,
         Failure::Cancelled => NetFailure::Other("the server stopped".to_owned()),
@@ -207,7 +219,8 @@ pub(in crate::embed) fn served_call(
             return Some(Ok(Value::Unit));
         }
         ("peer", []) => {
-            let peer = CONNS.with_borrow(|conns| conns.get(&handle).map(Conn::peer)).unwrap_or_default();
+            let peer =
+                CONNS.with_borrow(|conns| conns.get(&handle).map(|conn| conn.peer())).unwrap_or_default();
             return Some(Ok(Value::str(&peer)));
         }
         _ => {

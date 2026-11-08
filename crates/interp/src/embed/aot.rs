@@ -365,6 +365,14 @@ pub(super) fn counts_line(counts: &heap::Counts, parallel_calls: u64, blocked_wa
     }
 }
 
+/// Ends the program at once with `code`.
+pub(crate) fn stop_now(code: i32) -> ! {
+    if let Some(stop) = STOP.get() {
+        stop(code);
+    }
+    std::process::abort()
+}
+
 /// Ends the program for a failure where nothing can pass it on, printing what it printed and
 /// the failure, as the end of a run would. In anything but an executable, the failure just
 /// stays for whoever finishes the run.

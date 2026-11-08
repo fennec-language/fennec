@@ -101,7 +101,10 @@ fn returns_in<'b>(body: &'b [Stmt], returned: &mut Vec<&'b Expr>) {
                     returns_in(block, returned);
                 }
             }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+            StmtKind::While { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::With { body, .. }
+            | StmtKind::OnFailure { body, .. } => {
                 returns_in(body, returned);
             }
             _ => {}

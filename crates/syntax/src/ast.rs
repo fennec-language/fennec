@@ -269,6 +269,15 @@ pub enum StmtKind {
         lock: bool,
     },
     Def(FnDef),
+    /// Written in for a `with` block whose source has an `else:`. A `?` or `fail` in `body` runs
+    /// that cleanup where it's written, but a failure can also leave from inside what the block
+    /// calls: from a generator it reads, or a `parallel` loop's round. Those run `cleanup`
+    /// first, with the failure in `name`, and `cleanup` ends by failing with it.
+    OnFailure {
+        name: String,
+        cleanup: Vec<Stmt>,
+        body: Vec<Stmt>,
+    },
     /// `lend value`, in a function that gives back `with T`: the caller's `with` block runs
     /// here, with `value` lent to it. `otherwise` is the `else:` block, which runs when the
     /// caller's block fails, empty when there's none.
@@ -490,6 +499,20 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     /// `.Int(_) | .Float(_)`: any of the alternatives, each binding the same names.
     Or(Vec<Pattern>),
+}
+
+impl Pattern {
+    /// Whether the pattern has a `ref` in it anywhere.
+    #[must_use]
+    pub fn holds_ref(&self) -> bool {
+        match self {
+            Pattern::RefBind(_) => true,
+            Pattern::Variant { args: patterns, .. } | Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
+                patterns.iter().any(Pattern::holds_ref)
+            }
+            Pattern::Wildcard | Pattern::Bind(_) | Pattern::Literal(_) => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

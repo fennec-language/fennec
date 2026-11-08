@@ -57,6 +57,10 @@ fn statement(stmt: &Stmt, effects: &mut Effects) {
             expression(expr, effects);
             block(body, effects);
         }
+        StmtKind::OnFailure { cleanup, body, .. } => {
+            block(cleanup, effects);
+            block(body, effects);
+        }
         StmtKind::Return(None) | StmtKind::Def(_) | StmtKind::Break | StmtKind::Continue | StmtKind::Pass => {
         }
     }
@@ -145,7 +149,7 @@ pub(crate) fn breaks(body: &[Stmt]) -> bool {
         StmtKind::If { branches, otherwise } => {
             branches.iter().any(|(_, body)| breaks(body)) || otherwise.as_deref().is_some_and(breaks)
         }
-        StmtKind::With { body, .. } => breaks(body),
+        StmtKind::With { body, .. } | StmtKind::OnFailure { body, .. } => breaks(body),
         StmtKind::Expr(Expr { kind: ExprKind::Match { arms, .. }, .. }) => {
             arms.iter().any(|arm| breaks(&arm.body))
         }

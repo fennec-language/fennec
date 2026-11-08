@@ -65,7 +65,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Ends the program if `taken`, an `i1`, is true, and carries on otherwise.
-    fn stop_if(&mut self, taken: &str, message: &str, span: Span) {
+    pub(crate) fn stop_if(&mut self, taken: &str, message: &str, span: Span) {
         let (stop, carry_on) = (self.label("lock_stops"), self.label("lock_ok"));
         self.line(&format!("br i1 {taken}, label %{stop}, label %{carry_on}, !prof !8"));
         self.start_block(&stop);

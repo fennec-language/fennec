@@ -76,6 +76,12 @@ impl Lowering<'_> {
 
     /// Makes both sides of `==` one type: a value and an optional compare as optionals.
     fn one_type(&mut self, lhs: Operand, rhs: Operand, span: Span) -> Lowered<(Operand, Operand)> {
+        // A number written out beside a sized one is of its size, as the checker found.
+        let sized = |operand: &Operand| matches!(type_in(&self.locals, operand), Some(Type::Sized(_)));
+        let written = |operand: &Operand| matches!(operand, Operand::Int(_) | Operand::Float(_));
+        if (written(&lhs) && sized(&rhs)) || (sized(&lhs) && written(&rhs)) {
+            return Ok((lhs, rhs));
+        }
         let left = type_in(&self.locals, &lhs).ok_or("a value has no type")?;
         let right = type_in(&self.locals, &rhs).ok_or("a value has no type")?;
         if left == right {

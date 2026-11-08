@@ -374,6 +374,8 @@ struct Lowering<'a> {
     fills: Vec<collections::Fill>,
     /// The types of the yield functions whose copies are being lowered, innermost last.
     copied: Vec<(String, &'a Body, Option<generics::Subst>)>,
+    /// The types of the hidden names a copied yield function's parameters are bound to.
+    bound: HashMap<String, Type>,
     /// The types written in brackets at the call being lowered.
     written_types: Vec<Type>,
     /// Set while lowering a `list.pop()` whose list is known not to be empty.
@@ -411,6 +413,7 @@ impl<'a> Lowering<'a> {
             places: Vec::new(),
             fills: Vec::new(),
             copied: Vec::new(),
+            bound: HashMap::new(),
             written_types: Vec::new(),
             popping: false,
             retyped: Vec::new(),
@@ -671,7 +674,10 @@ impl<'a> Lowering<'a> {
         // A name made while fusing a stage is new, and holds what it's first given.
         let binds_item = declares && target.span == value.span && op.is_none();
         if binds_item || (name.starts_with('\0') && self.lookup(name).is_none()) {
-            let ty = self.fused_type(value)?;
+            let ty = match self.bound.get(name) {
+                Some(ty) => ty.clone(),
+                None => self.fused_type(value)?,
+            };
             let value = self.expr(value)?;
             let value = self.coerce(value, &ty, span)?;
             let dest = self.declare(name, ty);

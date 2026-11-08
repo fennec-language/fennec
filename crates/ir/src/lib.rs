@@ -40,6 +40,7 @@
 
 pub mod arrays;
 mod costs;
+pub mod eval;
 pub mod facts;
 mod guard;
 mod lower;

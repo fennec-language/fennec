@@ -1,0 +1,9 @@
+source af9e2775126665a76de5f35843be9bcd3639e8feaa2f6c87fc1801aa866d0d7b
+code 1
+stdout 0
+stderr 122
+error: this Id is from another Table
+ --> <dir>/other_table_store.fen:8:5
+  |
+8 |     ours[kit] = "den"
+  |     ^^^^^^^^^

@@ -1,0 +1,12 @@
+source 5e54c2abbb29a000bee337110b5a76fe4dd93c46c6adecdd454f1c9c77fe4ca8
+code 1
+stdout 2
+1
+stderr 182
+error: this assertion failed
+  --> <dir>/assert_2.fen:31:12
+   |
+31 |     assert 2.5 <= 1.5
+   |            ^^^^^^^^^^
+   |
+   = help: the left side is 2.5 and the right side is 1.5

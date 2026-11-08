@@ -74,10 +74,67 @@ fn both_built(name: &str, source: &str, how: &[&str]) -> std::io::Result<(Outcom
         ["build"].into_iter().chain(how.iter().copied()).chain([program.as_str(), "-o", &output]).collect();
     let built = fennec(&args, &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let ours = outcome(&Command::new(&executable).output_within()?);
-    let jit = outcome(&fennec(&["run", "--jit", &program], &dir)?);
+    let ours = apart_from(&dir, outcome(&Command::new(&executable).output_within()?));
+    let jit =
+        pinned(name, source, || Ok(apart_from(&dir, outcome(&fennec(&["run", "--jit", &program], &dir)?))))?;
     std::fs::remove_dir_all(&dir)?;
     Ok((ours, jit))
+}
+
+/// Where the outcomes the JIT and the interpreter gave are pinned, one file for each program, named
+/// as the test names it.
+fn pinned_folder() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pinned")
+}
+
+/// An outcome with the folder it ran in written as `<dir>`, so it reads the same wherever it ran.
+fn apart_from(dir: &Path, (out, err, code): Outcome) -> Outcome {
+    let mut folders = vec![dir.to_string_lossy().into_owned()];
+    folders.extend(std::fs::canonicalize(dir).ok().map(|real| real.to_string_lossy().into_owned()));
+    let plain =
+        |text: String| folders.iter().fold(text, |text, folder| text.replace(folder.as_str(), "<dir>"));
+    (plain(out), plain(err), code)
+}
+
+/// The outcome pinned for program `name`, written from what the JIT or the interpreter gave, with
+/// `reference`, when `FENNEC_PIN_OUTPUTS` is set. One pinned for other source than `source` is out
+/// of date, as is a missing one, and the test says so.
+fn pinned(
+    name: &str,
+    source: &str,
+    reference: impl FnOnce() -> std::io::Result<Outcome>,
+) -> std::io::Result<Outcome> {
+    let file = pinned_folder().join(format!("{name}.txt"));
+    let hash = fennec_blake3::hash(source.as_bytes()).to_hex();
+    if std::env::var_os("FENNEC_PIN_OUTPUTS").is_some() {
+        let (out, err, code) = reference()?;
+        let code = code.map_or_else(|| "none".to_owned(), |code| code.to_string());
+        std::fs::create_dir_all(pinned_folder())?;
+        let text =
+            format!("source {hash}\ncode {code}\nstdout {}\n{out}stderr {}\n{err}", out.len(), err.len());
+        std::fs::write(&file, text)?;
+    }
+    let text = std::fs::read_to_string(&file).unwrap_or_default();
+    let read = read_pinned(&text).filter(|(pinned_for, _)| *pinned_for == hash);
+    read.map(|(_, outcome)| outcome).ok_or_else(|| {
+        std::io::Error::other(format!(
+            "{} is missing or was pinned for other source: check what the program should do, and write it there",
+            file.display()
+        ))
+    })
+}
+
+/// A pinned file's source hash and outcome.
+fn read_pinned(text: &str) -> Option<(String, Outcome)> {
+    let (hash, rest) = text.strip_prefix("source ")?.split_once('\n')?;
+    let (code, rest) = rest.strip_prefix("code ")?.split_once('\n')?;
+    let (length, rest) = rest.strip_prefix("stdout ")?.split_once('\n')?;
+    let (out, rest) = rest.split_at_checked(length.parse().ok()?)?;
+    let (length, err) = rest.strip_prefix("stderr ")?.split_once('\n')?;
+    if err.len() != length.parse::<usize>().ok()? {
+        return None;
+    }
+    Some((hash.to_owned(), (out.to_owned(), err.to_owned(), code.parse().ok())))
 }
 
 type Outcome = (String, String, Option<i32>);

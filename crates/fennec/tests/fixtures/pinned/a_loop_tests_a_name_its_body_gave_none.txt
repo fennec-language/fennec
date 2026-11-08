@@ -1,0 +1,10 @@
+source e25785405f111be219a72d4ea6454251d686076d6653f1f56164a57970d08d72
+code 1
+stdout 8
+False 0
+stderr 160
+error: expected an int here, but this is a None
+  --> <dir>/a_loop_tests_a_name_its_body_gave_none.fen:14:9
+   |
+14 |         direct = None
+   |         ^^^^^^

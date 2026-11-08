@@ -1,0 +1,9 @@
+source 56f05c7875cc6611cdb06501e6f30d4dfed70df4803b175fcb53e7e1d22f4192
+code 1
+stdout 0
+stderr 112
+error: "b" isn't in the set
+ --> <dir>/remove_str.fen:3:5
+  |
+3 |     held.remove("b")
+  |     ^^^^^^^^^^^^^^^^

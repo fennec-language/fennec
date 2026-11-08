@@ -250,3 +250,36 @@ fn a_program_to_emit_is_checked_through_what_lowering_calls() {
     // What nothing reaches, and lowering never calls on its own, isn't.
     assert!(signatures.get("Deque.appendleft").is_none());
 }
+
+/// `std.concurrent`'s channels check, and `with Channel[Job].open(size=4) as jobs:`, a generic
+/// source called through its type, is written in where it's used with `Job` for its `T`, so what
+/// runs is the source's own body.
+#[test]
+fn a_channel_opens_through_its_generic_source() {
+    let source = "from std.concurrent import Channel, Closed, Inbox, Sender, Timeout\n\n\
+        enum Job:\n    Build(name: str)\n    Stop\n\n\
+        def drain(inbox: Inbox[Job]) -> int:\n    mut count = 0\n    for job in inbox:\n        match job:\n            \
+        case .Build(name):\n                count += name.len()\n            case .Stop:\n                return count\n    count\n\n\
+        def main(stdout: Stdout) fails Closed | Timeout:\n    with Channel[Job].open(size=4) as jobs:\n        \
+        sender: Sender[Job] = jobs.sender()\n        sender.send(.Build(name=\"core\"))?\n        jobs.send(.Stop, timeout=1s)?\n        \
+        stdout.print(drain(jobs.inbox()))\n";
+    let mut module = fennec_syntax::parse(source).unwrap();
+    fennec_check::check_and_resolve(&mut module).unwrap();
+    let mut made = Vec::new();
+    fennec_syntax::visit::exprs_mut(&mut module, &mut |expr| {
+        if let fennec_syntax::ExprKind::Name(name) = &expr.kind
+            && name.contains("channel_")
+        {
+            made.push(name.clone());
+        }
+    });
+    for written in ["channel_new", "channel_close", "channel_free"] {
+        assert!(made.iter().any(|name| name.ends_with(written)), "{made:?}");
+    }
+    assert_eq!(
+        problems(
+            "from std.concurrent import Channel\n\ndef main():\n    with Channel[int, str].open(size=1) as jobs:\n        pass\n"
+        ),
+        ["`Channel` takes 1 type in brackets, but this gives 2 @ int, str"]
+    );
+}

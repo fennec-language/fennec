@@ -34,6 +34,7 @@ modules! {
     cli,
     collections,
     compress,
+    concurrent,
     crypto,
     csv,
     fs,

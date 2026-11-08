@@ -76,6 +76,8 @@ impl Parser {
                 Ok(Pattern::Variant { name, dotted: false, args, fields })
             }
             Tok::Name(name) => Ok(Pattern::Bind(name)),
+            // `case .Button(ref clicks):` changes the field where it is.
+            Tok::Kw(Kw::Ref) => Ok(Pattern::RefBind(self.name("a name after `ref`")?)),
             Tok::Int(n) => literal(ExprKind::Int(n)),
             Tok::Float(x) => literal(ExprKind::Float(x)),
             Tok::Str(text) => literal(ExprKind::Str(text)),

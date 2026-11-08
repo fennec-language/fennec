@@ -542,7 +542,8 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
     // again, so the signatures and types given back are those of what runs.
     let nested = lend_lowering::nest(module, &checked.opened_apart);
-    let sources_written = lend_lowering::lower(module, &checked.sources, &checked.launches);
+    let sources_written =
+        lend_lowering::lower(module, &checked.sources, &checked.launches, &checked.ref_matches);
     let counted = enumerate_lowering::lower(module);
     let tuples = tuple_lowering::lower(module, &checked.saved_types);
     if (lock_lowering::lower(module, &checked.shared_values)
@@ -602,6 +603,8 @@ pub struct Checked {
     opened_apart: BTreeSet<(u32, u32)>,
     /// Each `with launch(...)`, which lowering writes in as a source.
     launches: BTreeMap<(u32, u32), launch::Launch>,
+    /// Each `match` with a `ref` case, with the fields each such case puts back.
+    ref_matches: BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>,
     /// The format calls native code can make in Fennec, by the call's span.
     native_formats: BTreeMap<(u32, u32), String>,
     /// The `json=` values of HTTP calls native code writes in Fennec, by the value's span.

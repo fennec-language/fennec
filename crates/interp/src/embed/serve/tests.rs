@@ -75,7 +75,7 @@ fn run(workers: usize, handler: &Handler, clients: impl FnOnce(SocketAddr) + Sen
         });
     };
     let pool = crate::embed::parallel::with_setup(workers, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>));
-    let served = serve(listener, pool, None, handler, started);
+    let served = serve(listener, pool, None, handler, (started, None));
     if let Ok(Err(panic)) = ran.recv() {
         std::panic::resume_unwind(panic);
     }
@@ -432,7 +432,7 @@ fn what_a_parked_task_printed_comes_out_while_another_task_runs() {
         });
     };
     let pool = crate::embed::parallel::with_setup(2, &setup);
-    let served = serve(listener, pool, None, &printing(), started);
+    let served = serve(listener, pool, None, &printing(), (started, None));
     super::super::finish();
     if let Ok(Err(panic)) = ran.recv() {
         std::panic::resume_unwind(panic);
@@ -514,7 +514,7 @@ fn run_until_it_ends(handler: &Handler, clients: impl FnOnce(SocketAddr) + Send 
         });
     };
     let pool = crate::embed::parallel::with_setup(2, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>));
-    let served = serve(listener, pool, None, handler, started);
+    let served = serve(listener, pool, None, handler, (started, None));
     *ended.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
     ended.1.notify_all();
     if let Ok(Err(panic)) = ran.recv() {

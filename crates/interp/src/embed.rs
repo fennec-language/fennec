@@ -268,12 +268,19 @@ pub(crate) fn make_way() {
 pub(in crate::embed) struct Temporaries {
     temps: Vec<Value>,
     inputs: Vec<Value>,
+    /// Which task it is, in a recording or a replay: a server's round, named by its connection.
+    replay: Option<crate::replay::Task>,
 }
 
 #[cfg(any(test, feature = "threads"))]
 impl Temporaries {
     pub(in crate::embed) fn is_empty(&self) -> bool {
-        self.temps.is_empty() && self.inputs.is_empty()
+        self.temps.is_empty() && self.inputs.is_empty() && self.replay.is_none()
+    }
+
+    /// A task's own, named `task` in a recording or a replay.
+    pub(in crate::embed) fn of_task(task: crate::replay::Task) -> Temporaries {
+        Temporaries { replay: Some(task), ..Temporaries::default() }
     }
 }
 
@@ -287,6 +294,7 @@ pub(in crate::embed) fn swap_temporaries(own: &mut Temporaries) {
             std::mem::swap(&mut state.inputs, &mut own.inputs);
         }
     });
+    crate::replay::swap(&mut own.replay);
 }
 
 /// Writes what this thread has printed and kept. Output comes out as it's printed, and is only

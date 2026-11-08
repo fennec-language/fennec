@@ -93,9 +93,14 @@ pub mod serve {
         0
     }
 
-    /// Only a server's round, as there are no tasks.
+    /// Only a server's round or a `parallel` call's range, as there are no tasks.
     pub extern "C" fn task_failed(failure: i64) {
         FAILED_WITH.set(failure);
+    }
+
+    /// The failure's value a range handed over, which it hasn't passed up yet.
+    pub(in crate::embed) fn take_failed_with() -> Option<u64> {
+        u64::try_from(FAILED_WITH.take()).ok().filter(|failure| *failure != 0)
     }
 
     pub(super) fn served_call(

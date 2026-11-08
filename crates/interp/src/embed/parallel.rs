@@ -693,11 +693,11 @@ pub use stream::{parallel_stream, stream_end, stream_next};
 
 #[cfg(test)]
 pub(in crate::embed) use pool::with_setup;
+pub(crate) use pool::workers_wanted;
 #[cfg(not(any(test, feature = "threads")))]
 use pool::{Latch, Pool};
 #[cfg(any(test, feature = "threads"))]
 pub(in crate::embed) use pool::{Latch, Pool, for_server, here};
-pub(crate) use pool::workers_wanted;
 #[cfg(any(test, feature = "threads"))]
 pub use pool::{has_worker_setup, run_worker_setup};
 pub use pool::{set_worker_setup, stack_limit};

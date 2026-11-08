@@ -85,6 +85,7 @@ Each of these is decided and not built.
 - `case .Button(ref clicks):` to change a field inside an enum.
 - `{x=}` in f-strings.
 - `x.approx(y, within=...)`.
+- `embed_file` in place of `embed`, and `embed_folder`, a read-only map of a folder's files baked into the program.
 - `else as name:`, which binds the failure in that block, and a compile error for `_ = f()` on a call that can fail, with `ignore` removed.
 - Units of measure, as structs whose operators are chosen by their right-hand type, with no new syntax.
 - `std.pack` data from an earlier version of a program loading into the new one, with fields matched by name and new fields taking their defaults.

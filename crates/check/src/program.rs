@@ -370,11 +370,7 @@ impl Program {
         let mut items = args.clone().into_iter();
         let mut arg = || Box::new(items.next().unwrap_or(Type::Unknown));
         let ty = match name {
-            "int" => Type::Int,
-            "float" => Type::Float,
-            "bool" => Type::Bool,
-            "str" => Type::Str,
-            "bytes" => Type::Bytes,
+            name if let Some(plain) = Type::plain(name) => plain,
             "None" => Type::None,
             // What a function gives back when it gives back nothing, for writing the return
             // type of one that calls itself.
@@ -500,10 +496,36 @@ impl Program {
 
 pub(crate) use fennec_syntax::visit::BUILT_IN_INTERFACES;
 
-pub(crate) const BUILT_IN_TYPES: [&str; 28] = [
-    "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "array", "SoaList", "Buffer", "set",
-    "dict", "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Net",
-    "Env", "Result", "Iterator", "->",
+pub(crate) const BUILT_IN_TYPES: [&str; 29] = [
+    "int",
+    "float",
+    "bool",
+    "str",
+    "LiteralStr",
+    "bytes",
+    "None",
+    "nothing",
+    "list",
+    "array",
+    "SoaList",
+    "Buffer",
+    "set",
+    "dict",
+    "tuple",
+    "Id",
+    "Table",
+    "Stdout",
+    "Fs",
+    "Clock",
+    "Args",
+    "Stdin",
+    "Process",
+    "Entropy",
+    "Net",
+    "Env",
+    "Result",
+    "Iterator",
+    "->",
 ];
 
 /// An interface written where a type goes, as in `list[Shape]`.

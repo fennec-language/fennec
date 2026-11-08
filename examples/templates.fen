@@ -1,0 +1,41 @@
+# decision: `t"..."` makes a `Template`, and injection can't be written.
+
+type SqlValue = int | str
+
+## A query as a database would send it: the text with a `?` for each value, and the values
+## apart, so no value can change what the text means.
+def placeholders(query: Template[SqlValue]) -> str:
+    mut sent = ""
+    for at, text in enumerate(query.strings):
+        sent += text
+        if at < query.values.len():
+            sent += "?"
+    sent
+
+## The values in order, each with its type.
+def bound(query: Template[SqlValue]) -> list[str]:
+    mut shown = []
+    for value in query.values:
+        if value is int:
+            shown.append(f"int {value}")
+        else:
+            shown.append(f"str {value}")
+    shown
+
+## A column to sort by: input picks between texts written here, so the result is still a
+## `LiteralStr`.
+def order_column(by_score: bool) -> LiteralStr:
+    "score" if by_score else "name"
+
+def main(stdout: Stdout):
+    # A name an attacker chose is a value, never part of the query's text.
+    name = "ash'; drop table players; --"
+    least = 10
+    query: Template[SqlValue] = t"select name from players where name = {name} and score > {least}"
+    stdout.print(placeholders(query))
+    stdout.print(bound(query))
+    column: LiteralStr = order_column(by_score=True)
+    stdout.print(column + " desc")
+    greeting = t"hello {name:>10}!"
+    for part in greeting.interpolations():
+        stdout.print(part.expression, part.format_spec)

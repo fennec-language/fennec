@@ -59,7 +59,8 @@ impl Lexer<'_> {
                 }
                 '#' => self.skip_comment(),
                 '"' => self.string(start)?,
-                'f' if self.peek(1) == Some('"') => self.fstring(start)?,
+                'f' if self.peek(1) == Some('"') => self.fstring(start, false)?,
+                't' if self.peek(1) == Some('"') => self.fstring(start, true)?,
                 'r' if self.peek(1) == Some('"') => self.raw_string(start)?,
                 '0'..='9' => self.number(start)?,
                 c if c.is_ascii_alphabetic() || c == '_' => self.word(start),
@@ -364,7 +365,9 @@ impl Lexer<'_> {
         })
     }
 
-    fn fstring(&mut self, start: usize) -> Result<(), Diagnostic> {
+    /// An f-string, or a template string when `template`: the same text and `{}`s, built as a
+    /// `Template` instead of joined.
+    fn fstring(&mut self, start: usize, template: bool) -> Result<(), Diagnostic> {
         self.pos += 2;
         let mut parts = Vec::new();
         let mut text = String::new();
@@ -401,7 +404,7 @@ impl Lexer<'_> {
         if !text.is_empty() {
             parts.push(FPart::Text(text));
         }
-        self.push(Tok::FStr(parts), start);
+        self.push(if template { Tok::TStr(parts) } else { Tok::FStr(parts) }, start);
         Ok(())
     }
 

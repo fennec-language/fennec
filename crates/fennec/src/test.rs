@@ -313,6 +313,13 @@ fn interpreted(
     Ok(interp.run_tests_where(&|name| names.iter().any(|left| left == name)))
 }
 
+/// What names a kit wherever it is: its name in `kit.toml`. `None` for a program that isn't a kit.
+fn kit_named(path: &str) -> Option<String> {
+    let manifest = std::fs::read_to_string(std::path::Path::new(path).join("kit.toml")).ok()?;
+    let manifest = fennec_kit::Manifest::parse(&manifest).ok()?;
+    Some(format!("kit {}", manifest.name))
+}
+
 /// Which tests of a program passed last time, and where to keep this run's.
 struct Results {
     cache: Option<(Cache, String)>,
@@ -328,7 +335,16 @@ impl Results {
             .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
             .map(|home| (Cache::new(&home), program));
         let passed = match &cache {
-            Some((cache, program)) if !all => cache.test_records(program),
+            Some((cache, program)) if !all => {
+                let here = cache.test_records(program);
+                // A kit that's moved has no results where it is now, so they're taken from what
+                // it's called. A result only counts when its key matches the test as it is, so a
+                // kit of the same name elsewhere can't pass a test for this one.
+                match kit_named(path) {
+                    Some(named) if here.is_empty() => cache.test_records(&named),
+                    _ => here,
+                }
+            }
             _ => HashMap::new(),
         };
         Results { cache, passed }
@@ -344,6 +360,9 @@ impl Results {
         if let Some((cache, program)) = &self.cache {
             // A cache that can't be written only means running these tests again next time.
             let _ = cache.store_test_records(program, passing);
+            if let Some(named) = kit_named(program) {
+                let _ = cache.store_test_records(&named, passing);
+            }
         }
     }
 }

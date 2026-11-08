@@ -230,9 +230,9 @@ with fs.open("save.dat")? as file, net.connect(host)? as conn:
 # both are closed here, however the block ends
 ```
 
-The end of a `with` block is where what it lent finishes: a file closes and a transaction commits. A failure while finishing is the `with` statement's failure, covered by the `?` on its line, so `with fs.create(path)? as file:` covers both opening and finishing. Built for sources a program writes, as in `examples/sources.fen`; the standard library's files and transactions move to it next.
+The end of a `with` block is where what it lent finishes: a file closes and a transaction commits. A failure while finishing is the `with` statement's failure, covered by the `?` on its line, so `with fs.create(path)? as file:` covers both opening and finishing. Built, for sources a program writes, as in `examples/sources.fen`, and for files, as in `examples/files.fen`: a file written goes in beside its path, synced, and takes the path's place when the block ends, and a block that fails leaves the old file. `fs.create(path, durable=False)` skips the sync. In a task, a file's disk waits pause only that task. Transactions move to it next.
 
-- `with` lends you something for the length of a block, then takes it back. It's the only way to open files, sockets, servers and transactions. Built for sources a program writes, below; the standard library's files and sockets move to them next.
+- `with` lends you something for the length of a block, then takes it back. It's the only way to open files, sockets, servers and transactions. Built for sources a program writes, below, and for files; sockets move to them next.
 - What it lends can't escape the block: it can't be returned, stored outside it or put in a `shared`. A second name for it inside the block is fine.
 - A struct holding something borrowed is borrowed too, so a wrapper like `LineProtocol(conn=conn)` works inside the block and can't leak out.
 - `with conn.split() as reader, writer:` gives a connection's read and write sides, for one task reading while another writes.
@@ -454,8 +454,6 @@ Loading is safe on untrusted input:
 
 ## Templates
 
-Not built yet.
-
 ```fennec
 # the literal pieces and the values stay apart
 rows = db.query(t"select name from players where team = {team} and score > {least}")?
@@ -463,7 +461,7 @@ page = html.render(t"<p>Hello, {visitor.name}</p>")
 result = process.run(t"git log --author={author}")?
 ```
 
-- `t"..."` makes a `std` `Template`, as Python 3.14's t-strings do. It holds the literal pieces and the values separately, and the values' type comes from where it goes, as in `Template[SqlValue]`.
+- `t"..."` makes a `std` `Template`, as Python 3.14's t-strings do. It holds the literal pieces and the values separately, and the values' type comes from where it goes, as in `Template[SqlValue]`. A `Template[T]` has `strings`, one more than its `values`, plus each value's `expressions` as written and its `format_specs`, and `interpolations()` gives each value with both.
 - A `str` is never a `Template`, so `db.query`, `html.render` and `process.run` can't be handed text built by joining strings, and SQL, HTML and shell injection can't be written. There are no per-library string prefixes.
 - `LiteralStr` is a string that came from the source code, as Python's `typing.LiteralString` is. Only a string literal, or literals joined with `+`, makes one. It goes anywhere a `str` goes, but a `str` is never a `LiteralStr`. A `Template`'s text pieces are `LiteralStr`, so building one from text read while the program runs is a compile error, and any function may ask for one. It's for strings only.
 

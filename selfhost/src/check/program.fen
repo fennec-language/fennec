@@ -38,7 +38,7 @@ def built_in_interfaces() -> list[str]:
 
 def built_in_types() -> list[str]:
     [
-        "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "array", "SoaList",
+        "int", "float", "bool", "str", "LiteralStr", "bytes", "None", "nothing", "list", "array", "SoaList",
         "Iterator", "set", "dict", "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin",
         "Process", "Entropy", "Net", "Env", "Result", "->",
     ]

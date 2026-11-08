@@ -1,0 +1,8 @@
+type SqlValue = int | str
+
+def count(query: Template[SqlValue]) -> int:
+    query.values.len()
+
+def main(stdout: Stdout):
+    price = 1.5
+    stdout.print(count(t"select * from items where price < {price}"))

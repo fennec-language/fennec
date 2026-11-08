@@ -715,7 +715,7 @@ def describe(tok: Tok) -> str:
         case .Float(_): "a number"
         case .Duration(_): "a duration"
         case .Str(_): "a string"
-        case .FStr(_): "a string"
+        case .FStr(_) | .TStr(_): "a string"
         case .Keyword(word): f"`{word}`"
         case .Punct(text): f"`{text}`"
         case .Newline: "the end of the line"

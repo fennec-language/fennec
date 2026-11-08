@@ -83,7 +83,8 @@ impl Checker {
             (Type::Unknown, _) | (_, Type::Unknown) => true,
             (Type::Var(id), other) | (other, Type::Var(id)) => self.bind(*id, other),
             _ if expected == actual => true,
-            (Type::Optional(_), Type::None) => true,
+            // A `LiteralStr` goes anywhere a `str` does; a `str` never goes where one is asked for.
+            (Type::Str, Type::LiteralStr) | (Type::Optional(_), Type::None) => true,
             (Type::Optional(inner), Type::Optional(other)) => self.fits(inner, other),
             (Type::Optional(inner), other) => self.fits(inner, other),
             (Type::Errors(names), Type::Named(name)) => names.contains(name),

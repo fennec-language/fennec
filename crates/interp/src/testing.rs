@@ -108,7 +108,7 @@ impl Interp<'_> {
         self.frame = caller;
         match flow? {
             Flow::PassUp(Value::Err(error)) | Flow::Return(Value::Err(error)) => {
-                Err(Diagnostic::new(format!("the test failed with {}", format::repr(&error)), test.span))
+                Err(Diagnostic::new(format!("the test failed with {}", format::failure(&error)), test.span))
             }
             _ => Ok(()),
         }

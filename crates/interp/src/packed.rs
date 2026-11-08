@@ -57,6 +57,16 @@ pub enum Element {
 /// The field holding a `shared` value's lock, last in its cell, which is never shown or read.
 pub const LOCK: &str = "\u{1}lock";
 
+/// The field holding an error's notes, a `list[str]` that's 0 until one's added: last in an
+/// error struct's layout, and first in each case of an error enum's, so it's at one place
+/// whatever the case. Like `LOCK`, it's never shown, compared, matched or saved.
+pub const NOTES: &str = "\0notes";
+
+/// Whether a field is one a layout keeps for itself, which a program never sees.
+pub fn hidden(field: &str) -> bool {
+    field == LOCK || field == NOTES
+}
+
 impl Element {
     /// How many words one item takes.
     pub fn words(&self) -> usize {
@@ -173,6 +183,7 @@ fn unpack_item<'w>(element: &Element, words: &mut dyn Iterator<Item = &'w u64>) 
                 fields,
                 is_error: false,
                 cause: None,
+                notes: None,
             }))
         }
         Element::Enum { name, cases, words: size } => {
@@ -189,6 +200,7 @@ fn unpack_item<'w>(element: &Element, words: &mut dyn Iterator<Item = &'w u64>) 
                 fields,
                 is_error: false,
                 cause: None,
+                notes: None,
             }));
             // Skip the words a smaller case leaves zero.
             mine.for_each(drop);

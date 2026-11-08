@@ -1,7 +1,6 @@
 //! What gets fuzzed: each target takes an input, and gives back what's wrong if something is.
 //! A crash, a hang or running out of memory counts as well, without a target doing anything.
 
-use std::fmt::Write as _;
 use std::path::Path;
 use std::time::Duration;
 
@@ -97,7 +96,7 @@ const BYTES: [&str; 8] = ["\u{7f}", "é", "🦊", "\u{800}", "\u{10ffff}", "\0",
 
 const ANYTHING: [&str; 4] = ["\0", "\u{7f}", "é", "🦊"];
 
-pub(crate) const TARGETS: [Target; 10] = [
+pub(crate) const TARGETS: [Target; 9] = [
     Target { name: "lexer", corpus: &PROGRAMS, tokens: &SYNTAX, run: lexer, stuck: STUCK },
     Target { name: "parser", corpus: &PROGRAMS, tokens: &SYNTAX, run: parser, stuck: STUCK },
     Target { name: "formatter", corpus: &PROGRAMS, tokens: &SYNTAX, run: formatter, stuck: STUCK },
@@ -109,13 +108,6 @@ pub(crate) const TARGETS: [Target; 10] = [
         corpus: &["crates/fuzz/seeds/regex"],
         tokens: &PATTERNS,
         run: regex,
-        stuck: STUCK,
-    },
-    Target {
-        name: "jit",
-        corpus: &["crates/fuzz/seeds/jit"],
-        tokens: &ANYTHING,
-        run: crate::engines::jit,
         stuck: STUCK,
     },
     Target {
@@ -134,8 +126,8 @@ pub(crate) const TARGETS: [Target; 10] = [
     },
 ];
 
-/// Programs built through LLVM against the interpreter, which runs only when named, since it
-/// needs `fennec`, its runtime library and LLVM's tools.
+/// Programs built through LLVM, a dev build against a `--release` build and what's pinned, which
+/// runs only when named, since it builds every input twice.
 pub(crate) const LLVM: Target = Target {
     name: "llvm",
     corpus: &["crates/fuzz/seeds/jit"],
@@ -144,6 +136,9 @@ pub(crate) const LLVM: Target = Target {
     // It runs `opt`, `llc` and the linker for every input, which a busy machine slows down.
     stuck: Duration::from_secs(60),
 };
+
+/// The targets, besides `llvm`, that run their input through a program built natively.
+pub(crate) const NATIVE: [&str; 3] = ["json", "toml", "utf8"];
 
 /// The UTF-8 reader is fuzzed with the bytes it's given, so it has its own way to be run.
 pub(crate) const UTF8: Target =
@@ -160,7 +155,7 @@ impl Target {
         for folder in self.corpus {
             for entry in std::fs::read_dir(root.join(folder)).into_iter().flatten().flatten() {
                 let path = entry.path();
-                if path.is_file() && path.extension().is_none_or(|extension| extension != "out") {
+                if path.is_file() && !crate::llvm::is_pinned_output(&path) {
                     paths.push(path);
                 }
             }
@@ -238,47 +233,14 @@ fn checker(input: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// A string literal holding `text`, whatever's in it.
-fn literal(text: &str) -> String {
-    let mut written = String::from("\"");
-    for ch in text.chars() {
-        match ch {
-            '"' => written.push_str("\\\""),
-            '\\' => written.push_str("\\\\"),
-            '{' => written.push_str("\\{"),
-            '}' => written.push_str("\\}"),
-            ch if u32::from(ch) < 0x20 || ch == '\u{7f}' => {
-                let _ = write!(written, "\\x{:02x}", u32::from(ch));
-            }
-            ch => written.push(ch),
-        }
-    }
-    written.push('"');
-    written
-}
-
-/// Runs a program in the interpreter, where failing is fine and only breaking isn't.
-fn interpreted(source: &str) -> Result<(), String> {
-    let module =
-        fennec_syntax::parse(source).map_err(|err| format!("the harness wrote bad code: {err:?}"))?;
-    let _ = fennec_interp::run(&module, &mut std::io::sink());
-    Ok(())
-}
-
+/// The standard library's JSON reader, built natively, on any text.
 fn json(input: &[u8]) -> Result<(), String> {
-    let source = format!(
-        "from std.json import loads\n\ndef main(stdout: Stdout):\n    stdout.print(loads({}))\n",
-        literal(&text(input))
-    );
-    interpreted(&source)
+    crate::llvm::read_natively("json", text(input).as_bytes()).map(|_| ())
 }
 
+/// The standard library's TOML reader, built natively, on any text.
 fn toml(input: &[u8]) -> Result<(), String> {
-    let source = format!(
-        "from std.toml import loads\n\ndef main(stdout: Stdout):\n    stdout.print(loads({}))\n",
-        literal(&text(input))
-    );
-    interpreted(&source)
+    crate::llvm::read_natively("toml", text(input).as_bytes()).map(|_| ())
 }
 
 /// A regular expression against a text. The first line of the input is the pattern.
@@ -291,18 +253,22 @@ fn regex(input: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// `bytes.decode()` on the input's bytes, which must agree with what the language promises:
-/// it reads valid UTF-8 and fails on anything else.
+/// `bytes.decode()` on the input's bytes, built natively, which must agree with what the
+/// language promises: it reads valid UTF-8 and fails on anything else.
 fn utf8(input: &[u8]) -> Result<(), String> {
-    let items: Vec<String> = input.iter().take(256).map(u8::to_string).collect();
-    let source =
-        format!("def main(stdout: Stdout):\n    stdout.print(bytes([{}]).decode())\n", items.join(", "));
-    interpreted(&source)
+    let input = input.get(..256).unwrap_or(input);
+    let Some(printed) = crate::llvm::read_natively("utf8", input)? else { return Ok(()) };
+    let read = printed.starts_with(b"Ok(");
+    if read != std::str::from_utf8(input).is_ok() {
+        let said = if read { "read" } else { "refused" };
+        return Err(format!("`decode` {said} {input:?}: {}", String::from_utf8_lossy(&printed)));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LLVM, TARGETS, UTF8, find, literal};
+    use super::{LLVM, TARGETS, UTF8, find};
 
     #[test]
     fn every_target_can_be_found_by_name() {
@@ -310,14 +276,6 @@ mod tests {
             assert_eq!(find(target.name).map(|found| found.name), Some(target.name));
         }
         assert!(find("no such target").is_none());
-    }
-
-    #[test]
-    fn a_literal_holds_anything_and_parses() {
-        for text in ["plain", "\"quoted\"", "back\\slash", "{braces}", "line\nbreak", "\0\u{7f}é🦊"] {
-            let source = format!("x = {}\n", literal(text));
-            assert!(fennec_syntax::parse(&source).is_ok(), "{text:?}");
-        }
     }
 
     #[test]

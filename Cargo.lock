@@ -406,7 +406,6 @@ dependencies = [
  "fennec-fmt",
  "fennec-interp",
  "fennec-ir",
- "fennec-jit",
  "fennec-parked",
  "fennec-re",
  "fennec-syntax",

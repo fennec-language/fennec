@@ -4,6 +4,11 @@
 use std::path::Path;
 use std::process::Command;
 
+/// Whether a file beside the inputs is an output pinned for one.
+fn pinned_output(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| extension == "out" || extension == "fails")
+}
+
 fn fuzz() -> Command {
     Command::new(env!("CARGO_BIN_EXE_fennec-fuzz"))
 }
@@ -19,6 +24,9 @@ fn every_kept_input_runs_clean() {
         let target = folder.file_name().unwrap().to_string_lossy().into_owned();
         for input in std::fs::read_dir(&folder).unwrap() {
             let input = input.unwrap().path();
+            if pinned_output(&input) {
+                continue;
+            }
             let output = fuzz().args(["one", &target]).arg(&input).output().unwrap();
             assert!(
                 output.status.success(),
@@ -45,10 +53,37 @@ fn a_short_run_of_every_target_finds_nothing() {
     let printed = String::from_utf8_lossy(&output.stdout).into_owned();
     let _ = std::fs::remove_dir_all(&dir);
     assert!(output.status.success(), "{printed}");
-    let targets =
-        ["lexer", "parser", "formatter", "checker", "json", "toml", "regex", "jit", "runtime", "utf8"];
+    let targets = ["lexer", "parser", "formatter", "checker", "json", "toml", "regex", "runtime", "utf8"];
+    // Those that run natively are left out, saying so, where nothing can be built.
+    let native = ["json", "toml", "utf8"];
+    let left_out = printed.contains("json, toml, utf8: left out");
     for target in targets {
+        if left_out && native.contains(&target) {
+            continue;
+        }
         assert!(printed.contains(&format!("{target}: 100 inputs, 0 failures")), "{target}: {printed}");
+    }
+}
+
+/// Each program the `llvm` target starts from builds both ways and prints what's pinned for it,
+/// where LLVM's tools are here.
+#[test]
+fn every_program_to_start_from_prints_what_is_pinned() {
+    let seeds = Path::new(env!("CARGO_MANIFEST_DIR")).join("seeds/jit");
+    for input in std::fs::read_dir(seeds).unwrap() {
+        let input = input.unwrap().path();
+        if pinned_output(&input) {
+            continue;
+        }
+        assert!(input.with_extension("out").exists(), "{} has no output pinned", input.display());
+        let output = fuzz().args(["one", "llvm"]).arg(&input).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}: {}\n{}",
+            input.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 }
 

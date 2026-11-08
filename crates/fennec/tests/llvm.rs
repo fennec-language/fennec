@@ -4747,8 +4747,8 @@ def main(stdout: Stdout):
     Ok(())
 }
 
-/// JSON read into dicts, by string, int and plain struct keys, and a dict a capability gives back,
-/// as the JIT has them.
+/// JSON read into dicts, by string, int, plain struct and tuple keys, and a dict a capability
+/// gives back, as the JIT has them.
 #[test]
 fn json_into_dicts_matches_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -4770,6 +4770,10 @@ def main(stdout: Stdout, env: Env):
     stdout.print(back == spots, back[Spot(x=0, y=0)])
     wrong = json.loads[dict[str, int]]("[1, 2]") else {"none": 0}
     stdout.print(wrong)
+    corners = {(0, 0): "start", (3, 4): "end"}
+    stdout.print(json.loads[dict[(int, int), str]](json.dumps(corners)) else {}, corners)
+    placed = {(Spot(x=1, y=2), "a"): 1}
+    stdout.print((json.loads[dict[(Spot, str), int]](json.dumps(placed)) else {}) == placed)
     stdout.print(env.all().get("PATH") is not None)
 "#;
     for (name, how) in [("json_dicts", &["--llvm"][..]), ("json_dicts_release", &["--llvm", "--release"][..])]

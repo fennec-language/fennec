@@ -215,6 +215,35 @@ def main(net: Net, stdout: Stdout) fails NetError:
     stdout.print(total.bytes)
 ";
 
+/// Asked to record or replay and unable to, a program says so and stops, rather than run live as if
+/// nothing was asked of it.
+#[test]
+fn a_recording_that_cant_be_opened_stops_the_program() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("unopenable")?;
+    let program = dir.join("hello.fen");
+    std::fs::write(&program, "def main(stdout: Stdout, clock: Clock):\n    stdout.print(clock.now())\n")?;
+    let executable = dir.join("hello");
+    let built = fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .output_within()?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let missing = dir.join("no such folder").join("log");
+    for variable in ["FENNEC_RECORD", "FENNEC_REPLAY"] {
+        let ran = std::process::Command::new(&executable).env(variable, &missing).output_within()?;
+        assert_eq!(ran.status.code(), Some(1), "{variable}");
+        assert!(ran.stdout.is_empty(), "{variable}");
+        assert!(String::from_utf8_lossy(&ran.stderr).contains("no such folder"), "{variable}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A native server's rounds are each a task named by its connection, and a replay runs them again
 /// with no socket, each reading what its connection sent, until the recording runs out.
 #[test]

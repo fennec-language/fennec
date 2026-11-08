@@ -1,0 +1,33 @@
+source e25785405f111be219a72d4ea6454251d686076d6653f1f56164a57970d08d72
+code 0
+stdout 215
+False 0
+True 1
+True 2
+None
+some 0
+none 1
+none 2
+False 0 0
+False 0 1
+True 1 0
+True 1 1
+False 0
+False 1
+True 2
+False 0
+False 1
+None
+False 0
+True 1
+False 2
+False
+False
+True
+False 0
+True 1
+False 0
+True 1
+False 0
+True 1
+stderr 0

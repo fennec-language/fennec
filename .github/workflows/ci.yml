@@ -405,6 +405,8 @@ jobs:
         run: .github/scripts/test-landing.sh
       - name: Opening a pull request, on a throwaway repository
         run: .github/scripts/test-open-pr.sh
+      - name: Sweeping old build files, on worktrees made for it
+        run: .github/scripts/test-sweep-builds.sh
       # The installer runs as `sh` on machines Fennec has never seen, so it keeps to POSIX sh.
       - name: shellcheck the installer
         run: shellcheck --shell=sh site/public/install.sh
@@ -635,11 +637,16 @@ jobs:
           FENNEC_THREADS_RUNTIME: 1
         run: |
           failed=0
+          # What a program should print, its lines sorted: its `.out`, or for one that prints too
+          # much to keep, the hash of that in its `.sorted.sha256`.
+          wanted() {
+            if [ -f "${1%.fen}.out" ]; then LC_ALL=C sort "${1%.fen}.out" | sha256sum; else cat "${1%.fen}.sorted.sha256"; fi
+          }
           for program in crates/fennec/tests/fixtures/workers/*.fen examples/parallel_loops.fen examples/parallel_put_back.fen; do
-            FENNEC_THREADS_RUNTIME='' ./target/release/fennec run --interp "$program" 2> /dev/null | sort > wanted.txt
+            wanted "$program" > wanted.txt
             ./target/release/fennec build "$program" -o checked > /dev/null
             for threads in 1 4 8; do
-              if [ "$(FENNEC_THREADS=$threads timeout 120 ./checked 2> said.txt | sort)" != "$(cat wanted.txt)" ]; then
+              if [ "$(FENNEC_THREADS=$threads timeout 120 ./checked 2> said.txt | LC_ALL=C sort | sha256sum)" != "$(cat wanted.txt)" ]; then
                 echo "::error::$program at $threads threads printed something different"; cat said.txt; failed=1
               fi
             done
@@ -648,7 +655,7 @@ jobs:
 
   # What `parallel` runs on real threads, built with the threads runtime, under AddressSanitizer
   # and ThreadSanitizer, at several thread counts and with every call forced onto the pool. Each
-  # has to print what the interpreter prints, sorted, as output from bodies comes in call order.
+  # has to print what its `.out` says, sorted, as output from bodies comes in call order.
   # On Linux, a release build links its program on its own, with musl's C library in it, once the
   # `musl` folder is beside `fennec`. Examples built that way must print their `.out` in an empty
   # container, with nothing in it but the program.
@@ -781,17 +788,21 @@ jobs:
           runs=0
           export "${OPTIONS?}"
           programs=$(grep -lE 'parallel\(' examples/*.fen | xargs grep -L Net)
+          # As in the job above: a program's sorted `.out`, or the hash of it.
+          wanted() {
+            if [ -f "${1%.fen}.out" ]; then LC_ALL=C sort "${1%.fen}.out" | sha256sum; else cat "${1%.fen}.sorted.sha256"; fi
+          }
           for program in $programs crates/fennec/tests/fixtures/workers/*.fen; do
-            FENNEC_SANITIZE='' ./target/release/fennec run --interp "$program" 2> /dev/null | sort > wanted.txt
+            wanted "$program" > wanted.txt
             if ! ./target/release/fennec build "$program" -o checked > /dev/null 2> built.txt; then
               echo "::error::$program didn't build"; cat built.txt; failed=1; continue
             fi
             nm checked | grep -q "$SYMBOL" || { echo "::error::$program built without the sanitizer"; failed=1; }
             for threads in 1 4 8 stress; do
               if [ "$threads" = stress ]; then
-                got=$(FENNEC_PARALLEL_STRESS=1 FENNEC_THREADS=4 timeout 120 ./checked 2> said.txt | sort)
+                got=$(FENNEC_PARALLEL_STRESS=1 FENNEC_THREADS=4 timeout 120 ./checked 2> said.txt | LC_ALL=C sort | sha256sum)
               else
-                got=$(FENNEC_THREADS=$threads timeout 120 ./checked 2> said.txt | sort)
+                got=$(FENNEC_THREADS=$threads timeout 120 ./checked 2> said.txt | LC_ALL=C sort | sha256sum)
               fi
               runs=$((runs + 1))
               if grep -q "$REPORT" said.txt; then

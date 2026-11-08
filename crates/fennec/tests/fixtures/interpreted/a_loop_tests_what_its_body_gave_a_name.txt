@@ -1,0 +1,21 @@
+source 75002a5faafcc541edbede3cdf4e5d838aea4a27418a2ff2fe873fab78618652
+code 0
+stdout 125
+none 0
+some 1
+some 2
+0
+no box 0
+box 1
+box 2
+Box(v=0)
+no text 0
+no text 1
+no text 2
+a
+True 0 0
+True 0 1
+False 1 0
+False 1 1
+1
+stderr 0

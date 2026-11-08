@@ -18,7 +18,8 @@ This page is the store's format, so that the launcher and a shared cache can rea
     cleanup.lock          held while a cleanup runs
     cleaned               when a command last started a cleanup
   work/                   commands' scratch work, like a build's objects before they're linked
-  daemon/<version>.sock   the build daemon's socket, or one in the temporary folder when this path is too long
+  daemon/<version>-<build>.sock  the build daemon's socket, one per build, named by its build's first 16 hex digits,
+                          or one in the temporary folder when this path is too long
   std/<version>/          the standard library's files, for editors to open
   llvm-tools              where LLVM's tools were last found
   llvm-version            which version of LLVM they are

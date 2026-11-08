@@ -1,0 +1,11 @@
+source 47ab00c5ba8d8a4ec72ef9f19074d8781b1d83596511368c090588f277393778
+code 1
+stdout 0
+stderr 158
+error: calls nested too deeply
+ --> <dir>/deep.fen:4:9
+  |
+4 |     1 + deep(n - 1)
+  |         ^^^^^^^^^^^
+  |
+  = help: check for recursion that never stops

@@ -1,0 +1,14 @@
+source 8675153f20a39f76d61a56b89d1817bfa95ea8c18f1093c537f7d5d4dd02167e
+code 1
+stdout 143
+(9223372036854775803, 9223372036854775802) (-9223372036854775804, -9223372036854775805) (5, 1)
+9223372036854775807 10 4588
+9223372036854775807
+stderr 214
+error: this calculation overflows an int
+  --> <dir>/proved_steps_then_past.fen:32:5
+   |
+32 |     x += 1
+   |     ^
+   |
+   = help: ints are 64-bit; check the values involved, or use floats for very large numbers

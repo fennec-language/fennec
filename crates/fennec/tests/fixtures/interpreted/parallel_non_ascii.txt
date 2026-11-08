@@ -1,0 +1,611 @@
+source 917fa4b4b195105a75517077f475379f4d1d45a6798e760f6b4b9ca8c69d1531
+code 0
+stdout 7115
+Z S 東 K Å p
+5590
+100
+ZÜRICH 0! SÃO PAULO 1! 東京 2! PLAIN 599!
+ür ão 京  ra
+600
+Zürich 0é 東京 2é plain 599é
+Zürich 0
+São Paulo 1
+東京 2
+Kraków 3
+Århus 4
+plain 5
+Zürich 6
+São Paulo 7
+東京 8
+Kraków 9
+Århus 10
+plain 11
+Zürich 12
+São Paulo 13
+東京 14
+Kraków 15
+Århus 16
+plain 17
+Zürich 18
+São Paulo 19
+東京 20
+Kraków 21
+Århus 22
+plain 23
+Zürich 24
+São Paulo 25
+東京 26
+Kraków 27
+Århus 28
+plain 29
+Zürich 30
+São Paulo 31
+東京 32
+Kraków 33
+Århus 34
+plain 35
+Zürich 36
+São Paulo 37
+東京 38
+Kraków 39
+Århus 40
+plain 41
+Zürich 42
+São Paulo 43
+東京 44
+Kraków 45
+Århus 46
+plain 47
+Zürich 48
+São Paulo 49
+東京 50
+Kraków 51
+Århus 52
+plain 53
+Zürich 54
+São Paulo 55
+東京 56
+Kraków 57
+Århus 58
+plain 59
+Zürich 60
+São Paulo 61
+東京 62
+Kraków 63
+Århus 64
+plain 65
+Zürich 66
+São Paulo 67
+東京 68
+Kraków 69
+Århus 70
+plain 71
+Zürich 72
+São Paulo 73
+東京 74
+Kraków 75
+Århus 76
+plain 77
+Zürich 78
+São Paulo 79
+東京 80
+Kraków 81
+Århus 82
+plain 83
+Zürich 84
+São Paulo 85
+東京 86
+Kraków 87
+Århus 88
+plain 89
+Zürich 90
+São Paulo 91
+東京 92
+Kraków 93
+Århus 94
+plain 95
+Zürich 96
+São Paulo 97
+東京 98
+Kraków 99
+Århus 100
+plain 101
+Zürich 102
+São Paulo 103
+東京 104
+Kraków 105
+Århus 106
+plain 107
+Zürich 108
+São Paulo 109
+東京 110
+Kraków 111
+Århus 112
+plain 113
+Zürich 114
+São Paulo 115
+東京 116
+Kraków 117
+Århus 118
+plain 119
+Zürich 120
+São Paulo 121
+東京 122
+Kraków 123
+Århus 124
+plain 125
+Zürich 126
+São Paulo 127
+東京 128
+Kraków 129
+Århus 130
+plain 131
+Zürich 132
+São Paulo 133
+東京 134
+Kraków 135
+Århus 136
+plain 137
+Zürich 138
+São Paulo 139
+東京 140
+Kraków 141
+Århus 142
+plain 143
+Zürich 144
+São Paulo 145
+東京 146
+Kraków 147
+Århus 148
+plain 149
+Zürich 150
+São Paulo 151
+東京 152
+Kraków 153
+Århus 154
+plain 155
+Zürich 156
+São Paulo 157
+東京 158
+Kraków 159
+Århus 160
+plain 161
+Zürich 162
+São Paulo 163
+東京 164
+Kraków 165
+Århus 166
+plain 167
+Zürich 168
+São Paulo 169
+東京 170
+Kraków 171
+Århus 172
+plain 173
+Zürich 174
+São Paulo 175
+東京 176
+Kraków 177
+Århus 178
+plain 179
+Zürich 180
+São Paulo 181
+東京 182
+Kraków 183
+Århus 184
+plain 185
+Zürich 186
+São Paulo 187
+東京 188
+Kraków 189
+Århus 190
+plain 191
+Zürich 192
+São Paulo 193
+東京 194
+Kraków 195
+Århus 196
+plain 197
+Zürich 198
+São Paulo 199
+東京 200
+Kraków 201
+Århus 202
+plain 203
+Zürich 204
+São Paulo 205
+東京 206
+Kraków 207
+Århus 208
+plain 209
+Zürich 210
+São Paulo 211
+東京 212
+Kraków 213
+Århus 214
+plain 215
+Zürich 216
+São Paulo 217
+東京 218
+Kraków 219
+Århus 220
+plain 221
+Zürich 222
+São Paulo 223
+東京 224
+Kraków 225
+Århus 226
+plain 227
+Zürich 228
+São Paulo 229
+東京 230
+Kraków 231
+Århus 232
+plain 233
+Zürich 234
+São Paulo 235
+東京 236
+Kraków 237
+Århus 238
+plain 239
+Zürich 240
+São Paulo 241
+東京 242
+Kraków 243
+Århus 244
+plain 245
+Zürich 246
+São Paulo 247
+東京 248
+Kraków 249
+Århus 250
+plain 251
+Zürich 252
+São Paulo 253
+東京 254
+Kraków 255
+Århus 256
+plain 257
+Zürich 258
+São Paulo 259
+東京 260
+Kraków 261
+Århus 262
+plain 263
+Zürich 264
+São Paulo 265
+東京 266
+Kraków 267
+Århus 268
+plain 269
+Zürich 270
+São Paulo 271
+東京 272
+Kraków 273
+Århus 274
+plain 275
+Zürich 276
+São Paulo 277
+東京 278
+Kraków 279
+Århus 280
+plain 281
+Zürich 282
+São Paulo 283
+東京 284
+Kraków 285
+Århus 286
+plain 287
+Zürich 288
+São Paulo 289
+東京 290
+Kraków 291
+Århus 292
+plain 293
+Zürich 294
+São Paulo 295
+東京 296
+Kraków 297
+Århus 298
+plain 299
+Zürich 300
+São Paulo 301
+東京 302
+Kraków 303
+Århus 304
+plain 305
+Zürich 306
+São Paulo 307
+東京 308
+Kraków 309
+Århus 310
+plain 311
+Zürich 312
+São Paulo 313
+東京 314
+Kraków 315
+Århus 316
+plain 317
+Zürich 318
+São Paulo 319
+東京 320
+Kraków 321
+Århus 322
+plain 323
+Zürich 324
+São Paulo 325
+東京 326
+Kraków 327
+Århus 328
+plain 329
+Zürich 330
+São Paulo 331
+東京 332
+Kraków 333
+Århus 334
+plain 335
+Zürich 336
+São Paulo 337
+東京 338
+Kraków 339
+Århus 340
+plain 341
+Zürich 342
+São Paulo 343
+東京 344
+Kraków 345
+Århus 346
+plain 347
+Zürich 348
+São Paulo 349
+東京 350
+Kraków 351
+Århus 352
+plain 353
+Zürich 354
+São Paulo 355
+東京 356
+Kraków 357
+Århus 358
+plain 359
+Zürich 360
+São Paulo 361
+東京 362
+Kraków 363
+Århus 364
+plain 365
+Zürich 366
+São Paulo 367
+東京 368
+Kraków 369
+Århus 370
+plain 371
+Zürich 372
+São Paulo 373
+東京 374
+Kraków 375
+Århus 376
+plain 377
+Zürich 378
+São Paulo 379
+東京 380
+Kraków 381
+Århus 382
+plain 383
+Zürich 384
+São Paulo 385
+東京 386
+Kraków 387
+Århus 388
+plain 389
+Zürich 390
+São Paulo 391
+東京 392
+Kraków 393
+Århus 394
+plain 395
+Zürich 396
+São Paulo 397
+東京 398
+Kraków 399
+Århus 400
+plain 401
+Zürich 402
+São Paulo 403
+東京 404
+Kraków 405
+Århus 406
+plain 407
+Zürich 408
+São Paulo 409
+東京 410
+Kraków 411
+Århus 412
+plain 413
+Zürich 414
+São Paulo 415
+東京 416
+Kraków 417
+Århus 418
+plain 419
+Zürich 420
+São Paulo 421
+東京 422
+Kraków 423
+Århus 424
+plain 425
+Zürich 426
+São Paulo 427
+東京 428
+Kraków 429
+Århus 430
+plain 431
+Zürich 432
+São Paulo 433
+東京 434
+Kraków 435
+Århus 436
+plain 437
+Zürich 438
+São Paulo 439
+東京 440
+Kraków 441
+Århus 442
+plain 443
+Zürich 444
+São Paulo 445
+東京 446
+Kraków 447
+Århus 448
+plain 449
+Zürich 450
+São Paulo 451
+東京 452
+Kraków 453
+Århus 454
+plain 455
+Zürich 456
+São Paulo 457
+東京 458
+Kraków 459
+Århus 460
+plain 461
+Zürich 462
+São Paulo 463
+東京 464
+Kraków 465
+Århus 466
+plain 467
+Zürich 468
+São Paulo 469
+東京 470
+Kraków 471
+Århus 472
+plain 473
+Zürich 474
+São Paulo 475
+東京 476
+Kraków 477
+Århus 478
+plain 479
+Zürich 480
+São Paulo 481
+東京 482
+Kraków 483
+Århus 484
+plain 485
+Zürich 486
+São Paulo 487
+東京 488
+Kraków 489
+Århus 490
+plain 491
+Zürich 492
+São Paulo 493
+東京 494
+Kraków 495
+Århus 496
+plain 497
+Zürich 498
+São Paulo 499
+東京 500
+Kraków 501
+Århus 502
+plain 503
+Zürich 504
+São Paulo 505
+東京 506
+Kraków 507
+Århus 508
+plain 509
+Zürich 510
+São Paulo 511
+東京 512
+Kraków 513
+Århus 514
+plain 515
+Zürich 516
+São Paulo 517
+東京 518
+Kraków 519
+Århus 520
+plain 521
+Zürich 522
+São Paulo 523
+東京 524
+Kraków 525
+Århus 526
+plain 527
+Zürich 528
+São Paulo 529
+東京 530
+Kraków 531
+Århus 532
+plain 533
+Zürich 534
+São Paulo 535
+東京 536
+Kraków 537
+Århus 538
+plain 539
+Zürich 540
+São Paulo 541
+東京 542
+Kraków 543
+Århus 544
+plain 545
+Zürich 546
+São Paulo 547
+東京 548
+Kraków 549
+Århus 550
+plain 551
+Zürich 552
+São Paulo 553
+東京 554
+Kraków 555
+Århus 556
+plain 557
+Zürich 558
+São Paulo 559
+東京 560
+Kraków 561
+Århus 562
+plain 563
+Zürich 564
+São Paulo 565
+東京 566
+Kraków 567
+Århus 568
+plain 569
+Zürich 570
+São Paulo 571
+東京 572
+Kraków 573
+Århus 574
+plain 575
+Zürich 576
+São Paulo 577
+東京 578
+Kraków 579
+Århus 580
+plain 581
+Zürich 582
+São Paulo 583
+東京 584
+Kraków 585
+Århus 586
+plain 587
+Zürich 588
+São Paulo 589
+東京 590
+Kraków 591
+Århus 592
+plain 593
+Zürich 594
+São Paulo 595
+東京 596
+Kraków 597
+Århus 598
+plain 599
+stderr 0

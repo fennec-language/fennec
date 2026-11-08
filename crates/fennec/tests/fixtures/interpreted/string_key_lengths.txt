@@ -1,0 +1,6 @@
+source fb9d07bd8cf070f8dcae2a6b5d11e50d1037a491acb1432b5c6bca3ed054aaff
+code 0
+stdout 27
+946 946 946 47 1
+174 -1 -1
+stderr 0

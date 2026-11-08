@@ -1,0 +1,12 @@
+source 86c5ab2cdbe193969c63e229c52d9553174847c37053bbc8cfc7ce3809fee6b5
+code 1
+stdout 17
+9 1
+bcd a
+[1, 2]
+stderr 123
+error: 9 isn't in the list
+  --> <dir>/fails_only_in_max.fen:14:5
+   |
+14 |     values.remove(9)
+   |     ^^^^^^^^^^^^^^^^

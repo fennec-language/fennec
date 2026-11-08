@@ -1,0 +1,12 @@
+source 46041281ba473423cde784db2330dfbb2aee8f0c957e0710fd5ec98a036e12e8
+code 1
+stdout 2
+1
+stderr 189
+error: this assertion failed
+  --> <dir>/assert_22.fen:31:12
+   |
+31 |     assert "z" in "abc"
+   |            ^^^^^^^^^^^^
+   |
+   = help: the left side is "z" and the right side is "abc"

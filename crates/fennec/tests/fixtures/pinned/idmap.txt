@@ -1,0 +1,12 @@
+source 1de52184e778a7906e1d2e154242c6435b0c5b96a97fabfe9e9aae7f1d28b4c5
+code 0
+stdout 87
+7 2 False
+True 1 True False
+True False False True
+False True
+fox 7
+den 7
+2 2 False
+kit
+stderr 0

@@ -1,0 +1,49 @@
+error: this assertion failed
+ --> <dir>/game.fen:2:12
+  |
+2 |     assert n < 10
+  |            ^^^^^^
+  |
+  = help: it failed for n = 10; the left side is 10 and the right side is 10
+error: this assertion failed
+ --> <dir>/game.fen:5:12
+  |
+5 |     assert n > -7
+  |            ^^^^^^
+  |
+  = help: it failed for n = -7; the left side is -7 and the right side is -7
+error: this assertion failed
+ --> <dir>/game.fen:8:12
+  |
+8 |     assert word.len() < 3
+  |            ^^^^^^^^^^^^^^
+  |
+  = help: it failed for word = "nnc"; the left side is 3 and the right side is 3
+error: this assertion failed
+  --> <dir>/game.fen:11:12
+   |
+11 |     assert items.len() < 2
+   |            ^^^^^^^^^^^^^^^
+   |
+   = help: it failed for items = [-1, 1]; the left side is 2 and the right side is 2
+error: this assertion failed
+  --> <dir>/game.fen:14:12
+   |
+14 |     assert not flag
+   |            ^^^^^^^^
+   |
+   = help: it failed for flag = True
+error: this assertion failed
+  --> <dir>/game.fen:17:12
+   |
+17 |     assert a + b < 50
+   |            ^^^^^^^^^^
+   |
+   = help: it failed for a = 0, b = 50; the left side is 50 and the right side is 50
+error: this assertion failed
+  --> <dir>/game.fen:25:12
+   |
+25 |     assert n < 100
+   |            ^^^^^^^
+   |
+   = help: it failed for n = 117; the left side is 117 and the right side is 100

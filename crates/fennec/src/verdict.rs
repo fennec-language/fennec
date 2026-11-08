@@ -10,7 +10,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use fennec_build::{Cache, KitFile, KitState, Row, TestRecord};
-use fennec_check::Signatures;
 use fennec_kit::Program;
 use fennec_syntax::Item;
 
@@ -19,7 +18,6 @@ const BUILD: &str = env!("FENNEC_BUILD");
 /// What a run has to do: the program to run it on, the tests to run, and the rest.
 pub(crate) struct Plan {
     pub(crate) program: Program,
-    pub(crate) signatures: Signatures,
     pub(crate) wanted: Vec<String>,
     pub(crate) unchanged: Vec<TestRecord>,
 }
@@ -182,10 +180,10 @@ pub(crate) fn plan(
         }
     }
     let mut program = fennec_kit::load_modules_to_test(dir, path, &needed).ok()?;
-    let signatures = fennec_check::check_to_run(&mut program.module).ok()?;
+    // What runs a module needs it checked and resolved.
+    fennec_check::check_to_run(&mut program.module).ok()?;
     Some(Plan {
         program,
-        signatures,
         wanted: wanted.iter().map(|record| record.test.clone()).collect(),
         unchanged: unchanged.into_iter().cloned().collect(),
     })

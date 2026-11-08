@@ -1,0 +1,6 @@
+source 22a7567bdb2fc60e825ca034a28b2363fc1158fb45bd36f920fe16542f91b898
+code 0
+stdout 66
+[[5], [42, 2], [7, 8, 9]] [[5], [1, 2], [7, 8, 9]] 73 3
+1 1 False
+stderr 0

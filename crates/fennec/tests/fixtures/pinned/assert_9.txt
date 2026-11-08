@@ -1,0 +1,12 @@
+source e592c6b089a673b4cbbca7ef8dce1d2450793407da787df0737e5c4a03bf7736
+code 1
+stdout 2
+1
+stderr 224
+error: this assertion failed
+  --> <dir>/assert_9.fen:31:12
+   |
+31 |     assert Shown(x=1) != Shown(x=1)
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: the left side is Shown(x=1) and the right side is Shown(x=1)

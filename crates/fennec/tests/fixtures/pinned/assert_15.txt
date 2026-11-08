@@ -1,0 +1,12 @@
+source 480fa6142c94e45f1225526523fba816c66a0933580488aee482bdbebcf85ee8
+code 1
+stdout 2
+1
+stderr 212
+error: this assertion failed
+  --> <dir>/assert_15.fen:31:12
+   |
+31 |     assert seen(True) == seen(False)
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: the left side is 3 and the right side is None

@@ -10,7 +10,7 @@ description: How Fennec runs near native speed and builds almost instantly, with
 
 ## Today
 
-`fennec run` builds through LLVM one function at a time, and each function is cached by its content, so a change recompiles only what it touched. Where LLVM can't build a program yet, it says so in one line and the JIT runs it instead. `fennec build` always makes a native program through LLVM, and `--release` optimizes the whole program as one.
+`fennec run` builds through LLVM one function at a time, and each function is cached by its content, so a change recompiles only what it touched. Where LLVM can't build a program yet, it says so in one line and the interpreter runs it instead. `fennec build` always makes a native program through LLVM, and `--release` optimizes the whole program as one.
 
 In CI, release builds of the benchmark suite run at about the speed of hand-written twins in a fast, C-class systems language. That's the whole run of each program, startup included. A development build of one kernel takes well under a second. The [benchmarks](/benchmarks/) have every number and how it's measured.
 
@@ -18,7 +18,7 @@ In CI, release builds of the benchmark suite run at about the speed of hand-writ
 
 - **LLVM for everything,** with per-function optimization. It's the default today. There's no separate development engine and no tiering.
 - **Whole-program optimization only in `--release`.** It's the one step that sees everything at once, so it's the one step you opt into. Built.
-- **Planned: the JIT and the interpreter go** once everything builds through LLVM. A program then either builds natively or is refused, and what doesn't build yet is on a tracked list that must reach zero. The commit before they go gets a tag.
+- **The JIT is gone, and the interpreter goes next,** since everything builds through LLVM. A program then either builds natively or is refused, and what doesn't build yet is on a tracked list that must reach zero. The commit before they go gets a tag.
 
 ## The plan: one store
 

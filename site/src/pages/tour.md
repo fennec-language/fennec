@@ -1028,7 +1028,7 @@ Floats have one equality, order and hash: NaN equals itself and sorts last, and 
 
 ## Building
 
-- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the JIT stands in and says so. **Planned:** once LLVM builds everything, the JIT and the interpreter are removed.
+- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the interpreter stands in and says so. The JIT is gone. **Planned:** the interpreter goes from `fennec` too.
 - `fennec build` makes a native program through LLVM, and `fennec build --release` optimizes the whole program as one. On Linux, a release build is one static program that needs nothing from the machine.
 
 ## Decided lately

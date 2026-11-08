@@ -1,0 +1,14 @@
+source 7e0a495cd01aec03fadd3be94817df3492f9bbb76cbe4601266433eb63cbd7e4
+code 0
+stdout 403
+ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad 6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85
+a77fc933cbb22a3738a01105ab6ec3c183b0eb0e582311f7881dd3bb8393ffa5
+True False
+{"mainWeapon": "bow", "uses": 3} {"main-weapon": "bow", "uses": 3}
+main_weapon = "bow"
+uses = 3
+
+Tool(main_weapon="axe", uses=2)
+expected `=` after the key, but found `t`, at line 1, column 5
+1 -1
+stderr 0

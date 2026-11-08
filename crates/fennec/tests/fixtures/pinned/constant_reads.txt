@@ -1,0 +1,9 @@
+source 65f1cfd4f0bffb2e99f45da613bd34fc6cae3401c77b86cfcdd02766c85ef43f
+code 0
+stdout 206
+["z", "b", "c"] ["z", "b", "c"] ["a", "b"]
+{"a": 1, "b": 1, "new": 3} {"a": 1, "b": 1}
+Point(x=5, tags=["start", "moved"]) Point(x=0, tags=["start"])
+1
+Shape.Named(words=["n"]) a and a long tail of text 25
+stderr 0

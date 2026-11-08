@@ -96,7 +96,7 @@ fn release_items(state: &mut State, element: &Element, words: &[u64]) {
 fn build(state: &mut State, at: usize, stride: usize, items: &[u64], room: usize) -> Box<[u64]> {
     let count = items.len() / stride.max(1);
     let room = room.max(count).max(MIN_ROOM);
-    let mut block = state.heap.fresh(LIST_HEADER_WORDS + room * stride);
+    let mut block = state.heap.fresh(super::heap::words_for(LIST_HEADER_WORDS, room, stride));
     let number = |n: usize| u64::try_from(n).unwrap_or(0);
     if let Some(header) = block.get_mut(..LIST_HEADER_WORDS) {
         header.copy_from_slice(&[1, shape(state, at), number(count), number(room)]);

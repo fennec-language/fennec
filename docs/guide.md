@@ -267,7 +267,7 @@ A crash in one connection's task ends only that task, and the server keeps servi
 
 ## Hashing
 
-`std.crypto` gives `blake3` and `sha256` as lowercase hex, for text or `bytes`, plus `keyed_blake3`, `hmac_sha256`, `derive_key` and `equal`, which compares secrets in constant time. The same bytes give the same hash on every machine, so a hash names its content, as `name_of` does above. A password or a key goes in a `Secret`, as `Secret.of(text)`: printing it, putting it in an f-string and saving it are compile errors, and `expose_secret()` is the one way to read it, so a search for that name finds every use.
+`std.crypto` gives `blake3` and `sha256` as lowercase hex, for text or `bytes`, plus `keyed_blake3`, `hmac_sha256`, `derive_key` and `equal`, which compares secrets in constant time. The same bytes give the same hash on every machine, so a hash names its content, as `name_of` does above. A password or a key goes in a `Secret`, as `Secret.of(text)`: printing it, putting it in an f-string and saving it are compile errors, and `expose_secret()` is the one way to read it, so a search for that name finds every use. `==` on two secrets compares them in constant time, as `equal` does, so checking a password or a token is just `==`.
 
 `blake3` and `sha256` also take a list or an iterator of text or `bytes`, and hash the chunks in turn, so a large file hashes as it's read, never in memory whole:
 

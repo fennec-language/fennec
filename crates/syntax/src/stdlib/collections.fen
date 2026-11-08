@@ -1242,6 +1242,15 @@ extend Deque[T: Deserializable]:
     def deserialize(ref src: Deserializer) -> Deque[T] fails ParseError:
         Deque.of(src.sequence[T]()?)
 
+## A `Packed` saves as its lists, one list of items each.
+extend Packed[T: Serializable]:
+    def serialize(self, ref out: Serializer):
+        out.sequence(self.lists())
+
+extend Packed[T: Deserializable]:
+    def deserialize(ref src: Deserializer) -> Packed[T] fails ParseError:
+        Packed.of(src.sequence[list[T]]()?)
+
 extend Grid[T: Serializable]:
     def serialize(self, ref out: Serializer):
         out.sequence(self.rows())

@@ -51,7 +51,7 @@ pub(super) fn is_id_map(name: &str) -> bool {
 pub(in crate::embed) fn packable(element: &Element) -> bool {
     let all = |fields: &[(Rc<str>, Element)]| fields.iter().all(|(_, field)| packable(field));
     match element {
-        Element::Int | Element::Float | Element::Bool => true,
+        Element::Int | Element::Float | Element::Bool | Element::U64 | Element::F32 => true,
         // A tuple a backend lays out as a struct, like `(int, int)`, is a tuple to the interpreter.
         Element::Struct { name, fields } => {
             !name.starts_with('(')

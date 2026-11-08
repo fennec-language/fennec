@@ -315,18 +315,36 @@ def main(stdout: Stdout):
 - A `str` is never a `Template`, so an f-string where one is wanted is a compile error.
 - `LiteralStr` is text written in the source: a literal, literals joined with `+`, or a choice between literals. It goes anywhere a `str` goes, but text read while the program runs is never one, so input can only choose between texts you wrote.
 
-**Planned:** `std.sqlite`, which takes these templates:
+`std.sqlite` takes these templates, and reads each row into a struct by its columns' names:
 
-```fennec planned
+```fennec
 from std import sqlite
+from std.sql import SqlError
 
-with sqlite.open(fs, ".hoard/index.db")? as db:
-    rows = db.query(t"select path, hash from entries where path = {path}")?
-    for row in rows:
-        stdout.print(row["hash"])
+struct Entry:
+    path: str
+    hash: str
+
+def record(fs: Fs, entries: list[Entry]) fails SqlError:
+    with sqlite.open(fs, ".hoard/index.db")? as db:
+        _ = db.execute(t"create table if not exists entries (path text primary key, hash text not null)")?
+        # kept when the block ends, and none of it if the block fails
+        with db.transaction()? as tx:
+            for entry in entries:
+                _ = tx.execute(t"insert or replace into entries values ({entry.path}, {entry.hash})")?
+
+def hash_of(fs: Fs, path: str) -> str? fails SqlError:
+    mut found = list[Entry]()
+    with sqlite.open(fs, ".hoard/index.db")? as db:
+        found = db.query[Entry](t"select path, hash from entries where path = {path}")?
+    found[0].hash if found.len() > 0 else None
 ```
 
-Until it lands, keep an index in a `shared` dict, as above, and save it with `std.json` or `std.pack`.
+- Each `{}` is bound as a parameter, never pasted into the query's text.
+- A column that doesn't fit its field, or a field with no column, fails with `SqlError.Column`, naming it. `query[int]` or `query[str]` reads a single column.
+- The database is in WAL mode, so reads go on while something writes. Tasks in a `parallel` loop can share one: each transaction gets a connection of its own and the database's one writer, and a task waiting for it pauses without holding a thread.
+- In a test, each path is a database in memory, fresh for each test. `fennec test --real` uses files.
+- `query` needs native code, as `std.pack` does, so `--jit` and `--interp` can't run it.
 
 ## Tests
 
@@ -372,6 +390,5 @@ Builds go through LLVM a function at a time and are cached, so an edit rebuilds 
 ## Not there yet
 
 These are decided and planned, and `docs/language.md` says where each one stands:
-- `std.sqlite`;
 - `launch` and `Channel` for long-running tasks;
 - sized numbers like `u8` and `f32`.

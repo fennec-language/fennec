@@ -483,6 +483,91 @@ fn workers_take_turns_at_shared_values_holding_blocks() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Runs a built server on `threads` threads, says `lines` to it, one connection each, and waits at
+/// most 15 seconds for it to end, the connections staying open. Gives back what it printed after its
+/// port, and its exit code.
+fn server_ended(built: &Path, threads: &str, lines: &[&str]) -> std::io::Result<(String, Option<i32>)> {
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+    let mut server = Command::new(built)
+        .env("FENNEC_THREADS", threads)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let mut out = BufReader::new(server.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
+    let mut port = String::new();
+    out.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+    let mut open = Vec::new();
+    for line in lines {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        if !line.is_empty() {
+            stream.write_all(format!("{line}\n").as_bytes())?;
+        }
+        if *line == "wait" {
+            let mut back = String::new();
+            BufReader::new(stream.try_clone()?).read_line(&mut back)?;
+            assert_eq!(back, "waiting\n");
+        }
+        open.push(stream);
+    }
+    let started = std::time::Instant::now();
+    let code = loop {
+        if let Some(status) = server.try_wait()? {
+            break status.code();
+        }
+        if started.elapsed() > std::time::Duration::from_secs(15) {
+            server.kill()?;
+            server.wait()?;
+            return Err(std::io::Error::other(format!("the server didn't end on {threads} threads")));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut rest = String::new();
+    out.read_to_string(&mut rest)?;
+    drop(open);
+    Ok((rest, code))
+}
+
+/// When one round fails, the others are cancelled, and a cancelled task can't wait: its wait for a
+/// channel or for a task it launched ends at once, and the server goes.
+#[test]
+fn a_cancelled_round_doesnt_wait_for_a_channel_or_a_task() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-cancelled-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let channel =
+        build_on_threads(&dir, include_str!("fixtures/workers/cancel_channel_wait.fen"), "channel")?;
+    let launch = build_on_threads(&dir, include_str!("fixtures/workers/cancel_launch_wait.fen"), "launch")?;
+    for built in [&channel, &launch] {
+        for threads in ["1", "2"] {
+            let (_, code) = server_ended(built, threads, &["wait", "boom"])?;
+            assert_eq!(code, Some(1), "{} on {threads} threads", built.display());
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A stop cuts short a read on a served connection, as it does any other wait.
+#[test]
+fn a_stop_cuts_short_a_read_on_a_served_connection() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-stopped-read-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/stop_a_connection_read.fen");
+    let built = build_on_threads(&dir, source, "stop_a_connection_read")?;
+    for threads in ["1", "2"] {
+        let (printed, code) = server_ended(&built, threads, &[""])?;
+        assert_eq!((printed.as_str(), code), ("the block ended\nafter\n", Some(0)), "on {threads} threads");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// One task can write to a connection while another is waiting to read from it.
 #[test]
 fn a_connection_can_be_written_while_another_task_reads_it() -> std::io::Result<()> {

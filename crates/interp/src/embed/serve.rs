@@ -359,6 +359,8 @@ impl Conn {
             match woken {
                 Some(Wake::Ready(TIMED_OUT)) => Waited::TimedOut,
                 Some(Wake::Cancelled) => Waited::Cancelled,
+                // A stop cuts the wait short, as any other's, unless it's a cleanup's in its grace.
+                Some(Wake::Ready(STOPPED)) if cut_short() => Waited::Cancelled,
                 Some(Wake::Ready(_)) => Waited::Ready,
                 None => self.block(interest, until, call)?,
             }
@@ -1086,15 +1088,17 @@ fn parked_as(woken: Option<Wake>) -> Parked {
     }
 }
 
+/// Fails the running task as one that was stopped.
+pub(crate) fn fail_as_stopped() {
+    super::fail_with(fennec_syntax::Diagnostic::new("this task was stopped", fennec_syntax::Span::default()));
+}
+
 /// Whether this is a launched task that's been stopped. If so, it fails, as a crash does, so it
 /// ends with its locks put back and let go; that it was stopped keeps its end quiet.
 fn cut_short() -> bool {
     let stopped = super::threads::stopped();
     if stopped {
-        super::fail_with(fennec_syntax::Diagnostic::new(
-            "this task was stopped",
-            fennec_syntax::Span::default(),
-        ));
+        fail_as_stopped();
     }
     stopped
 }

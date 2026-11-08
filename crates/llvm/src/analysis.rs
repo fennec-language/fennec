@@ -134,6 +134,8 @@ pub(crate) struct Whole<'p> {
     pub(crate) on_workers: HashSet<&'p str>,
     /// Whether the program has any `shared` type.
     pub(crate) cells: bool,
+    /// The functions that can run as a parked task, which count their loops' turns.
+    pub(crate) tasks: HashSet<&'p str>,
     /// Whether its closures are blocks in the runtime's table, since it keeps one where the
     /// runtime reads (see `closures`).
     pub(crate) runtime_closures: bool,
@@ -3114,6 +3116,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         })
         .collect();
     let on_workers = crate::parallel::run_on_workers(program);
+    let tasks = crate::ticks::tasks(&functions);
     Whole {
         functions,
         analyses,
@@ -3126,6 +3129,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         constants,
         on_workers,
         cells: crate::parallel::has_cells(program),
+        tasks,
         runtime_closures: crate::closures::runtime_holds_closures(program),
     }
 }

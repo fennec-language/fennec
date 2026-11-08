@@ -55,6 +55,7 @@ mod random;
 mod regex;
 mod rollback;
 mod text;
+mod ticks;
 mod uniqueness;
 mod waits;
 

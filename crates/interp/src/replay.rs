@@ -13,22 +13,40 @@
 //!   catches any outside input this doesn't record yet.
 //! - **A normal run** pays one load to see that nothing's recorded.
 //!
-//! A run of several tasks, whose order between them isn't recorded yet, can diverge.
+//! - **Tasks:** each entry is logged under the task that made the call, and a replay hands each
+//!   task its own entries in order, whatever order the tasks run in. A task is named by its path:
+//!   its parent's name, a dot, and how many tasks the parent had started before it. `main` is `0`,
+//!   its third launch `0.2`, and a `parallel` call's range is named by the call, then where the
+//!   range starts, as `0.1.128`. No counter is shared between tasks, so the names don't depend on
+//!   how the threads interleave. How many workers the run had is logged first, and a replay has as
+//!   many, so its ranges are cut the same way.
 //!
-//! The log is `FENREPL1`, the header's length as four bytes and the header, then the entries. Each
-//! entry is its call's name, with its length as two bytes, then what it gave, with its length as
-//! four. All numbers are little-endian.
+//! The order between tasks where one sees another's work, at a lock, a channel or a print, isn't
+//! recorded yet, so a run whose tasks do that can still diverge.
+//!
+//! The log is `FENREPL2`, the header's length as four bytes and the header, then the entries. Each
+//! entry is its task's name and its call's name, each with its length as two bytes, then what it
+//! gave, with its length as four. All numbers are little-endian. A `FENREPL1` log, from before
+//! tasks were named, has no task names, and replays as `main`'s.
 
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::io::Write as _;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use fennec_syntax::{Diagnostic, Span};
 
 use crate::value::{Instance, Value};
 
-const MAGIC: &[u8; 8] = b"FENREPL1";
+const MAGIC: &[u8; 8] = b"FENREPL2";
+
+/// A log from before tasks were named: every entry is `main`'s.
+const MAGIC_UNNAMED: &[u8; 8] = b"FENREPL1";
+
+/// The entry that says how many workers the recorded run had, logged first, under no task.
+const WORKERS: &str = "workers";
 
 enum Mode {
     Off,
@@ -36,9 +54,78 @@ enum Mode {
     Replay(Mutex<Player>),
 }
 
+/// A replay's log, read into a stream of entries for each task.
 struct Player {
-    log: Vec<u8>,
-    at: usize,
+    streams: HashMap<String, VecDeque<(String, Vec<u8>)>>,
+    /// How many workers the recorded run had, when the log says.
+    workers: Option<usize>,
+}
+
+/// A task, for its entries: its name, and how many tasks it has started, to name the next one.
+pub(crate) struct Task {
+    name: Arc<str>,
+    started: u32,
+}
+
+impl Task {
+    fn named(name: Arc<str>) -> Task {
+        Task { name, started: 0 }
+    }
+
+    /// The task that's `main`, and whatever runs on a thread outside any other task.
+    fn main() -> Task {
+        Task::named(Arc::from("0"))
+    }
+}
+
+thread_local! {
+    /// The task running on this thread, in a recording or a replay. `None` is `main`.
+    static TASK: RefCell<Option<Task>> = const { RefCell::new(None) };
+}
+
+/// The name of the task running on this thread.
+fn running() -> Arc<str> {
+    TASK.with_borrow(|task| task.as_ref().map_or_else(|| Arc::from("0"), |task| Arc::clone(&task.name)))
+}
+
+/// The next task the running one starts, named after it, in a recording or a replay: `None` in a
+/// normal run, which pays one load for it.
+pub(crate) fn child() -> Option<Task> {
+    if matches!(mode(), Mode::Off) {
+        return None;
+    }
+    TASK.with_borrow_mut(|task| {
+        let parent = task.get_or_insert_with(Task::main);
+        let name = format!("{}.{}", parent.name, parent.started);
+        parent.started += 1;
+        Some(Task::named(Arc::from(name)))
+    })
+}
+
+/// A `parallel` call's range, named by its call and where it starts.
+pub(crate) fn range(call: Option<&Task>, from: usize) -> Option<Task> {
+    call.map(|call| Task::named(Arc::from(format!("{}.{from}", call.name))))
+}
+
+/// Swaps the task running on this thread with `task`: once to run it, and again to put back what
+/// was running. Nothing happens in a normal run.
+pub(crate) fn swap(task: &mut Option<Task>) {
+    if matches!(mode(), Mode::Off) {
+        return;
+    }
+    TASK.with_borrow_mut(|running| std::mem::swap(running, task));
+}
+
+/// How many workers the recorded run had, for a replay to have as many.
+#[cfg_attr(
+    not(any(test, feature = "threads")),
+    expect(dead_code, reason = "without threads there's no pool to size")
+)]
+pub(crate) fn workers() -> Option<usize> {
+    match mode() {
+        Mode::Replay(player) => player.lock().unwrap_or_else(PoisonError::into_inner).workers,
+        _ => None,
+    }
 }
 
 static MODE: OnceLock<Mode> = OnceLock::new();
@@ -56,14 +143,62 @@ fn mode() -> &'static Mode {
 }
 
 fn recording(path: &Path) -> std::io::Result<Mode> {
-    let file = std::fs::OpenOptions::new().append(true).open(path)?;
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    let workers = u64::try_from(crate::embed::workers_wanted()).unwrap_or(1);
+    file.write_all(&entry("", WORKERS, &workers.to_le_bytes()))?;
     Ok(Mode::Record(Mutex::new(file)))
 }
 
 fn playing(path: &Path) -> std::io::Result<Mode> {
     let log = std::fs::read(path)?;
-    let at = entries_start(&log).ok_or_else(|| std::io::Error::other("this isn't a recording"))?;
-    Ok(Mode::Replay(Mutex::new(Player { log, at })))
+    entries_start(&log).ok_or_else(|| std::io::Error::other("this isn't a recording"))?;
+    let player = player_of(&log).ok_or_else(|| std::io::Error::other("this recording is damaged"))?;
+    Ok(Mode::Replay(Mutex::new(player)))
+}
+
+/// A log's entries, each task's in a stream of its own: `None` if it's damaged.
+fn player_of(log: &[u8]) -> Option<Player> {
+    let named = log.starts_with(MAGIC);
+    let mut player = Player { streams: HashMap::new(), workers: None };
+    let mut reader = Entries { log, at: entries_start(log)? };
+    while reader.at < log.len() {
+        let task = if named { reader.name()? } else { "0".to_owned() };
+        let call = reader.name()?;
+        let payload = reader.payload()?;
+        if task.is_empty() && call == WORKERS {
+            let bytes: [u8; 8] = payload.as_slice().try_into().ok()?;
+            player.workers = usize::try_from(u64::from_le_bytes(bytes)).ok();
+            continue;
+        }
+        player.streams.entry(task).or_default().push_back((call, payload));
+    }
+    Some(player)
+}
+
+/// Reads a log's entries in turn.
+struct Entries<'l> {
+    log: &'l [u8],
+    at: usize,
+}
+
+impl Entries<'_> {
+    fn bytes(&mut self, count: usize) -> Option<&[u8]> {
+        let got = self.log.get(self.at..self.at.checked_add(count)?)?;
+        self.at += count;
+        Some(got)
+    }
+
+    /// A task's or a call's name, after its length as two bytes.
+    fn name(&mut self) -> Option<String> {
+        let length = usize::from(u16::from_le_bytes(self.bytes(2)?.try_into().ok()?));
+        Some(String::from_utf8_lossy(self.bytes(length)?).into_owned())
+    }
+
+    /// What a call gave, after its length as four bytes.
+    fn payload(&mut self) -> Option<Vec<u8>> {
+        let length = usize::try_from(u32::from_le_bytes(self.bytes(4)?.try_into().ok()?)).ok()?;
+        Some(self.bytes(length)?.to_vec())
+    }
 }
 
 /// Starts a log at `path` with `header`, for a run recorded into it.
@@ -82,7 +217,8 @@ pub fn header_of(path: &Path) -> std::io::Result<Vec<u8>> {
 }
 
 fn entries_start(log: &[u8]) -> Option<usize> {
-    if log.get(..MAGIC.len())? != MAGIC {
+    let magic = log.get(..MAGIC.len())?;
+    if magic != MAGIC && magic != MAGIC_UNNAMED {
         return None;
     }
     let length = u32::from_le_bytes(log.get(MAGIC.len()..MAGIC.len() + 4)?.try_into().ok()?);
@@ -106,18 +242,26 @@ pub fn replay_from(path: &Path) -> std::io::Result<()> {
 /// What a replay that's run out of its log, or ended before it, says: `None` when it hasn't.
 pub fn unfinished() -> Option<String> {
     let Mode::Replay(player) = mode() else { return None };
-    let player = player.lock().unwrap_or_else(PoisonError::into_inner);
-    let next = next_name(&player)?;
+    let (task, next) = left_over(&player.lock().unwrap_or_else(PoisonError::into_inner))?;
     Some(format!(
-        "this replay ended where its recording asked for `{next}` next, so it isn't the run that was \
-         recorded: something it depends on wasn't recorded, or the program has changed"
+        "this replay ended where its recording asked for `{next}` next{}, so it isn't the run that was \
+         recorded: something it depends on wasn't recorded, or the program has changed",
+        in_task(&task)
     ))
 }
 
-fn next_name(player: &Player) -> Option<String> {
-    let length = usize::from(u16::from_le_bytes(player.log.get(player.at..player.at + 2)?.try_into().ok()?));
-    let name = player.log.get(player.at + 2..player.at + 2 + length)?;
-    Some(String::from_utf8_lossy(name).into_owned())
+/// The first task, by name, with entries a replay didn't ask for, and the next of them: by name,
+/// so what a replay says is the same every time.
+fn left_over(player: &Player) -> Option<(String, String)> {
+    let mut left: Vec<_> = player.streams.iter().filter(|(_, stream)| !stream.is_empty()).collect();
+    left.sort_by_key(|(a, _)| *a);
+    let (task, stream) = left.first()?;
+    Some(((*task).clone(), stream.front()?.0.clone()))
+}
+
+/// Where a call was asked for, in what a replay says: nothing for `main`'s.
+fn in_task(task: &str) -> String {
+    if task == "0" { String::new() } else { format!(" in task {task}") }
 }
 
 /// The result of a capability's call named `call`: in a normal run what `live` gives, in a
@@ -136,7 +280,7 @@ pub(crate) fn value(
             let result = live();
             let mut payload = Vec::new();
             encode_result(&result, &mut payload);
-            log(file, &call.to_string(), &payload);
+            log(file, &running(), &call.to_string(), &payload);
             result
         }
         Mode::Replay(player) => {
@@ -155,7 +299,7 @@ pub(crate) fn word(call: &str, live: impl FnOnce() -> i64) -> Result<i64, String
         Mode::Off => Ok(live()),
         Mode::Record(file) => {
             let word = live();
-            log(file, call, &word.to_le_bytes());
+            log(file, &running(), call, &word.to_le_bytes());
             Ok(word)
         }
         Mode::Replay(player) => {
@@ -167,14 +311,16 @@ pub(crate) fn word(call: &str, live: impl FnOnce() -> i64) -> Result<i64, String
     }
 }
 
-fn log(file: &Mutex<std::fs::File>, call: &str, payload: &[u8]) {
+fn log(file: &Mutex<std::fs::File>, task: &str, call: &str, payload: &[u8]) {
     // Written at once, so a run that crashes or is killed leaves what it took.
-    let _ = file.lock().unwrap_or_else(PoisonError::into_inner).write_all(&entry(call, payload));
+    let _ = file.lock().unwrap_or_else(PoisonError::into_inner).write_all(&entry(task, call, payload));
 }
 
 /// One entry of a log.
-fn entry(call: &str, payload: &[u8]) -> Vec<u8> {
-    let mut entry = Vec::with_capacity(call.len() + payload.len() + 6);
+fn entry(task: &str, call: &str, payload: &[u8]) -> Vec<u8> {
+    let mut entry = Vec::with_capacity(task.len() + call.len() + payload.len() + 8);
+    entry.extend(u16::try_from(task.len()).unwrap_or(u16::MAX).to_le_bytes());
+    entry.extend(task.as_bytes());
     entry.extend(u16::try_from(call.len()).unwrap_or(u16::MAX).to_le_bytes());
     entry.extend(call.as_bytes());
     entry.extend(u32::try_from(payload.len()).unwrap_or(u32::MAX).to_le_bytes());
@@ -182,35 +328,26 @@ fn entry(call: &str, payload: &[u8]) -> Vec<u8> {
     entry
 }
 
-/// The logged result of the next call, which must be `call`.
+/// The logged result of the running task's next call, which must be `call`.
 fn replayed(player: &Mutex<Player>, call: &str) -> Result<Vec<u8>, String> {
+    let task = running();
     let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
-    let Some(next) = next_name(&player) else {
+    let stream = player.streams.get_mut(&*task);
+    let Some((next, _)) = stream.as_ref().and_then(|stream| stream.front()) else {
         return Err(format!(
-            "this replay asked for `{call}`, where its recording had nothing more, so it isn't the run that \
-             was recorded: something it depends on wasn't recorded, or the program has changed"
+            "this replay asked for `{call}`{}, where its recording had nothing more, so it isn't the run \
+             that was recorded: something it depends on wasn't recorded, or the program has changed",
+            in_task(&task)
         ));
     };
     if next != call {
         return Err(format!(
-            "this replay asked for `{call}`, where its recording asked for `{next}`, so it isn't the run that \
-             was recorded: something it depends on wasn't recorded, or the program has changed"
+            "this replay asked for `{call}`{}, where its recording asked for `{next}`, so it isn't the run \
+             that was recorded: something it depends on wasn't recorded, or the program has changed",
+            in_task(&task)
         ));
     }
-    let start = player.at + 2 + call.len();
-    let length = player
-        .log
-        .get(start..start + 4)
-        .and_then(|bytes| bytes.try_into().ok())
-        .map(u32::from_le_bytes)
-        .and_then(|length| usize::try_from(length).ok())
-        .ok_or_else(|| format!("this replay's recording of `{call}` is damaged"))?;
-    let payload = player
-        .log
-        .get(start + 4..start + 4 + length)
-        .ok_or_else(|| format!("this replay's recording of `{call}` is damaged"))?
-        .to_vec();
-    player.at = start + 4 + length;
+    let (_, payload) = stream.and_then(VecDeque::pop_front).unwrap_or_default();
     Ok(payload)
 }
 

@@ -228,6 +228,8 @@ pub(crate) struct Accounts {
     stop: Option<Arc<AtomicU8>>,
     /// How many crashes' cleanups it's in.
     cleaning: usize,
+    /// Which task it is, in a recording or a replay, for naming its entries.
+    replay: Option<crate::replay::Task>,
 }
 
 #[cfg(any(test, feature = "threads"))]
@@ -235,7 +237,7 @@ impl Accounts {
     /// A launched task's, reading what's `lent` to the code that launched it, if anything, and
     /// stopping when `stop` is set.
     pub(in crate::embed) fn for_task(lent: Option<Arc<Table>>, stop: Arc<AtomicU8>) -> Accounts {
-        Accounts { lent, stop: Some(stop), ..Accounts::default() }
+        Accounts { lent, stop: Some(stop), replay: crate::replay::child(), ..Accounts::default() }
     }
 
     /// Whether nothing's left in them: a range that ended has handed everything over.
@@ -262,6 +264,7 @@ pub(crate) fn swap_accounts(accounts: &mut Accounts) {
         std::mem::swap(&mut *state.output.0.borrow_mut(), &mut accounts.printed);
         STOP.with_borrow_mut(|stop| std::mem::swap(stop, &mut accounts.stop));
         accounts.cleaning = CLEANING.replace(accounts.cleaning);
+        crate::replay::swap(&mut accounts.replay);
         if !same {
             state.heap.texts.get_mut().clear();
             state.heap.set_cursor(super::heap::Cursor::default());

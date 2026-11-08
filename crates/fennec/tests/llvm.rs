@@ -476,6 +476,33 @@ fn same_as_the_interpreter_in_both_builds(name: &str, source: &str) -> std::io::
     Ok(())
 }
 
+/// What a program prints, built in dev and `--release` both, is `wanted`.
+fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join(name));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            wanted,
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Each kind of local passed by `mut` and used again, with what could be remembered about it
 /// before the call: where an index points, a length, a read held across the change, a dict's
 /// entry, how far a string's been read, what a loop or a closure holds, a number known to fit.
@@ -6727,6 +6754,34 @@ fn a_failure_out_of_a_lock_puts_back_what_it_changed() -> std::io::Result<()> {
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
+}
+
+/// Every way of changing what a lock holds is put back when the block fails: numbers of each size,
+/// strings, items, what's inside a field in place or in a list, dicts, a whole field, and what's
+/// changed through `ref`.
+#[test]
+fn a_failure_out_of_a_lock_puts_back_every_kind_of_write() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_failure_every_write",
+        include_str!("fixtures/lock_failure_every_write.fen"),
+        "kinds that kept a change: 0\n",
+    )
+}
+
+/// A `str` parameter written under a lock counts as a string where it's kept, on a worker too.
+#[test]
+fn a_str_parameter_written_under_a_lock() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "str_under_a_lock",
+        "struct Person:\n    name: str\n\ndef rename(person: shared Person, first: str, second: str):\n    lock person as ref current:\n        current.name = f\"{first}{second}\"\n\ndef main(stdout: Stdout):\n    shared person = Person(name=\"a\")\n    done = [at for at in parallel(range(2))]\n    rename(person, first=\"a name that is long enough \", second=\"to need a block of its own\")\n    lock person as held:\n        stdout.print(done.len(), held.name)\n",
+        "2 a name that is long enough to need a block of its own\n",
+    )
 }
 
 /// A crash inside `lock ... as ref` puts back everything the block changed, then gives back the

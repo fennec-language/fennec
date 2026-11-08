@@ -204,8 +204,13 @@ impl Emit<'_, '_, '_> {
 
     fn words_of(&self, kind: &Kind, at: u32, words: &mut Vec<(u32, Word)>) -> Result<(), String> {
         match kind {
-            Kind::Int | Kind::Float | Kind::Bool => words.push((at, Word::Plain)),
+            Kind::Int | Kind::Float | Kind::Bool | Kind::U64 | Kind::F32 => words.push((at, Word::Plain)),
             Kind::Str if self.headers() => words.push((at, Word::Header)),
+            // An enum holding nothing counted is only words.
+            Kind::Enum(_) if !self.holds_inline(kind) => {
+                let size = kind.size(self.module.layouts);
+                words.extend((0..size / 8).map(|word| (at + word * 8, Word::Plain)));
+            }
             Kind::Struct(id) => {
                 let names: Vec<String> =
                     self.layout_of(*id)?.fields.iter().map(|field| field.name.clone()).collect();
@@ -251,10 +256,12 @@ impl Emit<'_, '_, '_> {
         }
         let holds = if kind.counted() {
             true
-        } else if matches!(kind, Kind::Int | Kind::Float | Kind::Bool) {
+        } else if matches!(kind, Kind::Int | Kind::Float | Kind::Bool | Kind::U64 | Kind::F32) {
             false
         } else {
-            // A value of several words, some of which may hold blocks, isn't saved yet.
+            // A value of several words is saved a word at a time. The store then lets go of what
+            // it holds as usual, and the log has counts of its own.
+            let _ = self.save_words(block, place, kind);
             return false;
         };
         self.declare("declare void @fennec_lock_save(i64, i64, i64, i64) nounwind");
@@ -266,6 +273,90 @@ impl Emit<'_, '_, '_> {
             i64::from(holds)
         ));
         holds
+    }
+
+    /// Saves each word of the value at `place`, inside `block`, keeping a count of each block in it
+    /// for the log. A value that's an enum holding blocks is the one kind this can't save, as
+    /// which words hold them depends on its case: that's `Err`.
+    fn save_words(&mut self, block: &str, place: &str, kind: &Kind) -> Result<(), String> {
+        let mut words = Vec::new();
+        self.words_of(kind, 0, &mut words)?;
+        for (offset, word) in words {
+            let at = self.offset(place, offset);
+            let (from, index) = self.word_in(block, &at);
+            match word {
+                Word::Plain => {
+                    self.declare("declare void @fennec_lock_save(i64, i64, i64, i64) nounwind");
+                    let old = self.temp();
+                    self.line(&format!("{old} = load i64, ptr {at}"));
+                    self.line(&format!(
+                        "call void @fennec_lock_save(i64 {from}, i64 {index}, i64 {old}, i64 0)"
+                    ));
+                }
+                Word::Block => {
+                    self.declare("declare void @fennec_lock_save_ref(i64, i64, i64) nounwind");
+                    let old = self.temp();
+                    self.line(&format!("{old} = load i64, ptr {at}"));
+                    self.line(&format!(
+                        "call void @fennec_lock_save_ref(i64 {from}, i64 {index}, i64 {old})"
+                    ));
+                }
+                Word::Header => {
+                    self.declare("declare void @fennec_lock_save_text(i64, i64, i64, i64, i64) nounwind");
+                    let header = self.temp();
+                    self.line(&format!("{header} = load {}, ptr {at}", crate::headers::HEADER));
+                    // The log takes over a count of its block, so it has one of its own.
+                    self.retain_value(&header, &Kind::Str);
+                    let mut held = Vec::with_capacity(3);
+                    for part in 0..3_u32 {
+                        let (part_at, old) = (self.offset(&at, part * 8), self.temp());
+                        self.line(&format!("{old} = load i64, ptr {part_at}"));
+                        held.push(old);
+                    }
+                    let [w0, w1, w2] = [0, 1, 2].map(|part| held.get(part).cloned().unwrap_or_default());
+                    self.line(&format!(
+                        "call void @fennec_lock_save_text(i64 {from}, i64 {index}, i64 {w0}, i64 {w1}, i64 {w2})"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Before a write reaches along `path` from a local into what a `lock ... as ref` block's value
+    /// holds: the first block on the way is saved, so the write copies it and a crash or failure
+    /// can put the old one back, and if there's none, the words the path comes to.
+    pub(crate) fn save_along(&mut self, object: LocalId, path: &[String]) -> Result<(), String> {
+        let (handle, whole) = if self.saving.contains(&object.0) {
+            (object, path.to_vec())
+        } else if let Some((handle, mut along)) = self.read_from_saving(object) {
+            along.extend_from_slice(path);
+            (handle, along)
+        } else {
+            return Ok(());
+        };
+        let (cell, kind) = self.operand(&Operand::Local(handle))?;
+        if !matches!(kind, Kind::Boxed(_)) {
+            return Ok(());
+        }
+        let (mut place, mut kind) = (self.offset(&cell, FIELDS_OFFSET), kind);
+        for name in &whole {
+            let (offset, inner) = self.field(&kind, name)?;
+            place = self.offset(&place, offset);
+            kind = inner;
+            if kind.counted() {
+                self.declare("declare void @fennec_lock_save_ref(i64, i64, i64) nounwind");
+                let (from, index) = self.word_in(&cell, &place);
+                let old = self.temp();
+                self.line(&format!("{old} = load i64, ptr {place}"));
+                self.line(&format!("call void @fennec_lock_save_ref(i64 {from}, i64 {index}, i64 {old})"));
+                return Ok(());
+            }
+            if !matches!(kind, Kind::Struct(_)) {
+                break;
+            }
+        }
+        self.save_words(&cell, &place, &kind)
     }
 
     /// Before a builtin changes in place a value read from a field of a `lock ... as ref` block's

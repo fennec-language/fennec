@@ -265,6 +265,8 @@ fn a_channel_opens_through_its_generic_source() {
         stdout.print(drain(jobs.inbox()))\n";
     let mut module = fennec_syntax::parse(source).unwrap();
     fennec_check::check_and_resolve(&mut module).unwrap();
+    // What's written in checks as it stands, as a build checks it again once trimmed.
+    assert_eq!(fennec_check::check(&module).err(), None);
     let mut made = Vec::new();
     fennec_syntax::visit::exprs_mut(&mut module, &mut |expr| {
         if let fennec_syntax::ExprKind::Name(name) = &expr.kind

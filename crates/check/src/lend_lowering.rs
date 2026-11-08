@@ -26,6 +26,8 @@ pub(crate) struct Source {
     /// What it gives where it's called, `with T` as that call has it: the types its type
     /// parameters stand for there, as in `with Channel[Job]`.
     pub(crate) gives: crate::types::Type,
+    /// The names of its type parameters, a method's type's first.
+    pub(crate) generics: Vec<String>,
 }
 
 /// Writes in every `with` over a source in `module`, saying whether there were any.
@@ -282,7 +284,7 @@ impl Lowering<'_> {
         let mut body = def.body.clone();
         rename(&mut body, &renamed);
         // A generic source's body names its type parameters, which are this call's types here.
-        let given = given_types(def, &source.gives)?;
+        let given = given_types(def, &source.generics, &source.gives)?;
         if !given.is_empty() {
             retype(&mut written, &given);
             retype(&mut body, &given);
@@ -354,8 +356,12 @@ impl Lowering<'_> {
 /// gives, `with Channel[Job]`, against what the source says it gives, `with Channel[T]`: each as
 /// a written type and as it's written in brackets, `Channel[T](...)`. `None` when one can't be
 /// written.
-fn given_types(def: &FnDef, lent: &crate::types::Type) -> Option<BTreeMap<String, (TypeExpr, Expr)>> {
-    let names: Vec<&str> = def.generics.iter().map(|generic| generic.name.as_str()).collect();
+fn given_types(
+    def: &FnDef,
+    generics: &[String],
+    lent: &crate::types::Type,
+) -> Option<BTreeMap<String, (TypeExpr, Expr)>> {
+    let names: Vec<&str> = generics.iter().map(String::as_str).collect();
     let mut found = BTreeMap::new();
     if let Some(ret) = &def.ret {
         match_params(ret, lent, &names, &mut found);

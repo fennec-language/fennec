@@ -34,6 +34,7 @@ pub mod packed;
 mod pairs;
 mod place;
 mod prelude;
+pub mod replay;
 mod scan;
 mod scope;
 mod stdlib;

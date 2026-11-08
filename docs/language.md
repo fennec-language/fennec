@@ -579,6 +579,7 @@ def main(net: Net, fs: Fs, clock: Clock):
 ## Speed
 
 - Everyday builds stay fast, and release builds can take as long as they need.
+- `sum()` over floats, `dot()`, and `std.math`'s vector and matrix reductions add in one fixed pattern, 8 running totals combined pairwise, so they're fast, the same bits on every platform, and more accurate than adding left to right. Not built yet: today they add left to right. `math.fma(a, b, c)` rounds `a * b + c` once, the same everywhere. Not built yet.
 - `@hot` turns a hidden copy into a compile error, and the tracer shows where each copy happens and why. Built: anything that may allocate or copy in a `@hot` function, or in what it calls, is an error that says why, and so is any check native code keeps there, like an index it can't place inside its list. An overflow check the compiler can't prove away stays, as the safety net it is everywhere.
 
 ## Still to decide

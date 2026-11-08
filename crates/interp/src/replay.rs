@@ -21,8 +21,13 @@
 //!   how the threads interleave. How many workers the run had is logged first, and a replay has as
 //!   many, so its ranges are cut the same way.
 //!
-//! The order between tasks where one sees another's work, at a lock, a channel or a print, isn't
-//! recorded yet, so a run whose tasks do that can still diverge.
+//! - **Where tasks meet:** a channel is a place, named by the task that made it, as `0.2:c1`. What
+//!   each task did there, send, receive, listen or close, is logged in the order it took effect,
+//!   with what it came to, and a replay makes each task wait for its turn. So messages go to the
+//!   same receivers, and a receive that timed out times out again, without waiting.
+//!
+//! The order at `shared` values' locks isn't recorded yet, so a run whose tasks meet there can still
+//! diverge.
 //!
 //! The log is `FENREPL2`, the header's length as four bytes and the header, then the entries. Each
 //! entry is its task's name and its call's name, each with its length as two bytes, then what it
@@ -65,11 +70,13 @@ struct Player {
 pub(crate) struct Task {
     name: Arc<str>,
     started: u32,
+    /// How many places where tasks meet, like channels, it has made, to name the next one.
+    made: u32,
 }
 
 impl Task {
     fn named(name: Arc<str>) -> Task {
-        Task { name, started: 0 }
+        Task { name, started: 0, made: 0 }
     }
 
     /// The task that's `main`, and whatever runs on a thread outside any other task.
@@ -100,6 +107,83 @@ pub(crate) fn child() -> Option<Task> {
         parent.started += 1;
         Some(Task::named(Arc::from(name)))
     })
+}
+
+/// A name for a place where tasks meet that the running task makes, like a channel, in a recording
+/// or a replay: the task's name, a colon, `kind`, and how many it had made before, as `0.2:c1`.
+/// `None` in a normal run.
+pub(crate) fn place(kind: &str) -> Option<Arc<str>> {
+    if matches!(mode(), Mode::Off) {
+        return None;
+    }
+    TASK.with_borrow_mut(|task| {
+        let maker = task.get_or_insert_with(Task::main);
+        let name = format!("{}:{kind}{}", maker.name, maker.made);
+        maker.made += 1;
+        Some(Arc::from(name))
+    })
+}
+
+/// In a recording, logs that the running task did `what` at `place`, coming to `outcome`. It's
+/// called where what it did takes effect, with the place held, so the log has them in the order
+/// they happened.
+pub(crate) fn met(place: Option<&str>, what: &str, outcome: i64) {
+    let (Some(place), Mode::Record(file)) = (place, mode()) else { return };
+    log(file, place, &format!("{} {what}", running()), &outcome.to_le_bytes());
+}
+
+/// How long a replay waits for its turn at a place before saying it's diverged: long enough for
+/// any task the turn is waiting on to get there.
+const TURN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// In a replay, waits until it's the running task's turn to do `what` at `place`, and gives back
+/// what it came to in the recording. `Ok(None)` when this isn't a replay. A replay that asks for
+/// something the recording didn't do there has diverged, and says so.
+pub(crate) fn turn(place: Option<&str>, what: &str) -> Result<Option<i64>, String> {
+    let (Some(place), Mode::Replay(player)) = (place, mode()) else { return Ok(None) };
+    turn_in(player, (place, what), TURN_PATIENCE, crate::embed::make_way).map(Some)
+}
+
+/// Waits up to `patience` for the running task's turn to do `what` at `place` in `player`'s log,
+/// calling `make_way` between looks, and gives back what it came to.
+fn turn_in(
+    player: &Mutex<Player>,
+    (place, what): (&str, &str),
+    patience: std::time::Duration,
+    make_way: fn(),
+) -> Result<i64, String> {
+    let asked = format!("{} {what}", running());
+    let started = std::time::Instant::now();
+    loop {
+        let waiting_for = {
+            let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
+            let stream = player.streams.get_mut(place);
+            match stream.as_ref().and_then(|stream| stream.front()).map(|(next, _)| next.clone()) {
+                None => {
+                    return Err(format!(
+                        "this replay's task asked for `{asked}` at {place}, where its recording had nothing \
+                         more, so it isn't the run that was recorded: something it depends on wasn't \
+                         recorded, or the program has changed"
+                    ));
+                }
+                Some(next) if next == asked => {
+                    let (_, payload) = stream.and_then(VecDeque::pop_front).unwrap_or_default();
+                    let bytes: [u8; 8] =
+                        payload.try_into().map_err(|_| format!("this replay's {place} is damaged"))?;
+                    return Ok(i64::from_le_bytes(bytes));
+                }
+                Some(next) => next,
+            }
+        };
+        if started.elapsed() > patience {
+            return Err(format!(
+                "this replay asked for `{asked}` at {place}, where its recording has `{waiting_for}` next, \
+                 so it isn't the run that was recorded: something it depends on wasn't recorded, or the \
+                 program has changed"
+            ));
+        }
+        make_way();
+    }
 }
 
 /// A `parallel` call's range, named by its call and where it starts.
@@ -259,9 +343,16 @@ fn left_over(player: &Player) -> Option<(String, String)> {
     Some(((*task).clone(), stream.front()?.0.clone()))
 }
 
-/// Where a call was asked for, in what a replay says: nothing for `main`'s.
+/// Where a call was asked for, in what a replay says: nothing for `main`'s, and a place where
+/// tasks meet by its name.
 fn in_task(task: &str) -> String {
-    if task == "0" { String::new() } else { format!(" in task {task}") }
+    if task == "0" {
+        String::new()
+    } else if task.contains(':') {
+        format!(" at {task}")
+    } else {
+        format!(" in task {task}")
+    }
 }
 
 /// The result of a capability's call named `call`: in a normal run what `live` gives, in a

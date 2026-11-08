@@ -2045,6 +2045,8 @@ impl Emit<'_, '_, '_> {
                 self.random_builtin(dest, name, args, span)
             }
             parallel if parallel.starts_with("parallel.") => self.parallel_builtin(dest, name, args, span),
+            channel if channel.starts_with("intrinsics.channel_") => self.channel_builtin(dest, name, args),
+            "intrinsics.launch" | "intrinsics.launch_take" => self.launch_builtin(dest, name, args),
             // A list of a list's items is the list, shared until one changes.
             "parallel" | "list"
                 if args.len() == 1

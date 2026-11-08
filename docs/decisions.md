@@ -421,7 +421,7 @@ if result is Err(NotFound):
 This replaces the earlier rules that errors are inferred and `fails` is optional.
 *Why:* A reader sees at a glance how a function can fail and every line where it can leave. Swallowed errors are how reliable-looking programs go wrong.
 
-**An error carries notes, a `list[str]`, as Python's exceptions have since PEP 678.** Every `error Name:` type has `failure.add_note(text)`, which needs a `mut` place, and `failure.notes() -> list[str]`. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure is added to the block's as a note, in its printed form, so neither is lost. A failure that reaches `main` prints each note under it as `note: ...`. Notes are left out of `==`, hashing, printing and saving, and a failure with none costs one empty word. Not built yet: today an error has no `add_note`, and a failing `else:` replaces the block's failure.
+**An error carries notes, a `list[str]`, as Python's exceptions have since PEP 678.** Every `error Name:` type has `failure.add_note(text)`, which needs a `mut` place, and `failure.notes() -> list[str]`. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure is added to the block's as a note, in its printed form, so neither is lost. A failure that reaches `main` prints each note under it as `note: ...`. Notes are left out of `==`, hashing, printing and saving, and a failure with none costs one empty word. Built in the checker and the interpreter: `notes()`, `add_note(text)`, and a failed cleanup's failure as a note. Native code for notes isn't built yet.
 *Why:* When cleanup fails after a failure, the first failure is usually the cause and the second is the clue, so both have to reach the reader. Notes as text need no new kind of type.
 
 **There's no `exit()`.** `fail` out of `main` prints the failure to stderr and exits with code 1, and `main` may return an `int` as the exit code. Nothing else can end the process. Built.
@@ -1060,9 +1060,9 @@ def record(scores: shared Scores, name: str, points: int):
 **A `shared` value holds plain values and other `shared` values, never something borrowed from a `with`.** It can't hold one of its own type or form a cycle of types, directly or through other types and channels, so trees use `Table` and `Id`s. It can't store a function that captures a `shared` value. It's freed when its last holder lets go, with no cleanup code.
 *Why:* With no cycles nothing can leak, and with no resources inside, freeing it is only giving memory back.
 
-**`with launch(...)` runs a task until its block ends.** The arrow is the call you'd write anyway, and `launch`'s own options, `stop_after=` and `inbox_size=`, sit outside it. A parameter typed `Inbox[T]` makes `launch` create the channel, giving the task the receiving end and you the sending end. A task with no messages takes none: `with launch(() => autosave(rooms, fs, clock)):`. `launch` is only ever written as `with launch(...)`. This replaces `with launch(physics_loop) as physics:`, where the first parameter was the inbox. Not built yet.
+**`with launch(...)` runs a task until its block ends.** The arrow is the call you'd write anyway, and `launch`'s own options, `stop_after=` and `inbox_size=`, sit outside it. A parameter typed `Inbox[T]` makes `launch` create the channel, giving the task the receiving end and you the sending end. A task with no messages takes none: `with launch(() => autosave(rooms, fs, clock))?:`. `launch` is only ever written as `with launch(...)`, and the `?` on its line covers the task's failure and `Crashed`. This replaces `with launch(physics_loop) as physics:`, where the first parameter was the inbox. Checked; not run natively yet.
 ```fennec
-with launch((inbox) => audio(inbox, speakers), stop_after=5s) as sounds:
+with launch((inbox) => audio(inbox, speakers), stop_after=5s)? as sounds:
     sounds.send(.Play(name="jump", volume=0.8))?
 ```
 *Why:* `launch`'s options can never collide with the function's arguments, and the inbox is in the task's signature, not a convention about its first parameter.

@@ -2894,6 +2894,10 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
     capability
         // `u8(x)` stops the program when `x` doesn't fit.
         || fennec_check::Num::named(name).is_some_and(|num| !num.is_float())
+        // A stop can cut a channel's wait short.
+        || matches!(name, "intrinsics.channel_send" | "intrinsics.channel_take")
+        // A launch fails with no thread to run on, and a wait for a task can be cut short.
+        || matches!(name, "intrinsics.launch" | "intrinsics.launch_take")
         || is_socket_method(name)
         || name.starts_with("crypto.")
         || name.starts_with("compress.")

@@ -1,5 +1,7 @@
 //! The log's parts, apart from the process-wide mode a run sets once.
 
+use std::time::Duration;
+
 use super::*;
 
 fn round_trip(value: &Value) -> Value {
@@ -143,4 +145,45 @@ fn a_log_without_its_mark_isnt_a_recording() {
     let mut log = MAGIC.to_vec();
     log.extend(100_u32.to_le_bytes());
     assert_eq!(entries_start(&log), None, "its header runs past its end");
+}
+
+/// At a place where tasks meet, each task waits for its turn, so they go in the recorded order
+/// whatever order they arrive in, and each gets what it came to.
+#[test]
+fn tasks_take_their_turns_at_a_place_in_the_recorded_order() {
+    let player = Arc::new(player(&[
+        ("0:c0", "0.1 send", &0_i64.to_le_bytes()),
+        ("0:c0", "0.0 receive", &0_i64.to_le_bytes()),
+        ("0:c0", "0.0 receive", &2_i64.to_le_bytes()),
+    ]));
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let go = |name: &'static str, what: &'static str, times: usize| {
+        let (player, order) = (Arc::clone(&player), Arc::clone(&order));
+        std::thread::spawn(move || {
+            TASK.with_borrow_mut(|running| *running = Some(Task::named(Arc::from(name))));
+            for _ in 0..times {
+                let got =
+                    turn_in(&player, ("0:c0", what), Duration::from_secs(5), std::thread::yield_now).unwrap();
+                order.lock().unwrap().push((name, got));
+            }
+        })
+    };
+    // The receiver arrives first, and waits for the send that came first in the recording.
+    let receiving = go("0.0", "receive", 2);
+    std::thread::sleep(Duration::from_millis(20));
+    let sending = go("0.1", "send", 1);
+    receiving.join().unwrap();
+    sending.join().unwrap();
+    assert_eq!(*order.lock().unwrap(), [("0.1", 0), ("0.0", 0), ("0.0", 2)]);
+}
+
+/// A task asking for something the recording didn't do there has diverged.
+#[test]
+fn a_turn_the_recording_doesnt_have_is_a_divergence() {
+    let player = player(&[("0:c0", "0 send", &0_i64.to_le_bytes())]);
+    let why = turn_in(&player, ("0:c0", "close"), Duration::ZERO, std::thread::yield_now);
+    assert!(why.is_err_and(|why| why.contains("`0 close`") && why.contains("`0 send`")));
+    assert_eq!(turn_in(&player, ("0:c0", "send"), Duration::ZERO, std::thread::yield_now), Ok(0));
+    let why = turn_in(&player, ("0:c0", "send"), Duration::ZERO, std::thread::yield_now).unwrap_err();
+    assert!(why.contains("nothing more"), "{why}");
 }

@@ -2489,6 +2489,38 @@ fn sized_integers_from_outside_fail_cleanly() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `wrapping_` arithmetic goes round past either end, as the size's bits do, and `saturating_`
+/// stops at the nearest end, for each size; a u32's product past what an int holds included.
+#[test]
+fn sized_integers_wrap_or_saturate_when_asked() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "sized_wrapping",
+        "def main(stdout: Stdout):
+    a: u8 = 250
+    b: u8 = 10
+    stdout.print(a.wrapping_add(b), a.saturating_add(b), b.wrapping_sub(a), b.saturating_sub(a), a.wrapping_mul(b))
+    low: i8 = -128
+    stdout.print(low.wrapping_sub(1), low.saturating_sub(1), low.wrapping_mul(-1), low.saturating_mul(-1))
+    big: u32 = 4294967295
+    stdout.print(big.wrapping_mul(big), big.saturating_mul(2), big.wrapping_add(1), u32(65536).wrapping_mul(65536))
+    small: i32 = -2147483648
+    stdout.print(small.wrapping_mul(small), small.saturating_mul(small), small.wrapping_sub(1))
+    mut hash: u32 = 2166136261
+    for byte in [104, 105]:
+        hash = u32(int(hash) ^ byte).wrapping_mul(16777619)
+    stdout.print(hash)
+",
+    )?;
+    assert_eq!(
+        printed,
+        "4 255 16 0 196\n127 -128 -128 127\n1 4294967295 0 0\n0 2147483647 2147483647\n1748694682\n"
+    );
+    Ok(())
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -7204,6 +7236,173 @@ def main(net: Net, stdout: Stdout) fails NetError:
     std::fs::remove_dir_all(&dir)?;
     // 10,000 leaked rounds would be about 18 MB.
     assert!(after < before + 4_096, "the server grew from {before} KB to {after} KB");
+    Ok(())
+}
+
+/// What the next test builds: tasks that read an inbox, fail, crash, and are launched in a loop.
+const LAUNCHED: &str = "from std.concurrent import Closed, Crashed, Inbox, Timeout
+
+enum Sound:
+    Play(name: str, volume: float)
+    StopAll
+
+error Muted:
+    why: str
+
+def audio(inbox: Inbox[Sound], stdout: Stdout) fails Muted:
+    for sound in inbox:
+        match sound:
+            case .Play(name, volume):
+                if volume > 1.0: fail Muted(why=f\"{name} too loud\")
+                stdout.print(f\"play {name}\")
+            case .StopAll:
+                stdout.print(\"stop\")
+
+def tick(stdout: Stdout):
+    stdout.print(\"tick\")
+
+def crashes(xs: list[int], stdout: Stdout):
+    stdout.print(xs[5])
+
+def loud(stdout: Stdout) fails Closed | Crashed | Muted | Timeout:
+    with launch((inbox) => audio(inbox, stdout), inbox_size=4)? as sounds:
+        sounds.send(.Play(name=\"boom\", volume=3.0))?
+
+def crashing(stdout: Stdout) fails Closed | Crashed | Timeout:
+    xs = [1, 2]
+    with launch(() => crashes(xs, stdout))?:
+        pass
+
+def counts(inbox: Inbox[int], stdout: Stdout):
+    mut sum = 0
+    for n in inbox:
+        sum += n
+    stdout.print(\"sum\", sum)
+
+def main(stdout: Stdout) fails Closed | Crashed | Muted | Timeout:
+    with launch((inbox) => audio(inbox, stdout), stop_after=5s, inbox_size=4)? as sounds:
+        sounds.send(.Play(name=\"jump\", volume=0.8))?
+        sounds.send(.StopAll)?
+    with launch(() => tick(stdout))?:
+        pass
+    match loud(stdout):
+        case Ok(_):
+            stdout.print(\"ended\")
+        case Err(problem):
+            stdout.print(\"failed:\", problem)
+    match crashing(stdout):
+        case Ok(_):
+            stdout.print(\"ended\")
+        case Err(problem):
+            stdout.print(\"failed:\", problem)
+    for round in range(200):
+        with launch((inbox) => counts(inbox, stdout), inbox_size=8)? as numbers:
+            for k in range(10):
+                numbers.send(k * round)?
+";
+
+/// A launched task runs beside the block that launched it, on the runtime's threads, with what
+/// it was given copied for it: it reads its inbox until the block ends and closes it, and the
+/// block waits for it. Its failure passes up out of the block as itself, a crash as `Crashed`.
+#[test]
+fn launched_tasks_run_beside_their_block_natively() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("launched")?;
+    let program = dir.join("launched.fen");
+    std::fs::write(&program, LAUNCHED)?;
+    let executable = dir.join("launched");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    let printed = String::from_utf8_lossy(&ran.stdout);
+    let sums = (0..200).fold(String::new(), |mut sums, round| {
+        let _ = std::fmt::Write::write_fmt(&mut sums, format_args!("sum {}\n", 45 * round));
+        sums
+    });
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(
+        printed,
+        format!(
+            "play jump\nstop\ntick\nfailed: Muted(why=\"boom too loud\")\nfailed: Crashed(why=\"the task crashed\")\n{sums}"
+        )
+    );
+    Ok(())
+}
+
+/// A channel's messages cross it as the runtime holds them, of each kind: a number, a string long
+/// enough for a block, a struct held in place, and a list. A receive or a send that waits past its
+/// timeout fails as `Timeout`.
+#[test]
+fn channels_carry_each_kind_of_message_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "channels",
+        "from std.concurrent import Channel, Closed, Timeout
+from std.time import Duration
+
+struct Job:
+    name: str
+    weight: int
+
+def numbers(stdout: Stdout) fails Closed | Timeout:
+    with Channel[int].open(size=4) as ch:
+        ch.send(7)?
+        ch.send(8)?
+        stdout.print(ch.receive()?, ch.receive()?)
+
+def words(stdout: Stdout) fails Closed | Timeout:
+    with Channel[str].open(size=4) as ch:
+        ch.send(\"hi\")?
+        ch.send(\"a string long enough to live in a block of its own\")?
+        stdout.print(ch.receive()?, ch.receive()?.len())
+
+def jobs(stdout: Stdout) fails Closed | Timeout:
+    with Channel[Job].open(size=2) as ch:
+        ch.send(Job(name=\"first\", weight=3))?
+        got = ch.receive()?
+        stdout.print(got.name, got.weight)
+
+def lists(stdout: Stdout) fails Closed | Timeout:
+    with Channel[list[float]].open(size=1) as ch:
+        ch.send([1.5, 2.5])?
+        stdout.print(ch.receive()?)
+
+def waits(stdout: Stdout) fails Closed | Timeout:
+    with Channel[int].open(size=1) as ch:
+        match ch.receive(timeout=Duration(nanos=2_000_000)):
+            case Ok(n):
+                stdout.print(\"got\", n)
+            case Err(problem):
+                stdout.print(\"empty:\", problem)
+        ch.send(1)?
+        match ch.send(2, timeout=Duration(nanos=2_000_000)):
+            case Ok(_):
+                stdout.print(\"sent\")
+            case Err(problem):
+                stdout.print(\"full:\", problem)
+
+def main(stdout: Stdout) fails Closed | Timeout:
+    numbers(stdout)?
+    words(stdout)?
+    jobs(stdout)?
+    lists(stdout)?
+    waits(stdout)?
+",
+    )?;
+    assert_eq!(
+        printed,
+        "7 8\nhi 50\nfirst 3\n[1.5, 2.5]\nempty: Timeout(waited=Duration(nanos=2000000))\nfull: Timeout(waited=Duration(nanos=2000000))\n"
+    );
     Ok(())
 }
 

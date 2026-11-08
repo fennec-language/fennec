@@ -51,7 +51,12 @@ fn listening_to<T>(use_it: impl FnOnce(&mut HashMap<i64, i64>) -> T) -> T {
 pub extern "C" fn channel_new_every(size: i64) -> i64 {
     let size = usize::try_from(size).unwrap_or(1).max(1);
     let queue = Queue { every: Some(Listeners::default()), ..Queue::default() };
-    let channel = Channel { size, queue: Mutex::new(queue), changed: Condvar::new() };
+    let channel = Channel {
+        size,
+        replay: crate::replay::place("c"),
+        queue: Mutex::new(queue),
+        changed: Condvar::new(),
+    };
     let number = NEXT.fetch_add(1, Ordering::Relaxed);
     channels(|channels| channels.insert(number, Arc::new(channel)));
     number
@@ -62,7 +67,11 @@ pub extern "C" fn channel_new_every(size: i64) -> i64 {
 /// skips what's gone instead of failing. Of a work-queue channel, it gives back the channel's own.
 pub extern "C" fn channel_listen(channel: i64, drop_oldest: i64) -> i64 {
     let Some(found) = find(channel) else { return channel };
+    if let super::Turn::Gives(_) = super::replayed(&found, "listen") {
+        return channel;
+    }
     let mut queue = found.queue();
+    super::met(&found, "listen", DONE);
     let kept = u64::try_from(queue.messages.len()).unwrap_or(0);
     let Some(every) = &mut queue.every else { return channel };
     let number = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -108,6 +117,11 @@ pub(super) fn push(
 
 /// The next message for `listener`, as `channel_receive` gives back.
 pub(super) fn receive(channel: &Channel, listener: i64, timeout_ns: i64, value: &mut i64) -> i64 {
+    let timeout_ns = match super::replayed(channel, "receive") {
+        super::Turn::Live => timeout_ns,
+        super::Turn::Goes => -1,
+        super::Turn::Gives(code) => return code,
+    };
     let deadline = deadline(timeout_ns);
     loop {
         let mut queue = channel.queue();
@@ -139,16 +153,21 @@ pub(super) fn receive(channel: &Channel, listener: i64, timeout_ns: i64, value: 
                 Some(Message::Shared(address, table)) => Message::Shared(*address, Arc::clone(table)),
                 Some(Message::Block(..)) | None => return CLOSED,
             };
+            super::met(channel, "receive", DONE);
             drop(queue);
             *value = i64::try_from(super::taken(message)).unwrap_or(0);
             return DONE;
         }
         if queue.closed {
+            super::met(channel, "receive", CLOSED);
             return CLOSED;
         }
         match wait(channel, queue, deadline, Side::Receiving) {
             Waited::Again => {}
-            Waited::TimedOut => return TIMED_OUT,
+            Waited::TimedOut => {
+                super::met(channel, "receive", TIMED_OUT);
+                return TIMED_OUT;
+            }
             Waited::Stopped => return DONE,
         }
     }

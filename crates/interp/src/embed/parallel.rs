@@ -80,8 +80,9 @@ struct Run {
     made: Mutex<Vec<Box<[u64]>>>,
     /// How the ranges changed the owners of the calling thread's blocks, for it to apply.
     owners: Mutex<HashMap<u64, i64>>,
-    /// What the ranges printed on workers, each range's whole, as they finish.
-    printed: Mutex<Vec<u8>>,
+    /// What each range printed on a worker, whole, by where it starts: it's written in that order,
+    /// whatever order the ranges finished in, so what a call prints is the same every run.
+    printed: Mutex<Vec<(usize, Vec<u8>)>>,
     /// Says when the last range on the pool has finished, to the calling thread waiting for it.
     done: Latch,
     /// A reduction's result, when its ranges ran on the pool: None if it failed.
@@ -139,6 +140,14 @@ struct Node {
 }
 
 /// Where one half of a split reduction is.
+/// A range that's started on a thread: where what it makes starts, what was running before it, in a
+/// recording or a replay, and where it starts.
+struct Started {
+    since: usize,
+    was: Option<crate::replay::Task>,
+    from: usize,
+}
+
 #[derive(Clone, Copy)]
 enum Half {
     Running,
@@ -202,18 +211,18 @@ impl Run {
 
     /// Starts the range at `from` on this thread, giving back where what it makes starts, and what
     /// was running before it, in a recording or a replay, for `keep_made` to put back.
-    fn range_starts(&self, from: usize) -> (usize, Option<crate::replay::Task>) {
+    fn range_starts(&self, from: usize) -> Started {
         if super::threads::index() != self.caller {
             pool::range_starts(self.lent.read().unwrap_or_else(PoisonError::into_inner).clone());
         }
         let mut was = crate::replay::range(self.task.as_ref(), from);
         crate::replay::swap(&mut was);
-        (super::threads::made_so_far(), was)
+        Started { since: super::threads::made_so_far(), was, from }
     }
 
     /// Keeps what the range just run on this thread made since `since`, and how it changed the
     /// owners of the calling thread's blocks, when this thread is a worker.
-    fn keep_made(&self, (since, mut was): (usize, Option<crate::replay::Task>)) {
+    fn keep_made(&self, Started { since, mut was, from }: Started) {
         crate::replay::swap(&mut was);
         if super::threads::index() != self.caller {
             // Most ranges make nothing that outlives them, and every worker shares these locks.
@@ -223,7 +232,7 @@ impl Run {
             }
             let (changes, printed) = pool::range_ends();
             if !printed.is_empty() {
-                self.printed.lock().unwrap_or_else(PoisonError::into_inner).extend(printed);
+                self.printed.lock().unwrap_or_else(PoisonError::into_inner).push((from, printed));
             }
             if !changes.is_empty() {
                 let mut owners = self.owners.lock().unwrap_or_else(PoisonError::into_inner);
@@ -239,7 +248,9 @@ impl Run {
     fn finish(self) -> i64 {
         super::threads::adopt(self.made.into_inner().unwrap_or_else(PoisonError::into_inner));
         pool::settle(self.owners.into_inner().unwrap_or_else(PoisonError::into_inner));
-        super::print_handed_over(&self.printed.into_inner().unwrap_or_else(PoisonError::into_inner));
+        let mut printed = self.printed.into_inner().unwrap_or_else(PoisonError::into_inner);
+        printed.sort_by_key(|(from, _)| *from);
+        super::print_handed_over(&printed.into_iter().flat_map(|(_, text)| text).collect::<Vec<u8>>());
         // Theirs now, as what the ranges made is.
         let beaten = self.beaten.into_inner().unwrap_or_else(PoisonError::into_inner);
         if !beaten.is_empty() {
@@ -1114,6 +1125,29 @@ mod tests {
         heap::free(text);
         let (output, _, _) = finish();
         assert_eq!(String::from_utf8(output).unwrap(), TEXT.repeat(ranges));
+    }
+
+    extern "C" fn prints_where_it_starts(_env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
+        let text = with(|state| heap::text_address(state, &format!("{from},")));
+        strings::print(text);
+        heap::free(text);
+        0
+    }
+
+    /// What ranges print on workers comes out in the order they start in the list, whatever order
+    /// they finish in, so a call prints the same every run.
+    #[test]
+    fn what_ranges_print_comes_out_in_their_order() {
+        begin();
+        let list = lists::new(0, ITEMS);
+        assert_eq!(super::parallel_for(list, prints_where_it_starts, 0), 0);
+        heap::free(list);
+        let (output, _, _) = finish();
+        let starts: Vec<usize> =
+            String::from_utf8(output).unwrap().split_terminator(',').map(|n| n.parse().unwrap()).collect();
+        assert!(starts.len() > 1, "the call ran as one range: {starts:?}");
+        assert_eq!(starts.first(), Some(&0));
+        assert!(starts.is_sorted(), "{starts:?}");
     }
 
     #[test]

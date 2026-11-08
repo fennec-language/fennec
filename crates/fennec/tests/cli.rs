@@ -162,6 +162,34 @@ fn the_proof_program_checks_passes_its_tests_and_runs() {
     }
 }
 
+/// When a `with` block fails and its source's `else:` cleanup fails too, the cleanup's failure
+/// rides along as a note on the block's, which is the one that passes up, and `main` prints it
+/// under its failure. The cleanup runs once, where a whole line that's a `?` fails the block.
+/// Through the interpreter for now, since native code for notes is the LLVM lane's.
+#[test]
+fn a_failing_cleanup_is_a_note_on_the_blocks_failure() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-cleanup-notes", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("notes.fen");
+    std::fs::write(
+        &program,
+        "error DbError:\n    why: str\n\nstruct Log:\n    lines = list[str]()\n\n\
+         def transaction(ref log: Log) -> with int fails DbError:\n    lend 1 else:\n        \
+         log.lines.append(\"rolled back\")\n        fail DbError(why=\"lost the connection\")\n    pass\n\n\
+         def insert(n: int) fails DbError:\n    if n > 1: fail DbError(why=\"duplicate row\")\n\n\
+         def main(stdout: Stdout) fails DbError:\n    mut log = Log()\n    \
+         with transaction(ref log)? as tx:\n        insert(tx + 4)?\n    stdout.print(log.lines)\n",
+    )
+    .unwrap();
+    let path = program.to_string_lossy().into_owned();
+    let ran = fennec(&["run", "--interp", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let printed = text(&ran.stderr);
+    assert!(!ran.status.success());
+    assert!(printed.contains("`main` failed: DbError(why=\"duplicate row\")"), "{printed}");
+    assert_eq!(printed.matches("note: DbError(why=\"lost the connection\")").count(), 1, "{printed}");
+}
+
 #[test]
 fn run_hands_main_its_arguments_and_input() {
     let program = "examples/args_and_stdin.fen";

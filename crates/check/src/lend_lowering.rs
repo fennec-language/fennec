@@ -31,8 +31,12 @@ pub(crate) struct Source {
 }
 
 /// Writes in every `with` over a source in `module`, saying whether there were any.
-pub(crate) fn lower(module: &mut Module, sources: &BTreeMap<(u32, u32), Source>) -> bool {
-    if sources.is_empty() {
+pub(crate) fn lower(
+    module: &mut Module,
+    sources: &BTreeMap<(u32, u32), Source>,
+    launches: &BTreeMap<(u32, u32), crate::launch::Launch>,
+) -> bool {
+    if sources.is_empty() && launches.is_empty() {
         return false;
     }
     NEXT.with(|next| next.set(Span::PRELUDE - 1));
@@ -43,7 +47,7 @@ pub(crate) fn lower(module: &mut Module, sources: &BTreeMap<(u32, u32), Source>)
         }
     });
     COPIES.with(|copies| copies.set(lowest));
-    let mut lowering = Lowering { sources, made: 0, returns: Vec::new() };
+    let mut lowering = Lowering { sources, launches, made: 0, returns: Vec::new() };
     for item in &mut module.items {
         match item {
             Item::Function(def) => lowering.function(def),
@@ -147,6 +151,8 @@ fn discards_apart_again(module: &mut Module) {
 
 struct Lowering<'s> {
     sources: &'s BTreeMap<(u32, u32), Source>,
+    /// Each `with launch(...)`, which is written in as a source made for it.
+    launches: &'s BTreeMap<(u32, u32), crate::launch::Launch>,
     /// How many have been written in, which makes each one's hidden names its own.
     made: usize,
     /// The return type written for each function being walked, innermost last.
@@ -253,9 +259,14 @@ impl Lowering<'_> {
                         ExprKind::Try { value: inner, context: None } => inner.as_ref(),
                         _ => value,
                     };
-                    match self.sources.get(&(call.span.start, call.span.end)) {
-                        Some(source) => self.expand(call, names, block, &source.clone(), stmt.span),
-                        None => None,
+                    let at = (call.span.start, call.span.end);
+                    match (self.sources.get(&at).cloned(), self.launches.get(&at)) {
+                        (Some(source), _) => self.expand(call, names, block, &source, stmt.span),
+                        (None, Some(launch)) => crate::launch::source(launch).and_then(|source| {
+                            let options = crate::launch::options_only(call);
+                            self.expand(&options, names, block, &source, stmt.span)
+                        }),
+                        (None, None) => None,
                     }
                 }
                 _ => None,
@@ -312,7 +323,8 @@ impl Lowering<'_> {
         let held = match names {
             [held] => held.clone(),
             [first, ..] => WithName { name: format!("{}__split", first.name), ..first.clone() },
-            [] => return None,
+            // A `with` with no name still runs what's lent, as `with launch(() => work())?:` does.
+            [] => WithName { name: "unnamed__held".to_owned(), is_mut: false, span: at },
         };
         self.made += 1;
         let suffix = format!("__lend{}", self.made);
@@ -727,8 +739,24 @@ fn fail_through(body: &mut Vec<Stmt>, otherwise: &[Stmt]) {
         }
         let mut before = Vec::new();
         let mut made = 0;
-        hoist_tries(stmt, otherwise, &mut before, &mut made);
+        // A whole line that's a `?` becomes a `match` whose failing case runs the cleanup
+        // already: its cases aren't the program's, so they're not walked again.
+        if hoist_tries(stmt, otherwise, &mut before, &mut made) {
+            let count = before.len();
+            body.splice(at..at, before);
+            at += count + 1;
+            continue;
+        }
         match &mut stmt.kind {
+            StmtKind::Fail(error) if otherwise.iter().any(cleanup_fails) => {
+                // The block's failure, held to take the cleanup's as notes, fails it after.
+                let span = stmt.span;
+                let mut failing = failing_with(error.clone(), otherwise, span);
+                if let Some(last) = failing.pop() {
+                    stmt.kind = last.kind;
+                }
+                before.extend(failing);
+            }
             StmtKind::Fail(_) => {
                 before.extend(otherwise.iter().cloned());
             }
@@ -761,7 +789,7 @@ fn fail_through(body: &mut Vec<Stmt>, otherwise: &[Stmt]) {
 /// Takes each `?` in what a statement runs before its blocks out to its own `match` before it,
 /// which runs `otherwise` before failing: `x = f()?` becomes
 /// `got = match f(): case Ok(v): v / case Err(e): otherwise; fail e`, then `x = got`.
-fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made: &mut usize) {
+fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made: &mut usize) -> bool {
     // A whole line that's a `?`, like `file.write_text(text)?`, is a `match` statement: what it
     // gives back may be nothing, which no name holds.
     if let StmtKind::Expr(Expr { kind: ExprKind::Try { value, context: None }, .. }) = &held.kind {
@@ -782,6 +810,7 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
             span: here(span),
         };
         held.kind = StmtKind::Expr(matched);
+        return true;
     }
     loop {
         let mut taken = None;
@@ -815,7 +844,7 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
             }
             _ => {}
         }
-        let Some((got, value)) = taken else { return };
+        let Some((got, value)) = taken else { return false };
         *made += 1;
         let ok = arm("Ok", "value__try", vec![stmt_value(name("value__try", span))], span);
         let matched = Expr {
@@ -825,7 +854,7 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
         let mut hoisted = assign(&got, matched, false, None);
         // What was taken out may hold `?`s of its own, which go before it.
         let mut inner = Vec::new();
-        hoist_tries(&mut hoisted, otherwise, &mut inner, made);
+        let _ = hoist_tries(&mut hoisted, otherwise, &mut inner, made);
         before.extend(inner);
         before.push(hoisted);
     }
@@ -833,9 +862,100 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
 
 /// A hoisted `?`'s `Err` case: the `lend`'s `else:`, then the failure passes on.
 fn failed_arm(otherwise: &[Stmt], span: Span) -> MatchArm {
-    let mut failed: Vec<Stmt> = otherwise.to_vec();
-    failed.push(stmt(StmtKind::Fail(name("error__try", span)), span));
+    let failed = failing_with(name("error__try", span), otherwise, span);
     arm("Err", "error__try", failed, span)
+}
+
+/// The block failing with `error`, once `otherwise`, the `lend`'s `else:`, has run. A failure of
+/// the cleanup itself is added to the block's as a note, in its printed form, and the rest of the
+/// cleanup is skipped, so the block's own failure is the one that passes up.
+fn failing_with(error: Expr, otherwise: &[Stmt], span: Span) -> Vec<Stmt> {
+    if !otherwise.iter().any(cleanup_fails) {
+        let mut failed = otherwise.to_vec();
+        failed.push(stmt(StmtKind::Fail(error), span));
+        return failed;
+    }
+    let held = format!("failed__noted{}", here(span).start);
+    let mut cleanup = noted(otherwise, &held, span);
+    cleanup.push(stmt(StmtKind::Break, span));
+    let always = Expr { kind: ExprKind::Bool(true), span: here(span) };
+    vec![
+        assign(&held, error, true, None),
+        stmt(StmtKind::While { cond: always, body: cleanup }, span),
+        stmt(StmtKind::Fail(name(&held, span)), span),
+    ]
+}
+
+/// Whether a cleanup statement can fail: a `fail`, or a whole line that's a `?`, here or in an
+/// `if` inside it.
+fn cleanup_fails(each: &Stmt) -> bool {
+    match &each.kind {
+        StmtKind::Fail(_) | StmtKind::Expr(Expr { kind: ExprKind::Try { context: None, .. }, .. }) => true,
+        StmtKind::If { branches, otherwise } => {
+            branches.iter().any(|(_, body)| body.iter().any(cleanup_fails))
+                || otherwise.iter().flatten().any(cleanup_fails)
+        }
+        _ => false,
+    }
+}
+
+/// A cleanup with each of its failures added to `held` as a note, and the rest of it skipped by
+/// leaving the loop it's run in.
+fn noted(cleanup: &[Stmt], held: &str, span: Span) -> Vec<Stmt> {
+    let note = |failure: Expr| {
+        let text = Expr {
+            kind: ExprKind::FStr(vec![fennec_syntax::FStrPart::Expr { expr: failure, spec: None }]),
+            span: here(span),
+        };
+        let callee = Expr {
+            kind: ExprKind::Attr {
+                object: Box::new(name(held, span)),
+                name: "add_note".to_owned(),
+                optional: false,
+            },
+            span: here(span),
+        };
+        let args = vec![fennec_syntax::Arg { name: None, is_mut: false, value: text }];
+        stmt_value(Expr { kind: ExprKind::Call { callee: Box::new(callee), args }, span: here(span) })
+    };
+    let mut written = Vec::new();
+    for each in cleanup {
+        match &each.kind {
+            StmtKind::Fail(failure) => {
+                written.push(note(failure.clone()));
+                written.push(stmt(StmtKind::Break, span));
+            }
+            StmtKind::Expr(Expr { kind: ExprKind::Try { value, context: None }, .. }) => {
+                let ok = MatchArm {
+                    pattern: Pattern::Variant {
+                        name: "Ok".to_owned(),
+                        dotted: false,
+                        args: vec![Pattern::Wildcard],
+                        fields: Vec::new(),
+                    },
+                    guard: None,
+                    body: vec![stmt(StmtKind::Pass, span)],
+                    span: here(span),
+                };
+                let cut = format!("cleanup__failed{}", here(span).start);
+                let failed =
+                    arm("Err", &cut, vec![note(name(&cut, span)), stmt(StmtKind::Break, span)], span);
+                let matched = Expr {
+                    kind: ExprKind::Match { subject: value.clone(), arms: vec![ok, failed] },
+                    span: here(span),
+                };
+                written.push(stmt_value(matched));
+            }
+            StmtKind::If { branches, otherwise } => {
+                let branches =
+                    branches.iter().map(|(cond, body)| (cond.clone(), noted(body, held, span))).collect();
+                let otherwise = otherwise.as_ref().map(|body| noted(body, held, span));
+                written.push(Stmt { kind: StmtKind::If { branches, otherwise }, span: each.span });
+            }
+            _ => written.push(each.clone()),
+        }
+    }
+    written
 }
 
 fn stmt_value(value: Expr) -> Stmt {

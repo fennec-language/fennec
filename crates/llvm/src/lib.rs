@@ -36,6 +36,7 @@ mod builders;
 mod builtins;
 mod bytes;
 mod capabilities;
+mod channels;
 mod checks_left;
 mod closures;
 mod conversions;

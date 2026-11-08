@@ -300,6 +300,7 @@ impl Type {
         match self {
             Type::Int => Some("int"),
             Type::Float => Some("float"),
+            Type::Sized(num) => Some(num.name()),
             Type::Bool => Some("bool"),
             Type::Bytes => Some("bytes"),
             Type::Str | Type::LiteralStr => Some("str"),

@@ -960,7 +960,8 @@ pub(super) fn held_addresses(element: &Element, words: &[u64], found: &mut Vec<u
 }
 
 /// Where among its words a block holds the addresses of others, as `children_into` finds them, for
-/// a copy of it to hold its own. An interpreter's value or a generator can't be copied like that.
+/// a copy of it to hold its own. An interpreter's value or a generator can't be copied like that,
+/// but a native closure can.
 pub(super) fn child_places(state: &State, block: &[u64], found: &mut Vec<usize>) -> Result<(), Diagnostic> {
     let Some(shape) = shape_word(block) else { return Ok(()) };
     if shape == CAPABILITY_SHAPE {
@@ -999,8 +1000,14 @@ pub(super) fn child_places(state: &State, block: &[u64], found: &mut Vec<usize>)
         return Ok(());
     }
     let Some(element) = shape_of(state, block) else { return Ok(()) };
-    if matches!(element.as_ref(), Element::Struct { fields, .. } if fields.iter().any(|(name, _)| name.starts_with('\0')))
-    {
+    // A generator's block is in the middle of running, so it can't be copied. A closure's can: its
+    // code is the same for every thread, and what it captured copies as any field does. An
+    // error's notes are an ordinary field too.
+    let hidden = |fields: &[(Rc<str>, Element)]| {
+        fields.iter().any(|(name, _)| name.starts_with('\0') && &**name != "\0notes")
+    };
+    let closure = |fields: &[(Rc<str>, Element)]| fields.first().is_some_and(|(name, _)| &**name == "\0code");
+    if matches!(element.as_ref(), Element::Struct { fields, .. } if hidden(fields) && !closure(fields)) {
         return Err(not_copied());
     }
     let mut from = HEADER_WORDS;

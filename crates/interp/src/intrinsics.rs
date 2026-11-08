@@ -24,6 +24,11 @@ pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagn
             Err(Diagnostic::new("the interpreter can't run channels", span)
                 .with_help("build it natively: `fennec run` without `--interp`"))
         }
+        // So do launched tasks.
+        ("launch" | "launch_end", _) => {
+            Err(Diagnostic::new("the interpreter can't run launched tasks", span)
+                .with_help("build it natively: `fennec run` without `--interp`"))
+        }
         ("int_add" | "float_add", _) => binary(BinOp::Add),
         ("int_sub" | "float_sub", _) => binary(BinOp::Sub),
         ("int_mul" | "float_mul", _) => binary(BinOp::Mul),

@@ -235,7 +235,8 @@ The end of a `with` block is where what it lent finishes: a file closes and a tr
 - `with` lends you something for the length of a block, then takes it back. It's the only way to open files, sockets, servers and transactions. Built for sources a program writes, below, and for files; sockets move to them next.
 - What it lends can't escape the block: it can't be returned, stored outside it or put in a `shared`. A second name for it inside the block is fine.
 - A struct holding something borrowed is borrowed too, so a wrapper like `LineProtocol(conn=conn)` works inside the block and can't leak out.
-- `with conn.split() as reader, writer:` gives a connection's read and write sides, for one task reading while another writes.
+- Several handles in one `with` open left to right and finish innermost first, as one `with` inside another. If one fails to open, the ones already open run their `else:`. Built.
+- `with conn.split() as reader, writer:` gives a connection's read and write sides, for one task reading while another writes. Several names split what a source lends as a tuple, `-> with (Reader, Writer)`. Built for sources; connections move to them with sockets.
 - `with` never locks.
 
 Writing your own takes `-> with T` and one `lend`, outside any loop. Setup goes above it and cleanup below. Built:
@@ -263,7 +264,7 @@ with fs.create("save.dat")? as file:
 `fs.create` syncs the file to disk before putting it in place, and `file.sync()?` syncs at any other point. Not built yet.
 
 - Code after `lend` runs when the caller's block succeeds, and it may fail. That failure becomes the `with` statement's failure. `return`, `break` and `continue` in the caller count as success, so an early `return` still runs the cleanup, and a failing cleanup makes the function fail. Built.
-- `lend x else:` runs when the caller's block fails or crashes, and the block's own failure is the one that passes up. If the cleanup in `else:` fails too, its failure is attached to the block's as a note. With several handles, every one runs its cleanup, innermost first. Running `else:` for a failed block is built. Running it on a crash, the note, and several handles in one `with` aren't built yet: today a failing `else:` replaces the block's failure.
+- `lend x else:` runs when the caller's block fails or crashes, and the block's own failure is the one that passes up. If the cleanup in `else:` fails too, its failure is attached to the block's as a note. With several handles, every one runs its cleanup, innermost first. Running `else:` for a failed block is built, and so are several handles. Running it on a crash, and the note, aren't built yet: today a failing `else:` replaces the block's failure.
 - There's nothing for the caller to finish by hand, like a `commit()` or a `close()`, and nothing to forget.
 - A source can't `lend` while it holds a lock it took. Opening a file inside a lock is fine.
 - A generator can `lend` each item, closed when that round of the loop ends: `def clients(server: Server) -> Iterator[with Connection]:`. That's how `for conn in parallel(server):` works, with each connection lent to its own round's task. It's a plain loop, not `for ref`, and a connection's methods take `self`.

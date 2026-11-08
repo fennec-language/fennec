@@ -53,6 +53,71 @@ pub(crate) fn lower(module: &mut Module, sources: &BTreeMap<(u32, u32), Source>)
     lowering.made > 0
 }
 
+/// Writes each `with` that opens several handles, `with a()? as x, b()? as y:`, as one inside
+/// another, saying whether there were any. Then they finish innermost first, and when one fails
+/// to open, the ones opened before it run their `else:`, as their blocks failed.
+pub(crate) fn nest(module: &mut Module, opened_apart: &std::collections::BTreeSet<(u32, u32)>) -> bool {
+    if opened_apart.is_empty() {
+        return false;
+    }
+    let mut nested = false;
+    fennec_syntax::visit::functions_mut(module, &mut |def| nest_in(&mut def.body, opened_apart, &mut nested));
+    for item in &mut module.items {
+        if let Item::Test(test) = item {
+            nest_in(&mut test.body, opened_apart, &mut nested);
+        }
+    }
+    // A `match` case holds statements too. Nesting one twice finds nothing the second time.
+    fennec_syntax::visit::exprs_mut(module, &mut |expr| {
+        if let ExprKind::Match { arms, .. } = &mut expr.kind {
+            for arm in arms {
+                nest_in(&mut arm.body, opened_apart, &mut nested);
+            }
+        }
+    });
+    nested
+}
+
+fn nest_in(body: &mut [Stmt], opened_apart: &std::collections::BTreeSet<(u32, u32)>, nested: &mut bool) {
+    for each in body {
+        match &mut each.kind {
+            StmtKind::If { branches, otherwise } => {
+                for (_, body) in branches {
+                    nest_in(body, opened_apart, nested);
+                }
+                if let Some(body) = otherwise {
+                    nest_in(body, opened_apart, nested);
+                }
+            }
+            StmtKind::Lend { otherwise, .. } => nest_in(otherwise, opened_apart, nested),
+            StmtKind::Def(def) => nest_in(&mut def.body, opened_apart, nested),
+            StmtKind::With { value, names, body, lock: false } => {
+                if opened_apart.contains(&(value.span.start, value.span.end))
+                    && let ExprKind::Tuple(items) = &value.kind
+                    && items.len() == names.len()
+                    && let Some(first) = items.first().cloned()
+                {
+                    let mut inner = std::mem::take(body);
+                    for (item, held) in items.iter().zip(names.iter()).skip(1).rev() {
+                        let names = vec![held.clone()];
+                        let kind = StmtKind::With { value: item.clone(), names, body: inner, lock: false };
+                        inner = vec![Stmt { kind, span: each.span }];
+                    }
+                    names.truncate(1);
+                    *value = first;
+                    *body = inner;
+                    *nested = true;
+                }
+                nest_in(body, opened_apart, nested);
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                nest_in(body, opened_apart, nested);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Gives each `_` its own name again: a source's `else:` is written in at each place the block
 /// can fail, and each copy repeats its `_ = ...`. No one can write the name, so nothing reads it.
 fn discards_apart_again(module: &mut Module) {
@@ -194,8 +259,14 @@ impl Lowering<'_> {
         source: &Source,
         at: Span,
     ) -> Option<Vec<Stmt>> {
-        let [held] = names else { return None };
         let ExprKind::Call { callee, args } = &call.kind else { return None };
+        // Several names split what the source lends, a tuple, as `with conn.split() as r, w:`.
+        let split = names.len() > 1;
+        let held = match names {
+            [held] => held.clone(),
+            [first, ..] => WithName { name: format!("{}__split", first.name), ..first.clone() },
+            [] => return None,
+        };
         self.made += 1;
         let suffix = format!("__lend{}", self.made);
         let hidden = |name: &str| format!("{name}{suffix}");
@@ -221,7 +292,20 @@ impl Lowering<'_> {
                 ExprKind::Name(place) => (place.clone(), None),
                 _ => (lent_as.clone(), Some(assign(&lent_as, value, true, None))),
             };
-            rename(&mut block, &[(held.name.clone(), place)]);
+            if split {
+                let targets = names.iter().map(|named| name(&named.name, named.span)).collect();
+                let target = Expr { kind: ExprKind::Tuple(targets), span: here(at) };
+                let kind = StmtKind::Assign {
+                    target,
+                    op: None,
+                    value: name(&place, at),
+                    declare_mut: true,
+                    ty: None,
+                };
+                block.insert(0, stmt(kind, at));
+            } else {
+                rename(&mut block, &[(held.name.clone(), place)]);
+            }
             if !otherwise.is_empty() {
                 fail_through(&mut block, otherwise);
             }

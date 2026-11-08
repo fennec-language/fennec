@@ -24,6 +24,14 @@ extend list[T]:
             low += 1
             high -= 1
 
+    ## Swaps the items at `i` and `j`, in place, counting from the end when either is negative, as
+    ## `self[at]` does. Each has to be there. It's how two items of one list change places, since
+    ## `f(ref xs[i], ref xs[j])` is refused: `i` and `j` may be the same.
+    def swap(ref self, i: int, j: int):
+        held = self[i]
+        self[i] = self[j]
+        self[j] = held
+
 ## Methods for lists whose items can be compared with `==`.
 extend list[T: Eq]:
     ## How many items equal `item`.

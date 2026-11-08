@@ -129,19 +129,17 @@ fn a_kits_tests_run_first_even_in_files_main_doesnt_import() {
 }
 
 #[test]
-fn the_interpreter_and_the_benchmarks_flag_dont_run_tests() {
+fn no_test_doesnt_run_tests() {
     let dir = scratch("flags").unwrap();
     let (home, game) = (dir.join("home"), dir.join("game.fen"));
     std::fs::write(&game, TESTED.replace("x * 2", "x * 3")).unwrap();
-    for flag in ["--interp", "--no-test"] {
-        let ran = crate::executables::fennec_command()
-            .args(["run", flag])
-            .arg(&game)
-            .env("FENNEC_HOME", &home)
-            .output()
-            .unwrap();
-        assert_eq!(stdout(&ran), "63\n", "{flag}");
-    }
+    let ran = crate::executables::fennec_command()
+        .args(["run", "--no-test"])
+        .arg(&game)
+        .env("FENNEC_HOME", &home)
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&ran), "63\n", "{}", String::from_utf8_lossy(&ran.stderr));
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -251,8 +249,7 @@ fn an_edit_to_an_embedded_file_runs_the_tests_before_a_run_again() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// A parameter named like a constant is the parameter inside its function, in every engine. Native
-/// code writes constants out where they're used, which mustn't reach a name that only looks like
+/// A parameter named like a constant is the parameter inside its function. Native code writes constants out where they're used, which mustn't reach a name that only looks like
 /// one. The linter's `naming-case` keeps examples from doing this, so it's checked here.
 #[test]
 fn a_parameter_named_like_a_constant_is_the_parameter() {
@@ -261,14 +258,12 @@ fn a_parameter_named_like_a_constant_is_the_parameter() {
     let dir = scratch("shadowed_constant").unwrap();
     let game = dir.join("game.fen");
     std::fs::write(&game, source).unwrap();
-    for engine in ["--no-test", "--interp"] {
-        let ran = crate::executables::fennec_command()
-            .args(["run", engine])
-            .arg(&game)
-            .env("FENNEC_HOME", dir.join("home"))
-            .output()
-            .unwrap();
-        assert_eq!(stdout(&ran), "2 10\n", "{engine}");
-    }
+    let ran = crate::executables::fennec_command()
+        .args(["run", "--no-test"])
+        .arg(&game)
+        .env("FENNEC_HOME", dir.join("home"))
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&ran), "2 10\n", "{}", String::from_utf8_lossy(&ran.stderr));
     std::fs::remove_dir_all(&dir).unwrap();
 }

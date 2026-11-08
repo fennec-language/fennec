@@ -29,6 +29,7 @@ mod imports;
 mod index;
 mod infer;
 mod keys;
+mod launch;
 mod lend;
 mod lend_lowering;
 mod lock;
@@ -441,8 +442,10 @@ pub fn interpreter_refuses(signatures: &Signatures) -> Option<Diagnostic> {
         matches!(ty, Type::Sized(_)) || ty.children().into_iter().any(holds)
     }
     let found = signatures.types.functions.values().flat_map(|body| &body.exprs);
-    let ((start, end), ty) =
-        found.filter(|(_, ty)| holds(ty)).min_by_key(|((start, end), _)| (*start, *end))?;
+    let ((start, end), ty) = found
+        // The standard library's own code, as the sized numbers' functions, isn't the program's.
+        .filter(|((start, end), ty)| !Span { start: *start, end: *end }.in_prelude() && holds(ty))
+        .min_by_key(|((start, end), _)| (*start, *end))?;
     let span = Span { start: *start, end: *end };
     Some(
         Diagnostic::new(format!("the interpreter can't run sized numbers like {ty}"), span)
@@ -466,8 +469,10 @@ fn sized_value(signatures: &Signatures) -> Option<Diagnostic> {
         matches!(ty, Type::Sized(Num::U64 | Num::F32)) || ty.children().into_iter().any(holds)
     }
     let found = signatures.types.functions.values().flat_map(|body| &body.exprs);
-    let ((start, end), ty) =
-        found.filter(|(_, ty)| holds(ty)).min_by_key(|((start, end), _)| (*start, *end))?;
+    let ((start, end), ty) = found
+        // The standard library's own code, as the sized numbers' functions, isn't the program's.
+        .filter(|((start, end), ty)| !Span { start: *start, end: *end }.in_prelude() && holds(ty))
+        .min_by_key(|((start, end), _)| (*start, *end))?;
     let span = Span { start: *start, end: *end };
     Some(
         Diagnostic::new(format!("sized numbers like {ty} aren't built yet past the checker"), span)
@@ -571,7 +576,7 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
     // again, so the signatures and types given back are those of what runs.
     let nested = lend_lowering::nest(module, &checked.opened_apart);
-    let sources_written = lend_lowering::lower(module, &checked.sources);
+    let sources_written = lend_lowering::lower(module, &checked.sources, &checked.launches);
     let counted = enumerate_lowering::lower(module);
     let tuples = tuple_lowering::lower(module, &checked.saved_types);
     if (lock_lowering::lower(module, &checked.shared_values)
@@ -629,6 +634,8 @@ pub struct Checked {
     sources: BTreeMap<(u32, u32), lend_lowering::Source>,
     /// The `with`s that open several handles, which lowering nests one inside another.
     opened_apart: BTreeSet<(u32, u32)>,
+    /// Each `with launch(...)`, which lowering writes in as a source.
+    launches: BTreeMap<(u32, u32), launch::Launch>,
     /// The format calls native code can make in Fennec, by the call's span.
     native_formats: BTreeMap<(u32, u32), String>,
     /// The `json=` values of HTTP calls native code writes in Fennec, by the value's span.

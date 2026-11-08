@@ -183,6 +183,10 @@ impl FnCx<'_> {
         if matches!(name, "len" | "abs") || builtins::is_builtin(name) {
             return Some(self.call_global(name, callee, args, span));
         }
+        // `with launch(...)`, the one place `launch` is written.
+        if name == "launch" {
+            return Some(self.launch(args, span));
+        }
         None
     }
 
@@ -238,13 +242,26 @@ impl FnCx<'_> {
         given: (&[Arg], &[Type]),
         span: Span,
     ) -> Type {
+        self.call_through(key, name, given, 0, span)
+    }
+
+    /// Calls a function, as `call_with_types` does, where the first `through` types written are
+    /// those of the type a static method is called through: `Job` in `Channel[Job].open(size=4)`.
+    fn call_through(
+        &mut self,
+        key: &str,
+        name: &str,
+        given: (&[Arg], &[Type]),
+        through: usize,
+        span: Span,
+    ) -> Type {
         let (args, types) = given;
         let Some(signature) = self.checker.signature(key) else {
             self.ignore_args(args);
             return Type::Unknown;
         };
         let entry = self.checker.program.functions.get(key);
-        let own = entry.map_or(types.len(), |entry| written_generics(&entry.def.generics));
+        let own = entry.map_or(types.len(), |entry| written_generics(&entry.def.generics) + through);
         if !self.takes_types(name, own, types, span) {
             self.ignore_args(args);
             return Type::Unknown;
@@ -404,6 +421,37 @@ impl FnCx<'_> {
     ) -> Type {
         if let Some(type_name) = self.as_type_name(object) {
             return self.static_call(type_name, method, args, span);
+        }
+        // `u8.from(x)`: a function on a sized number type, from the standard library.
+        if let ExprKind::Name(size) = &object.kind
+            && self.lookup(size).is_none()
+            && crate::types::Num::named(size).is_some()
+        {
+            let size = size.clone();
+            return self.static_call(&size, method, args, span);
+        }
+        // `Channel[Job].open(size=4)`: a static method, with the type's parameters written.
+        if let ExprKind::Index { object: written, index } = &object.kind
+            && let Some(type_name) = self.as_type_name(written)
+            && self.checker.program.type_info(type_name).is_some()
+        {
+            // A static method's type parameters start with its type's, so they're given first.
+            let types = self.types_in(index);
+            let through = self.checker.program.type_info(type_name).map_or(0, |info| info.def.generics.len());
+            if types.len() != through {
+                let takes = if through == 1 { "1 type".to_owned() } else { format!("{through} types") };
+                let message =
+                    format!("`{type_name}` takes {takes} in brackets, but this gives {}", types.len());
+                self.error(Diagnostic::new(message, index.span));
+                self.ignore_args(args);
+                return Type::Unknown;
+            }
+            return match self.checker.program.method(type_name, method) {
+                Some((key, entry)) if !entry.def.takes_self() => {
+                    self.call_through(&key, method, (args, &types), through, span)
+                }
+                _ => self.static_call(type_name, method, args, span),
+            };
         }
         if let ExprKind::Name(param) = &object.kind
             && self.lookup(param).is_none()

@@ -1,0 +1,103 @@
+## `std.concurrent`: channels between tasks, and the ends of one that `with launch(...)` hands out.
+##
+## ```fennec
+## from std.concurrent import Channel
+##
+## with Channel[str].open(size=64) as jobs:
+##     jobs.send("first")?
+##     job = jobs.receive()?
+## ```
+##
+## A channel holds at most its `size` messages, so `send` waits while it's full, and `receive`
+## waits while it's empty. Both take `timeout=`. A channel closes when its `with` block ends,
+## and anything still waiting on it then wakes as `Closed`.
+from std.intrinsics import channel_close, channel_free, channel_new, channel_receive, channel_send
+from std.time import Duration
+
+## A `send` on a channel that's closed, or a `receive` on one that's closed and empty.
+export error Closed:
+    pass
+
+## A `send` or `receive` that waited its `timeout=` and got nowhere.
+export error Timeout:
+    waited: Duration
+
+## A launched task that crashed, as its `with launch` block gives back where it ends.
+export error Crashed:
+    why: str
+
+## A channel for messages of type `T`, which every task inside its `with` block can send on and
+## receive from. Hand one end to a task with `sender()` or `inbox()`.
+export struct Channel[T]:
+    _channel: int
+
+    ## A channel holding up to `size` messages, lent for a `with` block, and closed when it ends.
+    def open(size: int) -> with Channel[T]:
+        made = Channel[T](_channel=channel_new(size))
+        lend made else:
+            channel_close(made._channel)
+            channel_free(made._channel)
+        channel_close(made._channel)
+        channel_free(made._channel)
+
+    ## Sends `message`, waiting while the channel is full, for at most `timeout` when it's given.
+    def send(self, message: T, timeout: Duration? = None) fails Closed | Timeout:
+        sent(channel_send[T](self._channel, message, nanos_of(timeout)), timeout)?
+
+    ## The next message, waiting while the channel is empty, for at most `timeout` when it's
+    ## given.
+    def receive(self, timeout: Duration? = None) -> T fails Closed | Timeout:
+        received[T](self._channel, timeout)?
+
+    ## Each message until the channel is closed and empty, as `for message in channel`.
+    def iter(self) -> Iterator[T]:
+        while True:
+            message = received[T](self._channel, None) else return
+            yield message
+
+    ## The sending end, to hand to a task.
+    def sender(self) -> Sender[T]:
+        Sender[T](_channel=self._channel)
+
+    ## The receiving end, to hand to a task.
+    def inbox(self) -> Inbox[T]:
+        Inbox[T](_channel=self._channel)
+
+## The receiving end of a channel: a task's inbox, as `with launch` makes it.
+export struct Inbox[T]:
+    _channel: int
+
+    ## The next message, waiting while there's none, for at most `timeout` when it's given.
+    def receive(self, timeout: Duration? = None) -> T fails Closed | Timeout:
+        received[T](self._channel, timeout)?
+
+    ## Each message until the channel is closed and empty, as `for message in inbox`.
+    def iter(self) -> Iterator[T]:
+        while True:
+            message = received[T](self._channel, None) else return
+            yield message
+
+## The sending end of a channel, as `with launch(...) as sender:` gives it.
+export struct Sender[T]:
+    _channel: int
+
+    ## Sends `message`, waiting while the channel is full, for at most `timeout` when it's given.
+    def send(self, message: T, timeout: Duration? = None) fails Closed | Timeout:
+        sent(channel_send[T](self._channel, message, nanos_of(timeout)), timeout)?
+
+## How long to wait, in nanoseconds, as the runtime takes it: -1 for as long as it takes.
+def nanos_of(timeout: Duration?) -> int:
+    if timeout is None: return -1
+    timeout.nanos
+
+## What a send's answer means: 0 sent, 1 closed, 2 timed out.
+def sent(answer: int, timeout: Duration?) fails Closed | Timeout:
+    if answer == 1: fail Closed()
+    if answer == 2: fail Timeout(waited=timeout else Duration())
+
+## The next message on channel `channel`, or why there isn't one.
+def received[T](channel: int, timeout: Duration?) -> T fails Closed | Timeout:
+    mut why = 0
+    got = channel_receive[T](channel, nanos_of(timeout), ref why)
+    if why == 2: fail Timeout(waited=timeout else Duration())
+    got else fail Closed()

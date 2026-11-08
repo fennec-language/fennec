@@ -169,9 +169,11 @@ impl FnCx<'_> {
                 .is_some_and(|info| info.def.methods.iter().any(|def| def.name == method))
     }
 
-    /// Reports a use of `owner`'s `_` field or method from outside it.
+    /// Reports a use of `owner`'s `_` field or method from outside it. One written in the
+    /// standard library's own text is a std type's method's, as when a `with` source like
+    /// `Channel[T].open` is written in where it's used: what reaches the name is still its own code.
     pub(crate) fn private_member(&mut self, owner: &str, member: &str, span: Span) {
-        if !member.starts_with('_') || self.inside(owner) {
+        if !member.starts_with('_') || span.in_prelude() || self.inside(owner) {
             return;
         }
         let what = if self.checker.program.method(owner, member).is_some() { "call" } else { "reach" };

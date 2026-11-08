@@ -91,7 +91,12 @@ impl Lowering<'_> {
     /// declared with once a check has shown it isn't `None`.
     pub(super) fn narrowed(&mut self, value: Operand, expr: &Expr) -> Lowered<Operand> {
         let from = type_in(&self.locals, &value).ok_or("a value has no type")?;
-        let Some(read) = self.type_at(expr.span).filter(|read| *read != from) else {
+        // A function named inside what's read, as in `(add, 4)`, is held as its closure.
+        let read = self.type_at(expr.span).map(|read| match read {
+            Type::Function(_) => read,
+            other => self.closures_for_functions(&other).unwrap_or(other),
+        });
+        let Some(read) = read.filter(|read| *read != from) else {
             return Ok(value);
         };
         match (&from, read) {

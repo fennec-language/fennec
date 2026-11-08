@@ -63,7 +63,7 @@ for attacker_id, attacker in units.items():
     units[attacker.target_id].health -= attacker.damage
 ```
 
-**Nothing can be reached two ways while it's being changed.** Overlapping `ref`s are refused, including `f(ref x, ref x)`, `f(ref xs[i], ref xs[j])` always, since `i` may equal `j`, and writing to `units` inside `for ref unit in units`. `xs.swap(i, j)` swaps two items, and `pair` is gone. Built, except `swap`. So is an argument that changes what its call changes, like `self.items.append(self.grow())` when `grow` appends to `self.items`, since which change wins would depend on the engine.
+**Nothing can be reached two ways while it's being changed.** Overlapping `ref`s are refused, including `f(ref x, ref x)`, `f(ref xs[i], ref xs[j])` always, since `i` may equal `j`, and writing to `units` inside `for ref unit in units`. `xs.swap(i, j)` swaps two items, and `pair` is gone. Built, `swap` too. So is an argument that changes what its call changes, like `self.items.append(self.grow())` when `grow` appends to `self.items`, since which change wins would depend on the engine.
 ```fennec
 for ref unit in units:
     units[unit.target_id].health -= 1    # error: the target may be `unit`
@@ -1060,9 +1060,9 @@ def record(scores: shared Scores, name: str, points: int):
 **A `shared` value holds plain values and other `shared` values, never something borrowed from a `with`.** It can't hold one of its own type or form a cycle of types, directly or through other types and channels, so trees use `Table` and `Id`s. It can't store a function that captures a `shared` value. It's freed when its last holder lets go, with no cleanup code.
 *Why:* With no cycles nothing can leak, and with no resources inside, freeing it is only giving memory back.
 
-**`with launch(...)` runs a task until its block ends.** The arrow is the call you'd write anyway, and `launch`'s own options, `stop_after=` and `inbox_size=`, sit outside it. A parameter typed `Inbox[T]` makes `launch` create the channel, giving the task the receiving end and you the sending end. A task with no messages takes none: `with launch(() => autosave(rooms, fs, clock)):`. `launch` is only ever written as `with launch(...)`. This replaces `with launch(physics_loop) as physics:`, where the first parameter was the inbox. Not built yet.
+**`with launch(...)` runs a task until its block ends.** The arrow is the call you'd write anyway, and `launch`'s own options, `stop_after=` and `inbox_size=`, sit outside it. A parameter typed `Inbox[T]` makes `launch` create the channel, giving the task the receiving end and you the sending end. A task with no messages takes none: `with launch(() => autosave(rooms, fs, clock))?:`. `launch` is only ever written as `with launch(...)`, and the `?` on its line covers the task's failure and `Crashed`. This replaces `with launch(physics_loop) as physics:`, where the first parameter was the inbox. Checked; not run natively yet.
 ```fennec
-with launch((inbox) => audio(inbox, speakers), stop_after=5s) as sounds:
+with launch((inbox) => audio(inbox, speakers), stop_after=5s)? as sounds:
     sounds.send(.Play(name="jump", volume=0.8))?
 ```
 *Why:* `launch`'s options can never collide with the function's arguments, and the inbox is in the task's signature, not a convention about its first parameter.

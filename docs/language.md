@@ -101,7 +101,7 @@ for at, ref score in enumerate(scores): ...
 - `items()` is for keyed things: a dict, a `Table`, and your own types that give `len`, `[]` and `key(i)`. Built for dicts and `Table`s.
 - Looping over a dict gives its keys, as in Python, and `keys()`, `values()` and `items()` stay. Built.
 - A generator passed to a call like `sum` can read anything, but it can't change the names around it, which is a compile error. Use a loop for that. Built.
-- `f(ref xs[i], ref xs[j])` is always refused, since `i` and `j` may be the same, and so is `f(ref xs[0], ref xs[2])`. `xs.swap(i, j)` swaps two items, and there's no `pair`. Not built yet: there's no `swap`.
+- `f(ref xs[i], ref xs[j])` is always refused, since `i` and `j` may be the same, and so is `f(ref xs[0], ref xs[2])`. `xs.swap(i, j)` swaps two items, counting from the end when a place is negative, and there's no `pair`. Built.
 
 ## Copies
 
@@ -139,7 +139,7 @@ hash = hash.wrapping_mul(16777619)
 
 - There are ten: `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32` and `f64`. `int` is `i64` and `float` is `f64`. There's no 128-bit type and no platform-sized one, since `int` already indexes.
 - A literal with nothing to go by is an `int` or a `float`, as today.
-- Mixing types, like `i32 + i64`, is a compile error that says to convert one side. Widening is written too, as `i64(small)`, and can't fail. Built in the checker: the ten types, `i64` as `int` and `f64` as `float`, the mixing errors, and literals taking the size they go into, checked to fit. `/` gives a `float` between integers of any one size, as between ints, and `//` keeps the size. Built natively for `i8` to `i32` and `u8` to `u32`: arithmetic checked against each size, `~` within an unsigned size's width, and `u8(x)`, `int(x)` and `float(x)`. `u64` and `f32` check but don't run or build yet, and a `u64` literal above the largest `int` can't be written yet. The interpreter can't run sized numbers, so `fennec run --interp` and `fennec test` refuse a program that uses them, for now. Not built yet: `u8.from(x)?`, `u8.parse(text)?`, `wrapping_`/`saturating_` methods, packed layout, and set, dict and tuple literals where sized numbers go (`{1, 2}` for a `set[u8]`).
+- Mixing types, like `i32 + i64`, is a compile error that says to convert one side. Widening is written too, as `i64(small)`, and can't fail. Built in the checker: the ten types, `i64` as `int` and `f64` as `float`, the mixing errors, and literals taking the size they go into, checked to fit. `/` gives a `float` between integers of any one size, as between ints, and `//` keeps the size. Built natively for `i8` to `i32` and `u8` to `u32`: arithmetic checked against each size, `~` within an unsigned size's width, and `u8(x)`, `int(x)` and `float(x)`. `u64` and `f32` check but don't run or build yet, and a `u64` literal above the largest `int` can't be written yet. The interpreter can't run sized numbers, so `fennec run --interp` and `fennec test` refuse a program that uses them, for now. `u8.from(x)?` and `u8.parse(text)?` are built, written in Fennec in the standard library. Not built yet: `wrapping_`/`saturating_` methods, packed layout, and set, dict and tuple literals where sized numbers go (`{1, 2}` for a `set[u8]`).
 - Every sized type checks overflow, and a check is removed only where the compiler proves it can't fire. `wrapping_` and `saturating_` methods are for when you mean it.
 - Floats give the same bits on every platform. Arithmetic and `sqrt` are exact in IEEE 754, and `sin`, `cos`, `tan`, `acos`, `exp`, `log` and `**` are computed by one library, `libm`, on arm64, x86-64, Windows and WebAssembly alike, so replays and lockstep multiplayer agree. Each platform's own C library rounds some of these differently in the last bit. Built.
 - Floats have one total order: NaN equals itself and sorts last, and `<` agrees with `sorted`. Built: `==`, hashing, sorting and `<` all follow it. A "never NaN" analysis is planned, to recover the cost where a value can't be NaN.
@@ -179,7 +179,7 @@ An `Id` is local to its process's `Table`. To name something across servers, sen
 
 ## Sharing, resources and tasks
 
-Built so far: `shared T`, `shared name = value` and `lock`, on every engine, with a crash inside `lock x as ref` rolled back; `with` sources a program writes, with `lend`; and server rounds for `parallel(server)`. A `lock` inside another `lock` is refused for now: take them together in one. Not built yet: `launch`, `Inbox`, `TaskGroup`, `Channel` in the language, and pools, as the lines below say. Today's `shared Name:` declarations, `with x as ref y:` and `def del` still compile, and `fennec fix` rewrites them.
+Built so far: `shared T`, `shared name = value` and `lock`, on every engine, with a crash inside `lock x as ref` rolled back; `with` sources a program writes, with `lend`; and server rounds for `parallel(server)`. A `lock` inside another `lock` is refused for now: take them together in one. `with launch`, `Channel`, `Inbox` and `Sender` check, as the lines below say. Not built yet: running them natively, `TaskGroup`, and pools. Today's `shared Name:` declarations, `with x as ref y:` and `def del` still compile, and `fennec fix` rewrites them.
 
 Four questions, each with its own words:
 
@@ -288,7 +288,7 @@ def audio(inbox: Inbox[Sound], speakers: Speakers):
                 speakers.stop_all()
 
 def main(speakers: Speakers, input: Input):
-    with launch((inbox) => audio(inbox, speakers), stop_after=5s) as sounds:
+    with launch((inbox) => audio(inbox, speakers), stop_after=5s)? as sounds:
         for frame in input.frames():
             if frame.jumped:
                 sounds.send(.Play(name="jump", volume=0.8))?
@@ -296,9 +296,10 @@ def main(speakers: Speakers, input: Input):
 
 - `launch` runs a function alongside you until its `with` block ends, so no task outlives the code that started it. It's only ever written as `with launch(...)`.
 - The arrow is the call you'd write anyway. `launch`'s own options, `stop_after=` and `inbox_size=`, sit outside it.
-- A parameter typed `Inbox[T]` makes `launch` create the channel: the task gets the receiving end and you get the sending end, as `sounds`. The enum is the protocol, so you can only send real cases and the task must handle each one. A task with no messages takes no inbox: `with launch(() => autosave(rooms, fs, clock)):`.
+- A parameter typed `Inbox[T]` makes `launch` create the channel: the task gets the receiving end and you get the sending end, as `sounds`. The enum is the protocol, so you can only send real cases and the task must handle each one. A task with no messages takes no inbox: `with launch(() => autosave(rooms, fs, clock))?:`.
+- The `?` on its line covers the task: `with launch(...)` fails with the task's errors and `Crashed`, from `std.concurrent`, where the block ends. `inbox_size=` is 16 unless given. Checked, and written in around `std.intrinsics`' `launch` and `launch_end`. Native code for those is the LLVM lane's next step, and the interpreter refuses them.
 - `TaskGroup`, from `std.concurrent`, holds a number of tasks known only at run time, and stops them all when its block ends.
-- Channels are always bounded, and `send` waits when one is full. Both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. A channel you set up yourself is `with Channel[Job](size=64) as jobs:`. The runtime's half is built, but the language doesn't have `Channel` yet.
+- Channels are always bounded, and `send` waits when one is full. Both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. A channel you set up yourself is `with Channel[Job](size=64) as jobs:`. The runtime's half is built. `std.concurrent` has `Channel[T]`, its ends `Inbox[T]` and `Sender[T]`, and the errors `Closed`, `Timeout` and `Crashed`, written in Fennec over channel intrinsics. `with Channel[Job].open(size=64) as jobs:` checks, and so do `send`, `receive` and `for job in jobs`. Not built yet: native code for the intrinsics, and the shorter `Channel[Job](size=64)`.
 - A channel delivers each message to one receiver by default, as a work queue. `to=.Every` gives every listener every message, as in `with Channel[Hit](size=1024, to=.Every) as hits:`, and receiving reads the same either way, `for hit in hits`. With `.Every`, `send` never waits, and a listener that falls behind fails loudly, unless it asked for `when_behind=.DropOldest`. There's no separate events type. Not built yet.
 - Dev builds stop with a report when tasks are waiting only on each other, since a hang through channels alone can't be ruled out at compile time.
 
@@ -561,7 +562,7 @@ def autosave(rooms: shared dict[str, Room], fs: Fs, clock: Clock) fails IoError:
 def main(net: Net, fs: Fs, clock: Clock):
     shared rooms = dict[str, Room]()
     with Database.open(net, "postgres://localhost/chat", pool_size=10)? as db:
-        with launch(() => autosave(rooms, fs, clock), stop_after=5s):
+        with launch(() => autosave(rooms, fs, clock), stop_after=5s)?:
             with net.listen(9000)? as server:
                 # each connection gets its own task, and closes when its round ends
                 for conn in parallel(server):

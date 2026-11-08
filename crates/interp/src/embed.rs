@@ -250,10 +250,6 @@ thread_local! {
     static OUTPUT: RefCell<Option<Output>> = const { RefCell::new(None) };
 }
 
-/// Writes what this thread has printed and kept. Output comes out as it's printed, and is only
-/// kept to save writing it line by line, so this is called before anything that can wait, and
-/// before anything else on another thread is to come after it. A failure to write stays for the
-/// next print to report, as there's nothing here to pass it to.
 /// Lets others run for a moment, for a replay's task waiting its turn: a task makes way for the
 /// others on its thread, and a thread that isn't one sleeps briefly.
 pub(crate) fn make_way() {
@@ -264,6 +260,37 @@ pub(crate) fn make_way() {
     std::thread::sleep(std::time::Duration::from_micros(50));
 }
 
+/// A parked task's own temporaries and inputs, kept apart from the thread's while it's parked.
+#[cfg(any(test, feature = "threads"))]
+#[derive(Default)]
+pub(in crate::embed) struct Temporaries {
+    temps: Vec<Value>,
+    inputs: Vec<Value>,
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl Temporaries {
+    pub(in crate::embed) fn is_empty(&self) -> bool {
+        self.temps.is_empty() && self.inputs.is_empty()
+    }
+}
+
+/// Swaps the runtime's temporaries and inputs on this thread with `own`: once as a task is resumed,
+/// and again as it parks or ends.
+#[cfg(any(test, feature = "threads"))]
+pub(in crate::embed) fn swap_temporaries(own: &mut Temporaries) {
+    STATE.with_borrow_mut(|state| {
+        if let Some(state) = state.as_mut() {
+            std::mem::swap(&mut state.temps, &mut own.temps);
+            std::mem::swap(&mut state.inputs, &mut own.inputs);
+        }
+    });
+}
+
+/// Writes what this thread has printed and kept. Output comes out as it's printed, and is only
+/// kept to save writing it line by line, so this is called before anything that can wait, and
+/// before anything else on another thread is to come after it. A failure to write stays for the
+/// next print to report, as there's nothing here to pass it to.
 pub(crate) fn write_kept_output() {
     OUTPUT.with_borrow_mut(|output| {
         if let Some(output) = output {
@@ -902,6 +929,16 @@ pub mod io {
 
     pub extern "C" fn print_float(x: f64) {
         attempt(|state: &mut State| write(state, &format::float(x)));
+    }
+
+    /// `print` of a `u64`, its bits in `n`: unsigned.
+    pub extern "C" fn print_u64(n: i64) {
+        attempt(|state: &mut State| write(state, &n.cast_unsigned().to_string()));
+    }
+
+    /// `print` of an `f32`, held as the `f64` that's exactly it.
+    pub extern "C" fn print_f32(x: f64) {
+        attempt(|state: &mut State| write(state, &format::float32(x)));
     }
 
     pub extern "C" fn print_bool(b: i8) {

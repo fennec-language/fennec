@@ -2393,6 +2393,39 @@ fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
     Ok(())
 }
 
+/// What comes from outside becomes a sized integer through `u8.from(x)?` and `u8.parse(text)?`,
+/// which fail cleanly with an `InvalidValue` when it doesn't fit or isn't a whole number, where
+/// `u8(x)` would stop the program.
+#[test]
+fn sized_integers_from_outside_fail_cleanly() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "sized_from_outside",
+        "def main(stdout: Stdout):
+    stdout.print(u8.from(200), u8.parse(\"17\"), i8.from(-5), u32.parse(\"4294967295\"))
+    for text in [\"300\", \"-1\", \"seven\"]:
+        match u8.parse(text):
+            case Ok(n):
+                stdout.print(\"fit\", n)
+            case Err(problem):
+                stdout.print(\"failed:\", problem.message)
+    small = u8.parse(\"250\") else u8(0)
+    stdout.print(small + 5, i16.from(40000) else i16(-1))
+",
+    )?;
+    assert_eq!(
+        printed,
+        "Ok(200) Ok(17) Ok(-5) Ok(4294967295)\n\
+         failed: 300 doesn't fit in u8, which holds 0 to 255\n\
+         failed: -1 doesn't fit in u8, which holds 0 to 255\n\
+         failed: \"seven\" isn't an int\n\
+         255 -1\n"
+    );
+    Ok(())
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -4430,6 +4463,32 @@ def main(stdout: Stdout):
     stdout.print("made")
     stdout.print(list(held))
 "#,
+    )
+}
+
+/// A function named in a tuple, as in `(add, 4)`, is held as its closure: unpacked, kept in a
+/// name and unpacked later, and called. It once wasn't lowered, as "it gives (int) -> int where
+/// function goes".
+#[test]
+fn functions_named_in_tuples_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "functions_in_tuples",
+        "def add(x: int) -> int:
+    x + 1
+
+def twice(x: int) -> int:
+    x * 2
+
+def main(stdout: Stdout):
+    (g, n) = (add, 4)
+    stdout.print(g(n))
+    pair = (twice, 5)
+    (h, m) = pair
+    stdout.print(h(m), g(h(1)))
+",
     )
 }
 
@@ -7085,6 +7144,75 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// A channel's messages cross it as the runtime holds them, of each kind: a number, a string long
+/// enough for a block, a struct held in place, and a list. A receive or a send that waits past its
+/// timeout fails as `Timeout`.
+#[test]
+fn channels_carry_each_kind_of_message_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "channels",
+        "from std.concurrent import Channel, Closed, Timeout
+from std.time import Duration
+
+struct Job:
+    name: str
+    weight: int
+
+def numbers(stdout: Stdout) fails Closed | Timeout:
+    with Channel[int].open(size=4) as ch:
+        ch.send(7)?
+        ch.send(8)?
+        stdout.print(ch.receive()?, ch.receive()?)
+
+def words(stdout: Stdout) fails Closed | Timeout:
+    with Channel[str].open(size=4) as ch:
+        ch.send(\"hi\")?
+        ch.send(\"a string long enough to live in a block of its own\")?
+        stdout.print(ch.receive()?, ch.receive()?.len())
+
+def jobs(stdout: Stdout) fails Closed | Timeout:
+    with Channel[Job].open(size=2) as ch:
+        ch.send(Job(name=\"first\", weight=3))?
+        got = ch.receive()?
+        stdout.print(got.name, got.weight)
+
+def lists(stdout: Stdout) fails Closed | Timeout:
+    with Channel[list[float]].open(size=1) as ch:
+        ch.send([1.5, 2.5])?
+        stdout.print(ch.receive()?)
+
+def waits(stdout: Stdout) fails Closed | Timeout:
+    with Channel[int].open(size=1) as ch:
+        match ch.receive(timeout=Duration(nanos=2_000_000)):
+            case Ok(n):
+                stdout.print(\"got\", n)
+            case Err(problem):
+                stdout.print(\"empty:\", problem)
+        ch.send(1)?
+        match ch.send(2, timeout=Duration(nanos=2_000_000)):
+            case Ok(_):
+                stdout.print(\"sent\")
+            case Err(problem):
+                stdout.print(\"full:\", problem)
+
+def main(stdout: Stdout) fails Closed | Timeout:
+    numbers(stdout)?
+    words(stdout)?
+    jobs(stdout)?
+    lists(stdout)?
+    waits(stdout)?
+",
+    )?;
+    assert_eq!(
+        printed,
+        "7 8\nhi 50\nfirst 3\n[1.5, 2.5]\nempty: Timeout(waited=Duration(nanos=2000000))\nfull: Timeout(waited=Duration(nanos=2000000))\n"
+    );
+    Ok(())
+}
+
 /// A round that fails, by `fail` or `?`, stops the server, and its failure passes up out of the
 /// loop to the function serving, which handles it. The rounds before it were answered. Natively a
 /// round's failure once only ended that round, as a crash does.
@@ -7394,6 +7522,40 @@ def main(stdout: Stdout):
          {\"pair\": [{\"x\": 5}, [null, \"a\"]]} True\n\
          True\n"
     );
+    Ok(())
+}
+
+/// A tuple saved only through `std.pack`, with nothing routed through JSON, saves natively: its
+/// saving isn't trimmed away as unreached. And one saved before what holds it is known, `pairs`
+/// here until its `append`, is what it holds once the check is done.
+#[test]
+fn a_tuple_saved_only_through_pack_saves_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("tuples-later")?;
+    let program = dir.join("later.fen");
+    std::fs::write(
+        &program,
+        "\
+from std import pack
+
+def main(stdout: Stdout):
+    mut pairs = []
+    saved = pack.dumps(pairs)
+    pairs.append((1, \"a\"))
+    stdout.print(pairs, saved.len() > 0, pack.dumps(pairs).len() > saved.len())
+",
+    )?;
+    let executable = dir.join("later");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "[(1, \"a\")] True True\n");
     Ok(())
 }
 

@@ -2033,6 +2033,7 @@ impl Emit<'_, '_, '_> {
                 self.random_builtin(dest, name, args, span)
             }
             parallel if parallel.starts_with("parallel.") => self.parallel_builtin(dest, name, args, span),
+            channel if channel.starts_with("intrinsics.channel_") => self.channel_builtin(dest, name, args),
             // A list of a list's items is the list, shared until one changes.
             "parallel" | "list"
                 if args.len() == 1
@@ -2876,7 +2877,8 @@ def main(stdout: Stdout):
 
     #[test]
     fn what_it_cant_take_says_which_function() -> Result<(), String> {
-        let source = "def add(x: int) -> int:\n    x + 1\n\ndef f() -> int:\n    (g, n) = (add, 4)\n    g(n)\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n";
+        // `f32` isn't held natively yet.
+        let source = "def f() -> int:\n    speed: f32 = 1.5\n    int(speed > 1.0)\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n";
         let error = emit(&lowered(source)?).err().unwrap_or_default();
         assert!(error.contains("`f`"), "{error}");
         Ok(())

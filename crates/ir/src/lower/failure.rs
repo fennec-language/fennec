@@ -64,6 +64,10 @@ impl Lowering<'_> {
         if matches!(value, Operand::Int(_)) && matches!(to, Type::Sized(_)) {
             return Ok(value);
         }
+        // A float written out where an `f32` goes is the nearest `f32`.
+        if let (Operand::Float(written), Type::Sized(fennec_check::Num::F32)) = (&value, to) {
+            return Ok(Operand::Float(nearest_f32(*written)));
+        }
         match to {
             Type::Optional(inner) => {
                 let value = self.coerce(value, inner, span)?;
@@ -91,7 +95,12 @@ impl Lowering<'_> {
     /// declared with once a check has shown it isn't `None`.
     pub(super) fn narrowed(&mut self, value: Operand, expr: &Expr) -> Lowered<Operand> {
         let from = type_in(&self.locals, &value).ok_or("a value has no type")?;
-        let Some(read) = self.type_at(expr.span).filter(|read| *read != from) else {
+        // A function named inside what's read, as in `(add, 4)`, is held as its closure.
+        let read = self.type_at(expr.span).map(|read| match read {
+            Type::Function(_) => read,
+            other => self.closures_for_functions(&other).unwrap_or(other),
+        });
+        let Some(read) = read.filter(|read| *read != from) else {
             return Ok(value);
         };
         match (&from, read) {
@@ -461,4 +470,10 @@ fn stop_on_failure(function: &mut Function, span: Span) {
         added.push(Block { insts: Vec::new(), end: Terminator::Return(None) });
     }
     function.blocks.extend(added);
+}
+
+/// The `f32` nearest a float, as the float it is exactly.
+#[expect(clippy::cast_possible_truncation, reason = "rounding to the nearest f32 is what's meant")]
+pub(crate) fn nearest_f32(value: f64) -> f64 {
+    f64::from(value as f32)
 }

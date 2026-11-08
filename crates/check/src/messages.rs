@@ -196,7 +196,7 @@ pub(crate) fn describe(ty: &Type) -> String {
 
 /// An f-string format spec the interpreter would refuse while running, or `None` when it fits.
 /// A spec is an optional `,` for thousands separators, an optional `.N` for decimal places,
-/// and an optional `f` or `d`; only an int or a float takes one.
+/// and an optional `f` or `d`; only a number takes one.
 pub(crate) fn bad_spec(spec: &str, ty: &Type, span: Span) -> Option<Diagnostic> {
     const FORMS: &str = "a format is an optional `,` for thousands separators, then `.N` for N decimal places, then `f` or `d`: like `{x:,}`, `{x:.2f}` or `{n:,d}`";
     let rest = spec.strip_prefix(',').unwrap_or(spec);
@@ -216,7 +216,13 @@ pub(crate) fn bad_spec(spec: &str, ty: &Type, span: Span) -> Option<Diagnostic> 
     if !matches!(kind, "" | "d" | "f") {
         return Some(Diagnostic::new(format!("Fennec has no format `{spec}`"), span).with_help(FORMS));
     }
-    let help = match (ty, kind, places) {
+    // A sized integer formats as an int does, and an `f32` as a float.
+    let number = match ty {
+        Type::Sized(num) if num.is_float() => &Type::Float,
+        Type::Sized(_) => &Type::Int,
+        other => other,
+    };
+    let help = match (number, kind, places) {
         (Type::Unknown, _, _)
         | (Type::Int, "" | "d", false)
         | (Type::Float, "" | "f", false)

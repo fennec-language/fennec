@@ -49,15 +49,21 @@ pub fn uses_tls(program: &Program) -> bool {
     })
 }
 
-/// Whether a program hands work to the runtime's `parallel` calls, and so keeps a stack limit
+/// Whether a program hands work to the runtime's `parallel` calls or launches a task, and so keeps a stack limit
 /// and failure flag for each thread.
 pub fn uses_parallel(program: &Program) -> bool {
     program.functions.iter().chain(&program.constants).flat_map(|function| &function.blocks).any(|block| {
         block
             .insts
             .iter()
-            .any(|inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if name.starts_with("parallel.")))
+            .any(|inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if runs_beside(name)))
     })
+}
+
+/// Whether a builtin runs code on another of the runtime's threads: `parallel`'s, and
+/// `with launch`'s task.
+fn runs_beside(name: &str) -> bool {
+    name.starts_with("parallel.") || name == "intrinsics.launch"
 }
 
 /// Whether a program has any `shared` type.
@@ -195,6 +201,8 @@ enum Shape {
     Partial { float: bool },
     /// `(conn) -> ()`: a server's task for a connection, on a stack of its own.
     Task,
+    /// `() -> int`: a launched task, giving back 0, or 2 when it handed a failure over.
+    Launch,
 }
 
 impl Shape {
@@ -206,6 +214,7 @@ impl Shape {
             Shape::Partial { float: false } => "@fen_parallel_partial_int",
             Shape::Partial { float: true } => "@fen_parallel_partial_float",
             Shape::Task => "@fen_parallel_task",
+            Shape::Launch => "@fen_launched_task",
         }
     }
 
@@ -214,9 +223,12 @@ impl Shape {
         if matches!(self, Shape::Task) {
             return task_shim();
         }
+        if matches!(self, Shape::Launch) {
+            return launch_shim();
+        }
         let name = self.name();
         let (extra, args, call, keep) = match self {
-            Shape::Each | Shape::Task => ("", "", "call swiftcc void", String::new()),
+            Shape::Each | Shape::Task | Shape::Launch => ("", "", "call swiftcc void", String::new()),
             Shape::Into => (", i64 %out", ", ptr %into", "call swiftcc void", String::new()),
             Shape::IntoFailing => (", i64 %out", ", ptr %into", "%ended = call swiftcc i64", String::new()),
             Shape::Partial { float: false } => (
@@ -276,7 +288,89 @@ fn task_shim() -> String {
     )
 }
 
+/// The shim for a launched task: its closure takes nothing, and its stack is its own, which the
+/// prelude reads the limit of. A crash is 1, with the failure flag set; otherwise what it gave back.
+fn launch_shim() -> String {
+    let name = Shape::Launch.name();
+    let running = format!("@\"{}.run\"", name.trim_start_matches('@'));
+    format!(
+        "define internal i64 {running}(i64 %env) noinline #0 {{\nentry:\n  \
+         %closure = inttoptr i64 %env to ptr\n  %code_at = getelementptr inbounds i8, ptr %closure, i64 {CODE}\n  \
+         %code = load ptr, ptr %code_at\n  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n  \
+         %ended = call swiftcc i64 %code(ptr %closure, ptr swifterror %failed)\n  \
+         %held = load ptr, ptr %failed\n  %bad = icmp ne ptr %held, null\n  %result = select i1 %bad, i64 1, i64 %ended\n  \
+         ret i64 %result\n}}\n\n\
+         define internal i64 {name}(i64 %env, i64 %thread) #0 {{\n{READY}  \
+         %result = call i64 {running}(i64 %env)\n  ret i64 %result\n}}\n\n"
+    )
+}
+
 impl Emit<'_, '_, '_> {
+    /// `intrinsics.launch(task)`: starts the task, a closure the IR made that gives back how it
+    /// ended, on the runtime's threads, which copy it for the task. `intrinsics.launch_take`, what
+    /// the IR makes of `launch_end`: waits for it, sets `why` to how it ended, and takes its
+    /// failure into `dest` when that's 2, leaving it empty otherwise for the IR to make `None`.
+    pub(crate) fn launch_builtin(
+        &mut self,
+        dest: Option<LocalId>,
+        name: &str,
+        args: &[Operand],
+    ) -> Result<(), String> {
+        match (name, args) {
+            ("intrinsics.launch", [task]) => {
+                let (closure, _) = self.operand(task)?;
+                let env = self.temp();
+                self.line(&format!("{env} = ptrtoint ptr {closure} to i64"));
+                let shim = self.shim(Shape::Launch);
+                self.declare("declare i64 @fennec_launch(ptr, i64) nounwind");
+                let started = self.temp();
+                self.line(&format!("{started} = call i64 @fennec_launch(ptr {shim}, i64 {env})"));
+                // With no thread to run it on, it fails.
+                self.leave_if_failed();
+                self.assign(dest.ok_or("a task no one waits for")?, &started)
+            }
+            ("intrinsics.launch_take", [task, nanos, failed, Operand::Local(why)]) => {
+                let dest = dest.ok_or("a failure no one keeps")?;
+                let ((task, _), (nanos, _), (failed, _)) =
+                    (self.operand(task)?, self.operand(nanos)?, self.operand(failed)?);
+                let failed_word = self.temp();
+                self.line(&format!("{failed_word} = zext i1 {failed} to i64"));
+                let failure_at = self.place_for(&Kind::Int);
+                self.declare("declare i64 @fennec_launch_end(i64, i64, i64, ptr) nounwind");
+                let how = self.temp();
+                self.line(&format!(
+                    "{how} = call i64 @fennec_launch_end(i64 {task}, i64 {nanos}, i64 {failed_word}, ptr {failure_at})"
+                ));
+                // A failure this thread had before waiting is its own again.
+                self.leave_if_failed();
+                self.assign(*why, &how)?;
+                let (failed_task, take, nothing, done) = (
+                    self.temp(),
+                    self.label("task_failed"),
+                    self.label("task_ended"),
+                    self.label("task_waited"),
+                );
+                self.line(&format!("{failed_task} = icmp eq i64 {how}, 2"));
+                self.line(&format!("br i1 {failed_task}, label %{take}, label %{nothing}"));
+                self.start_block(&take);
+                let (word, block) = (self.temp(), self.temp());
+                self.line(&format!("{word} = load i64, ptr {failure_at}"));
+                self.line(&format!("{block} = inttoptr i64 {word} to ptr"));
+                self.take_handed_failure(dest, &block)?;
+                self.line(&format!("br label %{done}"));
+                self.start_block(&nothing);
+                let kind = self.kind_of(dest)?.clone();
+                let slot = self.slot(dest);
+                let zero = self.zero_line(&kind, &slot);
+                self.line(&zero);
+                self.line(&format!("br label %{done}"));
+                self.start_block(&done);
+                Ok(())
+            }
+            _ => Err(format!("it calls `{name}` in a way this backend doesn't take yet")),
+        }
+    }
+
     /// Defines `@fen_retain` for a program that runs `parallel`: one more owner of a block, by
     /// whichever way this thread counts it.
     pub(crate) fn counted_retain_helper(&mut self) {

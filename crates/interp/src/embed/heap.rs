@@ -130,6 +130,18 @@ pub(crate) struct Heap {
     pub(super) lent_owners: HashMap<u64, i64, BuildHasherDefault<AddressHasher>>,
     /// Words copied out of one block on the way to another, kept to save making them anew.
     pub(super) scratch: Vec<u64>,
+    /// Where blocks freed now go (see `give_back`).
+    freed: Freed,
+}
+
+/// Where a heap puts the blocks it frees.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Freed {
+    /// Into `spare`, for the next blocks it makes.
+    #[default]
+    Kept,
+    /// Back to the allocator.
+    GivenBack,
 }
 
 /// Whether heaps made from now on count what they allocate, for a caller that reads `Counts`
@@ -364,11 +376,23 @@ impl Heap {
         }
     }
 
+    /// Says where blocks freed from now on go, giving back where they went before. They should go
+    /// back to the allocator while letting go of blocks another thread made, which this one won't
+    /// make more of: kept here, they'd never be reused, and would hold that thread's memory from
+    /// it. Given back, the thread that made them takes their memory back when it next makes some.
+    #[cfg_attr(
+        not(any(test, feature = "threads")),
+        expect(dead_code, reason = "only a launched task frees what another thread made")
+    )]
+    pub(super) fn freeing(&mut self, freed: Freed) -> Freed {
+        std::mem::replace(&mut self.freed, freed)
+    }
+
     /// Keeps a freed block for reuse, when it's small: big ones, like a long list's, are
     /// rare enough to give back.
     pub(super) fn recycle(&mut self, block: Box<[u64]>) {
         // Under AddressSanitizer every freed block is given back, for it to watch.
-        if cfg!(feature = "sanitize") {
+        if cfg!(feature = "sanitize") || self.freed == Freed::GivenBack {
             return;
         }
         if self.spare_words + block.len() > SPARE_TOTAL_WORDS {
@@ -492,6 +516,12 @@ impl Heap {
     /// Takes over blocks, as this thread's own and as made since it last handed any over: what a
     /// launched task was given to start with, or left when it ended, for whoever runs next to hand
     /// over in turn.
+    /// How many words of freed blocks it's keeping for reuse.
+    #[cfg(test)]
+    pub(crate) fn spare_words(&self) -> usize {
+        self.spare_words
+    }
+
     pub(crate) fn adopt_made(&mut self, blocks: impl IntoIterator<Item = Box<[u64]>>) {
         let counts = self.counts;
         for mut block in blocks {
@@ -832,7 +862,7 @@ fn boxed_words(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec
             }
             *at = start + size;
         }
-        Element::Int | Element::Float | Element::Bool => *at += 1,
+        Element::Int | Element::Float | Element::Bool | Element::U64 | Element::F32 => *at += 1,
     }
 }
 
@@ -911,14 +941,14 @@ fn boxed_addresses(element: &Element, words: &[u64], at: &mut usize, found: &mut
             }
             *at = start + size;
         }
-        Element::Int | Element::Float | Element::Bool => *at += 1,
+        Element::Int | Element::Float | Element::Bool | Element::U64 | Element::F32 => *at += 1,
     }
 }
 
 /// Whether values of a kind, laid out in place, hold blocks.
 pub(super) fn holds_floats(element: &Element) -> bool {
     match element {
-        Element::Float => true,
+        Element::Float | Element::F32 => true,
         Element::Struct { fields, .. } => fields.iter().any(|(_, field)| holds_floats(field)),
         Element::Enum { cases, .. } => {
             cases.iter().any(|(_, fields)| fields.iter().any(|(_, field)| holds_floats(field)))
@@ -950,7 +980,7 @@ pub(super) fn holds_blocks(element: &Element) -> bool {
         Element::Enum { cases, .. } => {
             cases.iter().any(|(_, fields)| fields.iter().any(|(_, field)| holds_blocks(field)))
         }
-        Element::Int | Element::Float | Element::Bool => false,
+        Element::Int | Element::Float | Element::Bool | Element::U64 | Element::F32 => false,
     }
 }
 
@@ -960,7 +990,8 @@ pub(super) fn held_addresses(element: &Element, words: &[u64], found: &mut Vec<u
 }
 
 /// Where among its words a block holds the addresses of others, as `children_into` finds them, for
-/// a copy of it to hold its own. An interpreter's value or a generator can't be copied like that.
+/// a copy of it to hold its own. An interpreter's value or a generator can't be copied like that,
+/// but a native closure can.
 pub(super) fn child_places(state: &State, block: &[u64], found: &mut Vec<usize>) -> Result<(), Diagnostic> {
     let Some(shape) = shape_word(block) else { return Ok(()) };
     if shape == CAPABILITY_SHAPE {
@@ -999,8 +1030,14 @@ pub(super) fn child_places(state: &State, block: &[u64], found: &mut Vec<usize>)
         return Ok(());
     }
     let Some(element) = shape_of(state, block) else { return Ok(()) };
-    if matches!(element.as_ref(), Element::Struct { fields, .. } if fields.iter().any(|(name, _)| name.starts_with('\0')))
-    {
+    // A generator's block is in the middle of running, so it can't be copied. A closure's can: its
+    // code is the same for every thread, and what it captured copies as any field does. An
+    // error's notes are an ordinary field too.
+    let hidden = |fields: &[(Rc<str>, Element)]| {
+        fields.iter().any(|(name, _)| name.starts_with('\0') && &**name != "\0notes")
+    };
+    let closure = |fields: &[(Rc<str>, Element)]| fields.first().is_some_and(|(name, _)| &**name == "\0code");
+    if matches!(element.as_ref(), Element::Struct { fields, .. } if hidden(fields) && !closure(fields)) {
         return Err(not_copied());
     }
     let mut from = HEADER_WORDS;
@@ -1221,8 +1258,10 @@ pub(super) fn read_word(state: &State, element: &Element, word: u64) -> Value {
 fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'w u64>) -> Value {
     let word = |words: &mut dyn Iterator<Item = &'w u64>| words.next().copied().unwrap_or(0);
     match element {
-        Element::Int => Value::Int(i64::from_ne_bytes(word(words).to_ne_bytes())),
-        Element::Float => Value::Float(f64::from_bits(word(words))),
+        // The interpreter has no `u64`: it holds one as an `int` of the same bits, so it goes back
+        // unchanged, though a value of 2^63 or more reads there as negative.
+        Element::Int | Element::U64 => Value::Int(i64::from_ne_bytes(word(words).to_ne_bytes())),
+        Element::Float | Element::F32 => Value::Float(f64::from_bits(word(words))),
         Element::Bool => Value::Bool(word(words) != 0),
         Element::Boxed(_) | Element::Str | Element::Object => read_block(state, word(words)),
         Element::Text => {
@@ -1372,9 +1411,10 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
         named::Written::NotNamed => {}
     }
     match (element, value) {
-        (Element::Int, Value::Int(n)) => words.push(u64::from_ne_bytes(n.to_ne_bytes())),
+        (Element::Int | Element::U64, Value::Int(n)) => words.push(u64::from_ne_bytes(n.to_ne_bytes())),
         (Element::Float, Value::Float(x)) => words.push(x.to_bits()),
         (Element::Bool, Value::Bool(b)) => words.push(u64::from(*b)),
+        (Element::F32, Value::Float(x)) => words.push(crate::packed::as_f32(*x).to_bits()),
         (Element::Boxed(shape), value) => {
             let address = write_block(state, *shape, value)?;
             words.push(u64::try_from(address).ok()?);

@@ -3,7 +3,7 @@
 //! is read into a temporary and written back after the call.
 
 use fennec_check::Type;
-use fennec_syntax::{Arg, Expr, ExprKind, Span};
+use fennec_syntax::{Arg, BinOp, Expr, ExprKind, Span};
 
 use super::places::{Place, Step};
 use super::{Lowered, Lowering};
@@ -60,6 +60,7 @@ pub(super) fn owner_name(ty: &Type) -> Option<&str> {
         Type::Str => Some("str"),
         Type::Int => Some("int"),
         Type::Float => Some("float"),
+        Type::Sized(num) => Some(num.name()),
         Type::Bool => Some("bool"),
         Type::Optional(_) => Some("Optional"),
         Type::Named(name) => Some(name),
@@ -356,6 +357,12 @@ impl Lowering<'_> {
             // A generic intrinsic's copy, like `intrinsics.id_slot[Unit]`, is still the intrinsic.
             let intrinsic = function.split_once('[').map_or(function.as_str(), |(base, _)| base);
             if self.context.intrinsics.contains(intrinsic) {
+                if matches!(
+                    intrinsic,
+                    "intrinsics.channel_receive" | "intrinsics.launch_end" | "intrinsics.launch"
+                ) {
+                    return self.lowered_intrinsic(intrinsic, dest, values, write_backs, span);
+                }
                 // One given something by `ref`, like `append_text(ref out, text)`, changes it, and
                 // it's put back after, as for any call.
                 let name = intrinsic.to_owned();
@@ -374,6 +381,65 @@ impl Lowering<'_> {
         }
         self.write_back(write_backs, span)?;
         Ok(dest)
+    }
+
+    /// The intrinsics the IR lowers itself, rather than leave to the backend as they are.
+    fn lowered_intrinsic(
+        &mut self,
+        intrinsic: &str,
+        dest: Option<LocalId>,
+        values: Vec<Operand>,
+        write_backs: Vec<WriteBack>,
+        span: Span,
+    ) -> Lowered<Option<LocalId>> {
+        match intrinsic {
+            "intrinsics.channel_receive" => {
+                let raw = ("intrinsics.channel_take", 2, 0);
+                self.taken_or_none(dest, values, write_backs, raw, span)
+            }
+            "intrinsics.launch_end" => {
+                let raw = ("intrinsics.launch_take", 3, 2);
+                self.taken_or_none(dest, values, write_backs, raw, span)
+            }
+            _ => self.launch_task(dest, &values, span).map(Some),
+        }
+    }
+
+    /// `channel_receive[T](channel, timeout_ns, ref why)`, the message, or
+    /// `launch_end[E](task, stop_after_ns, failed, ref why)`, the task's failure: taken into a `T`
+    /// by the backend's `raw` builtin, with `why` (the argument at `why_at`) set to how it went,
+    /// then `Some` of it when `why` is `some_when`, else `None`.
+    fn taken_or_none(
+        &mut self,
+        dest: Option<LocalId>,
+        values: Vec<Operand>,
+        write_backs: Vec<WriteBack>,
+        (raw, why_at, some_when): (&str, usize, i64),
+        span: Span,
+    ) -> Lowered<Option<LocalId>> {
+        let why = values.get(why_at).cloned().ok_or_else(|| format!("`{raw}` without its `why`"))?;
+        let wanted = dest.map(|dest| self.local_type(dest));
+        let Some(Type::Optional(item)) = wanted else {
+            return Err(format!("`{raw}` gives back something not kept as an optional"));
+        };
+        let taken = self.temporary(*item);
+        let take = InstKind::Builtin { dest: Some(taken), name: raw.to_owned(), args: values, changes: true };
+        self.emit(take, span);
+        let got = self.temporary(Type::Bool);
+        let rhs = Operand::Int(some_when);
+        self.emit(InstKind::Binary { dest: got, op: BinOp::Eq, lhs: why, rhs }, span);
+        self.write_back(write_backs, span)?;
+        let dest = dest.ok_or("what's taken, kept by no one")?;
+        let (some, none, join) = (self.new_block(), self.new_block(), self.new_block());
+        self.finish(Terminator::Branch { cond: Operand::Local(got), then: some, otherwise: none });
+        self.current = some;
+        self.emit(InstKind::MakeSome { dest, value: Operand::Local(taken) }, span);
+        self.finish(Terminator::Jump(join));
+        self.current = none;
+        self.emit(InstKind::Copy { dest, value: Operand::None }, span);
+        self.finish(Terminator::Jump(join));
+        self.current = join;
+        Ok(Some(dest))
     }
 
     /// Writes back what a call changed, saying which of those places can be taken out for it.
@@ -542,6 +608,16 @@ impl Lowering<'_> {
                 let ty = &held;
                 if matches!(ty, Type::Result(..)) && name == "expect" {
                     return Some(("result.expect".to_owned(), Some(object.as_ref()), false));
+                }
+                // An error's notes, one pair of builtins for every `error` type that doesn't
+                // write its own: `error.add_note` changes the error it's called on.
+                let an_error = matches!(ty, Type::Errors(_))
+                    || owner_name(ty).is_some_and(|owner| {
+                        signatures.error_type(owner).is_some()
+                            && signatures.get(&format!("{owner}.{name}")).is_none()
+                    });
+                if matches!(name.as_str(), "notes" | "add_note") && an_error {
+                    return Some((format!("error.{name}"), Some(object.as_ref()), name == "add_note"));
                 }
                 let changes = fennec_check::builtin_method_changes(ty, name)?;
                 let owner = owner_name(ty)?;

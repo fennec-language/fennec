@@ -27,3 +27,6 @@ def main(stdout: Stdout):
     grid[1] = 5
     grid[2] += 2
     stdout.print(grid)
+    # Two items change places with `swap`, counting from the end when a place is negative.
+    grid.swap(0, -1)
+    stdout.print(grid)

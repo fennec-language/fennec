@@ -85,7 +85,7 @@ fn fixed_words(
         }
         Element::Enum { words, .. } if !super::heap::holds_blocks(element) => *at += words,
         Element::Enum { .. } => return None,
-        Element::Int | Element::Float | Element::Bool => *at += 1,
+        Element::Int | Element::Float | Element::Bool | Element::U64 | Element::F32 => *at += 1,
     }
     Some(())
 }

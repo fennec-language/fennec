@@ -173,6 +173,10 @@ pub(in crate::embed) fn item(
             let _ = write!(out, "{}", i64::from_ne_bytes(word(words).to_ne_bytes()));
         }
         Element::Float => out.push_str(&crate::format::float(f64::from_bits(word(words)))),
+        Element::U64 => {
+            let _ = write!(out, "{}", word(words));
+        }
+        Element::F32 => out.push_str(&crate::format::float32(f64::from_bits(word(words)))),
         Element::Bool => out.push_str(if word(words) == 0 { "False" } else { "True" }),
         Element::Boxed(_) | Element::Str | Element::Object | Element::List(_) | Element::ListOf(_) => {
             quoted(state, word(words), out);

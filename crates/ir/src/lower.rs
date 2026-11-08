@@ -308,9 +308,10 @@ impl Context<'_> {
     /// Whether the IR holds values of this type yet.
     fn holds(&self, ty: &Type) -> bool {
         match ty {
-            Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::None => true,
-            // The integers up to 32 bits, held in a word as an `int` is; `u64` and `f32` aren't yet.
-            Type::Sized(num) => !matches!(num, fennec_check::Num::U64 | fennec_check::Num::F32),
+            // A sized number is held in a word, as an `int` or a `float` is.
+            Type::Int | Type::Float | Type::Sized(_) | Type::Bool | Type::Str | Type::Bytes | Type::None => {
+                true
+            }
             Type::List(item)
             | Type::Buffer(item)
             | Type::Iterator(item)
@@ -571,10 +572,22 @@ impl<'a> Lowering<'a> {
 
     /// A type as the IR holds it, when it does: a function as a value is a closure.
     fn held(&self, ty: &Type) -> Option<Type> {
-        match ty {
-            Type::Function(key) => self.context.arrow_of(key),
-            _ => self.context.holds(ty).then(|| ty.clone()),
-        }
+        let ty = self.closures_for_functions(ty)?;
+        self.context.holds(&ty).then_some(ty)
+    }
+
+    /// A type with each function named in it, as in `(add, 4)`'s, the closure it's held as.
+    pub(super) fn closures_for_functions(&self, ty: &Type) -> Option<Type> {
+        let each = |items: &[Type]| {
+            items.iter().map(|item| self.closures_for_functions(item)).collect::<Option<Vec<_>>>()
+        };
+        Some(match ty {
+            Type::Function(key) => self.context.arrow_of(key)?,
+            Type::Tuple(items) => Type::Tuple(each(items)?),
+            Type::List(item) => Type::List(Box::new(self.closures_for_functions(item)?)),
+            Type::Optional(item) => Type::Optional(Box::new(self.closures_for_functions(item)?)),
+            other => other.clone(),
+        })
     }
 
     /// Lowers statements in order. Code after leaving early never runs, so it's skipped.

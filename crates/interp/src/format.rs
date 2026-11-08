@@ -127,15 +127,38 @@ pub fn float(x: f64) -> String {
     }
 }
 
+/// An `f32`, held as the `f64` that's exactly it, written as `float` writes a float, from the
+/// shortest digits that read back as that `f32`: `0.1`, not `0.10000000149011612`.
+#[expect(clippy::cast_possible_truncation, reason = "the value is exactly an f32")]
+#[expect(clippy::float_cmp, reason = "checking for a whole number is an exact comparison")]
+pub(crate) fn float32(wide: f64) -> String {
+    let x = wide as f32;
+    if x.is_nan() {
+        "nan".to_owned()
+    } else if x.is_infinite() {
+        if x.is_sign_positive() { "inf".to_owned() } else { "-inf".to_owned() }
+    } else if x != 0.0 && !(1e-4..1e16).contains(&x.abs()) {
+        exponent_as_python(&format!("{x:e}"))
+    } else if x == x.trunc() {
+        format!("{x}.0")
+    } else {
+        format!("{x}")
+    }
+}
+
 /// `1.5e+17` and `1e-05`, as Python writes them.
 fn scientific(x: f64) -> String {
-    let text = format!("{x:e}");
+    exponent_as_python(&format!("{x:e}"))
+}
+
+/// Rust's exponent, as in `1.5e17`, written as Python writes it: `1.5e+17`.
+fn exponent_as_python(text: &str) -> String {
     match text.split_once('e') {
         Some((mantissa, exponent)) => {
             let (sign, digits) = exponent.strip_prefix('-').map_or(("+", exponent), |digits| ("-", digits));
             format!("{mantissa}e{sign}{digits:0>2}")
         }
-        None => text,
+        None => text.to_owned(),
     }
 }
 
@@ -163,6 +186,29 @@ pub(crate) fn with_spec(value: &Value, spec: &str) -> Result<String, String> {
         }
     };
     Ok(if comma { thousands(&text) } else { text })
+}
+
+/// `with_spec` for a `u64`: one that fits an `int` formats as that int does, and a bigger one
+/// takes only the plain and `,` formats.
+pub(crate) fn with_spec_u64(n: u64, spec: &str) -> Result<String, String> {
+    if let Ok(fits) = i64::try_from(n) {
+        return with_spec(&Value::Int(fits), spec);
+    }
+    match spec {
+        "" | "d" => Ok(n.to_string()),
+        "," | ",d" => Ok(thousands(&n.to_string())),
+        _ => Err(format!("the format `{spec}` isn't built yet for a `u64` of 2^63 or more")),
+    }
+}
+
+/// `with_spec` for an `f32`, held as the `f64` that's exactly it: with a precision it's that
+/// float's, and without one it's the shortest text that reads back as the `f32`.
+pub(crate) fn with_spec_f32(wide: f64, spec: &str) -> Result<String, String> {
+    match spec {
+        "" | "f" => Ok(float32(wide)),
+        "," | ",f" => Ok(thousands(&float32(wide))),
+        _ => with_spec(&Value::Float(wide), spec),
+    }
 }
 
 fn thousands(number: &str) -> String {

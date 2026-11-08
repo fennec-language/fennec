@@ -2948,6 +2948,27 @@ fn a_type_with_its_own_str_prints_through_it() {
     );
 }
 
+/// Two `with` blocks over one generic source, of different types, in one function: each written-in
+/// copy of the source's text has types of its own, so neither takes the other's.
+#[test]
+fn two_channels_of_different_types_in_one_function_lower() {
+    let source = "from std.concurrent import Channel, Closed, Timeout\n\n\
+        def main(stdout: Stdout) fails Closed | Timeout:\n    \
+        with Channel[int].open(size=4) as numbers:\n        numbers.send(1)?\n        stdout.print(numbers.receive()?)\n    \
+        with Channel[list[float]].open(size=1) as lists:\n        lists.send([1.5])?\n        stdout.print(lists.receive()?)\n";
+    let program = lowered(source).unwrap();
+    assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
+}
+
+/// `with launch(...)`, written in as a source, lowers: its task as a closure given to
+/// `intrinsics.launch`, and its end through `intrinsics.launch_end`.
+#[test]
+fn with_launch_lowers() {
+    let source = "from std.concurrent import Closed, Crashed, Inbox, Timeout\n\nenum Sound:\n    Play(name: str, volume: float)\n    StopAll\n\nerror Muted:\n    why: str\n\ndef audio(inbox: Inbox[Sound], stdout: Stdout) fails Muted:\n    for sound in inbox:\n        match sound:\n            case .Play(name, volume):\n                if volume > 1.0: fail Muted(why=\"too loud\")\n                stdout.print(f\"play {name}\")\n            case .StopAll:\n                stdout.print(\"stop\")\n\ndef tick(stdout: Stdout):\n    stdout.print(\"tick\")\n\ndef main(stdout: Stdout) fails Closed | Crashed | Muted | Timeout:\n    with launch((inbox) => audio(inbox, stdout), stop_after=5s, inbox_size=4)? as sounds:\n        sounds.send(.Play(name=\"jump\", volume=0.8))?\n        sounds.send(.StopAll)?\n    with launch(() => tick(stdout))?:\n        stdout.print(\"ticking\")\n";
+    let program = lowered(source).unwrap();
+    assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
+}
+
 #[test]
 fn a_result_passed_on_fails_every_way_its_function_can() {
     // `outer` fails with `Worse` itself and passes up `inner`'s failure, which is `Bad`, so it

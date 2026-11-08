@@ -183,6 +183,10 @@ impl FnCx<'_> {
         if matches!(name, "len" | "abs") || builtins::is_builtin(name) {
             return Some(self.call_global(name, callee, args, span));
         }
+        // `with launch(...)`, the one place `launch` is written.
+        if name == "launch" {
+            return Some(self.launch(args, span));
+        }
         None
     }
 
@@ -238,13 +242,26 @@ impl FnCx<'_> {
         given: (&[Arg], &[Type]),
         span: Span,
     ) -> Type {
+        self.call_through(key, name, given, 0, span)
+    }
+
+    /// Calls a function, as `call_with_types` does, where the first `through` types written are
+    /// those of the type a static method is called through: `Job` in `Channel[Job].open(size=4)`.
+    fn call_through(
+        &mut self,
+        key: &str,
+        name: &str,
+        given: (&[Arg], &[Type]),
+        through: usize,
+        span: Span,
+    ) -> Type {
         let (args, types) = given;
         let Some(signature) = self.checker.signature(key) else {
             self.ignore_args(args);
             return Type::Unknown;
         };
         let entry = self.checker.program.functions.get(key);
-        let own = entry.map_or(types.len(), |entry| written_generics(&entry.def.generics));
+        let own = entry.map_or(types.len(), |entry| written_generics(&entry.def.generics) + through);
         if !self.takes_types(name, own, types, span) {
             self.ignore_args(args);
             return Type::Unknown;
@@ -405,6 +422,37 @@ impl FnCx<'_> {
         if let Some(type_name) = self.as_type_name(object) {
             return self.static_call(type_name, method, args, span);
         }
+        // `u8.from(x)`: a function on a sized number type, from the standard library.
+        if let ExprKind::Name(size) = &object.kind
+            && self.lookup(size).is_none()
+            && crate::types::Num::named(size).is_some()
+        {
+            let size = size.clone();
+            return self.static_call(&size, method, args, span);
+        }
+        // `Channel[Job].open(size=4)`: a static method, with the type's parameters written.
+        if let ExprKind::Index { object: written, index } = &object.kind
+            && let Some(type_name) = self.as_type_name(written)
+            && self.checker.program.type_info(type_name).is_some()
+        {
+            // A static method's type parameters start with its type's, so they're given first.
+            let types = self.types_in(index);
+            let through = self.checker.program.type_info(type_name).map_or(0, |info| info.def.generics.len());
+            if types.len() != through {
+                let takes = if through == 1 { "1 type".to_owned() } else { format!("{through} types") };
+                let message =
+                    format!("`{type_name}` takes {takes} in brackets, but this gives {}", types.len());
+                self.error(Diagnostic::new(message, index.span));
+                self.ignore_args(args);
+                return Type::Unknown;
+            }
+            return match self.checker.program.method(type_name, method) {
+                Some((key, entry)) if !entry.def.takes_self() => {
+                    self.call_through(&key, method, (args, &types), through, span)
+                }
+                _ => self.static_call(type_name, method, args, span),
+            };
+        }
         if let ExprKind::Name(param) = &object.kind
             && self.lookup(param).is_none()
             && self.generics.iter().any(|generic| generic.name == *param)
@@ -441,11 +489,19 @@ impl FnCx<'_> {
                         let takes_self = entry.def.takes_self();
                         self.call_method(call, ty, (&key, takes_self))
                     }
+                    // Every error's notes, which the language gives each `error` type.
+                    None if matches!(method, "notes" | "add_note") && self.checker.is_error_type(ty) => {
+                        self.note_method(object, method, args, span)
+                    }
                     // Methods written in Rust, like `Regex`'s.
                     None => self.builtin_method(object, ty, method, args, span),
                 }
             }
             Type::Param(name) => self.interface_call(call, name),
+            // A failure that's one of several errors has notes too: each error does.
+            Type::Errors(_) if matches!(method, "notes" | "add_note") => {
+                self.note_method(object, method, args, span)
+            }
             Type::Union(members) => self.union_method(call, members),
             Type::Unknown | Type::Var(_) => {
                 self.ignore_args(args);
@@ -610,6 +666,33 @@ impl FnCx<'_> {
                     .with_help("write it as a string, like `.expect(\"the file was just written\")`"),
             );
         }
+    }
+
+    /// `failure.notes()`, the notes an error carries, as Python's exceptions do, or
+    /// `failure.add_note(text)`, which adds one and so needs the error in a mut name.
+    fn note_method(&mut self, object: &Expr, method: &str, args: &[Arg], span: Span) -> Type {
+        if method == "notes" {
+            if !args.is_empty() {
+                self.error(Diagnostic::new("`notes()` takes nothing", span));
+                self.ignore_args(args);
+            }
+            return Type::list(Type::Str);
+        }
+        if let [Arg { name: None, value, .. }] = args {
+            let given = self.expr_as(value, &Type::Str);
+            if !self.checker.fits(&Type::Str, &given) {
+                let message = format!("`add_note` takes the note's text, a str, but this is {}", a(&given));
+                self.error(
+                    Diagnostic::new(message, value.span)
+                        .with_help("write it as text, like `f\"while {what}\"`"),
+                );
+            }
+        } else {
+            self.error(Diagnostic::new("`add_note` takes the note's text", span));
+            self.ignore_args(args);
+        }
+        self.mut_place(object, "`add_note` changes its error, so call it on something held in a mut name");
+        Type::Unit
     }
 
     /// Calls a method on a value of type `receiver`. A `mut self` method needs its value in

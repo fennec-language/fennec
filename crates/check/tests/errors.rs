@@ -160,6 +160,34 @@ fn a_function_that_can_fail_says_fails() {
     assert_eq!(crate::problems_as_written(&fixed), Vec::<String>::new());
 }
 
+/// Every `error` type carries notes, as Python's exceptions do: `notes()` reads them and
+/// `add_note(text)` adds one, which changes the error, so it needs a mut name. Other types have
+/// neither.
+#[test]
+fn an_error_carries_notes() {
+    let found = |body: &str| crate::in_main_after(RISKY, body);
+    let empty: [&str; 0] = [];
+    assert_eq!(
+        found(
+            "match risky(5):\n    case Ok(n): pass\n    case Err(failure):\n        mut noted = failure\n        noted.add_note('while loading')\n        texts: list[str] = noted.notes()\n        _ = texts\n"
+        ),
+        empty
+    );
+    assert_eq!(
+        found(
+            "match risky(5):\n    case Ok(n): pass\n    case Err(failure):\n        failure.add_note('x')\n"
+        ),
+        ["`failure` isn't mut @ failure"]
+    );
+    assert_eq!(
+        found(
+            "match risky(5):\n    case Ok(n): pass\n    case Err(failure):\n        mut noted = failure\n        noted.add_note(3)\n"
+        ),
+        ["`add_note` takes the note's text, a str, but this is an int @ 3"]
+    );
+    assert_eq!(found("p = player('a')?\n_ = p.notes()\n").len(), 1);
+}
+
 #[test]
 fn ignored_results_are_mistakes() {
     let program = "

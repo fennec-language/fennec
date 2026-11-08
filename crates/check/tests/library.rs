@@ -250,3 +250,89 @@ fn a_program_to_emit_is_checked_through_what_lowering_calls() {
     // What nothing reaches, and lowering never calls on its own, isn't.
     assert!(signatures.get("Deque.appendleft").is_none());
 }
+
+/// `std.concurrent`'s channels check, and `with Channel[Job].open(size=4) as jobs:`, a generic
+/// source called through its type, is written in where it's used with `Job` for its `T`, so what
+/// runs is the source's own body.
+#[test]
+fn a_channel_opens_through_its_generic_source() {
+    let source = "from std.concurrent import Channel, Closed, Inbox, Sender, Timeout\n\n\
+        enum Job:\n    Build(name: str)\n    Stop\n\n\
+        def drain(inbox: Inbox[Job]) -> int:\n    mut count = 0\n    for job in inbox:\n        match job:\n            \
+        case .Build(name):\n                count += name.len()\n            case .Stop:\n                return count\n    count\n\n\
+        def main(stdout: Stdout) fails Closed | Timeout:\n    with Channel[Job].open(size=4) as jobs:\n        \
+        sender: Sender[Job] = jobs.sender()\n        sender.send(.Build(name=\"core\"))?\n        jobs.send(.Stop, timeout=1s)?\n        \
+        stdout.print(drain(jobs.inbox()))\n";
+    let mut module = fennec_syntax::parse(source).unwrap();
+    fennec_check::check_and_resolve(&mut module).unwrap();
+    // What's written in checks as it stands, as a build checks it again once trimmed.
+    assert_eq!(fennec_check::check(&module).err(), None);
+    let mut made = Vec::new();
+    fennec_syntax::visit::exprs_mut(&mut module, &mut |expr| {
+        if let fennec_syntax::ExprKind::Name(name) = &expr.kind
+            && name.contains("channel_")
+        {
+            made.push(name.clone());
+        }
+    });
+    for written in ["channel_new", "channel_close", "channel_free"] {
+        assert!(made.iter().any(|name| name.ends_with(written)), "{made:?}");
+    }
+    assert_eq!(
+        problems(
+            "from std.concurrent import Channel\n\ndef main():\n    with Channel[int, str].open(size=1) as jobs:\n        pass\n"
+        ),
+        ["`Channel` takes 1 type in brackets, but this gives 2 @ int, str"]
+    );
+}
+
+/// `with launch(...)` checks, and is written in as a source around `std.intrinsics`' `launch` and
+/// `launch_end`, with and without an inbox: what's written in checks as it stands, as a build
+/// checks it again once trimmed.
+#[test]
+fn with_launch_is_written_in_around_the_launch_intrinsics() {
+    let source = "from std.concurrent import Closed, Crashed, Inbox, Timeout\n\nenum Sound:\n    Play(name: str, volume: float)\n    StopAll\n\nerror Muted:\n    why: str\n\ndef audio(inbox: Inbox[Sound], stdout: Stdout) fails Muted:\n    for sound in inbox:\n        match sound:\n            case .Play(name, volume):\n                if volume > 1.0: fail Muted(why=\"too loud\")\n                stdout.print(f\"play {name}\")\n            case .StopAll:\n                stdout.print(\"stop\")\n\ndef tick(stdout: Stdout):\n    stdout.print(\"tick\")\n\ndef main(stdout: Stdout) fails Closed | Crashed | Muted | Timeout:\n    with launch((inbox) => audio(inbox, stdout), stop_after=5s, inbox_size=4)? as sounds:\n        sounds.send(.Play(name=\"jump\", volume=0.8))?\n        sounds.send(.StopAll)?\n    with launch(() => tick(stdout))?:\n        stdout.print(\"ticking\")\n";
+    let mut module = fennec_syntax::parse(source).unwrap();
+    fennec_check::check_and_resolve(&mut module).unwrap();
+    assert_eq!(fennec_check::check(&module).err(), None);
+    let mut made = Vec::new();
+    fennec_syntax::visit::exprs_mut(&mut module, &mut |expr| {
+        if let fennec_syntax::ExprKind::Name(name) = &expr.kind
+            && name.starts_with("intrinsics.")
+        {
+            made.push(name.clone());
+        }
+    });
+    for written in
+        ["intrinsics.launch", "intrinsics.launch_end", "intrinsics.channel_new", "intrinsics.channel_free"]
+    {
+        assert!(made.iter().any(|name| name == written), "{made:?}");
+    }
+}
+
+/// What `with launch` asks of what it's given.
+#[test]
+fn with_launch_takes_an_arrow_its_inbox_and_its_own_options() {
+    let program = |body: &str| {
+        problems(&format!(
+            "from std.concurrent import Crashed, Inbox\n\ndef work(inbox: Inbox[int]):\n    pass\n\n\
+             def plain():\n    pass\n\ndef main():\n{body}"
+        ))
+    };
+    assert_eq!(
+        program("    task = launch(() => plain())\n"),
+        ["`launch` is only ever written as `with launch(...)` @ launch(() => plain())"]
+    );
+    assert_eq!(
+        program("    with launch(plain)?:\n        pass\n"),
+        ["`launch` takes an arrow: the call you'd write anyway @ plain"]
+    );
+    assert_eq!(
+        program("    with launch(() => plain(), inbox_size=4)?:\n        pass\n"),
+        ["this task takes no inbox, so it has no `inbox_size=` @ 4"]
+    );
+    assert_eq!(
+        program("    with launch((inbox) => work(inbox), size=4)?:\n        pass\n"),
+        ["`launch` takes the task, then `stop_after=` and `inbox_size=` @ 4"]
+    );
+}

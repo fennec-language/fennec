@@ -309,6 +309,8 @@ impl Encode for Element {
             Element::Int => to.tag(0),
             Element::Float => to.tag(1),
             Element::Bool => to.tag(2),
+            Element::U64 => to.tag(12),
+            Element::F32 => to.tag(13),
             Element::Struct { name, fields } => {
                 to.tag(3);
                 name.encode(to);
@@ -349,6 +351,8 @@ impl Decode for Element {
             0 => Element::Int,
             1 => Element::Float,
             2 => Element::Bool,
+            12 => Element::U64,
+            13 => Element::F32,
             3 => Element::Struct { name: Decode::decode(from)?, fields: Decode::decode(from)? },
             4 => Element::Boxed(Decode::decode(from)?),
             5 => Element::Str,

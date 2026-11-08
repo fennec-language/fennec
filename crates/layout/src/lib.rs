@@ -21,6 +21,11 @@ pub enum Ty {
     Int,
     Float,
     Bool,
+    /// A `u64`: its 64 bits in a word, shown unsigned.
+    U64,
+    /// An `f32`: in a word as the `f64` that's exactly its value, shown as the shortest text that
+    /// reads back as that `f32`.
+    F32,
     /// Nothing at all: what a function without a value returns.
     Unit,
     /// A capability, like `stdout`, which needs nothing at run time.
@@ -106,6 +111,8 @@ pub enum ListItem {
     Int,
     Float,
     Bool,
+    U64,
+    F32,
     /// A plain struct or enum, by its layout's number.
     Struct(u32),
     /// The address of a string's block, which the list owns.
@@ -124,6 +131,8 @@ impl ListItem {
             Ty::Int => ListItem::Int,
             Ty::Float => ListItem::Float,
             Ty::Bool => ListItem::Bool,
+            Ty::U64 => ListItem::U64,
+            Ty::F32 => ListItem::F32,
             Ty::Struct(id) => ListItem::Struct(id),
             Ty::Str => ListItem::Str,
             Ty::Boxed(id) => ListItem::Boxed(id),
@@ -138,6 +147,8 @@ impl ListItem {
             ListItem::Int => Ty::Int,
             ListItem::Float => Ty::Float,
             ListItem::Bool => Ty::Bool,
+            ListItem::U64 => Ty::U64,
+            ListItem::F32 => Ty::F32,
             ListItem::Struct(id) => Ty::Struct(id),
             ListItem::Str => Ty::Str,
             ListItem::Boxed(id) => Ty::Boxed(id),
@@ -167,6 +178,8 @@ impl Ty {
             Ty::Int => "int",
             Ty::Float => "float",
             Ty::Bool => "bool",
+            Ty::U64 => "u64",
+            Ty::F32 => "f32",
             Ty::Unit => "nothing",
             Ty::Cap(cap) => cap.name(),
             Ty::Obj => "value",
@@ -273,6 +286,8 @@ fn describe_numbered(layouts: &Layouts, ty: Ty, numbering: &Numbering) -> Option
     };
     Some(match ty {
         Ty::Int => Element::Int,
+        Ty::U64 => Element::U64,
+        Ty::F32 => Element::F32,
         Ty::Float => Element::Float,
         Ty::Bool => Element::Bool,
         Ty::Boxed(id) => Element::Boxed(usize::try_from(numbering.number(id)?).ok()?),

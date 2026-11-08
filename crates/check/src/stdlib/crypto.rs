@@ -13,7 +13,10 @@ pub(crate) const MODULE: Module = Module {
     construct: no_checks,
 };
 
-const FUNCTIONS: [Function; 6] = [
+const FUNCTIONS: [Function; 9] = [
+    takes("crypto._add", (2, 2)),
+    takes("crypto._end", (1, 1)),
+    takes("crypto._start", (1, 1)),
     takes("crypto.blake3", (1, 1)),
     takes("crypto.derive_key", (2, 2)),
     takes("crypto.equal", (2, 2)),
@@ -33,13 +36,53 @@ fn arguments(name: &str) -> [(Option<&'static str>, bool); 2] {
     }
 }
 
-fn result(cx: &mut FnCx<'_>, name: &str, plain: &[(Type, Span)], _: Span) -> Type {
+/// What `crypto.fen` writes hashes of many chunks with: a hash started, given each chunk, then
+/// ended in its hex.
+fn pieces(name: &str) -> Type {
+    match name {
+        "crypto._start" => Type::Int,
+        "crypto._add" => Type::Unit,
+        _ => Type::Str,
+    }
+}
+
+/// The function in `crypto.fen` that hashes `ty`'s chunks, when it's a list or an iterator of
+/// text or bytes, like `crypto.blake3_of_bytes_chunks`.
+fn of_chunks(cx: &mut FnCx<'_>, name: &str, ty: &Type) -> Option<String> {
+    let (item, form) = match cx.checker.settled(ty) {
+        Type::List(item) => (*item, "list"),
+        Type::Iterator(item) => (*item, "chunks"),
+        _ => return None,
+    };
+    let given = match cx.checker.settled(&item) {
+        Type::Str => "str",
+        Type::Bytes => "bytes",
+        _ => return None,
+    };
+    Some(format!("{name}_of_{given}_{form}"))
+}
+
+fn result(cx: &mut FnCx<'_>, name: &str, plain: &[(Type, Span)], span: Span) -> Type {
+    if name.starts_with("crypto._") {
+        return pieces(name);
+    }
+    if matches!(name, "crypto.blake3" | "crypto.sha256")
+        && let [(ty, _)] = plain
+        && let Some(written) = of_chunks(cx, name, ty)
+    {
+        cx.checker.std_calls.insert((span.start, span.end), written);
+        return Type::Str;
+    }
     for ((ty, at), (what, bytes_too)) in plain.iter().zip(arguments(name)) {
         let ty = cx.checker.settled(ty);
         let fits = matches!(ty, Type::Str | Type::Unknown | Type::Var(_)) || (bytes_too && ty == Type::Bytes);
         if !fits {
-            let wanted = if bytes_too { "a str or bytes" } else { "a str" };
             let short = name.trim_start_matches("crypto.");
+            let wanted = match (bytes_too, short) {
+                (true, "blake3" | "sha256") => "a str or bytes, or a list or iterator of them",
+                (true, _) => "a str or bytes",
+                (false, _) => "a str",
+            };
             let message = match what {
                 Some(what) => format!("`{short}`'s {what} should be {wanted}, but this is {}", a(&ty)),
                 None => format!("`{short}` takes {wanted}, but this is {}", a(&ty)),

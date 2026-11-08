@@ -1,0 +1,53 @@
+## What `blake3(chunks)` and `sha256(chunks)` are written with: each chunk, text or `bytes`, is given
+## to the hash in turn, so a file far bigger than memory hashes in a few kilobytes, as
+## `blake3(file.chunks(1_000_000))` does. The checker sends a call here when what's hashed is a list
+## or an iterator of chunks.
+from std import crypto
+
+def blake3_of_str_chunks(chunks: Iterator[str]) -> str:
+    handle = crypto._start("blake3")
+    for chunk in chunks:
+        crypto._add(handle, chunk)
+    crypto._end(handle)
+
+def blake3_of_str_list(chunks: list[str]) -> str:
+    handle = crypto._start("blake3")
+    for chunk in chunks:
+        crypto._add(handle, chunk)
+    crypto._end(handle)
+
+def blake3_of_bytes_chunks(chunks: Iterator[bytes]) -> str:
+    handle = crypto._start("blake3")
+    for chunk in chunks:
+        crypto._add(handle, chunk)
+    crypto._end(handle)
+
+def blake3_of_bytes_list(chunks: list[bytes]) -> str:
+    handle = crypto._start("blake3")
+    for chunk in chunks:
+        crypto._add(handle, chunk)
+    crypto._end(handle)
+
+def sha256_of_str_chunks(chunks: Iterator[str]) -> str:
+    handle = crypto._start("sha256")
+    for chunk in chunks:
+        crypto._add(handle, chunk)
+    crypto._end(handle)
+
+def sha256_of_str_list(chunks: list[str]) -> str:
+    handle = crypto._start("sha256")
+    for chunk in chunks:
+        crypto._add(handle, chunk)
+    crypto._end(handle)
+
+def sha256_of_bytes_chunks(chunks: Iterator[bytes]) -> str:
+    handle = crypto._start("sha256")
+    for chunk in chunks:
+        crypto._add(handle, chunk)
+    crypto._end(handle)
+
+def sha256_of_bytes_list(chunks: list[bytes]) -> str:
+    handle = crypto._start("sha256")
+    for chunk in chunks:
+        crypto._add(handle, chunk)
+    crypto._end(handle)

@@ -66,6 +66,9 @@ pub(crate) struct Checker {
     pub(crate) failing_steps: BTreeSet<(u32, u32)>,
     /// What each name for a standard library function written in Fennec means.
     pub(crate) std_names: BTreeMap<(u32, u32), String>,
+    /// The calls a standard library function written in Fennec makes instead, by the call's
+    /// span, like `crypto.blake3(chunks)` of many chunks.
+    pub(crate) std_calls: BTreeMap<(u32, u32), String>,
     /// The field each value given by position goes to, by the value's span, where that isn't
     /// the field at its position: from outside a type, the `_` fields are skipped.
     pub(crate) field_args: BTreeMap<(u32, u32), String>,
@@ -158,6 +161,7 @@ impl Checker {
             optional_steps: BTreeSet::new(),
             failing_steps: BTreeSet::new(),
             std_names: BTreeMap::new(),
+            std_calls: BTreeMap::new(),
             field_args: BTreeMap::new(),
             named_patterns: BTreeMap::new(),
             shared_values: BTreeMap::new(),
@@ -261,6 +265,7 @@ impl Checker {
             optional_steps: self.optional_steps,
             failing_steps: self.failing_steps,
             std_names: self.std_names,
+            std_calls: self.std_calls,
             field_args: self.field_args,
             named_patterns: self.named_patterns,
             shared_values: self.shared_values,

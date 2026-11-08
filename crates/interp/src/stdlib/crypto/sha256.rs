@@ -19,22 +19,63 @@ const BLOCK: usize = 64;
 
 /// The SHA-256 digest of `data`.
 pub(super) fn digest(data: &[u8]) -> [u8; 32] {
-    let mut state = START;
-    let bits = u64::try_from(data.len()).unwrap_or(u64::MAX).wrapping_mul(8);
-    let mut padded = data.to_vec();
-    padded.push(0x80);
-    while padded.len() % BLOCK != BLOCK - 8 {
-        padded.push(0);
+    let mut hasher = Hasher::new();
+    hasher.update(data);
+    hasher.finish()
+}
+
+/// SHA-256 over bytes given a piece at a time, with only a block's worth held between them.
+pub(crate) struct Hasher {
+    state: [u32; 8],
+    /// What's been given since the last whole block.
+    waiting: Vec<u8>,
+    /// How many bytes have been given in all.
+    length: u64,
+}
+
+impl Hasher {
+    pub(crate) fn new() -> Self {
+        Hasher { state: START, waiting: Vec::with_capacity(BLOCK), length: 0 }
     }
-    padded.extend_from_slice(&bits.to_be_bytes());
-    for block in padded.as_chunks::<BLOCK>().0 {
-        compress(&mut state, block);
+
+    pub(crate) fn update(&mut self, mut data: &[u8]) {
+        self.length = self.length.wrapping_add(u64::try_from(data.len()).unwrap_or(u64::MAX));
+        if !self.waiting.is_empty() {
+            let wanted = (BLOCK - self.waiting.len()).min(data.len());
+            let (taken, rest) = data.split_at(wanted);
+            self.waiting.extend_from_slice(taken);
+            data = rest;
+            if self.waiting.len() == BLOCK {
+                if let Ok(block) = <&[u8; BLOCK]>::try_from(self.waiting.as_slice()) {
+                    compress(&mut self.state, block);
+                }
+                self.waiting.clear();
+            }
+        }
+        let (blocks, rest) = data.as_chunks::<BLOCK>();
+        for block in blocks {
+            compress(&mut self.state, block);
+        }
+        self.waiting.extend_from_slice(rest);
     }
-    let mut out = [0u8; 32];
-    for (word, chunk) in state.iter().zip(out.as_chunks_mut::<4>().0) {
-        *chunk = word.to_be_bytes();
+
+    pub(crate) fn finish(mut self) -> [u8; 32] {
+        let bits = self.length.wrapping_mul(8);
+        let mut tail = std::mem::take(&mut self.waiting);
+        tail.push(0x80);
+        while tail.len() % BLOCK != BLOCK - 8 {
+            tail.push(0);
+        }
+        tail.extend_from_slice(&bits.to_be_bytes());
+        for block in tail.as_chunks::<BLOCK>().0 {
+            compress(&mut self.state, block);
+        }
+        let mut out = [0u8; 32];
+        for (word, chunk) in self.state.iter().zip(out.as_chunks_mut::<4>().0) {
+            *chunk = word.to_be_bytes();
+        }
+        out
     }
-    out
 }
 
 /// The 64 words a block is spread into: its own 16, then each worked out from earlier ones.
@@ -107,6 +148,18 @@ mod tests {
     }
 
     /// The examples from FIPS 180-4 and NIST's test vectors.
+    #[test]
+    fn a_digest_given_in_pieces_is_the_same() {
+        let data: Vec<u8> = (0..1000u32).map(|at| (at * 7 % 251) as u8).collect();
+        for size in [1, 3, 63, 64, 65, 100, 999] {
+            let mut hasher = super::Hasher::new();
+            for piece in data.chunks(size) {
+                hasher.update(piece);
+            }
+            assert_eq!(hasher.finish(), digest(&data), "pieces of {size}");
+        }
+    }
+
     #[test]
     fn digests_match_the_standard() {
         let cases: [(&[u8], &str); 4] = [

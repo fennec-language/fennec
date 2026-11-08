@@ -5,6 +5,9 @@
 
 mod sha256;
 
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex, PoisonError};
+
 use fennec_syntax::{Diagnostic, Span};
 
 use super::{Module, no_constants};
@@ -15,6 +18,9 @@ use crate::value::Value;
 
 pub(crate) const MODULE: Module = Module {
     functions: &[
+        "crypto._add",
+        "crypto._end",
+        "crypto._start",
         "crypto.blake3",
         "crypto.derive_key",
         "crypto.equal",
@@ -49,8 +55,58 @@ fn call(_: &mut Interp<'_>, name: &str, args: Vec<CallArg>, span: Span) -> Resul
     run(name, &plain(args, name, span)?, span)
 }
 
+/// A hash being worked out a piece at a time, for `blake3` or `sha256` of chunks, by its handle.
+enum Hashing {
+    Blake3(Box<fennec_blake3::Hasher>),
+    Sha256(sha256::Hasher),
+}
+
+static HASHING: LazyLock<Mutex<HashMap<i64, Hashing>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static NEXT: LazyLock<Mutex<i64>> = LazyLock::new(|| Mutex::new(1));
+
+/// `crypto._start(kind)`, `crypto._add(handle, data)` and `crypto._end(handle)`: a hash of many
+/// pieces, which `crypto.fen` gives each chunk to in turn.
+fn hashing(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    let wrong = || Diagnostic::new(format!("`{name}` was called with the wrong arguments"), span);
+    let mut open = HASHING.lock().unwrap_or_else(PoisonError::into_inner);
+    match (name, values) {
+        ("crypto._start", [Value::Str(kind)]) => {
+            let hashing = match kind.as_ref() {
+                "blake3" => Hashing::Blake3(Box::new(fennec_blake3::Hasher::new())),
+                "sha256" => Hashing::Sha256(sha256::Hasher::new()),
+                _ => return Err(wrong()),
+            };
+            let mut next = NEXT.lock().unwrap_or_else(PoisonError::into_inner);
+            let handle = *next;
+            *next += 1;
+            open.insert(handle, hashing);
+            Ok(Value::Int(handle))
+        }
+        ("crypto._add", [Value::Int(handle), data]) => {
+            let data = bytes_of(data).ok_or_else(|| Diagnostic::new("a chunk to hash is text or bytes", span))?;
+            match open.get_mut(handle) {
+                Some(Hashing::Blake3(hasher)) => {
+                    hasher.update(data);
+                }
+                Some(Hashing::Sha256(hasher)) => hasher.update(data),
+                None => return Err(wrong()),
+            }
+            Ok(Value::Unit)
+        }
+        ("crypto._end", [Value::Int(handle)]) => match open.remove(handle) {
+            Some(Hashing::Blake3(hasher)) => Ok(hex(hasher.finalize().as_bytes())),
+            Some(Hashing::Sha256(hasher)) => Ok(hex(&hasher.finish())),
+            None => Err(wrong()),
+        },
+        _ => Err(wrong()),
+    }
+}
+
 /// One of these functions, which need nothing of the interpreter.
 pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    if name.starts_with("crypto._") {
+        return hashing(name, values, span);
+    }
     let wrong = || Diagnostic::new(format!("`{name}` takes text or bytes"), span);
     let data = |at: usize| values.get(at).and_then(bytes_of).ok_or_else(wrong);
     match name {

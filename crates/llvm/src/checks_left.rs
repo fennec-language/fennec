@@ -295,6 +295,23 @@ mod tests {
         Ok(())
     }
 
+    /// A loop taking a list 4 items a turn, `while at + 4 <= n:`, reads `items[at]` to
+    /// `items[at + 3]` with no check, and `at + 1` to `at + 3` can't overflow: the guard says
+    /// they're in range. A read past what the guard covers, `items[at + 4]`, keeps its check.
+    #[test]
+    fn a_guard_taking_k_items_a_turn_covers_their_reads() -> Result<(), String> {
+        let covered = "def go(items: list[float]) -> float:\n    n = items.len()\n    mut a = 0.0\n    mut b = 0.0\n    mut at = 0\n    while at + 4 <= n:\n        a += items[at] + items[at + 1]\n        b += items[at + 2] + items[at + 3]\n        at += 4\n    a + b\n";
+        let found = kept(covered)?;
+        assert!(!found.iter().any(|(what, _)| *what == CheckKind::Bounds), "{found:?}");
+        let overflows = found.iter().filter(|(what, _)| *what == CheckKind::Overflow).count();
+        // `at + 4` in the guard, and `at += 4`.
+        assert_eq!(overflows, 2, "{found:?}");
+        let past = covered.replace("items[at + 3]", "items[at + 4]");
+        let found = kept(&past)?;
+        assert_eq!(found.iter().filter(|(what, _)| *what == CheckKind::Bounds).count(), 1, "{found:?}");
+        Ok(())
+    }
+
     /// An index read twice is checked once, until something could change the list or the index.
     #[test]
     fn an_index_read_twice_keeps_one_check() -> Result<(), String> {

@@ -1,0 +1,12 @@
+source cc5119fb6d70c65f0536254ccde1b588fde0a88d1bdf145fa9b7da3e8f3cb13c
+code 1
+stdout 2
+1
+stderr 201
+error: this assertion failed
+  --> <dir>/assert_16.fen:31:12
+   |
+31 |     assert [1, 2] == [1, 3]
+   |            ^^^^^^^^^^^^^^^^
+   |
+   = help: the left side is [1, 2] and the right side is [1, 3]

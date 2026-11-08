@@ -1,0 +1,9 @@
+source ab4225746e5bc79cd84e2b20f2828c4c0199788a60946c22c9cd3e9245a503d0
+code 0
+stdout 144
+HELLO hello HeLLo 2 0
+WÖRLD wörld wörLd 3 0
+   None 0
+MIXED 123 mixed 123 MiXeD 123 None 0
+["a", "b", "c"] ["a", "b", "", "c"] [] ["x", "x"]
+stderr 0

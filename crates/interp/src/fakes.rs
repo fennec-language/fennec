@@ -40,7 +40,7 @@ pub(crate) struct TestWorld {
     pub(crate) variables: BTreeMap<String, String>,
     /// The test's network, in memory.
     pub(crate) net: crate::stdlib::net::Fake,
-    /// The test's SQLite databases, in memory, by path.
+    /// The test's SQLite databases, by path, each in a file of the test's own.
     pub(crate) databases: crate::stdlib::sqlite::Fakes,
 }
 

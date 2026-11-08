@@ -1,0 +1,13 @@
+source 890d59bebce27855bb5875ad9e132207a41bc361cc7e6385934bbcf5f9fea2f5
+code 0
+stdout 232
+{1.5, 2.5} True False 2 [1.5, 2.5] ["a", "b"]
+{1.5, 3.5} 2 [1.5, 3.5] 5.0
+True True
+{0.0} 1
+{-0.0} 1 True
+1 True True False
+{1.5: "c", 2.5: "b", 0.0: "z"} c z None [1.5, 2.5, 0.0] ["c", "b", "z"]
+b {1.5: "c", 0.0: "z"} True
+7 15 14
+stderr 0

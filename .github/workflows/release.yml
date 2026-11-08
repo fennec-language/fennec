@@ -231,10 +231,42 @@ jobs:
           name: ${{ matrix.target }}
           path: ${{ env.ARCHIVE }}
 
+  # The manifest is what gets signed, offline, by hand: see docs/releases.md. Until it's signed,
+  # the launcher won't install the release. A pull request writes one too, so a change to the
+  # archives' names fails there rather than at a release.
+  manifest:
+    name: Write the release's manifest
+    if: github.event_name != 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the toolchain `rust-toolchain.toml` names
+        run: rustup toolchain install
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      # Named as the archives are: by the tag, or for a pull request by its number.
+      - run: |
+          name="${GITHUB_REF_NAME//\//-}"
+          mkdir manifest
+          cargo run --release --locked -q -p fennec-dist -- manifest toolchain "${name#v}" dist/fennec-* > "manifest/fennec-$name.manifest"
+          cat "manifest/fennec-$name.manifest"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: manifest
+          path: manifest
+
   publish:
     name: Publish the release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, manifest]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

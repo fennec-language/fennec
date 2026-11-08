@@ -1,0 +1,12 @@
+source bfe95cf904a6592d5789487ade16752d43cf7f2a331427e0dfd009b4e3ed9aa3
+code 0
+stdout 113
+1.0 1.5 True
+2.0 3.0 True False
+1.0 9.5 1.5 3 False
+7.0 1.5 3 False
+2.0 -3.0
+6 2.5
+True False
+2.500 and 6 at 1.0
+stderr 0

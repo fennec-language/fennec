@@ -1,0 +1,12 @@
+source 385f50f4dfdb3c320d58c6aea7398c9971e8fec286432f2ffcc40c8ce38758f8
+code 1
+stdout 2
+2
+stderr 170
+error: the dict has no key 3
+ --> <dir>/missing.fen:4:18
+  |
+4 |     stdout.print(d[3])
+  |                  ^^^^
+  |
+  = help: use `.get(key)`, which gives None instead

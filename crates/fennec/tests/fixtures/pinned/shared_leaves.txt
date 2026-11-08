@@ -1,0 +1,9 @@
+source 50ee200df7daa1b3694e60f691d1fe014aeec7b9f90b126159ca68575f4e055e
+code 0
+stdout 94
+2047 True False True
+Tree.Node(left=Tree.Leaf, right=Tree.Leaf) Tree.Leaf
+7 1 True
+544
+0 True
+stderr 0

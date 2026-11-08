@@ -1,0 +1,42 @@
+source 6d4eb8166ffd7dd803f6a03def7b0f9f929bad4bba6efdb243762a78ca0c26f0
+code 0
+stdout 464
+84
+42 4
+342 5
+first:1:first,second is a much longer name than fits:2:second is a much longer name than fits,é:0:é,first,second is a much longer name than fits,é
+second is a much longer name than fits:2:second is a much longer name than fits,second is a much longer name than fits
+1 1.5 1
+2 2.5 2
+a
+a word too long to fit in a header
+0
+100
+1
+2
+5
+6
+0 100 100
+0 1 1
+0 2 2
+0 5 5
+0 6 6
+1 100 100
+1 1 1
+1 2 2
+1 5 5
+1 6 6
+5
+0
+1
+2
+0 0
+0 2
+1 0
+1 0
+1 2
+2 0
+2 0
+2 2
+2 100
+stderr 0

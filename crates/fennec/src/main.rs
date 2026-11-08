@@ -44,9 +44,8 @@ use std::process::ExitCode;
 
 const USAGE: &str = "usage:
   fennec run [path] [args]  run the tests a change affects, then a kit's main or a single .fen file's,
-      built through LLVM a function at a time, or with the JIT where LLVM can't build it yet
+      built through LLVM a function at a time
   fennec run --no-test [path] [args]  run it without running the tests first
-  fennec run --jit [path] [args]  run it with the JIT instead of LLVM
   fennec run --interp [path]  run it with the interpreter instead of compiling it
   fennec build [--release] [--cpu baseline] [path] [-o out]  compile it to a native program through LLVM;
                                      --release optimizes the whole program as one;
@@ -55,7 +54,6 @@ const USAGE: &str = "usage:
   fennec test --all [path]  run every test
   fennec test --real [path]  run every test with real capabilities rather than fakes
   fennec test --verbose [path]  list the tests that pass too, not only failures and the summary
-  fennec test --jit [path]  run them on the JIT instead of LLVM
   fennec bench [path]       run its `bench` blocks: instructions and times, against the last run
   fennec new <name>         start a kit in a new folder
   fennec init               set up this folder: a kit if it's new, and Fennec's guidance in AGENTS.md
@@ -106,8 +104,6 @@ fn main() -> ExitCode {
         ["run", "--no-test", path, arguments @ ..] => run(run::Engine::Untested, path, arguments),
         ["run", "--interp"] => run(run::Engine::Interpreter, ".", &[]),
         ["run", "--interp", path, arguments @ ..] => run(run::Engine::Interpreter, path, arguments),
-        ["run", "--jit"] => run(run::Engine::NativeNoted, ".", &[]),
-        ["run", "--jit", path, arguments @ ..] => run(run::Engine::NativeNoted, path, arguments),
         ["run", "--record", log, rest @ ..] => record(log, rest),
         ["run", path, arguments @ ..] => run(run::Engine::Native, path, arguments),
         ["replay", log] => replay(log),
@@ -135,14 +131,6 @@ fn main() -> ExitCode {
         ["check", path] => on_big_stack(lint::check, path),
         ["fix"] => fix::fix("."),
         ["fix", path] => fix::fix(path),
-        ["dev", "bench", path, name, rest @ ..] if rest.is_empty() || *rest == ["--start-only"] => {
-            let (path, name, execute) = ((*path).to_owned(), (*name).to_owned(), rest.is_empty());
-            big_stack(move || bench::one(&path, &name, execute))
-        }
-        ["dev", "startup", path] => {
-            let path = (*path).to_owned();
-            big_stack(move || run::startup(&path))
-        }
         ["dev", "tokens", path] => dev(fennec_syntax::dump::tokens, path),
         ["dev", "tree", path] => dev(fennec_syntax::dump::tree, path),
         ["dev", "check", path] => dev(check_dump, path),
@@ -153,10 +141,10 @@ fn main() -> ExitCode {
         ["dev", "checks", path] => on_big_stack(fallbacks::checks, path),
         ["dev", "waits"] => on_big_stack(fallbacks::waits, "."),
         ["dev", "waits", path] => on_big_stack(fallbacks::waits, path),
-        ["dev", "fallbacks"] => on_big_stack(fallbacks::fallbacks, "."),
-        ["dev", "fallbacks", "--llvm"] => on_big_stack(fallbacks::not_lowered, "."),
-        ["dev", "fallbacks", "--llvm", path] => on_big_stack(fallbacks::not_lowered, path),
-        ["dev", "fallbacks", path] => on_big_stack(fallbacks::fallbacks, path),
+        ["dev", "fallbacks"] | ["dev", "fallbacks", "--llvm"] => on_big_stack(fallbacks::not_lowered, "."),
+        ["dev", "fallbacks", "--llvm", path] | ["dev", "fallbacks", path] => {
+            on_big_stack(fallbacks::not_lowered, path)
+        }
         ["dev", "copies"] => on_big_stack(copies::copies, "."),
         ["dev", "copies", "--run"] => on_big_stack(copies::copies_in_a_run, "."),
         ["dev", "copies", "--run", path] => on_big_stack(copies::copies_in_a_run, path),
@@ -193,7 +181,7 @@ fn on_big_stack(command: fn(&str) -> ExitCode, path: &str) -> ExitCode {
     big_stack(move || command(&path))
 }
 
-/// `fennec test [--all] [--real] [--verbose] [--jit] [path]`, on a big stack for the interpreter.
+/// `fennec test [--all] [--real] [--verbose] [path]`, on a big stack for the interpreter.
 fn test(args: &[&str]) -> ExitCode {
     let Some((path, options)) = test::Options::of(args) else {
         eprintln!("{USAGE}");
@@ -215,7 +203,6 @@ fn run(engine: run::Engine, path: &str, arguments: &[&str]) -> ExitCode {
 fn record(log: &str, rest: &[&str]) -> ExitCode {
     let (engine, words) = match rest {
         ["--interp", rest @ ..] => (run::Engine::Interpreter, rest),
-        ["--jit", rest @ ..] => (run::Engine::NativeNoted, rest),
         rest => (run::Engine::Native, rest),
     };
     let (path, arguments) = match words {
@@ -226,7 +213,6 @@ fn record(log: &str, rest: &[&str]) -> ExitCode {
     };
     let named = match engine {
         run::Engine::Interpreter => "interp",
-        run::Engine::NativeNoted => "jit",
         _ => "native",
     };
     let header =
@@ -253,7 +239,6 @@ fn replay(log: &str) -> ExitCode {
     let mut parts = header.split('\0').map(str::to_owned);
     let engine = match parts.next().as_deref() {
         Some("interp") => run::Engine::Interpreter,
-        Some("jit") => run::Engine::NativeNoted,
         _ => run::Engine::Native,
     };
     let path = parts.next().unwrap_or_else(|| ".".to_owned());

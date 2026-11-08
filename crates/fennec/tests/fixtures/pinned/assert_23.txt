@@ -1,0 +1,10 @@
+source 8010859f2d090a6ad665e1b134f2e268be06cc5f5bf83a099563a61d835b91ae
+code 1
+stdout 2
+1
+stderr 110
+error: this assertion failed
+  --> <dir>/assert_23.fen:31:12
+   |
+31 |     assert False
+   |            ^^^^^

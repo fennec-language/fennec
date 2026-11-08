@@ -1,0 +1,6 @@
+source 5f06b377ddb5a2d3ed8a8a2cecce22f3a71252a10fa938b77560fe6fbdbbaed2
+code 0
+stdout 76
+[4, 3, 2, 1] [1, 2, 3, 4] True 1 4
+[] Deque([1, 2, 3]) SortedSet([1, 2, 3])
+stderr 0

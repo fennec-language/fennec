@@ -133,6 +133,9 @@ pub(crate) struct Whole<'p> {
     pub(crate) cells: bool,
     /// The functions that can run as a parked task, which count their loops' turns.
     pub(crate) tasks: HashSet<&'p str>,
+    /// Whether its closures are blocks in the runtime's table, since it keeps one where the
+    /// runtime reads (see `closures`).
+    pub(crate) runtime_closures: bool,
 }
 
 /// What a function calls by name, a constant being a call of a function of no arguments, and a
@@ -2990,6 +2993,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         on_workers,
         cells: crate::parallel::has_cells(program),
         tasks,
+        runtime_closures: crate::closures::runtime_holds_closures(program),
     }
 }
 

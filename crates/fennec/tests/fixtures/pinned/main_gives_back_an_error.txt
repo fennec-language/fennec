@@ -1,0 +1,10 @@
+source 5ec84a53dc4560fea72529518a4f5522afe72b8474e9dd9ac6d63a4922b43f87
+code 1
+stdout 6
+first
+stderr 177
+error: `main` failed: InvalidValue(message="\"twelve\" isn't an int")
+ --> <dir>/main_gives_back_an_error.fen:4:1
+  |
+4 | def main(stdout: Stdout):
+  | ^^^^^^^^^^^^^^^^^^^^^^^^

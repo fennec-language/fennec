@@ -55,6 +55,13 @@ getrandom = { version = "=0.4.3", default-features = false }
 # system trusts, so there's no list of roots to ship and keep up to date.
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-platform-verifier = "=0.7.1"
+# Checking a release's Ed25519 signatures and hashing what they sign, for `fennec-dist`: the same
+# `ring` rustls uses above, so it adds no code to the tree. Only checking, never signing: the keys
+# that sign releases are hardware keys, offline. Under Apache-2.0 and ISC.
+ring = { version = "=0.17.14", default-features = false }
+# Inflating a release's `.tar.gz` when the launcher installs it, after its hash is checked: pure
+# Rust with no `unsafe`, the inflater most Rust tools use. Under MIT, Zlib or Apache-2.0.
+miniz_oxide = { version = "=0.8.9", default-features = false, features = ["with-alloc"] }
 # The deques of the work-stealing pool `parallel` runs on, for programs with tasks: well-tested
 # Chase-Lev deques, which would be a lot of subtle code to write again. Under MIT or Apache-2.0.
 crossbeam-deque = { version = "=0.8.8", default-features = false, features = ["std"] }
@@ -79,22 +86,17 @@ libm = { version = "=0.2.16", default-features = false }
 # and libsqlite3-sys. Without default features, there's no statement cache to pull in a second
 # hashbrown. Not on WebAssembly, where there's no disk. Under MIT, with SQLite in the public domain.
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
-cranelift-codegen = "=0.137.0"
-cranelift-frontend = "=0.137.0"
-cranelift-jit = "=0.137.0"
-cranelift-module = "=0.137.0"
-cranelift-native = "=0.137.0"
-cranelift-object = "=0.137.0"
 fennec-bench = { path = "crates/bench" }
 fennec-blake3 = { path = "crates/blake3" }
 fennec-build = { path = "crates/build" }
 fennec-check = { path = "crates/check" }
+fennec-dist = { path = "crates/dist" }
+fennec-launcher = { path = "crates/launcher" }
 fennec-count = { path = "crates/count" }
 fennec-fmt = { path = "crates/fmt" }
 fennec-fuzz = { path = "crates/fuzz" }
 fennec-ir = { path = "crates/ir" }
 fennec-parked = { path = "crates/parked" }
-fennec-jit = { path = "crates/jit" }
 fennec-layout = { path = "crates/layout" }
 fennec-llvm = { path = "crates/llvm" }
 fennec-interp = { path = "crates/interp" }

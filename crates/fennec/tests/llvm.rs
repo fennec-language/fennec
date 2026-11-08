@@ -476,6 +476,33 @@ fn same_as_the_interpreter_in_both_builds(name: &str, source: &str) -> std::io::
     Ok(())
 }
 
+/// What a program prints, built in dev and `--release` both, is `wanted`.
+fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join(name));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            wanted,
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Each kind of local passed by `mut` and used again, with what could be remembered about it
 /// before the call: where an index points, a length, a read held across the change, a dict's
 /// entry, how far a string's been read, what a loop or a closure holds, a number known to fit.
@@ -2459,6 +2486,19 @@ def main(stdout: Stdout):
          18446744073709551615 0.33333334 2 1.8446744073709552e+19 200 3673995259836664039\n"
     );
     Ok(())
+}
+
+/// `%` on floats is exact, however much bigger the left side is, with the sign of the right.
+#[test]
+fn a_float_remainder_is_exact() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "float_remainder",
+        "def number(x: float) -> float:\n    x\n\ndef main(stdout: Stdout):\n    stdout.print(number(1e17) % 3.0, number(5.5) % 0.1, number(-7.5) % 2.0, number(7.5) % -2.0)\n    stdout.print(number(6.0) % 3.0, number(1e300) % 7.0, number(0.3) % 0.1)\n",
+        "1.0 0.0999999999999997 0.5 -0.5\n0.0 1.0 0.09999999999999998\n",
+    )
 }
 
 /// What doesn't fit a size stops the program, saying which size and what it holds: arithmetic

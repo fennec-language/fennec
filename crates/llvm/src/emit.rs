@@ -1792,8 +1792,11 @@ impl Emit<'_, '_, '_> {
                     self.line(&format!("{zero} = fcmp oeq double {b}, {}", float_text(0.0)));
                     self.fail_if(&zero, DIVISION_BY_ZERO, span);
                 }
-                if op != BinOp::Div {
-                    return Ok(self.float_floor(op, (a, b)));
+                if op == BinOp::Mod {
+                    return Ok(self.float_remainder((a, b)));
+                }
+                if op == BinOp::FloorDiv {
+                    return Ok(self.float_floor((a, b)));
                 }
                 "fdiv"
             }
@@ -1810,18 +1813,32 @@ impl Emit<'_, '_, '_> {
         Ok(temp)
     }
 
-    /// `a // b` or `a % b` on floats, rounding toward negative infinity.
-    fn float_floor(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
+    /// `a // b` on floats, rounding toward negative infinity.
+    fn float_floor(&mut self, (a, b): (&str, &str)) -> String {
         self.declare("declare double @llvm.floor.f64(double)");
         let (ratio, floor) = (self.temp(), self.temp());
         self.line(&format!("{ratio} = fdiv double {a}, {b}"));
         self.line(&format!("{floor} = call double @llvm.floor.f64(double {ratio})"));
-        if op == BinOp::FloorDiv {
-            return floor;
-        }
-        let (times, rest) = (self.temp(), self.temp());
-        self.line(&format!("{times} = fmul double {floor}, {b}"));
-        self.line(&format!("{rest} = fsub double {a}, {times}"));
+        floor
+    }
+
+    /// `a % b` on floats: exact, with the sign of `b`. Worked out from `a / b` it would lose what's
+    /// left once `a` is much bigger than `b`.
+    fn float_remainder(&mut self, (a, b): (&str, &str)) -> String {
+        let zero = float_text(0.0);
+        let (left, some, left_below, b_below) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{left} = frem double {a}, {b}"));
+        self.line(&format!("{some} = fcmp une double {left}, {zero}"));
+        self.line(&format!("{left_below} = fcmp olt double {left}, {zero}"));
+        self.line(&format!("{b_below} = fcmp olt double {b}, {zero}"));
+        let (differ, shifts, moved, signed, rest) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{differ} = xor i1 {left_below}, {b_below}"));
+        self.line(&format!("{shifts} = and i1 {some}, {differ}"));
+        self.line(&format!("{moved} = fadd double {left}, {b}"));
+        self.line(&format!("{signed} = select i1 {shifts}, double {moved}, double {left}"));
+        // Nothing left is 0.0, whichever way it came.
+        self.line(&format!("{rest} = select i1 {some}, double {signed}, double {zero}"));
         rest
     }
 

@@ -18,17 +18,17 @@ In CI, release builds of the benchmark suite run at about the speed of hand-writ
 
 - **LLVM for everything,** with per-function optimization. It's the default today. There's no separate development engine and no tiering.
 - **Whole-program optimization only in `--release`.** It's the one step that sees everything at once, so it's the one step you opt into. Built.
-- **Planned: the JIT and the interpreter go** once everything builds through LLVM. A program then either builds natively or is refused, and what doesn't build yet is on a tracked list that must reach zero.
+- **Planned: the JIT and the interpreter go** once everything builds through LLVM. A program then either builds natively or is refused, and what doesn't build yet is on a tracked list that must reach zero. The commit before they go gets a tag.
 
 ## The plan: one store
 
-**Planned.** Today's cache becomes one content store per machine.
+Everything Fennec keeps between commands is in one store per machine, in `~/.fennec`. Built:
 
-- **Results are named by hash** and written by atomic rename, with a size cap and eviction. There are no `target` folders.
+- **Results are named by hash** and written by atomic rename, with a size cap and eviction. There are no `target` folders, and a kit's folder holds only its own files.
 - **A key covers what matters:** a function's typed IR, the signatures of what it calls, the bodies of anything inlined into it, and the compiler version, target and flags.
 - **An unchanged signature skips the callers,** so a change inside a function stays inside it.
 - **A daemon is optional and purely a speedup.** The plain command gives identical results without it.
-- **A shared cache** can be written only by trusted builds, and CI does a clean rebuild and compares it, because a wrong cache is the worst bug a build system can have.
+- **Planned: a shared cache,** which can be written only by trusted builds, and CI does a clean rebuild and compares it, because a wrong cache is the worst bug a build system can have.
 
 ## What the language hands the optimizer
 

@@ -4718,8 +4718,8 @@ def main(stdout: Stdout):
     Ok(())
 }
 
-/// JSON read into dicts, by string, int and plain struct keys, and a dict a capability gives back,
-/// as the JIT has them.
+/// JSON read into dicts, by string, int, plain struct and tuple keys, and a dict a capability
+/// gives back, as the JIT has them.
 #[test]
 fn json_into_dicts_matches_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -4741,6 +4741,10 @@ def main(stdout: Stdout, env: Env):
     stdout.print(back == spots, back[Spot(x=0, y=0)])
     wrong = json.loads[dict[str, int]]("[1, 2]") else {"none": 0}
     stdout.print(wrong)
+    corners = {(0, 0): "start", (3, 4): "end"}
+    stdout.print(json.loads[dict[(int, int), str]](json.dumps(corners)) else {}, corners)
+    placed = {(Spot(x=1, y=2), "a"): 1}
+    stdout.print((json.loads[dict[(Spot, str), int]](json.dumps(placed)) else {}) == placed)
     stdout.print(env.all().get("PATH") is not None)
 "#;
     for (name, how) in [("json_dicts", &["--llvm"][..]), ("json_dicts_release", &["--llvm", "--release"][..])]
@@ -9315,6 +9319,27 @@ fn a_list_of_a_union_holds_its_items_in_place() -> std::io::Result<()> {
 /// A `parallel` call whose body may wait goes to the runtime's `_waiting` entry points, and
 /// runs as one whose body only computes does: here a loop, a comprehension and a sum whose
 /// ranges sleep, beside ones that don't.
+/// A `parallel` comprehension whose item can fail, like `[save(fs.read(path)?)? for path in
+/// parallel(paths)]`, builds natively, and fails as the interpreter does: what it fails with has
+/// no way out of the runtime's ranges yet, so its items are made in order.
+#[test]
+fn a_parallel_comprehension_whose_item_can_fail_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "parallel_tries",
+        r#"def doubled(text: str) -> int fails InvalidValue:
+    int(text)? * 2
+
+def main(stdout: Stdout) fails InvalidValue:
+    texts = ["1", "2", "3"]
+    stdout.print([doubled(t)? for t in parallel(texts)], sum(int(t)? for t in parallel(texts)))
+    stdout.print([int(t)? for t in parallel(["4", "x"])])
+"#,
+    )
+}
+
 #[test]
 fn parallel_bodies_that_wait_match_the_jit() -> std::io::Result<()> {
     if !ready() {

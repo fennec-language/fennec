@@ -15,6 +15,9 @@ crate-type = ["staticlib", "rlib"]
 mimalloc.workspace = true
 fennec-interp.workspace = true
 
+[build-dependencies]
+fennec-blake3.workspace = true
+
 [lints.rust]
 # Unsafe only to export the runtime's functions by name, in one `expect`.
 unsafe_code = "deny"

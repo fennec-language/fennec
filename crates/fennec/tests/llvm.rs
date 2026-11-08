@@ -2844,7 +2844,7 @@ fn a_u64_from_outside_and_its_wrapping_and_saturating_methods() -> std::io::Resu
     stdout.print(top, half, u64.parse(\"42\"), u64.from(7), u64.from(-1), u64.parse(\"18446744073709551616\"), u64.parse(\"-3\"), u64.parse(\"seven\"))
     stdout.print(top.wrapping_add(2), u64(1).wrapping_sub(3), top.wrapping_mul(top), half.wrapping_mul(2), u64(3037000500).wrapping_mul(3037000500))
     stdout.print(top.saturating_add(1), u64(1).saturating_sub(2), half.saturating_mul(2), u64(6).saturating_mul(7), top.saturating_mul(0))
-    stdout.print(i8(u64(100)), u32(half >> 33))
+    stdout.print(i8(u64(100)), u32(half >> 33), top << 4, u64(3) << 63)
 ",
     )?;
     let too_big = |text: &str| {
@@ -2858,7 +2858,7 @@ fn a_u64_from_outside_and_its_wrapping_and_saturating_methods() -> std::io::Resu
             "18446744073709551615 9223372036854775808 Ok(42) Ok(7) {} {} {} Err(InvalidValue(message=\"\\\"seven\\\" isn't an int\"))\n\
              1 18446744073709551614 1 0 9223372037000250000\n\
              18446744073709551615 0 18446744073709551615 42 0\n\
-             100 1073741824\n",
+             100 1073741824 18446744073709551600 9223372036854775808\n",
             too_big("-1"),
             too_big("18446744073709551616"),
             too_big("-3")

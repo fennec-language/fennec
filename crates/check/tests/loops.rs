@@ -266,9 +266,20 @@ fn an_argument_cant_change_what_its_call_changes() {
     }
 }
 
+/// Two `ref`s into one collection overlap however they're written, `spots[0]` and `spots[1]` too:
+/// each has its place to itself.
 #[test]
-fn an_index_that_isnt_known_as_written_could_be_the_other_one() {
+fn two_refs_into_one_collection_overlap_however_theyre_written() {
     for (call, said) in [
+        ("bump(ref spots[0], ref spots[1])", "`ref spots[0]` and `ref spots[1]` overlap"),
+        (
+            "bump(ref units[0].spots[1], ref units[0].spots[2])",
+            "`ref units[0].spots[1]` and `ref units[0].spots[2]` overlap",
+        ),
+        (
+            "bump(ref units[0].position, ref units[1].position)",
+            "`ref units[0].position` and `ref units[1].position` overlap",
+        ),
         ("bump(ref spots[0], ref spots[-1])", "`ref spots[0]` and `ref spots[...]` overlap"),
         ("bump(ref spots[0], ref spots[i])", "`ref spots[0]` and `ref spots[i]` overlap"),
         ("bump(ref spots[i], ref spots[i + 1])", "`ref spots[i]` and `ref spots[...]` overlap"),
@@ -285,11 +296,8 @@ fn different_places_can_be_given_as_mut_together() {
     for call in [
         "bump(ref unit.position, ref unit.home)",
         "bump(ref units[i].position, ref units[j].home)",
-        // Different items, as written, can't be one.
-        "bump(ref spots[0], ref spots[1])",
+        // A value read from a different item, as written, can't be the one a `ref` changes.
         "read(ref spots[0], spots[1])",
-        "bump(ref units[0].spots[1], ref units[0].spots[2])",
-        "bump(ref units[0].position, ref units[1].position)",
         "read(ref unit.position, unit.home)",
         "unit.absorb(ref units[0])",
         "units[i].look(ref unit.home)",

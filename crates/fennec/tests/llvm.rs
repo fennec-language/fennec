@@ -1083,11 +1083,11 @@ def main(stdout: Stdout):
     show(stdout, keeps)
     stdout.print(kept)
 
-    # Two places at once, apart and in one root.
+    # Two places at once, each in its own collection.
     mut left = [[1], [2]]
     mut right = [[3], [4]]
     swap_ends(ref left[0], ref right[1])
-    swap_ends(ref left[1], ref left[0])
+    swap_ends(ref right[0], ref left[1])
     stdout.print(left, right)
 
     # In a loop, through a loop's item, and with the rule checked after.
@@ -6245,6 +6245,31 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A list of a union's values, whose members are generic or tuples, prints each value as itself,
+/// as the interpreter does, from a literal or from fields, in `print` and in an f-string.
+#[test]
+fn lists_of_unions_with_generic_members_print_their_values() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "union_lists",
+        r#"struct Box[T]:
+    value: T
+
+def main(stdout: Stdout):
+    words: Box[list[int] | str] = Box(value="kit")
+    lists: Box[list[int] | str] = Box(value=[1, 2])
+    stdout.print([words.value, lists.value])
+    stdout.print(f"{[words.value, lists.value]}")
+    both: list[list[int] | str] = ["a", [3]]
+    stdout.print(both)
+    pairs: list[(int, str) | bool] = [(1, "one"), True]
+    stdout.print(pairs)
+"#,
+    )
+}
+
 /// A known difference: native code writes a field holding a union tagged with its member, as
 /// the language says, where the JIT's JSON writer, which a plain `fennec build` uses too, leaves
 /// the tag out. The JIT is on its way out, so its side isn't being fixed.
@@ -10015,6 +10040,35 @@ fn none_in_a_tuple_matches_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// A value of a union like `int | str`, read from a field or a list's item, prints and formats as
+/// itself, a string member unquoted, as in the interpreter: by `print`, `str` and an f-string.
+/// Inside a list it's shown quoted, as any string in a list is.
+#[test]
+fn a_unions_value_from_a_field_or_an_item_prints_as_itself() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "union_text",
+        r#"struct Box[T]:
+    value: T
+
+def main(stdout: Stdout):
+    held: int | str = "ash"
+    boxed: Box[int | str] = Box(value="ash")
+    items: list[int | str] = ["ash", 1]
+    stdout.print(held, boxed.value, items[0], items[1], items)
+    stdout.print(f"{boxed.value} {items[0]}", str(items[0]), str(boxed.value).len())
+    numbers: Box[int | str] = Box(value=3)
+    floats: Box[float | str] = Box(value=1.5)
+    flags: list[bool | str] = [True, "no"]
+    lists: Box[list[int] | str] = Box(value=[1, 2])
+    stdout.print(numbers.value, floats.value, flags[0], flags[1], lists.value, flags)
+    stdout.print(f"{numbers.value}|{floats.value}|{flags[1]}|{lists.value}", str(lists.value))
+"#,
+    )
+}
+
 /// A name narrowed to `None`, like `x` after `x = None`, prints and formats as `None`, as in the
 /// interpreter. LLVM refused it once, and the JIT still gets it wrong (#572).
 #[test]
@@ -10799,8 +10853,8 @@ test \"nothing runs\"(process: Process):
     Ok(())
 }
 
-/// A property test runs through LLVM with each input, and one that fails there runs again in the
-/// interpreter, on the same inputs, which shrinks what it failed for.
+/// A property test runs through LLVM with each input, and one that fails there shrinks what it
+/// failed for there too, as the interpreter does.
 #[test]
 fn property_tests_run_through_llvm() -> std::io::Result<()> {
     if !ready() {
@@ -10829,7 +10883,7 @@ test \"this one goes too far\" for value: int:
     let ran = fennec(&["test", "--all", "--verbose", &path], &dir)?;
     let (out, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
     assert!(!ran.status.success(), "{said}");
-    assert!(said.contains("2 of 3 tests ran through LLVM"), "{said}");
+    assert!(said.contains("3 of 3 tests ran through LLVM"), "{said}");
     assert!(out.contains("ints stay small (100 inputs)"), "{out}");
     assert!(said.contains("it failed for value = 500"), "{said}");
     assert!(!said.contains("through LLVM and passes"), "{said}");

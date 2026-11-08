@@ -18,9 +18,20 @@ pub(super) fn is_result(name: &str) -> bool {
     name.starts_with("Result[")
 }
 
-/// One of several error types held as an enum, with a case for each: `A | B`.
+/// One of several types held as an enum, with a case for each holding the value: several errors,
+/// `A | B`, or a union's members, `list[int] | str`. The ` | ` is outside any brackets, so a generic
+/// enum given a union, `Pair[A | B]`, is the enum it is.
 pub(super) fn is_one_of_several(name: &str) -> bool {
-    name.contains(" | ") && !name.contains('[') && !name.starts_with('(')
+    let mut depth = 0_usize;
+    for (at, character) in name.char_indices() {
+        match character {
+            '[' | '(' => depth += 1,
+            ']' | ')' => depth = depth.saturating_sub(1),
+            '|' if depth == 0 && name.get(..at).is_some_and(|before| before.ends_with(' ')) => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// A fixed-size array a backend keeps in place, laid out as a struct with a field for each item,
@@ -218,4 +229,26 @@ fn write_id_map(
     words.push(0);
     words.push(map.tag);
     Some(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_one_of_several;
+
+    #[test]
+    fn several_types_are_told_by_a_bar_outside_brackets() {
+        for several in ["IoError | NetError", "list[int] | str", "(int, str) | bool", "dict[str, int] | None"]
+        {
+            assert!(is_one_of_several(several), "{several}");
+        }
+        for one in [
+            "Pair[int | str]",
+            "Option[int | str]",
+            "Result[int, IoError | NetError]",
+            "(int | str, bool)",
+            "Shape",
+        ] {
+            assert!(!is_one_of_several(one), "{one}");
+        }
+    }
 }

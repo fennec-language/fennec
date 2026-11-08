@@ -483,6 +483,22 @@ fn workers_take_turns_at_shared_values_holding_blocks() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A crash under a read lock gives the lock back and ends only that task, as one under `as ref` does.
+#[test]
+fn a_crash_under_a_read_lock_ends_only_its_task() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-read-crash-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/crash_under_a_read_lock.fen");
+    let built = build_on_threads(&dir, source, "crash_under_a_read_lock")?;
+    let wanted = "failed: Crashed(why=\"the task crashed\")\n2\n";
+    matches_on_workers(&built, "crash_under_a_read_lock", Some(0), wanted)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A task holding a lock stays on its thread until it lets go, however long it runs or waits: what
 /// says it's in a lock is its thread's, so another task run there would seem to hold the lock too.
 #[test]

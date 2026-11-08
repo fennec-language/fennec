@@ -79,6 +79,8 @@ impl Emit<'_, '_, '_> {
         self.take_and_enter((&word, &cell), write, &plain.to_string(), span);
         if self.saves_changes(handle) {
             self.rollback_begin(handle, &cell);
+        } else if self.read_lock_given_back(handle) {
+            self.note_read_lock(handle, true);
         }
         Ok(())
     }
@@ -232,6 +234,8 @@ impl Emit<'_, '_, '_> {
         // A `lock ... as ref` block ending normally keeps what it changed.
         if self.saves_changes(handle) {
             self.rollback_kept(handle);
+        } else if self.read_lock_given_back(handle) {
+            self.note_read_lock(handle, false);
         }
         self.give_back_word(&word, &cell, &plain.to_string(), false);
         Ok(())
@@ -304,6 +308,8 @@ impl Emit<'_, '_, '_> {
             if self.saves_changes(handle) {
                 let (cell, _) = self.operand(handle)?;
                 self.rollback_begin(handle, &cell);
+            } else if self.read_lock_given_back(handle) {
+                self.note_read_lock(handle, true);
             }
         }
         Ok(())
@@ -316,6 +322,8 @@ impl Emit<'_, '_, '_> {
         for handle in handles.iter().rev() {
             if self.saves_changes(handle) {
                 self.rollback_kept(handle);
+            } else if self.read_lock_given_back(handle) {
+                self.note_read_lock(handle, false);
             }
         }
         let mut held = Vec::with_capacity(handles.len());

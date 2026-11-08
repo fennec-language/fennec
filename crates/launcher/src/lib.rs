@@ -1,6 +1,7 @@
 //! The `fennec` people install. It runs the version of Fennec a kit asks for, `fennec = "0.4.2"`
 //! in its `kit.toml`, from `~/.fennec/toolchains/0.4.2`, and hands the command to it. Outside a
-//! kit, it runs the default toolchain.
+//! kit, it runs the version `--version` names, or else the one `fennec default` set. `+0.4.2` runs
+//! that version anywhere, once, and changes no pin.
 //!
 //! It goes to the network only when the version asked for isn't installed, and never with
 //! `--offline`. It fetches from the release page, or from `FENNEC_DIST`, a mirror. What it fetches
@@ -24,6 +25,63 @@ pub const TARGET: &str = env!("FENNEC_TARGET");
 /// Where releases are fetched from, unless `FENNEC_DIST` says otherwise: each one's files are in
 /// `<dist>/v<version>/`.
 pub const RELEASES: &str = "https://github.com/fennec-language/fennec/releases/download";
+
+/// What to say when a script outside a kit has no version to run with.
+pub const NO_DEFAULT: &str = "this isn't in a kit, and no version of Fennec is set for scripts outside one: `fennec default 0.4.2` sets one, with the version you want, or `fennec --version 0.4.2 <command>` runs one for this command";
+
+/// A version named on the command line, ahead of the command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pick {
+    /// `+0.4.2`: this version, anywhere, once.
+    JustThisOnce(String),
+    /// `--version 0.4.2`: the version for a script outside a kit.
+    OutsideAKit(String),
+}
+
+/// What the words on the command line ask of the launcher.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Asked {
+    /// Whether a leading `--offline` said not to fetch.
+    pub offline: bool,
+    pub pick: Option<Pick>,
+    /// The rest, which go to the toolchain as they are.
+    pub command: Vec<String>,
+}
+
+impl Asked {
+    /// Reads the launcher's own options, which come before the command, so that a program's own
+    /// arguments are never taken for them. `--version` with no version after it is the toolchain's,
+    /// which says what it is.
+    #[must_use]
+    pub fn read(args: &[String]) -> Self {
+        let mut asked = Asked { offline: false, pick: None, command: Vec::new() };
+        let mut rest = args;
+        loop {
+            match rest {
+                [first, others @ ..] if first == "--offline" => {
+                    asked.offline = true;
+                    rest = others;
+                }
+                [first, others @ ..]
+                    if asked.pick.is_none() && first.strip_prefix('+').is_some_and(kit::plain_version) =>
+                {
+                    asked.pick =
+                        first.strip_prefix('+').map(|version| Pick::JustThisOnce(version.to_owned()));
+                    rest = others;
+                }
+                [first, version, others @ ..]
+                    if asked.pick.is_none() && first == "--version" && kit::plain_version(version) =>
+                {
+                    asked.pick = Some(Pick::OutsideAKit(version.clone()));
+                    rest = others;
+                }
+                _ => break,
+            }
+        }
+        asked.command = rest.to_vec();
+        asked
+    }
+}
 
 /// What a launcher knows: where toolchains go, where releases come from, and whom it trusts.
 pub struct Launcher {
@@ -77,17 +135,13 @@ impl Launcher {
         kit::plain_version(version).then(|| version.to_owned())
     }
 
-    /// Makes an installed toolchain the one run outside a kit.
+    /// Makes a toolchain the one run outside a kit, installing it if it has to be.
     ///
     /// # Errors
     ///
-    /// When it isn't installed, or the choice can't be written.
+    /// When it isn't there and can't or mayn't be installed, or the choice can't be written.
     pub fn set_default(&self, version: &str) -> Result<(), String> {
-        if !self.installed().iter().any(|installed| installed == version) {
-            return Err(format!(
-                "Fennec {version} isn't installed: `fennec toolchain install {version}` installs it"
-            ));
-        }
+        self.ensure(version, None)?;
         std::fs::write(self.toolchains().join("default"), format!("{version}\n"))
             .map_err(|err| format!("couldn't write the default toolchain: {err}"))
     }
@@ -114,11 +168,8 @@ impl Launcher {
     /// When there's no toolchain to run, or the one there is isn't the one pinned.
     pub fn toolchain_for(&self, from: &Path) -> Result<PathBuf, String> {
         let Some(root) = kit::root(from) else {
-            let version = self.default_version().ok_or(
-                "this isn't in a kit, and there's no default toolchain: `fennec toolchain default <version>` chooses one",
-            )?;
-            self.ensure(&version, None)?;
-            return Ok(self.command(&version));
+            let version = self.default_version().ok_or(NO_DEFAULT)?;
+            return self.exactly(&version);
         };
         let read = |name: &str| std::fs::read_to_string(root.join(name));
         let manifest = read("kit.toml").map_err(|err| format!("couldn't read kit.toml: {err}"))?;
@@ -140,6 +191,33 @@ impl Launcher {
                 .map_err(|err| format!("couldn't write kit.lock: {err}"))?;
         }
         Ok(self.command(&version))
+    }
+
+    /// The `fennec` of exactly this version, installing it if it has to be, whatever kit it's run
+    /// in. No pin is read or written.
+    ///
+    /// # Errors
+    ///
+    /// When it isn't there and can't or mayn't be installed.
+    pub fn exactly(&self, version: &str) -> Result<PathBuf, String> {
+        self.ensure(version, None)?;
+        Ok(self.command(version))
+    }
+
+    /// The `fennec` of the version `--version` names, run from the folder `from`.
+    ///
+    /// # Errors
+    ///
+    /// When `from` is in a kit, whose `kit.toml` says which version it builds with, or the version
+    /// isn't there and can't or mayn't be installed.
+    pub fn outside_a_kit(&self, from: &Path, version: &str) -> Result<PathBuf, String> {
+        if let Some(root) = kit::root(from) {
+            return Err(format!(
+                "`--version` is for scripts outside a kit, and {} says which version this kit builds with: change `fennec = ...` there, or `fennec +{version} <command>` runs that version this once",
+                root.join("kit.toml").display()
+            ));
+        }
+        self.exactly(version)
     }
 
     /// The hash of the manifest of the toolchain `version`, installing it if it isn't there.

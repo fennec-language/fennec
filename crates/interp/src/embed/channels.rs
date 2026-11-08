@@ -358,10 +358,16 @@ fn wait(channel: &Channel, queue: MutexGuard<'_, Queue>, deadline: Option<Instan
         }
         drop(queue);
         return match super::serve::park_on(token, deadline) {
-            // Stopped, it's failing. Cancelled otherwise, as by a server that's stopping, it looks again.
-            super::serve::Parked::Cancelled if super::failed() => Waited::Stopped,
+            // Stopped, it's failing. Cancelled, as by a server that's stopping, it can't wait any more
+            // and ends here: it'd never be parked again, and nothing would ever change what it saw.
+            super::serve::Parked::Cancelled => {
+                if !super::failed() {
+                    super::serve::fail_as_stopped();
+                }
+                Waited::Stopped
+            }
             super::serve::Parked::TimedOut => Waited::TimedOut,
-            super::serve::Parked::Cancelled | super::serve::Parked::Ready => Waited::Again,
+            super::serve::Parked::Ready => Waited::Again,
         };
     }
     let _ = side;

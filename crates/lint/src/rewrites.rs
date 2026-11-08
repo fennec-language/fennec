@@ -100,8 +100,7 @@ fn rebound(def: &FnDef) -> HashSet<String> {
     }
     let mut found = HashSet::new();
     block(&def.body, &mut found);
-    let mut walked = def.clone();
-    fennec_syntax::visit::in_function(&mut walked, &mut |expr| match &expr.kind {
+    fennec_syntax::read::in_function(def, &mut |expr| match &expr.kind {
         ExprKind::Comprehension { names, .. } | ExprKind::Lambda { params: names, .. } => {
             found.extend(names.iter().cloned());
         }
@@ -137,8 +136,7 @@ fn compared_bools(module: &Module) -> HashSet<(u32, u32)> {
     let mut judged: HashMap<(u32, u32), bool> = HashMap::new();
     for def in functions(module) {
         let rebound = rebound(def);
-        let mut walked = def.clone();
-        fennec_syntax::visit::in_function(&mut walked, &mut |expr| {
+        fennec_syntax::read::in_function(def, &mut |expr| {
             if let ExprKind::Binary { op: BinOp::Eq | BinOp::NotEq, lhs, rhs } = &expr.kind
                 && matches!(rhs.kind, ExprKind::Bool(_))
             {
@@ -296,9 +294,7 @@ fn concat_to_fstring(expr: &Expr, sources: &Sources) -> Option<Lint> {
 fn expressions(module: &Module, sources: &Sources) -> Vec<Lint> {
     let mut found = Vec::new();
     let bools = compared_bools(module);
-    // Walking changes nothing, but the only walk there is takes a module it could change.
-    let mut walked = module.clone();
-    fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
+    fennec_syntax::read::exprs(module, &mut |expr| {
         found.extend(plain_compare(expr, sources, &bools));
         found.extend(negated_compare(expr, sources));
         found.extend(plain_fstring(expr, sources));

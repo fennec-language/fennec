@@ -157,7 +157,7 @@ def main(stdout: Stdout):
 | Type | Example |
 | --- | --- |
 | `int`, `float` | `42`, `3.14` (64-bit) |
-| Sized numbers | **Planned:** `i32`, `u8`, `f32` when you want control over size |
+| Sized numbers | `pixel: u8 = 255`, `low: i8 = -128`, `speed: f32 = 1.5`, from `i8` to `u64` and `f32`, checked against their size |
 | `bool` | `True`, `False` |
 | `str` | `"fennec"`, `f"{count} foxes"`, `r"\d+"` |
 | `bytes` | `bytes([137, 80])`, `"hi".encode()` |
@@ -820,33 +820,33 @@ Code after `lend` runs when the caller's block succeeds, and if it fails, that's
 
 ### `launch` and channels
 
-**Planned.** `launch` runs a function beside you until its `with` block ends, so no task outlives the code that started it.
+`launch` runs a function beside you until its `with` block ends, so no task outlives the code that started it. Built natively.
 
-```fennec planned
+```fennec
+from std.concurrent import Inbox, Crashed, Closed, Timeout
+
 enum Sound:
     Play(name: str, volume: float)
     StopAll
 
-def audio(inbox: Inbox[Sound], speakers: Speakers):
+def audio(inbox: Inbox[Sound], stdout: Stdout):
     for sound in inbox:
         match sound:
             case .Play(name, volume):
-                speakers.play(name, volume=volume)
+                stdout.print(f"playing {name} at {volume}")
             case .StopAll:
-                speakers.stop_all()
+                stdout.print("quiet")
 
-def main(speakers: Speakers, input: Input):
-    with launch((inbox) => audio(inbox, speakers), stop_after=5s) as sounds:
-        for frame in input.frames():
-            if frame.jumped:
-                sounds.send(.Play(name="jump", volume=0.8))?
+def main(stdout: Stdout) fails Crashed | Closed | Timeout:
+    with launch((inbox) => audio(inbox, stdout), stop_after=5s)? as sounds:
+        sounds.send(.Play(name="jump", volume=0.8))?
+        sounds.send(.StopAll)?
 ```
 
 - A parameter typed `Inbox[T]` makes `launch` create the channel: the task gets the receiving end and you get the sending end. The enum is the protocol, so you can only send real cases and the task must handle each one.
-- Channels are always bounded, and `send` waits when one is full. `send` and `receive` take `timeout=`. `to=.Every` gives every listener every message.
-- `TaskGroup` holds a number of tasks known only at run time, and stops them all when its block ends.
-- Pools, like a database's connections, are written in plain Fennec, so nothing can leak or be used twice.
-- A task's crash comes out as `Crashed` where its `with launch` block ends.
+- The `?` on the `with launch` line covers the task: its own failures, and `Crashed` if it crashes, come out where the block ends. A crash ends only its own task.
+- Channels are always bounded, and `send` waits when one is full. `send` and `receive` take `timeout=`. A channel of your own is `with Channel[Job].open(size=64) as jobs:` today, from `std.concurrent`. **Planned:** the plain function `with channel[Job](size=64) as jobs:`, as Python's `open()` is, and `to=.Every`, which gives every listener every message.
+- **Planned:** `TaskGroup`, which holds a number of tasks known only at run time and stops them all when its block ends, and pools, like a database's connections, written in plain Fennec so nothing can leak or be used twice.
 
 Not in the language at all: `del`, destructors, moves, lifetimes, `unsafe` and global state.
 
@@ -1028,7 +1028,7 @@ Floats have one equality, order and hash: NaN equals itself and sorts last, and 
 
 ## Building
 
-- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the interpreter stands in and says so. The JIT is gone. **Planned:** the interpreter goes from `fennec` too.
+- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the interpreter stands in and says so. The JIT is gone, and a native program carries no interpreter. **Planned:** the interpreter goes from `fennec` too.
 - `fennec build` makes a native program through LLVM, and `fennec build --release` optimizes the whole program as one. On Linux, a release build is one static program that needs nothing from the machine.
 
 ## Decided lately

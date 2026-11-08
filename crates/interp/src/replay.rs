@@ -26,8 +26,10 @@
 //!   with what it came to, and a replay makes each task wait for its turn. So messages go to the
 //!   same receivers, and a receive that timed out times out again, without waiting.
 //!
-//! The order at `shared` values' locks isn't recorded yet, so a run whose tasks meet there can still
-//! diverge.
+//! - **Locks:** a `shared` value is a place too, named as a channel is, as `0:s2`. Each time a task
+//!   takes its lock, to read or to write, it's logged once the lock is held, and a replay makes
+//!   each task wait its turn before it tries to take it. Native code takes a free lock without a
+//!   call, so it asks for these only while a run is recorded or replayed.
 //!
 //! - **Servers:** the call serving is a task, and each connection it accepts is its next child,
 //!   named in the order they were taken: `0.3.0`, `0.3.1`. The count is logged under the call. A
@@ -251,6 +253,11 @@ pub(crate) fn swap(task: &mut Option<Task>) {
         return;
     }
     TASK.with_borrow_mut(|running| std::mem::swap(running, task));
+}
+
+/// Whether this run is being recorded or replayed.
+pub(crate) fn active() -> bool {
+    !matches!(mode(), Mode::Off)
 }
 
 /// How many workers the recorded run had, for a replay to have as many.

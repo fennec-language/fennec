@@ -193,6 +193,11 @@ impl FnCx<'_> {
                 ("SortedMap", [key, value]) => self.holds_map(format, ty, (key, value), (span, field), seen),
                 (_, args) => args.iter().try_for_each(|item| self.holds(format, item, (span, field), seen)),
             },
+            Type::Named(name) | Type::Generic(name, _)
+                if let Some((what, instead)) = crate::saving::never_saved(name) =>
+            {
+                Err(Diagnostic::new(cant_hold(format, field, what), span).with_help(instead))
+            }
             Type::Named(name) | Type::Generic(name, _) => {
                 let kind = self.checker.program.type_info(name).map(|info| info.kind);
                 let fits = match kind {

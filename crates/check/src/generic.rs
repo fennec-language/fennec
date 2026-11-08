@@ -138,9 +138,14 @@ impl FnCx<'_> {
     /// Whether values of a type can be put in order with `<`.
     pub(crate) fn is_ordered(&self, ty: &Type) -> bool {
         match ty {
-            Type::Int | Type::Float | Type::Str | Type::Bytes | Type::Bool | Type::Unknown | Type::Var(_) => {
-                true
-            }
+            Type::Int
+            | Type::Float
+            | Type::Sized(_)
+            | Type::Str
+            | Type::Bytes
+            | Type::Bool
+            | Type::Unknown
+            | Type::Var(_) => true,
             Type::Tuple(items) => items.iter().all(|item| self.is_ordered(item)),
             Type::List(item) => self.is_ordered(item),
             Type::Param(name) => {

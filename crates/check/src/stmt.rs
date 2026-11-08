@@ -152,6 +152,9 @@ impl FnCx<'_> {
             (Some(value), None) => self.expr(value),
             (None, _) => Type::Unit,
         };
+        if let Some(value) = value {
+            self.passes_up_unmarked(value, &ty);
+        }
         // A function that says `fails E` returns nothing without an arrow, or fails.
         let checked = self.declared.clone().or_else(|| self.fails.as_ref().map(|_| Type::Unit));
         if let (Some(declared), Some(value)) = (checked, value) {

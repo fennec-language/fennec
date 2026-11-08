@@ -94,6 +94,96 @@ fn ints_and_floats_do_not_mix() {
     assert_eq!(in_main(program), ["can't mix int and float in `+` @ half + 1"]);
 }
 
+/// A program using a sized number checks, but isn't run or built yet: nothing past the checker
+/// takes sized numbers, and running one as an `int` would miss where it overflows.
+#[test]
+fn sized_numbers_are_refused_past_the_checker() {
+    let source =
+        "def main(stdout: Stdout):\n    mut pixel: u8 = 255\n    pixel += 1\n    stdout.print(pixel)\n";
+    let mut module = fennec_syntax::parse(source).expect("it parses");
+    assert!(fennec_check::check(&module).is_ok());
+    let refused = fennec_check::check_to_run(&mut module).err().unwrap_or_default();
+    let said: Vec<String> = refused.iter().map(|problem| problem.message.clone()).collect();
+    assert_eq!(said, ["sized numbers like u8 aren't built yet past the checker"]);
+}
+
+/// A number literal takes the size it goes into, checked to fit: a name's declared type, a
+/// parameter, a return, the other side of an operator, and what `+=` changes. With nothing to go
+/// by, it's an `int` or a `float` as before.
+#[test]
+fn literals_take_the_size_they_go_into() {
+    let program = "
+        def scaled(by: f32) -> f32:
+            by * 2.0
+
+        def first(stdout: Stdout) -> u8:
+            mut pixel: u8 = 255
+            pixel -= 1
+            low: i8 = -128
+            speed: f32 = 1.5
+            stdout.print(scaled(0.5), 3 * low, low < 0, 0 == pixel, speed + 1.0, pixel >> 1)
+            count = 3
+            stdout.print(count + 1, 1.5 * 2.0)
+            7
+
+        def too_big(stdout: Stdout) -> u16:
+            over: u8 = 256
+            under: u8 = -1
+            low: i8 = -129
+            huge: f32 = 1e39
+            whole: f32 = 1
+            stdout.print(over, under, low, huge, whole)
+            70000
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "256 doesn't fit in u8 @ 256",
+            "-1 doesn't fit in u8 @ -1",
+            "-129 doesn't fit in i8 @ -129",
+            "1000000000000000000000000000000000000000 is too big for an f32 @ 1e39",
+            "`whole` should be an f32, but this is an int @ 1",
+            "70000 doesn't fit in u16 @ 70000",
+        ]
+    );
+}
+
+/// Each sized number type is a type of its own: `i64` is `int` and `f64` is `float`, and sizes
+/// never mix, with each other or with `int` and `float`, until one side is converted.
+#[test]
+fn sized_numbers_mix_only_with_their_own_size() {
+    let program = "
+        def same(stdout: Stdout, small: i32, other: i32, single: f32, wide: i64, count: int, double: f64, real: float) -> i32:
+            whole = small + other * small // other % small - small ** other
+            bits = small & other | small << other
+            half = single / single - single
+            both = wide + count
+            reals = double * real
+            stdout.print(bits, half, both, reals, small < other, -small, -single)
+            whole
+
+        def mixed(stdout: Stdout, small: i32, wide: i64, byte: u8, single: f32, double: float, count: int):
+            stdout.print(small + wide, byte - small, single * double, count + small)
+            stdout.print(small < wide, small & wide, small / small + 0.5, -byte, small == count)
+            stdout.print(byte << count, small >> byte, 1 == double, byte << single)
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "can't mix i32 and int in `+` @ small + wide",
+            "can't mix u8 and i32 in `-` @ byte - small",
+            "can't mix f32 and float in `*` @ single * double",
+            "can't mix int and i32 in `+` @ count + small",
+            "can't mix i32 and int in `<` @ small < wide",
+            "can't mix i32 and int in `&` @ small & wide",
+            "can't negate a u8, which is never below 0 @ -byte",
+            "`==` compares an i32 with an int, which are never equal @ small == count",
+            "`==` compares an int with a float, which are never equal @ 1 == double",
+            "can't mix u8 and f32 in `<<` @ byte << single",
+        ]
+    );
+}
+
 #[test]
 fn operators_work_on_the_types_they_are_defined_for() {
     let program = "

@@ -234,7 +234,7 @@ const CHECK_CASES: &[(&str, &str)] = &[
     ),
     (
         "unknown_types",
-        "def f(a: lsit[int], b: String, c: f64, d: i32, e: boolean, g: List[int], h: Optional) -> Strng:\n    pass\n",
+        "def f(a: lsit[int], b: String, c: double, d: long, e: boolean, g: List[int], h: Optional) -> Strng:\n    pass\n",
     ),
     (
         "bracket_counts",

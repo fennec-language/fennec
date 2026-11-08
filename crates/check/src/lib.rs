@@ -60,7 +60,7 @@ use fennec_syntax::{Diagnostic, Expr, ExprKind, Item, Module, Span};
 pub use messages::missing_method;
 pub use named::add_pattern_fixes;
 pub use privacy::add_rename_fixes;
-pub use types::Type;
+pub use types::{Num, Type};
 
 /// Checks a parsed module. Returns the signature of every function and method, or every
 /// problem found, in source order.
@@ -72,7 +72,12 @@ pub fn check(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
 /// about to be lowered: the standard library's functions are checked only when the module
 /// reaches them, or lowering uses them without the program naming them.
 pub fn check_to_emit(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
-    checked_typed_in(module, checker::Scope::ReachedWithFields).map(Checked::into_signatures)
+    let signatures =
+        checked_typed_in(module, checker::Scope::ReachedWithFields).map(Checked::into_signatures)?;
+    match sized_value(&signatures) {
+        Some(diagnostic) => Err(vec![diagnostic]),
+        None => Ok(signatures),
+    }
 }
 
 /// Checks a parsed module. Returns the signatures and the type of every expression and
@@ -418,7 +423,35 @@ fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, 
     let names = own_types_apart(module);
     let checked =
         checker::Checker::new(module).run(scope).map_err(|problems| as_written(problems, &names))?;
-    Ok(resolved(module, checked))
+    let signatures = resolved(module, checked);
+    match sized_value(&signatures) {
+        Some(diagnostic) => Err(vec![diagnostic]),
+        None => Ok(signatures),
+    }
+}
+
+/// What a checked program uses that only the checker takes so far, which nothing can run or
+/// build yet: a value of a sized number type.
+#[must_use]
+pub fn not_built_yet(signatures: &Signatures) -> Option<Diagnostic> {
+    sized_value(signatures)
+}
+
+/// The first value of a sized number type in a program about to run or be built, which only the
+/// checker takes so far: a program using one checks, but nothing runs it yet, rather than run it
+/// as an `int` that never overflows where it should.
+fn sized_value(signatures: &Signatures) -> Option<Diagnostic> {
+    fn holds(ty: &Type) -> bool {
+        matches!(ty, Type::Sized(_)) || ty.children().into_iter().any(holds)
+    }
+    let found = signatures.types.functions.values().flat_map(|body| &body.exprs);
+    let ((start, end), ty) =
+        found.filter(|(_, ty)| holds(ty)).min_by_key(|((start, end), _)| (*start, *end))?;
+    let span = Span { start: *start, end: *end };
+    Some(
+        Diagnostic::new(format!("sized numbers like {ty} aren't built yet past the checker"), span)
+            .with_help("use `int` or `float` for now: the checker takes the sized types, but running them isn't built"),
+    )
 }
 
 /// A call the checker sent to a standard library function, like `sum` of a list of floats to

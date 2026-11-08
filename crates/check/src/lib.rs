@@ -431,6 +431,23 @@ fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, 
     }
 }
 
+/// What a checked program uses that the interpreter can't run: a value of any sized number type,
+/// which it would hold as an `int` or a `float`, missing where one overflows. Native code runs them.
+#[must_use]
+pub fn interpreter_refuses(signatures: &Signatures) -> Option<Diagnostic> {
+    fn holds(ty: &Type) -> bool {
+        matches!(ty, Type::Sized(_)) || ty.children().into_iter().any(holds)
+    }
+    let found = signatures.types.functions.values().flat_map(|body| &body.exprs);
+    let ((start, end), ty) =
+        found.filter(|(_, ty)| holds(ty)).min_by_key(|((start, end), _)| (*start, *end))?;
+    let span = Span { start: *start, end: *end };
+    Some(
+        Diagnostic::new(format!("the interpreter can't run sized numbers like {ty}"), span)
+            .with_help("build it with `fennec build`, or run it with `fennec run`, which builds it natively"),
+    )
+}
+
 /// What a checked program uses that only the checker takes so far, which nothing can run or
 /// build yet: a value of a sized number type.
 #[must_use]

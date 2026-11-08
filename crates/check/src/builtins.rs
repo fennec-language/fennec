@@ -575,6 +575,12 @@ impl FnCx<'_> {
         if name == "sum" {
             return self.sum(args, &plain, span);
         }
+        // `u8(300)`: a number written out that can't fit is an error now, as `x: u8 = 300` is.
+        if let Some(num) = crate::types::Num::named(name)
+            && let Some(arg) = args.iter().find(|arg| arg.name.is_none())
+        {
+            self.literal_fits(num, &arg.value);
+        }
         if name == "str" {
             for (given, at) in &plain {
                 self.not_a_secret(given, "`str` of this", *at);
@@ -586,6 +592,23 @@ impl FnCx<'_> {
             self.needs_order(name, &result, span);
         }
         result
+    }
+
+    /// A number written out, or one negated, given to `u8(...)` and the like, which has to fit.
+    fn literal_fits(&mut self, num: crate::types::Num, value: &Expr) {
+        use fennec_syntax::{ExprKind, UnaryOp};
+        let written = match &value.kind {
+            ExprKind::Int(n) => i128::from(*n),
+            ExprKind::Unary { op: UnaryOp::Neg, expr } if let ExprKind::Int(n) = expr.kind => -i128::from(n),
+            _ => return,
+        };
+        let Some((least, most)) = num.range() else { return };
+        if written < least || written > most {
+            let ty = Type::Sized(num);
+            let message = format!("{written} doesn't fit in {ty}");
+            let help = format!("{} holds {least} to {most}", a(&ty));
+            self.error(Diagnostic::new(message, value.span).with_help(help));
+        }
     }
 
     /// `min` and `max` compare the items with `<`, so the items need an order.
@@ -643,7 +666,13 @@ impl FnCx<'_> {
                 };
                 if !integer(&first) {
                     let message = format!("`{name}(...)` converts an integer, not {}", a(&first));
-                    let help = format!("for text, write `{name}.parse(text)?`");
+                    let help = match self.checker.settled(&first) {
+                        Type::Str => format!("read it as an int first: `{name}(int(text)?)`"),
+                        Type::Float => {
+                            format!("make it a whole number first: `{name}(round(x))` or `{name}(int(x))`")
+                        }
+                        _ => format!("give `{name}` an integer"),
+                    };
                     self.error(Diagnostic::new(message, at).with_help(help));
                 }
                 Type::Sized(num)

@@ -100,14 +100,24 @@ fn ints_and_floats_do_not_mix() {
 fn sized_integers_convert_when_written_out() {
     let program = "
         def sizes(stdout: Stdout, small: i32, byte: u8, text: str):
-            stdout.print(u8(small), i16(byte), int(byte) + 1, float(small) * 0.5, u8(300))
-            stdout.print(u8(text), u8(1.5))
+            stdout.print(u8(small), i16(byte), int(byte) + 1, float(small) * 0.5, u8(255), i8(-128))
+            stdout.print(u8(text), u8(1.5), u8(300), i8(-129))
     ";
     assert_eq!(
         problems(program),
         [
             "`u8(...)` converts an integer, not a str @ text",
             "`u8(...)` converts an integer, not a float @ 1.5",
+            "300 doesn't fit in u8 @ 300",
+            "-129 doesn't fit in i8 @ -129",
+        ]
+    );
+    let helps = helps("def f(stdout: Stdout, text: str):\n    stdout.print(u8(text), u8(1.5))\n");
+    assert_eq!(
+        helps,
+        [
+            "read it as an int first: `u8(int(text)?)`",
+            "make it a whole number first: `u8(round(x))` or `u8(int(x))`"
         ]
     );
 }

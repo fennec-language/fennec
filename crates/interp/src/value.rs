@@ -309,7 +309,6 @@ impl Value {
 }
 
 impl PartialEq for Value {
-    #[expect(clippy::match_same_arms, reason = "each arm compares a different type")]
     fn eq(&self, other: &Value) -> bool {
         match (self, other) {
             (Value::Unit, Value::Unit) | (Value::None, Value::None) => true,

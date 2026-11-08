@@ -10,6 +10,7 @@ pub mod fuse;
 mod lexer;
 mod modules;
 mod parser;
+pub mod read;
 pub mod rename;
 mod sources;
 mod span;
@@ -23,7 +24,7 @@ pub use ast::{
     Import, Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr,
     UnaryOp, WithName,
 };
-pub use diagnostic::{Also, Diagnostic, Edit, HELP_MARK, Hint, apply_fixes};
+pub use diagnostic::{Also, Diagnostic, Edit, HELP_MARK, Hint, KIT_MARK, apply_fixes, without_kits};
 pub use doc_examples::doc_examples;
 pub use modules::{
     Imported, dotted, importable_type, member as std_member, module_as_value, package_member, short_module,

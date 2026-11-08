@@ -863,6 +863,20 @@ fn a_local_nothing_reads_keeps_what_its_value_does() {
 }
 
 #[test]
+fn a_ref_case_changes_what_the_match_is_over() {
+    let kinds = "enum Kind:\n    Button(clicks: int)\n    Label\n\nstruct Widget:\n    kind: Kind\n\n";
+    for (made, over) in [
+        ("kind = Kind.Button(clicks=1)", "kind"),
+        ("widgets = [Widget(kind=Kind.Button(clicks=1))]", "widgets[0].kind"),
+    ] {
+        let source = format!(
+            "{kinds}def main(stdout: Stdout):\n    mut {made}\n    match {over}:\n        case .Button(ref clicks):\n            clicks += 1\n            stdout.print(clicks)\n        case .Label:\n            pass\n"
+        );
+        assert!(!rules(&source).contains(&"needless-mut"), "{over}");
+    }
+}
+
+#[test]
 fn mut_on_a_local_nothing_changes_goes() {
     let source = "def f() -> int:\n    mut speed = 4\n    speed + 1\n";
     assert_eq!(rules(source), ["needless-mut"]);
@@ -879,6 +893,7 @@ fn mut_on_a_local_nothing_changes_goes() {
         "def f() -> int:\n    mut n = 0\n    m, n = pair()\n    m + n\n",
         "def f() -> int:\n    mut w = W(xs=[1])\n    mut part = w.xs\n    mut deeper = part\n    deeper[0] = 2\n    w.xs[0]\n",
         "def f(s: S) -> int:\n    mut at = s\n    match at:\n        case .A(inner):\n            at = inner\n        case _:\n            pass\n    1\n",
+        "def f(s: S) -> int:\n    mut src = s\n    src.next[int]() else 0\n",
     ];
     for source in changed {
         assert_eq!(rules(source), NONE, "{source}");

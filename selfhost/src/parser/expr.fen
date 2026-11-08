@@ -32,7 +32,16 @@ extend Parser:
             if self.at_leaving():
                 default = self.leaving()?
             elif self.at_punct(":"):
-                default = self.leaving_block()?
+                default = self.leaving_block(None)?
+            elif self.eat_keyword("as"):
+                failure = self.name("a name for the failure after `else as`")?
+                if not self.at_punct(":"):
+                    fail Diagnostic(
+                        message="`else as` needs a block",
+                        span=self.span(),
+                        help="write `else as failure:` and the block under it, which leaves",
+                    )
+                default = self.leaving_block(failure)?
             else:
                 default = self.expr()?
             return Expr(kind=.Else(value, default=default), span=value.span.to(default.span))
@@ -61,14 +70,14 @@ extend Parser:
 
     ## An `else:` block, which says something and then leaves. It's the same `match` as
     ## `else return`, with more statements in its case.
-    def leaving_block(ref self) -> Expr fails Diagnostic:
+    def leaving_block(ref self, failure: str?) -> Expr fails Diagnostic:
         start = self.advance().span
         indented = self.at(.Newline)
         body = self.block()?
         self.block_ended = indented
         span = start.to(self.prev_span())
         if body.len() > 0 and leaves_by(body[-1].kind):
-            return leaving_match(start, body, span)
+            return leaving_match(start, body, span, failure=failure)
         at = body[-1].span if body.len() > 0 else start
         fail Diagnostic(
             message="an `else:` block must leave",
@@ -504,8 +513,9 @@ def leaves_by(kind: StmtKind) -> bool:
 
 ## What a default that leaves parses to: a `match` with one case, holding the statements that
 ## leave, which every engine and analysis already follows out of the expression.
-def leaving_match(start: Span, body: list[Stmt], span: Span) -> Expr:
-    arm = MatchArm(pattern=.Wildcard, guard=None, body=body, span=span)
+def leaving_match(start: Span, body: list[Stmt], span: Span, failure: str? = None) -> Expr:
+    pattern = Pattern.Bind(failure) if failure is not None else Pattern.Wildcard
+    arm = MatchArm(pattern=pattern, guard=None, body=body, span=span)
     # Expressions are told apart by span, and nothing's written here, so it's empty.
     subject = Expr(kind=.Bool(False), span=Span(start=start.start, end=start.start))
     Expr(kind=.Match(subject, [arm]), span=span)

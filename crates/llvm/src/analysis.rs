@@ -292,6 +292,20 @@ pub(crate) fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: 
     }
 }
 
+/// Whether a builtin keeps what it's given after its receiver, so the given value has another owner.
+fn keeps_an_argument(name: &str) -> bool {
+    matches!(
+        name,
+        "list.append"
+            | "list.insert"
+            | "set.add"
+            | "Buffer.push"
+            | "Buffer.insert"
+            | "Table.add"
+            | "dict.setdefault"
+    )
+}
+
 /// What the facts leave to say about one instruction.
 fn note(
     function: &Function,
@@ -304,7 +318,8 @@ fn note(
         InstKind::Copy { dest, value } => {
             facts.note_write(*dest, range_of(facts, multi, value, block));
             if let Operand::Local(from) = value {
-                if known.nonzero.contains(&from.0) {
+                // Only a local written once stays what it was given: any other can become 0 after.
+                if known.nonzero.contains(&from.0) && facts.holds_one_value(*dest) {
                     known.nonzero.insert(dest.0);
                 }
                 if facts.holds_one_value(*dest) {
@@ -351,7 +366,7 @@ fn note(
         InstKind::Builtin { dest: Some(dest), name, args, .. } => match name.as_str() {
             "float" => {
                 let (low, high) = args.first().map_or(FULL, |arg| range_of(facts, multi, arg, block));
-                if low > 0 || high < 0 {
+                if (low > 0 || high < 0) && facts.holds_one_value(*dest) {
                     known.nonzero.insert(dest.0);
                 }
             }
@@ -468,20 +483,42 @@ fn analyze(
             }
             InstKind::Make { fields: items, .. }
             | InstKind::MakeCase { fields: items, .. }
-            | InstKind::MakeList { items, .. } => {
+            | InstKind::MakeList { items, .. }
+            | InstKind::MakeTuple { items, .. }
+            | InstKind::MakeSet { items, .. }
+            | InstKind::MakeClosure { captures: items, .. } => {
                 for item in items {
                     if let Operand::Local(local) = item {
                         known.shared.insert(local.0);
                     }
                 }
             }
+            InstKind::MakeDict { pairs, .. } => {
+                for item in pairs.iter().flat_map(|(key, value)| [key, value]) {
+                    if let Operand::Local(local) = item {
+                        known.shared.insert(local.0);
+                    }
+                }
+            }
+            InstKind::MakeGenerator { args, .. } => {
+                for (_, value) in args {
+                    if let Operand::Local(local) = value {
+                        known.shared.insert(local.0);
+                    }
+                }
+            }
             InstKind::SetField { value: Operand::Local(local), .. }
-            | InstKind::SetIndex { value: Operand::Local(local), .. } => {
+            | InstKind::SetIndex { value: Operand::Local(local), .. }
+            | InstKind::SetSlot { value: Operand::Local(local), .. }
+            | InstKind::MakeOk { value: Some(Operand::Local(local)), .. }
+            | InstKind::MakeErr { error: Operand::Local(local), .. } => {
                 known.shared.insert(local.0);
             }
-            InstKind::Builtin { name, args, .. } if name == "list.append" => {
-                if let Some(Operand::Local(local)) = args.get(1) {
-                    known.shared.insert(local.0);
+            InstKind::Builtin { name, args, .. } if keeps_an_argument(name) => {
+                for arg in args.iter().skip(1) {
+                    if let Operand::Local(local) = arg {
+                        known.shared.insert(local.0);
+                    }
                 }
             }
             _ => {}
@@ -607,10 +644,17 @@ fn guarded_after(
     function: &Function,
     known: &mut std::collections::BTreeSet<Guard>,
     inst: &InstKind,
-    (range, stepped): (&dyn Fn(usize) -> Range, &HashSet<usize>),
+    (range, stepped, given_mut): (&dyn Fn(usize) -> Range, &HashSet<usize>, &HashSet<usize>),
 ) {
     let mut written = Vec::new();
     visit(inst, |_| {}, |local| written.push(local.0));
+    // A call can write what it's given by `ref`, which nothing here shows.
+    if let InstKind::Call { args, .. } = inst {
+        written.extend(args.iter().filter_map(|arg| match arg {
+            Operand::Local(local) if given_mut.contains(&local.0) => Some(local.0),
+            _ => None,
+        }));
+    }
     let before = known.clone();
     let mut kept = Vec::new();
     for guard in known.iter() {
@@ -706,7 +750,8 @@ fn find_guarded_reads(
             },
         );
     }
-    let once = |local: usize| known.writes.get(local) == Some(&1);
+    // A local a call can write by `ref` isn't written once, whatever it says here.
+    let once = |local: usize| known.writes.get(local) == Some(&1) && !known.given_mut.contains(&local);
     let mut ways_in: HashMap<usize, usize> = HashMap::new();
     for block in &function.blocks {
         for next in block.end.targets() {
@@ -739,7 +784,8 @@ fn find_guarded_reads(
             continue;
         };
         if *step <= 0
-            || (range_of(facts, multi, &Operand::Local(*at), then.0).0 < 0 && !never_negative(function, *at))
+            || (range_of(facts, multi, &Operand::Local(*at), then.0).0 < 0
+                && !never_negative(function, *at, &known.given_mut))
         {
             continue;
         }
@@ -775,8 +821,8 @@ fn find_guarded_reads(
 
 /// Whether a local is never below 0: each write gives it a number from 0 up, or adds one to what
 /// it holds, which can't wrap round, as an add that overflows stops the program.
-fn never_negative(function: &Function, local: LocalId) -> bool {
-    if local.0 < function.params {
+fn never_negative(function: &Function, local: LocalId, given_mut: &HashSet<usize>) -> bool {
+    if local.0 < function.params || given_mut.contains(&local.0) {
         return false;
     }
     let insts: Vec<&InstKind> =
@@ -864,7 +910,7 @@ fn find_guarded_steps(
             }
             let range = |local: usize| range_of(facts, multi, &Operand::Local(LocalId(local)), at);
             for inst in &block.insts {
-                guarded_after(function, &mut state, &inst.kind, (&range, &stepped));
+                guarded_after(function, &mut state, &inst.kind, (&range, &stepped, &known.given_mut));
             }
             let outs: Vec<(usize, BTreeSet<Guard>)> = match &block.end {
                 Terminator::Branch { cond: Operand::Local(flag), then, otherwise } => {
@@ -952,7 +998,7 @@ fn find_guarded_steps(
                 let all = proved.entry(dest.0).or_insert(true);
                 *all &= holds;
             }
-            guarded_after(function, &mut state, &inst.kind, (&range, &stepped));
+            guarded_after(function, &mut state, &inst.kind, (&range, &stepped, &known.given_mut));
         }
     }
     known.safe.extend(proved.into_iter().filter(|(_, all)| *all).map(|(dest, _)| dest));
@@ -2895,7 +2941,7 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
         // `u8(x)` stops the program when `x` doesn't fit.
         || fennec_check::Num::named(name).is_some_and(|num| !num.is_float())
         // A stop can cut a channel's wait short.
-        || matches!(name, "intrinsics.channel_send" | "intrinsics.channel_take")
+        || matches!(name, "intrinsics.channel_new" | "intrinsics.channel_send" | "intrinsics.channel_take")
         // A launch fails with no thread to run on, and a wait for a task can be cut short.
         || matches!(name, "intrinsics.launch" | "intrinsics.launch_take")
         || is_socket_method(name)

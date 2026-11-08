@@ -1,22 +1,34 @@
 ## `std.postgres`: a Postgres database over the network, written in Fennec on `std.net`, under
-## `std.sql`. It's built a part at a time. This part speaks Postgres's messages, version 3 of its
-## protocol, with no network of its own: `startup`, `password` and `terminate` give the bytes a
-## client sends, and a `PgReader` is fed the bytes a server sends and gives back each whole
-## message, so the same code runs against a socket or against bytes a test wrote.
+## `std.sql`. Queries are templates, and each value goes to the server apart from the query's
+## text, as a parameter. Rows read into any type that loads, by the columns' names.
 ##
 ## ```fennec
-## mut reader = PgReader()
-## reader.feed(conn.read(65536)?)
-## message = reader.next()?
+## with postgres.connect(net, entropy, host="localhost", user="hoard", database="hoard", password=secret)? as db:
+##     _ = db.execute(t"insert into entries values ({path}, {size})")?
+##     rows = db.query[Entry](t"select path, size from entries where size > {least}")?
+##     with db.transaction()? as tx:
+##         _ = tx.execute(t"delete from entries where path = {path}")?
 ## ```
+##
+## A connection runs one query at a time, so one task uses a `PgDatabase` at a time: tasks in
+## `parallel` each connect for themselves. There's no TLS yet, so it's for a server on this machine
+## or a private network.
+##
+## Underneath, `startup`, `password` and `terminate` give the bytes a client sends, and a `PgReader`
+## is fed the bytes a server sends and gives back each whole message, with no network of their
+## own, so the same code runs against a socket or against bytes a test wrote.
 
 from std import base64, crypto
 from std.crypto import Secret
 from std.intrinsics import bytes_text
-from std.sql import SqlError, SqlRows, SqlValue
+from std.net import Connection
+from std.sql import SqlError, SqlRows, SqlValue, rows_as
 
 ## The protocol's version, 3.0, as a startup message gives it.
 PROTOCOL = 196608
+
+## The most SCRAM rounds a server may ask for. Postgres uses 4096 unless it's told otherwise.
+MOST_ROUNDS = 1_000_000
 
 ## The longest message a reader takes, so a server can't make it hold more than this.
 LONGEST = 1073741824
@@ -165,7 +177,7 @@ def message(kind: int, body: bytes) -> PgMessage fails SqlError:
     if kind == 78: return .Notice(fields=part.fields()?)
     if kind == 84: return columns(ref part)?
     if kind == 68: return row(ref part)?
-    if kind == 67: return .Done(tag=part.text()?)
+    if kind == 67: return PgMessage.Done(tag=part.text()?)
     if kind == 49: return .ParseComplete
     if kind == 50: return .BindComplete
     if kind == 110: return .NoData
@@ -315,6 +327,11 @@ export struct PgScram:
             fail SqlError.Failed(reason="the server's SCRAM nonce doesn't extend ours")
         if salt.len() == 0 or rounds < 4096:
             fail SqlError.Failed(reason="the server's SCRAM salt or rounds are too weak")
+        # Each round is work done here, so a server can't ask for hours of it.
+        if rounds > MOST_ROUNDS:
+            fail SqlError.Failed(
+                reason=f"the server asks for {rounds} SCRAM rounds, over the limit of {MOST_ROUNDS}",
+            )
         salted = salted_password(self._password.expose_secret().encode(), salt, rounds)
         client_key = mac(salted, "Client Key".encode())
         stored = unhex(crypto.sha256(client_key))
@@ -329,6 +346,9 @@ export struct PgScram:
     ## Checks the server's last message: its signature, which only a server that knows the
     ## password could make.
     def check(self, server_final: bytes) fails SqlError:
+        # Before `answer`, there's no key to check it with, and an empty one anyone can sign with.
+        if self._signed == "":
+            fail SqlError.Failed(reason="the server sent its SCRAM proof before the exchange")
         said = server_final.decode() else ""
         wanted = base64.encode(mac(self._server_key, self._signed.encode()))
         if not crypto.equal(said, f"v={wanted}"):
@@ -488,7 +508,7 @@ def add_cell(ref rows: SqlRows, kind: int, cell: bytes, there: bool) fails SqlEr
         rows.texts.append(text)
 
 def float_of(text: str) -> float fails SqlError:
-    if text == "NaN": return 0.0 / 0.0
+    if text == "NaN": return float("nan") else 0.0
     if text == "Infinity": return 1e308 * 10.0
     if text == "-Infinity": return -1e308 * 10.0
     float(text) else fail SqlError.Failed(reason=f"the server sent `{text}` as a float")
@@ -521,3 +541,207 @@ export def failure_of(fields: dict[str, str]) -> SqlError:
     if code.startswith("23"): return SqlError.Constraint(reason=reason)
     if code == "40001" or code == "40P01": return SqlError.Busy(reason=reason)
     SqlError.Failed(reason=reason)
+
+## Connects to the database, signs in, and lends a `PgDatabase` for a `with` block, closing it at the
+## end. `password` is needed if the server asks for one, and goes through SCRAM-SHA-256, which never
+## puts it on the wire and makes the server prove it knows it too. Given a password, a server that
+## lets the client in with no proof, or asks for the password as it is, is refused, since anything
+## on the way could be pretending to be it. `allow_weak_sign_in=True` lets those through, for a server
+## set up that way. `entropy` makes SCRAM's nonce.
+export def connect(
+    net: Net,
+    entropy: Entropy,
+    host: str,
+    user: str,
+    database: str,
+    password: Secret[str]? = None,
+    port = 5432,
+    allow_weak_sign_in = False,
+) -> with PgDatabase fails SqlError:
+    db = PgDatabase(_conn=opened(net, host=host, port=port)?)
+    db._sign_in(entropy, user=user, database=database, secret=password, weak=allow_weak_sign_in)?
+    lend db else:
+        db._close()
+    db._close()
+
+## A connection to a database, lent by `postgres.connect`.
+export struct PgDatabase:
+    _conn: Connection
+
+    ## Runs a query that changes something, like an `insert`, and gives how many rows it changed.
+    def execute(self, query: Template[SqlValue]) -> int fails SqlError:
+        changed(self._run(query)?.tag)
+
+    ## Runs a query and gives each row it found as a `T`, a struct's fields by the columns' names.
+    def query[T: Deserializable](self, query: Template[SqlValue]) -> list[T] fails SqlError:
+        found = self._run(query)?
+        rows_as[T](rows_of(found.names, types=found.types, rows=found.rows)?)?
+
+    ## A transaction for a `with` block: it commits when the block ends, and rolls back if the
+    ## block fails.
+    def transaction(self) -> with PgTransaction fails SqlError:
+        _ = self._run(t"begin")?
+        tx = PgTransaction(_db=self)
+        lend tx else:
+            _ = self._run(t"rollback") else PgResult()
+        kept = self._run(t"commit")?
+        # A transaction that had a failure in it is rolled back by the commit, with no error.
+        if kept.tag != "COMMIT":
+            fail SqlError.Failed(
+                reason=f"the transaction wasn't kept: the server answered the commit with `{kept.tag}`, as it does when something in it failed",
+            )
+
+    ## Sends a query, and reads what comes back up to the server's saying it's ready again. A
+    ## failure is kept until then, so the connection is ready for the next query.
+    def _run(self, query: Template[SqlValue]) -> PgResult fails SqlError:
+        send(self._conn, query_messages(query))?
+        mut reader = PgReader()
+        mut found = PgResult()
+        mut failed = False
+        mut failure = SqlError.Failed(reason="")
+        while True:
+            message = next_message(self._conn, ref reader)?
+            match message:
+                case .Columns(names=names, types=types):
+                    found.names = names
+                    found.types = types
+                case .Row(cells=_, present=_):
+                    found.rows.append(message)
+                case .Done(tag=tag):
+                    found.tag = tag
+                case .Failed(fields=fields):
+                    failed = True
+                    failure = failure_of(fields)
+                case .Ready(status=_):
+                    if failed: fail failure
+                    return found
+                case _:
+                    pass
+        found
+
+    ## Says who's signing in, and answers whatever the server asks until it's ready. After SCRAM
+    ## the server has to have proved it knows the password, or it isn't trusted.
+    def _sign_in(
+        self,
+        entropy: Entropy,
+        user: str,
+        database: str,
+        secret: Secret[str]?,
+        weak: bool,
+    ) fails SqlError:
+        send(self._conn, startup(user, database=database))?
+        mut reader = PgReader()
+        mut scram = PgScram.started(Secret.of(""), nonce="", user="")
+        mut signing = False
+        mut proved = False
+        while True:
+            message = next_message(self._conn, ref reader)?
+            match message:
+                case .AuthOk:
+                    if not proved and (signing or (secret is not None and not weak)):
+                        fail SqlError.Failed(
+                            reason="the server let us in without proving it knows the password: `allow_weak_sign_in=True` accepts that",
+                        )
+                case .AuthCleartext:
+                    if not weak:
+                        fail SqlError.Failed(
+                            reason="the server asks for the password as it is, so it wasn't sent: `allow_weak_sign_in=True` sends it",
+                        )
+                    held = needed(secret)?
+                    send(self._conn, cleartext(held))?
+                case .AuthSasl(mechanisms=mechanisms):
+                    if not ("SCRAM-SHA-256" in mechanisms):
+                        fail SqlError.Failed(reason="the server doesn't offer SCRAM-SHA-256")
+                    nonce = base64.encode(entropy.bytes(18))
+                    scram = PgScram.started(needed(secret)?, nonce=nonce, user="")
+                    signing = True
+                    send(self._conn, sasl_first("SCRAM-SHA-256", data=scram.first()))?
+                case .AuthSaslContinue(data=data):
+                    send(self._conn, sasl_next(scram.answer(data)?))?
+                case .AuthSaslFinal(data=data):
+                    scram.check(data)?
+                    proved = True
+                case .AuthOther(code=code):
+                    fail SqlError.Failed(
+                        reason=f"the server signs in a way this doesn't speak, number {code}: use SCRAM-SHA-256 or a password",
+                    )
+                case .Failed(fields=fields):
+                    fail failure_of(fields)
+                case .Ready(status=_):
+                    return
+                case _:
+                    pass
+
+    def _close(self):
+        # Closing goes ahead whether or not the server hears it's the end.
+        match self._conn.write(terminate()):
+            case Ok(_):
+                pass
+            case Err(_):
+                pass
+        self._conn.close()
+
+## A transaction, lent by `db.transaction()`. Its queries see what it's changed so far, and the
+## rest of the program sees none of it until it's kept.
+export struct PgTransaction:
+    _db: PgDatabase
+
+    ## Runs a query that changes something, like an `insert`, and gives how many rows it changed.
+    def execute(self, query: Template[SqlValue]) -> int fails SqlError:
+        self._db.execute(query)?
+
+    ## Runs a query and gives each row it found as a `T`.
+    def query[T: Deserializable](self, query: Template[SqlValue]) -> list[T] fails SqlError:
+        self._db.query[T](query)?
+
+## What one query gave.
+struct PgResult:
+    names = list[str]()
+    types = list[int]()
+    rows = list[PgMessage]()
+    tag = ""
+
+## A connection to the server.
+def opened(net: Net, host: str, port: int) -> Connection fails SqlError:
+    match net.connect(host, port):
+        case Ok(conn):
+            return conn
+        case Err(error):
+            fail SqlError.Failed(reason=f"couldn't connect to {host}:{port}: {error.message()}")
+
+## The password a server asked for, which has to have been given.
+def needed(secret: Secret[str]?) -> Secret[str] fails SqlError:
+    secret else fail SqlError.Failed(
+        reason="the server asks for a password, and `connect` wasn't given one",
+    )
+
+## The message that sends a password as it is.
+def cleartext(secret: Secret[str]) -> bytes:
+    password(secret.expose_secret())
+
+## How many rows a query's tag says it changed, like the 1 in `INSERT 0 1`, or 0 if it doesn't say.
+def changed(tag: str) -> int:
+    words = tag.split(" ")
+    int(words[words.len() - 1]) else 0
+
+def send(conn: Connection, data: bytes) fails SqlError:
+    match conn.write(data):
+        case Ok(_):
+            pass
+        case Err(error):
+            fail SqlError.Failed(reason=f"the connection to the server failed: {error.message()}")
+
+## The next whole message from the server, waiting for it.
+def next_message(conn: Connection, ref reader: PgReader) -> PgMessage fails SqlError:
+    while True:
+        found = reader.next()?
+        if found is not None: return found
+        match conn.read(65536):
+            case Ok(more):
+                if more.len() == 0: fail SqlError.Failed(reason="the server closed the connection")
+                reader.feed(more)
+            case Err(error):
+                fail SqlError.Failed(
+                    reason=f"the connection to the server failed: {error.message()}",
+                )
+    fail SqlError.Failed(reason="the server closed the connection")

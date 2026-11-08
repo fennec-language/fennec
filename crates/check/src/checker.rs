@@ -108,7 +108,11 @@ pub(crate) struct Checker {
     previous: BTreeMap<String, Signature>,
     /// The functions that used each function's signature, so they're checked again when it
     /// changes.
-    callers: BTreeMap<String, BTreeSet<String>>,
+    pub(crate) callers: BTreeMap<String, BTreeSet<String>>,
+    /// What each function waits on itself: a network call, a sleep, a channel.
+    pub(crate) waits: BTreeMap<String, String>,
+    /// The calls made inside lock bodies, judged once every function's waits are known.
+    pub(crate) lock_calls: Vec<crate::waits::LockCall>,
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
@@ -188,6 +192,8 @@ impl Checker {
             revisit: BTreeSet::new(),
             previous: BTreeMap::new(),
             callers: BTreeMap::new(),
+            waits: BTreeMap::new(),
+            lock_calls: Vec::new(),
             diagnostics,
         }
     }
@@ -213,6 +219,7 @@ impl Checker {
             self.check_implicit_methods();
         }
         self.revisit_cycles();
+        self.waits_under_locks();
         self.fails_unsaid();
         for name in self.program.constants.keys().cloned().collect::<Vec<_>>() {
             self.constant_type(&name);
@@ -242,7 +249,7 @@ impl Checker {
             self.unknowns_left();
         }
         if self.diagnostics.is_empty() {
-            self.body_rules();
+            self.body_rules(scope);
         }
         if self.diagnostics.is_empty() {
             return Ok(self.checked(structs, errors));
@@ -461,7 +468,7 @@ impl Checker {
 
     /// The rules over whole bodies, once their types are known: what a loop goes over and a call
     /// is given can't change another way, and a change has to be read.
-    fn body_rules(&mut self) {
+    fn body_rules(&mut self, scope: Scope) {
         let mut problems = Vec::new();
         let keys: Vec<String> = self
             .program
@@ -479,8 +486,11 @@ impl Checker {
         for test in &self.program.tests {
             problems.extend(crate::loops::check_arguments(&test.body));
         }
-        // A change that's lost matters only once what's written is otherwise right.
-        if problems.is_empty() {
+        // A change that's lost matters only once what's written is otherwise right. What's about
+        // to be emitted has been checked as written and rewritten since: a `with` function's body
+        // is written into its caller, where a change to a `ref` parameter is to a local, and a
+        // failure leaves before anything reads it.
+        if problems.is_empty() && scope != Scope::ReachedWithFields {
             for key in keys {
                 let Some(def) = self.program.functions.get(&key).map(|entry| entry.def.clone()) else {
                     continue;
@@ -745,7 +755,7 @@ impl Checker {
 
     /// The function a nested function is in, all the way out: nested functions are checked
     /// again with the function around them, which gives them the names they read.
-    fn outermost(&self, key: &str) -> String {
+    pub(crate) fn outermost(&self, key: &str) -> String {
         let mut key = key.to_owned();
         while let Some(entry) = self.program.functions.get(&key)
             && entry.owner.is_none()

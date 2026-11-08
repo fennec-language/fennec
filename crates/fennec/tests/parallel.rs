@@ -11,13 +11,10 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output_before(FENNEC_DEADLINE)
 }
 
-/// What the interpreter gave for the program `{name}.fen` in `dir`, pinned before it left the
-/// command (see `crate::llvm::interpreted_by`), with `dir` written as `<dir>`.
+/// What the interpreter gave for the program `{name}.fen` in `dir`, pinned before it was removed
+/// (see `crate::llvm::interpreted_by`).
 fn interpreted(dir: &Path, name: &str) -> std::io::Result<crate::llvm::Outcome> {
-    let program = dir.join(format!("{name}.fen"));
-    crate::llvm::interpreted_by(dir, &program, &format!("parallel_{name}"), || {
-        fennec(&["run", "--interp", &program.to_string_lossy()], dir)
-    })
+    crate::llvm::interpreted_by(&dir.join(format!("{name}.fen")), &format!("parallel_{name}"))
 }
 
 /// What a native run printed, said and gave back, with `dir` written as `<dir>`.
@@ -482,6 +479,345 @@ fn workers_take_turns_at_shared_values_holding_blocks() -> std::io::Result<()> {
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/shared_blocks.fen");
     matches_the_interpreter_on_workers(&dir, "shared_blocks", source)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// What `embed` gives lives for the whole run, so every task gets all of it, not just the first.
+#[test]
+fn every_task_reads_what_was_embedded() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-embed-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("embed_in_tasks.txt"), "embedded")?;
+    let source = include_str!("fixtures/workers/embed_in_tasks.fen");
+    let built = build_on_threads(&dir, source, "embed_in_tasks")?;
+    matches_on_workers(
+        &built,
+        "embed_in_tasks",
+        Some(0),
+        "first 8 16 16\nsecond 8 16 16\nthird 8 16 16\ndone\n",
+    )?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// What one task printed before it told another comes out before what the other prints then.
+#[test]
+fn printing_keeps_its_order_across_a_channel() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-print-order-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/print_order_across_a_channel.fen");
+    let built = build_on_threads(&dir, source, "print_order")?;
+    for threads in ["1", "2", "4"] {
+        let ran = Command::new(&built).env("FENNEC_THREADS", threads).output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "1 first prints, then sends\n2 second, after it was told 1\n3 first again, after the reply 1\ndone\n",
+            "on {threads} threads"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A crash under a read lock gives the lock back and ends only that task, as one under `as ref` does.
+#[test]
+fn a_crash_under_a_read_lock_ends_only_its_task() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-read-crash-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/crash_under_a_read_lock.fen");
+    let built = build_on_threads(&dir, source, "crash_under_a_read_lock")?;
+    let wanted = "failed: Crashed(why=\"the task crashed\")\n2\n";
+    matches_on_workers(&built, "crash_under_a_read_lock", Some(0), wanted)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A task holding a lock stays on its thread until it lets go, however long it runs or waits: what
+/// says it's in a lock is its thread's, so another task run there would seem to hold the lock too.
+#[test]
+fn a_task_holding_a_lock_is_not_parked() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-lock-park-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/waiting_inside_a_lock.fen");
+    let built = build_on_threads(&dir, source, "waiting_inside_a_lock")?;
+    let wanted = "a name that is long enough to need a block of its own 300000000\n";
+    matches_on_workers(&built, "waiting_inside_a_lock", Some(0), wanted)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// When a server's loop ends, the blocks it lent to its rounds come back, so what runs next can
+/// read and lend them.
+#[test]
+fn what_a_server_borrowed_comes_back_when_it_ends() -> std::io::Result<()> {
+    use std::io::{BufRead as _, BufReader, Read as _};
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-after-server-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/blocks_after_a_server.fen");
+    let built = build_on_threads(&dir, source, "blocks_after_a_server")?;
+    for threads in ["1", "2", "4"] {
+        let mut server = Command::new(&built)
+            .env("FENNEC_THREADS", threads)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        let mut out = BufReader::new(server.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
+        let mut port = String::new();
+        out.read_line(&mut port)?;
+        let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        let mut back = String::new();
+        BufReader::new(stream).read_line(&mut back)?;
+        let mut rest = String::new();
+        out.read_to_string(&mut rest)?;
+        assert!(server.wait()?.success(), "on {threads} threads");
+        assert_eq!(
+            rest, "word number long enough to sit in a block of its own 3!\n5001 x\n",
+            "on {threads} threads"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// Runs a built server on `threads` threads, says `lines` to it, one connection each, and waits at
+/// most 15 seconds for it to end, the connections staying open. Gives back what it printed after its
+/// port, and its exit code.
+fn server_ended(built: &Path, threads: &str, lines: &[&str]) -> std::io::Result<(String, Option<i32>)> {
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+    let mut server = Command::new(built)
+        .env("FENNEC_THREADS", threads)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let mut out = BufReader::new(server.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
+    let mut port = String::new();
+    out.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+    let mut open = Vec::new();
+    for line in lines {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        if !line.is_empty() {
+            stream.write_all(format!("{line}\n").as_bytes())?;
+        }
+        if *line == "wait" {
+            let mut back = String::new();
+            BufReader::new(stream.try_clone()?).read_line(&mut back)?;
+            assert_eq!(back, "waiting\n");
+        }
+        open.push(stream);
+    }
+    let started = std::time::Instant::now();
+    let code = loop {
+        if let Some(status) = server.try_wait()? {
+            break status.code();
+        }
+        if started.elapsed() > std::time::Duration::from_secs(15) {
+            server.kill()?;
+            server.wait()?;
+            return Err(std::io::Error::other(format!("the server didn't end on {threads} threads")));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut rest = String::new();
+    out.read_to_string(&mut rest)?;
+    drop(open);
+    Ok((rest, code))
+}
+
+/// When one round fails, the others are cancelled, and a cancelled task can't wait: its wait for a
+/// channel or for a task it launched ends at once, and the server goes.
+#[test]
+fn a_cancelled_round_doesnt_wait_for_a_channel_or_a_task() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-cancelled-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let channel =
+        build_on_threads(&dir, include_str!("fixtures/workers/cancel_channel_wait.fen"), "channel")?;
+    let launch = build_on_threads(&dir, include_str!("fixtures/workers/cancel_launch_wait.fen"), "launch")?;
+    for built in [&channel, &launch] {
+        for threads in ["1", "2"] {
+            let (_, code) = server_ended(built, threads, &["wait", "boom"])?;
+            assert_eq!(code, Some(1), "{} on {threads} threads", built.display());
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A stop cuts short a read on a served connection, as it does any other wait.
+#[test]
+fn a_stop_cuts_short_a_read_on_a_served_connection() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-stopped-read-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/stop_a_connection_read.fen");
+    let built = build_on_threads(&dir, source, "stop_a_connection_read")?;
+    for threads in ["1", "2"] {
+        let (printed, code) = server_ended(&built, threads, &[""])?;
+        assert_eq!((printed.as_str(), code), ("the block ended\nafter\n", Some(0)), "on {threads} threads");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// One task can write to a connection while another is waiting to read from it.
+#[test]
+fn a_connection_can_be_written_while_another_task_reads_it() -> std::io::Result<()> {
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-conn-shared-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/connection_shared_by_two_tasks.fen");
+    let built = build_on_threads(&dir, source, "connection_shared_by_two_tasks")?;
+    for threads in ["1", "2"] {
+        let mut server = Command::new(&built)
+            .env("FENNEC_THREADS", threads)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        let mut out = BufReader::new(server.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
+        let mut port = String::new();
+        out.read_line(&mut port)?;
+        let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        let mut reader = BufReader::new(stream.try_clone()?);
+        let mut heard = String::new();
+        reader.read_line(&mut heard)?;
+        assert_eq!(heard, "from the launched task\n", "on {threads} threads");
+        stream.write_all(b"hello\n")?;
+        heard.clear();
+        reader.read_line(&mut heard)?;
+        assert_eq!(heard, "from the round\n", "on {threads} threads");
+        let mut rest = String::new();
+        out.read_to_string(&mut rest)?;
+        assert!(server.wait()?.success(), "on {threads} threads");
+        assert_eq!(
+            sorted_lines(rest.as_bytes()),
+            sorted_lines(b"launched wrote\nround read hello\nafter server\n")
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// Runs a fixture on 1, 2, 4 and 8 threads and checks what it printed, in any order.
+fn fixture_prints(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let built = build_on_threads(&dir, source, name)?;
+    matches_on_workers(&built, name, Some(0), wanted)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A task's stack limit is its own again after any wait, not that of whatever ran on its thread
+/// meanwhile, however it waited.
+#[test]
+fn a_tasks_stack_limit_is_its_own_after_a_wait() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/workers/stack_limit_after_a_wait.fen");
+    fixture_prints(
+        "stack_limit_after_a_wait",
+        source,
+        "first 1 51\nsecond 2 51\nfirst 3 51\nsecond 4 51\ndone\n",
+    )
+}
+
+/// A stop ends the task it was for: being stopped in a sleep is that task's failure, and doesn't
+/// show up in whichever task its thread runs next.
+#[test]
+fn a_stopped_task_keeps_its_failure_to_itself() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/workers/stopped_task_keeps_its_failure.fen");
+    fixture_prints(
+        "stopped_task_keeps_its_failure",
+        source,
+        "the stopped one is over\nother ended fine 20000\ndone\n",
+    )
+}
+
+/// A dict's values go with it across a lock and into a task, as its strings do: a list held in one
+/// is the thread's own copy, not the address of a block another thread may reuse.
+#[test]
+fn a_dicts_lists_are_copied_across_a_lock_and_into_a_task() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-dict-lists-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/shared_dict_of_lists.fen");
+    let built = build_on_threads(&dir, source, "shared_dict_of_lists")?;
+    let first = "[100, 101, 102, 103, 104, 105, 106, 107]";
+    let second = "[200, 201, 202, 203, 204, 205, 206, 207]";
+    let wanted = format!("lock {first} {second}\n5000\ntask {first} {second}\n");
+    matches_on_workers(&built, "shared_dict_of_lists", Some(0), &wanted)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A task's end takes only the blocks it still has: one it freed, whose address another task on its
+/// worker then got for a block of its own, stays with that task.
+#[test]
+fn a_task_ending_leaves_another_tasks_blocks_alone() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-task-blocks-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/task_end_keeps_others_blocks.fen");
+    let built = build_on_threads(&dir, source, "task_end_keeps_others_blocks")?;
+    let base = "the same long text for both tasks, more than twenty three bytes in all";
+    let size = 2 * base.len() + 1;
+    let start = base.get(..12).unwrap_or_default();
+    let joined = size + 1;
+    let wanted = format!(
+        "A freed, length {size}\nB built {size}\nA ends\nB holds: {size} [ {start} ]\n\
+         B joined: {joined} [ {start} ]\nB same: True\n{base}{base}2\n"
+    );
+    matches_on_workers(&built, "task_end_keeps_others_blocks", Some(0), &wanted)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// Long strings with the same text are equal, whichever threads made them.
+#[test]
+fn long_strings_made_on_different_threads_are_equal() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-equal-strings-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/equal_long_strings.fen");
+    let built = build_on_threads(&dir, source, "equal_long_strings")?;
+    matches_on_workers(&built, "equal_long_strings", Some(0), "equal 1\nfound 5\n")?;
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

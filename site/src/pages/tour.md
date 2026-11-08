@@ -542,7 +542,7 @@ def main(stdout: Stdout):
 
 - The default after `else` is only worked out if it's needed. Failing is a plain return, with no stack unwinding.
 - `fails A | B` combines failures from different places, and `?` passes any of them up as it is. A function type can say it too: `(str) -> int fails ParseError | RangeError`.
-- `ignore(result, "why")` throws a failure away on purpose, and `result.expect("why")` says it can't fail. Both need a reason.
+- `result.expect("why")` says a call can't fail, and needs a reason. **Planned:** `ignore` goes, and `_ = f()` on a call that can fail is a compile error, so a failure must always be handled.
 - A run-time bug is different from a failure. `xs[i]` out of range stops the program with a clear message, because there's nothing sensible to handle.
 
 - Ignoring a returned value is a compile error, and `_ = call()` throws one away on purpose.
@@ -765,7 +765,7 @@ def main(stdout: Stdout):
 ```
 
 - A `shared` value is made in a function, usually `main`, and passed to whoever needs it, like a capability. There's no top-level shared state, so a function's signature says what shared state it touches.
-- Any way out of a `lock` block releases it. Leaving with `fail` or `return` keeps the changes made so far.
+- Any way out of a `lock` block releases it. Leaving with `return` keeps the changes made so far, and today so does `fail`. **Planned:** a `fail` or `?` leaving `lock ... as ref` rolls back the block's changes, as a crash does, so a write lock either finishes or has no effect.
 - A crash inside `lock x as ref s:` rolls back: every value the block changed is put back before the lock is released, so nobody ever sees a half-change. There's nothing to write, and a lock is never left poisoned.
 - Two values locked at once go in one statement, `lock source, target as ref payer, ref payee:`, and a `lock` inside another is refused for now.
 - A `shared` value never holds one of its own type and never forms a cycle, so a tree uses a `Table` and `Id`s. Its memory is freed when the last holder lets go, with no cleanup code.
@@ -845,7 +845,7 @@ def main(stdout: Stdout) fails Crashed | Closed | Timeout:
 
 - A parameter typed `Inbox[T]` makes `launch` create the channel: the task gets the receiving end and you get the sending end. The enum is the protocol, so you can only send real cases and the task must handle each one.
 - The `?` on the `with launch` line covers the task: its own failures, and `Crashed` if it crashes, come out where the block ends. A crash ends only its own task.
-- Channels are always bounded, and `send` waits when one is full. `send` and `receive` take `timeout=`. A channel of your own is `with Channel[Job].open(size=64) as jobs:` today, from `std.concurrent`. **Planned:** the plain function `with channel[Job](size=64) as jobs:`, as Python's `open()` is, and `to=.Every`, which gives every listener every message.
+- Channels are always bounded, and `send` waits when one is full. `send` and `receive` take `timeout=`. A channel of your own is `with channel[Job](size=64) as jobs:`, from `std.concurrent`, a plain function as Python's `open()` is. **Planned:** `to=.Every`, which gives every listener every message.
 - **Planned:** `TaskGroup`, which holds a number of tasks known only at run time and stops them all when its block ends, and pools, like a database's connections, written in plain Fennec so nothing can leak or be used twice.
 
 Not in the language at all: `del`, destructors, moves, lifetimes, `unsafe` and global state.
@@ -1028,7 +1028,7 @@ Floats have one equality, order and hash: NaN equals itself and sorts last, and 
 
 ## Building
 
-- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, the interpreter stands in and says so. The JIT is gone, and a native program carries no interpreter. **Planned:** the interpreter goes from `fennec` too.
+- `fennec run` runs the tests a change affects, then the program, built through LLVM a function at a time and cached. Where LLVM can't build something yet, it says why, and `fennec test` fails the tests that reach it. There's no JIT and no interpreter to fall back on.
 - `fennec build` makes a native program through LLVM, and `fennec build --release` optimizes the whole program as one. On Linux, a release build is one static program that needs nothing from the machine.
 
 ## Decided lately

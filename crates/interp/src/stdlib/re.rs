@@ -4,40 +4,8 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use fennec_re::{Anchor, Captures, Regex};
+use fennec_re::Regex;
 use fennec_syntax::{Diagnostic, Span};
-
-use super::{Module, no_constants};
-use crate::call::CallArg;
-use crate::collections::{plain, split_key};
-use crate::interp::Interp;
-use crate::methods::no_method;
-use crate::value::{Instance, Value};
-
-pub(crate) const MODULE: Module = Module {
-    functions: &["re.is_regex"],
-    call,
-    constant: no_constants,
-    methods: &[("Regex", method)],
-};
-
-fn method(
-    interp: &mut Interp<'_>,
-    regex: &Instance,
-    name: &str,
-    args: Vec<CallArg>,
-    span: Span,
-) -> Result<Value, Diagnostic> {
-    interp.regex_method(regex, name, args, span)
-}
-
-/// `re.is_regex(pattern)`: whether a pattern is valid.
-fn call(interp: &mut Interp<'_>, name: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
-    match plain(args, name, span)?.as_slice() {
-        [Value::Str(pattern)] => Ok(Value::Bool(interp.regexes.compiled(pattern).is_ok())),
-        _ => Err(Diagnostic::new(format!("`{name}` was called with the wrong arguments"), span)),
-    }
-}
 
 /// Part of a replacement: text as written, or what a group caught.
 enum Part {
@@ -58,113 +26,6 @@ impl Regexes {
         let regex = Rc::new(Regex::new(pattern)?);
         self.0.insert(pattern.to_owned(), Rc::clone(&regex));
         Ok(regex)
-    }
-}
-
-impl Interp<'_> {
-    /// Why a `Regex` being made has a pattern that isn't valid, if it does.
-    pub(crate) fn pattern_problem(
-        &mut self,
-        type_name: &str,
-        fields: &[(String, Value)],
-        span: Span,
-    ) -> Option<Diagnostic> {
-        match (type_name, fields) {
-            ("Regex", [(_, Value::Str(pattern))]) => {
-                self.regexes.compiled(pattern).err().map(|error| invalid(&error, span))
-            }
-            _ => None,
-        }
-    }
-
-    pub(crate) fn regex_method(
-        &mut self,
-        receiver: &Instance,
-        method: &str,
-        args: Vec<CallArg>,
-        span: Span,
-    ) -> Result<Value, Diagnostic> {
-        let (args, key) = split_key(args, method)?;
-        if key.is_some() {
-            return Err(Diagnostic::new(format!("`{method}` doesn't take `key`"), span));
-        }
-        let pattern = match receiver.field("pattern") {
-            Some(Value::Str(pattern)) => Rc::clone(pattern),
-            _ => return Err(Diagnostic::new("this `Regex` has no pattern", span)),
-        };
-        let regex = self.regexes.compiled(&pattern).map_err(|error| invalid(&error, span))?;
-        match (method, args.as_slice()) {
-            ("match" | "fullmatch" | "search", [Value::Str(text)]) => {
-                let anchor = match method {
-                    "match" => Anchor::Start,
-                    "fullmatch" => Anchor::Both,
-                    _ => Anchor::Search,
-                };
-                match regex.find_at(text, 0, anchor) {
-                    Some(captures) => {
-                        let start = chars(text, 0, captures.whole().0);
-                        self.found(text, &captures, start, span)
-                    }
-                    None => Ok(Value::None),
-                }
-            }
-            ("find_all", [Value::Str(text)]) => {
-                let mut matches = Vec::new();
-                // Counting characters from the last match keeps this linear.
-                let (mut byte, mut char) = (0, 0);
-                for captures in regex.find_all(text) {
-                    let start = captures.whole().0;
-                    char += chars(text, byte, start);
-                    byte = start;
-                    matches.push(self.found(text, &captures, char, span)?);
-                }
-                Ok(Value::list(matches))
-            }
-            ("replace", [Value::Str(text), Value::Str(replacement)]) => {
-                let parts = template(replacement, regex.groups(), span)?;
-                Ok(Value::str(&replace(text, &regex, &parts)))
-            }
-            ("split", [Value::Str(text)]) => {
-                let mut pieces = Vec::new();
-                let mut from = 0;
-                for captures in regex.find_all(text) {
-                    let (start, end) = captures.whole();
-                    pieces.push(Value::str(text.get(from..start).unwrap_or("")));
-                    from = end;
-                }
-                pieces.push(Value::str(text.get(from..).unwrap_or("")));
-                Ok(Value::list(pieces))
-            }
-            ("match" | "fullmatch" | "search" | "find_all" | "replace" | "split", _) => {
-                Err(Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span))
-            }
-            _ => Err(no_method(&Value::Instance(Rc::new(receiver.clone())), method, span)),
-        }
-    }
-
-    /// A `Match`, given where the whole match starts in characters.
-    fn found(
-        &mut self,
-        text: &str,
-        captures: &Captures,
-        start: usize,
-        span: Span,
-    ) -> Result<Value, Diagnostic> {
-        let (from, to) = captures.whole();
-        let int = |n: usize| Value::Int(i64::try_from(n).unwrap_or(i64::MAX));
-        let groups = captures
-            .groups
-            .iter()
-            .skip(1)
-            .map(|group| group.map_or(Value::None, |(from, to)| Value::str(text.get(from..to).unwrap_or(""))))
-            .collect();
-        let fields = vec![
-            ("text", Value::str(text.get(from..to).unwrap_or(""))),
-            ("start", int(start)),
-            ("end", int(start + chars(text, from, to))),
-            ("groups", Value::list(groups)),
-        ];
-        self.make_value("Match", fields, span)
     }
 }
 

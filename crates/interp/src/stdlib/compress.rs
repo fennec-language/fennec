@@ -6,31 +6,8 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Module, no_constants};
-use crate::call::CallArg;
 use crate::compress as codec;
-use crate::collections::plain;
-use crate::interp::Interp;
 use crate::value::Value;
-
-pub(crate) const MODULE: Module = Module {
-    functions: &[
-        "compress.deflate",
-        "compress.gunzip",
-        "compress.gzip",
-        "compress.inflate",
-        "compress.unzlib",
-        "compress.zlib",
-    ],
-    call,
-    constant: no_constants,
-    methods: &[],
-};
-
-fn call(_: &mut Interp<'_>, name: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
-    let (name, args) = crate::stdlib::process::options_on_name(name, args);
-    run(&name, &plain(args, &name, span)?, span)
-}
 
 /// One of these functions, which need nothing of the interpreter.
 pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic> {
@@ -39,7 +16,9 @@ pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Dia
             let Some(Value::Int(level)) = values.get(1) else {
                 return Err(Diagnostic::new(format!("`{function}`'s `level` is an int"), span));
             };
-            let Ok(level) = u8::try_from(*level).map_err(drop).and_then(|level| if level <= 9 { Ok(level) } else { Err(()) })
+            let Ok(level) = u8::try_from(*level)
+                .map_err(drop)
+                .and_then(|level| if level <= 9 { Ok(level) } else { Err(()) })
             else {
                 return Err(Diagnostic::new(format!("`level` is from 0 to 9, not {level}"), span)
                     .with_help("0 stores it as it is, 6 is the usual, and 9 tries hardest"));

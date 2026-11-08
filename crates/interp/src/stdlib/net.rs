@@ -5,7 +5,7 @@
 //! Nothing else runs while a test waits, so a read that would wait forever stops the test and
 //! says why, and a server with no connection waiting is done.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::rc::Rc;
@@ -14,26 +14,15 @@ use std::time::{Duration, Instant};
 
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Module, http, no_constants, no_functions};
-use crate::call::CallArg;
-use crate::interp::Interp;
+use super::http;
 use crate::methods::no_method;
-use crate::value::{Capability, Instance, Value};
-
-pub(crate) const MODULE: Module = Module {
-    functions: &[],
-    call: no_functions,
-    constant: no_constants,
-    methods: &[
-        ("Connection", connection_method),
-        ("Server", server_method),
-        ("UdpSocket", udp_method),
-        ("Response", response_method),
-    ],
-};
+use crate::value::{Capability, Value};
 
 /// How long connecting waits unless told otherwise.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const SENT_BEFORE_TLS: &str =
+    "the other side sent more than was read before TLS started, and that can't be trusted";
+const ALREADY_TLS: &str = "this connection already has TLS over it";
 
 /// The hosts a test's fake network has: its own, where its servers are.
 const FAKE_HOSTS: [&str; 2] = ["localhost", "127.0.0.1"];
@@ -50,8 +39,64 @@ const UDP_LOOKS_EVERY: Duration = Duration::from_millis(100);
 struct Stream {
     peer: String,
     socket: TcpStream,
-    reader: Mutex<BufReader<TcpStream>>,
+    reader: Mutex<Reading>,
     writing: Mutex<()>,
+}
+
+/// What a connection reads through: the socket itself, or TLS over it, which writes through the
+/// same, so a TLS connection's reads and writes take turns.
+enum Reading {
+    Plain(BufReader<TcpStream>),
+    Tls(Box<dyn SecureStream>),
+}
+
+/// A connection with TLS over it, read and written as a plain one is. Only the TLS module makes
+/// one, so a program that never asks for TLS links none of it.
+pub(crate) trait SecureStream: BufRead + Write + Send {}
+
+impl<T: BufRead + Write + Send> SecureStream for T {}
+
+/// What a TLS session reads from and writes to: a socket that doesn't block.
+#[cfg_attr(
+    not(any(test, feature = "threads")),
+    expect(dead_code, reason = "only a served connection uses it, which needs threads")
+)]
+pub(crate) trait Transport: Read + Write {}
+
+impl<T: Read + Write> Transport for T {}
+
+/// One connection's TLS on a server, over a socket that doesn't block: anything that has to wait
+/// says `WouldBlock`, for the task to park and try again.
+#[cfg_attr(
+    not(any(test, feature = "threads")),
+    expect(dead_code, reason = "only a served connection uses it, which needs threads")
+)]
+pub(crate) trait ServerSession: Send {
+    /// Does as much of the handshake as it can, and says when it's done.
+    fn handshake(&mut self, socket: &mut dyn Transport) -> std::io::Result<bool>;
+    /// Up to `count` bytes of what the other side sent, onto `into`: 0 at the end.
+    fn read_onto(
+        &mut self,
+        socket: &mut dyn Transport,
+        into: &mut Vec<u8>,
+        count: usize,
+    ) -> std::io::Result<usize>;
+    /// Takes as much of `data` as it can, saying how much, and sends what it can of what it holds.
+    fn write_some(&mut self, socket: &mut dyn Transport, data: &[u8]) -> std::io::Result<usize>;
+    /// Whether it has something to send before anything else can happen.
+    fn wants_write(&self) -> bool;
+}
+
+/// A server's TLS, what `net.listen(port, tls=...)` proves itself with.
+pub(crate) trait TlsServer: Send + Sync {
+    /// A session for a connection a task serves.
+    #[cfg_attr(
+        not(any(test, feature = "threads")),
+        expect(dead_code, reason = "only a served connection uses it, which needs threads")
+    )]
+    fn session(&self) -> Result<Box<dyn ServerSession>, Failure>;
+    /// TLS over a connection `server.accept()` took, its handshake done in at most `timeout`.
+    fn accepted(&self, tcp: TcpStream, timeout: Duration) -> Result<Box<dyn SecureStream>, Failure>;
 }
 
 /// A real UDP socket. Only one thread reads at a time, as how long a read waits is the socket's.
@@ -60,10 +105,16 @@ struct Udp {
     receiving: Mutex<()>,
 }
 
+/// A port listened on, with the TLS each connection it takes starts with, if it has any.
+struct Listening {
+    listener: TcpListener,
+    tls: Option<Arc<dyn TlsServer>>,
+}
+
 #[derive(Clone)]
 enum Socket {
     Stream(Arc<Stream>),
-    Listener(Arc<TcpListener>),
+    Listener(Arc<Listening>),
     Udp(Arc<Udp>),
 }
 
@@ -91,6 +142,9 @@ pub(crate) struct Fake {
     last: i64,
     /// Each server's port, and the connections waiting for it to accept them.
     servers: BTreeMap<i64, (i64, VecDeque<(i64, String)>)>,
+    /// The servers listening with a certificate, and the connections with TLS over them. No real TLS runs in a
+    /// test: a connection has only to agree with its server about using it.
+    secure: BTreeSet<i64>,
     streams: BTreeMap<i64, FakeStream>,
     /// Each UDP socket's port, and the data and sender of what's been sent to it.
     udp: BTreeMap<i64, (i64, VecDeque<FakePacket>)>,
@@ -128,8 +182,16 @@ impl Fake {
             ("requests", []) => {
                 return Ok(Value::list(self.requests.iter().map(|sent| Value::str(sent)).collect()));
             }
-            ("connect", [Value::Str(host), Value::Int(port)]) => self.connect(host, port_of(*port, span)?),
-            ("listen", [Value::Int(port)]) => self.listen(port_of(*port, span)?),
+            ("connect", [Value::Str(host), Value::Int(port)]) => {
+                self.connect(host, port_of(*port, span)?, false)
+            }
+            ("connect", [Value::Str(host), Value::Int(port), Value::Bool(tls)]) => {
+                self.connect(host, port_of(*port, span)?, *tls)
+            }
+            ("listen", [Value::Int(port)]) => self.listen(port_of(*port, span)?, false),
+            ("listen", [Value::Int(port), certificate]) => {
+                self.listen(port_of(*port, span)?, has_certificate(certificate, span)?)
+            }
             ("udp", []) => self.udp(0),
             ("udp", [Value::Int(port)]) => self.udp(port_of(*port, span)?),
             ("connect" | "listen" | "udp" | "script" | "requests", _) => return Err(wrong(method, span)),
@@ -153,9 +215,13 @@ impl Fake {
         let done = match (kind, method, args) {
             ("Connection", "read", [Value::Int(count)]) => {
                 let count = bytes_asked(*count, span)?;
-                self.read(handle, Some(count), span)?.map(|data| Value::Bytes(Rc::from(data.unwrap_or_default())))
+                self.read(handle, Some(count), span)?
+                    .map(|data| Value::Bytes(Rc::from(data.unwrap_or_default())))
             }
-            ("Connection", "read_line", []) => self.read(handle, None, span)?.map(|line| line_value(line.as_deref())),
+            ("Connection", "read_line", []) => {
+                self.read(handle, None, span)?.map(|line| line_value(line.as_deref()))
+            }
+            ("Connection", "start_tls", [Value::Str(_)]) => self.start_tls(handle).map(|()| Value::Unit),
             ("Connection", "write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
                 self.write(handle, data_of(data)).map(|()| Value::Unit)
             }
@@ -187,7 +253,7 @@ impl Fake {
         }
     }
 
-    pub(crate) fn listen(&mut self, port: u16) -> Result<Made, Failure> {
+    pub(crate) fn listen(&mut self, port: u16, tls: bool) -> Result<Made, Failure> {
         let fake = self;
         let port = i64::from(port);
         if fake.servers.values().any(|(taken, _)| *taken == port) {
@@ -197,10 +263,13 @@ impl Fake {
         let port = if port == 0 { 49152 + i64::try_from(fake.servers.len()).unwrap_or(0) } else { port };
         let handle = fake.handle();
         fake.servers.insert(handle, (port, VecDeque::new()));
+        if tls {
+            fake.secure.insert(handle);
+        }
         Ok(("Server", vec![("_handle", Value::Int(handle)), ("port", Value::Int(port))]))
     }
 
-    pub(crate) fn connect(&mut self, host: &str, port: u16) -> Result<Made, Failure> {
+    pub(crate) fn connect(&mut self, host: &str, port: u16, tls: bool) -> Result<Made, Failure> {
         let fake = self;
         let port = i64::from(port);
         if !FAKE_HOSTS.contains(&host) {
@@ -208,10 +277,21 @@ impl Fake {
                 "the test's fake `Net` reaches only the test's own servers, at `localhost`, not `{host}`"
             )));
         }
-        let Some(server) = fake.servers.iter().find(|(_, (taken, _))| *taken == port).map(|(server, _)| *server) else {
+        let Some(server) =
+            fake.servers.iter().find(|(_, (taken, _))| *taken == port).map(|(server, _)| *server)
+        else {
             return Err(Failure::Refused(host.to_owned(), port));
         };
+        if tls != fake.secure.contains(&server) {
+            let (client, listening) = if tls { ("with", "without") } else { ("without", "with") };
+            return Err(Failure::Tls(format!(
+                "a connection {client} TLS reached a server on port {port} {listening} it"
+            )));
+        }
         let (client, other_end) = (fake.handle(), fake.handle());
+        if tls {
+            fake.secure.insert(client);
+        }
         let stream = |peer| FakeStream { inbox: VecDeque::new(), peer, peer_closed: false };
         fake.streams.insert(client, stream(other_end));
         fake.streams.insert(other_end, stream(client));
@@ -219,7 +299,22 @@ impl Fake {
         if let Some((_, waiting)) = fake.servers.get_mut(&server) {
             waiting.push_back((other_end, client_peer));
         }
-        Ok(("Connection", vec![("_handle", Value::Int(client)), ("peer", Value::str(&format!("localhost:{port}")))]))
+        Ok((
+            "Connection",
+            vec![("_handle", Value::Int(client)), ("peer", Value::str(&format!("localhost:{port}")))],
+        ))
+    }
+
+    /// `connection.start_tls(host)` in a test: refused as a real one is, for what a real one can tell.
+    fn start_tls(&mut self, handle: i64) -> Result<(), Failure> {
+        let Some(stream) = self.streams.get(&handle) else { return Err(Failure::Closed) };
+        if !stream.inbox.is_empty() {
+            return Err(Failure::Tls(SENT_BEFORE_TLS.to_owned()));
+        }
+        if !self.secure.insert(handle) {
+            return Err(Failure::Tls(ALREADY_TLS.to_owned()));
+        }
+        Ok(())
     }
 
     pub(crate) fn udp(&mut self, port: u16) -> Result<Made, Failure> {
@@ -237,13 +332,19 @@ impl Fake {
 
     /// The next packet for a socket in a test. With none waiting, none can come, since nothing
     /// else runs while a test waits.
-    pub(crate) fn receive(&mut self, handle: i64, span: Span) -> Result<Result<(Vec<u8>, String), Failure>, Diagnostic> {
+    pub(crate) fn receive(
+        &mut self,
+        handle: i64,
+        span: Span,
+    ) -> Result<Result<(Vec<u8>, String), Failure>, Diagnostic> {
         let fake = self;
         let Some((port, waiting)) = fake.udp.get_mut(&handle) else { return Ok(Err(Failure::Closed)) };
         match waiting.pop_front() {
             Some(packet) => Ok(Ok(packet)),
             None => Err(waits_forever(
-                &format!("this socket on port {port} in the test's fake network would wait forever for a packet"),
+                &format!(
+                    "this socket on port {port} in the test's fake network would wait forever for a packet"
+                ),
                 span,
             )),
         }
@@ -281,7 +382,12 @@ impl Fake {
     }
 
     /// The next `count` bytes, or with no count the next line, of a connection in a test.
-    pub(crate) fn read(&mut self, handle: i64, count: Option<usize>, span: Span) -> Result<Result<Option<Vec<u8>>, Failure>, Diagnostic> {
+    pub(crate) fn read(
+        &mut self,
+        handle: i64,
+        count: Option<usize>,
+        span: Span,
+    ) -> Result<Result<Option<Vec<u8>>, Failure>, Diagnostic> {
         let fake = self;
         let Some(stream) = fake.streams.get_mut(&handle) else { return Ok(Err(Failure::Closed)) };
         let take = match count {
@@ -301,7 +407,9 @@ impl Fake {
         }
         let wanted = if count.is_some() { "anything" } else { "a whole line" };
         Err(waits_forever(
-            &format!("this connection in the test's fake network would wait forever for {wanted}: write to its other end first"),
+            &format!(
+                "this connection in the test's fake network would wait forever for {wanted}: write to its other end first"
+            ),
             span,
         ))
     }
@@ -352,7 +460,9 @@ impl Failure {
     pub(crate) fn of(error: &std::io::Error, waited: Option<Duration>) -> Failure {
         match error.kind() {
             ErrorKind::WouldBlock | ErrorKind::TimedOut => Failure::TimedOut(waited.unwrap_or_default()),
-            ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted => Failure::Closed,
+            ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted => {
+                Failure::Closed
+            }
             _ => Failure::Other(error.to_string()),
         }
     }
@@ -362,7 +472,6 @@ impl Failure {
 /// outside `std.net` can't make a `Connection` or `Server` at all
 /// (`examples/errors/net_forged_handle`). A handle is also looked up in the program's own
 /// table, so one this program wasn't given reaches nothing, and the randomness is a third wall.
-#[cfg(not(target_arch = "wasm32"))]
 fn fresh_handle(taken: &HashMap<i64, Socket>) -> i64 {
     loop {
         let mut word = [0; 8];
@@ -376,75 +485,6 @@ fn fresh_handle(taken: &HashMap<i64, Socket>) -> i64 {
     }
 }
 
-/// The playground has no sockets, so its handles never reach one.
-#[cfg(target_arch = "wasm32")]
-fn fresh_handle(taken: &HashMap<i64, Socket>) -> i64 {
-    i64::try_from(taken.len()).unwrap_or(i64::MAX) + 1
-}
-
-fn connection_method(
-    interp: &mut Interp<'_>,
-    connection: &Instance,
-    method: &str,
-    args: Vec<CallArg>,
-    span: Span,
-) -> Result<Value, Diagnostic> {
-        crate::replay::value(format_args!("Connection.{method}"), span, || interp.connection_method(connection, method, args, span))
-}
-
-fn server_method(
-    interp: &mut Interp<'_>,
-    server: &Instance,
-    method: &str,
-    args: Vec<CallArg>,
-    span: Span,
-) -> Result<Value, Diagnostic> {
-        crate::replay::value(format_args!("Server.{method}"), span, || interp.server_method(server, method, args, span))
-}
-
-#[expect(clippy::needless_pass_by_value, reason = "every method in `MODULE` takes these")]
-fn response_method(
-    _interp: &mut Interp<'_>,
-    response: &Instance,
-    method: &str,
-    args: Vec<CallArg>,
-    span: Span,
-) -> Result<Value, Diagnostic> {
-    match (method, args.as_slice(), response.field("body")) {
-        ("text", [], Some(Value::Bytes(body))) => Ok(Value::str(&String::from_utf8_lossy(body))),
-        ("text", _, _) => Err(wrong(method, span)),
-        _ => Err(no_method(&Value::Instance(Rc::new(response.clone())), method, span)),
-    }
-}
-
-fn udp_method(
-    interp: &mut Interp<'_>,
-    socket: &Instance,
-    method: &str,
-    args: Vec<CallArg>,
-    span: Span,
-) -> Result<Value, Diagnostic> {
-        crate::replay::value(format_args!("UdpSocket.{method}"), span, || interp.udp_method(socket, method, args, span))
-}
-
-/// The arguments, and the `Duration` given as `timeout=`, if it was. `net.udp(port=…)` is the port
-/// as the last argument.
-fn with_timeout(args: Vec<CallArg>, method: &str, span: Span) -> Result<(Vec<Value>, Option<Duration>), Diagnostic> {
-    let mut plain = Vec::new();
-    let mut timeout = None;
-    for arg in args {
-        match arg.name.as_deref() {
-            None => plain.push(arg.value),
-            Some("port") if method == "udp" => plain.push(arg.value),
-            Some("timeout") => timeout = Some(duration_of(&arg.value, span)?),
-            Some(other) => {
-                return Err(Diagnostic::new(format!("`{method}` has no parameter called `{other}`"), arg.span));
-            }
-        }
-    }
-    Ok((plain, timeout))
-}
-
 fn duration_of(value: &Value, span: Span) -> Result<Duration, Diagnostic> {
     if let Value::Instance(duration) = value
         && let Some(Value::Int(nanos)) = duration.field("nanos")
@@ -452,13 +492,6 @@ fn duration_of(value: &Value, span: Span) -> Result<Duration, Diagnostic> {
         return Ok(Duration::from_nanos(u64::try_from(*nanos).unwrap_or(0)));
     }
     Err(Diagnostic::new("`timeout` should be a `Duration`", span))
-}
-
-fn handle_of(instance: &Instance) -> i64 {
-    match instance.field("_handle") {
-        Some(Value::Int(handle)) => *handle,
-        _ => -1,
-    }
 }
 
 fn port_of(port: i64, span: Span) -> Result<u16, Diagnostic> {
@@ -474,211 +507,70 @@ fn waits_forever(what: &str, span: Span) -> Diagnostic {
     Diagnostic::new(format!("{what}, and nothing else runs while a test waits"), span)
 }
 
-impl Interp<'_> {
-    /// Whether this is a test's world, whose network is a fake in memory.
-    pub(crate) fn faked_net(&self) -> bool {
-        self.world.as_ref().is_some_and(|world| !world.real())
-    }
-
-    fn fake(&mut self) -> Option<&mut Fake> {
-        self.world.as_mut().map(|world| &mut world.net)
-    }
-
-    /// What `call` does on the test's network, or that it's closed where there's none.
-    fn on_fake<T>(&mut self, call: impl FnOnce(&mut Fake) -> Result<T, Failure>) -> Result<T, Failure> {
-        self.fake().map_or(Err(Failure::Closed), call)
-    }
-
-    /// The same, for a call that can also stop the test.
-    fn fake_or_closed<T>(
-        &mut self,
-        call: impl FnOnce(&mut Fake) -> Result<Result<T, Failure>, Diagnostic>,
-    ) -> Result<Result<T, Failure>, Diagnostic> {
-        self.fake().map_or(Ok(Err(Failure::Closed)), call)
-    }
-
-    /// The types what's real gives back: a program using `Net` needn't have named them.
-    fn load_net_types(&mut self) -> Result<(), Diagnostic> {
-        for name in ["Connection", "UdpSocket", "Packet", "Response", "NetError", "Duration"] {
-            self.load_std_providing(name)?;
-        }
-        Ok(())
-    }
-
-    /// `net.connect(host, port)`, `net.listen(port)`, `net.udp()` and requests.
-    pub(crate) fn net_method(&mut self, method: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
-        self.load_net_types()?;
-        match method {
-            "get" | "post" | "request" => return self.http_method(method, &args, span),
-            "script" | "requests" => return self.fake_answers(method, &args, span),
-            _ => {}
-        }
-        let (args, timeout) = with_timeout(args, method, span)?;
-        if !self.faked_net() {
-            return real_net(method, &args, timeout, span);
-        }
-        let found = match (method, args.as_slice()) {
-            ("connect", [Value::Str(host), Value::Int(port)]) => {
-                let port = port_of(*port, span)?;
-                self.on_fake(|fake| fake.connect(host, port))
-            }
-            ("listen", [Value::Int(port)]) => {
-                let port = port_of(*port, span)?;
-                self.on_fake(|fake| fake.listen(port))
-            }
-            ("udp", []) => self.on_fake(|fake| fake.udp(0)),
-            ("udp", [Value::Int(port)]) => {
-                let port = port_of(*port, span)?;
-                self.on_fake(|fake| fake.udp(port))
-            }
-            ("connect" | "listen" | "udp", _) => return Err(wrong(method, span)),
-            _ => return Err(no_method(&Value::Capability(Capability::Net), method, span)),
-        };
-        Ok(made_or_failed(found))
-    }
-
-    /// `net.get(url)`, `net.post(url)` and `net.request(method, url)`.
-    fn http_method(&mut self, method: &str, args: &[CallArg], span: Span) -> Result<Value, Diagnostic> {
-        let plain: Vec<Value> = args.iter().filter(|arg| arg.name.is_none()).map(|arg| arg.value.clone()).collect();
-        // `json=` is sent as its JSON text, which native code writes before the call.
-        let mut sent = None;
-        if let Some(arg) = args.iter().find(|arg| arg.name.as_deref() == Some("json")) {
-            let value = CallArg::plain(arg.value.clone(), arg.span);
-            sent = Some(self.format_builtin("json.dumps", vec![value], arg.span)?);
-        }
-        let named: Vec<(&str, &Value)> = args
-            .iter()
-            .filter_map(|arg| arg.name.as_deref().map(|name| (name, &arg.value)))
-            .map(|(name, value)| match &sent {
-                Some(text) if name == "json" => (name, text),
-                _ => (name, value),
-            })
-            .collect();
-        let request = request_of(method, &plain, &named, span)?;
-        if self.faked_net() {
-            return Ok(self.fake_request(&request));
-        }
-        Ok(done_or_failed(http::send(&request).map(answer_value)))
-    }
-
-    /// `net.script(request, response)` and `net.requests()`, for a test.
-    fn fake_answers(&mut self, method: &str, args: &[CallArg], span: Span) -> Result<Value, Diagnostic> {
-        if !self.faked_net() {
-            return Err(no_method(&Value::Capability(Capability::Net), method, span));
-        }
-        let given: Vec<Value> = args.iter().map(|arg| arg.value.clone()).collect();
-        match self.fake().filter(|_| matches!(method, "script" | "requests")) {
-            Some(fake) => fake.net_method(method, &given, span),
-            None => Err(no_method(&Value::Capability(Capability::Net), method, span)),
-        }
-    }
-
-    /// What a test scripted for a request.
-    fn fake_request(&mut self, request: &http::Request) -> Value {
-        self.fake().map_or_else(|| failed(&Failure::Closed), |fake| fake.request(request))
-    }
-
-    fn connection_method(
-        &mut self,
-        connection: &Instance,
-        method: &str,
-        args: Vec<CallArg>,
-        span: Span,
-    ) -> Result<Value, Diagnostic> {
-        if !matches!(method, "read" | "read_line" | "write" | "close") {
-            return Err(no_method(&Value::Instance(Rc::new(connection.clone())), method, span));
-        }
-        let handle = handle_of(connection);
-        let (args, timeout) = with_timeout(args, method, span)?;
-        self.load_net_types()?;
-        if !self.faked_net() {
-            return real_connection(handle, method, &args, timeout, span);
-        }
-        let done = match (method, args.as_slice()) {
-            ("read", [Value::Int(count)]) => {
-                let count = bytes_asked(*count, span)?;
-                self.fake_or_closed(|fake| fake.read(handle, Some(count), span))?.map(|data| Value::Bytes(Rc::from(data.unwrap_or_default())))
-            }
-            ("read_line", []) => self.fake_or_closed(|fake| fake.read(handle, None, span))?.map(|line| line_value(line.as_deref())),
-            ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
-                self.on_fake(|fake| fake.write(handle, data_of(data))).map(|()| Value::Unit)
-            }
-            ("close", []) => {
-                if let Some(fake) = self.fake() {
-                    fake.close(handle);
-                }
-                return Ok(Value::Unit);
-            }
-            _ => return Err(wrong(method, span)),
-        };
-        Ok(done_or_failed(done))
-    }
-
-    fn udp_method(&mut self, socket: &Instance, method: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
-        if !matches!(method, "receive" | "send_to" | "close") {
-            return Err(no_method(&Value::Instance(Rc::new(socket.clone())), method, span));
-        }
-        let handle = handle_of(socket);
-        let (args, timeout) = with_timeout(args, method, span)?;
-        self.load_net_types()?;
-        if !self.faked_net() {
-            return real_udp(handle, method, &args, timeout, span);
-        }
-        let done = match (method, args.as_slice()) {
-            ("receive", []) => self.fake_or_closed(|fake| fake.receive(handle, span))?.map(packet_value),
-            ("send_to", [data @ (Value::Str(_) | Value::Bytes(_)), Value::Str(address)]) => {
-                self.on_fake(|fake| fake.send_to(handle, data_of(data), address)).map(|()| Value::Unit)
-            }
-            ("close", []) => {
-                if let Some(fake) = self.fake() {
-                    fake.close(handle);
-                }
-                return Ok(Value::Unit);
-            }
-            _ => return Err(wrong(method, span)),
-        };
-        Ok(done_or_failed(done))
-    }
-
-    fn server_method(&mut self, server: &Instance, method: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
-        if !matches!(method, "accept" | "close") {
-            return Err(no_method(&Value::Instance(Rc::new(server.clone())), method, span));
-        }
-        let handle = handle_of(server);
-        let (args, timeout) = with_timeout(args, method, span)?;
-        self.load_net_types()?;
-        if !self.faked_net() {
-            return real_server(handle, method, &args, timeout, span);
-        }
-        match (method, args.as_slice()) {
-            ("accept", []) => Ok(made_or_failed(self.on_fake(|fake| fake.accept(handle)).map(connection_made))),
-            ("close", []) => {
-                if let Some(fake) = self.fake() {
-                    fake.close(handle);
-                }
-                Ok(Value::Unit)
-            }
-            _ => Err(wrong(method, span)),
-        }
-    }
-
-}
-
 /// `net.connect(host, port)`, `net.listen(port)` and `net.udp()` on the real network: needing nothing of the
 /// interpreter, for native code too.
-pub(crate) fn real_net(method: &str, args: &[Value], timeout: Option<Duration>, span: Span) -> Result<Value, Diagnostic> {
+pub(crate) fn real_net(
+    method: &str,
+    args: &[Value],
+    timeout: Option<Duration>,
+    span: Span,
+) -> Result<Value, Diagnostic> {
     let found = match (method, args) {
         ("connect", [Value::Str(host), Value::Int(port)]) => {
-            connect(host, port_of(*port, span)?, timeout.unwrap_or(CONNECT_TIMEOUT))
+            connect(host, port_of(*port, span)?, timeout.unwrap_or(CONNECT_TIMEOUT), false)
         }
-        ("listen", [Value::Int(port)]) => listen(port_of(*port, span)?),
+        // `tls=True`, which native code keeps on the method's name.
+        ("connect.tls" | "connect", [Value::Str(host), Value::Int(port), Value::Bool(tls)]) => {
+            connect(host, port_of(*port, span)?, timeout.unwrap_or(CONNECT_TIMEOUT), *tls)
+        }
+        ("listen", [Value::Int(port)]) => listen(port_of(*port, span)?, None),
+        // `tls=Certificate(...)`, or `None`, which native code keeps on the method's name.
+        ("listen.tls" | "listen", [Value::Int(port), certificate]) => match tls_server(certificate, span)? {
+            Ok(tls) => listen(port_of(*port, span)?, tls),
+            Err(failure) => Err(failure),
+        },
         ("udp", []) => udp(0),
         // Native code keeps a named argument on the method's name.
         ("udp" | "udp.port", [Value::Int(port)]) => udp(port_of(*port, span)?),
-        ("connect" | "listen" | "udp" | "udp.port", _) => return Err(wrong(method, span)),
+        ("connect" | "connect.tls" | "listen" | "listen.tls" | "udp" | "udp.port", _) => {
+            return Err(wrong(method, span));
+        }
         _ => return Err(no_method(&Value::Capability(Capability::Net), method, span)),
     };
     Ok(made_or_failed(found))
+}
+
+/// Whether `tls=` on a test's `net.listen` gives a certificate. A value that isn't one is the program's mistake.
+fn has_certificate(certificate: &Value, span: Span) -> Result<bool, Diagnostic> {
+    match certificate {
+        Value::None => Ok(false),
+        Value::Instance(instance) if &*instance.type_name == "Certificate" => Ok(true),
+        _ => Err(Diagnostic::new("`tls=` takes a `Certificate`", span)),
+    }
+}
+
+/// The TLS a `Certificate` makes, or `None` for `tls=None`. A `Certificate` that isn't one is the
+/// program's mistake, and a chain or key that can't be read is its failure.
+fn tls_server(
+    certificate: &Value,
+    span: Span,
+) -> Result<Result<Option<Arc<dyn TlsServer>>, Failure>, Diagnostic> {
+    let instance = match certificate {
+        Value::None => return Ok(Ok(None)),
+        Value::Instance(instance) if &*instance.type_name == "Certificate" => instance,
+        _ => return Err(Diagnostic::new("`tls=` takes a `Certificate`", span)),
+    };
+    let Some(Value::Str(chain)) = instance.field("chain") else {
+        return Err(Diagnostic::new("this `Certificate` has no `chain`", span));
+    };
+    let key = match instance.field("key") {
+        Some(Value::Instance(secret)) => secret.field("_value"),
+        _ => None,
+    };
+    let Some(Value::Str(key)) = key else {
+        return Err(Diagnostic::new("this `Certificate` has no `key`", span));
+    };
+    Ok(http::server_tls(chain, key).map(Some))
 }
 
 /// A method of a real connection, by its handle.
@@ -694,6 +586,9 @@ pub(crate) fn real_connection(
             read(handle, bytes_asked(*count, span)?, timeout).map(|data| Value::Bytes(Rc::from(data)))
         }
         ("read_line", []) => read_line(handle, timeout).map(|line| line_value(line.as_deref())),
+        ("start_tls", [Value::Str(host)]) => {
+            start_tls(handle, host, timeout.unwrap_or(CONNECT_TIMEOUT)).map(|()| Value::Unit)
+        }
         ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
             write(handle, data_of(data)).map(|()| Value::Unit)
         }
@@ -750,7 +645,12 @@ pub(crate) fn real_udp(
 
 /// A request from what a call gave: its URL, with the method first for `net.request`, and its
 /// named arguments.
-fn request_of(method: &str, plain: &[Value], named: &[(&str, &Value)], span: Span) -> Result<http::Request, Diagnostic> {
+fn request_of(
+    method: &str,
+    plain: &[Value],
+    named: &[(&str, &Value)],
+    span: Span,
+) -> Result<http::Request, Diagnostic> {
     let (method, url) = match (method, plain) {
         ("get", [Value::Str(url)]) => ("GET".to_owned(), url),
         ("post", [Value::Str(url)]) => ("POST".to_owned(), url),
@@ -797,14 +697,30 @@ fn text_pairs(pairs: &crate::pairs::Pairs, span: Span) -> Result<Vec<(String, St
 
 /// An answer as a `Response`.
 fn answer_value(answer: http::Answer) -> Value {
+    // A dict has each name once: a header sent again adds to the one there, as HTTP says it can.
+    let mut joined: Vec<(String, String)> = Vec::new();
+    let mut cookies = Vec::new();
+    for (name, value) in &answer.headers {
+        if name == "set-cookie" {
+            cookies.push(Value::str(value));
+        }
+        match joined.iter_mut().find(|(seen, _)| seen == name) {
+            Some((_, held)) => {
+                held.push_str(", ");
+                held.push_str(value);
+            }
+            None => joined.push((name.clone(), value.clone())),
+        }
+    }
     let headers: Vec<(Value, Value)> =
-        answer.headers.iter().map(|(name, value)| (Value::str(name), Value::str(value))).collect();
+        joined.iter().map(|(name, value)| (Value::str(name), Value::str(value))).collect();
     Value::made(
         "Response",
         vec![
             ("status", Value::Int(answer.status)),
             ("headers", Value::Dict(Rc::new(headers.into()))),
             ("body", Value::Bytes(Rc::from(answer.body))),
+            ("set_cookies", Value::list(cookies)),
         ],
     )
 }
@@ -835,8 +751,9 @@ fn in_order<'a>(name: &'a str, args: &[Value]) -> (&'a str, Vec<Value>) {
     let (plain, last) = args.split_at(args.len().saturating_sub(named.len()));
     let mut ordered = plain.to_vec();
     let params: &[&str] = match method {
-        "connect" => &["host", "port"],
-        "listen" | "udp" => &["port"],
+        "connect" => &["host", "port", "tls"],
+        "listen" => &["port", "tls"],
+        "udp" => &["port"],
         _ => &[],
     };
     for param in params.iter().skip(plain.len()) {
@@ -915,22 +832,61 @@ pub(crate) fn failed(failure: &Failure) -> Value {
     Value::Err(Rc::new(Value::made_case("NetError", case, fields)))
 }
 
-fn connect(host: &str, port: u16, timeout: Duration) -> Result<Made, Failure> {
-    // A task parks while its lookup and connect wait, on a thread that may block, rather than
-    // holding its worker.
-    let (stream, peer) = if task_parks() {
-        let host = host.to_owned();
-        off_thread(move || connected(&host, port, timeout))?
-    } else {
-        connected(host, port, timeout)?
+fn connect(host: &str, port: u16, timeout: Duration, tls: bool) -> Result<Made, Failure> {
+    // A task parks while its lookup, connect and handshake wait, on a thread that may block,
+    // rather than holding its worker.
+    let opened = move |host: &str| {
+        let (stream, peer) = connected(host, port, timeout)?;
+        let secured = if tls { Some(secured(&stream, host, timeout)?) } else { None };
+        Ok::<_, Failure>((stream, peer, secured))
     };
-    let handle = keep_stream(stream, peer.clone())?;
+    let (stream, peer, secured) = if task_parks() {
+        let host = host.to_owned();
+        off_thread(move || opened(&host))?
+    } else {
+        opened(host)?
+    };
+    let handle = keep_stream(stream, peer.clone(), secured)?;
     Ok(connection_made((handle, peer)))
+}
+
+/// TLS over a connection just made, its certificate checked against what the system trusts.
+fn secured(stream: &TcpStream, host: &str, timeout: Duration) -> Result<Box<dyn SecureStream>, Failure> {
+    let tcp = stream.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
+    http::raw_secured(tcp, host, timeout)
+}
+
+/// `connection.start_tls(host)`: TLS over a connection that began plain, its certificate checked
+/// against what the system trusts and against `host`.
+fn start_tls(handle: i64, host: &str, timeout: Duration) -> Result<(), Failure> {
+    upgrade(handle, host, timeout, http::raw_secured)
+}
+
+/// Puts TLS over a plain connection, by `shake`. It holds both of the connection's locks throughout,
+/// so nothing else reads or writes in the middle of the handshake.
+fn upgrade(handle: i64, host: &str, timeout: Duration, shake: http::RawTls) -> Result<(), Failure> {
+    let stream = stream(handle)?;
+    let _writing = stream.writing.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
+    let Reading::Plain(plain) = &*reader else { return Err(Failure::Tls(ALREADY_TLS.to_owned())) };
+    // What's buffered came before the handshake, so TLS vouches for none of it. Carrying it over
+    // would let anyone on the wire write what the program takes for protected data.
+    if !plain.buffer().is_empty() {
+        return Err(Failure::Tls(SENT_BEFORE_TLS.to_owned()));
+    }
+    let tcp = stream.socket.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
+    let host = host.to_owned();
+    let handshake = move || shake(tcp, &host, timeout);
+    // A task parks while the handshake waits, on a thread that may block, as `connect` does.
+    let secured = if task_parks() { off_thread(handshake)? } else { handshake()? };
+    *reader = Reading::Tls(secured);
+    Ok(())
 }
 
 /// A connection to `host` on `port`, looked up and connected, blocking its thread.
 fn connected(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, String), Failure> {
-    let addresses: Vec<_> = (host, port).to_socket_addrs().map_err(|_| Failure::NotFound(host.to_owned()))?.collect();
+    let addresses: Vec<_> =
+        (host, port).to_socket_addrs().map_err(|_| Failure::NotFound(host.to_owned()))?.collect();
     if addresses.is_empty() {
         return Err(Failure::NotFound(host.to_owned()));
     }
@@ -938,7 +894,8 @@ fn connected(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, Str
     for address in addresses {
         match TcpStream::connect_timeout(&address, timeout) {
             Ok(stream) => {
-                let peer = stream.peer_addr().map_or_else(|_| format!("{host}:{port}"), |peer| peer.to_string());
+                let peer =
+                    stream.peer_addr().map_or_else(|_| format!("{host}:{port}"), |peer| peer.to_string());
                 return Ok((stream, peer));
             }
             Err(error) => {
@@ -953,9 +910,14 @@ fn connected(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, Str
     Err(failure)
 }
 
-fn keep_stream(socket: TcpStream, peer: String) -> Result<i64, Failure> {
-    let reader = socket.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
-    let stream = Stream { peer, socket, reader: Mutex::new(BufReader::new(reader)), writing: Mutex::new(()) };
+fn keep_stream(socket: TcpStream, peer: String, secured: Option<Secured>) -> Result<i64, Failure> {
+    let reading = match secured {
+        Some(secured) => Reading::Tls(secured),
+        None => Reading::Plain(BufReader::new(
+            socket.try_clone().map_err(|error| Failure::Other(error.to_string()))?,
+        )),
+    };
+    let stream = Stream { peer, socket, reader: Mutex::new(reading), writing: Mutex::new(()) };
     Ok(open(|open| {
         let handle = fresh_handle(open);
         open.insert(handle, Socket::Stream(Arc::new(stream)));
@@ -963,7 +925,9 @@ fn keep_stream(socket: TcpStream, peer: String) -> Result<i64, Failure> {
     }))
 }
 
-fn listen(port: u16) -> Result<Made, Failure> {
+/// TLS over a connection, as `secured` makes it.
+type Secured = Box<dyn SecureStream>;
+fn listen(port: u16, tls: Option<Arc<dyn TlsServer>>) -> Result<Made, Failure> {
     let listener = TcpListener::bind(("0.0.0.0", port)).map_err(|error| match error.kind() {
         ErrorKind::AddrInUse => Failure::Other(format!("port {port} is already in use")),
         _ => Failure::Other(error.to_string()),
@@ -971,7 +935,7 @@ fn listen(port: u16) -> Result<Made, Failure> {
     let port = listener.local_addr().map_or(port, |address| address.port());
     let handle = open(|open| {
         let handle = fresh_handle(open);
-        open.insert(handle, Socket::Listener(Arc::new(listener)));
+        open.insert(handle, Socket::Listener(Arc::new(Listening { listener, tls })));
         handle
     });
     Ok(("Server", vec![("_handle", Value::Int(handle)), ("port", Value::Int(i64::from(port)))]))
@@ -1001,12 +965,7 @@ fn read(handle: i64, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>,
     }
     let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
     let mut data = vec![0; count];
-    let read = if socket_parks() {
-        parked(&mut reader, timeout, |reader| reader.read(&mut data))?
-    } else {
-        wait_at_most(reader.get_ref(), timeout)?;
-        reader.read(&mut data).map_err(|error| Failure::of(&error, timeout))?
-    };
+    let read = reading(&stream.socket, &mut reader, timeout, |reader| reader.read(&mut data))?;
     data.truncate(read);
     Ok(data)
 }
@@ -1016,19 +975,19 @@ fn read_line(handle: i64, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, 
     let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
     let mut line = Vec::new();
     // What a read cut short by having to wait got is kept in `line`, and the next adds to it.
-    let read = if socket_parks() {
-        parked(&mut reader, timeout, |reader| reader.read_until(b'\n', &mut line))?;
-        line.len()
-    } else {
-        wait_at_most(reader.get_ref(), timeout)?;
-        reader.read_until(b'\n', &mut line).map_err(|error| Failure::of(&error, timeout))?
-    };
-    Ok((read > 0).then_some(line))
+    reading(&stream.socket, &mut reader, timeout, |reader| reader.read_until(b'\n', &mut line))?;
+    Ok((!line.is_empty()).then_some(line))
 }
 
 fn write(handle: i64, mut data: &[u8]) -> Result<(), Failure> {
     let stream = stream(handle)?;
     let _writing = stream.writing.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Reading::Tls(secured) = &mut *stream.reader.lock().unwrap_or_else(PoisonError::into_inner) {
+        return secured
+            .write_all(data)
+            .and_then(|()| secured.flush())
+            .map_err(|error| Failure::of(&error, None));
+    }
     let mut socket = &stream.socket;
     // A read parked on this connection's other end can have made the socket not block, so a full
     // buffer says so here, and this waits for room.
@@ -1053,7 +1012,7 @@ pub(crate) fn fetch_line(host: &str, port: u16) -> Result<Vec<u8>, Failure> {
     } else {
         connected(host, port, Duration::from_secs(10))?
     };
-    let handle = keep_stream(stream, peer)?;
+    let handle = keep_stream(stream, peer, None)?;
     let line = read_line(handle, Some(Duration::from_secs(10)));
     close(handle);
     line?.ok_or(Failure::Closed)
@@ -1090,15 +1049,44 @@ fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R
     }
 }
 
+/// Runs `read` on a connection, plain or through TLS: parked if it has to wait in a task, and
+/// otherwise waiting at most `timeout`.
+fn reading<T>(
+    socket: &TcpStream,
+    reader: &mut Reading,
+    timeout: Option<Duration>,
+    mut read: impl FnMut(&mut dyn BufRead) -> std::io::Result<T>,
+) -> Result<T, Failure> {
+    match reader {
+        Reading::Plain(plain) => read_on(socket, plain, timeout, |reader| read(reader)),
+        Reading::Tls(secured) => read_on(socket, &mut **secured, timeout, |reader| read(reader)),
+    }
+}
+
+/// `reading`, on one kind of reader.
+fn read_on<R: BufRead + ?Sized, T>(
+    socket: &TcpStream,
+    reader: &mut R,
+    timeout: Option<Duration>,
+    mut read: impl FnMut(&mut R) -> std::io::Result<T>,
+) -> Result<T, Failure> {
+    if socket_parks() {
+        return parked(socket, reader, timeout, read);
+    }
+    wait_at_most(socket, timeout)?;
+    read(reader).map_err(|error| Failure::of(&error, timeout))
+}
+
 /// Runs a read that may have to wait, in a task that parks rather than block: with the socket not
 /// blocking, `read` is tried, and each time it would block, the task parks until the socket's
 /// readable or `timeout` passes. The socket blocks again after.
-fn parked<T>(
-    reader: &mut BufReader<TcpStream>,
+fn parked<R: ?Sized, T>(
+    socket: &TcpStream,
+    reader: &mut R,
     timeout: Option<Duration>,
-    mut read: impl FnMut(&mut BufReader<TcpStream>) -> std::io::Result<T>,
+    mut read: impl FnMut(&mut R) -> std::io::Result<T>,
 ) -> Result<T, Failure> {
-    reader.get_ref().set_nonblocking(true).map_err(|error| Failure::Other(error.to_string()))?;
+    socket.set_nonblocking(true).map_err(|error| Failure::Other(error.to_string()))?;
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     let done = loop {
         match read(reader) {
@@ -1107,7 +1095,7 @@ fn parked<T>(
                 if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
                     break Err(Failure::TimedOut(timeout.unwrap_or_default()));
                 }
-                if park_until_readable(reader.get_ref(), deadline) {
+                if park_until_readable(socket, deadline) {
                     break Err(Failure::TimedOut(timeout.unwrap_or_default()));
                 }
             }
@@ -1115,7 +1103,7 @@ fn parked<T>(
             Err(error) => break Err(Failure::of(&error, timeout)),
         }
     };
-    let blocking = reader.get_ref().set_nonblocking(false);
+    let blocking = socket.set_nonblocking(false);
     let done = done?;
     blocking.map_err(|error| Failure::Other(error.to_string()))?;
     Ok(done)
@@ -1149,9 +1137,10 @@ fn wait_to_write(socket: &TcpStream) {
 }
 
 fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failure> {
-    let Some(Socket::Listener(listener)) = open(|open| open.get(&handle).cloned()) else {
+    let Some(Socket::Listener(listening)) = open(|open| open.get(&handle).cloned()) else {
         return Err(Failure::Closed);
     };
+    let listener = &listening.listener;
     let accepted = match timeout {
         None => listener.accept().map_err(|error| Failure::of(&error, None))?,
         Some(limit) => {
@@ -1164,7 +1153,9 @@ fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failu
                     Err(error) if error.kind() == ErrorKind::WouldBlock && started.elapsed() < limit => {
                         std::thread::sleep(Duration::from_millis(5));
                     }
-                    Err(error) if error.kind() == ErrorKind::WouldBlock => break Err(Failure::TimedOut(limit)),
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        break Err(Failure::TimedOut(limit));
+                    }
                     Err(error) => break Err(Failure::of(&error, Some(limit))),
                 }
             };
@@ -1175,7 +1166,25 @@ fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failu
     let (stream, peer) = accepted;
     stream.set_nonblocking(false).map_err(|error| Failure::Other(error.to_string()))?;
     let peer = peer.to_string();
-    Ok((keep_stream(stream, peer.clone())?, peer))
+    let secured = match &listening.tls {
+        Some(tls) => Some(accepted_securely(tls, &stream)?),
+        None => None,
+    };
+    Ok((keep_stream(stream, peer.clone(), secured)?, peer))
+}
+
+/// How long a connection a server took has to finish its handshake.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The server's half of a handshake over a connection just taken, on a thread that may block when
+/// this is a task.
+fn accepted_securely(tls: &Arc<dyn TlsServer>, stream: &TcpStream) -> Result<Secured, Failure> {
+    let tcp = stream.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
+    if task_parks() {
+        let tls = Arc::clone(tls);
+        return off_thread(move || tls.accepted(tcp, HANDSHAKE_TIMEOUT));
+    }
+    tls.accepted(tcp, HANDSHAKE_TIMEOUT)
 }
 
 /// The next connection a server takes, by its handle, for a server taking them one at a time.
@@ -1223,7 +1232,9 @@ fn receive(handle: i64, timeout: Option<Duration>) -> Result<(Vec<u8>, String), 
         if left.is_zero() {
             return Err(Failure::TimedOut(timeout.unwrap_or_default()));
         }
-        udp.socket.set_read_timeout(Some(left.min(UDP_LOOKS_EVERY))).map_err(|error| Failure::of(&error, timeout))?;
+        udp.socket
+            .set_read_timeout(Some(left.min(UDP_LOOKS_EVERY)))
+            .map_err(|error| Failure::of(&error, timeout))?;
         match udp.socket.recv_from(&mut data) {
             Ok((size, sender)) => {
                 data.truncate(size);
@@ -1231,7 +1242,11 @@ fn receive(handle: i64, timeout: Option<Duration>) -> Result<(Vec<u8>, String), 
             }
             // Windows says this of a packet this socket sent earlier that nothing took. Nothing's
             // wrong with the socket, and UDP doesn't say what's lost.
-            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::ConnectionReset) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::ConnectionReset
+                ) => {}
             Err(error) => return Err(Failure::of(&error, timeout)),
         }
     }
@@ -1260,10 +1275,11 @@ fn close(handle: i64) {
 /// Takes a real server's listener out of the open sockets, for `parallel(server)` to serve from.
 /// One already closed has none.
 #[cfg(any(test, feature = "threads"))]
-pub(crate) fn take_listener(handle: i64) -> Option<TcpListener> {
+pub(crate) fn take_listener(handle: i64) -> Option<(TcpListener, Option<Arc<dyn TlsServer>>)> {
     open(|open| match open.remove(&handle) {
-        Some(Socket::Listener(listener)) => {
-            Arc::try_unwrap(listener).or_else(|listener| listener.try_clone()).ok()
+        Some(Socket::Listener(listening)) => {
+            let tls = listening.tls.clone();
+            Some((listening.listener.try_clone().ok()?, tls))
         }
         Some(other) => {
             open.insert(handle, other);
@@ -1290,9 +1306,76 @@ fn trim_line(line: &[u8]) -> &[u8] {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{Failure, Made, close, receive, udp};
+pub(crate) mod tests {
+    use fennec_syntax::Span;
+
+    use super::{Failure, Fake, Made, close, receive, udp};
     use crate::value::Value;
+
+    /// Native code keeps `tls=` on the method's name.
+    #[test]
+    fn a_tests_connection_and_server_have_to_agree_about_tls() {
+        let span = Span::default();
+        let certificate = Value::made("Certificate", vec![]);
+        let port = |made: &Value| {
+            let Value::Ok(made) = made else { panic!("it failed: {made:?}") };
+            let Value::Instance(instance) = made.as_ref() else { panic!("not an instance") };
+            instance.field("port").cloned().unwrap()
+        };
+        let host = || Value::str("localhost");
+        let mut fake = Fake::default();
+
+        let secure = fake.net_method("listen.tls", &[Value::Int(0), certificate], span).unwrap();
+        let plain = fake.net_method("listen", &[Value::Int(0)], span).unwrap();
+        let (secure, plain) = (port(&secure), port(&plain));
+        let tls = Value::Bool(true);
+
+        let both = fake.net_method("connect.tls", &[host(), secure.clone(), tls.clone()], span).unwrap();
+        assert!(matches!(both, Value::Ok(_)), "{both:?}");
+        for (name, args) in [("connect", vec![host(), secure]), ("connect.tls", vec![host(), plain, tls])] {
+            let refused = fake.net_method(name, &args, span).unwrap();
+            let Value::Err(error) = refused else { panic!("{name} connected") };
+            assert!(format!("{error:?}").contains("Tls"), "{error:?}");
+        }
+    }
+
+    /// A test's `start_tls` refuses what a real one does: plain bytes waiting, or doing it twice.
+    #[test]
+    fn a_tests_start_tls_refuses_bytes_sent_before_it_and_a_second_try() {
+        let span = Span::default();
+        let refused = |got: Value| {
+            let Value::Err(error) = got else { panic!("it wasn't refused") };
+            assert!(format!("{error:?}").contains("Tls"), "{error:?}");
+        };
+        let start = |fake: &mut Fake, handle: i64| {
+            fake.socket_method(handle, "Connection.start_tls", &[Value::str("localhost")], span).unwrap()
+        };
+        let mut fake = Fake::default();
+        let Ok((_, server)) = fake.listen(0, false) else { panic!("it didn't listen") };
+        let Some((_, Value::Int(port))) = server.get(1).cloned() else { panic!("no port") };
+        let Ok((_, client)) = fake.connect("localhost", u16::try_from(port).unwrap(), false) else {
+            panic!("it didn't connect")
+        };
+        let Some((_, Value::Int(client))) = client.first().cloned() else { panic!("no handle") };
+        assert!(matches!(start(&mut fake, client), Value::Ok(_)));
+        refused(start(&mut fake, client));
+
+        let Ok((_, second)) = fake.connect("localhost", u16::try_from(port).unwrap(), false) else {
+            panic!("it didn't connect")
+        };
+        let Some((_, Value::Int(second))) = second.first().cloned() else { panic!("no handle") };
+        let Some(other_end) = fake.streams.get(&second).map(|stream| stream.peer) else {
+            panic!("no other end")
+        };
+        assert!(matches!(fake.write(other_end, b"Sinjected"), Ok(())));
+        refused(start(&mut fake, second));
+    }
+
+    #[test]
+    fn a_tests_listen_takes_only_a_certificate() {
+        let mut fake = Fake::default();
+        assert!(fake.net_method("listen.tls", &[Value::Int(0), Value::Int(1)], Span::default()).is_err());
+    }
 
     fn handle_of_made((_, fields): &Made) -> i64 {
         match fields.first() {
@@ -1319,5 +1402,326 @@ mod tests {
         let limit = std::time::Duration::from_millis(5);
         assert!(matches!(receive(handle, Some(limit)), Err(Failure::TimedOut(after)) if after == limit));
         close(handle);
+    }
+
+    pub(crate) mod tls {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        use std::net::{TcpListener, TcpStream};
+        use std::rc::Rc;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use rustls::pki_types::pem::PemObject as _;
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+        use rustls::{ClientConfig, RootCertStore, ServerConfig, ServerConnection, StreamOwned};
+
+        use fennec_syntax::Span;
+
+        use super::super::http::tls::handshake;
+        use super::super::{
+            Failure, close, http, keep_stream, read, read_line, real_connection, real_net, real_server,
+            upgrade, write,
+        };
+        use crate::value::Value;
+
+        const CA: &[u8] = include_bytes!("testdata/tls-test-ca.pem");
+        const CHAIN: &[u8] = include_bytes!("testdata/tls-test-chain.pem");
+        const KEY: &[u8] = include_bytes!("testdata/tls-test-key.pem");
+
+        fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+            Arc::new(rustls::crypto::ring::default_provider())
+        }
+
+        /// A client that trusts only the tests' own certificate authority.
+        fn client_config() -> Arc<ClientConfig> {
+            let mut roots = RootCertStore::empty();
+            for certificate in CertificateDer::pem_slice_iter(CA) {
+                roots.add(certificate.unwrap()).unwrap();
+            }
+            let config = ClientConfig::builder_with_provider(provider())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            Arc::new(config)
+        }
+
+        /// A server on a port of its own, with the tests' certificate for `localhost`, that answers
+        /// one line on one connection with `pong`.
+        fn serving() -> (u16, std::thread::JoinHandle<Result<String, String>>) {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let chain: Vec<CertificateDer<'static>> =
+                    CertificateDer::pem_slice_iter(CHAIN).map(Result::unwrap).collect();
+                let key = PrivateKeyDer::from_pem_slice(KEY).unwrap();
+                let config = ServerConfig::builder_with_provider(provider())
+                    .with_safe_default_protocol_versions()
+                    .unwrap()
+                    .with_no_client_auth()
+                    .with_single_cert(chain, key)
+                    .unwrap();
+                let (tcp, _) = listener.accept().unwrap();
+                let connection = ServerConnection::new(Arc::new(config)).unwrap();
+                let mut reader = BufReader::new(StreamOwned::new(connection, tcp));
+                let mut line = String::new();
+                reader.read_line(&mut line).map_err(|error| error.to_string())?;
+                let secured = reader.get_mut();
+                secured.write_all(b"pong\n").map_err(|error| error.to_string())?;
+                secured.flush().map_err(|error| error.to_string())?;
+                Ok(line)
+            });
+            (port, server)
+        }
+
+        fn connected_to(port: u16) -> TcpStream {
+            TcpStream::connect(("127.0.0.1", port)).unwrap()
+        }
+
+        /// A TLS connection's handle, to a server that answers its one line only once `ready` is
+        /// set, for a test that a read waiting for it parks.
+        pub(crate) fn connected_once_ready(ready: &'static std::sync::atomic::AtomicBool) -> i64 {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                let chain: Vec<CertificateDer<'static>> =
+                    CertificateDer::pem_slice_iter(CHAIN).map(Result::unwrap).collect();
+                let config = ServerConfig::builder_with_provider(provider())
+                    .with_safe_default_protocol_versions()
+                    .unwrap()
+                    .with_no_client_auth()
+                    .with_single_cert(chain, PrivateKeyDer::from_pem_slice(KEY).unwrap())
+                    .unwrap();
+                let (tcp, _) = listener.accept().unwrap();
+                let connection = ServerConnection::new(Arc::new(config)).unwrap();
+                let mut secured = StreamOwned::new(connection, tcp);
+                // The handshake's done by the first read, which waits for the client to write.
+                let mut first = [0; 1];
+                let _ = std::io::Read::read(&mut secured, &mut first);
+                let started = std::time::Instant::now();
+                while !ready.load(std::sync::atomic::Ordering::SeqCst)
+                    && started.elapsed() < Duration::from_secs(5)
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let _ = secured.write_all(b"late\n");
+                let _ = secured.flush();
+                std::thread::sleep(Duration::from_millis(200));
+            });
+            let tcp = connected_to(port);
+            let Ok(secured) =
+                handshake(tcp.try_clone().unwrap(), "localhost", Duration::from_secs(10), client_config())
+            else {
+                panic!("the handshake failed");
+            };
+            let handle = keep_stream(tcp, "server".to_owned(), Some(secured)).ok().unwrap();
+            assert!(write(handle, b"x").is_ok());
+            handle
+        }
+
+        /// A `Certificate`, as a program makes one.
+        fn certificate() -> Value {
+            let text = |bytes: &[u8]| Value::str(std::str::from_utf8(bytes).unwrap());
+            let key = Value::made("Secret", vec![("_value", text(KEY))]);
+            Value::made("Certificate", vec![("chain", text(CHAIN)), ("key", key)])
+        }
+
+        fn field(made: &Value, name: &str) -> i64 {
+            let Value::Ok(made) = made else { panic!("it failed: {made:?}") };
+            let Value::Instance(instance) = made.as_ref() else { panic!("not an instance: {made:?}") };
+            let Some(Value::Int(number)) = instance.field(name) else { panic!("no {name}") };
+            *number
+        }
+
+        /// `net.listen(port, tls=...)` and `server.accept()`: the connection it gives reads and
+        /// writes through TLS.
+        #[test]
+        fn a_server_listening_with_a_certificate_accepts_over_tls() {
+            http::use_tls();
+            let span = Span::default();
+            let listened = real_net("listen.tls", &[Value::Int(0), certificate()], None, span).unwrap();
+            let (server, port) = (field(&listened, "_handle"), field(&listened, "port"));
+            let serving = std::thread::spawn(move || {
+                let span = Span::default();
+                let taken = real_server(server, "accept", &[], Some(Duration::from_secs(10)), span).unwrap();
+                let conn = field(&taken, "_handle");
+                let line =
+                    real_connection(conn, "read_line", &[], Some(Duration::from_secs(10)), span).unwrap();
+                let wrote = real_connection(conn, "write", &[Value::str("pong\n")], None, span).unwrap();
+                close(conn);
+                (line == Value::Ok(Rc::new(Value::str("ping"))), matches!(wrote, Value::Ok(_)))
+            });
+            let tcp = connected_to(u16::try_from(port).unwrap());
+            let Ok(mut secured) = handshake(tcp, "localhost", Duration::from_secs(10), client_config())
+            else {
+                panic!("the handshake failed");
+            };
+            secured.write_all(b"ping\n").unwrap();
+            secured.flush().unwrap();
+            let mut back = String::new();
+            secured.read_line(&mut back).unwrap();
+            assert_eq!(back, "pong\n");
+            assert_eq!(serving.join().unwrap(), (true, true));
+            close(server);
+        }
+
+        /// `tls=` takes a `Certificate`, and one that can't be read is the program's failure.
+        #[test]
+        fn a_certificate_that_cant_be_read_fails_as_tls() {
+            http::use_tls();
+            let span = Span::default();
+            let bad = Value::made(
+                "Certificate",
+                vec![
+                    ("chain", Value::str("nope")),
+                    ("key", Value::made("Secret", vec![("_value", Value::str("nope"))])),
+                ],
+            );
+            let listened = real_net("listen.tls", &[Value::Int(0), bad], None, span).unwrap();
+            let Value::Err(error) = listened else { panic!("it listened") };
+            assert!(format!("{error:?}").contains("Tls"), "{error:?}");
+            assert!(real_net("listen.tls", &[Value::Int(0), Value::Int(1)], None, span).is_err());
+        }
+
+        fn shake_trusting_the_tests(
+            tcp: TcpStream,
+            host: &str,
+            timeout: Duration,
+        ) -> Result<Box<dyn crate::stdlib::net::SecureStream>, Failure> {
+            handshake(tcp, host, timeout, client_config())
+        }
+
+        const WAIT: Option<Duration> = Some(Duration::from_secs(10));
+
+        /// A plain connection and a server that writes `first` when it's accepted one, and says so
+        /// on the channel, then does TLS.
+        fn accepted_writing(
+            first: &'static [u8],
+        ) -> (i64, std::sync::mpsc::Receiver<()>, std::thread::JoinHandle<Result<String, String>>) {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let (wrote, written) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let chain: Vec<CertificateDer<'static>> =
+                    CertificateDer::pem_slice_iter(CHAIN).map(Result::unwrap).collect();
+                let config = ServerConfig::builder_with_provider(provider())
+                    .with_safe_default_protocol_versions()
+                    .unwrap()
+                    .with_no_client_auth()
+                    .with_single_cert(chain, PrivateKeyDer::from_pem_slice(KEY).unwrap())
+                    .unwrap();
+                let (mut tcp, _) = listener.accept().unwrap();
+                tcp.write_all(first).map_err(|error| error.to_string())?;
+                wrote.send(()).map_err(|error| error.to_string())?;
+                let connection = ServerConnection::new(Arc::new(config)).unwrap();
+                let mut reader = BufReader::new(StreamOwned::new(connection, tcp));
+                let mut line = String::new();
+                reader.read_line(&mut line).map_err(|error| error.to_string())?;
+                let secured = reader.get_mut();
+                secured.write_all(b"pong\n").map_err(|error| error.to_string())?;
+                secured.flush().map_err(|error| error.to_string())?;
+                Ok(line)
+            });
+            let handle = keep_stream(connected_to(port), "server".to_owned(), None).ok().unwrap();
+            (handle, written, server)
+        }
+
+        /// What Postgres does: one byte read in plain text, then TLS for the rest.
+        #[test]
+        fn a_plain_connection_can_start_tls_after_reading_all_it_was_sent() {
+            let (handle, written, server) = accepted_writing(b"S");
+            written.recv().unwrap();
+            assert_eq!(read(handle, 1, WAIT).ok().unwrap(), b"S");
+            assert!(upgrade(handle, "localhost", Duration::from_secs(10), shake_trusting_the_tests).is_ok());
+            assert!(write(handle, b"ping\n").is_ok());
+            assert_eq!(read_line(handle, WAIT).ok().unwrap().unwrap(), b"pong\n");
+            assert_eq!(server.join().unwrap().unwrap(), "ping\n");
+            close(handle);
+        }
+
+        /// Bytes that came before the handshake aren't TLS's to vouch for: someone on the wire can
+        /// send them after the one byte a client waits for, as in the Postgres client's CVE-2021-23214.
+        #[test]
+        fn starting_tls_is_refused_when_plain_bytes_are_waiting_in_the_buffer() {
+            let (handle, written, _server) = accepted_writing(b"Sinjected");
+            written.recv().unwrap();
+            assert_eq!(read(handle, 1, WAIT).ok().unwrap(), b"S");
+            let got = upgrade(handle, "localhost", Duration::from_secs(10), shake_trusting_the_tests);
+            assert!(
+                matches!(&got, Err(Failure::Tls(reason)) if reason.contains("before TLS")),
+                "it was let through"
+            );
+            close(handle);
+        }
+
+        /// `start_tls` trusts what the system does, which doesn't include the tests' authority.
+        #[test]
+        fn starting_tls_checks_the_certificate() {
+            http::use_tls();
+            let (handle, written, _server) = accepted_writing(b"S");
+            written.recv().unwrap();
+            assert_eq!(read(handle, 1, WAIT).ok().unwrap(), b"S");
+            let got = real_connection(handle, "start_tls", &[Value::str("localhost")], WAIT, Span::default())
+                .unwrap();
+            let Value::Err(error) = got else { panic!("it trusted a certificate nothing vouches for") };
+            assert!(format!("{error:?}").contains("Tls"), "{error:?}");
+            close(handle);
+        }
+
+        #[test]
+        fn starting_tls_twice_is_refused() {
+            let (handle, written, _server) = accepted_writing(b"");
+            written.recv().unwrap();
+            assert!(upgrade(handle, "localhost", Duration::from_secs(10), shake_trusting_the_tests).is_ok());
+            let got = upgrade(handle, "localhost", Duration::from_secs(10), shake_trusting_the_tests);
+            assert!(
+                matches!(&got, Err(Failure::Tls(reason)) if reason.contains("already")),
+                "it did it twice"
+            );
+            close(handle);
+        }
+
+        /// A connection with TLS over it reads and writes as a plain one does.
+        #[test]
+        fn a_tls_connection_reads_and_writes_lines() {
+            let (port, server) = serving();
+            let tcp = connected_to(port);
+            let secured =
+                handshake(tcp.try_clone().unwrap(), "localhost", Duration::from_secs(10), client_config());
+            let Ok(secured) = secured else { panic!("the handshake failed") };
+            let handle = keep_stream(tcp, "server".to_owned(), Some(secured)).ok().unwrap();
+            assert!(write(handle, b"ping\n").is_ok());
+            let back = read_line(handle, Some(Duration::from_secs(10)));
+            assert_eq!(back.ok().flatten().as_deref(), Some(&b"pong\n"[..]));
+            close(handle);
+            assert_eq!(server.join().unwrap().unwrap(), "ping\n");
+        }
+
+        /// The certificate is for `localhost`, so a connection that asked for anything else fails:
+        /// checking can't be left out, whatever the host.
+        #[test]
+        fn a_certificate_for_another_name_is_refused() {
+            let (port, server) = serving();
+            let got =
+                handshake(connected_to(port), "fennec.example", Duration::from_secs(10), client_config());
+            assert!(matches!(got, Err(Failure::Tls(_))), "the handshake didn't fail as TLS");
+            drop(got);
+            assert!(server.join().unwrap().is_err());
+        }
+
+        /// A client that doesn't trust the certificate's authority refuses it.
+        #[test]
+        fn a_certificate_from_an_authority_nobody_trusts_is_refused() {
+            let (port, server) = serving();
+            let config = ClientConfig::builder_with_provider(provider())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(RootCertStore::empty())
+                .with_no_client_auth();
+            let got = handshake(connected_to(port), "localhost", Duration::from_secs(10), Arc::new(config));
+            assert!(matches!(got, Err(Failure::Tls(_))), "the handshake didn't fail as TLS");
+            drop(got);
+            assert!(server.join().unwrap().is_err());
+        }
     }
 }

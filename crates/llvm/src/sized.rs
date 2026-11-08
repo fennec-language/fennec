@@ -67,19 +67,13 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = {word} i64 {a}, {b}"));
             }
             BinOp::ShiftLeft | BinOp::ShiftRight => {
-                // A shift by 64 or more, or one that loses bits off the top, stops the program.
+                // A shift by 64 or more stops the program. Bits shifted off the top are lost, as on
+                // every integer type: a shift is bit work, not arithmetic.
                 let far = self.temp();
                 self.line(&format!("{far} = icmp uge i64 {b}, 64"));
-                self.fail_if(&far, fennec_interp::embed::checks::BAD_SHIFT, span);
-                if op == BinOp::ShiftRight {
-                    self.line(&format!("{temp} = lshr i64 {a}, {b}"));
-                } else {
-                    let (back, lost) = (self.temp(), self.temp());
-                    self.line(&format!("{temp} = shl i64 {a}, {b}"));
-                    self.line(&format!("{back} = lshr i64 {temp}, {b}"));
-                    self.line(&format!("{lost} = icmp ne i64 {back}, {a}"));
-                    self.size_overflow(&lost, fennec_check::Num::U64, span);
-                }
+                self.fail_if(&far, fennec_runtime::embed::checks::BAD_SHIFT, span);
+                let word = if op == BinOp::ShiftRight { "lshr" } else { "shl" };
+                self.line(&format!("{temp} = {word} i64 {a}, {b}"));
             }
             other => {
                 return Err(format!(

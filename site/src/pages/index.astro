@@ -131,11 +131,11 @@ back = json.loads[World](text)?`,
   },
   {
     title: 'One backend',
-    status: 'Mostly built',
+    status: 'Built',
     code: `$ fennec run
 # built through LLVM a function at a time,
 # each function cached by content`,
-    body: 'What you run is what ships. `fennec build` always makes a native program, with no interpreter in it, and `--release` optimizes it as a whole. `fennec run` says so when the interpreter stands in for what LLVM can\'t build yet.',
+    body: 'What you run is what ships. `fennec build` always makes a native program, with no interpreter in it, and `--release` optimizes it as a whole. What LLVM can\'t build yet is an error that says why.',
   },
 ];
 ---
@@ -148,7 +148,7 @@ back = json.loads[World](text)?`,
       <h1>The fast language agents write and people can read.</h1>
       <p class="lede">It reads like Python, builds almost instantly, runs near native speed, and is fully safe, with no <code>unsafe</code> and no garbage collector. It's being built in the open, numbers included.</p>
       <div class="actions">
-        <a class="button primary" href={`${base}playground/`}>Try it →</a>
+        <a class="button primary" href={`${base}reference/`}>See it run →</a>
         <a class="button" href={`${base}tour/`}>Take the tour</a>
       </div>
       <div class="install">
@@ -164,6 +164,10 @@ back = json.loads[World](text)?`,
           <em>fib.fen</em>
         </div>
         <Code code={program} lang={fennec} themes={themes} />
+        <div class="printed">
+          <span>$ fennec run fib.fen</span>
+          <pre>9227465</pre>
+        </div>
       </div>
       <div class="meters">
         <div class="meter">
@@ -378,6 +382,21 @@ fixed area.fen</code></pre>
     border-radius: 0;
     margin: 0;
     font-size: 0.88rem;
+  }
+
+  .printed {
+    border-top: 1px solid var(--border);
+    padding: 0.65rem 1rem;
+    font-family: var(--font-mono);
+    font-size: 0.88rem;
+  }
+
+  .printed span {
+    color: var(--muted);
+  }
+
+  .printed pre {
+    margin: 0.25rem 0 0;
   }
 
   .meters {

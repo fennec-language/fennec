@@ -1,0 +1,25 @@
+from std.concurrent import Crashed
+
+def sleeper(clock: Clock, fs: Fs, stdout: Stdout):
+    clock.sleep(5s)
+    stdout.print("sleeper woke")
+    data = fs.read_bytes("no such file") else bytes([1])
+    stdout.print("sleeper read", data.len())
+
+def other(clock: Clock, stdout: Stdout):
+    mut total = 0
+    for turn in range(10000):
+        clock.sleep(50us)
+        parts = f"{turn},x".split(",")
+        total += parts.len()
+    stdout.print("other ended fine", total)
+
+def pair(clock: Clock, fs: Fs, stdout: Stdout) fails Crashed:
+    with launch(() => sleeper(clock, fs, stdout), stop_after=20ms)?:
+        pass
+    stdout.print("the stopped one is over")
+
+def main(clock: Clock, fs: Fs, stdout: Stdout) fails Crashed:
+    with launch(() => other(clock, stdout))?:
+        pair(clock, fs, stdout)?
+    stdout.print("done")

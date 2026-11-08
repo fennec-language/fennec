@@ -327,7 +327,6 @@ fn native_method(
 
 /// `fennec_use_tls()`: compiled code that makes a request calls this, which is all that brings TLS
 /// into a program.
-#[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn use_tls() {
     crate::stdlib::http::use_tls();
 }

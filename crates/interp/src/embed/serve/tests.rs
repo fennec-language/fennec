@@ -16,7 +16,7 @@ fn listener() -> (TcpListener, SocketAddr) {
 /// Sends back each line it's sent until the other side is done; a line saying "fail" fails
 /// its connection.
 fn echo() -> Handler {
-    Arc::new(|mut conn: Conn| {
+    Arc::new(|conn: Conn| {
         loop {
             match conn.read_line(None) {
                 Ok(Some(line)) if line == b"fail" => return 1,
@@ -75,7 +75,7 @@ fn run(workers: usize, handler: &Handler, clients: impl FnOnce(SocketAddr) + Sen
         });
     };
     let pool = crate::embed::parallel::with_setup(workers, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>));
-    let served = serve(listener, pool, None, handler, started);
+    let served = serve(listener, pool, None, handler, (started, None, None));
     if let Ok(Err(panic)) = ran.recv() {
         std::panic::resume_unwind(panic);
     }
@@ -151,15 +151,14 @@ fn a_failing_connection_ends_only_its_own_task() {
 
 #[test]
 fn a_wait_with_a_timeout_gives_up_while_others_go_on() {
-    let timing_out: Handler =
-        Arc::new(|mut conn: Conn| match conn.read_line(Some(Duration::from_millis(50))) {
-            Err(Failure::TimedOut(after)) if after == Duration::from_millis(50) => 7,
-            Ok(Some(line)) => {
-                let _ = conn.write(&[line, b"\n".to_vec()].concat());
-                0
-            }
-            _ => 1,
-        });
+    let timing_out: Handler = Arc::new(|conn: Conn| match conn.read_line(Some(Duration::from_millis(50))) {
+        Err(Failure::TimedOut(after)) if after == Duration::from_millis(50) => 7,
+        Ok(Some(line)) => {
+            let _ = conn.write(&[line, b"\n".to_vec()].concat());
+            0
+        }
+        _ => 1,
+    });
     let finished = Finished::default();
     let waited = Arc::clone(&finished);
     let served = run(1, &noting(timing_out, &finished), move |address| {
@@ -181,7 +180,7 @@ fn a_wait_with_a_timeout_gives_up_while_others_go_on() {
 fn a_connection_that_sends_nothing_times_out_however_often_its_task_is_woken() {
     // Woken at every poll, as a socket that keeps saying it's writable wakes its task, a read
     // that's never answered still gives up when its time's up, not later each time.
-    let quiet: Handler = Arc::new(|mut conn: Conn| {
+    let quiet: Handler = Arc::new(|conn: Conn| {
         super::WAKE_ALL.set(true);
         let read = conn.read_line(Some(Duration::from_millis(100)));
         super::WAKE_ALL.set(false);
@@ -203,7 +202,7 @@ fn a_connection_that_sends_nothing_times_out_however_often_its_task_is_woken() {
 
 #[test]
 fn stopping_a_server_cancels_its_parked_connections() {
-    let cancelled: Handler = Arc::new(|mut conn: Conn| match conn.read_line(None) {
+    let cancelled: Handler = Arc::new(|conn: Conn| match conn.read_line(None) {
         Err(Failure::Cancelled) => 0,
         _ => 1,
     });
@@ -236,7 +235,7 @@ fn a_wait_that_cant_park_blocks_its_thread_and_is_counted() {
     };
     let before = super::blocked_waits();
     // Not on an I/O worker, so not a task: the read blocks this thread.
-    let mut conn = Conn::new(accepted);
+    let conn = Conn::new(accepted);
     assert_eq!(conn.read_line(Some(Duration::from_secs(10))), Ok(Some(b"late".to_vec())));
     assert!(super::blocked_waits() > before);
     client.join().unwrap();
@@ -278,7 +277,7 @@ fn measure_memory_per_parked_connection() {
     let count: usize = std::env::var("FENNEC_CONNECTIONS").ok().and_then(|n| n.parse().ok()).unwrap_or(1_000);
     let parked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = Arc::clone(&parked);
-    let waiting: Handler = Arc::new(move |mut conn: Conn| {
+    let waiting: Handler = Arc::new(move |conn: Conn| {
         counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match conn.read_line(None) {
             Err(Failure::Cancelled) => 0,
@@ -391,7 +390,7 @@ fn wait_for_written(line: &str) {
 /// Prints the first line a connection sends, waits for a second, and prints that: so its first
 /// print has to come out while it's parked.
 fn printing() -> Handler {
-    Arc::new(|mut conn: Conn| {
+    Arc::new(|conn: Conn| {
         while let Ok(Some(line)) = conn.read_line(None) {
             super::super::with(|state| {
                 let _ = super::super::io::write(state, &format!("{}\n", String::from_utf8_lossy(&line)));
@@ -432,7 +431,7 @@ fn what_a_parked_task_printed_comes_out_while_another_task_runs() {
         });
     };
     let pool = crate::embed::parallel::with_setup(2, &setup);
-    let served = serve(listener, pool, None, &printing(), started);
+    let served = serve(listener, pool, None, &printing(), (started, None, None));
     super::super::finish();
     if let Ok(Err(panic)) = ran.recv() {
         std::panic::resume_unwind(panic);
@@ -448,7 +447,7 @@ fn what_a_parked_task_printed_comes_out_while_another_task_runs() {
 /// Answers each request with its line, except every tenth, which crashes on purpose.
 fn crashes_every_tenth() -> Handler {
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    Arc::new(move |mut conn: Conn| {
+    Arc::new(move |conn: Conn| {
         let n = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let Ok(Some(mut line)) = conn.read_line(None) else { return 1 };
         if n.is_multiple_of(10) {
@@ -514,7 +513,7 @@ fn run_until_it_ends(handler: &Handler, clients: impl FnOnce(SocketAddr) + Send 
         });
     };
     let pool = crate::embed::parallel::with_setup(2, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>));
-    let served = serve(listener, pool, None, handler, started);
+    let served = serve(listener, pool, None, handler, (started, None, None));
     *ended.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
     ended.1.notify_all();
     if let Ok(Err(panic)) = ran.recv() {
@@ -526,7 +525,7 @@ fn run_until_it_ends(handler: &Handler, clients: impl FnOnce(SocketAddr) + Send 
 /// Echoes the line it's sent, ending its round with what the line asks: "break", "fail" or
 /// nothing.
 fn ends_as_asked() -> Handler {
-    Arc::new(|mut conn: Conn| {
+    Arc::new(|conn: Conn| {
         let Ok(Some(mut line)) = conn.read_line(None) else { return 1 };
         let how = match line.as_slice() {
             b"break" => super::ROUND_BROKE,
@@ -577,7 +576,7 @@ static STOP_SPIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 /// A round that's sent "spin" computes, ticking every few thousand turns as native code does,
 /// until it's told to stop; any other line is answered "pong" at once.
 fn spins_or_pongs() -> Handler {
-    Arc::new(|mut conn: Conn| {
+    Arc::new(|conn: Conn| {
         let line = conn.read_line(None).ok().flatten().unwrap_or_default();
         if line == b"spin" {
             let started = std::time::Instant::now();
@@ -620,4 +619,127 @@ fn a_round_that_never_waits_makes_way_for_a_connection_that_arrives_meanwhile() 
         assert_eq!(back, "pong\n");
         assert_eq!(spun, "spun\n");
     });
+}
+
+/// A served connection with TLS: its handshake is done before its round runs, its reads and writes
+/// go through it, and one that fails its handshake closes without its round running.
+mod tls {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use rustls::pki_types::CertificateDer;
+    use rustls::pki_types::ServerName;
+    use rustls::pki_types::pem::PemObject as _;
+    use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
+
+    use super::{Conn, Handler, Served, Stopper, listener, serve};
+    use crate::stdlib::http::tls::server;
+
+    const CA: &[u8] = include_bytes!("../../stdlib/testdata/tls-test-ca.pem");
+    const CHAIN: &str = include_str!("../../stdlib/testdata/tls-test-chain.pem");
+    const KEY: &str = include_str!("../../stdlib/testdata/tls-test-key.pem");
+
+    fn client() -> Arc<ClientConfig> {
+        let mut roots = RootCertStore::empty();
+        for certificate in CertificateDer::pem_slice_iter(CA) {
+            roots.add(certificate.unwrap()).unwrap();
+        }
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        Arc::new(config)
+    }
+
+    static ROUNDS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Answers each line it's sent with the same line.
+    fn echo() -> Handler {
+        Arc::new(|conn: Conn| {
+            ROUNDS.fetch_add(1, Ordering::SeqCst);
+            while let Ok(Some(mut line)) = conn.read_line(Some(Duration::from_secs(10))) {
+                line.push(b'\n');
+                if conn.write(&line).is_err() {
+                    return 1;
+                }
+            }
+            0
+        })
+    }
+
+    #[test]
+    fn a_served_connection_shakes_hands_before_its_round_and_talks_through_tls() {
+        ROUNDS.store(0, Ordering::SeqCst);
+        let (listening, address) = listener();
+        let (sent, ran) = std::sync::mpsc::channel();
+        let started = move |stopper: Stopper| {
+            std::thread::spawn(move || {
+                let went = std::panic::catch_unwind(|| {
+                    // A client that doesn't speak TLS fails its handshake, and no round runs for it.
+                    let mut plain = std::net::TcpStream::connect(address).unwrap();
+                    plain.write_all(b"this isn't TLS\n").unwrap();
+                    plain.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                    let mut closed = Vec::new();
+                    let _ = std::io::Read::read_to_end(&mut plain, &mut closed);
+                    assert_eq!(ROUNDS.load(Ordering::SeqCst), 0, "a round ran with no handshake");
+                    let tcp = std::net::TcpStream::connect(address).unwrap();
+                    tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                    let name = ServerName::try_from("localhost").unwrap();
+                    let connection = ClientConnection::new(client(), name).unwrap();
+                    let mut stream = BufReader::new(StreamOwned::new(connection, tcp));
+                    for line in ["one", "two"] {
+                        stream.get_mut().write_all(format!("{line}\n").as_bytes()).unwrap();
+                        stream.get_mut().flush().unwrap();
+                        let mut back = String::new();
+                        stream.read_line(&mut back).unwrap();
+                        assert_eq!(back, format!("{line}\n"));
+                    }
+                    assert_eq!(ROUNDS.load(Ordering::SeqCst), 1);
+                });
+                stopper.stop();
+                let _ = sent.send(went);
+            });
+        };
+        let pool = crate::embed::parallel::with_setup(1, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>));
+        let Ok(tls) = server(CHAIN, KEY) else { panic!("the certificate didn't load") };
+        let served: Served = serve(listening, pool, None, &echo(), (started, None, Some(tls)));
+        if let Ok(Err(panic)) = ran.recv() {
+            std::panic::resume_unwind(panic);
+        }
+        assert_eq!(served.connections, 2);
+    }
+
+    #[test]
+    fn a_chain_or_key_that_cant_be_read_fails() {
+        assert!(server("not pem", KEY).is_err());
+        assert!(server(CHAIN, "not pem").is_err());
+    }
+}
+
+/// A connection's number means the same connection in the whole process: one sent to a task on
+/// another worker can't name a different client there.
+#[test]
+fn connection_numbers_are_never_shared_between_workers() {
+    let on_other_worker = std::thread::spawn(super::calls::next_handle).join().unwrap();
+    let here = super::calls::next_handle();
+    assert_ne!(here, on_other_worker);
+    let refused = super::calls::on_conn(on_other_worker, |_| Ok(()));
+    assert!(matches!(refused, Err(crate::stdlib::net::Failure::Closed)));
+}
+
+/// Running out of file descriptors leaves connections waiting that the poll won't announce again,
+/// and a connection that gave up before it was accepted leaves the rest waiting too.
+#[test]
+fn a_failure_to_accept_doesnt_strand_what_waits_behind_it() {
+    use std::io::{Error, ErrorKind};
+
+    use super::{AfterAccept, accept_failed};
+    assert_eq!(accept_failed(&Error::from(ErrorKind::ConnectionAborted)), AfterAccept::Next);
+    assert_eq!(accept_failed(&Error::from(ErrorKind::Interrupted)), AfterAccept::Next);
+    assert_eq!(accept_failed(&Error::from_raw_os_error(24)), AfterAccept::Later);
+    assert_eq!(accept_failed(&Error::from(ErrorKind::WouldBlock)), AfterAccept::Stop);
 }

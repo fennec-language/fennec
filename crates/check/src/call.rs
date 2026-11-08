@@ -246,7 +246,7 @@ impl FnCx<'_> {
     }
 
     /// Calls a function, as `call_with_types` does, where the first `through` types written are
-    /// those of the type a static method is called through: `Job` in `Channel[Job].open(size=4)`.
+    /// those of the type a static method is called through: `int` in `Deque[int].of(items)`.
     fn call_through(
         &mut self,
         key: &str,
@@ -267,6 +267,10 @@ impl FnCx<'_> {
             return Type::Unknown;
         }
         let (signature, chosen) = self.instantiate(key, &signature, None, types, span);
+        if let Some(what) = crate::waits::intrinsic_waits(key) {
+            self.note_wait(what, span);
+        }
+        self.note_lock_call(key, name, span);
         self.bind_args(name, &signature.params, args, span);
         self.check_bounds(chosen, span);
         self.note_source(key, &signature.returns, false, span);
@@ -430,7 +434,7 @@ impl FnCx<'_> {
             let size = size.clone();
             return self.static_call(&size, method, args, span);
         }
-        // `Channel[Job].open(size=4)`: a static method, with the type's parameters written.
+        // `Deque[int].of(items)`: a static method, with the type's parameters written.
         if let ExprKind::Index { object: written, index } = &object.kind
             && let Some(type_name) = self.as_type_name(written)
             && self.checker.program.type_info(type_name).is_some()
@@ -592,6 +596,8 @@ impl FnCx<'_> {
     /// interfaces and no others.
     fn interface_call(&mut self, call: &MethodCall<'_>, name: &str) -> Type {
         let MethodCall { object, method, types, args, span } = *call;
+        // Any type's method of this name could be the one called.
+        self.note_lock_call(&format!("*.{method}"), method, span);
         let owner = Type::Param(name.to_owned());
         let Some((_, def)) = self.bound_method(name, method) else {
             let help = match self.bounds_of(name).as_slice() {
@@ -700,6 +706,7 @@ impl FnCx<'_> {
     fn call_method(&mut self, call: &MethodCall<'_>, receiver: &Type, method_key: (&str, bool)) -> Type {
         let MethodCall { object, method, types, args, span } = *call;
         let (key, takes_self) = method_key;
+        self.note_lock_call(key, method, span);
         self.locks_again(object, receiver, &format!("calling `{method}`"));
         self.method_on_holder(object, receiver, method);
         if let Some(owner) = receiver.type_name() {

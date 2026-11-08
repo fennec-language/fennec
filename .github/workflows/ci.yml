@@ -92,9 +92,6 @@ jobs:
           fi
       - run: cargo clippy --all-targets --locked -- -D warnings
         if: env.CODE == 'true'
-      - name: Clippy for the playground's WebAssembly module
-        if: env.CODE == 'true'
-        run: cargo clippy --target wasm32-unknown-unknown -p fennec-wasm --locked -- -D warnings
       - run: cargo doc --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
@@ -125,11 +122,11 @@ jobs:
     # Windows' tests took 20 minutes in one job, and a build with no cache there takes 10 more. A
     # job that runs out of time saves no cache, so the limit leaves room for a cold one.
     timeout-minutes: 35
-    # LLVM is the main backend, so on Linux and Windows its tests have to run: with LLVM's tools
+    # Everything runs through LLVM, so its tests have to run on every platform: with LLVM's tools
     # from the toolchain's own `llvm-tools`, the LLVM rustc uses, a missing tool or runtime
     # library fails them instead of skipping them.
     env:
-      FENNEC_EXPECT_LLVM: ${{ (startsWith(matrix.os, 'ubuntu') || startsWith(matrix.os, 'windows')) && '1' || '' }}
+      FENNEC_EXPECT_LLVM: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -140,7 +137,7 @@ jobs:
         shell: bash
         run: .github/scripts/windows.sh toolchain
       - name: Install LLVM's tools
-        if: runner.os == 'Linux'
+        if: runner.os != 'Windows'
         run: rustup component add llvm-tools-preview
       # A failing or stopped run still saves what it built. Otherwise a red main saves nothing, and
       # every run after it builds from nothing: after Windows' key changed, each of its runs did,
@@ -274,6 +271,49 @@ jobs:
           done
       - run: cargo test --locked -p fennec --test fennec 'llvm::'
 
+  # `std.postgres` against a real server, which only Linux runners can host.
+  postgres:
+    name: Postgres against a real server
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true' && github.event_name != 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: fennec
+          POSTGRES_PASSWORD: fennec-test
+          POSTGRES_DB: fennec
+        ports:
+          - 127.0.0.1:55432:5432
+        options: >-
+          --health-cmd "pg_isready -U fennec"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    env:
+      FENNEC_EXPECT_LLVM: 1
+      # A password for this throwaway container, and nothing else.
+      FENNEC_TEST_POSTGRES: postgres://fennec:fennec-test@127.0.0.1:55432/fennec
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install LLVM's tools
+        run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build the runtime libraries
+        run: |
+          cargo build --locked -p fennec-runtime
+          for features in threads; do
+            dir="target/$(echo "$features" | tr , -)"
+            name="fennec_runtime_$(echo "$features" | tr , _)"
+            cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
+            cp "$dir/debug/libfennec_runtime.a" "target/debug/lib$name.a"
+          done
+      - run: cargo test --locked -p fennec --test fennec 'llvm::postgres_'
+
   # Only a report, of tests `test` runs too, so a merge group leaves it out. The pull request
   # and the push to main each have it.
   coverage:
@@ -292,12 +332,11 @@ jobs:
           tool: cargo-llvm-cov@0.9.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # `tee` would hide a failing test without `pipefail`, which `shell: bash` turns on. The
-      # tests that link programs look for the runtime library beside `fennec`, which isn't where
-      # llvm-cov builds it, so they run in the test jobs instead.
+      # tests that mostly link programs, rather than run the compiler, are the test jobs' to run.
       - name: Measure coverage
         shell: bash
         run: |
-          cargo llvm-cov --locked --summary-only -- --skip llvm:: --skip executables:: | tee coverage.txt
+          cargo llvm-cov --locked --summary-only -- --skip llvm:: --skip executables:: --skip parallel:: --skip replay:: --skip live:: | tee coverage.txt
       - name: Show coverage on the run's summary page
         run: |
           {
@@ -330,7 +369,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The build compiles the interpreter to WebAssembly for the playground.
+      # The build runs fennec-reference, which writes the language page from the examples.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -339,8 +378,6 @@ jobs:
           cache-dependency-path: site/package-lock.json
       - run: npm ci --prefix site
       - run: npm run build --prefix site
-      - name: Run the examples through the playground's WebAssembly module
-        run: node site/scripts/check-playground.mjs
 
   workflows:
     name: Workflow lints and security audit
@@ -430,7 +467,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo build --release --locked -p fennec -p fennec-bench
+      # The tests of the kit it times run through LLVM. It runs them in a folder of its own, outside
+      # this repository's toolchain file, so it's told where this toolchain's tools are.
+      - name: Install LLVM's tools
+        run: |
+          rustup component add llvm-tools-preview
+          echo "FENNEC_LLVM_BIN=$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin" >> "$GITHUB_ENV"
+      - run: cargo build --release --locked -p fennec -p fennec-runtime -p fennec-bench
       # An edit's verdict is held to a count of instructions, which doesn't depend on which
       # machine this lands on. Its time is shown too, and warns.
       - name: Install what counts instructions
@@ -501,7 +544,7 @@ jobs:
           echo "$built builds ran under AddressSanitizer"
           [ "$built" -ge 40 ] || { echo "::error::only $built builds ran"; failed=1; }
           exit "$failed"
-      - name: Fuzz programs built through LLVM against the interpreter
+      - name: Fuzz programs built through LLVM
         run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run llvm --seed 1 --inputs 150 --seconds 300 --found found
       - name: Keep what fuzzing found
         if: failure()
@@ -577,7 +620,6 @@ jobs:
               echo "::error::$name didn't link"; cat built.txt; failed=1
               continue
             fi
-            if nm checked | grep -q 5Interp; then echo "::error::$name has the interpreter in it"; failed=1; fi
             built=$((built + 1))
             if [ -f "${program%.fen}.out" ]; then
               timeout 120 ./checked < /dev/null > printed.txt 2> said.txt || true
@@ -600,6 +642,8 @@ jobs:
             if [ -f "${1%.fen}.out" ]; then LC_ALL=C sort "${1%.fen}.out" | sha256sum; else cat "${1%.fen}.sorted.sha256"; fi
           }
           for program in crates/fennec/tests/fixtures/workers/*.fen examples/parallel_loops.fen examples/parallel_put_back.fen; do
+            # A fixture with no pinned output is driven by its own test, which connects to it or stops it.
+            case "$program" in crates/*) [ -f "${program%.fen}.out" ] || [ -f "${program%.fen}.sorted.sha256" ] || continue ;; esac
             wanted "$program" > wanted.txt
             ./target/release/fennec build "$program" -o checked > /dev/null
             for threads in 1 4 8; do
@@ -750,6 +794,8 @@ jobs:
             if [ -f "${1%.fen}.out" ]; then LC_ALL=C sort "${1%.fen}.out" | sha256sum; else cat "${1%.fen}.sorted.sha256"; fi
           }
           for program in $programs crates/fennec/tests/fixtures/workers/*.fen; do
+            # As above: a fixture with no pinned output is driven by its own test.
+            case "$program" in crates/*) [ -f "${program%.fen}.out" ] || [ -f "${program%.fen}.sorted.sha256" ] || continue ;; esac
             wanted "$program" > wanted.txt
             if ! ./target/release/fennec build "$program" -o checked > /dev/null 2> built.txt; then
               echo "::error::$program didn't build"; cat built.txt; failed=1; continue

@@ -126,7 +126,6 @@ pub mod threads;
 use std::collections::HashMap;
 
 use crate::format;
-use crate::place::Place;
 use crate::value::{Capability, Value};
 
 pub use heap::{Counts, count_allocations};
@@ -184,6 +183,28 @@ impl Tables {
 #[derive(Clone, Default)]
 struct Output(Rc<RefCell<Vec<u8>>>, bool);
 
+/// Whether the program writes its output as it goes, rather than keeping it for a host.
+static PROGRAM_WRITES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+thread_local! {
+    /// Whether what's running here is a launched task of a program that writes as it goes. A
+    /// `parallel` range's output is kept to come out whole, but tasks talk to each other, and what
+    /// one printed before it told another comes first.
+    static TASK_WRITES: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether a launched task's printing is written as it goes.
+#[cfg(any(test, feature = "threads"))]
+pub(in crate::embed) fn program_writes() -> bool {
+    PROGRAM_WRITES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Says whether what's about to run here writes as it goes, giving back what was.
+#[cfg(any(test, feature = "threads"))]
+pub(in crate::embed) fn swap_task_writes(writes: bool) -> bool {
+    TASK_WRITES.replace(writes)
+}
+
 /// How much output is kept before a live run writes it.
 const LIVE_OUTPUT: usize = 1 << 13;
 
@@ -233,7 +254,7 @@ impl Write for Output {
 
     /// Writes what a live run has kept. Any other run's output stays for its host.
     fn flush(&mut self) -> std::io::Result<()> {
-        if !self.1 {
+        if !self.1 && !TASK_WRITES.get() {
             return Ok(());
         }
         let length = self.0.borrow().len();
@@ -268,12 +289,26 @@ pub(crate) fn make_way() {
 pub(in crate::embed) struct Temporaries {
     temps: Vec<Value>,
     inputs: Vec<Value>,
+    /// Which task it is, in a recording or a replay: a server's round, named by its connection.
+    replay: Option<crate::replay::Task>,
+    /// Its failure, if it parked with one: it's the task's, not whatever its thread runs next.
+    failure: Option<Diagnostic>,
+    failed: u8,
 }
 
 #[cfg(any(test, feature = "threads"))]
 impl Temporaries {
     pub(in crate::embed) fn is_empty(&self) -> bool {
-        self.temps.is_empty() && self.inputs.is_empty()
+        self.temps.is_empty()
+            && self.inputs.is_empty()
+            && self.replay.is_none()
+            && self.failure.is_none()
+            && self.failed == 0
+    }
+
+    /// A task's own, named `task` in a recording or a replay.
+    pub(in crate::embed) fn of_task(task: crate::replay::Task) -> Temporaries {
+        Temporaries { replay: Some(task), ..Temporaries::default() }
     }
 }
 
@@ -285,8 +320,23 @@ pub(in crate::embed) fn swap_temporaries(own: &mut Temporaries) {
         if let Some(state) = state.as_mut() {
             std::mem::swap(&mut state.temps, &mut own.temps);
             std::mem::swap(&mut state.inputs, &mut own.inputs);
+            std::mem::swap(&mut state.failure, &mut own.failure);
         }
     });
+    own.failed = FLAGS.with(|flags| flags.failed.replace(own.failed));
+    crate::replay::swap(&mut own.replay);
+}
+
+/// Puts a task's failure back in its thread's runtime, as it ends with one: what's run it says what
+/// happens next.
+#[cfg(any(test, feature = "threads"))]
+pub(in crate::embed) fn take_failure_of(own: &mut Temporaries) {
+    if let Some(failure) = own.failure.take() {
+        with(|state| state.failure = Some(failure));
+    }
+    if own.failed != 0 {
+        set_failed(std::mem::take(&mut own.failed));
+    }
 }
 
 /// Writes what this thread has printed and kept. Output comes out as it's printed, and is only
@@ -333,12 +383,8 @@ struct State {
     /// The inputs of the next expression or statement native code hands over.
     inputs: Vec<Value>,
     /// Each name's number in the name table, for telling types apart.
+    #[cfg(any(test, feature = "threads"))]
     name_ids: HashMap<String, i64>,
-    /// The path `objects::put` changes, built a step at a time.
-    path: Option<Place>,
-    /// A `return`, or a failure `?` or `fail` passes up, from code the interpreter ran,
-    /// which native code must now carry out.
-    leaving: Option<crate::exec::Flow>,
     heap: heap::Heap,
     /// The block of each plain capability, by its kind, once it's been asked for.
     capabilities: Vec<i64>,
@@ -416,7 +462,11 @@ fn capability(kind: i64) -> Capability {
 pub fn start(mut tables: Tables, inputs: crate::Inputs) {
     let crate::Inputs { program, arguments, live, .. } = inputs;
     let output = Output(Rc::default(), live);
+    if live {
+        PROGRAM_WRITES.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     OUTPUT.set(Some(output.clone()));
+    #[cfg(any(test, feature = "threads"))]
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
     set_failed(0);
     STATE.set(Some(State {
@@ -424,9 +474,8 @@ pub fn start(mut tables: Tables, inputs: crate::Inputs) {
         regexes: crate::stdlib::re::Regexes::default(),
         temps: Vec::new(),
         inputs: Vec::new(),
-        leaving: None,
+        #[cfg(any(test, feature = "threads"))]
         name_ids,
-        path: None,
         heap: heap::Heap::new(std::mem::take(&mut tables.statics)).planned(&tables.shapes, &tables.elements),
         capabilities: Vec::new(),
         world: None,
@@ -612,10 +661,6 @@ impl State {
             .ok()
             .and_then(|at| self.temps.get_mut(at))
             .map_or(Value::Unit, |slot| std::mem::replace(slot, Value::Unit))
-    }
-
-    fn name(&self, id: i64) -> String {
-        usize::try_from(id).ok().and_then(|id| self.tables.names.get(id)).cloned().unwrap_or_default()
     }
 }
 
@@ -812,7 +857,7 @@ pub mod temps {
     pub extern "C" fn err(error: i64, start: i64, end: i64) -> i64 {
         attempt(|state: &mut State| {
             let error = state.take(error);
-            crate::exec::check_error(&error, span(start, end))?;
+            super::check_error(&error, span(start, end))?;
             Ok(state.push(Value::Err(std::rc::Rc::new(error))))
         })
     }
@@ -847,16 +892,14 @@ pub mod temps {
 
 /// Running the parts of a program that native code hands to the interpreter.
 pub mod eval {
-    use super::{State, Value, attempt, span, with};
-    use crate::call::at_call as repoint;
-    use crate::exec::Flow;
+    use super::{State, attempt, span, with};
     use fennec_syntax::Diagnostic;
 
     /// Reports a failure inside the standard library where the program called it.
     pub extern "C" fn at_call(start: i64, end: i64) {
         with(|state| {
             if let Some(failure) = state.failure.take() {
-                state.failure = Some(repoint(failure, span(start, end)));
+                state.failure = Some(super::at_failed_call(failure, span(start, end)));
             }
         });
     }
@@ -872,27 +915,6 @@ pub mod eval {
             let value = state.take(value);
             state.inputs.push(value);
         });
-    }
-
-    /// Whether the code the interpreter just ran is leaving the function: 0 when it isn't,
-    /// 1 for a `return`, 2 for a failure passing up.
-    pub extern "C" fn leaving() -> i8 {
-        with(|state| match state.leaving {
-            None | Some(Flow::Normal(_) | Flow::Break | Flow::Continue | Flow::Yield(_)) => 0,
-            Some(Flow::Return(_)) => 1,
-            Some(Flow::PassUp(_)) => 2,
-        })
-    }
-
-    /// The value the function is leaving with.
-    pub extern "C" fn left() -> i64 {
-        with(|state| {
-            let value = match state.leaving.take() {
-                Some(Flow::Return(value) | Flow::PassUp(value) | Flow::Normal(value)) => value,
-                _ => Value::Unit,
-            };
-            state.push(value)
-        })
     }
 
     /// Fails because no case of a `match` matches its value.
@@ -986,5 +1008,24 @@ pub mod io {
             };
             state.push(item.unwrap_or(Value::Unit))
         })
+    }
+}
+
+/// A failure inside the standard library is reported where the program called it.
+fn at_failed_call(mut diagnostic: Diagnostic, call: Span) -> Diagnostic {
+    if diagnostic.span.in_prelude() && !call.in_prelude() {
+        diagnostic.span = call;
+    }
+    diagnostic
+}
+
+/// Checks a value can be failed with: it must be declared with `error`.
+fn check_error(value: &Value, span: Span) -> Result<(), Diagnostic> {
+    match value {
+        Value::Instance(instance) if instance.is_error => Ok(()),
+        other => {
+            Err(Diagnostic::new(format!("`fail` needs an error, but this is a {}", other.type_name()), span)
+                .with_help("declare error types with `error`, like `error NotFound:`"))
+        }
     }
 }

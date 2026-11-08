@@ -118,7 +118,10 @@ fn declared<'a>(stmts: &'a [Stmt], found: &mut Vec<(&'a str, &'a Expr)>) {
                 }
                 declared(otherwise.as_deref().unwrap_or_default(), found);
             }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+            StmtKind::While { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::With { body, .. }
+            | StmtKind::OnFailure { body, .. } => {
                 declared(body, found);
             }
             StmtKind::Expr(Expr { kind: ExprKind::Match { arms, .. }, .. }) => {
@@ -213,6 +216,10 @@ fn reads_in(stmts: &[Stmt], live: &mut Live) {
             | StmtKind::For { iter: value, body, .. }
             | StmtKind::With { value, body, .. } => {
                 reads(value, live);
+                reads_in(body, live);
+            }
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                reads_in(cleanup, live);
                 reads_in(body, live);
             }
             StmtKind::Def(def) => reads_in(&def.body, live),
@@ -366,6 +373,13 @@ impl<'a> Lost<'a> {
         live
     }
 
+    /// What's live before a block with a cleanup, which can run at any point inside it.
+    fn on_failure(&mut self, cleanup: &'a [Stmt], body: &'a [Stmt], live: Live) -> Live {
+        let mut before = self.block(body, live);
+        reads_in(cleanup, &mut before);
+        before
+    }
+
     fn stmt(&mut self, stmt: &'a Stmt, mut live: Live) -> Live {
         match &stmt.kind {
             StmtKind::Assign { target, op, value, declare_mut, .. } => {
@@ -428,6 +442,7 @@ impl<'a> Lost<'a> {
                 reads(iter, &mut before);
                 before
             }
+            StmtKind::OnFailure { cleanup, body, .. } => self.on_failure(cleanup, body, live),
             StmtKind::With { value, body, .. } => {
                 let mut before = self.block(body, live);
                 reads(value, &mut before);

@@ -48,7 +48,10 @@ tools = { path = "../tools" }
 - `fennec update` fetches each kit from git that isn't fetched yet and pins it in `kit.lock` by the hash of its files. It says what each moved pin changes, file by file. Nothing else changes `kit.lock`, and a `kit.toml` that names another commit than `kit.lock` pins is an error until you run it.
 - Fetching runs nothing: a kit has no install or build scripts, nothing is checked out, and only `kit.toml` and `src` are taken. A fetched kit is kept in `~/.fennec/kits/`, so the network is only needed for one that isn't there yet, and `--offline` refuses to fetch at all.
 - A kit from a path isn't pinned, since it's work in progress. A kit from git can't name a path.
-- Importing from a dependency is the next step, not built yet.
+
+`import physics` reaches the kit's `src/lib.fen`, and `import physics.shapes` its `src/shapes.fen`, and `from physics import Body` works as it does for a kit's own files. A kit imports only what its own `kit.toml` names, so a dependency's dependencies stay its own.
+
+Each kit keeps its own names: a program's `Circle` and a dependency's `Circle` are different types, and neither gets in the other's way. Another kit reaches only what's marked `export`. A dependency's tests and lints are its own, so `fennec test` and `fennec lint` leave them out, and a change to `kit.lock`, or to a kit from a path, is seen by the next run.
 
 ## `main` and capabilities
 
@@ -111,7 +114,7 @@ match load(fs, hash):
         stdout.print(f"couldn't read {path}")
 ```
 
-Ignoring a returned value is a compile error. Write `_ = call()` when you mean to throw one away.
+Ignoring a returned value is a compile error. Write `_ = call()` when you mean to throw one away. Don't write it on a call that can fail: that's planned to be a compile error, so handle the failure instead.
 
 ## Files
 
@@ -298,7 +301,7 @@ def main(stdout: Stdout) fails Crashed | Closed | Timeout:
     stdout.print("after")
 ```
 
-When the block ends, the task's inbox closes, the task sums what it was sent and prints `10`, and only then does `after` print. Channels are always bounded, so `send` waits when the task falls behind. This builds natively; the interpreter refuses it.
+When the block ends, the task's inbox closes, the task sums what it was sent and prints `10`, and only then does `after` print. Channels are always bounded, so `send` waits when the task falls behind. This builds natively.
 
 ## Hashing
 
@@ -379,7 +382,6 @@ def hash_of(fs: Fs, path: str) -> str? fails SqlError:
 - A column that doesn't fit its field, or a field with no column, fails with `SqlError.Column`, naming it. `query[int]` or `query[str]` reads a single column.
 - The database is in WAL mode, so reads go on while something writes. Tasks in a `parallel` loop can share one: each transaction gets a connection of its own and the database's one writer, and a task waiting for it pauses without holding a thread.
 - In a test, each path is a database of the test's own, fresh for each test, in a temporary folder. It behaves as a file does, so what passes in a test passes for real. `fennec test --real` uses the paths themselves.
-- `query` needs native code, as `std.pack` does, so `--interp` can't run it.
 
 ## Tests
 
@@ -420,11 +422,10 @@ test "a hash names its content" for text: str:
 | `fennec fix` | Makes the fixes that can't change what the program does |
 | `fennec fmt` | Formats the kit in the one style |
 
-Builds go through LLVM a function at a time and are cached, so an edit rebuilds only what changed. Where LLVM can't build something yet, `fennec run` says so and runs it another way.
+Builds go through LLVM a function at a time and are cached, so an edit rebuilds only what changed. Where LLVM can't build something yet, `fennec run` and `fennec build` say why.
 
 ## Not there yet
 
 These are decided and planned, and `docs/language.md` says where each one stands:
 - `TaskGroup`, for a number of tasks known only at run time, and pools;
 - `u64` and `f32`, and `wrapping_` and `saturating_` methods: `i8` to `i32` and `u8` to `u32` already run natively;
-- notes on errors in native code: today a program that uses them runs in the interpreter, which says so.

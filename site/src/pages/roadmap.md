@@ -24,7 +24,7 @@ description: What Fennec does today, what's being built next, and the design que
 - `ref` for loops, parameters and `self`. Compile errors for changing a copy nobody reads, changing a list while looping over it, and a copy made on every round of a loop.
 - Structs with defaults, methods, named constructors and `where` rules, checked on every write. `copy(x, field=...)` for a changed copy.
 - Fixed-size arrays, `array[T, N]`, held inline.
-- Enums and `match`, with or-patterns and guards. Unions, `Circle | Square`, narrowed with `is` and `match`. Interfaces and generics. `extend` for a type's methods in another file.
+- Enums and `match`, with or-patterns and guards, and `case .Button(ref clicks):` to change a field inside one. Unions, `Circle | Square`, narrowed with `is` and `match`. Interfaces and generics. `extend` for a type's methods in another file.
 - Failures with `error`, `fail`, `?`, `else` and `match`, `fails Name` in signatures, and `fails A | B`. An `else:` block must leave. Optional values with `None` and `else`.
 - Lists, dicts, sets, tuples, `bytes`, comprehensions and slices. Structs work as dict keys with nothing to write.
 - Lazy generators, used once.
@@ -39,6 +39,7 @@ description: What Fennec does today, what's being built next, and the design que
 - `shared T` and `lock`, with a crash inside `lock x as ref` rolled back so nobody sees a half-change.
 - `with launch(...)`, a task beside you until its block ends, and bounded channels, `Channel`, `Inbox` and `Sender`, natively.
 - Sized numbers from `i8` to `u64` and `f32`, natively, each operation checked against its size, with `wrapping_` and `saturating_` add, sub and mul up to 32 bits, with literals taking the size they go into and `u8.from(x)?` and `u8.parse(text)?` for numbers from outside.
+- Notes on errors, so a cleanup that fails after a failure hides neither one.
 - A function that can fail says `fails` in its signature, a failure passes up only with `?`, and a `match` over what can fail handles both sides. `fennec fix` writes the first two.
 - `with` and `lend`, for sources of your own and for files: `fs.create` puts a file in place only when its block ends, synced to the disk, and `fs.open` reads in lines or chunks.
 - Capabilities: `Stdout`, `Stdin`, `Args`, `Fs`, `Clock`, `Env`, `Entropy`, `Process` and `Net`.
@@ -47,11 +48,11 @@ description: What Fennec does today, what's being built next, and the design que
 **The standard library**
 
 - `collections`: `Table` and `Id`, `Tree`, `Graph`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Deque`, `Heap`, `PriorityQueue` and `Counter`.
-- `json`, `toml` and `pack`, which save any type whose fields can be saved. `csv`, `base64` and `compress`.
+- `json`, `toml` and `pack`, which save any type whose fields can be saved. `pack` loads data from an earlier version of a type by its names, with new fields taking their defaults. `csv`, `base64` and `compress`.
 - `net`: TCP, UDP, an HTTP client with TLS, and an HTTP server.
 - `math`, with `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` for games. `layout`, `path`, `fs`, `random`, `time`, `string`, `re`, `unicode`, `log`, `cli`, `url`, `process`, `crypto` and `uuid`.
 - `crypto`'s `Secret`, which can't be printed, logged or saved, and hashes over a file a chunk at a time.
-- `concurrent`, for tasks and channels. `sql` and `sqlite`, which take only t-strings, with a test's database a real file of its own. `postgres`, so far its messages, sign-in and queries, with no network of its own.
+- `concurrent`, for tasks and channels. `sql` and `sqlite`, which take only t-strings, with a test's database a real file of its own. `postgres`, which connects over `std.net`, signs in with SCRAM-SHA-256, and runs queries and transactions, with no TLS yet.
 
 [The guide](https://github.com/fennec-language/fennec/blob/main/docs/guide.md) walks through building a real program with all of this. Every example in the repository's `examples/` folder is a test, including its error messages, and the [language reference](/reference/) is generated from them.
 
@@ -61,15 +62,14 @@ description: What Fennec does today, what's being built next, and the design que
 - **Wrapped C libraries for games.** Windows, input, audio and graphics, wrapped by the Fennec project behind safe APIs. Your own code never needs `unsafe`, because there isn't any.
 - **Hot reload,** after Hoard's core works, so a running game or server picks up a change. It's all or nothing: code swaps only at a safe point, after the live data is checked against the new code, or the reload is refused and the old code keeps running.
 - **Debug info and stack traces,** so a failure shows the calls that led to it.
-- **The rest of the sized numbers:** `wrapping_` and `saturating_` on a `u64`, and running them in `fennec test`.
-- **Kit dependencies and [the Den](/den/),** Fennec's registry for kits.
+- **The rest of the sized numbers:** `wrapping_` and `saturating_` on a `u64`.
+- **Kit dependencies and [the Den](/den/),** Fennec's registry for kits. Kits from git or a path are already pinned in `kit.lock` by `fennec update`, and importing from them is next.
 - **Cross-compiling and WebAssembly.**
 - **The rest of the concurrency design:** `TaskGroup`, keeper pools, lock order checked across the whole program, and no waiting inside a lock. The [tour](/tour/#sharing-resources-and-tasks) describes it.
-- **`std.postgres` connecting through `std.net`,** on the protocol parts already built.
 
 ## Next: speed and builds
 
-- Everything on LLVM, so the JIT and the interpreter can go. What didn't build natively is at zero, the test fake network is in the runtime, constants have a small evaluator in the compiler, fuzzing checks against pinned outputs and native builds, and the commit before removal has a tag. The JIT is gone, and native programs carry no interpreter. Next, the interpreter goes from `fennec` itself, and the playground compiles to WebAssembly on a server.
+- Everything on LLVM, so the JIT and the interpreter can go. What didn't build natively is at zero, the test fake network is in the runtime, constants have a small evaluator in the compiler, fuzzing checks against pinned outputs and native builds, and the commit before removal has a tag. The JIT is gone, native programs carry no interpreter, and `fennec` runs nothing on one. Next, the interpreter's code is deleted. The website's playground is removed for now, and returns once the self-hosted compiler can compile in the browser.
 - Every kernel at 110% of its hand-written twin. The [benchmarks](/benchmarks/) show where each one stands.
 - A shared cache that only trusted builds can write to, checked by a clean rebuild in CI.
 - `math.fma(a, b, c)`, rounded once. Float sums and `math.dot` already add in one fixed pattern.
@@ -81,12 +81,11 @@ Each of these is decided and not built.
 
 - A compile error for a copy that can go stale, which `copy(x)` makes on purpose.
 - Narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
-- `case .Button(ref clicks):` to change a field inside an enum.
 - `{x=}` in f-strings.
 - `x.approx(y, within=...)`.
+- `embed_file` in place of `embed`, and `embed_folder`, a read-only map of a folder's files baked into the program.
+- `else as name:`, which binds the failure in that block, and a compile error for `_ = f()` on a call that can fail, with `ignore` removed.
 - Units of measure, as structs whose operators are chosen by their right-hand type, with no new syntax.
-- Notes on errors in native code. They work in the checker and the interpreter today.
-- `std.pack` data from an earlier version of a program loading into the new one, with fields matched by name and new fields taking their defaults.
 - Annotations a kit defines for fields, read by generic code.
 
 ## After that

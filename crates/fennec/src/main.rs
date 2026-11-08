@@ -48,7 +48,6 @@ const USAGE: &str = "usage:
   fennec run [path] [args]  run the tests a change affects, then a kit's main or a single .fen file's,
       built through LLVM a function at a time
   fennec run --no-test [path] [args]  run it without running the tests first
-  fennec run --interp [path]  run it with the interpreter instead of compiling it
   fennec build [--release] [--cpu baseline] [path] [-o out]  compile it to a native program through LLVM;
                                      --release optimizes the whole program as one;
                                      --cpu baseline builds for x86-64 machines older than AVX2
@@ -75,7 +74,7 @@ const USAGE: &str = "usage:
 
   path is a .fen file, or a kit's folder; it defaults to the current folder";
 
-/// The interpreter recurses for each nested call, so it gets a generous stack.
+/// The checker and the lowering recurse for each nested expression, so they get a generous stack.
 pub(crate) const STACK_BYTES: usize = 512 * 1024 * 1024;
 
 /// The command's arguments, with `--cpu baseline` taken out wherever it's put: it builds for the
@@ -113,8 +112,6 @@ fn main() -> ExitCode {
         ["run"] => run(run::Engine::Native, ".", &[]),
         ["run", "--no-test"] => run(run::Engine::Untested, ".", &[]),
         ["run", "--no-test", path, arguments @ ..] => run(run::Engine::Untested, path, arguments),
-        ["run", "--interp"] => run(run::Engine::Interpreter, ".", &[]),
-        ["run", "--interp", path, arguments @ ..] => run(run::Engine::Interpreter, path, arguments),
         ["run", "--record", log, rest @ ..] => record(log, rest),
         ["run", path, arguments @ ..] => run(run::Engine::Native, path, arguments),
         ["replay", log] => replay(log),
@@ -193,7 +190,7 @@ fn on_big_stack(command: fn(&str) -> ExitCode, path: &str) -> ExitCode {
     big_stack(move || command(&path))
 }
 
-/// `fennec test [--all] [--real] [--verbose] [path]`, on a big stack for the interpreter.
+/// `fennec test [--all] [--real] [--verbose] [path]`, on a big stack for the checker.
 fn test(args: &[&str]) -> ExitCode {
     let Some((path, options)) = test::Options::of(args) else {
         eprintln!("{USAGE}");
@@ -202,7 +199,7 @@ fn test(args: &[&str]) -> ExitCode {
     big_stack(move || test::test(&path, options))
 }
 
-/// `fennec run [--interp] [path] [args]`: runs a program, handing it the arguments after its path.
+/// `fennec run [path] [args]`: runs a program, handing it the arguments after its path.
 fn run(engine: run::Engine, path: &str, arguments: &[&str]) -> ExitCode {
     let path = path.to_owned();
     let arguments: Vec<String> = arguments.iter().map(|arg| (*arg).to_owned()).collect();
@@ -213,28 +210,23 @@ fn run(engine: run::Engine, path: &str, arguments: &[&str]) -> ExitCode {
 /// input it takes into `log`, with what it was run with, for `fennec replay` (see
 /// `fennec_interp::replay`).
 fn record(log: &str, rest: &[&str]) -> ExitCode {
-    let (engine, words) = match rest {
-        ["--interp", rest @ ..] => (run::Engine::Interpreter, rest),
-        rest => (run::Engine::Native, rest),
-    };
-    let (path, arguments) = match words {
+    let (path, arguments) = match rest {
         [path, arguments @ ..] => {
             ((*path).to_owned(), arguments.iter().map(|arg| (*arg).to_owned()).collect())
         }
         [] => (".".to_owned(), Vec::new()),
     };
-    let named = match engine {
-        run::Engine::Interpreter => "interp",
-        _ => "native",
-    };
+    // The first part names what ran it, which is always native code now.
     let header =
-        [named.to_owned(), path.clone()].into_iter().chain(arguments.iter().cloned()).collect::<Vec<_>>();
+        ["native".to_owned(), path.clone()].into_iter().chain(arguments.iter().cloned()).collect::<Vec<_>>();
     let log = std::path::PathBuf::from(log);
     if let Err(err) = fennec_interp::replay::start_log(&log, header.join("\0").as_bytes()) {
         eprintln!("error: couldn't start the recording at {}: {err}", log.display());
         return ExitCode::FAILURE;
     }
-    big_stack(move || run::run_logged(&path, engine, &arguments, Some(&run::Logged::Recording(log))))
+    big_stack(move || {
+        run::run_logged(&path, run::Engine::Native, &arguments, Some(&run::Logged::Recording(log)))
+    })
 }
 
 /// `fennec replay log`: runs the program `fennec run --record` recorded into `log` again, with what
@@ -249,13 +241,15 @@ fn replay(log: &str) -> ExitCode {
         }
     };
     let mut parts = header.split('\0').map(str::to_owned);
-    let engine = match parts.next().as_deref() {
-        Some("interp") => run::Engine::Interpreter,
-        _ => run::Engine::Native,
-    };
+    if parts.next().as_deref() == Some("interp") {
+        eprintln!("error: {} was recorded with the interpreter, which Fennec no longer has", log.display());
+        return ExitCode::FAILURE;
+    }
     let path = parts.next().unwrap_or_else(|| ".".to_owned());
     let arguments: Vec<String> = parts.collect();
-    big_stack(move || run::run_logged(&path, engine, &arguments, Some(&run::Logged::Replaying(log))))
+    big_stack(move || {
+        run::run_logged(&path, run::Engine::Native, &arguments, Some(&run::Logged::Replaying(log)))
+    })
 }
 
 fn big_stack(command: impl FnOnce() -> ExitCode + Send + 'static) -> ExitCode {
@@ -263,7 +257,7 @@ fn big_stack(command: impl FnOnce() -> ExitCode + Send + 'static) -> ExitCode {
     if let Ok(Ok(code)) = worker.map(std::thread::JoinHandle::join) {
         code
     } else {
-        eprintln!("error: the interpreter stopped unexpectedly");
+        eprintln!("error: fennec stopped unexpectedly");
         ExitCode::FAILURE
     }
 }

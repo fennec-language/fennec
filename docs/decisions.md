@@ -63,7 +63,7 @@ for attacker_id, attacker in units.items():
     units[attacker.target_id].health -= attacker.damage
 ```
 
-**Nothing can be reached two ways while it's being changed.** Overlapping `ref`s are refused, including `f(ref x, ref x)`, `f(ref xs[i], ref xs[j])` always, since `i` may equal `j`, and writing to `units` inside `for ref unit in units`. `xs.swap(i, j)` swaps two items, and `pair` is gone. Built, `swap` too. So is an argument that changes what its call changes, like `self.items.append(self.grow())` when `grow` appends to `self.items`, since which change wins would depend on the engine.
+**Nothing can be reached two ways while it's being changed.** Overlapping `ref`s are refused, including `f(ref x, ref x)`, `f(ref xs[i], ref xs[j])` always, since `i` may equal `j`, and writing to `units` inside `for ref unit in units`. A `ref self` method can't be given what it changes either: `bag.grab(bag.items)` is refused when `grab` changes `items`, and `bag.grow(bag.size)` is fine, since a number is passed as its value. `xs.swap(i, j)` swaps two items, and `pair` is gone. Built, `swap` too. So is an argument that changes what its call changes, like `self.items.append(self.grow())` when `grow` appends to `self.items`, since which change wins would depend on the engine.
 ```fennec
 for ref unit in units:
     units[unit.target_id].health -= 1    # error: the target may be `unit`
@@ -318,7 +318,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 **There's no unwinding.** Errors are values, and a runtime failure such as overflow ends the program. Containing one to a single server task is the intent, under Concurrency. With no unwinding machinery, code is smaller and inlines better.
 
-**There are ten sized number types: `i8` to `i64`, `u8` to `u64`, `f32` and `f64`.** `int` is `i64` and `float` is `f64`, and they stay the everyday types. There's no 128-bit type and no platform-sized one. Built in the checker, all ten, with `i64` as `int` and `f64` as `float`. Built natively for `i8` to `i32` and `u8` to `u32`. Not built yet: running `u64` and `f32`, which are refused past the checker, and running sized numbers in the interpreter, so `fennec test` refuses them for now.
+**There are ten sized number types: `i8` to `i64`, `u8` to `u64`, `f32` and `f64`.** `int` is `i64` and `float` is `f64`, and they stay the everyday types. There's no 128-bit type and no platform-sized one. Built in the checker, all ten, with `i64` as `int` and `f64` as `float`. Built natively, all ten, apart from a few gaps `docs/language.md` names, like a `u64` literal above the largest `int`.
 *Why:* Game math, file formats, GPUs and hashes need exact sizes, and `int` already covers indexes.
 
 **A literal takes the type it's going into, and is checked to fit at compile time.** `speed: f32 = 1.5` needs nothing more, and `pixel: u8 = 300` is a compile error. With nothing to go by, a literal is an `int` or a `float`, as today. Built, for names, parameters, returns, the other side of an operator and list items. Not built yet: set, dict and tuple literals.
@@ -327,7 +327,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 **Conversions are always written, in two forms.** `u8(x)` stops the program if `x` doesn't fit, since that's a bug. `u8.from(x)?` and `u8.parse(text)?` fail cleanly, for anything from outside, and the standard library's decoders use only those. Mixing types, like `i32 + i64`, is a compile error that says to convert one side, and widening, like `i64(small)`, is written too. Built: the mixing errors, `u8(x)`, and `u8.from(x)?` and `u8.parse(text)?`, written in Fennec, for the sizes that run.
 *Why:* Automatic mixing is where C and C++ get subtle bugs, and the two forms keep a bug apart from bad input, so a packet with too big a number can't stop a server.
 
-**Overflow on a sized type is checked, as on `int`.** A check is removed only where the compiler proves it can't fire, and `wrapping_` and `saturating_` methods are for when you mean it. Built for `i8` to `i32` and `u8` to `u32`: an overflow stops with "this calculation overflows a u8, which holds 0 to 255". Not built yet: the `wrapping_` and `saturating_` methods.
+**Overflow on a sized type is checked, as on `int`.** A check is removed only where the compiler proves it can't fire, and `wrapping_` and `saturating_` methods are for when you mean it. Built for every size: an overflow stops with "this calculation overflows a u8, which holds 0 to 255". `wrapping_` and `saturating_` add, sub and mul are built for `i8` to `i32` and `u8` to `u32`. Not built yet: them for `u64`.
 *Why:* We're a safe language, so a small type mustn't wrap quietly.
 
 **Math types are 32-bit.** `std.math`'s `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` are concrete `f32` types, and `DVec3` and the other `D` types hold doubles. They're not generic: a generic version with an `f32` default could come later without breaking anything. Not built yet: until sized numbers are in, they're `float` and are checked against glam's 64-bit types.
@@ -346,7 +346,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 ## Functions and types
 
-**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose. Built.
+**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose. Built. On a call that can fail, `_ = f()` is a compile error too, so a failure must always be handled, and `ignore` is removed. Chris decided this on 2026-11-08, since `ignore` was used only by its own tests across the whole repository. Not built yet: today `_ = f()` drops the failure, and `ignore(result, "why")` still compiles. `Ok` and `Err` stay as they are for now, to revisit after real Hoard code.
 ```fennec
 sorted(scores)       # error: the result is ignored
 _ = sorted(scores)   # fine
@@ -423,7 +423,7 @@ if result is Err(NotFound):
 This replaces the earlier rules that errors are inferred and `fails` is optional.
 *Why:* A reader sees at a glance how a function can fail and every line where it can leave. Swallowed errors are how reliable-looking programs go wrong.
 
-**An error carries notes, a `list[str]`, as Python's exceptions have since PEP 678.** Every `error Name:` type has `failure.add_note(text)`, which needs a `mut` place, and `failure.notes() -> list[str]`. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure is added to the block's as a note, in its printed form, so neither is lost. A failure that reaches `main` prints each note under it as `note: ...`. Notes are left out of `==`, hashing, printing and saving, and a failure with none costs one empty word. Built in the checker and the interpreter: `notes()`, `add_note(text)`, and a failed cleanup's failure as a note. Native code for notes isn't built yet, so a program that uses them runs in the interpreter, which says so.
+**An error carries notes, a `list[str]`, as Python's exceptions have since PEP 678.** Every `error Name:` type has `failure.add_note(text)`, which needs a `mut` place, and `failure.notes() -> list[str]`. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure is added to the block's as a note, in its printed form, so neither is lost. A failure that reaches `main` prints each note under it as `note: ...`. Notes are left out of `==`, hashing, printing and saving, and a failure with none costs one empty word. Built: `notes()`, `add_note(text)`, and a failed cleanup's failure as a note.
 *Why:* When cleanup fails after a failure, the first failure is usually the cause and the second is the clue, so both have to reach the reader. Notes as text need no new kind of type.
 
 **There's no `exit()`.** `fail` out of `main` prints the failure to stderr and exits with code 1, and `main` may return an `int` as the exit code. Nothing else can end the process. Built.
@@ -448,6 +448,15 @@ unit = units.get(unit_id) else fail ApiError.NotFound
 - Without `else`, it's a compile error whose fix adds one or a check.
 
 *Why:* Each spelling says what the writer meant. `?` means this line can leave the function. `else` means missing or failed is fine here, so use this instead, or leave, which the line says. `[]` means it must be there, so a missing value is a bug that stops with an error naming the step and the key.
+
+**`else as name:` binds the failure in that block,** as Python's `except E as e` does. It leaves as any `else:` block must. Chris decided this on 2026-11-08. Not built yet: today it's a syntax error, and a block that needs the failure uses `match`.
+```fennec
+# Planned: `else as` doesn't parse yet
+score = load_score(path) else as failure:
+    stdout.print(failure)
+    return
+```
+*Why:* A block that handles a failure usually wants to say which one, and `match` is a lot to write for that.
 
 **`where` rules run on every write to a guarded field,** and on defaults at compile time: `health = 100 where health >= 0`. A rule looks only at its own field. An invariant across several fields goes in a named constructor or a method. A broken rule stops the program in code, and a load that breaks one fails cleanly. Both are built, writes after construction included.
 *Why:* A rule that only holds at construction promises something it doesn't deliver. Checking one field keeps each write's cost obvious.
@@ -603,7 +612,7 @@ def write[T, W: Writer](x: T, ref out: W):
 ```
 - `fields(T)` gives a struct's fields, each with its name, type, value and annotations. `cases(T)` gives an enum's cases. `*Cs` is a list of types, as in `world.query(Position, Velocity)`. `if T is int:` is decided at compile time. Not built yet: today `fields` doesn't exist, and formats get their fields from the compiler.
 - Each set of types gets its own specialized copy, whatever the build.
-- There are no macros, no `derive` and no generating code from text. There's no I/O at compile time beyond `embed`, which reads a file that's part of the build, and no new types can be invented.
+- There are no macros, no `derive` and no generating code from text. There's no I/O at compile time beyond `embed_file` and `embed_folder`, which read files that are part of the build, and no new types can be invented.
 - New declarations, like a client struct from an API schema, come from separate programs that write `.fen` files.
 
 *Why:* It covers serialization, SQL rows, CLI parsing, ECS queries and test helpers, and the checker sees ordinary code. With no I/O, builds stay deterministic and cacheable, and a kit can't run anything on your machine while it compiles, which closes a real supply-chain hole.
@@ -826,13 +835,16 @@ There's no per-format override, like a `def json` method on a type; one `def ser
 *Why:* One mechanism covers printing and every data format, and it's how `std` types keep their internals hidden. The method is `str`, not `text`, because `text` would clash with common fields like `message.text`, while `str(x)` already means "make text of this".
 
 **`std.pack` is the default binary format,** written in plain Fennec.
-- v1 is flat positional binary: little-endian, small ints in fewer bytes (varints), and no names on the wire. Union members and enum cases are written by position.
+- v1 is flat positional binary: little-endian, small ints in fewer bytes (varints), and no names among the values. Union members and enum cases are written by position. The names go once, before the values, in the type's layout.
 - Every pack stream or file carries a fingerprint: a compile-time hash of the exact layout of every type reachable from what's sent, its types, fields and cases, in order. A mismatch is an error value, never misread bytes.
 - `where` ranges shrink values: a field that's `where hp >= 0 and hp <= 100` takes one byte.
 - Delta encoding is built in, and quantization is opt-in.
-- Data from an earlier version of a program loads into the new one: fields are matched by name, and a field the data doesn't have takes its default, as hot reload does. A field with no default that the data doesn't have fails the load. A lock file of past layouts comes later, adding to v1 without breaking it. Chris decided this on 2026-11-07, which settles how `std.pack` data evolves. Not built yet: today `std.pack` writes fields by position, with no names, so data packed from a different type is refused.
+- Data from an earlier version of a program loads into the new one: fields are matched by name, and a field the data doesn't have takes its default, as hot reload does. A field with no default that the data doesn't have fails the load. A lock file of past layouts comes later, adding to v1 without breaking it. Chris decided this on 2026-11-07, which settles how `std.pack` data evolves. Built: `dumps` writes the type's layout after its shape's number, every struct's field names and every enum's case names, with what each holds. `loads` into a type of the same shape passes over it and reads in order, as fast as before. Into another shape, it reads by the layout's names: a field that's gone is passed over, a new one takes its default, one with no default fails naming itself, a case or a union's member is found by name wherever it is now, and an `int` that's a `float` now reads as one. A field that's gone and holds a type with its own `def serialize` can't be passed over, since only that type knows where it ends, so that load fails saying so. Data from before layouts, `FPK1`, still loads into the same shape. A layout costs its names, about 100 bytes for a struct of a few fields with an enum in it, on each value `dumps` saves. So many values go through a `pack.Packer`, which writes each type's layout once, before its first value, and each value after with a byte for which layout it has and its length: a hundred small values take 638 bytes, where a hundred `dumps` take 5300. `pack.Unpacker.of(data)` reads them back a value at a time, in order or by name, and `pack.Unpacker.stream()` takes a stream a piece at a time with `feed`, giving each value once all of it has come. A `Packer`'s header can come again partway, starting a new set of layouts, so a file one version of a program wrote can be added to by the next, each value read by its own layout. Built.
+- The lock file is planned: `pack.lock` beside the program keeps every layout each saved type has had, by its shape's number, and only ever grows. The program carries it, so `loads` finds the layout of data written without one, and `dumps` leaves the layout out once it's locked, so saved values are back to their v1 size. `fennec check` then says, as it compiles, when a type can't load one of its locked layouts any more: a new field with no default, a field whose type changed past what loads, or a case taken out that saved data may hold. The typed message layer sends each layout once, when it connects, rather than with each message.
 
 *Why:* Saves and network messages are where games and servers feel size most, and the types already say most of what a compact format needs to know.
+
+**HTTP is read strictly, so nothing in front of a server can read a request differently.** A second `content-length`, `host` or `transfer-encoding`, a length that isn't only digits, a space before a header's `:`, a folded header, a version other than 1.0 or 1.1, and a control character in a method, target or header each get a 400. A response header that would break its line makes the response a 500, and the client refuses a line break or control character in a URL, a method or a header before it connects. Built, in `examples/http_strict.fen`. A bare line feed ending a line is still accepted, until reading a line can tell.
 
 **A protocol is a union of message types.** `net.connect` stays about bytes, and `conn.messages[GameMsg]()?` puts a typed message layer on any byte stream: TCP, later QUIC, the test fake or a file. It sends in `std.pack` and checks fingerprints when it starts.
 ```fennec
@@ -870,7 +882,7 @@ def play(ref conn: Connection, ref world: World) fails NetError:
 
 **`std.sql` is one standard database interface,** modeled on the ideas of Python's DB-API. Drivers are first-party kits, with Postgres and MySQL in pure Fennec.
 
-**`std.sqlite` is SQLite itself, compiled in, under `std.sql`.** `with sqlite.open(fs, path)? as db:` opens a file in WAL mode, `db.execute(t"...")` and `db.query[T](t"...")` take only templates, binding each value as a parameter, and `with db.transaction()? as tx:` commits at the block's end and rolls back in `lend else:`. Rows read into a `T` through the same `deserialize` JSON uses, a struct's fields by the columns' names, and a column that doesn't fit, or a field with no column, fails as `SqlError.Column` with its name. Unknown columns are refused, as unknown JSON keys are. A transaction takes a connection of its own and the database's one writer at its start (`begin immediate`), so `parallel` rounds can share one database. SQLite never waits on a lock itself: a query that finds the writer taken gives its blocking thread back, and its task pauses and tries again for up to 5 seconds, so waiting tasks never hold the threads the writer needs. In a test, each path is a database of the test's own, fresh for each test, kept in a temporary folder that's gone when the test ends, and `--real` uses the path itself. Both are WAL files, so a test sees what a program does: a query outside a transaction reads what was there before the transaction, while it's still going. `std.sql` holds `SqlValue`, `SqlError` and the `Sql` interface, and gives drivers `SqlRows`, which a driver fills with what its database sent back, and `sql.rows_as[T](rows)`, which reads each row into a `T`, so every driver maps rows to types the same way. `std.postgres` is being built on it, in Fennec over `std.net`, a part at a time, with no network of its own, so the same code runs against a socket or against bytes a test wrote. Built: Postgres's messages, signing in with SCRAM-SHA-256 (checked against RFC 7677's own exchange), and a query as Parse, Bind, Describe, Execute and Sync, with each value bound apart and rows read by column type. Next: connecting it through `std.net`. It lives in `std` until first-party kits have a home. Built, natively: `query` needs native code, as `std.pack` does.
+**`std.sqlite` is SQLite itself, compiled in, under `std.sql`.** `with sqlite.open(fs, path)? as db:` opens a file in WAL mode, `db.execute(t"...")` and `db.query[T](t"...")` take only templates, binding each value as a parameter, and `with db.transaction()? as tx:` commits at the block's end and rolls back in `lend else:`. Rows read into a `T` through the same `deserialize` JSON uses, a struct's fields by the columns' names, and a column that doesn't fit, or a field with no column, fails as `SqlError.Column` with its name. Unknown columns are refused, as unknown JSON keys are. A transaction takes a connection of its own and the database's one writer at its start (`begin immediate`), so `parallel` rounds can share one database. SQLite never waits on a lock itself: a query that finds the writer taken gives its blocking thread back, and its task pauses and tries again for up to 5 seconds, so waiting tasks never hold the threads the writer needs. In a test, each path is a database of the test's own, fresh for each test, kept in a temporary folder that's gone when the test ends, and `--real` uses the path itself. Both are WAL files, so a test sees what a program does: a query outside a transaction reads what was there before the transaction, while it's still going. `std.sql` holds `SqlValue`, `SqlError` and the `Sql` interface, and gives drivers `SqlRows`, which a driver fills with what its database sent back, and `sql.rows_as[T](rows)`, which reads each row into a `T`, so every driver maps rows to types the same way. `std.postgres` is built on it, in Fennec over `std.net`. Its messages have no network of their own, so the same code runs against a socket or against bytes a test wrote. Built: Postgres's messages, signing in with SCRAM-SHA-256 (checked against RFC 7677's own exchange), a query as Parse, Bind, Describe, Execute and Sync, with each value bound apart and rows read by column type, and `postgres.connect` as a `with` source lending a `PgDatabase` with `execute`, `query[T]` and `transaction`, tested against a real Postgres 17. Given a password, a server has to prove it knows it: one that lets the client in with no proof is refused, and one that asks for the password as it is never gets it, unless `allow_weak_sign_in=True` says that's how the server is set up. A commit the server answers with anything but `COMMIT` fails, since that's how it says a failure in the transaction rolled it all back. A connection runs one query at a time and a `lock` can't be held across the network, so one task uses a `PgDatabase` at a time, and tasks in `parallel` each connect for themselves until pools exist. A transaction runs on its database's connection. There's no TLS yet, since raw `net.connect` has none. The tests that need a server read `FENNEC_TEST_POSTGRES`, and with none set they check only that the driver builds and reports a refused connection; CI has a Postgres service for them. It lives in `std` until first-party kits have a home. Built, natively: `query` needs native code, as `std.pack` does.
 *Why:* SQLite is the most tested database there is, and porting it isn't realistic, so it's compiled in from its own C source behind a reviewed, safe wrapper whose `unsafe` stays its own, with its handles in a table as sockets' are. Hoard keeps its index in it.
 
 **`Tree` and `Graph` are in `std`,** both built on `Table`. `Tree` keeps parents and children in sync. `Graph[N, E]` holds nodes in a `Table[N]` and directed edges holding an `E`: `add_node` gives an `Id[N]`, `add_edge(from_id=, to_id=, edge=)` links two, `edges_from` and `edges_to` give a node's `Edge`s, and `topological_order()` and `shortest_path(from_id=, to_id=, cost=)` give `Id`s, or `None` for a cycle or no path. It's `Id`s throughout, with no references. Built, and measured against petgraph in `bench/realworld/graph`. This moves `Graph` up from the list of things cut from the first version.
@@ -911,7 +923,7 @@ def echo(conn: Connection) fails NetError:
     for line in conn.lines():
         conn.write(f"{line}\n")?
 ```
-- **TCP:** `net.connect(host, port)` gives a `Connection`, and `net.listen(port)` gives a server whose items are connections. Both are used in a `with` block, which closes them. A connection has `read(n)`, which gives up to `n` bytes and empty bytes at the end, `read_line()`, which gives `None` at the end, `lines()`, `write(data)`, taking `bytes` or `str`, and `peer`, the other side's address.
+- **TCP:** `net.connect(host, port)` gives a `Connection`, and `net.listen(port)` gives a server whose items are connections. `tls=True` on `connect`, or a `Certificate` as `tls=` on `listen`, makes them TLS, and `conn.start_tls(host)` upgrades a plain connection. Both are used in a `with` block, which closes them. A connection has `read(n)`, which gives up to `n` bytes and empty bytes at the end, `read_line()`, which gives `None` at the end, `lines()`, `write(data)`, taking `bytes` or `str`, and `peer`, the other side's address.
 - **UDP:** `net.udp(port=9001)` gives a socket whose items are `Packet(data, sender)`, and `send_to(data, address)` answers.
 - **A failing connection is handled in its own round,** as in `main` above, since a failure that passes up ends the loop. A crash, like overflow, ends only that task and closes its connection, and the server goes on. This is the containment recorded under Concurrency.
 - **Shared state** between connections is a `shared` value made in `main` and passed down, and one task hands work to another through a channel, as under Concurrency.
@@ -1045,7 +1057,7 @@ A big program that wants walls between its own parts splits into local kits in o
 **There's no top-level shared state.** A `shared` value is made in a function, usually `main`, and passed to whoever needs it, like a capability.
 *Why:* A function's signature then says what shared state it can touch, so nobody has to read its body to find out.
 
-**A `shared` value is reached only inside `lock`.** `lock x as s:` reads, and many tasks can read at once. `lock x as ref s:` changes it, one task at a time. Any way out of the block releases it. `fail` and `return` keep the changes made so far, and only a crash undoes them. There's no upgrading a read to a write. This replaces `with x as ref y:` for locking. Built, apart from a `lock` inside another, which is refused for now: take them together in one.
+**A `shared` value is reached only inside `lock`.** `lock x as s:` reads, and many tasks can read at once. `lock x as ref s:` changes it, one task at a time. Any way out of the block releases it. `return`, `break` and `continue` keep the changes made so far, and a crash undoes them, as a `fail` or `?` will, below. There's no upgrading a read to a write. This replaces `with x as ref y:` for locking. Built, apart from a `lock` inside another, which is refused for now: take them together in one.
 ```fennec
 def record(scores: shared Scores, name: str, points: int):
     lock scores as ref current:
@@ -1053,7 +1065,7 @@ def record(scores: shared Scores, name: str, points: int):
 ```
 *Why:* The block shows exactly how long the lock is held, and code can't touch the value without it.
 
-**Nothing waits inside a lock.** No channel receive, pool take, network call, `parallel`, or end of a `with launch`. Printing and local files are fine. This replaces the rule that I/O inside a lock only makes it slow: network calls now count as waiting.
+**Nothing waits inside a lock.** No channel send or receive, pool take, network call, `clock.sleep`, `parallel`, `lend`, or end of a `with launch`, traced across the whole program. Printing and local files are fine. This replaces the rule that I/O inside a lock only makes it slow: network calls now count as waiting.
 *Why:* A lock held while waiting on another task, or on a stalled client, can freeze every task, so the rule is to wait first, then lock.
 
 **Lock deadlocks can't compile.** Lock order is checked across the whole program, keyed by where each `shared` value is made. Values the compiler can't tell apart, like two accounts from one dict, are locked together in one `lock` statement, never one inside the other, and locking the same value twice there fails rather than stopping the program. Interfaces and function values are traced across the whole program, with no annotations, and an error names the implementation that takes the lock.
@@ -1062,7 +1074,7 @@ def record(scores: shared Scores, name: str, points: int):
 **A `shared` value holds plain values and other `shared` values, never something borrowed from a `with`.** It can't hold one of its own type or form a cycle of types, directly or through other types and channels, so trees use `Table` and `Id`s. It can't store a function that captures a `shared` value. It's freed when its last holder lets go, with no cleanup code.
 *Why:* With no cycles nothing can leak, and with no resources inside, freeing it is only giving memory back.
 
-**`with launch(...)` runs a task until its block ends.** The arrow is the call you'd write anyway, and `launch`'s own options, `stop_after=` and `inbox_size=`, sit outside it. A parameter typed `Inbox[T]` makes `launch` create the channel, giving the task the receiving end and you the sending end. A task with no messages takes none: `with launch(() => autosave(rooms, fs, clock))?:`. `launch` is only ever written as `with launch(...)`, and the `?` on its line covers the task's failure and `Crashed`. This replaces `with launch(physics_loop) as physics:`, where the first parameter was the inbox. Built natively: the task runs on the runtime's threads, with what it captured copied for it, and its failure or `Crashed` passes up where the block ends. The interpreter refuses it.
+**`with launch(...)` runs a task until its block ends.** The arrow is the call you'd write anyway, and `launch`'s own options, `stop_after=` and `inbox_size=`, sit outside it. A parameter typed `Inbox[T]` makes `launch` create the channel, giving the task the receiving end and you the sending end. A task with no messages takes none: `with launch(() => autosave(rooms, fs, clock))?:`. `launch` is only ever written as `with launch(...)`, and the `?` on its line covers the task's failure and `Crashed`. This replaces `with launch(physics_loop) as physics:`, where the first parameter was the inbox. Built natively: the task runs on the runtime's threads, with what it captured copied for it, and its failure or `Crashed` passes up where the block ends.
 ```fennec
 with launch((inbox) => audio(inbox, speakers), stop_after=5s)? as sounds:
     sounds.send(.Play(name="jump", volume=0.8))?
@@ -1081,11 +1093,20 @@ with launch((inbox) => audio(inbox, speakers), stop_after=5s)? as sounds:
 **A task's failure comes out where its `with launch` ends, and a crash comes out as `Crashed`.** A crash ends only its own task, and the HTTP server answers that request with a 500.
 *Why:* A parent, like a pool's keeper, has to see a child die to replace it, and one bad request shouldn't stop a server.
 
-**A crash inside `lock x as ref s:` rolls back the block's writes.** The compiler saves the old value before each write, and on a crash the runtime puts them back in reverse order, then releases the lock. Only crashes roll back, so `fail` and `return` keep their changes. The compiler skips the saves where it proves the block can't crash, and values taken out are freed when the block ends. There's no new syntax, no new failure type and no poisoned lock. This replaces the rule that a crash while holding a `ref` lock stops the program. Built.
+**A crash inside `lock x as ref s:` rolls back the block's writes.** The compiler saves the old value before each write, and on a crash the runtime puts them back in reverse order, then releases the lock. Today only crashes roll back. A `fail` or `?` will too, below. The compiler skips the saves where it proves the block can't crash, and values taken out are freed when the block ends. There's no new syntax, no new failure type and no poisoned lock. This replaces the rule that a crash while holding a `ref` lock stops the program. Built.
 *Why:* Nobody ever sees a half-change, and one crashing task no longer takes everything else down with it.
 The build lanes make this one general piece that undoes the writes in a block. Other uses wait until a real program asks for them, like a failing function leaving its `ref` arguments unchanged, or undo in a game.
 
-**Channels are bounded.** `send` waits when one is full, and both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. Sending to a closed channel fails at once. A channel you set up yourself is `with Channel[Job](size=64) as jobs:`. Built natively as `with Channel[Job].open(size=64) as jobs:`, in `std.concurrent`, written in Fennec over channel intrinsics. Not built yet: the shorter form.
+**A `fail` or `?` leaving `lock ... as ref` rolls back the block's changes, as a crash does,** so a write lock either finishes or has no effect, as a database transaction does. `return`, `break` and `continue` keep the changes.
+- Rollback covers one `lock` statement, including all the values locked together in it. An inner lock that already finished stays committed, so values that must change together are locked in one statement.
+- Local variables and output aren't rolled back.
+- To keep a change and still fail, decide inside the lock and `fail` after it.
+- A lint may warn when a `fail` follows a write in the same block.
+- Chris decided this on 2026-11-08. Not built yet: today a `fail` or `?` keeps the changes made so far, and only a crash undoes them. This replaces the rule that only crashes roll back.
+
+*Why:* A failure halfway through a write would otherwise leave a half-change for the next reader, and finishing or having no effect is the rule people already know from database transactions.
+
+**Channels are bounded.** `send` waits when one is full, and both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. Sending to a closed channel fails at once. A channel you set up yourself opens with a plain function in `std.concurrent`, `with channel[Job](size=64) as jobs:`, as Python's `open()` is, not by calling the type. Chris decided this on 2026-11-08. Built natively, written in Fennec over channel intrinsics. `Channel`'s constructor is private, so `channel()` is the only way to make one.
 *Why:* A bounded buffer pushes back instead of growing without limit, and saying why a receive stopped lets the task decide what to do.
 
 **Dev builds stop with a report when tasks are waiting only on each other.**
@@ -1133,7 +1154,7 @@ with net.listen(8080) as server:
 - Each iteration can change only its own element. It can read anything around it, but can't change outer `mut` names.
 - A body may use capabilities and `shared` values. Results are deterministic when it uses neither. This replaces the earlier rule that a body can't use capabilities.
 - Work over data runs on a work-stealing thread pool, and reading outer values changes no reference counts.
-- The interpreter runs the loop in order, which is a correct implementation of a deterministic body, and the playground needs no threads.
+- The interpreter runs the loop in order, which is a correct implementation of a deterministic body.
 
 *Why:* One word covers data across cores and connections from a server, and everything in it ends when its loop ends.
 
@@ -1204,15 +1225,20 @@ SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]    # one full turn
 
 *Why:* Purity is already known from capabilities, so the compiler can tell what to evaluate without the programmer marking anything. It covers what other systems languages need `const fn` or macros for, and Fennec has no macros.
 
-**`embed("path")` gives a file's bytes, baked in at build time.**
+**`embed_file("path")` gives a file's bytes, and `embed_folder("path")` a folder's, baked in at build time.**
 ```fennec
-MAP = embed("assets/level1.bin")
+# Planned: today the first is `embed("assets/level1.bin")`, and the second doesn't exist
+MAP = embed_file("assets/level1.bin")
+SHADERS = embed_folder("assets/shaders")
 ```
-- The path is relative to the source file, and a missing file is a compile error.
-- No `Fs` capability is needed, since the file is an input to the build, not something the program reads when it runs.
-- A Den package may embed only files inside its own folder.
+- `embed_file` renames today's `embed`, and gives `bytes`. `embed_folder` gives a read-only map from relative path, always written with `/`, to `bytes`, in sorted path order.
+- Both are views into the program's read-only data: no copy, nothing loaded at startup, and readable whole or in chunks, since the OS pages it in on demand.
+- The path is relative to the source file. A missing path, or anything outside the kit, symlinks included, is a compile error.
+- `embed_folder` leaves out hidden files, and nothing is compressed.
+- No `Fs` capability is needed, since the files are inputs to the build, tracked by their content. It's the same in development and release builds.
+- Chris locked this on 2026-11-08. Not built yet: `embed_file` and `embed_folder` don't exist. Today's `embed("path")` gives a file's bytes, and refuses a missing path and, in a kit, anything outside it, a symlink included. This replaces `embed("path")`.
 
-*Why:* Games ship levels, shaders and fonts inside the binary. This is what other systems languages use an `include_bytes!` macro for, and here it's one function.
+*Why:* Games ship levels, shaders and fonts inside the binary. This is what other systems languages use an `include_bytes!` macro for. There are two names because a single `embed` would have a type that depends on what's on disk.
 
 **Durations have literals:** `30s`, `1.5s`, `200ms`, `16ms`, `5min`, `2h`. The units are exactly `ns`, `us`, `ms`, `s`, `min` and `h`. Minutes are `min`, never `m`, so a duration can't be read as meters. Durations are the only unit literals: there's no `kb`, `px` or `deg`.
 ```fennec
@@ -1329,15 +1355,20 @@ match tok:
 *Why:* Installing a version is copying one file, the way Zig works. Nothing on the machine can be missing or the wrong version.
 
 **A tiny, stable launcher is what you install, and it needs no Homebrew.** It reads the version a kit asks for, `fennec = "0.4.2"` in `kit.toml`, with no separate version file. If that version isn't there, it fetches its binary into `~/.fennec/toolchains/0.4.2/` on first use, verifies its checksum and signature, records its hash in `kit.lock`, and hands off to it.
-- Only the launcher updates itself, and its updates are signed with two keys.
+- Only the launcher updates itself, and an update needs 2 of the 3 release keys, as below.
 - A pinned compiler never changes by itself, and nothing fetches "latest" without being asked.
-- `fennec toolchain list`, `install`, `remove` and `default` manage toolchains.
-- Single-file scripts outside a kit use the default toolchain.
+- `fennec toolchain list`, `install` and `remove` manage toolchains.
+- A kit's version is `fennec = "0.4.2"` at the top of its `kit.toml`, found by walking up from the current folder.
+- A script outside a kit runs with `--version 0.4.2`, or else the version `fennec default 0.4.2` set. With neither, the command stops and says how to set one. In a kit, `--version` is an error, since `kit.toml` says.
+- `fennec +0.4.2 build` runs that version anywhere, this once, and changes no pin.
 - `fennec doctor` reports how much disk the toolchains and the store use, and offers to remove versions no kit uses anymore.
 - A release's archives are the same bytes however often and wherever they're built, so anyone can build one again from its tag and check it against the signed manifest, and CI builds each platform twice and compares them.
 - Built, as `fennec-launcher` for now: running a kit's pinned toolchain, `kit.lock` holding its signed manifest's hash, fetching only what's missing, `--offline`, `fennec update`, and `fennec toolchain`. Releases built the same twice is built too, on macOS, Linux and Windows. Not built yet: the release keys, which Chris makes (`docs/releases.md`), so nothing verifies today; the launcher updating itself; and `fennec doctor`.
 
 *Why:* Every project gets its own Fennec version without anyone thinking about it, and teammates, CI and AI agents all build with exactly the same toolchain. It's also what makes lints pinned to a kit's Fennec version work. Keeping the part that updates tiny means it rarely has to change, and two keys mean one stolen key can't push an update.
+
+**Releases are signed by Chris on hardware keys, and CI never signs.** The release key is Ed25519 and lives on a YubiKey, so it never leaves the device and signs only when touched. CI builds a release and writes its manifest, and Chris signs the manifest offline. A toolchain needs one signature. The launcher's own update needs 2 of 3 keys, from different keys: two YubiKeys and a paper backup kept offline. Each kind is signed in its own namespace, so a toolchain's signature never counts for a launcher. Chris locked this on 2026-11-08. Not built yet: the keys are made when releases go public, as `docs/releases.md` describes. The checks are in `fennec-dist` today, with no keys built in, so nothing verifies.
+*Why:* A stolen CI token can't ship a release, since CI holds no key. The launcher checks everything else, so one lost or stolen key can't replace it.
 
 **Building Fennec itself stays fast.** Only the release packaging of the toolchain links LLVM in, through a build feature CI turns on for each target. Everyday builds of the compiler call a pinned, prebuilt `llc` as a separate program instead.
 *Why:* Linking LLVM into every build of the compiler would make working on Fennec as slow as the builds Fennec exists to avoid.
@@ -1527,7 +1558,7 @@ tools = { path = "../tools" }
 ```
 - A kit with git or path dependencies can't be published to the Den, so they never spread into other people's trees.
 - Capabilities are enforced as for any other code.
-- Built: `kit.toml` reads both, with `folder` for a kit inside a repository, like the first-party kits in this repository's `kits/`. `fennec update` fetches a kit from git into `~/.fennec/kits/<hash>` without checking anything out, and pins it in `kit.lock` by the hash of its `kit.toml` and `src`. A kit from a path isn't pinned, and a kit from git can't name one. Importing from them isn't built yet.
+- Built: `kit.toml` reads both, with `folder` for a kit inside a repository, like the first-party kits in this repository's `kits/`. `fennec update` fetches a kit from git into `~/.fennec/kits/<hash>` without checking anything out, and pins it in `kit.lock` by the hash of its `kit.toml` and `src`. A kit from a path isn't pinned, and a kit from git can't name one. Importing from them is built too: `import physics` reaches its `src/lib.fen`, each kit keeps its own names, and another kit reaches only what's marked `export`.
 
 *Why:* Go's convenience for private code, while public code stays on the checked Den. An app may already use C in its own code, and a game engine split into local kits (`../engine`) needs C for Metal and Vulkan; the Den fence still stops that C from spreading. Capabilities mean even unreviewed code can't touch files or the network unless it's handed `Fs` or `Net`.
 
@@ -1536,7 +1567,7 @@ tools = { path = "../tools" }
 **There's one backend: LLVM, with per-function `-O3` and a function-level cache.** `fennec run` makes real binaries in the store. Whole-program work happens only in `--release`. There's no tiering.
 *Why:* What people run is what ships, so a first benchmark shows real speed. The cache is what makes it fast to edit, and one backend is less to maintain and keep in agreement.
 
-**LLVM is the default backend.** `fennec run` and `fennec test` use the cached LLVM build, with a one-line note and then the JIT where LLVM can't build the program, and the interpreter for what the JIT can't compile. Once the interpreter is out, refusing to build and building natively are the only two outcomes. Removing Cranelift also requires Windows linking. Since every program in the repository built natively, `fennec build` always makes a native program through LLVM, with no way back to the JIT's compiler. This replaces the rule that Cranelift is removed when LLVM wins across the benchmark suite, edits stay well under a second, and CI's rebuild comparison stays clean.
+**LLVM is the default backend.** `fennec run` and `fennec test` use the cached LLVM build, and building natively and refusing to build, with the reason, are the only two outcomes. Built. Since every program in the repository built natively, `fennec build` always makes a native program through LLVM, with no way back to the JIT's compiler. This replaces the rule that Cranelift is removed when LLVM wins across the benchmark suite, edits stay well under a second, and CI's rebuild comparison stays clean.
 
 **Fennec has no REPL.** Running a small file is already quick, and one can come back as a pure addition if people ask.
 *Why:* This is a compiled language written mostly by AI, and it needs to be readable, fast to build and fast to run.
@@ -1546,12 +1577,12 @@ tools = { path = "../tools" }
 - **The test fake network** moves into the runtime.
 - **Constants at compile time** are worked out by a small evaluator inside the compiler.
 - **The fuzzing reference** becomes pinned outputs and the native twins.
-- **The website playground** is compiled on a server with a cache that returns WebAssembly, the first small piece of the Den's builder.
+- **The website playground** is removed for now, and returns once the self-hosted compiler can compile in the browser. Until then the site shows examples with the output they really print. Chris decided this on 2026-11-08. Built: the playground page, its links and its build are gone. This replaces compiling the playground on a server with a cache that returns WebAssembly.
 
-The commit before removal gets a tag, so the old engines can still be found. Built so far: the JIT is removed, after the tag `before-jit-interpreter-removal`; native programs carry no interpreter; the test fakes, the network's included, are the runtime's; constants are worked out by the compiler's own evaluator; and fuzzing's reference is pinned outputs and native builds. Not built yet: the playground on a server, and taking the interpreter out of `fennec` itself, where it still stands in for `fennec run` and runs `fennec test`. This replaces the rule that the interpreter keeps constants, fuzzing and the playground for now.
+The commit before removal gets a tag, so the old engines can still be found. Built so far: the JIT is removed, after the tag `before-jit-interpreter-removal`; native programs carry no interpreter; the test fakes, the network's included, are the runtime's; constants are worked out by the compiler's own evaluator; fuzzing's reference is pinned outputs and native builds; and `fennec` runs nothing on the interpreter, so `run --interp` and the fallbacks are gone. Not built yet: deleting the interpreter's code. This replaces the rule that the interpreter keeps constants, fuzzing and the playground for now.
 *Why:* One engine is what ships and what's tested, so the interpreter's double work and its differences from native code go away.
 
-**Until then, every example that builds natively must give the same output as the interpreter.** An example that's refused goes on a tracked list, which must reach zero.
+**Until then, every example that builds natively must give the same output as the interpreter.** An example that's refused goes on a tracked list, which must reach zero. Tests now hold native code to the interpreter's pinned answers, since there's no live interpreter run to compare with.
 
 **While it remained, the JIT aimed for 80% of the speed of the benchmark suite's twins to start, then 85%, and no further.** The JIT is removed now, so this no longer applies. Closing the rest is the release build's job. Optimizations that would slow the JIT's compiling to win the last few percent aren't made.
 *Why:* Development builds are for changing code and seeing it run at once. The 110% target applies to release builds.
@@ -1572,8 +1603,12 @@ Every build and the language server share one build engine and store, described 
 **Debug info is planned,** so a debugger can step through Fennec code, a stack trace is readable, and a crash maps back to its source line. Not built yet: today no DWARF or stepping information is written. This replaces the rule that builds carry no debug info.
 *Why:* Games and native code need a debugger, even when tests and replay do most of the work.
 
-**Hot reload is planned,** for changing code while a game runs. Changed functions are swapped in between frames, and the state the main loop owns stays as it was. When a struct's fields change, the state is saved with `std.pack`, the code is swapped, and the state is loaded back into the new types, with fields matched by name and new fields taking their defaults. Not built yet. This replaces the rule that there's no hot reload.
-*Why:* A game's state is plain data its main loop owns, with nothing pointing into code, so swapping code is unusually clean, and the function-level cache already makes each change small.
+**Hot reload is planned, for after Hoard's core works, and it's all or nothing.** It's for changing code while a game or a server runs.
+- Changed functions are swapped in only at a safe point: the top of a loop, or between requests. The state the main loop owns stays as it was.
+- Before anything changes, the live data is checked against the new code: fields matched by name, new fields taking their defaults, and every `where` rule run again. When a struct's fields change, the state is saved with `std.pack` and loaded back into the new types.
+- If every check passes, the reload applies completely. If any fails, it's refused with a message saying why, and the old code keeps running. A reload is never half-applied.
+- Chris decided this on 2026-11-08. Not built yet. This replaces the rule that there's no hot reload, and the plan that swapped code between frames without checking first.
+*Why:* A game's state is plain data its main loop owns, with nothing pointing into code, so swapping code is unusually clean, and the function-level cache already makes each change small. Checking first means a reload that can't work costs nothing, and a half-applied one would leave data the new code can't trust.
 
 **The unit of work is the function, keyed by its content.** A function's key covers its typed IR, the signatures of what it calls, the bodies of anything inlined into it, and the compiler version, target and flags. A caller depends on a callee's body only if it inlined that callee. Summaries let a change that leaves a signature alone skip the callers.
 
@@ -1676,7 +1711,7 @@ def main(stdout: Stdout, gpu: Gpu):
 - **A port is benchmarked against the original:** CI fails if it's more than 3% slower.
 - **Only permissively licensed code is ported:** MIT, BSD, Apache, zlib or public domain. Anything under the GPL or LGPL is written from scratch without reading the original.
 
-*Why:* Ported code is memory-safe, bound by capabilities, and runs in wasm and the playground. A C binding is none of those.
+*Why:* Ported code is memory-safe, bound by capabilities, and runs in wasm. A C binding is none of those.
 
 **A C callback reaches Fennec through an `Id`.** C never holds a closure or a place.
 *Why:* C can call back at any time, so anything it keeps has to be safe to keep, and a stale `Id` finds nothing.
@@ -1698,7 +1733,7 @@ This replaces the earlier plan for C in Fennec code: `extern "C":` blocks, `unsa
 **Capabilities are the sandbox's policy in every engine.** Sandboxed code can do only what the capabilities passed to its `main` allow, and it can't call C. A tool can show what a snippet asks for before running it: "this snippet wants `Net` and read access to `data/`".
 *Why:* That makes Fennec a good language for AI agents to write tool code in: typed, with every power declared up front.
 
-**Until it's removed, the interpreter runs untrusted code for those tools, with limits.** After that, the playground, Den tests and agents' snippets are all compiled to WebAssembly by the server build and run in Wasmtime, with fuel and memory limits and no files or network unless granted. Not built yet. It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs the playground and AI-written snippets, where starting instantly and being easy to sandbox matter more than speed. In the browser it runs as wasm, so the browser sandboxes it again.
+**Until it's removed, the interpreter runs untrusted code for those tools, with limits.** After that, Den tests and agents' snippets are compiled to WebAssembly by the server build and run in Wasmtime, with fuel and memory limits and no files or network unless granted. Not built yet. It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs AI-written snippets, where starting instantly and being easy to sandbox matter more than speed.
 
 **Untrusted code that needs native speed is compiled to WebAssembly and run in Wasmtime.** The development and release backends can both target wasm. Wasmtime already provides fuel, interruption and memory limits.
 *Why:* Wasmtime's sandbox is heavily hardened. Making our own JIT a security boundary would mean any compiler bug is an escape.

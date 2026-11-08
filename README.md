@@ -96,20 +96,19 @@ Every program in [`examples/`](examples) is a test: it must print exactly its `.
 - `crates/check`: the type checker, which also infers every function's signature.
 - `crates/ir`: the typed intermediate representation the backends compile.
 - `crates/llvm`: the LLVM backend, behind `fennec run` and `fennec build`.
-- `crates/interp`: the interpreter, for what LLVM can't build yet, and for the website's playground.
+- `crates/interp`: the runtime's code, which `crates/runtime` builds into a library.
 - `crates/runtime` and `crates/layout`: the runtime library compiled programs link against, and how values are laid out in memory.
 - `crates/build`: content hashes, so a run rebuilds and retests only what changed.
 - `crates/kit`: kits: `kit.toml`, and loading a kit's files as one program.
 - `crates/fmt`, `crates/lint` and `crates/lsp`: the formatter, the linter and the language server.
 - `crates/fennec`: the `fennec` command.
 - `crates/bench` and `crates/count`: the benchmark suite, and counting the instructions a program runs.
-- `crates/wasm`: the interpreter as WebAssembly, for the website's [playground](https://fennec-lang.dev/playground/).
 - `crates/blake3`, `crates/re` and `crates/parked`: hashing, regular expressions and parked network tasks for the standard library.
 - `crates/reference` and `crates/fuzz`: the language reference, written from the examples, and fuzzing.
 - `examples/`: example programs, which double as the test suite.
 - `site/`: the website, built with [Astro](https://astro.build) and deployed to Cloudflare on every push to `main`.
 
-To work on the site, from the repository root (Node's version is pinned in `.node-version` for fnm; `dev` and `build` also compile the playground's WebAssembly):
+To work on the site, from the repository root (Node's version is pinned in `.node-version` for fnm; `dev` and `build` also write the language page from the examples, with cargo):
 
 ```bash
 npm --prefix site install

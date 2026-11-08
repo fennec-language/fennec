@@ -1,0 +1,23 @@
+from std.concurrent import Inbox, Closed, Crashed, Timeout
+
+def deep(n: int, text: str) -> int:
+    if n == 0:
+        return text.len()
+    more = f"{n}"
+    below = deep(n - 1, more)
+    return below + more.len() - more.len() + 1
+
+def task(name: str, inbox: Inbox[int], stdout: Stdout):
+    for got in inbox:
+        stdout.print(name, got, deep(50, "start"))
+
+def main(clock: Clock, stdout: Stdout) fails Closed | Crashed | Timeout:
+    with launch((inbox) => task("first", inbox, stdout), inbox_size=4)? as a:
+        clock.sleep(30ms)
+        with launch((inbox) => task("second", inbox, stdout), inbox_size=4)? as b:
+            clock.sleep(30ms)
+            a.send(1)?
+            b.send(2)?
+            a.send(3)?
+            b.send(4)?
+    stdout.print("done")

@@ -162,19 +162,19 @@ impl<'m> Inputs<'m> {
         for (at, case) in def.cases.iter().enumerate() {
             let (lines, made) = self.fields(&case.fields, "        ")?;
             let made = if case.fields.is_empty() {
-                format!("{name}.{}", case.name)
+                format!(".{}", case.name)
             } else {
-                format!("{name}.{}({made})", case.name)
+                format!(".{}({made})", case.name)
             };
             let _ = write!(body, "    if kind == {at}:\n{lines}        return {made}\n");
         }
         // Never reached, but a function has to give back a value at its end.
         let first = def.cases.first()?;
         if first.fields.is_empty() {
-            let _ = writeln!(body, "    {name}.{}", first.name);
+            let _ = writeln!(body, "    .{}", first.name);
         } else {
             let (lines, made) = self.fields(&first.fields, "    ")?;
-            let _ = writeln!(body, "{lines}    {name}.{}({made})", first.name);
+            let _ = writeln!(body, "{lines}    .{}({made})", first.name);
         }
         Some(body)
     }
@@ -198,72 +198,10 @@ impl<'m> Inputs<'m> {
 
 #[cfg(test)]
 mod tests {
-    use std::fmt::Write as _;
-
     use super::Inputs;
 
-    const TYPES: &str = "\
-struct Point:
-    x: int
-    y: float
-    name: str
-    near: bool
-    label = \"none\"
-
-enum Shape:
-    Circle(radius: int)
-    Named(first: str, second: float?)
-    Empty
-
-struct Tree:
-    value: int
-    next: Tree?
-
-";
-
-    /// The functions for a test's inputs, and a program that prints what they make.
-    fn program_for(source: &str, name: &str) -> String {
-        let module = fennec_syntax::parse(source).unwrap();
-        let test = module.items.iter().find_map(|item| match item {
-            fennec_syntax::Item::Test(test) => Some(test),
-            _ => None,
-        });
-        let test = test.unwrap();
-        let mut inputs = Inputs::new(&module);
-        let mut body = format!(
-            "def main(stdout: Stdout):\n    mut state = {}\n    for _ in range({}):\n",
-            fennec_interp::property_seed(name),
-            fennec_interp::PROPERTY_CASES
-        );
-        for input in &test.inputs {
-            let function = inputs.function_for(input.ty.as_ref().unwrap()).unwrap();
-            let _ = writeln!(body, "        stdout.print({function}(ref state, 0))");
-        }
-        format!("{TYPES}{}{body}", inputs.source())
-    }
-
     #[test]
-    fn what_it_writes_makes_what_the_interpreter_makes() {
-        let name = "all";
-        let source = format!(
-            "{TYPES}test \"{name}\" for a: int, b: float, c: bool, d: str, e: list[int], f: (int, str), g: Point, h: Shape, i: list[list[str]], j: int?, k: Tree:\n    pass\n"
-        );
-        let module = fennec_syntax::parse(&source).unwrap();
-        let mut sink = std::io::sink();
-        let mut interp = fennec_interp::Interp::new(&mut sink).unwrap();
-        interp.load(&module).unwrap();
-        let wanted = interp.property_inputs(name).unwrap();
-        assert_eq!(wanted.len(), 11 * fennec_interp::PROPERTY_CASES);
-
-        let written = fennec_syntax::parse(&program_for(&source, name)).unwrap();
-        let mut printed = Vec::new();
-        fennec_interp::run(&written, &mut printed).unwrap();
-        let printed = String::from_utf8(printed).unwrap();
-        assert_eq!(printed.lines().collect::<Vec<_>>(), wanted);
-    }
-
-    #[test]
-    fn it_leaves_what_only_the_interpreter_can_make() {
+    fn it_leaves_what_it_cannot_make() {
         let source = "\
 struct Ruled:
     x: int where x > 0

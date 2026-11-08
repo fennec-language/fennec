@@ -60,7 +60,7 @@ fn fail(message: String) -> i64 {
 /// `parallel` call's ranges. Gives back 0, 1 when the server couldn't be served, and 2 when a round
 /// failed, its failure's value then given by `fennec_net_serve_failure`.
 pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
-    let Some(listener) = crate::stdlib::net::take_listener(server) else {
+    let Some((listener, tls)) = crate::stdlib::net::take_listener(server) else {
         return fail("this server isn't open to serve".to_owned());
     };
     if let Err(error) = listener.set_nonblocking(true) {

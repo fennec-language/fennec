@@ -1,0 +1,30 @@
+# Signing in to Postgres with SCRAM-SHA-256: the client proves it knows the password, and the
+# server proves it knows it too, and the password never crosses the network. This is RFC 7677's
+# own exchange, so the client's proof has to come out exactly as the RFC says.
+from std.crypto import Secret
+from std.postgres import PgScram
+
+def main(stdout: Stdout):
+    mut scram = PgScram.started(Secret.of("pencil"), nonce="rOprNGfwEbeRWgbNEkqO", user="user")
+    stdout.print(scram.first().decode() else "")
+    server_first = "r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096"
+    proof = scram.answer(server_first.encode()) else bytes([])
+    stdout.print(proof.decode() else "")
+    # The server's signature, which only a server that knows the password could make.
+    for server_last in ["v=6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=", "v=AAAA"]:
+        match scram.check(server_last.encode()):
+            case Ok(_):
+                stdout.print("the server knows it")
+            case Err(err):
+                stdout.print(err.message())
+    # A server that doesn't extend our nonce, or asks for too few rounds, is refused.
+    mut again = PgScram.started(Secret.of("pencil"), nonce="abc")
+    for weak in [
+        "r=xyz,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096",
+        "r=abcdef,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=10",
+    ]:
+        match again.answer(weak.encode()):
+            case Ok(_):
+                stdout.print("wrongly answered")
+            case Err(err):
+                stdout.print(err.message())

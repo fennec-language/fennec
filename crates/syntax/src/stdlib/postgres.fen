@@ -10,6 +10,8 @@
 ## message = reader.next()?
 ## ```
 
+from std import base64, crypto
+from std.crypto import Secret
 from std.intrinsics import bytes_text
 from std.sql import SqlError
 
@@ -263,3 +265,95 @@ struct PgBody:
 def int32_at(data: bytes, at: int) -> int:
     n = (data[at] << 24) | (data[at + 1] << 16) | (data[at + 2] << 8) | data[at + 3]
     n - 4294967296 if n >= 2147483648 else n
+
+## Signing in with SCRAM-SHA-256 (RFC 5802 and 7677), with no network of its own: `first` gives
+## the client's first message, `answer` reads the server's first and gives the client's proof that
+## it knows the password, and `check` reads the server's last, which proves the server knows it
+## too. The password never crosses the network.
+export struct PgScram:
+    _password: Secret[str]
+    _first_bare: str
+    _nonce: str
+    _server_key = bytes([])
+    _signed = ""
+
+    ## Starts signing in with the password `secret`, and `nonce`, text the server never saw before,
+    ## which a driver makes from 18 or more bytes of `Entropy`. Postgres takes the user from the
+    ## startup message, so `user` is usually left empty.
+    def started(secret: Secret[str], nonce: str, user = "") -> PgScram:
+        PgScram(_password=secret, _first_bare=f"n={user},r={nonce}", _nonce=nonce)
+
+    ## The client's first message, with no channel binding.
+    def first(self) -> bytes:
+        f"n,,{self._first_bare}".encode()
+
+    ## The client's last message, answering the server's first: the server's nonce, which has to
+    ## start with ours, and the proof.
+    def answer(ref self, server_first: bytes) -> bytes fails SqlError:
+        said = server_first.decode() else fail SqlError.Failed(
+            reason="the server's SCRAM message isn't text",
+        )
+        mut nonce = ""
+        mut salt = bytes([])
+        mut rounds = 0
+        for part in said.split(","):
+            if part.startswith("r="):
+                nonce = part[2:part.len()]
+            if part.startswith("s="):
+                salt = base64.decode(part[2:part.len()]) else fail SqlError.Failed(
+                    reason="the server's SCRAM salt isn't base64",
+                )
+            if part.startswith("i="):
+                rounds = int(part[2:part.len()]) else fail SqlError.Failed(
+                    reason="the server's SCRAM rounds aren't a number",
+                )
+        if not nonce.startswith(self._nonce) or nonce == self._nonce:
+            fail SqlError.Failed(reason="the server's SCRAM nonce doesn't extend ours")
+        if salt.len() == 0 or rounds < 4096:
+            fail SqlError.Failed(reason="the server's SCRAM salt or rounds are too weak")
+        salted = salted_password(self._password.expose_secret().encode(), salt, rounds)
+        client_key = mac(salted, "Client Key".encode())
+        stored = unhex(crypto.sha256(client_key))
+        unproved = f"c=biws,r={nonce}"
+        signed = f"{self._first_bare},{said},{unproved}"
+        signature = mac(stored, signed.encode())
+        proof = bytes([client_key[at] ^ signature[at] for at in range(client_key.len())])
+        self._server_key = mac(salted, "Server Key".encode())
+        self._signed = signed
+        f"{unproved},p={base64.encode(proof)}".encode()
+
+    ## Checks the server's last message: its signature, which only a server that knows the
+    ## password could make.
+    def check(self, server_final: bytes) fails SqlError:
+        said = server_final.decode() else ""
+        wanted = base64.encode(mac(self._server_key, self._signed.encode()))
+        if not crypto.equal(said, f"v={wanted}"):
+            fail SqlError.Failed(reason="the server couldn't prove it knows the password")
+
+## PBKDF2 with HMAC-SHA-256, for one 32-byte block: RFC 5802's `Hi`.
+def salted_password(key: bytes, salt: bytes, rounds: int) -> bytes:
+    mut round = mac(key, salt + bytes([0, 0, 0, 1]))
+    mut total = list[int]()
+    for each in round:
+        total.append(each)
+    for _ in range(rounds - 1):
+        round = mac(key, round)
+        for at in range(total.len()):
+            total[at] = total[at] ^ round[at]
+    bytes(total)
+
+## HMAC-SHA-256 of `data` under `key`, as bytes.
+def mac(key: bytes, data: bytes) -> bytes:
+    unhex(crypto.hmac_sha256(key, data))
+
+## Bytes from the lowercase hex `std.crypto`'s hashes give.
+def unhex(hex: str) -> bytes:
+    digits = hex.encode()
+    mut out = list[int]()
+    for at in range(digits.len() // 2):
+        out.append(nibble(digits[2 * at]) * 16 + nibble(digits[2 * at + 1]))
+    bytes(out)
+
+def nibble(digit: int) -> int:
+    # `0` to `9`, then `a` to `f`.
+    digit - 48 if digit < 97 else digit - 87

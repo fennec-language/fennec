@@ -563,7 +563,7 @@ impl Lowering<'_> {
         span: Span,
     ) -> Lowered<(String, Vec<Operand>, Option<Lock>)> {
         let (key, object) = match &callee.kind {
-            _ if let Some(found) = self.tuple_saving(callee) => found,
+            _ if let Some(found) = self.tuple_saved(callee) => found?,
             _ if self.std_member(callee).is_some() => (self.std_member(callee).unwrap_or_default(), None),
             ExprKind::Name(name) if self.lookup(name).is_none() => (name.clone(), None),
             ExprKind::Attr { object, name, optional: false } => {

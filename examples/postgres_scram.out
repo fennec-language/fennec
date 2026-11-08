@@ -1,0 +1,6 @@
+n,,n=user,r=rOprNGfwEbeRWgbNEkqO
+c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,p=dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=
+the server knows it
+the server couldn't prove it knows the password
+the server's SCRAM nonce doesn't extend ours
+the server's SCRAM salt or rounds are too weak

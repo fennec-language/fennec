@@ -1398,6 +1398,20 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// A word cut to a size's bits, as that size holds them: kept unsigned, or with the sign of its
+    /// top bit.
+    fn within_width(&mut self, value: &str, num: fennec_check::Num) -> String {
+        let bits = num.bits();
+        if bits >= 64 {
+            return value.to_owned();
+        }
+        let (narrow, wide) = (self.temp(), self.temp());
+        self.line(&format!("{narrow} = trunc i64 {value} to i{bits}"));
+        let extend = if num.is_unsigned() { "zext" } else { "sext" };
+        self.line(&format!("{wide} = {extend} i{bits} {narrow} to i64"));
+        wide
+    }
+
     /// Stops the program as an overflow, when an integer worked out for a local of a sized type
     /// doesn't fit it.
     pub(crate) fn check_size(&mut self, dest: LocalId, value: &str, span: Span) {
@@ -1489,11 +1503,16 @@ impl Emit<'_, '_, '_> {
             Kind::F32 => self.f32_binary(op, (&a, &b), rhs, span)?,
             Kind::Int => {
                 let value = self.int_binary(dest, op, (&a, &b), rhs, span)?;
-                // What's worked out in a word has to fit its size; the bits of two that do, do.
-                if !matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) {
-                    self.check_size(dest, &value, span);
+                match (op, self.sized(dest)) {
+                    // Bits shifted past a size's top are dropped, as on every integer type.
+                    (BinOp::ShiftLeft, Some(num)) => self.within_width(&value, num),
+                    // What's worked out in a word has to fit its size; the bits of two that do, do.
+                    (BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor, _) => value,
+                    _ => {
+                        self.check_size(dest, &value, span);
+                        value
+                    }
                 }
-                value
             }
             Kind::Str | Kind::MaybeText
                 if matches!(op, BinOp::Eq | BinOp::NotEq) && (optional.0 || optional.1) =>

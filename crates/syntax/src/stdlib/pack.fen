@@ -1,9 +1,11 @@
 ## `std.pack`: a compact binary format for anything that saves, through the same `serialize` and
-## `deserialize` as JSON and TOML. Fields go in the order they're written, with no names, so
-## the bytes say nothing of the type they were written from but its shape: they start with
-## `FPK1` and a number for the type's shape, and loading into a type whose shape differs fails
-## at once rather than reading the bytes as something else. Changing a field, its type or its
-## place, or a case of an enum, changes the shape.
+## `deserialize` as JSON and TOML. Fields go in the order they're written, with no names. The
+## bytes start with `FPK2`, a number for the type's shape, and the type's layout: each field's
+## name and what it holds, and each case's name, once for the whole value. Loading into a type of
+## the same shape reads the fields in order, passing over the layout. Loading into another, like
+## the next version of a program's type, reads them by name: a field the data has and the type
+## doesn't is passed over, a field the type has and the data doesn't takes its default, and one
+## with no default fails the load, naming it. A case or a union's member is found by its name too.
 ##
 ## ```fennec
 ## from std import pack
@@ -22,7 +24,7 @@
 ## same slots, so a replay's later `add`s hand out the same `Id`s, and an `Id` whose item had gone
 ## is still gone. Either way an `Id` has to be in a `Table` saved with it, one of each type.
 
-from std.intrinsics import bytes_builder, bytes_push, bytes_push_bytes, bytes_push_text, bytes_push_word, bytes_set, bytes_text, float_bits, float_of_bits, new_tag, shape_hash, text_byte, text_size, type_name
+from std.intrinsics import bytes_builder, bytes_push, bytes_push_bytes, bytes_push_text, bytes_push_word, bytes_set, bytes_text, float_bits, float_of_bits, layout, new_tag, shape_hash, text_byte, text_size, type_name
 from std.json import IdsSeen, found_tables
 
 ## How far a load may go. Bytes that ask for more fail to load.
@@ -36,21 +38,23 @@ export struct Limits:
 ## saved slot for slot.
 export def dumps[T: Serializable](value: T, exact = False) -> bytes:
     mut out = PackWriter(_exact=exact)
-    out._header(shape_hash[T]())
+    out._header(shape_hash[T](), layout[T]())
     value.serialize(ref out)
     if not out._wants_tables: return out._done()
     # It holds `Id`s, so where each one's item is comes first, and every one's checked.
     found = found_tables(value, exact)
     mut again = PackWriter(_exact=exact, _tables=found.positions(), _tags=found.tags(), _found=True)
-    again._header(shape_hash[T]())
+    again._header(shape_hash[T](), layout[T]())
     value.serialize(ref again)
     again._done()
 
-## A `T` from bytes `dumps` wrote for a `T`. It fails if they were written for another shape of
-## type, if they end too soon or go on past it, or if they go past `limits`.
+## A `T` from bytes `dumps` wrote for a `T`, or for an earlier version of it, read by its fields'
+## names. It fails if a field it needs isn't there, if they end too soon or go on past it, or if
+## they go past `limits`.
 export def loads[T: Deserializable](data: bytes, limits: Limits? = None) -> T fails ParseError:
     held = limits else Limits()
     mut src = PackReader(_data=data, _most_deep=held.depth, _longest=held.length)
+    if not src._header(shape_hash[T](), type_name[T]())?: return by_name[T](src)?
     match read_value[T](ref src):
         case Ok(value):
             value
@@ -62,10 +66,20 @@ export def loads[T: Deserializable](data: bytes, limits: Limits? = None) -> T fa
                 _longest=held.length,
                 _explain=True,
             )
+            _ = again._header(shape_hash[T](), type_name[T]())?
             read_value[T](ref again)?
 
+## A `T` from data saved from another shape of it, by the names in the layout saved with it.
+def by_name[T: Deserializable](raw: PackReader) -> T fails ParseError:
+    mut src = PackByName(_raw=raw)
+    src._read_layout()?
+    value = src.value[T]()?
+    if src._raw._at != src._raw._data.len(): fail src._raw._fail("there's more after the value")
+    problem = src._raw._ids.problem()
+    if problem != "": fail ParseError(message=problem, line=0, column=0)
+    value
+
 def read_value[T: Deserializable](ref src: PackReader) -> T fails ParseError:
-    src._header(shape_hash[T](), type_name[T]())?
     value = T.deserialize(ref src)?
     if src._at != src._data.len(): fail src._fail("there's more after the value")
     problem = src._ids.problem()
@@ -100,11 +114,12 @@ export struct PackWriter:
     def _done(self) -> bytes:
         self._out[0:self._out.len()]
 
-    def _header(ref self, shape: int):
-        # `FPK1`, or `FPKE` for `Table`s slot for slot.
-        for b in [70, 80, 75, 69 if self._exact else 49]:
+    def _header(ref self, shape: int, layout: str):
+        # `FPK2`, or `FPKX` for `Table`s slot for slot.
+        for b in [70, 80, 75, 88 if self._exact else 50]:
             bytes_push(ref self._out, b)
         self._word(shape)
+        self.text(layout)
 
     ## A whole word, low byte first.
     def _word(ref self, bits: int):
@@ -249,6 +264,9 @@ export struct PackReader:
     ## Whether to keep track of where it is, for a message, and where.
     _explain = False
     _path = list[str]()
+    ## Where the layout the data was saved with starts and ends, in a version that has one.
+    _layout_at = 0
+    _layout_end = 0
 
     def _fail(self, message: str) -> ParseError:
         self._fail_at(self._at, message)
@@ -257,18 +275,34 @@ export struct PackReader:
     def _fail_at(self, at: int, message: str) -> ParseError:
         ParseError(message=f"{message}, at byte {at}", line=0, column=0)
 
-    def _header(ref self, shape: int, name: str) fails ParseError:
+    ## Reads the header, and gives whether the data was saved from a type of the same shape, to
+    ## read in order. One saved from another shape is read by its layout's names. Data from the
+    ## first version, `FPK1`, has no layout, so it loads only into the same shape.
+    def _header(ref self, shape: int, name: str) -> bool fails ParseError:
         self._items_left = self._longest
         if self._data.len() < 12: fail self._fail("these aren't bytes `std.pack` wrote")
         for at, b in enumerate([70, 80, 75]):
             if self._data[at] != b: fail self._fail("these aren't bytes `std.pack` wrote")
         mode = self._data[3]
-        if mode != 49 and mode != 69: fail self._fail("these aren't bytes `std.pack` wrote")
-        self._exact = mode == 69
+        # `1` and `E` have no layout; `2` and `X` do. `E` and `X` hold `Table`s slot for slot.
+        if mode != 49 and mode != 69 and mode != 50 and mode != 88:
+            fail self._fail("these aren't bytes `std.pack` wrote")
+        self._exact = mode == 69 or mode == 88
         self._at = 4
-        if self._word()? != shape:
+        same = self._word()? == shape
+        if mode == 50 or mode == 88:
+            # The layout is held to what the data holds, not to the limit on one text: it's read
+            # only for data from another shape, a word at a time, as deep as `Limits.depth` allows.
+            n = self._varint()?
+            if n < 0 or n > self._data.len() - self._at: fail self._fail("the data ends too soon")
+            self._layout_at = self._at
+            self._layout_end = self._at + n
+            self._at += n
+            return same
+        if not same:
             self._at = 4
             fail self._fail(f"this was packed from a different `{name}`")
+        True
 
     def _byte(ref self) -> int fails ParseError:
         if self._at >= self._data.len(): fail self._fail("the data ends too soon")
@@ -513,3 +547,470 @@ export struct PackReader:
 
     def end_member(ref self) fails ParseError:
         self._depth -= 1
+
+## The letters a layout writes what a value is with: see `layout` in `std.intrinsics`.
+INT = 105
+FLOAT = 102
+BOOL = 98
+TEXT = 115
+BYTES = 121
+LIST = 108
+MAP = 109
+OPTIONAL = 111
+TUPLE = 116
+STRUCT = 83
+ENUM = 69
+UNION = 117
+SAME = 114
+TABLE = 84
+ID = 73
+OWN = 79
+UNKNOWN = 63
+## Not written: a case of an enum, with its fields, as the layout is read.
+CASE = 99
+
+## Reads bytes saved from another shape of a type, like the one an earlier version of a program
+## had: each value as the layout saved with it says it was written, and each field by its name.
+struct PackByName:
+    _raw: PackReader
+    ## What each value in the layout is, as the letter it's written with, what it holds, in order,
+    ## and their names: a struct's fields, an enum's cases and a union's members.
+    _kinds = list[int]()
+    _kids = list[list[int]]()
+    _names = list[list[str]]()
+    ## Where the layout is being read.
+    _at = 0
+    ## What the next value read was saved as.
+    _expect = 0
+    ## Each struct, case or tuple being read, innermost last, and the next of what it holds.
+    _open = list[int]()
+    _next = list[int]()
+    _field = 0
+    ## The case just read, whose fields come next.
+    _case = -1
+    ## Whether a `Table` saved slot for slot has had its slots read, so its items come next.
+    _slots_read = False
+    _path = list[str]()
+
+    def _bad_layout(self) -> ParseError:
+        self._raw._fail_at(
+            self._raw._layout_at,
+            "the layout saved with the data isn't one `std.pack` writes",
+        )
+
+    ## The next word of the layout.
+    def _word(ref self) -> str fails ParseError:
+        start = self._at
+        end = self._raw._layout_end
+        mut at = start
+        while at < end and self._raw._data[at] != 32:
+            at += 1
+        word = bytes_text(self._raw._data, start, at)
+        if text_size(word) == 0: fail self._bad_layout()
+        self._at = at + 1
+        word
+
+    ## The next word of the layout, as a count.
+    def _count(ref self) -> int fails ParseError:
+        word = self._word()?
+        mut n = 0
+        for at in range(text_size(word)):
+            digit = text_byte(word, at) - 48
+            if digit < 0 or digit > 9 or n > 100000000: fail self._bad_layout()
+            n = n * 10 + digit
+        n
+
+    def _read_layout(ref self) fails ParseError:
+        # The first is an int, which the slots of a `Table` saved slot for slot are read as.
+        self._made(INT)
+        self._at = self._raw._layout_at
+        mut open = list[int]()
+        self._expect = self._node(ref open, 0)?
+        if self._at < self._raw._layout_end: fail self._bad_layout()
+
+    def _made(ref self, kind: int) -> int:
+        self._kinds.append(kind)
+        self._kids.append(list[int]())
+        self._names.append(list[str]())
+        self._kinds.len() - 1
+
+    ## Reads a value's layout, and gives where it is. `open` holds the structs and enums it's in,
+    ## outermost first, which a type inside itself names by where they are.
+    def _node(ref self, ref open: list[int], depth: int) -> int fails ParseError:
+        if depth > self._raw._most_deep: fail self._bad_layout()
+        word = self._word()?
+        if text_size(word) != 1: fail self._bad_layout()
+        kind = text_byte(word, 0)
+        if kind == SAME:
+            at = self._count()?
+            if at >= open.len(): fail self._bad_layout()
+            return open[at]
+        node = self._made(kind)
+        if kind == LIST or kind == OPTIONAL or kind == TABLE:
+            self._kid(node, "", ref open, depth)?
+        elif kind == MAP:
+            self._kid(node, "", ref open, depth)?
+            self._kid(node, "", ref open, depth)?
+        elif kind == TUPLE:
+            for _ in range(self._count()?):
+                self._kid(node, "", ref open, depth)?
+        elif kind == STRUCT or kind == UNION:
+            n = self._count()?
+            if kind == STRUCT:
+                open.append(node)
+            for _ in range(n):
+                name = self._word()?
+                self._kid(node, name, ref open, depth)?
+            if kind == STRUCT:
+                _ = open.pop()
+        elif kind == ENUM:
+            n = self._count()?
+            open.append(node)
+            for _ in range(n):
+                name = self._word()?
+                case = self._made(CASE)
+                for _ in range(self._count()?):
+                    field = self._word()?
+                    self._kid(case, field, ref open, depth + 1)?
+                self._kids[node].append(case)
+                self._names[node].append(name)
+            _ = open.pop()
+        elif kind == OWN:
+            self._names[node].append(self._word()?)
+        elif (
+            kind != INT
+            and kind != FLOAT
+            and kind != BOOL
+            and kind != TEXT
+            and kind != BYTES
+            and kind != ID
+            and kind != UNKNOWN
+        ):
+            fail self._bad_layout()
+        node
+
+    def _kid(ref self, node: int, name: str, ref open: list[int], depth: int) fails ParseError:
+        kid = self._node(ref open, depth + 1)?
+        self._kids[node].append(kid)
+        self._names[node].append(name)
+
+    def _kind(self) -> int:
+        self._kinds[self._expect]
+
+    ## What a value was saved as, in words.
+    def _saved_as(self, node: int) -> str:
+        kind = self._kinds[node]
+        if kind == INT or kind == ID: return "an int"
+        if kind == FLOAT: return "a float"
+        if kind == BOOL: return "a bool"
+        if kind == TEXT: return "text"
+        if kind == BYTES: return "bytes"
+        if kind == LIST or kind == TABLE: return "a list"
+        if kind == MAP: return "a dict"
+        if kind == OPTIONAL: return "an optional"
+        if kind == TUPLE: return "a tuple"
+        if kind == STRUCT: return "a struct"
+        if kind == ENUM: return "an enum"
+        if kind == UNION: return "a union"
+        if kind == OWN: return f"a `{self._names[node][0]}`"
+        "something that can't be loaded"
+
+    def _was(self, wanted: str) -> ParseError:
+        self._raw._fail(
+            f"{self._where()} was saved as {self._saved_as(self._expect)}, not {wanted}",
+        )
+
+    ## Where the reader is, as messages say it.
+    def _where(self) -> str:
+        mut out = ""
+        for part in self._path:
+            if out != "" and text_byte(part, 0) != 91:
+                out += "."
+            out += part
+        "the data" if out == "" else f"`{out}`"
+
+    ## Passes over a value the type it's loaded into doesn't have, as the layout says it was saved.
+    def _skip(ref self, node: int) fails ParseError:
+        self._raw._deeper()?
+        kind = self._kinds[node]
+        if kind == INT:
+            _ = self._raw._varint()?
+        elif kind == FLOAT:
+            _ = self._raw._word()?
+        elif kind == BOOL:
+            _ = self._raw.bool()?
+        elif kind == TEXT or kind == BYTES:
+            _ = self._raw._run()?
+        elif kind == LIST or kind == MAP:
+            n = self._raw._length()?
+            self._raw._items(n)?
+            for _ in range(n):
+                for kid in self._kids[node]:
+                    self._skip(kid)?
+        elif kind == OPTIONAL:
+            if not self._raw.none()?:
+                self._skip(self._kids[node][0])?
+        elif kind == TUPLE or kind == STRUCT or kind == CASE:
+            for kid in self._kids[node]:
+                self._skip(kid)?
+        elif kind == ENUM or kind == UNION:
+            start = self._raw._at
+            at = self._raw._varint()?
+            if at < 0 or at >= self._kids[node].len():
+                fail self._raw._fail_at(start, f"{self._where()} has no case {at}")
+            self._skip(self._kids[node][at])?
+        elif kind == TABLE:
+            if self._raw._exact:
+                self._skip_list(0)?
+            self._skip_list(self._kids[node][0])?
+        elif kind == ID:
+            _ = self._raw._varint()?
+            if self._raw._exact:
+                _ = self._raw._varint()?
+        else:
+            what = self._saved_as(node)
+            fail self._raw._fail(
+                f"{self._where()} isn't in the type now, and holds {what}, which saves itself its own way, so where it ends can't be found",
+            )
+        self._raw._depth -= 1
+
+    def _skip_list(ref self, item: int) fails ParseError:
+        n = self._raw._length()?
+        self._raw._items(n)?
+        for _ in range(n):
+            self._skip(item)?
+
+    def int(ref self) -> int fails ParseError:
+        kind = self._kind()
+        if kind != INT and kind != ID: fail self._was("an int")
+        self._raw.int()?
+
+    def float(ref self) -> float fails ParseError:
+        kind = self._kind()
+        # An int field that's a float now reads as one.
+        if kind == INT: return float(self._raw.int()?)
+        if kind != FLOAT: fail self._was("a float")
+        self._raw.float()?
+
+    def bool(ref self) -> bool fails ParseError:
+        if self._kind() != BOOL: fail self._was("a bool")
+        self._raw.bool()?
+
+    def text(ref self) -> str fails ParseError:
+        if self._kind() != TEXT: fail self._was("text")
+        self._raw.text()?
+
+    def bytes(ref self) -> bytes fails ParseError:
+        if self._kind() != BYTES: fail self._was("bytes")
+        self._raw.bytes()?
+
+    ## Whether an optional value is missing. A value that wasn't optional when it was saved is
+    ## there; one that was and is there is read as what it holds.
+    def none(ref self) -> bool fails ParseError:
+        if self._kind() != OPTIONAL: return False
+        if self._raw.none()?: return True
+        self._expect = self._kids[self._expect][0]
+        False
+
+    ## A field that was optional when it was saved may be missing, and takes its default.
+    def none_next(ref self) -> bool:
+        self._kind() == OPTIONAL
+
+    def value[T: Deserializable](ref self) -> T fails ParseError:
+        # A type that saves itself its own way reads it its own way, in order.
+        if self._kind() == OWN: return T.deserialize(ref self._raw)?
+        T.deserialize(ref self)?
+
+    def sequence[T: Deserializable](ref self) -> list[T] fails ParseError:
+        node = self._expect
+        kind = self._kinds[node]
+        # Slot for slot, a `Table`'s slots come first, as ints, then its items.
+        mut item = 0
+        if kind == LIST:
+            item = self._kids[node][0]
+        elif kind == TABLE and self._raw._exact and not self._slots_read:
+            self._slots_read = True
+        elif kind == TABLE:
+            self._slots_read = False
+            item = self._kids[node][0]
+        else:
+            fail self._was("a list")
+        n = self._raw._length()?
+        self._raw._items(n)?
+        self._raw._deeper()?
+        mut found = list[T]()
+        for at in range(n):
+            self._path.append(f"[{at}]")
+            self._expect = item
+            found.append(self.value[T]()?)
+            _ = self._path.pop()
+        self._raw._depth -= 1
+        self._expect = node
+        found
+
+    def map[K: Deserializable, V: Deserializable](ref self) -> list[(K, V)] fails ParseError:
+        node = self._expect
+        if self._kinds[node] != MAP: fail self._was("a dict")
+        n = self._raw._length()?
+        self._raw._items(n)?
+        self._raw._deeper()?
+        mut found = list[(K, V)]()
+        for at in range(n):
+            self._path.append(f"[{at}]")
+            self._expect = self._kids[node][0]
+            key = self.value[K]()?
+            self._expect = self._kids[node][1]
+            value = self.value[V]()?
+            found.append((key, value))
+            _ = self._path.pop()
+        self._raw._depth -= 1
+        self._expect = node
+        found
+
+    def map_count(ref self) -> int fails ParseError:
+        -1
+
+    def end_map(ref self):
+        pass
+
+    def record(ref self, name: str) fails ParseError:
+        mut node = self._expect
+        if self._case >= 0:
+            node = self._case
+            self._case = -1
+        elif self._kinds[node] != STRUCT:
+            fail self._was(f"a `{name}`")
+        self._raw._deeper()?
+        self._open.append(node)
+        self._next.append(0)
+        self._path.append("")
+
+    ## The next field the data has that the type has too, by its name. Those it doesn't have any
+    ## more are passed over.
+    def next_field(ref self, fields: list[(str, str)]) -> bool fails ParseError:
+        top = self._open.len() - 1
+        node = self._open[top]
+        while self._next[top] < self._kids[node].len():
+            at = self._next[top]
+            self._next[top] = at + 1
+            name = self._names[node][at]
+            self._path[self._path.len() - 1] = name
+            for found, field in enumerate(fields):
+                if field[0] != "" and field[0] == name:
+                    self._field = found
+                    self._expect = self._kids[node][at]
+                    return True
+            self._skip(self._kids[node][at])?
+        _ = self._open.pop()
+        _ = self._next.pop()
+        _ = self._path.pop()
+        self._raw._depth -= 1
+        False
+
+    def field_at(self) -> int:
+        self._field
+
+    def missing(self, name: str) -> ParseError:
+        self._raw._fail(f"`{name}` isn't in the data, and has no default")
+
+    def rule(self, message: str) -> ParseError:
+        self._raw._fail(message)
+
+    def at_item(self, at: int, message: str) -> ParseError:
+        self._raw._fail(f"item {at} {message}")
+
+    def here(self, message: str) -> ParseError:
+        self._raw._fail(f"{self._where()} {message}")
+
+    def saw_id(ref self, kind: str, position: int):
+        self._raw._ids.id(kind, self._where(), position)
+
+    def saw_table(ref self, kind: str, count: int):
+        self._raw._ids.table(kind, self._where(), count)
+
+    def tag(ref self, kind: str) -> int:
+        self._raw.tag(kind)
+
+    ## Fields are read by name, never in order.
+    def ordered(ref self, name: str) -> bool fails ParseError:
+        False
+
+    def end_ordered(ref self):
+        pass
+
+    def items(ref self, name: str, count: int) fails ParseError:
+        node = self._expect
+        if self._kinds[node] != TUPLE: fail self._was("a tuple")
+        saved = self._kids[node].len()
+        if saved != count:
+            fail self._raw._fail(
+                f"{self._where()} was saved as a tuple of {saved} items, not {count}",
+            )
+        self._raw._deeper()?
+        self._open.append(node)
+        self._next.append(0)
+
+    def item[T: Deserializable](ref self) -> T fails ParseError:
+        top = self._open.len() - 1
+        at = self._next[top]
+        self._next[top] = at + 1
+        self._expect = self._kids[self._open[top]][at]
+        self.value[T]()?
+
+    def end_items(ref self) fails ParseError:
+        _ = self._open.pop()
+        _ = self._next.pop()
+        self._raw._depth -= 1
+
+    def exact(self) -> bool:
+        self._raw._exact
+
+    ## A case by its name, which may be at another place among the cases now.
+    def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+        node = self._expect
+        if self._kinds[node] != ENUM: fail self._was(f"a `{name}`")
+        start = self._raw._at
+        at = self._raw._varint()?
+        if at < 0 or at >= self._kids[node].len():
+            fail self._raw._fail_at(start, f"`{name}` has no case {at}")
+        saved = self._names[node][at]
+        case = self._kids[node][at]
+        for found, each in enumerate(cases):
+            if each[0] == saved:
+                if each[1]:
+                    self._case = case
+                else:
+                    # It has no fields now: those it was saved with are passed over.
+                    for kid in self._kids[case]:
+                        self._skip(kid)?
+                return found
+        fail self._raw._fail_at(
+            start,
+            f"{self._where()} was saved as `{name}.{saved}`, a case `{name}` doesn't have now",
+        )
+
+    def end_case(ref self) fails ParseError:
+        pass
+
+    ## A union's member by its type's name, which may be at another place among the members now.
+    def member(ref self, names: list[str]) -> int fails ParseError:
+        node = self._expect
+        union = " | ".join(names)
+        if self._kinds[node] != UNION: fail self._was(f"a `{union}`")
+        start = self._raw._at
+        at = self._raw._varint()?
+        if at < 0 or at >= self._kids[node].len():
+            fail self._raw._fail_at(start, f"`{union}` has no member {at}")
+        saved = self._names[node][at]
+        for found, name in enumerate(names):
+            if name == saved:
+                self._raw._deeper()?
+                self._expect = self._kids[node][at]
+                return found
+        fail self._raw._fail_at(
+            start,
+            f"{self._where()} was saved as a `{saved}`, which isn't one of `{union}` now",
+        )
+
+    def end_member(ref self) fails ParseError:
+        self._raw._depth -= 1

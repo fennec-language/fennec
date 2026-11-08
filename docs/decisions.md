@@ -256,8 +256,8 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 This replaces IEEE comparison operators, and the rule that a struct with a float field can't be a dict key. Built: `==`, hashing, sorting and `<` all follow it. A "never NaN" analysis is planned, so a comparison of values that can't be NaN costs what IEEE's does.
 *Why:* Floats compare, sort, hash and key consistently. Measured with LLVM, every benchmark kernel stayed within ±0.4% of IEEE's instruction count once comparisons against a constant compile to one comparison, and vectorizing was unchanged.
 
-**Floats give the same results on every platform.** There are no fused operations and no fast-math outside an opt-in, and `sin`, `cos` and the rest are in the stdlib rather than the platform's math library. `@fast_math` on a function opts out. This replaces `with fast_math():`.
-*Why:* It makes lockstep multiplayer and replays possible. It costs a little, and only in math-heavy code, which can opt out.
+**Floats give the same results on every platform and every build.** There are no fused operations, except a fused multiply-add written as `.fma`, and `sin`, `cos` and the rest are in the stdlib rather than the platform's math library. There's no `@fast_math` and no other way to opt out. Speed comes from checks the compiler proves it can remove. This replaces `@fast_math` on a function, and before it `with fast_math():`.
+*Why:* Replays and lockstep multiplayer depend on the same bits everywhere, and an opt-out would break that for every function it reaches.
 
 **Parallel reductions combine in a fixed order.** `sum(... for e in parallel(xs))` combines its parts in a tree whose leaves are ranges of at most 1,024 positions, set by the length alone, never by element size or thread count. So the interpreter and native code give identical bits for a float sum.
 *Why:* Float results don't drift between runs or machines.
@@ -1695,7 +1695,6 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 - How an `Id` is used across servers, which is expected at the simulation level.
 - How `std.pack` data evolves: a lock file of past layouts with automatic migration rules, as Avro does. It comes later and adds to v1 without breaking it.
 - Whether kits can define their own annotations, like `@get("/todos/{id}")` on a plain function, so a router can build its table at compile time.
-- SQLite: whether and how Fennec includes it. Porting it isn't realistic.
 - Whether independent writes, not just reads, should overlap automatically.
 - The syntax for units of measure.
 - The file extension (currently `.fen`).

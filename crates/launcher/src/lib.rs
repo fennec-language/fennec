@@ -172,6 +172,78 @@ impl Launcher {
         }
     }
 
+    /// The newest release there is, checked as one to install would be: what `--latest` asks, and
+    /// the only thing that asks. The release page says by where its latest release redirects to,
+    /// and a mirror by a file `latest` holding the version.
+    ///
+    /// # Errors
+    ///
+    /// When it can't be found out, or the newest release isn't signed as it has to be.
+    pub fn latest(&self) -> Result<String, String> {
+        if self.offline {
+            return Err("--offline says not to ask what's newest".to_owned());
+        }
+        let version = if self.dist == RELEASES {
+            let page = RELEASES.trim_end_matches("/download");
+            let tag = web::redirect(&format!("{page}/latest"))?;
+            let (_, version) = tag.rsplit_once("/tag/v").ok_or("the release page has no release yet")?;
+            version.to_owned()
+        } else {
+            let dist = self.dist.strip_prefix("file://").unwrap_or(&self.dist).trim_end_matches('/');
+            let latest = if dist.starts_with("https://") || dist.starts_with("http://") {
+                web::fetch(&format!("{dist}/latest"))?
+            } else {
+                std::fs::read(Path::new(dist).join("latest"))
+                    .map_err(|err| format!("couldn't read {dist}/latest: {err}"))?
+            };
+            String::from_utf8_lossy(&latest).trim().to_owned()
+        };
+        if !kit::plain_version(&version) {
+            return Err(format!("couldn't tell the newest release from `{version}`"));
+        }
+        let name = format!("fennec-v{version}.manifest");
+        let text = self.fetch(&version, &name)?;
+        let signatures = String::from_utf8(self.fetch(&version, &format!("{name}.sig"))?)
+            .map_err(|_| "the release's signatures aren't text".to_owned())?;
+        fennec_dist::verified_by(&text, &signatures, Kind::Toolchain, &self.trusted)?;
+        Ok(version)
+    }
+
+    /// Moves the kit around `from` to a toolchain, pinning it in `kit.lock`: the version its
+    /// `kit.toml` asks for, or with `latest` the newest release, which `kit.toml` then asks for.
+    /// It's the only thing that moves a pin. Gives back what changed.
+    ///
+    /// # Errors
+    ///
+    /// When it isn't in a kit, or the toolchain can't be installed.
+    pub fn update(&self, from: &Path, latest: bool) -> Result<String, String> {
+        let root = kit::root(from).ok_or("this isn't in a kit, so there's no pin to move")?;
+        let manifest = std::fs::read_to_string(root.join("kit.toml"))
+            .map_err(|err| format!("couldn't read kit.toml: {err}"))?;
+        let mut version = kit::version(&manifest)?;
+        let lock = std::fs::read_to_string(root.join("kit.lock")).unwrap_or_default();
+        let pin = kit::pinned(&lock)?;
+        if latest {
+            let newest = self.latest()?;
+            if newest != version {
+                std::fs::write(root.join("kit.toml"), kit::asking_for(&manifest, &newest))
+                    .map_err(|err| format!("couldn't write kit.toml: {err}"))?;
+                version = newest;
+            }
+        }
+        let hash = self.ensure(&version, None)?;
+        if pin.as_ref() == Some(&(version.clone(), hash)) {
+            return Ok(format!("kit.lock pins Fennec {version} already\n"));
+        }
+        std::fs::write(root.join("kit.lock"), kit::with_pin(&lock, &version, hash))
+            .map_err(|err| format!("couldn't write kit.lock: {err}"))?;
+        Ok(match pin {
+            Some((before, _)) if before != version => format!("kit.lock: Fennec {before} → {version}\n"),
+            Some(_) => format!("kit.lock: Fennec {version}, as its release is now\n"),
+            None => format!("kit.lock: Fennec {version}\n"),
+        })
+    }
+
     /// Reads one of a release's files.
     fn fetch(&self, version: &str, file: &str) -> Result<Vec<u8>, String> {
         let dist = self.dist.strip_prefix("file://").unwrap_or(&self.dist);

@@ -32,6 +32,18 @@ pub(crate) fn fetch(url: &str) -> Result<Vec<u8>, String> {
     Err(format!("{url} redirects more than {MOST_REDIRECTS} times"))
 }
 
+/// Where `url` redirects to, without following it.
+///
+/// # Errors
+///
+/// When it can't be asked, or doesn't redirect.
+pub(crate) fn redirect(url: &str) -> Result<String, String> {
+    match get(url)? {
+        Got::Elsewhere(next) => Ok(next),
+        Got::Bytes(_) => Err(format!("{url} doesn't redirect")),
+    }
+}
+
 enum Got {
     Bytes(Vec<u8>),
     Elsewhere(String),

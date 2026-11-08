@@ -439,4 +439,54 @@ mod launcher {
         assert!(mirror.ensure("0.4.3", None).unwrap_err().contains("404"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[test]
+    fn fennec_update_moves_the_pin_to_what_kit_toml_asks_for() {
+        let dir = scratch("update");
+        let (pair, public) = key();
+        release(&dir.join("dist"), "0.4.2", &pair);
+        release(&dir.join("dist"), "0.4.3", &pair);
+        let kit = kit(&dir, "0.4.2");
+        let launcher = launcher(&dir, &public);
+        assert_eq!(launcher.update(&kit, false).unwrap(), "kit.lock: Fennec 0.4.2\n");
+        assert_eq!(launcher.update(&kit, false).unwrap(), "kit.lock pins Fennec 0.4.2 already\n");
+        std::fs::write(kit.join("kit.toml"), "name = \"game\"\nversion = \"0.1.0\"\nfennec = \"0.4.3\"\n")
+            .unwrap();
+        assert!(launcher.toolchain_for(&kit).is_err());
+        assert_eq!(launcher.update(&kit, false).unwrap(), "kit.lock: Fennec 0.4.2 → 0.4.3\n");
+        assert_eq!(ran(&launcher.toolchain_for(&kit).unwrap(), "x").0, "fennec 0.4.3: x\n");
+        assert!(launcher.update(&dir, false).unwrap_err().contains("isn't in a kit"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_latest_asks_whats_newest_and_the_answer_has_to_be_signed() {
+        let dir = scratch("latest");
+        let (pair, public) = key();
+        release(&dir.join("dist"), "0.4.2", &pair);
+        release(&dir.join("dist"), "0.4.3", &pair);
+        std::fs::write(dir.join("dist/latest"), "0.4.3\n").unwrap();
+        let kit = kit(&dir, "0.4.2");
+        let fresh = launcher;
+        let launcher = fresh(&dir, &public);
+        launcher.toolchain_for(&kit).unwrap();
+        assert_eq!(launcher.latest().unwrap(), "0.4.3");
+        // Asking moves nothing: the kit runs what it's pinned to until `fennec update --latest`.
+        assert_eq!(ran(&launcher.toolchain_for(&kit).unwrap(), "x").0, "fennec 0.4.2: x\n");
+        assert_eq!(launcher.update(&kit, true).unwrap(), "kit.lock: Fennec 0.4.2 → 0.4.3\n");
+        assert!(std::fs::read_to_string(kit.join("kit.toml")).unwrap().contains("fennec = \"0.4.3\"\n"));
+        assert_eq!(ran(&launcher.toolchain_for(&kit).unwrap(), "x").0, "fennec 0.4.3: x\n");
+        let offline = Launcher { offline: true, ..fresh(&dir, &public) };
+        assert!(offline.latest().unwrap_err().contains("--offline"));
+        // A newest release nobody trusted signed isn't one.
+        let (stranger, _) = key();
+        release(&dir.join("dist"), "0.5.0", &stranger);
+        std::fs::write(dir.join("dist/latest"), "0.5.0\n").unwrap();
+        assert!(launcher.latest().unwrap_err().contains("signed by 0 of"));
+        let mirror = Launcher { dist: serve(dir.join("dist")), ..fresh(&dir, &public) };
+        assert!(mirror.latest().unwrap_err().contains("signed by 0 of"));
+        std::fs::write(dir.join("dist/latest"), "0.4.3\n").unwrap();
+        assert_eq!(mirror.latest().unwrap(), "0.4.3");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

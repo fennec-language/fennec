@@ -6,6 +6,8 @@
 //! fennec toolchain install <version>
 //! fennec toolchain remove <version>
 //! fennec toolchain default <version>    the one run outside a kit
+//! fennec update [--latest]              pins the kit to the version kit.toml asks for, or the newest
+//! fennec --latest                       the newest release, the only thing that asks
 //! ```
 //!
 //! `--offline`, or `FENNEC_OFFLINE`, never fetches. `FENNEC_DIST` is where releases come from, a
@@ -60,6 +62,16 @@ fn launched(args: &[String], offline: bool) -> Result<ExitCode, String> {
         ["toolchain", "install", version] => launcher.ensure(version, None).map(|_| ExitCode::SUCCESS),
         ["toolchain", "remove", version] => launcher.remove(version).map(|()| ExitCode::SUCCESS),
         ["toolchain", "default", version] => launcher.set_default(version).map(|()| ExitCode::SUCCESS),
+        ["--latest"] => {
+            println!("{}", launcher.latest()?);
+            Ok(ExitCode::SUCCESS)
+        }
+        ["update"] | ["update", "--latest"] => {
+            let here = std::env::current_dir()
+                .map_err(|err| format!("couldn't tell which folder this is: {err}"))?;
+            print!("{}", launcher.update(&here, words.len() == 2)?);
+            Ok(ExitCode::SUCCESS)
+        }
         ["toolchain", ..] => Err(
             "`fennec toolchain` takes `list`, `install <version>`, `remove <version>` or `default <version>`"
                 .to_owned(),

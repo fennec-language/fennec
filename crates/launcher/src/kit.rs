@@ -34,6 +34,33 @@ pub(crate) fn version(manifest: &str) -> Result<String, String> {
     Err("kit.toml doesn't say which Fennec it needs: add `fennec = \"0.4.2\"`, with the version".to_owned())
 }
 
+/// `kit.toml` asking for `version`: its `fennec = ...` line changed, and every other line as it was.
+pub(crate) fn asking_for(manifest: &str, version: &str) -> String {
+    let mut in_top = true;
+    let mut moved = String::with_capacity(manifest.len());
+    for line in manifest.split_inclusive('\n') {
+        let trimmed = line.trim();
+        in_top &= !trimmed.starts_with('[');
+        let is_it = in_top && trimmed.split_once('=').is_some_and(|(key, _)| key.trim() == "fennec");
+        if !is_it {
+            moved.push_str(line);
+            continue;
+        }
+        let ending = if line.ends_with("\r\n") {
+            "\r\n"
+        } else if line.ends_with('\n') {
+            "\n"
+        } else {
+            ""
+        };
+        moved.push_str("fennec = \"");
+        moved.push_str(version);
+        moved.push('"');
+        moved.push_str(ending);
+    }
+    moved
+}
+
 /// Whether a word is a version: digits first, then digits, letters, dots, dashes and `+`.
 pub(crate) fn plain_version(version: &str) -> bool {
     version.starts_with(|first: char| first.is_ascii_digit())
@@ -98,6 +125,14 @@ mod tests {
         assert!(version("fennec = \"latest\"\n").unwrap_err().contains("isn't a version"));
         assert!(version("fennec = \"../0.4.2\"\n").unwrap_err().contains("isn't a version"));
         assert!(version("fennec = 0.4\n").unwrap_err().contains("isn't a version"));
+    }
+
+    #[test]
+    fn asking_for_another_version_changes_only_that_line() {
+        let manifest = "name = \"game\"\nfennec = \"0.4.2\"  \n\n[dependencies]\nfennec = \"x\"\n";
+        let moved = super::asking_for(manifest, "0.4.3");
+        assert_eq!(moved, "name = \"game\"\nfennec = \"0.4.3\"\n\n[dependencies]\nfennec = \"x\"\n");
+        assert_eq!(version(&moved), Ok("0.4.3".to_owned()));
     }
 
     #[test]

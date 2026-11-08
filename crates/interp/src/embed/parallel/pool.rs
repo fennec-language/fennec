@@ -108,6 +108,23 @@ pub fn run_worker_setup() {
     }
 }
 
+/// Sets native code's stack limit on the thread that runs it.
+static SET_STACK_LIMIT: OnceLock<extern "C" fn(i64)> = OnceLock::new();
+
+/// `fennec_on_task_resume(set)`: `set` sets this thread's stack limit in native code, and is
+/// called each time a task comes back from parking, as other tasks have run here since.
+pub extern "C" fn on_task_resume(set: extern "C" fn(i64)) {
+    if SET_STACK_LIMIT.set(set).is_ok() {
+        fennec_parked::on_resume(stack_limit_again);
+    }
+}
+
+fn stack_limit_again() {
+    if let Some(set) = SET_STACK_LIMIT.get() {
+        set(i64::try_from(stack_limit()).unwrap_or(0));
+    }
+}
+
 /// The lowest address native code on this thread may grow its stack to, when it's one of the
 /// pool's workers, and 0 otherwise.
 pub fn stack_limit() -> usize {

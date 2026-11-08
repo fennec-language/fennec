@@ -25,7 +25,7 @@ impl Emit<'_, '_, '_> {
         self.declare(&format!("@\"{held}\" = linkonce_odr constant [{length} x i8] c\"{shown}\""));
         let local = if self.module.threads { "thread_local(initialexec) " } else { "" };
         self.declare(&format!("@\"{kept}\" = linkonce_odr {local}global ptr null"));
-        self.declare("declare ptr @fennec_bytes_new(i64) nounwind");
+        self.declare("declare ptr @fennec_bytes_constant(i64) nounwind");
         self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
         let (found, missing, block, value) = (self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{found} = load ptr, ptr @\"{kept}\""));
@@ -34,7 +34,7 @@ impl Emit<'_, '_, '_> {
         let (make, joined) = (self.label("make_bytes"), self.label("have_bytes"));
         self.line(&format!("br i1 {missing}, label %{make}, label %{joined}, !prof !0"));
         self.start_block(&make);
-        self.line(&format!("{block} = call ptr @fennec_bytes_new(i64 {length})"));
+        self.line(&format!("{block} = call ptr @fennec_bytes_constant(i64 {length})"));
         let into = self.offset(&block, DATA_OFFSET);
         self.line(&format!(
             "call void @llvm.memcpy.p0.p0.i64(ptr {into}, ptr @\"{held}\", i64 {length}, i1 false)"

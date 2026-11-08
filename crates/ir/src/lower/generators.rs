@@ -617,7 +617,7 @@ impl<'a> Lowering<'a> {
         };
         let held = self.temporary(*error);
         self.emit(InstKind::GetSlot { dest: held, generator: generator.clone(), slot: slot::FAILURE }, span);
-        self.return_error(Operand::Local(held), span)
+        self.pass_up_error(Operand::Local(held), span)
     }
 }
 

@@ -25,6 +25,13 @@ pub(super) fn definitions(signatures: &Signatures) -> Vec<StructDef> {
         .collect()
 }
 
+/// A `with` block's cleanup, run with the failure in `name` when one leaves from inside what the
+/// block calls.
+pub(super) struct OnFailure {
+    pub(super) name: String,
+    pub(super) cleanup: Vec<fennec_syntax::Stmt>,
+}
+
 impl Lowering<'_> {
     /// `Ok(value)` or `Err(error)` written out, as a function that says `fails E` can return.
     pub(super) fn written_result(
@@ -264,10 +271,38 @@ impl Lowering<'_> {
         left
     }
 
+    /// Leaves with a failure that came from inside what's being called: the `with` block
+    /// around it runs its cleanup first, which ends by failing.
+    pub(super) fn pass_up_error(&mut self, error: Operand, span: Span) -> Lowered<()> {
+        let Some(around) = self.on_failure.pop() else { return self.return_error(error, span) };
+        let rounds = std::mem::take(&mut self.plain_rounds);
+        self.scopes.push(std::collections::HashMap::new());
+        let ty = match &self.returns {
+            Type::Result(_, failure) => (**failure).clone(),
+            other => other.clone(),
+        };
+        let held = self.declare(&around.name, ty);
+        self.emit(InstKind::Copy { dest: held, value: error }, span);
+        let lowered = self.stmts(&around.cleanup, Tail::Drop);
+        self.scopes.pop();
+        self.plain_rounds = rounds;
+        self.on_failure.push(around);
+        lowered
+    }
+
+    /// Leaves with a failure written in this function: from a `parallel` loop's round that's
+    /// lowered as an ordinary loop it's one whose block hasn't run its cleanup yet.
+    fn leave_with_error(&mut self, error: Operand, span: Span) -> Lowered<()> {
+        if self.plain_rounds > 0 {
+            return self.pass_up_error(error, span);
+        }
+        self.return_error(error, span)
+    }
+
     /// `fail error`.
     pub(super) fn fail(&mut self, error: &Expr, span: Span) -> Lowered<()> {
         let error = self.expr(error)?;
-        self.return_error(error, span)
+        self.leave_with_error(error, span)
     }
 
     /// `value?`, and `value? from wrapper`: leaves the function if it's an error, and gives
@@ -300,7 +335,7 @@ impl Lowering<'_> {
             self.emit(InstKind::Builtin { dest: Some(dest), name, args, changes: false }, span);
             passed = Operand::Local(dest);
         }
-        self.return_error(passed, span)?;
+        self.leave_with_error(passed, span)?;
         self.current = present;
         if *ok == Type::Unit {
             return Ok(None);

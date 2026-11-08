@@ -1,0 +1,22 @@
+from std.concurrent import Crashed
+
+struct Tally:
+    items = [1, 2]
+
+def reads(counts: shared Tally, at: int, stdout: Stdout):
+    lock counts as current:
+        stdout.print(current.items[at])
+
+def crashing(counts: shared Tally, stdout: Stdout) fails Crashed:
+    with launch(() => reads(counts, 9, stdout))?:
+        pass
+
+def main(stdout: Stdout):
+    shared counts = Tally()
+    match crashing(counts, stdout):
+        case Ok():
+            stdout.print("fine")
+        case Err(failure):
+            stdout.print("failed:", failure)
+    lock counts as current:
+        stdout.print(current.items[1])

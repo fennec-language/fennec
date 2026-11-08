@@ -78,6 +78,7 @@ mod playground {
 #[cfg(not(target_arch = "wasm32"))]
 mod real {
     use std::collections::HashMap;
+    use std::path::PathBuf;
     use std::rc::Rc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, LazyLock, Mutex, PoisonError};
@@ -97,12 +98,12 @@ mod real {
     /// How many connections a database keeps for its next transactions once they're done.
     const KEPT_IDLE: usize = 8;
 
-    /// Where a database is: a file, or a test's database in memory, by the name every
-    /// connection to it opens.
+    /// Where a database is: a file, or a test's database, in a file of the test's own that
+    /// nothing else sees.
     #[derive(Clone)]
     enum Place {
         File(String),
-        Memory(String),
+        Test(String),
     }
 
     /// An open database.
@@ -134,17 +135,48 @@ mod real {
         Value::made(type_name, vec![("_handle", Value::Int(handle))])
     }
 
-    /// The databases a test has opened, in memory, each kept open by a connection of its own
-    /// until the test ends, so closing and opening one again finds what was written.
+    /// The databases a test has opened, each a file in a folder of the test's own, made when it
+    /// first opens one and gone when the test ends. A test's database is a real one in WAL mode,
+    /// so it does what a database on the disk does: a query outside a transaction reads what was
+    /// there before it, while it's still going.
     pub(crate) struct Fakes {
         test: u64,
-        keepers: HashMap<String, Connection>,
+        pub(super) folder: Option<PathBuf>,
+        /// Each path's file in the folder, by the path's key in the test's fake file system.
+        files: HashMap<String, PathBuf>,
     }
 
     impl Default for Fakes {
         fn default() -> Self {
             static TESTS: AtomicU64 = AtomicU64::new(0);
-            Fakes { test: TESTS.fetch_add(1, Ordering::Relaxed), keepers: HashMap::new() }
+            Fakes { test: TESTS.fetch_add(1, Ordering::Relaxed), folder: None, files: HashMap::new() }
+        }
+    }
+
+    impl Drop for Fakes {
+        fn drop(&mut self) {
+            if let Some(folder) = self.folder.take() {
+                let _ = std::fs::remove_dir_all(folder);
+            }
+        }
+    }
+
+    impl Fakes {
+        /// The file for the database at `key`, and its folder made if this is the first.
+        fn file(&mut self, key: &str) -> std::io::Result<PathBuf> {
+            if let Some(file) = self.files.get(key) {
+                return Ok(file.clone());
+            }
+            if self.folder.is_none() {
+                let made =
+                    std::env::temp_dir().join(format!("fennec-test-databases-{}-{}", std::process::id(), self.test));
+                std::fs::create_dir_all(&made)?;
+                self.folder = Some(made);
+            }
+            let folder = self.folder.clone().unwrap_or_default();
+            let file = folder.join(format!("{}.db", self.files.len()));
+            self.files.insert(key.to_owned(), file.clone());
+            Ok(file)
         }
     }
 
@@ -153,16 +185,16 @@ mod real {
         // Serialized: SQLite takes a lock of its own around each call, as well as ours.
         let flags =
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
-        let conn = match place {
-            Place::File(path) => {
-                let conn = Connection::open_with_flags(path, flags)?;
-                // Readers go on while a writer writes, and a commit is on the disk before it's done,
-                // as SQLite's default `synchronous=FULL` has it.
-                let _: String = conn.query_row("pragma journal_mode=wal", [], |row| row.get(0))?;
-                conn
-            }
-            Place::Memory(name) => Connection::open_with_flags_and_vfs(name, flags, "memdb")?,
-        };
+        let (Place::File(path) | Place::Test(path)) = place;
+        let conn = Connection::open_with_flags(path, flags)?;
+        // Readers go on while a writer writes, and a commit is on the disk before it's done,
+        // as SQLite's default `synchronous=FULL` has it.
+        let _: String = conn.query_row("pragma journal_mode=wal", [], |row| row.get(0))?;
+        if let Place::Test(_) = place {
+            // A test's database is gone when the test ends, so there's nothing to keep through
+            // a power cut, and its commits needn't wait on the disk.
+            conn.execute_batch("pragma synchronous=off")?;
+        }
         conn.busy_timeout(Duration::ZERO)?;
         Ok(conn)
     }
@@ -182,17 +214,14 @@ mod real {
         }
     }
 
-    /// `fs._sqlite_open(path)` in a test: the test's database in memory for `path`, by the path's
-    /// key in its fake file system.
+    /// `fs._sqlite_open(path)` in a test: the test's own database for `path`, by the path's key
+    /// in its fake file system.
     pub(crate) fn open_fake(fakes: &mut Fakes, key: &str) -> Value {
-        let name = format!("/fennec-test-{}/{key}", fakes.test);
-        if !fakes.keepers.contains_key(key) {
-            match connect(&Place::Memory(name.clone())) {
-                Ok(keeper) => drop(fakes.keepers.insert(key.to_owned(), keeper)),
-                Err(err) => return io_error(&err.to_string()),
-            }
-        }
-        match open(Place::Memory(name)) {
+        let file = match fakes.file(key) {
+            Ok(file) => file,
+            Err(err) => return io_error(&err.to_string()),
+        };
+        match open(Place::Test(file.to_string_lossy().into_owned())) {
             Ok(handle) => Value::Ok(Rc::new(held("Database", handle))),
             Err(reason) => io_error(&reason),
         }

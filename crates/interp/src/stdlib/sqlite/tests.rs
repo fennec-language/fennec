@@ -76,3 +76,16 @@ fn a_broken_rule_and_a_query_in_two_statements_fail_as_what_they_are() -> Result
     assert!(run(other, "_execute", &query("insert into keys values (?)", &[], &["b"]))?.contains("no such table"));
     Ok(())
 }
+
+#[test]
+fn a_tests_databases_are_files_of_its_own_gone_when_it_ends() -> Result<(), String> {
+    let mut fakes = Fakes::default();
+    let db = handle_of(&open_fake(&mut fakes, "gone.db"))?;
+    assert_eq!(run(db, "_execute", &query("create table notes (n integer)", &[], &[]))?, "Ok(0)");
+    let folder = fakes.folder.clone().ok_or("no folder was made")?;
+    assert!(folder.join("0.db").exists());
+    assert_eq!(run(db, "_close", &[])?, "");
+    drop(fakes);
+    assert!(!folder.exists(), "{} is left", folder.display());
+    Ok(())
+}

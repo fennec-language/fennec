@@ -343,7 +343,7 @@ def hash_of(fs: Fs, path: str) -> str? fails SqlError:
 - Each `{}` is bound as a parameter, never pasted into the query's text.
 - A column that doesn't fit its field, or a field with no column, fails with `SqlError.Column`, naming it. `query[int]` or `query[str]` reads a single column.
 - The database is in WAL mode, so reads go on while something writes. Tasks in a `parallel` loop can share one: each transaction gets a connection of its own and the database's one writer, and a task waiting for it pauses without holding a thread.
-- In a test, each path is a database in memory, fresh for each test. `fennec test --real` uses files.
+- In a test, each path is a database of the test's own, fresh for each test, in a temporary folder. It behaves as a file does, so what passes in a test passes for real. `fennec test --real` uses the paths themselves.
 - `query` needs native code, as `std.pack` does, so `--jit` and `--interp` can't run it.
 
 ## Tests

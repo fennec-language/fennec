@@ -5599,10 +5599,25 @@ test "a folder that isn't there fails it"(fs: Fs):
             assert reason != ""
         case _:
             assert False
+
+test "outside a transaction, a query reads what was there before it"(fs: Fs):
+    with sqlite.open(fs, "snapshot.db")? as db:
+        _ = db.execute(t"create table if not exists notes (text text)")?
+        _ = db.execute(t"delete from notes")?
+        old = "old"
+        _ = db.execute(t"insert into notes values ({old})")?
+        with db.transaction()? as tx:
+            new = "new"
+            _ = tx.execute(t"insert into notes values ({new})")?
+            assert db.query[str](t"select text from notes")? == ["old"]
+            assert tx.query[str](t"select text from notes order by text")? == ["new", "old"]
+        assert db.query[str](t"select text from notes order by text")? == ["new", "old"]
+    fs.remove("snapshot.db")?
 "#;
 
 /// The same tests pass on a test's fake `Fs` and, with `--real`, on files: a database written,
-/// closed and opened again, its file there to see, and a folder that isn't there failing it.
+/// closed and opened again, its file there to see, a folder that isn't there failing it, and a
+/// query outside a transaction reading what was there before it while it's still going.
 #[test]
 fn sqlite_tests_pass_alike_on_a_fake_fs_and_on_files() -> std::io::Result<()> {
     if !ready() {
@@ -5621,10 +5636,12 @@ fn sqlite_tests_pass_alike_on_a_fake_fs_and_on_files() -> std::io::Result<()> {
             .current_dir(&dir)
             .output_before(FENNEC_DEADLINE)?;
         let (shown, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
-        assert!(ran.status.success() && shown.contains("3 passed, 0 failed"), "{how:?}: {shown}{said}");
+        assert!(ran.status.success() && shown.contains("4 passed, 0 failed"), "{how:?}: {shown}{said}");
     }
     // Nothing's left of the database on the disk.
-    assert!(!dir.join("real.db").exists() && !dir.join("memory.db").exists());
+    for left in ["real.db", "memory.db", "snapshot.db", "snapshot.db-wal"] {
+        assert!(!dir.join(left).exists(), "{left} is left");
+    }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

@@ -254,7 +254,7 @@ pub fn unfinished() -> Option<String> {
 /// so what a replay says is the same every time.
 fn left_over(player: &Player) -> Option<(String, String)> {
     let mut left: Vec<_> = player.streams.iter().filter(|(_, stream)| !stream.is_empty()).collect();
-    left.sort_by(|(a, _), (b, _)| a.cmp(b));
+    left.sort_by_key(|(a, _)| *a);
     let (task, stream) = left.first()?;
     Some(((*task).clone(), stream.front()?.0.clone()))
 }

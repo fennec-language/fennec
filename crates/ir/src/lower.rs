@@ -774,6 +774,12 @@ impl<'a> Lowering<'a> {
         if let ExprKind::Try { value, context } = &expr.kind {
             return self.try_value(value, context.as_deref(), expr.span).map(|_| ());
         }
+        // `conn.write(line) else: continue`: what fails gives nothing back when it doesn't.
+        if let ExprKind::Else { value, default } = &expr.kind
+            && self.type_at(expr.span) == Some(Type::Unit)
+        {
+            return self.else_effect(value, default, expr.span);
+        }
         self.expr(expr).map(|_| ())
     }
 

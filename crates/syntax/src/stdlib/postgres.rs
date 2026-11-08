@@ -5,7 +5,7 @@ use super::Module;
 
 pub(crate) const MODULE: Module = Module {
     name: "postgres",
-    names: &["PgMessage", "PgReader", "startup", "password", "sasl_first", "sasl_next", "terminate"],
+    names: &["PgMessage", "PgReader", "PgScram", "startup", "password", "sasl_first", "sasl_next", "terminate"],
     source: include_str!("postgres.fen"),
     gives: &[],
 };

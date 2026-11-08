@@ -1065,7 +1065,7 @@ def record(scores: shared Scores, name: str, points: int):
 ```
 *Why:* The block shows exactly how long the lock is held, and code can't touch the value without it.
 
-**Nothing waits inside a lock.** No channel receive, pool take, network call, `parallel`, or end of a `with launch`. Printing and local files are fine. This replaces the rule that I/O inside a lock only makes it slow: network calls now count as waiting.
+**Nothing waits inside a lock.** No channel send or receive, pool take, network call, `clock.sleep`, `parallel`, `lend`, or end of a `with launch`, traced across the whole program. Printing and local files are fine. This replaces the rule that I/O inside a lock only makes it slow: network calls now count as waiting.
 *Why:* A lock held while waiting on another task, or on a stalled client, can freeze every task, so the rule is to wait first, then lock.
 
 **Lock deadlocks can't compile.** Lock order is checked across the whole program, keyed by where each `shared` value is made. Values the compiler can't tell apart, like two accounts from one dict, are locked together in one `lock` statement, never one inside the other, and locking the same value twice there fails rather than stopping the program. Interfaces and function values are traced across the whole program, with no annotations, and an error names the implementation that takes the lock.

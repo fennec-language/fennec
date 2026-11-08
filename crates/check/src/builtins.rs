@@ -355,11 +355,9 @@ impl FnCx<'_> {
         if let Some(refused) = self.refused_method(ty, name, span) {
             return self.unusable(refused, args);
         }
+        self.note_capability_wait(ty, name, span);
         if method.changes {
-            let what = format!(
-                "`{name}` changes it, so call it on something held in a mut name, like `items.{name}(...)`"
-            );
-            self.mut_place(object, &what);
+            self.mut_place(object, &format!("`{name}` changes it, so call it on something held in a mut name, like `items.{name}(...)`"));
         }
         let named: &[&str] = match ty.type_name() {
             _ if name == "sort" => &["key"],
@@ -763,7 +761,11 @@ impl FnCx<'_> {
                 Type::Bool
             }
             "reversed" if first == Type::Str => Type::Str,
-            "sorted" | "list" | "parallel" | "reversed" => Type::list(items(self)),
+            "parallel" => {
+                self.note_wait("`parallel`", span);
+                Type::list(items(self))
+            }
+            "sorted" | "list" | "reversed" => Type::list(items(self)),
             "set" => Type::Set(Box::new(items(self))),
             "enumerate" => {
                 let pairs = Type::Tuple(vec![Type::Int, items(self)]);

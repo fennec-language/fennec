@@ -24,6 +24,11 @@ pub(crate) fn lent(ty: &Type) -> Option<&Type> {
 impl FnCx<'_> {
     /// `lend value`, or `lend value else:` with what runs when the caller's block fails.
     pub(crate) fn lend(&mut self, value: &Expr, otherwise: &[Stmt], span: Span) -> Flow {
+        self.not_under_lock(
+            "a `lend` runs its caller's block, which can wait,",
+            span,
+            "lend after the lock's block ends, and take the lock again after the `lend` if it's needed",
+        );
         let Some(lends) = self.lends.clone() else {
             self.expr(value);
             self.error(

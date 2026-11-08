@@ -4062,6 +4062,37 @@ def main(stdout: Stdout):
     )
 }
 
+/// A generator copied into the loop over it holds each argument as its parameter's type: a `str`
+/// given for a `str?` is an optional in the copy. The copy once held it as the argument's type,
+/// so the build left `main` to the JIT, as it read `str` as `str?`.
+#[test]
+fn a_copied_generator_holds_its_arguments_as_its_parameters_types() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "copied_parameter_types",
+        r#"def or_else(word: str?) -> Iterator[str]:
+    yield word else "nothing"
+
+def when_given(word: str?) -> Iterator[str]:
+    if word is not None:
+        yield f"{word}!"
+
+def main(stdout: Stdout):
+    for word in or_else("hi"):
+        stdout.print(word)
+    for word in or_else(None):
+        stdout.print(word)
+    maybe: str? = "kept"
+    for word in when_given(maybe):
+        stdout.print(word)
+    held = or_else("later")
+    stdout.print(list(held), list(when_given("x")))
+"#,
+    )
+}
+
 /// What closures and generators capture, of each kind, comes out as the interpreter gives it:
 /// a closure giving back what it captured as it is, generator expressions yielding a captured
 /// string, struct, list, bool, int or float, nested generators and generators with `while`,
@@ -9364,6 +9395,34 @@ fn generic_types_built_where_one_is_expected_match_the_interpreter() -> std::io:
         return Ok(());
     }
     same_as_the_interpreter_in_both_builds("generics_expected", GENERICS_EXPECTED)
+}
+
+/// A generic function whose type parameter is only in an `Iterator[T]` it's given works out
+/// what `T` is from the iterator. It once couldn't, so the build left the caller to the JIT.
+#[test]
+fn a_generic_over_an_iterator_takes_its_type_from_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "generic_iterator",
+        r#"def count[T](items: Iterator[T]) -> int:
+    mut n = 0
+    for _ in items:
+        n += 1
+    n
+
+def last_of[T](items: Iterator[T], otherwise: T) -> T:
+    mut last = otherwise
+    for item in items:
+        last = item
+    last
+
+def main(stdout: Stdout):
+    stdout.print(count(x * 2 for x in range(10)), count(s for s in ["a", "b"]))
+    stdout.print(count(f for f in [1.5, 2.5, 3.5]), last_of((w for w in ["p", "q"]), otherwise="none"))
+"#,
+    )
 }
 
 const GENERICS_EXPECTED: &str = r#"struct Box[T]:

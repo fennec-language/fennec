@@ -45,3 +45,10 @@ def main(stdout: Stdout):
         failure_of({"C": "23505", "M": "duplicate key value violates unique constraint"}).message(),
     )
     stdout.print(failure_of({"C": "40P01", "M": "deadlock detected"}).message())
+    # A float column can hold what isn't a number, and that isn't a failure.
+    nan = PgMessage.Row(cells=["NaN".encode()], present=[True])
+    match rows_of(["ratio"], types=[701], rows=[nan]):
+        case Ok(made):
+            stdout.print(made.columns, made.kinds, made.floats)
+        case _:
+            pass

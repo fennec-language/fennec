@@ -1,11 +1,10 @@
 //! Running a program's tests through LLVM. Each test becomes a function, and those LLVM can build
 //! go into one executable with what they reach, compiled a function at a time from the cache.
-//! Worker processes run it, each with its share of the tests, so a crash ends only the tests that
-//! worker hadn't run yet. Tests LLVM can't build yet and tests a crash left come back for the
-//! caller to run another way. A test that fails says why as the other way does, both sides of an
-//! `assert` and what a failure passed up was, except that a property test's input isn't made the
-//! smallest that fails here: one that fails comes back too. If it passes there, the two disagree,
-//! which is reported as a failure rather than hidden.
+//! Worker processes run it, each with its share of the tests. A test a crash left unfinished runs
+//! again alone, so a crash is reported as that test's. Tests LLVM can't build yet come back for
+//! the caller to run another way. A test that fails says why as the other way does, both sides of
+//! an `assert` and what a failure passed up was, and a property test's input is shrunk to the
+//! simplest that fails, as the interpreter shrinks it.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -23,8 +22,6 @@ pub(crate) struct LlvmTests {
     pub(crate) outcomes: Vec<TestOutcome>,
     /// The names of the tests to run another way.
     pub(crate) left: Vec<String>,
-    /// The property tests that failed, which are in `left` too, with how.
-    pub(crate) failed: Vec<(String, Diagnostic)>,
     /// Why LLVM wouldn't build some of them, the first it said.
     pub(crate) refused: Option<String>,
     /// The program functions each test that passed ran, by their keys, for the tests that's known
@@ -224,11 +221,10 @@ fn test_functions(number: usize, test: &TestDef, inputs: &mut Inputs<'_>) -> Opt
     if test.inputs.is_empty() {
         return Some(vec![as_function(name, test)]);
     }
-    // A test whose inputs each have their simpler values here shrinks a failing one itself. One
-    // that passes failures up gives back a result, which a failed attempt hasn't made.
+    // A test whose inputs each have their simpler values here shrinks a failing one itself.
     let simpler: Option<Vec<String>> =
         test.inputs.iter().map(|input| inputs.simpler_for(input.ty.as_ref()?)).collect();
-    if let (Some(simpler), false) = (simpler, passes_failures_up(test)) {
+    if let Some(simpler) = simpler {
         return shrinking_functions(number, test, inputs, &simpler);
     }
     let capabilities: Vec<&str> = test.capabilities.iter().map(|param| param.name.as_str()).collect();
@@ -292,15 +288,22 @@ fn shrinking_functions(
         let _ = writeln!(made, "        input{at} = {function}(ref state, 0)");
     }
     let given = passing(named("input"));
+    // A body that passes a failure up gives it back, which counts as failing, and the last run
+    // passes it up as the test's failure.
+    let tried = if passes_failures_up(test) { "?" } else { "" };
     let mut source = format!(
-        "def {PREFIX}{number}():\n    mut state = {}\n    for _ in range({PROPERTY_CASES}):\n{}{made}        if not {PREFIX}{number}_attempt({given}):\n            {PREFIX}{number}_shrunk({given})\n            return\n\n",
+        "def {PREFIX}{number}():\n    mut state = {}\n    for _ in range({PROPERTY_CASES}):\n{}{made}        if not {PREFIX}{number}_attempt({given}):\n            {PREFIX}{number}_shrunk({given}){tried}\n            return\n\n",
         property_seed(&test.name),
         world("        "),
     );
-    let _ = write!(
-        source,
-        "def {PREFIX}{number}_attempt({params}) -> bool:\n    {PREFIX}{number}_body({given})\n    {PREFIX}passed()\n\n"
-    );
+    let ran = if tried.is_empty() {
+        format!("    {PREFIX}{number}_body({given})\n")
+    } else {
+        format!(
+            "    match {PREFIX}{number}_body({given}):\n        case Err(_):\n            return False\n        case _:\n            pass\n"
+        )
+    };
+    let _ = write!(source, "def {PREFIX}{number}_attempt({params}) -> bool:\n{ran}    {PREFIX}passed()\n\n");
     let _ = writeln!(source, "def {PREFIX}{number}_shrunk({params}):");
     for at in 0..test.inputs.len() {
         let _ = writeln!(source, "    mut best{at} = input{at}");
@@ -331,7 +334,7 @@ fn shrinking_functions(
     }
     let _ = write!(
         source,
-        "    {PREFIX}failed_for({})\n{}    {PREFIX}{number}_body({})\n",
+        "    {PREFIX}failed_for({})\n{}    {PREFIX}{number}_body({}){tried}\n",
         described.join(" + \", \" + "),
         world("    "),
         passing(named("best")),
@@ -370,17 +373,6 @@ fn trimmed_for(module: &Module, tests: &[&TestDef]) -> Option<Module> {
     trimmed.items.extend(made.into_iter().map(Item::Function));
     fennec_build::keep_what_functions_reach(&mut trimmed, &|name| name.starts_with(TEST_FUNCTION));
     Some(trimmed)
-}
-
-/// Whether a property test shrinks a failing input itself, so its failure says what it would the
-/// other way: each input has its simpler values here, and it doesn't pass failures up.
-fn shrinks_itself(module: &Module, test: &TestDef) -> bool {
-    let mut inputs = Inputs::new(module);
-    !passes_failures_up(test)
-        && test
-            .inputs
-            .iter()
-            .all(|input| input.ty.as_ref().is_some_and(|ty| inputs.simpler_for(ty).is_some()))
 }
 
 /// Whether the tests' functions can be written: a property test takes only inputs this can make.
@@ -557,7 +549,6 @@ pub(crate) fn run(
     let fused = fusible(module);
     let prelude = prelude_functions();
     let ran = if real { vec![run_for_real(&work, taken.len())] } else { run_workers(&work, taken.len()) };
-    let _ = std::fs::remove_file(&work);
     let mut seen = vec![false; taken.len()];
     for (number, failure, set) in ran.iter().flat_map(|output| output.lines()).filter_map(read_line) {
         let (Some(test), Some(done)) = (taken.get(number), seen.get_mut(number)) else { continue };
@@ -575,22 +566,57 @@ pub(crate) fn run(
                 let cases = if test.inputs.is_empty() { 1 } else { PROPERTY_CASES };
                 result.outcomes.push(TestOutcome { name: test.name.clone(), failure: None, cases });
             }
-            Some(failure) if test.inputs.is_empty() || shrinks_itself(module, test) => {
+            // A property test's input is the simplest that fails, as it shrank it.
+            Some(failure) => {
                 result.outcomes.push(TestOutcome {
                     name: test.name.clone(),
                     failure: Some(test_failure(failure)),
                     cases: 1,
                 });
             }
-            Some(failure) => {
-                result.left.push(test.name.clone());
-                result.failed.push((test.name.clone(), test_failure(failure)));
-            }
         }
     }
-    // A worker that crashed leaves tests no one has an answer for.
+    rerun_crashed(&work, &taken, &seen, &mut result);
+    let _ = std::fs::remove_file(&work);
     result
-        .left
-        .extend(taken.iter().zip(&seen).filter(|(_, done)| !**done).map(|(test, _)| test.name.clone()));
-    result
+}
+
+/// A worker that crashed leaves the tests it hadn't finished, and each of those runs again alone,
+/// so a crash is the test's own.
+fn rerun_crashed(work: &std::path::Path, taken: &[&TestDef], seen: &[bool], result: &mut LlvmTests) {
+    for (number, test) in taken.iter().enumerate() {
+        if seen.get(number).copied().unwrap_or(true) {
+            continue;
+        }
+        let (output, crash) = run_alone(work, number);
+        let line = output.lines().filter_map(read_line).find(|(at, _, _)| *at == number);
+        let failure = match line {
+            Some((_, failure, _)) => failure,
+            None => Some(Diagnostic::new(format!("this test crashed: {crash}"), test.span)),
+        };
+        let cases = if failure.is_none() && !test.inputs.is_empty() { PROPERTY_CASES } else { 1 };
+        result.outcomes.push(TestOutcome {
+            name: test.name.clone(),
+            failure: failure.map(test_failure),
+            cases,
+        });
+    }
+}
+
+/// Runs test `number` of a tests executable alone, giving what it wrote, and how it ended, in words,
+/// with the first thing it said on standard error.
+fn run_alone(work: &std::path::Path, number: usize) -> (String, String) {
+    match Command::new(work).arg(number.to_string()).output() {
+        Ok(output) => {
+            let said = String::from_utf8_lossy(&output.stderr);
+            let first = said.lines().next().unwrap_or_default();
+            let ended = if first.is_empty() {
+                output.status.to_string()
+            } else {
+                format!("{}: {first}", output.status)
+            };
+            (String::from_utf8_lossy(&output.stdout).into_owned(), ended)
+        }
+        Err(err) => (String::new(), format!("it couldn't be run: {err}")),
+    }
 }

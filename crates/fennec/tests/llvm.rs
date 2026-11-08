@@ -11165,6 +11165,48 @@ test \"this one goes too far\" for value: int:
     Ok(())
 }
 
+/// A failing property test shrinks a float, a struct and an input whose body passes a failure up
+/// through LLVM, as the interpreter does, rather than running again another way.
+#[test]
+fn every_failing_property_test_shrinks_through_llvm() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("test_shrinking_all")?;
+    let program = dir.join("shrinking.fen");
+    std::fs::write(
+        &program,
+        "\
+struct Point:
+    x: int
+    y: int
+
+def parsed(text: str) -> int fails InvalidValue:
+    int(text)?
+
+test \"floats stay small\" for x: float:
+    assert x < 3.5
+
+test \"points stay near\" for p: Point:
+    assert p.x < 50
+
+test \"texts are numbers\" for text: str:
+    n = parsed(text)?
+    assert n >= 0
+",
+    )?;
+    let path = program.to_string_lossy().into_owned();
+    let ran = fennec(&["test", "--all", "--verbose", &path], &dir)?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!ran.status.success(), "{said}");
+    assert!(said.contains("3 of 3 tests ran through LLVM"), "{said}");
+    assert!(said.contains("it failed for x = 9.0;"), "{said}");
+    assert!(said.contains("it failed for p = Point(x="), "{said}");
+    assert!(said.contains("it failed for text = \"\""), "{said}");
+    Ok(())
+}
+
 /// A failure a test's body passes up with `?` fails the test through LLVM, and running it again
 /// says what the failure was.
 #[test]

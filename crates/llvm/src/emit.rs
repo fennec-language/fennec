@@ -1126,6 +1126,18 @@ impl Emit<'_, '_, '_> {
         self.start_block(&ok);
     }
 
+    /// As [`Self::leave_if`], after a call from the program into the standard library: a failure
+    /// inside it is said to be here, where the program called it, as the interpreter says it.
+    fn leave_pointing_here(&mut self, failed: &str, span: Span) {
+        let (here, ok) = (self.label("from_std"), self.label("ok"));
+        self.needs_prop = true;
+        self.line(&format!("br i1 {failed}, label %{here}, label %{ok}, !prof !0"));
+        self.start_block(&ok);
+        self.declare("declare void @fennec_at_call(i64, i64) nounwind");
+        let (place, args) = self.span_values(&here, span);
+        let _ = writeln!(self.cold, "{here}:\n{place}  call void @fennec_at_call({args})\n  br label %prop");
+    }
+
     /// Calls the runtime's failure and leaves the function when `bad` holds.
     pub(crate) fn fail_if(&mut self, bad: &str, code: i64, span: Span) {
         let what = match code {
@@ -1929,7 +1941,11 @@ impl Emit<'_, '_, '_> {
             let (held, failed) = (self.temp(), self.temp());
             self.line(&format!("{held} = load ptr, ptr %err"));
             self.line(&format!("{failed} = icmp ne ptr {held}, null"));
-            self.leave_if(&failed);
+            if !span.in_prelude() && written_in_std(callee) {
+                self.leave_pointing_here(&failed, span);
+            } else {
+                self.leave_if(&failed);
+            }
         }
         for block in lent {
             self.release(&block);
@@ -2895,6 +2911,12 @@ def main(stdout: Stdout):
         assert!(error.contains("`f`"), "{error}");
         Ok(())
     }
+}
+
+/// Whether a function is the standard library's, by where its code is written.
+fn written_in_std(function: &Function) -> bool {
+    let mut spans = function.blocks.iter().flat_map(|block| &block.insts).map(|inst| inst.span);
+    spans.find(|span| *span != Span::default()).is_some_and(Span::in_prelude)
 }
 
 /// Whether a function is one `fennec test` makes for an attempt of a property test's shrinking,

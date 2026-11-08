@@ -174,7 +174,7 @@ def message(kind: int, body: bytes) -> PgMessage fails SqlError:
     if kind == 78: return .Notice(fields=part.fields()?)
     if kind == 84: return columns(ref part)?
     if kind == 68: return row(ref part)?
-    if kind == 67: return .Done(tag=part.text()?)
+    if kind == 67: return PgMessage.Done(tag=part.text()?)
     if kind == 49: return .ParseComplete
     if kind == 50: return .BindComplete
     if kind == 110: return .NoData

@@ -187,6 +187,25 @@ impl FnCx<'_> {
     }
 
     pub(crate) fn fits_interface(&mut self, ty: &Type, interface: &str) -> Result<(), (String, String)> {
+        // A tuple saves and loads as an array of its items, when each of them does (see
+        // `tuple_lowering`).
+        if let Type::Tuple(items) = ty
+            && matches!(interface, "Serializable" | "Deserializable")
+            && !items.is_empty()
+        {
+            if items.iter().any(crate::saving::holds_union) {
+                return Err((
+                    format!("`{ty}` holds a union, which a tuple can't save yet"),
+                    "save it in a struct's field instead".to_owned(),
+                ));
+            }
+            // An item that's always `None` saves as missing.
+            for item in items.iter().filter(|item| **item != Type::None) {
+                self.fits_interface(item, interface)
+                    .map_err(|(why, fix)| (format!("`{item}` is one of its items, and {why}"), fix))?;
+            }
+            return Ok(());
+        }
         // A union fits an interface every type in it fits: a call through it goes to whichever
         // member it holds.
         if let Type::Union(members) = ty {

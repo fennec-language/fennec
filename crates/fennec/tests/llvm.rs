@@ -7029,6 +7029,74 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A tuple saves as an array of its items, as in Python's `json.dumps`, and loads back, through
+/// std's readers and writers in Fennec, with no interpreter linked: in a list, in a field, inside
+/// another tuple, in an enum's case, as a dict's and a `SortedMap`'s keys, with an item that's
+/// always `None`, and through TOML and `std.pack` too. An array of the wrong length doesn't load.
+#[test]
+fn tuples_save_and_load_natively() -> std::io::Result<()> {
+    if !ready() || !crate::executables::lean_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("tuples-lean")?;
+    let program = dir.join("tuples.fen");
+    std::fs::write(
+        &program,
+        "\
+from std import json, pack, toml
+from std.collections import SortedMap
+
+enum Order:
+    Hold
+    Move(to: (int, int))
+
+struct Path:
+    steps: list[(int, str)]
+    at: (int, (int, int))
+
+def main(stdout: Stdout):
+    path = Path(steps=[(1, \"a\"), (2, \"b\")], at=(3, (4, 5)))
+    text = json.dumps(path)
+    stdout.print(text)
+    stdout.print(json.loads[Path](text) else Path(steps=[], at=(0, (0, 0))))
+    orders = [Order.Hold, Order.Move(to=(2, 3))]
+    stdout.print(json.dumps(orders), (json.loads[list[Order]](json.dumps(orders)) else []) == orders)
+    corners = {(0, 0): \"start\", (3, 4): \"end\"}
+    stdout.print(json.dumps(corners), (json.loads[dict[(int, int), str]](json.dumps(corners)) else {}) == corners)
+    mut by_side = SortedMap[(int, int), str]()
+    by_side[(2, 0)] = \"b\"
+    by_side[(1, 0)] = \"a\"
+    stdout.print(json.dumps(by_side))
+    stdout.print(json.dumps((1, None, \"x\")))
+    stdout.print(json.loads[list[(int, int)]](\"[[1, 2, 3]]\") else [(0, 0)])
+    stdout.print((toml.loads[Path](toml.dumps(path)) else path) == path)
+    stdout.print((pack.loads[Path](pack.dumps(path)) else Path(steps=[], at=(0, (0, 0)))) == path)
+",
+    )?;
+    let executable = dir.join("tuples");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_LEAN_RUNTIME", "1")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "{\"steps\": [[1, \"a\"], [2, \"b\"]], \"at\": [3, [4, 5]]}\n\
+         Path(steps=[(1, \"a\"), (2, \"b\")], at=(3, (4, 5)))\n\
+         [\"Hold\", {\"Move\": {\"to\": [2, 3]}}] True\n\
+         [[[0, 0], \"start\"], [[3, 4], \"end\"]] True\n\
+         [[[1, 0], \"a\"], [[2, 0], \"b\"]]\n\
+         [1, null, \"x\"]\n\
+         [(0, 0)]\n\
+         True\n\
+         True\n"
+    );
+    Ok(())
+}
+
 /// Native JSON and TOML write and read what the JIT does, and fail with the same messages: a
 /// field left out, a value of the wrong type, a key no field has, inside and outside, and text
 /// that isn't JSON.
@@ -11336,6 +11404,15 @@ struct Words:
         -1
 
     def end_map(ref self):
+        pass
+
+    def items(ref self, name: str, count: int) fails ParseError:
+        pass
+
+    def item[T: Deserializable](ref self) -> T fails ParseError:
+        T.deserialize(ref self)?
+
+    def end_items(ref self) fails ParseError:
         pass
 
     def none(ref self) -> bool fails ParseError:

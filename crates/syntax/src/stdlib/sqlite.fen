@@ -229,6 +229,15 @@ struct SqliteRowReader:
     def map[K: Deserializable, V: Deserializable](ref self) -> list[(K, V)] fails ParseError:
         fail self._bad("a column holds one value, not a dict")
 
+    def items(ref self, name: str, count: int) fails ParseError:
+        fail self._bad(f"a column holds one value, not a `{name}`")
+
+    def item[T: Deserializable](ref self) -> T fails ParseError:
+        fail self._bad("a column holds one value, not a tuple")
+
+    def end_items(ref self) fails ParseError:
+        pass
+
     def record(ref self, name: str) fails ParseError:
         if self._in_record: fail self._bad(f"a column holds one value, not a `{name}`")
         self._in_record = True

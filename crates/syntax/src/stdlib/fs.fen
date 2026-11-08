@@ -1,6 +1,81 @@
+from std.intrinsics import bytes_builder, bytes_push_bytes
+
 ## What `fs.metadata(path)` finds out about a file or folder: its size in bytes, and whether
 ## it's a file or a folder. A folder's size depends on the system.
 export struct Metadata:
     size: int
     is_file: bool
     is_dir: bool
+
+## The file system: what reads and writes files and folders, given to `main` or a test. Its
+## methods written in Rust are `read_text(path)`, `write_text(path, text)`, `read_bytes`,
+## `write_bytes`, `exists`, `list_dir`, `walk`, `make_dir`, `remove` and `metadata`. Each takes a
+## `Path` or a `str` and fails with an `IoError`. Only `main` and tests are given one: it can't be
+## made.
+export struct Fs:
+    _given: int
+
+    ## A new file at `path` to write, in place of any file there, lent for a `with` block:
+    ## `with fs.create("save.txt")? as file:`. What's written goes into a file of its own beside
+    ## `path`, which takes `path`'s place when the block ends, and a failure then is the `with`
+    ## line's. A block that fails leaves `path` as it was, so there's never half a file, and
+    ## nothing's held in memory however much is written. When the block ends, the file is on the
+    ## disk, and so is its new name: `durable=False` skips that wait, for a file that doesn't
+    ## matter if the power goes.
+    def create(self, path: str, durable = True) -> with File fails IoError:
+        file = self._create(path, durable)?
+        lend file else:
+            self._discard(file)
+        self._finish(file)?
+
+    ## The file at `path` to read, lent for a `with` block: `with fs.open("save.txt")? as file:`.
+    ## It's closed when the block ends.
+    def open(self, path: str) -> with File fails IoError:
+        file = self._open(path)?
+        lend file else:
+            self._discard(file)
+        self._finish(file)?
+
+## A file lent by `fs.create`, to write, or by `fs.open`, to read, for the length of a `with`
+## block. Its methods written in Rust: `write(data)` writes `bytes` or a `str`'s UTF-8; `sync()`
+## puts what's been written on the disk now; `read()` gives what's left as `bytes`;
+## `read_chunk(size)` gives up to `size` bytes, and empty bytes at the end; and `read_line()` gives
+## the next line without its ending, or `None` at the end. Each fails with an `IoError`, as a read
+## of a file made to write does. In a task, each waits on the disk without holding up the others.
+export struct File:
+    _handle: int
+
+    def write_text(self, text: str) fails IoError:
+        self.write(text)?
+
+    def write_bytes(self, data: bytes) fails IoError:
+        self.write(data)?
+
+    ## Writes `text`, then a line break.
+    def write_line(self, text: str) fails IoError:
+        self.write(text)?
+        self.write("\n")?
+
+    ## What's left in it, as text.
+    def read_text(self) -> str fails IoError:
+        data = self.read()?
+        data.decode() else fail IoError(reason="this file isn't UTF-8 text")
+
+    def read_bytes(self) -> bytes fails IoError:
+        self.read()?
+
+    ## What's left in it, `size` bytes at a time, the last chunk shorter: for reading a file far
+    ## bigger than memory, as `blake3(file.chunks(1_000_000))` will.
+    def chunks(self, size: int) -> Iterator[bytes]:
+        while True:
+            chunk = self.read_chunk(size) else bytes([])
+            if chunk.len() == 0: return
+            yield chunk
+
+    ## Each line left in it, without its line break, until the end or a failure. To tell those
+    ## apart, call `read_line()` instead.
+    def lines(self) -> Iterator[str]:
+        while True:
+            line = self.read_line() else None
+            if line is None: return
+            yield line

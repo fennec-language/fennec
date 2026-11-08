@@ -4886,6 +4886,218 @@ fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `Fs` is declared in `fs.fen`, as `Connection` is in `net.fen`, and the compiler still finds it
+/// by name everywhere it did: given to `main`, passed to functions and kept in a struct, with its
+/// Rust methods taking a `Path` or a `str`, narrowed by `only`, and with `create` and `open`,
+/// written in Fennec, refused outside what a narrowed one reaches.
+const FS_BY_NAME: &str = "\
+from std.path import Path
+
+struct Saves:
+    fs: Fs
+    folder: str
+
+    def path(self, name: str) -> str:
+        self.folder + \"/\" + name
+
+def write(fs: Fs, path: str, text: str) fails IoError:
+    with fs.create(path)? as file:
+        file.write_text(text)?
+
+def read(saves: Saves, name: str) -> str fails IoError:
+    mut text = \"\"
+    with saves.fs.open(saves.path(name))? as file:
+        text = file.read_text()?
+    text
+
+def main(stdout: Stdout, fs: Fs):
+    folder = \"fs-by-name\"
+    fs.make_dir(folder).expect(\"it works\")
+    saves = Saves(fs=fs, folder=folder)
+    write(fs, path=saves.path(\"a.txt\"), text=\"fox\").expect(\"it works\")
+    stdout.print(read(saves, \"a.txt\").expect(\"it works\"), fs.read_text(Path(text=saves.path(\"a.txt\"))).expect(\"it works\"))
+    only = fs.only(folder)
+    write(only, path=folder + \"/b.txt\", text=\"den\").expect(\"it works\")
+    stdout.print(read(Saves(fs=only, folder=folder), \"b.txt\").expect(\"it works\"))
+    match write(only, path=\"outside.txt\", text=\"no\"):
+        case Ok(_): stdout.print(\"wrote outside\")
+        case Err(problem): stdout.print(\"outside what this Fs can reach\" in problem.reason)
+    stdout.print(fs.exists(\"outside.txt\"))
+    fs.remove(folder + \"/a.txt\").expect(\"it works\")
+    fs.remove(folder + \"/b.txt\").expect(\"it works\")
+    fs.remove(folder).expect(\"it works\")
+";
+
+#[test]
+fn fs_declared_in_std_is_found_by_name_natively_as_in_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("fs-by-name")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, FS_BY_NAME)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let fallbacks = fennec(&["dev", "fallbacks", "--llvm", &path(&program)], &dir)?;
+    let said = String::from_utf8_lossy(&fallbacks.stdout);
+    assert_eq!(said.lines().last(), Some("everything compiles to native code"), "{said}");
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output_within()?;
+    let interpreted = crate::executables::fennec_command()
+        .args(["run", "--interp", &path(&program)])
+        .env("FENNEC_HOME", &dir)
+        .current_dir(&dir)
+        .output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "fox fox\nden\nTrue\nFalse\n",
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
+/// Writes `megabytes` through `fs.create`, a megabyte at a time. The file takes its name only
+/// when the block ends, synced, and what's written goes straight to the disk, so the program
+/// holds next to nothing however big the file grows.
+fn big_write(megabytes: usize) -> String {
+    format!(
+        "\
+def write_big(fs: Fs) -> int fails IoError:
+    chunk = \"fennec \" * 142857 + \"fox\"
+    with fs.create(\"big.txt\")? as file:
+        for _ in range({megabytes}):
+            file.write_text(chunk)?
+    fs.metadata(\"big.txt\")?.size
+
+def main(stdout: Stdout, fs: Fs):
+    stdout.print(write_big(fs) else -1)
+"
+    )
+}
+
+/// Builds and runs `big_write(megabytes)`, checking the file came out whole, nothing was left
+/// beside it, and the program never held `most` bytes.
+fn writes_in_little_memory(name: &str, megabytes: usize, most: u64) -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder(name)?;
+    let program = dir.join("big.fen");
+    std::fs::write(&program, big_write(megabytes))?;
+    let executable = dir.join("big");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (ran, peak) = with_peak_memory(&executable, &dir)?;
+    let partial = std::fs::read_dir(&dir)?
+        .filter_map(Result::ok)
+        .any(|entry| entry.file_name().to_string_lossy().ends_with(".fennec-partial"));
+    std::fs::remove_dir_all(&dir)?;
+    let size = megabytes * 1_000_002;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        format!("{size}\n"),
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    assert!(!partial, "the file written beside big.txt was left behind");
+    if let Some(peak) = peak {
+        assert!(peak < most, "writing {megabytes} MB held {} MB", peak / (1024 * 1024));
+    }
+    Ok(())
+}
+
+/// 64 MB, where a program starts at about 5 MB: one that held its chunks would show at once.
+#[test]
+fn a_big_file_written_a_chunk_at_a_time_holds_little_memory() -> std::io::Result<()> {
+    writes_in_little_memory("big-file", 64, 32 * 1024 * 1024)
+}
+
+/// The same with a gigabyte, run by hand: `cargo test -p fennec --test fennec -- --ignored
+/// a_gigabyte`. It's too much time and disk for every gate.
+#[test]
+#[ignore = "writes a gigabyte"]
+fn a_gigabyte_written_a_chunk_at_a_time_holds_little_memory() -> std::io::Result<()> {
+    writes_in_little_memory("gigabyte-file", 1024, 200 * 1024 * 1024)
+}
+
+/// What a program printed, and the most memory it held, where `/usr/bin/time` can say.
+fn with_peak_memory(executable: &Path, dir: &Path) -> std::io::Result<(Output, Option<u64>)> {
+    let time = Path::new("/usr/bin/time");
+    let flag = if cfg!(target_os = "macos") { "-l" } else { "-v" };
+    if cfg!(windows) || !time.exists() {
+        return Ok((Command::new(executable).current_dir(dir).output_within()?, None));
+    }
+    let ran = Command::new(time).arg(flag).arg(executable).current_dir(dir).output_within()?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    let peak = said.lines().find_map(|line| {
+        let line = line.trim();
+        if let Some(bytes) = line.strip_suffix("maximum resident set size") {
+            return bytes.trim().parse::<u64>().ok();
+        }
+        let kilobytes = line.strip_prefix("Maximum resident set size (kbytes):")?;
+        kilobytes.trim().parse::<u64>().ok().map(|kilobytes| kilobytes * 1024)
+    });
+    Ok((ran, peak))
+}
+
+/// One task writes 64 MB, synced, while three others only answer, all on one thread. Each disk
+/// wait parks the writer and gives the thread to the others, so they finish first: blocking on
+/// the disk would hold all three up until the write was done.
+const WRITE_WHILE_ANSWERING: &str = "\
+shared Order:
+    done = list[int]()
+
+    def finished(ref self, at: int):
+        self.done.append(at)
+
+def work(fs: Fs, order: Order, at: int) -> int fails IoError:
+    if at == 0:
+        chunk = \"x\" * 1000000
+        with fs.create(\"synced.txt\")? as file:
+            for _ in range(64):
+                file.write_text(chunk)?
+    order.finished(at)
+    at
+
+def main(stdout: Stdout, fs: Fs):
+    order = Order()
+    answered = [work(fs, order, at) else -1 for at in parallel([0, 1, 2, 3])]
+    stdout.print(answered, order.done[3])
+";
+
+#[test]
+fn a_task_writing_a_file_lets_the_others_answer() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("write-while-answering")?;
+    let program = dir.join("writes.fen");
+    std::fs::write(&program, WRITE_WHILE_ANSWERING)?;
+    let executable = dir.join("writes");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).env("FENNEC_THREADS", "1").output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    // The writer started first and was the last to finish.
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "[0, 1, 2, 3] 0\n",
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    Ok(())
+}
+
 /// `process.run`'s options in compiled code: what the program reads, the folder it runs in and
 /// variables it gets, on their own and together, and a narrowed `Process` still running only
 /// what it may when given them.

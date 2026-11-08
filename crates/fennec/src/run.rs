@@ -22,9 +22,46 @@ pub(crate) enum Engine {
     Interpreter,
 }
 
+/// A run recorded into a log, or replayed from one (see `fennec_interp::replay`).
+pub(crate) enum Logged {
+    Recording(std::path::PathBuf),
+    Replaying(std::path::PathBuf),
+}
+
+impl Logged {
+    /// What tells an executable this run starts to record or replay.
+    fn variable(&self) -> (&'static str, &std::path::Path) {
+        match self {
+            Logged::Recording(log) => ("FENNEC_RECORD", log),
+            Logged::Replaying(log) => ("FENNEC_REPLAY", log),
+        }
+    }
+
+    /// Starts recording or replaying in this process, for a program it runs itself.
+    fn start_here(&self) -> std::io::Result<()> {
+        match self {
+            Logged::Recording(log) => fennec_interp::replay::record_to(log),
+            Logged::Replaying(log) => fennec_interp::replay::replay_from(log),
+        }
+    }
+}
+
 /// Runs the program at `path`, handing `main` the `arguments` and this process's input.
 pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode {
+    run_logged(path, engine, arguments, None)
+}
+
+/// `run`, recording the program's outside inputs, or replaying them. A replay runs no tests: its
+/// program's run is the one that was recorded, which ran them first.
+pub(crate) fn run_logged(
+    path: &str,
+    engine: Engine,
+    arguments: &[String],
+    logged: Option<&Logged>,
+) -> ExitCode {
+    let replaying = matches!(logged, Some(Logged::Replaying(_)));
     if engine == Engine::Native
+        && !replaying
         && let Some(failed) = crate::test::before_a_run(path)
     {
         return failed;
@@ -44,7 +81,7 @@ pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode 
     // that's this machine, not the program. Only LLVM turning the program down is said.
     if matches!(engine, Engine::Native | Engine::Untested) {
         if crate::aot::llvm_ready() {
-            match built_and_run(&program, path, arguments) {
+            match built_and_run(&program, path, arguments, logged) {
                 Ok(code) => return code,
                 Err(why) => eprintln!("note: running this with the JIT, since LLVM can't build it: {why}"),
             }
@@ -55,6 +92,12 @@ pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode 
         }
     }
     let module = &program.module;
+    if let Some(logged) = logged
+        && let Err(err) = logged.start_here()
+    {
+        eprintln!("error: couldn't open the recording: {err}");
+        return ExitCode::FAILURE;
+    }
     // Not locked: native code writes to standard output itself as the program runs.
     let mut out = BufWriter::new(std::io::stdout());
     let inputs = || Inputs {
@@ -68,6 +111,11 @@ pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode 
         _ => native(module, &signatures, (path, engine == Engine::NativeNoted), &mut out, inputs),
     };
     let flushed = out.flush();
+    // A replay that ended with its recording not all read isn't the run that was recorded.
+    let result = result.and_then(|code| match fennec_interp::replay::unfinished() {
+        Some(why) => Err(fennec_syntax::Diagnostic::new(why, fennec_syntax::Span::default())),
+        None => Ok(code),
+    });
     match (result, flushed) {
         // The int `main` gave back, if it gave one.
         (Ok(code), Ok(())) => ExitCode::from(code),
@@ -89,6 +137,7 @@ fn built_and_run(
     program: &fennec_kit::Program,
     path: &str,
     arguments: &[String],
+    logged: Option<&Logged>,
 ) -> Result<ExitCode, String> {
     // A program started from a kept image doesn't have its source, which an executable keeps
     // to point a failure at. Its files haven't changed since, so reading them again matches.
@@ -115,6 +164,10 @@ fn built_and_run(
     std::os::unix::process::CommandExt::arg0(&mut command, path);
     #[cfg(not(unix))]
     command.env("FENNEC_RUN_AS", format!("{}|{path}", executable.display()));
+    if let Some(logged) = logged {
+        let (variable, log) = logged.variable();
+        command.env(variable, log);
+    }
     let ran = command.args(arguments).status();
     let _ = std::fs::remove_file(&executable);
     let status = ran.map_err(|err| format!("the program it built didn't start: {err}"))?;

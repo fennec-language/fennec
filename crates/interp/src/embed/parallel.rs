@@ -68,7 +68,9 @@ struct Run {
     /// ranges before it still run, since one of them failing is the failure passed up.
     stop: AtomicUsize,
     /// The failure from the lowest range that failed, by where it starts.
-    failure: Mutex<Option<(usize, Diagnostic)>>,
+    failure: Mutex<Option<(usize, Failure)>>,
+    /// The values of failures a lower range's beat, to let go of once they're the caller's.
+    beaten: Mutex<Vec<u64>>,
     /// The calling thread's blocks, lent to the ranges while it waits, when they're on the pool.
     lent: RwLock<Option<Arc<super::table::Table>>>,
     /// What each range made on a worker that outlives it, for the calling thread to adopt.
@@ -83,6 +85,29 @@ struct Run {
     reduced: Mutex<Option<i64>>,
     /// Whether its body may wait, so each range on the pool runs as a parked task.
     waiting: bool,
+}
+
+/// How a range failed.
+enum Failure {
+    /// It crashed, with this.
+    Crash(Diagnostic),
+    /// It failed with a `fails` error, this value, which passes up out of the call.
+    Value(u64),
+}
+
+/// What a range's body gives back when it failed with a value, handed over by `fennec_task_failed`
+/// first. 1 is a crash, with the runtime's failure set.
+const RANGE_FAILED: i64 = 2;
+
+thread_local! {
+    /// The failure the last `parallel` call on this thread passed up, for `fennec_parallel_failure`.
+    static PASSED_UP: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// `fennec_parallel_failure()`: the value of the failure the last `parallel` call on this thread
+/// gave back 2 for, the caller's own.
+pub extern "C" fn parallel_failure() -> i64 {
+    i64::try_from(PASSED_UP.take()).unwrap_or(0)
 }
 
 /// What a loop's or a comprehension's range runs: copied into each job, so it owns what it uses.
@@ -125,6 +150,7 @@ impl Run {
             caller: super::threads::index(),
             stop: AtomicUsize::new(usize::MAX),
             failure: Mutex::new(None),
+            beaten: Mutex::new(Vec::new()),
             lent: RwLock::new(None),
             made: Mutex::new(Vec::new()),
             owners: Mutex::new(HashMap::new()),
@@ -142,22 +168,31 @@ impl Run {
         self
     }
 
-    /// Notes that the range starting at `from` failed, with the failure in this thread's
-    /// runtime, keeping the lowest range's.
-    fn failed(&self, from: usize) {
+    /// Notes that the range starting at `from` failed, as its body's `code` says: with a value
+    /// it handed over, or with the failure in this thread's runtime. The lowest range's is kept.
+    fn failed(&self, from: usize, code: i64) {
         // Its locks stay held, with what they guard half changed, and other bodies may be waiting
         // for them, so the program ends now rather than wait for every body to finish.
         if super::threads::holds_locks() {
             super::aot::stop_for_failure();
         }
         self.stop.fetch_min(from, Ordering::Relaxed);
-        let found = with(|state| state.failure.take().map(|failure| (from, failure)));
+        let value = if code == RANGE_FAILED { super::serve::take_failed_with() } else { None };
+        let found = match value {
+            Some(value) => Some(Failure::Value(value)),
+            None => with(|state| state.failure.take().map(Failure::Crash)),
+        };
         super::set_failed(0);
+        let Some(found) = found else { return };
         let mut kept = self.failure.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(found) = found
-            && kept.as_ref().is_none_or(|(at, _)| found.0 < *at)
-        {
-            *kept = Some(found);
+        let beaten = if kept.as_ref().is_none_or(|(at, _)| from < *at) {
+            kept.replace((from, found)).map(|(_, beaten)| beaten)
+        } else {
+            Some(found)
+        };
+        drop(kept);
+        if let Some(Failure::Value(beaten)) = beaten {
+            self.beaten.lock().unwrap_or_else(PoisonError::into_inner).push(beaten);
         }
     }
 
@@ -197,9 +232,24 @@ impl Run {
         super::threads::adopt(self.made.into_inner().unwrap_or_else(PoisonError::into_inner));
         pool::settle(self.owners.into_inner().unwrap_or_else(PoisonError::into_inner));
         super::print_handed_over(&self.printed.into_inner().unwrap_or_else(PoisonError::into_inner));
+        // Theirs now, as what the ranges made is.
+        let beaten = self.beaten.into_inner().unwrap_or_else(PoisonError::into_inner);
+        if !beaten.is_empty() {
+            with(|state| {
+                for value in beaten {
+                    super::heap::release(state, value);
+                }
+            });
+        }
         let failure = self.failure.into_inner().unwrap_or_else(PoisonError::into_inner);
         match failure {
-            Some((_, failure)) => attempt(|_: &mut State| -> Result<i64, Diagnostic> { Err(failure) }).max(1),
+            Some((_, Failure::Crash(failure))) => {
+                attempt(|_: &mut State| -> Result<i64, Diagnostic> { Err(failure) }).max(1)
+            }
+            Some((_, Failure::Value(value))) => {
+                PASSED_UP.set(value);
+                RANGE_FAILED
+            }
             None => 0,
         }
     }
@@ -211,10 +261,10 @@ impl Run {
         }
         if to - from <= self.chunk {
             let since = self.range_starts();
-            let failed = leaf(from, to, i64::from(super::threads::index())) != 0;
+            let code = leaf(from, to, i64::from(super::threads::index()));
             self.keep_made(since);
-            if failed {
-                self.failed(from);
+            if code != 0 {
+                self.failed(from, code);
             }
             return;
         }
@@ -257,10 +307,10 @@ impl Run {
     fn leaf_on(&self, (from, to): (usize, usize), leaf: Leaf) {
         if from <= self.stop.load(Ordering::Relaxed) && from < to {
             let since = self.range_starts();
-            let failed = leaf.run(from, to, i64::from(super::threads::index())) != 0;
+            let code = leaf.run(from, to, i64::from(super::threads::index()));
             self.keep_made(since);
-            if failed {
-                self.failed(from);
+            if code != 0 {
+                self.failed(from, code);
             }
         }
     }
@@ -336,10 +386,10 @@ impl Run {
         let (_, combine, env) = steps;
         let mut combined = 0;
         let since = self.range_starts();
-        let failed = combine(env, left?, right?, &mut combined) != 0;
+        let code = combine(env, left?, right?, &mut combined);
         self.keep_made(since);
-        if failed {
-            self.failed(from);
+        if code != 0 {
+            self.failed(from, code);
             return None;
         }
         Some(combined)
@@ -355,10 +405,10 @@ impl Run {
         if to - from <= self.chunk {
             let mut partial = 0;
             let since = self.range_starts();
-            let failed = body(env, number(from), number(to), thread, &mut partial) != 0;
+            let code = body(env, number(from), number(to), thread, &mut partial);
             self.keep_made(since);
-            if failed {
-                self.failed(from);
+            if code != 0 {
+                self.failed(from, code);
                 return None;
             }
             return Some(partial);
@@ -763,6 +813,52 @@ mod tests {
         heap::free(list);
         let (_, failure, _) = finish();
         assert!(failure.is_some_and(|failure| failure.message.ends_with("at 70000")));
+    }
+
+    /// Fails with a list as long as where it failed, for each of two places, as a body whose `?`
+    /// passes a failure up does: handing the value over, then giving back 2.
+    /// The places: 90000 and 70000 for `env` 0, 7 and 3 for `env` 1. A range fails at the lower of
+    /// the two it holds.
+    extern "C" fn fails_twice_with_values(env: i64, from: i64, to: i64, _thread: i64) -> i64 {
+        let places = if env == 0 { [90_000, 70_000] } else { [7, 3] };
+        let Some(at) = places.into_iter().filter(|at| (from..to).contains(at)).min() else { return 0 };
+        crate::embed::serve::task_failed(lists::new(0, at));
+        super::RANGE_FAILED
+    }
+
+    /// The length of the list a failure passed up, and the thread that owns its block.
+    fn passed_up() -> (Option<usize>, u64) {
+        let value = super::parallel_failure();
+        let length = with(|state| super::extent(state, value).map(|(length, _)| length));
+        let owner = with(|state| state.heap.block(value.cast_unsigned()).map_or(u64::MAX, |block| block[1]));
+        heap::free(value);
+        (length, owner >> heap::OWNER_SHIFT)
+    }
+
+    #[test]
+    fn of_several_ranges_failing_with_values_the_lowest_one_s_passes_up_as_the_caller_s() {
+        begin();
+        let before = with(|state| state.heap.live());
+        let list = lists::new(0, ITEMS);
+        for waiting in [false, true] {
+            let call = if waiting { super::parallel_for_waiting } else { super::parallel_for };
+            assert_eq!(call(list, fails_twice_with_values, 0), super::RANGE_FAILED, "waiting: {waiting}");
+            assert_eq!(passed_up(), (Some(70_000), 0), "waiting: {waiting}");
+            assert!(!crate::embed::failed());
+        }
+        heap::free(list);
+        assert_eq!(with(|state| state.heap.live()), before, "the failure the lower one beat was let go of");
+        finish();
+    }
+
+    #[test]
+    fn a_call_too_small_for_the_pool_passes_its_lowest_failure_up_too() {
+        begin();
+        let list = lists::new(0, 10);
+        assert_eq!(super::parallel_for(list, fails_twice_with_values, 1), super::RANGE_FAILED);
+        assert_eq!(passed_up(), (Some(3), 0));
+        heap::free(list);
+        finish();
     }
 
     /// What each range of the turn-taking loop made, by where it starts: a string, and the string

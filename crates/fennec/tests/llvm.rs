@@ -386,7 +386,7 @@ def main(stdout: Stdout):
     same_as_the_jit("failing_out_of_for_mut", shared)?;
     // Out of two loops at once. The JIT stops here with "expected an int", so this one's held to
     // what the interpreter prints.
-    let nested = "error Bad:\n    why: str\n\ndef nested(ref grid: list[list[int]]) -> int:\n    for ref row in grid:\n        for ref cell in row:\n            cell += 1\n            if cell == 5:\n                fail Bad(\"inner\")\n    0\n\ndef main(stdout: Stdout):\n    mut grid = [[1, 2], [4, 7], [9]]\n    stdout.print(nested(ref grid) else -3, grid)\n";
+    let nested = "error Bad:\n    why: str\n\ndef nested(ref grid: list[list[int]]) -> int fails Bad:\n    for ref row in grid:\n        for ref cell in row:\n            cell += 1\n            if cell == 5:\n                fail Bad(\"inner\")\n    0\n\ndef main(stdout: Stdout):\n    mut grid = [[1, 2], [4, 7], [9]]\n    stdout.print(nested(ref grid) else -3, grid)\n";
     let dir = folder("failing_out_of_two_loops")?;
     let program = dir.join("two_loops.fen");
     std::fs::write(&program, nested)?;

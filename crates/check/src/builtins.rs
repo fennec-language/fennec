@@ -355,6 +355,9 @@ impl FnCx<'_> {
         if let Some(refused) = self.refused_method(ty, name, span) {
             return self.unusable(refused, args);
         }
+        if let Some(owner) = ty.type_name().filter(|owner| crate::waits::capability_waits(owner, name)) {
+            self.note_wait(&format!("`{owner}.{name}`"), span);
+        }
         if method.changes {
             let what = format!(
                 "`{name}` changes it, so call it on something held in a mut name, like `items.{name}(...)`"
@@ -763,7 +766,11 @@ impl FnCx<'_> {
                 Type::Bool
             }
             "reversed" if first == Type::Str => Type::Str,
-            "sorted" | "list" | "parallel" | "reversed" => Type::list(items(self)),
+            "parallel" => {
+                self.note_wait("`parallel`", span);
+                Type::list(items(self))
+            }
+            "sorted" | "list" | "reversed" => Type::list(items(self)),
             "set" => Type::Set(Box::new(items(self))),
             "enumerate" => {
                 let pairs = Type::Tuple(vec![Type::Int, items(self)]);

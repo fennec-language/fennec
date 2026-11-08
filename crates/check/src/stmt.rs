@@ -349,6 +349,7 @@ impl FnCx<'_> {
             self.mut_place(parallel.unwrap_or(iter), what);
         }
         if parallel.is_some() {
+            self.note_wait("`parallel`", iter.span);
             self.writes_only_its_own(body, names);
         }
         let positions = match parallel.filter(|_| is_mut) {

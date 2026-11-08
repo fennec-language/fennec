@@ -75,6 +75,47 @@ fn run_shows_lints_on_standard_error_and_still_runs() {
     assert_eq!((text(&jit.stdout), text(&jit.stderr)), ("4\n".to_owned(), String::new()));
 }
 
+/// A run lints again only the files of a kit that changed, and keeps the rest from the last run,
+/// so what it shows after each edit has to be what linting all of the kit shows: an edit that adds
+/// a lint to a body, one that takes it out, a new function nothing uses, which another file's lint
+/// looks across files to find, and a nested `expect`, which changes what every file is linted by.
+#[test]
+fn a_run_after_an_edit_shows_the_lints_all_of_the_kit_has() {
+    let dir = scratch("edits_linted").unwrap();
+    assert!(fennec_in(&dir, &["new", "demo"], "").unwrap().status.success());
+    let kit = dir.join("demo");
+    let maths = "## Twice the number.\nexport def twice(number: int) -> int:\n    number * 2\n";
+    let main = "from maths import twice\n\ndef main(stdout: Stdout):\n    mut doubled = twice(21)\n    stdout.print(doubled)\n";
+    std::fs::write(kit.join("src/maths.fen"), maths).unwrap();
+    std::fs::write(kit.join("src/main.fen"), main).unwrap();
+    let run = |cached: bool| {
+        let mut command = crate::executables::fennec_command();
+        command.args(["run", "--no-test"]).current_dir(&kit).env("FENNEC_HOME", dir.join("home"));
+        if cached {
+            command.env_remove("FENNEC_NO_CACHE");
+        } else {
+            command.env("FENNEC_NO_CACHE", "1");
+        }
+        command.output().unwrap()
+    };
+    let edits = [
+        maths.to_owned(),
+        maths.replace("    number * 2", "    mut twice = number * 2\n    twice"),
+        maths.to_owned(),
+        format!("{maths}\ndef unused(number: int) -> int:\n    number\n"),
+        maths.replace("    number * 2", "    def expect(x: int) -> int:\n        x\n    number * 2"),
+        maths.to_owned(),
+    ];
+    for edit in edits {
+        std::fs::write(kit.join("src/maths.fen"), &edit).unwrap();
+        let (cached, whole) = (run(true), run(false));
+        assert_eq!(text(&cached.stdout), text(&whole.stdout), "after {edit:?}");
+        assert_eq!(text(&cached.stderr), text(&whole.stderr), "after {edit:?}");
+        assert!(text(&cached.stderr).contains("needless-mut"), "{}", text(&cached.stderr));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// The README's sample is the first Fennec code most people see, so it has to run as it's
 /// shown, formatted and with nothing for the linter to say.
 #[test]

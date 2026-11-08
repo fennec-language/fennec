@@ -2948,6 +2948,18 @@ fn a_type_with_its_own_str_prints_through_it() {
     );
 }
 
+/// Two `with` blocks over one generic source, of different types, in one function: each written-in
+/// copy of the source's text has types of its own, so neither takes the other's.
+#[test]
+fn two_channels_of_different_types_in_one_function_lower() {
+    let source = "from std.concurrent import Channel, Closed, Timeout\n\n\
+        def main(stdout: Stdout) fails Closed | Timeout:\n    \
+        with Channel[int].open(size=4) as numbers:\n        numbers.send(1)?\n        stdout.print(numbers.receive()?)\n    \
+        with Channel[list[float]].open(size=1) as lists:\n        lists.send([1.5])?\n        stdout.print(lists.receive()?)\n";
+    let program = lowered(source).unwrap();
+    assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
+}
+
 #[test]
 fn a_result_passed_on_fails_every_way_its_function_can() {
     // `outer` fails with `Worse` itself and passes up `inner`'s failure, which is `Bad`, so it

@@ -87,7 +87,8 @@ export struct Sender[T]:
 
 ## How long to wait, in nanoseconds, as the runtime takes it: -1 for as long as it takes.
 def nanos_of(timeout: Duration?) -> int:
-    timeout.nanos else -1
+    if timeout is None: return -1
+    timeout.nanos
 
 ## What a send's answer means: 0 sent, 1 closed, 2 timed out.
 def sent(answer: int, timeout: Duration?) fails Closed | Timeout:

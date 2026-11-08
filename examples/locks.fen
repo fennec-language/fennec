@@ -26,22 +26,22 @@ def balance(account: shared Account) -> int:
 
 test "a transfer moves money"():
     shared ana = Account(owner="ana", balance=10)
-    shared bo = Account(owner="bo")
+    shared bob = Account(owner="bo")
     shared log = list[str]()
-    bank = Bank(accounts={"ana": ana, "bo": bo}, audit=log)
+    bank = Bank(accounts={"ana": ana, "bo": bob}, audit=log)
     assert transfer(bank, from_id="ana", to_id="bo", amount=4)
     assert not transfer(bank, from_id="bo", to_id="ana", amount=9)
-    assert balance(ana) == 6 and balance(bo) == 4
+    assert balance(ana) == 6 and balance(bob) == 4
 
 def main(stdout: Stdout):
     shared ana = Account(owner="ana", balance=10)
-    shared bo = Account(owner="bo")
+    shared bob = Account(owner="bo")
     shared log = list[str]()
-    bank = Bank(accounts={"ana": ana, "bo": bo}, audit=log)
+    bank = Bank(accounts={"ana": ana, "bo": bob}, audit=log)
     stdout.print(
         transfer(bank, from_id="ana", to_id="bo", amount=4),
         transfer(bank, from_id="bo", to_id="ana", amount=9),
     )
-    stdout.print(balance(ana), balance(bo))
+    stdout.print(balance(ana), balance(bob))
     lock log as lines:
         stdout.print(lines)

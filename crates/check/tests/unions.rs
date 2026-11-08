@@ -129,3 +129,9 @@ fn a_union_fits_an_interface_every_type_in_it_fits() {
         "the member that doesn't fit is named"
     );
 }
+
+#[test]
+fn one_of_several_errors_can_be_optional() {
+    let declared = "error Alpha:\n    at: int\n\nerror Beta:\n    at: int\n\ndef pick(which: int) -> (Alpha | Beta)?:\n    if which == 0:\n        return None\n    return Alpha(at=which)\n";
+    assert_eq!(in_main_after(declared, "stdout.print(pick(0) is None)\n"), Vec::<String>::new());
+}

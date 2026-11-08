@@ -23,7 +23,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | Diagnostics | `log` |
 | Games | `math`: `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4`, checked bit for bit against a widely used native math library. `layout` for lists stored a field at a time. Planned: `Simd`, and `audio` and `gpu` as kits |
 | Tasks | `concurrent`: `Channel`, its ends `Inbox` and `Sender`, and the errors `Closed`, `Timeout` and `Crashed`, for `with launch`. Planned: `TaskGroup` and pools |
-| Storage | `sql`, one interface for databases. `sqlite`, SQLite compiled in, which takes only t-strings, so SQL injection can't be written. `postgres`, Postgres's protocol in Fennec: messages, sign-in and queries so far, with connecting next |
+| Storage | `sql`, one interface for databases. `sqlite`, SQLite compiled in, which takes only t-strings, so SQL injection can't be written. `postgres`, written in Fennec over `net`: sign-in, queries and transactions, with no TLS yet |
 
 ## Importing what you use
 
@@ -57,7 +57,7 @@ def main(stdout: Stdout):
 
 This works for JSON, TOML and `std.pack`. One `serialize` and `deserialize` serve every format. A `Table` is saved as a list of its items in order, with each `Id` as where its item is in that list, and loading makes a new `Table` whose `Id`s find the same items. CSV reads and writes rows of text with `csv.loads` and `csv.dumps`, and reading it into structs is planned.
 
-`std.pack` is the default binary format, written in plain Fennec: no field names on the wire, and a number for the layout's shape, so loading into a type of another shape fails at once. **Planned:** `where` ranges that shrink values, delta encoding and opt-in quantization.
+`std.pack` is the default binary format, written in plain Fennec. Values are written by position, with their type's layout written once beside them, so data from an earlier version of a type loads by its names, and a new field takes its default. `pack.Packer` writes many values with each layout once, and `pack.Unpacker` reads them from a file or a stream. **Planned:** `where` ranges that shrink values, delta encoding and opt-in quantization.
 
 ## A web server is a function
 

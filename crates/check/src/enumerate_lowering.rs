@@ -58,7 +58,10 @@ fn inner(each: &mut Stmt, made: &mut usize) {
                 stmts(body, made);
             }
         }
-        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+        StmtKind::While { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::With { body, .. }
+        | StmtKind::OnFailure { body, .. } => {
             stmts(body, made);
         }
         StmtKind::Lend { otherwise, .. } => stmts(otherwise, made),

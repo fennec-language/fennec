@@ -1,0 +1,108 @@
+error Nope:
+    why: str
+
+enum Mode:
+    Off
+    On
+
+struct Inner:
+    v: int
+    tags: list[int]
+
+    def poke(ref self):
+        self.v = 99
+        self.tags.append(99)
+
+struct Inners:
+    v: int
+    tags: list[int]
+
+struct C:
+    n: int
+    big: u64
+    small: f32
+    f: float
+    s: str
+    items: list[int]
+    inner: Inner
+    d: dict[str, int]
+    inners: list[Inner]
+    boxed: list[int]
+    mode: Mode
+
+def grow(ref xs: list[int]):
+    xs.append(99)
+
+def bump(ref x: int):
+    x = 99
+
+def made() -> C:
+    C(n=1, big=2, small=0.5, f=1.5, s="the first text, long enough to need a block", items=[1, 2], inner=Inner(v=1, tags=[1]), d={"a": 1}, inners=[Inner(v=1, tags=[1])], boxed=[1], mode=.Off)
+
+def fails_after(c: shared C, which: int) fails Nope:
+    lock c as ref c:
+        if which == 0:
+            c.n = 5
+        elif which == 1:
+            c.big = 7
+        elif which == 2:
+            c.small = 2.5
+        elif which == 3:
+            c.f = 9.5
+        elif which == 4:
+            c.s = "changed, and long enough to need a block"
+        elif which == 5:
+            c.items[0] = 99
+        elif which == 6:
+            c.items.append(99)
+        elif which == 7:
+            c.items.clear()
+        elif which == 8:
+            c.inner.v = 99
+        elif which == 9:
+            c.inner.tags[0] = 99
+        elif which == 10:
+            c.inner.tags.append(99)
+        elif which == 11:
+            c.inner = Inner(v=99, tags=[99])
+        elif which == 12:
+            c.d["k"] = 99
+        elif which == 13:
+            _ = c.d.pop("a")
+        elif which == 14:
+            c.inners[0].v = 99
+        elif which == 15:
+            c.inners[0].tags.append(99)
+        elif which == 16:
+            c.boxed = [99]
+        elif which == 17:
+            c.mode = .On
+        elif which == 18:
+            c.inner.poke()
+        elif which == 19:
+            grow(ref c.items)
+        elif which == 20:
+            bump(ref c.n)
+        elif which == 21:
+            for ref i in c.items:
+                i += 1
+        fail Nope(why="undone")
+
+def main(stdout: Stdout):
+    plain = made()
+    wanted = str(plain)
+    mut bad = 0
+    for which in range(22):
+        shared c = made()
+        match fails_after(c, which):
+            case Ok(_):
+                stdout.print("it didn't fail", which)
+            case Err(_):
+                pass
+        mut now = ""
+        lock c as held:
+            now = str(held)
+        if now != wanted:
+            stdout.print(which, now)
+            bad += 1
+    stdout.print("kinds that kept a change:", bad)

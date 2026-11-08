@@ -125,11 +125,11 @@ jobs:
     # Windows' tests took 20 minutes in one job, and a build with no cache there takes 10 more. A
     # job that runs out of time saves no cache, so the limit leaves room for a cold one.
     timeout-minutes: 35
-    # LLVM is the main backend, so on Linux and Windows its tests have to run: with LLVM's tools
+    # Everything runs through LLVM, so its tests have to run on every platform: with LLVM's tools
     # from the toolchain's own `llvm-tools`, the LLVM rustc uses, a missing tool or runtime
     # library fails them instead of skipping them.
     env:
-      FENNEC_EXPECT_LLVM: ${{ (startsWith(matrix.os, 'ubuntu') || startsWith(matrix.os, 'windows')) && '1' || '' }}
+      FENNEC_EXPECT_LLVM: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -140,7 +140,7 @@ jobs:
         shell: bash
         run: .github/scripts/windows.sh toolchain
       - name: Install LLVM's tools
-        if: runner.os == 'Linux'
+        if: runner.os != 'Windows'
         run: rustup component add llvm-tools-preview
       # A failing or stopped run still saves what it built. Otherwise a red main saves nothing, and
       # every run after it builds from nothing: after Windows' key changed, each of its runs did,
@@ -470,7 +470,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo build --release --locked -p fennec -p fennec-bench
+      # The tests of the kit it times run through LLVM. It runs them in a folder of its own, outside
+      # this repository's toolchain file, so it's told where this toolchain's tools are.
+      - name: Install LLVM's tools
+        run: |
+          rustup component add llvm-tools-preview
+          echo "FENNEC_LLVM_BIN=$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin" >> "$GITHUB_ENV"
+      - run: cargo build --release --locked -p fennec -p fennec-runtime -p fennec-bench
       # An edit's verdict is held to a count of instructions, which doesn't depend on which
       # machine this lands on. Its time is shown too, and warns.
       - name: Install what counts instructions

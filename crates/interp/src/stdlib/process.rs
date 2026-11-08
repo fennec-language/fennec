@@ -64,17 +64,59 @@ pub(crate) fn options_on_name(method: &str, args: Vec<crate::call::CallArg>) -> 
     (name, plain)
 }
 
+/// The words of a `process.run(t"...")`: its text split at spaces, with each value part of the
+/// word it's written in, whatever it holds, so a value can't add a word or end one. `None` if
+/// this isn't a template of text.
+pub(crate) fn words_of(template: &Value) -> Option<Vec<String>> {
+    let Value::Instance(instance) = template else { return None };
+    let (Value::List(strings), Value::List(values)) = (instance.field("strings")?, instance.field("values")?)
+    else {
+        return None;
+    };
+    let mut words = Vec::new();
+    let mut word: Option<String> = None;
+    for (at, piece) in strings.iter().enumerate() {
+        let Value::Str(piece) = piece else { return None };
+        for letter in piece.chars() {
+            if letter.is_whitespace() {
+                words.extend(word.take());
+            } else {
+                word.get_or_insert_default().push(letter);
+            }
+        }
+        match values.get(at) {
+            Some(Value::Str(value)) => word.get_or_insert_default().push_str(value),
+            Some(_) => return None,
+            None => {}
+        }
+    }
+    words.extend(word);
+    Some(words)
+}
+
 /// The program, its arguments and the options of a call to `run`, named as `options_on_name`
 /// names it.
 pub(crate) fn run_of(method: &str, args: &[Value], span: Span) -> Result<(String, Vec<String>, Options), Diagnostic> {
     let names: Vec<&str> = method.split('.').skip(1).collect();
     let (plain, given) = args.split_at(args.len().saturating_sub(names.len()));
-    let [Value::Str(program), Value::List(items)] = plain else { return Err(wrong("run", span)) };
-    let mut arguments = Vec::with_capacity(items.len());
-    for item in items.iter() {
-        let Value::Str(text) = item else { return Err(wrong("run", span)) };
-        arguments.push(text.to_string());
-    }
+    let (program, arguments) = match plain {
+        [Value::Str(program), Value::List(items)] => {
+            let mut arguments = Vec::with_capacity(items.len());
+            for item in items.iter() {
+                let Value::Str(text) = item else { return Err(wrong("run", span)) };
+                arguments.push(text.to_string());
+            }
+            (program.to_string(), arguments)
+        }
+        [template] => {
+            let mut words = words_of(template).ok_or_else(|| wrong("run", span))?.into_iter();
+            let program = words.next().ok_or_else(|| {
+                Diagnostic::new("this template names no program to run", span)
+            })?;
+            (program, words.collect())
+        }
+        _ => return Err(wrong("run", span)),
+    };
     let mut options = Options::default();
     for (name, value) in names.iter().zip(given) {
         match (*name, value) {
@@ -95,7 +137,7 @@ pub(crate) fn run_of(method: &str, args: &[Value], span: Span) -> Result<(String
             }
         }
     }
-    Ok((program.to_string(), arguments, options))
+    Ok((program, arguments, options))
 }
 
 /// Runs `program` and waits for it, giving a result holding what it wrote.

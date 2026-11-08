@@ -86,7 +86,7 @@ impl FnCx<'_> {
                 self.is_member(lhs, member, rhs.span)
             }
             ExprKind::Binary { op, lhs, rhs } => {
-                let (left, right) = (self.expr(lhs), self.expr(rhs));
+                let (left, right) = self.operands(lhs, rhs);
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
             ExprKind::Cond { then, cond, otherwise } => self.cond_value((then, cond, otherwise), None, span),

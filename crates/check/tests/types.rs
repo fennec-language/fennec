@@ -94,6 +94,47 @@ fn ints_and_floats_do_not_mix() {
     assert_eq!(in_main(program), ["can't mix int and float in `+` @ half + 1"]);
 }
 
+/// A number literal takes the size it goes into, checked to fit: a name's declared type, a
+/// parameter, a return, the other side of an operator, and what `+=` changes. With nothing to go
+/// by, it's an `int` or a `float` as before.
+#[test]
+fn literals_take_the_size_they_go_into() {
+    let program = "
+        def scaled(by: f32) -> f32:
+            by * 2.0
+
+        def first(stdout: Stdout) -> u8:
+            mut pixel: u8 = 255
+            pixel -= 1
+            low: i8 = -128
+            speed: f32 = 1.5
+            stdout.print(scaled(0.5), 3 * low, low < 0, 0 == pixel, speed + 1.0, pixel >> 1)
+            count = 3
+            stdout.print(count + 1, 1.5 * 2.0)
+            7
+
+        def too_big(stdout: Stdout) -> u16:
+            over: u8 = 256
+            under: u8 = -1
+            low: i8 = -129
+            huge: f32 = 1e39
+            whole: f32 = 1
+            stdout.print(over, under, low, huge, whole)
+            70000
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "256 doesn't fit in u8 @ 256",
+            "-1 doesn't fit in u8 @ -1",
+            "-129 doesn't fit in i8 @ -129",
+            "1000000000000000000000000000000000000000 is too big for an f32 @ 1e39",
+            "`whole` should be an f32, but this is an int @ 1",
+            "70000 doesn't fit in u16 @ 70000",
+        ]
+    );
+}
+
 /// Each sized number type is a type of its own: `i64` is `int` and `f64` is `float`, and sizes
 /// never mix, with each other or with `int` and `float`, until one side is converted.
 #[test]

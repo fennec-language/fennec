@@ -26,6 +26,9 @@ impl FnCx<'_> {
     /// since it can come to hold `None`.
     pub(crate) fn expected_kind(&mut self, expr: &Expr, expected: &Type) -> Type {
         self.note_named_case(expr, expected);
+        if let Some(ty) = self.sized_literal(expr, expected) {
+            return ty;
+        }
         if let Some(ty) = self.union_literal(expr, expected) {
             return ty;
         }
@@ -96,6 +99,57 @@ impl FnCx<'_> {
             }
             _ => self.expr_kind(expr),
         }
+    }
+
+    /// A number literal written where a sized number goes takes that size, checked to fit:
+    /// `pixel: u8 = 255`, `speed: f32 = 1.5`. `None` for anything else.
+    fn sized_literal(&mut self, expr: &Expr, expected: &Type) -> Option<Type> {
+        let Type::Sized(num) = self.checker.settled(expected).without_none() else { return None };
+        let (negated, value) = match &expr.kind {
+            ExprKind::Unary { op: fennec_syntax::UnaryOp::Neg, expr: inner } => (true, &inner.kind),
+            kind => (false, kind),
+        };
+        let ty = Type::Sized(num);
+        match (value, num.range()) {
+            (ExprKind::Int(written), Some((least, most))) => {
+                let value = if negated { -i128::from(*written) } else { i128::from(*written) };
+                if value < least || value > most {
+                    let message = format!("{value} doesn't fit in {ty}");
+                    let help = format!("{} holds {least} to {most}", a(&ty));
+                    self.error(Diagnostic::new(message, expr.span).with_help(help));
+                }
+            }
+            (ExprKind::Float(written), None) => {
+                if written.is_finite() && written.abs() > f64::from(f32::MAX) {
+                    let message = format!("{written} is too big for an f32");
+                    let help = "an f32 holds up to about 3.4e38; use `float` for more";
+                    self.error(Diagnostic::new(message, expr.span).with_help(help));
+                }
+            }
+            _ => return None,
+        }
+        if negated && let ExprKind::Unary { expr: inner, .. } = &expr.kind {
+            self.record(inner.span, &ty);
+        }
+        Some(ty)
+    }
+
+    /// The two sides of an operator. A number literal on one side, opposite a sized number,
+    /// takes its size, as in `small + 1` or `2 * small`.
+    pub(crate) fn operands(&mut self, lhs: &Expr, rhs: &Expr) -> (Type, Type) {
+        if number_literal(lhs) && !number_literal(rhs) {
+            let right = self.expr(rhs);
+            let left =
+                if matches!(right, Type::Sized(_)) { self.expr_as(lhs, &right) } else { self.expr(lhs) };
+            return (left, right);
+        }
+        let left = self.expr(lhs);
+        let right = if matches!(left, Type::Sized(_)) && number_literal(rhs) {
+            self.expr_as(rhs, &left)
+        } else {
+            self.expr(rhs)
+        };
+        (left, right)
     }
 
     /// What's written where a `LiteralStr` goes, if it's one by how it's written: a string
@@ -177,7 +231,7 @@ impl FnCx<'_> {
     /// The two sides of `==` or `!=`. A leading-dot case on one side takes its enum from
     /// the other side.
     pub(crate) fn compared(&mut self, lhs: &Expr, rhs: &Expr) -> (Type, Type) {
-        if leading_dot(lhs) && !leading_dot(rhs) {
+        if (leading_dot(lhs) && !leading_dot(rhs)) || (number_literal(lhs) && !number_literal(rhs)) {
             let right = self.expr(rhs);
             (self.expr_as(lhs, &right), right)
         } else {
@@ -318,6 +372,17 @@ fn leading_dot(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Variant(_) => true,
         ExprKind::Call { callee, .. } => matches!(callee.kind, ExprKind::Variant(_)),
+        _ => false,
+    }
+}
+
+/// Whether this is a number written out, or one negated: what takes a size from where it goes.
+pub(crate) fn number_literal(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) => true,
+        ExprKind::Unary { op: fennec_syntax::UnaryOp::Neg, expr: inner } => {
+            matches!(inner.kind, ExprKind::Int(_) | ExprKind::Float(_))
+        }
         _ => false,
     }
 }

@@ -12,8 +12,7 @@
 //!
 //! Tests run through LLVM's cached dev build, in worker processes on every core (see
 //! `llvm_tests`). A failing property test's input is shrunk there to the simplest that fails. A
-//! test LLVM can't take runs on the JIT, or the interpreter, which no example's does. `--jit`
-//! leaves LLVM out.
+//! test LLVM can't take runs in the interpreter, which no example's does.
 
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -31,8 +30,6 @@ pub(crate) struct Options {
     verbose: bool,
     /// Keep standard output for the program that runs next, and say nothing if all is well.
     before_a_run: bool,
-    /// Run on the JIT what would otherwise run through LLVM.
-    jit: bool,
 }
 
 /// Which tests run, and what they get.
@@ -59,7 +56,6 @@ impl Options {
                 "--all" => {}
                 "--verbose" | "-v" => options.verbose = true,
                 "--real" => options.run = Run::Real,
-                "--jit" => options.jit = true,
                 flag if flag.starts_with("--") => return None,
                 written if path.is_none() => path = Some(written),
                 _ => return None,
@@ -133,13 +129,13 @@ fn whole_program(path: &str, results: &Results) -> Result<Plan, ExitCode> {
         return Err(ExitCode::FAILURE);
     };
     // The standard library as a run checks it: just what the tests reach.
-    let signatures = match crate::copy_rule::check_to_run(&mut program.module, &program.sources) {
-        Ok(signatures) => signatures,
+    match crate::copy_rule::check_to_run(&mut program.module, &program.sources) {
+        Ok(_) => {}
         Err(diagnostics) => {
             eprint!("{}", program.sources.render_all(&diagnostics));
             return Err(ExitCode::FAILURE);
         }
-    };
+    }
     let graph = TestGraph::of(&program.module, env!("FENNEC_BUILD"));
     let unchanged: Vec<TestRecord> = graph
         .tests()
@@ -149,7 +145,7 @@ fn whole_program(path: &str, results: &Results) -> Result<Plan, ExitCode> {
         .collect();
     let is_unchanged = |name: &str| unchanged.iter().any(|record| record.test == name);
     let wanted = graph.tests().filter(|name| !is_unchanged(name)).map(str::to_owned).collect();
-    Ok(Plan { program, signatures, wanted, unchanged })
+    Ok(Plan { program, wanted, unchanged })
 }
 
 /// A test as it's kept once it has passed.
@@ -176,16 +172,14 @@ fn run_plan(
     files: Option<&[fennec_build::KitFile]>,
     plan: Plan,
 ) -> ExitCode {
-    let Plan { program, signatures, wanted, unchanged } = plan;
+    let Plan { program, wanted, unchanged } = plan;
     let render = |diagnostic: &fennec_syntax::Diagnostic| program.sources.render(diagnostic);
     let graph = TestGraph::of(&program.module, env!("FENNEC_BUILD"));
-    let cache = results.machine_code();
-    let cache = cache.as_ref().map(|(cache, program)| (cache, program.as_str()));
     let mut outcomes = Vec::new();
     let mut wanted = wanted;
     let mut ran_through_llvm = HashMap::new();
     // Tests with real capabilities take what they're given, which only the interpreter does.
-    if !options.jit && crate::aot::llvm_ready() {
+    if crate::aot::llvm_ready() {
         let real = options.run == Run::Real;
         let through_llvm =
             crate::llvm_tests::run(&program.module, &wanted, &|name| graph.defines(name), real);
@@ -196,10 +190,8 @@ fn run_plan(
         wanted = through_llvm.left;
         ran_through_llvm = through_llvm.ran;
     }
-    let mut native = fennec_jit::run_tests(&program.module, &signatures, &wanted, cache);
-    outcomes.append(&mut native.outcomes);
-    if !native.left.is_empty() {
-        match interpreted(&program.module, &native.left, options.run == Run::Real) {
+    if !wanted.is_empty() {
+        match interpreted(&program.module, &wanted, options.run == Run::Real) {
             Ok(more) => outcomes.extend(more),
             Err(diagnostic) => {
                 eprint!("{}", render(&diagnostic));
@@ -226,7 +218,7 @@ fn run_plan(
                 if options.verbose {
                     println!("  ✓ {}{cases}", outcome.name);
                 }
-                let ran = native.ran.remove(&outcome.name).or_else(|| ran_through_llvm.remove(&outcome.name));
+                let ran = ran_through_llvm.remove(&outcome.name);
                 passing.extend(record_of((&graph, &program, &modules), &outcome.name, ran));
             }
             Some(diagnostic) => {
@@ -336,10 +328,6 @@ impl Results {
 
     /// Where machine code for this program's tests is kept: apart from its `main`'s, since
     /// tests reach other functions.
-    fn machine_code(&self) -> Option<(Cache, String)> {
-        self.cache.as_ref().map(|(cache, program)| (cache.clone(), format!("{program}#tests")))
-    }
-
     fn store(&self, passing: &[TestRecord]) {
         if let Some((cache, program)) = &self.cache {
             // A cache that can't be written only means running these tests again next time.

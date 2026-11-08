@@ -87,16 +87,6 @@ fn front_end(sources: &[PathBuf], out_dir: &Path, selfhost: &Path) -> Result<Ker
 }
 
 impl Kernel {
-    /// Running the kernel with the JIT, for one LLVM can't build yet: it says when the
-    /// interpreter stands in.
-    pub(crate) fn on_the_jit(&self, fennec: &Path) -> Program {
-        Program {
-            command: fennec.to_path_buf(),
-            args: vec!["run".to_owned(), "--jit".to_owned(), self.path.clone()],
-            stdin: self.stdin.clone(),
-        }
-    }
-
     /// The kernel built by `fennec build --llvm --release` into `out_dir`, run as it is. `tag`
     /// keeps one `fennec`'s build apart from another's.
     pub(crate) fn built(&self, fennec: &Path, out_dir: &Path, tag: &str) -> Result<Program, String> {

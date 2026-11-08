@@ -58,7 +58,7 @@ fn interpreted(name: &str, source: &str) -> std::io::Result<Outcome> {
     Ok(done)
 }
 
-/// What the program printed, its errors and its exit code, built with LLVM and run by the JIT.
+/// What the program printed, its errors and its exit code, built with LLVM, and what the JIT gave.
 fn both(name: &str, source: &str) -> std::io::Result<(Outcome, Outcome)> {
     both_built(name, source, &["--llvm"])
 }
@@ -75,14 +75,13 @@ fn both_built(name: &str, source: &str, how: &[&str]) -> std::io::Result<(Outcom
     let built = fennec(&args, &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ours = apart_from(&dir, outcome(&Command::new(&executable).output_within()?));
-    let jit =
-        pinned(name, source, || Ok(apart_from(&dir, outcome(&fennec(&["run", "--jit", &program], &dir)?))))?;
+    let jit = pinned(name, source, || Ok(ours.clone()))?;
     std::fs::remove_dir_all(&dir)?;
     Ok((ours, jit))
 }
 
-/// Where the outcomes the JIT and the interpreter gave are pinned, one file for each program, named
-/// as the test names it.
+/// Where the outcomes the JIT gave are pinned, one file for each program, named as the test names
+/// it. They were written from the JIT before it was removed.
 fn pinned_folder() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pinned")
 }
@@ -96,9 +95,10 @@ fn apart_from(dir: &Path, (out, err, code): Outcome) -> Outcome {
     (plain(out), plain(err), code)
 }
 
-/// The outcome pinned for program `name`, written from what the JIT or the interpreter gave, with
-/// `reference`, when `FENNEC_PIN_OUTPUTS` is set. One pinned for other source than `source` is out
-/// of date, as is a missing one, and the test says so.
+/// The outcome pinned for program `name`. One pinned for other source than `source` is out of date,
+/// as is a missing one, and the test says so. With `FENNEC_PIN_OUTPUTS` set, it's written from
+/// `reference`, the build's own outcome, which then has to be checked by reading it: a new test's
+/// expected outcome is decided before it's built, not copied from it.
 fn pinned(
     name: &str,
     source: &str,

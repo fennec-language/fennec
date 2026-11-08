@@ -2461,6 +2461,35 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A division's check against 0 only goes when the divisor can't become 0 after what proved it.
+#[test]
+fn a_divisor_written_again_is_still_checked() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def n() -> int:\n    7\n\ndef main(stdout: Stdout):\n    v = (n() % 5) + 1\n    mut d = float(v)\n    d = 0.0\n    stdout.print(1.0 / d)\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("divisor_written_again")?;
+        let program = dir.join("divides.fen");
+        std::fs::write(&program, source)?;
+        let output = dir.join("divides");
+        let (from, to) = (program.to_string_lossy().into_owned(), output.to_string_lossy().into_owned());
+        let args: Vec<&str> =
+            ["build"].into_iter().chain(how.iter().copied()).chain([from.as_str(), "-o", &to]).collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert!(!ran.status.success(), "{how:?}: {}", String::from_utf8_lossy(&ran.stdout));
+        assert!(
+            String::from_utf8_lossy(&ran.stderr).contains("division by zero"),
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
 /// What doesn't fit a size stops the program, saying which size and what it holds: arithmetic
 /// past either end, a negation, the one division that grows, and a conversion that doesn't fit,
 /// a `u64` too big for an `int` among them.

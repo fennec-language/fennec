@@ -111,7 +111,7 @@ match load(fs, hash):
         stdout.print(f"couldn't read {path}")
 ```
 
-Ignoring a returned value is a compile error. Write `_ = call()` when you mean to throw one away.
+Ignoring a returned value is a compile error. Write `_ = call()` when you mean to throw one away. Don't write it on a call that can fail: that's planned to be a compile error, so handle the failure instead.
 
 ## Files
 

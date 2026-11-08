@@ -109,7 +109,7 @@ Every program in [`examples/`](examples) is a test: it must print exactly its `.
 - `examples/`: example programs, which double as the test suite.
 - `site/`: the website, built with [Astro](https://astro.build) and deployed to Cloudflare on every push to `main`.
 
-To work on the site, from the repository root (Node's version is pinned in `.node-version` for fnm; `dev` and `build` also compile the playground's WebAssembly):
+To work on the site, from the repository root (Node's version is pinned in `.node-version` for fnm; `dev` and `build` also write the language page from the examples, with cargo):
 
 ```bash
 npm --prefix site install

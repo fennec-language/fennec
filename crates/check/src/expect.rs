@@ -90,6 +90,16 @@ impl FnCx<'_> {
                 }
                 Type::Dict(key, value)
             }
+            // `bytes: list[u8] = [1, 2, 255]`: each item goes where a sized number does.
+            ExprKind::List(items)
+                if let Type::List(item) = self.checker.settled(expected).without_none()
+                    && matches!(*item, Type::Sized(_)) =>
+            {
+                for each in items {
+                    self.item_as(each, &item);
+                }
+                Type::List(item)
+            }
             ExprKind::List(_) => {
                 let ty = self.expr_kind(expr);
                 let wanted = self.checker.settled(expected);

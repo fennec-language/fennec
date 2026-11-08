@@ -111,6 +111,9 @@ impl Emit<'_, '_, '_> {
             ("int", [value], [Some(Kind::Int)]) | ("float", [value], [Some(Kind::Float)]) => {
                 dest.and_then(|dest| self.copy(dest, value))
             }
+            (sized, [value], [Some(Kind::Int)]) if fennec_check::Num::named(sized).is_some() => {
+                dest.and_then(|dest| self.sized_from(dest, sized, value, span))
+            }
             ("max" | "min", [list], [Some(Kind::List(_))]) => {
                 dest.and_then(|dest| self.extreme_of_list(dest, name, list, None, span))
             }
@@ -232,6 +235,23 @@ impl Emit<'_, '_, '_> {
             ("set", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| self.copy(dest, set)),
             _ => return None,
         })
+    }
+
+    /// `u8(x)`: an integer as one of a size, which stops the program, saying so, if it doesn't fit.
+    fn sized_from(&mut self, dest: LocalId, name: &str, value: &Operand, span: Span) -> Result<(), String> {
+        let num = fennec_check::Num::named(name).ok_or("no such size")?;
+        let (least, most) = num.range().ok_or("a size that isn't an integer")?;
+        let (word, _) = self.operand(value)?;
+        let (shifted, bad) = (self.temp(), self.temp());
+        self.line(&format!("{shifted} = sub i64 {word}, {least}"));
+        self.line(&format!("{bad} = icmp ugt i64 {shifted}, {}", most - least));
+        let (stops, fits) = (self.label("too_big"), self.label("fits"));
+        self.line(&format!("br i1 {bad}, label %{stops}, label %{fits}, !prof !0"));
+        self.start_block(&stops);
+        self.failed_with(&format!("it doesn't fit in {name}, which holds {least} to {most}: "), value, span)?;
+        self.line(&format!("br label %{fits}"));
+        self.start_block(&fits);
+        self.assign(dest, &word)
     }
 
     /// `int(text)` or `float(text)`: `Ok` with the number, or `Err` with an `InvalidValue`.

@@ -3,8 +3,8 @@
 use std::collections::{HashMap, HashSet};
 
 use fennec_syntax::{
-    Diagnostic, Expr, ExprKind, FnDef, Import, Item, Module, Sources, Span, Stmt, StmtKind, TokenKind,
-    lex_source, parse_at,
+    Diagnostic, Expr, ExprKind, Import, Item, Module, Sources, Span, Stmt, StmtKind, TokenKind, lex_source,
+    parse_at,
 };
 
 use crate::Lint;
@@ -118,18 +118,7 @@ fn unused_imports(text: &str, base: u32, extending: &[&str], found: &mut Vec<Lin
 /// How often each name is read in a body: every time it appears, less when it's only assigned.
 pub(crate) fn reads(body: &[Stmt]) -> HashMap<String, i64> {
     let mut counts: HashMap<String, i64> = HashMap::new();
-    let mut walked = FnDef {
-        name: String::new(),
-        generics: Vec::new(),
-        params: Vec::new(),
-        ret: None,
-        arrow: None,
-        fails: None,
-        body: body.to_vec(),
-        annotations: Vec::new(),
-        span: Span::default(),
-    };
-    fennec_syntax::visit::in_function(&mut walked, &mut |expr| {
+    fennec_syntax::read::in_stmts(body, &mut |expr| {
         if let ExprKind::Name(name) = &expr.kind {
             *counts.entry(name.clone()).or_default() += 1;
         }
@@ -235,18 +224,7 @@ pub(crate) fn changed_in(part: &[Stmt], body: &[Stmt]) -> HashSet<String> {
 fn changed_directly(body: &[Stmt]) -> HashSet<String> {
     let mut found = HashSet::new();
     changed_by_statements(body, &mut found);
-    let mut walked = FnDef {
-        name: String::new(),
-        generics: Vec::new(),
-        params: Vec::new(),
-        ret: None,
-        arrow: None,
-        fails: None,
-        body: body.to_vec(),
-        annotations: Vec::new(),
-        span: Span::default(),
-    };
-    fennec_syntax::visit::in_function(&mut walked, &mut |expr| {
+    fennec_syntax::read::in_stmts(body, &mut |expr| {
         // A `match` is an expression, so its arms' statements are only found from here.
         if let ExprKind::Match { arms, .. } = &expr.kind {
             for arm in arms {

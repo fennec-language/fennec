@@ -15,18 +15,7 @@ use crate::sizes::{blocks, end_of, functions};
 /// How often each name appears in some statements, nested functions included.
 fn names_in(stmts: &[Stmt]) -> HashMap<String, usize> {
     let mut counts: HashMap<String, usize> = HashMap::new();
-    let mut walked = FnDef {
-        name: String::new(),
-        generics: Vec::new(),
-        params: Vec::new(),
-        ret: None,
-        arrow: None,
-        fails: None,
-        body: stmts.to_vec(),
-        annotations: Vec::new(),
-        span: Span::default(),
-    };
-    fennec_syntax::visit::in_function(&mut walked, &mut |expr| {
+    fennec_syntax::read::in_stmts(stmts, &mut |expr| {
         if let ExprKind::Name(name) = &expr.kind {
             *counts.entry(name.clone()).or_default() += 1;
         }
@@ -331,18 +320,7 @@ fn made_as_list(stmts: &[Stmt], name: &str) -> bool {
 /// Every `list[index]` in some statements.
 fn indexes(stmts: &[Stmt], list: &str, index: &str) -> Vec<Span> {
     let mut found = Vec::new();
-    let mut walked = FnDef {
-        name: String::new(),
-        generics: Vec::new(),
-        params: Vec::new(),
-        ret: None,
-        arrow: None,
-        fails: None,
-        body: stmts.to_vec(),
-        annotations: Vec::new(),
-        span: Span::default(),
-    };
-    fennec_syntax::visit::in_function(&mut walked, &mut |expr| {
+    fennec_syntax::read::in_stmts(stmts, &mut |expr| {
         if let ExprKind::Index { object, index: at } = &expr.kind
             && matches!(&object.kind, ExprKind::Name(object) if object == list)
             && matches!(&at.kind, ExprKind::Name(at) if at == index)

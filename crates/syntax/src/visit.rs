@@ -174,8 +174,7 @@ fn bound_in<S: std::hash::BuildHasher>(body: &[Stmt], bound: &mut HashSet<String
         }
     }
     // What expressions bind: a lambda's parameters, a comprehension's names, a case's pattern.
-    let mut copy = body.to_vec();
-    stmts(&mut copy, &mut |found| match &found.kind {
+    crate::read::in_stmts(body, &mut |found| match &found.kind {
         ExprKind::Lambda { params, .. } => bound.extend(params.iter().cloned()),
         ExprKind::Comprehension { names, .. } => bound.extend(names.iter().cloned()),
         ExprKind::Match { arms, .. } => {

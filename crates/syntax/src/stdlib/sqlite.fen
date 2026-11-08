@@ -20,8 +20,8 @@
 ##
 ## In a test, each path is a database in memory, fresh for each test, and `--real` uses files.
 
-from std.sql import SqlError, SqlValue
 from std.intrinsics import new_tag
+from std.sql import SqlError, SqlValue
 
 ## The database at `path`, made if it isn't there, lent for a `with` block:
 ## `with sqlite.open(fs, "index.db")? as db:`. It's closed when the block ends.
@@ -143,7 +143,11 @@ def rows_as[T: Deserializable](rows: SqliteRows) -> list[T] fails SqlError:
                 found.append(value)
             case Err(err):
                 # A field with no column says so with no line, and its name as the message.
-                if err.line < 0: fail .Column(name=err.message, reason="the query gives no column for this field")
+                if err.line < 0:
+                    fail .Column(
+                        name=err.message,
+                        reason="the query gives no column for this field",
+                    )
                 fail .Column(name=src._column(), reason=err.message)
     found
 
@@ -168,7 +172,9 @@ struct SqliteRowReader:
     ## Where the cell being read is, in the lists of `SqliteRows`, after checking there's one.
     def _here(self) -> int fails ParseError:
         if not self._in_record and self._width != 1:
-            fail self._bad(f"a row of {self._width} columns can't be read as one value: read it into a struct")
+            fail self._bad(
+                f"a row of {self._width} columns can't be read as one value: read it into a struct",
+            )
         self._row * self._width + self._cell
 
     def _kind(self) -> int fails ParseError:

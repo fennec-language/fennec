@@ -51,10 +51,33 @@ pub struct Edit {
     pub text: String,
 }
 
+/// What joins a dependency's name to each name it defines in the merged program, as in `physics·Body`.
+/// It's nothing a program can write, so a kit's names can't meet another's.
+pub const KIT_MARK: char = '·';
+
+/// A message as people read it: a name from another kit is written `physics.Body`, as code
+/// reaches it.
+fn with_kits_dotted(message: String) -> String {
+    if message.contains(KIT_MARK) { message.replace(KIT_MARK, ".") } else { message }
+}
+
+/// A type's name as a running program shows it, without the kit the merged program marks it with:
+/// `Body`, the same as inside its own kit.
+#[must_use]
+pub fn without_kits(name: &str) -> String {
+    let mut shown = String::new();
+    let mut parts = name.split(KIT_MARK).peekable();
+    while let Some(part) = parts.next() {
+        let word = |c: char| c.is_alphanumeric() || c == '_';
+        shown.push_str(if parts.peek().is_some() { part.trim_end_matches(word) } else { part });
+    }
+    shown
+}
+
 impl Diagnostic {
     pub fn new(message: impl Into<String>, span: Span) -> Self {
         Diagnostic {
-            message: message.into(),
+            message: with_kits_dotted(message.into()),
             span,
             help: None,
             elsewhere: None,
@@ -65,7 +88,7 @@ impl Diagnostic {
 
     #[must_use]
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
-        self.help = Some(help.into());
+        self.help = Some(with_kits_dotted(help.into()));
         self
     }
 

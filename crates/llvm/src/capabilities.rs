@@ -203,35 +203,6 @@ impl Emit<'_, '_, '_> {
         self.take_what_crossed(dest, &handle, (&mark, crossed), span)
     }
 
-    /// One of std's functions the runtime has, called as a capability's method is.
-    pub(crate) fn std_call(
-        &mut self,
-        dest: Option<LocalId>,
-        name: &str,
-        args: &[Operand],
-        span: Span,
-    ) -> Result<(), String> {
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
-        let (mark, crossed) = self.cross_arguments(args)?;
-        let named = self.literal(name);
-        // What `loads` reads into is the type the program wrote, here as a string.
-        let wanted = match dest.and_then(|dest| self.function.locals.get(dest.0)).map(|local| &local.ty) {
-            Some(fennec_check::Type::Result(wanted, _)) if name.contains(".loads") => {
-                let written = wanted.to_string();
-                self.literal(&written)
-            }
-            _ => "null".to_owned(),
-        };
-        self.declare("declare i64 @fennec_std_call(ptr, ptr, i64, i64, i64) nounwind");
-        let handle = self.temp();
-        self.line(&format!(
-            "{handle} = call i64 @fennec_std_call(ptr {named}, ptr {wanted}, i64 {}, i64 {from}, i64 {to})",
-            args.len()
-        ));
-        self.leave_if_failed();
-        self.take_what_crossed(dest, &handle, (&mark, crossed), span)
-    }
-
     /// One of `std.crypto`'s functions, which the runtime runs with no interpreter.
     pub(crate) fn crypto_call(
         &mut self,

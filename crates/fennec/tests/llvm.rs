@@ -6495,20 +6495,18 @@ fn a_program_that_makes_no_requests_links_no_tls() -> std::io::Result<()> {
     Ok(())
 }
 
-/// A program built with no interpreter in its runtime prints what it should and has none of the
-/// interpreter in it.
+/// A built program prints what it should and has none of the interpreter in it.
 #[test]
-fn a_lean_runtime_leaves_the_interpreter_out() -> std::io::Result<()> {
-    if !ready() || !crate::executables::lean_runtime_built() {
+fn a_built_program_has_no_interpreter_in_it() -> std::io::Result<()> {
+    if !ready() {
         return Ok(());
     }
-    let dir = folder("lean-runtime")?;
+    let dir = folder("no-interpreter")?;
     let path = |file: &Path| file.display().to_string();
-    let lean = |source: &Path, output: &Path| {
+    let compile = |source: &Path, output: &Path| {
         crate::executables::fennec_command()
             .args(["build", "--llvm", &path(source), "-o", &path(output)])
             .env("FENNEC_HOME", &dir)
-            .env("FENNEC_LEAN_RUNTIME", "1")
             .output_before(FENNEC_DEADLINE)
     };
     let plain = dir.join("plain.fen");
@@ -6527,24 +6525,21 @@ def main(stdout: Stdout, args: Args, process: Process):
 ",
     )?;
     let executable = dir.join("plain");
-    let built = lean(&plain, &executable)?;
+    let built = compile(&plain, &executable)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "[<a>] {\"key\": 1} 0\nhello\n\n");
-    // A Windows executable has no symbols to look through. There, what follows is the check: what
-    // needs the interpreter doesn't link.
+    // A Windows executable has no symbols to look through.
     if !cfg!(windows) {
         let symbols = Command::new("nm").arg(&executable).output_within()?;
         assert!(symbols.status.success(), "{}", String::from_utf8_lossy(&symbols.stderr));
         let symbols = String::from_utf8_lossy(&symbols.stdout);
         assert!(symbols.contains("fennec_clock_now") || symbols.contains("fennec_print_block"), "{symbols}");
-        // The interpreter's constructor, which the full runtime always calls when the program
-        // starts. Rust writes each name as its length and the name. A looser match finds
-        // `Interp` in the name of a small closure the linker folded together with the native code's own
-        // copy, in a release build.
-        assert!(!symbols.contains("6Interp11with_output"), "the interpreter is still linked");
+        // The interpreter's constructor. Rust writes each name as its length and the name. A looser
+        // match finds `Interp` in the name of a small closure the linker folded together with the
+        // native code's own copy, in a release build.
+        assert!(!symbols.contains("6Interp11with_output"), "the interpreter is linked");
     }
-
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -6589,44 +6584,6 @@ fn a_build_finds_llvm_s_tools_beside_fennec() -> std::io::Result<()> {
     assert!(!without.status.success(), "it built with no tools beside it and no toolchain");
     assert!(with.status.success(), "{}", String::from_utf8_lossy(&with.stderr));
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "built with what ships\n");
-    Ok(())
-}
-
-/// With nothing asked, a program is built with the runtime that leaves the interpreter out. No
-/// program's code crosses into the interpreter any more, so none is built with the one that has it.
-#[test]
-fn a_build_leaves_the_interpreter_out() -> std::io::Result<()> {
-    if !ready() || !crate::executables::lean_runtime_built() {
-        return Ok(());
-    }
-    let dir = folder("lean-default")?;
-    let built = |source: &str, name: &str| -> std::io::Result<PathBuf> {
-        let program = dir.join(format!("{name}.fen"));
-        std::fs::write(&program, source)?;
-        let executable = dir.join(name);
-        let built = crate::executables::fennec_command()
-            .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
-            .env("FENNEC_HOME", &dir)
-            .env_remove("FENNEC_LEAN_RUNTIME")
-            .output_before(FENNEC_DEADLINE)?;
-        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-        Ok(executable)
-    };
-    let has_interpreter = |executable: &Path| -> std::io::Result<bool> {
-        let symbols = Command::new("nm").arg(executable).output_within()?;
-        // The interpreter's constructor, as `a_lean_runtime_leaves_the_interpreter_out` looks for it.
-        Ok(String::from_utf8_lossy(&symbols.stdout).contains("6Interp11with_output"))
-    };
-    let lean = built("def main(stdout: Stdout):\n    stdout.print([1, 2], {\"key\": 3})\n", "lean")?;
-    assert_eq!(
-        String::from_utf8_lossy(&Command::new(&lean).output_within()?.stdout),
-        "[1, 2] {\"key\": 3}\n"
-    );
-    // A Windows executable has no symbols to look through.
-    if !cfg!(windows) {
-        assert!(!has_interpreter(&lean)?, "the interpreter is still linked");
-    }
-    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 
@@ -7145,7 +7102,7 @@ fn a_build_runs_parallel_on_every_core_unless_asked_not_to() -> std::io::Result<
 /// in it.
 #[test]
 fn json_and_toml_of_plain_types_need_no_interpreter() -> std::io::Result<()> {
-    if !ready() || !crate::executables::lean_runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let dir = folder("formats-lean")?;
@@ -7179,7 +7136,6 @@ def main(stdout: Stdout):
     let built = crate::executables::fennec_command()
         .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
         .env("FENNEC_HOME", &dir)
-        .env("FENNEC_LEAN_RUNTIME", "1")
         .output_before(FENNEC_DEADLINE)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
@@ -7198,7 +7154,7 @@ def main(stdout: Stdout):
 /// always `None`, and through TOML and `std.pack` too. An array of the wrong length doesn't load.
 #[test]
 fn tuples_save_and_load_natively() -> std::io::Result<()> {
-    if !ready() || !crate::executables::lean_runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let dir = folder("tuples-lean")?;
@@ -7240,7 +7196,6 @@ def main(stdout: Stdout):
     let built = crate::executables::fennec_command()
         .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
         .env("FENNEC_HOME", &dir)
-        .env("FENNEC_LEAN_RUNTIME", "1")
         .output_before(FENNEC_DEADLINE)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;

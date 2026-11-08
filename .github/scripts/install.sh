@@ -22,7 +22,7 @@ cp "$from/fennec" "$into/fennec.new"
 cp "$from/libfennec_runtime.a" "$into/libfennec_runtime.a"
 # Each runtime with features is built in a folder of its own, since built with the others, Cargo
 # would give all of them its features.
-for features in threads lean lean,threads; do
+for features in threads; do
   dir="target/install-${features//,/-}"
   name="libfennec_runtime_${features//,/_}"
   cargo build --release --locked -p fennec-runtime --features "$features" --target-dir "$dir"

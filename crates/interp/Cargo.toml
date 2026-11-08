@@ -28,9 +28,6 @@ rusqlite.workspace = true
 workspace = true
 
 [features]
-# Leaves the interpreter out of the runtime native code links, so anything still needing it is a
-# compile or link error.
-lean = []
 # The checks native code running on several threads needs: blocks counted across threads,
 # and each thread's queue of blocks to free. Programs with no tasks link a runtime without
 # them, so they pay nothing (decisions.md: "Programs with no tasks compile the check away").

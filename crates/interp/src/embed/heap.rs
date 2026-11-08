@@ -24,6 +24,8 @@ mod freeing;
 mod named;
 pub(super) mod shown;
 #[cfg(test)]
+mod tests;
+#[cfg(test)]
 pub(super) use freeing::measure_part;
 pub use freeing::{free, free_text, set_abandon};
 pub(super) use freeing::{release, run_abandons};
@@ -1160,32 +1162,6 @@ pub(super) fn lent_block(
     i64::try_from(lent.address).ok()
 }
 
-/// A field of a struct a temporary is lent, without looking at the rest of it. `None` for
-/// anything else, which the interpreter then reads.
-pub(super) fn lent_field(state: &mut State, value: &Value, name: i64) -> Option<Value> {
-    let Value::Lent(lent) = value else { return None };
-    let name = State::name_ref(&state.tables, name);
-    let block = state.heap.block(lent.address)?;
-    let shape = Rc::clone(state.tables.shapes.get(usize::try_from(shape_word(block)?).ok()?)?);
-    let Element::Struct { fields, .. } = shape.as_ref() else { return None };
-    let mut at = HEADER_WORDS;
-    let (element, word) = fields.iter().find_map(|(field, element)| {
-        let word = block.get(at).copied();
-        at += element.words();
-        (field.as_ref() == name).then_some((element, word))
-    })?;
-    let word = word?;
-    Some(match element {
-        Element::Int | Element::Float | Element::Bool | Element::Str => read_word(state, element, word),
-        Element::Object => cell_value(state, state.heap.block(word)?)?,
-        Element::Boxed(_) | Element::List(_) | Element::ListOf(_) => {
-            retain(state, word);
-            Value::Lent(Rc::new(Lent { address: word }))
-        }
-        _ => return None,
-    })
-}
-
 /// The name of the type of a struct or enum a temporary is lent.
 pub(super) fn lent_type(state: &State, value: &Value) -> Option<Rc<str>> {
     let Value::Lent(lent) = value else { return None };
@@ -1274,13 +1250,7 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
         Element::Struct { name, fields } => {
             let value = instance(name, None, read_fields(state, fields, words));
             // An error's block is laid out like a struct's, so its type says which it is.
-            #[cfg(not(feature = "lean"))]
-            let error = state
-                .interp
-                .type_info(type_name(name))
-                .is_some_and(|info| info.kind == crate::interp::TypeKind::Error);
             // Nothing built without the interpreter looks at this on a value read back.
-            #[cfg(feature = "lean")]
             let error = false;
             match value {
                 Value::Instance(mut made) if error => {

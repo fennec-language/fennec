@@ -412,6 +412,10 @@ pub(in crate::embed) struct Io {
     /// the connections' tasks share `ready` and `waiting`.
     ranges: Scheduler,
     accounts: HashMap<TaskId, super::threads::Accounts>,
+    /// The runtime's temporaries and inputs each parked task holds, kept apart while it's parked:
+    /// tasks take turns on the thread, so one's can't be left where another's truncating would
+    /// cut them off, and an ended task's go with it.
+    temporaries: HashMap<TaskId, super::Temporaries>,
 }
 
 impl Io {
@@ -430,6 +434,7 @@ impl Io {
             servers: HashMap::new(),
             ranges: Scheduler::keeping(RANGE_STACK, RANGE_STACKS_KEPT),
             accounts: HashMap::new(),
+            temporaries: HashMap::new(),
         }
     }
 
@@ -506,7 +511,8 @@ impl Io {
         self.ready.retain(|(task, _)| !here.tasks.contains(task));
         for task in here.tasks.drain() {
             self.owners.remove(&task);
-            let _ = self.scheduler.cancel(task);
+            let _ = self.with_own_temporaries(task, |io| io.scheduler.cancel(task));
+            self.temporaries.remove(&task);
             // A round cut short ends quietly, however it ended.
             super::clear_failure();
         }
@@ -546,7 +552,7 @@ impl Io {
                 self.resume_range(task, wake);
                 continue;
             }
-            match self.scheduler.resume(task, wake) {
+            match self.with_own_temporaries(task, |io| io.scheduler.resume(task, wake)) {
                 Step::Parked(YIELD) => self.ready.push_back((task, Wake::Ready(READY))),
                 Step::Parked(token) => {
                     let token = usize::try_from(token).unwrap_or(usize::MAX);
@@ -592,7 +598,7 @@ impl Io {
     fn resume_range(&mut self, task: TaskId, wake: Wake) {
         let Some(mut accounts) = self.accounts.remove(&task) else { return };
         super::threads::swap_accounts(&mut accounts);
-        let step = self.ranges.resume(task, wake);
+        let step = self.with_own_temporaries(task, |io| io.ranges.resume(task, wake));
         super::threads::swap_accounts(&mut accounts);
         match step {
             Step::Parked(YIELD) => {
@@ -609,6 +615,20 @@ impl Io {
                 debug_assert!(accounts.is_empty(), "a range ended with what it made not handed over");
             }
         }
+    }
+
+    /// Resumes `task` with its own temporaries and inputs in the runtime, keeping them apart again
+    /// if it parks. What's left when it ends is let go of: native code that left a function by a
+    /// failure may leave some.
+    fn with_own_temporaries(&mut self, task: TaskId, resume: impl FnOnce(&mut Io) -> Step) -> Step {
+        let mut own = self.temporaries.remove(&task).unwrap_or_default();
+        super::swap_temporaries(&mut own);
+        let step = resume(self);
+        super::swap_temporaries(&mut own);
+        if matches!(step, Step::Parked(_)) && !own.is_empty() {
+            self.temporaries.insert(task, own);
+        }
+        step
     }
 
     /// A task's about to be resumed: its slice starts now, and whether anything else here wants the

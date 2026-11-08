@@ -59,8 +59,6 @@ pub const GEN_ITEM: i32 = 48;
 mod tests {
     use std::rc::Rc;
 
-    use fennec_syntax::Module;
-
     use super::super::{Tables, finish, heap, lists, regex, start, strings, with};
     use super::{FIELDS, LIST_ITEMS, LIST_LENGTH, LIST_ROOM, TEXT, TEXT_BYTES, TEXT_CHARS, TEXT_ROOM};
     use crate::packed::Element;
@@ -85,7 +83,7 @@ mod tests {
     #[test]
     fn a_list_with_room_is_empty_and_has_it() {
         let tables = Tables { elements: vec![Rc::new(Element::Int)], ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let list = lists::with_room(0, 100);
         assert_eq!(word(list, LIST_LENGTH), Some(0));
         assert_eq!(word(list, LIST_ROOM), Some(100));
@@ -95,7 +93,7 @@ mod tests {
     #[test]
     fn a_string_with_room_is_filled_by_the_caller_and_grows_in_place() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let text = strings::with_room(13);
         assert_eq!(word(text, 0), Some(1));
         assert_eq!(word(text, TEXT_ROOM), Some(16));
@@ -114,7 +112,7 @@ mod tests {
     fn strings_join_and_grow_a_word_at_a_time_from_any_byte() {
         let str = Rc::new(Element::Str);
         let tables = Tables { shapes: vec![Rc::clone(&str)], elements: vec![str], ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let string = |text: &str| with(|state| heap::text_address(state, text));
         let pieces = ["", "a", "bcdefghij", "é", "klmnopq", "rstuvwxyz0123456789", "ü!"];
         let mut grown = string("");
@@ -143,7 +141,7 @@ mod tests {
     #[cfg(not(feature = "sanitize"))]
     fn a_string_a_runtime_call_makes_reuses_what_a_freed_one_left() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let long = with(|state| heap::text_address(state, "long enough to be a block of its own, twice"));
         let first = strings::concat(long, long);
         heap::free_text(first);
@@ -160,12 +158,7 @@ mod tests {
     fn a_string_is_freed_as_one_and_anything_else_as_free_would() {
         let shapes =
             vec![Rc::new(Element::Str), Rc::new(Element::Struct { name: "S".into(), fields: Vec::new() })];
-        start(
-            &Module { items: Vec::new() },
-            Tables { shapes, ..Tables::default() },
-            crate::Inputs::default(),
-        )
-        .unwrap();
+        start(Tables { shapes, ..Tables::default() }, crate::Inputs::default());
         let text = with(|state| heap::text_address(state, "a string long enough to have its own block"));
         heap::free_text(text);
         assert_eq!(word(text, 0), None);
@@ -187,7 +180,7 @@ mod tests {
         };
         let shapes = vec![Rc::new(node), Rc::new(Element::Str)];
         let tables = Tables { shapes, str_shape: 1, ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let loops: u64 = std::env::var("FENNEC_LOOPS").ok().and_then(|n| n.parse().ok()).unwrap_or(0);
         let names = ["", "spare", "pop", "nothing", "table", "with", "alloc", "allocdrop"];
         let part =
@@ -212,7 +205,7 @@ mod tests {
     #[test]
     fn strings_strip_as_the_interpreter_does_from_any_byte() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let string = |text: &str| with(|state| heap::text_address(state, text));
         let cases = [
             "",
@@ -241,7 +234,7 @@ mod tests {
     #[test]
     fn floats_sort_as_the_interpreter_sorts_them() {
         let tables = Tables { elements: vec![Rc::new(Element::Float)], ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let nans = [f64::NAN, -f64::NAN, f64::from_bits(f64::NAN.to_bits() | 1)];
         let floats = [0.0, -0.0, 1.5, -0.0, 0.0, f64::INFINITY, -1.0, f64::NEG_INFINITY];
         let floats: Vec<f64> = floats.into_iter().chain(nans).chain([0.0, -0.0]).collect();
@@ -274,7 +267,7 @@ mod tests {
         };
         let tables =
             Tables { shapes: vec![Rc::new(point), Rc::new(Element::Str)], str_shape: 1, ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let block = heap::alloc(0);
         set_word(block, FIELDS, 7);
         set_word(block, FIELDS + 8, u64::try_from(with(|state| heap::text_address(state, "fox"))).unwrap());
@@ -295,7 +288,7 @@ mod tests {
     #[test]
     fn numbers_format_without_a_temporary() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let (two, comma) = with(|state| (heap::text_address(state, ".2f"), heap::text_address(state, ",")));
         assert_eq!(text_of(strings::float_spec_text(1.5, two, 0, 0)), "1.50");
         assert_eq!(text_of(strings::int_spec_text(1000, comma, 0, 0)), "1,000");
@@ -342,7 +335,7 @@ mod tests {
     fn a_generator_stopped_at_a_yield_is_closed_when_it_is_freed() {
         let shapes = vec![Rc::new(generator_shape()), Rc::new(Element::Str)];
         let tables = Tables { shapes, str_shape: 1, ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         heap::set_abandon(0, close);
         CLOSED.set(0);
         let not_started = heap::alloc(0);
@@ -365,7 +358,7 @@ mod tests {
         };
         let shapes = vec![Rc::new(generator_shape()), Rc::new(holder), Rc::new(Element::Str)];
         let tables = Tables { shapes, str_shape: 2, elements: vec![items], ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         heap::set_abandon(0, close);
         CLOSED.set(0);
         let generator = heap::alloc(0);
@@ -393,7 +386,7 @@ mod tests {
             shapes: vec![Rc::new(Element::Str)],
             ..Tables::default()
         };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let list = lists::new(0, 3);
         for (at, value) in [(0, 1), (1, 2), (2, 3)] {
             set_word(list, LIST_ITEMS + at * 8, value);
@@ -412,7 +405,7 @@ mod tests {
             shapes: vec![Rc::new(Element::Str)],
             ..Tables::default()
         };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let string = |text: &str| with(|state| heap::text_address(state, text));
         let (pattern, whole) = (string("é(b)|(c)"), string("aéb c"));
         assert_eq!(regex::is_valid(pattern), 1);
@@ -443,7 +436,7 @@ mod tests {
     #[test]
     fn stopping_fails_with_the_text_at_the_span() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let message = with(|state| heap::text_address(state, "assertion failed"));
         super::super::checks::stop(message, 3, 7);
         let (_, failure, _) = finish();
@@ -480,7 +473,7 @@ mod tests {
             str_shape: 1,
             ..Tables::default()
         };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         with(|state| {
             let mut words = Vec::new();
             heap::write(state, &maybe, &crate::value::Value::None, &mut words).unwrap();
@@ -506,7 +499,7 @@ mod tests {
     fn a_dict_is_read_and_changed_by_a_slice_of_text_without_making_its_key() {
         let shapes = vec![Rc::new(Element::Str)];
         let tables = Tables { shapes, str_shape: 0, ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let shape =
             super::super::dicts::shape(0, super::super::dicts::Word::Str, super::super::dicts::Word::Int)
                 .unwrap();
@@ -555,7 +548,7 @@ mod tests {
     #[test]
     fn indexing_text_reads_only_what_it_needs() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let string = |text: &str| with(|state| heap::text_address(state, text));
         let (plain, accented) = (string("abc"), string("aéb€c"));
         let at = |text, at| text_of(strings::index(text, at, 0, 0));
@@ -572,7 +565,7 @@ mod tests {
     #[test]
     fn stripping_takes_off_what_str_trim_does() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let string = |text: &str| with(|state| heap::text_address(state, text));
         for text in ["  a b  ", "\t\n\x0b\x0cx\r ", "   ", "", "ok", " é ", "\x1fy\x1f", "a\u{a0}"] {
             for (which, expected) in [(0, text.trim()), (1, text.trim_start()), (2, text.trim_end())] {
@@ -597,7 +590,7 @@ mod tests {
     #[test]
     fn popping_a_dict_key_hands_back_its_value() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let words = super::super::dicts::Word::Int;
         let shape = super::super::dicts::shape(0, words, words).unwrap();
         let mut dict = super::super::dicts::new(i64::try_from(shape).unwrap(), 4);
@@ -622,7 +615,7 @@ mod tests {
             str_shape: 1,
             ..Tables::default()
         };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         with(|state| {
             let tuple =
                 crate::value::Value::tuple(vec![crate::value::Value::Int(1), crate::value::Value::str("a")]);
@@ -643,7 +636,7 @@ mod tests {
             shapes: vec![Rc::new(Element::Str)],
             ..Tables::default()
         };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let int = crate::value::Value::Int;
         let nested = crate::value::Value::list(vec![
             crate::value::Value::list(vec![int(1), int(2)]),

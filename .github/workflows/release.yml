@@ -160,20 +160,6 @@ jobs:
         run: |
           cargo rustc --release --locked -p fennec-runtime --target "$TARGET" --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
           cp "$(find "target/$TARGET/release/deps" -name 'fennec_runtime-*.bc' -print -quit)" "target/$TARGET/release/libfennec_runtime.bc"
-      # The runtimes with no interpreter, which `fennec build` uses for every program that doesn't
-      # cross into it, also next to `fennec`, each in a folder of its own.
-      - name: Build the runtime libraries with no interpreter
-        shell: bash
-        env:
-          TARGET: ${{ matrix.platform.target }}
-        run: |
-          for features in lean lean,threads; do
-            dir="target/$(echo "$features" | tr , -)"
-            name="libfennec_runtime_$(echo "$features" | tr , _)"
-            cargo rustc --release --locked -p fennec-runtime --features "$features" --target "$TARGET" --target-dir "$dir" --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
-            cp "$dir/$TARGET/release/libfennec_runtime.a" "target/$TARGET/release/$name.a"
-            cp "$(find "$dir/$TARGET/release/deps" -name 'fennec_runtime-*.bc' -print -quit)" "target/$TARGET/release/$name.bc"
-          done
       # LLVM's tools for the target's own machine, as `fennec` runs them. An archive lays them out
       # as the toolchain does, which is where `fennec` looks: see `Tools::find`.
       - name: Install LLVM's tools for this platform
@@ -195,7 +181,7 @@ jobs:
           mkdir "$name"
           cp README.md LICENSE-MIT LICENSE-APACHE RUNTIME-LIBRARY-EXCEPTION THIRD-PARTY.md "$name/"
           from="target/${TARGET}/release"
-          for runtime in libfennec_runtime libfennec_runtime_threads libfennec_runtime_lean libfennec_runtime_lean_threads; do
+          for runtime in libfennec_runtime libfennec_runtime_threads; do
             cp "$from/$runtime.a" "$from/$runtime.bc" "$name/"
           done
           mkdir -p "$name/licenses"

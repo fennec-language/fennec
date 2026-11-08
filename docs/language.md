@@ -342,6 +342,7 @@ def report(shapes: list[Shape], stdout: Stdout):
 - `None` is never a member: `str | None` is an error whose fix writes `str?`, and an optional union is `(A | B)?`.
 - Failures stay separate: a function that can fail returns `-> T fails E`, never `-> T | E`.
 - A function that can fail says `fails` in its signature, so a reader sees how it can fail there. One that leaves it out is a compile error, and `fennec fix` writes it, as `-> str fails TooBig`, `fails IoError` for one that gives back nothing, or `fails ParseError | RangeError`. `main` doesn't say it, since nothing calls `main`. Built.
+- A failure is always an `error` type, however it's made: `fail` takes one, `Err(...)` holds one, and a `Result` written as a type names one, or several, as its second type. `Err("no")` and `Result[int, str]` are compile errors. Built.
 
 ## Named arguments
 

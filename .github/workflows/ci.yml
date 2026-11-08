@@ -156,11 +156,10 @@ jobs:
         shell: bash
         run: |
           cargo build --locked -p fennec-runtime
-          # The runtimes with threads and with no interpreter, each on its own so Cargo doesn't
-          # give the plain one their features too. `fennec build` takes the lean ones whenever
-          # they're there, so they're built fresh here: one a cache kept from another commit
-          # can't read this commit's programs.
-          for features in threads lean lean,threads; do
+          # The runtime with threads, on its own so Cargo doesn't give the plain one its features
+          # too. `fennec build` takes it whenever it's there, so it's built fresh here: one a cache
+          # kept from another commit can't read this commit's programs.
+          for features in threads; do
             dir="target/$(echo "$features" | tr , -)"
             name="fennec_runtime_$(echo "$features" | tr , _)"
             cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
@@ -267,7 +266,7 @@ jobs:
       - name: Build the runtime libraries
         run: |
           cargo build --locked -p fennec-runtime
-          for features in threads lean lean,threads; do
+          for features in threads; do
             dir="target/$(echo "$features" | tr , -)"
             name="fennec_runtime_$(echo "$features" | tr , _)"
             cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
@@ -535,7 +534,7 @@ jobs:
       - name: Build the runtime libraries
         run: |
           cargo build --locked -p fennec-runtime
-          for features in threads lean lean,threads; do
+          for features in threads; do
             dir="target/$(echo "$features" | tr , -)"
             name="fennec_runtime_$(echo "$features" | tr , _)"
             cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
@@ -543,18 +542,14 @@ jobs:
           done
       - run: cargo test --locked -p fennec --test fennec 'llvm::'
 
-  # Programs built with no interpreter in their runtime, as `fennec build` builds every program
-  # whose code doesn't cross into it: nothing but what's listed may still need it, which fails at
-  # link when this job asks for the lean runtime for all of them, and everything else prints
-  # what it should, on one thread and on several.
+  # Every example and kernel builds with no interpreter in it, and prints what it should, on one
+  # thread and on several.
   lean-runtime:
     name: Programs with no interpreter
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    env:
-      FENNEC_LEAN_RUNTIME: 1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -562,33 +557,24 @@ jobs:
       - name: Install LLVM's tools
         run: rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Build fennec, and its runtimes with no interpreter
+      - name: Build fennec and its runtimes
         run: |
-          cargo build --release --locked -p fennec
-          cargo build --release --locked -p fennec-runtime --features lean --target-dir target/lean
-          cp target/lean/release/libfennec_runtime.a target/release/libfennec_runtime_lean.a
-          cargo build --release --locked -p fennec-runtime --features lean,threads --target-dir target/lean-threads
-          cp target/lean-threads/release/libfennec_runtime.a target/release/libfennec_runtime_lean_threads.a
+          cargo build --release --locked -p fennec -p fennec-runtime
+          cargo build --release --locked -p fennec-runtime --features threads --target-dir target/threads
+          cp target/threads/release/libfennec_runtime.a target/release/libfennec_runtime_threads.a
       - name: Build and run every example and kernel
         run: |
-          # By path, as an example and a kernel can share a name.
-          still_needs=" examples/json "
           built=0
           failed=0
           for program in examples/*.fen bench/kernels/*.fen; do
+            # By path, as an example and a kernel can share a name.
             name=${program%.fen}
             if ! ./target/release/fennec build "$program" -o checked > /dev/null 2> built.txt; then
               # Anything but a failed link is the backend saying what it doesn't take yet.
               grep -qE "linking failed|Undefined symbols|undefined reference" built.txt || continue
-              case "$still_needs" in
-                *" $name "*) ;;
-                *) echo "::error::$name needs the interpreter"; cat built.txt; failed=1 ;;
-              esac
+              echo "::error::$name didn't link"; cat built.txt; failed=1
               continue
             fi
-            case "$still_needs" in
-              *" $name "*) echo "::error::$name doesn't need the interpreter any more: take it off the list"; failed=1 ;;
-            esac
             if nm checked | grep -q 5Interp; then echo "::error::$name has the interpreter in it"; failed=1; fi
             built=$((built + 1))
             if [ -f "${program%.fen}.out" ]; then
@@ -607,7 +593,7 @@ jobs:
         run: |
           failed=0
           for program in crates/fennec/tests/fixtures/workers/*.fen examples/parallel_loops.fen examples/parallel_put_back.fen; do
-            FENNEC_LEAN_RUNTIME='' FENNEC_THREADS_RUNTIME='' ./target/release/fennec run --interp "$program" 2> /dev/null | sort > wanted.txt
+            FENNEC_THREADS_RUNTIME='' ./target/release/fennec run --interp "$program" 2> /dev/null | sort > wanted.txt
             ./target/release/fennec build "$program" -o checked > /dev/null
             for threads in 1 4 8; do
               if [ "$(FENNEC_THREADS=$threads timeout 120 ./checked 2> said.txt | sort)" != "$(cat wanted.txt)" ]; then

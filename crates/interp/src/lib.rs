@@ -2,10 +2,6 @@
 //! It exists to run real programs while the typed bytecode interpreter and native
 //! compilers are built.
 
-#![cfg_attr(
-    feature = "lean",
-    expect(dead_code, unused_imports, reason = "what only the interpreter uses is left unused")
-)]
 mod access;
 mod buffer;
 mod builtins;

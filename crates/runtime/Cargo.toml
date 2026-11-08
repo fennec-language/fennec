@@ -56,4 +56,3 @@ threads = ["fennec-interp/threads"]
 # For AddressSanitizer runs only: the system's allocator, which ASan watches, and freed
 # blocks given back at once (see `fennec-interp`'s feature of the same name).
 sanitize = ["fennec-interp/sanitize"]
-lean = ["fennec-interp/lean"]

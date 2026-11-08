@@ -2969,6 +2969,19 @@ fn with_launch_lowers() {
     assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
 }
 
+/// A launched task that can fail several ways: `launch_end` is written with their union in its
+/// brackets, which reads as one type, and the program checks again and lowers.
+#[test]
+fn a_task_failing_several_ways_lowers() {
+    let source = "from std.concurrent import Channel, Closed, Crashed, Timeout\n\n\
+        def tell(replies: Channel[int]) fails Closed | Timeout:\n    replies.send(1)?\n\n\
+        def main(stdout: Stdout) fails Closed | Crashed | Timeout:\n    \
+        with Channel[int].open(size=4) as replies:\n        with launch(() => tell(replies))?:\n            pass\n        \
+        stdout.print(replies.receive()?)\n";
+    let program = lowered(source).unwrap();
+    assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
+}
+
 #[test]
 fn a_result_passed_on_fails_every_way_its_function_can() {
     // `outer` fails with `Worse` itself and passes up `inner`'s failure, which is `Bad`, so it

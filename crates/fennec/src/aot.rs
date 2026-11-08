@@ -232,17 +232,17 @@ fn linker_here() -> bool {
     }
 }
 
-/// Whether this machine can build through LLVM at all: its tools are there, and the runtime
-/// library is beside `fennec`. Without them, nothing about the program is the reason.
-pub(crate) fn llvm_ready() -> bool {
-    linker_here() && fennec_llvm::Tools::find().is_ok() && runtime_library(Runtime::Plain, false).is_ok()
-}
-
-/// Why the plain runtime library beside `fennec` can't be used when it's there: it's from another
-/// build of Fennec. `None` when it's fine, or isn't there at all.
-pub(crate) fn stale_runtime() -> Option<String> {
-    let path = runtime_folder(false).ok()?.join(Runtime::Plain.library());
-    path.is_file().then(|| runtime_library(Runtime::Plain, false).err()).flatten()
+/// Why this machine can't build through LLVM at all: a tool, the linker or the runtime library
+/// beside `fennec` isn't there, or the library is from another build. `None` when it can, and
+/// then nothing but the program is the reason a build fails.
+pub(crate) fn not_ready() -> Option<String> {
+    if let Err(why) = fennec_llvm::Tools::find() {
+        return Some(why);
+    }
+    if !linker_here() {
+        return Some("there's no linker: LLD and the libraries it links come with LLVM's tools".to_owned());
+    }
+    runtime_library(Runtime::Plain, false).err()
 }
 
 /// Builds a checked program through LLVM to `output`, or says why LLVM can't: a function it

@@ -12,7 +12,7 @@
 //!
 //! Tests run through LLVM's cached dev build, in worker processes on every core (see
 //! `llvm_tests`). A failing property test's input is shrunk there to the simplest that fails. A
-//! test LLVM can't take runs in the interpreter, which no example's does.
+//! test LLVM can't take yet fails, saying why.
 
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -130,12 +130,6 @@ fn whole_program(path: &str, results: &Results) -> Result<Plan, ExitCode> {
     };
     // The standard library as a run checks it: just what the tests reach.
     match crate::copy_rule::check_to_run(&mut program.module, &program.sources) {
-        // A test may run in the interpreter, which would get sized numbers wrong, so a program
-        // using them isn't tested yet.
-        Ok(signatures) if let Some(refused) = fennec_check::interpreter_refuses(&signatures) => {
-            eprint!("{}", program.sources.render_all(&[refused]));
-            return Err(ExitCode::FAILURE);
-        }
         Ok(_) => {}
         Err(diagnostics) => {
             eprint!("{}", program.sources.render_all(&diagnostics));
@@ -181,29 +175,29 @@ fn run_plan(
     let Plan { program, wanted, unchanged } = plan;
     let render = |diagnostic: &fennec_syntax::Diagnostic| program.sources.render(diagnostic);
     let graph = TestGraph::of(&program.module, env!("FENNEC_BUILD"));
-    let mut outcomes = Vec::new();
-    let mut wanted = wanted;
-    let mut ran_through_llvm = HashMap::new();
-    // Tests with real capabilities take what they're given, which only the interpreter does.
-    if crate::aot::llvm_ready() {
-        let real = options.run == Run::Real;
-        let through_llvm =
-            crate::llvm_tests::run(&program.module, &wanted, &|name| graph.defines(name), real);
-        if options.verbose {
-            say_how_llvm_went(&through_llvm, wanted.len());
-        }
-        outcomes = through_llvm.outcomes;
-        wanted = through_llvm.left;
-        ran_through_llvm = through_llvm.ran;
+    if let Some(why) = crate::aot::not_ready() {
+        eprintln!("error: {why}");
+        return ExitCode::FAILURE;
     }
-    if !wanted.is_empty() {
-        match interpreted(&program.module, &wanted, options.run == Run::Real) {
-            Ok(more) => outcomes.extend(more),
-            Err(diagnostic) => {
-                eprint!("{}", render(&diagnostic));
-                return ExitCode::FAILURE;
-            }
-        }
+    let real = options.run == Run::Real;
+    let through_llvm = crate::llvm_tests::run(&program.module, &wanted, &|name| graph.defines(name), real);
+    if options.verbose {
+        say_how_llvm_went(&through_llvm, wanted.len());
+    }
+    let mut outcomes = through_llvm.outcomes;
+    let mut ran_through_llvm = through_llvm.ran;
+    // A test LLVM can't build yet fails, saying why, as `fennec build` would.
+    let why = through_llvm.refused.as_deref().unwrap_or("LLVM couldn't build it");
+    for name in through_llvm.left {
+        let span = program.module.items.iter().find_map(|item| match item {
+            fennec_syntax::Item::Test(found) if found.name == name => Some(found.span),
+            _ => None,
+        });
+        let failure = fennec_syntax::Diagnostic::new(
+            format!("LLVM can't build what this test reaches yet: {why}"),
+            span.unwrap_or_default(),
+        );
+        outcomes.push(fennec_interp::TestOutcome { name, failure: Some(failure), cases: 1 });
     }
     // Workers finish in any order, and a report reads in the order the tests are written.
     let place = |name: &str| graph.tests().position(|test| test == name);
@@ -277,22 +271,6 @@ fn say_how_llvm_went(through_llvm: &crate::llvm_tests::LlvmTests, wanted: usize)
         eprintln!("note: some tests run another way, since LLVM can't build what they reach: {why}");
     }
     eprintln!("note: {} of {wanted} tests ran through LLVM", through_llvm.outcomes.len());
-}
-
-/// Runs the tests in `names` in the interpreter.
-fn interpreted(
-    module: &fennec_syntax::Module,
-    names: &[String],
-    real: bool,
-) -> Result<Vec<fennec_interp::TestOutcome>, fennec_syntax::Diagnostic> {
-    let mut out: Box<dyn std::io::Write> =
-        if real { Box::new(std::io::stdout()) } else { Box::new(std::io::sink()) };
-    let mut interp = fennec_interp::Interp::new(&mut out)?;
-    if real {
-        interp.use_real_capabilities();
-    }
-    interp.load(module)?;
-    Ok(interp.run_tests_where(&|name| names.iter().any(|left| left == name)))
 }
 
 /// What names a kit wherever it is: its name in `kit.toml`. `None` for a program that isn't a kit.

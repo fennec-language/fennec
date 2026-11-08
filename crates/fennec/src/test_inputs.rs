@@ -162,19 +162,19 @@ impl<'m> Inputs<'m> {
         for (at, case) in def.cases.iter().enumerate() {
             let (lines, made) = self.fields(&case.fields, "        ")?;
             let made = if case.fields.is_empty() {
-                format!("{name}.{}", case.name)
+                format!(".{}", case.name)
             } else {
-                format!("{name}.{}({made})", case.name)
+                format!(".{}({made})", case.name)
             };
             let _ = write!(body, "    if kind == {at}:\n{lines}        return {made}\n");
         }
         // Never reached, but a function has to give back a value at its end.
         let first = def.cases.first()?;
         if first.fields.is_empty() {
-            let _ = writeln!(body, "    {name}.{}", first.name);
+            let _ = writeln!(body, "    .{}", first.name);
         } else {
             let (lines, made) = self.fields(&first.fields, "    ")?;
-            let _ = writeln!(body, "{lines}    {name}.{}({made})", first.name);
+            let _ = writeln!(body, "{lines}    .{}({made})", first.name);
         }
         Some(body)
     }

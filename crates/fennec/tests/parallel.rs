@@ -483,6 +483,23 @@ fn workers_take_turns_at_shared_values_holding_blocks() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A task holding a lock stays on its thread until it lets go, however long it runs or waits: what
+/// says it's in a lock is its thread's, so another task run there would seem to hold the lock too.
+#[test]
+fn a_task_holding_a_lock_is_not_parked() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-lock-park-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/waiting_inside_a_lock.fen");
+    let built = build_on_threads(&dir, source, "waiting_inside_a_lock")?;
+    let wanted = "a name that is long enough to need a block of its own 300000000\n";
+    matches_on_workers(&built, "waiting_inside_a_lock", Some(0), wanted)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// What a read lock's method makes holding a `shared` value's strings, a list made under it among
 /// them, is the reader's own once the lock is let go: each string prints, and isn't blank.
 #[test]

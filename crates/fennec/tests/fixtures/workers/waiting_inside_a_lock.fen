@@ -1,0 +1,30 @@
+from std.concurrent import Crashed
+
+struct Tally:
+    name = "none yet"
+    total = 0
+
+def sleeps(counts: shared Tally, clock: Clock):
+    lock counts as ref current:
+        clock.sleep(20ms)
+        current.name = "a name that is long enough to need a block of its own"
+
+def runs_long(counts: shared Tally):
+    lock counts as ref current:
+        mut total = 0
+        mut turn = 0
+        while turn < 300000000:
+            turn += 1
+            total += turn % 3
+        current.total = total
+
+def main(clock: Clock, stdout: Stdout) fails Crashed:
+    shared counts = Tally()
+    with launch(() => sleeps(counts, clock))?:
+        with launch(() => sleeps(counts, clock))?:
+            pass
+    with launch(() => runs_long(counts))?:
+        with launch(() => runs_long(counts))?:
+            pass
+    lock counts as current:
+        stdout.print(current.name, current.total)

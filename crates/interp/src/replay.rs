@@ -159,7 +159,7 @@ pub(crate) fn wait_turn(place: Option<&str>, what: &str) -> Result<(), String> {
 pub(crate) fn took_turn(place: Option<&str>, what: &str) {
     match (place, mode()) {
         (Some(place), Mode::Record(file)) => {
-            log(file, place, &format!("{} {what}", running()), &0_i64.to_le_bytes())
+            log(file, place, &format!("{} {what}", running()), &0_i64.to_le_bytes());
         }
         (Some(place), Mode::Replay(player)) => {
             let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);

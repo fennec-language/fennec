@@ -101,6 +101,8 @@ fn start_of(
     let _ = writeln!(out, "@fennec_failed = dso_local {local}global ptr null");
     if crate::parallel::uses_parallel(program) {
         out += "@fennec_thread = dso_local thread_local(initialexec) global i64 0\n";
+        // A parked task's stack limit is put back through this each time it's resumed.
+        out += "declare void @fennec_on_task_resume(ptr)\ndefine internal void @fen_set_stack_limit(i64 %limit) {\n  store i64 %limit, ptr @fennec_stack_limit\n  ret void\n}\n";
         out += crate::parallel::MAIN_THREAD_GLOBALS;
     }
     out += "@fennec_ascii = dso_local global ptr null\n";
@@ -140,6 +142,7 @@ fn setup(out: &mut String, program: &Program, shared: &Shared, image: &Image) ->
     if let Some(main_thread) = main_thread {
         // Filled in as soon as it's all set, before anything reads them.
         *out += main_thread;
+        *out += "  call void @fennec_on_task_resume(ptr @fen_set_stack_limit)\n";
     }
     if !shared.native.is_empty() {
         *out +=

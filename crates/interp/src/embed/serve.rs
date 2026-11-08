@@ -768,6 +768,9 @@ impl Io {
         super::swap_temporaries(&mut own);
         let step = resume(self);
         super::swap_temporaries(&mut own);
+        if !matches!(step, Step::Parked(_)) {
+            super::take_failure_of(&mut own);
+        }
         if matches!(step, Step::Parked(_)) && !own.is_empty() {
             self.temporaries.insert(task, own);
         }

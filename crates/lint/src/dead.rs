@@ -341,10 +341,10 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     found
 }
 
-/// What `for ref` changes when it loops over `parallel(xs)`: `xs`.
-fn parallel_items(iter: &Expr) -> &Expr {
+/// What `for ref` changes when it loops over `parallel(xs)` or `enumerate(xs)`: `xs`.
+pub(crate) fn parallel_items(iter: &Expr) -> &Expr {
     match &iter.kind {
-        ExprKind::Call { callee, args } if matches!(&callee.kind, ExprKind::Name(name) if name == "parallel") => {
+        ExprKind::Call { callee, args } if matches!(&callee.kind, ExprKind::Name(name) if name == "parallel" || name == "enumerate") => {
             args.first().map_or(iter, |first| &first.value)
         }
         _ => iter,

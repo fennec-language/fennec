@@ -96,7 +96,7 @@ for at, name in enumerate(names): ...
 for at, ref score in enumerate(scores): ...
 ```
 
-- `enumerate` takes anything you can loop over and gives `(index, value)`. Built. `for i, ref x in enumerate(xs)` needs `xs` to have positions, `len` and `[]`, and isn't built yet.
+- `enumerate` takes anything you can loop over and gives `(index, value)`. Built. `for i, ref x in enumerate(xs)` needs `xs` to have positions, `len` and `[]`, as `for ref` does. Built.
 - `ref` over a generator is a compile error, since its items are made one at a time and aren't anywhere to change. Built.
 - `items()` is for keyed things: a dict, a `Table`, and your own types that give `len`, `[]` and `key(i)`. Built for dicts and `Table`s.
 - Looping over a dict gives its keys, as in Python, and `keys()`, `values()` and `items()` stay. Built.
@@ -574,7 +574,7 @@ def main(net: Net, fs: Fs, clock: Clock):
 - `x / 0.0` stops the program, as Python's `ZeroDivisionError` does, and so does integer division by zero. Built. The compiler removes the check where it proves the divisor isn't zero.
 - A broken `where` rule stops the program in code, and a load that breaks one fails cleanly. Built.
 - `@hot` allows a leftover overflow check, and refuses any leftover bounds, key or integer divide check as a compile error that says why. Built. It will allow a leftover float divide check too, as it does overflow. Not built yet.
-- Speed never comes from dropping a check: there's no unchecked arithmetic and no switch that turns checks off.
+- Speed never comes from dropping a check: there's no unchecked arithmetic and no switch that turns checks off. There's no `@fast_math` either: a float result is the same bits on every machine and every build, which replays and lockstep games depend on.
 
 ## Speed
 

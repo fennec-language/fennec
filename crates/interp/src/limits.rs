@@ -67,10 +67,18 @@ impl Interp<'_> {
         args: &[Value],
         span: Span,
     ) -> Result<Value, Diagnostic> {
-        narrowed(limited, method, args, &mut |capability, method, args| match capability {
-            Capability::Process => self.process_method(method, args, span),
-            Capability::Fs => self.fs_method(method, args, span),
-            other => self.call_capability(other, method, args, span),
+        narrowed(limited, method, args, &mut |capability, method, args| {
+            // A test's capabilities are fakes, narrowed like any others.
+            if let Some(world) = self.world.as_mut()
+                && let Some(done) = world.method(capability, method, args, span)
+            {
+                return done;
+            }
+            match capability {
+                Capability::Process => self.process_method(method, args, span),
+                Capability::Fs => crate::stdlib::fs::fs_method(method, args, span),
+                other => self.call_capability(other, method, args, span),
+            }
         })
     }
 

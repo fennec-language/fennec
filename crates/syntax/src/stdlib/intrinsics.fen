@@ -223,3 +223,15 @@ export def channel_close(channel: int)
 ## Lets go of channel `channel` and what's left in it, at the end of its `with` block.
 @intrinsic
 export def channel_free(channel: int)
+
+## Starts `task` beside the caller, and gives back its handle for `launch_end`. `task` is a
+## closure taking nothing, which may fail.
+@intrinsic
+export def launch[F](task: F) -> int
+
+## Where the `with launch` block ends: waits for task `task`, cutting its waits short after
+## `stop_after_ns`, or never when that's -1, or at once when `failed`. `why` is set to 0 for a task
+## that ended or was stopped, 1 for one that crashed, and 2 for one that failed, whose failure it
+## gives back.
+@intrinsic
+export def launch_end[E](task: int, stop_after_ns: int, failed: bool, ref why: int) -> E?

@@ -82,6 +82,8 @@ pub(crate) struct Checker {
     /// The `with`s that open several handles, by their values' span, which lowering nests one
     /// inside another, innermost last.
     pub(crate) opened_apart: BTreeSet<(u32, u32)>,
+    /// Each `with launch(...)`, by the call's span, which lowering writes in as a source.
+    pub(crate) launches: BTreeMap<(u32, u32), crate::launch::Launch>,
     /// The calls to `json` and `toml`'s `dumps` and `loads` whose type has its own `def serialize`
     /// or `def deserialize`, each with the function in std that does the same in Fennec.
     pub(crate) native_formats: BTreeMap<(u32, u32), String>,
@@ -173,6 +175,7 @@ impl Checker {
             shared_values: BTreeMap::new(),
             sources: BTreeMap::new(),
             opened_apart: BTreeSet::new(),
+            launches: BTreeMap::new(),
             native_formats: BTreeMap::new(),
             native_json_bodies: BTreeSet::new(),
             saved_types: BTreeSet::new(),
@@ -275,6 +278,10 @@ impl Checker {
         for source in sources.values_mut() {
             source.gives = self.settled(&source.gives);
         }
+        let launches = std::mem::take(&mut self.launches)
+            .into_iter()
+            .map(|(at, launch)| (at, launch.settled(&|ty| self.settled(ty))))
+            .collect();
         let enums = self.enums();
         let locals = std::mem::take(&mut self.locals);
         // A type asked about before what it holds was known, like the list in `pack.dumps(pairs)`
@@ -309,6 +316,7 @@ impl Checker {
             shared_values: self.shared_values,
             sources,
             opened_apart: self.opened_apart,
+            launches,
             native_formats: self.native_formats,
             native_json_bodies: self.native_json_bodies,
             saved_types,

@@ -52,6 +52,7 @@ mod shared;
 mod stdlib;
 mod stmt;
 mod sum;
+mod tuple_lowering;
 mod types;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -61,6 +62,7 @@ use fennec_syntax::{Diagnostic, Expr, ExprKind, Item, Module, Span};
 pub use messages::missing_method;
 pub use named::add_pattern_fixes;
 pub use privacy::add_rename_fixes;
+pub use tuple_lowering::tuple_function;
 pub use types::{Num, Type};
 
 /// Checks a parsed module. Returns the signature of every function and method, or every
@@ -571,7 +573,12 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
     let nested = lend_lowering::nest(module, &checked.opened_apart);
     let sources_written = lend_lowering::lower(module, &checked.sources);
     let counted = enumerate_lowering::lower(module);
-    if (lock_lowering::lower(module, &checked.shared_values) || sources_written || counted || nested)
+    let tuples = tuple_lowering::lower(module, &checked.types);
+    if (lock_lowering::lower(module, &checked.shared_values)
+        || sources_written
+        || counted
+        || nested
+        || tuples)
         && let Ok(again) = checker::Checker::new(module).run(checker::Scope::Everything)
     {
         return resolved(module, again);

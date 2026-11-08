@@ -20,6 +20,7 @@ mod parallel;
 mod places;
 mod positions;
 mod structs;
+mod tuples;
 
 use std::collections::{HashMap, HashSet};
 

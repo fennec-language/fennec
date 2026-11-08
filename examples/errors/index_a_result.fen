@@ -1,7 +1,7 @@
 error Empty:
     reason: str
 
-def first(items: list[int]) -> int:
+def first(items: list[int]) -> int fails Empty:
     if items.len() == 0: fail Empty("no items")
     items[0]
 

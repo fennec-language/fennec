@@ -1826,8 +1826,8 @@ def dial(n: int) -> int fails DialError:
         fail .Closed
     fail .NotFound(\"host\")
 
-def unsaid() -> int:
-    fail DialError.Closed
+def unsaid() -> int fails DialError:
+    fail .Closed
 
 def main(stdout: Stdout):
     car = Car(color=.Red)

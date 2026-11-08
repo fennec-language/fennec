@@ -28,7 +28,7 @@ error TooSmall:
 
 MINIMUM = 0.5
 
-def checked(circle: Circle) -> Circle:
+def checked(circle: Circle) -> Circle fails TooSmall:
     if circle.radius < MINIMUM: fail TooSmall(radius=circle.radius)
     circle
 
@@ -51,7 +51,7 @@ def main(stdout: Stdout):
 - A name can't change unless it's declared `mut`: `mut total = 0`. The same goes for parameters and methods: `mut self`.
 - Assigning or passing a value gives the receiver its own copy.
 - `main` receives what the program may touch, like `stdout: Stdout`. There's no global `print`.
-- A function that can fail uses `fail`, and its caller passes the failure on with `?`.
+- A function that can fail says `fails` with its error, uses `fail`, and its caller passes the failure on with `?`.
 - A kit is a `kit.toml` and code under `src`: `src/main.fen` holds `main`, and `src/enemies/ai.fen` is the module `enemies.ai`.
 
 ### Common mistakes

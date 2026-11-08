@@ -71,6 +71,9 @@ struct Run {
     failure: Mutex<Option<(usize, Failure)>>,
     /// The values of failures a lower range's beat, to let go of once they're the caller's.
     beaten: Mutex<Vec<u64>>,
+    /// The call, as a task of the one making it, for naming its ranges' entries in a recording or a
+    /// replay. `None` in a normal run.
+    task: Option<crate::replay::Task>,
     /// The calling thread's blocks, lent to the ranges while it waits, when they're on the pool.
     lent: RwLock<Option<Arc<super::table::Table>>>,
     /// What each range made on a worker that outlives it, for the calling thread to adopt.
@@ -148,6 +151,7 @@ impl Run {
         Run {
             chunk,
             caller: super::threads::index(),
+            task: crate::replay::child(),
             stop: AtomicUsize::new(usize::MAX),
             failure: Mutex::new(None),
             beaten: Mutex::new(Vec::new()),
@@ -196,17 +200,21 @@ impl Run {
         }
     }
 
-    /// Starts a range on this thread, giving back where what it makes starts.
-    fn range_starts(&self) -> usize {
+    /// Starts the range at `from` on this thread, giving back where what it makes starts, and what
+    /// was running before it, in a recording or a replay, for `keep_made` to put back.
+    fn range_starts(&self, from: usize) -> (usize, Option<crate::replay::Task>) {
         if super::threads::index() != self.caller {
             pool::range_starts(self.lent.read().unwrap_or_else(PoisonError::into_inner).clone());
         }
-        super::threads::made_so_far()
+        let mut was = crate::replay::range(self.task.as_ref(), from);
+        crate::replay::swap(&mut was);
+        (super::threads::made_so_far(), was)
     }
 
     /// Keeps what the range just run on this thread made since `since`, and how it changed the
     /// owners of the calling thread's blocks, when this thread is a worker.
-    fn keep_made(&self, since: usize) {
+    fn keep_made(&self, (since, mut was): (usize, Option<crate::replay::Task>)) {
+        crate::replay::swap(&mut was);
         if super::threads::index() != self.caller {
             // Most ranges make nothing that outlives them, and every worker shares these locks.
             let made = super::threads::hand_over(since);
@@ -260,7 +268,7 @@ impl Run {
             return;
         }
         if to - from <= self.chunk {
-            let since = self.range_starts();
+            let since = self.range_starts(from);
             let code = leaf(from, to, i64::from(super::threads::index()));
             self.keep_made(since);
             if code != 0 {
@@ -306,7 +314,7 @@ impl Run {
     /// Runs one range of a loop or a comprehension on this thread, as it was split.
     fn leaf_on(&self, (from, to): (usize, usize), leaf: Leaf) {
         if from <= self.stop.load(Ordering::Relaxed) && from < to {
-            let since = self.range_starts();
+            let since = self.range_starts(from);
             let code = leaf.run(from, to, i64::from(super::threads::index()));
             self.keep_made(since);
             if code != 0 {
@@ -385,7 +393,7 @@ impl Run {
     ) -> Option<i64> {
         let (_, combine, env) = steps;
         let mut combined = 0;
-        let since = self.range_starts();
+        let since = self.range_starts(from);
         let code = combine(env, left?, right?, &mut combined);
         self.keep_made(since);
         if code != 0 {
@@ -404,7 +412,7 @@ impl Run {
         let thread = i64::from(super::threads::index());
         if to - from <= self.chunk {
             let mut partial = 0;
-            let since = self.range_starts();
+            let since = self.range_starts(from);
             let code = body(env, number(from), number(to), thread, &mut partial);
             self.keep_made(since);
             if code != 0 {
@@ -600,6 +608,11 @@ mod pool {
     pub fn set_worker_setup(_setup: Box<dyn Fn() + Send + Sync>) {}
 
     /// Without threads, there's no pool to test.
+    /// Without threads, the calling thread is the only worker.
+    pub(crate) fn workers_wanted() -> usize {
+        1
+    }
+
     pub(super) fn stressed() -> bool {
         false
     }
@@ -680,6 +693,7 @@ pub use stream::{parallel_stream, stream_end, stream_next};
 
 #[cfg(test)]
 pub(in crate::embed) use pool::with_setup;
+pub(crate) use pool::workers_wanted;
 #[cfg(not(any(test, feature = "threads")))]
 use pool::{Latch, Pool};
 #[cfg(any(test, feature = "threads"))]

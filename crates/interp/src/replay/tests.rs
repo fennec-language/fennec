@@ -52,21 +52,28 @@ fn an_error_from_the_operating_system_reads_back_as_the_same_failure() {
     assert_eq!((back.message.as_str(), back.help.as_deref()), ("disk full", Some("free some room")));
 }
 
-fn player(entries: &[(&str, &[u8])]) -> Mutex<Player> {
+/// A log with `entries`, each a task's call and what it gave, after the worker count.
+fn log_of(entries: &[(&str, &str, &[u8])]) -> Vec<u8> {
     let mut log = MAGIC.to_vec();
     log.extend(3_u32.to_le_bytes());
     log.extend(b"run");
     let at = log.len();
-    for (call, payload) in entries {
-        log.extend(entry(call, payload));
+    log.extend(entry("", WORKERS, &4_u64.to_le_bytes()));
+    for (task, call, payload) in entries {
+        log.extend(entry(task, call, payload));
     }
     assert_eq!(entries_start(&log), Some(at));
-    Mutex::new(Player { log, at })
+    log
+}
+
+fn player(entries: &[(&str, &str, &[u8])]) -> Mutex<Player> {
+    Mutex::new(player_of(&log_of(entries)).unwrap())
 }
 
 #[test]
 fn a_replay_gives_back_each_call_in_turn_and_names_both_where_it_diverges() {
-    let player = player(&[("Clock.now", &5_i64.to_le_bytes()), ("Fs.read_text", b"x")]);
+    let player = player(&[("0", "Clock.now", &5_i64.to_le_bytes()), ("0", "Fs.read_text", b"x")]);
+    assert_eq!(player.lock().unwrap().workers, Some(4));
     assert_eq!(replayed(&player, "Clock.now").unwrap(), 5_i64.to_le_bytes());
     let why = replayed(&player, "Entropy.seed").unwrap_err();
     assert!(why.contains("`Entropy.seed`") && why.contains("`Fs.read_text`"), "{why}");
@@ -75,12 +82,59 @@ fn a_replay_gives_back_each_call_in_turn_and_names_both_where_it_diverges() {
     assert!(why.contains("`Clock.now`") && why.contains("nothing more"), "{why}");
 }
 
+/// Each task gets its own entries in order, however the tasks take turns, and a divergence says
+/// which task it was in.
+#[test]
+fn each_task_replays_its_own_calls_in_whatever_order_the_tasks_run() {
+    let player = player(&[
+        ("0.0.0", "Clock.now", &1_i64.to_le_bytes()),
+        ("0.0.8", "Clock.now", &2_i64.to_le_bytes()),
+        ("0.0.0", "Clock.now", &3_i64.to_le_bytes()),
+    ]);
+    let as_task = |name: &str, call: &str| {
+        let mut task = Some(Task::named(Arc::from(name)));
+        TASK.with_borrow_mut(|running| std::mem::swap(running, &mut task));
+        let got = replayed(&player, call);
+        TASK.with_borrow_mut(|running| std::mem::swap(running, &mut task));
+        got
+    };
+    assert_eq!(as_task("0.0.8", "Clock.now").unwrap(), 2_i64.to_le_bytes());
+    assert_eq!(as_task("0.0.0", "Clock.now").unwrap(), 1_i64.to_le_bytes());
+    assert_eq!(left_over(&player.lock().unwrap()), Some(("0.0.0".to_owned(), "Clock.now".to_owned())));
+    assert_eq!(as_task("0.0.0", "Clock.now").unwrap(), 3_i64.to_le_bytes());
+    let why = as_task("0.0.8", "Clock.time").unwrap_err();
+    assert!(why.contains("in task 0.0.8") && why.contains("nothing more"), "{why}");
+    assert_eq!(left_over(&player.lock().unwrap()), None);
+}
+
 #[test]
 fn a_replay_that_ends_early_has_its_next_call_left() {
-    let player = player(&[("Stdin.lines", b"")]);
-    assert_eq!(next_name(&player.lock().unwrap()).as_deref(), Some("Stdin.lines"));
+    let player = player(&[("0", "Stdin.lines", b"")]);
+    assert_eq!(left_over(&player.lock().unwrap()), Some(("0".to_owned(), "Stdin.lines".to_owned())));
     replayed(&player, "Stdin.lines").unwrap();
-    assert_eq!(next_name(&player.lock().unwrap()), None);
+    assert_eq!(left_over(&player.lock().unwrap()), None);
+}
+
+/// A log from before tasks were named replays as `main`'s.
+#[test]
+fn a_log_from_before_tasks_were_named_is_mains() {
+    let mut log = MAGIC_UNNAMED.to_vec();
+    log.extend(0_u32.to_le_bytes());
+    log.extend(4_u16.to_le_bytes());
+    log.extend(b"Args");
+    log.extend(1_u32.to_le_bytes());
+    log.push(7);
+    let player = Mutex::new(player_of(&log).unwrap());
+    assert_eq!(replayed(&player, "Args").unwrap(), [7]);
+}
+
+/// Task names are paths: no counter is shared, so they're the same however threads interleave.
+#[test]
+fn a_task_is_named_by_its_path() {
+    let call = Task::named(Arc::from("0.2"));
+    let named = range(Some(&call), 128).unwrap();
+    assert_eq!(&*named.name, "0.2.128");
+    assert!(range(None, 5).is_none());
 }
 
 #[test]

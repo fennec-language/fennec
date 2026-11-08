@@ -118,8 +118,14 @@ pub fn stack_limit() -> usize {
     fennec_parked::stack_low().map_or_else(|| LIMIT.get(), |low| low + room)
 }
 
-/// How many workers `FENNEC_THREADS` asks for, or as many as there are cores.
+/// How many workers the pool has: as many as the recorded run had, in a replay, so its ranges are
+/// cut the same way, and otherwise what `workers_wanted` says.
 fn threads_wanted() -> usize {
+    crate::replay::workers().filter(|workers| *workers > 0).unwrap_or_else(workers_wanted)
+}
+
+/// How many workers `FENNEC_THREADS` asks for, or as many as there are cores.
+pub(crate) fn workers_wanted() -> usize {
     let asked = std::env::var("FENNEC_THREADS").ok().and_then(|threads| threads.trim().parse().ok());
     asked
         .filter(|threads: &usize| *threads > 0)

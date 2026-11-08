@@ -1,5 +1,5 @@
 error OutOfStock:
     item: str
 
-def take(item: str) -> str:
+def take(item: str) -> str fails OutOfStock:
     fail OutOfStock(item)

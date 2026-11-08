@@ -341,6 +341,7 @@ def report(shapes: list[Shape], stdout: Stdout):
 - `if x is Circle:` narrows `x` inside the block, and `match` handles each member, checked for exhaustiveness. A method every member has is the union's too.
 - `None` is never a member: `str | None` is an error whose fix writes `str?`, and an optional union is `(A | B)?`.
 - Failures stay separate: a function that can fail returns `-> T fails E`, never `-> T | E`.
+- A function that can fail says `fails` in its signature, so a reader sees how it can fail there. One that leaves it out is a compile error, and `fennec fix` writes it, as `-> str fails TooBig`, `fails IoError` for one that gives back nothing, or `fails ParseError | RangeError`. `main` doesn't say it, since nothing calls `main`. Built.
 
 ## Named arguments
 

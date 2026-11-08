@@ -23,17 +23,17 @@ def held(n: int) -> int fails Held:
     if n > 1: fail Held(items=[n, n], table={"k": n})
     n
 
-def short_or_coded(n: int) -> int:
+def short_or_coded(n: int) -> int fails Coded | Short:
     first = short(n)?
     second = coded(n + 1)?
     first + second
 
-def any_of_three(n: int) -> int:
+def any_of_three(n: int) -> int fails Coded | Held | Short:
     first = short_or_coded(n)?
     second = held(n + 2)?
     first + second
 
-def by_return(n: int) -> int:
+def by_return(n: int) -> int fails Coded | Short:
     if n > 5: return short(n)?
     coded(n)?
 
@@ -45,7 +45,7 @@ def by_copy(n: int) -> str:
         case Err(error):
             f"{error}"
 
-def in_a_loop(n: int) -> int:
+def in_a_loop(n: int) -> int fails Coded | Held | Short:
     for step in range(3):
         value = short_or_coded(n + step)?
         if value > 100: return held(value)?
@@ -58,7 +58,7 @@ def check_short(n: int) fails Short:
 def check_coded(n: int) fails Coded:
     if n > 1: fail Coded(code=n)
 
-def nothing_back(n: int):
+def nothing_back(n: int) fails Coded | Short:
     check_short(n - 1)?
     check_coded(n)?
 

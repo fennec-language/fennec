@@ -37,14 +37,14 @@ def noisy(out: Stdout, value: int) -> int:
 error TooBig:
     at: int
 
-def checked(limit: int) -> Iterator[int]:
+def checked(limit: int) -> Iterator[int] fails TooBig:
     mut n = 0
     while True:
         if n >= limit: fail TooBig(at=n)
         yield n
         n += 1
 
-def up_to_failure(limit: int) -> int:
+def up_to_failure(limit: int) -> int fails TooBig:
     mut total = 0
     for n in checked(limit)?:
         total += n

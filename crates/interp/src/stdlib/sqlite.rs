@@ -357,7 +357,7 @@ mod real {
     fn rows_value(found: Found) -> Value {
         let list = |values: Vec<Value>| Value::list(values);
         Value::made(
-            "SqliteRows",
+            "SqlRows",
             vec![
                 ("columns", list(found.columns.iter().map(|name| Value::str(name)).collect())),
                 ("kinds", list(found.kinds.into_iter().map(Value::Int).collect())),

@@ -720,6 +720,17 @@ mod tls {
     }
 }
 
+/// A connection's number means the same connection in the whole process: one sent to a task on
+/// another worker can't name a different client there.
+#[test]
+fn connection_numbers_are_never_shared_between_workers() {
+    let on_other_worker = std::thread::spawn(super::calls::next_handle).join().unwrap();
+    let here = super::calls::next_handle();
+    assert_ne!(here, on_other_worker);
+    let refused = super::calls::on_conn(on_other_worker, |_| Ok(()));
+    assert!(matches!(refused, Err(crate::stdlib::net::Failure::Closed)));
+}
+
 /// Running out of file descriptors leaves connections waiting that the poll won't announce again,
 /// and a connection that gave up before it was accepted leaves the rest waiting too.
 #[test]

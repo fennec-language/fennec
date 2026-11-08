@@ -1,0 +1,14 @@
+from std.concurrent import Crashed
+
+def show(name: str, stdout: Stdout):
+    data = embed("embed_in_tasks.txt")
+    stdout.print(name, data.len(), data.hex().len(), (data + data).len())
+
+def main(stdout: Stdout) fails Crashed:
+    with launch(() => show("first", stdout))?:
+        pass
+    with launch(() => show("second", stdout))?:
+        pass
+    with launch(() => show("third", stdout))?:
+        pass
+    stdout.print("done")

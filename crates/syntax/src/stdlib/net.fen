@@ -56,9 +56,12 @@ export error NetError:
 ## `text()`, written in Rust, gives the body as text, with anything that isn't text replaced.
 export struct Response:
     status: int
-    ## By their names in lower case.
+    ## By their names in lower case. A header sent twice has its values joined with `, `, as HTTP
+    ## says they can be.
     headers = dict[str, str]()
     body = bytes([])
+    ## Each `Set-Cookie` header's value, in order: the one header whose values can't be joined.
+    set_cookies = list[str]()
 
     ## Whether the status is one of the 200s.
     def ok(self) -> bool:

@@ -8253,6 +8253,34 @@ fn printed_by(name: &str, source: &str) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
 }
 
+/// A response's headers are a real dict, however many times a header came. Those that can be
+/// joined are, as HTTP says, and `Set-Cookie`, which can't, has all its values in `set_cookies`.
+#[test]
+fn a_header_sent_twice_is_one_entry_and_keeps_every_value() -> std::io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    if !ready() {
+        return Ok(());
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let server = std::thread::spawn(move || -> std::io::Result<()> {
+        let (mut stream, _) = listener.accept()?;
+        let mut asked = [0_u8; 4096];
+        let _ = stream.read(&mut asked)?;
+        stream.write_all(
+            b"HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\nX-Tag: one\r\nX-Tag: two\r\nContent-Length: 0\r\n\r\n",
+        )
+    });
+    let source = format!(
+        "def main(net: Net, stdout: Stdout) fails NetError:\n    answer = net.get(\"http://127.0.0.1:{port}/\")?\n    stdout.print(answer.headers.len())\n    stdout.print(answer.headers[\"x-tag\"])\n    stdout.print(answer.set_cookies)\n"
+    )
+    .replace("def main", "from std.net import NetError\n\ndef main");
+    let printed = printed_by("headers_twice", &source)?;
+    server.join().map_err(|_| std::io::Error::other("the server stopped"))??;
+    assert_eq!(printed, "3\none, two\n[\"a=1\", \"b=2\"]\n");
+    Ok(())
+}
+
 /// What the next test builds: a round trip, then bytes `std.pack` should refuse.
 const PACK_MESSAGES: &str = r#"from std import pack
 from std.pack import Limits

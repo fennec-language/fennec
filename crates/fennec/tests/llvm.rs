@@ -8443,7 +8443,9 @@ fn a_channel_of_no_size_fails_where_its_made() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Each `with launch` in a function has its own `stop_after`, whatever another one was given.
+/// Each `with launch` in a function has its own `stop_after`, whatever another one was given. A
+/// sleep cut short by the stop ends the task quietly, so the sleeper never prints; if the second
+/// `stop_after` were lost, it would sleep the full 3 seconds and print False.
 #[test]
 fn the_second_launch_in_a_function_keeps_its_stop_after() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
@@ -8467,7 +8469,7 @@ fn the_second_launch_in_a_function_keeps_its_stop_after() -> std::io::Result<()>
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),
-        "True\ndone\n",
+        "done\n",
         "{}",
         String::from_utf8_lossy(&ran.stderr)
     );

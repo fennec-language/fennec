@@ -476,6 +476,94 @@ fn same_as_the_interpreter_in_both_builds(name: &str, source: &str) -> std::io::
     Ok(())
 }
 
+/// What a program prints, built in dev and `--release` both, is `wanted`.
+fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join(name));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            wanted,
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// An assignment goes left to right: the place written is the one named before the value runs,
+/// and `+=` adds to what was there before it, whatever the value changes by `ref`.
+#[test]
+fn an_assignment_goes_left_to_right() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "assignment_order",
+        "struct Total:
+    v: int
+
+def inc(ref i: int) -> int:
+    i += 1
+    i * 10
+
+def text(ref k: str) -> int:
+    k = \"b\"
+    5
+
+def bump(ref t: Total) -> int:
+    t.v = 10
+    2
+
+def main(stdout: Stdout):
+    mut xs = [0, 0, 0]
+    mut i = 0
+    xs[i] = inc(ref i)
+    stdout.print(xs, i)
+
+    mut m = {\"a\": 1, \"b\": 2}
+    mut k = \"a\"
+    m[k] = text(ref k)
+    stdout.print(m, k)
+
+    mut a = [[0, 0], [0, 0]]
+    mut r = 0
+    a[r][r] = inc(ref r)
+    stdout.print(a, r)
+
+    mut t = Total(v=0)
+    t.v += bump(ref t)
+    stdout.print(t)
+
+    mut u = Total(v=0)
+    u.v = u.v + bump(ref u)
+    stdout.print(u)
+
+    mut ys = [1, 2]
+    mut j = 0
+    ys[j] += inc(ref j)
+    stdout.print(ys, j)
+
+    mut n = 1
+    n += inc(ref n)
+    stdout.print(n)
+",
+        "[10, 0, 0] 1\n{\"a\": 5, \"b\": 2} b\n[[10, 0], [0, 0]] 1\nTotal(v=2)\nTotal(v=2)\n[11, 2] 1\n21\n",
+    )
+}
+
 /// Each kind of local passed by `mut` and used again, with what could be remembered about it
 /// before the call: where an index points, a length, a read held across the change, a dict's
 /// entry, how far a string's been read, what a loop or a closure holds, a number known to fit.

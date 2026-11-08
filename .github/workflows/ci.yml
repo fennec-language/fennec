@@ -292,12 +292,11 @@ jobs:
           tool: cargo-llvm-cov@0.9.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # `tee` would hide a failing test without `pipefail`, which `shell: bash` turns on. The
-      # tests that link programs look for the runtime library beside `fennec`, which isn't where
-      # llvm-cov builds it, so they run in the test jobs instead.
+      # tests that mostly link programs, rather than run the compiler, are the test jobs' to run.
       - name: Measure coverage
         shell: bash
         run: |
-          cargo llvm-cov --locked --summary-only -- --skip llvm:: --skip executables:: | tee coverage.txt
+          cargo llvm-cov --locked --summary-only -- --skip llvm:: --skip executables:: --skip parallel:: --skip replay:: --skip live:: | tee coverage.txt
       - name: Show coverage on the run's summary page
         run: |
           {

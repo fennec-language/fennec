@@ -8299,7 +8299,8 @@ fn a_secret_stays_hidden_in_what_a_failure_says() -> std::io::Result<()> {
     std::fs::write(&program, SECRET_SHOWN)?;
     let path = program.to_string_lossy().into_owned();
     let tested = fennec(&["test", &path], &dir)?;
-    let tests_said = format!("{}{}", String::from_utf8_lossy(&tested.stdout), String::from_utf8_lossy(&tested.stderr));
+    let tests_said =
+        format!("{}{}", String::from_utf8_lossy(&tested.stdout), String::from_utf8_lossy(&tested.stderr));
     assert!(tests_said.contains("0 passed, 4 failed"), "{tests_said}");
     assert!(!tests_said.contains("hunter2"), "{tests_said}");
     assert_eq!(tests_said.matches("Secret(hidden)").count(), 8, "{tests_said}");

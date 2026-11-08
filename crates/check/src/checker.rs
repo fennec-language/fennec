@@ -270,8 +270,16 @@ impl Checker {
         structs: BTreeMap<String, crate::Struct>,
         errors: BTreeMap<String, crate::Struct>,
     ) -> Checked {
+        // What each source lends, now that what it's given is known, for lowering to write in.
+        let mut sources = std::mem::take(&mut self.sources);
+        for source in sources.values_mut() {
+            source.gives = self.settled(&source.gives);
+        }
         let enums = self.enums();
         let locals = std::mem::take(&mut self.locals);
+        // A type asked about before what it holds was known, like the list in `pack.dumps(pairs)`
+        // before `pairs.append((1, "a"))`, is what it holds once the check is done.
+        let saved_types = std::mem::take(&mut self.saved_types).iter().map(|ty| self.settled(ty)).collect();
         let functions = self
             .states
             .into_iter()
@@ -299,11 +307,11 @@ impl Checker {
             field_args: self.field_args,
             named_patterns: self.named_patterns,
             shared_values: self.shared_values,
-            sources: self.sources,
+            sources,
             opened_apart: self.opened_apart,
             native_formats: self.native_formats,
             native_json_bodies: self.native_json_bodies,
-            saved_types: self.saved_types,
+            saved_types,
         }
     }
 

@@ -23,6 +23,9 @@ use fennec_syntax::{
 pub(crate) struct Source {
     pub(crate) def: Arc<FnDef>,
     pub(crate) method: bool,
+    /// What it gives where it's called, `with T` as that call has it: the types its type
+    /// parameters stand for there, as in `with Channel[Job]`.
+    pub(crate) gives: crate::types::Type,
 }
 
 /// Writes in every `with` over a source in `module`, saying whether there were any.
@@ -278,6 +281,12 @@ impl Lowering<'_> {
         renamed.extend(locals.iter().map(|local| (local.clone(), hidden(local))));
         let mut body = def.body.clone();
         rename(&mut body, &renamed);
+        // A generic source's body names its type parameters, which are this call's types here.
+        let given = given_types(def, &source.gives)?;
+        if !given.is_empty() {
+            retype(&mut written, &given);
+            retype(&mut body, &given);
+        }
         // The caller's name for what's lent: the source's own name for it, when it lends one,
         // so the block's changes are what the source's cleanup sees, or else a name of its own,
         // apart from the source's hidden ones.
@@ -338,6 +347,117 @@ impl Lowering<'_> {
         written.extend(body);
         written.extend(taken_again(ways, &exit, &returned, at));
         Some(written)
+    }
+}
+
+/// What each of a generic source's type parameters stands for at a call, from what the call
+/// gives, `with Channel[Job]`, against what the source says it gives, `with Channel[T]`: each as
+/// a written type and as it's written in brackets, `Channel[T](...)`. `None` when one can't be
+/// written.
+fn given_types(def: &FnDef, lent: &crate::types::Type) -> Option<BTreeMap<String, (TypeExpr, Expr)>> {
+    let names: Vec<&str> = def.generics.iter().map(|generic| generic.name.as_str()).collect();
+    let mut found = BTreeMap::new();
+    if let Some(ret) = &def.ret {
+        match_params(ret, lent, &names, &mut found);
+    }
+    let mut given = BTreeMap::new();
+    for (name, ty) in found {
+        given.insert(name, written_type(&ty)?);
+    }
+    Some(given)
+}
+
+/// Finds each of `names` in a written type, beside what the same place holds in `ty`.
+fn match_params(
+    written: &TypeExpr,
+    ty: &crate::types::Type,
+    names: &[&str],
+    found: &mut BTreeMap<String, crate::types::Type>,
+) {
+    if written.args.is_empty() && names.contains(&written.name.as_str()) {
+        found.insert(written.name.clone(), ty.clone());
+        return;
+    }
+    for (arg, held) in written.args.iter().zip(ty.type_args()) {
+        match_params(arg, &held, names, found);
+    }
+}
+
+/// A type as written where a type goes and as written in brackets, parsed from its source and
+/// moved to spans of its own, which no program's text reaches.
+fn written_type(ty: &crate::types::Type) -> Option<(TypeExpr, Expr)> {
+    let source = ty.source()?;
+    let text = format!("def held__(held: {source}):\n    _ = held[{source}]\n");
+    let module = fennec_syntax::parse(&text).ok()?;
+    let Some(Item::Function(def)) = module.items.first() else { return None };
+    let mut written = def.params.first()?.ty.clone()?;
+    let StmtKind::Assign { value, .. } = &def.body.first()?.kind else { return None };
+    let ExprKind::Index { index, .. } = &value.kind else { return None };
+    let mut bracketed = index.as_ref().clone();
+    // Spans of their own, apart from every other's, keeping where each starts against the others.
+    let length = u32::try_from(text.len()).ok()?;
+    let mut low = here(Span::default()).start;
+    for _ in 1..length {
+        low = here(Span::default()).start;
+    }
+    let moved = |span: Span| Span { start: low + span.start, end: low + span.end };
+    fennec_syntax::visit::in_expr(&mut bracketed, &mut |expr| expr.span = moved(expr.span));
+    respan(&mut written, &moved);
+    Some((written, bracketed))
+}
+
+fn respan(written: &mut TypeExpr, moved: &dyn Fn(Span) -> Span) {
+    written.span = moved(written.span);
+    for arg in &mut written.args {
+        respan(arg, moved);
+    }
+}
+
+/// Writes in what each type parameter stands for: in written types, as in `held: list[T]`, and in
+/// brackets, as in `Channel[T](...)`.
+fn retype(body: &mut [Stmt], given: &BTreeMap<String, (TypeExpr, Expr)>) {
+    fennec_syntax::visit::in_stmts(body, &mut |expr| {
+        if let ExprKind::Name(name) = &expr.kind
+            && let Some((_, bracketed)) = given.get(name)
+        {
+            *expr = bracketed.clone();
+        }
+    });
+    retype_written(body, given);
+}
+
+fn retype_written(body: &mut [Stmt], given: &BTreeMap<String, (TypeExpr, Expr)>) {
+    for each in body {
+        match &mut each.kind {
+            StmtKind::Assign { ty: Some(ty), .. } => retype_one(ty, given),
+            StmtKind::If { branches, otherwise } => {
+                for (_, body) in branches {
+                    retype_written(body, given);
+                }
+                if let Some(body) = otherwise {
+                    retype_written(body, given);
+                }
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                retype_written(body, given);
+            }
+            StmtKind::Lend { otherwise, .. } => retype_written(otherwise, given),
+            _ => {}
+        }
+    }
+}
+
+fn retype_one(written: &mut TypeExpr, given: &BTreeMap<String, (TypeExpr, Expr)>) {
+    if written.args.is_empty()
+        && let Some((ty, _)) = given.get(&written.name)
+    {
+        let optional = written.optional;
+        *written = ty.clone();
+        written.optional |= optional;
+        return;
+    }
+    for arg in &mut written.args {
+        retype_one(arg, given);
     }
 }
 

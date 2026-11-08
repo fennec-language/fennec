@@ -8934,7 +8934,7 @@ fn float_keys_hash_as_decided() -> std::io::Result<()> {
     stdout.print(named.get(minus), named[minus])
     stdout.print([zero, nan] == [minus, -nan])
 ";
-    let dir = folder("float_keys")?;
+    let dir = folder("float_keys_hashed")?;
     let program = dir.join("keys.fen");
     std::fs::write(&program, source)?;
     let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("keys"));
@@ -11413,8 +11413,10 @@ fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
         let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
         assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
         let ran = Command::new(&executable).output_within()?;
-        let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
-        assert_eq!(outcome(&ran), outcome(&interpreted), "{name}");
+        let interpreted = interpreted_by(&dir, &program, &format!("error_notes_{name}"), || {
+            fennec(&["run", "--interp", &path(&program)], &dir)
+        })?;
+        assert_eq!(apart_from(&dir, outcome(&ran)), interpreted, "{name}");
         let said = String::from_utf8_lossy(&ran.stderr);
         assert!(said.contains(note), "{name}: {said}");
     }

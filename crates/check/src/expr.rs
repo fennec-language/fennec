@@ -979,6 +979,7 @@ impl FnCx<'_> {
         let mut steps = Vec::new();
         else_steps(value, &mut steps);
         self.else_chain.extend(steps.iter().copied());
+        let written = value.span;
         let value = self.expr(value);
         for step in &steps {
             self.else_chain.remove(step);
@@ -992,7 +993,7 @@ impl FnCx<'_> {
             );
         }
         let default = match default.failure_named() {
-            Some((failure, block)) => self.else_as(failure, block, &value, default),
+            Some((failure, block)) => self.else_as(failure, block, &value, written),
             None => self.expr(default),
         };
         match value {
@@ -1013,27 +1014,21 @@ impl FnCx<'_> {
     }
 
     /// `else as failure:`, whose block sees what failed under that name.
-    fn else_as(
-        &mut self,
-        failure: &str,
-        block: &[fennec_syntax::Stmt],
-        value: &Type,
-        default: &Expr,
-    ) -> Type {
+    fn else_as(&mut self, failure: &str, block: &[fennec_syntax::Stmt], value: &Type, written: Span) -> Type {
         let error =
             match self.checker.settled(value) {
                 Type::Result(_, error) => *error,
                 Type::Unknown => Type::Unknown,
                 _ => {
                     let message = "this can't fail, so `else as` has no failure to name";
-                    self.error(Diagnostic::new(message, default.span).with_help(
+                    self.error(Diagnostic::new(message, written).with_help(
                         "write `else:` for a value that's `None`, or call something that can fail",
                     ));
                     Type::Unknown
                 }
             };
         self.push(false);
-        self.declare(failure, error, false, default.span);
+        self.declare(failure, error, false, written);
         self.stmts(block, false);
         self.pop();
         Type::Unit

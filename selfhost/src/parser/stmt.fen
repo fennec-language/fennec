@@ -34,7 +34,7 @@ extend Parser:
         if self.at_keyword("def"):
             function = self.function()?
             return Stmt(kind=.Def(function), span=function.span)
-        self.simple_stmt()
+        self.simple_stmt()?
 
     def simple_stmt(ref self) -> Stmt:
         start = self.span()

@@ -64,6 +64,7 @@ enum Reading {
 
 /// A connection with TLS over it, read and written as a plain one is. Only the TLS module makes
 /// one, so a program that never asks for TLS links none of it.
+#[cfg_attr(target_arch = "wasm32", expect(dead_code, reason = "the playground has no network"))]
 pub(crate) trait SecureStream: BufRead + Write + Send {}
 
 impl<T: BufRead + Write + Send> SecureStream for T {}
@@ -94,6 +95,7 @@ pub(crate) trait TlsServer: Send + Sync {
     #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only a served connection uses it, which needs threads"))]
     fn session(&self) -> Result<Box<dyn ServerSession>, Failure>;
     /// TLS over a connection `server.accept()` took, its handshake done in at most `timeout`.
+    #[cfg_attr(target_arch = "wasm32", expect(dead_code, reason = "the playground has no network"))]
     fn accepted(&self, tcp: TcpStream, timeout: Duration) -> Result<Box<dyn SecureStream>, Failure>;
 }
 
@@ -1358,6 +1360,7 @@ fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failu
 }
 
 /// How long a connection a server took has to finish its handshake.
+#[cfg_attr(target_arch = "wasm32", expect(dead_code, reason = "the playground has no network"))]
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The server's half of a handshake over a connection just taken, on a thread that may block when

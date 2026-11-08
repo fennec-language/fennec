@@ -8,7 +8,9 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use super::net::{Failure, SecureStream, TlsServer};
+#[cfg(not(target_arch = "wasm32"))]
+use super::net::SecureStream;
+use super::net::{Failure, TlsServer};
 
 /// How many redirects a request follows.
 const MOST_REDIRECTS: usize = 10;

@@ -32,7 +32,7 @@ fn tables() -> Tables {
 }
 
 fn begin() {
-    start(&fennec_syntax::Module { items: Vec::new() }, tables(), crate::Inputs::default()).unwrap();
+    start(tables(), crate::Inputs::default());
 }
 
 /// A list with what `list` holds and `text`, in place of it.

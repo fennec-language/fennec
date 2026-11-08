@@ -1,7 +1,6 @@
 //! The runtime library compiled executables link against: every function their code
-//! calls, exported under the name it calls it by, and the interpreter for the parts of a
-//! program that aren't compiled. `fennec build` links an executable's object file with this
-//! library and the system's C libraries.
+//! calls, exported under the name it calls it by. It has no interpreter in it. `fennec build`
+//! links an executable's object file with this library and the system's C libraries.
 //!
 //! The functions are `fennec_interp::embed`'s; this crate only gives them names a linker
 //! can find, which is the one thing here Rust calls unsafe.

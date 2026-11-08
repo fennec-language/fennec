@@ -249,9 +249,9 @@ mod tests {
             ..Tables::default()
         };
         super::super::set_worker_setup(Box::new(move || {
-            let _ = start(&fennec_syntax::Module { items: Vec::new() }, tables(), crate::Inputs::default());
+            start(tables(), crate::Inputs::default());
         }));
-        start(&fennec_syntax::Module { items: Vec::new() }, tables(), crate::Inputs::default()).unwrap();
+        start(tables(), crate::Inputs::default());
     }
 
     /// Enough items to run on the pool.

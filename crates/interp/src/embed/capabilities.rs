@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn a_capability_crosses_native_code_as_a_block_that_keeps_what_it_allows() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
-        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let fs = super::block(1);
         assert_eq!(super::block(1), fs);
         assert!(fs >= super::KINDS);
@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn a_narrowed_capability_s_methods_run_from_native_code() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
-        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let string = |text: &str| with(|state| heap::text_address(state, text));
         let input = |value: Value| {
             let temp = with(|state| Some(state.push(value))).unwrap();
@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn a_capability_call_from_native_code_leaves_nothing_behind() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
-        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let dir = std::env::temp_dir().join(format!("fennec-capability-calls-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("w.txt");

@@ -47,7 +47,7 @@ fn an_id_map_of_optional_ids_crosses_and_comes_back_the_same() {
     );
     let tables =
         Tables { shapes: vec![Rc::new(map), Rc::new(Element::Str)], str_shape: 1, ..Tables::default() };
-    start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+    start(tables, crate::Inputs::default());
     let unit = |name: &str, target: Value| {
         let fields = vec![(Rc::from("name"), Value::str(name)), (Rc::from("target"), target)];
         Value::Instance(Rc::new(Instance {
@@ -80,7 +80,7 @@ fn a_generic_struct_s_block_holds_an_instance_named_after_its_type() {
     let layout = Element::Struct { name: Rc::from("Holder[int]"), fields };
     let tables =
         Tables { shapes: vec![Rc::new(layout), Rc::new(Element::Str)], str_shape: 1, ..Tables::default() };
-    start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+    start(tables, crate::Inputs::default());
     let fields = vec![(Rc::from("value"), Value::Int(4))];
     let held = Instance {
         type_name: Rc::from("Holder"),
@@ -106,7 +106,7 @@ fn a_list_of_tuples_reads_back_as_tuples() {
     };
     let tables =
         Tables { shapes: vec![Rc::new(Element::Str)], elements: vec![Rc::new(pair)], ..Tables::default() };
-    start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+    start(tables, crate::Inputs::default());
     let list = super::super::lists::new(0, 2);
     let path = Value::list(vec![
         Value::tuple(vec![Value::Int(13), Value::Int(5)]),
@@ -127,7 +127,7 @@ fn a_list_of_tuples_reads_back_as_tuples() {
 fn strings_have_the_interpreter_s_methods() {
     let str = Rc::new(Element::Str);
     let tables = Tables { shapes: vec![Rc::clone(&str)], elements: vec![str], ..Tables::default() };
-    start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+    start(tables, crate::Inputs::default());
     let string = |text: &str| with(|state| heap::text_address(state, text));
     let fox = string("The quick Fox");
     assert_eq!(text_of(strings::upper(fox)), "THE QUICK FOX");

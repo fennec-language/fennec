@@ -19,7 +19,7 @@ fn tables() -> Tables {
 }
 
 fn begin() {
-    start(&fennec_syntax::Module { items: Vec::new() }, tables(), crate::Inputs::default()).unwrap();
+    start(tables(), crate::Inputs::default());
 }
 
 /// The tests' own pool, whose workers' runtimes have these tests' tables, as a program's threads all
@@ -28,7 +28,7 @@ fn pool() -> &'static Pool {
     static POOL: std::sync::OnceLock<&'static Pool> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
         let setup: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
-            let _ = start(&fennec_syntax::Module { items: Vec::new() }, tables(), crate::Inputs::default());
+            start(tables(), crate::Inputs::default());
         });
         crate::embed::parallel::with_setup(2, &setup)
     })
@@ -252,7 +252,7 @@ fn a_task_on_another_thread_reads_its_launcher_s_string_literals() {
 fn one_worker(made: &'static std::sync::OnceLock<&'static Pool>) -> &'static Pool {
     made.get_or_init(|| {
         let setup: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
-            let _ = start(&fennec_syntax::Module { items: Vec::new() }, tables(), crate::Inputs::default());
+            start(tables(), crate::Inputs::default());
         });
         crate::embed::parallel::with_setup(1, &setup)
     })

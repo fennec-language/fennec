@@ -14,7 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::io::Write;
 use std::rc::Rc;
 
-use fennec_syntax::{Diagnostic, Expr, Module, Pattern, Span, Stmt};
+use fennec_syntax::{Diagnostic, Span};
 
 pub mod aot;
 pub mod bytes;
@@ -129,15 +129,12 @@ use crate::value::{Capability, Value};
 pub use heap::{Counts, count_allocations};
 pub use tests::next_test;
 
-/// What the compiler registers before a program runs: the names, text and syntax its
-/// native code refers to by number.
+/// What the compiler registers before a program runs: the names, text and layouts its native
+/// code refers to by number.
 #[derive(Default)]
 pub struct Tables {
     pub names: Vec<String>,
     pub strings: Vec<String>,
-    pub exprs: Vec<Expr>,
-    pub stmts: Vec<Stmt>,
-    pub patterns: Vec<Pattern>,
     /// The kinds of items in the lists native code packs.
     pub elements: Vec<Rc<crate::packed::Element>>,
     /// The shapes of boxed values' blocks, by their number.
@@ -171,9 +168,6 @@ impl Tables {
         Tables {
             names: self.names.clone(),
             strings: self.strings.clone(),
-            exprs: self.exprs.clone(),
-            stmts: self.stmts.clone(),
-            patterns: self.patterns.clone(),
             elements: self.elements.clone(),
             shapes: self.shapes.clone(),
             cells: self.cells.clone(),
@@ -369,13 +363,11 @@ fn capability(kind: i64) -> Capability {
     }
 }
 
-/// Sets up the runtime to run `module` with `tables` and `inputs`, replacing any earlier
-/// run's.
-pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Result<(), Diagnostic> {
-    let output = Output(Rc::default(), inputs.live);
+/// Sets up the runtime to run a program with `tables` and `inputs`, replacing any earlier run's.
+pub fn start(mut tables: Tables, inputs: crate::Inputs) {
+    let crate::Inputs { program, arguments, live, .. } = inputs;
+    let output = Output(Rc::default(), live);
     OUTPUT.set(Some(output.clone()));
-    let (program, arguments) = (inputs.program.clone(), inputs.arguments.clone());
-    let _ = (module, inputs);
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
     set_failed(0);
     STATE.set(Some(State {
@@ -394,7 +386,6 @@ pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Resu
         tables,
         failure: None,
     }));
-    Ok(())
 }
 
 /// What a run left in the runtime. A run that succeeds leaves nothing: a check on the

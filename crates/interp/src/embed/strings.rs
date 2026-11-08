@@ -872,7 +872,7 @@ mod place_tests {
 
     fn begin() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
-        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
     }
 
     fn character(text: i64, at: i64) -> String {

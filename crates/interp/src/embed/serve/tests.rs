@@ -339,9 +339,9 @@ fn native_code_serves_a_server_the_runtime_opened() {
             elements: vec![std::rc::Rc::new(crate::packed::Element::Int)],
             ..Tables::default()
         };
-        let _ = start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default());
+        start(tables, crate::Inputs::default());
     }));
-    start(&fennec_syntax::Module { items: Vec::new() }, Tables::default(), crate::Inputs::default()).unwrap();
+    start(Tables::default(), crate::Inputs::default());
     let span = fennec_syntax::Span::default();
     let (server, port) = (|| {
         let listened = crate::stdlib::net::real_net("listen", &[Value::Int(0)], None, span).ok()?;
@@ -407,7 +407,7 @@ fn what_a_parked_task_printed_comes_out_while_another_task_runs() {
     let setup: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
         let inputs = crate::Inputs { live: true, ..crate::Inputs::default() };
         let tables = super::super::Tables::default();
-        super::super::start(&fennec_syntax::Module { items: Vec::new() }, tables, inputs).unwrap();
+        super::super::start(tables, inputs);
     });
     // This thread is one of the workers, and runs no setup of its own.
     setup();

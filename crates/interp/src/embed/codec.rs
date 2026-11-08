@@ -9,7 +9,7 @@ mod ast;
 
 use std::rc::Rc;
 
-use fennec_syntax::{Module, Sources, Span};
+use fennec_syntax::{Sources, Span};
 
 use super::Tables;
 use crate::packed::Element;
@@ -370,7 +370,6 @@ impl Decode for Element {
 /// What a compiled executable carries: its program, the files to show failures in, and
 /// the tables its native code refers to by number.
 pub struct Image {
-    pub module: Module,
     pub sources: Sources,
     pub tables: Tables,
     /// The text of each string literal, in the order native code numbers them.
@@ -380,22 +379,12 @@ pub struct Image {
 impl Image {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut to = Writer::default();
-        // The syntax goes first with its length, so a runtime that has no interpreter to run it
-        // can step over it unread.
-        let mut module = Writer::default();
-        self.module.encode(&mut module);
-        let module = module.into_bytes();
-        to.word(u64::try_from(module.len()).unwrap_or(u64::MAX));
-        to.bytes.extend_from_slice(&module);
         let files: Vec<(String, String)> =
             self.sources.files().map(|(path, text)| (path.to_owned(), text.to_owned())).collect();
         files.encode(&mut to);
         let tables = &self.tables;
         tables.names.encode(&mut to);
         tables.strings.encode(&mut to);
-        tables.exprs.encode(&mut to);
-        tables.stmts.encode(&mut to);
-        tables.patterns.encode(&mut to);
         tables.elements.encode(&mut to);
         tables.shapes.encode(&mut to);
         tables.cells.encode(&mut to);
@@ -408,10 +397,6 @@ impl Image {
 
     pub fn from_bytes(bytes: &[u8]) -> Option<Image> {
         let from = &mut Reader::new(bytes);
-        let length = usize::try_from(from.word()?).ok()?;
-        let syntax = from.take(length)?;
-        let _ = syntax;
-        let module = Module { items: Vec::new() };
         let mut sources = Sources::new();
         for (path, text) in Vec::<(String, String)>::decode(from)? {
             sources.add(path, text);
@@ -419,9 +404,6 @@ impl Image {
         let tables = Tables {
             names: Decode::decode(from)?,
             strings: Decode::decode(from)?,
-            exprs: Decode::decode(from)?,
-            stmts: Decode::decode(from)?,
-            patterns: Decode::decode(from)?,
             elements: Decode::decode(from)?,
             shapes: Decode::decode(from)?,
             cells: Decode::decode(from)?,
@@ -431,7 +413,7 @@ impl Image {
             ..Tables::default()
         };
         let literals = Decode::decode(from)?;
-        Some(Image { module, sources, tables, literals })
+        Some(Image { sources, tables, literals })
     }
 }
 
@@ -481,20 +463,17 @@ mod tests {
         round_trip(&Element::Maybe(std::rc::Rc::new(Element::Str)));
     }
 
-    /// An image comes back with its syntax, which goes first with its length, and what follows it.
+    /// An image comes back with its sources, tables and literals.
     #[test]
-    fn an_image_comes_back_with_its_syntax_and_what_follows_it() {
-        let module = fennec_syntax::parse("def main(stdout: Stdout):\n    stdout.print(1)\n").unwrap();
+    fn an_image_comes_back_with_what_it_holds() {
         let mut sources = fennec_syntax::Sources::new();
         sources.add("main.fen".to_owned(), "def main(stdout: Stdout):\n".to_owned());
         let image = Image {
-            module: module.clone(),
             sources,
             tables: crate::embed::Tables { str_shape: 7, ..crate::embed::Tables::default() },
             literals: vec!["fox".to_owned()],
         };
         let back = Image::from_bytes(&image.to_bytes()).unwrap();
-        assert_eq!(back.module, module);
         assert_eq!(back.tables.str_shape, 7);
         assert_eq!(back.literals, ["fox"]);
         assert_eq!(back.sources.files().count(), 1);

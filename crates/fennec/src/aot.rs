@@ -145,7 +145,6 @@ pub(crate) fn tests_executable(
     let emitted = emitted(module, true)?;
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_interp::embed::codec::Image {
-            module: module.clone(),
             // `fennec test` renders a failure itself.
             sources: fennec_syntax::Sources::new(),
             tables: std::mem::take(&mut image.tables),
@@ -172,7 +171,6 @@ pub(crate) fn tracing_executable(
     let emitted = emitted_with(&reached, fennec_llvm::emit_tracing_costs, false)?;
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_interp::embed::codec::Image {
-            module: program.module.clone(),
             sources: program.sources.clone(),
             tables: std::mem::take(&mut image.tables),
             literals: image.literals.clone(),
@@ -461,7 +459,6 @@ fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Compiled
     let emitted = emitted(&reached, false)?;
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_interp::embed::codec::Image {
-            module: program.module.clone(),
             sources: program.sources.clone(),
             tables: std::mem::take(&mut image.tables),
             literals: image.literals.clone(),

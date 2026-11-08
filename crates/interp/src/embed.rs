@@ -266,6 +266,16 @@ thread_local! {
 /// kept to save writing it line by line, so this is called before anything that can wait, and
 /// before anything else on another thread is to come after it. A failure to write stays for the
 /// next print to report, as there's nothing here to pass it to.
+/// Lets others run for a moment, for a replay's task waiting its turn: a task makes way for the
+/// others on its thread, and a thread that isn't one sleeps briefly.
+pub(crate) fn make_way() {
+    #[cfg(any(test, feature = "threads"))]
+    if serve::can_park() && serve::yield_task_always() {
+        return;
+    }
+    std::thread::sleep(std::time::Duration::from_micros(50));
+}
+
 pub(crate) fn write_kept_output() {
     OUTPUT.with_borrow_mut(|output| {
         if let Some(output) = output {

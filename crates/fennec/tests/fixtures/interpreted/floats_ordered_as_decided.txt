@@ -1,0 +1,18 @@
+source cf2bb99a452daf413880eeadbd2985127e0fcb03c907b394ac55baa24b5015f6
+code 0
+stdout 288
+True True True False True
+False False True
+False False True False False
+True True False True
+True False False False
+True False True True
+True False False True True
+False True False True True False True False
+True False
+True False
+True True
+True True
+True 1.0 True 0.0
+[1.0, 2.0] (1.0, 2)
+stderr 0

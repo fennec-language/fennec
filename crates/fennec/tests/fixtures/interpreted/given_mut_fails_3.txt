@@ -1,0 +1,12 @@
+source 47bcf773d07e238737e08c3a4eb06a9ca287b9eed0a872852be6f8f2d299273a
+code 1
+stdout 2
+2
+stderr 237
+error: this calculation overflows an int
+ --> <dir>/given_mut_fails_3.fen:9:18
+  |
+9 |     stdout.print(big + 1)
+  |                  ^^^^^^^
+  |
+  = help: ints are 64-bit; check the values involved, or use floats for very large numbers

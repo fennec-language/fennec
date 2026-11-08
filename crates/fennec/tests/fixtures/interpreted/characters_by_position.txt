@@ -1,0 +1,9 @@
+source f9e01fb94a449b7bd2bebcf427fbae9cd5769efa62e912db8b13e295d6fee17e
+code 0
+stdout 271
+["fóx", "ünïcode", "日本語", "🦊🦊", "and", "plain", "ascii", "past", "an", "inline", "header", "é"]
+[] ["é"] ["é", "🦊"]
+0=f0=f1=ó1=ó2=x5=n4=ü30=s29=a31=c-1=é-2= 2=x3= 13=本12=日14=語15= 16=🦊17=🦊
+ünïcode 日本語 🦊🦊 é fóx n
+517622
+stderr 0

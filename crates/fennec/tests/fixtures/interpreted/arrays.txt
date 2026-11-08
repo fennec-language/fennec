@@ -1,0 +1,13 @@
+source 443c8f4e5f895bbb77ade5f117e448cb497b35613a631b6ce96713c59dd320e3
+code 0
+stdout 478
+["changed", "hi!", "last"] ["hi", "hi!", "hi?"] False True True 3
+["changed", "hi!", "last"] and hi! ["hi", "hi!", "hi?"]
+[0.5, 0.5, 3.25, 0.5] 4.75 3.25 [0.5, 0.5, 0.5, 3.25] [0.5, 0.5, 3.25, 0.5, 1.0]
+Named(label="x", tags=["a", "bx", "c"], lists=[[5], [1, 9]]) Named(label="x", tags=["a", "b", "c"], lists=[[], [1]])
+["zero", "b", "c"] ["a", "b", "c"]
+[[0, 4, 0], [0, 0, 7]] [4, 7]
+[{}, {"k": 3}] [{}, {}]
+[None, "there", None] [None, "a", None] True
+["p!", "q!"] ["p", "q"]
+stderr 0

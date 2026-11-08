@@ -1,0 +1,16 @@
+source 74b2ce8b8b734e120c9b31928083ae275d374df2ea884bb49bb9fd21f6ed78da
+code 1
+stdout 49
+ok 3
+bad x
+empty
+12>9
+no e
+3 3 [8, -1, -1]
+6 0 0
+stderr 165
+error: `main` failed: RangeError.TooBig(value=12, limit=9)
+  --> <dir>/fails_several_ways.fen:40:1
+   |
+40 | def main(stdout: Stdout):
+   | ^^^^^^^^^^^^^^^^^^^^^^^^

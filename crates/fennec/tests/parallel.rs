@@ -11,6 +11,20 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output_before(FENNEC_DEADLINE)
 }
 
+/// What the interpreter gave for the program `{name}.fen` in `dir`, pinned before it left the
+/// command (see `crate::llvm::interpreted_by`), with `dir` written as `<dir>`.
+fn interpreted(dir: &Path, name: &str) -> std::io::Result<crate::llvm::Outcome> {
+    let program = dir.join(format!("{name}.fen"));
+    crate::llvm::interpreted_by(dir, &program, &format!("parallel_{name}"), || {
+        fennec(&["run", "--interp", &program.to_string_lossy()], dir)
+    })
+}
+
+/// What a native run printed, said and gave back, with `dir` written as `<dir>`.
+fn ran_in(dir: &Path, ran: &Output) -> crate::llvm::Outcome {
+    crate::llvm::apart_from(dir, crate::llvm::outcome(ran))
+}
+
 fn ready() -> bool {
     fennec_llvm::Tools::find().is_ok()
         && runtime_built()
@@ -61,7 +75,7 @@ fn a_for_mut_over_parallel_and_its_kin_run_as_parallel_calls_natively() -> std::
     let built = fennec(&["build", "--llvm", &source, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
-    let interpreted = fennec(&["run", "--interp", &source], &dir)?;
+    let interpreted = interpreted(&dir, "ticks")?;
     // `fennec run` takes LLVM's dev build where it can, so it runs the same calls.
     let run = fennec(&["run", &source], &dir)?;
     std::fs::remove_dir_all(&dir)?;
@@ -73,8 +87,8 @@ fn a_for_mut_over_parallel_and_its_kin_run_as_parallel_calls_natively() -> std::
         lines.sort();
         lines
     };
-    assert_eq!(sorted(&ran.stdout), sorted(&interpreted.stdout));
-    assert_eq!(sorted(&run.stdout), sorted(&interpreted.stdout));
+    assert_eq!(sorted(&ran.stdout), sorted(interpreted.0.as_bytes()));
+    assert_eq!(sorted(&run.stdout), sorted(interpreted.0.as_bytes()));
     // The `for mut`, the comprehension, the sum and the loop over `take`'s list: four calls, not
     // ordinary loops.
     let counts = String::from_utf8_lossy(&ran.stderr);
@@ -104,11 +118,11 @@ fn a_range_that_fails_stops_the_program_natively_as_the_interpreter_does() -> st
     let built = fennec(&["build", "--llvm", &source, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
-    let interpreted = fennec(&["run", "--interp", &source], &dir)?;
+    let interpreted = interpreted(&dir, "fails")?;
+    let ran = ran_in(&dir, &ran);
     std::fs::remove_dir_all(&dir)?;
-    assert!(!ran.status.success());
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&interpreted.stdout));
-    assert_eq!(String::from_utf8_lossy(&ran.stderr), String::from_utf8_lossy(&interpreted.stderr));
+    assert_ne!(ran.2, Some(0));
+    assert_eq!((ran.0, ran.1), (interpreted.0, interpreted.1));
     Ok(())
 }
 
@@ -127,7 +141,7 @@ fn items_put_back_unchanged_stay_whole_with_text_inline_or_not() -> std::io::Res
     let program = dir.join("words.fen");
     std::fs::write(&program, PUT_BACK)?;
     let source = program.to_string_lossy().into_owned();
-    let interpreted = fennec(&["run", "--interp", &source], &dir)?;
+    let interpreted = interpreted(&dir, "words")?;
     // Headers make a `str` item three words in place; without them it's one, a block's address.
     for inline in ["1", "0"] {
         let executable = dir.join(format!("words-{inline}"));
@@ -140,7 +154,7 @@ fn items_put_back_unchanged_stay_whole_with_text_inline_or_not() -> std::io::Res
         assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
         let ran = Command::new(&executable).output_within()?;
         assert!(ran.status.success(), "inline text {inline}: {}", String::from_utf8_lossy(&ran.stderr));
-        assert_eq!(String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&interpreted.stdout));
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), interpreted.0);
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -194,16 +208,14 @@ fn ranges_run_on_the_runtime_s_workers_each_with_its_own_stack_limit_and_failure
         (build_on_threads(&dir, ON_WORKERS, "workers")?, build_on_threads(&dir, TOO_DEEP, "deep")?);
     let on = |executable: &Path| Command::new(executable).env("FENNEC_THREADS", "4").output_within();
     let (ran, too_deep) = (on(&workers)?, on(&deep)?);
-    let source = |name: &str| dir.join(format!("{name}.fen")).to_string_lossy().into_owned();
-    let interpreted = fennec(&["run", "--interp", &source("workers")], &dir)?;
-    let interpreted_deep = fennec(&["run", "--interp", &source("deep")], &dir)?;
+    let (interpreted, interpreted_deep) = (interpreted(&dir, "workers")?, interpreted(&dir, "deep")?);
+    let too_deep = ran_in(&dir, &too_deep);
     std::fs::remove_dir_all(&dir)?;
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&interpreted.stdout));
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), interpreted.0);
     // Too deep on a worker is the same failure at the same place, not a crash or a pass.
-    assert!(!too_deep.status.success());
-    assert_eq!(String::from_utf8_lossy(&too_deep.stdout), String::from_utf8_lossy(&interpreted_deep.stdout));
-    assert_eq!(String::from_utf8_lossy(&too_deep.stderr), String::from_utf8_lossy(&interpreted_deep.stderr));
+    assert_ne!(too_deep.2, Some(0));
+    assert_eq!((too_deep.0, too_deep.1), (interpreted_deep.0, interpreted_deep.1));
     Ok(())
 }
 
@@ -250,16 +262,11 @@ fn bodies_on_workers_use_the_calling_thread_s_blocks_as_the_interpreter_does() -
     let dir = std::env::temp_dir().join(format!("fennec-parallel-lent-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let lent = build_on_threads(&dir, LENT_BLOCKS, "lent")?;
-    let source = dir.join("lent.fen").to_string_lossy().into_owned();
-    let interpreted = fennec(&["run", "--interp", &source], &dir)?;
+    let interpreted = interpreted(&dir, "lent")?;
     for threads in ["1", "2", "4", "8"] {
         let ran = Command::new(&lent).env("FENNEC_THREADS", threads).output_within()?;
         assert!(ran.status.success(), "{threads} threads: {}", String::from_utf8_lossy(&ran.stderr));
-        assert_eq!(
-            String::from_utf8_lossy(&ran.stdout),
-            String::from_utf8_lossy(&interpreted.stdout),
-            "{threads} threads"
-        );
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), interpreted.0, "{threads} threads");
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -277,8 +284,6 @@ fn what_bodies_print_on_workers_all_comes_out_whole_and_in_order_within_each_bod
     let dir = std::env::temp_dir().join(format!("fennec-parallel-prints-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let prints = build_on_threads(&dir, PRINTS, "prints")?;
-    let source = dir.join("prints.fen").to_string_lossy().into_owned();
-    let interpreted = fennec(&["run", "--interp", &source], &dir)?;
     let ran = Command::new(&prints).env("FENNEC_THREADS", "8").output_within()?;
     std::fs::remove_dir_all(&dir)?;
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
@@ -290,7 +295,7 @@ fn what_bodies_print_on_workers_all_comes_out_whole_and_in_order_within_each_bod
         lines.sort();
         lines
     };
-    assert_eq!(sorted(&text), sorted(&String::from_utf8_lossy(&interpreted.stdout)));
+    assert_eq!(sorted(&text), sorted(&prints_wanted()));
     // What's printed before and after the loop comes before and after all of the loop's output.
     assert!(text.starts_with("before\n"), "{}", text.lines().next().unwrap_or_default());
     assert!(text.ends_with("after\n"), "{}", text.lines().next_back().unwrap_or_default());
@@ -306,6 +311,16 @@ fn what_bodies_print_on_workers_all_comes_out_whole_and_in_order_within_each_bod
         }
     }
     Ok(())
+}
+
+/// What `PRINTS` prints, in order, as the interpreter printed it.
+fn prints_wanted() -> String {
+    let mut wanted = String::from("before\n");
+    for n in 0..50_000 {
+        let word = format!("text long enough to be held in a block of its own, {n}");
+        wanted.push_str(&format!("first {word} {}\nsecond {word} {}\n", word.len(), word.len()));
+    }
+    wanted + "after\n"
 }
 
 /// A program that fails with an error nothing handles, having printed lines just before: in a
@@ -422,19 +437,20 @@ fn sorted_lines(text: &[u8]) -> Vec<String> {
 /// count, each item on a worker in a range of its own.
 fn matches_the_interpreter_on_workers(dir: &Path, name: &str, source: &str) -> std::io::Result<()> {
     let built = build_on_threads(dir, source, name)?;
-    let path = dir.join(format!("{name}.fen")).to_string_lossy().into_owned();
-    let interpreted = fennec(&["run", "--interp", &path], dir)?;
+    let (wanted, _, code) = interpreted(dir, name)?;
+    matches_on_workers(&built, name, code, &wanted)
+}
+
+/// What `built` prints on every thread count, each item on a worker in a range of its own, is
+/// `wanted` once sorted, and it gives back `code`.
+fn matches_on_workers(built: &Path, name: &str, code: Option<i32>, wanted: &str) -> std::io::Result<()> {
     for threads in ["1", "2", "4", "8"] {
-        let ran = Command::new(&built)
+        let ran = Command::new(built)
             .env("FENNEC_THREADS", threads)
             .env("FENNEC_PARALLEL_STRESS", "1")
             .output_within()?;
-        assert_eq!(ran.status.code(), interpreted.status.code(), "{name} on {threads} threads");
-        assert_eq!(
-            sorted_lines(&ran.stdout),
-            sorted_lines(&interpreted.stdout),
-            "{name} on {threads} threads"
-        );
+        assert_eq!(ran.status.code(), code, "{name} on {threads} threads");
+        assert_eq!(sorted_lines(&ran.stdout), sorted_lines(wanted.as_bytes()), "{name} on {threads} threads");
     }
     Ok(())
 }
@@ -722,7 +738,7 @@ fn a_server_task_failing_under_a_lock_ends_the_program() -> std::io::Result<()> 
 }
 
 #[test]
-fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::Result<()> {
+fn every_parallel_program_prints_what_it_should_on_real_threads() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
@@ -731,7 +747,6 @@ fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::
     let programs = [
         ("non_ascii", NON_ASCII),
         ("lent", LENT_BLOCKS),
-        ("prints", PRINTS),
         ("own_text", OWN_TEXT),
         ("places", CHANGED_PLACES),
         ("places_lent", LENT_PLACES),
@@ -741,15 +756,19 @@ fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::
     for (name, source) in programs {
         matches_the_interpreter_on_workers(&dir, name, source)?;
     }
+    // Too much to pin, so it's written out here.
+    matches_on_workers(&build_on_threads(&dir, PRINTS, "prints")?, "prints", Some(0), &prints_wanted())?;
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let mut covered = Vec::new();
     for entry in std::fs::read_dir(examples)? {
         let path = entry?.path();
         let source = std::fs::read_to_string(&path).unwrap_or_default();
         let name = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
-        // A server's example needs a network, and is covered by what it calls.
+        // A server's example needs a network, and is covered by what it calls. An example prints
+        // what its `.out` says.
         if source.contains("parallel(") && !source.contains("Net") {
-            matches_the_interpreter_on_workers(&dir, &name, &source)?;
+            let wanted = std::fs::read_to_string(path.with_extension("out"))?;
+            matches_on_workers(&build_on_threads(&dir, &source, &name)?, &name, Some(0), &wanted)?;
             covered.push(name);
         }
     }
@@ -797,13 +816,9 @@ fn workers_read_a_constant_the_calling_thread_worked_out() -> std::io::Result<()
     let executable = build_on_threads(&dir, source, "constants")?;
     let ran = Command::new(&executable).env("FENNEC_THREADS", "4").output_within()?;
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
-    let interpreted = crate::executables::fennec_command()
-        .args(["run", "--interp"])
-        .arg(dir.join("constants.fen"))
-        .env("FENNEC_HOME", &dir)
-        .output_before(FENNEC_DEADLINE)?;
+    let interpreted = interpreted(&dir, "constants")?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&interpreted.stdout));
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), interpreted.0);
     assert!(ran.stdout.starts_with(b"1"), "{}", String::from_utf8_lossy(&ran.stdout));
     Ok(())
 }

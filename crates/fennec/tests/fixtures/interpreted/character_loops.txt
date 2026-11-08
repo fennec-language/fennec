@@ -1,0 +1,15 @@
+source 25916c1d1639a1e85e0ef6dc7ff284fd0e137077bd083f6fee619fd6bcb532eb
+code 0
+stdout 457
+ 0 0 0
+a 0 0 1
+short_ascii 10 10 11
+h*llo_wörld_*_and_日本 19 12 20
+a_much_longer_ASCII_text_than_any_inline_header_can_hold 51 51 56
+a_much_longer_text_than_a_header_holds,_ending_in_* 47 47 51
+********* 9 0 9
+x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_x#_y#_z#_ 6 180 180
+nanbeaebsasbtatbeaebdadb a béaéb
+30
+[5, 4, 3, 42]
+stderr 0

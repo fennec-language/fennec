@@ -48,14 +48,36 @@ fn same_message_as_the_jit(name: &str, source: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// What the program printed, its errors and its exit code on the interpreter.
+/// What the program printed, its errors and its exit code on the interpreter, as pinned in
+/// `tests/fixtures/interpreted` before the interpreter left the command.
 fn interpreted(name: &str, source: &str) -> std::io::Result<Outcome> {
     let dir = folder(&format!("{name}_interpreted"))?;
-    let program = dir.join(format!("{name}.fen"));
-    std::fs::write(&program, source)?;
-    let done = outcome(&fennec(&["run", "--interp", &program.to_string_lossy()], &dir)?);
+    let done = interpreted_in(&dir, name, source);
     std::fs::remove_dir_all(&dir)?;
-    Ok(done)
+    done
+}
+
+/// The same, for a program already written to `dir` as `{name}.fen`. With
+/// `FENNEC_PIN_INTERPRETED` set, it's pinned from `fennec run --interp`.
+pub(crate) fn interpreted_in(dir: &Path, name: &str, source: &str) -> std::io::Result<Outcome> {
+    let program = dir.join(format!("{name}.fen"));
+    if !program.exists() {
+        std::fs::write(&program, source)?;
+    }
+    interpreted_by(dir, &program, name, || fennec(&["run", "--interp", &program.to_string_lossy()], dir))
+}
+
+/// What the interpreter gave for the program at `program`, which ran in `dir`, pinned as `name`.
+/// With `FENNEC_PIN_INTERPRETED` set, it's pinned from `run`, `fennec run --interp` as the test ran
+/// it.
+pub(crate) fn interpreted_by(
+    dir: &Path,
+    program: &Path,
+    name: &str,
+    run: impl FnOnce() -> std::io::Result<Output>,
+) -> std::io::Result<Outcome> {
+    let source = std::fs::read_to_string(program)?;
+    pinned_in("interpreted", name, &source, || Ok(apart_from(dir, outcome(&run()?))))
 }
 
 /// What the program printed, its errors and its exit code, built with LLVM, and what the JIT gave.
@@ -80,14 +102,18 @@ fn both_built(name: &str, source: &str, how: &[&str]) -> std::io::Result<(Outcom
     Ok((ours, jit))
 }
 
-/// Where the outcomes the JIT gave are pinned, one file for each program, named as the test names
-/// it. They were written from the JIT before it was removed.
-fn pinned_folder() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pinned")
+/// The outcome pinned for program `name` in `tests/fixtures/pinned`, one file for each program,
+/// named as the test names it. They were written from the JIT before it was removed.
+fn pinned(
+    name: &str,
+    source: &str,
+    reference: impl FnOnce() -> std::io::Result<Outcome>,
+) -> std::io::Result<Outcome> {
+    pinned_in("pinned", name, source, reference)
 }
 
 /// An outcome with the folder it ran in written as `<dir>`, so it reads the same wherever it ran.
-fn apart_from(dir: &Path, (out, err, code): Outcome) -> Outcome {
+pub(crate) fn apart_from(dir: &Path, (out, err, code): Outcome) -> Outcome {
     let mut folders = vec![dir.to_string_lossy().into_owned()];
     folders.extend(std::fs::canonicalize(dir).ok().map(|real| real.to_string_lossy().into_owned()));
     let plain =
@@ -95,21 +121,27 @@ fn apart_from(dir: &Path, (out, err, code): Outcome) -> Outcome {
     (plain(out), plain(err), code)
 }
 
-/// The outcome pinned for program `name`. One pinned for other source than `source` is out of date,
-/// as is a missing one, and the test says so. With `FENNEC_PIN_OUTPUTS` set, it's written from
-/// `reference`, the build's own outcome, which then has to be checked by reading it: a new test's
-/// expected outcome is decided before it's built, not copied from it.
-fn pinned(
+/// The outcome pinned for program `name` in `tests/fixtures/{kind}`. One pinned for other source
+/// than `source` is out of date, as is a missing one, and the test says so. With
+/// `FENNEC_PIN_OUTPUTS` set (`FENNEC_PIN_INTERPRETED` for the interpreter's), it's written from
+/// `reference`, which then has to be checked by reading it: a new test's expected outcome is
+/// decided before it's built, not copied from it.
+fn pinned_in(
+    kind: &str,
     name: &str,
     source: &str,
     reference: impl FnOnce() -> std::io::Result<Outcome>,
 ) -> std::io::Result<Outcome> {
-    let file = pinned_folder().join(format!("{name}.txt"));
+    let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(kind);
+    let file = folder.join(format!("{name}.txt"));
     let hash = fennec_blake3::hash(source.as_bytes()).to_hex();
-    if std::env::var_os("FENNEC_PIN_OUTPUTS").is_some() {
+    // The interpreter's answers are written only when asked for by name, so pinning the JIT's
+    // missing ones from the build never writes over them.
+    let asked = if kind == "interpreted" { "FENNEC_PIN_INTERPRETED" } else { "FENNEC_PIN_OUTPUTS" };
+    if std::env::var_os(asked).is_some() {
         let (out, err, code) = reference()?;
         let code = code.map_or_else(|| "none".to_owned(), |code| code.to_string());
-        std::fs::create_dir_all(pinned_folder())?;
+        std::fs::create_dir_all(&folder)?;
         let text =
             format!("source {hash}\ncode {code}\nstdout {}\n{out}stderr {}\n{err}", out.len(), err.len());
         std::fs::write(&file, text)?;
@@ -137,9 +169,9 @@ fn read_pinned(text: &str) -> Option<(String, Outcome)> {
     Some((hash.to_owned(), (out.to_owned(), err.to_owned(), code.parse().ok())))
 }
 
-type Outcome = (String, String, Option<i32>);
+pub(crate) type Outcome = (String, String, Option<i32>);
 
-fn outcome(output: &Output) -> Outcome {
+pub(crate) fn outcome(output: &Output) -> Outcome {
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -393,8 +425,8 @@ def main(stdout: Stdout):
     let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("two_loops"));
     let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let ours = outcome(&Command::new(&executable).output_within()?);
-    let interpreted = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    let ours = apart_from(&dir, outcome(&Command::new(&executable).output_within()?));
+    let interpreted = interpreted_in(&dir, "two_loops", nested)?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(ours, interpreted);
     assert_eq!(ours.0, "-3 [[2, 3], [5, 7], [9]]\n");
@@ -453,7 +485,7 @@ fn same_as_the_interpreter_in_both_builds(name: &str, source: &str) -> std::io::
     std::fs::write(&program, source)?;
     let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
     let output = executable.to_string_lossy().into_owned();
-    let (wanted_out, wanted_err, wanted_code) = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    let (wanted_out, wanted_err, wanted_code) = interpreted_in(&dir, name, source)?;
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let args: Vec<&str> = ["build"]
             .into_iter()
@@ -462,7 +494,7 @@ fn same_as_the_interpreter_in_both_builds(name: &str, source: &str) -> std::io::
             .collect();
         let built = fennec(&args, &dir)?;
         assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-        let (out, err, code) = outcome(&Command::new(&executable).output_within()?);
+        let (out, err, code) = apart_from(&dir, outcome(&Command::new(&executable).output_within()?));
         assert_eq!((&out, code), (&wanted_out, wanted_code), "{how:?}");
         assert_eq!(err.lines().next(), wanted_err.lines().next(), "{how:?}");
     }
@@ -3080,18 +3112,13 @@ fn taking_a_lock_already_held_ends_the_program() -> std::io::Result<()> {
         let program = dir.join(format!("{name}.fen"));
         std::fs::write(&program, format!("{LOCK_HELD}{shape}    stdout.print(\"not here\")\n"))?;
         let executable = dir.join(name);
-        let interpreted = outcome(&fennec(&["run", "--interp", &path(&program)], &dir)?);
-        assert_eq!((interpreted.0.as_str(), interpreted.2), ("before 1\n", Some(1)), "{name}");
-        assert!(interpreted.1.contains("that's already held"), "{name}: {}", interpreted.1);
         // Native code doesn't take a nested function kept in a list yet. Once it does, it has to
-        // stop the same way.
+        // stop as the interpreter did.
         let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
         if !built.status.success() {
             continue;
         }
         let ran = outcome(&Command::new(&executable).output_within()?);
-        assert_eq!((&ran.0, ran.2), (&interpreted.0, interpreted.2), "{name}");
-        assert_eq!(ran.1.lines().next(), interpreted.1.lines().next(), "{name}");
         assert_eq!(ran.2, Some(1), "{name}");
         assert_eq!(ran.0, "before 1\n", "{name}");
         assert!(ran.1.contains("that's already held"), "{name}: {}", ran.1);
@@ -3136,7 +3163,11 @@ fn a_with_taking_one_cell_twice_ends_the_program() -> std::io::Result<()> {
         let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
         assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
         let ran = outcome(&Command::new(&executable).output_within()?);
-        assert_eq!(ran, outcome(&fennec(&["run", "--interp", &path(&program)], &dir)?), "{name}");
+        let interpreted =
+            interpreted_by(&dir, &program, &format!("taken_twice_{name}"), || {
+                fennec(&["run", "--interp", &path(&program)], &dir)
+            })?;
+        assert_eq!(apart_from(&dir, ran.clone()), interpreted, "{name}");
         assert_eq!(ran.2, Some(1), "{name}");
         assert_eq!(ran.0, "before 21\n", "{name}");
         assert!(ran.1.contains("takes the same `shared` value twice"), "{name}: {}", ran.1);
@@ -3222,9 +3253,10 @@ fn every_name_for_a_shared_value_sees_it_change() -> std::io::Result<()> {
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
-    let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+    let interpreted =
+        interpreted_by(&dir, &program, "shared_names", || fennec(&["run", "--interp", &path(&program)], &dir))?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(outcome(&ran), outcome(&interpreted));
+    assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
     Ok(())
 }
 
@@ -3746,9 +3778,10 @@ fn own_text_inside_other_values_is_written_by_native_code() -> std::io::Result<(
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
-    let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+    let interpreted =
+        interpreted_by(&dir, &program, "own_text_inside", || fennec(&["run", "--interp", &path(&program)], &dir))?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(outcome(&ran), outcome(&interpreted));
+    assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
     Ok(())
 }
 
@@ -3823,9 +3856,10 @@ fn values_read_from_their_blocks_show_as_they_do_in_the_interpreter() -> std::io
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
-    let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+    let interpreted =
+        interpreted_by(&dir, &program, "shown_values", || fennec(&["run", "--interp", &path(&program)], &dir))?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(outcome(&ran), outcome(&interpreted));
+    assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
     Ok(())
 }
 
@@ -3837,8 +3871,8 @@ fn same_as_the_interpreter(name: &str, source: &str) -> std::io::Result<()> {
     let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
     let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let ours = outcome(&Command::new(&executable).output_within()?);
-    let interpreted = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    let ours = apart_from(&dir, outcome(&Command::new(&executable).output_within()?));
+    let interpreted = interpreted_in(&dir, name, source)?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(ours, interpreted);
     Ok(())
@@ -5416,10 +5450,12 @@ def main(stdout: Stdout, args: Args, clock: Clock):
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).args(["one", "two"]).output_within()?;
-    let interpreted = fennec(&["run", "--interp", &path(&program), "one", "two"], &dir)?;
+    let interpreted = interpreted_by(&dir, &program, "arguments_and_clock", || {
+        fennec(&["run", "--interp", &path(&program), "one", "two"], &dir)
+    })?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "2 True\none\ntwo\none two\nTrue\n");
-    assert_eq!(outcome(&ran), outcome(&interpreted));
+    assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
     Ok(())
 }
 
@@ -5485,13 +5521,15 @@ fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
         command.current_dir(&dir).output_given(b"first\r\nsecond\n", FENNEC_DEADLINE)
     };
     let ran = with_lines(&mut Command::new(&executable))?;
-    let interpreted = with_lines(
-        crate::executables::fennec_command()
-            .args(["run", "--interp", &path(&program)])
-            .env("FENNEC_HOME", &dir),
-    )?;
+    let interpreted = interpreted_by(&dir, &program, "stdin_lines", || {
+        with_lines(
+            crate::executables::fennec_command()
+                .args(["run", "--interp", &path(&program)])
+                .env("FENNEC_HOME", &dir),
+        )
+    })?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(outcome(&ran), outcome(&interpreted));
+    assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
     Ok(())
 }
 
@@ -5553,11 +5591,13 @@ fn fs_declared_in_std_is_found_by_name_natively_as_in_the_interpreter() -> std::
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).current_dir(&dir).output_within()?;
-    let interpreted = crate::executables::fennec_command()
-        .args(["run", "--interp", &path(&program)])
-        .env("FENNEC_HOME", &dir)
-        .current_dir(&dir)
-        .output_within()?;
+    let interpreted = interpreted_by(&dir, &program, "fs_by_name", || {
+        crate::executables::fennec_command()
+            .args(["run", "--interp", &path(&program)])
+            .env("FENNEC_HOME", &dir)
+            .current_dir(&dir)
+            .output_within()
+    })?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),
@@ -5565,7 +5605,7 @@ fn fs_declared_in_std_is_found_by_name_natively_as_in_the_interpreter() -> std::
         "{}",
         String::from_utf8_lossy(&ran.stderr)
     );
-    assert_eq!(outcome(&ran), outcome(&interpreted));
+    assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
     Ok(())
 }
 
@@ -6153,17 +6193,19 @@ fn process_options_without_the_interpreter_match_it() -> std::io::Result<()> {
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).current_dir(&dir).output_within()?;
-    let interpreted = crate::executables::fennec_command()
-        .args(["run", "--interp", &path(&program)])
-        .env("FENNEC_HOME", &dir)
-        .current_dir(&dir)
-        .output_before(FENNEC_DEADLINE)?;
+    let interpreted = interpreted_by(&dir, &program, "process_options", || {
+        crate::executables::fennec_command()
+            .args(["run", "--interp", &path(&program)])
+            .env("FENNEC_HOME", &dir)
+            .current_dir(&dir)
+            .output_before(FENNEC_DEADLINE)
+    })?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),
         "one\ntwo\n\nTrue\nred\n\nTrue True\nthere's no folder `no-such-folder` to run it in\nnarrowed\n\nthis Process can run only `cat`, so it can't run `pwd`\n"
     );
-    assert_eq!(outcome(&ran), outcome(&interpreted));
+    assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
     Ok(())
 }
 
@@ -6208,18 +6250,20 @@ fn walking_a_folder_without_the_interpreter_matches_it() -> std::io::Result<()> 
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).current_dir(&dir).output_within()?;
-    let interpreted = crate::executables::fennec_command()
-        .args(["run", "--interp", &path(&program)])
-        .env("FENNEC_HOME", &dir)
-        .current_dir(&dir)
-        .output_before(FENNEC_DEADLINE)?;
+    let interpreted = interpreted_by(&dir, &program, "walked", || {
+        crate::executables::fennec_command()
+            .args(["run", "--interp", &path(&program)])
+            .env("FENNEC_HOME", &dir)
+            .current_dir(&dir)
+            .output_before(FENNEC_DEADLINE)
+    })?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),
         "tree/a.txt False\ntree/b True\ntree/b/c True\ntree/b/c/deep.txt False\ntree/b/up True\ntree/b/z.txt False\n\
          [\"tree/b/c\", \"tree/b/c/deep.txt\", \"tree/b/up\", \"tree/b/z.txt\"]\nrefused\nTrue\n"
     );
-    assert_eq!(outcome(&ran), outcome(&interpreted));
+    assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
     Ok(())
 }
 
@@ -6605,10 +6649,9 @@ def main(net: Net, stdout: Stdout):
 }
 
 /// `json=` sends a value as its JSON text, with `content-type: application/json` unless the call
-/// says otherwise, the same natively as in the interpreter: a struct, a list with a type of its
-/// own, and a str, which is quoted.
+/// says otherwise: a struct, a list with a type of its own, and a str, which is quoted.
 #[test]
-fn a_value_sent_as_json_reads_the_same_natively_as_in_the_interpreter() -> std::io::Result<()> {
+fn a_value_sent_as_json_reads_as_its_json_text() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -6640,26 +6683,20 @@ def main(net: Net, stdout: Stdout):
                   application/vnd.mine+json [\"a\", \"b\"]\n\
                   application/json \"a \\\"quoted\\\" note\"\n";
     let dir = folder("json_body")?;
-    for native in [false, true] {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
-        let port = listener.local_addr()?.port();
-        listener.set_nonblocking(true)?;
-        let program = dir.join(format!("post_{native}.fen"));
-        std::fs::write(&program, source(port))?;
-        let program = program.to_string_lossy().into_owned();
-        let server = std::thread::spawn(move || echo_three_bodies(&listener));
-        let ran = if native {
-            let executable = dir.join(format!("post{}", std::env::consts::EXE_SUFFIX));
-            let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
-            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-            outcome(&Command::new(&executable).output_within()?)
-        } else {
-            outcome(&fennec(&["run", "--interp", &program], &dir)?)
-        };
-        let answered = server.join().map_err(|_| std::io::Error::other("the test's server panicked"))?;
-        assert!(answered.is_ok(), "native {native}: {answered:?}, and the program said {ran:?}");
-        assert_eq!(ran.0, wanted, "native {native}: {}", ran.1);
-    }
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    listener.set_nonblocking(true)?;
+    let program = dir.join("post.fen");
+    std::fs::write(&program, source(port))?;
+    let program = program.to_string_lossy().into_owned();
+    let server = std::thread::spawn(move || echo_three_bodies(&listener));
+    let executable = dir.join(format!("post{}", std::env::consts::EXE_SUFFIX));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = outcome(&Command::new(&executable).output_within()?);
+    let answered = server.join().map_err(|_| std::io::Error::other("the test's server panicked"))?;
+    assert!(answered.is_ok(), "{answered:?}, and the program said {ran:?}");
+    assert_eq!(ran.0, wanted, "{}", ran.1);
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -8579,8 +8616,8 @@ def main(stdout: Stdout):
     let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("floats"));
     let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let ours = outcome(&Command::new(&executable).output()?);
-    let interpreted = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    let ours = apart_from(&dir, outcome(&Command::new(&executable).output()?));
+    let interpreted = interpreted_in(&dir, "floats_ordered_as_decided", source)?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(ours, interpreted);
     assert_eq!(
@@ -8714,8 +8751,8 @@ def main(stdout: Stdout):
     let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("floats"));
     let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let ours = outcome(&Command::new(&executable).output_within()?);
-    let interpreted = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    let ours = apart_from(&dir, outcome(&Command::new(&executable).output_within()?));
+    let interpreted = interpreted_in(&dir, "floats_as_decided", source)?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(ours, interpreted);
     assert_eq!(
@@ -8832,10 +8869,12 @@ def main(stdout: Stdout):
     )
 }
 
-/// Floats as keys hash as they compare, on the interpreter here. LLVM's float keys are held to the
-/// same answers where they're lowered.
+/// Floats as keys hash as they compare: `-0.0` is `0.0`, and NaN is one key.
 #[test]
-fn float_keys_hash_as_decided_on_the_interpreter() -> std::io::Result<()> {
+fn float_keys_hash_as_decided() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
     let source = "def main(stdout: Stdout):
     zero = 0.0
     minus = -zero
@@ -8851,12 +8890,15 @@ fn float_keys_hash_as_decided_on_the_interpreter() -> std::io::Result<()> {
     stdout.print(named.get(minus), named[minus])
     stdout.print([zero, nan] == [minus, -nan])
 ";
-    let dir = folder("float_keys_interpreted")?;
+    let dir = folder("float_keys")?;
     let program = dir.join("keys.fen");
     std::fs::write(&program, source)?;
-    let interpreted = outcome(&fennec(&["run", "--interp", &program.to_string_lossy()], &dir)?);
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("keys"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = outcome(&Command::new(&executable).output_within()?);
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(interpreted.0, "True\n1 True\n1 True\n1 1\nTrue\n");
+    assert_eq!(ran.0, "True\n1 True\n1 True\n1 1\nTrue\n", "{}", ran.1);
     Ok(())
 }
 
@@ -11282,8 +11324,10 @@ fn a_failing_main_ends_as_on_the_interpreter() -> std::io::Result<()> {
         let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
         assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
         let ran = Command::new(&executable).output_within()?;
-        let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
-        assert_eq!(outcome(&ran), outcome(&interpreted), "{name}");
+        let interpreted = interpreted_by(&dir, &program, &format!("failing_main_{name}"), || {
+            fennec(&["run", "--interp", &path(&program)], &dir)
+        })?;
+        assert_eq!(apart_from(&dir, outcome(&ran)), interpreted, "{name}");
         assert_eq!(ran.status.code(), Some(1), "{name}");
     }
     std::fs::remove_dir_all(&dir)?;

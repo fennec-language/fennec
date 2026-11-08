@@ -1,0 +1,15 @@
+source 76b4e948ae90fba088b88b17b1d1a8a3d28313278e2958d11095ec695ab156c1
+code 0
+stdout 397
+1 4 1200 1200
+3 13 600 600
+12 15 300 300
+23 15 299 299
+24 15 299 299
+30 15 299 299
+42 94.0 ["a much longer key than a header holds 0", "a much longer key than a header holds 1", "a much longer key than a header holds 2", "a much longer key than a header holds 3"]
+14 True
+11 1 {"x": 1}
+{"0": True, "1": False, "2": True, "3": False, "4": False, "5": True, "6": False, "7": True, "8": False}
+6 115
+stderr 0

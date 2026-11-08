@@ -38,7 +38,7 @@ description: What Fennec does today, what's being built next, and the design que
 - `parallel` over collections, streams and a server's connections, on every core, with reductions that combine in a fixed order. Each server round closes its connection when it ends, a failure passing up stops the server, and a crash ends only its own round.
 - `shared T` and `lock`, with a crash inside `lock x as ref` rolled back so nobody sees a half-change.
 - `with launch(...)`, a task beside you until its block ends, and bounded channels, `Channel`, `Inbox` and `Sender`, natively.
-- Sized numbers from `i8` to `u32`, each operation checked against its size, with literals taking the size they go into and `u8.from(x)?` and `u8.parse(text)?` for numbers from outside.
+- Sized numbers from `i8` to `u64` and `f32`, natively, each operation checked against its size, with `wrapping_` and `saturating_` add, sub and mul up to 32 bits, with literals taking the size they go into and `u8.from(x)?` and `u8.parse(text)?` for numbers from outside.
 - A function that can fail says `fails` in its signature, a failure passes up only with `?`, and a `match` over what can fail handles both sides. `fennec fix` writes the first two.
 - `with` and `lend`, for sources of your own and for files: `fs.create` puts a file in place only when its block ends, synced to the disk, and `fs.open` reads in lines or chunks.
 - Capabilities: `Stdout`, `Stdin`, `Args`, `Fs`, `Clock`, `Env`, `Entropy`, `Process` and `Net`.
@@ -59,9 +59,9 @@ description: What Fennec does today, what's being built next, and the design que
 
 - **More game math.** 32-bit math types, and `Simd` for when a loop must use vectors.
 - **Wrapped C libraries for games.** Windows, input, audio and graphics, wrapped by the Fennec project behind safe APIs. Your own code never needs `unsafe`, because there isn't any.
-- **Hot reload,** so a running game picks up a change.
+- **Hot reload,** after Hoard's core works, so a running game or server picks up a change. It's all or nothing: code swaps only at a safe point, after the live data is checked against the new code, or the reload is refused and the old code keeps running.
 - **Debug info and stack traces,** so a failure shows the calls that led to it.
-- **The rest of the sized numbers:** `u64` and `f32` running, and `wrapping_` and `saturating_` methods.
+- **The rest of the sized numbers:** `wrapping_` and `saturating_` on a `u64`, and running them in `fennec test`.
 - **Kit dependencies and [the Den](/den/),** Fennec's registry for kits.
 - **Cross-compiling and WebAssembly.**
 - **The rest of the concurrency design:** `TaskGroup`, keeper pools, lock order checked across the whole program, and no waiting inside a lock. The [tour](/tour/#sharing-resources-and-tasks) describes it.

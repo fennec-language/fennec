@@ -7270,9 +7270,25 @@ def main(net: Net, stdout: Stdout) fails NetError:
             answered += 1;
         }
     }
+    // A round's connection closes as it ends, which can be before it's written why, so the server
+    // is given time to say so for the last one.
+    let said = server.stderr.take().expect("its errors");
+    let (sender, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(said).lines().map_while(Result::ok) {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut errors = String::new();
+    while errors.matches("error:").count() < 3 {
+        let Ok(line) = lines.recv_timeout(std::time::Duration::from_secs(10)) else { break };
+        errors.push_str(&line);
+        errors.push('\n');
+    }
     server.kill()?;
-    let ended = server.wait_with_output()?;
-    let errors = String::from_utf8_lossy(&ended.stderr);
+    server.wait()?;
     assert_eq!((answered, closed), (27, 3), "{errors}");
     assert_eq!(errors.matches("error:").count(), 3, "each crash says why: {errors}");
     std::fs::remove_dir_all(&dir)?;

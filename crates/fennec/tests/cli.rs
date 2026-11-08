@@ -2056,7 +2056,6 @@ fn fennec_update_pins_a_kit_from_git() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-#[cfg(unix)]
 fn small_kit(name: &str) -> std::io::Result<(PathBuf, PathBuf)> {
     let dir = scratch(name)?;
     std::fs::create_dir_all(dir.join("kit/src"))?;

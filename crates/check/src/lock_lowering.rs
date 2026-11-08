@@ -202,6 +202,10 @@ impl Lowering<'_> {
                 self.exprs(iter);
                 self.stmts(body);
             }
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                self.stmts(cleanup);
+                self.stmts(body);
+            }
             StmtKind::Def(def) => self.function(def),
             StmtKind::Expr(value)
             | StmtKind::Fail(value)

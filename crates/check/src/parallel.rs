@@ -75,6 +75,7 @@ impl FnCx<'_> {
                     self.writes_in_expr(value, writes);
                     self.writes_in(block, writes);
                 }
+                StmtKind::OnFailure { body: block, .. } => self.writes_in(block, writes),
                 StmtKind::Def(_)
                 | StmtKind::Return(None)
                 | StmtKind::Break

@@ -33,6 +33,9 @@ export struct Limits:
     depth = 64
     ## The most bytes one text or `bytes` may hold, and the most items a load may read in all.
     length = 16_000_000
+    ## The most items a load may read that take no bytes, like a struct with nothing saved in it.
+    ## Each of those is made from nothing, so bytes could ask for far more memory than they are.
+    empty = 65536
 
 ## `value` as bytes, which `loads` reads back into the same type. With `exact`, its `Table`s are
 ## saved slot for slot.
@@ -53,7 +56,12 @@ export def dumps[T: Serializable](value: T, exact = False) -> bytes:
 ## they go past `limits`.
 export def loads[T: Deserializable](data: bytes, limits: Limits? = None) -> T fails ParseError:
     held = limits else Limits()
-    mut src = PackReader(_data=data, _most_deep=held.depth, _longest=held.length)
+    mut src = PackReader(
+        _data=data,
+        _most_deep=held.depth,
+        _longest=held.length,
+        _most_empty=held.empty,
+    )
     if not src._header(shape_hash[T](), type_name[T]())?:
         layout = data[src._layout_at:src._layout_end]
         return by_name[T](src, layout=layout, at=src._layout_at)?
@@ -66,6 +74,7 @@ export def loads[T: Deserializable](data: bytes, limits: Limits? = None) -> T fa
                 _data=data,
                 _most_deep=held.depth,
                 _longest=held.length,
+                _most_empty=held.empty,
                 _explain=True,
             )
             _ = again._header(shape_hash[T](), type_name[T]())?
@@ -259,6 +268,7 @@ export struct Unpacker:
                 _exact=self._exact,
                 _most_deep=held.depth,
                 _longest=held.length,
+                _most_empty=held.empty,
                 _items_left=held.length,
             )
             return by_name[T](raw, layout=self._layouts[place], at=0)?
@@ -282,6 +292,7 @@ def in_order[T: Deserializable](body: bytes, exact: bool, held: Limits) -> T fai
         _exact=exact,
         _most_deep=held.depth,
         _longest=held.length,
+        _most_empty=held.empty,
         _items_left=held.length,
     )
     match read_value[T](ref src):
@@ -294,6 +305,7 @@ def in_order[T: Deserializable](body: bytes, exact: bool, held: Limits) -> T fai
                 _exact=exact,
                 _most_deep=held.depth,
                 _longest=held.length,
+                _most_empty=held.empty,
                 _items_left=held.length,
                 _explain=True,
             )
@@ -484,6 +496,9 @@ export struct PackReader:
     _longest = 16_000_000
     ## How many more items this load may read.
     _items_left = 16_000_000
+    ## How many items that took no bytes it may read, and how many it has.
+    _most_empty = 65536
+    _empty_read = 0
     ## The next field of each struct being read, innermost last, and the one just read.
     _next = list[int]()
     _field = 0
@@ -596,6 +611,14 @@ export struct PackReader:
         if self._depth > self._most_deep:
             fail self._fail(f"it nests deeper than the limit of {self._most_deep}")
 
+    ## Counts an item that took no bytes against the limit on those.
+    def _took_nothing(ref self) fails ParseError:
+        self._empty_read += 1
+        if self._empty_read > self._most_empty:
+            fail self._fail(
+                f"it holds more than the limit of {self._most_empty} items that take no bytes",
+            )
+
     ## Counts `n` items against the limit on items, before any is read.
     def _items(ref self, n: int) fails ParseError:
         self._items_left -= n
@@ -643,7 +666,10 @@ export struct PackReader:
         for at in range(n):
             if self._explain:
                 self._path.append(f"[{at}]")
+            before = self._at
             found.append(T.deserialize(ref self)?)
+            if self._at == before:
+                self._took_nothing()?
             if self._explain:
                 _ = self._path.pop()
         self._depth -= 1
@@ -657,9 +683,12 @@ export struct PackReader:
         for at in range(n):
             if self._explain:
                 self._path.append(f"[{at}]")
+            before = self._at
             key = K.deserialize(ref self)?
             value = V.deserialize(ref self)?
             found.append((key, value))
+            if self._at == before:
+                self._took_nothing()?
             if self._explain:
                 _ = self._path.pop()
         self._depth -= 1
@@ -819,6 +848,8 @@ struct PackByName:
     ## Each struct, case or tuple being read, innermost last, and the next of what it holds.
     _open = list[int]()
     _next = list[int]()
+    ## How many of each struct's fields the data has had so far.
+    _matched = list[int]()
     _field = 0
     ## The case just read, whose fields come next.
     _case = -1
@@ -1076,7 +1107,10 @@ struct PackByName:
         for at in range(n):
             self._path.append(f"[{at}]")
             self._expect = item
+            before = self._raw._at
             found.append(self.value[T]()?)
+            if self._raw._at == before:
+                self._raw._took_nothing()?
             _ = self._path.pop()
         self._raw._depth -= 1
         self._expect = node
@@ -1092,10 +1126,13 @@ struct PackByName:
         for at in range(n):
             self._path.append(f"[{at}]")
             self._expect = self._kids[node][0]
+            before = self._raw._at
             key = self.value[K]()?
             self._expect = self._kids[node][1]
             value = self.value[V]()?
             found.append((key, value))
+            if self._raw._at == before:
+                self._raw._took_nothing()?
             _ = self._path.pop()
         self._raw._depth -= 1
         self._expect = node
@@ -1117,6 +1154,7 @@ struct PackByName:
         self._raw._deeper()?
         self._open.append(node)
         self._next.append(0)
+        self._matched.append(0)
         self._path.append("")
 
     ## The next field the data has that the type has too, by its name. Those it doesn't have any
@@ -1133,10 +1171,14 @@ struct PackByName:
                 if field[0] != "" and field[0] == name:
                     self._field = found
                     self._expect = self._kids[node][at]
+                    self._matched[top] += 1
                     return True
             self._skip(self._kids[node][at])?
+        # The fields the data didn't have are made from their defaults, so they count too.
+        self._raw._items(fields.len() - self._matched[top])?
         _ = self._open.pop()
         _ = self._next.pop()
+        _ = self._matched.pop()
         _ = self._path.pop()
         self._raw._depth -= 1
         False
@@ -1183,6 +1225,7 @@ struct PackByName:
         self._raw._deeper()?
         self._open.append(node)
         self._next.append(0)
+        self._matched.append(0)
 
     def item[T: Deserializable](ref self) -> T fails ParseError:
         top = self._open.len() - 1
@@ -1194,6 +1237,7 @@ struct PackByName:
     def end_items(ref self) fails ParseError:
         _ = self._open.pop()
         _ = self._next.pop()
+        _ = self._matched.pop()
         self._raw._depth -= 1
 
     def exact(self) -> bool:

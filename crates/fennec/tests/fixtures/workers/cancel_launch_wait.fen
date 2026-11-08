@@ -1,0 +1,20 @@
+from std.net import NetError
+from std.concurrent import Crashed
+
+error Boom:
+    why: str
+
+def child(clock: Clock):
+    clock.sleep(30s)
+
+def main(net: Net, clock: Clock, stdout: Stdout) fails NetError | Boom | Crashed:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else "none"
+            if line == "wait":
+                conn.write("waiting\n")?
+                with launch(() => child(clock))?:
+                    pass
+            else:
+                fail Boom(why="a round failed")

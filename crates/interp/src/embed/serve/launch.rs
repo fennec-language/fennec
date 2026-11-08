@@ -69,6 +69,13 @@ struct Outcome {
     printed: Vec<u8>,
 }
 
+impl Outcome {
+    /// What a launcher that couldn't wait for its task gets.
+    fn left_behind() -> Outcome {
+        Outcome { how: ENDED, failure: 0, blocks: Vec::new(), lent_owners: Vec::new(), printed: Vec::new() }
+    }
+}
+
 /// Launched tasks still to end, by the number their launcher holds.
 static TASKS: Mutex<Option<HashMap<i64, Arc<Launched>>>> = Mutex::new(None);
 static NEXT_TASK: AtomicI64 = AtomicI64::new(1);
@@ -302,6 +309,13 @@ fn wait_for(launched: &Arc<Launched>, mut deadline: Option<Instant>) -> Outcome 
             drop(launched.ended.wait(end).unwrap_or_else(PoisonError::into_inner));
             None
         };
+        // A cancelled launcher can't wait, and its task may need this very worker to run. So the task's
+        // stopped hard and left to end by itself, with nothing of it coming back here.
+        if fennec_parked::is_cancelled() {
+            *launched.end.lock().unwrap_or_else(PoisonError::into_inner) = End::Running(None);
+            stop(launched, threads::STOPPED_HARD);
+            return Outcome::left_behind();
+        }
         // Its time's up, or the launcher's been stopped itself: the task's stopped, and waited for,
         // then stopped hard once its grace is up.
         let late = deadline.is_some_and(|deadline| deadline <= Instant::now());

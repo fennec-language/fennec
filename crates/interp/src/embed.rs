@@ -292,12 +292,19 @@ pub(in crate::embed) struct Temporaries {
     inputs: Vec<Value>,
     /// Which task it is, in a recording or a replay: a server's round, named by its connection.
     replay: Option<crate::replay::Task>,
+    /// Its failure, if it parked with one: it's the task's, not whatever its thread runs next.
+    failure: Option<Diagnostic>,
+    failed: u8,
 }
 
 #[cfg(any(test, feature = "threads"))]
 impl Temporaries {
     pub(in crate::embed) fn is_empty(&self) -> bool {
-        self.temps.is_empty() && self.inputs.is_empty() && self.replay.is_none()
+        self.temps.is_empty()
+            && self.inputs.is_empty()
+            && self.replay.is_none()
+            && self.failure.is_none()
+            && self.failed == 0
     }
 
     /// A task's own, named `task` in a recording or a replay.
@@ -314,9 +321,23 @@ pub(in crate::embed) fn swap_temporaries(own: &mut Temporaries) {
         if let Some(state) = state.as_mut() {
             std::mem::swap(&mut state.temps, &mut own.temps);
             std::mem::swap(&mut state.inputs, &mut own.inputs);
+            std::mem::swap(&mut state.failure, &mut own.failure);
         }
     });
+    own.failed = FLAGS.with(|flags| flags.failed.replace(own.failed));
     crate::replay::swap(&mut own.replay);
+}
+
+/// Puts a task's failure back in its thread's runtime, as it ends with one: what's run it says what
+/// happens next.
+#[cfg(any(test, feature = "threads"))]
+pub(in crate::embed) fn take_failure_of(own: &mut Temporaries) {
+    if let Some(failure) = own.failure.take() {
+        with(|state| state.failure = Some(failure));
+    }
+    if own.failed != 0 {
+        set_failed(std::mem::take(&mut own.failed));
+    }
 }
 
 /// Writes what this thread has printed and kept. Output comes out as it's printed, and is only

@@ -83,12 +83,11 @@ fn at_call(args: &[Arg], index: usize, name: &str, sources: &Sources) -> AtCall 
 /// The arguments of each call of a function named `name` in the module, or None if the name
 /// is used any other way, or a member anywhere has the name.
 fn calls(module: &Module, name: &str) -> Option<Vec<Vec<Arg>>> {
-    let mut walked = module.clone();
     let mut callees = Vec::new();
     let mut found = Vec::new();
     let mut names = Vec::new();
     let mut member = false;
-    fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| match &expr.kind {
+    fennec_syntax::read::exprs(module, &mut |expr| match &expr.kind {
         ExprKind::Call { callee, args } if matches!(&callee.kind, ExprKind::Name(called) if called == name) =>
         {
             callees.push(callee.span);

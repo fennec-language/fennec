@@ -13,6 +13,18 @@ export struct Path:
         if self.text.endswith("/"): return Path(self.text + part)
         Path(self.text + "/" + part)
 
+    ## `part`, a path from outside like a request's, inside this one. A leading `/` is taken as
+    ## this path's own top. It fails on anything that could lead out of it: a `..`, a `\\`, or a
+    ## control character. Unlike `/`, it can't replace the path.
+    def inside(self, part: str) -> Path fails InvalidValue:
+        for c in part:
+            if c.code() < 32 or c.code() == 127 or c == "\\":
+                fail InvalidValue(message=f"`{part}` can't be a path inside `{self.text}`")
+        kept = Path(part).parts()
+        for name in kept:
+            if name == "..": fail InvalidValue(message=f"`{part}` would leave `{self.text}`")
+        self.join("/".join(kept))
+
     ## Whether the path starts at the root, `/`.
     def is_absolute(self) -> bool:
         self.text.startswith("/")
@@ -43,8 +55,12 @@ export struct Path:
 
     ## The path without its last part: `assets` for `assets/fox.png`, and `.` for `fox.png`.
     def parent(self) -> Path:
-        parts = self.parts()
+        mut parts = self.parts()
         if parts.len() == 0: return self.rebuild([])
+        # Going up from `..` is further up, not back down to here.
+        if parts[parts.len() - 1] == "..":
+            parts.append("..")
+            return self.rebuild(parts)
         self.rebuild(parts[:parts.len() - 1])
 
     ## The same path written simply: `a/./b/../c` becomes `a/c`. A `..` that would go above

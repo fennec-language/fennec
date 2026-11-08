@@ -4,7 +4,8 @@
 //! which places under its `mut` parameters it changes. The loop goes over `copy(xs)` instead, or
 //! collects the changes and makes them after.
 //!
-//! A `mut` argument has its place to itself the same way: nothing else in the call can reach it.
+//! A `ref` argument has its place to itself the same way: nothing else in the call can reach it,
+//! not even another item of the same collection, as `f(ref xs[0], ref xs[2])` would.
 //! Nor can an argument change what its call changes, like `self.items.append(self.grow())` where
 //! `grow` appends to `self.items`: the engines would disagree on which change wins.
 
@@ -477,12 +478,15 @@ fn overlapping_arguments(callee: &Expr, args: &[Arg], problems: &mut Vec<Diagnos
     let mut earlier: Vec<(Place, &Expr, bool)> = Vec::new();
     for arg in args {
         let Some(given) = place(&arg.value) else { continue };
+        // Two `ref`s into one collection overlap however they're written, `xs[0]` and `xs[2]` too:
+        // each has its place to itself. A value read beside a `ref` is apart when its index is
+        // written as a different one.
         let clash = earlier.iter().find(|(other, written, is_mut)| {
-            (arg.is_mut || *is_mut) && given.overlaps(other) && !written_apart(&arg.value, written)
+            (arg.is_mut || *is_mut)
+                && given.overlaps(other)
+                && ((arg.is_mut && *is_mut) || !written_apart(&arg.value, written))
         });
-        let held = receiver.as_ref().filter(|(called_on, written)| {
-            arg.is_mut && given.overlaps(called_on) && !written_apart(&arg.value, written)
-        });
+        let held = receiver.as_ref().filter(|(called_on, _)| arg.is_mut && given.overlaps(called_on));
         if let Some((_, other, is_mut)) = clash {
             let (first, second) = (written(other, *is_mut), written(&arg.value, arg.is_mut));
             let message = format!("{first} and {second} overlap");
@@ -562,8 +566,8 @@ fn reads(expr: &Expr, changed: &Place) -> bool {
 const ARGUMENT_CHANGES_FIX: &str =
     "make that change on the line before, keeping what it gives back in a name, and pass the name";
 
-const OVERLAP_FIX: &str = "a `ref` argument needs its place to itself: give the other `copy(...)` of what \
-it reads, or make the changes one at a time";
+const OVERLAP_FIX: &str = "a `ref` argument needs its place to itself, so two items of one collection are \
+never both `ref`: give the other `copy(...)` of what it reads, or make the changes one at a time";
 
 /// An argument that names a place, in backticks as it's written.
 fn written(expr: &Expr, is_mut: bool) -> String {

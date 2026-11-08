@@ -1083,11 +1083,11 @@ def main(stdout: Stdout):
     show(stdout, keeps)
     stdout.print(kept)
 
-    # Two places at once, apart and in one root.
+    # Two places at once, each in its own collection.
     mut left = [[1], [2]]
     mut right = [[3], [4]]
     swap_ends(ref left[0], ref right[1])
-    swap_ends(ref left[1], ref left[0])
+    swap_ends(ref right[0], ref left[1])
     stdout.print(left, right)
 
     # In a loop, through a loop's item, and with the rule checked after.

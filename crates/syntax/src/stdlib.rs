@@ -63,13 +63,14 @@ modules! {
 /// What's available everywhere without an import: the errors standard operations fail
 /// with, the `Template` a template string builds, and the built-in types' methods written in
 /// Fennec.
-const CORE: [(&str, &str); 7] = [
+const CORE: [(&str, &str); 8] = [
     ("errors", include_str!("stdlib/errors.fen")),
     ("template", include_str!("stdlib/template.fen")),
     ("str", include_str!("stdlib/str.fen")),
     ("list", include_str!("stdlib/list.fen")),
     ("dict", include_str!("stdlib/dict.fen")),
     ("set", include_str!("stdlib/set.fen")),
+    ("sized", include_str!("stdlib/sized.fen")),
     ("serialize", include_str!("stdlib/serialize.fen")),
 ];
 
@@ -297,8 +298,10 @@ fn qualify_functions(modules: &mut [(&'static str, crate::Module)]) {
                 }
             }
         }
-        crate::visit::exprs_mut(module, &mut |expr| {
+        // A function's own parameter or local of the same name shadows the module's function.
+        crate::visit::exprs_in_scope_mut(module, &mut |expr, bound: &HashSet<String>| {
             let function = match &expr.kind {
+                ExprKind::Name(found) if bound.contains(found) => None,
                 ExprKind::Name(found) => names.get(found).cloned(),
                 ExprKind::Attr { object, name, optional: false } => crate::dotted(object)
                     .and_then(|alias| aliases.get(&alias))
@@ -321,6 +324,36 @@ pub fn given() -> impl Iterator<Item = (&'static str, &'static str)> {
 
 #[cfg(test)]
 mod tests {
+    /// A module's own functions are qualified where they're named, apart from where a
+    /// function's parameter or local of the same name shadows one, as in any program.
+    #[test]
+    fn a_parameter_or_local_shadows_a_modules_function() {
+        let source = "export def password(text: str) -> str:\n    text\n\n\
+            export def message(kind: int) -> int:\n    kind\n\n\
+            export def started(password: str) -> str:\n    password + password(\"x\")\n\n\
+            export def mac(key: int) -> int:\n    message = key + 1\n    message\n\n\
+            export def plain() -> str:\n    password(\"y\")\n";
+        let module = super::parse_module("postgres", source).unwrap();
+        let mut set = vec![("postgres", module)];
+        super::qualify_functions(&mut set);
+        let names = |function: &str| -> Vec<String> {
+            let mut found = Vec::new();
+            let mut module = set[0].1.clone();
+            module.items.retain(|item| matches!(item, crate::Item::Function(def) if def.name == function));
+            crate::visit::exprs_mut(&mut module, &mut |expr| {
+                if let crate::ExprKind::Name(name) = &expr.kind {
+                    found.push(name.clone());
+                }
+            });
+            found
+        };
+        // In `started`, both are the parameter: it shadows the function for the whole body, as
+        // in a program.
+        assert_eq!(names("postgres.started"), ["password", "password"]);
+        assert_eq!(names("postgres.mac"), ["message", "key", "message"]);
+        assert_eq!(names("postgres.plain"), ["postgres.password"]);
+    }
+
     /// How many typed empty collections, like `list[int]()`, a set of modules makes.
     fn typed_empties(modules: &[crate::Module]) -> usize {
         let mut found = 0;

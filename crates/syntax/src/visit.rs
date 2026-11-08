@@ -95,6 +95,123 @@ fn hide_interface_params<S: std::hash::BuildHasher>(
 /// What marks a type parameter the program didn't write, which can't be written in source.
 pub const HIDDEN: char = '\'';
 
+/// Calls `change` on every expression in a module, with the names the function it's in binds
+/// itself, which shadow anything of the same name outside it: its parameters, and every local,
+/// loop, `with`, lambda, comprehension and pattern name in it. A test's are its own too, and
+/// outside a function there are none.
+pub fn exprs_in_scope_mut<S: std::hash::BuildHasher + Default>(
+    module: &mut Module,
+    change: &mut dyn FnMut(&mut Expr, &HashSet<String, S>),
+) {
+    let none = HashSet::default();
+    for item in &mut module.items {
+        match item {
+            Item::Function(def) => scoped(def, change),
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+                let fields =
+                    def.fields.iter_mut().chain(def.cases.iter_mut().flat_map(|case| case.fields.iter_mut()));
+                for field in fields {
+                    for value in field.default.iter_mut().chain(field.rule.iter_mut()) {
+                        expr(value, &mut |found| change(found, &none));
+                    }
+                }
+                def.methods.iter_mut().for_each(|def| scoped(def, change));
+            }
+            Item::Interface(interface) => interface.methods.iter_mut().for_each(|def| scoped(def, change)),
+            Item::Extend(extension) => extension.methods.iter_mut().for_each(|def| scoped(def, change)),
+            Item::Test(test) => {
+                let mut bound: HashSet<String, S> =
+                    test.capabilities.iter().chain(&test.inputs).map(|param| param.name.clone()).collect();
+                bound_in(&test.body, &mut bound);
+                stmts(&mut test.body, &mut |found| change(found, &bound));
+            }
+            Item::Const { value, .. } => expr(value, &mut |found| change(found, &none)),
+            Item::Stmt(each) => stmt(each, &mut |found| change(found, &none)),
+            Item::Import(_) | Item::TypeAlias { .. } => {}
+        }
+    }
+}
+
+/// A function's expressions, each with the names the function binds.
+fn scoped<S: std::hash::BuildHasher + Default>(
+    def: &mut FnDef,
+    change: &mut dyn FnMut(&mut Expr, &HashSet<String, S>),
+) {
+    let mut bound: HashSet<String, S> = def.params.iter().map(|param| param.name.clone()).collect();
+    bound_in(&def.body, &mut bound);
+    function(def, &mut |found| change(found, &bound));
+}
+
+/// Every name some statements bind, in them and in what's inside them.
+fn bound_in<S: std::hash::BuildHasher>(body: &[Stmt], bound: &mut HashSet<String, S>) {
+    for each in body {
+        match &each.kind {
+            StmtKind::Assign { target, .. } => bound_target(target, bound),
+            StmtKind::For { names, body, .. } => {
+                bound.extend(names.iter().cloned());
+                bound_in(body, bound);
+            }
+            StmtKind::With { names, body, .. } => {
+                bound.extend(names.iter().map(|held| held.name.clone()));
+                bound_in(body, bound);
+            }
+            StmtKind::While { body, .. } => bound_in(body, bound),
+            StmtKind::If { branches, otherwise } => {
+                for (_, body) in branches {
+                    bound_in(body, bound);
+                }
+                if let Some(body) = otherwise {
+                    bound_in(body, bound);
+                }
+            }
+            StmtKind::Lend { otherwise, .. } => bound_in(otherwise, bound),
+            StmtKind::Def(def) => {
+                bound.insert(def.name.clone());
+                bound.extend(def.params.iter().map(|param| param.name.clone()));
+                bound_in(&def.body, bound);
+            }
+            _ => {}
+        }
+    }
+    // What expressions bind: a lambda's parameters, a comprehension's names, a case's pattern.
+    let mut copy = body.to_vec();
+    stmts(&mut copy, &mut |found| match &found.kind {
+        ExprKind::Lambda { params, .. } => bound.extend(params.iter().cloned()),
+        ExprKind::Comprehension { names, .. } => bound.extend(names.iter().cloned()),
+        ExprKind::Match { arms, .. } => {
+            for arm in arms {
+                bound_pattern(&arm.pattern, bound);
+                bound_in(&arm.body, bound);
+            }
+        }
+        _ => {}
+    });
+}
+
+fn bound_target<S: std::hash::BuildHasher>(target: &Expr, bound: &mut HashSet<String, S>) {
+    match &target.kind {
+        ExprKind::Name(name) => {
+            bound.insert(name.clone());
+        }
+        ExprKind::Tuple(items) => items.iter().for_each(|item| bound_target(item, bound)),
+        _ => {}
+    }
+}
+
+fn bound_pattern<S: std::hash::BuildHasher>(pattern: &Pattern, bound: &mut HashSet<String, S>) {
+    match pattern {
+        Pattern::Bind(name) => {
+            bound.insert(name.clone());
+        }
+        Pattern::Variant { args: patterns, .. } | Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
+            for pattern in patterns {
+                bound_pattern(pattern, bound);
+            }
+        }
+        Pattern::Wildcard | Pattern::Literal(_) => {}
+    }
+}
+
 /// Calls `change` on an expression and every expression inside it.
 pub fn in_expr(value: &mut Expr, change: &mut dyn FnMut(&mut Expr)) {
     expr(value, change);

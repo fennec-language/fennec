@@ -660,6 +660,11 @@ impl Parser {
                 self.advance();
                 "in".to_owned()
             }
+            // `def from(x: int) -> u8`, which `u8.from(x)` calls: a name after `.` can be a keyword.
+            Tok::Kw(Kw::From) => {
+                self.advance();
+                "from".to_owned()
+            }
             Tok::P(Punct::LBracket) if self.peek_at(1) == &Tok::P(Punct::RBracket) => {
                 self.pos += 2;
                 if self.eat_p(Punct::Assign) { "[]=".to_owned() } else { "[]".to_owned() }

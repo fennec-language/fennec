@@ -422,3 +422,73 @@ fn measure_the_tick_s_cost() {
     }
     finish();
 }
+
+static TEMPS_WORKER: std::sync::OnceLock<&'static Pool> = std::sync::OnceLock::new();
+static FIRST_PUSHED: AtomicBool = AtomicBool::new(false);
+static SECOND_PUSHED: AtomicBool = AtomicBool::new(false);
+static FIRST_DONE: AtomicBool = AtomicBool::new(false);
+static SECOND_READ: AtomicI64 = AtomicI64::new(-1);
+static LEFT_FOR_NEXT: AtomicI64 = AtomicI64::new(-1);
+
+/// Makes way for the other tasks on this thread until `ready` is set, a bounded number of times.
+fn until(ready: &AtomicBool) {
+    for _ in 0..100_000 {
+        if ready.load(Ordering::SeqCst) {
+            return;
+        }
+        crate::embed::serve::yield_task();
+    }
+}
+
+/// Holds a temporary across a wait, then truncates to where it started, as native code does.
+extern "C" fn first_holds_a_temporary(_env: i64, _thread: i64) -> i64 {
+    let mark = crate::embed::temps::mark();
+    let _ = with(|state| Some(state.push(crate::value::Value::Int(1))));
+    FIRST_PUSHED.store(true, Ordering::SeqCst);
+    until(&SECOND_PUSHED);
+    crate::embed::temps::truncate(mark);
+    FIRST_DONE.store(true, Ordering::SeqCst);
+    ENDED
+}
+
+/// Holds its own temporary across the first task's truncating, and reads it after.
+extern "C" fn second_holds_a_temporary(_env: i64, _thread: i64) -> i64 {
+    until(&FIRST_PUSHED);
+    let mark = crate::embed::temps::mark();
+    let held = with(|state| Some(state.push(crate::value::Value::Int(2)))).unwrap_or(-1);
+    SECOND_PUSHED.store(true, Ordering::SeqCst);
+    until(&FIRST_DONE);
+    let read = with(|state| match usize::try_from(held).ok().and_then(|at| state.temps.get(at)) {
+        Some(crate::value::Value::Int(n)) => Some(*n),
+        _ => Some(0),
+    });
+    SECOND_READ.store(read.unwrap_or(0), Ordering::SeqCst);
+    // Leaves without truncating, as native code leaving by a failure may.
+    let _ = mark;
+    ENDED
+}
+
+/// What a task finds in the runtime's temporaries when it starts.
+extern "C" fn counts_what_it_finds(_env: i64, _thread: i64) -> i64 {
+    let found = with(|state| Some(i64::try_from(state.temps.len() + state.inputs.len()).unwrap_or(-1)));
+    LEFT_FOR_NEXT.store(found.unwrap_or(-1), Ordering::SeqCst);
+    ENDED
+}
+
+/// Tasks taking turns on one thread each keep their own temporaries: one truncating to where it
+/// started never cuts off another's, and what a task left when it ended goes with it.
+#[test]
+fn tasks_taking_turns_on_a_thread_keep_their_own_temporaries() {
+    begin();
+    let worker = one_worker(&TEMPS_WORKER);
+    let first = launch_on(worker, first_holds_a_temporary, 0);
+    let second = launch_on(worker, second_holds_a_temporary, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(first, -1, 0, &mut failure), ENDED);
+    assert_eq!(launch_end(second, -1, 0, &mut failure), ENDED);
+    assert_eq!(SECOND_READ.load(Ordering::SeqCst), 2, "the second task's temporary was cut off");
+    let next = launch_on(worker, counts_what_it_finds, 0);
+    assert_eq!(launch_end(next, -1, 0, &mut failure), ENDED);
+    assert_eq!(LEFT_FOR_NEXT.load(Ordering::SeqCst), 0, "an ended task's temporaries stayed behind");
+    finish();
+}

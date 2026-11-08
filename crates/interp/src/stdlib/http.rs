@@ -243,7 +243,6 @@ static WITH_TLS: OnceLock<WithTls> = OnceLock::new();
 
 /// Says TLS is wanted: compiled code that makes a request calls this first, and so does the
 /// `fennec` command, for the interpreter.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn use_tls() {
     WITH_TLS.get_or_init(|| tls::wrap);
     RAW_TLS.get_or_init(|| tls::raw);
@@ -251,15 +250,12 @@ pub fn use_tls() {
 
 /// A raw connection with TLS over it, as `net.connect(host, port, tls=True)` makes: the TCP
 /// connection, its host's name, and how long the handshake may take.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) type RawTls = fn(TcpStream, &str, Duration) -> Result<tls::Secured, Failure>;
 
-#[cfg(not(target_arch = "wasm32"))]
 static RAW_TLS: OnceLock<RawTls> = OnceLock::new();
 
 /// Puts TLS over a raw connection, with its handshake done, checking the certificate against what
 /// the system trusts: or says why it can't be.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn raw_secured(tcp: TcpStream, host: &str, timeout: Duration) -> Result<tls::Secured, Failure> {
     let Some(raw) = RAW_TLS.get() else {
         return Err(Failure::Tls("this program was built without TLS: build it with LLVM".to_owned()));
@@ -463,7 +459,6 @@ fn failure_of(error: &std::io::Error, timeout: Duration) -> Failure {
 
 /// TLS, which always checks certificates, with what the operating system trusts. The playground
 /// has no network, so it has no TLS either.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod tls {
     use std::net::TcpStream;
     use std::sync::{Arc, OnceLock};

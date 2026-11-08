@@ -45,7 +45,6 @@ struct Stream {
 /// same, so a TLS connection's reads and writes take turns.
 enum Reading {
     Plain(BufReader<TcpStream>),
-    #[cfg(not(target_arch = "wasm32"))]
     Tls(Box<BufReader<http::tls::Secured>>),
 }
 
@@ -357,7 +356,6 @@ impl Failure {
 /// outside `std.net` can't make a `Connection` or `Server` at all
 /// (`examples/errors/net_forged_handle`). A handle is also looked up in the program's own
 /// table, so one this program wasn't given reaches nothing, and the randomness is a third wall.
-#[cfg(not(target_arch = "wasm32"))]
 fn fresh_handle(taken: &HashMap<i64, Socket>) -> i64 {
     loop {
         let mut word = [0; 8];
@@ -369,12 +367,6 @@ fn fresh_handle(taken: &HashMap<i64, Socket>) -> i64 {
             return handle;
         }
     }
-}
-
-/// The playground has no sockets, so its handles never reach one.
-#[cfg(target_arch = "wasm32")]
-fn fresh_handle(taken: &HashMap<i64, Socket>) -> i64 {
-    i64::try_from(taken.len()).unwrap_or(i64::MAX) + 1
 }
 
 fn duration_of(value: &Value, span: Span) -> Result<Duration, Diagnostic> {
@@ -673,15 +665,9 @@ fn connect(host: &str, port: u16, timeout: Duration, tls: bool) -> Result<Made, 
 }
 
 /// TLS over a connection just made, its certificate checked against what the system trusts.
-#[cfg(not(target_arch = "wasm32"))]
 fn secured(stream: &TcpStream, host: &str, timeout: Duration) -> Result<Box<BufReader<http::tls::Secured>>, Failure> {
     let tcp = stream.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
     Ok(Box::new(BufReader::new(http::raw_secured(tcp, host, timeout)?)))
-}
-
-#[cfg(target_arch = "wasm32")]
-fn secured(_stream: &TcpStream, _host: &str, _timeout: Duration) -> Result<std::convert::Infallible, Failure> {
-    Err(Failure::Tls("the playground has no network".to_owned()))
 }
 
 /// A connection to `host` on `port`, looked up and connected, blocking its thread.
@@ -711,10 +697,7 @@ fn connected(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, Str
 
 fn keep_stream(socket: TcpStream, peer: String, secured: Option<Secured>) -> Result<i64, Failure> {
     let reading = match secured {
-        #[cfg(not(target_arch = "wasm32"))]
         Some(secured) => Reading::Tls(secured),
-        #[cfg(target_arch = "wasm32")]
-        Some(never) => match never {},
         None => Reading::Plain(BufReader::new(socket.try_clone().map_err(|error| Failure::Other(error.to_string()))?)),
     };
     let stream = Stream { peer, socket, reader: Mutex::new(reading), writing: Mutex::new(()) };
@@ -726,11 +709,7 @@ fn keep_stream(socket: TcpStream, peer: String, secured: Option<Secured>) -> Res
 }
 
 /// TLS over a connection, as `secured` makes it.
-#[cfg(not(target_arch = "wasm32"))]
 type Secured = Box<BufReader<http::tls::Secured>>;
-#[cfg(target_arch = "wasm32")]
-type Secured = std::convert::Infallible;
-
 fn listen(port: u16) -> Result<Made, Failure> {
     let listener = TcpListener::bind(("0.0.0.0", port)).map_err(|error| match error.kind() {
         ErrorKind::AddrInUse => Failure::Other(format!("port {port} is already in use")),
@@ -786,7 +765,6 @@ fn read_line(handle: i64, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, 
 fn write(handle: i64, mut data: &[u8]) -> Result<(), Failure> {
     let stream = stream(handle)?;
     let _writing = stream.writing.lock().unwrap_or_else(PoisonError::into_inner);
-    #[cfg(not(target_arch = "wasm32"))]
     if let Reading::Tls(secured) = &mut *stream.reader.lock().unwrap_or_else(PoisonError::into_inner) {
         let secured = secured.get_mut();
         return secured.write_all(data).and_then(|()| secured.flush()).map_err(|error| Failure::of(&error, None));
@@ -862,7 +840,6 @@ fn reading<T>(
 ) -> Result<T, Failure> {
     match reader {
         Reading::Plain(plain) => read_on(socket, plain, timeout, |reader| read(reader)),
-        #[cfg(not(target_arch = "wasm32"))]
         Reading::Tls(secured) => read_on(socket, &mut **secured, timeout, |reader| read(reader)),
     }
 }

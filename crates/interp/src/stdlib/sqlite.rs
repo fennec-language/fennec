@@ -20,42 +20,11 @@ fn failed(case: &str, reason: &str) -> Value {
     Value::Err(Rc::new(Value::made_case("SqlError", case, vec![("reason", Value::str(reason))])))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use real::{Fakes, call, open_fake, open_file};
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests;
 
-#[cfg(target_arch = "wasm32")]
-pub(crate) use playground::{Fakes, call, open_fake, open_file};
-
-/// In the playground, in a browser, there's no disk for a database.
-#[cfg(target_arch = "wasm32")]
-mod playground {
-    use fennec_syntax::{Diagnostic, Span};
-
-    use crate::value::Value;
-
-    const NONE: &str = "SQLite isn't in the playground";
-
-    #[derive(Default)]
-    pub(crate) struct Fakes(());
-
-    pub(crate) fn open_file(_: &str) -> Value {
-        crate::stdlib::fs::io_error(NONE)
-    }
-
-    pub(crate) fn open_fake(_: &mut Fakes, _: &str) -> Value {
-        crate::stdlib::fs::io_error(NONE)
-    }
-
-    #[expect(clippy::unnecessary_wraps, reason = "it's called as the real one is")]
-    pub(crate) fn call(_: i64, _: &str, _: &[Value], _: Span) -> Result<Value, Diagnostic> {
-        Ok(super::failed("Failed", NONE))
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 mod real {
     use std::collections::HashMap;
     use std::path::PathBuf;

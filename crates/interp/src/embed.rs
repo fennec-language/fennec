@@ -340,6 +340,7 @@ struct State {
     /// The inputs of the next expression or statement native code hands over.
     inputs: Vec<Value>,
     /// Each name's number in the name table, for telling types apart.
+    #[cfg(any(test, feature = "threads"))]
     name_ids: HashMap<String, i64>,
     heap: heap::Heap,
     /// The block of each plain capability, by its kind, once it's been asked for.
@@ -419,6 +420,7 @@ pub fn start(mut tables: Tables, inputs: crate::Inputs) {
     let crate::Inputs { program, arguments, live, .. } = inputs;
     let output = Output(Rc::default(), live);
     OUTPUT.set(Some(output.clone()));
+    #[cfg(any(test, feature = "threads"))]
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
     set_failed(0);
     STATE.set(Some(State {
@@ -426,6 +428,7 @@ pub fn start(mut tables: Tables, inputs: crate::Inputs) {
         regexes: crate::stdlib::re::Regexes::default(),
         temps: Vec::new(),
         inputs: Vec::new(),
+        #[cfg(any(test, feature = "threads"))]
         name_ids,
         heap: heap::Heap::new(std::mem::take(&mut tables.statics)).planned(&tables.shapes, &tables.elements),
         capabilities: Vec::new(),

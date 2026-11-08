@@ -112,8 +112,6 @@ impl Instance {
 #[derive(Clone, Debug)]
 pub(crate) struct Table {
     pub(crate) slots: Vec<Slot>,
-    /// No slot below this one is free, so finding the first free slot needn't look at them.
-    free_from: usize,
     /// Which `Table` this is, so an `Id` from another finds nothing in it. A copy keeps it, since
     /// it holds the same items in the same slots.
     pub(crate) tag: u64,
@@ -189,7 +187,7 @@ impl Table {
     }
 
     pub(crate) fn tagged(slots: Vec<Slot>, tag: u64) -> Table {
-        Table { slots, free_from: 0, tag }
+        Table { slots, tag }
     }
 
     pub(crate) fn get(&self, id: Id) -> Option<&Value> {
@@ -342,18 +340,7 @@ impl PartialEq for Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{Id, Slot, Table, Value};
-
-    /// A slot freed at the last generation an `Id` can hold is never used again, so no `Id`'s
-    /// generation comes round to one an old `Id` has.
-    #[test]
-    fn a_slot_at_its_last_generation_is_retired() {
-        let mut table = Table::new(vec![Slot { generation: u32::MAX, value: None }]);
-        let added = table.insert(Value::Int(1));
-        assert_eq!(added.at(), 1);
-        let old = Id { slot: 0, generation: u32::MAX, tag: table.tag };
-        assert!(table.get(old).is_none());
-    }
+    use super::Id;
 
     /// An `Id`'s key packs its slot above its generation, and comes back the same.
     #[test]

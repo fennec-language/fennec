@@ -100,6 +100,38 @@ fn question_mark_else_and_match_get_the_value_out() {
     assert_eq!(problems(&format!("{RISKY}\n{}", crate::dedent(program))), Vec::<String>::new());
 }
 
+/// A `match` over what something that can fail gives back handles its value and its failure, or
+/// has `case _`, as any `match` handles every case: a failure would otherwise stop the program.
+#[test]
+fn a_match_over_a_result_handles_the_value_and_the_failure() {
+    let found =
+        |arms: &str| problems(&format!("{RISKY}\ndef f(n: int) -> int:\n    match risky(n):\n{arms}"));
+    let empty: [&str; 0] = [];
+    assert_eq!(
+        found("        case Ok(value): value\n"),
+        ["this `match` doesn't handle the failure @ risky(n)"]
+    );
+    assert_eq!(
+        found("        case Err(error): 0\n"),
+        ["this `match` doesn't handle the value it gives when it works @ risky(n)"]
+    );
+    // A guarded case might not be taken, so it covers nothing.
+    assert_eq!(
+        found("        case Ok(value): value\n        case Err(error) if n > 0: 0\n"),
+        ["this `match` doesn't handle the failure @ risky(n)"]
+    );
+    assert_eq!(found("        case Ok(value): value\n        case Oops(why): why.len()\n"), empty);
+    assert_eq!(found("        case Ok(value): value\n        case _: 0\n"), empty);
+    assert_eq!(found("        case Ok(value): value\n        case Err(_): 0\n"), empty);
+    // Several errors are handled one by one, an enum's case by case.
+    let several = "error Gone:\n    path: str\n\nerror Bad:\n    Empty\n    Long(size: int)\n\n\
+        def load(n: int) -> int fails Gone | Bad:\n    if n == 0: fail Gone(path=\"a\")\n    if n == 1: fail .Empty\n    n\n\n\
+        def f(n: int) -> int:\n    match load(n):\n        case Ok(value): value\n        case Err(Gone(path)): 0\n        case Err(.Empty): 1\n";
+    assert_eq!(problems(several), ["this `match` doesn't handle the failure @ load(n)"]);
+    let all = format!("{several}        case Err(.Long(size)): size\n");
+    assert_eq!(problems(&all), empty);
+}
+
 #[test]
 fn ignored_results_are_mistakes() {
     let program = "

@@ -387,6 +387,10 @@ impl FnCx<'_> {
 
     /// A `match` over an enum has to handle every case, or have `case _`.
     fn check_cases(&mut self, subject: &Type, arms: &[MatchArm], span: Span) {
+        let subject = &self.checker.settled(subject);
+        if let Type::Result(value, error) = subject {
+            return self.check_result_cases(value, error, arms, span);
+        }
         if let Type::Union(members) = subject {
             return self.check_members(members, arms, span);
         }
@@ -427,6 +431,93 @@ impl FnCx<'_> {
             Diagnostic::new(format!("this `match` doesn't handle {}", named.join(" or ")), span)
                 .with_help(format!("add {}, or `case _:` for everything else", cases.join(" and "))),
         );
+    }
+}
+
+impl FnCx<'_> {
+    /// A `match` over what a call that can fail gives back has to handle its value and its
+    /// failure, or have `case _`: one with only `case Ok(data):` would stop the program at a
+    /// failure.
+    fn check_result_cases(&mut self, value: &Type, error: &Type, arms: &[MatchArm], span: Span) {
+        let unguarded: Vec<&Pattern> = arms
+            .iter()
+            .filter(|arm| arm.guard.is_none())
+            .flat_map(|arm| alternatives(&arm.pattern))
+            .collect();
+        if unguarded.iter().any(|pattern| always_matches(pattern)) {
+            return;
+        }
+        // `Ok(x)` and `.Case(...)` are the value's cases, and `Err(e)` and `IoError(...)` the
+        // failure's, as `bind_pattern` reads them.
+        let mut values = Vec::new();
+        let mut failures = Vec::new();
+        for pattern in unguarded {
+            match pattern {
+                Pattern::Variant { name, dotted: false, args, .. } if name == "Ok" || name == "Err" => {
+                    let side = if name == "Ok" { &mut values } else { &mut failures };
+                    match args.as_slice() {
+                        [] => side.push(&Pattern::Wildcard),
+                        [one] => side.extend(alternatives(one)),
+                        _ => {}
+                    }
+                }
+                Pattern::Variant { dotted: true, .. } => values.push(pattern),
+                Pattern::Variant { .. } => failures.push(pattern),
+                _ => values.push(pattern),
+            }
+        }
+        if !self.covers(value, &values) {
+            self.error(
+                Diagnostic::new("this `match` doesn't handle the value it gives when it works", span)
+                    .with_help("add `case Ok(value):`, or `case _:` for everything else"),
+            );
+        }
+        if !self.covers(error, &failures) {
+            self.error(
+                Diagnostic::new("this `match` doesn't handle the failure", span).with_help(
+                    "add `case Err(error):`, a case for each error it can fail with, or `case _:` for everything else",
+                ),
+            );
+        }
+    }
+
+    /// Whether `patterns` match every value of type `ty`: one that matches anything, every case
+    /// of an enum, every type of a union, or the one type of a struct or error.
+    fn covers(&self, ty: &Type, patterns: &[&Pattern]) -> bool {
+        if patterns.iter().any(|pattern| always_matches(pattern)) {
+            return true;
+        }
+        let whole: Vec<&str> = patterns
+            .iter()
+            .filter_map(|pattern| match pattern {
+                Pattern::Variant { name, args, .. } if args.iter().all(always_matches) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        match ty {
+            Type::Unknown => true,
+            Type::Errors(names) => names.iter().all(|name| {
+                whole.contains(&name.as_str()) || self.covers(&Type::Named(name.clone()), patterns)
+            }),
+            Type::Union(members) => members
+                .iter()
+                .all(|member| whole.contains(&member.to_string().as_str()) || self.covers(member, patterns)),
+            Type::Named(owner) => match self.checker.program.type_info(owner) {
+                Some(info) if !info.def.cases.is_empty() => {
+                    info.def.cases.iter().all(|case| whole.contains(&case.name.as_str()))
+                }
+                _ => whole.contains(&owner.as_str()),
+            },
+            Type::Bool => {
+                let literal = |value: bool| {
+                    patterns.iter().any(|pattern| {
+                        matches!(pattern, Pattern::Literal(expr) if expr.kind == ExprKind::Bool(value))
+                    })
+                };
+                literal(true) && literal(false)
+            }
+            _ => false,
+        }
     }
 }
 

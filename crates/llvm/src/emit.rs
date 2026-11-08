@@ -458,6 +458,7 @@ impl<'p> Module<'_, 'p> {
             alone_fields: Vec::new(),
             taken_items: HashMap::new(),
             place_homes: HashMap::new(),
+            places_out: HashMap::new(),
             at: (usize::MAX, usize::MAX),
             check_kind: None,
             inside_items: Vec::new(),
@@ -544,6 +545,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Where a place taken out for a call goes back to: the address, what's held there, and how
     /// it's marked for LLVM.
     pub(crate) place_homes: HashMap<usize, (String, Kind, &'static str)>,
+    /// For each place taken out to change, the stack slot saying where it goes back while it's out.
+    pub(crate) places_out: HashMap<usize, String>,
     /// The instruction being written: its block, and its place in it.
     pub(crate) at: (usize, usize),
     /// The handles of the `lock ... as ref` blocks whose changes are saved, for a crash to put
@@ -836,6 +839,7 @@ impl Emit<'_, '_, '_> {
         // nothing of theirs.
         if let Some(leave) = self.leave_after_crash.clone() {
             self.start_block("prop");
+            self.put_places_back_after_crash()?;
             if !self.saving.is_empty() {
                 self.roll_back_on_crash()?;
             }
@@ -844,6 +848,11 @@ impl Emit<'_, '_, '_> {
             self.wrote_prop = true;
         }
         Ok(())
+    }
+
+    /// Whether a crash in this function lets go of what it owns, rather than leaving it.
+    pub(crate) fn lets_go_after_crash(&self) -> bool {
+        self.leave_after_crash.is_some()
     }
 
     /// A new slot on this function's stack.
@@ -2900,6 +2909,23 @@ def main(stdout: Stdout):
     fn a_loop_count_needs_no_overflow_check() -> Result<(), String> {
         let source = "def main(stdout: Stdout):\n    for i in range(3):\n        stdout.print(i)\n";
         assert!(!text_of(source, "main")?.contains("with.overflow"));
+        Ok(())
+    }
+
+    /// A place taken out for a `ref` call goes back where it was before a crash lets go of what
+    /// holds it: what holds it has the address of what the call may have moved or freed.
+    #[test]
+    fn a_crash_puts_a_place_that_is_out_back_first() -> Result<(), String> {
+        let source = "struct Inner:\n    name: list[int]\n\nstruct Wrap:\n    r: Inner\n\ndef grow(ref xs: list[int], at: int):\n    xs.append(at)\n    empty: list[int] = []\n    xs[0] = empty[at]\n\ndef handle(at: int) -> int:\n    mut w = Wrap(r=Inner(name=[1]))\n    grow(ref w.r.name, at=at)\n    w.r.name.len()\n\ndef main(stdout: Stdout):\n    stdout.print(handle(0))\n";
+        let text = text_of(source, "handle")?;
+        let prop = text.find("prop:").ok_or("no way out on a crash")?;
+        let put_back =
+            text.get(prop..).and_then(|rest| rest.find("crash_place")).ok_or_else(|| text.clone())?;
+        let let_go = text
+            .get(prop..)
+            .and_then(|rest| rest.find("@fen_owner_gone").or_else(|| rest.find("add i64 %")))
+            .unwrap_or(usize::MAX);
+        assert!(put_back < let_go, "{text}");
         Ok(())
     }
 

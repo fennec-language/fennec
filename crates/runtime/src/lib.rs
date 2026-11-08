@@ -475,6 +475,10 @@ export! {
     fennec_counting() -> i64 => aot::counting();
     #[cfg(not(feature = "lean"))]
     fennec_aot_test_world(a0: i64) => aot::test_world(a0);
+    #[cfg(not(feature = "lean"))]
+    fennec_aot_attempt_failed() => aot::attempt_failed();
+    fennec_aot_attempt_passed() -> i8 => aot::attempt_passed();
+    fennec_aot_failed_for(a0: i64) => aot::failed_for(a0);
 }
 
 /// Runs a compiled executable's program: its `main` calls this.

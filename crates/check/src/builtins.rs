@@ -369,14 +369,7 @@ impl FnCx<'_> {
             Some("Net") if name == "udp" => &["port"],
             Some("Process") if name == "run" => &["cwd", "env", "input"],
             Some("Net") if matches!(name, "get" | "post" | "request") => {
-                let given = |option: &str| args.iter().any(|arg| arg.name.as_deref() == Some(option));
-                if given("body") && given("json") {
-                    let message = "a request sends `body=` or `json=`, not both";
-                    self.error(
-                        Diagnostic::new(message, span)
-                            .with_help("`json=` sends a value as JSON, as its body"),
-                    );
-                }
+                self.one_request_body(args, span);
                 &["body", "headers", "json", "params", "timeout"]
             }
             _ => &[],
@@ -521,6 +514,16 @@ impl FnCx<'_> {
         }
         plain.extend(start);
         plain
+    }
+
+    fn one_request_body(&mut self, args: &[Arg], span: Span) {
+        let given = |option: &str| args.iter().any(|arg| arg.name.as_deref() == Some(option));
+        if given("body") && given("json") {
+            let message = "a request sends `body=` or `json=`, not both";
+            self.error(
+                Diagnostic::new(message, span).with_help("`json=` sends a value as JSON, as its body"),
+            );
+        }
     }
 
     /// `tls=`: whether `connect` uses TLS, and the `Certificate` a server shows, if any.

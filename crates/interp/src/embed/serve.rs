@@ -542,6 +542,7 @@ impl Io {
         let held = Rc::clone(&run);
         let made = self.ranges.spawn(move || held.take().map_or(0, |run| run()));
         if let Ok(task) = made {
+            accounts.set_task(task);
             // Named as a server's round is: a task's temporaries are swapped last, so they say who it is.
             if let Some(named) = accounts.take_replay() {
                 self.temporaries.insert(task, super::Temporaries::of_task(named));

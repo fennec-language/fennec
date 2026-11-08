@@ -203,8 +203,9 @@ fn crashed(launched: &Launched) -> i64 {
     CRASHED
 }
 
-/// The failure's value a task's function, or a server's round, handed over before giving back 2.
-pub(super) fn take_failed_with() -> Option<u64> {
+/// The failure's value a task's function, a server's round, or a `parallel` call's range, handed over
+/// before giving back 2.
+pub(in crate::embed) fn take_failed_with() -> Option<u64> {
     FAILED_WITH.take()
 }
 

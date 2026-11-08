@@ -36,11 +36,11 @@ extend str:
     ## The text with `fill` after it to make it `width` characters, as it is if it's that long
     ## already: `"ab".ljust(4, fill=".")` is `"ab.."`.
     def ljust(self, width: int, fill = " ") -> str:
-        self + fill * (width - self.len())
+        self + padding(fill, count=width - self.len())
 
     ## The text with `fill` before it to make it `width` characters: `"7".rjust(3)` is `"  7"`.
     def rjust(self, width: int, fill = " ") -> str:
-        fill * (width - self.len()) + self
+        padding(fill, count=width - self.len()) + self
 
     ## The text in the middle of `width` characters, with `fill` either side, one more on the
     ## left when they can't be even and `width` is odd, as Python puts it.
@@ -48,7 +48,7 @@ extend str:
         pad = width - self.len()
         if pad <= 0: return self
         left = pad // 2 + (1 if pad % 2 == 1 and width % 2 == 1 else 0)
-        fill * left + self + fill * (pad - left)
+        padding(fill, count=left) + self + padding(fill, count=pad - left)
 
     ## The text with zeros before it to make it `width` characters, after a sign if it starts
     ## with one: `"-7".zfill(3)` is `"-07"`.
@@ -120,3 +120,8 @@ export struct StrWriter:
     ## Everything written so far.
     def text(self) -> str:
         "".join(self._parts)
+
+## `count` characters of `fill` repeated, cut to that many when `fill` is longer than one.
+def padding(fill: str, count: int) -> str:
+    if count <= 0: return ""
+    (fill * count)[:count]

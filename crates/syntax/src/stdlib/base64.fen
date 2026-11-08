@@ -83,6 +83,10 @@ def read_back(text: str, url: bool) -> bytes fails InvalidValue:
             count += 1
         # A short last group stands for fewer bytes: 2 digits for 1, 3 for 2.
         n = n << (6 * (4 - count))
+        # Digits that hold more bits than the bytes they stand for: `aGl=` isn't what `hi` is
+        # written as, and two texts for one value would let a check be passed around.
+        if (count == 2 and n & 65535 != 0) or (count == 3 and n & 255 != 0):
+            fail not_base64(text, "its last digit has bits that stand for nothing")
         out.append(n >> 16)
         if count > 2:
             out.append((n >> 8) & 255)

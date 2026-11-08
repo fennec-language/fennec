@@ -105,7 +105,10 @@ jobs:
         env:
           TARGET: ${{ matrix.platform.target }}
         run: |
-          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+          # In a container the checkout is someone else's, which git won't read without being told.
+          epoch="$(git -c safe.directory="$PWD" log -1 --format=%ct)"
+          [ -n "$epoch" ] || { echo "::error::couldn't tell when the commit was made"; exit 1; }
+          echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
           if [ "$RUNNER_OS" = Windows ]; then
             echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
           else

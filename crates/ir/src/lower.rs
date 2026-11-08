@@ -322,9 +322,10 @@ impl Context<'_> {
     /// Whether the IR holds values of this type yet.
     fn holds(&self, ty: &Type) -> bool {
         match ty {
-            Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::None => true,
-            // The integers up to 32 bits, held in a word as an `int` is; `u64` and `f32` aren't yet.
-            Type::Sized(num) => !matches!(num, fennec_check::Num::U64 | fennec_check::Num::F32),
+            // A sized number is held in a word, as an `int` or a `float` is.
+            Type::Int | Type::Float | Type::Sized(_) | Type::Bool | Type::Str | Type::Bytes | Type::None => {
+                true
+            }
             Type::List(item)
             | Type::Buffer(item)
             | Type::Iterator(item)

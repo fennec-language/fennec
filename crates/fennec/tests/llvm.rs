@@ -2350,8 +2350,56 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A `u64` natively is unsigned all the way up: arithmetic, comparisons, shifts and `~` on its
+/// 64 bits. An `f32` is rounded to 32 bits after each operation, and prints as the shortest text
+/// that reads back as the same `f32`. Both go in structs, lists, f-strings with a format, `str`,
+/// and conversions either way.
+#[test]
+fn u64_and_f32_work_out_as_their_sizes_say() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "u64_and_f32",
+        "struct Pixel:
+    hash: u64
+    level: f32
+
+def mixed(text: str) -> u64:
+    mut hash = u64(7347990519673328018) * 2 + 1
+    for c in text:
+        hash = (hash ^ u64(c.code())) >> 1
+    hash
+
+def scaled(by: f32) -> f32:
+    by * 2.0
+
+def main(stdout: Stdout):
+    half: u64 = 9223372036854775807
+    top = half + half + 1
+    stdout.print(top, top // 10, top % 10, top > half, top >> 60, ~top, top / 2)
+    one: f32 = 1.0
+    third = one / 3.0
+    stdout.print(third, float(third), scaled(third), third * 3.0 == 1.0, -third, f32(16777217))
+    p = Pixel(hash=top - 5, level=third)
+    stdout.print(p, f\"{p.hash} {p.level:.3f} {p.hash:,} {p.level:.0f}\", [p.hash, u64(5)], [third, f32(2)])
+    stdout.print(str(top), str(third), int(f32(2.75)), float(top), u8(u64(200)), mixed(\"hi\"))
+",
+    )?;
+    assert_eq!(
+        printed,
+        "18446744073709551615 1844674407370955161 5 True 15 0 9.223372036854776e+18\n\
+         0.33333334 0.3333333432674408 0.6666667 True -0.33333334 16777216.0\n\
+         Pixel(hash=18446744073709551610, level=0.33333334) 18446744073709551610 0.333 \
+         18,446,744,073,709,551,610 0 [18446744073709551610, 5] [0.33333334, 2.0]\n\
+         18446744073709551615 0.33333334 2 1.8446744073709552e+19 200 3673995259836664039\n"
+    );
+    Ok(())
+}
+
 /// What doesn't fit a size stops the program, saying which size and what it holds: arithmetic
-/// past either end, a negation, the one division that grows, and a conversion that doesn't fit.
+/// past either end, a negation, the one division that grows, and a conversion that doesn't fit,
+/// a `u64` too big for an `int` among them.
 #[test]
 fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
     if !ready() {
@@ -2372,6 +2420,21 @@ fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
         (
             "n = -1\n    stdout.print(u32(n))",
             "error: it doesn't fit in u32, which holds 0 to 4294967295: -1".to_owned(),
+        ),
+        ("z: u64 = 0\n    stdout.print(z - 1)", overflow("a u64", "0 to 18446744073709551615")),
+        (
+            "h: u64 = 9223372036854775807\n    stdout.print(h * 3)",
+            overflow("a u64", "0 to 18446744073709551615"),
+        ),
+        (
+            "n = -1\n    stdout.print(u64(n))",
+            "error: it doesn't fit in u64, which holds 0 to 18446744073709551615: -1".to_owned(),
+        ),
+        (
+            "h: u64 = 9223372036854775807\n    stdout.print(int(h + 1))",
+            "error: it doesn't fit in int, which holds -9223372036854775808 to 9223372036854775807: \
+             9223372036854775808"
+                .to_owned(),
         ),
     ]
     .into_iter()
@@ -2422,6 +2485,38 @@ fn sized_integers_from_outside_fail_cleanly() -> std::io::Result<()> {
          failed: -1 doesn't fit in u8, which holds 0 to 255\n\
          failed: \"seven\" isn't an int\n\
          255 -1\n"
+    );
+    Ok(())
+}
+
+/// `wrapping_` arithmetic goes round past either end, as the size's bits do, and `saturating_`
+/// stops at the nearest end, for each size; a u32's product past what an int holds included.
+#[test]
+fn sized_integers_wrap_or_saturate_when_asked() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "sized_wrapping",
+        "def main(stdout: Stdout):
+    a: u8 = 250
+    b: u8 = 10
+    stdout.print(a.wrapping_add(b), a.saturating_add(b), b.wrapping_sub(a), b.saturating_sub(a), a.wrapping_mul(b))
+    low: i8 = -128
+    stdout.print(low.wrapping_sub(1), low.saturating_sub(1), low.wrapping_mul(-1), low.saturating_mul(-1))
+    big: u32 = 4294967295
+    stdout.print(big.wrapping_mul(big), big.saturating_mul(2), big.wrapping_add(1), u32(65536).wrapping_mul(65536))
+    small: i32 = -2147483648
+    stdout.print(small.wrapping_mul(small), small.saturating_mul(small), small.wrapping_sub(1))
+    mut hash: u32 = 2166136261
+    for byte in [104, 105]:
+        hash = u32(int(hash) ^ byte).wrapping_mul(16777619)
+    stdout.print(hash)
+",
+    )?;
+    assert_eq!(
+        printed,
+        "4 255 16 0 196\n127 -128 -128 127\n1 4294967295 0 0\n0 2147483647 2147483647\n1748694682\n"
     );
     Ok(())
 }
@@ -7442,6 +7537,45 @@ fn a_build_runs_parallel_on_every_core_unless_asked_not_to() -> std::io::Result<
     Ok(())
 }
 
+/// A program that uses `parallel`, built by a `fennec` whose threads runtime is from another
+/// build, fails saying so, rather than linking the plain runtime and running on one thread.
+#[test]
+fn a_stale_threads_runtime_fails_the_build_rather_than_running_on_one_thread() -> std::io::Result<()> {
+    if !ready() || !runtime_built() || !crate::executables::runtime_beside_fennec() {
+        return Ok(());
+    }
+    let dir = folder("threads-stale")?;
+    let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
+    let mine = dir.join("bin");
+    std::fs::create_dir_all(&mine)?;
+    let fennec_here = mine.join(fennec.file_name().unwrap_or_default());
+    if std::fs::hard_link(fennec, &fennec_here).is_err() {
+        std::fs::copy(fennec, &fennec_here)?;
+    }
+    let plain = fennec.with_file_name(crate::executables::runtime_file());
+    std::fs::copy(&plain, mine.join(crate::executables::runtime_file()))?;
+    let stale = ["fennec-runtime-", "build:", &"0".repeat(64)].concat();
+    std::fs::write(mine.join("libfennec_runtime_threads.a"), stale)?;
+    let program = dir.join("squares.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    squares = [x * x for x in parallel([1, 2, 3])]\n    stdout.print(sum(squares))\n",
+    )?;
+    let built = Command::new(&fennec_here)
+        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &dir.join("squares").to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    let said = String::from_utf8_lossy(&built.stderr).into_owned();
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!built.status.success(), "built with a stale threads runtime");
+    assert!(
+        said.contains("libfennec_runtime_threads.a") && said.contains("another build of Fennec"),
+        "{said}"
+    );
+    Ok(())
+}
+
 /// JSON and TOML of types that save themselves go through std's readers and writers in Fennec,
 /// std's collections among them, so a program reading and writing them links with no interpreter
 /// in it.
@@ -11494,6 +11628,41 @@ fn errors_of_several_types_go_up_and_show_as_on_the_interpreter() -> std::io::Re
         "errors_of_several_types",
         include_str!("fixtures/errors_of_several_types.fen"),
     )
+}
+
+/// An error's notes natively: none to start with, each `add_note` changing only that error, not
+/// a copy taken before, `==` and printing passing them over, a union of errors noting the error
+/// it holds, and a failure reaching `main` or `expect` showing them under it. All as on the
+/// interpreter.
+#[test]
+fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("error-notes")?;
+    let path = |file: &Path| file.display().to_string();
+    let expected = "error Missing:\n    path: str\n\ndef load(path: str) -> int fails Missing:\n    mut m = Missing(path=path)\n    m.add_note(\"looked everywhere\")\n    fail m\n\ndef main(stdout: Stdout):\n    stdout.print(load(\"x\").expect(\"x is there\"))\n";
+    for (name, source, note) in [
+        (
+            "notes",
+            include_str!("fixtures/error_notes.fen"),
+            "note: while loading a long one\nnote: second line\n  and a third\n",
+        ),
+        ("expected", expected, "but it failed: Missing(path=\"x\")\nnote: looked everywhere\n"),
+    ] {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+        assert_eq!(outcome(&ran), outcome(&interpreted), "{name}");
+        let said = String::from_utf8_lossy(&ran.stderr);
+        assert!(said.contains(note), "{name}: {said}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }
 
 /// A function that says `fails A | B`, with errors that have cases among them.

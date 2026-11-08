@@ -17,11 +17,7 @@ fn methods_from_other_languages_point_to_fennec_ones() {
         ("\"x\".toUpperCase()", "a str has no method `toUpperCase`", "use `upper()`"),
         ("\"X\".to_lowercase()", "a str has no method `to_lowercase`", "use `lower()`"),
         ("stdout.println(1)", "`Stdout` has no method `println`", "use `stdout.print(...)`"),
-        (
-            "[1].copy()",
-            "a list has no method `copy`",
-            "values are copied automatically when assigned: `b = a`",
-        ),
+        ("[1].copy()", "a list has no method `copy`", "write `copy(value)`"),
     ];
     for (body, message, help) in cases {
         assert_eq!(first_error(body), Some((message.to_owned(), Some(help.to_owned()))), "{body}");

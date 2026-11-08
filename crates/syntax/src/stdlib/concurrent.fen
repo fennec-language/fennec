@@ -1,9 +1,9 @@
 ## `std.concurrent`: channels between tasks, and the ends of one that `with launch(...)` hands out.
 ##
 ## ```fennec
-## from std.concurrent import Channel
+## from std.concurrent import channel
 ##
-## with Channel[str].open(size=64) as jobs:
+## with channel[str](size=64) as jobs:
 ##     jobs.send("first")?
 ##     job = jobs.receive()?
 ## ```
@@ -26,19 +26,20 @@ export error Timeout:
 export error Crashed:
     why: str
 
+## A channel holding up to `size` messages of type `T`, lent for a `with` block, and closed when it
+## ends: `with channel[Job](size=64) as jobs:`. It's the only way to make a `Channel`.
+export def channel[T](size: int) -> with Channel[T]:
+    made = Channel[T](_channel=channel_new(size))
+    lend made else:
+        channel_close(made._channel)
+        channel_free(made._channel)
+    channel_close(made._channel)
+    channel_free(made._channel)
+
 ## A channel for messages of type `T`, which every task inside its `with` block can send on and
 ## receive from. Hand one end to a task with `sender()` or `inbox()`.
 export struct Channel[T]:
     _channel: int
-
-    ## A channel holding up to `size` messages, lent for a `with` block, and closed when it ends.
-    def open(size: int) -> with Channel[T]:
-        made = Channel[T](_channel=channel_new(size))
-        lend made else:
-            channel_close(made._channel)
-            channel_free(made._channel)
-        channel_close(made._channel)
-        channel_free(made._channel)
 
     ## Sends `message`, waiting while the channel is full, for at most `timeout` when it's given.
     def send(self, message: T, timeout: Duration? = None) fails Closed | Timeout:
@@ -85,10 +86,11 @@ export struct Sender[T]:
     def send(self, message: T, timeout: Duration? = None) fails Closed | Timeout:
         sent(channel_send[T](self._channel, message, nanos_of(timeout)), timeout)?
 
-## How long to wait, in nanoseconds, as the runtime takes it: -1 for as long as it takes.
+## How long to wait, in nanoseconds, as the runtime takes it: -1 for as long as it takes. A
+## negative `timeout` has already run out, so it doesn't wait at all.
 def nanos_of(timeout: Duration?) -> int:
     if timeout is None: return -1
-    timeout.nanos
+    max(timeout.nanos, 0)
 
 ## What a send's answer means: 0 sent, 1 closed, 2 timed out.
 def sent(answer: int, timeout: Duration?) fails Closed | Timeout:

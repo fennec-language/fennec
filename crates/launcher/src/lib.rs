@@ -285,12 +285,15 @@ impl Launcher {
         let archive = manifest
             .archive(&self.target)
             .ok_or_else(|| format!("Fennec {version} has no release for {}", self.target))?;
-        let top = archive.file.strip_suffix(".tar.gz").ok_or_else(|| {
-            format!("{} isn't a .tar.gz, which is all this launcher unpacks yet", archive.file)
-        })?;
         let bytes = self.fetch(version, &archive.file)?;
         archive.check(&bytes)?;
-        let entries = unpack::tar_gz(&bytes, top)?;
+        let entries = if let Some(top) = archive.file.strip_suffix(".tar.gz") {
+            unpack::tar_gz(&bytes, top)?
+        } else if let Some(top) = archive.file.strip_suffix(".zip") {
+            unpack::zip(&bytes, top)?
+        } else {
+            return Err(format!("{} isn't a .tar.gz or a .zip", archive.file));
+        };
         let has_command = entries.iter().any(|entry| {
             entry.runnable
                 && entry.bytes.is_some()

@@ -113,9 +113,14 @@ mod launcher {
 
     /// A release of `version` in `dist`, of the archive given, signed by `pair`.
     fn release_of(dist: &Path, version: &str, archive: &[u8], pair: &Ed25519KeyPair) {
+        release_as(dist, version, archive, "tar.gz", pair);
+    }
+
+    /// Like `release_of`, with an archive of the kind `extension` names.
+    fn release_as(dist: &Path, version: &str, archive: &[u8], extension: &str, pair: &Ed25519KeyPair) {
         let folder = dist.join(format!("v{version}"));
         std::fs::create_dir_all(&folder).unwrap();
-        let file = format!("fennec-v{version}-{TARGET}.tar.gz");
+        let file = format!("fennec-v{version}-{TARGET}.{extension}");
         std::fs::write(folder.join(&file), archive).unwrap();
         let manifest =
             Manifest::of_archives(Kind::Toolchain, version, &[(file, archive.to_vec())]).unwrap().write();
@@ -487,6 +492,108 @@ mod launcher {
         assert!(mirror.latest().unwrap_err().contains("signed by 0 of"));
         std::fs::write(dir.join("dist/latest"), "0.4.3\n").unwrap();
         assert_eq!(mirror.latest().unwrap(), "0.4.3");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A zip of stored entries, each a name, the Unix mode it was made with, and its bytes, as a
+    /// zip made on Unix holds them.
+    fn stored_zip(entries: &[(&str, u32, &[u8])]) -> Vec<u8> {
+        let mut zip = Vec::new();
+        let mut listed = Vec::new();
+        for (name, mode, bytes) in entries {
+            let offset = u32::try_from(zip.len()).unwrap();
+            let size = u32::try_from(bytes.len()).unwrap();
+            let length = u16::try_from(name.len()).unwrap();
+            zip.extend_from_slice(&[0x50, 0x4b, 3, 4, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            zip.extend_from_slice(&size.to_le_bytes());
+            zip.extend_from_slice(&size.to_le_bytes());
+            zip.extend_from_slice(&length.to_le_bytes());
+            zip.extend_from_slice(&[0, 0]);
+            zip.extend_from_slice(name.as_bytes());
+            zip.extend_from_slice(bytes);
+            listed.extend_from_slice(&[0x50, 0x4b, 1, 2, 20, 3, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            listed.extend_from_slice(&size.to_le_bytes());
+            listed.extend_from_slice(&size.to_le_bytes());
+            listed.extend_from_slice(&length.to_le_bytes());
+            listed.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+            listed.extend_from_slice(&(mode << 16).to_le_bytes());
+            listed.extend_from_slice(&offset.to_le_bytes());
+            listed.extend_from_slice(name.as_bytes());
+        }
+        let start = u32::try_from(zip.len()).unwrap();
+        let count = u16::try_from(entries.len()).unwrap();
+        let listed_size = u32::try_from(listed.len()).unwrap();
+        zip.extend(listed);
+        zip.extend_from_slice(&[0x50, 0x4b, 5, 6, 0, 0, 0, 0]);
+        zip.extend_from_slice(&count.to_le_bytes());
+        zip.extend_from_slice(&count.to_le_bytes());
+        zip.extend_from_slice(&listed_size.to_le_bytes());
+        zip.extend_from_slice(&start.to_le_bytes());
+        zip.extend_from_slice(&[0, 0]);
+        zip
+    }
+
+    #[test]
+    fn a_zip_made_by_the_systems_zip_unpacks() {
+        let dir = scratch("zip");
+        let (pair, public) = key();
+        let top = format!("fennec-v0.4.2-{TARGET}");
+        std::fs::create_dir_all(dir.join(&top).join("llvm/bin")).unwrap();
+        std::fs::write(dir.join(&top).join("fennec"), script("0.4.2")).unwrap();
+        std::fs::write(dir.join(&top).join("llvm/bin/opt"), "opt ".repeat(1000)).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(dir.join(&top).join("fennec"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let made = std::process::Command::new("zip")
+            .args(["-q", "-r", "archive.zip"])
+            .arg(&top)
+            .current_dir(&dir)
+            .status();
+        assert!(made.unwrap().success());
+        release_as(
+            &dir.join("dist"),
+            "0.4.2",
+            &std::fs::read(dir.join("archive.zip")).unwrap(),
+            "zip",
+            &pair,
+        );
+        let launcher = launcher(&dir, &public);
+        launcher.ensure("0.4.2", None).unwrap();
+        assert_eq!(ran(&launcher.command("0.4.2"), "x").0, "fennec 0.4.2: x\n");
+        let opt = std::fs::read_to_string(launcher.home.join("toolchains/0.4.2/llvm/bin/opt")).unwrap();
+        assert_eq!(opt, "opt ".repeat(1000));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_zip_reaching_outside_its_folder_is_never_unpacked() {
+        let dir = scratch("zip-outside");
+        let (pair, public) = key();
+        let top = format!("fennec-v0.4.2-{TARGET}");
+        let fennec = format!("{top}/fennec");
+        let script = script("0.4.2");
+        for (name, mode) in [
+            (format!("{top}/../evil"), 0o100_644),
+            (format!("{top}/link"), 0o120_777),
+            (format!("{top}\\evil"), 0o100_644),
+        ] {
+            let archive = stored_zip(&[(&fennec, 0o100_755, &script), (&name, mode, b"evil")]);
+            let _ = std::fs::remove_dir_all(dir.join("dist"));
+            release_as(&dir.join("dist"), "0.4.2", &archive, "zip", &pair);
+            let launcher = launcher(&dir, &public);
+            let refused = launcher.ensure("0.4.2", None).unwrap_err();
+            assert!(
+                refused.contains("isn't in its folder") || refused.contains("is a link"),
+                "{name}: {refused}"
+            );
+            assert_eq!(launcher.installed(), Vec::<String>::new());
+        }
+        let archive = stored_zip(&[(&fennec, 0o100_755, &script)]);
+        let _ = std::fs::remove_dir_all(dir.join("dist"));
+        release_as(&dir.join("dist"), "0.4.2", &archive, "zip", &pair);
+        launcher(&dir, &public).ensure("0.4.2", None).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

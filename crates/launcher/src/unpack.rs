@@ -25,6 +25,84 @@ pub(crate) fn tar_gz(archive: &[u8], top: &str) -> Result<Vec<Entry>, String> {
     tar(&gunzip(archive)?, top)
 }
 
+/// The entries of a `.zip` whose one top folder is `top`, with `top` taken off their paths, as
+/// Windows' releases are packed.
+///
+/// # Errors
+///
+/// When it isn't a zip that's stored or deflated, or holds anything but plain files and folders
+/// under `top`.
+pub(crate) fn zip(archive: &[u8], top: &str) -> Result<Vec<Entry>, String> {
+    const END: [u8; 4] = [0x50, 0x4b, 5, 6];
+    const LISTED: [u8; 4] = [0x50, 0x4b, 1, 2];
+    const LOCAL: [u8; 4] = [0x50, 0x4b, 3, 4];
+    const UNIX: u8 = 3;
+    const LINK: u32 = 0o120_000;
+    const KIND: u32 = 0o170_000;
+    let bad = || "the archive isn't a zip that can be read".to_owned();
+    let number = |at: usize, width: usize| -> Option<usize> {
+        let bytes = archive.get(at..at + width)?;
+        Some(bytes.iter().rev().fold(0, |number, byte| number << 8 | usize::from(*byte)))
+    };
+    // The end record is the last thing, after a comment of up to 64 KiB.
+    let end = (0..archive.len().saturating_sub(21))
+        .rev()
+        .take(65_557)
+        .find(|at| archive.get(*at..*at + 4) == Some(&END[..]))
+        .ok_or_else(bad)?;
+    let count = number(end + 10, 2).ok_or_else(bad)?;
+    let mut at = number(end + 16, 4).ok_or_else(bad)?;
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        if archive.get(at..at + 4) != Some(&LISTED[..]) {
+            return Err(bad());
+        }
+        let made_on = *archive.get(at + 5).ok_or_else(bad)?;
+        let method = number(at + 10, 2).ok_or_else(bad)?;
+        let (packed, size) = (number(at + 20, 4).ok_or_else(bad)?, number(at + 24, 4).ok_or_else(bad)?);
+        let name_length = number(at + 28, 2).ok_or_else(bad)?;
+        let skipped = number(at + 30, 2).ok_or_else(bad)? + number(at + 32, 2).ok_or_else(bad)?;
+        let attributes = u32::try_from(number(at + 38, 4).ok_or_else(bad)?).map_err(|_| bad())?;
+        let local = number(at + 42, 4).ok_or_else(bad)?;
+        let name = archive.get(at + 46..at + 46 + name_length).ok_or_else(bad)?;
+        let name = std::str::from_utf8(name).map_err(|_| bad())?.to_owned();
+        at += 46 + name_length + skipped;
+        let mode = if made_on == UNIX { attributes >> 16 } else { 0 };
+        if mode & KIND == LINK || name.contains('\\') {
+            return Err(format!("the archive holds `{name}`, which is a link, or isn't named plainly"));
+        }
+        let Some(path) = under(&name, top)? else { continue };
+        if name.ends_with('/') {
+            entries.push(Entry { path, runnable: false, bytes: None });
+            continue;
+        }
+        if archive.get(local..local + 4) != Some(&LOCAL[..]) {
+            return Err(bad());
+        }
+        let start =
+            local + 30 + number(local + 26, 2).ok_or_else(bad)? + number(local + 28, 2).ok_or_else(bad)?;
+        let data = archive.get(start..start.checked_add(packed).ok_or_else(bad)?).ok_or_else(bad)?;
+        let bytes = match method {
+            0 => data.to_vec(),
+            8 => miniz_oxide::inflate::decompress_to_vec_with_limit(data, MOST_UNPACKED)
+                .map_err(|_| format!("`{name}` in the archive doesn't inflate"))?,
+            _ => {
+                return Err(format!(
+                    "`{name}` in the archive is packed in a way this launcher doesn't unpack"
+                ));
+            }
+        };
+        if bytes.len() != size {
+            return Err(format!("`{name}` in the archive isn't the size it says"));
+        }
+        // A zip made on Windows says nothing of what can run, so there it's what's named `.exe`.
+        let runnable =
+            if made_on == UNIX { mode & 0o111 != 0 } else { name.to_ascii_lowercase().ends_with(".exe") };
+        entries.push(Entry { path, runnable, bytes: Some(bytes) });
+    }
+    Ok(entries)
+}
+
 /// The bytes a gzip holds.
 fn gunzip(archive: &[u8]) -> Result<Vec<u8>, String> {
     const CRC: u8 = 2;

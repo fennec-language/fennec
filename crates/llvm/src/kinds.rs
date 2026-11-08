@@ -119,6 +119,11 @@ pub(crate) fn define_named(ty: &Type, layouts: Option<&Layouts>, out: &mut BTree
 pub(crate) enum Kind {
     Int,
     Float,
+    /// A `u64`: its bits in a word, read as unsigned.
+    U64,
+    /// An `f32`: held as the `f64` that's exactly its value, rounded to an `f32` after each
+    /// operation.
+    F32,
     Bool,
     Unit,
     /// A capability: the address of a block saying what it may do, owned like any block. The
@@ -171,6 +176,8 @@ impl Kind {
         Some(match ty {
             Ty::Int => Kind::Int,
             Ty::Float => Kind::Float,
+            Ty::U64 => Kind::U64,
+            Ty::F32 => Kind::F32,
             Ty::Bool => Kind::Bool,
             Ty::Unit => Kind::Unit,
             Ty::Cap(_) => Kind::Cap,
@@ -226,8 +233,8 @@ impl Kind {
     /// How LLVM holds it inside a struct, tuple or list.
     pub(crate) fn memory(&self, layouts: &Layouts) -> String {
         match self {
-            Kind::Int | Kind::Bool => "i64".to_owned(),
-            Kind::Float => "double".to_owned(),
+            Kind::Int | Kind::Bool | Kind::U64 => "i64".to_owned(),
+            Kind::Float | Kind::F32 => "double".to_owned(),
             Kind::Unit => "void".to_owned(),
             Kind::Str if layouts.text_headers() => crate::headers::HEADER.to_owned(),
             Kind::MaybeText => crate::headers::HEADER.to_owned(),

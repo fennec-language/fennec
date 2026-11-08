@@ -739,6 +739,9 @@ impl Emit<'_, '_, '_> {
             self.line("%err_clear = icmp eq ptr %err_in, null");
             self.line("call void @llvm.assume(i1 %err_clear)");
         }
+        if self.ticks() {
+            self.start_ticks();
+        }
         self.line("br label %bb0");
         // Which blocks lead to each, so a lookup can carry on into a block every way in has
         // come through, once each of those is written.
@@ -823,6 +826,11 @@ impl Emit<'_, '_, '_> {
                 && matches!(self.kinds.get(list), Some(Kind::List(_)))
             {
                 self.reserve(LocalId(list), &limit)?;
+            }
+            // Every loop goes back to a block written no later than where it goes from, so that's
+            // where a task counts a turn.
+            if self.ticks() && block.end.targets().iter().any(|next| next.0 <= at) {
+                self.tick();
             }
             self.terminator(&block.end)?;
         }

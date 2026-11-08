@@ -450,10 +450,12 @@ impl Lowering<'_> {
     /// What an `assert` tests, and the two sides of a comparison.
     fn asserted(&mut self, cond: &Expr) -> Lowered<(Operand, Option<(Operand, Operand)>)> {
         let span = cond.span;
-        // A failed assert says what each side was, which is as good as printing it.
+        // A failed assert says what each side was, so a `Secret` in one has to stay hidden.
         if let ExprKind::Binary { lhs, rhs, .. } = &cond.kind {
             for side in [lhs, rhs] {
-                if let Some(held) = self.type_at(side.span) {
+                if let Some(held) = self.type_at(side.span)
+                    && self.holds_secret(&held, &mut Vec::new())
+                {
                     self.own_texts_within(&held, &mut Vec::new(), side.span)?;
                 }
             }

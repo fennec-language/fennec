@@ -472,11 +472,13 @@ impl<'a> Lowering<'a> {
         if let Some(ty) = itself {
             lowering.bind_itself(key, &def.name, ty, captures.len(), def.span);
         }
-        // A failure that ends the program is shown, so whatever it holds shows only what it
-        // would if it were printed: a `Secret` in it stays hidden.
+        // A failure that ends the program is shown, so a `Secret` in it has to stay hidden.
         if key == "main" {
             for name in context.signatures.error_types() {
-                lowering.own_texts_within(&Type::Named(name.to_owned()), &mut Vec::new(), def.span)?;
+                let error = Type::Named(name.to_owned());
+                if lowering.holds_secret(&error, &mut Vec::new()) {
+                    lowering.own_texts_within(&error, &mut Vec::new(), def.span)?;
+                }
             }
         }
         let plain = lowering.returns == Type::Unit;

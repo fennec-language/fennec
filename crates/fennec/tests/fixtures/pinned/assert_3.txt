@@ -1,0 +1,12 @@
+source b2b9d3238bf568c6bdd0c2bcc56e282e684090f12f1036f3a6a53bf3402129e9
+code 1
+stdout 2
+1
+stderr 188
+error: this assertion failed
+  --> <dir>/assert_3.fen:31:12
+   |
+31 |     assert True != True
+   |            ^^^^^^^^^^^^
+   |
+   = help: the left side is True and the right side is True

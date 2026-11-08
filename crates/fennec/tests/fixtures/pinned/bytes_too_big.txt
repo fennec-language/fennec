@@ -1,0 +1,10 @@
+source b938d9bf4b659f7a41810cd80be4ae0ad67f79700204d4c227cd8bdd051deb7d
+code 1
+stdout 2
+1
+stderr 160
+error: a byte is an int from 0 to 255, not 256
+ --> <dir>/bytes_too_big.fen:3:18
+  |
+3 |     stdout.print(bytes([1, 256]))
+  |                  ^^^^^^^^^^^^^^^

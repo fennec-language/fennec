@@ -1,0 +1,29 @@
+error: this assertion failed
+  --> <dir>/game.fen:13:12
+   |
+13 |     assert double(2) == 4
+   |            ^^^^^^^^^^^^^^
+   |
+   = help: the left side is 6 and the right side is 4
+error: this assertion failed
+  --> <dir>/game.fen:17:12
+   |
+17 |     assert ready
+   |            ^^^^^
+error: the test failed with Broke(why="empty")
+  --> <dir>/game.fen:19:1
+   |
+19 | test "a failure passed up":
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+error: index 3 is out of range for length 2
+  --> <dir>/game.fen:24:12
+   |
+24 |     assert items[double(1)] == 1
+   |            ^^^^^^^^^^^^^^^^
+error: this assertion failed
+  --> <dir>/game.fen:28:12
+   |
+28 |     assert found is not None
+   |            ^^^^^^^^^^^^^^^^^
+   |
+   = help: the left side is None and the right side is None

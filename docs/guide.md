@@ -267,7 +267,7 @@ A crash in one connection's task ends only that task, and the server keeps servi
 
 ## Hashing
 
-`std.crypto` gives `blake3` and `sha256` as lowercase hex, for text or `bytes`, plus `keyed_blake3`, `hmac_sha256`, `derive_key` and `equal`, which compares secrets in constant time. The same bytes give the same hash on every machine, so a hash names its content, as `name_of` does above.
+`std.crypto` gives `blake3` and `sha256` as lowercase hex, for text or `bytes`, plus `keyed_blake3`, `hmac_sha256`, `derive_key` and `equal`, which compares secrets in constant time. The same bytes give the same hash on every machine, so a hash names its content, as `name_of` does above. A password or a key goes in a `Secret`, as `Secret.of(text)`: printing it, putting it in an f-string and saving it are compile errors, and `expose_secret()` is the one way to read it, so a search for that name finds every use.
 
 `blake3` and `sha256` also take a list or an iterator of text or `bytes`, and hash the chunks in turn, so a large file hashes as it's read, never in memory whole:
 
@@ -344,7 +344,7 @@ def hash_of(fs: Fs, path: str) -> str? fails SqlError:
 - A column that doesn't fit its field, or a field with no column, fails with `SqlError.Column`, naming it. `query[int]` or `query[str]` reads a single column.
 - The database is in WAL mode, so reads go on while something writes. Tasks in a `parallel` loop can share one: each transaction gets a connection of its own and the database's one writer, and a task waiting for it pauses without holding a thread.
 - In a test, each path is a database of the test's own, fresh for each test, in a temporary folder. It behaves as a file does, so what passes in a test passes for real. `fennec test --real` uses the paths themselves.
-- `query` needs native code, as `std.pack` does, so `--jit` and `--interp` can't run it.
+- `query` needs native code, as `std.pack` does, so `--interp` can't run it.
 
 ## Tests
 

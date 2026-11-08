@@ -1,0 +1,10 @@
+source b3d6d00ecdd99c9e77549e7447135d9d883a5f23e3a163a615e72a5545b05763
+code 1
+stdout 2
+1
+stderr 167
+error: index -3 is out of range for length 2
+ --> <dir>/bytes_before_start.fen:3:18
+  |
+3 |     stdout.print(bytes([1, 2])[-3])
+  |                  ^^^^^^^^^^^^^^^^^

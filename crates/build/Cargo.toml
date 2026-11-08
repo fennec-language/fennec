@@ -14,6 +14,9 @@ autotests = false
 name = "build"
 path = "tests/main.rs"
 
+[build-dependencies]
+fennec-blake3.workspace = true
+
 [dependencies]
 fennec-blake3.workspace = true
 fennec-syntax.workspace = true

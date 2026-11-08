@@ -204,6 +204,9 @@ impl Pool {
                 io.poll_now();
             } else if io.has_ready() {
                 idle = 0;
+                // A task that made way at a tick is ready again at once: the poll's looked at
+                // before it runs on, so a connection or a wake that came meanwhile gets its turn.
+                io.poll_now();
             } else if idle < ROUNDS {
                 // A program that makes many short `parallel` calls in a row finds its workers awake.
                 idle += 1;

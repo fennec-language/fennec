@@ -93,7 +93,7 @@ fn functions_that_can_fail_return_results() {
             a(n)? + 1
 
         def d(n: int):
-            a(n)
+            a(n)?
 
         def e(n: int) -> int:
             a(n)?
@@ -111,7 +111,7 @@ fn functions_that_can_fail_return_results() {
     assert_eq!(returns(program, "g"), Ok(result(Type::Unit, oops)));
     let signatures = check(program).unwrap();
     assert!(signatures.get("a").unwrap().can_fail);
-    assert!(!signatures.get("d").unwrap().can_fail);
+    assert!(signatures.get("d").unwrap().can_fail);
 }
 
 #[test]
@@ -203,7 +203,7 @@ fn written_types_have_to_mean_something() {
         type Loop = Loop
 
         interface Shape:
-            def area(self) -> f32
+            def area(self) -> f16
 
         def f(k: T, l: Loop, r: list, d: dict[str], s: str[int], u: Enemy?) -> String:
             pass
@@ -215,7 +215,7 @@ fn written_types_have_to_mean_something() {
         problems(program),
         [
             "the type alias `Loop` refers to itself @ Loop",
-            "`f32` isn't a type @ f32",
+            "`f16` isn't a type @ f16",
             "`T` isn't a type @ T",
             "`list` needs 1 type in brackets @ list",
             "`dict` needs 2 types in brackets @ dict[str]",
@@ -226,9 +226,9 @@ fn written_types_have_to_mean_something() {
         ]
     );
     assert_eq!(
-        helps("def f(a: f32, b: string, c: List[int], d: Optional[int], e: Enemy):\n    pass\n"),
+        helps("def f(a: double, b: string, c: List[int], d: Optional[int], e: Enemy):\n    pass\n"),
         [
-            "write `float`",
+            "write `float`, or `f32` for 32 bits",
             "write `str`",
             "write `list`",
             "write `?` after the type, like `Enemy?`",
@@ -373,7 +373,7 @@ fn values_from_several_places_combine() {
         def d(n: int) -> int:
             if n > 1:
                 fail Oops('x')
-            a(n)
+            a(n)?
     ";
     let both = Type::Errors(vec!["Oops".to_owned(), "Other".to_owned()]);
     assert_eq!(returns(program, "c"), Ok(result(optional(Type::Int), both)));
@@ -436,7 +436,7 @@ fn only_the_value_a_function_ends_with_is_checked_against_its_return_type() {
 
         def d(n: int) -> int:
             x = risky(n)?
-            risky(x)
+            risky(x)?
     ";
     assert_eq!(problems(program), ["this is the result of something that can fail @ risky(n)"]);
 }

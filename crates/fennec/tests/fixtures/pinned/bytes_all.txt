@@ -1,0 +1,32 @@
+source 04ca97271ec5441151a81ce444c8133c32a93cdcd406c5266ec89be072cd1612
+code 0
+stdout 1280
+bytes([]) 0 bytes([0, 1, 127, 128, 255]) 5
+0 255 128 0
+bytes([1, 127]) bytes([0, 1]) bytes([128, 255]) bytes([128, 255]) bytes([0, 1, 127]) bytes([]) bytes([])
+bytes([0, 1, 127, 128, 255, 7]) bytes([]) True False
+True True True False
+True False True False False
+00017f80ff 00 01 7f 80 ff 00--01--7f--80--ff 
+511 [0, 1, 127, 128, 255] 511
+bytes([104, 195, 169, 108, 108, 111, 32, 119, 195, 182, 114, 108, 100]) 13 11
+héllo wörld True
+these bytes aren't UTF-8 text: invalid utf-8 sequence of 1 bytes from index 0
+bytes([0, 255])
+bytes([0, 255])
+bytes([])
+`fromhex` needs two hex digits for each byte, but the text ends halfway through one
+`fromhex` needs two hex digits for each byte, but found "z" at 0
+`fromhex` needs two hex digits for each byte, but found " " at 1
+Packet(id=1, data=bytes([0, 1])) bytes([0, 1]) True True
+bytes([0, 1]) bytes([]) [Packet(id=1, data=bytes([0, 1])), Packet(id=2, data=bytes([]))]
+bytes([0, 1, 127, 128, 255]) bytes([3]) 4 [bytes([0, 1, 127, 128, 255]), bytes([]), bytes([104, 195, 169, 108, 108, 111, 32, 119, 195, 182, 114, 108, 100]), bytes([3])]
+empty
+bytes([1]) 1 Held.Full(data=bytes([1]))
+bytes([9, 8]) None False True
+bytes([9, 8]) 2
+(bytes([0]), 3)
+bytes([0]) and bytes([]) bytes([0, 1])
+300 43 255 bytes([0, 1, 2])
+1 000102030405060708
+stderr 0

@@ -1,0 +1,6 @@
+source 391a34896ef3c83af6fa82c10ff4c5b17fe1e9df3f5aad7ccf3bda10246d7ed4
+code 0
+stdout 55
+Ok(3) Err("not positive")
+[Ok(1), Err("not positive")]
+stderr 0

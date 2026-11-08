@@ -412,11 +412,9 @@ fn run_kernel(
     (target, unchecked): (Option<&Target>, Option<u64>),
     (out_dir, startup): (&Path, &measure::Program),
 ) -> std::result::Result<Result, String> {
-    // A kernel LLVM can't build yet runs on the JIT, and the run warns about it.
-    let built = kernel.built(&options.fennec, out_dir, "ours").unwrap_or_else(|why| {
-        eprintln!("warning: {} doesn't build through LLVM, so it runs on the JIT: {why}", kernel.name);
-        kernel.on_the_jit(&options.fennec)
-    });
+    let built = kernel
+        .built(&options.fennec, out_dir, "ours")
+        .map_err(|why| format!("{} doesn't build through LLVM: {why}", kernel.name))?;
     // A program just linked starts slowly the first time on macOS, while the system checks it.
     time_together(&[built.clone(), startup.clone()], 1)?;
     let mut programs = vec![built.clone(), startup.clone()];

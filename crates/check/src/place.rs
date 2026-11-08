@@ -85,9 +85,10 @@ impl FnCx<'_> {
                     None if op.is_none() => self.declared_type(name),
                     // `query += " where id = 1"` keeps a `LiteralStr` one when what's added is.
                     None if op == Some(BinOp::Add) => {
-                        self.declared_type(name).filter(|ty| matches!(ty, Type::LiteralStr))
+                        self.declared_type(name).filter(|ty| matches!(ty, Type::LiteralStr | Type::Sized(_)))
                     }
-                    None => None,
+                    // `small -= 1`: a number literal takes the size of what it changes.
+                    None => self.declared_type(name).filter(|ty| matches!(ty, Type::Sized(_))),
                 };
                 let ty = match &expected {
                     Some(expected) => self.expr_as(value, expected),
@@ -123,7 +124,9 @@ impl FnCx<'_> {
                 let current = self.place_type(target);
                 self.record(target.span, &current);
                 let adds_literal = op == Some(BinOp::Add) && matches!(current, Type::LiteralStr);
-                let mut ty = if op.is_none() || adds_literal {
+                // `small += 1`: a number literal takes the size of what it changes.
+                let sized = matches!(current, Type::Sized(_)) && crate::expect::number_literal(value);
+                let mut ty = if op.is_none() || adds_literal || sized {
                     self.expr_as(value, &current)
                 } else {
                     self.expr(value)

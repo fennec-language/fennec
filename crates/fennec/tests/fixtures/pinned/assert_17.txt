@@ -1,0 +1,12 @@
+source 8a20043c85cdadb0368685b43bae375165b0e96f5226ad5b4f0a3fbe8c15608c
+code 1
+stdout 2
+1
+stderr 195
+error: this assertion failed
+  --> <dir>/assert_17.fen:31:12
+   |
+31 |     assert ["a"] == ["b"]
+   |            ^^^^^^^^^^^^^^
+   |
+   = help: the left side is ["a"] and the right side is ["b"]

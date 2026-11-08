@@ -182,7 +182,6 @@ thread_local! {
 
 /// `fennec_aot_attempt_failed()`: an attempt of a property test's shrinking failed, so its failure
 /// is cleared, as one test's is before the next, and noted for `attempt_passed`.
-#[cfg(not(feature = "lean"))]
 pub fn attempt_failed() {
     let _ = super::next_test();
     ATTEMPT_FAILED.set(true);
@@ -207,10 +206,9 @@ pub fn failed_for(text: i64) {
 
 /// Starts a test: one that takes capabilities gets fakes in a world of its own, with nothing left
 /// by the one before, as `run_case` gives the interpreter's.
-#[cfg(not(feature = "lean"))]
 pub fn test_world(fakes: i64) {
     with(|state: &mut State| {
-        state.interp.world = (fakes != 0 && !real_tests()).then(|| TestWorld::new(TestCapabilities::Fakes));
+        state.world = (fakes != 0 && !real_tests()).then(|| TestWorld::new(TestCapabilities::Fakes));
     });
 }
 
@@ -224,7 +222,6 @@ fn real_tests() -> bool {
 /// Says what the test just run did, on standard output as soon as it's done, in a line `fennec
 /// test` reads, so a crash loses only the tests not yet run. A test's `Stdout` is a fake, so
 /// nothing else writes there.
-#[cfg(not(feature = "lean"))]
 pub fn test_done(number: i64) {
     let ran: Vec<String> = RAN.take().iter().map(ToString::to_string).collect();
     let failure = super::next_test().map(|failure| match FAILED_FOR.take() {
@@ -241,7 +238,7 @@ pub fn test_done(number: i64) {
     FAILED_FOR.take();
     // The test's fakes go now rather than with the next test's, so the last test's go too, and
     // what they hold outside the program, like a test's databases, is cleaned up.
-    let world = with(|state: &mut State| state.interp.world.take());
+    let world = with(|state: &mut State| state.world.take());
     drop(world);
     let line = test_line(number, failure.as_ref(), &ran);
     if real_tests() {

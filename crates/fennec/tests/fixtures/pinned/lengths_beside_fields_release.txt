@@ -1,0 +1,49 @@
+source 2c9866a70f7bc847779e272aeec8007e08ffa50f9b637e9fa8dab9ff7e7142d9
+code 0
+stdout 412
+3 44 44
+80972 393 400
+2925 55 a replacement long enough to have its own block of text
+6 s 1
+8 h 2
+10 o 3
+12 r 4
+14 t 5
+16 é 6
+18 a 7
+19 b 8
+21 a 9
+23 b 10
+25 a 11
+27 b 12
+29 a 13
+31 b 14
+32 a 15
+34 b 16
+36 a 17
+38 b 18
+40 é 19
+42 a 20
+44 b 21
+45 a 22
+47 b 23
+49 a 24
+51 b 25
+53 a 26
+55 b 27
+57 a 28
+58 b 29
+60 a 30
+62 b 31
+64 é 32
+66 a 33
+68 b 34
+70 a 35
+71 b 36
+73 a 37
+75 b 38
+77 a 39
+79 b 40
+2 42 42
+1 2 2
+stderr 0

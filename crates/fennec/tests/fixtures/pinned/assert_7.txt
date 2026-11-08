@@ -1,0 +1,12 @@
+source 34efb26c650a6d7f7ca445348ee2f7b163dd44d64bd79d221645ce8a7344336d
+code 1
+stdout 2
+1
+stderr 266
+error: this assertion failed
+  --> <dir>/assert_7.fen:31:12
+   |
+31 |     assert Plain(x=1, y=2.0) == Plain(x=2, y=2.0)
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: the left side is Plain(x=1, y=2.0) and the right side is Plain(x=2, y=2.0)

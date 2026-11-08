@@ -1,0 +1,8 @@
+  ✗ small ints
+  ✗ negative ints
+  ✗ short words
+  ✗ short lists
+  ✗ flags
+  ✗ two at once
+  ✗ files
+1 passed, 7 failed

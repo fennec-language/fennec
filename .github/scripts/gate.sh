@@ -23,12 +23,33 @@ step() {
   echo "$((SECONDS - started))s  $name"
 }
 
+# A runtime library built a little at a time has come out without parts of what it uses, which a
+# program then fails to link with, as if the program were at fault. So each one is checked, and one
+# missing parts is built again from nothing, which makes it whole; if it still isn't, the gate stops.
+#
+#   whole_runtime <library> <target folder> <what cargo builds it with>...
+whole_runtime() {
+  local library=$1 folder=$2 manifest
+  shift 2
+  .github/scripts/whole-archive.sh "$library" && return 0
+  echo "gate: $library was missing parts, so it's built again from nothing" >&2
+  local crates=()
+  for manifest in crates/*/Cargo.toml; do
+    crates+=(-p "$(sed -n 's/^name = "\(.*\)"$/\1/p' "$manifest" | sed -n 1p)")
+  done
+  cargo clean --target-dir "$folder" "${crates[@]}" || return 1
+  cargo build --locked --target-dir "$folder" "$@" || return 1
+  .github/scripts/whole-archive.sh "$library"
+}
+
 runtime() {
   cargo build --locked -p fennec -p fennec-runtime || return 1
+  whole_runtime target/debug/libfennec_runtime.a target -p fennec -p fennec-runtime || return 1
   # Every variant `fennec build` may take, fresh, so none is left over from another commit.
   for features in threads lean lean,threads; do
     dir="target/$(echo "$features" | tr , -)"
     cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir" || return 1
+    whole_runtime "$dir/debug/libfennec_runtime.a" "$dir" -p fennec-runtime --features "$features" || return 1
     cp "$dir/debug/libfennec_runtime.a" "target/debug/libfennec_runtime_$(echo "$features" | tr , _).a"
   done
 }
@@ -49,10 +70,26 @@ examples() {
   done
 }
 
-# An Arm-only pass can hide what only x86-64 does, like having two return registers, not eight.
+# An Arm-only pass can hide what only x86-64 does, like having two return registers, not eight. So
+# `fennec` built for x86-64 builds every example as an x86-64 program, under Rosetta, with LLVM's
+# own tools and a `cc` that links for x86-64, and each has to print its `.out`.
 x86() {
   rustup target add x86_64-apple-darwin || return 1
-  cargo test --locked -p fennec --target x86_64-apple-darwin the_jit_runs_examples_exactly
+  cargo build --locked -p fennec -p fennec-runtime --target x86_64-apple-darwin || return 1
+  # Only the plain runtime is built here, so a lean or threads one left by an earlier build, of
+  # other source, isn't taken in its place.
+  rm -f target/x86_64-apple-darwin/debug/libfennec_runtime_*.a
+  local work="$logs/x86" tools program
+  tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
+  mkdir -p "$work/bin" || return 1
+  printf '#!/bin/sh\nexec /usr/bin/cc -arch x86_64 "$@"\n' > "$work/bin/cc" && chmod +x "$work/bin/cc" || return 1
+  for program in examples/*.fen; do
+    PATH="$work/bin:$PATH" FENNEC_HOME="$work/home" FENNEC_LLVM_BIN="$tools" \
+      .github/scripts/within.sh 120 ./target/x86_64-apple-darwin/debug/fennec build "$program" -o "$work/program" \
+      > /dev/null || return 1
+    .github/scripts/within.sh 60 "$work/program" < /dev/null > "$work/printed" || return 1
+    diff --strip-trailing-cr "${program%.fen}.out" "$work/printed" || return 1
+  done
 }
 
 watched() {
@@ -78,7 +115,7 @@ else
 fi
 step "tests" watched cargo test --locked || exit 1
 step "examples and kits" watched examples || exit 1
-step "the JIT as x86-64 under Rosetta" watched x86 || exit 1
+step "every example as x86-64 under Rosetta" watched x86 || exit 1
 if [ -s "$log" ]; then
   echo "the gate stopped test programs:"
   cat "$log"

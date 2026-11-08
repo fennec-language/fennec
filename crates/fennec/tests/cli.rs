@@ -41,8 +41,9 @@ fn run_prints_the_programs_output() {
 }
 
 /// What the linter finds doesn't stop a run, and it's on standard error, so what the program prints
-/// is all of standard output. A run of the same code again shows it again, from the cache. `--jit`
-/// chooses an engine, to compare it with another, so it shows only the program's own output.
+/// is all of standard output. A run of the same code again shows it again, from the cache.
+/// `--interp` chooses an engine, to compare it with another, so it shows only the program's own
+/// output.
 #[test]
 fn run_shows_lints_on_standard_error_and_still_runs() {
     let dir = scratch("run_lints").unwrap();
@@ -70,9 +71,9 @@ fn run_shows_lints_on_standard_error_and_still_runs() {
             "{time}: {said}"
         );
     }
-    let jit = run(&["run", "--jit", "game.fen"]);
+    let interpreted = run(&["run", "--interp", "game.fen"]);
     std::fs::remove_dir_all(&dir).unwrap();
-    assert_eq!((text(&jit.stdout), text(&jit.stderr)), ("4\n".to_owned(), String::new()));
+    assert_eq!((text(&interpreted.stdout), text(&interpreted.stderr)), ("4\n".to_owned(), String::new()));
 }
 
 /// A run lints again only the files of a kit that changed, and keeps the rest from the last run,
@@ -386,9 +387,9 @@ fn tests_get_fakes_unless_asked_for_the_real_thing() {
 }
 
 /// `--real` runs tests through LLVM too, with the real capabilities: what they print comes out in
-/// order, around a real file written and read, and a failure says the same as on the JIT.
+/// order, around a real file written and read, and a failure says which assert failed.
 #[test]
-fn real_tests_run_through_llvm_as_on_the_jit() {
+fn real_tests_run_through_llvm() {
     if !llvm_ready_for_run() {
         return;
     }
@@ -402,19 +403,15 @@ fn real_tests_run_through_llvm_as_on_the_jit() {
     let path = dir.join("real.fen");
     std::fs::write(&path, source).unwrap();
     let path = path.to_str().unwrap();
-    let jit = fennec(&["test", "--real", "--verbose", "--jit", path], "").unwrap();
-    std::fs::remove_file(&written).unwrap();
     let llvm = fennec(&["test", "--real", "--verbose", path], "").unwrap();
     let said = text(&llvm.stderr);
     assert!(said.contains("note: 3 of 3 tests ran through LLVM"), "{said}");
-    assert_eq!(text(&llvm.stdout), text(&jit.stdout));
     assert!(
         text(&llvm.stdout).starts_with("hello from a test\nread it back\nbefore the failure\n"),
         "{}",
         text(&llvm.stdout)
     );
-    let shown: String = said.split_inclusive('\n').filter(|line| !line.starts_with("note: ")).collect();
-    assert_eq!(shown, text(&jit.stderr));
+    assert!(said.contains("assert 1 + 1 == 3"), "{said}");
     assert_eq!(std::fs::read_to_string(&written).unwrap(), "kept");
     assert!(!llvm.status.success());
     std::fs::remove_dir_all(&dir).unwrap();
@@ -422,7 +419,7 @@ fn real_tests_run_through_llvm_as_on_the_jit() {
 
 /// A standard library type's default, like `Response`'s `headers = dict[str, str]()`, works in a
 /// test that doesn't run through LLVM: here the file's other test reaches what LLVM can't build
-/// yet, so both go another way, and with `--jit` and `--real` too.
+/// yet, so both go another way, and with `--real` too.
 #[test]
 fn a_standard_library_default_works_in_a_test_off_llvm() {
     let dir = std::env::temp_dir().join(format!("fennec-std-default-{}", std::process::id()));
@@ -431,7 +428,7 @@ fn a_standard_library_default_works_in_a_test_off_llvm() {
     let source = "from std.net import Response\n\ndef handle(path: str) -> Response:\n    match path:\n        case \"/hello\":\n            Response(status=200, body=\"hi\".encode())\n        case _:\n            Response(status=404)\n\ntest \"plain\":\n    assert handle(\"/hello\").status == 200\n    assert handle(\"/\").headers.len() == 0\n\ntest \"net only\"(net: Net):\n    with net.listen(0)? as server:\n        assert server.port >= 0\n";
     std::fs::write(&path, source).unwrap();
     let path = path.to_str().unwrap();
-    for how in ["--all", "--jit"] {
+    for how in ["--all", "--real"] {
         let ran = fennec(&["test", how, path], "").unwrap();
         assert!(ran.status.success(), "{how}: {}{}", text(&ran.stdout), text(&ran.stderr));
     }
@@ -627,7 +624,7 @@ fn llvm_ready_for_run() -> bool {
         && crate::executables::runtime_beside_fennec()
 }
 
-/// A conversion to the type a value has already gives it back, on the JIT and in the
+/// A conversion to the type a value has already gives it back, natively and in the
 /// interpreter. The linter takes these out of the examples, since they change nothing.
 #[test]
 fn conversions_to_what_a_value_is_already_give_it_back() {
@@ -636,7 +633,7 @@ fn conversions_to_what_a_value_is_already_give_it_back() {
     let source = "def main(stdout: Stdout):\n    name = \"fox\"\n    half = 0.5\n    seven = 7\n    \
                   stdout.print(str(name), float(half), int(seven), float(-0.0))\n";
     std::fs::write(&program, source).unwrap();
-    for engine in ["--jit", "--interp"] {
+    for engine in ["--no-test", "--interp"] {
         let output = fennec(&["run", engine, program.to_str().unwrap()], "").unwrap();
         assert_eq!(text(&output.stdout), "fox 0.5 7 -0.0\n", "{engine}: {}", text(&output.stderr));
     }
@@ -662,7 +659,7 @@ fn a_double_lookup_fixed_prints_the_same() {
     let now = std::fs::read_to_string(&program).unwrap();
     assert_eq!(now.matches(".get(").count(), 3, "{now}");
     assert!(!now.contains("in counts") && !now.contains("in names"), "{now}");
-    for engine in [&["run"][..], &["run", "--jit"], &["run", "--interp"]] {
+    for engine in [&["run"][..], &["run", "--interp"]] {
         let args: Vec<&str> = engine.iter().copied().chain([path]).collect();
         let output = fennec(&args, "").unwrap();
         assert_eq!(text(&output.stdout), expected, "{engine:?}: {}", text(&output.stderr));
@@ -672,7 +669,7 @@ fn a_double_lookup_fixed_prints_the_same() {
 }
 
 /// A program that fails while running, or returns normally, gives `fennec run` the same exit
-/// code whichever way it runs: through LLVM, on the JIT, or in the interpreter.
+/// code whichever way it runs: through LLVM or in the interpreter.
 #[test]
 fn run_exits_the_same_way_whichever_engine_runs_it() {
     let dir = scratch("exit-codes").unwrap();
@@ -686,17 +683,16 @@ fn run_exits_the_same_way_whichever_engine_runs_it() {
     std::fs::write(&fine, "def main(stdout: Stdout):\n    stdout.print(1)\n").unwrap();
     for (program, succeeds) in [(&failing, false), (&fine, true)] {
         let path = program.to_str().unwrap();
-        let codes: Vec<Option<i32>> =
-            [&["run", "--no-test", path][..], &["run", "--jit", path], &["run", "--interp", path]]
-                .iter()
-                .map(|args| fennec(args, "").unwrap().status.code())
-                .collect();
+        let codes: Vec<Option<i32>> = [&["run", "--no-test", path][..], &["run", "--interp", path]]
+            .iter()
+            .map(|args| fennec(args, "").unwrap().status.code())
+            .collect();
         let expected = Some(i32::from(!succeeds));
-        assert_eq!(codes, [expected; 3], "{path}: through LLVM where it can, the JIT, then the interpreter");
+        assert_eq!(codes, [expected; 2], "{path}: through LLVM, then the interpreter");
     }
     if llvm_ready_for_run() {
         let output = fennec(&["run", "--no-test", failing.to_str().unwrap()], "").unwrap();
-        assert!(!text(&output.stderr).contains("note: running this with the JIT"), "LLVM built it");
+        assert!(!text(&output.stderr).contains("note: running this with the interpreter"), "LLVM built it");
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -725,7 +721,7 @@ fn main_gives_back_its_exit_code_on_every_engine() {
         let program = dir.join(format!("{name}.fen"));
         std::fs::write(&program, source).unwrap();
         let path = program.to_str().unwrap();
-        for engine in [&["run", "--no-test"][..], &["run", "--jit"], &["run", "--interp"]] {
+        for engine in [&["run", "--no-test"][..], &["run", "--interp"]] {
             let args: Vec<&str> = engine.iter().copied().chain([path]).collect();
             let output = fennec(&args, "").unwrap();
             let said = text(&output.stderr);
@@ -1866,8 +1862,8 @@ fn fix_writes_leading_dots_where_the_type_is_known() {
     let fixed = fennec(&["fix", &path], "").unwrap();
     let written = std::fs::read_to_string(&program).unwrap();
     let again = fennec(&["fix", &path], "").unwrap();
-    let [interpreted, jitted] =
-        [["run", "--interp"], ["run", "--jit"]].map(|how| fennec(&[how[0], how[1], &path], "").unwrap());
+    let [interpreted, native] =
+        [["run", "--interp"], ["run", "--no-test"]].map(|how| fennec(&[how[0], how[1], &path], "").unwrap());
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(!before.status.success());
     assert!(text(&before.stderr).contains("the type here is known, so write"), "{}", text(&before.stderr));
@@ -1875,7 +1871,7 @@ fn fix_writes_leading_dots_where_the_type_is_known() {
     assert_eq!(written, CASES_AFTER);
     assert!(again.status.success() && again.stdout.is_empty(), "{}", text(&again.stdout));
     assert!(interpreted.status.success(), "{}", text(&interpreted.stderr));
-    assert_eq!(text(&jitted.stdout), text(&interpreted.stdout), "{}", text(&jitted.stderr));
+    assert_eq!(text(&native.stdout), text(&interpreted.stdout), "{}", text(&native.stderr));
 }
 
 /// In a kit, the leading dot of a case its own file declares comes to the checker with its enum
@@ -2144,29 +2140,6 @@ fn a_dicts_get_with_a_negative_default_is_native() {
 }
 
 #[test]
-fn dev_fallbacks_lists_what_isnt_native_hot_loops_first() {
-    // A dict of lists isn't native yet.
-    let dir = scratch("fallbacks").unwrap();
-    let program = dir.join("groups.fen");
-    std::fs::write(
-        &program,
-        "def main(stdout: Stdout):\n    mut groups: dict[int, list[int]] = {}\n    for i in range(10):\n        \
-         groups[i % 3] = (groups.get(i % 3) else []) + [i]\n    stdout.print(groups.len())\n",
-    )
-    .unwrap();
-    let output = fennec(&["dev", "fallbacks", program.to_str().unwrap()], "").unwrap();
-    assert!(output.status.success());
-    let printed = text(&output.stdout);
-    let first = printed.lines().next().unwrap();
-    assert!(first.contains("groups.fen:4:"), "{printed}");
-    assert!(first.contains("in `main` (in a loop)"), "{printed}");
-    assert!(printed.contains("the interpreter calls the method `get`"), "{printed}");
-    assert!(printed.contains("    groups[i % 3] = (groups.get(i % 3) else []) + [i]\n"), "{printed}");
-    assert!(printed.ends_with("places aren't native\n"), "{printed}");
-    std::fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
 fn run_compiles_by_default_and_shows_output_before_it_reads_input() {
     let dir = scratch("default-run").unwrap();
     let program = dir.join("prompt.fen");
@@ -2351,7 +2324,7 @@ fn a_hot_function_keeps_no_checks() {
 }
 
 /// A `shared` value is a handle: every name for it, and every function it's passed to, changes
-/// one cell. The JIT hands such a program to the interpreter for now, so both print the same.
+/// one cell, natively and in the interpreter.
 #[test]
 fn a_shared_value_is_one_cell_however_its_reached() {
     let dir = scratch("shared").unwrap();
@@ -2432,6 +2405,29 @@ fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
         let built = fennec(&build, "")?;
         assert!(!built.status.success(), "{build:?}");
         assert!(text(&built.stderr).contains("is copied each time"), "{build:?}: {}", text(&built.stderr));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A program using a sized number checks as far as its types go, but a run and a build refuse it
+/// before anything's lowered, since nothing past the checker takes sized numbers yet.
+#[test]
+fn a_build_refuses_sized_numbers_until_they_run() -> std::io::Result<()> {
+    let dir = std::env::temp_dir().join(format!("fennec_build_sized_{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("sized.fen");
+    std::fs::write(&program, "def main(stdout: Stdout):\n    x: u8 = 1\n    stdout.print(x)\n")?;
+    let program = program.to_string_lossy().into_owned();
+    let executable = dir.join("sized").to_string_lossy().into_owned();
+    for command in [vec!["build", &program, "-o", &executable], vec!["run", &program]] {
+        let refused = fennec(&command, "")?;
+        assert!(!refused.status.success(), "{command:?}");
+        let said = text(&refused.stderr);
+        assert!(
+            said.starts_with("error: sized numbers like u8 aren't built yet past the checker"),
+            "{command:?}: {said}"
+        );
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())

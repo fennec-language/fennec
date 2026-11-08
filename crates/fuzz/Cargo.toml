@@ -1,6 +1,6 @@
 [package]
 name = "fennec-fuzz"
-description = "Fuzzing Fennec's front end, standard library parsers and JIT"
+description = "Fuzzing Fennec's front end, standard library parsers and native builds"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

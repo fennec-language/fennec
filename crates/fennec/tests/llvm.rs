@@ -476,6 +476,110 @@ fn same_as_the_interpreter_in_both_builds(name: &str, source: &str) -> std::io::
     Ok(())
 }
 
+/// What a program prints, built in dev and `--release` both, is `wanted`.
+fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join(name));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            wanted,
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A value stored into another keeps what it held when a name it came from changes after: in a
+/// tuple, a dict, a list by `insert`, a closure, a struct, an optional and a comprehension.
+#[test]
+fn a_stored_value_keeps_what_it_held() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "stored_values_keep_theirs",
+        include_str!("fixtures/stored_values_keep_theirs.fen"),
+        "([1, 2], 1) [9, 2]\n{\"k\": [1, 2]} [9, 2]\n[[1, 2], [0]] [9, 2]\n3 [9, 2]\n{\"k\": [1, 2]} [9, 2]\n\
+         Box(item=[1, 2]) [9, 2]\n[1, 2] [9, 2]\n{\"k\": [1, 2]} [1, 2] [9, 2]\n\
+         (\"text that is long enough to live in a block\", 2) 44\n[[1, 2], [1, 2]] [9, 2]\n",
+    )
+}
+
+/// An assignment goes left to right: the place written is the one named before the value runs,
+/// and `+=` adds to what was there before it, whatever the value changes by `ref`.
+#[test]
+fn an_assignment_goes_left_to_right() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "assignment_order",
+        "struct Total:
+    v: int
+
+def inc(ref i: int) -> int:
+    i += 1
+    i * 10
+
+def text(ref k: str) -> int:
+    k = \"b\"
+    5
+
+def bump(ref t: Total) -> int:
+    t.v = 10
+    2
+
+def main(stdout: Stdout):
+    mut xs = [0, 0, 0]
+    mut i = 0
+    xs[i] = inc(ref i)
+    stdout.print(xs, i)
+
+    mut m = {\"a\": 1, \"b\": 2}
+    mut k = \"a\"
+    m[k] = text(ref k)
+    stdout.print(m, k)
+
+    mut a = [[0, 0], [0, 0]]
+    mut r = 0
+    a[r][r] = inc(ref r)
+    stdout.print(a, r)
+
+    mut t = Total(v=0)
+    t.v += bump(ref t)
+    stdout.print(t)
+
+    mut u = Total(v=0)
+    u.v = u.v + bump(ref u)
+    stdout.print(u)
+
+    mut ys = [1, 2]
+    mut j = 0
+    ys[j] += inc(ref j)
+    stdout.print(ys, j)
+
+    mut n = 1
+    n += inc(ref n)
+    stdout.print(n)
+",
+        "[10, 0, 0] 1\n{\"a\": 5, \"b\": 2} b\n[[10, 0], [0, 0]] 1\nTotal(v=2)\nTotal(v=2)\n[11, 2] 1\n21\n",
+    )
+}
+
 /// Each kind of local passed by `mut` and used again, with what could be remembered about it
 /// before the call: where an index points, a length, a read held across the change, a dict's
 /// entry, how far a string's been read, what a loop or a closure holds, a number known to fit.
@@ -1147,9 +1251,9 @@ def main(stdout: Stdout):
     # What's given to the call comes from what's changed.
     mut own = [unit(1), unit(2), unit(3)]
     own[0].grow(own[1].hp)
-    own[0].grown_by(own[0].tags)
+    own[0].grown_by(copy(own[0].tags))
     own[1].grown_by(own[0].tags)
-    own[2].absorb(own[2])
+    own[2].absorb(copy(own[2]))
     own[2].absorb(own[0])
     first = own[1]
     own[1].grown_by(first.tags)
@@ -2461,6 +2565,156 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// What a function does to a local through `ref` counts as a write. The proofs that take a bounds
+/// or an overflow check away can't rest on the local's value from before the call.
+const REF_WRITES: &str = "def neg(ref at: int):
+    at = -3
+
+def bump(ref x: int):
+    x = 9223372036854775807
+
+def drop(ref x: int):
+    x = -9223372036854775807 - 1
+
+def past_the_end(xs: list[int]) -> int:
+    mut at = 0
+    neg(ref at)
+    mut total = 0
+    while at + 2 <= xs.len():
+        total += xs[at] + xs[at + 1]
+        at += 2
+    total
+
+def after_a_guard(x0: int, b: int) -> int:
+    mut x = x0
+    if x < b:
+        bump(ref x)
+        return x + 1
+    0
+
+def down_after_a_guard(x0: int, b: int) -> int:
+    mut x = x0
+    if x > b:
+        drop(ref x)
+        return x - 1
+    0
+
+";
+
+#[test]
+fn a_write_through_ref_undoes_what_was_proved() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, call, wanted) in [
+        ("ref_negative_index", "past_the_end([1, 2, 3, 4])", Ok("15\n")),
+        ("ref_after_a_guard", "after_a_guard(1, b=5)", Err("error: this calculation overflows an int")),
+        (
+            "ref_down_after_a_guard",
+            "down_after_a_guard(5, b=1)",
+            Err("error: this calculation overflows an int"),
+        ),
+    ] {
+        let source = format!("{REF_WRITES}def main(stdout: Stdout):\n    stdout.print({call})\n");
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let dir = folder(name)?;
+            let program = dir.join(format!("{name}.fen"));
+            std::fs::write(&program, &source)?;
+            let output = dir.join(name);
+            let (from, to) = (program.to_string_lossy().into_owned(), output.to_string_lossy().into_owned());
+            let args: Vec<&str> =
+                ["build"].into_iter().chain(how.iter().copied()).chain([from.as_str(), "-o", &to]).collect();
+            let built = fennec(&args, &dir)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&output).output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            match wanted {
+                Ok(printed) => assert_eq!(String::from_utf8_lossy(&ran.stdout), printed, "{name} {how:?}"),
+                Err(said) => {
+                    assert!(!ran.status.success(), "{name} {how:?}");
+                    assert_eq!(
+                        String::from_utf8_lossy(&ran.stderr).lines().next(),
+                        Some(said),
+                        "{name} {how:?}"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A division's check against 0 only goes when the divisor can't become 0 after what proved it.
+#[test]
+fn a_divisor_written_again_is_still_checked() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def n() -> int:\n    7\n\ndef main(stdout: Stdout):\n    v = (n() % 5) + 1\n    mut d = float(v)\n    d = 0.0\n    stdout.print(1.0 / d)\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("divisor_written_again")?;
+        let program = dir.join("divides.fen");
+        std::fs::write(&program, source)?;
+        let output = dir.join("divides");
+        let (from, to) = (program.to_string_lossy().into_owned(), output.to_string_lossy().into_owned());
+        let args: Vec<&str> =
+            ["build"].into_iter().chain(how.iter().copied()).chain([from.as_str(), "-o", &to]).collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert!(!ran.status.success(), "{how:?}: {}", String::from_utf8_lossy(&ran.stdout));
+        assert!(
+            String::from_utf8_lossy(&ran.stderr).contains("division by zero"),
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// A number written on the left of a `u64` or an `f32` is that size, so what's worked out is too:
+/// unsigned on all 64 bits, and rounded to 32.
+#[test]
+fn a_number_on_the_left_takes_the_size_on_the_right() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = "literal_left_of_a_size";
+    let source = "def big() -> u64:
+    half: u64 = 9223372036854775807
+    half + half
+
+def large() -> f32:
+    f: f32 = 16777216.0
+    f
+
+def main(stdout: Stdout):
+    b = big()
+    stdout.print(100 // b, 100 % b, 100 / b, 100 < b, 100 == b)
+    f = large()
+    stdout.print(1.0 + f, 0.1 * f, 1.0 < f, 2.0 / f)
+";
+    prints_in_both_builds(
+        dir,
+        source,
+        "0 100 5.421010862427522e-18 True False\n16777216.0 1677721.6 True 1.1920929e-07\n",
+    )
+}
+
+/// `%` on floats is exact, however much bigger the left side is, with the sign of the right.
+#[test]
+fn a_float_remainder_is_exact() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "float_remainder",
+        "def number(x: float) -> float:\n    x\n\ndef main(stdout: Stdout):\n    stdout.print(number(1e17) % 3.0, number(5.5) % 0.1, number(-7.5) % 2.0, number(7.5) % -2.0)\n    stdout.print(number(6.0) % 3.0, number(1e300) % 7.0, number(0.3) % 0.1)\n",
+        "1.0 0.0999999999999997 0.5 -0.5\n0.0 1.0 0.09999999999999998\n",
+    )
+}
+
 /// What doesn't fit a size stops the program, saying which size and what it holds: arithmetic
 /// past either end, a negation, the one division that grows, and a conversion that doesn't fit,
 /// a `u64` too big for an `int` among them.
@@ -2486,6 +2740,23 @@ fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
             "error: it doesn't fit in u32, which holds 0 to 4294967295: -1".to_owned(),
         ),
         ("z: u64 = 0\n    stdout.print(z - 1)", overflow("a u64", "0 to 18446744073709551615")),
+        ("stdout.print(5 - u64(6))", overflow("a u64", "0 to 18446744073709551615")),
+        (
+            "h: u64 = 9223372036854775807\n    stdout.print(4 * h)",
+            overflow("a u64", "0 to 18446744073709551615"),
+        ),
+        (
+            "x: u8 = 200\n    n = 9\n    stdout.print(x >> n)",
+            "error: can't shift u8 by a count outside 0 to 7".to_owned(),
+        ),
+        (
+            "x: u8 = 16\n    n = 60\n    stdout.print(x << n)",
+            "error: can't shift u8 by a count outside 0 to 7".to_owned(),
+        ),
+        (
+            "x: i32 = 2\n    n = 63\n    stdout.print(x << n)",
+            "error: can't shift i32 by a count outside 0 to 31".to_owned(),
+        ),
         (
             "h: u64 = 9223372036854775807\n    stdout.print(h * 3)",
             overflow("a u64", "0 to 18446744073709551615"),
@@ -3458,6 +3729,145 @@ def main(stdout: Stdout):
         stdout.print(lines)
 ";
 
+/// A failure can leave a `with` block from inside what it calls: from a generator, whether it's
+/// read through a name, looped over or summed, or from a round of a `parallel` loop. Each runs the
+/// source's `else:` once, a `ref` case still puts back what it changed, and what a failing
+/// cleanup says goes on the failure as a note.
+#[test]
+fn a_failure_from_inside_what_a_block_calls_runs_its_cleanup() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("failure_inside_a_block", FAILURE_INSIDE_A_BLOCK)?;
+    assert_eq!(
+        printed,
+        "open\nopen\nclosed\nclosed\n7\n\
+         open\n7\n8\ncleanup ran\nfailed 2 []\n\
+         open\n7\n8\ncleanup ran\nfailed 2 []\n\
+         open\ncleanup ran\nfailed 2 []\n\
+         open\nopen\n14\n15\ncleanup ran\ncleanup ran\nfailed 2 []\n\
+         open\ncleanup ran\nfailed 3 []\n\
+         failed 2 [\"Boom(at=99)\"]\n\
+         failed 2 [] 2\n"
+    );
+    Ok(())
+}
+
+const FAILURE_INSIDE_A_BLOCK: &str = "error Boom:
+    at: int
+
+def numbers(limit: int) -> Iterator[int] fails Boom:
+    for at in range(limit):
+        if at == 2:
+            fail Boom(at=at)
+        yield at
+
+def opened(stdout: Stdout) -> with int fails Boom:
+    stdout.print(\"open\")
+    lend 7 else:
+        stdout.print(\"cleanup ran\")
+    stdout.print(\"closed\")
+
+def through_a_name(stdout: Stdout) fails Boom:
+    with opened(stdout)? as held:
+        items = numbers(5)?
+        for each in items:
+            stdout.print(each + held)
+
+def looped(stdout: Stdout) fails Boom:
+    with opened(stdout)? as held:
+        for each in numbers(5)?:
+            stdout.print(each + held)
+
+def summed(stdout: Stdout) fails Boom:
+    with opened(stdout)? as held:
+        stdout.print(sum(numbers(5)?) + held)
+
+def nested(stdout: Stdout) fails Boom:
+    with opened(stdout)? as first:
+        with opened(stdout)? as second:
+            for each in numbers(5)?:
+                stdout.print(each + first + second)
+
+def check(item: int) -> int fails Boom:
+    if item == 3:
+        fail Boom(at=item)
+    return item
+
+def rounds(stdout: Stdout) fails Boom:
+    items = [1, 2, 3, 4]
+    with opened(stdout)? as held:
+        for item in parallel(items):
+            _ = check(item)?
+        stdout.print(held)
+
+enum Kind:
+    Button(clicks: int)
+    Label
+
+def clicks_of(kind: Kind) -> int:
+    return match kind:
+        case .Button(clicks):
+            clicks
+        case .Label:
+            0
+
+def put_back(ref kind: Kind) fails Boom:
+    match kind:
+        case .Button(ref clicks):
+            clicks += 1
+            _ = sum(numbers(5)?)
+        case .Label:
+            pass
+
+def closing_fails() -> with int fails Boom:
+    lend 1 else:
+        fail Boom(at=99)
+
+def noted(stdout: Stdout) fails Boom:
+    with closing_fails()? as held:
+        stdout.print(sum(numbers(5)?) + held)
+
+def inner_returns(stdout: Stdout) -> int fails Boom:
+    with opened(stdout)? as first:
+        with opened(stdout)? as second:
+            if first == second:
+                return first
+    return 0
+
+def main(stdout: Stdout):
+    match inner_returns(stdout):
+        case Ok(value):
+            stdout.print(value)
+        case Err(problem):
+            stdout.print(problem.at)
+    for run in [0, 1, 2, 3, 4, 6]:
+        ran = match run:
+            case 0:
+                through_a_name(stdout)
+            case 1:
+                looped(stdout)
+            case 2:
+                summed(stdout)
+            case 3:
+                nested(stdout)
+            case 4:
+                rounds(stdout)
+            case _:
+                noted(stdout)
+        match ran:
+            case Ok(_):
+                stdout.print(\"no failure\")
+            case Err(problem):
+                stdout.print(\"failed\", problem.at, problem.notes())
+    mut kind = Kind.Button(clicks=1)
+    match put_back(ref kind):
+        case Ok(_):
+            stdout.print(\"no failure\")
+        case Err(problem):
+            stdout.print(\"failed\", problem.at, problem.notes(), clicks_of(kind))
+";
+
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.
@@ -4248,6 +4658,200 @@ def main(stdout: Stdout):
     )
 }
 
+/// Int keys made so a dict's fast hash, under seed 0, puts them all in the first slot: its top bits
+/// differ and the low 22 are zero, undoing the hash's last two steps.
+fn keys_that_all_collide(count: u64) -> String {
+    const INVERSE_OF_MIX: u64 = 0xF1DE_83E1_9937_733D;
+    let mut keys = String::new();
+    for number in 1..=count {
+        let folded = number << 22;
+        let mixed = folded ^ (folded >> 29) ^ (folded >> 58);
+        let key = mixed.wrapping_mul(INVERSE_OF_MIX).cast_signed();
+        keys.push_str(&key.to_string());
+        keys.push('\n');
+    }
+    keys
+}
+
+/// Keys chosen to collide stop being slow once a dict sees it: the first long probe makes it hash
+/// them another way. Quadratic, these keys take minutes; the deadline is far from either time.
+#[test]
+fn keys_made_to_collide_dont_slow_a_dict_down() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("colliding_keys")?;
+    let program = dir.join("colliding.fen");
+    std::fs::write(
+        &program,
+        r#"def key_in(seen: dict[int, int], key: int) -> bool:
+    key in seen
+
+def main(stdout: Stdout, stdin: Stdin):
+    mut seen: dict[int, int] = {}
+    mut order = 0
+    keys = [int(line).expect("a number") for line in stdin.lines()]
+    for key in keys:
+        seen[key] = order
+        order += 1
+    total = sum(seen[key] for key in keys)
+    stdout.print(seen.len(), total, key_in(seen, keys[0]), key_in(seen, 1))
+"#,
+    )?;
+    let run = crate::executables::fennec_command()
+        .arg("run")
+        .arg(&program)
+        .env("FENNEC_HASH_SEED", "0")
+        .output_given(keys_that_all_collide(300_000).as_bytes(), std::time::Duration::from_secs(50))?;
+    assert_eq!(String::from_utf8_lossy(&run.stderr), "");
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "300000 44999850000 True False\n");
+    Ok(())
+}
+
+/// `count` values of `next` whose hash, by `hash`, is zero in its low 11 bits, so a dict with 2048
+/// slots or fewer gives them all one first slot.
+fn colliding<T>(count: usize, hash: impl Fn(&T) -> u64, next: impl Fn(u64) -> T) -> Vec<T> {
+    (0..).map(next).filter(|value| hash(value).trailing_zeros() >= 11).take(count).collect()
+}
+
+/// The fast hash of words, under seed 0, as the runtime and compiled code work it out.
+fn fast_hash(count: u64, words: &[u64]) -> u64 {
+    const MIX: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mixed = words
+        .iter()
+        .fold(count.wrapping_mul(MIX), |hash, word| (hash.rotate_left(23) ^ word).wrapping_mul(MIX));
+    (mixed ^ (mixed >> 29)) >> 1
+}
+
+fn fast_text_hash(text: &str) -> u64 {
+    let words: Vec<u64> = text
+        .as_bytes()
+        .chunks(8)
+        .map(|chunk| {
+            let mut word = [0; 8];
+            for (to, from) in word.iter_mut().zip(chunk) {
+                *to = *from;
+            }
+            u64::from_le_bytes(word)
+        })
+        .collect();
+    fast_hash(u64::try_from(text.len()).unwrap_or(0), &words)
+}
+
+/// A dict that has changed to its strong hash still finds every kind of key that compiled code looks
+/// up itself, and keeps working when it's copied and when keys come out. If compiled code and the
+/// runtime hashed a key differently for it, these lookups would miss.
+#[test]
+fn a_dict_that_changed_its_hash_finds_every_kind_of_key() -> std::io::Result<()> {
+    const COUNT: usize = 1100;
+    if !ready() {
+        return Ok(());
+    }
+    let short = colliding(COUNT, |text: &String| fast_text_hash(text), |at| format!("{at:08x}"));
+    let long = colliding(
+        COUNT,
+        |text: &String| fast_text_hash(text),
+        |at| format!("a key too long to be held inline {at:08x}"),
+    );
+    let pairs = colliding(COUNT, |b: &u64| fast_hash(2, &[1, *b]), |at| at);
+    let mut input = String::new();
+    for key in short.iter().chain(&long) {
+        input.push('T');
+        input.push_str(key);
+        input.push('\n');
+    }
+    for b in &pairs {
+        input.push('P');
+        input.push_str(&b.to_string());
+        input.push('\n');
+    }
+    let dir = folder("strong_dict")?;
+    let program = dir.join("strong.fen");
+    std::fs::write(
+        &program,
+        r#"struct Pair:
+    first: int
+    second: int
+
+def main(stdout: Stdout, stdin: Stdin):
+    lines = stdin.lines()
+    mut texts: dict[str, int] = {}
+    mut pairs: dict[Pair, int] = {}
+    for line in lines:
+        if line.startswith("T"):
+            key = line[1:]
+            texts[key] = key.len()
+        else:
+            pairs[Pair(first=1, second=int(line[1:]).expect("a number"))] = 1
+    mut whole = 0
+    mut sliced = 0
+    mut paired = 0
+    for line in lines:
+        if line.startswith("T"):
+            key = line[1:]
+            whole += texts[key]
+            sliced += texts.get(line[1:]) else 0
+        else:
+            paired += pairs[Pair(first=1, second=int(line[1:]).expect("a number"))]
+    missing = "not one of them" in texts
+    mut copied = texts
+    copied["added to the copy"] = 1
+    copied["and another"] = 2
+    _ = copied.pop("added to the copy") else 0
+    stdout.print(texts.len(), copied.len(), whole, sliced, paired, missing, pairs.len())
+"#,
+    )?;
+    let run = crate::executables::fennec_command()
+        .arg("run")
+        .arg(&program)
+        .env("FENNEC_HASH_SEED", "0")
+        .output_given(input.as_bytes(), std::time::Duration::from_secs(50))?;
+    assert_eq!(String::from_utf8_lossy(&run.stderr), "");
+    let total: usize = short.iter().chain(&long).map(String::len).sum();
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        format!("{} {} {total} {total} {COUNT} False {COUNT}\n", 2 * COUNT, 2 * COUNT + 1)
+    );
+    Ok(())
+}
+
+/// The seed changes nothing a program can see: a dict and a set go in the order keys were added.
+#[test]
+fn a_dicts_order_is_the_same_for_every_seed() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("seeds")?;
+    let program = dir.join("seeds.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):
+    mut counts: dict[str, int] = {}
+    mut seen: set[int] = set()
+    for number in range(200):
+        counts[str(number * 7919 % 1009)] = number
+        seen.add(number * 104729 % 7907)
+    stdout.print(counts)
+    stdout.print(seen)
+",
+    )?;
+    let with_seed = |seed: Option<&str>| {
+        let mut command = crate::executables::fennec_command();
+        command.arg("run").arg(&program);
+        if let Some(seed) = seed {
+            command.env("FENNEC_HASH_SEED", seed);
+        }
+        command
+            .output_within()
+            .map(|run| (String::from_utf8_lossy(&run.stdout).into_owned(), run.status.success()))
+    };
+    let first = with_seed(Some("1"))?;
+    assert!(first.1 && first.0.len() > 100, "{first:?}");
+    assert_eq!(first, with_seed(Some("987654321"))?);
+    assert_eq!(first, with_seed(None)?);
+    Ok(())
+}
+
 /// Dicts whose values are plain structs and enums, or `Id`s, with what's done to them.
 #[test]
 fn dicts_of_plain_values_match_the_jit() -> std::io::Result<()> {
@@ -4658,6 +5262,80 @@ def main(stdout: Stdout):
     stdout.print(h(m), g(h(1)))
 ",
     )
+}
+
+/// A generator's failure passes up however the generator was reached: from a name, and from inside
+/// `with` blocks, where the loop is over a name too, as well as from the loop that calls it.
+#[test]
+fn a_generators_failure_passes_up_from_a_name_or_a_with() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def checked(limit: int) -> Iterator[int] fails IoError:
+    for at in range(limit):
+        if at == 2: fail IoError(reason=\"stop\")
+        yield at
+
+def source() -> with int:
+    lend 1 else:
+        pass
+
+def in_a_name(limit: int) -> int fails IoError:
+    mut seen = 0
+    made = checked(limit)?
+    for at in made:
+        seen += at
+    seen
+
+def in_with(limit: int) -> int fails IoError:
+    mut seen = 0
+    with source() as held:
+        for at in checked(limit)?:
+            seen += at + held
+    seen
+
+def nested(limit: int) -> int fails IoError:
+    mut seen = 0
+    with source() as outer:
+        with source() as inner:
+            for at in checked(limit)?:
+                seen += at + outer + inner
+    seen
+
+def listed(limit: int) -> list[int] fails IoError:
+    [at * 2 for at in checked(limit)?]
+
+def main(stdout: Stdout):
+    stdout.print(in_a_name(5), in_a_name(2))
+    stdout.print(in_with(5), in_with(2))
+    stdout.print(nested(5), nested(2))
+    stdout.print(listed(5), listed(2))
+";
+    let stop = "Err(IoError(reason=\"stop\"))";
+    let wanted = format!("{stop} Ok(1)\n{stop} Ok(3)\n{stop} Ok(5)\n{stop} Ok([0, 2])\n");
+    let dir = folder("generator_failure")?;
+    let program = dir.join("failing.fen");
+    std::fs::write(&program, source)?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("failing"));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            wanted,
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }
 
 #[test]
@@ -7270,9 +7948,25 @@ def main(net: Net, stdout: Stdout) fails NetError:
             answered += 1;
         }
     }
+    // A round's connection closes as it ends, which can be before it's written why, so the server
+    // is given time to say so for the last one.
+    let said = server.stderr.take().expect("its errors");
+    let (sender, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(said).lines().map_while(Result::ok) {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut errors = String::new();
+    while errors.matches("error:").count() < 3 {
+        let Ok(line) = lines.recv_timeout(std::time::Duration::from_secs(10)) else { break };
+        errors.push_str(&line);
+        errors.push('\n');
+    }
     server.kill()?;
-    let ended = server.wait_with_output()?;
-    let errors = String::from_utf8_lossy(&ended.stderr);
+    server.wait()?;
     assert_eq!((answered, closed), (27, 3), "{errors}");
     assert_eq!(errors.matches("error:").count(), 3, "each crash says why: {errors}");
     std::fs::remove_dir_all(&dir)?;
@@ -7567,6 +8261,37 @@ fn a_channel_of_no_size_fails_where_its_made() -> std::io::Result<()> {
     let said = String::from_utf8_lossy(&ran.stderr);
     assert!(said.contains("a channel has to hold at least 1 message, but its size is 0"), "{said}");
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "");
+    Ok(())
+}
+
+/// Each `with launch` in a function has its own `stop_after`, whatever another one was given.
+#[test]
+fn the_second_launch_in_a_function_keeps_its_stop_after() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("second_stop_after")?;
+    let program = dir.join("stops.fen");
+    std::fs::write(
+        &program,
+        "from std.concurrent import Crashed\n\ndef sleeper(clock: Clock, stdout: Stdout):\n    start = clock.time()\n    clock.sleep(3s)\n    stdout.print((clock.time() - start).nanos < 2_000_000_000)\n\ndef other(clock: Clock):\n    clock.sleep(10ms)\n\ndef main(clock: Clock, stdout: Stdout) fails Crashed:\n    with launch(() => other(clock))?:\n        with launch(() => sleeper(clock, stdout), stop_after=20ms)?:\n            pass\n    stdout.print(\"done\")\n",
+    )?;
+    let executable = dir.join("stops");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "True\ndone\n",
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
     Ok(())
 }
 
@@ -8332,6 +9057,292 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// What the next test builds: failed asserts and a failing `main`, each holding a secret. The
+/// text is put together on a line of its own, since a diagnostic shows the line it points at.
+const SECRET_SHOWN: &str = r#"from std.crypto import Secret
+
+struct Login:
+    name: str
+    password: Secret[str]
+
+error Refused:
+    Denied(token: Secret[str])
+
+def word() -> Secret[str]:
+    Secret.of("hun" + "ter2")
+
+def signs_in() fails Refused:
+    fail .Denied(token=word())
+
+test "the secret itself"():
+    assert word() == Secret.of("other")
+
+test "in a list"():
+    assert [word()] == [Secret.of("other")]
+
+test "in a tuple"():
+    assert (1, word()) == (2, Secret.of("other"))
+
+test "in a struct"():
+    assert Login(name="a", password=word()) == Login(name="b", password=word())
+
+def main():
+    _ = Login(name="a", password=word())
+    signs_in()?
+"#;
+
+/// A `Secret` stays hidden where a program says what went wrong: both sides of a failed `assert`,
+/// inside a list, a tuple and a struct, and the failure that ends `main`.
+#[test]
+fn a_secret_stays_hidden_in_what_a_failure_says() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("secret_shown")?;
+    let program = dir.join("secret_shown.fen");
+    std::fs::write(&program, SECRET_SHOWN)?;
+    let path = program.to_string_lossy().into_owned();
+    let tested = fennec(&["test", &path], &dir)?;
+    let tests_said =
+        format!("{}{}", String::from_utf8_lossy(&tested.stdout), String::from_utf8_lossy(&tested.stderr));
+    assert!(tests_said.contains("0 passed, 4 failed"), "{tests_said}");
+    assert!(!tests_said.contains("hunter2"), "{tests_said}");
+    assert_eq!(tests_said.matches("Secret(hidden)").count(), 8, "{tests_said}");
+    let executable = dir.join("secret_shown");
+    let built = fennec(&["build", "--llvm", &path, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    let main_said = String::from_utf8_lossy(&ran.stderr).into_owned();
+    assert!(main_said.contains("Refused.Denied(token=Secret(hidden))"), "{main_said}");
+    assert!(!main_said.contains("hunter2"), "{main_said}");
+    Ok(())
+}
+
+/// Replacing a file keeps what was true of it: who can read it, and that a link stays a link to
+/// the file it points at. What's being written is never readable by more than the file was.
+#[cfg(unix)]
+#[test]
+fn replacing_a_file_keeps_its_mode_and_goes_through_a_link() -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    if !ready() {
+        return Ok(());
+    }
+    let place = std::env::temp_dir().join(format!("fennec-fs-safety-{}", std::process::id()));
+    std::fs::create_dir_all(&place)?;
+    let mode_of = |name: &str| -> std::io::Result<u32> {
+        Ok(std::fs::metadata(place.join(name))?.permissions().mode() & 0o777)
+    };
+    let set_mode = |name: &str, mode: u32| {
+        std::fs::set_permissions(place.join(name), std::fs::Permissions::from_mode(mode))
+    };
+    std::fs::write(place.join("secret.txt"), "old")?;
+    set_mode("secret.txt", 0o600)?;
+    std::fs::write(place.join("shared.txt"), "old")?;
+    set_mode("shared.txt", 0o664)?;
+    std::fs::write(place.join("real.txt"), "old")?;
+    std::os::unix::fs::symlink(place.join("real.txt"), place.join("link.txt"))?;
+    let folder = place.to_string_lossy().into_owned();
+    let source = format!(
+        "def main(fs: Fs) fails IoError:\n    with fs.create(\"{folder}/secret.txt\")? as file:\n        file.write_text(\"new\")?\n    with fs.create(\"{folder}/link.txt\")? as file:\n        file.write_text(\"new\")?\n    fs.write_text(\"{folder}/shared.txt\", \"new\")?\n"
+    );
+    printed_by("fs_safety", &source)?;
+    let (secret, shared) = (mode_of("secret.txt")?, mode_of("shared.txt")?);
+    let real = std::fs::read_to_string(place.join("real.txt"))?;
+    let still_a_link = std::fs::symlink_metadata(place.join("link.txt"))?.file_type().is_symlink();
+    let contents = std::fs::read_to_string(place.join("secret.txt"))?;
+    let left: Vec<_> =
+        std::fs::read_dir(&place)?.filter_map(Result::ok).map(|entry| entry.file_name()).collect();
+    std::fs::remove_dir_all(&place)?;
+    assert_eq!(secret, 0o600, "the mode of a file fs.create replaced");
+    assert_eq!(shared, 0o664, "the mode of a file fs.write_text replaced");
+    assert!(still_a_link, "a link fs.create wrote through");
+    assert_eq!((real.as_str(), contents.as_str()), ("new", "new"));
+    assert_eq!(left.len(), 4, "something was left behind: {left:?}");
+    Ok(())
+}
+
+/// A narrowed `Fs` stays inside its folder when a link inside it points out, to read or to write,
+/// and what's really inside still works.
+#[cfg(unix)]
+#[test]
+fn a_link_cannot_carry_a_narrowed_fs_out_of_its_folder() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let place = std::env::temp_dir().join(format!("fennec-fs-only-{}", std::process::id()));
+    std::fs::create_dir_all(place.join("inside"))?;
+    std::fs::create_dir_all(place.join("outside"))?;
+    std::fs::write(place.join("outside/secret.txt"), "secret")?;
+    std::fs::write(place.join("inside/plain.txt"), "plain")?;
+    std::os::unix::fs::symlink(place.join("outside"), place.join("inside/door"))?;
+    let folder = place.to_string_lossy().into_owned();
+    let source = format!(
+        "def read_out(fs: Fs, path: str) -> str:\n    match fs.read_text(path):\n        case Ok(text):\n            return text\n        case Err(_):\n            return \"refused\"\n\ndef main(fs: Fs, stdout: Stdout):\n    narrow = fs.only(\"{folder}/inside\")\n    stdout.print(read_out(narrow, path=\"{folder}/inside/door/secret.txt\"))\n    stdout.print(read_out(narrow, path=\"{folder}/inside/plain.txt\"))\n    match narrow.write_text(\"{folder}/inside/door/new.txt\", \"x\"):\n        case Ok(_):\n            stdout.print(\"wrote\")\n        case Err(_):\n            stdout.print(\"refused\")\n"
+    );
+    let printed = printed_by("fs_only_link", &source)?;
+    let escaped = place.join("outside/new.txt").exists();
+    std::fs::remove_dir_all(&place)?;
+    assert_eq!(printed, "refused\nplain\nrefused\n");
+    assert!(!escaped, "a file was written outside the folder");
+    Ok(())
+}
+
+/// A Postgres message from a server: its type, its length, its body.
+fn postgres_message(kind: u8, body: &[u8]) -> Vec<u8> {
+    let mut message = vec![kind];
+    message.extend_from_slice(&u32::try_from(body.len() + 4).unwrap_or(0).to_be_bytes());
+    message.extend_from_slice(body);
+    message
+}
+
+/// A server's `Authentication` message of the type `code`, then `rest`.
+fn postgres_auth(code: u32, rest: &[u8]) -> Vec<u8> {
+    let mut body = code.to_be_bytes().to_vec();
+    body.extend_from_slice(rest);
+    postgres_message(b'R', &body)
+}
+
+/// What a server says when it's ready for a query.
+fn postgres_ready() -> Vec<u8> {
+    postgres_message(b'Z', b"I")
+}
+
+/// A query's whole answer, ending in the tag `tag`.
+fn postgres_answer(tag: &str) -> Vec<u8> {
+    let mut tagged = tag.as_bytes().to_vec();
+    tagged.push(0);
+    [
+        postgres_message(b'1', b""),
+        postgres_message(b'2', b""),
+        postgres_message(b'n', b""),
+        postgres_message(b'C', &tagged),
+        postgres_ready(),
+    ]
+    .concat()
+}
+
+/// Reads what a client sends up to where it waits for an answer, and gives its messages' types,
+/// or nothing once it's gone. The first thing it sends has no type.
+fn postgres_flight(stream: &mut std::net::TcpStream, first: bool) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let mut kinds = Vec::new();
+    loop {
+        let mut kind = [0_u8; 1];
+        if !first {
+            stream.read_exact(&mut kind).ok()?;
+        }
+        let mut size = [0_u8; 4];
+        stream.read_exact(&mut size).ok()?;
+        let mut body = vec![0_u8; usize::try_from(u32::from_be_bytes(size)).ok()?.checked_sub(4)?];
+        stream.read_exact(&mut body).ok()?;
+        kinds.push(kind[0]);
+        if first || kind[0] == b'p' || kind[0] == b'S' {
+            return Some(kinds);
+        }
+        if kind[0] == b'X' {
+            return None;
+        }
+    }
+}
+
+/// A server on a port of its own that gives each of `answers` in turn, one for each time the
+/// client waits, then hangs up. It gives back the port, and how many passwords it was sent.
+fn postgres_scripted(answers: Vec<Vec<u8>>) -> std::io::Result<(u16, std::sync::mpsc::Receiver<usize>)> {
+    use std::io::Write as _;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let (done, passwords) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else { return };
+        let mut sent = 0;
+        for (at, answer) in answers.iter().enumerate() {
+            let Some(kinds) = postgres_flight(&mut stream, at == 0) else { break };
+            sent += usize::from(kinds.contains(&b'p'));
+            if stream.write_all(answer).is_err() {
+                break;
+            }
+        }
+        // What comes after the script, like a password it asked for, or the goodbye.
+        while let Some(kinds) = postgres_flight(&mut stream, false) {
+            sent += usize::from(kinds.contains(&b'p'));
+        }
+        let _ = done.send(sent);
+    });
+    Ok((port, passwords))
+}
+
+/// What the next test builds: `connect`, a transaction and a query, against each port it's given.
+const POSTGRES_SCRIPTED: &str = r#"from std import postgres
+from std.crypto import Secret
+from std.sql import SqlError
+
+def run(port: int, weak: bool, net: Net, entropy: Entropy) fails SqlError:
+    with postgres.connect(net, entropy, host="127.0.0.1", user="u", database="d", password=Secret.of("pw"), port=port, allow_weak_sign_in=weak)? as db:
+        with db.transaction()? as tx:
+            _ = tx.execute(t"select 1")?
+
+def main(stdout: Stdout, net: Net, entropy: Entropy):
+    for at, port in enumerate(PORTS):
+        match run(port, weak=at >= STRICT, net=net, entropy=entropy):
+            case Ok(_):
+                stdout.print("went through")
+            case Err(error):
+                stdout.print(error.message())
+"#;
+
+/// A server can't trick the driver. A commit the server answers with `ROLLBACK` fails. A server
+/// that was given a password has to prove it knows it: one that claims to have checked SCRAM
+/// without doing the exchange is refused, and so is one that lets the client in with no proof or
+/// asks for the password as it is, which is then never sent.
+#[test]
+fn postgres_does_not_believe_a_server_that_has_not_proved_itself() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let signed_in = [postgres_auth(0, b""), postgres_ready()].concat();
+    let sasl = postgres_auth(10, b"SCRAM-SHA-256\0\0");
+    // The signature of nothing under an empty key, which is what a check before the exchange
+    // compared with.
+    let forged = postgres_auth(12, b"v=thNnmggU2ex3L5XXeMNfxf8Wl8STcVZTxscSFEKSxa0=");
+    let works = |tag: &str| vec![postgres_answer("BEGIN"), postgres_answer("SELECT 1"), postgres_answer(tag)];
+    let after = |first: Vec<Vec<u8>>, tag: &str| [first, works(tag)].concat();
+    let cleartext = postgres_auth(3, b"");
+    let scripts = vec![
+        // With a password, and SCRAM not done: these are refused.
+        after(vec![signed_in.clone()], "COMMIT"),
+        after(vec![sasl, [forged, signed_in.clone()].concat()], "COMMIT"),
+        after(vec![cleartext.clone(), signed_in.clone()], "COMMIT"),
+        // Asked for the weak ways: these go through, up to what the commit says.
+        after(vec![signed_in.clone()], "ROLLBACK"),
+        after(vec![signed_in.clone()], "COMMIT"),
+        after(vec![cleartext, signed_in], "COMMIT"),
+    ];
+    let mut ports = Vec::new();
+    let mut passwords = Vec::new();
+    for script in scripts {
+        let (port, sent) = postgres_scripted(script)?;
+        ports.push(port.to_string());
+        passwords.push(sent);
+    }
+    let source =
+        POSTGRES_SCRIPTED.replace("PORTS", &format!("[{}]", ports.join(", "))).replace("STRICT", "3");
+    let printed = printed_by("postgres_scripted", &source)?;
+    assert_eq!(
+        printed,
+        "the server let us in without proving it knows the password: `allow_weak_sign_in=True` accepts that\n\
+         the server sent its SCRAM proof before the exchange\n\
+         the server asks for the password as it is, so it wasn't sent: `allow_weak_sign_in=True` sends it\n\
+         the transaction wasn't kept: the server answered the commit with `ROLLBACK`, as it does when something in it failed\n\
+         went through\n\
+         went through\n"
+    );
+    let sent: Vec<usize> = passwords.iter().map(|sent| sent.recv().unwrap_or(99)).collect();
+    assert_eq!(sent[2], 0, "the password went to a server that asked for it as it is");
+    assert_eq!(sent[5], 1, "the password wasn't sent when asked to send it as it is");
+    Ok(())
+}
+
 /// What the next test builds: a round trip, then bytes `std.pack` should refuse.
 const PACK_MESSAGES: &str = r#"from std import pack
 from std.pack import Limits
@@ -8835,6 +9846,80 @@ fn pack_streams_write_each_layout_once() -> std::io::Result<()> {
     assert_eq!(
         printed,
         "stream 638 one value alone 53 a hundred alone 5300\n4950 50\n0 50\n101 500 3\nfed 100\n99 the data ends too soon, at byte 637\n56 4\n"
+    );
+    Ok(())
+}
+
+/// What the next test builds: a few bytes that ask for millions of values made from nothing.
+const PACK_BOMB: &str = r#"from std import pack
+
+struct Hollow:
+    @skip
+    note = "nothing saved"
+
+struct Big:
+    one = 1
+    two = 2
+    three = 3
+    four = 4
+    five = 5
+    six = 6
+
+## `n` as `std.pack` writes a length.
+def varint(n: int) -> list[int]:
+    mut rest = n
+    mut out = list[int]()
+    while rest >= 128:
+        out.append((rest & 127) | 128)
+        rest = rest >> 7
+    out.append(rest)
+    out
+
+## Bytes that ask for `count` items that each take no bytes, from `start`, the header and a layout.
+def asking(start: bytes, count: int) -> bytes:
+    start + bytes(varint(count))
+
+def said[T](found: Result[T, ParseError]) -> str:
+    match found:
+        case Ok(_):
+            return "loaded"
+        case Err(error):
+            return error.message
+
+def main(stdout: Stdout):
+    empty = pack.dumps([Hollow()])
+    start = empty[0:empty.len() - 1]
+    # The same shape: a list of what saves nothing.
+    stdout.print(said(pack.loads[list[Hollow]](asking(start, 2_000_000))))
+    # A layout written by hand, of structs with no fields, loaded by name into a bigger struct.
+    layout = "l S 0".encode()
+    named = bytes([70, 80, 75, 50, 1, 2, 3, 4, 5, 6, 7, 8, layout.len()]) + layout
+    stdout.print(said(pack.loads[list[Big]](asking(named, 2_000_000))))
+    # What's honest loads.
+    stdout.print(said(pack.loads[list[Hollow]](asking(start, 1000))))
+    stdout.print(said(pack.loads[list[Big]](asking(named, 1000))))
+    # The limit is the program's to set.
+    small = pack.Limits(empty=10)
+    stdout.print(said(pack.loads[list[Hollow]](asking(start, 100), limits=small)))
+    # Fields filled from defaults count against the items a load may read.
+    few = pack.Limits(length=500)
+    one_byte = "l S 1 x b".encode()
+    filled = bytes([70, 80, 75, 50, 1, 2, 3, 4, 5, 6, 7, 8, one_byte.len()]) + one_byte + bytes(varint(100)) + bytes([1 for _ in range(100)])
+    stdout.print(said(pack.loads[list[Big]](filled, limits=few)))
+"#;
+
+/// Bytes can't ask for far more memory than they are. Items that take no bytes count against
+/// `Limits.empty`, whether the data is read in order or by name, and fields filled from their
+/// defaults count against the items a load may read.
+#[test]
+fn pack_refuses_values_made_from_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("pack_bomb", PACK_BOMB)?;
+    assert_eq!(
+        printed,
+        "it holds more than the limit of 65536 items that take no bytes, at byte 21\nit holds more than the limit of 65536 items that take no bytes, at byte 21\nloaded\nloaded\nit holds more than the limit of 10 items that take no bytes, at byte 19\nit holds more than the limit of 500 items, at byte 90\n"
     );
     Ok(())
 }

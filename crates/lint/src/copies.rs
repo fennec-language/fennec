@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Item, Module, Sources, Span, Stmt, StmtKind};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, Item, Module, Sources, Span, Stmt, StmtKind};
 
 use crate::Lint;
 use crate::dead::changed_in;
@@ -87,8 +87,7 @@ pub(crate) fn places(module: &Module) -> HashSet<(u32, u32)> {
             block(&test.body, &mut found);
         }
     }
-    let mut walked = module.clone();
-    fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| match &expr.kind {
+    fennec_syntax::read::exprs(module, &mut |expr| match &expr.kind {
         ExprKind::Call { args, .. } => {
             for arg in args.iter().filter(|arg| arg.is_mut) {
                 found.insert((root(&arg.value).span.start, root(&arg.value).span.end));
@@ -111,18 +110,7 @@ fn shared(value: &Expr) -> Vec<String> {
         return vec![name.clone()];
     }
     let mut names = Vec::new();
-    let mut walked = FnDef {
-        name: String::new(),
-        generics: Vec::new(),
-        params: Vec::new(),
-        ret: None,
-        arrow: None,
-        fails: None,
-        body: vec![Stmt { kind: StmtKind::Expr(value.clone()), span: value.span }],
-        annotations: Vec::new(),
-        span: value.span,
-    };
-    fennec_syntax::visit::in_function(&mut walked, &mut |expr| {
+    fennec_syntax::read::in_expr(value, &mut |expr| {
         if let ExprKind::Name(name) = &expr.kind {
             names.push(name.clone());
         }
@@ -185,8 +173,7 @@ fn fix(sources: &Sources, call: Span, value: &Expr) -> Option<Diagnostic> {
 /// program, and programs write few, so it runs only where the whole program is checked anyway.
 pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     let mut calls = Vec::new();
-    let mut walked = module.clone();
-    fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
+    fennec_syntax::read::exprs(module, &mut |expr| {
         if let Some((call, value)) = copy_call(expr)
             && !call.in_prelude()
         {

@@ -17,12 +17,15 @@ def main(stdout: Stdout):
         # With an `if`, the items that count are summed as a list of just them is.
         kept = sum(item(at + length) for at in range(length) if at % 3 != 0)
         only_kept = [item(at + length) for at in range(length) if at % 3 != 0]
+        # One at a time over a list, eight a round: the same as a list of what it adds.
+        halves = sum(x * 0.5 for x in items)
         stdout.print(
             length,
             listed,
             sum(items, start=0.1),
             listed == streamed,
             kept == sum(only_kept),
+            halves == sum([x * 0.5 for x in items]),
         )
     # A large item swallows each small one added to it alone. Eight totals keep most of them.
     mut ones = [1e16]

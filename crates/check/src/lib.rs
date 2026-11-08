@@ -19,6 +19,7 @@ mod call;
 mod checker;
 mod constants;
 mod effects;
+mod enumerate_lowering;
 mod expect;
 mod expr;
 mod extend;
@@ -299,6 +300,90 @@ fn sends_json(module: &Module) -> bool {
     sends
 }
 
+/// The function `route_sorts_natively` calls in place of `sorted`, written in Fennec: the
+/// interpreter's merge sort, which splits a list at its middle and, merging, takes from the right
+/// only when its item is `<` the left one, so the order is the same where `<` is.
+const SORTED_IN_ORDER: &str = "\
+def fennec_sorted_in_order[T: Ordered](items: list[T]) -> list[T]:
+    if items.len() <= 1:
+        return items
+    half = items.len() // 2
+    left = fennec_sorted_in_order(items[:half])
+    right = fennec_sorted_in_order(items[half:])
+    mut merged: list[T] = []
+    mut at_left = 0
+    mut at_right = 0
+    while at_left < left.len() and at_right < right.len():
+        if right[at_right] < left[at_left]:
+            merged.append(right[at_right])
+            at_right += 1
+        else:
+            merged.append(left[at_left])
+            at_left += 1
+    merged + left[at_left:] + right[at_right:]
+";
+
+/// Makes each `sorted(items)` whose items have their own `<` call a merge sort written in Fennec,
+/// which calls that `<` as any code does, so native code sorts them. Says whether anything changed.
+/// If the changed module doesn't check, which would be a mistake here, it's left as it was. It's
+/// left unresolved, so run this before `route_formats_natively`.
+pub fn route_sorts_natively(module: &mut Module) -> bool {
+    // Checking again costs a build its time, so only a program that sorts is.
+    let mut sorts = false;
+    fennec_syntax::visit::exprs_mut(&mut module.clone(), &mut |expr| {
+        if let ExprKind::Call { callee, .. } = &expr.kind {
+            sorts |= matches!(&callee.kind, ExprKind::Name(name) if name == "sorted");
+        }
+    });
+    if !sorts {
+        return false;
+    }
+    let Ok(checked) = check_typed(module) else { return false };
+    let types: BTreeMap<(u32, u32), Type> = checked
+        .types
+        .iter()
+        .flat_map(|(_, body)| body.exprs().map(|(span, ty)| ((span.start, span.end), ty.clone())))
+        .collect();
+    // The type of the items, when they have their own `<`.
+    let own_order = |ty: Option<&Type>| match ty {
+        Some(Type::List(item)) => match item.as_ref() {
+            Type::Named(name) if checked.signatures.get(&format!("{name}.<")).is_some() => Some(name.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let mut routed = module.clone();
+    let mut changed = false;
+    fennec_syntax::visit::exprs_mut(&mut routed, &mut |expr| {
+        let ExprKind::Call { callee, args } = &mut expr.kind else { return };
+        let (ExprKind::Name(name), [items]) = (&callee.kind, args.as_slice()) else { return };
+        if name != "sorted" || items.name.is_some() {
+            return;
+        }
+        let Some(item) = own_order(types.get(&(items.value.span.start, items.value.span.end))) else {
+            return;
+        };
+        // The type written in, as `fennec_sorted_in_order[Score](scores)`, for an empty list.
+        let span = callee.span;
+        let named = |name: String| Box::new(Expr { kind: ExprKind::Name(name), span });
+        callee.kind =
+            ExprKind::Index { object: named("fennec_sorted_in_order".to_owned()), index: named(item) };
+        changed = true;
+    });
+    if !changed {
+        return false;
+    }
+    let Ok(parsed) = fennec_syntax::parse_prelude(SORTED_IN_ORDER) else { return false };
+    routed.items.extend(parsed.items);
+    // Checked as it is, and left unresolved for what checks it next: resolving makes some of it,
+    // like `list[Score]()` turned into `[]`, what can't be checked twice.
+    if check_typed(&routed).is_err() {
+        return false;
+    }
+    *module = routed;
+    true
+}
+
 fn imports_a_format(module: &Module) -> bool {
     module.items.iter().any(|item| match item {
         fennec_syntax::Item::Import(import) => match import.module.as_slice() {
@@ -397,7 +482,8 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
     // again, so the signatures and types given back are those of what runs.
     let sources_written = lend_lowering::lower(module, &checked.sources);
-    if (lock_lowering::lower(module, &checked.shared_values) || sources_written)
+    let counted = enumerate_lowering::lower(module);
+    if (lock_lowering::lower(module, &checked.shared_values) || sources_written || counted)
         && let Ok(again) = checker::Checker::new(module).run(checker::Scope::Everything)
     {
         return resolved(module, again);

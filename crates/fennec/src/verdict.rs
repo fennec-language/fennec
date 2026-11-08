@@ -113,6 +113,16 @@ impl<'f> Modules<'f> {
 
 /// The definitions of each module a loaded program has.
 fn rows_by_module(program: &Program, files: &[KitFile]) -> HashMap<String, Vec<Row>> {
+    rows_of_modules(program, files, &|_| true)
+}
+
+/// Like `rows_by_module`, for just the modules `wanted` says, since working out every
+/// definition's hash in a big kit takes a while.
+fn rows_of_modules(
+    program: &Program,
+    files: &[KitFile],
+    wanted: &dyn Fn(&str) -> bool,
+) -> HashMap<String, Vec<Row>> {
     let modules = Modules::of(files);
     let mut items: HashMap<&str, (Option<&str>, Vec<&Item>)> = HashMap::new();
     for item in &program.module.items {
@@ -121,8 +131,8 @@ fn rows_by_module(program: &Program, files: &[KitFile]) -> HashMap<String, Vec<R
     }
     let mut found: HashMap<String, Vec<Row>> = HashMap::new();
     for (module, of_module) in items.values() {
-        if let Some(module) = module {
-            found.insert((*module).to_owned(), fennec_build::rows(of_module.iter().copied()));
+        if let Some(module) = module.filter(|module| wanted(module)) {
+            found.insert(module.to_owned(), fennec_build::rows(of_module.iter().copied()));
         }
     }
     found
@@ -179,6 +189,71 @@ pub(crate) fn plan(
         wanted: wanted.iter().map(|record| record.test.clone()).collect(),
         unchanged: unchanged.into_iter().cloned().collect(),
     })
+}
+
+/// What names the last time all of a kit `main` reaches passed the checker, for `fennec run`.
+fn checked_name(path: &str) -> String {
+    format!("{}#checked", crate::run::absolute(path))
+}
+
+/// Whether the kit at `path`, with `files` as they are now, passes the checker, when that can be
+/// told without checking all of it: the last check passed, and every file changed since only in the
+/// bodies of its functions. Then nothing outside those bodies can have broken, so the changed files
+/// and what they import are checked, and what that finds is the answer, with the program it was
+/// found in. `None` means the whole program has to be checked.
+pub(crate) fn checked_quickly(
+    path: &str,
+    cache: &Cache,
+    files: &[KitFile],
+) -> Option<Result<(), (Program, Vec<fennec_syntax::Diagnostic>)>> {
+    let state = cache.kit_state(&checked_name(path), BUILD)?;
+    if state.files.len() != files.len() {
+        return None;
+    }
+    let mut changed: Vec<String> = Vec::new();
+    for file in files {
+        if state.files.get(&file.module)?.text != file.text {
+            changed.push(file.module.clone());
+        }
+    }
+    if changed.is_empty() {
+        return Some(Ok(()));
+    }
+    if changed.iter().any(|module| module == "kit.toml" || module.starts_with(fennec_kit::EMBEDDED)) {
+        return None;
+    }
+    let overlay = fennec_kit::Overlay::new();
+    let loaded = fennec_kit::load_modules_with(Path::new(path), path, &changed, &overlay).ok()?;
+    let rows = rows_by_module(&loaded, files);
+    for module in &changed {
+        let old = cache.file_rows(state.files.get(module)?.text)?;
+        let new = rows.get(module).map_or(&[][..], Vec::as_slice);
+        fennec_build::changed_bodies(&old, new)?;
+    }
+    match crate::copy_rule::check_rules(&mut loaded.module.clone(), &loaded.sources) {
+        Ok(_) => Some(Ok(())),
+        Err(diagnostics) => Some(Err((loaded, diagnostics))),
+    }
+}
+
+/// Remembers that all of the kit at `path` that `main` reaches, `program`, passes the checker
+/// with its files as they are, with each file's definitions, for `checked_quickly`.
+pub(crate) fn remember_checked(path: &str, cache: &Cache, files: &[KitFile], program: &Program) {
+    // Only a file whose text is new needs its definitions worked out: after an edit, that's the
+    // file edited.
+    let new: HashSet<&str> = files
+        .iter()
+        .filter(|file| !cache.has_file_rows(file.text))
+        .map(|file| file.module.as_str())
+        .collect();
+    let rows = rows_of_modules(program, files, &|module| new.contains(module));
+    for file in files {
+        if let Some(rows) = rows.get(&file.module) {
+            let _ = cache.store_file_rows(file.text, rows);
+        }
+    }
+    // A cache that can't be written only means checking all of it again next time.
+    let _ = cache.store_kit_state(&checked_name(path), BUILD, &with_embedded(files, program));
 }
 
 /// Remembers that all of a kit's tests pass with its files as they are.

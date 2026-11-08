@@ -2066,6 +2066,35 @@ fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `for at, ref item in enumerate(items)` changes each item where it is, natively as in the
+/// interpreter: numbers, structs and lists, a `continue` that still counts what it skips, and a
+/// nested one over the items' own lists.
+#[test]
+fn enumerate_with_ref_changes_items_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("enumerate_ref", ENUMERATE_REF)
+}
+
+const ENUMERATE_REF: &str = r"struct Unit:
+    health: int
+    tags: list[int]
+
+def main(stdout: Stdout):
+    mut scores = [1, 2, 3]
+    for at, ref score in enumerate(scores):
+        score += at * 10
+    mut units = [Unit(health=1, tags=[]), Unit(health=2, tags=[7])]
+    for at, ref unit in enumerate(units):
+        if at == 0:
+            continue
+        unit.health *= at + 10
+        for place, ref tag in enumerate(unit.tags):
+            tag += place + at
+    stdout.print(scores, units[0].health, units[1].health, units[1].tags)
+";
+
 /// `isdigit`, native on headers, says what std's says: inline and in a block, empty, digits
 /// outside ASCII, and a digit beside something that isn't.
 #[test]
@@ -2368,6 +2397,36 @@ def main(stdout: Stdout):
     empty: list[int] = []
     stdout.print(sorted(empty, key=(n) => (n, n)))
     stdout.print(words)
+"#,
+    )
+}
+
+/// `sorted` of a type with its own `<` sorts by it as the JIT does: stable, so items `<` says are
+/// neither before nor after keep their order, and the standard library's `Uuid` too.
+#[test]
+fn sorting_by_a_types_own_order_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "sorting_by_own_order",
+        r#"from std.uuid import Uuid
+
+struct Score:
+    points: int
+    name: str
+
+    def <(self, other: Score) -> bool:
+        self.points > other.points
+
+def main(stdout: Stdout):
+    scores = [Score(points=3, name="ash"), Score(points=7, name="vex"), Score(points=3, name="kit"), Score(points=9, name="bo")]
+    stdout.print([score.name for score in sorted(scores)])
+    empty: list[Score] = []
+    stdout.print(sorted(empty).len(), [score.name for score in sorted([Score(points=1, name="one")])])
+    later = Uuid.parse("018f2a6e-0000-7000-8000-000000000002") else Uuid()
+    first = Uuid.parse("018f2a6e-0000-7000-8000-000000000001") else Uuid()
+    stdout.print(sorted([later, first]) == [first, later])
 "#,
     )
 }
@@ -3946,6 +4005,109 @@ def main(stdout: Stdout):
     n = 7
     stdout.print(joined(small for _ in range(3)), joined(big for _ in range(2)).len())
     stdout.print(joined(repeat("kit", times=2)), sum(n for _ in range(4)), list(n for _ in range(2)))
+"#,
+    )
+}
+
+/// What closures and generators capture, of each kind, comes out as the interpreter gives it:
+/// a closure giving back what it captured as it is, generator expressions yielding a captured
+/// string, struct, list, bool, int or float, nested generators and generators with `while`,
+/// comprehensions inside generators and the other way round, and a closure inside a generator.
+#[test]
+fn captures_of_every_kind_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "captures",
+        r#"struct Pair:
+    name: str
+    count: int
+
+def joined(parts: Iterator[str]) -> str:
+    mut whole = ""
+    for part in parts:
+        whole = whole + part
+    whole
+
+def apply(change: (int) -> str, x: int) -> str:
+    change(x)
+
+def twice(word: str) -> Iterator[str]:
+    yield word
+    yield word
+
+def outer(word: str, times: int) -> Iterator[str]:
+    for w in twice(word):
+        for _ in range(times):
+            yield w
+
+def counting(word: str, limit: int) -> Iterator[str]:
+    mut n = 0
+    while n < limit:
+        yield word
+        n += 1
+
+def main(stdout: Stdout):
+    small = "ab"
+    big = "a string long enough to live in a block"
+    n = 7
+    pair = Pair(name="kit", count=2)
+    items = [1, 2]
+    flag = True
+    # closures returning a captured value as it is
+    stdout.print(apply((x) => small, 1), apply((x) => big, 1).len(), apply((x) => str(n), 1))
+    stdout.print(apply((x) => pair.name, 0), apply((x) => f"{items}", 0))
+    # generator expressions yielding captures as they are, of each kind
+    stdout.print(list(pair for _ in range(2)), list(items for _ in range(2)), list(flag for _ in range(2)))
+    stdout.print(list(n for _ in range(2)), list(1.5 for _ in range(2)), joined(pair.name for _ in range(2)))
+    # nested generators and generator functions
+    stdout.print(joined(outer("xy", times=2)), joined(counting(small, limit=3)))
+    stdout.print(joined(w for w in twice(small)), joined(small for w in twice("q")))
+    # comprehensions inside generators, and generators inside comprehensions
+    stdout.print(list([small, w] for w in twice("z")), [joined(small for _ in range(k)) for k in range(3)])
+    stdout.print(joined(s for s in [small, big] if s.len() < 5), sum(n for _ in range(3)))
+    # a closure inside a generator, and a generator inside a closure
+    stdout.print(joined(apply((x) => small, 0) for _ in range(2)), apply((x) => joined(small for _ in range(x)), 2))
+"#,
+    )
+}
+
+/// A generator made in one place and read in another keeps what it captured: one returned from a
+/// function, one held before it's read, and one made each time round a loop.
+#[test]
+fn generators_kept_for_later_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "kept_generators",
+        r#"def joined(parts: Iterator[str]) -> str:
+    mut whole = ""
+    for part in parts:
+        whole = whole + part
+    whole
+
+def words_of(word: str, times: int) -> Iterator[str]:
+    (word for _ in range(times))
+
+def later(word: str) -> Iterator[str]:
+    made = word + "!"
+    (made for _ in range(2))
+
+def main(stdout: Stdout):
+    small = "ab"
+    held = words_of(small, times=3)
+    stdout.print("before")
+    stdout.print(joined(held), joined(later("hey")))
+    mut gens: list[str] = []
+    for word in ["p", "qq"]:
+        gens.append(joined(word for _ in range(2)))
+    stdout.print(gens)
+    mut total = 0
+    for k in range(3):
+        total += sum(k for _ in range(2))
+    stdout.print(total)
 "#,
     )
 }

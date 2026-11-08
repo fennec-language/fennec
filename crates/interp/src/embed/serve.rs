@@ -850,6 +850,7 @@ fn cut_short() -> bool {
 mod launch;
 #[cfg(test)]
 pub(in crate::embed) use launch::launch_on;
+pub(in crate::embed) use launch::take_failed_with;
 pub use launch::{TaskBody, launch, launch_end, task_failed};
 
 /// Work the operating system can't be asked to say is ready for, run off this task's thread,

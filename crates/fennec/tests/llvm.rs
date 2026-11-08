@@ -7580,7 +7580,7 @@ fn channels_carry_each_kind_of_message_natively() -> std::io::Result<()> {
     }
     let printed = printed_by(
         "channels",
-        "from std.concurrent import Channel, Closed, Timeout
+        "from std.concurrent import Closed, Timeout, channel
 from std.time import Duration
 
 struct Job:
@@ -7588,7 +7588,7 @@ struct Job:
     weight: int
 
 def numbers(stdout: Stdout) fails Closed | Timeout:
-    with Channel[int].open(size=4) as ch:
+    with channel[int](size=4) as ch:
         ch.send(7)?
         ch.send(8)?
         stdout.print(ch.receive()?, ch.receive()?)
@@ -7616,24 +7616,24 @@ def signs(stdout: Stdout) fails Closed | Timeout:
                 stdout.print(\"at once:\", problem)
 
 def words(stdout: Stdout) fails Closed | Timeout:
-    with Channel[str].open(size=4) as ch:
+    with channel[str](size=4) as ch:
         ch.send(\"hi\")?
         ch.send(\"a string long enough to live in a block of its own\")?
         stdout.print(ch.receive()?, ch.receive()?.len())
 
 def jobs(stdout: Stdout) fails Closed | Timeout:
-    with Channel[Job].open(size=2) as ch:
+    with channel[Job](size=2) as ch:
         ch.send(Job(name=\"first\", weight=3))?
         got = ch.receive()?
         stdout.print(got.name, got.weight)
 
 def lists(stdout: Stdout) fails Closed | Timeout:
-    with Channel[list[float]].open(size=1) as ch:
+    with channel[list[float]](size=1) as ch:
         ch.send([1.5, 2.5])?
         stdout.print(ch.receive()?)
 
 def waits(stdout: Stdout) fails Closed | Timeout:
-    with Channel[int].open(size=1) as ch:
+    with channel[int](size=1) as ch:
         match ch.receive(timeout=Duration(nanos=2_000_000)):
             case Ok(n):
                 stdout.print(\"got\", n)

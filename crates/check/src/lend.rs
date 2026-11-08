@@ -75,7 +75,7 @@ impl FnCx<'_> {
             return;
         }
         if let Some(entry) = self.checker.program.functions.get(key) {
-            // A method's type parameters start with its type's: `T` in `Channel[T].open`.
+            // A method's type parameters start with its type's: `T` in `Pool[T].lent`.
             let owner = entry.owner.as_deref().and_then(|owner| self.checker.program.type_info(owner));
             let generics = owner
                 .iter()

@@ -246,7 +246,7 @@ impl FnCx<'_> {
     }
 
     /// Calls a function, as `call_with_types` does, where the first `through` types written are
-    /// those of the type a static method is called through: `Job` in `Channel[Job].open(size=4)`.
+    /// those of the type a static method is called through: `int` in `Deque[int].of(items)`.
     fn call_through(
         &mut self,
         key: &str,
@@ -434,7 +434,7 @@ impl FnCx<'_> {
             let size = size.clone();
             return self.static_call(&size, method, args, span);
         }
-        // `Channel[Job].open(size=4)`: a static method, with the type's parameters written.
+        // `Deque[int].of(items)`: a static method, with the type's parameters written.
         if let ExprKind::Index { object: written, index } = &object.kind
             && let Some(type_name) = self.as_type_name(written)
             && self.checker.program.type_info(type_name).is_some()

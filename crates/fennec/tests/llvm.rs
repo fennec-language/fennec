@@ -8285,13 +8285,40 @@ fn replacing_a_file_keeps_its_mode_and_goes_through_a_link() -> std::io::Result<
     let real = std::fs::read_to_string(place.join("real.txt"))?;
     let still_a_link = std::fs::symlink_metadata(place.join("link.txt"))?.file_type().is_symlink();
     let contents = std::fs::read_to_string(place.join("secret.txt"))?;
-    let left: Vec<_> = std::fs::read_dir(&place)?.filter_map(Result::ok).map(|entry| entry.file_name()).collect();
+    let left: Vec<_> =
+        std::fs::read_dir(&place)?.filter_map(Result::ok).map(|entry| entry.file_name()).collect();
     std::fs::remove_dir_all(&place)?;
     assert_eq!(secret, 0o600, "the mode of a file fs.create replaced");
     assert_eq!(shared, 0o664, "the mode of a file fs.write_text replaced");
     assert!(still_a_link, "a link fs.create wrote through");
     assert_eq!((real.as_str(), contents.as_str()), ("new", "new"));
     assert_eq!(left.len(), 4, "something was left behind: {left:?}");
+    Ok(())
+}
+
+/// A narrowed `Fs` stays inside its folder when a link inside it points out, to read or to write,
+/// and what's really inside still works.
+#[cfg(unix)]
+#[test]
+fn a_link_cannot_carry_a_narrowed_fs_out_of_its_folder() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let place = std::env::temp_dir().join(format!("fennec-fs-only-{}", std::process::id()));
+    std::fs::create_dir_all(place.join("inside"))?;
+    std::fs::create_dir_all(place.join("outside"))?;
+    std::fs::write(place.join("outside/secret.txt"), "secret")?;
+    std::fs::write(place.join("inside/plain.txt"), "plain")?;
+    std::os::unix::fs::symlink(place.join("outside"), place.join("inside/door"))?;
+    let folder = place.to_string_lossy().into_owned();
+    let source = format!(
+        "def read_out(fs: Fs, path: str) -> str:\n    match fs.read_text(path):\n        case Ok(text):\n            return text\n        case Err(_):\n            return \"refused\"\n\ndef main(fs: Fs, stdout: Stdout):\n    narrow = fs.only(\"{folder}/inside\")\n    stdout.print(read_out(narrow, path=\"{folder}/inside/door/secret.txt\"))\n    stdout.print(read_out(narrow, path=\"{folder}/inside/plain.txt\"))\n    match narrow.write_text(\"{folder}/inside/door/new.txt\", \"x\"):\n        case Ok(_):\n            stdout.print(\"wrote\")\n        case Err(_):\n            stdout.print(\"refused\")\n"
+    );
+    let printed = printed_by("fs_only_link", &source)?;
+    let escaped = place.join("outside/new.txt").exists();
+    std::fs::remove_dir_all(&place)?;
+    assert_eq!(printed, "refused\nplain\nrefused\n");
+    assert!(!escaped, "a file was written outside the folder");
     Ok(())
 }
 

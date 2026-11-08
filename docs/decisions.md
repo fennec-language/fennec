@@ -318,7 +318,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 **There's no unwinding.** Errors are values, and a runtime failure such as overflow ends the program. Containing one to a single server task is the intent, under Concurrency. With no unwinding machinery, code is smaller and inlines better.
 
-**There are ten sized number types: `i8` to `i64`, `u8` to `u64`, `f32` and `f64`.** `int` is `i64` and `float` is `f64`, and they stay the everyday types. There's no 128-bit type and no platform-sized one. Built in the checker, all ten, with `i64` as `int` and `f64` as `float`. Built natively for `i8` to `i32` and `u8` to `u32`. Not built yet: running `u64` and `f32`, which are refused past the checker, and running sized numbers in the interpreter, so `fennec test` refuses them for now.
+**There are ten sized number types: `i8` to `i64`, `u8` to `u64`, `f32` and `f64`.** `int` is `i64` and `float` is `f64`, and they stay the everyday types. There's no 128-bit type and no platform-sized one. Built in the checker, all ten, with `i64` as `int` and `f64` as `float`. Built natively, all ten, apart from a few gaps `docs/language.md` names, like a `u64` literal above the largest `int`. Not built yet: running sized numbers in the interpreter, so `fennec test` refuses them for now.
 *Why:* Game math, file formats, GPUs and hashes need exact sizes, and `int` already covers indexes.
 
 **A literal takes the type it's going into, and is checked to fit at compile time.** `speed: f32 = 1.5` needs nothing more, and `pixel: u8 = 300` is a compile error. With nothing to go by, a literal is an `int` or a `float`, as today. Built, for names, parameters, returns, the other side of an operator and list items. Not built yet: set, dict and tuple literals.
@@ -327,7 +327,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 **Conversions are always written, in two forms.** `u8(x)` stops the program if `x` doesn't fit, since that's a bug. `u8.from(x)?` and `u8.parse(text)?` fail cleanly, for anything from outside, and the standard library's decoders use only those. Mixing types, like `i32 + i64`, is a compile error that says to convert one side, and widening, like `i64(small)`, is written too. Built: the mixing errors, `u8(x)`, and `u8.from(x)?` and `u8.parse(text)?`, written in Fennec, for the sizes that run.
 *Why:* Automatic mixing is where C and C++ get subtle bugs, and the two forms keep a bug apart from bad input, so a packet with too big a number can't stop a server.
 
-**Overflow on a sized type is checked, as on `int`.** A check is removed only where the compiler proves it can't fire, and `wrapping_` and `saturating_` methods are for when you mean it. Built for `i8` to `i32` and `u8` to `u32`: an overflow stops with "this calculation overflows a u8, which holds 0 to 255". Not built yet: the `wrapping_` and `saturating_` methods.
+**Overflow on a sized type is checked, as on `int`.** A check is removed only where the compiler proves it can't fire, and `wrapping_` and `saturating_` methods are for when you mean it. Built for every size: an overflow stops with "this calculation overflows a u8, which holds 0 to 255". `wrapping_` and `saturating_` add, sub and mul are built for `i8` to `i32` and `u8` to `u32`. Not built yet: them for `u64`.
 *Why:* We're a safe language, so a small type mustn't wrap quietly.
 
 **Math types are 32-bit.** `std.math`'s `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` are concrete `f32` types, and `DVec3` and the other `D` types hold doubles. They're not generic: a generic version with an `f32` default could come later without breaking anything. Not built yet: until sized numbers are in, they're `float` and are checked against glam's 64-bit types.
@@ -346,7 +346,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 ## Functions and types
 
-**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose. Built.
+**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose. Built. On a call that can fail, `_ = f()` is a compile error too, so a failure must always be handled, and `ignore` is removed. Chris decided this on 2026-11-08, since `ignore` was used only by its own tests across the whole repository. Not built yet: today `_ = f()` drops the failure, and `ignore(result, "why")` still compiles. `Ok` and `Err` stay as they are for now, to revisit after real Hoard code.
 ```fennec
 sorted(scores)       # error: the result is ignored
 _ = sorted(scores)   # fine
@@ -423,7 +423,7 @@ if result is Err(NotFound):
 This replaces the earlier rules that errors are inferred and `fails` is optional.
 *Why:* A reader sees at a glance how a function can fail and every line where it can leave. Swallowed errors are how reliable-looking programs go wrong.
 
-**An error carries notes, a `list[str]`, as Python's exceptions have since PEP 678.** Every `error Name:` type has `failure.add_note(text)`, which needs a `mut` place, and `failure.notes() -> list[str]`. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure is added to the block's as a note, in its printed form, so neither is lost. A failure that reaches `main` prints each note under it as `note: ...`. Notes are left out of `==`, hashing, printing and saving, and a failure with none costs one empty word. Built in the checker and the interpreter: `notes()`, `add_note(text)`, and a failed cleanup's failure as a note. Native code for notes isn't built yet, so a program that uses them runs in the interpreter, which says so.
+**An error carries notes, a `list[str]`, as Python's exceptions have since PEP 678.** Every `error Name:` type has `failure.add_note(text)`, which needs a `mut` place, and `failure.notes() -> list[str]`. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure is added to the block's as a note, in its printed form, so neither is lost. A failure that reaches `main` prints each note under it as `note: ...`. Notes are left out of `==`, hashing, printing and saving, and a failure with none costs one empty word. Built natively and in the checker and the interpreter: `notes()`, `add_note(text)`, and a failed cleanup's failure as a note.
 *Why:* When cleanup fails after a failure, the first failure is usually the cause and the second is the clue, so both have to reach the reader. Notes as text need no new kind of type.
 
 **There's no `exit()`.** `fail` out of `main` prints the failure to stderr and exits with code 1, and `main` may return an `int` as the exit code. Nothing else can end the process. Built.
@@ -448,6 +448,15 @@ unit = units.get(unit_id) else fail ApiError.NotFound
 - Without `else`, it's a compile error whose fix adds one or a check.
 
 *Why:* Each spelling says what the writer meant. `?` means this line can leave the function. `else` means missing or failed is fine here, so use this instead, or leave, which the line says. `[]` means it must be there, so a missing value is a bug that stops with an error naming the step and the key.
+
+**`else as name:` binds the failure in that block,** as Python's `except E as e` does. It leaves as any `else:` block must. Chris decided this on 2026-11-08. Not built yet: today it's a syntax error, and a block that needs the failure uses `match`.
+```fennec
+# Planned: `else as` doesn't parse yet
+score = load_score(path) else as failure:
+    stdout.print(failure)
+    return
+```
+*Why:* A block that handles a failure usually wants to say which one, and `match` is a lot to write for that.
 
 **`where` rules run on every write to a guarded field,** and on defaults at compile time: `health = 100 where health >= 0`. A rule looks only at its own field. An invariant across several fields goes in a named constructor or a method. A broken rule stops the program in code, and a load that breaks one fails cleanly. Both are built, writes after construction included.
 *Why:* A rule that only holds at construction promises something it doesn't deliver. Checking one field keeps each write's cost obvious.
@@ -1046,7 +1055,7 @@ A big program that wants walls between its own parts splits into local kits in o
 **There's no top-level shared state.** A `shared` value is made in a function, usually `main`, and passed to whoever needs it, like a capability.
 *Why:* A function's signature then says what shared state it can touch, so nobody has to read its body to find out.
 
-**A `shared` value is reached only inside `lock`.** `lock x as s:` reads, and many tasks can read at once. `lock x as ref s:` changes it, one task at a time. Any way out of the block releases it. `fail` and `return` keep the changes made so far, and only a crash undoes them. There's no upgrading a read to a write. This replaces `with x as ref y:` for locking. Built, apart from a `lock` inside another, which is refused for now: take them together in one.
+**A `shared` value is reached only inside `lock`.** `lock x as s:` reads, and many tasks can read at once. `lock x as ref s:` changes it, one task at a time. Any way out of the block releases it. `return`, `break` and `continue` keep the changes made so far, and a crash undoes them, as a `fail` or `?` will, below. There's no upgrading a read to a write. This replaces `with x as ref y:` for locking. Built, apart from a `lock` inside another, which is refused for now: take them together in one.
 ```fennec
 def record(scores: shared Scores, name: str, points: int):
     lock scores as ref current:
@@ -1082,11 +1091,20 @@ with launch((inbox) => audio(inbox, speakers), stop_after=5s)? as sounds:
 **A task's failure comes out where its `with launch` ends, and a crash comes out as `Crashed`.** A crash ends only its own task, and the HTTP server answers that request with a 500.
 *Why:* A parent, like a pool's keeper, has to see a child die to replace it, and one bad request shouldn't stop a server.
 
-**A crash inside `lock x as ref s:` rolls back the block's writes.** The compiler saves the old value before each write, and on a crash the runtime puts them back in reverse order, then releases the lock. Only crashes roll back, so `fail` and `return` keep their changes. The compiler skips the saves where it proves the block can't crash, and values taken out are freed when the block ends. There's no new syntax, no new failure type and no poisoned lock. This replaces the rule that a crash while holding a `ref` lock stops the program. Built.
+**A crash inside `lock x as ref s:` rolls back the block's writes.** The compiler saves the old value before each write, and on a crash the runtime puts them back in reverse order, then releases the lock. Today only crashes roll back. A `fail` or `?` will too, below. The compiler skips the saves where it proves the block can't crash, and values taken out are freed when the block ends. There's no new syntax, no new failure type and no poisoned lock. This replaces the rule that a crash while holding a `ref` lock stops the program. Built.
 *Why:* Nobody ever sees a half-change, and one crashing task no longer takes everything else down with it.
 The build lanes make this one general piece that undoes the writes in a block. Other uses wait until a real program asks for them, like a failing function leaving its `ref` arguments unchanged, or undo in a game.
 
-**Channels are bounded.** `send` waits when one is full, and both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. Sending to a closed channel fails at once. A channel you set up yourself is `with Channel[Job](size=64) as jobs:`. Built natively as `with Channel[Job].open(size=64) as jobs:`, in `std.concurrent`, written in Fennec over channel intrinsics. Not built yet: the shorter form.
+**A `fail` or `?` leaving `lock ... as ref` rolls back the block's changes, as a crash does,** so a write lock either finishes or has no effect, as a database transaction does. `return`, `break` and `continue` keep the changes.
+- Rollback covers one `lock` statement, including all the values locked together in it. An inner lock that already finished stays committed, so values that must change together are locked in one statement.
+- Local variables and output aren't rolled back.
+- To keep a change and still fail, decide inside the lock and `fail` after it.
+- A lint may warn when a `fail` follows a write in the same block.
+- Chris decided this on 2026-11-08. Not built yet: today a `fail` or `?` keeps the changes made so far, and only a crash undoes them. This replaces the rule that only crashes roll back.
+
+*Why:* A failure halfway through a write would otherwise leave a half-change for the next reader, and finishing or having no effect is the rule people already know from database transactions.
+
+**Channels are bounded.** `send` waits when one is full, and both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. Sending to a closed channel fails at once. A channel you set up yourself opens with a plain function in `std.concurrent`, `with channel[Job](size=64) as jobs:`, as Python's `open()` is, not by calling the type. Chris decided this on 2026-11-08. Built natively today as `with Channel[Job].open(size=64) as jobs:`, written in Fennec over channel intrinsics. Not built yet: `channel[Job](size=64)`.
 *Why:* A bounded buffer pushes back instead of growing without limit, and saying why a receive stopped lets the task decide what to do.
 
 **Dev builds stop with a report when tasks are waiting only on each other.**
@@ -1330,7 +1348,7 @@ match tok:
 *Why:* Installing a version is copying one file, the way Zig works. Nothing on the machine can be missing or the wrong version.
 
 **A tiny, stable launcher is what you install, and it needs no Homebrew.** It reads the version a kit asks for, `fennec = "0.4.2"` in `kit.toml`, with no separate version file. If that version isn't there, it fetches its binary into `~/.fennec/toolchains/0.4.2/` on first use, verifies its checksum and signature, records its hash in `kit.lock`, and hands off to it.
-- Only the launcher updates itself, and its updates are signed with two keys.
+- Only the launcher updates itself, and an update needs 2 of the 3 release keys, as below.
 - A pinned compiler never changes by itself, and nothing fetches "latest" without being asked.
 - `fennec toolchain list`, `install`, `remove` and `default` manage toolchains.
 - Single-file scripts outside a kit use the default toolchain.
@@ -1339,6 +1357,9 @@ match tok:
 - Built, as `fennec-launcher` for now: running a kit's pinned toolchain, `kit.lock` holding its signed manifest's hash, fetching only what's missing, `--offline`, `fennec update`, and `fennec toolchain`. Releases built the same twice is built too, on macOS, Linux and Windows. Not built yet: the release keys, which Chris makes (`docs/releases.md`), so nothing verifies today; the launcher updating itself; and `fennec doctor`.
 
 *Why:* Every project gets its own Fennec version without anyone thinking about it, and teammates, CI and AI agents all build with exactly the same toolchain. It's also what makes lints pinned to a kit's Fennec version work. Keeping the part that updates tiny means it rarely has to change, and two keys mean one stolen key can't push an update.
+
+**Releases are signed by Chris on hardware keys, and CI never signs.** The release key is Ed25519 and lives on a YubiKey, so it never leaves the device and signs only when touched. CI builds a release and writes its manifest, and Chris signs the manifest offline. A toolchain needs one signature. The launcher's own update needs 2 of 3 keys, from different keys: two YubiKeys and a paper backup kept offline. Each kind is signed in its own namespace, so a toolchain's signature never counts for a launcher. Chris locked this on 2026-11-08. Not built yet: the keys are made when releases go public, as `docs/releases.md` describes. The checks are in `fennec-dist` today, with no keys built in, so nothing verifies.
+*Why:* A stolen CI token can't ship a release, since CI holds no key. The launcher checks everything else, so one lost or stolen key can't replace it.
 
 **Building Fennec itself stays fast.** Only the release packaging of the toolchain links LLVM in, through a build feature CI turns on for each target. Everyday builds of the compiler call a pinned, prebuilt `llc` as a separate program instead.
 *Why:* Linking LLVM into every build of the compiler would make working on Fennec as slow as the builds Fennec exists to avoid.
@@ -1573,8 +1594,12 @@ Every build and the language server share one build engine and store, described 
 **Debug info is planned,** so a debugger can step through Fennec code, a stack trace is readable, and a crash maps back to its source line. Not built yet: today no DWARF or stepping information is written. This replaces the rule that builds carry no debug info.
 *Why:* Games and native code need a debugger, even when tests and replay do most of the work.
 
-**Hot reload is planned,** for changing code while a game runs. Changed functions are swapped in between frames, and the state the main loop owns stays as it was. When a struct's fields change, the state is saved with `std.pack`, the code is swapped, and the state is loaded back into the new types, with fields matched by name and new fields taking their defaults. Not built yet. This replaces the rule that there's no hot reload.
-*Why:* A game's state is plain data its main loop owns, with nothing pointing into code, so swapping code is unusually clean, and the function-level cache already makes each change small.
+**Hot reload is planned, for after Hoard's core works, and it's all or nothing.** It's for changing code while a game or a server runs.
+- Changed functions are swapped in only at a safe point: the top of a loop, or between requests. The state the main loop owns stays as it was.
+- Before anything changes, the live data is checked against the new code: fields matched by name, new fields taking their defaults, and every `where` rule run again. When a struct's fields change, the state is saved with `std.pack` and loaded back into the new types.
+- If every check passes, the reload applies completely. If any fails, it's refused with a message saying why, and the old code keeps running. A reload is never half-applied.
+- Chris decided this on 2026-11-08. Not built yet. This replaces the rule that there's no hot reload, and the plan that swapped code between frames without checking first.
+*Why:* A game's state is plain data its main loop owns, with nothing pointing into code, so swapping code is unusually clean, and the function-level cache already makes each change small. Checking first means a reload that can't work costs nothing, and a half-applied one would leave data the new code can't trust.
 
 **The unit of work is the function, keyed by its content.** A function's key covers its typed IR, the signatures of what it calls, the bodies of anything inlined into it, and the compiler version, target and flags. A caller depends on a callee's body only if it inlined that callee. Summaries let a change that leaves a signature alone skip the callers.
 

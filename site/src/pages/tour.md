@@ -542,7 +542,7 @@ def main(stdout: Stdout):
 
 - The default after `else` is only worked out if it's needed. Failing is a plain return, with no stack unwinding.
 - `fails A | B` combines failures from different places, and `?` passes any of them up as it is. A function type can say it too: `(str) -> int fails ParseError | RangeError`.
-- `ignore(result, "why")` throws a failure away on purpose, and `result.expect("why")` says it can't fail. Both need a reason.
+- `result.expect("why")` says a call can't fail, and needs a reason. **Planned:** `ignore` goes, and `_ = f()` on a call that can fail is a compile error, so a failure must always be handled.
 - A run-time bug is different from a failure. `xs[i]` out of range stops the program with a clear message, because there's nothing sensible to handle.
 
 - Ignoring a returned value is a compile error, and `_ = call()` throws one away on purpose.
@@ -765,7 +765,7 @@ def main(stdout: Stdout):
 ```
 
 - A `shared` value is made in a function, usually `main`, and passed to whoever needs it, like a capability. There's no top-level shared state, so a function's signature says what shared state it touches.
-- Any way out of a `lock` block releases it. Leaving with `fail` or `return` keeps the changes made so far.
+- Any way out of a `lock` block releases it. Leaving with `return` keeps the changes made so far, and today so does `fail`. **Planned:** a `fail` or `?` leaving `lock ... as ref` rolls back the block's changes, as a crash does, so a write lock either finishes or has no effect.
 - A crash inside `lock x as ref s:` rolls back: every value the block changed is put back before the lock is released, so nobody ever sees a half-change. There's nothing to write, and a lock is never left poisoned.
 - Two values locked at once go in one statement, `lock source, target as ref payer, ref payee:`, and a `lock` inside another is refused for now.
 - A `shared` value never holds one of its own type and never forms a cycle, so a tree uses a `Table` and `Id`s. Its memory is freed when the last holder lets go, with no cleanup code.

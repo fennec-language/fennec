@@ -39,6 +39,7 @@ description: What Fennec does today, what's being built next, and the design que
 - `shared T` and `lock`, with a crash inside `lock x as ref` rolled back so nobody sees a half-change.
 - `with launch(...)`, a task beside you until its block ends, and bounded channels, `Channel`, `Inbox` and `Sender`, natively.
 - Sized numbers from `i8` to `u64` and `f32`, natively, each operation checked against its size, with `wrapping_` and `saturating_` add, sub and mul up to 32 bits, with literals taking the size they go into and `u8.from(x)?` and `u8.parse(text)?` for numbers from outside.
+- Notes on errors, so a cleanup that fails after a failure hides neither one.
 - A function that can fail says `fails` in its signature, a failure passes up only with `?`, and a `match` over what can fail handles both sides. `fennec fix` writes the first two.
 - `with` and `lend`, for sources of your own and for files: `fs.create` puts a file in place only when its block ends, synced to the disk, and `fs.open` reads in lines or chunks.
 - Capabilities: `Stdout`, `Stdin`, `Args`, `Fs`, `Clock`, `Env`, `Entropy`, `Process` and `Net`.
@@ -84,8 +85,8 @@ Each of these is decided and not built.
 - `case .Button(ref clicks):` to change a field inside an enum.
 - `{x=}` in f-strings.
 - `x.approx(y, within=...)`.
+- `else as name:`, which binds the failure in that block, and a compile error for `_ = f()` on a call that can fail, with `ignore` removed.
 - Units of measure, as structs whose operators are chosen by their right-hand type, with no new syntax.
-- Notes on errors in native code. They work in the checker and the interpreter today.
 - `std.pack` data from an earlier version of a program loading into the new one, with fields matched by name and new fields taking their defaults.
 - Annotations a kit defines for fields, read by generic code.
 

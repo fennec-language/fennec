@@ -186,10 +186,10 @@ fn ignored_results_are_mistakes() {
 #[test]
 fn a_function_passes_a_failure_up_only_with_a_question_mark() {
     let program = "
-        def passthrough(n: int):
+        def passthrough(n: int) -> int fails Oops:
             risky(n)
 
-        def early(n: int):
+        def early(n: int) -> int fails Oops:
             if n > 0:
                 return risky(n)
             risky(n)?
@@ -199,7 +199,6 @@ fn a_function_passes_a_failure_up_only_with_a_question_mark() {
         problems(&program),
         [
             "this can fail, and a failure passes up only with `?` @ risky(n)",
-            "`early` returns a result of int and an int @ def early(n: int)",
             "this can fail, and a failure passes up only with `?` @ risky(n)"
         ]
     );

@@ -131,8 +131,9 @@ use crate::scope::Frame;
 use crate::value::{Capability, Value};
 
 pub use heap::{Counts, count_allocations};
+pub use tests::next_test;
 #[cfg(not(feature = "lean"))]
-pub use tests::{next_test, ran_in_interpreter};
+pub use tests::ran_in_interpreter;
 
 /// What the compiler registers before a program runs: the names, text and syntax its
 /// native code refers to by number.
@@ -323,6 +324,8 @@ struct State {
     heap: heap::Heap,
     /// The block of each plain capability, by its kind, once it's been asked for.
     capabilities: Vec<i64>,
+    /// A test's fake capabilities, while one that takes them runs.
+    world: Option<crate::fakes::TestWorld>,
     /// The program's name, as `args.program`.
     program: String,
     /// What it was given on its command line, as `args`.
@@ -421,9 +424,6 @@ pub const INTERPRETER_EXPORTS: &[&str] = &[
     "fennec_std_call",
     "fennec_toml_dumps",
     "fennec_toml_loads",
-    "fennec_aot_attempt_failed",
-    "fennec_aot_test_done",
-    "fennec_aot_test_world",
 ];
 
 /// Sets up the runtime to run `module` with `tables` and `inputs`, replacing any earlier
@@ -459,6 +459,7 @@ pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Resu
         shared_names: Vec::new(),
         heap: heap::Heap::new(std::mem::take(&mut tables.statics)).planned(&tables.shapes, &tables.elements),
         capabilities: Vec::new(),
+        world: None,
         program,
         arguments,
         tables,
@@ -1178,12 +1179,7 @@ fn print_handed_over(printed: &[u8]) {
     if printed.is_empty() {
         return;
     }
-    attempt(|state: &mut State| {
-        state
-            .output
-            .write_all(printed)
-            .map_err(|err| Diagnostic::new(format!("couldn't write output: {err}"), Span::default()))
-    });
+    attempt(|state: &mut State| io::write(state, &String::from_utf8_lossy(printed)));
 }
 
 /// Printing, and the loops native code runs over interpreter values.
@@ -1193,6 +1189,14 @@ pub mod io {
     use std::io::Write;
 
     pub(super) fn write(state: &mut State, text: &str) -> Result<(), Diagnostic> {
+        // A test's `Stdout` keeps what it printed, for `stdout.captured()`, and a fake one prints
+        // nothing more.
+        if let Some(world) = state.world.as_mut() {
+            world.print(text, "");
+            if !world.real() {
+                return Ok(());
+            }
+        }
         state
             .output
             .write_all(text.as_bytes())

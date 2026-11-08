@@ -211,6 +211,29 @@ pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, en
         Ok(Some((receiver, name, given)))
     });
     let Some((receiver, name, given)) = called else { return 0 };
+    // A test's capabilities are fakes the runtime holds, which never wait, so they run with the
+    // state borrowed. What they leave to the real ones, like `only`, runs below.
+    let faked = attempt(|state: &mut State| {
+        let Some(fakes) = state.world.as_mut() else { return Ok(None) };
+        let done = match &receiver {
+            Value::Capability(capability) => fakes.method(*capability, &name, &given, at),
+            Value::Limited(limited) => {
+                Some(narrowed(limited, &name, &given, &mut |capability, method, args| {
+                    fakes
+                        .method(capability, method, args, at)
+                        .unwrap_or_else(|| native_method(capability, method, args, at))
+                }))
+            }
+            _ => None,
+        };
+        match done {
+            Some(done) => done.map(|value| Some(state.push(value))),
+            None => Ok(None),
+        }
+    });
+    if let Some(pushed) = faked {
+        return pushed;
+    }
     // The method runs with nothing borrowed, so a task waiting in it, on the network, can park.
     let live = || match &receiver {
         Value::Capability(capability) => native_method(*capability, &name, &given, at),
@@ -288,13 +311,15 @@ pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end
         });
         return attempt(|state: &mut State| done.map(|value| state.push(value)));
     }
-    // A test's network is a fake the interpreter holds, which never waits, so it runs here with
-    // the state borrowed. The real one runs below with nothing borrowed, so a socket's wait can
-    // park its task.
-    #[cfg(not(feature = "lean"))]
-    if with(|state| state.interp.faked_net()) {
+    // A test's network is a fake the runtime holds, which never waits, so it runs here with the
+    // state borrowed. The real one runs below with nothing borrowed, so a socket's wait can park
+    // its task.
+    if with(|state| state.world.as_ref().is_some_and(|world| !world.real())) {
         return attempt(|state: &mut State| {
-            let done = state.interp.fake_socket_call(handle, &name, given, at)?;
+            let done = match state.world.as_mut() {
+                Some(world) => world.net.socket_method(handle, &name, &given, at)?,
+                None => crate::stdlib::net::failed(&crate::stdlib::net::Failure::Closed),
+            };
             Ok(state.push(done))
         });
     }
@@ -385,7 +410,15 @@ pub extern "C" fn use_tls() {
 
 /// `clock.now()`, as the nanoseconds of an `Instant`.
 pub extern "C" fn clock_now() -> i64 {
+    if let Some(nanos) = fake_clock() {
+        return nanos;
+    }
     recorded_word("Clock.now", crate::collections::monotonic_nanos)
+}
+
+/// A test's fake clock's reading, which stands still but for sleeping, if a test's running.
+fn fake_clock() -> Option<i64> {
+    with(|state| state.world.as_ref().filter(|world| !world.real()).map(crate::fakes::TestWorld::now))
 }
 
 /// A word an outside call gives, recorded and replayed (see `crate::replay`). A replay that's
@@ -399,6 +432,9 @@ fn recorded_word(call: &str, live: impl FnOnce() -> i64) -> i64 {
 
 /// `clock.time()`, as the nanoseconds of a `Time`.
 pub extern "C" fn clock_time() -> i64 {
+    if let Some(elapsed) = fake_clock() {
+        return crate::collections::FAKE_TIME.saturating_add(elapsed);
+    }
     recorded_word("Clock.time", crate::collections::wall_nanos)
 }
 
@@ -406,6 +442,17 @@ pub extern "C" fn clock_time() -> i64 {
 /// first, as it does before anything else that waits. It's recorded like the clock's readings,
 /// so a replay doesn't wait it out, and a replay that sleeps where its recording didn't stops.
 pub extern "C" fn clock_sleep(nanos: i64) {
+    // A test's sleep passes no time at all.
+    let faked = with(|state| match state.world.as_mut().filter(|world| !world.real()) {
+        Some(world) => {
+            world.sleep(u64::try_from(nanos).unwrap_or(0));
+            true
+        }
+        None => false,
+    });
+    if faked {
+        return;
+    }
     super::write_kept_output();
     recorded_word("Clock.sleep", || {
         wait(nanos);

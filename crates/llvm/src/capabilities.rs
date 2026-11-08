@@ -1,6 +1,7 @@
 //! What a capability does, like `process.run(…)` or `fs.read_text(…)`: the runtime runs the
-//! interpreter's own method on the capability's block, which says what a narrowed one may do,
-//! with the arguments as temporaries, and what it gives back is made native here.
+//! method on the capability's block, which says what a narrowed one may do, with the arguments as
+//! temporaries, and what it gives back is made native here. In a test, the runtime asks the
+//! test's fakes first.
 
 use fennec_ir::{LocalId, Operand};
 use fennec_layout::ListItem;
@@ -111,9 +112,8 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let (receiver, rest) = args.split_first().ok_or("a method with nothing to call it on")?;
-        // A test's capabilities are fakes, which the runtime holds: they stay on the way to those.
-        let test = self.module.shared.traced;
-        if !test && self.native_capability(dest, name, rest)? {
+        // A test's capabilities are fakes, which the runtime holds, and asks first.
+        if self.native_capability(dest, name, rest)? {
             return Ok(());
         }
         // A named `timeout=` stays on the method's name: the runtime takes it off.
@@ -124,11 +124,7 @@ impl Emit<'_, '_, '_> {
             self.line("call void @fennec_use_tls()");
         }
         let (word, _) = self.operand(receiver)?;
-        // What's still only written for the interpreter is a symbol of its own, so a program that
-        // needs it can't link without the interpreter.
-        let interpreted = name.starts_with("Stdout.");
-        let runtime = if test || interpreted { "fennec_capability_call" } else { "fennec_native_capability" };
-        self.crossing(dest, (runtime, "ptr", &word), method, rest, span)
+        self.crossing(dest, ("fennec_native_capability", "ptr", &word), method, rest, span)
     }
 
     /// A method of a `Connection`, `Server` or `UdpSocket`, which the runtime does by the handle it holds.

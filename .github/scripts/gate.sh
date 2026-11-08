@@ -55,6 +55,9 @@ examples() {
 x86() {
   rustup target add x86_64-apple-darwin || return 1
   cargo build --locked -p fennec -p fennec-runtime --target x86_64-apple-darwin || return 1
+  # Only the plain runtime is built here, so a lean or threads one left by an earlier build, of
+  # other source, isn't taken in its place.
+  rm -f target/x86_64-apple-darwin/debug/libfennec_runtime_*.a
   local work="$logs/x86" tools program
   tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
   mkdir -p "$work/bin" || return 1

@@ -108,6 +108,9 @@ pub(crate) struct Analysis {
     pub(crate) walk_items: HashMap<usize, (LocalId, bool)>,
     /// Pairs read from those, never made: the list, and the index the pair is at.
     pub(crate) pairs: HashMap<usize, (LocalId, Operand)>,
+    /// Reads of a list's item, by block and place in it, that a guard proves in range: see
+    /// `find_guarded_reads`.
+    guarded_reads: HashSet<(usize, usize)>,
 }
 
 /// What's known about every function, and which can fail.
@@ -498,6 +501,7 @@ fn analyze(
         let written = writes.get(*list).copied().unwrap_or(2);
         !grown.contains(list) && written == u32::from(*list >= params)
     });
+    find_guarded_reads(function, (&facts, &multi), &mut known);
     known.below.retain(|local, _| facts.range_in(LocalId(*local), 0).is_some_and(|range| range.0 >= 0));
     find_reservations(function, &stepped, &mut known);
     find_slice_keys(function, &mut known);
@@ -679,6 +683,132 @@ const MOST_GUARDS: usize = 64;
 /// holds is worked out forward over the blocks: a branch on a compare says it on the way it
 /// goes, a bool says what the compare it copies said, and writing a local forgets what was
 /// known about it. Where ways in meet, only what holds on all of them is kept.
+/// Reads a guard proves in range: after `while at + K <= n:`, where `n` is a list's length and
+/// `at` is never negative, the block the guard leads to reads `items[at + j]` for any `j` from 0
+/// to `K - 1` in range, and `at + j` can't overflow, until something there changes `at`, `n` or
+/// the list. That's how a loop taking a list `K` items a turn reads them, as `math.fixed_sum`
+/// does, and with no check between them, LLVM can read and add them as vectors.
+fn find_guarded_reads(
+    function: &Function,
+    (facts, multi): (&Facts, &HashMap<usize, Range>),
+    known: &mut Analysis,
+) {
+    // Where each local is written, by the instruction writing it, for the ones written once.
+    let mut made: HashMap<usize, &InstKind> = HashMap::new();
+    for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+        visit(
+            &inst.kind,
+            |_| {},
+            |local| {
+                made.insert(local.0, &inst.kind);
+            },
+        );
+    }
+    let once = |local: usize| known.writes.get(local) == Some(&1);
+    let mut ways_in: HashMap<usize, usize> = HashMap::new();
+    for block in &function.blocks {
+        for next in block.end.targets() {
+            *ways_in.entry(next.0).or_default() += 1;
+        }
+    }
+    for block in &function.blocks {
+        let Terminator::Branch { cond: Operand::Local(flag), then, .. } = &block.end else { continue };
+        if ways_in.get(&then.0) != Some(&1) || !once(flag.0) {
+            continue;
+        }
+        // `flag = t <= n`, `t = at + K`, with `n` a list's length.
+        let Some(InstKind::Binary {
+            op: BinOp::LtEq,
+            lhs: Operand::Local(sum),
+            rhs: Operand::Local(length),
+            ..
+        }) = made.get(&flag.0)
+        else {
+            continue;
+        };
+        let Some(&list) = known.length_of.get(&length.0) else { continue };
+        if !once(sum.0) {
+            continue;
+        }
+        let Some(InstKind::Binary {
+            op: BinOp::Add, lhs: Operand::Local(at), rhs: Operand::Int(step), ..
+        }) = made.get(&sum.0)
+        else {
+            continue;
+        };
+        if *step <= 0
+            || (range_of(facts, multi, &Operand::Local(*at), then.0).0 < 0 && !never_negative(function, *at))
+        {
+            continue;
+        }
+        let Some(body) = function.blocks.get(then.0) else { continue };
+        let mut near: HashSet<usize> = HashSet::from([at.0]);
+        for (index, inst) in body.insts.iter().enumerate() {
+            match &inst.kind {
+                // `at + j`, which can't overflow, as `at + K` didn't.
+                InstKind::Binary {
+                    dest,
+                    op: BinOp::Add,
+                    lhs: Operand::Local(from),
+                    rhs: Operand::Int(j),
+                } if from == at && (0..*step).contains(j) && once(dest.0) => {
+                    near.insert(dest.0);
+                    known.safe.insert(dest.0);
+                }
+                InstKind::GetIndex {
+                    object: Operand::Local(read), index: Operand::Local(position), ..
+                } if read.0 == list && near.contains(&position.0) => {
+                    known.guarded_reads.insert((then.0, index));
+                }
+                _ => {}
+            }
+            let mut changes = false;
+            visit(&inst.kind, |_| {}, |local| changes |= local == *at || local == *length || local.0 == list);
+            if changes || matches!(inst.kind, InstKind::Call { .. }) {
+                break;
+            }
+        }
+    }
+}
+
+/// Whether a local is never below 0: each write gives it a number from 0 up, or adds one to what
+/// it holds, which can't wrap round, as an add that overflows stops the program.
+fn never_negative(function: &Function, local: LocalId) -> bool {
+    if local.0 < function.params {
+        return false;
+    }
+    let insts: Vec<&InstKind> =
+        function.blocks.iter().flat_map(|block| &block.insts).map(|inst| &inst.kind).collect();
+    // A temporary holding `local + c`, with `c` from 0 up.
+    let grown = |from: &LocalId| {
+        insts.iter().any(|inst| {
+            matches!(inst, InstKind::Binary { dest, op: BinOp::Add, lhs: Operand::Local(base), rhs: Operand::Int(c) }
+                if dest == from && *base == local && *c >= 0)
+        })
+    };
+    let mut writes = 0;
+    for inst in &insts {
+        let mut writes_it = false;
+        visit(inst, |_| {}, |written| writes_it |= written == local);
+        if !writes_it {
+            continue;
+        }
+        writes += 1;
+        let fine = match inst {
+            InstKind::Copy { value: Operand::Int(value), .. } => *value >= 0,
+            InstKind::Copy { value: Operand::Local(from), .. } => grown(from),
+            InstKind::Binary { op: BinOp::Add, lhs: Operand::Local(base), rhs: Operand::Int(c), .. } => {
+                *base == local && *c >= 0
+            }
+            _ => false,
+        };
+        if !fine {
+            return false;
+        }
+    }
+    writes > 0
+}
+
 fn find_guarded_steps(
     function: &Function,
     (facts, multi): (&Facts, &HashMap<usize, Range>),
@@ -2299,6 +2429,7 @@ impl Analysis {
             map_walks: HashMap::new(),
             walk_items: HashMap::new(),
             pairs: HashMap::new(),
+            guarded_reads: HashSet::new(),
         }
     }
 
@@ -2312,6 +2443,12 @@ impl Analysis {
             Operand::Float(value) => *value != 0.0,
             _ => false,
         }
+    }
+
+    /// Whether the read of an item at this block and place in it can't be out of range, by what
+    /// the guard before it says.
+    pub(crate) fn guarded_read(&self, at: (usize, usize)) -> bool {
+        self.guarded_reads.contains(&at)
     }
 
     /// Whether `list[index]` can't be out of range. A copy standing for the list a loop goes

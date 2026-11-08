@@ -1334,8 +1334,7 @@ struct JsonReader:
         top = self._tuples.pop() else fail no_reason()
         name, start, count, read = top
         b = self._space()
-        if read == count or b == 93 or (read > 0 and b != 44):
-            fail self._tuple_misfit(name, start)
+        if read == count or b == 93 or (read > 0 and b != 44): fail self._tuple_misfit(name, start)
         if read > 0:
             self._at += 1
         self._tuples.append((name, start, count, read + 1))

@@ -272,7 +272,9 @@ impl Emit<'_, '_, '_> {
                     let name = self.literal(&format!("{}(", layout.name.trim_end_matches('\'')));
                     text = self.joined(&text, &name, false);
                 }
-                for (at, field) in layout.fields.iter().enumerate() {
+                // An error's notes aren't shown with its fields.
+                let shown = layout.fields.iter().filter(|field| !fennec_interp::packed::hidden(&field.name));
+                for (at, field) in shown.enumerate() {
                     let field_kind = Kind::from_ty(self.module.layouts, field.ty)
                         .ok_or("a field this backend doesn't take yet")?;
                     let label = match (at, tuple) {
@@ -338,7 +340,24 @@ impl Emit<'_, '_, '_> {
     /// Ends the program, saying what `main` failed with. What the IR ends this block with is
     /// never reached, so it goes in a block of its own.
     pub(crate) fn main_failed(&mut self, error: &Operand, span: Span) -> Result<(), String> {
-        self.failed_with("`main` failed: ", error, span)
+        let (value, kind) = self.operand(error)?;
+        let shown = self.shown_text(&value, &kind)?;
+        let start = self.literal("`main` failed: ");
+        let text = self.joined(&start, &shown, true);
+        // Its notes go under it, a line each.
+        let text = match self.notes_word(error)? {
+            Some(word) => {
+                self.declare("declare ptr @fennec_notes_shown(i64) nounwind");
+                let notes = self.temp();
+                self.line(&format!("{notes} = call ptr @fennec_notes_shown(i64 {word})"));
+                self.joined(&text, &notes, true)
+            }
+            None => text,
+        };
+        self.stop_with(&text, span);
+        let after = self.label("stopped");
+        self.start_block(&after);
+        Ok(())
     }
 
     /// Ends the program or a server's task, saying `start` and what it failed with. What the IR ends
@@ -509,6 +528,7 @@ impl Emit<'_, '_, '_> {
 
     /// Two strings joined into a new one, letting go of the first and, if it's owned, the second.
     fn joined(&mut self, first: &str, second: &str, second_owned: bool) -> String {
+        self.declare("declare ptr @fennec_str_concat(ptr, ptr) nounwind");
         let text = self.temp();
         self.line(&format!("{text} = call ptr @fennec_str_concat(ptr {first}, ptr {second})"));
         self.release(first);

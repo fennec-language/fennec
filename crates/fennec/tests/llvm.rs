@@ -11269,6 +11269,30 @@ fn errors_of_several_types_go_up_and_show_as_on_the_interpreter() -> std::io::Re
     )
 }
 
+/// An error's notes natively: none to start with, each `add_note` changing only that error, not
+/// a copy taken before, `==` and printing passing them over, a union of errors noting the error
+/// it holds, and a failure reaching `main` showing them under it. All as on the interpreter.
+#[test]
+fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("error-notes")?;
+    let path = |file: &Path| file.display().to_string();
+    let program = dir.join("notes.fen");
+    std::fs::write(&program, include_str!("fixtures/error_notes.fen"))?;
+    let executable = dir.join("notes");
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert!(said.contains("note: while loading a long one\nnote: second line\n  and a third\n"), "{said}");
+    Ok(())
+}
+
 /// A function that says `fails A | B`, with errors that have cases among them.
 #[test]
 fn failing_several_ways_matches_the_interpreter() -> std::io::Result<()> {

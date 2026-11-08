@@ -62,7 +62,9 @@ fn node(item: &Item, is_start: &dyn Fn(&str) -> bool) -> Option<Node> {
     match item {
         Item::Function(def) => {
             node.names.push(def.name.clone());
-            node.root = is_start(&def.name);
+            // What saves and loads a tuple the program saves (see `fennec_check::tuple_function`)
+            // is only called from inside std's generic code, which no name in the program reaches.
+            node.root = is_start(&def.name) || def.name.starts_with("fennec_tuple_");
             node.uses.function(def);
         }
         Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {

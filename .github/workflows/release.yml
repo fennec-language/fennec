@@ -51,12 +51,19 @@ jobs:
           path: musl
 
   build:
-    name: Build (${{ matrix.target }})
+    name: Build (${{ matrix.platform.target }}${{ matrix.copy == 'rebuild' && ', again' || '' }})
     needs: musl
     strategy:
       fail-fast: false
       matrix:
-        include:
+        # Each platform is built twice, the second time from a checkout somewhere else, on
+        # another machine, and `reproducible` holds that both made the same archive. Windows
+        # isn't yet: its paths aren't taken out of what it builds.
+        copy: [release, rebuild]
+        exclude:
+          - copy: rebuild
+            platform: { os: windows-latest, target: x86_64-pc-windows-gnullvm }
+        platform:
           # Linux's are built and tried on AlmaLinux 8, so they run with glibc 2.28 and later: RHEL
           # 8 and later, Debian 10 and later, Ubuntu 20.04 and later. Built on the runner's own
           # Ubuntu, `fennec` needed glibc 2.39, and the runtime 2.38 to link a program.
@@ -67,18 +74,23 @@ jobs:
           - { os: macos-15-intel, target: x86_64-apple-darwin }
           # Programs link with LLD and MinGW-w64's libraries there: see `.github/scripts/windows.sh`.
           - { os: windows-latest, target: x86_64-pc-windows-gnullvm }
-    runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container }}
+    runs-on: ${{ matrix.platform.os }}
+    container: ${{ matrix.platform.container }}
     timeout-minutes: 60
     permissions:
       contents: read
       id-token: write
       attestations: write
+    defaults:
+      run:
+        working-directory: ${{ matrix.copy == 'rebuild' && 'second-copy' || '.' }}
     steps:
       # A container has none of the runner's tools: a C compiler for mimalloc, git, and rustup,
       # which takes the toolchain `rust-toolchain.toml` names when it's first used.
       - name: Set up the container
-        if: matrix.container
+        if: matrix.platform.container
+        # Before the checkout, so not in the second copy's folder, which isn't there yet.
+        working-directory: .
         run: |
           dnf install -y -q gcc gcc-c++ make git tar gzip findutils diffutils
           curl -sSfL --retry 3 https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path
@@ -86,28 +98,56 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          path: ${{ matrix.copy == 'rebuild' && 'second-copy' || '' }}
+      # The same commit builds the same bytes wherever it's checked out and whenever. C's
+      # `__DATE__` is the commit's, and no path of this machine's is left in what's built: not in
+      # what's compiled from C, through flags for this target that add to `.cargo/config.toml`'s.
+      - name: Build the same wherever and whenever
+        shell: bash
+        env:
+          TARGET: ${{ matrix.platform.target }}
+        run: |
+          # In a container the checkout is someone else's, which git won't read without being told.
+          epoch="$(git -c safe.directory="$PWD" log -1 --format=%ct)"
+          [ -n "$epoch" ] || { echo "::error::couldn't tell when the commit was made"; exit 1; }
+          echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
+          else
+            cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+            flags="--remap-path-prefix=$PWD=/fennec --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup"
+            # macOS's linker names a program by a hash of it before it's stripped, which notes
+            # where each object it linked was and when it was made: the checkout's path is taken
+            # out of those, and their times are zero.
+            if [ "$RUNNER_OS" = macOS ]; then
+              flags="$flags -C link-arg=-Wl,-reproducible -C link-arg=-Wl,-oso_prefix,$PWD/"
+              echo "ZERO_AR_DATE=1" >> "$GITHUB_ENV"
+            fi
+            echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
+            echo "CFLAGS_${TARGET//-/_}=-ffile-prefix-map=$cargo_home=/cargo -ffile-prefix-map=$PWD=/fennec" >> "$GITHUB_ENV"
+          fi
       - name: Install the toolchain `rust-toolchain.toml` names
-        if: matrix.container
+        if: matrix.platform.container
         run: rustup toolchain install
       - name: Use Rust's gnullvm toolchain and llvm-mingw
         if: runner.os == 'Windows'
         shell: bash
         run: .github/scripts/windows.sh toolchain
-      - run: rustup target add ${{ matrix.target }}
+      - run: rustup target add ${{ matrix.platform.target }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: runner.os == 'Linux'
         with:
-          name: musl-${{ matrix.target }}
-          path: musl
+          name: musl-${{ matrix.platform.target }}
+          path: ${{ matrix.copy == 'rebuild' && 'second-copy/musl' || 'musl' }}
       # `fennec build` links executables against the runtime library, shipped next to `fennec`.
-      - run: cargo build --release --locked -p fennec -p fennec-runtime --target ${{ matrix.target }}
+      - run: cargo build --release --locked -p fennec -p fennec-runtime --target ${{ matrix.platform.target }}
       # The runtime with threads, for programs that use `parallel`, also next to `fennec`. Built
       # on its own, in a folder of its own: built with the others, Cargo would give all of them
       # `threads`.
       - name: Build the runtime library with threads
         shell: bash
         env:
-          TARGET: ${{ matrix.target }}
+          TARGET: ${{ matrix.platform.target }}
         run: |
           cargo rustc --release --locked -p fennec-runtime --features threads --target "$TARGET" --target-dir target/threads --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
           cp "target/threads/$TARGET/release/libfennec_runtime.a" "target/$TARGET/release/libfennec_runtime_threads.a"
@@ -116,7 +156,7 @@ jobs:
       - name: Build the runtime's bitcode
         shell: bash
         env:
-          TARGET: ${{ matrix.target }}
+          TARGET: ${{ matrix.platform.target }}
         run: |
           cargo rustc --release --locked -p fennec-runtime --target "$TARGET" --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
           cp "$(find "target/$TARGET/release/deps" -name 'fennec_runtime-*.bc' -print -quit)" "target/$TARGET/release/libfennec_runtime.bc"
@@ -125,7 +165,7 @@ jobs:
       - name: Build the runtime libraries with no interpreter
         shell: bash
         env:
-          TARGET: ${{ matrix.target }}
+          TARGET: ${{ matrix.platform.target }}
         run: |
           for features in lean lean,threads; do
             dir="target/$(echo "$features" | tr , -)"
@@ -140,7 +180,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         env:
-          TARGET: ${{ matrix.target }}
+          TARGET: ${{ matrix.platform.target }}
         run: |
           channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
           rustup toolchain install "$channel-$TARGET" --profile minimal --component llvm-tools-preview --force-non-host --no-self-update
@@ -148,7 +188,7 @@ jobs:
       - name: Package
         shell: bash
         env:
-          TARGET: ${{ matrix.target }}
+          TARGET: ${{ matrix.platform.target }}
         run: |
           # A pull request's ref has a slash in it.
           name="fennec-${GITHUB_REF_NAME//\//-}-${TARGET}"
@@ -182,24 +222,20 @@ jobs:
           licenses="$TOOLCHAIN/share/doc/rust/licenses"
           cp "$licenses/Apache-2.0.txt" "$licenses/LLVM-exception.txt" "$licenses/NCSA.txt" "$name/licenses/"
           cp "$TOOLCHAIN/share/doc/rust/COPYRIGHT.html" "$name/licenses/rust-COPYRIGHT.html"
-          if [ "$RUNNER_OS" = Windows ]; then
-            7z a "$name.zip" "$name" > /dev/null
-            echo "ARCHIVE=$name.zip" >> "$GITHUB_ENV"
-          else
-            tar czf "$name.tar.gz" "$name"
-            echo "ARCHIVE=$name.tar.gz" >> "$GITHUB_ENV"
-          fi
+          archive="$(.github/scripts/pack.sh "$name")"
+          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
           echo "PACKAGED=$name" >> "$GITHUB_ENV"
-          ls -l "$name.zip" "$name.tar.gz" 2> /dev/null || true
+          ls -l "$archive"
       # What a user gets: the archive's own tools, with Rust's toolchain, llvm-mingw and Visual
       # Studio out of reach and a Fennec home with nothing in it. On macOS and Linux, `cc` is still
       # the system's, which links; on Windows, the archive's own LLD links.
       - name: Try the archive with no toolchain around
+        if: matrix.copy == 'release'
         shell: bash
         run: |
           reach="$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE 'cargo|rustup|mingw|visual studio' | paste -sd: -)"
           fennec="$PWD/$PACKAGED/fennec"
-          source="$GITHUB_WORKSPACE/examples"
+          source="$PWD/examples"
           cd "$RUNNER_TEMP"
           try() {
             echo "--- $*" >&2
@@ -223,13 +259,13 @@ jobs:
             try "$fennec" notices hello_release | grep -q 'Rich Felker'
           fi
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.copy == 'release'
         with:
           subject-path: ${{ env.ARCHIVE }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ${{ matrix.target }}
-          path: ${{ env.ARCHIVE }}
+          name: ${{ matrix.copy }}-${{ matrix.platform.target }}
+          path: ${{ matrix.copy == 'rebuild' && 'second-copy/' || '' }}${{ env.ARCHIVE }}
 
   # The manifest is what gets signed, offline, by hand: see docs/releases.md. Until it's signed,
   # the launcher won't install the release. A pull request writes one too, so a change to the
@@ -251,6 +287,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
+          pattern: release-*
           merge-multiple: true
       # Named as the archives are: by the tag, or for a pull request by its number.
       - run: |
@@ -263,10 +300,48 @@ jobs:
           name: manifest
           path: manifest
 
+  # Each archive built twice is the same bytes, so anyone can build a release from its tag and
+  # check it's the one that was signed. Where one isn't, this says which files differ.
+  reproducible:
+    name: Built twice, the same
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: first
+          pattern: release-*
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: second
+          pattern: rebuild-*
+          merge-multiple: true
+      - run: |
+          differ=0
+          for again in second/*; do
+            archive="${again#second/}"
+            if cmp -s "first/$archive" "$again"; then
+              echo "the same: $archive $(sha256sum < "$again" | cut -c1-16)"
+              continue
+            fi
+            differ=1
+            echo "::error::$archive isn't the same built twice"
+            mkdir -p "unpacked/first" "unpacked/second"
+            tar xzf "first/$archive" -C unpacked/first
+            tar xzf "$again" -C unpacked/second
+            diff -rq unpacked/first unpacked/second || true
+            rm -rf unpacked
+          done
+          exit "$differ"
+
   publish:
     name: Publish the release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, manifest]
+    needs: [build, manifest, reproducible]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -275,7 +350,12 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
+          pattern: release-*
           merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: manifest
+          path: dist
       - run: cd dist && sha256sum -- * > SHA256SUMS
       - name: Create the release
         env:

@@ -146,12 +146,22 @@ pub(crate) fn runtime_built() -> bool {
     static BUILT: OnceLock<bool> = OnceLock::new();
     *BUILT.get_or_init(|| {
         let profile = if cfg!(debug_assertions) { None } else { Some("--release") };
-        Command::new(env!("CARGO"))
-            .args(["build", "--quiet", "-p", "fennec-runtime"])
-            .args(profile)
-            .status()
-            .is_ok_and(|status| status.success())
+        let mut build = Command::new(env!("CARGO"));
+        build.args(["build", "--quiet", "-p", "fennec-runtime"]).args(profile);
+        // Coverage builds `fennec` in a target folder of its own, so the library goes there too.
+        if under_coverage()
+            && let Some(target) = Path::new(env!("CARGO_BIN_EXE_fennec")).parent().and_then(Path::parent)
+        {
+            build.arg("--target-dir").arg(target).env_remove("RUSTC_WRAPPER");
+        }
+        build.status().is_ok_and(|status| status.success())
     })
+}
+
+/// Whether coverage is being measured. What it adds to the code it builds isn't for a runtime
+/// library, which programs link with nothing to write the counts.
+fn under_coverage() -> bool {
+    std::env::var_os("CARGO_LLVM_COV").is_some()
 }
 
 /// The runtime library's file name, as Cargo names a static library on every platform Fennec
@@ -181,12 +191,15 @@ fn runtime_variant_built(features: &str, folder: &str, name: &str) -> bool {
     let Some(beside) = Path::new(env!("CARGO_BIN_EXE_fennec")).parent() else { return false };
     let Some(own) = beside.parent().map(|target| target.join(folder)) else { return false };
     let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
-    let built = Command::new(env!("CARGO"))
+    let mut build = Command::new(env!("CARGO"));
+    build
         .args(["build", "--quiet", "-p", "fennec-runtime", "--features", features, "--target-dir"])
         .arg(&own)
-        .args((profile == "release").then_some("--release"))
-        .status()
-        .is_ok_and(|status| status.success());
+        .args((profile == "release").then_some("--release"));
+    if under_coverage() {
+        build.env_remove("RUSTC_WRAPPER");
+    }
+    let built = build.status().is_ok_and(|status| status.success());
     let library = own.join(profile).join(runtime_file());
     let file = format!("lib{name}.a");
     // Copied under another name and then renamed, so a build linking it at that moment, in this

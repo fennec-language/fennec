@@ -194,14 +194,38 @@ pub fn unrolled(
         }
     }
     let mut round = Vec::new();
+    // Over a list, the round's eight items are read first, before anything an item calls, so the
+    // guard below proves each read is in the list and none needs a check of its own.
+    if let Over::List(_) = over {
+        for (k, offset) in (0..LANES).zip(0_i64..) {
+            round.push(writer.assign(&writer.hidden(&format!("item{k}")), None, value_at(offset), true));
+        }
+    }
     for (k, offset) in (0..LANES).zip(0_i64..) {
+        let value = match over {
+            Over::List(_) => {
+                Expr { kind: ExprKind::Name(writer.hidden(&format!("item{k}"))), span: places.item }
+            }
+            Over::Range { .. } => value_at(offset),
+        };
         // The loop's name is made again for each item, as a loop makes it for each round.
-        round.push(writer.assign(name, None, value_at(offset), true));
+        round.push(writer.assign(name, None, value, true));
         round.push(writer.assign(&writer.lane(k), Some(BinOp::Add), item.clone(), false));
     }
     round.push(writer.assign(&place, Some(BinOp::Add), writer.int(LANES_WRITTEN), false));
-    let left = Writer::binary(BinOp::Sub, writer.read(&end), writer.read(&place), places.counted);
-    let full = Writer::binary(BinOp::GtEq, left, writer.int(LANES_WRITTEN), places.compared);
+    // Over a list, `at + 8 <= end`, which can't overflow, as `at` never passes the list's length.
+    // Over a range, which may end near the largest int, `end - at >= 8`.
+    let full = match over {
+        Over::List(_) => {
+            let ahead =
+                Writer::binary(BinOp::Add, writer.read(&place), writer.int(LANES_WRITTEN), places.counted);
+            Writer::binary(BinOp::LtEq, ahead, writer.read(&end), places.compared)
+        }
+        Over::Range { .. } => {
+            let left = Writer::binary(BinOp::Sub, writer.read(&end), writer.read(&place), places.counted);
+            Writer::binary(BinOp::GtEq, left, writer.int(LANES_WRITTEN), places.compared)
+        }
+    };
     written.push(writer.stmt(StmtKind::While { cond: full, body: round }));
     // At most seven are left, into the first totals in order, each only if it's there.
     let mut rest: Vec<Stmt> = Vec::new();

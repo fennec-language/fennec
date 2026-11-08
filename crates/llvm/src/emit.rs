@@ -76,7 +76,7 @@ const COPY_DEPTH: usize = 2;
 const SELF_INLINED: usize = 24;
 
 const OVERFLOW: i64 = 1;
-const DIVISION_BY_ZERO: i64 = 2;
+pub(crate) const DIVISION_BY_ZERO: i64 = 2;
 const TOO_DEEP: i64 = 4;
 const NEGATIVE_SQRT: i64 = 5;
 
@@ -1378,12 +1378,22 @@ impl Emit<'_, '_, '_> {
     /// doesn't fit it.
     pub(crate) fn check_size(&mut self, dest: LocalId, value: &str, span: Span) {
         let Some(num) = self.sized(dest) else { return };
+        // A `u64` fills its word, so its operations check for themselves.
+        if num == fennec_check::Num::U64 {
+            return;
+        }
         let Some((least, most)) = num.range() else { return };
         // One unsigned comparison: the value less the least is in range only when it's below
         // the range's width.
         let (shifted, bad) = (self.temp(), self.temp());
         self.line(&format!("{shifted} = sub i64 {value}, {least}"));
         self.line(&format!("{bad} = icmp ugt i64 {shifted}, {}", most - least));
+        self.size_overflow(&bad, num, span);
+    }
+
+    /// Stops the program, when `bad` holds, saying that a calculation overflowed this size.
+    pub(crate) fn size_overflow(&mut self, bad: &str, num: fennec_check::Num, span: Span) {
+        let (least, most) = num.range().unwrap_or((0, 0));
         let ty = fennec_check::Type::Sized(num);
         let said = format!("this calculation overflows {}, which holds {least} to {most}", article_of(&ty));
         let text = self.literal(&said);
@@ -1447,6 +1457,8 @@ impl Emit<'_, '_, '_> {
         }
         let optional = (kind == Kind::MaybeText, b_kind == Kind::MaybeText);
         let value = match kind {
+            Kind::U64 => self.u64_binary(op, (&a, &b), rhs, span)?,
+            Kind::F32 => self.f32_binary(op, (&a, &b), rhs, span)?,
             Kind::Int => {
                 let value = self.int_binary(dest, op, (&a, &b), rhs, span)?;
                 // What's worked out in a word has to fit its size; the bits of two that do, do.
@@ -1751,7 +1763,7 @@ impl Emit<'_, '_, '_> {
         both
     }
 
-    fn float_binary(
+    pub(crate) fn float_binary(
         &mut self,
         op: BinOp,
         (a, b): (&str, &str),
@@ -2278,7 +2290,8 @@ impl Emit<'_, '_, '_> {
                         temp
                     }
                     (UnaryOp::Neg, Kind::Int) => self.checked("ssub", "0", &value, span),
-                    (UnaryOp::Neg, Kind::Float) => {
+                    // Negating an `f32` gives an `f32` exactly.
+                    (UnaryOp::Neg, Kind::Float | Kind::F32) => {
                         let temp = self.temp();
                         self.line(&format!("{temp} = fneg double {value}"));
                         temp
@@ -2293,7 +2306,7 @@ impl Emit<'_, '_, '_> {
                         self.line(&format!("{temp} = xor i64 {value}, {most}"));
                         temp
                     }
-                    (UnaryOp::BitNot, Kind::Int) => {
+                    (UnaryOp::BitNot, Kind::Int | Kind::U64) => {
                         let temp = self.temp();
                         self.line(&format!("{temp} = xor i64 {value}, -1"));
                         temp
@@ -2878,8 +2891,8 @@ def main(stdout: Stdout):
 
     #[test]
     fn what_it_cant_take_says_which_function() -> Result<(), String> {
-        // `f32` isn't held natively yet.
-        let source = "def f() -> int:\n    speed: f32 = 1.5\n    int(speed > 1.0)\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n";
+        // A dict keyed by a `u64` isn't built natively yet.
+        let source = "def f() -> int:\n    d = {u64(1): 2}\n    d.len()\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n";
         let error = emit(&lowered(source)?).err().unwrap_or_default();
         assert!(error.contains("`f`"), "{error}");
         Ok(())

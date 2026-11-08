@@ -162,10 +162,10 @@ impl Lowering<'_> {
     pub(super) fn check_operands(&self, op: BinOp, lhs: &Operand, rhs: &Operand) -> Lowered<()> {
         let (mut left, mut right) = (type_in(&self.locals, lhs), type_in(&self.locals, rhs));
         // A number written out beside a sized one is of its size, as the checker found.
-        if matches!(lhs, Operand::Int(_)) && matches!(right, Some(Type::Sized(_))) {
+        if matches!(lhs, Operand::Int(_) | Operand::Float(_)) && matches!(right, Some(Type::Sized(_))) {
             left.clone_from(&right);
         }
-        if matches!(rhs, Operand::Int(_)) && matches!(left, Some(Type::Sized(_))) {
+        if matches!(rhs, Operand::Int(_) | Operand::Float(_)) && matches!(left, Some(Type::Sized(_))) {
             right.clone_from(&left);
         }
         // A shift's amount can be an integer of any size.

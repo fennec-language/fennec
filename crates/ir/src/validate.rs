@@ -384,7 +384,7 @@ impl<'p> Check<'p> {
         let result = self.local(dest);
         let mut left = self.function.type_of(lhs);
         // A number written out beside a sized one is of its size.
-        if matches!(lhs, Operand::Int(_))
+        if matches!(lhs, Operand::Int(_) | Operand::Float(_))
             && let Some(Type::Sized(num)) = self.function.type_of(rhs)
         {
             left = Some(Type::Sized(num));
@@ -549,6 +549,9 @@ impl<'p> Check<'p> {
         match self.function.type_of(operand) {
             None => self.problems.push(format!("uses {operand}, which doesn't exist")),
             // A number written out goes where a sized one does, as the checker found it fits.
+            Some(Type::Float)
+                if matches!(operand, Operand::Float(_))
+                    && matches!(wanted, Some(Type::Sized(fennec_check::Num::F32))) => {}
             Some(Type::Int)
                 if matches!(operand, Operand::Int(_)) && matches!(wanted, Some(Type::Sized(_))) => {}
             Some(ty) if wanted.is_some_and(|wanted| !fits(wanted, &ty)) => {

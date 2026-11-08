@@ -1303,7 +1303,7 @@ match tok:
 **Fields may be named any word, keywords included; locals and functions can't be keywords.** `type: str`, `user.type` and `User(type="admin")` all work, since a field name is unambiguous where it's declared, after a dot and before `=`. This replaces the rule that field names can't be keywords.
 *Why:* Structs mirror the wire format, and real formats use keys like `type`, `class` and `from`. Locals and functions stay as Python has them, where a name that's sometimes a keyword would be harder to read.
 
-**f-strings have `{x=}` and no `!r`.** `f"{hp=}"` gives `hp=100`. Format specs like `{x:.2f}` stay. Not built yet: `{x=}` doesn't parse.
+**f-strings have `{x=}` and no `!r`.** `f"{hp=}"` gives `hp=100`. Format specs like `{x:.2f}` stay, after the `=` too: `{total=:,}`. As in Python, what's written is shown with its spaces, so `{ hp = }` gives ` hp = 100`. Built.
 *Why:* `{x=}` is what people want when debugging; `!r` has no meaning without Python's `repr`.
 
 ## Standard library

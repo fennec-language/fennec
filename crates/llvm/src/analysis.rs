@@ -421,11 +421,6 @@ fn count_uses(
                         if let Some(Operand::Local(list)) = args.get(at) {
                             grown.insert(list.0);
                             known.given_mut.insert(list.0);
-                            // The call writes it, however many times it's written here, so what's
-                            // proved of a local written once isn't proved of this one.
-                            if let Some(count) = known.writes.get_mut(list.0) {
-                                *count += 2;
-                            }
                         }
                     }
                     // Only what the callee might keep comes to have another owner.
@@ -755,7 +750,8 @@ fn find_guarded_reads(
             },
         );
     }
-    let once = |local: usize| known.writes.get(local) == Some(&1);
+    // A local a call can write by `ref` isn't written once, whatever it says here.
+    let once = |local: usize| known.writes.get(local) == Some(&1) && !known.given_mut.contains(&local);
     let mut ways_in: HashMap<usize, usize> = HashMap::new();
     for block in &function.blocks {
         for next in block.end.targets() {

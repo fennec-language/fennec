@@ -231,6 +231,7 @@ pub extern "C" fn make_instance(type_name: i64, count: i64, start: i64, end: i64
             fields,
             is_error: false,
             cause: None,
+            notes: None,
         };
         Ok(state.push(Value::Instance(std::rc::Rc::new(instance))))
     })
@@ -257,6 +258,7 @@ pub extern "C" fn make_variant(type_name: i64, case: i64, count: i64, start: i64
             fields,
             is_error: false,
             cause: None,
+            notes: None,
         };
         Ok(state.push(Value::Instance(std::rc::Rc::new(instance))))
     })

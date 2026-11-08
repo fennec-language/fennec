@@ -1,6 +1,6 @@
 //! `fennec build`: every example that fails while running fails the same way as a native
-//! program, with the interpreter's message. That every example builds and prints exactly its
-//! `.out` file is `llvm.rs`'s `the_examples_it_takes_print_what_they_should`.
+//! program, with the interpreter's message, as its `.err` keeps it. That every example builds and
+//! prints exactly its `.out` file is `llvm.rs`'s `the_examples_it_takes_print_what_they_should`.
 
 use std::fs;
 use std::io::Read;
@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 /// hanging the run for hours.
 pub(crate) const PROGRAM_DEADLINE: Duration = Duration::from_secs(60);
 
-/// How long `fennec` itself gets: a build, or a run in the interpreter, which is slower.
+/// How long `fennec` itself gets: a build and maybe a run.
 pub(crate) const FENNEC_DEADLINE: Duration = Duration::from_secs(180);
 
 /// Running a command with a deadline, as every program a test starts runs.
@@ -138,8 +138,8 @@ pub(crate) fn fennec_command() -> Command {
 }
 
 /// The runtime library executables link against, which `fennec build` expects next to
-/// itself. `cargo test` doesn't build it, so this does, once a run: an old one would be
-/// missing what the interpreter has learned since. Only once, because even when it's
+/// itself. `cargo test` doesn't build it, so this does, once a run: `fennec` refuses one from
+/// other source. Only once, because even when it's
 /// current Cargo puts the library in place again, removing it first, so a test linking
 /// while another builds it could find it missing. `llvm.rs` uses this too.
 pub(crate) fn runtime_built() -> bool {
@@ -314,18 +314,15 @@ fn failing_examples_fail_the_same_way_as_executables() {
         // Most error examples are mistakes the checker catches, which don't build.
         let Ok(executable) = build(path, &work)? else { return Ok(None) };
         let ran = run(&executable)?;
-        // `fennec run` runs an executable itself where LLVM builds the program, so the
-        // interpreter is what an executable's failure is held to.
-        let interpreted =
-            fennec_command().args(["run", "--interp"]).arg(path).output_before(FENNEC_DEADLINE)?;
-        let (ours, theirs) =
-            (String::from_utf8_lossy(&ran.stderr), String::from_utf8_lossy(&interpreted.stderr));
+        // An executable's failure is held to the interpreter's, as its `.err` keeps it, with the
+        // path it was built from.
+        let theirs = fs::read_to_string(path.with_extension("err"))?
+            .replace(&format!("examples/errors/{name}"), &path.display().to_string());
+        let ours = String::from_utf8_lossy(&ran.stderr);
         let differs = if ran.status.success() {
             Some(format!("{name} should fail"))
         } else if ours != theirs {
             Some(format!("{name} failed differently:\n{ours}\nwhere the interpreter said\n{theirs}"))
-        } else if ran.stdout != interpreted.stdout {
-            Some(format!("{name} printed something different before failing"))
         } else {
             None
         };

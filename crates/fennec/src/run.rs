@@ -1,21 +1,16 @@
 //! `fennec run`: checks a program, then runs its `main` as native code. That's the cached dev
 //! build LLVM makes, as `fennec build` does, compiled a function at a time so an edit
-//! recompiles only what it touched. Where LLVM can't build the program yet it says why, in
-//! one line, and the interpreter runs it. `--interp` asks for that directly.
+//! recompiles only what it touched. Where LLVM can't build the program yet, it says why.
 
-use std::io::{BufReader, BufWriter, Write};
 use std::process::ExitCode;
 
-use fennec_interp::Inputs;
-
-/// What runs a program.
+/// How a program runs.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Engine {
-    /// The LLVM dev build, or the interpreter where LLVM can't build it yet.
+    /// The LLVM dev build, after the tests a change affects.
     Native,
     /// As `Native`, without running the tests first.
     Untested,
-    Interpreter,
 }
 
 /// A run recorded into a log, or replayed from one (see `fennec_interp::replay`).
@@ -30,14 +25,6 @@ impl Logged {
         match self {
             Logged::Recording(log) => ("FENNEC_RECORD", log),
             Logged::Replaying(log) => ("FENNEC_REPLAY", log),
-        }
-    }
-
-    /// Starts recording or replaying in this process, for a program it runs itself.
-    fn start_here(&self) -> std::io::Result<()> {
-        match self {
-            Logged::Recording(log) => fennec_interp::replay::record_to(log),
-            Logged::Replaying(log) => fennec_interp::replay::replay_from(log),
         }
     }
 }
@@ -63,75 +50,25 @@ pub(crate) fn run_logged(
         return failed;
     }
     // What the linter finds doesn't stop a run, so iteration stays fast, but it's shown first, on
-    // standard error. `--interp` chooses the interpreter, to compare it with native code, so what
-    // it prints is the program's alone.
-    if matches!(engine, Engine::Native | Engine::Untested) {
-        eprint!("{}", crate::lint::errors_remembered(path));
-    }
-    let prepared = if engine == Engine::Interpreter { whole(path) } else { reached(path) };
-    let (program, signatures) = match prepared {
+    // standard error.
+    eprint!("{}", crate::lint::errors_remembered(path));
+    let (program, _) = match reached(path) {
         Ok(prepared) => prepared,
         Err(code) => return code,
     };
-    // Where LLVM's tools or the runtime library aren't there, the interpreter runs it without a
-    // word: that's this machine, not the program. Only LLVM turning the program down is said.
-    if matches!(engine, Engine::Native | Engine::Untested) {
-        if crate::aot::llvm_ready() {
-            match built_and_run(&program, path, arguments, logged) {
-                Ok(code) => return code,
-                Err(why) => {
-                    eprintln!("note: running this with the interpreter, since LLVM can't build it: {why}");
-                }
-            }
-        } else if let Some(why) = crate::aot::stale_runtime() {
-            // A runtime library that's there but from other source is the build's to fix, not
-            // this machine's, so it's said.
-            eprintln!("note: running this with the interpreter, since {why}");
-        }
-    }
-    let module = &program.module;
-    if let Some(logged) = logged
-        && let Err(err) = logged.start_here()
-    {
-        eprintln!("error: couldn't open the recording: {err}");
-        return ExitCode::FAILURE;
-    }
-    // What the interpreter would get wrong, it refuses, rather than run.
-    if let Some(refused) = fennec_check::interpreter_refuses(&signatures) {
-        return reject(&program, &[refused]);
-    }
-    // Not locked: native code writes to standard output itself as the program runs.
-    let mut out = BufWriter::new(std::io::stdout());
-    let inputs = || Inputs {
-        program: path.to_owned(),
-        arguments: arguments.to_vec(),
-        stdin: Box::new(BufReader::new(std::io::stdin())),
-        live: true,
-    };
-    let result = interpret(module, &mut out, inputs());
-    let flushed = out.flush();
-    // A replay that ended with its recording not all read isn't the run that was recorded.
-    let result = result.and_then(|code| match fennec_interp::replay::unfinished() {
-        Some(why) => Err(fennec_syntax::Diagnostic::new(why, fennec_syntax::Span::default())),
-        None => Ok(code),
-    });
-    match (result, flushed) {
-        // The int `main` gave back, if it gave one.
-        (Ok(code), Ok(())) => ExitCode::from(code),
-        (Err(diagnostic), _) => {
-            eprint!("{}", rendered(&program, path, &diagnostic));
-            ExitCode::FAILURE
-        }
-        (Ok(_), Err(err)) => {
-            eprintln!("error: couldn't write output: {err}");
+    // What LLVM can't take yet, or a tool or library that isn't there, is said as `fennec build`
+    // says it.
+    match built_and_run(&program, path, arguments, logged) {
+        Ok(code) => code,
+        Err(why) => {
+            eprintln!("error: {why}");
             ExitCode::FAILURE
         }
     }
 }
 
 /// Builds the program through LLVM's cached dev build and runs it, handing it the arguments,
-/// this process's input and output, and its exit code. A machine without LLVM's tools, the
-/// runtime library or a linker can't, so it doesn't get here.
+/// this process's input and output, and its exit code.
 fn built_and_run(
     program: &fennec_kit::Program,
     path: &str,
@@ -172,18 +109,6 @@ fn built_and_run(
     let status = ran.map_err(|err| format!("the program it built didn't start: {err}"))?;
     // A program stopped by a signal has no code of its own.
     Ok(status.code().and_then(|code| u8::try_from(code).ok()).map_or(ExitCode::FAILURE, ExitCode::from))
-}
-
-/// A failure against its source. A program started from a kept image doesn't have its source, so
-/// this reads it, which only a failing run has to wait for.
-fn rendered(program: &fennec_kit::Program, path: &str, diagnostic: &fennec_syntax::Diagnostic) -> String {
-    if program.sources.files().next().is_some() {
-        return program.sources.render(diagnostic);
-    }
-    match fennec_kit::load(std::path::Path::new(path), path, fennec_kit::Entry::Main) {
-        Ok(whole) => whole.sources.render(diagnostic),
-        Err(_) => format!("error: {}\n", diagnostic.message),
-    }
 }
 
 /// Loads and checks all of a program.
@@ -278,18 +203,6 @@ pub(crate) fn fingerprint<'t>(files: impl Iterator<Item = (&'t str, &'t str)>) -
         }
     }
     hasher.finalize()
-}
-
-/// Runs a program in the interpreter, giving back its exit code.
-fn interpret(
-    module: &fennec_syntax::Module,
-    out: &mut dyn Write,
-    inputs: Inputs,
-) -> Result<u8, fennec_syntax::Diagnostic> {
-    let mut interp = fennec_interp::Interp::new(out)?;
-    interp.give(inputs);
-    interp.run_program(module)?;
-    Ok(interp.exit_code())
 }
 
 /// Type-checks a program before it runs, printing every problem found, and names the enum

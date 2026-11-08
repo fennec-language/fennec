@@ -42,8 +42,6 @@ fn run_prints_the_programs_output() {
 
 /// What the linter finds doesn't stop a run, and it's on standard error, so what the program prints
 /// is all of standard output. A run of the same code again shows it again, from the cache.
-/// `--interp` chooses an engine, to compare it with another, so it shows only the program's own
-/// output.
 #[test]
 fn run_shows_lints_on_standard_error_and_still_runs() {
     let dir = scratch("run_lints").unwrap();
@@ -71,9 +69,7 @@ fn run_shows_lints_on_standard_error_and_still_runs() {
             "{time}: {said}"
         );
     }
-    let interpreted = run(&["run", "--interp", "game.fen"]);
     std::fs::remove_dir_all(&dir).unwrap();
-    assert_eq!((text(&interpreted.stdout), text(&interpreted.stderr)), ("4\n".to_owned(), String::new()));
 }
 
 /// A run lints again only the files of a kit that changed, and keeps the rest from the last run,
@@ -150,16 +146,9 @@ fn the_proof_program_checks_passes_its_tests_and_runs() {
         let output = fennec_in(&proof, command, "").unwrap();
         assert!(output.status.success(), "`fennec {}` failed:\n{}", command.join(" "), text(&output.stderr));
     }
-    for command in [&["run", "--no-test"][..], &["run", "--interp"]] {
-        let output = fennec_in(&proof, command, "").unwrap();
-        assert!(output.status.success(), "`fennec {}` failed:\n{}", command.join(" "), text(&output.stderr));
-        assert_eq!(
-            text(&output.stdout),
-            expected,
-            "`fennec {}` printed something different",
-            command.join(" ")
-        );
-    }
+    let output = fennec_in(&proof, &["run", "--no-test"], "").unwrap();
+    assert!(output.status.success(), "`fennec run --no-test` failed:\n{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), expected, "`fennec run --no-test` printed something different");
 }
 
 /// When a `with` block fails and its source's `else:` cleanup fails too, the cleanup's failure
@@ -182,7 +171,7 @@ fn a_failing_cleanup_is_a_note_on_the_blocks_failure() {
     )
     .unwrap();
     let path = program.to_string_lossy().into_owned();
-    let ran = fennec(&["run", "--interp", &path], "").unwrap();
+    let ran = fennec(&["run", "--no-test", &path], "").unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     let printed = text(&ran.stderr);
     assert!(!ran.status.success());
@@ -193,15 +182,12 @@ fn a_failing_cleanup_is_a_note_on_the_blocks_failure() {
 #[test]
 fn run_hands_main_its_arguments_and_input() {
     let program = "examples/args_and_stdin.fen";
-    for engine in [&["run"][..], &["run", "--interp"]] {
-        let args: Vec<&str> = engine.iter().copied().chain([program, "fire", "two words"]).collect();
-        let output = fennec(&args, "one\ntwo\r\n").unwrap();
-        assert!(output.status.success(), "{}", text(&output.stderr));
-        assert_eq!(
-            text(&output.stdout),
-            "2 arguments: FIRE TWO WORDS\nthe first is fire\n2 lines of input\n> one\n> two\n"
-        );
-    }
+    let output = fennec(&["run", program, "fire", "two words"], "one\ntwo\r\n").unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "2 arguments: FIRE TWO WORDS\nthe first is fire\n2 lines of input\n> one\n> two\n"
+    );
     let output = fennec_on("run", "program_name", "def main(stdout: Stdout, args: Args):\n    stdout.print(args.program.endswith(\"program_name.fen\"))\n").unwrap();
     assert_eq!(text(&output.stdout), "True\n");
 }
@@ -516,18 +502,16 @@ fn scratch(name: &str) -> std::io::Result<PathBuf> {
 fn fs_makes_lists_and_removes_files_and_folders() {
     let dir = scratch("fs").unwrap();
     std::fs::write(dir.join("main.fen"), PROGRAM_WITH_FILES).unwrap();
-    for engine in [&["run", "main.fen"][..], &["run", "--interp", "main.fen"]] {
-        let output = fennec_in(&dir, engine, "").unwrap();
-        assert!(output.status.success(), "{}", text(&output.stderr));
-        assert_eq!(
-            text(&output.stdout),
-            "Ok() Ok() True\n\
-             [\"saves/slots/a.txt\", \"saves/slots/b.txt\"] ay\n\
-             3 True False False True\n\
-             a folder has to be empty to remove\n\
-             False [Path(text=\"./main.fen\")]\n"
-        );
-    }
+    let output = fennec_in(&dir, &["run", "main.fen"], "").unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "Ok() Ok() True\n\
+         [\"saves/slots/a.txt\", \"saves/slots/b.txt\"] ay\n\
+         3 True False False True\n\
+         a folder has to be empty to remove\n\
+         False [Path(text=\"./main.fen\")]\n"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -542,14 +526,9 @@ def main(stdout: Stdout, fs: Fs):
     stdout.print(fs.read_bytes("note.txt")?, fs.read_bytes("missing.bin") else bytes())
 "#;
     std::fs::write(dir.join("main.fen"), program).unwrap();
-    for engine in [&["run", "main.fen"][..], &["run", "--interp", "main.fen"]] {
-        let output = fennec_in(&dir, engine, "").unwrap();
-        assert!(output.status.success(), "{}", text(&output.stderr));
-        assert_eq!(
-            text(&output.stdout),
-            "bytes([0, 1, 254, 255]) not text\nbytes([104, 195, 169]) bytes([])\n"
-        );
-    }
+    let output = fennec_in(&dir, &["run", "main.fen"], "").unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "bytes([0, 1, 254, 255]) not text\nbytes([104, 195, 169]) bytes([])\n");
     assert_eq!(std::fs::read(dir.join("save.bin")).unwrap(), [0, 1, 254, 255]);
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -631,16 +610,14 @@ fn run_with_no_path_runs_the_kit_around_the_current_folder() {
 }
 
 #[test]
-fn run_takes_a_kits_folder_in_either_engine() {
+fn run_takes_a_kits_folder() {
     let expected = std::fs::read_to_string(repo().join("examples/projects/arena.out")).unwrap();
-    for args in [&["run", "examples/projects/arena"][..], &["run", "--interp", "examples/projects/arena"]] {
-        let output = fennec(args, "").unwrap();
-        assert!(output.status.success(), "{}", text(&output.stderr));
-        assert_eq!(text(&output.stdout), expected);
-        // LLVM takes arena, and the interpreter needs no LLVM, so neither has anything to say.
-        let said = text(&output.stderr);
-        assert_eq!(said.lines().count(), 0, "{said}");
-    }
+    let output = fennec(&["run", "examples/projects/arena"], "").unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), expected);
+    // LLVM takes arena, so there's nothing to say.
+    let said = text(&output.stderr);
+    assert_eq!(said.lines().count(), 0, "{said}");
 }
 
 /// Whether `fennec run` builds through LLVM here: LLVM's tools are found, and
@@ -661,10 +638,8 @@ fn conversions_to_what_a_value_is_already_give_it_back() {
     let source = "def main(stdout: Stdout):\n    name = \"fox\"\n    half = 0.5\n    seven = 7\n    \
                   stdout.print(str(name), float(half), int(seven), float(-0.0))\n";
     std::fs::write(&program, source).unwrap();
-    for engine in ["--no-test", "--interp"] {
-        let output = fennec(&["run", engine, program.to_str().unwrap()], "").unwrap();
-        assert_eq!(text(&output.stdout), "fox 0.5 7 -0.0\n", "{engine}: {}", text(&output.stderr));
-    }
+    let output = fennec(&["run", "--no-test", program.to_str().unwrap()], "").unwrap();
+    assert_eq!(text(&output.stdout), "fox 0.5 7 -0.0\n", "{}", text(&output.stderr));
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -681,25 +656,21 @@ fn a_double_lookup_fixed_prints_the_same() {
     std::fs::write(&program, source).unwrap();
     let path = program.to_str().unwrap();
     let expected = "1\n1\n3\n7\n8\n4\n";
-    assert_eq!(text(&fennec(&["run", "--interp", path], "").unwrap().stdout), expected);
+    assert_eq!(text(&fennec(&["run", path], "").unwrap().stdout), expected);
     let fixed = fennec(&["fix", path], "").unwrap();
     assert!(fixed.status.success(), "{}", text(&fixed.stderr));
     let now = std::fs::read_to_string(&program).unwrap();
     assert_eq!(now.matches(".get(").count(), 3, "{now}");
     assert!(!now.contains("in counts") && !now.contains("in names"), "{now}");
-    for engine in [&["run"][..], &["run", "--interp"]] {
-        let args: Vec<&str> = engine.iter().copied().chain([path]).collect();
-        let output = fennec(&args, "").unwrap();
-        assert_eq!(text(&output.stdout), expected, "{engine:?}: {}", text(&output.stderr));
-        assert_eq!(text(&output.stderr), "", "{engine:?} ran it as asked");
-    }
+    let output = fennec(&["run", path], "").unwrap();
+    assert_eq!(text(&output.stdout), expected, "{}", text(&output.stderr));
+    assert_eq!(text(&output.stderr), "", "it ran as asked");
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// A program that fails while running, or returns normally, gives `fennec run` the same exit
-/// code whichever way it runs: through LLVM or in the interpreter.
+/// A program that fails while running exits with 1, and one that returns normally with 0.
 #[test]
-fn run_exits_the_same_way_whichever_engine_runs_it() {
+fn run_exits_with_1_when_the_program_fails() {
     let dir = scratch("exit-codes").unwrap();
     let failing = dir.join("failing.fen");
     std::fs::write(
@@ -711,16 +682,8 @@ fn run_exits_the_same_way_whichever_engine_runs_it() {
     std::fs::write(&fine, "def main(stdout: Stdout):\n    stdout.print(1)\n").unwrap();
     for (program, succeeds) in [(&failing, false), (&fine, true)] {
         let path = program.to_str().unwrap();
-        let codes: Vec<Option<i32>> = [&["run", "--no-test", path][..], &["run", "--interp", path]]
-            .iter()
-            .map(|args| fennec(args, "").unwrap().status.code())
-            .collect();
-        let expected = Some(i32::from(!succeeds));
-        assert_eq!(codes, [expected; 2], "{path}: through LLVM, then the interpreter");
-    }
-    if llvm_ready_for_run() {
-        let output = fennec(&["run", "--no-test", failing.to_str().unwrap()], "").unwrap();
-        assert!(!text(&output.stderr).contains("note: running this with the interpreter"), "LLVM built it");
+        let code = fennec(&["run", "--no-test", path], "").unwrap().status.code();
+        assert_eq!(code, Some(i32::from(!succeeds)), "{path}");
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -749,15 +712,12 @@ fn main_gives_back_its_exit_code_on_every_engine() {
         let program = dir.join(format!("{name}.fen"));
         std::fs::write(&program, source).unwrap();
         let path = program.to_str().unwrap();
-        for engine in [&["run", "--no-test"][..], &["run", "--interp"]] {
-            let args: Vec<&str> = engine.iter().copied().chain([path]).collect();
-            let output = fennec(&args, "").unwrap();
-            let said = text(&output.stderr);
-            assert_eq!(output.status.code(), Some(code), "{name}, {engine:?}: {said}");
-            if name == "failing" {
-                assert!(said.starts_with("error: `main` failed: Broke(why=\"no\")"), "{engine:?}: {said}");
-                assert_eq!(text(&output.stdout), "before\n", "{engine:?}");
-            }
+        let output = fennec(&["run", "--no-test", path], "").unwrap();
+        let said = text(&output.stderr);
+        assert_eq!(output.status.code(), Some(code), "{name}: {said}");
+        if name == "failing" {
+            assert!(said.starts_with("error: `main` failed: Broke(why=\"no\")"), "{said}");
+            assert_eq!(text(&output.stdout), "before\n");
         }
         if llvm_ready_for_run() {
             let built = dir.join(name);
@@ -1416,9 +1376,10 @@ fn a_run_says_which_file_has_a_missing_methods_extension() {
     assert!(checked.status.success(), "{}", text(&checked.stderr));
 }
 
+/// A function a type parameter names, as in `T.make()`, runs natively.
 #[test]
-fn the_interpreter_says_a_type_parameters_function_needs_native_code() {
-    let dir = scratch("type_param_interp").unwrap();
+fn a_type_parameters_function_runs() {
+    let dir = scratch("type_param").unwrap();
     let program = dir.join("made.fen");
     std::fs::write(
         &program,
@@ -1426,12 +1387,9 @@ fn the_interpreter_says_a_type_parameters_function_needs_native_code() {
          def build[T: Made]() -> T:\n    T.make()\n\ndef main(stdout: Stdout):\n    stdout.print(build[Part]().x)\n",
     )
     .unwrap();
-    let output = fennec(&["run", "--interp", &program.to_string_lossy()], "").unwrap();
+    let output = fennec(&["run", "--no-test", &program.to_string_lossy()], "").unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    let shown = text(&output.stderr);
-    assert!(shown.contains("`T.make()` needs native code"), "{shown}");
-    assert!(shown.contains("run this without `--interp`"), "{shown}");
+    assert_eq!(text(&output.stdout), "7\n", "{}", text(&output.stderr));
 }
 
 #[test]
@@ -1556,8 +1514,6 @@ fn new_makes_a_kit_that_runs_and_passes_its_tests() {
     let run = fennec_in(&kit, &["run"], "").unwrap();
     assert!(run.status.success(), "{}", text(&run.stderr));
     assert_eq!(text(&run.stdout), "Hello from star_fox!\n");
-    let interpreted = fennec_in(&kit, &["run", "--interp"], "").unwrap();
-    assert_eq!(text(&interpreted.stdout), "Hello from star_fox!\n");
     let test = fennec_in(&kit, &["test"], "").unwrap();
     assert!(test.status.success(), "{}", text(&test.stderr));
     assert!(text(&test.stdout).ends_with("1 passed, 0 failed\n"));
@@ -1816,6 +1772,9 @@ def main(stdout: Stdout):
         case Ok(_): stdout.print(\"fine\")
 ";
 
+/// What `CASES_AFTER` prints, as the interpreter printed it.
+const CASES_PRINTED: &str = "green 1\nred red True red 1 False\nred True\nclosed\nfailed\n";
+
 /// What `fennec fix` makes of `CASES_BEFORE`: a dot wherever the type is known, and nothing where
 /// it isn't, or where a dot would mean something else.
 const CASES_AFTER: &str = "enum Color:
@@ -1878,7 +1837,7 @@ def main(stdout: Stdout):
 ";
 
 /// A case written with its type where the type is known doesn't compile, and `fennec fix` writes
-/// `.Case` there, which runs the same on every engine.
+/// `.Case` there, which runs as the interpreter ran it.
 #[test]
 fn fix_writes_leading_dots_where_the_type_is_known() {
     let dir = std::env::temp_dir().join(format!("fennec-cli-{}-short-cases", std::process::id()));
@@ -1890,16 +1849,15 @@ fn fix_writes_leading_dots_where_the_type_is_known() {
     let fixed = fennec(&["fix", &path], "").unwrap();
     let written = std::fs::read_to_string(&program).unwrap();
     let again = fennec(&["fix", &path], "").unwrap();
-    let [interpreted, native] =
-        [["run", "--interp"], ["run", "--no-test"]].map(|how| fennec(&[how[0], how[1], &path], "").unwrap());
+    let native = fennec(&["run", "--no-test", &path], "").unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(!before.status.success());
     assert!(text(&before.stderr).contains("the type here is known, so write"), "{}", text(&before.stderr));
     assert!(fixed.status.success(), "{}", text(&fixed.stderr));
     assert_eq!(written, CASES_AFTER);
     assert!(again.status.success() && again.stdout.is_empty(), "{}", text(&again.stdout));
-    assert!(interpreted.status.success(), "{}", text(&interpreted.stderr));
-    assert_eq!(text(&native.stdout), text(&interpreted.stdout), "{}", text(&native.stderr));
+    assert!(native.status.success(), "{}", text(&native.stderr));
+    assert_eq!(text(&native.stdout), CASES_PRINTED, "{}", text(&native.stderr));
 }
 
 /// In a kit, the leading dot of a case its own file declares comes to the checker with its enum
@@ -2226,25 +2184,23 @@ fn run_compiles_by_default_and_shows_output_before_it_reads_input() {
         "def main(stdout: Stdout, stdin: Stdin):\n    stdout.print(\"name?\")\n    stdout.print(stdin.lines())\n",
     )
     .unwrap();
-    for engine in [&["run"][..], &["run", "--interp"]] {
-        let mut child = crate::executables::fennec_command()
-            .args(engine)
-            .arg(&program)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        // The prompt arrives while the program is still waiting for its input.
-        let mut stdout = child.stdout.take().unwrap();
-        let mut prompt = [0; 6];
-        std::io::Read::read_exact(&mut stdout, &mut prompt).unwrap();
-        assert_eq!(&prompt, b"name?\n");
-        child.stdin.take().unwrap().write_all(b"fox\n").unwrap();
-        let mut rest = String::new();
-        std::io::Read::read_to_string(&mut stdout, &mut rest).unwrap();
-        assert_eq!(rest, "[\"fox\"]\n");
-        assert!(child.wait().unwrap().success());
-    }
+    let mut child = crate::executables::fennec_command()
+        .arg("run")
+        .arg(&program)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The prompt arrives while the program is still waiting for its input.
+    let mut stdout = child.stdout.take().unwrap();
+    let mut prompt = [0; 6];
+    std::io::Read::read_exact(&mut stdout, &mut prompt).unwrap();
+    assert_eq!(&prompt, b"name?\n");
+    child.stdin.take().unwrap().write_all(b"fox\n").unwrap();
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut stdout, &mut rest).unwrap();
+    assert_eq!(rest, "[\"fox\"]\n");
+    assert!(child.wait().unwrap().success());
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -2408,10 +2364,8 @@ fn a_shared_value_is_one_cell_however_its_reached() {
     let dir = scratch("shared").unwrap();
     let program = dir.join("account.fen");
     std::fs::write(&program, "shared Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n    def balance(self) -> int:\n        self.total\n\ndef pay(account: Account, amount: int):\n    account.add(amount)\n\ndef main(stdout: Stdout):\n    account = Account()\n    same = account\n    pay(account, 5)\n    same.add(10)\n    stdout.print(account.balance(), same.total, account)\n").unwrap();
-    for engine in ["--interp", "--no-test"] {
-        let output = fennec(&["run", engine, program.to_str().unwrap()], "").unwrap();
-        assert_eq!(text(&output.stdout), "15 15 Account(total=15)\n", "{engine}");
-    }
+    let output = fennec(&["run", "--no-test", program.to_str().unwrap()], "").unwrap();
+    assert_eq!(text(&output.stdout), "15 15 Account(total=15)\n", "{}", text(&output.stderr));
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -2428,11 +2382,9 @@ fn constants_are_worked_out_while_compiling() {
          stdout.print(SINE.len(), SINE[256], ORIGIN.y, SQUARES[4])\n",
     )
     .unwrap();
-    for how in [&["run"][..], &["run", "--interp"]] {
-        let output = fennec(&[how, &[path.as_str()]].concat(), "").unwrap();
-        assert_eq!(text(&output.stdout), "1024 1.0 -1.5 16\n", "{}", text(&output.stderr));
-        assert_eq!(text(&output.stderr), "");
-    }
+    let output = fennec(&["run", &path], "").unwrap();
+    assert_eq!(text(&output.stdout), "1024 1.0 -1.5 16\n", "{}", text(&output.stderr));
+    assert_eq!(text(&output.stderr), "");
 
     // One that takes too long is worked out when the program starts, with a hint.
     std::fs::write(
@@ -2505,12 +2457,10 @@ fn a_run_builds_u64_and_f32_natively() -> std::io::Result<()> {
     Ok(())
 }
 
-/// The interpreter would hold a `u8` as an `int` and miss where it overflows, so it refuses one,
-/// and so does `fennec test`, which may run tests there. A plain run builds it natively, where
-/// the overflow stops the program.
+/// A `u8` that overflows stops the program.
 #[test]
-fn the_interpreter_refuses_sized_numbers() -> std::io::Result<()> {
-    let dir = std::env::temp_dir().join(format!("fennec_interp_sized_{}", std::process::id()));
+fn a_sized_number_that_overflows_stops_the_program() -> std::io::Result<()> {
+    let dir = std::env::temp_dir().join(format!("fennec_sized_{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let program = dir.join("pixel.fen");
     std::fs::write(
@@ -2518,16 +2468,6 @@ fn the_interpreter_refuses_sized_numbers() -> std::io::Result<()> {
         "def main(stdout: Stdout):\n    mut pixel: u8 = 255\n    pixel += 1\n    stdout.print(pixel)\n",
     )?;
     let program = program.to_string_lossy().into_owned();
-    for command in [vec!["run", "--interp", &program], vec!["test", &program]] {
-        let refused = fennec(&command, "")?;
-        assert!(!refused.status.success(), "{command:?}");
-        let said = text(&refused.stderr);
-        assert!(
-            said.starts_with("error: the interpreter can't run sized numbers like u8"),
-            "{command:?}: {said}"
-        );
-        assert!(!text(&refused.stdout).contains("256"), "{command:?}");
-    }
     let ran = fennec(&["run", &program], "")?;
     assert!(!ran.status.success());
     assert!(

@@ -13,6 +13,7 @@
 ## test's server is done once no connection is waiting.
 
 from std import json
+from std.crypto import Secret
 from std.url import decode_query, unquote
 
 ## A failure of the network, with a case for each way it fails. `message()` says it in words.
@@ -67,6 +68,18 @@ export struct Response:
     ## Text that isn't JSON, or doesn't fit `T`, fails with a `ParseError` saying where.
     def json[T: Deserializable](self) -> T fails ParseError:
         json.native_loads[T](self.text(), names=None, extra=None)?
+
+## What a server shows to prove who it is: its certificate chain and its private key, as the text
+## of their PEM files. The program reads those with its own `Fs`, so no file access is hidden in
+## `std.net`, and the key is a `Secret`, so it can't be printed, logged or saved by accident.
+##
+## ```fennec
+## key = Secret.of(fs.read_text("key.pem")?)
+## certificate = Certificate(chain=fs.read_text("cert.pem")?, key=key)
+## ```
+export struct Certificate:
+    chain: str
+    key: Secret[str]
 
 ## One end of a TCP connection. Its methods, written in Rust: `read(n)` gives up to `n` bytes,
 ## or empty bytes once the other side is done; `read_line()` gives the next line without its

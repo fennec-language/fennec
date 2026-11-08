@@ -1,0 +1,7 @@
+error: printing this would show a secret: `key` in it is a `Secret`, which never shows its text
+ --> examples/errors/certificate_printed.fen:6:18
+  |
+6 |     stdout.print(certificate)
+  |                  ^^^^^^^^^^^
+  |
+  = help: to show it on purpose, write `.expose_secret()` where you mean to reveal it

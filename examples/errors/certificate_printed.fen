@@ -1,0 +1,6 @@
+from std.crypto import Secret
+from std.net import Certificate
+
+def main(stdout: Stdout):
+    certificate = Certificate(chain="chain", key=Secret.of("key"))
+    stdout.print(certificate)

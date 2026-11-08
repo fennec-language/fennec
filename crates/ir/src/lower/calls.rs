@@ -356,8 +356,11 @@ impl Lowering<'_> {
             // A generic intrinsic's copy, like `intrinsics.id_slot[Unit]`, is still the intrinsic.
             let intrinsic = function.split_once('[').map_or(function.as_str(), |(base, _)| base);
             if self.context.intrinsics.contains(intrinsic) {
-                if intrinsic == "intrinsics.channel_receive" {
-                    return self.channel_receive(dest, values, write_backs, span);
+                if matches!(
+                    intrinsic,
+                    "intrinsics.channel_receive" | "intrinsics.launch_end" | "intrinsics.launch"
+                ) {
+                    return self.lowered_intrinsic(intrinsic, dest, values, write_backs, span);
                 }
                 // One given something by `ref`, like `append_text(ref out, text)`, changes it, and
                 // it's put back after, as for any call.
@@ -379,32 +382,53 @@ impl Lowering<'_> {
         Ok(dest)
     }
 
-    /// `channel_receive[T](channel, timeout_ns, ref why)`: the message, taken into a `T` by the
-    /// backend with `why` set to how it went, then `Some` of it when `why` is 0, else `None`.
-    fn channel_receive(
+    /// The intrinsics the IR lowers itself, rather than leave to the backend as they are.
+    fn lowered_intrinsic(
         &mut self,
+        intrinsic: &str,
         dest: Option<LocalId>,
         values: Vec<Operand>,
         write_backs: Vec<WriteBack>,
         span: Span,
     ) -> Lowered<Option<LocalId>> {
-        let why = values.get(2).cloned().ok_or("`channel_receive` without its `why`")?;
+        match intrinsic {
+            "intrinsics.channel_receive" => {
+                let raw = ("intrinsics.channel_take", 2, 0);
+                self.taken_or_none(dest, values, write_backs, raw, span)
+            }
+            "intrinsics.launch_end" => {
+                let raw = ("intrinsics.launch_take", 3, 2);
+                self.taken_or_none(dest, values, write_backs, raw, span)
+            }
+            _ => self.launch_task(dest, &values, span).map(Some),
+        }
+    }
+
+    /// `channel_receive[T](channel, timeout_ns, ref why)`, the message, or
+    /// `launch_end[E](task, stop_after_ns, failed, ref why)`, the task's failure: taken into a `T`
+    /// by the backend's `raw` builtin, with `why` (the argument at `why_at`) set to how it went,
+    /// then `Some` of it when `why` is `some_when`, else `None`.
+    fn taken_or_none(
+        &mut self,
+        dest: Option<LocalId>,
+        values: Vec<Operand>,
+        write_backs: Vec<WriteBack>,
+        (raw, why_at, some_when): (&str, usize, i64),
+        span: Span,
+    ) -> Lowered<Option<LocalId>> {
+        let why = values.get(why_at).cloned().ok_or_else(|| format!("`{raw}` without its `why`"))?;
         let wanted = dest.map(|dest| self.local_type(dest));
         let Some(Type::Optional(item)) = wanted else {
-            return Err("it receives from a channel without keeping the message".to_owned());
+            return Err(format!("`{raw}` gives back something not kept as an optional"));
         };
         let taken = self.temporary(*item);
-        let take = InstKind::Builtin {
-            dest: Some(taken),
-            name: "intrinsics.channel_take".to_owned(),
-            args: values,
-            changes: true,
-        };
+        let take = InstKind::Builtin { dest: Some(taken), name: raw.to_owned(), args: values, changes: true };
         self.emit(take, span);
         let got = self.temporary(Type::Bool);
-        self.emit(InstKind::Binary { dest: got, op: BinOp::Eq, lhs: why, rhs: Operand::Int(0) }, span);
+        let rhs = Operand::Int(some_when);
+        self.emit(InstKind::Binary { dest: got, op: BinOp::Eq, lhs: why, rhs }, span);
         self.write_back(write_backs, span)?;
-        let dest = dest.ok_or("a message no one keeps")?;
+        let dest = dest.ok_or("what's taken, kept by no one")?;
         let (some, none, join) = (self.new_block(), self.new_block(), self.new_block());
         self.finish(Terminator::Branch { cond: Operand::Local(got), then: some, otherwise: none });
         self.current = some;

@@ -465,8 +465,9 @@ fn taking(write: i64) -> &'static str {
 }
 
 /// `fennec_replay_lock(cell, write)`: in a replay, waits for this task's turn to take `cell`'s
-/// lock, to write if `write` is 1. Native code calls it before trying for the lock, only while the
-/// run is recorded or replayed. A replay that's diverged fails.
+/// lock, to write if `write` is 1. The turn is this task's until `fennec_replay_locked`, so no
+/// other task can take the lock first. Native code calls it before trying for the lock, only while
+/// the run is recorded or replayed. A replay that's diverged fails.
 pub extern "C" fn replay_lock(cell: i64, write: i64) {
     let place = with_slot(u64::try_from(cell).unwrap_or(0), |slot| slot.replay.clone()).flatten();
     if let Err(why) = crate::replay::turn(place.as_deref(), taking(write)) {
@@ -474,8 +475,9 @@ pub extern "C" fn replay_lock(cell: i64, write: i64) {
     }
 }
 
-/// `fennec_replay_locked(cell, write)`: in a recording, logs that this task has taken `cell`'s
-/// lock, called with it held, so the log has the order the lock was taken in.
+/// `fennec_replay_locked(cell, write)`: called with `cell`'s lock held. In a recording, logs that
+/// this task has taken it, so the log has the order it was taken in. In a replay, ends this task's
+/// turn, so the next one's can start.
 pub extern "C" fn replay_locked(cell: i64, write: i64) {
     let place = with_slot(u64::try_from(cell).unwrap_or(0), |slot| slot.replay.clone()).flatten();
     crate::replay::met(place.as_deref(), taking(write), 0);

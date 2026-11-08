@@ -8275,14 +8275,14 @@ fn postgres_scripted(answers: Vec<Vec<u8>>) -> std::io::Result<(u16, std::sync::
         let mut sent = 0;
         for (at, answer) in answers.iter().enumerate() {
             let Some(kinds) = postgres_flight(&mut stream, at == 0) else { break };
-            sent += kinds.iter().filter(|kind| **kind == b'p').count();
+            sent += usize::from(kinds.contains(&b'p'));
             if stream.write_all(answer).is_err() {
                 break;
             }
         }
         // What comes after the script, like a password it asked for, or the goodbye.
         while let Some(kinds) = postgres_flight(&mut stream, false) {
-            sent += kinds.iter().filter(|kind| **kind == b'p').count();
+            sent += usize::from(kinds.contains(&b'p'));
         }
         let _ = done.send(sent);
     });

@@ -132,12 +132,25 @@ pub(crate) fn place(kind: &str) -> Option<Arc<str>> {
     })
 }
 
-/// In a recording, logs that the running task did `what` at `place`, coming to `outcome`. It's
-/// called where what it did takes effect, with the place held, so the log has them in the order
-/// they happened.
+/// Says the running task has done `what` at `place`, coming to `outcome`. It's called where what
+/// it did takes effect, with the place held. In a recording, that logs it, so the log has them in
+/// the order they happened. In a replay, that ends the task's turn, so the next task's turn only
+/// starts once this one's has taken effect: its message is queued, or its lock is held.
 pub(crate) fn met(place: Option<&str>, what: &str, outcome: i64) {
-    let (Some(place), Mode::Record(file)) = (place, mode()) else { return };
-    log(file, place, &format!("{} {what}", running()), &outcome.to_le_bytes());
+    let Some(place) = place else { return };
+    match mode() {
+        Mode::Off => {}
+        Mode::Record(file) => log(file, place, &format!("{} {what}", running()), &outcome.to_le_bytes()),
+        Mode::Replay(player) => end_turn(player, place),
+    }
+}
+
+/// Ends the turn at the front of `place`'s stream.
+fn end_turn(player: &Mutex<Player>, place: &str) {
+    let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(stream) = player.streams.get_mut(place) {
+        stream.pop_front();
+    }
 }
 
 /// How long a replay waits for its turn at a place before saying it's diverged: long enough for
@@ -145,8 +158,9 @@ pub(crate) fn met(place: Option<&str>, what: &str, outcome: i64) {
 const TURN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// In a replay, waits until it's the running task's turn to do `what` at `place`, and gives back
-/// what it came to in the recording. `Ok(None)` when this isn't a replay. A replay that asks for
-/// something the recording didn't do there has diverged, and says so.
+/// what it came to in the recording. The turn stays this task's until `met` ends it. `Ok(None)`
+/// when this isn't a replay. A replay that asks for something the recording didn't do there has
+/// diverged, and says so.
 pub(crate) fn turn(place: Option<&str>, what: &str) -> Result<Option<i64>, String> {
     let (Some(place), Mode::Replay(player)) = (place, mode()) else { return Ok(None) };
     turn_in(player, (place, what), TURN_PATIENCE, crate::embed::make_way).map(Some)
@@ -164,9 +178,9 @@ fn turn_in(
     let started = std::time::Instant::now();
     loop {
         let waiting_for = {
-            let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
-            let stream = player.streams.get_mut(place);
-            match stream.as_ref().and_then(|stream| stream.front()).map(|(next, _)| next.clone()) {
+            let player = player.lock().unwrap_or_else(PoisonError::into_inner);
+            let front = player.streams.get(place).and_then(|stream| stream.front());
+            match front.map(|(next, payload)| (next.clone(), payload.clone())) {
                 None => {
                     return Err(format!(
                         "this replay's task asked for `{asked}` at {place}, where its recording had nothing \
@@ -174,13 +188,12 @@ fn turn_in(
                          recorded, or the program has changed"
                     ));
                 }
-                Some(next) if next == asked => {
-                    let (_, payload) = stream.and_then(VecDeque::pop_front).unwrap_or_default();
+                Some((next, payload)) if next == asked => {
                     let bytes: [u8; 8] =
                         payload.try_into().map_err(|_| format!("this replay's {place} is damaged"))?;
                     return Ok(i64::from_le_bytes(bytes));
                 }
-                Some(next) => next,
+                Some((next, _)) => next,
             }
         };
         if started.elapsed() > patience {

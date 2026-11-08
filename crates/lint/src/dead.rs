@@ -226,9 +226,13 @@ fn changed_directly(body: &[Stmt]) -> HashSet<String> {
     changed_by_statements(body, &mut found);
     fennec_syntax::read::in_stmts(body, &mut |expr| {
         // A `match` is an expression, so its arms' statements are only found from here.
-        if let ExprKind::Match { arms, .. } = &expr.kind {
+        if let ExprKind::Match { subject, arms, .. } = &expr.kind {
             for arm in arms {
                 changed_by_statements(&arm.body, &mut found);
+            }
+            // `case .Button(ref clicks):` changes the field in what the `match` is over.
+            if arms.iter().any(|arm| arm.pattern.holds_ref()) {
+                found.extend(root(subject).map(str::to_owned));
             }
         }
         if let ExprKind::Call { callee, args } = &expr.kind {

@@ -16,6 +16,7 @@ use fennec_syntax::{Arg, CompKind, Diagnostic, Expr, ExprKind, FnDef, Span, Stmt
 use crate::Body;
 use crate::builtins;
 use crate::checker::Checker;
+use crate::types::Type;
 
 /// A step along a place: a field, or an index, which could be any item.
 type Step = Option<String>;
@@ -179,6 +180,7 @@ impl Loops<'_, '_> {
 
     fn argument_changes_in(&mut self, expr: &Expr, body: Option<&Body>) {
         if let ExprKind::Call { callee, args } = &expr.kind {
+            self.receiver_given_again(callee, args, body);
             let held = self.call_changes(callee, args, body);
             if !held.is_empty() {
                 for arg in args {
@@ -206,6 +208,32 @@ impl Loops<'_, '_> {
         }
         for inner in crate::effects::children(expr) {
             self.argument_changes_in(inner, body);
+        }
+    }
+
+    /// Reports each argument that reaches a part of its receiver the `ref self` method changes,
+    /// as `p.change(p)` and `b.grab(b.items)` would: the method can change or free what the
+    /// argument is read from. A number is passed as its value, so `counter.add(counter.step)` is
+    /// fine, and `unit.keep(unit.home)` is when `keep` leaves `home` alone.
+    fn receiver_given_again(&mut self, callee: &Expr, args: &[Arg], body: Option<&Body>) {
+        let ExprKind::Attr { object, name, .. } = &callee.kind else { return };
+        let Some(called_on) = place(object) else { return };
+        let Some(body) = body else { return };
+        let Some(owner) = body.expr(object.span).and_then(Type::type_name) else { return };
+        let Some((key, entry)) = self.checker.program.method(owner, name) else { return };
+        if !entry.def.params.first().is_some_and(|param| param.is_self && param.is_mut) {
+            return;
+        }
+        let changes = self.summary(&key).remove("self").unwrap_or_default();
+        for arg in args.iter().filter(|arg| !arg.is_mut && !passed_as_a_value(body.expr(arg.value.span))) {
+            let Some(given) = place(&arg.value) else { continue };
+            if changes.iter().any(|inner| called_on.under(inner).overlaps(&given))
+                && !written_apart(&arg.value, object)
+            {
+                let (first, second) = (written(&arg.value, false), written(object, false));
+                let message = format!("{first} overlaps {second}, which this method changes");
+                self.problems.push(Diagnostic::new(message, arg.value.span).with_help(RECEIVER_FIX));
+            }
         }
     }
 
@@ -633,9 +661,16 @@ const ARGUMENT_CHANGES_FIX: &str =
 const OVERLAP_FIX: &str = "a `ref` argument needs its place to itself: give the other `copy(...)` of what \
 it reads, or make the changes one at a time";
 
+const RECEIVER_FIX: &str = "a `ref self` method needs what it changes to itself: pass `copy(...)` of it";
+
 /// Two `ref`s into one collection, at indexes written apart or not.
 const ITEMS_FIX: &str = "two items of one collection are never both `ref`, even at different indexes: \
 make the changes one at a time";
+
+/// Whether a value is passed as itself, leaving nothing behind that the callee could change.
+fn passed_as_a_value(ty: Option<&Type>) -> bool {
+    matches!(ty, Some(Type::Bool | Type::Int | Type::Float | Type::Sized(_) | Type::None | Type::Unknown))
+}
 
 /// An argument that names a place, in backticks as it's written.
 fn written(expr: &Expr, is_mut: bool) -> String {

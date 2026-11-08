@@ -1251,9 +1251,9 @@ def main(stdout: Stdout):
     # What's given to the call comes from what's changed.
     mut own = [unit(1), unit(2), unit(3)]
     own[0].grow(own[1].hp)
-    own[0].grown_by(own[0].tags)
+    own[0].grown_by(copy(own[0].tags))
     own[1].grown_by(own[0].tags)
-    own[2].absorb(own[2])
+    own[2].absorb(copy(own[2]))
     own[2].absorb(own[0])
     first = own[1]
     own[1].grown_by(first.tags)

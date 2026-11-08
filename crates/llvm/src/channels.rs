@@ -27,6 +27,26 @@ impl Emit<'_, '_, '_> {
                 self.leave_if_failed();
                 self.assign(dest.ok_or("a channel no one keeps")?, &made)
             }
+            ("intrinsics.channel_new_every", [size]) => {
+                let (size, _) = self.operand(size)?;
+                self.declare("declare i64 @fennec_channel_new_every(i64) nounwind");
+                let made = self.temp();
+                self.line(&format!("{made} = call i64 @fennec_channel_new_every(i64 {size})"));
+                // A size below 1 fails.
+                self.leave_if_failed();
+                self.assign(dest.ok_or("a channel no one keeps")?, &made)
+            }
+            ("intrinsics.channel_listen", [channel, drop_oldest]) => {
+                let ((channel, _), (drop_oldest, _)) = (self.operand(channel)?, self.operand(drop_oldest)?);
+                let flag = self.temp();
+                self.line(&format!("{flag} = zext i1 {drop_oldest} to i64"));
+                self.declare("declare i64 @fennec_channel_listen(i64, i64) nounwind");
+                let listener = self.temp();
+                self.line(&format!(
+                    "{listener} = call i64 @fennec_channel_listen(i64 {channel}, i64 {flag})"
+                ));
+                self.assign(dest.ok_or("a listener no one keeps")?, &listener)
+            }
             ("intrinsics.channel_close" | "intrinsics.channel_free", [channel]) => {
                 let (channel, _) = self.operand(channel)?;
                 let call = name.replace("intrinsics.", "fennec_");

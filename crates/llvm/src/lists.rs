@@ -760,7 +760,9 @@ impl Emit<'_, '_, '_> {
             }
             _ => false,
         };
-        held != wanted && (self.is_one_of_several(wanted) || (result(held) && result(wanted)))
+        // What's in a one-word optional is that word: taking it out widens nothing.
+        let inside = matches!(held, Kind::Maybe(inner) if **inner == *wanted);
+        held != wanted && !inside && (self.is_one_of_several(wanted) || (result(held) && result(wanted)))
     }
 
     /// `value` as a `wanted`, with owners of its own: a block, or an address in this frame.

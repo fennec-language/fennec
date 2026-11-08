@@ -5,7 +5,7 @@ use super::Module;
 
 pub(crate) const MODULE: Module = Module {
     name: "concurrent",
-    names: &["channel", "Channel", "Inbox", "Sender", "Closed", "Timeout", "Crashed"],
+    names: &["channel", "Channel", "Inbox", "Sender", "Closed", "Timeout", "Crashed", "Delivery", "Behind"],
     source: include_str!("concurrent.fen"),
     gives: &[],
 };

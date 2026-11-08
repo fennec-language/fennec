@@ -212,6 +212,17 @@ export def stop(message: str)
 @intrinsic
 export def channel_new(size: int) -> int
 
+## A new channel to every listener, keeping the last `size` messages, by its number. Sending on
+## it never waits: when it's full, the oldest message goes.
+@intrinsic
+export def channel_new_every(size: int) -> int
+
+## Starts listening to channel `channel` from the next message sent, giving back the number to
+## receive from in its place. A listener that falls behind fails, unless `drop_oldest`, when it
+## goes on from the oldest message kept. Of a channel to one receiver, it's the channel's own.
+@intrinsic
+export def channel_listen(channel: int, drop_oldest: bool) -> int
+
 ## Sends `message` on channel `channel`, waiting while it's full, for at most `timeout_ns`, or as
 ## long as it takes when that's -1. 0 is sent, 1 closed and 2 timed out.
 @intrinsic

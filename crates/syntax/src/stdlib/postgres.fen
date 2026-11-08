@@ -1,0 +1,265 @@
+## `std.postgres`: a Postgres database over the network, written in Fennec on `std.net`, under
+## `std.sql`. It's built a part at a time. This part speaks Postgres's messages, version 3 of its
+## protocol, with no network of its own: `startup`, `password` and `terminate` give the bytes a
+## client sends, and a `PgReader` is fed the bytes a server sends and gives back each whole
+## message, so the same code runs against a socket or against bytes a test wrote.
+##
+## ```fennec
+## mut reader = PgReader()
+## reader.feed(conn.read(65536)?)
+## message = reader.next()?
+## ```
+
+from std.intrinsics import bytes_text
+from std.sql import SqlError
+
+## The protocol's version, 3.0, as a startup message gives it.
+PROTOCOL = 196608
+
+## The longest message a reader takes, so a server can't make it hold more than this.
+LONGEST = 1073741824
+
+## A message a Postgres server sends.
+export enum PgMessage:
+    ## The client is in.
+    AuthOk
+    ## The server wants the password as it is.
+    AuthCleartext
+    ## The server wants SASL, with one of these mechanisms, like `SCRAM-SHA-256`.
+    AuthSasl(mechanisms: list[str])
+    ## The server's next SASL message.
+    AuthSaslContinue(data: bytes)
+    ## The server's last SASL message, which proves it knows the password too.
+    AuthSaslFinal(data: bytes)
+    ## A way to sign in this client doesn't speak, by its number.
+    AuthOther(code: int)
+    ## One of the server's settings, like `server_version`.
+    Setting(name: str, value: str)
+    ## What cancels this connection's query from another connection.
+    BackendKey(process: int, secret: int)
+    ## Ready for the next query: `I` idle, `T` in a transaction, `E` in a failed one.
+    Ready(status: str)
+    ## A failure, by its fields' codes: `C` the SQLSTATE, `M` the message, `S` how bad.
+    Failed(fields: dict[str, str])
+    ## A notice, by its fields' codes, as a failure's.
+    Notice(fields: dict[str, str])
+    ## The columns rows will have: each one's name and its type's number.
+    Columns(names: list[str], types: list[int])
+    ## A row's cells, as text. A cell that's null has `False` in `present` and empty bytes.
+    Row(cells: list[bytes], present: list[bool])
+    ## A query finished, saying what it did, like `INSERT 0 1`.
+    Done(tag: str)
+    ParseComplete
+    BindComplete
+    NoData
+    EmptyQuery
+    ## Any other message, by its type byte.
+    Other(kind: int)
+
+## The startup message: the protocol's version, then who's signing in and to which database.
+export def startup(user: str, database: str) -> bytes:
+    mut out = PgWriter()
+    out.int32(PROTOCOL)
+    for name, value in [("user", user), ("database", database)]:
+        out.text(name)
+        out.text(value)
+    out.byte(0)
+    out.done(-1)
+
+## The password, as it is, for a server that asks for it that way.
+export def password(text: str) -> bytes:
+    mut out = PgWriter()
+    out.text(text)
+    out.done(112)
+
+## The first SASL message: the mechanism chosen, then its first message.
+export def sasl_first(mechanism: str, data: bytes) -> bytes:
+    mut out = PgWriter()
+    out.text(mechanism)
+    out.int32(data.len())
+    out.bytes(data)
+    out.done(112)
+
+## A later SASL message.
+export def sasl_next(data: bytes) -> bytes:
+    mut out = PgWriter()
+    out.bytes(data)
+    out.done(112)
+
+## Says the client is done, before it closes the connection.
+export def terminate() -> bytes:
+    PgWriter().done(88)
+
+## Writes a message's body, then gives the message: its type byte, unless it's the startup
+## message, which has none, then its length, then the body.
+struct PgWriter:
+    _body = list[int]()
+
+    def byte(ref self, value: int):
+        self._body.append(value)
+
+    def int32(ref self, n: int):
+        for shift in [24, 16, 8, 0]:
+            self._body.append((n >> shift) & 255)
+
+    def bytes(ref self, data: bytes):
+        for each in data:
+            self._body.append(each)
+
+    ## Text, then the zero byte that ends it.
+    def text(ref self, text: str):
+        self.bytes(text.encode())
+        self._body.append(0)
+
+    ## The message of type `kind`, or the startup message for -1.
+    def done(self, kind: int) -> bytes:
+        size = self._body.len() + 4
+        mut head = list[int]() if kind < 0 else [kind]
+        for shift in [24, 16, 8, 0]:
+            head.append((size >> shift) & 255)
+        bytes(head + self._body)
+
+## Reads a server's messages from the bytes it's sent so far: `feed` takes more, and `next` gives
+## the next whole message, or `None` until there's enough for one.
+export struct PgReader:
+    _data = bytes([])
+    _at = 0
+
+    ## Adds bytes the server sent.
+    def feed(ref self, more: bytes):
+        self._data = self._data[self._at:self._data.len()] + more
+        self._at = 0
+
+    ## The next whole message, or `None` until there's enough for one. A message that isn't what a
+    ## server sends fails with `SqlError.Failed`.
+    def next(ref self) -> PgMessage? fails SqlError:
+        if self._data.len() - self._at < 5: return None
+        kind = self._data[self._at]
+        size = int32_at(self._data, self._at + 1)
+        if size < 4 or size > LONGEST:
+            fail .Failed(reason=f"the server sent a message {size} bytes long")
+        if self._data.len() - self._at < 1 + size: return None
+        body = self._data[self._at + 5:self._at + 1 + size]
+        self._at += 1 + size
+        message(kind, body)?
+
+## The message of type `kind` with `body`.
+def message(kind: int, body: bytes) -> PgMessage fails SqlError:
+    mut part = PgBody(_data=body)
+    # `R`, `S`, `K`, `Z`, `E`, `N`, `T`, `D`, `C`, `1`, `2`, `n`, `I`
+    if kind == 82: return authentication(ref part)?
+    if kind == 83:
+        name = part.text()?
+        return .Setting(name=name, value=part.text()?)
+    if kind == 75:
+        process = part.int32()?
+        return .BackendKey(process=process, secret=part.int32()?)
+    if kind == 90: return .Ready(status=bytes_text(body, 0, 1) if body.len() == 1 else "")
+    if kind == 69: return .Failed(fields=part.fields()?)
+    if kind == 78: return .Notice(fields=part.fields()?)
+    if kind == 84: return columns(ref part)?
+    if kind == 68: return row(ref part)?
+    if kind == 67: return .Done(tag=part.text()?)
+    if kind == 49: return .ParseComplete
+    if kind == 50: return .BindComplete
+    if kind == 110: return .NoData
+    if kind == 73: return .EmptyQuery
+    .Other(kind=kind)
+
+def authentication(ref part: PgBody) -> PgMessage fails SqlError:
+    code = part.int32()?
+    if code == 0: return .AuthOk
+    if code == 3: return .AuthCleartext
+    if code == 10:
+        mut mechanisms = list[str]()
+        while True:
+            mechanism = part.text()?
+            if mechanism == "": break
+            mechanisms.append(mechanism)
+        return .AuthSasl(mechanisms=mechanisms)
+    if code == 11: return .AuthSaslContinue(data=part.rest())
+    if code == 12: return .AuthSaslFinal(data=part.rest())
+    .AuthOther(code=code)
+
+def columns(ref part: PgBody) -> PgMessage fails SqlError:
+    count = part.int16()?
+    mut names = list[str]()
+    mut types = list[int]()
+    for _ in range(count):
+        names.append(part.text()?)
+        # The table and column it's from, then its type, size, modifier and format.
+        _ = part.int32()?
+        _ = part.int16()?
+        types.append(part.int32()?)
+        _ = part.int16()?
+        _ = part.int32()?
+        _ = part.int16()?
+    .Columns(names=names, types=types)
+
+def row(ref part: PgBody) -> PgMessage fails SqlError:
+    count = part.int16()?
+    mut cells = list[bytes]()
+    mut present = list[bool]()
+    for _ in range(count):
+        size = part.int32()?
+        present.append(size >= 0)
+        cells.append(part.take(size)? if size >= 0 else bytes([]))
+    .Row(cells=cells, present=present)
+
+## The body of one message, read from its start.
+struct PgBody:
+    _data: bytes
+    _at = 0
+
+    def _short(self) -> SqlError:
+        SqlError.Failed(reason="the server sent a message that ends too soon")
+
+    def int16(ref self) -> int fails SqlError:
+        if self._data.len() - self._at < 2: fail self._short()
+        n = (self._data[self._at] << 8) | self._data[self._at + 1]
+        self._at += 2
+        n - 65536 if n >= 32768 else n
+
+    def int32(ref self) -> int fails SqlError:
+        if self._data.len() - self._at < 4: fail self._short()
+        n = int32_at(self._data, self._at)
+        self._at += 4
+        n
+
+    def take(ref self, size: int) -> bytes fails SqlError:
+        if size < 0 or self._data.len() - self._at < size: fail self._short()
+        taken = self._data[self._at:self._at + size]
+        self._at += size
+        taken
+
+    ## Text up to the zero byte that ends it.
+    def text(ref self) -> str fails SqlError:
+        mut end = self._at
+        while end < self._data.len() and self._data[end] != 0:
+            end += 1
+        if end >= self._data.len(): fail self._short()
+        text = bytes_text(self._data, self._at, end)
+        if text == "" and end > self._at:
+            fail SqlError.Failed(reason="the server sent text that isn't UTF-8")
+        self._at = end + 1
+        text
+
+    ## What's left.
+    def rest(ref self) -> bytes:
+        taken = self._data[self._at:self._data.len()]
+        self._at = self._data.len()
+        taken
+
+    ## A failure's or a notice's fields: each a one-letter code and its text, ended by a zero byte.
+    def fields(ref self) -> dict[str, str] fails SqlError:
+        mut found = dict[str, str]()
+        while self._at < self._data.len() and self._data[self._at] != 0:
+            code = bytes_text(self._data, self._at, self._at + 1)
+            self._at += 1
+            found[code] = self.text()?
+        found
+
+## The signed int32 at `at`, high byte first.
+def int32_at(data: bytes, at: int) -> int:
+    n = (data[at] << 24) | (data[at + 1] << 16) | (data[at + 2] << 8) | data[at + 3]
+    n - 4294967296 if n >= 2147483648 else n

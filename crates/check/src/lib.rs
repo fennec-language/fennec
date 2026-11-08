@@ -52,6 +52,7 @@ mod shared;
 mod stdlib;
 mod stmt;
 mod sum;
+mod tuple_lowering;
 mod types;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -61,6 +62,7 @@ use fennec_syntax::{Diagnostic, Expr, ExprKind, Item, Module, Span};
 pub use messages::missing_method;
 pub use named::add_pattern_fixes;
 pub use privacy::add_rename_fixes;
+pub use tuple_lowering::tuple_function;
 pub use types::{Num, Type};
 
 /// Checks a parsed module. Returns the signature of every function and method, or every
@@ -431,6 +433,23 @@ fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, 
     }
 }
 
+/// What a checked program uses that the interpreter can't run: a value of any sized number type,
+/// which it would hold as an `int` or a `float`, missing where one overflows. Native code runs them.
+#[must_use]
+pub fn interpreter_refuses(signatures: &Signatures) -> Option<Diagnostic> {
+    fn holds(ty: &Type) -> bool {
+        matches!(ty, Type::Sized(_)) || ty.children().into_iter().any(holds)
+    }
+    let found = signatures.types.functions.values().flat_map(|body| &body.exprs);
+    let ((start, end), ty) =
+        found.filter(|(_, ty)| holds(ty)).min_by_key(|((start, end), _)| (*start, *end))?;
+    let span = Span { start: *start, end: *end };
+    Some(
+        Diagnostic::new(format!("the interpreter can't run sized numbers like {ty}"), span)
+            .with_help("build it with `fennec build`, or run it with `fennec run`, which builds it natively"),
+    )
+}
+
 /// What a checked program uses that only the checker takes so far, which nothing can run or
 /// build yet: a value of a sized number type.
 #[must_use]
@@ -442,8 +461,9 @@ pub fn not_built_yet(signatures: &Signatures) -> Option<Diagnostic> {
 /// checker takes so far: a program using one checks, but nothing runs it yet, rather than run it
 /// as an `int` that never overflows where it should.
 fn sized_value(signatures: &Signatures) -> Option<Diagnostic> {
+    // The integers up to 32 bits run; `u64` and `f32` don't yet.
     fn holds(ty: &Type) -> bool {
-        matches!(ty, Type::Sized(_)) || ty.children().into_iter().any(holds)
+        matches!(ty, Type::Sized(Num::U64 | Num::F32)) || ty.children().into_iter().any(holds)
     }
     let found = signatures.types.functions.values().flat_map(|body| &body.exprs);
     let ((start, end), ty) =
@@ -553,7 +573,12 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
     let nested = lend_lowering::nest(module, &checked.opened_apart);
     let sources_written = lend_lowering::lower(module, &checked.sources);
     let counted = enumerate_lowering::lower(module);
-    if (lock_lowering::lower(module, &checked.shared_values) || sources_written || counted || nested)
+    let tuples = tuple_lowering::lower(module, &checked.saved_types);
+    if (lock_lowering::lower(module, &checked.shared_values)
+        || sources_written
+        || counted
+        || nested
+        || tuples)
         && let Ok(again) = checker::Checker::new(module).run(checker::Scope::Everything)
     {
         return resolved(module, again);
@@ -608,6 +633,8 @@ pub struct Checked {
     native_formats: BTreeMap<(u32, u32), String>,
     /// The `json=` values of HTTP calls native code writes in Fennec, by the value's span.
     native_json_bodies: BTreeSet<(u32, u32)>,
+    /// Every type asked whether it saves or loads.
+    saved_types: BTreeSet<Type>,
     /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
     not_equals: BTreeSet<(u32, u32)>,
     /// The fields and method calls on a value that might be missing, in a chain an `else`

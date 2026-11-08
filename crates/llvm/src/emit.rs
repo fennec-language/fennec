@@ -739,6 +739,9 @@ impl Emit<'_, '_, '_> {
             self.line("%err_clear = icmp eq ptr %err_in, null");
             self.line("call void @llvm.assume(i1 %err_clear)");
         }
+        if self.ticks() {
+            self.start_ticks();
+        }
         self.line("br label %bb0");
         // Which blocks lead to each, so a lookup can carry on into a block every way in has
         // come through, once each of those is written.
@@ -823,6 +826,11 @@ impl Emit<'_, '_, '_> {
                 && matches!(self.kinds.get(list), Some(Kind::List(_)))
             {
                 self.reserve(LocalId(list), &limit)?;
+            }
+            // Every loop goes back to a block written no later than where it goes from, so that's
+            // where a task counts a turn.
+            if self.ticks() && block.end.targets().iter().any(|next| next.0 <= at) {
+                self.tick();
             }
             self.terminator(&block.end)?;
         }
@@ -1358,6 +1366,42 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// The sized number type a local holds, if it's one.
+    pub(crate) fn sized(&self, local: LocalId) -> Option<fennec_check::Num> {
+        match self.function.locals.get(local.0).map(|local| &local.ty) {
+            Some(fennec_check::Type::Sized(num)) => Some(*num),
+            _ => None,
+        }
+    }
+
+    /// Stops the program as an overflow, when an integer worked out for a local of a sized type
+    /// doesn't fit it.
+    pub(crate) fn check_size(&mut self, dest: LocalId, value: &str, span: Span) {
+        let Some(num) = self.sized(dest) else { return };
+        let Some((least, most)) = num.range() else { return };
+        // One unsigned comparison: the value less the least is in range only when it's below
+        // the range's width.
+        let (shifted, bad) = (self.temp(), self.temp());
+        self.line(&format!("{shifted} = sub i64 {value}, {least}"));
+        self.line(&format!("{bad} = icmp ugt i64 {shifted}, {}", most - least));
+        let ty = fennec_check::Type::Sized(num);
+        let said = format!("this calculation overflows {}, which holds {least} to {most}", article_of(&ty));
+        let text = self.literal(&said);
+        self.declare("declare void @fennec_stop(ptr, i64, i64) #1");
+        let (over, fits) = (self.label("over"), self.label("fits"));
+        self.line(&format!("br i1 {bad}, label %{over}, label %{fits}, !prof !0"));
+        self.start_block(&over);
+        let (place, args) = self.span_values(&over, span);
+        for line in place.lines() {
+            self.line(line.trim_start());
+        }
+        self.line(&format!("call void @fennec_stop(ptr {text}, {args})"));
+        self.next_check(span, Some(CheckKind::Overflow));
+        let failed = self.failed_exit();
+        self.line(&failed);
+        self.start_block(&fits);
+    }
+
     pub(crate) fn checked_add(&mut self, a: &str, b: &str, span: Span) -> String {
         self.checked("sadd", a, b, span)
     }
@@ -1403,7 +1447,14 @@ impl Emit<'_, '_, '_> {
         }
         let optional = (kind == Kind::MaybeText, b_kind == Kind::MaybeText);
         let value = match kind {
-            Kind::Int => self.int_binary(dest, op, (&a, &b), rhs, span)?,
+            Kind::Int => {
+                let value = self.int_binary(dest, op, (&a, &b), rhs, span)?;
+                // What's worked out in a word has to fit its size; the bits of two that do, do.
+                if !matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) {
+                    self.check_size(dest, &value, span);
+                }
+                value
+            }
             Kind::Str | Kind::MaybeText
                 if matches!(op, BinOp::Eq | BinOp::NotEq) && (optional.0 || optional.1) =>
             {
@@ -2000,14 +2051,14 @@ impl Emit<'_, '_, '_> {
                 self.regex_builtin(dest, name, args, span)
             }
             "json.dumps" | "json.loads" | "toml.dumps" | "toml.loads" => {
-                self.json_builtin(dest, name, args, span)
+                Err(crate::json::not_saved_natively(name))
             }
             named
                 if ["json.dumps.", "json.loads.", "toml.dumps.", "toml.loads."]
                     .iter()
                     .any(|format| named.starts_with(format)) =>
             {
-                self.std_call(dest, name, args, span)
+                Err(crate::json::not_saved_natively(name))
             }
             pure if pure.starts_with("crypto.")
                 || pure.starts_with("compress.")
@@ -2230,6 +2281,16 @@ impl Emit<'_, '_, '_> {
                         self.line(&format!("{temp} = fneg double {value}"));
                         temp
                     }
+                    // An unsigned size's bits flip within its width, so it stays in range.
+                    (UnaryOp::BitNot, Kind::Int)
+                        if let Some(num) = self.sized(*dest)
+                            && num.is_unsigned() =>
+                    {
+                        let (_, most) = num.range().unwrap_or((0, 0));
+                        let temp = self.temp();
+                        self.line(&format!("{temp} = xor i64 {value}, {most}"));
+                        temp
+                    }
                     (UnaryOp::BitNot, Kind::Int) => {
                         let temp = self.temp();
                         self.line(&format!("{temp} = xor i64 {value}, -1"));
@@ -2242,6 +2303,9 @@ impl Emit<'_, '_, '_> {
                     }
                     (_, other) => return Err(format!("it uses a unary operator on {other:?}")),
                 };
+                if *op == UnaryOp::Neg {
+                    self.check_size(*dest, &result, span);
+                }
                 self.assign(*dest, &result)
             }
             InstKind::Binary { dest, op, lhs, rhs } => self.binary(*dest, *op, lhs, rhs, span),
@@ -2825,4 +2889,12 @@ fn is_attempt(name: &str) -> bool {
     name.strip_prefix("test:")
         .and_then(|rest| rest.strip_suffix("_attempt"))
         .is_some_and(|number| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// A sized number type's name with its article, read letter by letter: "a u8", "an i32".
+fn article_of(ty: &fennec_check::Type) -> String {
+    match ty {
+        fennec_check::Type::Sized(num) if num.is_unsigned() => format!("a {ty}"),
+        _ => format!("an {ty}"),
+    }
 }

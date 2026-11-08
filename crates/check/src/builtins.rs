@@ -13,7 +13,7 @@ use crate::{ParamType, Signature};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most). Standard library
 /// functions, like `json.loads`, are in `stdlib`, and exist only once imported.
-const BUILTINS: [(&str, usize, usize); 23] = [
+const BUILTINS: [(&str, usize, usize); 30] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("all", 1, 1),
@@ -21,6 +21,13 @@ const BUILTINS: [(&str, usize, usize); 23] = [
     ("bytes", 0, 1),
     ("enumerate", 1, 1),
     ("float", 1, 1),
+    ("i8", 1, 1),
+    ("i16", 1, 1),
+    ("i32", 1, 1),
+    ("u8", 1, 1),
+    ("u16", 1, 1),
+    ("u32", 1, 1),
+    ("u64", 1, 1),
     ("ignore", 2, 2),
     ("copy", 1, 1),
     ("int", 1, 1),
@@ -40,7 +47,8 @@ const BUILTINS: [(&str, usize, usize); 23] = [
 ];
 
 /// Builtins whose arguments have to be plain values, not results or optionals.
-const NEEDS_VALUES: [&str; 4] = ["float", "int", "range", "round"];
+const NEEDS_VALUES: [&str; 11] =
+    ["float", "int", "range", "round", "i8", "i16", "i32", "u8", "u16", "u32", "u64"];
 
 pub(crate) fn is_builtin(name: &str) -> bool {
     BUILTINS.iter().any(|(builtin, ..)| *builtin == name) || stdlib::function(name).is_some()
@@ -567,6 +575,12 @@ impl FnCx<'_> {
         if name == "sum" {
             return self.sum(args, &plain, span);
         }
+        // `u8(300)`: a number written out that can't fit is an error now, as `x: u8 = 300` is.
+        if let Some(num) = crate::types::Num::named(name)
+            && let Some(arg) = args.iter().find(|arg| arg.name.is_none())
+        {
+            self.literal_fits(num, &arg.value);
+        }
         if name == "str" {
             for (given, at) in &plain {
                 self.not_a_secret(given, "`str` of this", *at);
@@ -578,6 +592,23 @@ impl FnCx<'_> {
             self.needs_order(name, &result, span);
         }
         result
+    }
+
+    /// A number written out, or one negated, given to `u8(...)` and the like, which has to fit.
+    fn literal_fits(&mut self, num: crate::types::Num, value: &Expr) {
+        use fennec_syntax::{ExprKind, UnaryOp};
+        let written = match &value.kind {
+            ExprKind::Int(n) => i128::from(*n),
+            ExprKind::Unary { op: UnaryOp::Neg, expr } if let ExprKind::Int(n) = expr.kind => -i128::from(n),
+            _ => return,
+        };
+        let Some((least, most)) = num.range() else { return };
+        if written < least || written > most {
+            let ty = Type::Sized(num);
+            let message = format!("{written} doesn't fit in {ty}");
+            let help = format!("{} holds {least} to {most}", a(&ty));
+            self.error(Diagnostic::new(message, value.span).with_help(help));
+        }
     }
 
     /// `min` and `max` compare the items with `<`, so the items need an order.
@@ -605,7 +636,16 @@ impl FnCx<'_> {
         match name {
             "copy" => first,
             "Ok" => Type::result(first, self.checker.fresh(span, Hole::OkError)),
-            "Err" => Type::result(self.checker.fresh(span, Hole::ErrValue), first),
+            "Err" => {
+                if !self.checker.program.can_fail_with(&self.checker.settled(&first)) {
+                    self.error(crate::program::not_an_error(
+                        "`Err` holds an error, as `fail` does",
+                        &first,
+                        at,
+                    ));
+                }
+                Type::result(self.checker.fresh(span, Hole::ErrValue), first)
+            }
             "range" => {
                 if !types.iter().all(|ty| self.checker.fits(&Type::Int, ty)) {
                     self.error(Diagnostic::new("`range` takes one to three ints", span));
@@ -627,8 +667,30 @@ impl FnCx<'_> {
                 }
                 Type::Unit
             }
+            // `u8(x)`: an integer of another size as this one, which stops the program if it
+            // doesn't fit. What comes from outside goes through `u8.from(x)?` or `u8.parse(s)?`.
+            name if let Some(num) = crate::types::Num::named(name) => {
+                let integer = |ty: &Type| {
+                    matches!(ty, Type::Int | Type::Unknown) || matches!(ty, Type::Sized(n) if !n.is_float())
+                };
+                if !integer(&first) {
+                    let message = format!("`{name}(...)` converts an integer, not {}", a(&first));
+                    let help = match self.checker.settled(&first) {
+                        Type::Str => format!("read it as an int first: `{name}(int(text)?)`"),
+                        Type::Float => {
+                            format!("make it a whole number first: `{name}(round(x))` or `{name}(int(x))`")
+                        }
+                        _ => format!("give `{name}` an integer"),
+                    };
+                    self.error(Diagnostic::new(message, at).with_help(help));
+                }
+                Type::Sized(num)
+            }
             "int" | "float" => {
-                if !matches!(first, Type::Int | Type::Float | Type::Str | Type::Bool | Type::Unknown) {
+                let sized_integer = matches!(first, Type::Sized(num) if !num.is_float());
+                if !sized_integer
+                    && !matches!(first, Type::Int | Type::Float | Type::Str | Type::Bool | Type::Unknown)
+                {
                     let message = format!("`{name}` converts a number or text, not {}", a(&first));
                     self.error(Diagnostic::new(message, at));
                 }

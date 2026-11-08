@@ -116,82 +116,6 @@ pub extern "C" fn from_value(value: i64, start: i64, end: i64) -> i64 {
     })
 }
 
-/// `fennec_capability_call(word, method, count, start, end)`: a method of a capability, run
-/// as the interpreter runs it, with the last `count` inputs native code handed over as its
-/// arguments. `word` is a capability's block or kind, and `method` a string block naming the
-/// method. Gives back a temporary holding what the method gave: a result where the method can
-/// fail, and a capability where it gives one, as `only` does.
-#[cfg(not(feature = "lean"))]
-pub extern "C" fn call(word: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
-    attempt(|state: &mut State| {
-        let at = span(start, end);
-        let receiver = value_of(state, word);
-        let name = u64::try_from(method)
-            .ok()
-            .and_then(|address| state.heap.block(address))
-            .filter(|block| super::heap::is_text(state, block))
-            .map(super::heap::block_text)
-            .ok_or_else(|| Diagnostic::new("the native code lost a method's name", at))?;
-        let count = usize::try_from(count).unwrap_or(0).min(state.inputs.len());
-        let given = state.inputs.split_off(state.inputs.len() - count);
-        let mut args: Vec<_> =
-            given.into_iter().map(|value| crate::call::CallArg::plain(value, at)).collect();
-        // Named arguments come last, and the name says what they're called: `get.params` is
-        // `get` with `params=` last, and `read_line.timeout` is `read_line` with `timeout=`.
-        let mut parts = name.split('.');
-        let method = parts.next().unwrap_or_default();
-        let named: Vec<&str> = parts.collect();
-        let plain = args.len().saturating_sub(named.len());
-        for (arg, called) in args.iter_mut().skip(plain).zip(&named) {
-            *arg = crate::call::CallArg::named(called, arg.value.clone(), at);
-        }
-        let result = state.interp.read_method(&receiver, method, args, at)?;
-        Ok(state.push(result))
-    })
-}
-
-/// Runs one of std's functions written in the runtime, with the last `count` temporaries handed
-/// in as its arguments. `name` is a string block with its full name, with any named arguments
-/// on the end as a call writes them, like `json.dumps.names`, which come last. `ty` is a string
-/// block with the type a `loads` was asked for, written as in the program, or 0.
-#[cfg(not(feature = "lean"))]
-pub extern "C" fn std_call(name: i64, ty: i64, count: i64, start: i64, end: i64) -> i64 {
-    attempt(|state: &mut State| {
-        let at = span(start, end);
-        let written = u64::try_from(name)
-            .ok()
-            .and_then(|address| state.heap.block(address))
-            .filter(|block| super::heap::is_text(state, block))
-            .map(super::heap::block_text)
-            .ok_or_else(|| Diagnostic::new("the native code lost a function's name", at))?;
-        let mut parts: Vec<&str> = written.split('.').collect();
-        let mut named = Vec::new();
-        while parts.len() > 2 {
-            named.extend(parts.pop());
-        }
-        let function = parts.join(".");
-        let module = crate::stdlib::module_of(&function)
-            .ok_or_else(|| Diagnostic::new(format!("no function `{function}` in std"), at))?;
-        let count = usize::try_from(count).unwrap_or(0).min(state.inputs.len());
-        let given = state.inputs.split_off(state.inputs.len() - count);
-        let mut args: Vec<_> =
-            given.into_iter().map(|value| crate::call::CallArg::plain(value, at)).collect();
-        // Named ones are last, in the order the name has them.
-        named.reverse();
-        let first_named = args.len().saturating_sub(named.len());
-        for (arg, name) in args.iter_mut().skip(first_named).zip(named) {
-            arg.name = Some(name.to_owned());
-        }
-        let result = if ty == 0 {
-            (module.call)(&mut state.interp, &function, args, at)?
-        } else {
-            let wanted = super::json::type_written(state, ty, at)?;
-            state.interp.typed_loads(&function, &wanted, args, at)?
-        };
-        Ok(state.push(result))
-    })
-}
-
 /// `fennec_native_capability(word, method, count, start, end)`: a method of a capability for
 /// compiled code, needing nothing of the interpreter, as `call` does. What's still only written
 /// for the interpreter, the network's methods, compiled code calls `call` for.
@@ -525,7 +449,7 @@ mod tests {
     #[test]
     fn a_capability_crosses_native_code_as_a_block_that_keeps_what_it_allows() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
-        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let fs = super::block(1);
         assert_eq!(super::block(1), fs);
         assert!(fs >= super::KINDS);
@@ -554,9 +478,9 @@ mod tests {
     }
 
     #[test]
-    fn a_capability_s_methods_run_from_native_code_as_the_interpreter_runs_them() {
+    fn a_narrowed_capability_s_methods_run_from_native_code() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
-        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let string = |text: &str| with(|state| heap::text_address(state, text));
         let input = |value: Value| {
             let temp = with(|state| Some(state.push(value))).unwrap();
@@ -564,31 +488,25 @@ mod tests {
         };
         // `process.only("echo")` gives a narrowed capability, which crosses as a block.
         input(Value::str("echo"));
-        let narrowed = super::call(super::block(5), string("only"), 1, 0, 0);
+        let narrowed = super::native_call(super::block(5), string("only"), 1, 0, 0);
         let block = super::from_value(narrowed, 0, 0);
         let Value::Limited(limited) = value(block) else { panic!("narrowed") };
         assert_eq!(limited.allowed, vec![Rc::<str>::from("echo")]);
         // Running something else is refused as a `ProcessError`, and nothing is started.
         input(Value::str("rm"));
         input(Value::list(vec![Value::str("-rf"), Value::str("/")]));
-        let refused = super::call(block, string("run"), 2, 0, 0);
+        let refused = super::native_call(block, string("run"), 2, 0, 0);
         let Value::Err(error) = with(|state| Some(state.temp(refused))).unwrap() else { panic!("refused") };
         assert!(format!("{error:?}").contains("can run only `echo`"), "{error:?}");
         heap::free(block);
         finish();
     }
 
-    /// How much each part of the runtime's state holds: its live blocks, temporaries, inputs,
-    /// strings' texts and callers' frames.
-    fn sizes() -> (usize, usize, usize, usize, usize) {
+    /// How much each part of the runtime's state holds: its live blocks, temporaries, inputs and
+    /// strings' texts.
+    fn sizes() -> (usize, usize, usize, usize) {
         with(|state| {
-            Some((
-                state.heap.live(),
-                state.temps.len(),
-                state.inputs.len(),
-                state.heap.texts.borrow().len(),
-                state.callers.len(),
-            ))
+            Some((state.heap.live(), state.temps.len(), state.inputs.len(), state.heap.texts.borrow().len()))
         })
         .unwrap()
     }
@@ -598,7 +516,7 @@ mod tests {
     #[test]
     fn a_capability_call_from_native_code_leaves_nothing_behind() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
-        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        start(tables, crate::Inputs::default());
         let dir = std::env::temp_dir().join(format!("fennec-capability-calls-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("w.txt");

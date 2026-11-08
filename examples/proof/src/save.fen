@@ -13,7 +13,7 @@ def dumps(world: World) -> str:
     json.dumps(world)
 
 ## A world from JSON text that `dumps` wrote.
-def loads(text: str) -> World:
+def loads(text: str) -> World fails ParseError:
     mut world = json.loads[World](text)?
     world.field = map.Map.of(world.field.tiles)
     world

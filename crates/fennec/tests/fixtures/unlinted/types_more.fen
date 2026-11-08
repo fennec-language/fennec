@@ -1,6 +1,9 @@
 from std.collections import Table
 from std.layout import SoaList
 
+error NotANumber:
+    text: str
+
 enum Light:
     Red
     Green
@@ -37,8 +40,8 @@ def find(name: str) -> Player?:
     if name == "Kit": return Player(name="Kit")
     None
 
-def parse(text: str) -> Result[int, str]:
-    if not text.isdigit(): return Err(f"{text} isn't a number")
+def parse(text: str) -> Result[int, NotANumber]:
+    if not text.isdigit(): return Err(NotANumber(text=text))
     Ok(int(text) else 0)
 
 def call(make: () -> int) -> int:

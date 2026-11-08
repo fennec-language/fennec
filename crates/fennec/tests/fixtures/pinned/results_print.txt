@@ -1,6 +1,6 @@
-source 391a34896ef3c83af6fa82c10ff4c5b17fe1e9df3f5aad7ccf3bda10246d7ed4
+source f553f2a563f465c81b3cfe8f6205a81194d17488ab4e1d7e31cbc3f70c36bb29
 code 0
-stdout 55
-Ok(3) Err("not positive")
-[Ok(1), Err("not positive")]
+stdout 60
+Ok(3) Err(NotPositive(n=-1))
+[Ok(1), Err(NotPositive(n=0))]
 stderr 0

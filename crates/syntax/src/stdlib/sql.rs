@@ -5,7 +5,7 @@ use super::Module;
 
 pub(crate) const MODULE: Module = Module {
     name: "sql",
-    names: &["SqlValue", "SqlError", "Sql"],
+    names: &["SqlValue", "SqlError", "Sql", "SqlRows", "rows_as", "SqlRowReader"],
     source: include_str!("sql.fen"),
     gives: &[],
 };

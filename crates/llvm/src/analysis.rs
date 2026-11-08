@@ -134,6 +134,8 @@ pub(crate) struct Whole<'p> {
     pub(crate) on_workers: HashSet<&'p str>,
     /// Whether the program has any `shared` type.
     pub(crate) cells: bool,
+    /// The functions that can run as a parked task, which count their loops' turns.
+    pub(crate) tasks: HashSet<&'p str>,
     /// Whether its closures are blocks in the runtime's table, since it keeps one where the
     /// runtime reads (see `closures`).
     pub(crate) runtime_closures: bool,
@@ -2890,6 +2892,8 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
         .is_some_and(|ty| matches!(&ty, Type::Named(name) if fennec_layout::Cap::named(name).is_some()));
     // A connection's or server's method runs in the runtime too.
     capability
+        // `u8(x)` stops the program when `x` doesn't fit.
+        || fennec_check::Num::named(name).is_some()
         || is_socket_method(name)
         || name.starts_with("crypto.")
         || name.starts_with("compress.")
@@ -2950,7 +2954,16 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
 }
 
 fn fails_itself(function: &Function, known: &Analysis) -> bool {
+    // What's worked out for a local of a sized type is checked to fit it.
+    let sized =
+        |dest: &LocalId| matches!(function.locals.get(dest.0).map(|local| &local.ty), Some(Type::Sized(_)));
     let inst_fails = |inst: &InstKind| match inst {
+        InstKind::Binary { dest, op, .. }
+            if sized(dest) && !matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) =>
+        {
+            true
+        }
+        InstKind::Unary { dest, op: UnaryOp::Neg, .. } if sized(dest) => true,
         InstKind::Binary { dest, op, lhs, rhs } => match (function.type_of(lhs), op) {
             (Some(Type::Int), BinOp::Add | BinOp::Sub | BinOp::Mul) => !known.is_safe(*dest),
             (Some(Type::Int), BinOp::FloorDiv | BinOp::Mod | BinOp::Div) => !matches!(rhs, Operand::Int(1..)),
@@ -3114,6 +3127,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         })
         .collect();
     let on_workers = crate::parallel::run_on_workers(program);
+    let tasks = crate::ticks::tasks(&functions);
     Whole {
         functions,
         analyses,
@@ -3126,6 +3140,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         constants,
         on_workers,
         cells: crate::parallel::has_cells(program),
+        tasks,
         runtime_closures: crate::closures::runtime_holds_closures(program),
     }
 }

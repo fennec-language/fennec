@@ -7,7 +7,7 @@ from parser import Parser, is_name
 
 extend Parser:
     ## The body after a `:`: an indented block, or one simple statement on the same line.
-    def block(ref self) -> list[Stmt]:
+    def block(ref self) -> list[Stmt] fails Diagnostic:
         if not self.at(.Newline):
             return [self.simple_stmt()?]
         self.expect_block_start()?
@@ -16,7 +16,7 @@ extend Parser:
             stmts.append(self.stmt()?)
         stmts
 
-    def stmt(ref self) -> Stmt:
+    def stmt(ref self) -> Stmt fails Diagnostic:
         if self.at_keyword("if"):
             return self.if_stmt()?
         if self.at_keyword("while"):
@@ -36,7 +36,7 @@ extend Parser:
             return Stmt(kind=.Def(function), span=function.span)
         self.simple_stmt()?
 
-    def simple_stmt(ref self) -> Stmt:
+    def simple_stmt(ref self) -> Stmt fails Diagnostic:
         start = self.span()
         kind = match self.peek():
             case .Keyword(word): self.keyword_stmt(word)?
@@ -54,7 +54,7 @@ extend Parser:
         Stmt(kind=kind, span=span)
 
     ## A simple statement that starts with the keyword `word`.
-    def keyword_stmt(ref self, word: str) -> StmtKind:
+    def keyword_stmt(ref self, word: str) -> StmtKind fails Diagnostic:
         if word == "mut":
             return self.mut_declaration()?
         if word == "ref":
@@ -82,7 +82,7 @@ extend Parser:
         )
 
     ## `lend value`, or `lend value else:` and the block that runs when the caller's fails.
-    def lend_stmt(ref self) -> Stmt:
+    def lend_stmt(ref self) -> Stmt fails Diagnostic:
         start = self.advance().span
         value = self.or_expr()?
         mut otherwise = list[Stmt]()
@@ -95,7 +95,7 @@ extend Parser:
 
     ## `shared name = value`, written in as `name: shared = value`: a type of `shared` with
     ## nothing in its brackets, which takes the value's type.
-    def shared_declaration(ref self) -> StmtKind:
+    def shared_declaration(ref self) -> StmtKind fails Diagnostic:
         word = self.advance().span
         at = self.span()
         name = self.name("a name after `shared`")?
@@ -106,12 +106,12 @@ extend Parser:
         .Assign(target, None, value, declare_mut=False, ty=ty)
 
     ## A simple statement's end: its line, and its span from `start`.
-    def finished(ref self, kind: StmtKind, start: Span) -> Stmt:
+    def finished(ref self, kind: StmtKind, start: Span) -> Stmt fails Diagnostic:
         span = start.to(self.prev_span())
         self.end_line()?
         Stmt(kind=kind, span=span)
 
-    def mut_declaration(ref self) -> StmtKind:
+    def mut_declaration(ref self) -> StmtKind fails Diagnostic:
         _ = self.advance()
         target = self.expr()?
         if not is_name_expr(target):
@@ -124,7 +124,7 @@ extend Parser:
         .Assign(target, None, value, declare_mut=True, ty=ty)
 
     ## An expression on its own, or an assignment. `a, b = pair` unpacks a tuple.
-    def expr_or_assign(ref self) -> StmtKind:
+    def expr_or_assign(ref self) -> StmtKind fails Diagnostic:
         mut target = self.expr()?
         if is_name_expr(target) and self.eat_punct(":"):
             ty = self.type_expr()?
@@ -147,7 +147,7 @@ extend Parser:
         value = self.expr()?
         .Assign(target, op, value, declare_mut=False, ty=None)
 
-    def if_stmt(ref self) -> Stmt:
+    def if_stmt(ref self) -> Stmt fails Diagnostic:
         start = self.advance().span
         mut branches = [self.condition_and_block()?]
         mut otherwise = None
@@ -162,19 +162,19 @@ extend Parser:
                 break
         Stmt(kind=.If(branches, otherwise), span=start.to(self.prev_span()))
 
-    def condition_and_block(ref self) -> (Expr, list[Stmt]):
+    def condition_and_block(ref self) -> (Expr, list[Stmt]) fails Diagnostic:
         cond = self.expr()?
         _ = self.expect_punct(":")?
         (cond, self.block()?)
 
-    def while_stmt(ref self) -> Stmt:
+    def while_stmt(ref self) -> Stmt fails Diagnostic:
         start = self.advance().span
         cond, body = self.condition_and_block()?
         Stmt(kind=.While(cond, body), span=start.to(self.prev_span()))
 
     ## `for x in xs:`, `for ref x in xs:`, `for at, x in enumerate(xs):`, or with `ref` before
     ## the second name, `for at, ref x in enumerate(xs):`, which changes each item where it is.
-    def for_stmt(ref self) -> Stmt:
+    def for_stmt(ref self) -> Stmt fails Diagnostic:
         start = self.advance().span
         ref_first = self.eat_ref("a loop's name")
         mut names = [self.name("a loop variable")?]
@@ -196,7 +196,7 @@ extend Parser:
         Stmt(kind=.For(names, is_mut, iter, body), span=start.to(self.prev_span()))
 
     ## `name` or `a, b`, then `in`.
-    def loop_names(ref self) -> list[str]:
+    def loop_names(ref self) -> list[str] fails Diagnostic:
         mut names = [self.name("a loop variable")?]
         while self.eat_punct(","):
             names.append(self.name("a loop variable")?)
@@ -207,7 +207,7 @@ extend Parser:
     ## `with game as ref current:`, or several at once: `with a as ref x, b as ref y:`, or
     ## `with a, b as x, y:`, or one source's tuple split: `with conn.split() as reader, writer:`.
     ## `with a as x:`, or, for `lock`, `lock a as ref x:`, which takes `shared` values.
-    def with_stmt(ref self, lock: bool) -> Stmt:
+    def with_stmt(ref self, lock: bool) -> Stmt fails Diagnostic:
         start = self.advance().span
         mut items = [self.expr()?]
         while self.eat_punct(","):

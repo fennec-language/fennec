@@ -30,7 +30,7 @@ def step(ref world: World, dt: float):
         enemy.position += enemy.velocity * dt
 
 ## Deals 10 damage to `target`, failing if it's gone or more than 5 away from the player.
-export def attack(ref world: World, target: EnemyId):
+export def attack(ref world: World, target: EnemyId) fails OutOfRange | TargetGone:
     mut enemy = world.enemies.get(target)
     if enemy is None: fail TargetGone(target)
     distance = (enemy.position - world.player).length()

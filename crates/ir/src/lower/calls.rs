@@ -443,7 +443,7 @@ impl Lowering<'_> {
     }
 
     /// The type of what a method is called on.
-    fn object_type(&self, object: &Expr) -> Option<Type> {
+    pub(super) fn object_type(&self, object: &Expr) -> Option<Type> {
         if let ExprKind::Name(name) = &object.kind
             && name == OPTIONAL_OBJECT
         {
@@ -513,6 +513,10 @@ impl Lowering<'_> {
     /// What the engines provide that a callee names: its name, its object for a method, and
     /// whether it changes that object.
     fn builtin<'e>(&self, callee: &'e Expr) -> Option<(String, Option<&'e Expr>, bool)> {
+        // A tuple's `serialize` and `deserialize` are functions the checker wrote.
+        if self.tuple_saving(callee).is_some() {
+            return None;
+        }
         let signatures = &self.context.signatures;
         if let Some(member) = self.std_member(callee) {
             return signatures.get(&member).is_none().then_some((member, None, false));
@@ -559,6 +563,7 @@ impl Lowering<'_> {
         span: Span,
     ) -> Lowered<(String, Vec<Operand>, Option<Lock>)> {
         let (key, object) = match &callee.kind {
+            _ if let Some(found) = self.tuple_saved(callee) => found?,
             _ if self.std_member(callee).is_some() => (self.std_member(callee).unwrap_or_default(), None),
             ExprKind::Name(name) if self.lookup(name).is_none() => (name.clone(), None),
             ExprKind::Attr { object, name, optional: false } => {

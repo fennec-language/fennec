@@ -7,14 +7,12 @@ use std::rc::Rc;
 use std::sync::Mutex;
 
 use fennec_syntax::rename::shown_type_name;
-use fennec_syntax::{Diagnostic, Span};
 
 use super::named::{is_array, is_id_map, is_one_of_several, is_option, is_result};
 use super::{
     CAPABILITY_SHAPE, HEADER_WORDS, State, block_text, cell_value, is_text, shape_of, shape_word, type_name,
     with,
 };
-use crate::embed::STATE;
 use crate::packed::{Element, Fields};
 use crate::value::Value;
 
@@ -65,8 +63,6 @@ fn own_writer(name: &str) -> Option<WriteOwn> {
 pub(in crate::embed) struct Written {
     done: Vec<(String, WriteOwn, i64)>,
     text: String,
-    /// Whether a value in it has its own text and native code can't write it.
-    interpreted: bool,
 }
 
 impl Written {
@@ -88,11 +84,7 @@ impl std::fmt::Write for Written {
 
 /// A value's text as printing shows it: a string as it is, and anything else as `quoted` writes
 /// it. Runs what native code has to write, so nothing of the runtime can be in use.
-#[cfg_attr(
-    feature = "lean",
-    expect(clippy::unnecessary_wraps, reason = "only the interpreter's text can fail")
-)]
-pub(in crate::embed) fn shown(address: u64) -> Result<String, Diagnostic> {
+pub(in crate::embed) fn shown(address: u64) -> String {
     let mut out = with(|state| {
         let mut out = Written::default();
         match state.heap.block(address) {
@@ -101,10 +93,6 @@ pub(in crate::embed) fn shown(address: u64) -> Result<String, Diagnostic> {
         }
         out
     });
-    #[cfg(not(feature = "lean"))]
-    if out.interpreted {
-        return attempt_value(address);
-    }
     let mut text = String::new();
     for (before, write, at) in out.done.drain(..) {
         text.push_str(&before);
@@ -112,38 +100,13 @@ pub(in crate::embed) fn shown(address: u64) -> Result<String, Diagnostic> {
         text.push_str(&HANDED_OVER.take());
     }
     text.push_str(&out.text);
-    Ok(text)
-}
-
-/// A value's text from the interpreter, which runs a type's `def str` itself.
-#[cfg(not(feature = "lean"))]
-fn attempt_value(address: u64) -> Result<String, Diagnostic> {
-    let shown = STATE.with_borrow_mut(|state| {
-        let state = state.as_mut()?;
-        let value = super::read_block(state, address);
-        Some(state.interp.shown(&value, Span::default()))
-    });
-    shown.unwrap_or_else(|| Ok(String::new()))
+    text
 }
 
 /// Notes a value of a type that writes its own text, if this is one, with the words it takes
 /// from `words`. Says whether it was.
-fn own_value(
-    state: &State,
-    (name, size): (&str, usize),
-    words: &mut dyn Iterator<Item = &u64>,
-    out: &mut Written,
-) -> bool {
-    let Some(write) = own_writer(name) else {
-        #[cfg(not(feature = "lean"))]
-        {
-            out.interpreted |=
-                state.interp.type_info(type_name(name)).is_some_and(|info| info.methods.contains_key("str"));
-        }
-        #[cfg(feature = "lean")]
-        let _ = state;
-        return false;
-    };
+fn own_value((name, size): (&str, usize), words: &mut dyn Iterator<Item = &u64>, out: &mut Written) -> bool {
+    let Some(write) = own_writer(name) else { return false };
     let mut mine = words.take(size);
     let at = mine.next().map_or(0, |first| std::ptr::from_ref(first).addr());
     mine.for_each(drop);
@@ -245,7 +208,7 @@ pub(in crate::embed) fn item(
         }
         Element::Struct { name, fields } if name.as_ref() == "Id" => id(fields, words, out),
         Element::Struct { name, fields } if is_id_map(name) => id_map(state, fields, words, out),
-        Element::Struct { name, .. } if own_value(state, (name, element.words()), words, out) => {}
+        Element::Struct { name, .. } if own_value((name, element.words()), words, out) => {}
         Element::Struct { name, fields } => {
             out.push_str(shown_type_name(type_name(name)));
             named_fields(state, fields, words, out);
@@ -254,7 +217,7 @@ pub(in crate::embed) fn item(
             if !is_option(name)
                 && !is_result(name)
                 && !is_one_of_several(name)
-                && own_value(state, (name, *size), words, out) => {}
+                && own_value((name, *size), words, out) => {}
         Element::Enum { name, cases, words: size } => {
             let mut mine = (&mut *words).take(*size);
             let at = usize::try_from(word(&mut mine)).unwrap_or(0);

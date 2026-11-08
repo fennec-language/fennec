@@ -40,7 +40,7 @@ error TargetGone:
     target: Id[Enemy]
 
 ## Hits an enemy for 10, or fails if it's gone.
-export def attack(ref world: World, target: Id[Enemy]):
+export def attack(ref world: World, target: Id[Enemy]) fails TargetGone:
     enemy = world.enemies.get(target) else fail TargetGone(target)
     world.enemies[target] = copy(enemy, health=max(enemy.health - 10, 0))
 

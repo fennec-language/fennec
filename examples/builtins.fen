@@ -2,10 +2,13 @@
 
 from std.math import PI, ceil, cos, floor, sin, sqrt
 
+error Failed:
+    why: str
+
 def square(n: int) -> int:
     n * n
 
-def checked(n: int):
+def checked(n: int) fails IoError:
     if n < 0: fail IoError("it's negative")
 
 def main(stdout: Stdout):
@@ -43,8 +46,8 @@ def main(stdout: Stdout):
     stdout.print(any([False, True]), all([True, False]), all([]), any([]))
 
     # Results.
-    three: Result[int, str] = Ok(3)
-    no: Result[int, str] = Err("no")
+    three: Result[int, Failed] = Ok(3)
+    no: Result[int, Failed] = Err(Failed(why="no"))
     stdout.print(checked(1), three, no)
     ignore(three, "only checking that ignore accepts a reason")
 

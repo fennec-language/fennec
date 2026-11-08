@@ -621,16 +621,18 @@ fn an_argument_that_cant_be_read_from_the_call_needs_a_name() {
 /// What two arguments both take is named as it's written: `shared Account`, `list[int]`.
 #[test]
 fn a_swap_names_the_type_as_its_written() {
-    let program = "struct Account:\n    balance = 0\n\ndef swap(a: shared Account, b: shared Account):\n    pass\n\n\
-        def both(a: list[int], b: list[int]):\n    pass\n\ndef main():\n    swap(x, y)\n    both(x, y)\n";
+    let program = "struct Account:\n    balance = 0\n\n\
+        def transfer(source: shared Account, target: shared Account):\n    pass\n\n\
+        def both(kept: list[int], dropped: list[int]):\n    pass\n\ndef main():\n    transfer(x, y)\n    both(x, y)\n";
     let said: Vec<String> =
         found(program).unwrap().iter().map(|lint| lint.diagnostic.message.clone()).collect();
     assert!(
-        said.iter().any(|said| said.contains("`a` and `b` both take `shared Account`, so swapping")),
+        said.iter()
+            .any(|said| said.contains("`source` and `target` both take `shared Account`, so swapping")),
         "{said:?}"
     );
     assert!(
-        said.iter().any(|said| said.contains("`a` and `b` both take `list[int]`, so swapping")),
+        said.iter().any(|said| said.contains("`kept` and `dropped` both take `list[int]`, so swapping")),
         "{said:?}"
     );
 }
@@ -647,6 +649,19 @@ fn an_argument_that_can_be_read_stays_as_it_is() {
     ] {
         assert_eq!(rules(&calling(call)), NONE, "{call}");
     }
+}
+
+/// `dot(a, b)`, `max(a, b)` and the like name their parameters for where they come and nothing
+/// else, so naming one at the call would say no more than its place does. Coordinates mean
+/// something, so they're still asked for.
+#[test]
+fn parameters_named_only_for_their_place_stay_positional() {
+    let defs = "def dot(a: Vec3, b: Vec3) -> float:\n    0.0\n\ndef larger(a: int, b: int) -> int:\n    a\n\n\
+        def mid(a: int, b: int, c: int) -> int:\n    a\n\ndef at(x: int, y: int):\n    pass\n\n";
+    for call in ["dot(u, v)", "larger(1, 2)", "mid(1, 2, 3)"] {
+        assert_eq!(rules(&format!("{defs}def main():\n    {call}\n")), NONE, "{call}");
+    }
+    assert_eq!(rules(&format!("{defs}def main():\n    at(1, 2)\n")), ["positional-arguments"]);
 }
 
 #[test]

@@ -60,6 +60,10 @@ impl Lowering<'_> {
         if fits(to, &from) {
             return Ok(value);
         }
+        // A number written out where a sized one goes, which the checker found fits.
+        if matches!(value, Operand::Int(_)) && matches!(to, Type::Sized(_)) {
+            return Ok(value);
+        }
         match to {
             Type::Optional(inner) => {
                 let value = self.coerce(value, inner, span)?;

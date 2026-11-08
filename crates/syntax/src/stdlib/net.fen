@@ -66,7 +66,7 @@ export struct Response:
     ## The body read as JSON into a `T`, as `json.loads[T]` reads text: what an API sent back.
     ## Text that isn't JSON, or doesn't fit `T`, fails with a `ParseError` saying where.
     def json[T: Deserializable](self) -> T fails ParseError:
-        json.loads[T](self.text())?
+        json.native_loads[T](self.text(), names=None, extra=None)?
 
 ## One end of a TCP connection. Its methods, written in Rust: `read(n)` gives up to `n` bytes,
 ## or empty bytes once the other side is done; `read_line()` gives the next line without its

@@ -280,11 +280,11 @@ fn a_function_that_says_it_gives_back_a_value_cant_run_off_its_end() {
         error TooBig:
             limit: int
 
-        def word(n: int) -> str:
+        def word(n: int) -> str fails TooBig:
             if n > 2: fail TooBig(limit=2)
             \"\"
 
-        def all(n: int) -> list[str]:
+        def all(n: int) -> list[str] fails TooBig:
             mut found = []
             for at in range(n):
                 found.append(word(at)?)

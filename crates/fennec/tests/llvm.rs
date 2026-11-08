@@ -358,12 +358,12 @@ struct Unit:
     tags: list[int]
     hp: int
 
-def maybe(at: int) -> int:
+def maybe(at: int) -> int fails Bad:
     if at == 1:
         fail Bad("from a call")
     at
 
-def by_fail(ref units: list[Unit], at: int) -> int:
+def by_fail(ref units: list[Unit], at: int) -> int fails Bad:
     for ref unit in units:
         unit.tags.append(at)
         unit.hp += 1
@@ -371,7 +371,7 @@ def by_fail(ref units: list[Unit], at: int) -> int:
             fail Bad("stop")
     0
 
-def by_try(ref units: list[Unit]) -> int:
+def by_try(ref units: list[Unit]) -> int fails Bad:
     for ref unit in units:
         unit.tags.append(8)
         unit.hp += maybe(unit.hp)?
@@ -386,7 +386,7 @@ def main(stdout: Stdout):
     same_as_the_jit("failing_out_of_for_mut", shared)?;
     // Out of two loops at once. The JIT stops here with "expected an int", so this one's held to
     // what the interpreter prints.
-    let nested = "error Bad:\n    why: str\n\ndef nested(ref grid: list[list[int]]) -> int:\n    for ref row in grid:\n        for ref cell in row:\n            cell += 1\n            if cell == 5:\n                fail Bad(\"inner\")\n    0\n\ndef main(stdout: Stdout):\n    mut grid = [[1, 2], [4, 7], [9]]\n    stdout.print(nested(ref grid) else -3, grid)\n";
+    let nested = "error Bad:\n    why: str\n\ndef nested(ref grid: list[list[int]]) -> int fails Bad:\n    for ref row in grid:\n        for ref cell in row:\n            cell += 1\n            if cell == 5:\n                fail Bad(\"inner\")\n    0\n\ndef main(stdout: Stdout):\n    mut grid = [[1, 2], [4, 7], [9]]\n    stdout.print(nested(ref grid) else -3, grid)\n";
     let dir = folder("failing_out_of_two_loops")?;
     let program = dir.join("two_loops.fen");
     std::fs::write(&program, nested)?;
@@ -1999,7 +1999,7 @@ enum Token:
 def total(units: list[Unit]) -> int:
     sum(unit.hp for unit in units)
 
-def by_fail(ref units: list[Unit]) -> int:
+def by_fail(ref units: list[Unit]) -> int fails Bad:
     for ref unit in units:
         unit.tags.append(9)
         unit.hp += 1
@@ -2270,6 +2270,84 @@ fn a_product_that_overflows_still_fails_as_on_the_interpreter() -> std::io::Resu
         ("product_too_small", "-3037000500", "3037000500"),
     ] {
         same_as_the_interpreter_in_both_builds(name, &program(a, b))?;
+    }
+    Ok(())
+}
+
+/// Sized integers natively: arithmetic, floor division and remainder as `int`'s, `~` within an
+/// unsigned size's width, shifts by an `int`, conversions written out, lists of them, and `/`
+/// giving a float. The interpreter doesn't take sized numbers, so the outcomes are written here.
+#[test]
+fn sized_integers_work_out_as_their_sizes_say() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "sized_integers",
+        "def mix(a: u8, b: u8) -> u8:
+    u8((u16(a) * 7 + u16(b)) % 251)
+
+def main(stdout: Stdout):
+    mut pixel: u8 = 250
+    pixel += 5
+    low: i8 = -100
+    small: i32 = 70000
+    big = small * 3
+    stdout.print(pixel, low, small, big, ~pixel, -low, pixel >> 2, low // 3, low % 7)
+    mut acc: u8 = 0
+    for k in range(10):
+        acc = mix(acc, b=u8(k))
+    stdout.print(acc, int(acc) + 1000, u16(pixel) * 200, small / 7)
+    bytes: list[u8] = [1, 2, 255]
+    stdout.print(bytes, bytes[2] == 255, i32(low) * 1000, 3 * i32(low) < 0)
+",
+    )?;
+    assert_eq!(
+        printed,
+        "255 -100 70000 210000 0 100 63 -34 5\n22 1022 51000 10000.0\n[1, 2, 255] True -100000 True\n"
+    );
+    Ok(())
+}
+
+/// What doesn't fit a size stops the program, saying which size and what it holds: arithmetic
+/// past either end, a negation, the one division that grows, and a conversion that doesn't fit.
+#[test]
+fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let overflow =
+        |size: &str, range: &str| format!("error: this calculation overflows {size}, which holds {range}");
+    for (at, (body, said)) in [
+        ("x: i8 = -128\n    stdout.print(-x)", overflow("an i8", "-128 to 127")),
+        ("big: i32 = 2147483647\n    stdout.print(big + 1)", overflow("an i32", "-2147483648 to 2147483647")),
+        ("m: i32 = -2147483648\n    stdout.print(m // -1)", overflow("an i32", "-2147483648 to 2147483647")),
+        ("p: u16 = 300\n    stdout.print(p * p)", overflow("a u16", "0 to 65535")),
+        ("z: u8 = 0\n    stdout.print(z - 1)", overflow("a u8", "0 to 255")),
+        (
+            "n = 300\n    stdout.print(u8(n))",
+            "error: it doesn't fit in u8, which holds 0 to 255: 300".to_owned(),
+        ),
+        (
+            "n = -1\n    stdout.print(u32(n))",
+            "error: it doesn't fit in u32, which holds 0 to 4294967295: -1".to_owned(),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let name = format!("sized_overflow_{at}");
+        let dir = folder(&name)?;
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("def main(stdout: Stdout):\n    {body}\n"))?;
+        let executable = dir.join(&name);
+        let built =
+            fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert!(!ran.status.success(), "{body}");
+        assert_eq!(String::from_utf8_lossy(&ran.stderr).lines().next(), Some(said.as_str()), "{body}");
     }
     Ok(())
 }
@@ -4327,32 +4405,32 @@ fn generators_that_fail_match_the_jit() -> std::io::Result<()> {
 error Named:
     who: str
 
-def checked(limit: int) -> Iterator[int]:
+def checked(limit: int) -> Iterator[int] fails TooBig:
     for n in range(5):
         if n >= limit: fail TooBig(at=n)
         yield n
 
-def named(limit: int) -> Iterator[str]:
+def named(limit: int) -> Iterator[str] fails Named:
     for n in range(5):
         if n >= limit: fail Named(who=f"a long name for number {n} in a block")
         yield str(n)
 
-def either(limit: int) -> Iterator[int]:
+def either(limit: int) -> Iterator[int] fails Named | TooBig:
     if limit == 0: fail Named(who="none")
     for n in range(limit):
         if n == 2: fail TooBig(at=n)
         yield n
 
-def total(limit: int) -> int:
+def total(limit: int) -> int fails TooBig:
     sum(n for n in checked(limit)?)
 
-def joined(limit: int) -> str:
+def joined(limit: int) -> str fails Named:
     mut out = ""
     for word in named(limit)?:
         out = out + word
     out
 
-def looped(limit: int) -> int:
+def looped(limit: int) -> int fails Named | TooBig:
     mut count = 0
     for n in either(limit)?:
         count = count + n + 1
@@ -4499,7 +4577,7 @@ def first_over(limit: int, over: int) -> int:
         if n > over: return n
     0
 
-def half(n: int) -> int:
+def half(n: int) -> int fails Fault:
     if n % 2 == 1: fail Fault(f"{n} is odd")
     n // 2
 
@@ -4525,13 +4603,14 @@ def main(stdout: Stdout):
     stdout.print(f"{[1, 2]} and {names}")
 "#,
     )?;
-    same_message_as_the_jit(
+    // The whole message, as it points at the generator and says what to do.
+    same_as_the_jit(
         "twice",
         "def count_up(limit: int) -> Iterator[int]:\n    mut at = 0\n    while at < limit:\n        yield at\n        at += 1\n\ndef total(numbers: Iterator[int]) -> int:\n    mut sum = 0\n    for n in numbers:\n        sum += n\n    sum\n\ndef main(stdout: Stdout):\n    numbers = count_up(3)\n    for _ in range(2):\n        stdout.print(total(numbers))\n",
     )?;
     same_message_as_the_jit(
         "expect",
-        "error Fault:\n    reason: str\n\ndef half(n: int) -> int:\n    if n % 2 == 1: fail Fault(\"odd\")\n    n // 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(4).expect(\"four is even\"))\n    stdout.print(half(3).expect(\"three is even\"))\n",
+        "error Fault:\n    reason: str\n\ndef half(n: int) -> int fails Fault:\n    if n % 2 == 1: fail Fault(\"odd\")\n    n // 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(4).expect(\"four is even\"))\n    stdout.print(half(3).expect(\"three is even\"))\n",
     )
 }
 
@@ -5061,7 +5140,7 @@ struct Bag:
     at: Point
     count = 0
 
-def load(text: str) -> Bag:
+def load(text: str) -> Bag fails ParseError:
     json.loads[Bag](text)?
 
 def main(stdout: Stdout):
@@ -5611,7 +5690,8 @@ fn a_parallel_comprehension_whose_items_fail_passes_up_the_first() -> std::io::R
 
 /// What the next test runs: `std.sqlite` in a test, on the fake `Fs`.
 const SQLITE_TESTS: &str = r#"from std import sqlite
-from std.sql import SqlError
+from std import sql
+from std.sql import SqlError, SqlRows
 
 enum Status:
     Clean
@@ -5715,6 +5795,20 @@ test "a narrowed Fs opens only what it reaches"(fs: Fs):
         case _:
             assert False
     made(fs.only("data"), "data/index.db")?
+
+test "a driver's rows read through std.sql as SQLite's do":
+    rows = SqlRows(
+        columns=["path", "size", "status", "note"],
+        kinds=[3, 1, 3, 0, 3, 1, 3, 3],
+        at=[0, 0, 1, 0, 2, 1, 3, 4],
+        ints=[3, 10],
+        floats=[],
+        texts=["a", "Clean", "b", "Changed", "hi"],
+        blobs=[],
+    )
+    found = sql.rows_as[Entry](rows)?
+    assert found.len() == 2 and found[0].note is None and found[1].note == "hi"
+    assert found[1].status == .Changed and found[1].size == 10
 "#;
 
 /// `std.sqlite` in compiled tests, with a database in memory for each path: rows read into
@@ -5734,7 +5828,7 @@ fn sqlite_in_tests_reads_rows_into_structs_and_names_a_column_that_does_not_fit(
     std::fs::remove_dir_all(&dir)?;
     assert!(ran.status.success(), "{shown}{said}");
     assert!(
-        said.contains("7 of 7 tests ran through LLVM") && shown.contains("7 passed, 0 failed"),
+        said.contains("8 of 8 tests ran through LLVM") && shown.contains("8 passed, 0 failed"),
         "{shown}{said}"
     );
     Ok(())
@@ -6479,20 +6573,18 @@ fn a_program_that_makes_no_requests_links_no_tls() -> std::io::Result<()> {
     Ok(())
 }
 
-/// A program built with no interpreter in its runtime prints what it should and has none of the
-/// interpreter in it, and one still needing the interpreter fails to link rather than to run.
+/// A built program prints what it should and has none of the interpreter in it.
 #[test]
-fn a_lean_runtime_leaves_the_interpreter_out() -> std::io::Result<()> {
-    if !ready() || !crate::executables::lean_runtime_built() {
+fn a_built_program_has_no_interpreter_in_it() -> std::io::Result<()> {
+    if !ready() {
         return Ok(());
     }
-    let dir = folder("lean-runtime")?;
+    let dir = folder("no-interpreter")?;
     let path = |file: &Path| file.display().to_string();
-    let lean = |source: &Path, output: &Path| {
+    let compile = |source: &Path, output: &Path| {
         crate::executables::fennec_command()
             .args(["build", "--llvm", &path(source), "-o", &path(output)])
             .env("FENNEC_HOME", &dir)
-            .env("FENNEC_LEAN_RUNTIME", "1")
             .output_before(FENNEC_DEADLINE)
     };
     let plain = dir.join("plain.fen");
@@ -6511,39 +6603,21 @@ def main(stdout: Stdout, args: Args, process: Process):
 ",
     )?;
     let executable = dir.join("plain");
-    let built = lean(&plain, &executable)?;
+    let built = compile(&plain, &executable)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "[<a>] {\"key\": 1} 0\nhello\n\n");
-    // A Windows executable has no symbols to look through. There, what follows is the check: what
-    // needs the interpreter doesn't link.
+    // A Windows executable has no symbols to look through.
     if !cfg!(windows) {
         let symbols = Command::new("nm").arg(&executable).output_within()?;
         assert!(symbols.status.success(), "{}", String::from_utf8_lossy(&symbols.stderr));
         let symbols = String::from_utf8_lossy(&symbols.stdout);
         assert!(symbols.contains("fennec_clock_now") || symbols.contains("fennec_print_block"), "{symbols}");
-        // The interpreter's constructor, which the full runtime always calls when the program
-        // starts. Rust writes each name as its length and the name. A looser match finds
-        // `Interp` in the name of a small closure the linker folded together with the native code's own
-        // copy, in a release build.
-        assert!(!symbols.contains("6Interp11with_output"), "the interpreter is still linked");
+        // The interpreter's constructor. Rust writes each name as its length and the name. A looser
+        // match finds `Interp` in the name of a small closure the linker folded together with the
+        // native code's own copy, in a release build.
+        assert!(!symbols.contains("6Interp11with_output"), "the interpreter is linked");
     }
-
-    let needs = dir.join("needs.fen");
-    std::fs::write(
-        &needs,
-        "\
-from std import json
-from std.collections import Packed
-
-def main(stdout: Stdout):
-    stdout.print(json.dumps(Packed.of([[1, 2]])))
-",
-    )?;
-    let refused = lean(&needs, &dir.join("needs"))?;
-    assert!(!refused.status.success(), "it linked without the interpreter");
-    let said = String::from_utf8_lossy(&refused.stderr);
-    assert!(said.contains("fennec_json"), "{said}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -6588,50 +6662,6 @@ fn a_build_finds_llvm_s_tools_beside_fennec() -> std::io::Result<()> {
     assert!(!without.status.success(), "it built with no tools beside it and no toolchain");
     assert!(with.status.success(), "{}", String::from_utf8_lossy(&with.stderr));
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "built with what ships\n");
-    Ok(())
-}
-
-/// With nothing asked, a program whose code doesn't cross into the interpreter is built with the
-/// runtime that leaves it out, and one that does is built with the runtime that has it, and runs.
-#[test]
-fn a_build_leaves_the_interpreter_out_unless_the_program_needs_it() -> std::io::Result<()> {
-    if !ready() || !crate::executables::lean_runtime_built() {
-        return Ok(());
-    }
-    let dir = folder("lean-default")?;
-    let built = |source: &str, name: &str| -> std::io::Result<PathBuf> {
-        let program = dir.join(format!("{name}.fen"));
-        std::fs::write(&program, source)?;
-        let executable = dir.join(name);
-        let built = crate::executables::fennec_command()
-            .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
-            .env("FENNEC_HOME", &dir)
-            .env_remove("FENNEC_LEAN_RUNTIME")
-            .output_before(FENNEC_DEADLINE)?;
-        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-        Ok(executable)
-    };
-    let has_interpreter = |executable: &Path| -> std::io::Result<bool> {
-        let symbols = Command::new("nm").arg(executable).output_within()?;
-        // The interpreter's constructor, as `a_lean_runtime_leaves_the_interpreter_out` looks for it.
-        Ok(String::from_utf8_lossy(&symbols.stdout).contains("6Interp11with_output"))
-    };
-    let lean = built("def main(stdout: Stdout):\n    stdout.print([1, 2], {\"key\": 3})\n", "lean")?;
-    assert_eq!(
-        String::from_utf8_lossy(&Command::new(&lean).output_within()?.stdout),
-        "[1, 2] {\"key\": 3}\n"
-    );
-    let needs = built(
-        "from std import json\nfrom std.collections import Packed\n\ndef main(stdout: Stdout):\n    stdout.print(json.dumps(Packed.of([[1, 2]])))\n",
-        "needs",
-    )?;
-    assert!(Command::new(&needs).output_within()?.status.success());
-    // A Windows executable has no symbols to look through.
-    if !cfg!(windows) {
-        assert!(!has_interpreter(&lean)?, "the interpreter is still linked");
-        assert!(has_interpreter(&needs)?, "a program that needs the interpreter lost it");
-    }
-    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 
@@ -6843,6 +6873,82 @@ def main(net: Net, stdout: Stdout) fails NetError:
     assert_eq!((answered, closed), (27, 3), "{errors}");
     assert_eq!(errors.matches("error:").count(), 3, "each crash says why: {errors}");
     std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// On one thread, a round only computing, for far longer than the test waits, still lets another
+/// connection's round answer: its loop's turns tick, and a tick lets the other tasks run. It once
+/// held the thread until it finished, so the second round waited for all of it.
+#[test]
+fn a_round_only_computing_lets_the_others_answer() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("ticking-rounds")?;
+    let program = dir.join("ticking.fen");
+    std::fs::write(
+        &program,
+        "from std.net import NetError
+
+def churn(turns: int) -> int:
+    mut x = 1
+    mut n = 0
+    while n < turns:
+        x = (x * 31 + 7) % 1000003
+        n += 1
+    x
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            if line == \"spin\":
+                conn.write(f\"spun {churn(1_000_000_000_000)}\\n\")?
+            else:
+                conn.write(\"pong\\n\")?
+",
+    )?;
+    let executable = dir.join("ticking");
+    let mut command = crate::executables::fennec_command();
+    command.args([
+        "build",
+        "--llvm",
+        "--release",
+        &program.to_string_lossy(),
+        "-o",
+        &executable.to_string_lossy(),
+    ]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().unwrap_or(0);
+    // The spinning round has started before the ping comes: its line is read, so it's computing.
+    let mut spinning = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    spinning.write_all(b"spin\n")?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let mut ping = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    ping.set_read_timeout(Some(std::time::Duration::from_secs(15)))?;
+    ping.write_all(b"ping\n")?;
+    let mut back = String::new();
+    let read = std::io::BufReader::new(ping).read_line(&mut back);
+    drop(spinning);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(back, "pong\n", "the ping wasn't answered while the other round computed: {read:?}");
     Ok(())
 }
 
@@ -7074,7 +7180,7 @@ fn a_build_runs_parallel_on_every_core_unless_asked_not_to() -> std::io::Result<
 /// in it.
 #[test]
 fn json_and_toml_of_plain_types_need_no_interpreter() -> std::io::Result<()> {
-    if !ready() || !crate::executables::lean_runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let dir = folder("formats-lean")?;
@@ -7108,7 +7214,6 @@ def main(stdout: Stdout):
     let built = crate::executables::fennec_command()
         .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
         .env("FENNEC_HOME", &dir)
-        .env("FENNEC_LEAN_RUNTIME", "1")
         .output_before(FENNEC_DEADLINE)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
@@ -7117,6 +7222,136 @@ def main(stdout: Stdout):
         String::from_utf8_lossy(&ran.stdout),
         "[{\"x\": 1, \"tags\": [\"a\"]}] [Spot(x=1, tags=[\"a\"])]\nSpot(x=2, tags=[])\n\
          {\"cells\": [[1, 2]], \"scores\": {\"a\": 1, \"b\": 2}, \"seen\": [1, 3], \"queue\": [\"go\"]} True\n"
+    );
+    Ok(())
+}
+
+/// A tuple saves as an array of its items, as in Python's `json.dumps`, and loads back, through
+/// std's readers and writers in Fennec, with no interpreter linked: in a list, in a field, inside
+/// another tuple, in an enum's case, as a dict's and a `SortedMap`'s keys, with an item that's
+/// always `None`, and through TOML and `std.pack` too. An array of the wrong length doesn't load.
+#[test]
+fn tuples_save_and_load_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("tuples-lean")?;
+    let program = dir.join("tuples.fen");
+    std::fs::write(
+        &program,
+        "\
+from std import json, pack, toml
+from std.collections import SortedMap
+
+enum Order:
+    Hold
+    Move(to: (int, int))
+
+struct Path:
+    steps: list[(int, str)]
+    at: (int, (int, int))
+
+def main(stdout: Stdout):
+    path = Path(steps=[(1, \"a\"), (2, \"b\")], at=(3, (4, 5)))
+    text = json.dumps(path)
+    stdout.print(text)
+    stdout.print(json.loads[Path](text) else Path(steps=[], at=(0, (0, 0))))
+    orders = [Order.Hold, Order.Move(to=(2, 3))]
+    stdout.print(json.dumps(orders), (json.loads[list[Order]](json.dumps(orders)) else []) == orders)
+    corners = {(0, 0): \"start\", (3, 4): \"end\"}
+    stdout.print(json.dumps(corners), (json.loads[dict[(int, int), str]](json.dumps(corners)) else {}) == corners)
+    mut by_side = SortedMap[(int, int), str]()
+    by_side[(2, 0)] = \"b\"
+    by_side[(1, 0)] = \"a\"
+    stdout.print(json.dumps(by_side))
+    stdout.print(json.dumps((1, None, \"x\")))
+    stdout.print(json.loads[list[(int, int)]](\"[[1, 2, 3]]\") else [(0, 0)])
+    stdout.print((toml.loads[Path](toml.dumps(path)) else path) == path)
+    stdout.print((pack.loads[Path](pack.dumps(path)) else Path(steps=[], at=(0, (0, 0)))) == path)
+",
+    )?;
+    let executable = dir.join("tuples");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "{\"steps\": [[1, \"a\"], [2, \"b\"]], \"at\": [3, [4, 5]]}\n\
+         Path(steps=[(1, \"a\"), (2, \"b\")], at=(3, (4, 5)))\n\
+         [\"Hold\", {\"Move\": {\"to\": [2, 3]}}] True\n\
+         [[[0, 0], \"start\"], [[3, 4], \"end\"]] True\n\
+         [[[1, 0], \"a\"], [[2, 0], \"b\"]]\n\
+         [1, null, \"x\"]\n\
+         [(0, 0)]\n\
+         True\n\
+         True\n"
+    );
+    Ok(())
+}
+
+/// A tuple of a kit module's type, written with its module's name, and of an optional item, saves
+/// and loads natively: the checker and lowering name its functions from the same type.
+#[test]
+fn tuples_of_a_kit_s_types_save_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("tuples-kit")?;
+    std::fs::create_dir_all(dir.join("src"))?;
+    std::fs::write(dir.join("kit.toml"), "name = \"marks\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")?;
+    std::fs::write(
+        dir.join("src/shapes.fen"),
+        "\
+export struct Spot:
+    x: int
+
+export struct Held:
+    pair: (Spot, (int?, str))
+",
+    )?;
+    std::fs::write(
+        dir.join("src/main.fen"),
+        "\
+import shapes
+from shapes import Spot
+from std import json, pack
+
+# Each optional comes from here: a list of `(Spot, int)` widened to `(Spot, int?)` isn't lowered
+# yet.
+def counted(n: int) -> int?:
+    if n > 0:
+        return n
+    None
+
+def main(stdout: Stdout):
+    marks: list[(Spot, int?)] = [(Spot(x=1), counted(2)), (Spot(x=3), counted(0))]
+    text = json.dumps(marks)
+    stdout.print(text)
+    stdout.print((json.loads[list[(Spot, int?)]](text) else []) == marks)
+    held = shapes.Held(pair=(Spot(x=5), (counted(0), \"a\")))
+    saved = json.dumps(held)
+    stdout.print(saved, (json.loads[shapes.Held](saved) else held) == held)
+    stdout.print((pack.loads[shapes.Held](pack.dumps(held)) else shapes.Held(pair=(Spot(x=0), (counted(1), \"\")))) == held)
+",
+    )?;
+    let executable = dir.join("marks");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &dir.to_string_lossy(), "-o", &executable.to_string_lossy()])
+        .env("FENNEC_HOME", dir.join("home"))
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "[[{\"x\": 1}, 2], [{\"x\": 3}, null]]\n\
+         True\n\
+         {\"pair\": [{\"x\": 5}, [null, \"a\"]]} True\n\
+         True\n"
     );
     Ok(())
 }
@@ -8975,11 +9210,11 @@ error Wrapped:
 error Inner:
     what: str
 
-def inner(n: int) -> int:
+def inner(n: int) -> int fails Inner:
     if n > 1: fail Inner(what="too many")
     n
 
-def outer(n: int) -> int:
+def outer(n: int) -> int fails Wrapped:
     inner(n)? from Wrapped(why="inner failed")
 
 def main(stdout: Stdout):
@@ -9341,16 +9576,19 @@ fn results_print_like_the_jit() -> std::io::Result<()> {
     }
     same_as_the_jit(
         "results_print",
-        r#"def check(n: int) -> Result[int, str]:
+        r"error NotPositive:
+    n: int
+
+def check(n: int) -> Result[int, NotPositive]:
     if n > 0:
         return Ok(n)
-    Err("not positive")
+    Err(NotPositive(n))
 
 def main(stdout: Stdout):
     stdout.print(check(3), check(-1))
     results = [check(1), check(0)]
     stdout.print(results)
-"#,
+",
     )
 }
 
@@ -9706,7 +9944,7 @@ def main(stdout: Stdout):
     stdout.print(who)
 "#;
 
-/// The same enums read and written as JSON, and as what a result holds.
+/// The same enums read and written as JSON, and an error with cases as what a result holds.
 const ENUMS_IN_JSON_AND_RESULTS: &str = r#"from std import json
 
 
@@ -9715,7 +9953,7 @@ enum Token:
     Word(text: str)
     Num(value: int)
 
-enum Failure:
+error Failure:
     Plain
     Why(reason: str)
 
@@ -11252,7 +11490,7 @@ fn a_main_giving_back_a_result_matches_the_jit() -> std::io::Result<()> {
     }
     same_as_the_jit(
         "main_gives_back",
-        r#"def number(text: str) -> int:
+        r#"def number(text: str) -> int fails InvalidValue:
     int(text)?
 
 def main(stdout: Stdout):
@@ -11279,20 +11517,20 @@ error TooWeak:
 error Plain:
     code: int
 
-def weak(level: int) -> int:
+def weak(level: int) -> int fails TooWeak:
     if level < 5: fail TooWeak(level)
     level
 
-def named(name: str) -> str:
+def named(name: str) -> str fails NotFound:
     if name == "": fail NotFound(name)
     name
 
-def challenge(name: str, level: int) -> str:
+def challenge(name: str, level: int) -> str fails NotFound | TooWeak:
     who = named(name)?
     power = weak(level)?
     f"{who} at {power}"
 
-def three(name: str, level: int, code: int) -> str:
+def three(name: str, level: int, code: int) -> str fails NotFound | Plain | TooWeak:
     if code > 0: fail Plain(code)
     challenge(name, level)?
 
@@ -11349,7 +11587,7 @@ fn an_unhandled_error_of_a_set_fails_like_the_jit() -> std::io::Result<()> {
 error TooWeak:
     level: int
 
-def pick(level: int) -> int:
+def pick(level: int) -> int fails NotFound | TooWeak:
     if level < 0: fail NotFound(\"x\")
     if level < 5: fail TooWeak(level)
     level
@@ -11370,7 +11608,7 @@ fn a_main_giving_back_an_error_fails_like_the_jit() -> std::io::Result<()> {
     }
     same_message_as_the_jit(
         "main_gives_back_an_error",
-        r#"def number(text: str) -> int:
+        r#"def number(text: str) -> int fails InvalidValue:
     int(text)?
 
 def main(stdout: Stdout):
@@ -11481,6 +11719,15 @@ struct Words:
         -1
 
     def end_map(ref self):
+        pass
+
+    def items(ref self, name: str, count: int) fails ParseError:
+        pass
+
+    def item[T: Deserializable](ref self) -> T fails ParseError:
+        T.deserialize(ref self)?
+
+    def end_items(ref self) fails ParseError:
         pass
 
     def none(ref self) -> bool fails ParseError:
@@ -11812,7 +12059,7 @@ fn numbers_and_sets_from_text_match_the_jit() -> std::io::Result<()> {
         "numbers_from_text",
         r#"from std.re import Regex
 
-def add(a: str, b: str) -> int:
+def add(a: str, b: str) -> int fails InvalidValue:
     int(a)? + int(b)?
 
 def main(stdout: Stdout):

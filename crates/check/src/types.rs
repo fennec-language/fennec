@@ -403,6 +403,8 @@ impl Type {
             Type::Set(item) => format!("set[{}]", item.source()?),
             Type::Iterator(item) => format!("Iterator[{}]", item.source()?),
             Type::Dict(key, value) => format!("dict[{}, {}]", key.source()?, value.source()?),
+            // One of a single item keeps its comma, or it would read back as the item.
+            Type::Tuple(items) if items.len() == 1 => format!("({},)", all(items)?),
             Type::Tuple(items) => format!("({})", all(items)?),
             Type::Optional(inner) if matches!(**inner, Type::Union(_)) => format!("({})?", inner.source()?),
             Type::Optional(inner) => format!("{}?", inner.source()?),
@@ -441,7 +443,8 @@ impl fmt::Display for Type {
             Type::Dict(key, value) => write!(f, "dict[{key}, {value}]"),
             Type::Tuple(items) => {
                 let items: Vec<String> = items.iter().map(ToString::to_string).collect();
-                write!(f, "({})", items.join(", "))
+                let comma = if items.len() == 1 { "," } else { "" };
+                write!(f, "({}{comma})", items.join(", "))
             }
             Type::Optional(inner) if matches!(**inner, Type::Union(_)) => write!(f, "({inner})?"),
             Type::Optional(inner) => write!(f, "{inner}?"),

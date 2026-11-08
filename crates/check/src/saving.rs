@@ -85,7 +85,7 @@ pub(crate) fn generate(module: &mut Module) {
     }
 }
 
-fn uses_saving(module: &Module) -> bool {
+pub(crate) fn uses_saving(module: &Module) -> bool {
     // A program's own interface by one of these names is its own business.
     let own = module.items.iter().any(|item| match item {
         Item::Interface(interface) => SAVING_NAMES.contains(&interface.name.as_str()),
@@ -178,7 +178,7 @@ fn all_saved(checker: &mut Checker, def: &TypeDef, generated: &BTreeSet<String>)
 
 /// Whether a value of this type can be saved and loaded. A type parameter is the extension's to
 /// ask of what it stands for.
-fn saved(checker: &Checker, ty: &Type, generated: &BTreeSet<String>) -> bool {
+pub(crate) fn saved(checker: &Checker, ty: &Type, generated: &BTreeSet<String>) -> bool {
     match ty {
         Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::Param(_) | Type::Id(_) => true,
         // A union is saved through a type made for it, which a set's items and a dict's keys
@@ -189,6 +189,13 @@ fn saved(checker: &Checker, ty: &Type, generated: &BTreeSet<String>) -> bool {
             saved(checker, inner, generated)
         }
         Type::Dict(key, value) => saved(checker, key, generated) && saved(checker, value, generated),
+        // A tuple is saved as an array of its items (see `tuple_lowering`).
+        // One of a single item can't be (see `Generic::fits_interface`).
+        Type::Tuple(items) => {
+            items.len() > 1
+                && !items.iter().any(holds_union)
+                && items.iter().all(|item| saved(checker, item, generated))
+        }
         Type::Union(members) => {
             members.iter().all(|member| tested_by_name(member) && saved(checker, member, generated))
         }
@@ -230,9 +237,9 @@ impl Read<'_> {
     fn read(&self) -> String {
         match &self.union {
             Some(changed) => {
-                format!("loaded_union__{}(src__.value[{}]()?)", changed.helper, changed.saved_as)
+                format!("loaded_union__{}(src__.value[{}]()?)", changed.helper, one_type(&changed.saved_as))
             }
-            None => format!("src__.value[{}]()?", self.ty),
+            None => format!("src__.value[{}]()?", one_type(&self.ty)),
         }
     }
 }
@@ -322,7 +329,8 @@ impl Unions {
                 "        if self.value is {member}:\n            out__.member(\"{member}\", {at})\n            out__.value(self.value)"
             );
             let read = format!(
-                "value__ = src__.value[{member}]()?\n            src__.end_member()?\n            return {name}(value=value__)"
+                "value__ = src__.value[{}]()?\n            src__.end_member()?\n            return {name}(value=value__)",
+                one_type(member)
             );
             if at + 1 < names.len() {
                 let _ = writeln!(loading, "        if at__ == {at}:\n            {read}");
@@ -339,6 +347,12 @@ impl Unions {
         );
         Some(name)
     }
+}
+
+/// A type written as the one type in brackets: a tuple type gets a comma after it, so `[(int, str),]`
+/// is one type, not two.
+pub(crate) fn one_type(written: &str) -> String {
+    if written.starts_with('(') { format!("{written},") } else { written.to_owned() }
 }
 
 /// Whether a type is a union, or holds one.

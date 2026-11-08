@@ -53,8 +53,10 @@ pub(crate) fn kit_files(path: &str, state: Option<&KitState>) -> Option<Vec<KitF
         paths.into_iter().map(|(module, path)| kit_file(module, &path, state)).collect::<Option<_>>()?;
     // Which files `embed` reads is only known from reading the kit, so it's what was last noted.
     // Any edit that changes that changes a module, which is seen anyway.
+    let listed: HashSet<String> = files.iter().map(|file| file.module.clone()).collect();
     let noted = state.into_iter().flat_map(|state| state.files.keys());
-    for module in noted.filter(|module| module.starts_with(fennec_kit::EMBEDDED)) {
+    for module in noted.filter(|module| module.starts_with(fennec_kit::EMBEDDED) && !listed.contains(*module))
+    {
         let path = Path::new(module.trim_start_matches(fennec_kit::EMBEDDED));
         files.push(kit_file(module.clone(), path, state).unwrap_or_else(|| KitFile {
             module: module.clone(),

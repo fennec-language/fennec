@@ -191,6 +191,12 @@ fn once<'h>(
     body: &[u8],
     (deadline, timeout): (Instant, Duration),
 ) -> Result<Answer, Failure> {
+    if !is_token(method) {
+        return Err(Failure::Other(format!("`{}` can't be a request's method", method.escape_debug())));
+    }
+    if !fits_on_a_line(&url.target) || !fits_on_a_line(&url.host) {
+        return Err(Failure::Other("the URL has a space, line break or control character in it".to_owned()));
+    }
     let tcp = connect(url, deadline, timeout)?;
     let mut stream =
         if url.secure { secured(tcp, &url.host, deadline, timeout)? } else { Stream::Plain(tcp) };
@@ -202,8 +208,9 @@ fn once<'h>(
     let mut head = format!("{method} {} HTTP/1.1\r\nHost: {host}\r\n", url.target);
     let (mut agent, mut accept) = (false, false);
     for (name, value) in headers {
-        if name.contains(['\r', '\n', ':']) || value.contains(['\r', '\n']) {
-            return Err(Failure::Other(format!("the header `{name}` has a line break or `:` in it")));
+        if !is_token(name) || value.bytes().any(|byte| (byte < 32 && byte != b'\t') || byte == 127) {
+            let shown = name.escape_debug();
+            return Err(Failure::Other(format!("the header `{shown}` has a line break or `:` in it")));
         }
         agent |= name.eq_ignore_ascii_case("user-agent");
         accept |= name.eq_ignore_ascii_case("accept");
@@ -222,6 +229,18 @@ fn once<'h>(
     stream.write_all_by(head.as_bytes(), deadline, timeout)?;
     stream.write_all_by(body, deadline, timeout)?;
     read_answer(&mut stream, method, deadline, timeout)
+}
+
+/// Whether this is what HTTP calls a token, as a method or a header's name has to be.
+fn is_token(text: &str) -> bool {
+    !text.is_empty()
+        && text.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+}
+
+/// Whether this can be written on a request's first line: it has no space or control character,
+/// either of which would end the line or the part of it, and start something a server would read.
+fn fits_on_a_line(text: &str) -> bool {
+    text.bytes().all(|byte| byte > 32 && byte != 127)
 }
 
 fn connect(url: &Url, deadline: Instant, timeout: Duration) -> Result<TcpStream, Failure> {
@@ -336,8 +355,14 @@ impl Stream {
         }
     }
 
-    /// Reads some, by the time left. Nothing read means the other side is done.
-    fn read_by(&mut self, into: &mut [u8], deadline: Instant, timeout: Duration) -> Result<usize, Failure> {
+    /// Reads some, by the time left. Nothing read means the other side is done, and `cut_off` says
+    /// whether it went without saying so.
+    fn read_by(
+        &mut self,
+        into: &mut [u8],
+        (deadline, timeout): (Instant, Duration),
+        cut_off: &mut bool,
+    ) -> Result<usize, Failure> {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Err(Failure::TimedOut(timeout));
@@ -349,8 +374,12 @@ impl Stream {
         };
         match read {
             Ok(count) => Ok(count),
-            // A server that hangs up without saying goodbye first has still said what it had.
-            Err(error) if error.kind() == ErrorKind::UnexpectedEof => Ok(0),
+            // A server that hangs up without saying goodbye first has still said what it had. Only
+            // an answer with no other way to say it's whole needs the goodbye.
+            Err(error) if error.kind() == ErrorKind::UnexpectedEof => {
+                *cut_off = true;
+                Ok(0)
+            }
             Err(error) => Err(failure_of(&error, timeout)),
         }
     }
@@ -376,13 +405,15 @@ struct Reader<'s> {
     at: usize,
     deadline: Instant,
     timeout: Duration,
+    /// Whether TLS ended with no word from the other side that it was finished.
+    cut_off: bool,
 }
 
 impl Reader<'_> {
     /// Reads more in. False once the other side is done.
     fn more(&mut self) -> Result<bool, Failure> {
         let mut chunk = [0; 16 * 1024];
-        let read = self.stream.read_by(&mut chunk, self.deadline, self.timeout)?;
+        let read = self.stream.read_by(&mut chunk, (self.deadline, self.timeout), &mut self.cut_off)?;
         self.held.extend_from_slice(chunk.get(..read).unwrap_or_default());
         Ok(read > 0)
     }
@@ -424,6 +455,9 @@ impl Reader<'_> {
     /// Everything until the other side is done.
     fn all(&mut self) -> Result<Vec<u8>, Failure> {
         while self.more()? {}
+        if self.cut_off {
+            return Err(Failure::Tls("the connection was cut off before the answer ended".to_owned()));
+        }
         let taken = self.rest().to_vec();
         self.at = self.held.len();
         Ok(taken)
@@ -452,7 +486,7 @@ fn read_answer(
     deadline: Instant,
     timeout: Duration,
 ) -> Result<Answer, Failure> {
-    let mut reader = Reader { stream, held: Vec::new(), at: 0, deadline, timeout };
+    let mut reader = Reader { stream, held: Vec::new(), at: 0, deadline, timeout, cut_off: false };
     let (status, headers) = loop {
         let (status, headers) = read_head(&mut reader)?;
         // `100 Continue` and the like say something's coming.
@@ -785,6 +819,60 @@ pub(crate) mod tls {
 
 #[cfg(test)]
 mod tests {
+    /// TLS that ends with what it had, then the other side gone without saying it's finished.
+    struct CutOff {
+        tcp: std::net::TcpStream,
+        left: &'static [u8],
+    }
+
+    impl Read for CutOff {
+        fn read(&mut self, into: &mut [u8]) -> std::io::Result<usize> {
+            if self.left.is_empty() {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            let count = self.left.len().min(into.len());
+            let (now, later) = self.left.split_at(count);
+            into[..count].copy_from_slice(now);
+            self.left = later;
+            Ok(count)
+        }
+    }
+
+    impl Write for CutOff {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl super::Secure for CutOff {
+        fn tcp(&self) -> &std::net::TcpStream {
+            &self.tcp
+        }
+    }
+
+    /// An answer that lasts until the connection closes has only the closing to say it's whole, and
+    /// over TLS a closing nobody said was coming may be someone cutting it short.
+    #[test]
+    fn an_answer_read_to_the_end_fails_if_tls_was_cut_off() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let tcp = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let mut stream = super::Stream::Secure(Box::new(CutOff { tcp, left: b"half of an answ" }));
+        let timeout = Duration::from_secs(5);
+        let mut reader = super::Reader {
+            stream: &mut stream,
+            held: Vec::new(),
+            at: 0,
+            deadline: std::time::Instant::now() + timeout,
+            timeout,
+            cut_off: false,
+        };
+        assert!(matches!(reader.all(), Err(Failure::Tls(_))));
+    }
+
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::time::Duration;
@@ -1013,6 +1101,28 @@ mod tests {
             Err(Failure::Other(why)) if why.contains("redirects more than 10 times")
         ));
         assert_eq!(done.join().unwrap().len(), 11);
+    }
+
+    /// What would start a line of its own on the wire is refused before anything's connected to:
+    /// port 1 has nothing listening, so getting past the check says `Refused`.
+    #[test]
+    fn a_line_break_never_reaches_the_wire() {
+        let asked = |method: &str, url: &str, headers: Vec<(String, String)>| {
+            send(&Request {
+                method: method.to_owned(),
+                url: url.to_owned(),
+                params: Vec::new(),
+                headers,
+                body: Vec::new(),
+                timeout: Duration::from_secs(5),
+            })
+        };
+        let plain = "http://127.0.0.1:1/";
+        assert!(matches!(asked("GET", plain, Vec::new()), Err(Failure::Refused(..))));
+        let injected = "http://127.0.0.1:1/a\r\nX-Injected: 1";
+        assert!(matches!(asked("GET", injected, Vec::new()), Err(Failure::Other(_))), "the URL");
+        assert!(matches!(asked("GET /x", plain, Vec::new()), Err(Failure::Other(_))), "the method");
+        assert!(matches!(asked("GE\rT", plain, Vec::new()), Err(Failure::Other(_))), "the method");
     }
 
     #[test]

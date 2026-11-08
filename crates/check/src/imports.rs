@@ -122,6 +122,10 @@ impl Uses<'_> {
                 self.expr(Some(value));
                 self.stmts(body);
             }
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                self.stmts(cleanup);
+                self.stmts(body);
+            }
             StmtKind::Def(def) => self.function(def),
             StmtKind::Break | StmtKind::Continue | StmtKind::Pass => {}
         }

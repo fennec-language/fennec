@@ -2,18 +2,33 @@
 //! file uses another file's names only after importing them: `from enemies import spawn`,
 //! or `import enemies` and then `enemies.spawn`. Uses of the second kind are rewritten to the
 //! plain name, so the merged module reads like one file.
+//!
+//! A kit's dependencies are merged in too. Each kit's names are its own: everything a dependency
+//! defines has its kit's name put in front of it in the merged module, joined by a mark no program
+//! can write, and another kit reaches only what it marks `export`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use fennec_syntax::{
-    Diagnostic, Expr, ExprKind, FStrPart, FnDef, Item, Pattern, Span, Stmt, StmtKind, TypeExpr,
+    Diagnostic, Expr, ExprKind, FStrPart, FnDef, Generic, Item, Pattern, Span, Stmt, StmtKind, TypeExpr,
 };
 
 use crate::load::{File, is_std};
 
-/// What each file defines, and which file defines each name.
+/// What one file defines.
+struct Part {
+    name: String,
+    shown: String,
+    names: BTreeSet<String>,
+    /// What starts its kit's names in the merged module.
+    prefix: String,
+    exports: HashSet<String>,
+}
+
+/// What each file defines, and which file defines each name, by the name the merged module has
+/// for it.
 struct Kit {
-    files: Vec<(String, String, BTreeSet<String>)>,
+    files: Vec<Part>,
     owners: HashMap<String, usize>,
     /// The enums with each case name, and the file each is in.
     cases: HashMap<String, Vec<(String, usize)>>,
@@ -21,24 +36,51 @@ struct Kit {
 
 impl Kit {
     fn name(&self, file: usize) -> &str {
-        self.files.get(file).map_or("", |(name, _, _)| name)
+        self.files.get(file).map_or("", |part| &part.name)
     }
 
     fn shown(&self, file: usize) -> &str {
-        self.files.get(file).map_or("", |(_, shown, _)| shown)
+        self.files.get(file).map_or("", |part| &part.shown)
     }
 
     fn defines(&self, file: usize, name: &str) -> bool {
-        self.files.get(file).is_some_and(|(_, _, names)| names.contains(name))
+        self.files.get(file).is_some_and(|part| part.names.contains(name))
     }
 
-    /// A help line listing what a file defines.
-    fn listing(&self, file: usize) -> String {
+    /// What the merged module calls a name `file` defines.
+    fn merged(&self, file: usize, name: &str) -> String {
+        let prefix = self.files.get(file).map_or("", |part| &part.prefix);
+        format!("{prefix}{name}")
+    }
+
+    /// Whether the files `reader` and `file` are of different kits.
+    fn apart(&self, reader: usize, file: usize) -> bool {
+        self.files.get(reader).map(|part| &part.prefix) != self.files.get(file).map(|part| &part.prefix)
+    }
+
+    /// Whether code in `reader` can use `name` from `file`: every name inside a kit, and only
+    /// what's exported between kits.
+    fn provides(&self, reader: usize, file: usize, name: &str) -> bool {
+        self.defines(file, name)
+            && (!self.apart(reader, file)
+                || self.files.get(file).is_some_and(|part| part.exports.contains(name)))
+    }
+
+    /// A help line listing what `file` gives `reader`.
+    fn listing(&self, reader: usize, file: usize) -> String {
         let names: Vec<&str> = self
             .files
             .get(file)
-            .map(|(_, _, names)| names.iter().map(String::as_str).collect())
+            .map(|part| part.names.iter().map(String::as_str).collect())
             .unwrap_or_default();
+        let names: Vec<&str> = names.into_iter().filter(|name| self.provides(reader, file, name)).collect();
+        if self.apart(reader, file) {
+            return if names.is_empty() {
+                format!("`{}` exports nothing", self.name(file))
+            } else {
+                format!("`{}` exports {}", self.name(file), names.join(", "))
+            };
+        }
         if names.is_empty() {
             format!("{} defines nothing yet", self.shown(file))
         } else {
@@ -95,7 +137,24 @@ pub(crate) fn resolve(files: &mut [File], errors: &mut Vec<Diagnostic>) {
         for item in &mut file.module.items {
             scope.item(item);
         }
+        if !file.prefix.is_empty() {
+            for item in &mut file.module.items {
+                name_with_prefix(item, &file.prefix);
+            }
+        }
     }
+}
+
+/// Renames what an item defines to what the merged module calls it.
+fn name_with_prefix(item: &mut Item, prefix: &str) {
+    let name = match item {
+        Item::Function(def) => &mut def.name,
+        Item::Struct(def) | Item::Enum(def) | Item::Error(def) => &mut def.name,
+        Item::Interface(interface) => &mut interface.name,
+        Item::TypeAlias { name, .. } | Item::Const { name, .. } => name,
+        Item::Extend(_) | Item::Import(_) | Item::Test(_) | Item::Stmt(_) => return,
+    };
+    *name = format!("{prefix}{name}");
 }
 
 /// Finds what each file defines, reporting names defined in two files.
@@ -110,7 +169,8 @@ fn gather(files: &[File], errors: &mut Vec<Diagnostic>) -> Kit {
                 }
             }
             let Some((name, span)) = defined(item) else { continue };
-            match kit.owners.get(name) {
+            let merged = format!("{}{name}", file.prefix);
+            match kit.owners.get(&merged) {
                 Some(&owner) if owner == at => errors.push(
                     Diagnostic::new(format!("`{name}` is already defined in this file"), span)
                         .with_help("rename one of them"),
@@ -122,12 +182,18 @@ fn gather(files: &[File], errors: &mut Vec<Diagnostic>) -> Kit {
                         ),
                 ),
                 None => {
-                    kit.owners.insert(name.to_owned(), at);
+                    kit.owners.insert(merged, at);
                 }
             }
             names.insert(name.to_owned());
         }
-        kit.files.push((file.name.clone(), file.shown.clone(), names));
+        kit.files.push(Part {
+            name: file.name.clone(),
+            shown: file.shown.clone(),
+            names,
+            prefix: file.prefix.clone(),
+            exports: file.exports.clone(),
+        });
     }
     kit
 }
@@ -202,18 +268,34 @@ impl Resolver<'_> {
             self.modules.insert(bound.to_owned(), from);
         }
         for (name, bound) in names {
-            if self.kit.defines(from, name) {
+            if self.kit.provides(self.file, from, name) {
                 self.bind_import(bound, name, span);
                 self.imported.insert(bound.clone(), from);
-                if bound != name {
-                    self.renamed.insert(bound.clone(), name.clone());
+                let merged = self.kit.merged(from, name);
+                if *bound != merged {
+                    self.renamed.insert(bound.clone(), merged);
                 }
             } else {
-                self.errors.push(
-                    Diagnostic::new(format!("`{module}` has nothing called `{name}`"), span)
-                        .with_help(self.kit.listing(from)),
-                );
+                let problem = self.missing(module, name, from, span);
+                self.errors.push(problem);
             }
+        }
+    }
+
+    /// Why a module has no `name` for this file to use.
+    fn missing(&self, module: &str, name: &str, owner: usize, span: Span) -> Diagnostic {
+        if self.kit.defines(owner, name) {
+            return Diagnostic::new(format!("`{module}` doesn't export `{name}`"), span)
+                .with_help(self.kit.listing(self.file, owner));
+        }
+        Diagnostic::new(format!("`{module}` has nothing called `{name}`"), span)
+            .with_help(self.kit.listing(self.file, owner))
+    }
+
+    /// Checks the bounds of type parameters.
+    fn bounds(&mut self, generics: &mut [Generic]) {
+        for bound in generics.iter_mut().flat_map(|generic| generic.bounds.iter_mut()) {
+            self.ty(bound);
         }
     }
 
@@ -221,8 +303,11 @@ impl Resolver<'_> {
         match item {
             Item::Function(def) => self.function(def, &[]),
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
-                let fields: Vec<String> = def.fields.iter().map(|field| field.name.clone()).collect();
+                let params = def.generics.iter().map(|generic| generic.name.clone());
+                let fields: Vec<String> =
+                    def.fields.iter().map(|field| field.name.clone()).chain(params).collect();
                 self.locals = fields.iter().cloned().collect();
+                self.bounds(&mut def.generics);
                 for field in
                     def.fields.iter_mut().chain(def.cases.iter_mut().flat_map(|case| case.fields.iter_mut()))
                 {
@@ -243,8 +328,12 @@ impl Resolver<'_> {
             // The type has to be one this file can see, like any other name it uses.
             Item::Extend(extension) => {
                 self.qualified(&mut extension.name, extension.span);
+                let params: Vec<String> =
+                    extension.generics.iter().map(|generic| generic.name.clone()).collect();
+                self.locals = params.iter().cloned().collect();
+                self.bounds(&mut extension.generics);
                 for method in &mut extension.methods {
-                    self.function(method, &[]);
+                    self.function(method, &params);
                 }
             }
             Item::TypeAlias { ty, .. } => self.ty(ty),
@@ -284,9 +373,18 @@ impl Resolver<'_> {
     }
 
     fn def(&mut self, def: &mut FnDef) {
+        for generic in &def.generics {
+            self.bind(&generic.name);
+        }
+        if !self.collecting {
+            self.bounds(&mut def.generics);
+        }
         for param in &mut def.params {
             self.bind(&param.name);
             self.optional_ty(param.ty.as_mut());
+            if let Some(default) = &mut param.default {
+                self.expr(default);
+            }
         }
         self.optional_ty(def.ret.as_mut());
         self.optional_ty(def.fails.as_mut());
@@ -319,7 +417,8 @@ impl Resolver<'_> {
                     self.expr(value);
                 }
             }
-            StmtKind::Assign { target, value, .. } => {
+            StmtKind::Assign { target, value, ty, .. } => {
+                self.optional_ty(ty.as_mut());
                 self.bind_target(target);
                 self.expr(target);
                 self.expr(value);
@@ -342,6 +441,11 @@ impl Resolver<'_> {
                     self.bind(name);
                 }
                 self.expr(iter);
+                self.stmts(body);
+            }
+            StmtKind::OnFailure { name, cleanup, body } => {
+                self.bind(name);
+                self.stmts(cleanup);
                 self.stmts(body);
             }
             StmtKind::With { value, names, body, .. } => {
@@ -468,17 +572,16 @@ impl Resolver<'_> {
         if owners.len() < 2 {
             return None;
         }
-        let visible: Vec<&String> = owners
+        let visible: Vec<&(String, usize)> = owners
             .iter()
             .filter(|(owner, file)| {
                 *file == self.file
                     || self.imported.get(owner) == Some(file)
                     || self.modules.values().any(|module| module == file)
             })
-            .map(|(owner, _)| owner)
             .collect();
         match visible.as_slice() {
-            [only] => Some((*only).clone()),
+            [(owner, file)] => Some(self.kit.merged(*file, owner)),
             _ => None,
         }
     }
@@ -517,7 +620,9 @@ impl Resolver<'_> {
         if self.collecting || self.locals.contains(used) {
             return None;
         }
-        let original = self.renamed.get(used)?.clone();
+        let Some(original) = self.renamed.get(used).cloned() else {
+            return self.kit.defines(self.file, used).then(|| self.kit.merged(self.file, used));
+        };
         if self.locals.contains(&original) {
             self.errors.push(
                 Diagnostic::new(format!("`{used}` stands for `{original}`, which a name here hides"), span)
@@ -544,7 +649,7 @@ impl Resolver<'_> {
         {
             return;
         }
-        if let Some(&owner) = self.kit.owners.get(name) {
+        if let Some(&owner) = self.kit.owners.get(&self.kit.merged(self.file, name)) {
             self.errors.push(
                 Diagnostic::new(
                     format!(
@@ -575,13 +680,11 @@ impl Resolver<'_> {
             }
             return false;
         };
-        if self.kit.defines(owner, name) {
-            expr.kind = ExprKind::Name(name.clone());
+        if self.kit.provides(self.file, owner, name) {
+            expr.kind = ExprKind::Name(self.kit.merged(owner, name));
         } else {
-            self.errors.push(
-                Diagnostic::new(format!("`{module}` has nothing called `{name}`"), expr.span)
-                    .with_help(self.kit.listing(owner)),
-            );
+            let problem = self.missing(&module, name, owner, expr.span);
+            self.errors.push(problem);
         }
         true
     }
@@ -639,11 +742,13 @@ impl Resolver<'_> {
             return;
         }
         match self.modules.get(module) {
-            Some(&owner) if self.kit.defines(owner, member) => *name = member.to_owned(),
-            Some(&owner) => self.errors.push(
-                Diagnostic::new(format!("`{module}` has nothing called `{member}`"), span)
-                    .with_help(self.kit.listing(owner)),
-            ),
+            Some(&owner) if self.kit.provides(self.file, owner, member) => {
+                *name = self.kit.merged(owner, member);
+            }
+            Some(&owner) => {
+                let problem = self.missing(module, member, owner, span);
+                self.errors.push(problem);
+            }
             None => {
                 let problem = self.short_form(module, member, span).unwrap_or_else(|| {
                     Diagnostic::new(format!("`{module}` isn't imported here"), span)

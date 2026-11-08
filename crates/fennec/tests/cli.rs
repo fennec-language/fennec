@@ -1990,6 +1990,33 @@ fn stops(dir: &Path, home: &Path) -> bool {
     })
 }
 
+/// Makes a folder a git repository with everything in it committed, giving back the commit.
+fn committed_to_git(repository: &Path) -> std::io::Result<String> {
+    let git = |args: &[&str]| -> std::io::Result<String> {
+        let done = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repository)
+            .args([
+                "-c",
+                "user.name=Fennec",
+                "-c",
+                "user.email=fennec@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()?;
+        if !done.status.success() {
+            return Err(std::io::Error::other(text(&done.stderr)));
+        }
+        Ok(text(&done.stdout).trim().to_owned())
+    };
+    git(&["init", "--quiet"])?;
+    git(&["add", "--all"])?;
+    git(&["commit", "--quiet", "-m", "a kit"])?;
+    git(&["rev-parse", "HEAD"])
+}
+
 /// `fennec update` pins a kit from git in kit.lock, and says so; run again, it has nothing to do.
 #[test]
 fn fennec_update_pins_a_kit_from_git() {
@@ -2001,29 +2028,12 @@ fn fennec_update_pins_a_kit_from_git() {
         "name = \"physics\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n",
     )
     .unwrap();
-    std::fs::write(repository.join("src/lib.fen"), "").unwrap();
-    let git = |args: &[&str]| {
-        let done = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repository)
-            .args([
-                "-c",
-                "user.name=Fennec",
-                "-c",
-                "user.email=fennec@example.com",
-                "-c",
-                "commit.gpgsign=false",
-            ])
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(done.status.success(), "{}", text(&done.stderr));
-        text(&done.stdout).trim().to_owned()
-    };
-    git(&["init", "--quiet"]);
-    git(&["add", "--all"]);
-    git(&["commit", "--quiet", "-m", "physics"]);
-    let commit = git(&["rev-parse", "HEAD"]);
+    std::fs::write(
+        repository.join("src/lib.fen"),
+        "## How far a thing falls.\nexport def fall() -> int:\n    7\n",
+    )
+    .unwrap();
+    let commit = committed_to_git(&repository).unwrap();
     let kit = dir.join("game");
     std::fs::create_dir_all(kit.join("src")).unwrap();
     std::fs::write(
@@ -2034,7 +2044,23 @@ fn fennec_update_pins_a_kit_from_git() {
         ),
     )
     .unwrap();
-    std::fs::write(kit.join("src/main.fen"), "def main():\n    pass\n").unwrap();
+    std::fs::write(
+        kit.join("src/main.fen"),
+        "from physics import fall\n\ndef main(stdout: Stdout):\n    stdout.print(fall())\n",
+    )
+    .unwrap();
+    let run = || {
+        crate::executables::fennec_command()
+            .args(["run", "."])
+            .current_dir(&kit)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_OFFLINE")
+            .output()
+            .unwrap()
+    };
+    let unpinned = run();
+    assert!(!unpinned.status.success());
+    assert!(text(&unpinned.stderr).contains("`fennec update` fetches it"), "{}", text(&unpinned.stderr));
     let update = || {
         crate::executables::fennec_command()
             .arg("update")
@@ -2053,10 +2079,133 @@ fn fennec_update_pins_a_kit_from_git() {
     );
     assert!(std::fs::read_to_string(kit.join("kit.lock")).unwrap().contains(&format!(" {commit}\n")));
     assert_eq!(text(&update().stdout), "kit.lock pins every dependency already\n");
+    let ran = run();
+    assert!(ran.status.success(), "{}", text(&ran.stderr));
+    assert_eq!(text(&ran.stdout), "7\n");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-#[cfg(unix)]
+/// Writes a kit with these files, and the dependencies its `kit.toml` lines name.
+fn write_kit(at: &Path, name: &str, dependencies: &str, files: &[(&str, &str)]) -> std::io::Result<()> {
+    std::fs::create_dir_all(at.join("src"))?;
+    std::fs::write(
+        at.join("kit.toml"),
+        format!("name = \"{name}\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n{dependencies}"),
+    )?;
+    for (file, source) in files {
+        std::fs::write(at.join("src").join(file), source)?;
+    }
+    Ok(())
+}
+
+/// The kits the import test depends on: `physics`, which depends on `maths`.
+fn write_physics_and_maths(dir: &Path) -> std::io::Result<()> {
+    write_kit(
+        &dir.join("maths"),
+        "maths",
+        "",
+        &[("lib.fen", "export def twice(x: int) -> int:\n    x * 2\n")],
+    )?;
+    write_kit(
+        &dir.join("physics"),
+        "physics",
+        "[dependencies]\nmaths = { path = \"../maths\" }\n",
+        &[
+            (
+                "lib.fen",
+                "from shapes import area, Circle\nfrom maths import twice\n\nLIMIT: int = 10\n\n\
+                 export struct Body:\n    mass: int\n    shape: Circle\n\n    \
+                 def weight(self) -> int:\n        twice(self.mass) + area(self.shape) + helper()\n\n\
+                 export enum Kind:\n    Solid\n    Liquid(depth: int)\n\n\
+                 export error TooHeavy:\n    Over(by: int)\n\n\
+                 export interface Weighed:\n    def weight(self) -> int\n\n\
+                 export def total[T: Weighed](items: list[T]) -> int fails TooHeavy:\n    \
+                 mut sum: int = 0\n    for item in items:\n        sum += item.weight()\n    \
+                 if sum > 100:\n        fail .Over(by=sum - 100)\n    sum\n\n\
+                 export def describe(kind: Kind) -> str:\n    match kind:\n        \
+                 case .Solid:\n            \"solid\"\n        case .Liquid(depth=d):\n            \
+                 f\"liquid {d}\"\n\n\
+                 def helper() -> int:\n    LIMIT\n\n\
+                 test \"not the program's\":\n    assert false\n",
+            ),
+            (
+                "shapes.fen",
+                "export struct Circle:\n    radius: int\n\n\
+                 export def area(circle: Circle) -> int:\n    3 * circle.radius * circle.radius\n",
+            ),
+        ],
+    )?;
+    Ok(())
+}
+
+/// A kit's names are its own, in every place a name can be written, another kit reaches only what
+/// it exports, and only the kits a kit names itself; its tests and lints stay with it.
+#[test]
+fn a_kit_imports_another_and_their_names_stay_apart() {
+    let dir = scratch("imports").unwrap();
+    write_physics_and_maths(&dir).unwrap();
+    let kit = dir.join("game");
+    let main = "import physics\nfrom physics import Body, total, describe\nfrom physics.shapes import Circle as Round\n\n\
+        struct Circle:\n    name: str\n\n\
+        def helper() -> str:\n    \"mine\"\n\n\
+        def main(stdout: Stdout):\n    \
+        body: physics.Body = Body(mass=2, shape=Round(radius=1))\n    \
+        stdout.print(body.weight())\n    \
+        stdout.print(describe(.Liquid(depth=3)))\n    \
+        stdout.print(Circle(name=\"own\").name + helper())\n    \
+        stdout.print(f\"{body}\")\n    \
+        match total([body]):\n        \
+        case Err(Over(by=n)):\n            stdout.print(n)\n        \
+        case Ok(n):\n            stdout.print(n)\n";
+    let manifest = "[dependencies]\nphysics = { path = \"../physics\" }\n";
+    write_kit(&kit, "game", manifest, &[("main.fen", main)]).unwrap();
+    let home = dir.join("home");
+    let fennec = |args: &[&str]| {
+        crate::executables::fennec_command()
+            .args(args)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", &home)
+            .output()
+            .unwrap()
+    };
+    let ran = fennec(&["run", "."]);
+    assert!(ran.status.success(), "{}", text(&ran.stderr));
+    assert_eq!(text(&ran.stdout), "17\nliquid 3\nownmine\nBody(mass=2, shape=Circle(radius=1))\n17\n");
+    assert!(!text(&ran.stderr).contains("physics"), "{}", text(&ran.stderr));
+    let tested = fennec(&["test", "."]);
+    assert!(tested.status.success(), "{}{}", text(&tested.stdout), text(&tested.stderr));
+    let linted = fennec(&["lint", "."]);
+    assert!(!text(&linted.stderr).contains("physics/src"), "{}", text(&linted.stderr));
+
+    // What a kit's own code sees of another.
+    let refused = |source: String, says: &str| {
+        std::fs::write(kit.join("src/main.fen"), source).unwrap();
+        let checked = fennec(&["check", "."]);
+        assert!(!checked.status.success());
+        assert!(text(&checked.stderr).contains(says), "{}", text(&checked.stderr));
+    };
+    refused(format!("from physics import helper as theirs\n{main}"), "`physics` doesn't export `helper`");
+    refused(
+        format!("{main}\ndef peek() -> int:\n    physics.helper()\n"),
+        "`physics` doesn't export `helper`",
+    );
+    refused(format!("from maths import twice\n{main}"), "there's no module called `maths`");
+    refused(format!("{main}\ndef wrong() -> physics.Body:\n    1\n"), "physics.Body");
+
+    // A change to a kit from a path is seen by the next run.
+    std::fs::write(kit.join("src/main.fen"), main).unwrap();
+    std::fs::write(
+        dir.join("physics/src/shapes.fen"),
+        "export struct Circle:\n    radius: int\n\n\
+         export def area(circle: Circle) -> int:\n    4 * circle.radius * circle.radius\n",
+    )
+    .unwrap();
+    let again = fennec(&["run", "."]);
+    assert!(again.status.success(), "{}", text(&again.stderr));
+    assert!(text(&again.stdout).starts_with("18\n"), "{}", text(&again.stdout));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 fn small_kit(name: &str) -> std::io::Result<(PathBuf, PathBuf)> {
     let dir = scratch(name)?;
     std::fs::create_dir_all(dir.join("kit/src"))?;

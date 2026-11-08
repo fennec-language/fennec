@@ -1,0 +1,69 @@
+# decision: HTTP is read strictly, so nothing in front of a server can read a request differently.
+#
+# A proxy and a server that disagree on where a request ends let one request hide inside another.
+# So anything the grammar doesn't allow gets a 400: a second `content-length`, a length that isn't
+# only digits, a space before a header's `:`, a header folded onto the next line, a version that
+# isn't 1.0 or 1.1, or a control character in the method. A value with a line break can't go into
+# a response's headers, where it would start a header of its own.
+from std.net import NetError, Request, Response
+
+def respond(request: Request) -> Response:
+    echoed = request.query.get("echo") else ""
+    Response(status=200, headers={"x-echo": echoed}, body="hello".encode())
+
+## Every line a server answers `raw` with.
+def answer(net: Net, raw: str) -> list[str] fails NetError:
+    with net.listen(0)? as server:
+        with net.connect("localhost", server.port)? as client:
+            client.write(raw)?
+            server.serve(respond)
+            return list(client.lines())
+    []
+
+def status_of(net: Net, raw: str) -> str fails NetError:
+    answer(net, raw)?[0]
+
+BAD = "HTTP/1.1 400 Bad Request"
+GOOD = "HTTP/1.1 200 OK"
+END = "connection: close\r\n\r\n"
+
+test "a plain request is answered"(net: Net):
+    assert status_of(net, f"POST / HTTP/1.1\r\ncontent-length: 2\r\n{END}hi")? == GOOD
+
+test "a second content-length is refused"(net: Net):
+    assert (
+        status_of(net, f"POST / HTTP/1.1\r\ncontent-length: 2\r\ncontent-length: 3\r\n{END}hi!")?
+        == BAD
+    )
+
+test "a content-length that isn't only digits is refused"(net: Net):
+    assert status_of(net, f"POST / HTTP/1.1\r\ncontent-length: +2\r\n{END}hi")? == BAD
+
+test "a space before a header's colon is refused"(net: Net):
+    assert status_of(net, f"POST / HTTP/1.1\r\ncontent-length : 2\r\n{END}hi")? == BAD
+
+test "a folded header is refused"(net: Net):
+    assert status_of(net, f"GET / HTTP/1.1\r\nx-a: 1\r\n  folded: 2\r\n{END}")? == BAD
+
+test "a version that isn't 1.0 or 1.1 is refused"(net: Net):
+    assert status_of(net, f"GET / HTTP/1.9\r\n{END}")? == BAD
+
+test "a control character in the method is refused"(net: Net):
+    assert status_of(net, f"GE\x00T / HTTP/1.1\r\n{END}")? == BAD
+
+test "a second host is refused"(net: Net):
+    assert status_of(net, f"GET / HTTP/1.1\r\nhost: a\r\nhost: b\r\n{END}")? == BAD
+
+test "a line break can't start a header in a response"(net: Net):
+    lines = answer(net, f"GET /?echo=a%0d%0aset-cookie:%20stolen=1 HTTP/1.1\r\n{END}")?
+    assert lines[0] == "HTTP/1.1 500 Internal Server Error"
+    assert "set-cookie: stolen=1" not in lines
+
+test "a response to HEAD says its length and sends no body"(net: Net):
+    lines = answer(net, f"HEAD / HTTP/1.1\r\n{END}")?
+    assert lines[0] == GOOD
+    assert "content-length: 5" in lines
+    assert "hello" not in lines
+
+def main(stdout: Stdout):
+    stdout.print("run with `fennec test`")

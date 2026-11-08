@@ -436,6 +436,15 @@ impl Expr {
                 Some(plain("tuple", items.iter().map(Expr::as_type).collect::<Option<_>>()?))
             }
             ExprKind::Try { value, context: None } => Some(TypeExpr { optional: true, ..value.as_type()? }),
+            // `launch_end[Closed | Timeout]`: one written type named `|`, as in a signature.
+            ExprKind::Binary { op: BinOp::BitOr, lhs, rhs } => {
+                let mut members = match lhs.as_type()? {
+                    left if left.name == "|" => left.args,
+                    left => vec![left],
+                };
+                members.push(rhs.as_type()?);
+                Some(plain("|", members))
+            }
             _ => None,
         }
     }

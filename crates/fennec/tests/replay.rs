@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::Duration;
 
-use crate::executables::{Within, fennec_command};
+use crate::executables::{Within, fennec_command, threads_runtime_built};
 use crate::llvm::ready;
 
 /// How long one recording or replay of an example may take.
@@ -219,7 +219,7 @@ def main(net: Net, stdout: Stdout) fails NetError:
 /// with no socket, each reading what its connection sent, until the recording runs out.
 #[test]
 fn a_recorded_server_replays_its_rounds_with_no_network() -> std::io::Result<()> {
-    if !runtime_built() {
+    if !ready() || !threads_runtime_built() {
         return Ok(());
     }
     let dir = folder("server")?;

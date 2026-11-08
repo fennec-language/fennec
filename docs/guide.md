@@ -298,7 +298,7 @@ def main(stdout: Stdout) fails Crashed | Closed | Timeout:
     stdout.print("after")
 ```
 
-When the block ends, the task's inbox closes, the task sums what it was sent and prints `10`, and only then does `after` print. Channels are always bounded, so `send` waits when the task falls behind. This builds natively; the interpreter refuses it.
+When the block ends, the task's inbox closes, the task sums what it was sent and prints `10`, and only then does `after` print. Channels are always bounded, so `send` waits when the task falls behind. This builds natively.
 
 ## Hashing
 
@@ -379,7 +379,6 @@ def hash_of(fs: Fs, path: str) -> str? fails SqlError:
 - A column that doesn't fit its field, or a field with no column, fails with `SqlError.Column`, naming it. `query[int]` or `query[str]` reads a single column.
 - The database is in WAL mode, so reads go on while something writes. Tasks in a `parallel` loop can share one: each transaction gets a connection of its own and the database's one writer, and a task waiting for it pauses without holding a thread.
 - In a test, each path is a database of the test's own, fresh for each test, in a temporary folder. It behaves as a file does, so what passes in a test passes for real. `fennec test --real` uses the paths themselves.
-- `query` needs native code, as `std.pack` does, so `--interp` can't run it.
 
 ## Tests
 
@@ -420,7 +419,7 @@ test "a hash names its content" for text: str:
 | `fennec fix` | Makes the fixes that can't change what the program does |
 | `fennec fmt` | Formats the kit in the one style |
 
-Builds go through LLVM a function at a time and are cached, so an edit rebuilds only what changed. Where LLVM can't build something yet, `fennec run` says so and runs it another way.
+Builds go through LLVM a function at a time and are cached, so an edit rebuilds only what changed. Where LLVM can't build something yet, `fennec run` and `fennec build` say why.
 
 ## Not there yet
 

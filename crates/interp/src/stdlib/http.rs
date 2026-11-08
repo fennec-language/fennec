@@ -5,10 +5,12 @@
 use std::fmt::Write as _;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use super::net::Failure;
+#[cfg(not(target_arch = "wasm32"))]
+use super::net::SecureStream;
+use super::net::{Failure, TlsServer};
 
 /// How many redirects a request follows.
 const MOST_REDIRECTS: usize = 10;
@@ -265,12 +267,13 @@ static WITH_TLS: OnceLock<WithTls> = OnceLock::new();
 pub fn use_tls() {
     WITH_TLS.get_or_init(|| tls::wrap);
     RAW_TLS.get_or_init(|| tls::raw);
+    SERVER_TLS.get_or_init(|| tls::server);
 }
 
 /// A raw connection with TLS over it, as `net.connect(host, port, tls=True)` makes: the TCP
 /// connection, its host's name, and how long the handshake may take.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) type RawTls = fn(TcpStream, &str, Duration) -> Result<tls::Secured, Failure>;
+pub(crate) type RawTls = fn(TcpStream, &str, Duration) -> Result<Box<dyn SecureStream>, Failure>;
 
 #[cfg(not(target_arch = "wasm32"))]
 static RAW_TLS: OnceLock<RawTls> = OnceLock::new();
@@ -278,11 +281,37 @@ static RAW_TLS: OnceLock<RawTls> = OnceLock::new();
 /// Puts TLS over a raw connection, with its handshake done, checking the certificate against what
 /// the system trusts: or says why it can't be.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn raw_secured(tcp: TcpStream, host: &str, timeout: Duration) -> Result<tls::Secured, Failure> {
+pub(crate) fn raw_secured(
+    tcp: TcpStream,
+    host: &str,
+    timeout: Duration,
+) -> Result<Box<dyn SecureStream>, Failure> {
     let Some(raw) = RAW_TLS.get() else {
         return Err(Failure::Tls("this program was built without TLS: build it with LLVM".to_owned()));
     };
     raw(tcp, host, timeout)
+}
+
+/// What a server's certificate chain and private key, as PEM text, make: `net.listen`'s TLS.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type ServerTlsFrom = fn(&str, &str) -> Result<Arc<dyn TlsServer>, Failure>;
+
+#[cfg(not(target_arch = "wasm32"))]
+static SERVER_TLS: OnceLock<ServerTlsFrom> = OnceLock::new();
+
+/// A server's TLS from its certificate chain and private key, or why there can't be one.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn server_tls(chain: &str, key: &str) -> Result<Arc<dyn TlsServer>, Failure> {
+    let Some(server) = SERVER_TLS.get() else {
+        return Err(Failure::Tls("this program was built without TLS: build it with LLVM".to_owned()));
+    };
+    server(chain, key)
+}
+
+/// A server's TLS, which the playground has no network for.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn server_tls(_chain: &str, _key: &str) -> Result<Arc<dyn TlsServer>, Failure> {
+    Err(Failure::Tls("the playground has no network".to_owned()))
 }
 
 /// Puts TLS over a connection, or says why it can't be.
@@ -483,14 +512,16 @@ fn failure_of(error: &std::io::Error, timeout: Duration) -> Failure {
 /// has no network, so it has no TLS either.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod tls {
+    use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
     use std::net::TcpStream;
     use std::sync::{Arc, OnceLock};
     use std::time::{Duration, Instant};
 
-    use rustls::pki_types::ServerName;
-    use rustls::{ClientConfig, ClientConnection, StreamOwned};
+    use rustls::pki_types::pem::PemObject as _;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+    use rustls::{ClientConfig, ClientConnection, ServerConfig, ServerConnection, StreamOwned};
 
-    use super::super::net::Failure;
+    use super::super::net::{Failure, SecureStream, ServerSession, TlsServer, Transport};
     use super::{Secure, failure_of};
 
     impl Secure for StreamOwned<ClientConnection, TcpStream> {
@@ -519,13 +550,199 @@ pub(crate) mod tls {
             .map_err(Failure::Tls)
     }
 
-    /// A raw connection with TLS over it: what `net.connect(host, port, tls=True)` reads and writes.
-    pub(crate) type Secured = StreamOwned<ClientConnection, TcpStream>;
+    /// A TLS connection read through a buffer. It's only ever seen as a `SecureStream`, so a
+    /// program that never asks for TLS links none of this.
+    struct Buffered<C>(BufReader<StreamOwned<C, TcpStream>>)
+    where
+        StreamOwned<C, TcpStream>: Read + Write;
+
+    impl<C> Read for Buffered<C>
+    where
+        StreamOwned<C, TcpStream>: Read + Write,
+    {
+        fn read(&mut self, into: &mut [u8]) -> std::io::Result<usize> {
+            self.0.read(into)
+        }
+    }
+
+    impl<C> BufRead for Buffered<C>
+    where
+        StreamOwned<C, TcpStream>: Read + Write,
+    {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            self.0.fill_buf()
+        }
+
+        fn consume(&mut self, count: usize) {
+            self.0.consume(count);
+        }
+    }
+
+    impl<C> Write for Buffered<C>
+    where
+        StreamOwned<C, TcpStream>: Read + Write,
+    {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.0.get_mut().write(data)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.0.get_mut().flush()
+        }
+    }
 
     /// A raw connection with TLS over it, its handshake done against what the system trusts, in at
     /// most `timeout`. The socket's left blocking, with no timeouts of its own.
-    pub(super) fn raw(tcp: TcpStream, host: &str, timeout: Duration) -> Result<Secured, Failure> {
+    pub(super) fn raw(
+        tcp: TcpStream,
+        host: &str,
+        timeout: Duration,
+    ) -> Result<Box<dyn SecureStream>, Failure> {
         handshake(tcp, host, timeout, config()?)
+    }
+
+    /// The server's TLS: what it'll prove itself with, for each connection it takes.
+    struct Server(Arc<ServerConfig>);
+
+    /// One connection's TLS on a server, driven over a socket that doesn't block.
+    #[cfg_attr(
+        not(any(test, feature = "threads")),
+        expect(dead_code, reason = "only a served connection uses it, which needs threads")
+    )]
+    struct Session(ServerConnection);
+
+    /// A server's TLS from its certificate chain and private key, as PEM text.
+    pub(crate) fn server(chain: &str, key: &str) -> Result<Arc<dyn TlsServer>, Failure> {
+        let unreadable = |what: &str| Failure::Tls(format!("the {what} isn't PEM that can be read"));
+        let certificates = CertificateDer::pem_slice_iter(chain.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| unreadable("certificate chain"))?;
+        if certificates.is_empty() {
+            return Err(unreadable("certificate chain"));
+        }
+        let private = PrivateKeyDer::from_pem_slice(key.as_bytes()).map_err(|_| unreadable("private key"))?;
+        let config = ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(|error| Failure::Tls(error.to_string()))?
+            .with_no_client_auth()
+            .with_single_cert(certificates, private)
+            .map_err(|error| Failure::Tls(error.to_string()))?;
+        Ok(Arc::new(Server(Arc::new(config))))
+    }
+
+    impl TlsServer for Server {
+        fn session(&self) -> Result<Box<dyn ServerSession>, Failure> {
+            let connection = ServerConnection::new(Arc::clone(&self.0))
+                .map_err(|error| Failure::Tls(error.to_string()))?;
+            Ok(Box::new(Session(connection)))
+        }
+
+        fn accepted(&self, tcp: TcpStream, timeout: Duration) -> Result<Box<dyn SecureStream>, Failure> {
+            let mut connection = ServerConnection::new(Arc::clone(&self.0))
+                .map_err(|error| Failure::Tls(error.to_string()))?;
+            let mut tcp = tcp;
+            shake_hands(&mut connection, &mut tcp, timeout)?;
+            Ok(Box::new(Buffered(BufReader::new(StreamOwned::new(connection, tcp)))))
+        }
+    }
+
+    impl ServerSession for Session {
+        fn handshake(&mut self, socket: &mut dyn Transport) -> std::io::Result<bool> {
+            while self.0.is_handshaking() {
+                while self.0.wants_write() {
+                    self.0.write_tls(socket)?;
+                }
+                if !self.0.is_handshaking() {
+                    break;
+                }
+                if self.0.read_tls(socket)? == 0 {
+                    return Err(ErrorKind::UnexpectedEof.into());
+                }
+                self.0.process_new_packets().map_err(std::io::Error::other)?;
+            }
+            while self.0.wants_write() {
+                self.0.write_tls(socket)?;
+            }
+            Ok(true)
+        }
+
+        fn read_onto(
+            &mut self,
+            socket: &mut dyn Transport,
+            into: &mut Vec<u8>,
+            count: usize,
+        ) -> std::io::Result<usize> {
+            let mut chunk = vec![0; count];
+            loop {
+                match self.0.reader().read(&mut chunk) {
+                    Ok(read) => {
+                        into.extend_from_slice(chunk.get(..read).unwrap_or_default());
+                        return Ok(read);
+                    }
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+                    Err(error) => return Err(error),
+                }
+                // Alerts and handshake messages go out before it waits for more.
+                while self.0.wants_write() {
+                    match self.0.write_tls(socket) {
+                        Ok(_) => {}
+                        Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                        Err(error) => return Err(error),
+                    }
+                }
+                if self.0.read_tls(socket)? == 0 {
+                    return Ok(0);
+                }
+                self.0.process_new_packets().map_err(std::io::Error::other)?;
+            }
+        }
+
+        fn write_some(&mut self, socket: &mut dyn Transport, data: &[u8]) -> std::io::Result<usize> {
+            let taken = self.0.writer().write(data)?;
+            while self.0.wants_write() {
+                match self.0.write_tls(socket) {
+                    Ok(_) => {}
+                    // What was taken stays taken: it goes when the socket has room.
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(taken)
+        }
+
+        fn wants_write(&self) -> bool {
+            self.0.wants_write()
+        }
+    }
+
+    /// Drives a handshake on a blocking socket, in at most `timeout`, leaving it with no timeouts.
+    fn shake_hands<C>(connection: &mut C, tcp: &mut TcpStream, timeout: Duration) -> Result<(), Failure>
+    where
+        C: std::ops::DerefMut<Target = rustls::ConnectionCommon<<C as Handshaking>::Data>> + Handshaking,
+    {
+        let deadline = Instant::now() + timeout;
+        while connection.is_handshaking() {
+            let left = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1));
+            tcp.set_read_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
+            tcp.set_write_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
+            connection.complete_io(tcp).map_err(|error| failure_of(&error, timeout))?;
+        }
+        tcp.set_read_timeout(None).map_err(|error| Failure::of(&error, None))?;
+        tcp.set_write_timeout(None).map_err(|error| Failure::of(&error, None))?;
+        Ok(())
+    }
+
+    /// What a connection's handshake needs to know of it.
+    trait Handshaking {
+        type Data;
+    }
+
+    impl Handshaking for ClientConnection {
+        type Data = rustls::client::ClientConnectionData;
+    }
+
+    impl Handshaking for ServerConnection {
+        type Data = rustls::server::ServerConnectionData;
     }
 
     /// `raw`, trusting what `config` does: tests trust a certificate authority of their own.
@@ -534,22 +751,14 @@ pub(crate) mod tls {
         host: &str,
         timeout: Duration,
         config: Arc<ClientConfig>,
-    ) -> Result<Secured, Failure> {
+    ) -> Result<Box<dyn SecureStream>, Failure> {
         let name = ServerName::try_from(host.to_owned())
             .map_err(|_| Failure::Tls(format!("`{host}` can't be checked against a certificate")))?;
         let mut connection =
             ClientConnection::new(config, name).map_err(|error| Failure::Tls(error.to_string()))?;
         let mut tcp = tcp;
-        let deadline = Instant::now() + timeout;
-        while connection.is_handshaking() {
-            let left = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1));
-            tcp.set_read_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
-            tcp.set_write_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
-            connection.complete_io(&mut tcp).map_err(|error| failure_of(&error, timeout))?;
-        }
-        tcp.set_read_timeout(None).map_err(|error| Failure::of(&error, None))?;
-        tcp.set_write_timeout(None).map_err(|error| Failure::of(&error, None))?;
-        Ok(StreamOwned::new(connection, tcp))
+        shake_hands(&mut connection, &mut tcp, timeout)?;
+        Ok(Box::new(Buffered(BufReader::new(StreamOwned::new(connection, tcp)))))
     }
 
     /// A TCP connection with TLS over it, with its handshake done.

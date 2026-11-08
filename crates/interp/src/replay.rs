@@ -29,6 +29,12 @@
 //! The order at `shared` values' locks isn't recorded yet, so a run whose tasks meet there can still
 //! diverge.
 //!
+//! - **Servers:** the call serving is a task, and each connection it accepts is its next child,
+//!   named in the order they were taken: `0.3.0`, `0.3.1`. The count is logged under the call. A
+//!   replay opens no socket: it runs as many rounds as were recorded, each with its own entries, its
+//!   connection's reads and writes among them, and when they've all ended the server stops, as if
+//!   it had been stopped there, and says so.
+//!
 //! The log is `FENREPL2`, the header's length as four bytes and the header, then the entries. Each
 //! entry is its task's name and its call's name, each with its length as two bytes, then what it
 //! gave, with its length as four. All numbers are little-endian. A `FENREPL1` log, from before
@@ -184,6 +190,53 @@ fn turn_in(
         }
         make_way();
     }
+}
+
+impl Task {
+    /// The task's name.
+    #[cfg_attr(
+        not(any(test, feature = "threads")),
+        expect(dead_code, reason = "only servers use it, which need threads")
+    )]
+    pub(crate) fn name(&self) -> Arc<str> {
+        Arc::clone(&self.name)
+    }
+}
+
+/// A task named `name`, like a server's round, `0.3.12`.
+#[cfg_attr(
+    not(any(test, feature = "threads")),
+    expect(dead_code, reason = "only servers use it, which need threads")
+)]
+pub(crate) fn task_named(name: &str) -> Task {
+    Task::named(Arc::from(name))
+}
+
+/// In a recording, logs under `place` that `what` happened, the `n`th: as a server's accepts are,
+/// under the call serving.
+#[cfg_attr(
+    not(any(test, feature = "threads")),
+    expect(dead_code, reason = "only servers use it, which need threads")
+)]
+pub(crate) fn log_at(place: &str, what: &str, n: u64) {
+    if let Mode::Record(file) = mode() {
+        log(file, place, what, &n.to_le_bytes());
+    }
+}
+
+/// In a replay, how many times `what` was logged under `place`, taking those entries: how many
+/// connections a server accepted. `None` when this isn't a replay.
+#[cfg_attr(
+    not(any(test, feature = "threads")),
+    expect(dead_code, reason = "only servers use it, which need threads")
+)]
+pub(crate) fn taken_at(place: &str, what: &str) -> Option<u64> {
+    let Mode::Replay(player) = mode() else { return None };
+    let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
+    let stream = player.streams.entry(place.to_owned()).or_default();
+    let before = stream.len();
+    stream.retain(|(call, _)| call != what);
+    Some(u64::try_from(before - stream.len()).unwrap_or(0))
 }
 
 /// A `parallel` call's range, named by its call and where it starts.

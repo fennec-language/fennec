@@ -1,6 +1,6 @@
 //! Dicts for native code. A dict is a block in the heap (see `heap`) holding a hash table:
-//! its owner count, its shape, how many keys it has, how many entries it has used, and one
-//! less than its number of slots. Then the slots, each 0 for empty or an entry's number
+//! its owner count, its shape, how many keys it has, how many entries it has used, one
+//! less than its number of slots, and how its keys are hashed. Then the slots, each 0 for empty or an entry's number
 //! plus one, then the entries in the order their keys were added: each a key's hash, the
 //! key and its value. Native code looks keys up, changes values and adds keys itself while
 //! the dict has one owner and room; everything else happens here.
@@ -9,6 +9,10 @@
 //! its own. Values are ints, floats, bools or strings, each one word. Which
 //! ones a dict holds is in its shape: the shapes after the string shape, one for each pair.
 //! A set is a dict whose values are nothing.
+
+use std::collections::hash_map::{DefaultHasher, RandomState};
+use std::hash::{BuildHasher as _, Hasher as _};
+use std::sync::OnceLock;
 
 use fennec_syntax::Diagnostic;
 
@@ -20,8 +24,17 @@ use super::{State, attempt, span, with};
 use crate::packed::Element;
 use crate::value::Value;
 
-/// Words a dict's block starts with: owner count, shape, keys, entries used, slots less one.
-pub const DICT_HEADER_WORDS: usize = 5;
+/// Words a dict's block starts with: owner count, shape, keys, entries used, slots less one, and
+/// how its keys are hashed.
+pub const DICT_HEADER_WORDS: usize = 6;
+
+/// The word of a dict's header saying how its keys are hashed: 0 fast, 1 strong.
+const HOW_HASHED: usize = 5;
+
+/// How far a key may land from its first slot before a dict stops trusting its fast hash. Linear
+/// probing at this load doesn't get near it by chance, and reaching it costs an attacker's keys
+/// about half a million comparisons, once. Native code stops adding keys at the same distance.
+pub const LONGEST_PROBE: usize = 1024;
 
 /// Words an entry takes: hash, key, value.
 pub const ENTRY_WORDS: usize = 3;
@@ -33,6 +46,86 @@ const MIN_SLOTS: usize = 8;
 const REMOVED: u64 = u64::MAX;
 
 const MIX: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// How a dict's keys are hashed. Every dict starts fast, and one whose probes get long changes
+/// to strong, which only that dict pays for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hashing {
+    Fast,
+    Strong,
+}
+
+impl Hashing {
+    fn of(block: &[u64]) -> Hashing {
+        if block.get(HOW_HASHED) == Some(&1) { Hashing::Strong } else { Hashing::Fast }
+    }
+
+    fn word(self) -> u64 {
+        u64::from(self == Hashing::Strong)
+    }
+}
+
+/// What this process hashes keys with.
+struct HashKeys {
+    seed: u64,
+    /// The strong hash's key. `None` for a fixed seed, when the strong hash has a fixed key too.
+    strong: Option<RandomState>,
+}
+
+static HASH_KEYS: OnceLock<HashKeys> = OnceLock::new();
+
+fn hash_keys() -> &'static HashKeys {
+    HASH_KEYS.get_or_init(|| {
+        if let Some(seed) = fixed_seed() {
+            return HashKeys { seed, strong: None };
+        }
+        let strong = RandomState::new();
+        HashKeys { seed: strong.hash_one(0_u64), strong: Some(strong) }
+    })
+}
+
+/// The seed for a run that wants the same one each time: a test, or a replay. Keys are iterated
+/// in the order they were added, so no seed changes what a program does.
+fn fixed_seed() -> Option<u64> {
+    if cfg!(test) {
+        return Some(0);
+    }
+    let given = std::env::var("FENNEC_HASH_SEED").ok().and_then(|seed| seed.parse().ok());
+    given.or_else(|| crate::replay::active().then_some(0))
+}
+
+/// `fennec_dict_hash_seed()`: the seed native code hashes keys with, which it reads once.
+pub extern "C" fn hash_seed() -> u64 {
+    hash_keys().seed
+}
+
+/// `fennec_dict_strong_step(hash, word)`: one step of the strong hash, `SipHash` under this
+/// process's key. Native code hashes a key for a strong dict by calling this for each word.
+pub extern "C" fn strong_step(hash: u64, word: u64) -> u64 {
+    let mut hasher = hash_keys().strong.as_ref().map_or_else(DefaultHasher::new, RandomState::build_hasher);
+    hasher.write_u64(hash);
+    hasher.write_u64(word);
+    hasher.finish()
+}
+
+/// The strong hash of a key: its length or count, then its words. Native code works it out the
+/// same way, so this mustn't change without changing it.
+fn strong_hash(count: u64, words: &[u64]) -> u64 {
+    words.iter().fold(strong_step(0, count), |hash, word| strong_step(hash, *word)) >> 1
+}
+
+/// A hash for text, from its length in bytes and its words.
+fn text_hash(how: Hashing, length: u64, words: &[u64]) -> u64 {
+    match how {
+        Hashing::Fast => hash_text(length, words),
+        Hashing::Strong => strong_hash(length, words),
+    }
+}
+
+/// Whether a key that hashes to `hash` has landed too far from its first slot, `slot`.
+fn too_far(hash: u64, slot: usize, mask: usize) -> bool {
+    slot.wrapping_sub(usize::try_from(hash).unwrap_or(0)) & mask > LONGEST_PROBE
+}
 
 /// What a dict's keys or values are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -166,7 +259,7 @@ pub fn capacity(slots: usize) -> usize {
 
 /// An int key's hash. Native code works it out the same way.
 pub fn hash_int(key: u64) -> u64 {
-    finish(key.wrapping_mul(MIX))
+    finish((key ^ hash_keys().seed).wrapping_mul(MIX))
 }
 
 /// A string key's hash, from its length in bytes and its words of text: its bytes packed
@@ -174,21 +267,17 @@ pub fn hash_int(key: u64) -> u64 {
 /// as its block holds them. Native code works it out the same way, for a slice of a string too,
 /// so this mustn't change without changing them.
 pub fn hash_text(length: u64, words: &[u64]) -> u64 {
-    finish(
-        words
-            .iter()
-            .fold(length.wrapping_mul(MIX), |hash, word| (hash.rotate_left(23) ^ word).wrapping_mul(MIX)),
-    )
+    finish(words.iter().fold((length ^ hash_keys().seed).wrapping_mul(MIX), |hash, word| {
+        (hash.rotate_left(23) ^ word).wrapping_mul(MIX)
+    }))
 }
 
 /// A plain struct key's hash, from its words. Native code works it out the same way.
 pub fn hash_words(words: &[u64]) -> u64 {
     let count = u64::try_from(words.len()).unwrap_or(0);
-    finish(
-        words
-            .iter()
-            .fold(count.wrapping_mul(MIX), |hash, word| (hash.rotate_left(23) ^ word).wrapping_mul(MIX)),
-    )
+    finish(words.iter().fold((count ^ hash_keys().seed).wrapping_mul(MIX), |hash, word| {
+        (hash.rotate_left(23) ^ word).wrapping_mul(MIX)
+    }))
 }
 
 fn finish(hash: u64) -> u64 {
@@ -214,7 +303,7 @@ pub extern "C" fn find_by_value(dict: i64, key: i64) -> i64 {
         let Some(block) = u64::try_from(dict).ok().and_then(|at| state.heap.block(at)) else { return 0 };
         let Some(layout) = layout(state, block) else { return 0 };
         let word = [key.cast_unsigned()];
-        let hash = hash_key(state, layout.key, &word);
+        let hash = hash_key(state, layout.key, &word, Hashing::of(block));
         match find(state, block, layout, &word, hash) {
             Probe::Found(entry) => {
                 let mask = block.get(4).and_then(|mask| usize::try_from(*mask).ok()).unwrap_or(0);
@@ -239,40 +328,56 @@ fn float_key(bits: u64) -> u64 {
     }
 }
 
-fn hash_key(state: &State, key_word: Word, key: &[u64]) -> u64 {
+fn hash_key(state: &State, key_word: Word, key: &[u64], how: Hashing) -> u64 {
     let first = key.first().copied().unwrap_or(0);
+    let one_word = |word: u64| match how {
+        Hashing::Fast => hash_int(word),
+        Hashing::Strong => strong_hash(1, &[word]),
+    };
     if key_word == Word::Float {
-        return hash_int(float_key(first));
+        return one_word(float_key(first));
     }
     if let Word::Plain(_) = key_word {
         let block = state.heap.block(first).unwrap_or_default();
         // Blocks or floats in a key go by what they hold, not by their words.
         if super::heap::element_of_block(state, block).is_some_and(|element| by_what_it_holds(&element)) {
-            return finish(crate::pairs::hash_of(&super::heap::read_block(state, first)));
+            let value = super::heap::read_block(state, first);
+            return match how {
+                Hashing::Fast => {
+                    finish(crate::pairs::hash_with(hash_keys().seed, crate::pairs::mixed, &value))
+                }
+                Hashing::Strong => {
+                    crate::pairs::hash_with(0, |hash, word| strong_step(hash, word), &value) >> 1
+                }
+            };
         }
-        return hash_words(block.get(HEADER_WORDS..).unwrap_or_default());
+        let words = block.get(HEADER_WORDS..).unwrap_or_default();
+        return match how {
+            Hashing::Fast => hash_words(words),
+            Hashing::Strong => strong_hash(u64::try_from(words.len()).unwrap_or(0), words),
+        };
     }
     match key_word {
-        Word::Str => hash_block_text(state, first),
-        Word::Text => hash_header(state, key),
-        _ => hash_int(first),
+        Word::Str => hash_block_text(state, first, how),
+        Word::Text => hash_header(state, key, how),
+        _ => one_word(first),
     }
 }
 
 /// The hash of the string in a block.
-fn hash_block_text(state: &State, address: u64) -> u64 {
+fn hash_block_text(state: &State, address: u64, how: Hashing) -> u64 {
     let block = state.heap.block(address).unwrap_or_default();
     let length = block.get(2).copied().unwrap_or(0);
     let words = usize::try_from(length).unwrap_or(0).div_ceil(8);
-    hash_text(length, block.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + words).unwrap_or_default())
+    text_hash(how, length, block.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + words).unwrap_or_default())
 }
 
 /// The hash of a string held as its header: an inline one's words are its bytes packed as a
 /// block packs them, once byte 23 is cleared, so both forms hash alike.
-fn hash_header(state: &State, key: &[u64]) -> u64 {
+fn hash_header(state: &State, key: &[u64], how: Hashing) -> u64 {
     let Ok(&[a, b, c]) = <&[u64; 3]>::try_from(key) else { return 0 };
     if let Some(address) = super::text::block_of(&[a, b, c]) {
-        return hash_block_text(state, address);
+        return hash_block_text(state, address, how);
     }
     let length = (c >> 56) & 0x7f;
     let words = [a, b, c & (u64::MAX >> 8)];
@@ -284,7 +389,7 @@ fn hash_header(state: &State, key: &[u64]) -> u64 {
             .all(|byte| byte == 0),
         "an inline header is zero after its bytes"
     );
-    hash_text(length, words.get(..usize::try_from(length).unwrap_or(0).div_ceil(8)).unwrap_or_default())
+    text_hash(how, length, words.get(..usize::try_from(length).unwrap_or(0).div_ceil(8)).unwrap_or_default())
 }
 
 fn keys_equal(state: &State, key_word: Word, a: &[u64], b: &[u64]) -> bool {
@@ -353,11 +458,71 @@ fn copy_entry(to: &mut [u64], from: &[u64]) -> bool {
 
 /// A block holding `entries`, each `width` words, owned once, with room for at least `room`
 /// keys.
-fn build(state: &mut State, shape: u64, width: usize, entries: &[u64], room: usize) -> Box<[u64]> {
+fn build(
+    state: &mut State,
+    (shape, how): (u64, Hashing),
+    width: usize,
+    entries: &[u64],
+    room: usize,
+) -> Box<[u64]> {
     let live = entries.len() / width;
     let (mut block, slots) = with_room(state, width, live, room);
-    place_entries(&mut block, (shape, slots), width, live, entries.chunks_exact(width));
+    fill(state, &mut block, (shape, slots, how), width, live, entries.chunks_exact(width));
     block
+}
+
+/// Fills in a new block, as `place_entries` does. Should a probe get too long, it starts over with
+/// the strong hash.
+fn fill<'e>(
+    state: &State,
+    block: &mut [u64],
+    (shape, slots, how): (u64, usize, Hashing),
+    width: usize,
+    live: usize,
+    entries: impl Iterator<Item = &'e [u64]> + Clone,
+) {
+    if place_entries(block, (shape, slots, how), width, live, entries.clone()) {
+        return;
+    }
+    let Some(layout) = shape_layout(state, shape) else { return };
+    let strong = strongly_hashed(state, layout, entries.flatten().copied().collect());
+    if let Some(taken) = block.get_mut(DICT_HEADER_WORDS..DICT_HEADER_WORDS + slots) {
+        taken.fill(0);
+    }
+    let placed =
+        place_entries(block, (shape, slots, Hashing::Strong), width, live, strong.chunks_exact(width));
+    debug_assert!(placed, "the strong hash places everything");
+}
+
+/// Entries with each key's hash changed to its strong one.
+fn strongly_hashed(state: &State, layout: Layout, mut entries: Vec<u64>) -> Vec<u64> {
+    for entry in entries.chunks_exact_mut(layout.width) {
+        let hash = hash_key(state, layout.key, key_of(entry), Hashing::Strong);
+        if let Some(first) = entry.first_mut() {
+            *first = hash;
+        }
+    }
+    entries
+}
+
+/// Changes a dict nothing else holds to the strong hash, in its own block.
+fn strengthen(state: &mut State, at: u64, layout: Layout) -> Option<()> {
+    let block = state.heap.block(at)?;
+    let shape = shape_word(block)?;
+    let slots = usize::try_from(*block.get(4)?).ok()? + 1;
+    let live = entries(block, layout.width);
+    let strong = strongly_hashed(state, layout, live);
+    let block = state.heap.block_mut(at)?;
+    block.get_mut(DICT_HEADER_WORDS..DICT_HEADER_WORDS + slots)?.fill(0);
+    let count = strong.len() / layout.width;
+    place_entries(
+        block,
+        (shape, slots, Hashing::Strong),
+        layout.width,
+        count,
+        strong.chunks_exact(layout.width),
+    );
+    Some(())
 }
 
 /// A dict's new block, not filled in yet, with room for at least `room` keys and all `live`.
@@ -370,22 +535,26 @@ fn with_room(state: &mut State, width: usize, live: usize, room: usize) -> (Box<
 }
 
 /// Fills in a new block with its header and `live` entries, finding each one's slot by its hash.
+/// False if a dict hashed the fast way got a probe too long, stopping there.
 fn place_entries<'e>(
     block: &mut [u64],
-    (shape, slots): (u64, usize),
+    (shape, slots, how): (u64, usize, Hashing),
     width: usize,
     live: usize,
     entries: impl Iterator<Item = &'e [u64]>,
-) {
+) -> bool {
     let count = |n: usize| u64::try_from(n).unwrap_or(0);
     if let Some(header) = block.get_mut(..DICT_HEADER_WORDS) {
-        header.copy_from_slice(&[1, shape, count(live), count(live), count(slots - 1)]);
+        header.copy_from_slice(&[1, shape, count(live), count(live), count(slots - 1), how.word()]);
     }
     for (at, entry) in entries.enumerate() {
         let hash = entry.first().copied().unwrap_or(0);
         let mut slot = usize::try_from(hash).unwrap_or(0) & (slots - 1);
         while block.get(DICT_HEADER_WORDS + slot).is_some_and(|taken| *taken != 0) {
             slot = (slot + 1) & (slots - 1);
+            if how == Hashing::Fast && too_far(hash, slot, slots - 1) {
+                return false;
+            }
         }
         if let Some(taken) = block.get_mut(DICT_HEADER_WORDS + slot) {
             *taken = count(at + 1);
@@ -396,6 +565,7 @@ fn place_entries<'e>(
             debug_assert!(copied, "an entry as wide as its dict's");
         }
     }
+    true
 }
 
 /// A bigger block for a dict nothing else holds, its entries copied once straight across, and the
@@ -407,9 +577,10 @@ fn grown(state: &mut State, at: u64, shape: u64, width: usize) -> Option<u64> {
     let slots = usize::try_from(*block.get(4)?).ok()? + 1;
     let used = usize::try_from(*block.get(3)?).ok()?;
     let start = DICT_HEADER_WORDS + slots;
+    let how = Hashing::of(block);
     let words = block.get(start..start + used * width)?;
     let kept = words.chunks_exact(width).filter(|entry| entry.first() != Some(&REMOVED));
-    place_entries(&mut new, (shape, new_slots), width, live, kept);
+    fill(state, &mut new, (shape, new_slots, how), width, live, kept);
     state.heap.discard(at);
     u64::try_from(state.heap.insert(new)).ok()
 }
@@ -498,7 +669,7 @@ fn find_text(state: &State, block: &[u64], (bytes, chars): (&[u8], usize)) -> Op
     let short = (bytes.len() <= super::text::INLINE_BYTES).then(|| super::text::inline(bytes));
     let words = packed_words(bytes);
     let length = u64::try_from(bytes.len()).ok()?;
-    let hash = hash_text(length, &words);
+    let hash = text_hash(Hashing::of(block), length, &words);
     let mask = usize::try_from(*block.get(4)?).ok()?;
     let start = DICT_HEADER_WORDS + mask + 1;
     let header = [length, u64::try_from(chars).ok()?];
@@ -687,8 +858,8 @@ pub extern "C" fn find_header(dict: i64, a: u64, b: u64, c: u64) -> i64 {
         let layout = layout(state, block)?;
         if layout.key == Word::Text {
             let key = [a, b, c];
-            let Probe::Found(entry) = find(state, block, layout, &key, hash_key(state, Word::Text, &key))
-            else {
+            let hash = hash_key(state, Word::Text, &key, Hashing::of(block));
+            let Probe::Found(entry) = find(state, block, layout, &key, hash) else {
                 return Some(0);
             };
             let word = value_place(block, layout, entry)?;
@@ -766,7 +937,7 @@ pub extern "C" fn new(shape: i64, room: i64) -> i64 {
     with(|state| {
         let shape = u64::try_from(shape).unwrap_or(0);
         let width = shape_layout(state, shape).map_or(ENTRY_WORDS, |layout| layout.width);
-        let block = build(state, shape, width, &[], usize::try_from(room).unwrap_or(0));
+        let block = build(state, (shape, Hashing::Fast), width, &[], usize::try_from(room).unwrap_or(0));
         state.heap.insert(block)
     })
 }
@@ -792,7 +963,8 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
     if key.len() + 2 != layout.width {
         return None;
     }
-    let hash = hash_key(state, layout.key, key);
+    let how = Hashing::of(block);
+    let mut hash = hash_key(state, layout.key, key, how);
     let slots = usize::try_from(*block.get(4)?).ok()? + 1;
     let used = usize::try_from(*block.get(3)?).ok()?;
     let shared = !state.heap.is_alone(at, block);
@@ -803,16 +975,29 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
             retain_entry(state, layout, entry);
         }
         release(state, at);
-        let copy = build(state, shape, layout.width, &live, 2 * (live.len() / layout.width + 1));
+        let copy = build(state, (shape, how), layout.width, &live, 2 * (live.len() / layout.width + 1));
         at = u64::try_from(state.heap.insert(copy)).ok()?;
     } else if used >= capacity(slots) {
         let shape = shape_word(block)?;
         at = grown(state, at, shape, layout.width)?;
     }
+    // Growing or copying may have changed how this dict hashes.
     let block = state.heap.block(at)?;
+    if Hashing::of(block) != how {
+        hash = hash_key(state, layout.key, key, Hashing::of(block));
+    }
     let mask = usize::try_from(*block.get(4)?).ok()?;
+    let mut probe = find(state, block, layout, key, hash);
+    if let Probe::Empty(slot) = probe
+        && Hashing::of(block) == Hashing::Fast
+        && too_far(hash, slot, mask)
+    {
+        strengthen(state, at, layout)?;
+        let block = state.heap.block(at)?;
+        hash = hash_key(state, layout.key, key, Hashing::Strong);
+        probe = find(state, block, layout, key, hash);
+    }
     let start = DICT_HEADER_WORDS + mask + 1;
-    let probe = find(state, block, layout, key, hash);
     let block = state.heap.block_mut(at)?;
     match probe {
         Probe::Found(entry) => {
@@ -850,14 +1035,18 @@ fn set_inline(state: &mut State, dict: i64, key: [u64; 3], value: u64) -> Option
     if super::text::block_of(&key).is_some() {
         return None;
     }
-    let hash = hash_header(state, &key);
+    let hash = hash_header(state, &key, Hashing::Fast);
     let State { heap, tables, .. } = state;
     if !heap.holds_all() {
         return None;
     }
     let block = heap.block_mut(u64::try_from(dict).ok()?)?;
     let layout = shape_layout_of(tables.str_shape, shape_word(block)?)?;
-    if layout.key != Word::Text || layout.value.owned() || block.first() != Some(&1) {
+    if layout.key != Word::Text
+        || layout.value.owned()
+        || block.first() != Some(&1)
+        || Hashing::of(block) == Hashing::Strong
+    {
         return None;
     }
     let mask = usize::try_from(*block.get(4)?).ok()?;
@@ -880,6 +1069,9 @@ fn set_inline(state: &mut State, dict: i64, key: [u64; 3], value: u64) -> Option
             return Some(dict);
         }
         slot = (slot + 1) & mask;
+    }
+    if too_far(hash, slot, mask) {
+        return None;
     }
     *block.get_mut(DICT_HEADER_WORDS + slot)? = u64::try_from(used + 1).ok()?;
     let at = start + used * HEADER_ENTRY_WORDS;
@@ -905,13 +1097,13 @@ fn unshared(state: &mut State, at: u64) -> Option<u64> {
         return Some(at);
     }
     let layout = layout(state, block)?;
-    let (shape, live) = (shape_word(block)?, entries(block, layout.width));
+    let (shape, live, how) = (shape_word(block)?, entries(block, layout.width), Hashing::of(block));
     state.heap.copied(live.len());
     for entry in live.chunks_exact(layout.width) {
         retain_entry(state, layout, entry);
     }
     release(state, at);
-    let copy = build(state, shape, layout.width, &live, live.len() / layout.width);
+    let copy = build(state, (shape, how), layout.width, &live, live.len() / layout.width);
     u64::try_from(state.heap.insert(copy)).ok()
 }
 
@@ -932,7 +1124,7 @@ fn take_key(state: &mut State, at: u64, key: &[u64]) -> Taken {
 fn take(state: &mut State, at: u64, key: &[u64]) -> Option<Taken> {
     let block = state.heap.block(at)?;
     let layout = layout(state, block)?;
-    let hash = hash_key(state, layout.key, key);
+    let hash = hash_key(state, layout.key, key, Hashing::of(block));
     let mask = usize::try_from(*block.get(4)?).ok()?;
     let Probe::Found(entry) = find(state, block, layout, key, hash) else { return Some(Taken::Missing) };
     let place = DICT_HEADER_WORDS + mask + 1 + entry * layout.width;
@@ -1030,7 +1222,7 @@ pub extern "C" fn set_clear(set: i64) -> i64 {
         let shape = state.heap.block(at).and_then(shape_word).unwrap_or(0);
         release(state, at);
         let width = shape_layout(state, shape).map_or(ENTRY_WORDS, |layout| layout.width);
-        let empty = build(state, shape, width, &[], 0);
+        let empty = build(state, (shape, Hashing::Fast), width, &[], 0);
         state.heap.insert(empty)
     })
 }
@@ -1098,7 +1290,7 @@ pub(super) fn child_places(state: &State, block: &[u64], found: &mut Vec<usize>)
         if key_block(layout.key, key_of(words)).is_some_and(|held| held != 0) {
             found.push(entry + 1);
         }
-        if layout.value == Word::Str && value_of(words) != 0 {
+        if layout.value.owned() && value_of(words) != 0 {
             found.push(entry + layout.value_at());
         }
     }
@@ -1250,11 +1442,11 @@ pub(super) fn write(state: &mut State, shape: u64, value: &Value) -> Option<i64>
             }
             return None;
         };
-        entries.push(hash_key(state, key_word, &key));
+        entries.push(hash_key(state, key_word, &key, Hashing::Fast));
         entries.extend(key);
         entries.push(value);
     }
-    let block = build(state, shape, layout.width, &entries, pairs.len());
+    let block = build(state, (shape, Hashing::Fast), layout.width, &entries, pairs.len());
     Some(state.heap.insert(block))
 }
 

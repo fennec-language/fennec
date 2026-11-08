@@ -3,7 +3,8 @@
 //! away. Something outside what's allowed fails the way the capability fails, with a
 //! `ProcessError` or an `IoError` value that says what was allowed, rather than stopping the
 //! program. Folders are compared by their paths with `.` and `..` worked out, so a path can't
-//! climb out of its folder by naming its parent.
+//! climb out of its folder by naming its parent, and again with every link followed, so a link
+//! inside a folder can't lead out of it.
 
 use std::rc::Rc;
 
@@ -53,6 +54,24 @@ pub(crate) fn absolute(path: &str) -> String {
     format!("/{}", parts.join("/"))
 }
 
+/// `path` with every link in it followed, as far as it's there: what isn't yet, like a new file,
+/// goes back on the end.
+fn with_links_followed(path: &str) -> String {
+    let mut there = std::path::Path::new(path);
+    let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(there) {
+            let joined = missing.iter().rev().fold(real, |so_far, part| so_far.join(part));
+            return joined.to_string_lossy().into_owned();
+        }
+        let (Some(parent), Some(name)) = (there.parent(), there.file_name()) else {
+            return path.to_owned();
+        };
+        missing.push(name);
+        there = parent;
+    }
+}
+
 /// Whether `path` is `folder` or inside it, both absolute.
 fn inside(path: &str, folder: &str) -> bool {
     path == folder || folder == "/" || path.strip_prefix(folder).is_some_and(|rest| rest.starts_with('/'))
@@ -78,15 +97,22 @@ pub(crate) fn narrowed(
         }
         // `run.cwd` and the like are `run` with options, and run only what it may.
         (Capability::Process, run) if run == "run" || run.starts_with("run.") => {
-            let Some(Value::Str(program)) = args.first() else {
-                return call(Capability::Process, method, args);
+            // Given a template, the program is its first word. One that's neither is refused
+            // by the call, since a narrowed `Process` is never let past on a guess.
+            let program: Rc<str> = match args.first() {
+                Some(Value::Str(program)) => Rc::clone(program),
+                Some(template) => match crate::stdlib::process::words_of(template) {
+                    Some(words) => Rc::from(words.first().map_or("", String::as_str)),
+                    None => return call(Capability::Process, method, args),
+                },
+                None => return call(Capability::Process, method, args),
             };
-            if limited.allowed.iter().any(|name| **name == **program) {
+            if limited.allowed.iter().any(|name| **name == *program) {
                 return call(Capability::Process, method, args);
             }
             let message =
                 format!("this Process can run only {}, so it can't run `{program}`", limited.listed());
-            Ok(crate::stdlib::process::process_error(program, &message))
+            Ok(crate::stdlib::process::process_error(&program, &message))
         }
         (Capability::Process, _) => call(Capability::Process, method, args),
         (Capability::Fs, _) => narrowed_fs(limited, method, args, call),
@@ -104,7 +130,11 @@ fn narrowed_fs(
         return call(Capability::Fs, method, args);
     };
     let full = absolute(&path);
-    let reachable = limited.allowed.iter().any(|folder| inside(&full, folder));
+    let real = with_links_followed(&full);
+    let reachable = limited
+        .allowed
+        .iter()
+        .any(|folder| inside(&full, folder) && inside(&real, &with_links_followed(folder)));
     if method == "only" {
         let allowed = if reachable { vec![Rc::from(full)] } else { Vec::new() };
         return Ok(Limited::to(Capability::Fs, allowed));

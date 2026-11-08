@@ -192,6 +192,29 @@ fn one_place_cant_be_given_as_mut_with_anything_that_reaches_it() {
 }
 
 #[test]
+fn a_ref_self_method_needs_its_value_to_itself() {
+    let types = "struct Bag:\n    name = \"\"\n    size = 0\n    items = list[int]()\n\n    def absorb(ref self, other: Bag):\n        self.size += other.size\n\n    def grab(ref self, more: list[int]):\n        self.items.append(more.len())\n\n    def rename(ref self, name: str):\n        self.name = name\n\n    def grow(ref self, by: int):\n        self.size += by\n\n    def has(self, other: Bag) -> bool:\n        return self.size == other.size\n";
+    let cases: [(&str, &[&str]); 8] = [
+        ("bag.absorb(bag)", &["`bag` overlaps `bag`, which this method changes"]),
+        ("bag.grab(bag.items)", &["`bag.items` overlaps `bag`, which this method changes"]),
+        ("bag.rename(bag.name)", &["`bag.name` overlaps `bag`, which this method changes"]),
+        ("bags[i].absorb(bags[j])", &["`bags[j]` overlaps `bags[i]`, which this method changes"]),
+        ("bag.grow(bag.size)", &[]),
+        ("bag.absorb(copy(bag))", &[]),
+        ("bags[0].absorb(bags[1])", &[]),
+        ("stdout.print(bag.has(bag))", &[]),
+    ];
+    for (call, said) in cases {
+        let body = format!(
+            "mut bag = Bag()\nmut bags = [Bag(), Bag()]\ni = 0\nj = 1\n{call}\nstdout.print(bag.size, bags.len(), i, j)\n"
+        );
+        let found = in_main_after(types, &body);
+        let messages: Vec<&str> = found.iter().filter_map(|one| one.split(" @ ").next()).collect();
+        assert_eq!(messages, said, "{call}");
+    }
+}
+
+#[test]
 fn a_mut_argument_cant_change_what_picks_another_arguments_place() {
     let spot = "def step(ref at: int, spot: Spot):\n    at += spot.x\n\ndef walk(ref spot: Spot, ref at: int):\n    at += spot.x\n\n";
     let types = format!("{PLACES}\n{spot}");

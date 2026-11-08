@@ -357,6 +357,7 @@ impl Finder<'_> {
                 self.declare(&def.name, def.span);
                 self.function(def, format!("{}.{}", self.function, def.name));
             }
+            StmtKind::OnFailure { body, .. } => self.block(body),
             StmtKind::Break | StmtKind::Continue | StmtKind::Pass => {}
         }
     }

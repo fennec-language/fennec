@@ -615,6 +615,9 @@ pub extern "C" fn parallel_stream_waiting(list: i64, body: MapBody, env: i64, el
 mod pool {
     //! Without threads, every range runs on the calling thread, one after another.
 
+    /// Without threads, no task parks.
+    pub extern "C" fn on_task_resume(_set: extern "C" fn(i64)) {}
+
     /// Without threads, there are no workers to set up.
     pub fn set_worker_setup(_setup: Box<dyn Fn() + Send + Sync>) {}
 
@@ -711,7 +714,7 @@ use pool::{Latch, Pool};
 pub(in crate::embed) use pool::{Latch, Pool, for_server, here};
 #[cfg(any(test, feature = "threads"))]
 pub use pool::{has_worker_setup, run_worker_setup};
-pub use pool::{set_worker_setup, stack_limit};
+pub use pool::{on_task_resume, set_worker_setup, stack_limit};
 
 #[cfg(test)]
 mod tests {

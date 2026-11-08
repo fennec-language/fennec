@@ -120,42 +120,49 @@ impl Pairs {
 
 /// A hash that's the same for any two values `==` says are equal.
 pub(crate) fn hash_of(value: &Value) -> u64 {
-    let hash = hash_in(0, value);
+    hash_with(0, mixed, value)
+}
+
+/// A value's hash from `start`, each word taken in by `mix`.
+pub(crate) fn hash_with(start: u64, mix: fn(u64, u64) -> u64, value: &Value) -> u64 {
+    let hash = hash_in(start, mix, value);
     hash ^ (hash >> 29)
 }
 
-fn mixed(hash: u64, word: u64) -> u64 {
+pub(crate) fn mixed(hash: u64, word: u64) -> u64 {
     (hash.rotate_left(23) ^ word).wrapping_mul(MIX)
 }
 
-fn hash_text(hash: u64, bytes: &[u8]) -> u64 {
-    bytes.chunks(8).fold(mixed(hash, u64::try_from(bytes.len()).unwrap_or(0)), |hash, chunk| {
+fn hash_text(hash: u64, mix: fn(u64, u64) -> u64, bytes: &[u8]) -> u64 {
+    bytes.chunks(8).fold(mix(hash, u64::try_from(bytes.len()).unwrap_or(0)), |hash, chunk| {
         let mut word = [0; 8];
         for (to, from) in word.iter_mut().zip(chunk) {
             *to = *from;
         }
-        mixed(hash, u64::from_le_bytes(word))
+        mix(hash, u64::from_le_bytes(word))
     })
 }
 
-fn hash_in(hash: u64, value: &Value) -> u64 {
+fn hash_in(hash: u64, mix: fn(u64, u64) -> u64, value: &Value) -> u64 {
     match value {
-        Value::Bool(b) => mixed(hash, u64::from(*b) + 1),
-        Value::Int(n) => mixed(hash, n.cast_unsigned()),
-        Value::Float(x) => mixed(hash, crate::value::float_key(*x)),
-        Value::Str(text) => hash_text(hash, text.as_bytes()),
-        Value::Bytes(data) => hash_text(hash, data),
-        Value::List(items) | Value::Tuple(items) => items.iter().fold(mixed(hash, 7), hash_in),
-        Value::Instance(instance) => {
-            let hash = hash_text(hash, instance.type_name.as_bytes());
-            let hash = instance.case.as_ref().map_or(hash, |case| hash_text(hash, case.as_bytes()));
-            instance.fields.iter().fold(hash, |hash, (_, field)| hash_in(hash, field))
+        Value::Bool(b) => mix(hash, u64::from(*b) + 1),
+        Value::Int(n) => mix(hash, n.cast_unsigned()),
+        Value::Float(x) => mix(hash, crate::value::float_key(*x)),
+        Value::Str(text) => hash_text(hash, mix, text.as_bytes()),
+        Value::Bytes(data) => hash_text(hash, mix, data),
+        Value::List(items) | Value::Tuple(items) => {
+            items.iter().fold(mix(hash, 7), |hash, item| hash_in(hash, mix, item))
         }
-        Value::Ok(inner) | Value::Err(inner) => hash_in(mixed(hash, 11), inner),
+        Value::Instance(instance) => {
+            let hash = hash_text(hash, mix, instance.type_name.as_bytes());
+            let hash = instance.case.as_ref().map_or(hash, |case| hash_text(hash, mix, case.as_bytes()));
+            instance.fields.iter().fold(hash, |hash, (_, field)| hash_in(hash, mix, field))
+        }
+        Value::Ok(inner) | Value::Err(inner) => hash_in(mix(hash, 11), mix, inner),
         // Equal sets or dicts can list their items in different orders.
-        Value::Set(items) => mixed(hash, u64::try_from(items.len()).unwrap_or(0)),
-        Value::Dict(pairs) => mixed(hash, u64::try_from(pairs.len()).unwrap_or(0)),
+        Value::Set(items) => mix(hash, u64::try_from(items.len()).unwrap_or(0)),
+        Value::Dict(pairs) => mix(hash, u64::try_from(pairs.len()).unwrap_or(0)),
         // Whatever's left is rare as a key, and looking through those is enough.
-        _ => mixed(hash, 13),
+        _ => mix(hash, 13),
     }
 }

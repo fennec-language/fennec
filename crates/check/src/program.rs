@@ -308,7 +308,7 @@ impl Program {
         }
         names.sort();
         names.dedup();
-        Ok(Type::Errors(names))
+        Ok(if union.optional { Type::optional(Type::Errors(names)) } else { Type::Errors(names) })
     }
 
     /// The name a written type gives, through an imported module: `Deque` for

@@ -236,6 +236,7 @@ export! {
     fennec_dict_pop_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i64, a5: i64) -> i64 => dicts::pop_header(a0, a1, a2, a3, a4, a5);
     fennec_stop(a0: i64, a1: i64, a2: i64) => checks::stop(a0, a1, a2);
     fennec_bytes_new(a0: i64) -> i64 => bytes::new(a0);
+    fennec_bytes_constant(a0: i64) -> i64 => bytes::constant(a0);
     fennec_bytes_builder() -> i64 => bytes::builder();
     fennec_bytes_grow(a0: i64, a1: i64) -> i64 => bytes::grow(a0, a1);
     fennec_bytes_of_list(a0: i64, a1: i64, a2: i64) -> i64 => bytes::of_list(a0, a1, a2);
@@ -331,6 +332,8 @@ export! {
     fennec_u64_header(a0: i64) -> text::Text => text::u64_header(a0);
     fennec_f32_header(a0: f64) -> text::Text => text::f32_header(a0);
     fennec_str_char_at(a0: i64, a1: i64) -> i64 => strings::char_at(a0, a1);
+    fennec_dict_hash_seed() -> u64 => dicts::hash_seed();
+    fennec_dict_strong_step(a0: u64, a1: u64) -> u64 => dicts::strong_step(a0, a1);
     fennec_dict_new(a0: i64, a1: i64) -> i64 => dicts::new(a0, a1);
     fennec_dict_set(a0: i64, a1: i64, a2: i64) -> i64 => dicts::set(a0, a1, a2);
     fennec_dict_missing(a0: i64, a1: i64, a2: i8, a3: i64, a4: i64) => dicts::missing(a0, a1, a2, a3, a4);
@@ -348,6 +351,7 @@ export! {
     fennec_native_capability(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::native_call(a0, a1, a2, a3, a4);
     fennec_crypto_call(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => capabilities::crypto_call(a0, a1, a2, a3);
     fennec_use_tls() => capabilities::use_tls();
+    fennec_on_task_resume(a0: extern "C" fn(i64)) => parallel::on_task_resume(a0);
     fennec_clock_now() -> i64 => capabilities::clock_now();
     fennec_clock_time() -> i64 => capabilities::clock_time();
     fennec_clock_sleep(a0: i64) => capabilities::clock_sleep(a0);

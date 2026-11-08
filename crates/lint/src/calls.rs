@@ -271,8 +271,7 @@ fn call(callees: &Callees<'_>, args: &[Arg], takes: &Takes<'_>, sources: &Source
 pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     let callees = Callees::of(module);
     let mut found = Vec::new();
-    let mut walked = module.clone();
-    fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
+    fennec_syntax::read::exprs(module, &mut |expr| {
         if let ExprKind::Call { callee, args } = &expr.kind {
             found.extend(callees.of_call(callee).and_then(|takes| call(&callees, args, takes, sources)));
         }

@@ -131,11 +131,11 @@ back = json.loads[World](text)?`,
   },
   {
     title: 'One backend',
-    status: 'Mostly built',
+    status: 'Built',
     code: `$ fennec run
 # built through LLVM a function at a time,
 # each function cached by content`,
-    body: 'What you run is what ships. `fennec build` always makes a native program, with no interpreter in it, and `--release` optimizes it as a whole. `fennec run` says so when the interpreter stands in for what LLVM can\'t build yet.',
+    body: 'What you run is what ships. `fennec build` always makes a native program, with no interpreter in it, and `--release` optimizes it as a whole. What LLVM can\'t build yet is an error that says why.',
   },
 ];
 ---

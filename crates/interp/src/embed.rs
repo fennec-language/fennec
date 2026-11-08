@@ -183,6 +183,28 @@ impl Tables {
 #[derive(Clone, Default)]
 struct Output(Rc<RefCell<Vec<u8>>>, bool);
 
+/// Whether the program writes its output as it goes, rather than keeping it for a host.
+static PROGRAM_WRITES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+thread_local! {
+    /// Whether what's running here is a launched task of a program that writes as it goes. A
+    /// `parallel` range's output is kept to come out whole, but tasks talk to each other, and what
+    /// one printed before it told another comes first.
+    static TASK_WRITES: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether a launched task's printing is written as it goes.
+#[cfg(any(test, feature = "threads"))]
+pub(in crate::embed) fn program_writes() -> bool {
+    PROGRAM_WRITES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Says whether what's about to run here writes as it goes, giving back what was.
+#[cfg(any(test, feature = "threads"))]
+pub(in crate::embed) fn swap_task_writes(writes: bool) -> bool {
+    TASK_WRITES.replace(writes)
+}
+
 /// How much output is kept before a live run writes it.
 const LIVE_OUTPUT: usize = 1 << 13;
 
@@ -232,7 +254,7 @@ impl Write for Output {
 
     /// Writes what a live run has kept. Any other run's output stays for its host.
     fn flush(&mut self) -> std::io::Result<()> {
-        if !self.1 {
+        if !self.1 && !TASK_WRITES.get() {
             return Ok(());
         }
         let length = self.0.borrow().len();
@@ -269,12 +291,19 @@ pub(in crate::embed) struct Temporaries {
     inputs: Vec<Value>,
     /// Which task it is, in a recording or a replay: a server's round, named by its connection.
     replay: Option<crate::replay::Task>,
+    /// Its failure, if it parked with one: it's the task's, not whatever its thread runs next.
+    failure: Option<Diagnostic>,
+    failed: u8,
 }
 
 #[cfg(any(test, feature = "threads"))]
 impl Temporaries {
     pub(in crate::embed) fn is_empty(&self) -> bool {
-        self.temps.is_empty() && self.inputs.is_empty() && self.replay.is_none()
+        self.temps.is_empty()
+            && self.inputs.is_empty()
+            && self.replay.is_none()
+            && self.failure.is_none()
+            && self.failed == 0
     }
 
     /// A task's own, named `task` in a recording or a replay.
@@ -291,9 +320,23 @@ pub(in crate::embed) fn swap_temporaries(own: &mut Temporaries) {
         if let Some(state) = state.as_mut() {
             std::mem::swap(&mut state.temps, &mut own.temps);
             std::mem::swap(&mut state.inputs, &mut own.inputs);
+            std::mem::swap(&mut state.failure, &mut own.failure);
         }
     });
+    own.failed = FLAGS.with(|flags| flags.failed.replace(own.failed));
     crate::replay::swap(&mut own.replay);
+}
+
+/// Puts a task's failure back in its thread's runtime, as it ends with one: what's run it says what
+/// happens next.
+#[cfg(any(test, feature = "threads"))]
+pub(in crate::embed) fn take_failure_of(own: &mut Temporaries) {
+    if let Some(failure) = own.failure.take() {
+        with(|state| state.failure = Some(failure));
+    }
+    if own.failed != 0 {
+        set_failed(std::mem::take(&mut own.failed));
+    }
 }
 
 /// Writes what this thread has printed and kept. Output comes out as it's printed, and is only
@@ -419,6 +462,9 @@ fn capability(kind: i64) -> Capability {
 pub fn start(mut tables: Tables, inputs: crate::Inputs) {
     let crate::Inputs { program, arguments, live, .. } = inputs;
     let output = Output(Rc::default(), live);
+    if live {
+        PROGRAM_WRITES.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     OUTPUT.set(Some(output.clone()));
     #[cfg(any(test, feature = "threads"))]
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();

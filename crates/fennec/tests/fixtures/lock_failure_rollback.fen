@@ -1,0 +1,79 @@
+error Nope:
+    why: str
+
+struct Account:
+    balance: int
+    name: str
+    log: list[str]
+
+def spend(a: shared Account, amount: int) -> int fails Nope:
+    mut changed = 0
+    lock a as ref held:
+        held.balance -= amount
+        held.name = held.name + " spent"
+        held.log.append("spent")
+        changed = 1
+        if held.balance < 0:
+            fail Nope(why=f"{held.name} is short")
+    changed
+
+def both(a: shared Account, b: shared Account) fails Nope:
+    lock a, b as ref first, ref second:
+        first.balance += 1
+        second.balance += 1
+        second.log.append("both")
+        fail Nope(why="both undone")
+
+def early(a: shared Account) -> int:
+    lock a as ref held:
+        held.balance += 100
+        return held.balance
+
+def in_a_loop(a: shared Account) -> int:
+    mut rounds = 0
+    for at in range(3):
+        lock a as ref held:
+            held.balance += 1
+            if at == 1:
+                break
+        rounds += 1
+    rounds
+
+def kept_local(a: shared Account) -> int:
+    mut seen = 0
+    match set_and_fail(a, ref seen):
+        case Ok(_):
+            pass
+        case Err(_):
+            pass
+    seen
+
+def set_and_fail(a: shared Account, ref seen: int) fails Nope:
+    lock a as ref held:
+        held.balance += 5
+        seen = held.balance
+        fail Nope(why="local kept")
+
+def tries(a: shared Account, at: int) -> int:
+    spend(a, 1000 + at) else -1
+
+def show(a: shared Account, stdout: Stdout):
+    lock a as held:
+        stdout.print(held)
+
+def main(stdout: Stdout):
+    shared a = Account(balance=10, name="ann", log=["start"])
+    shared b = Account(balance=20, name="bob", log=[])
+    stdout.print(spend(a, 3))
+    show(a, stdout)
+    stdout.print(spend(a, 50))
+    show(a, stdout)
+    stdout.print(both(a, b))
+    show(a, stdout)
+    show(b, stdout)
+    stdout.print(early(a), in_a_loop(a))
+    show(a, stdout)
+    stdout.print(kept_local(a))
+    show(a, stdout)
+    stdout.print(sum(tries(a, at) for at in parallel(range(16))))
+    show(a, stdout)

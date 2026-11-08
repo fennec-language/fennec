@@ -269,6 +269,15 @@ pub enum StmtKind {
         lock: bool,
     },
     Def(FnDef),
+    /// Written in for a `with` block whose source has an `else:`. A `?` or `fail` in `body` runs
+    /// that cleanup where it's written, but a failure can also leave from inside what the block
+    /// calls: from a generator it reads, or a `parallel` loop's round. Those run `cleanup`
+    /// first, with the failure in `name`, and `cleanup` ends by failing with it.
+    OnFailure {
+        name: String,
+        cleanup: Vec<Stmt>,
+        body: Vec<Stmt>,
+    },
     /// `lend value`, in a function that gives back `with T`: the caller's `with` block runs
     /// here, with `value` lent to it. `otherwise` is the `else:` block, which runs when the
     /// caller's block fails, empty when there's none.
@@ -492,6 +501,20 @@ pub enum Pattern {
     Or(Vec<Pattern>),
 }
 
+impl Pattern {
+    /// Whether the pattern has a `ref` in it anywhere.
+    #[must_use]
+    pub fn holds_ref(&self) -> bool {
+        match self {
+            Pattern::RefBind(_) => true,
+            Pattern::Variant { args: patterns, .. } | Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
+                patterns.iter().any(Pattern::holds_ref)
+            }
+            Pattern::Wildcard | Pattern::Bind(_) | Pattern::Literal(_) => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum FStrPart {
     Text(String),
@@ -549,12 +572,24 @@ impl Expr {
     /// to: it never gives a value, because it always leaves.
     pub fn leaves(&self) -> bool {
         let ExprKind::Match { subject, arms } = &self.kind else { return false };
-        let [MatchArm { pattern: Pattern::Wildcard, guard: None, body, .. }] = arms.as_slice() else {
+        let [MatchArm { pattern: Pattern::Wildcard | Pattern::Bind(_), guard: None, body, .. }] =
+            arms.as_slice()
+        else {
             return false;
         };
         let Some(Stmt { kind, .. }) = body.last() else { return false };
         matches!(subject.kind, ExprKind::Bool(false))
             && matches!(kind, StmtKind::Continue | StmtKind::Break | StmtKind::Return(_) | StmtKind::Fail(_))
+    }
+
+    /// The name `else as name:` gives the failure and the block it holds, when this is what one
+    /// parsed to.
+    pub fn failure_named(&self) -> Option<(&str, &[Stmt])> {
+        let ExprKind::Match { arms, .. } = &self.kind else { return None };
+        match arms.as_slice() {
+            [MatchArm { pattern: Pattern::Bind(name), body, .. }] if self.leaves() => Some((name, body)),
+            _ => None,
+        }
     }
 
     /// Whether this is a plain value written out: a number, string, bool or `None`.

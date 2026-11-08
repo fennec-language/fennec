@@ -97,14 +97,6 @@ impl<'p> Emit<'_, '_, 'p> {
         generator: &Operand,
         number: usize,
     ) -> Result<(), String> {
-        // A function that can fail passes up what fails the generators it loops over, but none that
-        // fails is made yet, so nothing gets here to run this.
-        if number == slot::FAILURE {
-            let kind = self.kind_of(dest)?.clone();
-            let (at, text) = (self.slot(dest), self.text_of(&kind));
-            self.line(&format!("store {text} zeroinitializer, ptr {at}"));
-            return Ok(());
-        }
         let (kind, offset) = self.slot_place(self.own_generator(generator), generator, number)?;
         let (block, _) = self.operand(generator)?;
         let at = self.offset(&block, offset);

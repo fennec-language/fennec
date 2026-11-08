@@ -101,9 +101,13 @@ fn start_of(
     let _ = writeln!(out, "@fennec_failed = dso_local {local}global ptr null");
     if crate::parallel::uses_parallel(program) {
         out += "@fennec_thread = dso_local thread_local(initialexec) global i64 0\n";
+        // A parked task's stack limit is put back through this each time it's resumed.
+        out += "declare void @fennec_on_task_resume(ptr)\ndefine internal void @fen_set_stack_limit(i64 %limit) {\n  store i64 %limit, ptr @fennec_stack_limit\n  ret void\n}\n";
         out += crate::parallel::MAIN_THREAD_GLOBALS;
     }
     out += "@fennec_ascii = dso_local global ptr null\n";
+    // What keys are hashed with in this run, which every dict's code reads.
+    out += "@fennec_hash_seed = dso_local global i64 0\ndeclare i64 @fennec_dict_hash_seed()\n";
     // Whether this run counts what it allocates, for native blocks to say what they made.
     if !shared.native.is_empty() {
         out += "@fennec_counting_native = dso_local global i64 0\n";
@@ -134,10 +138,11 @@ fn setup(out: &mut String, program: &Program, shared: &Shared, image: &Image) ->
     let main_thread = crate::parallel::uses_parallel(program).then_some(
         "  store i64 %limit, ptr @fennec_stack_limit_main\n  %main_flag = call i64 @fennec_aot_failed_flag()\n  %main_flag_at = inttoptr i64 %main_flag to ptr\n  store ptr %main_flag_at, ptr @fennec_failed_main\n",
     );
-    *out += "define void @fennec_entry(i64 %limit) {\n  store i64 %limit, ptr @fennec_stack_limit\n  %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  store ptr %flag_at, ptr @fennec_failed\n  %ascii = call i64 @fennec_aot_ascii()\n  %ascii_at = inttoptr i64 %ascii to ptr\n  store ptr %ascii_at, ptr @fennec_ascii\n";
+    *out += "define void @fennec_entry(i64 %limit) {\n  %hash_seed = call i64 @fennec_dict_hash_seed()\n  store i64 %hash_seed, ptr @fennec_hash_seed\n  store i64 %limit, ptr @fennec_stack_limit\n  %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  store ptr %flag_at, ptr @fennec_failed\n  %ascii = call i64 @fennec_aot_ascii()\n  %ascii_at = inttoptr i64 %ascii to ptr\n  store ptr %ascii_at, ptr @fennec_ascii\n";
     if let Some(main_thread) = main_thread {
         // Filled in as soon as it's all set, before anything reads them.
         *out += main_thread;
+        *out += "  call void @fennec_on_task_resume(ptr @fen_set_stack_limit)\n";
     }
     if !shared.native.is_empty() {
         *out +=

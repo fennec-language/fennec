@@ -20,6 +20,8 @@ use crate::value::{Capability, Value};
 
 /// How long connecting waits unless told otherwise.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const SENT_BEFORE_TLS: &str = "the other side sent more than was read before TLS started, and that can't be trusted";
+const ALREADY_TLS: &str = "this connection already has TLS over it";
 
 /// The hosts a test's fake network has: its own, where its servers are.
 const FAKE_HOSTS: [&str; 2] = ["localhost", "127.0.0.1"];
@@ -139,8 +141,8 @@ pub(crate) struct Fake {
     last: i64,
     /// Each server's port, and the connections waiting for it to accept them.
     servers: BTreeMap<i64, (i64, VecDeque<(i64, String)>)>,
-    /// The servers listening with a certificate. No real TLS runs in a test: a connection has only to agree with
-    /// its server about using it.
+    /// The servers listening with a certificate, and the connections with TLS over them. No real TLS runs in a
+    /// test: a connection has only to agree with its server about using it.
     secure: BTreeSet<i64>,
     streams: BTreeMap<i64, FakeStream>,
     /// Each UDP socket's port, and the data and sender of what's been sent to it.
@@ -218,6 +220,7 @@ impl Fake {
             ("Connection", "read_line", []) => {
                 self.read(handle, None, span)?.map(|line| line_value(line.as_deref()))
             }
+            ("Connection", "start_tls", [Value::Str(_)]) => self.start_tls(handle).map(|()| Value::Unit),
             ("Connection", "write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
                 self.write(handle, data_of(data)).map(|()| Value::Unit)
             }
@@ -285,6 +288,9 @@ impl Fake {
             )));
         }
         let (client, other_end) = (fake.handle(), fake.handle());
+        if tls {
+            fake.secure.insert(client);
+        }
         let stream = |peer| FakeStream { inbox: VecDeque::new(), peer, peer_closed: false };
         fake.streams.insert(client, stream(other_end));
         fake.streams.insert(other_end, stream(client));
@@ -296,6 +302,18 @@ impl Fake {
             "Connection",
             vec![("_handle", Value::Int(client)), ("peer", Value::str(&format!("localhost:{port}")))],
         ))
+    }
+
+    /// `connection.start_tls(host)` in a test: refused as a real one is, for what a real one can tell.
+    fn start_tls(&mut self, handle: i64) -> Result<(), Failure> {
+        let Some(stream) = self.streams.get(&handle) else { return Err(Failure::Closed) };
+        if !stream.inbox.is_empty() {
+            return Err(Failure::Tls(SENT_BEFORE_TLS.to_owned()));
+        }
+        if !self.secure.insert(handle) {
+            return Err(Failure::Tls(ALREADY_TLS.to_owned()));
+        }
+        Ok(())
     }
 
     pub(crate) fn udp(&mut self, port: u16) -> Result<Made, Failure> {
@@ -567,6 +585,9 @@ pub(crate) fn real_connection(
             read(handle, bytes_asked(*count, span)?, timeout).map(|data| Value::Bytes(Rc::from(data)))
         }
         ("read_line", []) => read_line(handle, timeout).map(|line| line_value(line.as_deref())),
+        ("start_tls", [Value::Str(host)]) => {
+            start_tls(handle, host, timeout.unwrap_or(CONNECT_TIMEOUT)).map(|()| Value::Unit)
+        }
         ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
             write(handle, data_of(data)).map(|()| Value::Unit)
         }
@@ -675,14 +696,30 @@ fn text_pairs(pairs: &crate::pairs::Pairs, span: Span) -> Result<Vec<(String, St
 
 /// An answer as a `Response`.
 fn answer_value(answer: http::Answer) -> Value {
+    // A dict has each name once: a header sent again adds to the one there, as HTTP says it can.
+    let mut joined: Vec<(String, String)> = Vec::new();
+    let mut cookies = Vec::new();
+    for (name, value) in &answer.headers {
+        if name == "set-cookie" {
+            cookies.push(Value::str(value));
+        }
+        match joined.iter_mut().find(|(seen, _)| seen == name) {
+            Some((_, held)) => {
+                held.push_str(", ");
+                held.push_str(value);
+            }
+            None => joined.push((name.clone(), value.clone())),
+        }
+    }
     let headers: Vec<(Value, Value)> =
-        answer.headers.iter().map(|(name, value)| (Value::str(name), Value::str(value))).collect();
+        joined.iter().map(|(name, value)| (Value::str(name), Value::str(value))).collect();
     Value::made(
         "Response",
         vec![
             ("status", Value::Int(answer.status)),
             ("headers", Value::Dict(Rc::new(headers.into()))),
             ("body", Value::Bytes(Rc::from(answer.body))),
+            ("set_cookies", Value::list(cookies)),
         ],
     )
 }
@@ -816,6 +853,38 @@ fn connect(host: &str, port: u16, timeout: Duration, tls: bool) -> Result<Made, 
 fn secured(stream: &TcpStream, host: &str, timeout: Duration) -> Result<Box<dyn SecureStream>, Failure> {
     let tcp = stream.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
     http::raw_secured(tcp, host, timeout)
+}
+
+/// `connection.start_tls(host)`: TLS over a connection that began plain, its certificate checked
+/// against what the system trusts and against `host`.
+fn start_tls(handle: i64, host: &str, timeout: Duration) -> Result<(), Failure> {
+    upgrade(handle, host, timeout, http::raw_secured)
+}
+
+/// Puts TLS over a plain connection, by `shake`. It holds both of the connection's locks throughout,
+/// so nothing else reads or writes in the middle of the handshake.
+fn upgrade(
+    handle: i64,
+    host: &str,
+    timeout: Duration,
+    shake: http::RawTls,
+) -> Result<(), Failure> {
+    let stream = stream(handle)?;
+    let _writing = stream.writing.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
+    let Reading::Plain(plain) = &*reader else { return Err(Failure::Tls(ALREADY_TLS.to_owned())) };
+    // What's buffered came before the handshake, so TLS vouches for none of it. Carrying it over
+    // would let anyone on the wire write what the program takes for protected data.
+    if !plain.buffer().is_empty() {
+        return Err(Failure::Tls(SENT_BEFORE_TLS.to_owned()));
+    }
+    let tcp = stream.socket.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
+    let host = host.to_owned();
+    let handshake = move || shake(tcp, &host, timeout);
+    // A task parks while the handshake waits, on a thread that may block, as `connect` does.
+    let secured = if task_parks() { off_thread(handshake)? } else { handshake()? };
+    *reader = Reading::Tls(secured);
+    Ok(())
 }
 
 /// A connection to `host` on `port`, looked up and connected, blocking its thread.
@@ -1274,6 +1343,36 @@ pub(crate) mod tests {
         }
     }
 
+    /// A test's `start_tls` refuses what a real one does: plain bytes waiting, or doing it twice.
+    #[test]
+    fn a_tests_start_tls_refuses_bytes_sent_before_it_and_a_second_try() {
+        let span = Span::default();
+        let refused = |got: Value| {
+            let Value::Err(error) = got else { panic!("it wasn't refused") };
+            assert!(format!("{error:?}").contains("Tls"), "{error:?}");
+        };
+        let start = |fake: &mut Fake, handle: i64| {
+            fake.socket_method(handle, "Connection.start_tls", &[Value::str("localhost")], span).unwrap()
+        };
+        let mut fake = Fake::default();
+        let Ok((_, server)) = fake.listen(0, false) else { panic!("it didn't listen") };
+        let Some((_, Value::Int(port))) = server.get(1).cloned() else { panic!("no port") };
+        let Ok((_, client)) = fake.connect("localhost", u16::try_from(port).unwrap(), false) else {
+            panic!("it didn't connect")
+        };
+        let Some((_, Value::Int(client))) = client.first().cloned() else { panic!("no handle") };
+        assert!(matches!(start(&mut fake, client), Value::Ok(_)));
+        refused(start(&mut fake, client));
+
+        let Ok((_, second)) = fake.connect("localhost", u16::try_from(port).unwrap(), false) else {
+            panic!("it didn't connect")
+        };
+        let Some((_, Value::Int(second))) = second.first().cloned() else { panic!("no handle") };
+        let Some(other_end) = fake.streams.get(&second).map(|stream| stream.peer) else { panic!("no other end") };
+        assert!(matches!(fake.write(other_end, b"Sinjected"), Ok(())));
+        refused(start(&mut fake, second));
+    }
+
     #[test]
     fn a_tests_listen_takes_only_a_certificate() {
         let mut fake = Fake::default();
@@ -1322,7 +1421,7 @@ pub(crate) mod tests {
 
         use super::super::http::tls::handshake;
         use super::super::{
-            Failure, close, http, keep_stream, read_line, real_connection, real_net, real_server, write,
+            Failure, close, http, keep_stream, read, read_line, real_connection, real_net, real_server, upgrade, write,
         };
         use crate::value::Value;
 
@@ -1483,6 +1582,95 @@ pub(crate) mod tests {
             let Value::Err(error) = listened else { panic!("it listened") };
             assert!(format!("{error:?}").contains("Tls"), "{error:?}");
             assert!(real_net("listen.tls", &[Value::Int(0), Value::Int(1)], None, span).is_err());
+        }
+
+        fn shake_trusting_the_tests(
+            tcp: TcpStream,
+            host: &str,
+            timeout: Duration,
+        ) -> Result<Box<dyn crate::stdlib::net::SecureStream>, Failure> {
+            handshake(tcp, host, timeout, client_config())
+        }
+
+        const WAIT: Option<Duration> = Some(Duration::from_secs(10));
+
+        /// A plain connection and a server that writes `first` when it's accepted one, and says so
+        /// on the channel, then does TLS.
+        fn accepted_writing(first: &'static [u8]) -> (i64, std::sync::mpsc::Receiver<()>, std::thread::JoinHandle<Result<String, String>>) {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let (wrote, written) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let chain: Vec<CertificateDer<'static>> =
+                    CertificateDer::pem_slice_iter(CHAIN).map(Result::unwrap).collect();
+                let config = ServerConfig::builder_with_provider(provider())
+                    .with_safe_default_protocol_versions()
+                    .unwrap()
+                    .with_no_client_auth()
+                    .with_single_cert(chain, PrivateKeyDer::from_pem_slice(KEY).unwrap())
+                    .unwrap();
+                let (mut tcp, _) = listener.accept().unwrap();
+                tcp.write_all(first).map_err(|error| error.to_string())?;
+                wrote.send(()).map_err(|error| error.to_string())?;
+                let connection = ServerConnection::new(Arc::new(config)).unwrap();
+                let mut reader = BufReader::new(StreamOwned::new(connection, tcp));
+                let mut line = String::new();
+                reader.read_line(&mut line).map_err(|error| error.to_string())?;
+                let secured = reader.get_mut();
+                secured.write_all(b"pong\n").map_err(|error| error.to_string())?;
+                secured.flush().map_err(|error| error.to_string())?;
+                Ok(line)
+            });
+            let handle = keep_stream(connected_to(port), "server".to_owned(), None).ok().unwrap();
+            (handle, written, server)
+        }
+
+        /// What Postgres does: one byte read in plain text, then TLS for the rest.
+        #[test]
+        fn a_plain_connection_can_start_tls_after_reading_all_it_was_sent() {
+            let (handle, written, server) = accepted_writing(b"S");
+            written.recv().unwrap();
+            assert_eq!(read(handle, 1, WAIT).ok().unwrap(), b"S");
+            assert!(upgrade(handle, "localhost", Duration::from_secs(10), shake_trusting_the_tests).is_ok());
+            assert!(write(handle, b"ping\n").is_ok());
+            assert_eq!(read_line(handle, WAIT).ok().unwrap().unwrap(), b"pong\n");
+            assert_eq!(server.join().unwrap().unwrap(), "ping\n");
+            close(handle);
+        }
+
+        /// Bytes that came before the handshake aren't TLS's to vouch for: someone on the wire can
+        /// send them after the one byte a client waits for, as in the Postgres client's CVE-2021-23214.
+        #[test]
+        fn starting_tls_is_refused_when_plain_bytes_are_waiting_in_the_buffer() {
+            let (handle, written, _server) = accepted_writing(b"Sinjected");
+            written.recv().unwrap();
+            assert_eq!(read(handle, 1, WAIT).ok().unwrap(), b"S");
+            let got = upgrade(handle, "localhost", Duration::from_secs(10), shake_trusting_the_tests);
+            assert!(matches!(&got, Err(Failure::Tls(reason)) if reason.contains("before TLS")), "it was let through");
+            close(handle);
+        }
+
+        /// `start_tls` trusts what the system does, which doesn't include the tests' authority.
+        #[test]
+        fn starting_tls_checks_the_certificate() {
+            http::use_tls();
+            let (handle, written, _server) = accepted_writing(b"S");
+            written.recv().unwrap();
+            assert_eq!(read(handle, 1, WAIT).ok().unwrap(), b"S");
+            let got = real_connection(handle, "start_tls", &[Value::str("localhost")], WAIT, Span::default()).unwrap();
+            let Value::Err(error) = got else { panic!("it trusted a certificate nothing vouches for") };
+            assert!(format!("{error:?}").contains("Tls"), "{error:?}");
+            close(handle);
+        }
+
+        #[test]
+        fn starting_tls_twice_is_refused() {
+            let (handle, written, _server) = accepted_writing(b"");
+            written.recv().unwrap();
+            assert!(upgrade(handle, "localhost", Duration::from_secs(10), shake_trusting_the_tests).is_ok());
+            let got = upgrade(handle, "localhost", Duration::from_secs(10), shake_trusting_the_tests);
+            assert!(matches!(&got, Err(Failure::Tls(reason)) if reason.contains("already")), "it did it twice");
+            close(handle);
         }
 
         /// A connection with TLS over it reads and writes as a plain one does.

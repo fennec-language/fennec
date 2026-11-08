@@ -34,9 +34,12 @@ use crate::emit::{Emit, HEADER_ACCESS, ITEM_ACCESS};
 use crate::kinds::{Kind, element_symbol};
 use crate::lists::list_item;
 
-/// Whether a builtin makes an HTTP request, the one thing that needs TLS.
+/// Whether a builtin needs TLS: an HTTP request, a raw socket asked for it with `tls=True`, or a
+/// plain connection upgraded to it.
 pub(crate) fn is_request(name: &str) -> bool {
-    ["Net.get", "Net.post", "Net.request"].iter().any(|request| name.starts_with(request))
+    ["Net.get", "Net.post", "Net.request", "Net.connect.tls", "Net.listen.tls", "Connection.start_tls"]
+        .iter()
+        .any(|request| name.starts_with(request))
 }
 
 /// Whether a program makes HTTP requests.
@@ -630,19 +633,6 @@ impl Emit<'_, '_, '_> {
             Kind::Boxed(_) => self.assign(dest, block),
             other => Err(format!("a task fails with a {other:?}, which this backend doesn't take yet")),
         }
-    }
-
-    /// A parked task's stack limit, read again after anything that can park: other tasks have run
-    /// on this thread since.
-    pub(crate) fn stack_limit_again(&mut self) {
-        if !self.on_workers() {
-            return;
-        }
-        self.declare(stack_limit_global(self.module.threads));
-        self.declare("declare i64 @fennec_aot_stack_limit()");
-        let limit = self.temp();
-        self.line(&format!("{limit} = call i64 @fennec_aot_stack_limit()"));
-        self.line(&format!("store i64 {limit}, ptr @fennec_stack_limit"));
     }
 
     /// `parallel.for(list, range)`: each range of the list's positions, as the runtime splits

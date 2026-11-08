@@ -1189,7 +1189,7 @@ export struct Graph[N, E]:
             while at >= 0:
                 step = cost(self._values[at])
                 # A cost below zero would make a path found already cheaper later.
-                assert step >= 0.0
+                assert step >= 0.0 and not step.is_nan()
                 next = self._ends[at]
                 total = reached.cost + step
                 if not done[next] and (best[next] < 0.0 or total < best[next]):

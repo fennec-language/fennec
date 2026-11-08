@@ -55,6 +55,7 @@ mod stmt;
 mod sum;
 mod tuple_lowering;
 mod types;
+mod waits;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 

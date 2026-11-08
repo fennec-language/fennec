@@ -137,6 +137,9 @@ const OUT: &str = "\0parallel.out";
 /// What a server's round gives back, for the runtime: it ended normally or by `continue`, so the
 /// server goes on.
 const ROUND_ON: i64 = 0;
+/// It failed, handing its failure's value over first: the server stops, the other rounds are cut
+/// short, and the loop fails with it.
+const ROUND_FAILED: i64 = 2;
 /// It ended by `break`: the server takes no more connections, and lets the running rounds finish.
 const ROUND_BREAK: i64 = 3;
 
@@ -204,7 +207,7 @@ impl Lowering<'_> {
 
     /// Lifts a server's loop body into a function of a connection, and that into the closure the
     /// runtime runs for each, which takes the connection's handle, makes its `Connection`, and
-    /// stops its task with any failure the body passes up.
+    /// hands over any failure the body passes up, which the loop then fails with.
     fn lift_task(&mut self, name: &str, server: &Expr, body: &[Stmt], span: Span) -> Lowered<()> {
         let server = self.expr(server)?;
         let mut names = Vec::new();
@@ -273,7 +276,7 @@ impl Lowering<'_> {
         let result = task.temporary(returns.clone());
         task.emit(InstKind::Call { dest: Some(result), function: inner, args }, span);
         let code = if let Type::Result(_, error) = &returns {
-            task.stop_task_on_failure(result, error, span);
+            task.hand_over_failure(result, error, span)?;
             let code = task.temporary(Type::Int);
             task.emit(InstKind::GetOk { dest: code, value: Operand::Local(result) }, span);
             code
@@ -286,8 +289,28 @@ impl Lowering<'_> {
         let arrow = Type::Arrow(vec![Type::Int], Box::new(Type::Int));
         let closure = self.make_closure(key, &captures, arrow, span);
         let args = vec![server, Operand::Local(closure)];
-        let call = InstKind::Builtin { dest: None, name: "parallel.serve".to_owned(), args, changes: false };
+        let ended = self.temporary(Type::Int);
+        let call =
+            InstKind::Builtin { dest: Some(ended), name: "parallel.serve".to_owned(), args, changes: false };
         self.emit(call, span);
+        self.pass_up_round_failure(ended, span)
+    }
+
+    /// After serving: a round's failure passes up out of the loop, as a `?` would, when serving
+    /// gave back that one failed.
+    fn pass_up_round_failure(&mut self, ended: LocalId, span: Span) -> Lowered<()> {
+        let Type::Result(_, error) = self.returns.clone() else { return Ok(()) };
+        let failed = self.temporary(Type::Bool);
+        let (lhs, rhs) = (Operand::Local(ended), Operand::Int(ROUND_FAILED));
+        self.emit(InstKind::Binary { dest: failed, op: BinOp::Eq, lhs, rhs }, span);
+        let (up, on) = (self.new_block(), self.new_block());
+        self.finish(crate::Terminator::Branch { cond: Operand::Local(failed), then: up, otherwise: on });
+        self.current = up;
+        let cause = self.temporary(*error);
+        let name = "parallel.serve_failure".to_owned();
+        self.emit(InstKind::Builtin { dest: Some(cause), name, args: Vec::new(), changes: false }, span);
+        self.return_error(Operand::Local(cause), span)?;
+        self.current = on;
         Ok(())
     }
 
@@ -301,9 +324,9 @@ impl Lowering<'_> {
         self.leave(Some(Operand::Int(code)), span)
     }
 
-    /// What a server's task does with a failure its body passed up: ends only itself, saying what
-    /// it was.
-    fn stop_task_on_failure(&mut self, result: LocalId, error: &Type, span: Span) {
+    /// What a server's task does with a failure its body passed up: hands its value over, and
+    /// gives back that the round failed.
+    fn hand_over_failure(&mut self, result: LocalId, error: &Type, span: Span) -> Lowered<()> {
         let (failed, cause) = (self.temporary(Type::Bool), self.temporary(error.clone()));
         self.emit(InstKind::IsErr { dest: failed, value: Operand::Local(result) }, span);
         let (stops, goes_on) = (self.new_block(), self.new_block());
@@ -319,9 +342,9 @@ impl Lowering<'_> {
             InstKind::Builtin { dest: None, name: "task.failed".to_owned(), args, changes: false },
             span,
         );
-        let message = "this connection's task failed".to_owned();
-        self.finish(crate::Terminator::Stop { message, span });
+        self.leave(Some(Operand::Int(ROUND_FAILED)), span)?;
         self.current = goes_on;
+        Ok(())
     }
 
     /// `[f(x) for x in parallel(xs)]` or `sum(f(x) for x in parallel(xs))`, lifted, when the

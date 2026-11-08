@@ -6311,6 +6311,93 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// A round that fails, by `fail` or `?`, stops the server, and its failure passes up out of the
+/// loop to the function serving, which handles it. The rounds before it were answered. Natively a
+/// round's failure once only ended that round, as a crash does.
+#[test]
+fn a_server_round_that_fails_passes_its_failure_up_natively() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("failing-rounds")?;
+    let program = dir.join("failing.fen");
+    std::fs::write(
+        &program,
+        "from std.net import NetError
+
+error Refused:
+    line: str
+
+def checked(line: str) -> str fails Refused:
+    if line == \"refuse\":
+        fail Refused(line=line)
+    line
+
+def serve(net: Net, stdout: Stdout) -> int fails NetError | Refused:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            conn.write(f\"{checked(line)?}\\n\")?
+    0
+
+def main(net: Net, stdout: Stdout):
+    match serve(net, stdout):
+        case Ok(_):
+            stdout.print(\"served\")
+        case Err(error):
+            stdout.print(\"failed:\", error)
+",
+    )?;
+    let executable = dir.join("failing");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "2")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().unwrap_or(0);
+    let ask = |line: &str| -> std::io::Result<String> {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        stream.write_all(format!("{line}\n").as_bytes())?;
+        let mut back = String::new();
+        std::io::BufReader::new(stream).read_line(&mut back).unwrap_or(0);
+        Ok(back)
+    };
+    for request in 1..=3 {
+        assert_eq!(ask(&format!("request {request}"))?, format!("request {request}\n"));
+    }
+    assert_eq!(ask("refuse")?, "");
+    // It ends by itself: nothing here kills it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = server.0.try_wait()? {
+            break status;
+        }
+        assert!(std::time::Instant::now() <= deadline, "the server kept going after a round failed");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut printed, &mut rest)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(status.code(), Some(0), "{rest}");
+    assert_eq!(rest, "failed: Refused(line=\"refuse\")\n");
+    Ok(())
+}
+
 /// With nothing asked, a program that uses `parallel` is built with the runtime that runs it on
 /// every core, and prints what it should; `FENNEC_THREADS_RUNTIME=0` keeps it on one thread.
 #[test]

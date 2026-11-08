@@ -361,7 +361,14 @@ impl Emit<'_, '_, '_> {
                 Ok(())
             }
             ("parallel.for", [list, range]) => self.parallel_for(list, range),
-            ("parallel.serve", [server, task]) => self.parallel_serve(server, task),
+            ("parallel.serve", [server, task]) => self.parallel_serve(dest, server, task),
+            ("parallel.serve_failure", []) => {
+                self.declare("declare i64 @fennec_net_serve_failure() nounwind");
+                let (number, block) = (self.temp(), self.temp());
+                self.line(&format!("{number} = call i64 @fennec_net_serve_failure()"));
+                self.line(&format!("{block} = inttoptr i64 {number} to ptr"));
+                self.take_handed_failure(dest.ok_or("a failure no one keeps")?, &block)
+            }
             ("parallel.peer", [Operand::Local(conn)]) => {
                 let (handle, _) = self.operand(&Operand::Local(*conn))?;
                 self.socket_method(dest, &handle, "Connection.peer", &[], span)
@@ -433,8 +440,14 @@ impl Emit<'_, '_, '_> {
         Ok((list, env))
     }
 
-    /// `parallel.serve(server, task)`: each connection a task of the runtime's, until it's stopped.
-    fn parallel_serve(&mut self, server: &Operand, task: &Operand) -> Result<(), String> {
+    /// `parallel.serve(server, task)`: each connection a task of the runtime's, until it's stopped,
+    /// giving back 2 when a round failed and passed its failure up.
+    fn parallel_serve(
+        &mut self,
+        dest: Option<LocalId>,
+        server: &Operand,
+        task: &Operand,
+    ) -> Result<(), String> {
         let handle = self.socket_handle(server)?;
         let (closure, _) = self.operand(task)?;
         let env = self.temp();
@@ -444,7 +457,54 @@ impl Emit<'_, '_, '_> {
         let done = self.temp();
         self.line(&format!("{done} = call i64 @fennec_net_serve(i64 {handle}, ptr {shim}, i64 {env})"));
         self.leave_if_failed();
+        match dest {
+            Some(dest) => self.assign(dest, &done),
+            None => Ok(()),
+        }
+    }
+
+    /// `task.failed(error)`: hands a task's failure over to whoever's waiting for it, as a block of
+    /// the runtime's, before the task gives back that it failed. A failure held in place goes in a
+    /// block of its own type.
+    pub(crate) fn hand_over_failure(&mut self, error: &Operand) -> Result<(), String> {
+        let (value, kind) = self.operand(error)?;
+        let block = match kind {
+            Kind::Struct(id) | Kind::Enum(id) => {
+                let block = self.new_block(id)?;
+                let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+                self.store_field(&kind, &value, &fields, "");
+                self.retain_inline(&kind, &fields);
+                block
+            }
+            Kind::Boxed(_) => {
+                self.retain(&value);
+                value
+            }
+            other => {
+                return Err(format!("a task fails with a {other:?}, which this backend doesn't take yet"));
+            }
+        };
+        self.declare("declare void @fennec_task_failed(i64) nounwind");
+        let number = self.temp();
+        self.line(&format!("{number} = ptrtoint ptr {block} to i64"));
+        self.line(&format!("call void @fennec_task_failed(i64 {number})"));
         Ok(())
+    }
+
+    /// A failure a task handed over, now this thread's own, as the local `dest`: read out of its
+    /// block when it's held in place, the block then let go of.
+    fn take_handed_failure(&mut self, dest: LocalId, block: &str) -> Result<(), String> {
+        let kind = self.kind_of(dest)?.clone();
+        match kind {
+            Kind::Struct(_) | Kind::Enum(_) => {
+                let fields = self.offset(block, crate::lists::FIELDS_OFFSET);
+                self.read_into(dest, &kind, &fields, "")?;
+                self.release(block);
+                Ok(())
+            }
+            Kind::Boxed(_) => self.assign(dest, block),
+            other => Err(format!("a task fails with a {other:?}, which this backend doesn't take yet")),
+        }
     }
 
     /// A parked task's stack limit, read again after anything that can park: other tasks have run

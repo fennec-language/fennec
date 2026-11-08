@@ -184,6 +184,28 @@ impl Tables {
 #[derive(Clone, Default)]
 struct Output(Rc<RefCell<Vec<u8>>>, bool);
 
+/// Whether the program writes its output as it goes, rather than keeping it for a host.
+static PROGRAM_WRITES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+thread_local! {
+    /// Whether what's running here is a launched task of a program that writes as it goes. A
+    /// `parallel` range's output is kept to come out whole, but tasks talk to each other, and what
+    /// one printed before it told another comes first.
+    static TASK_WRITES: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether a launched task's printing is written as it goes.
+#[cfg(any(test, feature = "threads"))]
+pub(in crate::embed) fn program_writes() -> bool {
+    PROGRAM_WRITES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Says whether what's about to run here writes as it goes, giving back what was.
+#[cfg(any(test, feature = "threads"))]
+pub(in crate::embed) fn swap_task_writes(writes: bool) -> bool {
+    TASK_WRITES.replace(writes)
+}
+
 /// How much output is kept before a live run writes it.
 const LIVE_OUTPUT: usize = 1 << 13;
 
@@ -233,7 +255,7 @@ impl Write for Output {
 
     /// Writes what a live run has kept. Any other run's output stays for its host.
     fn flush(&mut self) -> std::io::Result<()> {
-        if !self.1 {
+        if !self.1 && !TASK_WRITES.get() {
             return Ok(());
         }
         let length = self.0.borrow().len();
@@ -445,6 +467,9 @@ fn capability(kind: i64) -> Capability {
 pub fn start(mut tables: Tables, inputs: crate::Inputs) {
     let crate::Inputs { program, arguments, live, .. } = inputs;
     let output = Output(Rc::default(), live);
+    if live {
+        PROGRAM_WRITES.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     OUTPUT.set(Some(output.clone()));
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
     set_failed(0);

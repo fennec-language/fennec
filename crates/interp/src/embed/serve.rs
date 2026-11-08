@@ -1062,6 +1062,8 @@ fn park_on_token(token: Token, deadline: Option<Instant>, stoppable: bool) -> Pa
     if stoppable && cut_short() {
         return Parked::Cancelled;
     }
+    // What a task has printed comes out before it waits, however long that is.
+    super::write_kept_output();
     PARKING.set(Some((Interest::READABLE, deadline)));
     let woken = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
     if stoppable {
@@ -1167,6 +1169,7 @@ pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 's
     let sent = sender.lock().unwrap_or_else(PoisonError::into_inner).send(job);
     match sent {
         Ok(()) => {
+            super::write_kept_output();
             PARKING.set(Some((Interest::READABLE, None)));
             let _ = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
         }

@@ -1,0 +1,7 @@
+source 002e776010694e0e818b99bc56bde5e0a546c8f14d3ff2d34a1764ef6428a738
+code 0
+stdout 127
+at (3, 4) Spot(x=1, y=2.5, on=True, team=Team.Blue) True False Team.Red
+6 8 [5, 7]
+Spot(x=9, y=0.5, on=False, team=Team.Red) 1
+stderr 0

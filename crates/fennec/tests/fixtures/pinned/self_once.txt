@@ -1,0 +1,6 @@
+source 42c22f554509533c4caa6b4fffea997b536e9609e866b803da0dee5f88c24e47
+code 0
+stdout 20
+4 0 [1, 3] []
+24 14
+stderr 0

@@ -1,0 +1,9 @@
+source 4c4e6bf76d6ce50f5017c0edd071e983aeafee12e7b8176d5cf80bf4104f2d9c
+code 1
+stdout 0
+stderr 195
+error: `selected[0]` is an Id from another `Table[str]` than `units`
+  --> <dir>/other_table_saved.fen:13:18
+   |
+13 |     stdout.print(json.dumps(world))
+   |                  ^^^^^^^^^^^^^^^^^

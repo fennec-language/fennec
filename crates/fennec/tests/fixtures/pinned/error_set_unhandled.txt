@@ -1,0 +1,10 @@
+source 6bd6df77b128833fa52447ad44703f683cdf6d9cfd37fca4182a7fb13576ef03
+code 1
+stdout 2
+9
+stderr 160
+error: `main` failed: TooWeak(level=1)
+  --> <dir>/error_set_unhandled.fen:12:1
+   |
+12 | def main(stdout: Stdout) -> int:
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

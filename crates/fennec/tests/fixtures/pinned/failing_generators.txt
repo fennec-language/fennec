@@ -1,0 +1,12 @@
+source eca2c0e17aff785a1d1a2ffc285ba27dd4c9ee6242ffd6d8c420ad6fcbfcfee3
+code 0
+stdout 198
+Ok(10) Err(TooBig(at=2))
+too big 2
+Err(Named(who="a long name for number 3 in a block")) Ok("01234")
+a long name for number 1 in a block
+0 Err(Named(who="none"))
+1 Ok(1)
+2 Ok(3)
+3 Err(TooBig(at=2))
+stderr 0

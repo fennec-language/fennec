@@ -1,0 +1,11 @@
+source e31b7105854a9dd4c0e516fb124e8552326084bd57067135c2a4d060a379001b
+code 1
+stdout 0
+stderr 187
+error: the dict has no key "b"
+ --> <dir>/missing_list.fen:3:18
+  |
+3 |     stdout.print(held["b"])
+  |                  ^^^^^^^^^
+  |
+  = help: use `.get(key)`, which gives None instead

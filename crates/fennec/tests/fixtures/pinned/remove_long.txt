@@ -1,0 +1,9 @@
+source e2b8acbb917255d58828f29539df5f1245325408d258300474d4c507a1458910
+code 1
+stdout 0
+stderr 221
+error: "a long string that is held in a block" isn't in the set
+ --> <dir>/remove_long.fen:3:5
+  |
+3 |     held.remove("a long string that is held in a block")
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

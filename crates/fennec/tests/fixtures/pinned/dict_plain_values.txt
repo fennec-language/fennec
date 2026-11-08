@@ -1,0 +1,15 @@
+source 874f01d8bad0b81cc7778a5d312eac963de3c9513be4f0441abade0d4e4ede77
+code 0
+stdout 756
+{"p": Point(x=5, y=6.0), "q": Point(x=7, y=8.0)} {"p": Point(x=5, y=6.0), "q": Point(x=3, y=4.0)} 5 False Point(x=7, y=8.0) None
+[Point(x=5, y=6.0), Point(x=7, y=8.0)] [("p", Point(x=5, y=6.0)), ("q", Point(x=7, y=8.0))] Point(x=7, y=8.0) {"p": Point(x=5, y=6.0)}
+{"go": Light.Green, "wait": Light.Amber(seconds=3), "stop": Light.Red} Light.Amber(seconds=3) True
+go green
+wait 3
+stop red
+{1: Note.Said(text="replaced"), 2: Note.Empty, 3: Note.Said(text="short")} Note.Said(text="short")
+Note.Said(text="replaced") Note.Said(text="short") [Note.Empty, Note.Said(text="short")]
+{"me": Named(name="me", tags=["a"]), "you": Named(name="other", tags=["b", "c"])} Named(name="a long name that sits in its own block", tags=[]) c True
+True True True 2
+True True 2
+stderr 0

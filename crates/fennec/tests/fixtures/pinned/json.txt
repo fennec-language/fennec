@@ -1,0 +1,8 @@
+source 95f41ed5247713bd1b106079f534f421442e69806f2cce5c18c76365060ead7b
+code 0
+stdout 117
+{"items": [{"name": "a", "heals": 1}], "at": {"x": 1, "y": 2}, "count": 0} {"x": 1, "y": 2} [1, 2] "q" 3
+a 2 0
+1 3
+9
+stderr 0

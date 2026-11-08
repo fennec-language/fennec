@@ -1,0 +1,10 @@
+source b4258c8a5bdf9ee6338a0c8e7efd6bfa45ba10ad420087f4e485388f587c7481
+code 1
+stdout 8
+fox kit
+stderr 146
+error: can't insert at 5 in a Buffer of length 2
+ --> <dir>/buffer_insert.fen:6:5
+  |
+6 |     kept.insert(5, "den")
+  |     ^^^^^^^^^^^^^^^^^^^^^

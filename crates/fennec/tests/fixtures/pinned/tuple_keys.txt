@@ -1,0 +1,12 @@
+source 388e85f9f5ea5244205497348efd06facb68b2c336ff077ffcdab88d3232e35d
+code 0
+stdout 367
+["ash", "kit", "kit", "bramble", "a long word that sits in a block"]
+[2, 3, 1]
+[-2.5, 1.5]
+[Unit(name="c", hp=1), Unit(name="a", hp=2), Unit(name="b", hp=2), Unit(name="d", hp=2)]
+[Unit(name="c", hp=1), Unit(name="b", hp=2), Unit(name="a", hp=2), Unit(name="d", hp=2)]
+[3, 9, 1, 5] [5, 3, 9, 1]
+[]
+["bramble", "kit", "ash", "a long word that sits in a block", "kit"]
+stderr 0

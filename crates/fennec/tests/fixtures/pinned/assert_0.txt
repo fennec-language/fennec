@@ -1,0 +1,12 @@
+source a2ac4fbd8763315653022acf1633ce1435fe62c5ae5bf365750eab91be23ecac
+code 1
+stdout 2
+1
+stderr 178
+error: this assertion failed
+  --> <dir>/assert_0.fen:31:12
+   |
+31 |     assert 1 + 1 == 3
+   |            ^^^^^^^^^^
+   |
+   = help: the left side is 2 and the right side is 3

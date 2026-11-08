@@ -1,0 +1,10 @@
+source be3b6af467d3ce7afcc33f134000be7501973c2ff1b16f5f7cee5466392ffecc
+code 1
+stdout 2
+1
+stderr 134
+error: this assertion failed
+  --> <dir>/assert_24.fen:31:12
+   |
+31 |     assert 1 == 1 and 1 == 2
+   |            ^^^^^^^^^^^^^^^^^

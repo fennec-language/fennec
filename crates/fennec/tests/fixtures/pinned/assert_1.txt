@@ -1,0 +1,12 @@
+source 25796242dc2d0cb70924dbc45c39bf23848d27caf2aa32f7936466b41da58f70
+code 1
+stdout 2
+1
+stderr 168
+error: this assertion failed
+  --> <dir>/assert_1.fen:31:12
+   |
+31 |     assert 2 > 3
+   |            ^^^^^
+   |
+   = help: the left side is 2 and the right side is 3

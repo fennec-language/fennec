@@ -1,0 +1,11 @@
+source 9108b8f1338b9578c3ef49c54e6a8f90c9378149671839bad250f67cb8b6e875
+code 0
+stdout 64
+9
+1 kit
+2 den
+3 (1, "kit")
+[1, 2, 3, 1, 3, 5]
+(0, "a")
+(1, "b")
+stderr 0

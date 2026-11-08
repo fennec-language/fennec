@@ -4,12 +4,7 @@
 
 use fennec_syntax::{Diagnostic, Span};
 
-use crate::call::CallArg;
-use crate::interp::Interp;
 use crate::value::{Instance, Value};
-
-type Call = fn(&mut Interp<'_>, &str, Vec<CallArg>, Span) -> Result<Value, Diagnostic>;
-type Method = fn(&mut Interp<'_>, &Instance, &str, Vec<CallArg>, Span) -> Result<Value, Diagnostic>;
 
 /// What one module has written in Rust.
 pub(crate) struct Module {
@@ -70,11 +65,6 @@ pub(crate) fn methods_of(type_name: &str) -> Option<Method> {
         .flat_map(|module| module.methods)
         .find(|(name, _)| *name == type_name)
         .map(|(_, call)| *call)
-}
-
-/// For a module with no functions, which is never called.
-fn no_functions(_: &mut Interp<'_>, name: &str, _: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
-    Err(Diagnostic::new(format!("`{name}` doesn't exist"), span))
 }
 
 /// For a module with no constants.

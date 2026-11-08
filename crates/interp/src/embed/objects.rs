@@ -5,7 +5,7 @@
 use fennec_syntax::{BinOp, UnaryOp};
 
 use super::{State, attempt, span, with};
-use crate::place::{Place, Step};
+;
 use crate::value::Value;
 
 /// The operators native code passes by number, in order.

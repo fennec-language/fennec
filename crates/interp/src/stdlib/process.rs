@@ -9,36 +9,10 @@ use std::rc::Rc;
 use fennec_syntax::{Diagnostic, Span};
 
 use super::{Module, no_constants, no_functions};
-use crate::interp::Interp;
 use crate::methods::no_method;
 use crate::value::{Capability, Value};
 
 pub(crate) const MODULE: Module = Module { functions: &[], call: no_functions, constant: no_constants, methods: &[] };
-
-impl Interp<'_> {
-    pub(crate) fn process_method(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
-        // A test's fake `Process` is `TestWorld::process`.
-        match (method, args) {
-            (run, _) if run == "run" || run.starts_with("run.") => {
-                let (program, arguments, options) = run_of(run, args, span)?;
-                self.start_program(&program, &arguments, &options)
-            }
-            ("only", [Value::Str(program)]) => Ok(crate::limits::Limited::to(Capability::Process, vec![Rc::clone(program)])),
-            ("ran", []) => Ok(Value::list(Vec::new())),
-            ("script", _) => Err(wrong(method, span)),
-            _ => Err(no_method(&Value::Capability(Capability::Process), method, span)),
-        }
-    }
-
-    /// Runs `program` and waits for it, keeping what it writes.
-    fn start_program(&mut self, program: &str, arguments: &[String], options: &Options) -> Result<Value, Diagnostic> {
-        // A prompt this program printed shows before the other program starts.
-        self.flush()?;
-        Ok(run_program(program, arguments, options))
-    }
-
-
-}
 
 /// What `run` was given besides the program and its arguments: what the program reads from its
 /// standard input, the folder it runs in, and variables it gets on top of this program's own.

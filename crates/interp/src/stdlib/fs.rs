@@ -10,8 +10,6 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use fennec_syntax::{Diagnostic, Span};
 
 use super::{Module, no_constants, no_functions};
-use crate::call::CallArg;
-use crate::interp::Interp;
 use crate::methods::no_method;
 use crate::value::{Capability, Instance, Value};
 
@@ -292,21 +290,6 @@ fn line_text(mut line: Vec<u8>) -> Result<String, String> {
         }
     }
     String::from_utf8(line).map_err(|_| "this line isn't UTF-8 text".to_owned())
-}
-
-/// `File`'s methods written in Rust, as the interpreter calls them.
-fn file_method(
-    _: &mut Interp<'_>,
-    file: &Instance,
-    method: &str,
-    args: Vec<CallArg>,
-    span: Span,
-) -> Result<Value, Diagnostic> {
-    let Some(Value::Int(handle)) = file.field("_handle") else {
-        return Err(no_method(&Value::str("File"), method, span));
-    };
-    let args: Vec<Value> = args.into_iter().map(|arg| arg.value).collect();
-    crate::replay::value(format_args!("File.{method}"), span, || real_file(*handle, method, &args, span))
 }
 
 /// A method of the real `Fs`. A test's fake one is `fake_method`, which `TestWorld::method` runs.

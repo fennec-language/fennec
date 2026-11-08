@@ -14,8 +14,6 @@ use std::rc::Rc;
 use fennec_syntax::{Diagnostic, Span};
 
 use super::{Module, no_constants, no_functions};
-use crate::call::CallArg;
-use crate::interp::Interp;
 use crate::methods::no_method;
 use crate::value::{Instance, Value};
 
@@ -25,15 +23,6 @@ pub(crate) const MODULE: Module = Module {
     constant: no_constants,
     methods: &[("Database", method), ("Transaction", method)],
 };
-
-/// `Database`'s and `Transaction`'s methods written in Rust, as the interpreter calls them.
-fn method(_: &mut Interp<'_>, held: &Instance, method: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
-    let Some(Value::Int(handle)) = held.field("_handle") else {
-        return Err(no_method(&Value::str("Database"), method, span));
-    };
-    let args: Vec<Value> = args.into_iter().map(|arg| arg.value).collect();
-    call(*handle, method, &args, span)
-}
 
 /// The `Err` holding the case of `SqlError` a failure is.
 fn failed(case: &str, reason: &str) -> Value {

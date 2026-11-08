@@ -5,9 +5,6 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span};
 
-use crate::call::CallArg;
-use crate::interp::Interp;
-use crate::place::Place;
 use crate::value::{Instance, Value};
 
 /// The text `stdout.print` and `str()` produce.
@@ -228,55 +225,3 @@ fn thousands(number: &str) -> String {
     }
 }
 
-impl Interp<'_> {
-    /// The text printing gives a value, through the `def str` of any type that has one,
-    /// wherever it sits: the value itself, or inside a list, a dict or another value.
-    pub(crate) fn shown(&mut self, value: &Value, span: Span) -> Result<String, Diagnostic> {
-        let mut failure = None;
-        let text = display_with(value, &mut |instance| match self.own_str(instance, span) {
-            Ok(text) => text,
-            Err(problem) => {
-                failure.get_or_insert(problem);
-                None
-            }
-        });
-        failure.map_or(Ok(text), Err)
-    }
-
-    /// Like `shown`, in an f-string's format spec. Only numbers take a spec.
-    pub(crate) fn shown_spec(&mut self, value: &Value, spec: &str, span: Span) -> Result<String, Diagnostic> {
-        if spec.is_empty() {
-            return self.shown(value, span);
-        }
-        with_spec(value, spec).map_err(|message| Diagnostic::new(message, span))
-    }
-
-    /// What a value's own `def str` writes, if its type has one.
-    fn own_str(&mut self, instance: &Instance, span: Span) -> Result<Option<String>, Diagnostic> {
-        const OUT: &str = "\0out";
-        let Some(method) =
-            self.type_info(&instance.type_name).and_then(|info| info.methods.get("str").cloned())
-        else {
-            return Ok(None);
-        };
-        let writer = self.make_value("StrWriter", Vec::new(), span)?;
-        self.frame.push();
-        self.frame.declare(OUT, Value::Unit, true);
-        let place = Place { root: OUT.to_owned(), steps: Vec::new(), span };
-        let written = CallArg { name: None, value: writer, mut_place: Some(place), literal: false, span };
-        let args = vec![CallArg::plain(Value::Instance(Rc::new(instance.clone())), span), written];
-        let ran = self.call_user(&method, args, span);
-        let writer =
-            self.frame.get_mut(OUT).map(|binding| std::mem::replace(&mut binding.value, Value::Unit));
-        self.frame.pop();
-        ran?;
-        let parts = match &writer {
-            Some(Value::Instance(writer)) => writer.field("_parts").cloned(),
-            _ => None,
-        };
-        Ok(Some(match parts {
-            Some(Value::List(parts)) => parts.iter().map(display).collect(),
-            _ => String::new(),
-        }))
-    }
-}

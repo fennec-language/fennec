@@ -6,7 +6,6 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span};
 
-use crate::call::CallArg;
 use crate::value::Value;
 
 /// The fewest items a new buffer or list has room for.

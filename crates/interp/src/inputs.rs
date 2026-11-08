@@ -6,7 +6,6 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span};
 
-use crate::interp::Interp;
 use crate::methods::no_method;
 use crate::value::{Capability, Value};
 
@@ -48,42 +47,6 @@ impl From<Inputs> for Given {
             arguments: inputs.arguments.iter().map(|arg| Value::str(arg)).collect(),
             stdin: inputs.stdin,
         }
-    }
-}
-
-impl Interp<'_> {
-    /// Hands the program its command-line arguments and standard input.
-    pub fn give(&mut self, inputs: Inputs) {
-        self.given = Given::from(inputs);
-    }
-
-    /// The command-line arguments, each a `str`.
-    pub(crate) fn arguments(&self) -> Vec<Value> {
-        self.given.arguments.clone()
-    }
-
-    /// `args.program`: the program's name.
-    pub(crate) fn args_field(&self, name: &str, span: Span) -> Result<Value, Diagnostic> {
-        if name == "program" {
-            return Ok(Value::Str(Rc::clone(&self.given.program)));
-        }
-        Err(Diagnostic::new(format!("`Args` has no field `{name}`"), span)
-            .with_help("loop over `args` for the arguments, or use `args.program` for the program's name"))
-    }
-
-    /// `stdin.lines()`: every line of input, without its line ending.
-    pub(crate) fn stdin_method(
-        &mut self,
-        method: &str,
-        args: &[Value],
-        span: Span,
-    ) -> Result<Value, Diagnostic> {
-        if method != "lines" || !args.is_empty() {
-            return Err(no_method(&Value::Capability(Capability::Stdin), method, span));
-        }
-        // A prompt shows before the program waits for an answer.
-        self.flush()?;
-        lines_of(&mut self.given.stdin, span)
     }
 }
 

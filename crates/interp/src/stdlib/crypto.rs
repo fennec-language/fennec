@@ -11,9 +11,7 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 use fennec_syntax::{Diagnostic, Span};
 
 use super::{Module, no_constants};
-use crate::call::CallArg;
 use crate::collections::plain;
-use crate::interp::Interp;
 use crate::value::Value;
 
 pub(crate) const MODULE: Module = Module {
@@ -49,10 +47,6 @@ fn hex(bytes: &[u8]) -> Value {
         let _ = write!(text, "{byte:02x}");
     }
     Value::str(&text)
-}
-
-fn call(_: &mut Interp<'_>, name: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
-    run(name, &plain(args, name, span)?, span)
 }
 
 /// A hash being worked out a piece at a time, for `blake3` or `sha256` of chunks, by its handle.

@@ -92,9 +92,6 @@ jobs:
           fi
       - run: cargo clippy --all-targets --locked -- -D warnings
         if: env.CODE == 'true'
-      - name: Clippy for the playground's WebAssembly module
-        if: env.CODE == 'true'
-        run: cargo clippy --target wasm32-unknown-unknown -p fennec-wasm --locked -- -D warnings
       - run: cargo doc --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings

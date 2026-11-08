@@ -5,9 +5,7 @@
 use fennec_syntax::{Diagnostic, Span};
 
 use super::{Module, no_constants};
-use crate::call::CallArg;
 use crate::collections::plain;
-use crate::interp::Interp;
 use crate::value::Value;
 
 pub(crate) const MODULE: Module = Module {
@@ -16,10 +14,6 @@ pub(crate) const MODULE: Module = Module {
     constant: no_constants,
     methods: &[],
 };
-
-fn call(_: &mut Interp<'_>, name: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
-    draw(name, &plain(args, name, span)?, span)
-}
 
 /// The `n`th 64-bit number of `seed`'s sequence.
 pub(crate) fn splitmix(seed: i64, n: i64) -> u64 {

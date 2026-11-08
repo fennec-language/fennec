@@ -126,7 +126,6 @@ pub mod threads;
 use std::collections::HashMap;
 
 use crate::format;
-use crate::place::Place;
 use crate::value::{Capability, Value};
 
 pub use heap::{Counts, count_allocations};
@@ -820,7 +819,7 @@ pub mod temps {
     pub extern "C" fn err(error: i64, start: i64, end: i64) -> i64 {
         attempt(|state: &mut State| {
             let error = state.take(error);
-            crate::exec::check_error(&error, span(start, end))?;
+            check_error(&error, span(start, end))?;
             Ok(state.push(Value::Err(std::rc::Rc::new(error))))
         })
     }
@@ -856,15 +855,13 @@ pub mod temps {
 /// Running the parts of a program that native code hands to the interpreter.
 pub mod eval {
     use super::{State, Value, attempt, span, with};
-    use crate::call::at_call as repoint;
-    use crate::exec::Flow;
     use fennec_syntax::Diagnostic;
 
     /// Reports a failure inside the standard library where the program called it.
     pub extern "C" fn at_call(start: i64, end: i64) {
         with(|state| {
             if let Some(failure) = state.failure.take() {
-                state.failure = Some(repoint(failure, span(start, end)));
+                state.failure = Some(at_failed_call(failure, span(start, end)));
             }
         });
     }
@@ -994,5 +991,24 @@ pub mod io {
             };
             state.push(item.unwrap_or(Value::Unit))
         })
+    }
+}
+
+/// A failure inside the standard library is reported where the program called it.
+fn at_failed_call(mut diagnostic: Diagnostic, call: Span) -> Diagnostic {
+    if diagnostic.span.in_prelude() && !call.in_prelude() {
+        diagnostic.span = call;
+    }
+    diagnostic
+}
+
+/// Checks a value can be failed with: it must be declared with `error`.
+fn check_error(value: &Value, span: Span) -> Result<(), Diagnostic> {
+    match value {
+        Value::Instance(instance) if instance.is_error => Ok(()),
+        other => {
+            Err(Diagnostic::new(format!("`fail` needs an error, but this is a {}", other.type_name()), span)
+                .with_help("declare error types with `error`, like `error NotFound:`"))
+        }
     }
 }

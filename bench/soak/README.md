@@ -47,11 +47,23 @@ First runs, 2026-11-08, on an 18-core M5 MacBook Pro, the native server on 4 wor
 | 10 min, full mix | 442,317 | 737/s | 0.57 ms | 16.5 ms | 20–30 | 17 → 86 MB, still growing |
 | 10 min, no crashes | 590,871 | 985/s | 0.32 ms | 12.4 ms | 20–29 | 21 → 66 MB |
 | 30 min, no crashes | 1,640,645 | 912/s | 0.31 ms | 14.0 ms | 21–31 | 14 → 66 MB by minute 12, then 76 MB by minute 30 |
+| 10 min, no crashes, after #981 | 357,790 | 596/s | 0.38 ms | 30.3 ms | 21–30 | 22 → 61 MB by minute 5.6, then 62.6 MB by minute 10 |
 
 In every run the server never stopped, each crash ended only its own request and connection, and every other request was answered.
 
 **What's left to fix:**
 - **A crash leaks about 1.8 KB:** the frames' locals are never let go of, since native code's crash path returns without releasing them. At about 5,700 crashes a second alone it grows by 600 MB a minute. The fix is for native code to release live locals on the crash path, as a failure's early return does.
-- **Without crashes, memory still creeps,** about 0.5 MB a minute by minute 30 and slowing. Part of it is the runtime's cache of freed blocks filling to its bound: a run with that cache cut to 32 KB per thread reached 38 MB at 10 minutes rather than 66. What's left isn't found yet. It isn't Fennec values: a capability call from native code leaves nothing behind in the runtime (`a_capability_call_from_native_code_leaves_nothing_behind`). HTTP serving, `shared` values and request bodies grew by nothing over 290,000 requests each.
+- **Fixed in #981, the creep without crashes:** most of it was the runtime's temporaries. They were one stack per worker, shared by its tasks, and a round that left by a failure path, as about 1 in 40 hung-up connections did, left them behind. Each task now keeps its own. 1M hung-up connections went from 7 → 28 MB to a flat 9 MB. What's left is bounded: each worker's cache of freed blocks, up to 8 MB, and the allocator's pages, filling up as it warms. After #981 the last 4 minutes of a 10-minute run grew 1.6 MB.
+- **Latency after #981** rose by minute, from 10 ms at p99 to 95 ms. That run shared the machine with other builds, so it needs a run on a quiet machine before it counts.
 
-Until both are fixed, `soak.py` reports a failure on memory, as it should.
+Bisecting, on one worker for 6 minutes each, before #981:
+
+| Request | Requests | RSS |
+|---|---:|---|
+| `/note` (SQLite) | 175,559 | flat at 16 MB |
+| `/stats` | 3,269,325 | flat at 6 MB |
+| `/file` | 620,984 | 16 → 44 MB |
+| not HTTP | 2,682,260 | 6 → 51 MB |
+| half a request | 4,206,872 | 10 → 110 MB |
+
+Until the crash leak is fixed, `soak.py` reports a failure on memory for the full mix, as it should.

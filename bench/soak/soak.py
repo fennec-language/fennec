@@ -15,6 +15,7 @@ import http.client
 import json
 import os
 import random
+import shutil
 import socket
 import statistics
 import struct
@@ -235,6 +236,7 @@ def main():
     alive = server.poll() is None
     server.kill()
     server.wait()
+    shutil.rmtree(data, ignore_errors=True)
 
     # Each worker's caches, its runtime's spare blocks and the allocator's pages, fill up to a
     # bound as it serves: that's the warm-up, the first 40% of the run. After it, memory and

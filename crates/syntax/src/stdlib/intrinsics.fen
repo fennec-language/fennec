@@ -201,3 +201,25 @@ export def id_of_key[T](key: int, tag: int) -> Id[T]
 ## Ends the program, saying `message`, as a failed `assert` does.
 @intrinsic
 export def stop(message: str)
+
+## A new channel holding up to `size` messages, by its number.
+@intrinsic
+export def channel_new(size: int) -> int
+
+## Sends `message` on channel `channel`, waiting while it's full, for at most `timeout_ns`, or as
+## long as it takes when that's -1. 0 is sent, 1 closed and 2 timed out.
+@intrinsic
+export def channel_send[T](channel: int, message: T, timeout_ns: int) -> int
+
+## The next message on channel `channel`, waiting as `channel_send` does. `why` is set to 0 for a
+## message, 1 when it's closed and empty, and 2 when it timed out, which give back `None`.
+@intrinsic
+export def channel_receive[T](channel: int, timeout_ns: int, ref why: int) -> T?
+
+## Closes channel `channel`: sends then fail, and receives take what's left, then fail.
+@intrinsic
+export def channel_close(channel: int)
+
+## Lets go of channel `channel` and what's left in it, at the end of its `with` block.
+@intrinsic
+export def channel_free(channel: int)

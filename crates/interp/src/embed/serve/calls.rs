@@ -33,7 +33,7 @@ type Passed = Arc<Mutex<Option<(u64, Box<crate::embed::table::Table>)>>>;
 
 thread_local! {
     /// The connections this I/O worker serves, by the number native code holds.
-    static CONNS: RefCell<HashMap<i64, Conn>> = RefCell::new(HashMap::new());
+    static CONNS: RefCell<HashMap<i64, Rc<Conn>>> = RefCell::new(HashMap::new());
     static NEXT: Cell<i64> = const { Cell::new(1) };
     /// The failure the last `fennec_net_serve` on this thread passed up, for
     /// `fennec_net_serve_failure`.
@@ -78,7 +78,7 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     let handler: Handler = Arc::new(move |conn: Conn| {
         let handle = NEXT.get();
         NEXT.set(handle + 1);
-        CONNS.with_borrow_mut(|conns| conns.insert(handle, conn));
+        CONNS.with_borrow_mut(|conns| conns.insert(handle, Rc::new(conn)));
         let result = body(env, handle, i64::from(threads::index()));
         // Its task is done with it: dropping it closes it.
         CONNS.with_borrow_mut(|conns| conns.remove(&handle));
@@ -162,13 +162,11 @@ fn pass_up(passed: &Passed) {
 
 /// Runs `call` on a served connection taken out of the table, so nothing stays borrowed while
 /// it waits, and puts it back. A connection that isn't there is closed.
-fn on_conn<T>(conn: i64, call: impl FnOnce(&mut Conn) -> Result<T, Failure>) -> Result<T, NetFailure> {
-    let Some(mut taken) = CONNS.with_borrow_mut(|conns| conns.remove(&conn)) else {
+fn on_conn<T>(conn: i64, call: impl FnOnce(&Conn) -> Result<T, Failure>) -> Result<T, NetFailure> {
+    let Some(shared) = CONNS.with_borrow(|conns| conns.get(&conn).cloned()) else {
         return Err(NetFailure::Closed);
     };
-    let result = call(&mut taken);
-    CONNS.with_borrow_mut(|conns| conns.insert(conn, taken));
-    result.map_err(|failure| match failure {
+    call(&shared).map_err(|failure| match failure {
         Failure::TimedOut(after) => NetFailure::TimedOut(after),
         Failure::Closed => NetFailure::Closed,
         Failure::Cancelled => NetFailure::Other("the server stopped".to_owned()),
@@ -207,7 +205,8 @@ pub(in crate::embed) fn served_call(
             return Some(Ok(Value::Unit));
         }
         ("peer", []) => {
-            let peer = CONNS.with_borrow(|conns| conns.get(&handle).map(Conn::peer)).unwrap_or_default();
+            let peer =
+                CONNS.with_borrow(|conns| conns.get(&handle).map(|conn| conn.peer())).unwrap_or_default();
             return Some(Ok(Value::str(&peer)));
         }
         _ => {

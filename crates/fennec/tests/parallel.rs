@@ -483,6 +483,49 @@ fn workers_take_turns_at_shared_values_holding_blocks() -> std::io::Result<()> {
     Ok(())
 }
 
+/// One task can write to a connection while another is waiting to read from it.
+#[test]
+fn a_connection_can_be_written_while_another_task_reads_it() -> std::io::Result<()> {
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-conn-shared-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/connection_shared_by_two_tasks.fen");
+    let built = build_on_threads(&dir, source, "connection_shared_by_two_tasks")?;
+    for threads in ["1", "2"] {
+        let mut server = Command::new(&built)
+            .env("FENNEC_THREADS", threads)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        let mut out = BufReader::new(server.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
+        let mut port = String::new();
+        out.read_line(&mut port)?;
+        let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        let mut reader = BufReader::new(stream.try_clone()?);
+        let mut heard = String::new();
+        reader.read_line(&mut heard)?;
+        assert_eq!(heard, "from the launched task\n", "on {threads} threads");
+        stream.write_all(b"hello\n")?;
+        heard.clear();
+        reader.read_line(&mut heard)?;
+        assert_eq!(heard, "from the round\n", "on {threads} threads");
+        let mut rest = String::new();
+        out.read_to_string(&mut rest)?;
+        assert!(server.wait()?.success(), "on {threads} threads");
+        assert_eq!(
+            sorted_lines(rest.as_bytes()),
+            sorted_lines(b"launched wrote\nround read hello\nafter server\n")
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Runs a fixture on 1, 2, 4 and 8 threads and checks what it printed, in any order.
 fn fixture_prints(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
     let dir = std::env::temp_dir().join(format!("fennec-parallel-{name}-{}", std::process::id()));

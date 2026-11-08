@@ -1,0 +1,12 @@
+source 3192ba6846cbb369fc535a2b6ef25ce2b4977829a229520086abc95dc545bcc1
+code 1
+stdout 2
+1
+stderr 188
+error: this assertion failed
+  --> <dir>/assert_6.fen:31:12
+   |
+31 |     assert "q" in ["a"]
+   |            ^^^^^^^^^^^^
+   |
+   = help: the left side is "q" and the right side is ["a"]

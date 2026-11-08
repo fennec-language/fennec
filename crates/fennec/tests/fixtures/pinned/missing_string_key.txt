@@ -1,0 +1,11 @@
+source d9bd5e61d52b51439ccaa758af9afb2a57234b86671ab9b032f4b554c624a550
+code 1
+stdout 0
+stderr 302
+error: the dict has no key "a key long enough to live in a block"
+ --> <dir>/missing_string_key.fen:3:18
+  |
+3 |     stdout.print(counts["a key long enough to live in a block"])
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: use `.get(key)`, which gives None instead

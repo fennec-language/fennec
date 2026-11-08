@@ -1,0 +1,17 @@
+source 5cec0db6f6ec09d0eb456002770454cff86ac2b177770b1c33eb60143a53c535
+code 0
+stdout 294
+[] [] [] 0
+[] [] [] 0
+[x] [x] [x] 1
+[x] [x] [ x] 1
+[x] [x ] [x] 1
+[a b] [a b 
+] [	 a b] 3
+[q] [q] [q] 1
+[héllo] [héllo  ] [héllo] 5
+[ünï] [ünï  ] [  ünï] 3
+[abc] [abc] [abc] 3
+[long text with spaces inside] [long text with spaces inside   ] [  long text with spaces inside] 28
+2890
+stderr 0

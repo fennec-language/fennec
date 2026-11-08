@@ -1,0 +1,10 @@
+source 3684944b5f3fedaffd6e0384bd1128484ed5f5877dac6818364b1fd1b4387bcf
+code 1
+stdout 4
+fox
+stderr 140
+error: can't pop from an empty Buffer
+ --> <dir>/empty_buffer.fen:5:18
+  |
+5 |     stdout.print(kept.pop())
+  |                  ^^^^^^^^^^

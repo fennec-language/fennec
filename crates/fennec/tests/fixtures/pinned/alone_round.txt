@@ -1,0 +1,10 @@
+source 90d211e2947c63b0be5fb29d12cadf296f69fc71f7543974bcc380202344a96b
+code 1
+stdout 2
+0
+stderr 159
+error: can't turn a float into an int
+ --> <dir>/alone_round.fen:6:18
+  |
+6 |     stdout.print(round(1e300 * 1e300))
+  |                  ^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,7 @@
+source ae2e5cb2f94777e6e72fe0cb754b6a311b7d6666afc2b5c805b52c06a30c890c
+code 0
+stdout 125
+{"name": "a", "points": [1, 2], "rates": [0.5]}
+[1, 2, 3] [[1], [2, 3], []] [1, [2]]
+{"6": [6], "7": []} {"a": {"b": [1.5]}}
+stderr 0

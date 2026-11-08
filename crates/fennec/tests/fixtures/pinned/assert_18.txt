@@ -1,0 +1,12 @@
+source 084a84681d88069c5ccdad996ea9c4e640b09ba0c033ff6087b3459a32ee640e
+code 1
+stdout 2
+1
+stderr 213
+error: this assertion failed
+  --> <dir>/assert_18.fen:31:12
+   |
+31 |     assert {"a": 1} == {"a": 2}
+   |            ^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: the left side is {"a": 1} and the right side is {"a": 2}

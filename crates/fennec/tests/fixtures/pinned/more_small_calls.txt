@@ -1,0 +1,20 @@
+source ed432052b457deddbd5518704512528a72794a0a0b5f4754eb7ec4229519935a
+code 0
+stdout 249
+0
+3.14 2.0 1200.0 0.12
+[104, 233, 108, 108, 111] [] 8364
+A 1
+é 1
+€ 1
+-1 isn't the code of a character
+55296 isn't the code of a character
+1114112 isn't the code of a character
+{} {1: 2, 3: 4} 0
+{5: 6}
+{"d": "e"}
+{1} {1, 2, 3}
+{7} 1
+{"b"}
+set() 0
+stderr 0

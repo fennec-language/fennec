@@ -1,0 +1,9 @@
+source 2515e58e139d323f66198eb06e64d21193346d7fa8c1534e35cb3e00f6d118e5
+code 0
+stdout 143
+[4, 5, 2, 3, None] 14 13 17
+[2, None, None] 2
+["a", "a word too long to fit in a header", "é", "b"] ["given back", None]
+[1.5, 2.5]
+[8, None]
+stderr 0

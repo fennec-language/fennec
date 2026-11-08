@@ -3226,10 +3226,9 @@ fn a_with_taking_one_cell_twice_ends_the_program() -> std::io::Result<()> {
         let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
         assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
         let ran = outcome(&Command::new(&executable).output_within()?);
-        let interpreted =
-            interpreted_by(&dir, &program, &format!("taken_twice_{name}"), || {
-                fennec(&["run", "--interp", &path(&program)], &dir)
-            })?;
+        let interpreted = interpreted_by(&dir, &program, &format!("taken_twice_{name}"), || {
+            fennec(&["run", "--interp", &path(&program)], &dir)
+        })?;
         assert_eq!(apart_from(&dir, ran.clone()), interpreted, "{name}");
         assert_eq!(ran.2, Some(1), "{name}");
         assert_eq!(ran.0, "before 21\n", "{name}");
@@ -3316,8 +3315,9 @@ fn every_name_for_a_shared_value_sees_it_change() -> std::io::Result<()> {
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
-    let interpreted =
-        interpreted_by(&dir, &program, "shared_names", || fennec(&["run", "--interp", &path(&program)], &dir))?;
+    let interpreted = interpreted_by(&dir, &program, "shared_names", || {
+        fennec(&["run", "--interp", &path(&program)], &dir)
+    })?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
     Ok(())
@@ -3841,8 +3841,9 @@ fn own_text_inside_other_values_is_written_by_native_code() -> std::io::Result<(
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
-    let interpreted =
-        interpreted_by(&dir, &program, "own_text_inside", || fennec(&["run", "--interp", &path(&program)], &dir))?;
+    let interpreted = interpreted_by(&dir, &program, "own_text_inside", || {
+        fennec(&["run", "--interp", &path(&program)], &dir)
+    })?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
     Ok(())
@@ -3919,8 +3920,9 @@ fn values_read_from_their_blocks_show_as_they_do_in_the_interpreter() -> std::io
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output_within()?;
-    let interpreted =
-        interpreted_by(&dir, &program, "shown_values", || fennec(&["run", "--interp", &path(&program)], &dir))?;
+    let interpreted = interpreted_by(&dir, &program, "shown_values", || {
+        fennec(&["run", "--interp", &path(&program)], &dir)
+    })?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(apart_from(&dir, outcome(&ran)), interpreted);
     Ok(())

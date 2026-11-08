@@ -844,6 +844,8 @@ There's no per-format override, like a `def json` method on a type; one `def ser
 
 *Why:* Saves and network messages are where games and servers feel size most, and the types already say most of what a compact format needs to know.
 
+**HTTP is read strictly, so nothing in front of a server can read a request differently.** A second `content-length`, `host` or `transfer-encoding`, a length that isn't only digits, a space before a header's `:`, a folded header, a version other than 1.0 or 1.1, and a control character in a method, target or header each get a 400. A response header that would break its line makes the response a 500, and the client refuses a line break or control character in a URL, a method or a header before it connects. Built, in `examples/http_strict.fen`. A bare line feed ending a line is still accepted, until reading a line can tell.
+
 **A protocol is a union of message types.** `net.connect` stays about bytes, and `conn.messages[GameMsg]()?` puts a typed message layer on any byte stream: TCP, later QUIC, the test fake or a file. It sends in `std.pack` and checks fingerprints when it starts.
 ```fennec
 struct Move:

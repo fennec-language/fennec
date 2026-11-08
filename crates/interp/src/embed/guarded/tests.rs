@@ -261,3 +261,21 @@ fn another_thread_reads_and_changes_what_this_one_put_there() {
     assert_eq!(seen[100], "from the second");
     finish();
 }
+
+/// Native code finds the word saying a run is recorded or replayed at 16 bytes past its failure
+/// flag, after the lock it holds.
+#[test]
+fn the_replaying_word_is_where_native_code_reads_it() {
+    assert_eq!(std::mem::offset_of!(crate::embed::Flags, lock_held), 8);
+    assert_eq!(std::mem::offset_of!(crate::embed::Flags, replaying), 16);
+}
+
+/// Outside a recording or a replay, the word is 0, and the lock's hooks do nothing.
+#[test]
+fn outside_a_recording_the_lock_hooks_do_nothing() {
+    let _ = crate::embed::failed_flag();
+    assert_eq!(crate::embed::FLAGS.with(|flags| flags.replaying.get()), 0);
+    replay_lock(0, 1);
+    replay_locked(0, 1);
+    assert!(!crate::embed::failed());
+}

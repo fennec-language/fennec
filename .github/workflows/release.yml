@@ -115,7 +115,13 @@ jobs:
             echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
           else
             cargo_home="${CARGO_HOME:-$HOME/.cargo}"
-            echo "RUSTFLAGS=--remap-path-prefix=$PWD=/fennec --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup" >> "$GITHUB_ENV"
+            flags="--remap-path-prefix=$PWD=/fennec --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup"
+            # macOS's linker names a program by a hash of what it links, which otherwise takes in
+            # what differs from one machine to another, though the program's bytes don't.
+            if [ "$RUNNER_OS" = macOS ]; then
+              flags="$flags -C link-arg=-Wl,-reproducible"
+            fi
+            echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
             echo "CFLAGS_${TARGET//-/_}=-ffile-prefix-map=$cargo_home=/cargo -ffile-prefix-map=$PWD=/fennec" >> "$GITHUB_ENV"
           fi
       - name: Install the toolchain `rust-toolchain.toml` names

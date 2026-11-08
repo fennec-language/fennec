@@ -4433,6 +4433,32 @@ def main(stdout: Stdout):
     )
 }
 
+/// A function named in a tuple, as in `(add, 4)`, is held as its closure: unpacked, kept in a
+/// name and unpacked later, and called. It once wasn't lowered, as "it gives (int) -> int where
+/// function goes".
+#[test]
+fn functions_named_in_tuples_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "functions_in_tuples",
+        "def add(x: int) -> int:
+    x + 1
+
+def twice(x: int) -> int:
+    x * 2
+
+def main(stdout: Stdout):
+    (g, n) = (add, 4)
+    stdout.print(g(n))
+    pair = (twice, 5)
+    (h, m) = pair
+    stdout.print(h(m), g(h(1)))
+",
+    )
+}
+
 #[test]
 fn generators_that_fail_match_the_jit() -> std::io::Result<()> {
     if !ready() {

@@ -1,0 +1,12 @@
+source 0b0b6f6db1f0865c30393cefc390e7850285fc8c563bcb7b547c01452d32fde3
+code 0
+stdout 179
+(2, 3) (2,) (1, 2)
+("a string long enough to be held in a block", [1, 2]) (1, "a string long enough to be held in a block", [1, 2], 2.5)
+0 h
+1 é
+2 l
+3 l
+4 o
+[(0, "a"), (1, "b")]
+stderr 0

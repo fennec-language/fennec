@@ -1,0 +1,9 @@
+source 249ac5ce765c3bcf827a740e9cfdf53c1481527550b88555f83e4dd75e3300da
+code 1
+stdout 0
+stderr 111
+error: 2 isn't in the list
+ --> <dir>/remove_missing.fen:3:5
+  |
+3 |     some.remove(2)
+  |     ^^^^^^^^^^^^^^

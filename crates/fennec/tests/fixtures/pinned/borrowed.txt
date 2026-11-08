@@ -1,0 +1,6 @@
+source 7eac555a04892070b7b5da12a00c4a109ea9da6d45d978ea1eb08663cb8129f3
+code 0
+stdout 48
+["a", "b", "fox", "kit"] ["a", "b"] new ["a"]
+5
+stderr 0

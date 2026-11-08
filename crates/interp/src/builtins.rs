@@ -184,6 +184,9 @@ impl Interp<'_> {
             // The checker gives anything but ints a start, but a run without it needs one worked out.
             ("sum", Some(items), start, None) => {
                 let items = self.iterate(items, span)?;
+                if let Some(total) = float_sum(&items, start.as_ref()) {
+                    return Ok(total);
+                }
                 let mut total = start.unwrap_or_else(|| {
                     if matches!(items.first(), Some(Value::Float(_))) {
                         Value::Float(0.0)
@@ -374,4 +377,17 @@ fn to_float(value: &Value, span: Span) -> Result<Value, Diagnostic> {
 
 fn is_generated(value: &Value) -> bool {
     matches!(value, Value::Generator(_))
+}
+
+/// A sum of floats, in the one fixed order every engine adds them in, when the items are floats
+/// and so is any start.
+fn float_sum(items: &[Value], start: Option<&Value>) -> Option<Value> {
+    let floats: Option<Vec<f64>> =
+        items.iter().map(|item| if let Value::Float(x) = item { Some(*x) } else { None }).collect();
+    let first = match (&floats, start) {
+        (Some(floats), None) if !floats.is_empty() => 0.0,
+        (Some(_), Some(Value::Float(first))) => *first,
+        _ => return None,
+    };
+    Some(Value::Float(fennec_syntax::fixed_sum::added(first, floats?)))
 }

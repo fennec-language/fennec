@@ -1,0 +1,9 @@
+source eacdb69043104554e512e7a1aaa6ffb3701facc172be57c20837e1a6540b716b
+code 1
+stdout 0
+stderr 106
+error: 3 isn't in the set
+ --> <dir>/remove_int.fen:3:5
+  |
+3 |     held.remove(3)
+  |     ^^^^^^^^^^^^^^

@@ -314,6 +314,18 @@ fn range(machine: &mut Machine<'_>, bounds: &[Value]) -> Ran<Value> {
 }
 
 fn sum(items: Vec<Value>, start: Option<Value>, span: Span) -> Ran<Value> {
+    // Floats add in the one fixed order every engine uses.
+    let floats: Option<Vec<f64>> =
+        items.iter().map(|item| if let Value::Float(x) = item { Some(*x) } else { None }).collect();
+    match (&floats, &start) {
+        (Some(floats), None) if !floats.is_empty() => {
+            return Ok(Value::Float(fennec_syntax::fixed_sum::added(0.0, floats.iter().copied())));
+        }
+        (Some(floats), Some(Value::Float(first))) => {
+            return Ok(Value::Float(fennec_syntax::fixed_sum::added(*first, floats.iter().copied())));
+        }
+        _ => {}
+    }
     let mut total = start.unwrap_or_else(|| {
         if matches!(items.first(), Some(Value::Float(_))) { Value::Float(0.0) } else { Value::Int(0) }
     });

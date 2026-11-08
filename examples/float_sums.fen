@@ -1,0 +1,44 @@
+# decision: Float reductions add in one fixed pattern on every platform.
+#
+# `sum` of floats keeps 8 running totals, item `at` going into total `at % 8`, and adds them
+# pairwise at the end, then the start. A list's sum and the same items summed one at a time come
+# out the same, bit for bit, on every engine and every machine: this file's `.out` holds them.
+from std import math
+
+## A float from a seed, the same everywhere: a ratio of ints, which every platform rounds alike.
+def item(seed: int) -> float:
+    (float(seed * 7919 % 10007) - 5003.0) / float(seed % 97 + 1)
+
+def main(stdout: Stdout):
+    for length in [0, 1, 2, 3, 7, 8, 9, 15, 16, 17, 20, 1000, 4099]:
+        items = [item(at + length) for at in range(length)]
+        listed = sum(items)
+        streamed = sum(item(at + length) for at in range(length))
+        # With an `if`, the items that count are summed as a list of just them is.
+        kept = sum(item(at + length) for at in range(length) if at % 3 != 0)
+        only_kept = [item(at + length) for at in range(length) if at % 3 != 0]
+        stdout.print(
+            length,
+            listed,
+            sum(items, start=0.1),
+            listed == streamed,
+            kept == sum(only_kept),
+        )
+    # A large item swallows each small one added to it alone. Eight totals keep most of them.
+    mut ones = [1e16]
+    for _ in range(100000):
+        ones.append(1.0)
+    # One running total, left to right, as `sum` added before.
+    mut one_by_one = 0.0
+    mut at = 0
+    while at < ones.len():
+        one_by_one += ones[at]
+        at += 1
+    stdout.print("fixed", sum(ones), "one by one", one_by_one, "exact", 1e16 + 100000.0)
+    # `math.dot` adds its products in the same order, so it's the same as summing them.
+    first = [item(at) for at in range(1003)]
+    second = [item(at + 7) for at in range(1003)]
+    stdout.print(
+        math.dot(first, b=second),
+        math.dot(first, b=second) == sum(first[at] * second[at] for at in range(1003)),
+    )

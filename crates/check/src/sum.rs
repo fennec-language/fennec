@@ -12,6 +12,11 @@ use crate::types::Type;
 /// A call to `sum`, for checking its items once their type is known.
 pub(crate) struct SumCall {
     item: Type,
+    /// What the items are in: a list of floats is summed by `math.fixed_sum`.
+    items_in: Type,
+    /// Whether it's a sum over `parallel(...)`, which adds its rounds' partials in a fixed tree of
+    /// its own.
+    over_parallel: bool,
     has_start: bool,
     /// The first argument as it's written, if it's short enough to repeat in a message.
     items: String,
@@ -38,7 +43,15 @@ impl FnCx<'_> {
             Some(ExprKind::Name(name)) => name.clone(),
             _ => "...".to_owned(),
         };
-        let call = SumCall { item: item.clone(), has_start: start.is_some(), items: written, span };
+        let over_parallel = args.first().is_some_and(|arg| over_parallel(&arg.value));
+        let call = SumCall {
+            item: item.clone(),
+            items_in: items.clone(),
+            over_parallel,
+            has_start: start.is_some(),
+            items: written,
+            span,
+        };
         if self.checker.settled(&item).is_known() {
             self.check_sum(&call);
         } else {
@@ -62,7 +75,18 @@ impl FnCx<'_> {
 
     fn check_sum(&mut self, call: &SumCall) {
         let item = self.checker.settled(&call.item);
-        if !self.sum_adds(&item, call.span) || call.has_start {
+        if !self.sum_adds(&item, call.span) {
+            return;
+        }
+        // A list of floats adds in `math.fixed_sum`'s order, written in Fennec, as a sum one item
+        // at a time does in every engine.
+        if item == Type::Float
+            && !call.over_parallel
+            && matches!(self.checker.settled(&call.items_in), Type::List(held) if *held == Type::Float)
+        {
+            self.checker.std_calls.insert((call.span.start, call.span.end), "math.fixed_sum".to_owned());
+        }
+        if call.has_start {
             return;
         }
         match item {
@@ -150,5 +174,14 @@ fn no_plus(item: &Type, span: Span) -> Diagnostic {
                 .with_help(format!("add `def +(self, other: {item}) -> {item}` to {written}"))
         }
         _ => Diagnostic::new(format!("`sum` adds with `+`, but {written} has no `+`"), span),
+    }
+}
+
+/// Whether a sum's items come from `parallel(...)`, as such or through a comprehension over it.
+fn over_parallel(items: &fennec_syntax::Expr) -> bool {
+    let called = |expr: &fennec_syntax::Expr| matches!(&expr.kind, ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Name(name) if name == "parallel"));
+    match &items.kind {
+        ExprKind::Comprehension { iter, .. } => called(iter),
+        _ => called(items),
     }
 }

@@ -845,7 +845,7 @@ impl Lowering<'_> {
     }
 
     /// Whether an expression is a call to the built-in `range`.
-    fn is_range(&self, iter: &Expr) -> bool {
+    pub(super) fn is_range(&self, iter: &Expr) -> bool {
         let ExprKind::Call { callee, .. } = &iter.kind else { return false };
         matches!(&callee.kind, ExprKind::Name(name) if name == "range" && self.lookup(name).is_none())
             && !self.context.functions.contains("range")
@@ -854,7 +854,7 @@ impl Lowering<'_> {
 
 /// The first and limit arguments of a call to `range` with a step of 1 or -1, and
 /// whether it counts down.
-fn range_args(iter: &Expr) -> Option<(Vec<&Expr>, bool)> {
+pub(super) fn range_args(iter: &Expr) -> Option<(Vec<&Expr>, bool)> {
     let ExprKind::Call { args, .. } = &iter.kind else { return None };
     if args.iter().any(|arg| arg.name.is_some() || arg.is_mut) {
         return None;

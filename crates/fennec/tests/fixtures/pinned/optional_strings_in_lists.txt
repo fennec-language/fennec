@@ -1,0 +1,8 @@
+source 97cbeb46f8b6f6f603ef7b6e98b0894e9f0a4024690269cd71fce62f0d2f8ad7
+code 0
+stdout 139
+["short", None, "a string long enough that it has a block of its own"] 3
+short
+missing
+a string long enough that it has a block of its own
+stderr 0

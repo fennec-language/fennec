@@ -1,0 +1,12 @@
+source 2ef3bcb29e85d8716385250d708cebf14eec37ad9e70916ba61f91798d9d171e
+code 1
+stdout 2
+1
+stderr 198
+error: this assertion failed
+  --> <dir>/assert_21.fen:31:12
+   |
+31 |     assert "z" in {"a": 1}
+   |            ^^^^^^^^^^^^^^^
+   |
+   = help: the left side is "z" and the right side is {"a": 1}

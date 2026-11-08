@@ -1,0 +1,12 @@
+source 82045620465bb9763c32471612fdde8ac528fc76bae52251e3bbfee139836742
+code 1
+stdout 8
+5 6 Ash
+stderr 320
+error: this breaks the `where` rule on `Player.level`
+ --> <dir>/copy_with_fields.fen:9:18
+  |
+9 |     stdout.print(copy(player, name="Kit", level=player.level - 5).level)
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: `where` rules are checked on every write: check the value first

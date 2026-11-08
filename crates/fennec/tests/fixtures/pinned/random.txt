@@ -1,0 +1,12 @@
+source dc55d8b23d28134f56178abf132f4f610e2d83dc25df2783512253869be194ac
+code 1
+stdout 52
+3439 -2 1001
+0.923834 2.882669
+-1432680812548839056
+stderr 195
+error: can't pick a number from 3 to 1: `low` is bigger than `high`
+  --> <dir>/random.fen:12:18
+   |
+12 |     stdout.print(dice.randint(3, high=1))
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^

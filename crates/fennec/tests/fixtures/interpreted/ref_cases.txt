@@ -1,0 +1,8 @@
+source 571077bffe7ef78fee953f701d5b313fc130dccf108eea518ee65d82fabbf58a
+code 0
+stdout 135
+0 6 0 0
+Kind.Button(clicks=6, label="ok") Kind.Slider(value=3.0) Kind.Empty
+fine TooMany(clicks=21)
+Kind.Button(clicks=21, label="go")
+stderr 0

@@ -362,6 +362,8 @@ jobs:
         run: .github/scripts/test-landing.sh
       - name: Opening a pull request, on a throwaway repository
         run: .github/scripts/test-open-pr.sh
+      - name: Sweeping old build files, on worktrees made for it
+        run: .github/scripts/test-sweep-builds.sh
       # The installer runs as `sh` on machines Fennec has never seen, so it keeps to POSIX sh.
       - name: shellcheck the installer
         run: shellcheck --shell=sh site/public/install.sh

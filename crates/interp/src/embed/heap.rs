@@ -1001,8 +1001,11 @@ pub(super) fn child_places(state: &State, block: &[u64], found: &mut Vec<usize>)
     }
     let Some(element) = shape_of(state, block) else { return Ok(()) };
     // A generator's block is in the middle of running, so it can't be copied. A closure's can: its
-    // code is the same for every thread, and what it captured copies as any field does.
-    let hidden = |fields: &[(Rc<str>, Element)]| fields.iter().any(|(name, _)| name.starts_with('\0'));
+    // code is the same for every thread, and what it captured copies as any field does. An
+    // error's notes are an ordinary field too.
+    let hidden = |fields: &[(Rc<str>, Element)]| {
+        fields.iter().any(|(name, _)| name.starts_with('\0') && &**name != "\0notes")
+    };
     let closure = |fields: &[(Rc<str>, Element)]| fields.first().is_some_and(|(name, _)| &**name == "\0code");
     if matches!(element.as_ref(), Element::Struct { fields, .. } if hidden(fields) && !closure(fields)) {
         return Err(not_copied());

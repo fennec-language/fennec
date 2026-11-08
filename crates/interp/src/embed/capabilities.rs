@@ -212,12 +212,23 @@ pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, en
     });
     let Some((receiver, name, given)) = called else { return 0 };
     // The method runs with nothing borrowed, so a task waiting in it, on the network, can park.
-    let result = match &receiver {
+    let live = || match &receiver {
         Value::Capability(capability) => native_method(*capability, &name, &given, at),
         Value::Limited(limited) => narrowed(limited, &name, &given, &mut |capability, method, args| {
             native_method(capability, method, args, at)
         }),
         other => Err(crate::methods::no_method(other, &name, at)),
+    };
+    // What a capability gives is an outside input, recorded and replayed (see `crate::replay`):
+    // all but `only`, which narrows what it's given.
+    let result = match &receiver {
+        Value::Capability(capability) if name != "only" => {
+            crate::replay::value(format_args!("{capability:?}.{name}"), at, live)
+        }
+        Value::Limited(limited) if name != "only" => {
+            crate::replay::value(format_args!("{:?}.{name}", limited.capability), at, live)
+        }
+        _ => live(),
     };
     attempt(|state: &mut State| result.map(|value| state.push(value)))
 }
@@ -267,7 +278,9 @@ pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end
     // A `File` is a handle in the same table in a test as anywhere, its fake files with the rest,
     // so it never goes to the fake network.
     if let Some(method) = name.strip_prefix("File.") {
-        let done = crate::stdlib::fs::real_file(handle, method, &given, at);
+        let done = crate::replay::value(format_args!("{name}"), at, || {
+            crate::stdlib::fs::real_file(handle, method, &given, at)
+        });
         return attempt(|state: &mut State| done.map(|value| state.push(value)));
     }
     // A test's network is a fake the interpreter holds, which never waits, so it runs here with
@@ -281,14 +294,23 @@ pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end
         });
     }
     super::write_kept_output();
-    let done = crate::stdlib::net::timed(&name, &given, at).and_then(|(method, args, timeout)| match method
-        .split_once('.')
-    {
-        Some(("Server", method)) => crate::stdlib::net::real_server(handle, method, args, timeout, at),
-        Some(("UdpSocket", method)) => crate::stdlib::net::real_udp(handle, method, args, timeout, at),
-        Some((_, method)) => super::serve::served_call(handle, method, args, timeout, at)
-            .unwrap_or_else(|| crate::stdlib::net::real_connection(handle, method, args, timeout, at)),
-        None => Err(Diagnostic::new("the native code lost a method's name", at)),
+    // Whether a wait timed out is in what it gave, so a replay doesn't time it again.
+    let done = crate::replay::value(format_args!("{name}"), at, || {
+        crate::stdlib::net::timed(&name, &given, at).and_then(|(method, args, timeout)| {
+            match method.split_once('.') {
+                Some(("Server", method)) => {
+                    crate::stdlib::net::real_server(handle, method, args, timeout, at)
+                }
+                Some(("UdpSocket", method)) => {
+                    crate::stdlib::net::real_udp(handle, method, args, timeout, at)
+                }
+                Some((_, method)) => super::serve::served_call(handle, method, args, timeout, at)
+                    .unwrap_or_else(|| {
+                        crate::stdlib::net::real_connection(handle, method, args, timeout, at)
+                    }),
+                None => Err(Diagnostic::new("the native code lost a method's name", at)),
+            }
+        })
     });
     attempt(|state: &mut State| done.map(|value| state.push(value)))
 }
@@ -358,12 +380,21 @@ pub extern "C" fn use_tls() {
 
 /// `clock.now()`, as the nanoseconds of an `Instant`.
 pub extern "C" fn clock_now() -> i64 {
-    crate::collections::monotonic_nanos()
+    recorded_word("Clock.now", crate::collections::monotonic_nanos)
+}
+
+/// A word an outside call gives, recorded and replayed (see `crate::replay`). A replay that's
+/// diverged from its recording fails, at once.
+fn recorded_word(call: &str, live: impl FnOnce() -> i64) -> i64 {
+    crate::replay::word(call, live).unwrap_or_else(|why| {
+        super::fail_with(Diagnostic::new(why, Span::default()));
+        0
+    })
 }
 
 /// `clock.time()`, as the nanoseconds of a `Time`.
 pub extern "C" fn clock_time() -> i64 {
-    crate::collections::wall_nanos()
+    recorded_word("Clock.time", crate::collections::wall_nanos)
 }
 
 /// `clock.sleep(duration)`, by the nanoseconds of a `Duration`. What's been printed comes out

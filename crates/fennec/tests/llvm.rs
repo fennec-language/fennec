@@ -7555,7 +7555,7 @@ fn a_channel_of_no_size_fails_where_its_made() -> std::io::Result<()> {
     let program = dir.join("none.fen");
     std::fs::write(
         &program,
-        "from std.concurrent import Channel\n\ndef main(stdout: Stdout):\n    with Channel[int].open(size=0) as ch:\n        stdout.print(\"made\")\n",
+        "from std.concurrent import channel\n\ndef main(stdout: Stdout):\n    with channel[int](size=0) as ch:\n        stdout.print(\"made\")\n",
     )?;
     let executable = dir.join("none");
     let built =
@@ -7594,21 +7594,21 @@ def numbers(stdout: Stdout) fails Closed | Timeout:
         stdout.print(ch.receive()?, ch.receive()?)
 
 def signs(stdout: Stdout) fails Closed | Timeout:
-    with Channel[int].open(size=2) as ints:
+    with channel[int](size=2) as ints:
         ints.send(-7)?
         stdout.print(ints.receive()?)
-    with Channel[float].open(size=2) as floats:
+    with channel[float](size=2) as floats:
         floats.send(-1.5)?
         stdout.print(floats.receive()?)
-    with Channel[u64].open(size=2) as big:
+    with channel[u64](size=2) as big:
         half: u64 = 9223372036854775807
         big.send(half + half + 1)?
         stdout.print(big.receive()?)
-    with Channel[f32].open(size=2) as small:
+    with channel[f32](size=2) as small:
         tenth: f32 = -0.1
         small.send(tenth)?
         stdout.print(small.receive()?)
-    with Channel[int].open(size=1) as waits:
+    with channel[int](size=1) as waits:
         match waits.receive(timeout=Duration(nanos=-5)):
             case Ok(n):
                 stdout.print(\"got\", n)

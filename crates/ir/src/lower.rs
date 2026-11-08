@@ -398,6 +398,12 @@ struct Lowering<'a> {
     written_types: Vec<Type>,
     /// Set while lowering a `list.pop()` whose list is known not to be empty.
     popping: bool,
+    /// What the `with` blocks being lowered run when a failure leaves from inside what they
+    /// call, innermost last.
+    on_failure: Vec<failure::OnFailure>,
+    /// How many `parallel` loops being lowered as ordinary loops hold this statement. A failure
+    /// in one hasn't had its block's cleanup written in.
+    plain_rounds: usize,
     /// Types that stand in for what the typed tree says, innermost last: a union's receiver,
     /// read as one member while that member's method is called.
     retyped: Vec<(Span, Type)>,
@@ -434,6 +440,8 @@ impl<'a> Lowering<'a> {
             bound: HashMap::new(),
             written_types: Vec::new(),
             popping: false,
+            on_failure: Vec::new(),
+            plain_rounds: 0,
             retyped: Vec::new(),
         }
     }
@@ -649,8 +657,20 @@ impl<'a> Lowering<'a> {
                     .or_else(|| self.parallel_serve(names, iter, body, stmt.span));
                 match lifted {
                     Some(outlined) => outlined?,
-                    None => self.for_stmt((names, *is_mut), iter, body, stmt.span)?,
+                    None => {
+                        let rounds = usize::from(parallel::parallel_items(iter).is_some());
+                        self.plain_rounds += rounds;
+                        let lowered = self.for_stmt((names, *is_mut), iter, body, stmt.span);
+                        self.plain_rounds -= rounds;
+                        lowered?;
+                    }
                 }
+            }
+            StmtKind::OnFailure { name, cleanup, body } => {
+                self.on_failure.push(failure::OnFailure { name: name.clone(), cleanup: cleanup.clone() });
+                let lowered = self.block(body, tail);
+                self.on_failure.pop();
+                lowered?;
             }
             StmtKind::Fail(error) => self.fail(error, stmt.span)?,
             StmtKind::Yield(value) => self.yield_value(value, stmt.span)?,

@@ -155,6 +155,11 @@ fn bound_in<S: std::hash::BuildHasher>(body: &[Stmt], bound: &mut HashSet<String
                 bound.extend(names.iter().map(|held| held.name.clone()));
                 bound_in(body, bound);
             }
+            StmtKind::OnFailure { name, cleanup, body } => {
+                bound.insert(name.clone());
+                bound_in(cleanup, bound);
+                bound_in(body, bound);
+            }
             StmtKind::While { body, .. } => bound_in(body, bound),
             StmtKind::If { branches, otherwise } => {
                 for (_, body) in branches {
@@ -397,6 +402,10 @@ fn stmt(stmt: &mut Stmt, change: &mut dyn FnMut(&mut Expr)) {
         | StmtKind::For { iter: value, body, .. }
         | StmtKind::With { value, body, .. } => {
             expr(value, change);
+            stmts(body, change);
+        }
+        StmtKind::OnFailure { cleanup, body, .. } => {
+            stmts(cleanup, change);
             stmts(body, change);
         }
         StmtKind::Def(def) => function(def, change),

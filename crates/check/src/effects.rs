@@ -57,6 +57,10 @@ fn statement(stmt: &Stmt, effects: &mut Effects) {
             expression(expr, effects);
             block(body, effects);
         }
+        StmtKind::OnFailure { cleanup, body, .. } => {
+            block(cleanup, effects);
+            block(body, effects);
+        }
         StmtKind::Return(None) | StmtKind::Def(_) | StmtKind::Break | StmtKind::Continue | StmtKind::Pass => {
         }
     }

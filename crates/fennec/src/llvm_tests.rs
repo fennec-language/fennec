@@ -152,9 +152,10 @@ fn fails_or_gives_back(body: &[Stmt]) -> bool {
             branches.iter().any(|(_, body)| fails_or_gives_back(body))
                 || otherwise.as_deref().is_some_and(fails_or_gives_back)
         }
-        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
-            fails_or_gives_back(body)
-        }
+        StmtKind::While { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::With { body, .. }
+        | StmtKind::OnFailure { body, .. } => fails_or_gives_back(body),
         _ => false,
     })
 }

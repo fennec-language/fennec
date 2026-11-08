@@ -419,7 +419,10 @@ fn blank_header(stmts: &mut [Stmt], span: Span) {
                 }
                 blank_header(otherwise.as_deref_mut().unwrap_or_default(), span);
             }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+            StmtKind::While { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::With { body, .. }
+            | StmtKind::OnFailure { body, .. } => {
                 blank_header(body, span);
             }
             _ => {}

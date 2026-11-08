@@ -118,7 +118,10 @@ fn declared<'a>(stmts: &'a [Stmt], found: &mut Vec<(&'a str, &'a Expr)>) {
                 }
                 declared(otherwise.as_deref().unwrap_or_default(), found);
             }
-            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+            StmtKind::While { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::With { body, .. }
+            | StmtKind::OnFailure { body, .. } => {
                 declared(body, found);
             }
             StmtKind::Expr(Expr { kind: ExprKind::Match { arms, .. }, .. }) => {
@@ -213,6 +216,10 @@ fn reads_in(stmts: &[Stmt], live: &mut Live) {
             | StmtKind::For { iter: value, body, .. }
             | StmtKind::With { value, body, .. } => {
                 reads(value, live);
+                reads_in(body, live);
+            }
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                reads_in(cleanup, live);
                 reads_in(body, live);
             }
             StmtKind::Def(def) => reads_in(&def.body, live),
@@ -426,6 +433,11 @@ impl<'a> Lost<'a> {
             StmtKind::For { names, iter, body, .. } => {
                 let mut before = self.looped(body, &Live::new(), names, &live);
                 reads(iter, &mut before);
+                before
+            }
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                let mut before = self.block(body, live);
+                reads_in(cleanup, &mut before);
                 before
             }
             StmtKind::With { value, body, .. } => {

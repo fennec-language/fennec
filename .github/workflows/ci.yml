@@ -642,6 +642,8 @@ jobs:
             if [ -f "${1%.fen}.out" ]; then LC_ALL=C sort "${1%.fen}.out" | sha256sum; else cat "${1%.fen}.sorted.sha256"; fi
           }
           for program in crates/fennec/tests/fixtures/workers/*.fen examples/parallel_loops.fen examples/parallel_put_back.fen; do
+            # A fixture with no pinned output is driven by its own test, which connects to it or stops it.
+            case "$program" in crates/*) [ -f "${program%.fen}.out" ] || [ -f "${program%.fen}.sorted.sha256" ] || continue ;; esac
             wanted "$program" > wanted.txt
             ./target/release/fennec build "$program" -o checked > /dev/null
             for threads in 1 4 8; do
@@ -792,6 +794,8 @@ jobs:
             if [ -f "${1%.fen}.out" ]; then LC_ALL=C sort "${1%.fen}.out" | sha256sum; else cat "${1%.fen}.sorted.sha256"; fi
           }
           for program in $programs crates/fennec/tests/fixtures/workers/*.fen; do
+            # As above: a fixture with no pinned output is driven by its own test.
+            case "$program" in crates/*) [ -f "${program%.fen}.out" ] || [ -f "${program%.fen}.sorted.sha256" ] || continue ;; esac
             wanted "$program" > wanted.txt
             if ! ./target/release/fennec build "$program" -o checked > /dev/null 2> built.txt; then
               echo "::error::$program didn't build"; cat built.txt; failed=1; continue

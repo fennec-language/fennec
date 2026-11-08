@@ -133,7 +133,9 @@ fn write_whole(path: &str, data: &[u8]) -> std::io::Result<()> {
     }
     let (mut file, temporary) = match new_beside(&target) {
         Ok(made) => made,
-        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return std::fs::write(target, data),
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            return std::fs::write(target, data);
+        }
         Err(err) => return Err(err),
     };
     let done = file.write_all(data).and_then(|()| std::fs::rename(&temporary, &target));
@@ -511,7 +513,10 @@ fn done<T>(result: Result<T, String>, made: impl FnOnce(T) -> Value) -> Value {
 fn name_of(name: std::ffi::OsString, folder: &str) -> std::io::Result<String> {
     name.into_string().map_err(|odd| {
         let shown = odd.to_string_lossy().into_owned();
-        std::io::Error::new(std::io::ErrorKind::InvalidData, format!("a name in `{folder}` isn't UTF-8: {shown}"))
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("a name in `{folder}` isn't UTF-8: {shown}"),
+        )
     })
 }
 

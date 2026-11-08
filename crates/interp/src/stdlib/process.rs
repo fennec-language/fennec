@@ -69,9 +69,8 @@ pub(crate) fn run_of(
         }
         [template] => {
             let mut words = words_of(template).ok_or_else(|| wrong("run", span))?.into_iter();
-            let program = words.next().ok_or_else(|| {
-                Diagnostic::new("this template names no program to run", span)
-            })?;
+            let program =
+                words.next().ok_or_else(|| Diagnostic::new("this template names no program to run", span))?;
             (program, words.collect())
         }
         _ => return Err(wrong("run", span)),

@@ -20,7 +20,8 @@ use crate::value::{Capability, Value};
 
 /// How long connecting waits unless told otherwise.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-const SENT_BEFORE_TLS: &str = "the other side sent more than was read before TLS started, and that can't be trusted";
+const SENT_BEFORE_TLS: &str =
+    "the other side sent more than was read before TLS started, and that can't be trusted";
 const ALREADY_TLS: &str = "this connection already has TLS over it";
 
 /// The hosts a test's fake network has: its own, where its servers are.
@@ -863,12 +864,7 @@ fn start_tls(handle: i64, host: &str, timeout: Duration) -> Result<(), Failure> 
 
 /// Puts TLS over a plain connection, by `shake`. It holds both of the connection's locks throughout,
 /// so nothing else reads or writes in the middle of the handshake.
-fn upgrade(
-    handle: i64,
-    host: &str,
-    timeout: Duration,
-    shake: http::RawTls,
-) -> Result<(), Failure> {
+fn upgrade(handle: i64, host: &str, timeout: Duration, shake: http::RawTls) -> Result<(), Failure> {
     let stream = stream(handle)?;
     let _writing = stream.writing.lock().unwrap_or_else(PoisonError::into_inner);
     let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1368,7 +1364,9 @@ pub(crate) mod tests {
             panic!("it didn't connect")
         };
         let Some((_, Value::Int(second))) = second.first().cloned() else { panic!("no handle") };
-        let Some(other_end) = fake.streams.get(&second).map(|stream| stream.peer) else { panic!("no other end") };
+        let Some(other_end) = fake.streams.get(&second).map(|stream| stream.peer) else {
+            panic!("no other end")
+        };
         assert!(matches!(fake.write(other_end, b"Sinjected"), Ok(())));
         refused(start(&mut fake, second));
     }
@@ -1421,7 +1419,8 @@ pub(crate) mod tests {
 
         use super::super::http::tls::handshake;
         use super::super::{
-            Failure, close, http, keep_stream, read, read_line, real_connection, real_net, real_server, upgrade, write,
+            Failure, close, http, keep_stream, read, read_line, real_connection, real_net, real_server,
+            upgrade, write,
         };
         use crate::value::Value;
 
@@ -1596,7 +1595,9 @@ pub(crate) mod tests {
 
         /// A plain connection and a server that writes `first` when it's accepted one, and says so
         /// on the channel, then does TLS.
-        fn accepted_writing(first: &'static [u8]) -> (i64, std::sync::mpsc::Receiver<()>, std::thread::JoinHandle<Result<String, String>>) {
+        fn accepted_writing(
+            first: &'static [u8],
+        ) -> (i64, std::sync::mpsc::Receiver<()>, std::thread::JoinHandle<Result<String, String>>) {
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let port = listener.local_addr().unwrap().port();
             let (wrote, written) = std::sync::mpsc::channel();
@@ -1646,7 +1647,10 @@ pub(crate) mod tests {
             written.recv().unwrap();
             assert_eq!(read(handle, 1, WAIT).ok().unwrap(), b"S");
             let got = upgrade(handle, "localhost", Duration::from_secs(10), shake_trusting_the_tests);
-            assert!(matches!(&got, Err(Failure::Tls(reason)) if reason.contains("before TLS")), "it was let through");
+            assert!(
+                matches!(&got, Err(Failure::Tls(reason)) if reason.contains("before TLS")),
+                "it was let through"
+            );
             close(handle);
         }
 
@@ -1657,7 +1661,8 @@ pub(crate) mod tests {
             let (handle, written, _server) = accepted_writing(b"S");
             written.recv().unwrap();
             assert_eq!(read(handle, 1, WAIT).ok().unwrap(), b"S");
-            let got = real_connection(handle, "start_tls", &[Value::str("localhost")], WAIT, Span::default()).unwrap();
+            let got = real_connection(handle, "start_tls", &[Value::str("localhost")], WAIT, Span::default())
+                .unwrap();
             let Value::Err(error) = got else { panic!("it trusted a certificate nothing vouches for") };
             assert!(format!("{error:?}").contains("Tls"), "{error:?}");
             close(handle);
@@ -1669,7 +1674,10 @@ pub(crate) mod tests {
             written.recv().unwrap();
             assert!(upgrade(handle, "localhost", Duration::from_secs(10), shake_trusting_the_tests).is_ok());
             let got = upgrade(handle, "localhost", Duration::from_secs(10), shake_trusting_the_tests);
-            assert!(matches!(&got, Err(Failure::Tls(reason)) if reason.contains("already")), "it did it twice");
+            assert!(
+                matches!(&got, Err(Failure::Tls(reason)) if reason.contains("already")),
+                "it did it twice"
+            );
             close(handle);
         }
 

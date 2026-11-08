@@ -491,8 +491,8 @@ fn overlapping_arguments(callee: &Expr, args: &[Arg], problems: &mut Vec<Diagnos
             let (first, second) = (written(other, *is_mut), written(&arg.value, arg.is_mut));
             let message = format!("{first} and {second} overlap");
             let items = arg.is_mut && *is_mut && first != second && given.steps.contains(&None);
-            let help = if items { ITEMS_FIX } else { OVERLAP_FIX };
-            problems.push(Diagnostic::new(message, arg.value.span).with_help(help));
+            let fix = if items { ITEMS_FIX } else { OVERLAP_FIX };
+            problems.push(Diagnostic::new(message, arg.value.span).with_help(fix));
         } else if let Some((_, called_on)) = held {
             let (first, second) = (written(&arg.value, true), written(called_on, false));
             let message = format!("{first} overlaps {second}, which this method is called on");

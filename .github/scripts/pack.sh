@@ -26,7 +26,8 @@ case "$(uname -s)" in
     echo "$folder.tar.gz"
     ;;
   *)
-    7z a -tzip "$folder.zip" "$folder" > /dev/null
+    # Only each file's modified time, which is dated above: not when it was made or last read.
+    7z a -tzip -mtc=off -mta=off "$folder.zip" "$folder" > /dev/null
     echo "$folder.zip"
     ;;
 esac

@@ -162,6 +162,34 @@ fn the_proof_program_checks_passes_its_tests_and_runs() {
     }
 }
 
+/// When a `with` block fails and its source's `else:` cleanup fails too, the cleanup's failure
+/// rides along as a note on the block's, which is the one that passes up, and `main` prints it
+/// under its failure. The cleanup runs once, where a whole line that's a `?` fails the block.
+/// Through the interpreter for now, since native code for notes is the LLVM lane's.
+#[test]
+fn a_failing_cleanup_is_a_note_on_the_blocks_failure() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-cleanup-notes", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("notes.fen");
+    std::fs::write(
+        &program,
+        "error DbError:\n    why: str\n\nstruct Log:\n    lines = list[str]()\n\n\
+         def transaction(ref log: Log) -> with int fails DbError:\n    lend 1 else:\n        \
+         log.lines.append(\"rolled back\")\n        fail DbError(why=\"lost the connection\")\n    pass\n\n\
+         def insert(n: int) fails DbError:\n    if n > 1: fail DbError(why=\"duplicate row\")\n\n\
+         def main(stdout: Stdout) fails DbError:\n    mut log = Log()\n    \
+         with transaction(ref log)? as tx:\n        insert(tx + 4)?\n    stdout.print(log.lines)\n",
+    )
+    .unwrap();
+    let path = program.to_string_lossy().into_owned();
+    let ran = fennec(&["run", "--interp", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let printed = text(&ran.stderr);
+    assert!(!ran.status.success());
+    assert!(printed.contains("`main` failed: DbError(why=\"duplicate row\")"), "{printed}");
+    assert_eq!(printed.matches("note: DbError(why=\"lost the connection\")").count(), 1, "{printed}");
+}
+
 #[test]
 fn run_hands_main_its_arguments_and_input() {
     let program = "examples/args_and_stdin.fen";
@@ -2410,25 +2438,19 @@ fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
     Ok(())
 }
 
-/// A program using a sized number checks as far as its types go, but a run and a build refuse it
-/// before anything's lowered, since nothing past the checker takes sized numbers yet.
+/// A plain run builds a program with an `f32` or a `u64` natively, as it does any other.
 #[test]
-fn a_build_refuses_sized_numbers_until_they_run() -> std::io::Result<()> {
+fn a_run_builds_u64_and_f32_natively() -> std::io::Result<()> {
     let dir = std::env::temp_dir().join(format!("fennec_build_sized_{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let program = dir.join("sized.fen");
-    std::fs::write(&program, "def main(stdout: Stdout):\n    x: u64 = 1\n    stdout.print(x)\n")?;
-    let program = program.to_string_lossy().into_owned();
-    let executable = dir.join("sized").to_string_lossy().into_owned();
-    for command in [vec!["build", &program, "-o", &executable], vec!["run", &program]] {
-        let refused = fennec(&command, "")?;
-        assert!(!refused.status.success(), "{command:?}");
-        let said = text(&refused.stderr);
-        assert!(
-            said.starts_with("error: sized numbers like u64 aren't built yet past the checker"),
-            "{command:?}: {said}"
-        );
-    }
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    x: u64 = 1\n    y: f32 = 0.1\n    stdout.print(x, y + 0.2)\n",
+    )?;
+    let ran = fennec(&["run", &program.to_string_lossy()], "")?;
+    assert!(ran.status.success(), "{}", text(&ran.stderr));
+    assert_eq!(text(&ran.stdout), "1 0.3\n");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

@@ -20,6 +20,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use fennec_syntax::{Diagnostic, Span};
+
 use super::table::Table;
 use super::{State, attempt, guarded, heap, with};
 
@@ -41,6 +43,8 @@ enum Message {
 
 struct Channel {
     size: usize,
+    /// Its name, in a recording or a replay, where what's done to it is logged and replayed in turn.
+    replay: Option<Arc<str>>,
     queue: Mutex<Queue>,
     /// For waits that block their thread.
     changed: Condvar,
@@ -89,7 +93,12 @@ impl Channel {
 /// `fennec_channel_new(size)`: an open channel holding at most `size` messages, at least one.
 pub extern "C" fn channel_new(size: i64) -> i64 {
     let size = usize::try_from(size).unwrap_or(1).max(1);
-    let channel = Channel { size, queue: Mutex::new(Queue::default()), changed: Condvar::new() };
+    let channel = Channel {
+        size,
+        replay: crate::replay::place("c"),
+        queue: Mutex::new(Queue::default()),
+        changed: Condvar::new(),
+    };
     let number = NEXT.fetch_add(1, Ordering::Relaxed);
     channels(|channels| channels.insert(number, Arc::new(channel)));
     number
@@ -106,6 +115,12 @@ fn deadline(timeout_ns: i64) -> Option<Instant> {
 /// when it timed out. A stop cuts the wait short, failing it.
 pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_ns: i64) -> i64 {
     let Some(channel) = find(channel) else { return CLOSED };
+    // In a replay, it waits its turn, and a send that didn't go through doesn't wait again.
+    let timeout_ns = match replayed(&channel, "send") {
+        Turn::Live => timeout_ns,
+        Turn::Goes => -1,
+        Turn::Gives(code) => return code,
+    };
     let address = u64::try_from(value).unwrap_or(0);
     let message = if is_block != 0 && address != 0 {
         let copied = attempt(|state: &mut State| guarded::copied_for_task(state, address).map(Some));
@@ -119,12 +134,14 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
     loop {
         let mut queue = channel.queue();
         if queue.closed {
+            met(&channel, "send", CLOSED);
             drop(queue);
             let_go(message);
             return CLOSED;
         }
         if queue.every.is_some() {
             // It never waits: the oldest message goes, if there's no room.
+            met(&channel, "send", DONE);
             let dropped = every::push(&mut queue, message.take(), channel.size);
             let waiting = std::mem::take(&mut queue.receivers);
             drop(queue);
@@ -134,6 +151,7 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
             return DONE;
         }
         if queue.messages.len() < channel.size {
+            met(&channel, "send", DONE);
             queue.messages.extend(message.take());
             let waiting = std::mem::take(&mut queue.receivers);
             drop(queue);
@@ -144,6 +162,7 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
         match wait(&channel, queue, deadline, Side::Sending) {
             Waited::Again => {}
             Waited::TimedOut => {
+                met(&channel, "send", TIMED_OUT);
                 let_go(message);
                 return TIMED_OUT;
             }
@@ -165,10 +184,16 @@ pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64
         return every::receive(&channel, listener, timeout_ns, value);
     }
     let Some(channel) = find(channel) else { return CLOSED };
+    let timeout_ns = match replayed(&channel, "receive") {
+        Turn::Live => timeout_ns,
+        Turn::Goes => -1,
+        Turn::Gives(code) => return code,
+    };
     let deadline = deadline(timeout_ns);
     loop {
         let mut queue = channel.queue();
         if let Some(message) = queue.messages.pop_front() {
+            met(&channel, "receive", DONE);
             let waiting = std::mem::take(&mut queue.senders);
             drop(queue);
             wake(waiting);
@@ -177,21 +202,58 @@ pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64
             return DONE;
         }
         if queue.closed {
+            met(&channel, "receive", CLOSED);
             return CLOSED;
         }
         match wait(&channel, queue, deadline, Side::Receiving) {
             Waited::Again => {}
-            Waited::TimedOut => return TIMED_OUT,
+            Waited::TimedOut => {
+                met(&channel, "receive", TIMED_OUT);
+                return TIMED_OUT;
+            }
             Waited::Stopped => return DONE,
         }
     }
+}
+
+/// What a replay says to do at a channel.
+enum Turn {
+    /// This isn't a replay: it runs as it would.
+    Live,
+    /// It's this task's turn, and what it does goes through, without waiting.
+    Goes,
+    /// It's this task's turn, and it came to this without going through: closed, or timed out.
+    Gives(i64),
+}
+
+/// Waits, in a replay, for the running task's turn to do `what` at `channel`. A replay that's
+/// diverged fails, as having found the channel closed.
+fn replayed(channel: &Channel, what: &str) -> Turn {
+    match crate::replay::turn(channel.replay.as_deref(), what) {
+        Ok(None) => Turn::Live,
+        Ok(Some(DONE)) => Turn::Goes,
+        Ok(Some(code)) => Turn::Gives(code),
+        Err(why) => {
+            super::fail_with(Diagnostic::new(why, Span::default()));
+            Turn::Gives(CLOSED)
+        }
+    }
+}
+
+/// Logs, in a recording, that the running task did `what` at `channel`, coming to `outcome`.
+fn met(channel: &Channel, what: &str, outcome: i64) {
+    crate::replay::met(channel.replay.as_deref(), what, outcome);
 }
 
 /// `fennec_channel_close(channel)`: no more can be sent. Receivers take what's left, then are told
 /// it's closed. Everything waiting on it wakes.
 pub extern "C" fn channel_close(channel: i64) {
     let Some(channel) = find(channel) else { return };
+    if let Turn::Gives(_) = replayed(&channel, "close") {
+        return;
+    }
     let mut queue = channel.queue();
+    met(&channel, "close", DONE);
     queue.closed = true;
     let mut waiting = std::mem::take(&mut queue.senders);
     waiting.append(&mut queue.receivers);

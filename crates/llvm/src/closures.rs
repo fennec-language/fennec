@@ -25,7 +25,8 @@ const LET_GO: u32 = 24;
 const CAPTURES: u32 = 32;
 
 /// Whether a program keeps a closure anywhere the runtime reads: inside a collection, an
-/// optional, a tuple or another value, in a field, or in a generator's block. A closure only ever
+/// optional, a tuple or another value, in a field, in a generator's block, or as a launched task,
+/// which the runtime copies. A closure only ever
 /// held by a local, given as an argument or returned stays with generated code.
 pub(crate) fn runtime_holds_closures(program: &Program) -> bool {
     let functions = program.functions.iter().chain(&program.constants);
@@ -39,7 +40,14 @@ pub(crate) fn runtime_holds_closures(program: &Program) -> bool {
     if structs.chain(cases).any(|(_, ty)| has_one(ty)) {
         return true;
     }
-    program.generators.iter().any(|def| has_one(&def.item) || def.slots.iter().any(has_one))
+    // A launched task's closure is copied for it by the runtime, by its block's shape.
+    let launches = program.functions.iter().flat_map(|function| &function.blocks).any(|block| {
+        block
+            .insts
+            .iter()
+            .any(|inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if name == "intrinsics.launch"))
+    });
+    launches || program.generators.iter().any(|def| has_one(&def.item) || def.slots.iter().any(has_one))
 }
 
 /// Whether a value of this type holds a closure inside it, rather than being one.

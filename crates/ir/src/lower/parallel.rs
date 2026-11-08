@@ -321,6 +321,55 @@ impl Lowering<'_> {
         self.pass_up_round_failure(ended, span)
     }
 
+    /// `intrinsics.launch(task)`, the task a closure taking nothing: started as a closure that
+    /// calls it and gives back how it ended, as the runtime reads it, `0` normally, or `2` when it
+    /// failed, its failure handed over first.
+    pub(super) fn launch_task(
+        &mut self,
+        dest: Option<LocalId>,
+        values: &[Operand],
+        span: Span,
+    ) -> Lowered<LocalId> {
+        let [Operand::Local(closure)] = values else {
+            return Err("`launch` given something other than a task".to_owned());
+        };
+        let arrow = self.local_type(*closure);
+        let Type::Arrow(params, returns) = &arrow else {
+            return Err("`launch` given something other than a closure".to_owned());
+        };
+        if !params.is_empty() {
+            return Err("`launch` given a task that takes something".to_owned());
+        }
+        let key = format!("{}.launch@{}", self.name, span.start);
+        let instance =
+            FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
+        let mut task = Lowering::new(&instance, self.context, self.body, Type::Int);
+        let held = task.declare("\0launch.task", arrow.clone());
+        task.scopes.push(HashMap::new());
+        let result = (**returns != Type::Unit).then(|| task.temporary((**returns).clone()));
+        let call = InstKind::CallClosure { dest: result, closure: Operand::Local(held), args: Vec::new() };
+        task.emit(call, span);
+        if let (Some(result), Type::Result(_, error)) = (result, &**returns) {
+            task.hand_over_failure(result, error, span)?;
+        }
+        task.leave(Some(Operand::Int(0)), span)?;
+        self.lifted.extend(task.finished(1, Vec::new()));
+        let captures = vec![("\0launch.task".to_owned(), *closure)];
+        let started = self.make_closure(key, &captures, Type::Arrow(Vec::new(), Box::new(Type::Int)), span);
+        let dest = dest.unwrap_or_else(|| self.temporary(Type::Int));
+        let args = vec![Operand::Local(started)];
+        self.emit(
+            InstKind::Builtin {
+                dest: Some(dest),
+                name: "intrinsics.launch".to_owned(),
+                args,
+                changes: false,
+            },
+            span,
+        );
+        Ok(dest)
+    }
+
     /// After serving: a round's failure passes up out of the loop, as a `?` would, when serving
     /// gave back that one failed.
     fn pass_up_round_failure(&mut self, ended: LocalId, span: Span) -> Lowered<()> {

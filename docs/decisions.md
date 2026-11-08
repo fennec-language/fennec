@@ -421,7 +421,7 @@ if result is Err(NotFound):
 This replaces the earlier rules that errors are inferred and `fails` is optional.
 *Why:* A reader sees at a glance how a function can fail and every line where it can leave. Swallowed errors are how reliable-looking programs go wrong.
 
-**An error carries notes, a `list[str]`, as Python's exceptions have since PEP 678.** Every `error Name:` type has `failure.add_note(text)`, which needs a `mut` place, and `failure.notes() -> list[str]`. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure is added to the block's as a note, in its printed form, so neither is lost. A failure that reaches `main` prints each note under it as `note: ...`. Notes are left out of `==`, hashing, printing and saving, and a failure with none costs one empty word. Not built yet: today an error has no `add_note`, and a failing `else:` replaces the block's failure.
+**An error carries notes, a `list[str]`, as Python's exceptions have since PEP 678.** Every `error Name:` type has `failure.add_note(text)`, which needs a `mut` place, and `failure.notes() -> list[str]`. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure is added to the block's as a note, in its printed form, so neither is lost. A failure that reaches `main` prints each note under it as `note: ...`. Notes are left out of `==`, hashing, printing and saving, and a failure with none costs one empty word. Built in the checker and the interpreter: `notes()`, `add_note(text)`, and a failed cleanup's failure as a note. Native code for notes isn't built yet.
 *Why:* When cleanup fails after a failure, the first failure is usually the cause and the second is the clue, so both have to reach the reader. Notes as text need no new kind of type.
 
 **There's no `exit()`.** `fail` out of `main` prints the failure to stderr and exits with code 1, and `main` may return an `int` as the exit code. Nothing else can end the process. Built.
@@ -1303,7 +1303,7 @@ match tok:
 **Fields may be named any word, keywords included; locals and functions can't be keywords.** `type: str`, `user.type` and `User(type="admin")` all work, since a field name is unambiguous where it's declared, after a dot and before `=`. This replaces the rule that field names can't be keywords.
 *Why:* Structs mirror the wire format, and real formats use keys like `type`, `class` and `from`. Locals and functions stay as Python has them, where a name that's sometimes a keyword would be harder to read.
 
-**f-strings have `{x=}` and no `!r`.** `f"{hp=}"` gives `hp=100`. Format specs like `{x:.2f}` stay. Not built yet: `{x=}` doesn't parse.
+**f-strings have `{x=}` and no `!r`.** `f"{hp=}"` gives `hp=100`. Format specs like `{x:.2f}` stay, after the `=` too: `{total=:,}`. As in Python, what's written is shown with its spaces, so `{ hp = }` gives ` hp = 100`. Built.
 *Why:* `{x=}` is what people want when debugging; `!r` has no meaning without Python's `repr`.
 
 ## Standard library

@@ -539,6 +539,7 @@ impl FnCx<'_> {
     fn own_equality(&mut self, left: &Type, right: &Type, op: BinOp, span: Span, at: Span) -> bool {
         let Some(name) = left.method_owner() else { return false };
         let Some((key, _)) = self.checker.program.method(name, "==") else { return false };
+        self.secrets_compared(left, span);
         let returns = self.call_operator(left, &key, right, at);
         if !matches!(returns, Type::Bool | Type::Unknown) {
             let message = format!("`{name}`'s `def ==` gives back {}, so `==` can't use it", a(&returns));

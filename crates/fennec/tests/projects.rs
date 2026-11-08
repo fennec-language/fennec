@@ -137,6 +137,76 @@ fn kit_toml_reports_each_mistake() {
     assert_eq!(messages("fennec = \"0.0.1\"\n"), ["kit.toml needs `name`", "kit.toml needs `version`"]);
 }
 
+/// `[dependencies]` names kits from git, pinned to a commit's whole hash and maybe a folder in the
+/// repository, or from a path.
+#[test]
+fn kit_toml_reads_dependencies_from_git_and_paths() {
+    let commit = "3f9c2a1e7b4d3f9c2a1e7b4d3f9c2a1e7b4d3f9c";
+    let text = format!(
+        "name = \"arena\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n\n[dependencies]\nphysics = {{ git = \"https://git.example.com/studio/physics\", commit = \"{commit}\" }}\npostgres = {{ git = \"https://github.com/fennec-language/fennec\", commit = \"{commit}\", folder = \"kits/postgres\" }}  # first-party\ntools = {{ path = \"../tools\" }}\n"
+    );
+    let manifest = fennec_kit::Manifest::parse(&text).unwrap();
+    let git = |url: &str, folder: Option<&str>| fennec_kit::Source::Git {
+        url: url.to_owned(),
+        commit: commit.to_owned(),
+        folder: folder.map(str::to_owned),
+    };
+    let named = |name: &str, source| fennec_kit::Dependency { name: name.to_owned(), source };
+    assert_eq!(
+        manifest.dependencies,
+        [
+            named("physics", git("https://git.example.com/studio/physics", None)),
+            named("postgres", git("https://github.com/fennec-language/fennec", Some("kits/postgres"))),
+            named("tools", fennec_kit::Source::Path("../tools".to_owned())),
+        ]
+    );
+}
+
+#[test]
+fn kit_toml_says_what_is_wrong_with_a_dependency() {
+    let message = |line: &str| -> String {
+        let text =
+            format!("name = \"arena\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\n{line}\n");
+        let errors = fennec_kit::Manifest::parse(&text).unwrap_err();
+        assert_eq!(errors.len(), 1, "{line}");
+        errors.into_iter().next().map(|error| error.message).unwrap_or_default()
+    };
+    let commit = "3f9c2a1e7b4d3f9c2a1e7b4d3f9c2a1e7b4d3f9c";
+    let url = "https://git.example.com/physics";
+    for pinned in ["main", "v1.2.0", "3f9c2a1", "3F9C2A1E7B4D3F9C2A1E7B4D3F9C2A1E7B4D3F9C"] {
+        assert_eq!(
+            message(&format!("physics = {{ git = \"{url}\", commit = \"{pinned}\" }}")),
+            format!("`{pinned}` isn't a commit's whole hash")
+        );
+    }
+    assert_eq!(
+        message(&format!("physics = {{ git = \"{url}\" }}")),
+        "`physics` needs the `commit` it's pinned to"
+    );
+    for address in ["--upload-pack=touch /tmp/x", "ext::sh -c touch% /tmp/x"] {
+        assert_eq!(
+            message(&format!("physics = {{ git = \"{address}\", commit = \"{commit}\" }}")),
+            format!("`{address}` isn't a git repository's address")
+        );
+    }
+    assert_eq!(
+        message(&format!("physics = {{ git = \"{url}\", commit = \"{commit}\", folder = \"../up\" }}")),
+        "`../up` isn't a folder inside the repository"
+    );
+    assert_eq!(message("tools = { path = \"../tools\", git = \"x\" }"), "`tools` has both `git` and `path`");
+    assert_eq!(message("tools = { place = \"../tools\" }"), "a dependency has no key called `place`");
+    assert_eq!(message("tools = { path = \"../tools\" "), "`tools` should be a table in braces");
+    assert_eq!(
+        message("lasers = \"1.0.0\""),
+        "`lasers` asks for a version from the Den, which isn't built yet"
+    );
+    assert_eq!(message("Tools = { path = \"../tools\" }"), "`Tools` can't name a kit");
+    assert_eq!(
+        message("tools = { path = \"../tools\" }\ntools = { path = \"../other\" }"),
+        "`tools` is listed twice"
+    );
+}
+
 #[test]
 fn kit_toml_errors_point_at_their_line() {
     let text = "name = \"arena\"\n  colour = \"red\"  # indented\n";

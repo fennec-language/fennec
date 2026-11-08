@@ -16,8 +16,10 @@ This page is the store's format, so that the launcher and a shared cache can rea
     <version>-<build>/    one folder per build of Fennec, like 0.0.1-1f0c…: its version and a hash of all its source
       <kind>/<name>       one entry
     cleanup.lock          held while a cleanup runs
+    cleaned               when a command last started a cleanup
   work/                   commands' scratch work, like a build's objects before they're linked
-  daemon/<version>.sock   the build daemon's socket, or one in the temporary folder when this path is too long
+  daemon/<version>-<build>.sock  the build daemon's socket, one per build, named by its build's first 16 hex digits,
+                          or one in the temporary folder when this path is too long
   std/<version>/          the standard library's files, for editors to open
   llvm-tools              where LLVM's tools were last found
   llvm-version            which version of LLVM they are
@@ -61,15 +63,19 @@ Hashes are BLAKE3, written as 64 lowercase hex digits, and an entry about a prog
   an entry or none of it. Reading and writing take no locks.
 - Reading an entry sets its modified time, at most once every ten minutes, and that's how cleanup
   knows what was used least recently. Access times aren't reliable enough on every system.
-- The store has one size cap: 1 GiB, or `FENNEC_CACHE_CAP` in bytes. When it's over, cleanup removes
-  entries until it's at four fifths of the cap, other builds' entries first and then the least
-  recently used, and removes other builds' folders it empties.
-- The build daemon runs cleanup when it starts and every five minutes after, while it's idle. Only
-  cleanup takes a lock, so two never run at once, and one that died leaves a lock that's taken over
-  after ten minutes.
+- The store has one size cap for every build's folder together: 1 GiB, or `FENNEC_CACHE_CAP` in
+  bytes. A cleanup first removes, whole, any other build's folder that nothing has used for a day,
+  under the cap or over it. Then, if the cache is over, it removes entries until it's at four fifths
+  of the cap, the least recently used first whichever build wrote them, since another build may be
+  in use elsewhere, and removes other builds' folders it empties.
+- The build daemon runs cleanup when it starts and every five minutes after, while it's idle. Any
+  command, with the daemon or without it, starts `fennec cache clean` in the background once no
+  cleanup has run for an hour, and doesn't wait for it; `cleaned` marks when. `fennec cache clean`
+  runs one when asked. Only cleanup takes a lock, so two never run at once, and one that died leaves
+  a lock that's taken over after ten minutes.
 - A command's scratch work goes in `work`, in a folder or file of its own named by its process and
   when it started, and the command removes it when it's done. What a command that was stopped leaves
-  there, the daemon removes once it hasn't changed for an hour, when it checks the cache.
+  there, a cleanup removes once it hasn't changed for an hour.
 - Nothing in the store is needed for correctness. An entry that's missing, unreadable or removed by
   cleanup only means the work is done again.
 

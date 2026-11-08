@@ -34,6 +34,22 @@ fennec = "0.0.1"
 - Two files of a kit can't define the same top-level name, so a name means one thing everywhere in the kit.
 - Without `export`, a name is private to its kit. Mark what other kits may use: `export def save(...)`.
 
+### Dependencies
+
+`[dependencies]` names other kits, from git pinned to a commit's whole hash, or from a folder on this machine:
+
+```toml
+[dependencies]
+physics = { git = "https://git.example.com/studio/physics", commit = "3f9c2a1e7b4d3f9c2a1e7b4d3f9c2a1e7b4d3f9c" }
+postgres = { git = "https://github.com/fennec-language/fennec", commit = "...", folder = "kits/postgres" }
+tools = { path = "../tools" }
+```
+
+- `fennec update` fetches each kit from git that isn't fetched yet and pins it in `kit.lock` by the hash of its files. It says what each moved pin changes, file by file. Nothing else changes `kit.lock`, and a `kit.toml` that names another commit than `kit.lock` pins is an error until you run it.
+- Fetching runs nothing: a kit has no install or build scripts, nothing is checked out, and only `kit.toml` and `src` are taken. A fetched kit is kept in `~/.fennec/kits/`, so the network is only needed for one that isn't there yet, and `--offline` refuses to fetch at all.
+- A kit from a path isn't pinned, since it's work in progress. A kit from git can't name a path.
+- Importing from a dependency is the next step, not built yet.
+
 ## `main` and capabilities
 
 A function reaches outside itself only through what's in its signature. So `main` names everything the program may do, and hands each piece to the code that needs it:
@@ -286,7 +302,7 @@ When the block ends, the task's inbox closes, the task sums what it was sent and
 
 ## Hashing
 
-`std.crypto` gives `blake3` and `sha256` as lowercase hex, for text or `bytes`, plus `keyed_blake3`, `hmac_sha256`, `derive_key` and `equal`, which compares secrets in constant time. The same bytes give the same hash on every machine, so a hash names its content, as `name_of` does above. A password or a key goes in a `Secret`, as `Secret.of(text)`: printing it, putting it in an f-string and saving it are compile errors, and `expose_secret()` is the one way to read it, so a search for that name finds every use.
+`std.crypto` gives `blake3` and `sha256` as lowercase hex, for text or `bytes`, plus `keyed_blake3`, `hmac_sha256`, `derive_key` and `equal`, which compares secrets in constant time. The same bytes give the same hash on every machine, so a hash names its content, as `name_of` does above. A password or a key goes in a `Secret`, as `Secret.of(text)`: printing it, putting it in an f-string and saving it are compile errors, and `expose_secret()` is the one way to read it, so a search for that name finds every use. `==` on two secrets compares them in constant time, as `equal` does, so checking a password or a token is just `==`.
 
 `blake3` and `sha256` also take a list or an iterator of text or `bytes`, and hash the chunks in turn, so a large file hashes as it's read, never in memory whole:
 

@@ -2032,6 +2032,72 @@ fn stops(dir: &Path, home: &Path) -> bool {
     })
 }
 
+/// `fennec update` pins a kit from git in kit.lock, and says so; run again, it has nothing to do.
+#[test]
+fn fennec_update_pins_a_kit_from_git() {
+    let dir = scratch("update").unwrap();
+    let repository = dir.join("physics");
+    std::fs::create_dir_all(repository.join("src")).unwrap();
+    std::fs::write(
+        repository.join("kit.toml"),
+        "name = \"physics\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n",
+    )
+    .unwrap();
+    std::fs::write(repository.join("src/lib.fen"), "").unwrap();
+    let git = |args: &[&str]| {
+        let done = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args([
+                "-c",
+                "user.name=Fennec",
+                "-c",
+                "user.email=fennec@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(done.status.success(), "{}", text(&done.stderr));
+        text(&done.stdout).trim().to_owned()
+    };
+    git(&["init", "--quiet"]);
+    git(&["add", "--all"]);
+    git(&["commit", "--quiet", "-m", "physics"]);
+    let commit = git(&["rev-parse", "HEAD"]);
+    let kit = dir.join("game");
+    std::fs::create_dir_all(kit.join("src")).unwrap();
+    std::fs::write(
+        kit.join("kit.toml"),
+        format!(
+            "name = \"game\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\nphysics = {{ git = \"file:///{}\", commit = \"{commit}\" }}\n",
+            repository.display().to_string().replace('\\', "/").trim_start_matches('/')
+        ),
+    )
+    .unwrap();
+    std::fs::write(kit.join("src/main.fen"), "def main():\n    pass\n").unwrap();
+    let update = || {
+        crate::executables::fennec_command()
+            .arg("update")
+            .current_dir(&kit)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_OFFLINE")
+            .output()
+            .unwrap()
+    };
+    let first = update();
+    assert!(first.status.success(), "{}", text(&first.stderr));
+    assert!(
+        text(&first.stdout).starts_with("kit.lock: `physics` pinned to file://"),
+        "{}",
+        text(&first.stdout)
+    );
+    assert!(std::fs::read_to_string(kit.join("kit.lock")).unwrap().contains(&format!(" {commit}\n")));
+    assert_eq!(text(&update().stdout), "kit.lock pins every dependency already\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[cfg(unix)]
 fn small_kit(name: &str) -> std::io::Result<(PathBuf, PathBuf)> {
     let dir = scratch(name)?;
@@ -2100,6 +2166,56 @@ fn the_daemon_keeps_the_cache_under_its_cap() {
     with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
     assert!(cleaned, "the daemon should drop another version's entries once over its cap");
     assert!(stops(&kit, &home));
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
+/// Aged by `seconds`: the file's modified time, which is how the cache knows when it was used.
+fn aged(path: &Path, seconds: u64) -> std::io::Result<()> {
+    let used = std::time::SystemTime::now() - std::time::Duration::from_secs(seconds);
+    std::fs::File::options().write(true).open(path)?.set_modified(used)
+}
+
+/// With no daemon, a command starts a cleanup once none has run for an hour, which removes another
+/// build's folder that's gone unused for a day; `fennec cache clean` runs one when asked.
+#[test]
+fn a_command_cleans_the_cache_hourly_with_no_daemon() {
+    let (kit, home) = small_kit("cache-hourly").unwrap();
+    let old = home.join("cache").join("0.0.1").join("llvm").join("x");
+    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+    std::fs::write(&old, vec![0_u8; 1_000]).unwrap();
+    aged(&old, 2 * 24 * 60 * 60).unwrap();
+    let mark = home.join("cache").join("cleaned");
+    std::fs::write(&mark, "").unwrap();
+    aged(&mark, 2 * 60 * 60).unwrap();
+    let fennec = |args: &[&str]| {
+        crate::executables::fennec_command()
+            .args(args)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", &home)
+            .env("FENNEC_NO_DAEMON", "1")
+            .output()
+            .unwrap()
+    };
+    assert!(fennec(&["dev", "changes"]).status.success());
+    let cleaned = (0..250).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        !old.parent().unwrap().exists()
+    });
+    assert!(cleaned, "a build folder unused for two days should go once a cleanup is due");
+
+    // The background cleanup may still be letting go of its lock, and one asked for meanwhile
+    // would say so.
+    let _ = (0..250).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        !home.join("cache").join("cleanup.lock").exists()
+    });
+    let asked = fennec(&["cache", "clean"]);
+    assert!(asked.status.success());
+    assert!(
+        text(&asked.stdout).starts_with("🦊 cache: removed 0 entries, 0.0 MB; it holds "),
+        "{}",
+        text(&asked.stdout)
+    );
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 

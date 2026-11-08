@@ -12,6 +12,7 @@ mod changes;
 mod copies;
 mod copy_rule;
 mod daemon;
+mod dependencies;
 mod fallbacks;
 mod fix;
 mod fmt;
@@ -25,6 +26,7 @@ mod run;
 mod test;
 mod test_inputs;
 mod trace;
+mod upkeep;
 mod verdict;
 
 /// A path in Fennec's `work` folder for this command's own scratch work, named so that nothing
@@ -56,6 +58,8 @@ const USAGE: &str = "usage:
   fennec test --verbose [path]  list the tests that pass too, not only failures and the summary
   fennec bench [path]       run its `bench` blocks: instructions and times, against the last run
   fennec new <name>         start a kit in a new folder
+  fennec update             pin the kit's dependencies from git to the commits kit.toml names,
+                            fetching the ones not fetched yet, and say what changed
   fennec init               set up this folder: a kit if it's new, and Fennec's guidance in AGENTS.md
   fennec fmt [path...]      format files in place: a kit, a folder or a .fen file
   fennec fmt --check        list the files that aren't formatted, and fail if any aren't
@@ -66,6 +70,7 @@ const USAGE: &str = "usage:
   fennec lsp                the language server, for editors, over standard input and output
   fennec notices <program>  the third-party notices a program built by `fennec build` holds
   fennec daemon <action>    the build daemon: `status` or `stop`; commands start it
+  fennec cache clean        keep the cache under its cap now; commands do it by themselves hourly
   fennec --version          show the version
 
   path is a .fen file, or a kit's folder; it defaults to the current folder";
@@ -98,7 +103,13 @@ fn main() -> ExitCode {
     let Some(args) = arguments() else {
         return ExitCode::FAILURE;
     };
-    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    if !matches!(words.as_slice(), ["cache" | "daemon", ..]) {
+        upkeep::start_if_due();
+    }
+    match words.as_slice() {
+        ["cache", "clean"] => upkeep::clean(false),
+        ["cache", "clean", "--quiet"] => upkeep::clean(true),
         ["run"] => run(run::Engine::Native, ".", &[]),
         ["run", "--no-test"] => run(run::Engine::Untested, ".", &[]),
         ["run", "--no-test", path, arguments @ ..] => run(run::Engine::Untested, path, arguments),
@@ -119,6 +130,7 @@ fn main() -> ExitCode {
         ["bench"] => bench::bench("."),
         ["bench", path] => bench::bench(path),
         ["new", path] => new(path),
+        ["update"] => dependencies::update("."),
         ["init"] => init(),
         ["fmt", rest @ ..] => fmt::fmt(rest),
         ["lint"] => on_big_stack(lint::lint, "."),

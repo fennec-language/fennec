@@ -115,6 +115,17 @@ impl Table {
         self.len
     }
 
+    /// How many blocks it holds of each size, in words, for counting what's live.
+    #[cfg(any(test, feature = "threads"))]
+    pub(super) fn sizes(&self) -> std::collections::BTreeMap<usize, usize> {
+        let mut sizes = std::collections::BTreeMap::new();
+        let placed = self.regions.iter().flat_map(|(_, pages)| pages.iter().flatten());
+        for block in placed.flat_map(|page| page.iter().flatten()).chain(self.short.values()) {
+            *sizes.entry(block.len()).or_default() += 1;
+        }
+        sizes
+    }
+
     fn slot(&self, address: usize) -> Option<&[u64]> {
         let (region, page, place) = split(address);
         pages_of(&self.regions, region)?

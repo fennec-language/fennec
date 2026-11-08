@@ -7580,6 +7580,45 @@ fn a_build_runs_parallel_on_every_core_unless_asked_not_to() -> std::io::Result<
     Ok(())
 }
 
+/// A program that uses `parallel`, built by a `fennec` whose threads runtime is from another
+/// build, fails saying so, rather than linking the plain runtime and running on one thread.
+#[test]
+fn a_stale_threads_runtime_fails_the_build_rather_than_running_on_one_thread() -> std::io::Result<()> {
+    if !ready() || !runtime_built() || !crate::executables::runtime_beside_fennec() {
+        return Ok(());
+    }
+    let dir = folder("threads-stale")?;
+    let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
+    let mine = dir.join("bin");
+    std::fs::create_dir_all(&mine)?;
+    let fennec_here = mine.join(fennec.file_name().unwrap_or_default());
+    if std::fs::hard_link(fennec, &fennec_here).is_err() {
+        std::fs::copy(fennec, &fennec_here)?;
+    }
+    let plain = fennec.with_file_name(crate::executables::runtime_file());
+    std::fs::copy(&plain, mine.join(crate::executables::runtime_file()))?;
+    let stale = ["fennec-runtime-", "build:", &"0".repeat(64)].concat();
+    std::fs::write(mine.join("libfennec_runtime_threads.a"), stale)?;
+    let program = dir.join("squares.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    squares = [x * x for x in parallel([1, 2, 3])]\n    stdout.print(sum(squares))\n",
+    )?;
+    let built = Command::new(&fennec_here)
+        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &dir.join("squares").to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    let said = String::from_utf8_lossy(&built.stderr).into_owned();
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!built.status.success(), "built with a stale threads runtime");
+    assert!(
+        said.contains("libfennec_runtime_threads.a") && said.contains("another build of Fennec"),
+        "{said}"
+    );
+    Ok(())
+}
+
 /// JSON and TOML of types that save themselves go through std's readers and writers in Fennec,
 /// std's collections among them, so a program reading and writing them links with no interpreter
 /// in it.
@@ -11405,6 +11444,41 @@ fn errors_of_several_types_go_up_and_show_as_on_the_interpreter() -> std::io::Re
         "errors_of_several_types",
         include_str!("fixtures/errors_of_several_types.fen"),
     )
+}
+
+/// An error's notes natively: none to start with, each `add_note` changing only that error, not
+/// a copy taken before, `==` and printing passing them over, a union of errors noting the error
+/// it holds, and a failure reaching `main` or `expect` showing them under it. All as on the
+/// interpreter.
+#[test]
+fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("error-notes")?;
+    let path = |file: &Path| file.display().to_string();
+    let expected = "error Missing:\n    path: str\n\ndef load(path: str) -> int fails Missing:\n    mut m = Missing(path=path)\n    m.add_note(\"looked everywhere\")\n    fail m\n\ndef main(stdout: Stdout):\n    stdout.print(load(\"x\").expect(\"x is there\"))\n";
+    for (name, source, note) in [
+        (
+            "notes",
+            include_str!("fixtures/error_notes.fen"),
+            "note: while loading a long one\nnote: second line\n  and a third\n",
+        ),
+        ("expected", expected, "but it failed: Missing(path=\"x\")\nnote: looked everywhere\n"),
+    ] {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+        assert_eq!(outcome(&ran), outcome(&interpreted), "{name}");
+        let said = String::from_utf8_lossy(&ran.stderr);
+        assert!(said.contains(note), "{name}: {said}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }
 
 /// A function that says `fails A | B`, with errors that have cases among them.

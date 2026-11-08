@@ -54,7 +54,7 @@ def area(shape: Shape) -> int:
         case .Square(side): side * side
         case .Empty: 0
 
-def small(n: int) -> int:
+def small(n: int) -> int fails TooBig:
     if n > 1000: fail TooBig(limit=1000)
     n + 1
 

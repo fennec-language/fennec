@@ -9,7 +9,7 @@ from lexer import byte_length, lex
 from ast import Annotation, Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Extension, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp, is_plain_value
 
 ## Parses a whole `.fen` file, where only declarations may sit at the top level.
-def parse(source: str) -> Module:
+def parse(source: str) -> Module fails Diagnostic:
     mut parser = Parser.over(lex(source, 0)?)
     parser.module()?
 
@@ -106,7 +106,7 @@ struct Parser:
         span
 
     ## Fails at the first `pub`, saying how many more there are.
-    def check_old_pub(self):
+    def check_old_pub(self) fails Diagnostic:
         if self.old_pub.len() == 0:
             return
         others = self.old_pub.len() - 1
@@ -135,7 +135,7 @@ struct Parser:
 
     ## Fails at the first `mut` that should be `ref`, saying how many more there are. It comes
     ## before any later mistake, since it's earlier in the file.
-    def check_old_mut(self):
+    def check_old_mut(self) fails Diagnostic:
         if self.old_mut.len() == 0:
             return
         others = self.old_mut.len() - 1
@@ -146,7 +146,7 @@ struct Parser:
             help=f"`mut` is only for a new local name. `fennec fix` writes `ref` here{more}",
         )
 
-    def expect_punct(ref self, text: str) -> Span:
+    def expect_punct(ref self, text: str) -> Span fails Diagnostic:
         if not self.at_punct(text):
             fail self.unexpected(f"`{text}`")
         self.advance().span
@@ -154,7 +154,7 @@ struct Parser:
     def unexpected(self, expected: str) -> Diagnostic:
         Diagnostic(message=f"expected {expected}, found {describe(self.peek())}", span=self.span())
 
-    def name(ref self, what: str) -> str:
+    def name(ref self, what: str) -> str fails Diagnostic:
         match self.peek():
             case .Name(name):
                 _ = self.advance()
@@ -178,7 +178,7 @@ struct Parser:
         )
 
     ## The start of an indented block: a line break, then a deeper indent.
-    def expect_block_start(ref self):
+    def expect_block_start(ref self) fails Diagnostic:
         if not (self.eat(.Newline) and self.eat(.Indent)):
             fail Diagnostic(
                 message="expected an indented block",
@@ -186,14 +186,14 @@ struct Parser:
                 help="indent the body 4 spaces more than the line ending in `:`",
             )
 
-    def end_line(ref self):
+    def end_line(ref self) fails Diagnostic:
         block_ended = self.block_ended
         self.block_ended = False
         if block_ended or self.eat(.Newline) or self.at(.Eof) or self.at(.Dedent):
             return
         fail self.unexpected("the end of the line")
 
-    def module(ref self) -> Module:
+    def module(ref self) -> Module fails Diagnostic:
         mut items = []
         while True:
             while self.eat(.Newline):
@@ -210,7 +210,7 @@ struct Parser:
         self.check_old_pub()?
         Module(items=items)
 
-    def item(ref self) -> Item:
+    def item(ref self) -> Item fails Diagnostic:
         annotations = self.annotations()?
         if annotations.len() > 0:
             _ = self.eat_pub(True)
@@ -249,7 +249,7 @@ struct Parser:
             return is_str(self.peek_at(1))
         False
 
-    def declaration(ref self, word: str) -> Item:
+    def declaration(ref self, word: str) -> Item fails Diagnostic:
         start = self.advance().span
         match word:
             case "struct": .Struct(self.type_def(start, is_enum=False)?)
@@ -278,7 +278,7 @@ struct Parser:
 
     ## An error: fields, like a struct's, or cases, like an enum's, each failing its own way:
     ## `NotFound(path: str)`. A line that's a name and then `(` or nothing is a case.
-    def error_def(ref self, start: Span) -> TypeDef:
+    def error_def(ref self, start: Span) -> TypeDef fails Diagnostic:
         type_def = self.type_body(start, is_enum=False, is_error=True)?
         if type_def.fields.len() > 0 and type_def.cases.len() > 0:
             fail Diagnostic(
@@ -288,11 +288,11 @@ struct Parser:
             )
         type_def
 
-    def type_def(ref self, start: Span, is_enum: bool) -> TypeDef:
+    def type_def(ref self, start: Span, is_enum: bool) -> TypeDef fails Diagnostic:
         self.type_body(start, is_enum=is_enum, is_error=False)?
 
     ## A struct's, enum's or error's name and body. An error's body may have cases.
-    def type_body(ref self, start: Span, is_enum: bool, is_error: bool) -> TypeDef:
+    def type_body(ref self, start: Span, is_enum: bool, is_error: bool) -> TypeDef fails Diagnostic:
         name = self.name("a type name")?
         generics = self.generic_params()?
         span = start.to(self.prev_span())
@@ -322,7 +322,7 @@ struct Parser:
         type_def
 
     ## The annotations above a field or a `def`, each on its own line.
-    def annotations(ref self) -> list[Annotation]:
+    def annotations(ref self) -> list[Annotation] fails Diagnostic:
         mut found = []
         while self.at_punct("@"):
             start = self.advance().span
@@ -337,7 +337,7 @@ struct Parser:
         found
 
     ## A field's name, which may be any word, keywords included.
-    def field_name(ref self, what: str) -> str:
+    def field_name(ref self, what: str) -> str fails Diagnostic:
         match self.peek():
             case .Keyword(word):
                 if not is_reserved(word):
@@ -347,7 +347,7 @@ struct Parser:
         self.name(what)?
 
     ## `name: type`, `name = default`, or both, with a `where` rule when `rules` allows.
-    def field(ref self, rules: bool) -> Field:
+    def field(ref self, rules: bool) -> Field fails Diagnostic:
         start = self.span()
         name = self.field_name("a field name")?
         mut ty = None
@@ -368,7 +368,7 @@ struct Parser:
             )
         Field(name=name, ty=ty, default=default, rule=rule, span=start.to(self.prev_span()))
 
-    def case(ref self) -> Case:
+    def case(ref self) -> Case fails Diagnostic:
         start = self.span()
         name = self.name("an enum case")?
         mut fields = []
@@ -384,7 +384,7 @@ struct Parser:
         self.end_line()?
         Case(name=name, fields=fields, span=span)
 
-    def interface(ref self, start: Span) -> Item:
+    def interface(ref self, start: Span) -> Item fails Diagnostic:
         name = self.name("an interface name")?
         _ = self.expect_punct(":")?
         self.expect_block_start()?
@@ -396,7 +396,7 @@ struct Parser:
         .Interface(Interface(name=name, methods=methods, span=start.to(self.prev_span())))
 
     ## `extend Name:` and its methods. A field is an error: an extension adds methods only.
-    def extension(ref self, start: Span) -> Item:
+    def extension(ref self, start: Span) -> Item fails Diagnostic:
         name = self.name("a type name")?
         generics = self.generic_params()?
         span = start.to(self.prev_span())
@@ -417,7 +417,7 @@ struct Parser:
                 )
         .Extend(Extension(name=name, generics=generics, methods=methods, span=span))
 
-    def test(ref self, start: Span, bench: bool) -> Item:
+    def test(ref self, start: Span, bench: bool) -> Item fails Diagnostic:
         mut name = ""
         match self.advance().tok:
             case .Str(text): name = text
@@ -440,7 +440,7 @@ struct Parser:
         .Test(TestDef(name=name, capabilities=capabilities, inputs=inputs, body=body, bench=bench, span=span))
 
     ## `import a.b`, or `from a.b import x, y`, each maybe renamed with `as`.
-    def import_names(ref self) -> Import:
+    def import_names(ref self) -> Import fails Diagnostic:
         start = self.span()
         is_from = self.eat_keyword("from")
         if not is_from:
@@ -466,13 +466,13 @@ struct Parser:
         Import(module=module, names=names, aliases=aliases, alias=alias, span=span)
 
     ## `as name` after something imported, if it's there.
-    def import_alias(ref self) -> str?:
+    def import_alias(ref self) -> str? fails Diagnostic:
         if self.eat_keyword("as"):
             return self.name("a name to import it as")?
         None
 
     ## `[T, U: Shape & Eq]` after a function or type name.
-    def generic_params(ref self) -> list[Generic]:
+    def generic_params(ref self) -> list[Generic] fails Diagnostic:
         mut generics = []
         if not self.eat_punct("["):
             return generics
@@ -492,7 +492,7 @@ struct Parser:
 
     ## `def name(params) -> ret:` and its body, or the signature alone, which only std's
     ## `@intrinsic` functions may be.
-    def function(ref self) -> FnDef:
+    def function(ref self) -> FnDef fails Diagnostic:
         mut function = self.signature()?
         bodiless = (self.at(.Newline) and self.peek_at(1) != .Indent) or self.at(.Eof) or self.at(.Dedent)
         if bodiless:
@@ -504,7 +504,7 @@ struct Parser:
 
     ## `def name(params) -> ret`, without a body. Operators, indexing and `in` are defined as
     ## `def +`, `def []`, `def []=` and `def in`.
-    def signature(ref self) -> FnDef:
+    def signature(ref self) -> FnDef fails Diagnostic:
         start = self.advance().span
         mut name = ""
         match self.peek():
@@ -564,7 +564,7 @@ struct Parser:
             span=start.to(self.prev_span()),
         )
 
-    def param(ref self) -> Param:
+    def param(ref self) -> Param fails Diagnostic:
         start = self.span()
         is_mut = self.eat_ref("a parameter")
         name = self.name("a parameter name")?
@@ -587,7 +587,7 @@ struct Parser:
         Param(name=name, ty=ty, is_mut=is_mut, is_self=False, default=default, span=start.to(self.prev_span()))
 
     ## A parameter's default: a plain value, known without running anything.
-    def param_default(ref self, name: str, is_mut: bool) -> Expr:
+    def param_default(ref self, name: str, is_mut: bool) -> Expr fails Diagnostic:
         value = self.expr()?
         if is_mut:
             fail Diagnostic(
@@ -610,13 +610,13 @@ struct Parser:
 
     ## `fails LoadError`, or `fails ParseError | RangeError`: the errors after `fails`. Several
     ## are one written type named `|`.
-    def fails_type(ref self) -> TypeExpr:
+    def fails_type(ref self) -> TypeExpr fails Diagnostic:
         _ = self.advance()
         self.type_expr()?
 
     ## A type, or several joined by `|`: a union, like `Circle | Square`, or the errors after
     ## `fails` or in `Result[int, A | B]`. Either is one written type named `|`.
-    def type_expr(ref self) -> TypeExpr:
+    def type_expr(ref self) -> TypeExpr fails Diagnostic:
         first = self.member_type()?
         if not self.at_punct("|"):
             return first
@@ -626,7 +626,7 @@ struct Parser:
         TypeExpr(name="|", args=members, optional=False, span=first.span.to(self.prev_span()))
 
     ## One type with no `|` around it, unless it's in parentheses, as in `(Circle | Square)?`.
-    def member_type(ref self) -> TypeExpr:
+    def member_type(ref self) -> TypeExpr fails Diagnostic:
         start = self.span()
         # `shared Scores`: a value many tasks can reach, each inside a `lock`. A `?` after it
         # makes the shared value optional: `shared Scores?` is `(shared Scores)?`.
@@ -724,7 +724,7 @@ def describe(tok: Tok) -> str:
         case .Eof: "the end of the file"
 
 ## A statement at the top level of a file, which has to be a constant: `NAME = value`.
-def constant(stmt: Stmt) -> Item:
+def constant(stmt: Stmt) -> Item fails Diagnostic:
     match stmt.kind:
         case .Assign(target, op, value, declare_mut, ty):
             if declare_mut:
@@ -746,7 +746,7 @@ def constant(stmt: Stmt) -> Item:
 
 ## A field with no default after one with a default. Fields, like parameters, put the ones with
 ## defaults last, so a value given by position never lands in a defaulted one.
-def default_comes_last(earlier: list[Field], field: Field):
+def default_comes_last(earlier: list[Field], field: Field) fails Diagnostic:
     if field.default is None and any(other.default is not None for other in earlier):
         fail no_default_after_defaults(field.name, field.span)
 

@@ -760,6 +760,8 @@ struct TomlReader:
     _in_key = False
     _ids = IdsSeen()
     _tags = dict[str, int]()
+    ## The items of each tuple being read, inside one another, and how many have been read.
+    _tuples = list[(list[TomlValue], int)]()
 
     def _where(self) -> str:
         if self._path.len() == 0: return "the text"
@@ -994,6 +996,26 @@ struct TomlReader:
     def end_map(ref self):
         pass
 
+    def items(ref self, name: str, count: int) fails ParseError:
+        match self._here:
+            case .List(items) if items.len() == count:
+                self._tuples.append((items, 0))
+            case _:
+                fail self._misfit(name)
+
+    def item[T: Deserializable](ref self) -> T fails ParseError:
+        top = self._tuples.pop() else fail self._misfit("a tuple")
+        items, read = top
+        self._here = items[read]
+        self._tuples.append((items, read + 1))
+        self._path.append(f"[{read}]")
+        found = T.deserialize(ref self)?
+        _ = self._path.pop()
+        found
+
+    def end_items(ref self) fails ParseError:
+        _ = self._tuples.pop()
+
     def at_item(self, at: int, message: str) -> ParseError:
         ParseError(message=f"`{self._dotted()}[{at}]` {message}", line=0, column=0)
 
@@ -1094,6 +1116,8 @@ struct TomlWriter:
     _found = False
     _wants_tables = False
     _optional = False
+    ## The items of each tuple being written, innermost last.
+    _tuples = list[list[TomlValue]]()
 
     def int(ref self, value: int):
         self._done = .Int(n=value)
@@ -1144,6 +1168,20 @@ struct TomlWriter:
 
     def renamed[T: Serializable](ref self, name: str, x: T):
         self.field(name, x)
+
+    def items(ref self, name: str, count: int):
+        self._optional = False
+        self._tuples.append(list[TomlValue]())
+
+    def item[T: Serializable](ref self, x: T):
+        x.serialize(ref self)
+        mut items = self._tuples.pop() else list[TomlValue]()
+        items.append(self._done)
+        self._tuples.append(items)
+
+    def end_items(ref self):
+        items = self._tuples.pop() else list[TomlValue]()
+        self._done = .List(items=items)
 
     def end(ref self):
         if self._after_case:

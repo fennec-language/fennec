@@ -33,6 +33,13 @@ export interface Serializer:
 
     ## Closes the struct or case started last.
     def end(ref self)
+    ## Starts an array of `count` items, each of a type of its own, as a tuple is saved: each
+    ## follows through `item`, and `end_items` closes it. `name` is the tuple's type, as written.
+    def items(ref self, name: str, count: int)
+    ## The next item of the array `items` started.
+    def item[T: Serializable](ref self, x: T)
+    ## Closes the array `items` started last.
+    def end_items(ref self)
 
     ## An enum's case with no data, by name, and by where it is among the type's cases, `at`, for
     ## a format that saves no names.
@@ -145,6 +152,12 @@ export interface Deserializer:
     ## and value is then read with `value`, and `end_map` finishes it.
     def map_count(ref self) -> int fails ParseError
     def end_map(ref self)
+    ## Starts reading an array of exactly `count` items, as a tuple is saved: each is read with
+    ## `item`, and `end_items` finishes it. `name` is the tuple's type, as written, for a failure.
+    def items(ref self, name: str, count: int) fails ParseError
+    ## The next item of the array `items` started.
+    def item[T: Deserializable](ref self) -> T fails ParseError
+    def end_items(ref self) fails ParseError
 
     ## Which of `cases` comes next, as a place in it: each its name and whether it has data. One
     ## with data then reads its fields as a struct's, and `end_case` finishes it.

@@ -3,11 +3,11 @@
 # real ones instead.
 from std.time import Duration
 
-def save_score(fs: Fs, score: int):
+def save_score(fs: Fs, score: int) fails IoError:
     fs.make_dir("saves/today")?
     fs.write_text("saves/today/score.txt", f"{score}")?
 
-def report(stdout: Stdout, fs: Fs):
+def report(stdout: Stdout, fs: Fs) fails IoError:
     stdout.print("saved:", fs.read_text("saves/today/score.txt")?)
     stdout.write("done")
 

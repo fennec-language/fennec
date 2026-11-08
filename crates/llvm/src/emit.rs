@@ -2288,7 +2288,8 @@ impl Emit<'_, '_, '_> {
                         temp
                     }
                     (UnaryOp::Neg, Kind::Int) => self.checked("ssub", "0", &value, span),
-                    (UnaryOp::Neg, Kind::Float) => {
+                    // Negating an `f32` gives an `f32` exactly.
+                    (UnaryOp::Neg, Kind::Float | Kind::F32) => {
                         let temp = self.temp();
                         self.line(&format!("{temp} = fneg double {value}"));
                         temp
@@ -2306,11 +2307,6 @@ impl Emit<'_, '_, '_> {
                     (UnaryOp::BitNot, Kind::Int | Kind::U64) => {
                         let temp = self.temp();
                         self.line(&format!("{temp} = xor i64 {value}, -1"));
-                        temp
-                    }
-                    (UnaryOp::Neg, Kind::F32) => {
-                        let temp = self.temp();
-                        self.line(&format!("{temp} = fneg double {value}"));
                         temp
                     }
                     (UnaryOp::Not, Kind::Bool) => {

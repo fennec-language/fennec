@@ -308,9 +308,10 @@ impl Context<'_> {
     /// Whether the IR holds values of this type yet.
     fn holds(&self, ty: &Type) -> bool {
         match ty {
-            Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::None => true,
-            // Each held in a word, as an `int` or a `float` is.
-            Type::Sized(_) => true,
+            // A sized number is held in a word, as an `int` or a `float` is.
+            Type::Int | Type::Float | Type::Sized(_) | Type::Bool | Type::Str | Type::Bytes | Type::None => {
+                true
+            }
             Type::List(item)
             | Type::Buffer(item)
             | Type::Iterator(item)

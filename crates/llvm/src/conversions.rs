@@ -301,7 +301,7 @@ impl Emit<'_, '_, '_> {
             Kind::Int => "sitofp i64",
             Kind::U64 => "uitofp i64",
             _ => {
-                let nearest = self.to_f32(&number);
+                let nearest = self.rounded_to_f32(&number);
                 return self.assign(dest, &nearest);
             }
         };

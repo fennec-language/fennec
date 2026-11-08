@@ -110,17 +110,17 @@ impl Emit<'_, '_, '_> {
         rhs: &Operand,
         span: Span,
     ) -> Result<String, String> {
-        let (a, b) = (self.to_f32(a), self.to_f32(b));
+        let (a, b) = (self.rounded_to_f32(a), self.rounded_to_f32(b));
         let value = self.float_binary(op, (&a, &b), rhs, span)?;
         Ok(if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) {
             value
         } else {
-            self.to_f32(&value)
+            self.rounded_to_f32(&value)
         })
     }
 
     /// A float as the nearest `f32`, held as the `f64` it is.
-    pub(crate) fn to_f32(&mut self, value: &str) -> String {
+    pub(crate) fn rounded_to_f32(&mut self, value: &str) -> String {
         let (narrow, wide) = (self.temp(), self.temp());
         self.line(&format!("{narrow} = fptrunc double {value} to float"));
         self.line(&format!("{wide} = fpext float {narrow} to double"));

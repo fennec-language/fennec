@@ -55,10 +55,34 @@ impl Emit<'_, '_, '_> {
         let (value, kind) = self.operand(error)?;
         // A boxed one's block is what's held, so it's held somewhere to be read through.
         let place = if matches!(kind, Kind::Boxed(_)) { self.temp_slot(&value) } else { value };
-        let Some(at) = self.notes_in(&place, &kind, false)? else { return Ok(None) };
+        self.notes_word_at(&place, &kind)
+    }
+
+    /// The notes word of the error held at `place`, as [`Self::notes_in`] finds it.
+    pub(crate) fn notes_word_at(&mut self, place: &str, kind: &Kind) -> Result<Option<String>, String> {
+        let Some(at) = self.notes_in(place, kind, false)? else { return Ok(None) };
         let word = self.temp();
         self.line(&format!("{word} = load i64, ptr {at}"));
         Ok(Some(word))
+    }
+
+    /// `text` with the notes under it of the error held at `place`, when it's an error: a new
+    /// string, `text` let go of.
+    pub(crate) fn with_notes_under(
+        &mut self,
+        text: &str,
+        place: &str,
+        kind: &Kind,
+    ) -> Result<String, String> {
+        let Some(word) = self.notes_word_at(place, kind)? else { return Ok(text.to_owned()) };
+        self.declare("declare ptr @fennec_notes_shown(i64) nounwind");
+        self.declare("declare ptr @fennec_str_concat(ptr, ptr) nounwind");
+        let (notes, joined) = (self.temp(), self.temp());
+        self.line(&format!("{notes} = call ptr @fennec_notes_shown(i64 {word})"));
+        self.line(&format!("{joined} = call ptr @fennec_str_concat(ptr {text}, ptr {notes})"));
+        self.release(text);
+        self.release(&notes);
+        Ok(joined)
     }
 
     /// Where the notes word is of the error held at `place`: the value itself when it's in place,

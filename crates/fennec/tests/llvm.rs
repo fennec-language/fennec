@@ -11364,6 +11364,41 @@ fn errors_of_several_types_go_up_and_show_as_on_the_interpreter() -> std::io::Re
     )
 }
 
+/// An error's notes natively: none to start with, each `add_note` changing only that error, not
+/// a copy taken before, `==` and printing passing them over, a union of errors noting the error
+/// it holds, and a failure reaching `main` or `expect` showing them under it. All as on the
+/// interpreter.
+#[test]
+fn notes_go_with_errors_as_on_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("error-notes")?;
+    let path = |file: &Path| file.display().to_string();
+    let expected = "error Missing:\n    path: str\n\ndef load(path: str) -> int fails Missing:\n    mut m = Missing(path=path)\n    m.add_note(\"looked everywhere\")\n    fail m\n\ndef main(stdout: Stdout):\n    stdout.print(load(\"x\").expect(\"x is there\"))\n";
+    for (name, source, note) in [
+        (
+            "notes",
+            include_str!("fixtures/error_notes.fen"),
+            "note: while loading a long one\nnote: second line\n  and a third\n",
+        ),
+        ("expected", expected, "but it failed: Missing(path=\"x\")\nnote: looked everywhere\n"),
+    ] {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+        assert_eq!(outcome(&ran), outcome(&interpreted), "{name}");
+        let said = String::from_utf8_lossy(&ran.stderr);
+        assert!(said.contains(note), "{name}: {said}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A function that says `fails A | B`, with errors that have cases among them.
 #[test]
 fn failing_several_ways_matches_the_interpreter() -> std::io::Result<()> {

@@ -189,12 +189,12 @@ impl Lowering<'_> {
     pub(super) fn else_effect(&mut self, value: &Expr, default: &Expr, span: Span) -> Lowered<()> {
         let value = self.expr(value)?;
         let failed = self.temporary(Type::Bool);
-        self.emit(InstKind::IsErr { dest: failed, value }, span);
+        self.emit(InstKind::IsErr { dest: failed, value: value.clone() }, span);
         let (fallback, join) = (self.new_block(), self.new_block());
         self.finish(Terminator::Branch { cond: Operand::Local(failed), then: fallback, otherwise: join });
         self.current = fallback;
         if default.leaves() {
-            self.tail_expr(default, Tail::Drop)?;
+            self.else_leaves(default, &value, span)?;
         } else {
             self.effect(default)?;
         }
@@ -203,6 +203,22 @@ impl Lowering<'_> {
         }
         self.current = join;
         Ok(())
+    }
+
+    /// The block of an `else` that leaves, which `else as failure:` runs with what failed.
+    fn else_leaves(&mut self, default: &Expr, value: &Operand, span: Span) -> Lowered<()> {
+        let Some((failure, block)) = default.failure_named() else {
+            return self.tail_expr(default, Tail::Drop);
+        };
+        let Some(Type::Result(_, error)) = type_in(&self.locals, value) else {
+            return Err("it names the failure of something that can't fail".to_owned());
+        };
+        self.scopes.push(std::collections::HashMap::new());
+        let held = self.declare(failure, *error);
+        self.emit(InstKind::GetErr { dest: held, value: value.clone() }, span);
+        let lowered = self.stmts(block, Tail::Drop);
+        self.scopes.pop();
+        lowered
     }
 
     /// `value else default`: the default only runs when the value is `None` or an error.
@@ -224,7 +240,7 @@ impl Lowering<'_> {
         self.finish(Terminator::Branch { cond, then: fallback, otherwise: present });
         self.current = fallback;
         if default.leaves() {
-            self.tail_expr(default, Tail::Drop)?;
+            self.else_leaves(default, &value, span)?;
         } else {
             let lowered = self.expr(default)?;
             let lowered = self.coerce(lowered, &ty, default.span)?;

@@ -549,12 +549,24 @@ impl Expr {
     /// to: it never gives a value, because it always leaves.
     pub fn leaves(&self) -> bool {
         let ExprKind::Match { subject, arms } = &self.kind else { return false };
-        let [MatchArm { pattern: Pattern::Wildcard, guard: None, body, .. }] = arms.as_slice() else {
+        let [MatchArm { pattern: Pattern::Wildcard | Pattern::Bind(_), guard: None, body, .. }] =
+            arms.as_slice()
+        else {
             return false;
         };
         let Some(Stmt { kind, .. }) = body.last() else { return false };
         matches!(subject.kind, ExprKind::Bool(false))
             && matches!(kind, StmtKind::Continue | StmtKind::Break | StmtKind::Return(_) | StmtKind::Fail(_))
+    }
+
+    /// The name `else as name:` gives the failure and the block it holds, when this is what one
+    /// parsed to.
+    pub fn failure_named(&self) -> Option<(&str, &[Stmt])> {
+        let ExprKind::Match { arms, .. } = &self.kind else { return None };
+        match arms.as_slice() {
+            [MatchArm { pattern: Pattern::Bind(name), body, .. }] if self.leaves() => Some((name, body)),
+            _ => None,
+        }
     }
 
     /// Whether this is a plain value written out: a number, string, bool or `None`.

@@ -991,7 +991,10 @@ impl FnCx<'_> {
                     .with_help("write a loop, or give a value after `else`"),
             );
         }
-        let default = self.expr(default);
+        let default = match default.failure_named() {
+            Some((failure, block)) => self.else_as(failure, block, &value, default),
+            None => self.expr(default),
+        };
         match value {
             Type::Optional(inner) if matches!(*inner, Type::Result(..)) => {
                 self.error(
@@ -1007,6 +1010,33 @@ impl FnCx<'_> {
             Type::None => default,
             other => other,
         }
+    }
+
+    /// `else as failure:`, whose block sees what failed under that name.
+    fn else_as(
+        &mut self,
+        failure: &str,
+        block: &[fennec_syntax::Stmt],
+        value: &Type,
+        default: &Expr,
+    ) -> Type {
+        let error =
+            match self.checker.settled(value) {
+                Type::Result(_, error) => *error,
+                Type::Unknown => Type::Unknown,
+                _ => {
+                    let message = "this can't fail, so `else as` has no failure to name";
+                    self.error(Diagnostic::new(message, default.span).with_help(
+                        "write `else:` for a value that's `None`, or call something that can fail",
+                    ));
+                    Type::Unknown
+                }
+            };
+        self.push(false);
+        self.declare(failure, error, false, default.span);
+        self.stmts(block, false);
+        self.pop();
+        Type::Unit
     }
 
     /// An arrow function. Its parameters' types come from where it's passed, so it has to

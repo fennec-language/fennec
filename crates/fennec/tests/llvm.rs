@@ -8281,6 +8281,25 @@ fn a_header_sent_twice_is_one_entry_and_keeps_every_value() -> std::io::Result<(
     Ok(())
 }
 
+/// SQLite turns a NaN into NULL, so a program's value would quietly become no value. It's refused.
+#[test]
+fn sqlite_refuses_a_nan() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let place = std::env::temp_dir().join(format!("fennec-sqlite-nan-{}.db", std::process::id()));
+    let path = place.to_string_lossy().into_owned();
+    let source = format!(
+        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{path}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float(\"nan\") else 0.0\n        match db.execute(t\"insert into m values ({{nan}})\"):\n            case Ok(_):\n                stdout.print(\"stored\")\n            case Err(error):\n                stdout.print(error.message())\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
+    );
+    let printed = printed_by("sqlite_nan", &source)?;
+    for ending in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{path}{ending}"));
+    }
+    assert_eq!(printed, "NaN can't be stored: SQLite would turn it into NULL\n1\n");
+    Ok(())
+}
+
 /// What the next test builds: a round trip, then bytes `std.pack` should refuse.
 const PACK_MESSAGES: &str = r#"from std import pack
 from std.pack import Limits

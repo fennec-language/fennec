@@ -8253,6 +8253,39 @@ fn printed_by(name: &str, source: &str) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
 }
 
+/// `process.run(t"...")` runs what the template says, its words split at the spaces in the text
+/// written in the source. A value is part of one argument however much it holds, so it can't add
+/// an argument or start a command. Text written beside a value is that argument too.
+#[test]
+fn process_run_takes_a_template_and_a_value_stays_one_argument() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "process_template",
+        r#"from std.process import ProcessError
+
+def main(process: Process, stdout: Stdout) fails ProcessError:
+    name = "a b; rm -rf /"
+    # The line break in the text is a space between words, so the format is `[%s]`.
+    shown = process.run(t"printf [%s]\n one {name} --who={name}")?
+    stdout.print(shown.stdout)
+    empty = ""
+    stdout.print(process.run(t"printf [%s]\n {empty} x{empty}")?.stdout)
+    stdout.print(process.run(t"cat", input="fed in")?.stdout)
+    narrow = process.only("printf")
+    stdout.print(narrow.run(t"printf ok")?.stdout)
+    match narrow.run(t"cat"):
+        case Ok(_):
+            stdout.print("ran")
+        case Err(error):
+            stdout.print(error.program)
+"#,
+    )?;
+    assert_eq!(printed, "[one][a b; rm -rf /][--who=a b; rm -rf /]\n[][x]\nfed in\nok\ncat\n");
+    Ok(())
+}
+
 /// What the next test builds: a round trip, then bytes `std.pack` should refuse.
 const PACK_MESSAGES: &str = r#"from std import pack
 from std.pack import Limits

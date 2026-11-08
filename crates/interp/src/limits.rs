@@ -115,15 +115,22 @@ pub(crate) fn narrowed(
         }
         // `run.cwd` and the like are `run` with options, and run only what it may.
         (Capability::Process, run) if run == "run" || run.starts_with("run.") => {
-            let Some(Value::Str(program)) = args.first() else {
-                return call(Capability::Process, method, args);
+            // Given a template, the program is its first word. One that's neither is refused
+            // by the call, since a narrowed `Process` is never let past on a guess.
+            let program: Rc<str> = match args.first() {
+                Some(Value::Str(program)) => Rc::clone(program),
+                Some(template) => match crate::stdlib::process::words_of(template) {
+                    Some(words) => Rc::from(words.first().map_or("", String::as_str)),
+                    None => return call(Capability::Process, method, args),
+                },
+                None => return call(Capability::Process, method, args),
             };
-            if limited.allowed.iter().any(|name| **name == **program) {
+            if limited.allowed.iter().any(|name| **name == *program) {
                 return call(Capability::Process, method, args);
             }
             let message =
                 format!("this Process can run only {}, so it can't run `{program}`", limited.listed());
-            Ok(crate::stdlib::process::process_error(program, &message))
+            Ok(crate::stdlib::process::process_error(&program, &message))
         }
         (Capability::Process, _) => call(Capability::Process, method, args),
         (Capability::Fs, _) => narrowed_fs(limited, method, args, call),

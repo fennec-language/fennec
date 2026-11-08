@@ -119,6 +119,7 @@ impl FnCx<'_> {
                 for part in parts {
                     if let FStrPart::Expr { expr, spec } = part {
                         let ty = self.expr(expr);
+                        self.not_a_secret(&ty, "this f-string", expr.span);
                         if let Some(problem) = spec.as_deref().and_then(|spec| bad_spec(spec, &ty, expr.span))
                         {
                             self.error(problem);

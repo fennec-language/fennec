@@ -46,6 +46,7 @@ mod program;
 mod protocols;
 mod rules;
 mod saving;
+mod secrets;
 mod shapes;
 mod shared;
 mod stdlib;

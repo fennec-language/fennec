@@ -7545,6 +7545,31 @@ fn launched_tasks_run_beside_their_block_natively() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A channel that couldn't hold a message fails where it's made, rather than quietly holding one.
+#[test]
+fn a_channel_of_no_size_fails_where_its_made() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("channel-no-size")?;
+    let program = dir.join("none.fen");
+    std::fs::write(
+        &program,
+        "from std.concurrent import Channel\n\ndef main(stdout: Stdout):\n    with Channel[int].open(size=0) as ch:\n        stdout.print(\"made\")\n",
+    )?;
+    let executable = dir.join("none");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!ran.status.success());
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert!(said.contains("a channel has to hold at least 1 message, but its size is 0"), "{said}");
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "");
+    Ok(())
+}
+
 /// A channel's messages cross it as the runtime holds them, of each kind: a number, a string long
 /// enough for a block, a struct held in place, and a list. A receive or a send that waits past its
 /// timeout fails as `Timeout`.
@@ -7555,7 +7580,7 @@ fn channels_carry_each_kind_of_message_natively() -> std::io::Result<()> {
     }
     let printed = printed_by(
         "channels",
-        "from std.concurrent import Channel, Closed, Timeout
+        "from std.concurrent import Closed, Timeout, channel
 from std.time import Duration
 
 struct Job:
@@ -7563,30 +7588,52 @@ struct Job:
     weight: int
 
 def numbers(stdout: Stdout) fails Closed | Timeout:
-    with Channel[int].open(size=4) as ch:
+    with channel[int](size=4) as ch:
         ch.send(7)?
         ch.send(8)?
         stdout.print(ch.receive()?, ch.receive()?)
 
+def signs(stdout: Stdout) fails Closed | Timeout:
+    with Channel[int].open(size=2) as ints:
+        ints.send(-7)?
+        stdout.print(ints.receive()?)
+    with Channel[float].open(size=2) as floats:
+        floats.send(-1.5)?
+        stdout.print(floats.receive()?)
+    with Channel[u64].open(size=2) as big:
+        half: u64 = 9223372036854775807
+        big.send(half + half + 1)?
+        stdout.print(big.receive()?)
+    with Channel[f32].open(size=2) as small:
+        tenth: f32 = -0.1
+        small.send(tenth)?
+        stdout.print(small.receive()?)
+    with Channel[int].open(size=1) as waits:
+        match waits.receive(timeout=Duration(nanos=-5)):
+            case Ok(n):
+                stdout.print(\"got\", n)
+            case Err(problem):
+                stdout.print(\"at once:\", problem)
+
 def words(stdout: Stdout) fails Closed | Timeout:
-    with Channel[str].open(size=4) as ch:
+    with channel[str](size=4) as ch:
         ch.send(\"hi\")?
         ch.send(\"a string long enough to live in a block of its own\")?
         stdout.print(ch.receive()?, ch.receive()?.len())
 
 def jobs(stdout: Stdout) fails Closed | Timeout:
-    with Channel[Job].open(size=2) as ch:
+    with channel[Job](size=2) as ch:
         ch.send(Job(name=\"first\", weight=3))?
         got = ch.receive()?
         stdout.print(got.name, got.weight)
 
 def lists(stdout: Stdout) fails Closed | Timeout:
-    with Channel[list[float]].open(size=1) as ch:
+    with channel[list[float]](size=1) as ch:
         ch.send([1.5, 2.5])?
         stdout.print(ch.receive()?)
 
 def waits(stdout: Stdout) fails Closed | Timeout:
-    with Channel[int].open(size=1) as ch:
+    with channel[int](size=1) as ch:
         match ch.receive(timeout=Duration(nanos=2_000_000)):
             case Ok(n):
                 stdout.print(\"got\", n)
@@ -7601,6 +7648,7 @@ def waits(stdout: Stdout) fails Closed | Timeout:
 
 def main(stdout: Stdout) fails Closed | Timeout:
     numbers(stdout)?
+    signs(stdout)?
     words(stdout)?
     jobs(stdout)?
     lists(stdout)?
@@ -7609,7 +7657,7 @@ def main(stdout: Stdout) fails Closed | Timeout:
     )?;
     assert_eq!(
         printed,
-        "7 8\nhi 50\nfirst 3\n[1.5, 2.5]\nempty: Timeout(waited=Duration(nanos=2000000))\nfull: Timeout(waited=Duration(nanos=2000000))\n"
+        "7 8\n-7\n-1.5\n18446744073709551615\n-0.1\nat once: Timeout(waited=Duration(nanos=-5))\nhi 50\nfirst 3\n[1.5, 2.5]\nempty: Timeout(waited=Duration(nanos=2000000))\nfull: Timeout(waited=Duration(nanos=2000000))\n"
     );
     Ok(())
 }

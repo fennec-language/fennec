@@ -1106,7 +1106,7 @@ The build lanes make this one general piece that undoes the writes in a block. O
 
 *Why:* A failure halfway through a write would otherwise leave a half-change for the next reader, and finishing or having no effect is the rule people already know from database transactions.
 
-**Channels are bounded.** `send` waits when one is full, and both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. Sending to a closed channel fails at once. A channel you set up yourself opens with a plain function in `std.concurrent`, `with channel[Job](size=64) as jobs:`, as Python's `open()` is, not by calling the type. Chris decided this on 2026-11-08. Built natively today as `with Channel[Job].open(size=64) as jobs:`, written in Fennec over channel intrinsics. Not built yet: `channel[Job](size=64)`.
+**Channels are bounded.** `send` waits when one is full, and both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. Sending to a closed channel fails at once. A channel you set up yourself opens with a plain function in `std.concurrent`, `with channel[Job](size=64) as jobs:`, as Python's `open()` is, not by calling the type. Chris decided this on 2026-11-08. Built natively, written in Fennec over channel intrinsics. `Channel`'s constructor is private, so `channel()` is the only way to make one.
 *Why:* A bounded buffer pushes back instead of growing without limit, and saying why a receive stopped lets the task decide what to do.
 
 **Dev builds stop with a report when tasks are waiting only on each other.**

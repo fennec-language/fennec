@@ -259,7 +259,7 @@ fn waits_on_network(type_name: &str, name: &str) -> bool {
     matches!(
         (type_name, name),
         ("Net", "connect")
-            | ("Connection", "read" | "read_line")
+            | ("Connection", "read" | "read_line" | "start_tls")
             | ("Server", "accept")
             | ("UdpSocket", "receive")
     )
@@ -355,26 +355,19 @@ impl FnCx<'_> {
         if let Some(refused) = self.refused_method(ty, name, span) {
             return self.unusable(refused, args);
         }
+        self.note_capability_wait(ty, name, span);
         if method.changes {
-            let what = format!(
-                "`{name}` changes it, so call it on something held in a mut name, like `items.{name}(...)`"
-            );
-            self.mut_place(object, &what);
+            self.mut_place(object, &format!("`{name}` changes it, so call it on something held in a mut name, like `items.{name}(...)`"));
         }
         let named: &[&str] = match ty.type_name() {
             _ if name == "sort" => &["key"],
+            Some("Net") if name == "connect" => &["timeout", "tls"],
+            Some("Net") if name == "listen" => &["tls"],
             Some(owner) if waits_on_network(owner, name) => &["timeout"],
             Some("Net") if name == "udp" => &["port"],
             Some("Process") if name == "run" => &["cwd", "env", "input"],
             Some("Net") if matches!(name, "get" | "post" | "request") => {
-                let given = |option: &str| args.iter().any(|arg| arg.name.as_deref() == Some(option));
-                if given("body") && given("json") {
-                    let message = "a request sends `body=` or `json=`, not both";
-                    self.error(
-                        Diagnostic::new(message, span)
-                            .with_help("`json=` sends a value as JSON, as its body"),
-                    );
-                }
+                self.one_request_body(args, span);
                 &["body", "headers", "json", "params", "timeout"]
             }
             _ => &[],
@@ -493,6 +486,7 @@ impl FnCx<'_> {
                         self.error(mismatch(&format!("`{option}`"), &wanted, &ty, arg.value.span));
                     }
                 }
+                Some("tls") if named.contains(&"tls") => self.tls_option(name, &ty, arg.value.span),
                 Some("port") if named.contains(&"port") => {
                     if !self.checker.fits(&Type::Int, &ty) {
                         self.error(mismatch("`port`", &Type::Int, &ty, arg.value.span));
@@ -518,6 +512,25 @@ impl FnCx<'_> {
         }
         plain.extend(start);
         plain
+    }
+
+    fn one_request_body(&mut self, args: &[Arg], span: Span) {
+        let given = |option: &str| args.iter().any(|arg| arg.name.as_deref() == Some(option));
+        if given("body") && given("json") {
+            let message = "a request sends `body=` or `json=`, not both";
+            self.error(
+                Diagnostic::new(message, span).with_help("`json=` sends a value as JSON, as its body"),
+            );
+        }
+    }
+
+    /// `tls=`: whether `connect` uses TLS, and the `Certificate` a server shows, if any.
+    fn tls_option(&mut self, method: &str, ty: &Type, span: Span) {
+        let wanted =
+            if method == "connect" { Type::Bool } else { Type::optional(Type::named("Certificate")) };
+        if !self.checker.fits(&wanted, ty) {
+            self.error(mismatch("`tls`", &wanted, ty, span));
+        }
     }
 
     /// `names=` and `extra=` take a case of `JsonNames` and `JsonExtra`, like `.camel_case`.
@@ -763,7 +776,11 @@ impl FnCx<'_> {
                 Type::Bool
             }
             "reversed" if first == Type::Str => Type::Str,
-            "sorted" | "list" | "parallel" | "reversed" => Type::list(items(self)),
+            "parallel" => {
+                self.note_wait("`parallel`", span);
+                Type::list(items(self))
+            }
+            "sorted" | "list" | "reversed" => Type::list(items(self)),
             "set" => Type::Set(Box::new(items(self))),
             "enumerate" => {
                 let pairs = Type::Tuple(vec![Type::Int, items(self)]);

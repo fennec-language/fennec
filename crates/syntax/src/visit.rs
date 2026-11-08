@@ -155,6 +155,11 @@ fn bound_in<S: std::hash::BuildHasher>(body: &[Stmt], bound: &mut HashSet<String
                 bound.extend(names.iter().map(|held| held.name.clone()));
                 bound_in(body, bound);
             }
+            StmtKind::OnFailure { name, cleanup, body } => {
+                bound.insert(name.clone());
+                bound_in(cleanup, bound);
+                bound_in(body, bound);
+            }
             StmtKind::While { body, .. } => bound_in(body, bound),
             StmtKind::If { branches, otherwise } => {
                 for (_, body) in branches {
@@ -174,8 +179,7 @@ fn bound_in<S: std::hash::BuildHasher>(body: &[Stmt], bound: &mut HashSet<String
         }
     }
     // What expressions bind: a lambda's parameters, a comprehension's names, a case's pattern.
-    let mut copy = body.to_vec();
-    stmts(&mut copy, &mut |found| match &found.kind {
+    crate::read::in_stmts(body, &mut |found| match &found.kind {
         ExprKind::Lambda { params, .. } => bound.extend(params.iter().cloned()),
         ExprKind::Comprehension { names, .. } => bound.extend(names.iter().cloned()),
         ExprKind::Match { arms, .. } => {
@@ -397,6 +401,10 @@ fn stmt(stmt: &mut Stmt, change: &mut dyn FnMut(&mut Expr)) {
         | StmtKind::For { iter: value, body, .. }
         | StmtKind::With { value, body, .. } => {
             expr(value, change);
+            stmts(body, change);
+        }
+        StmtKind::OnFailure { cleanup, body, .. } => {
+            stmts(cleanup, change);
             stmts(body, change);
         }
         StmtKind::Def(def) => function(def, change),

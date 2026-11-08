@@ -27,8 +27,7 @@ fn self_compared(expr: &Expr, sources: &Sources) -> Option<(BinOp, Span, String)
 
 pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     let mut candidates = Vec::new();
-    let mut walked = module.clone();
-    fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
+    fennec_syntax::read::exprs(module, &mut |expr| {
         if !expr.span.in_prelude()
             && let Some((op, value, text)) = self_compared(expr, sources)
         {

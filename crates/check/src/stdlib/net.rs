@@ -13,6 +13,8 @@ fn method(type_name: &str, name: &str) -> Option<Method> {
     Some(match (type_name, name) {
         ("Net", "connect") => reads(&[Type::Str, Type::Int], fails(Type::named("Connection"))),
         ("Net", "listen") => reads(&[Type::Int], fails(Type::named("Server"))),
+        // Upgrades a plain connection, for protocols that start without TLS.
+        ("Connection", "start_tls") => reads(&[Type::Str], fails(Type::Unit)),
         ("Connection", "read") => reads(&[Type::Int], fails(Type::Bytes)),
         ("Connection", "read_line") => reads(&[], fails(Type::optional(Type::Str))),
         // `bytes` or a `str`, which the call checks.

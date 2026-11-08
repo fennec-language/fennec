@@ -190,6 +190,12 @@ impl Encode for StmtKind {
                 value.encode(to);
                 otherwise.encode(to);
             }
+            StmtKind::OnFailure { name, cleanup, body } => {
+                to.tag(15);
+                name.encode(to);
+                cleanup.encode(to);
+                body.encode(to);
+            }
         }
     }
 }
@@ -229,6 +235,11 @@ impl Decode for StmtKind {
             12 => StmtKind::Continue,
             13 => StmtKind::Pass,
             14 => StmtKind::Lend { value: Decode::decode(r)?, otherwise: Decode::decode(r)? },
+            15 => StmtKind::OnFailure {
+                name: Decode::decode(r)?,
+                cleanup: Decode::decode(r)?,
+                body: Decode::decode(r)?,
+            },
             _ => return None,
         })
     }

@@ -111,7 +111,7 @@ match load(fs, hash):
         stdout.print(f"couldn't read {path}")
 ```
 
-Ignoring a returned value is a compile error. Write `_ = call()` when you mean to throw one away.
+Ignoring a returned value is a compile error. Write `_ = call()` when you mean to throw one away. Don't write it on a call that can fail: that's planned to be a compile error, so handle the failure instead.
 
 ## Files
 
@@ -427,4 +427,3 @@ Builds go through LLVM a function at a time and are cached, so an edit rebuilds 
 These are decided and planned, and `docs/language.md` says where each one stands:
 - `TaskGroup`, for a number of tasks known only at run time, and pools;
 - `u64` and `f32`, and `wrapping_` and `saturating_` methods: `i8` to `i32` and `u8` to `u32` already run natively;
-- notes on errors in native code: today a program that uses them runs in the interpreter, which says so.

@@ -346,7 +346,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 ## Functions and types
 
-**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose. Built.
+**Ignoring a returned value is a compile error.** `_ = call()` discards one on purpose. Built. On a call that can fail, `_ = f()` is a compile error too, so a failure must always be handled, and `ignore` is removed. Chris decided this on 2026-11-08, since `ignore` was used only by its own tests across the whole repository. Not built yet: today `_ = f()` drops the failure, and `ignore(result, "why")` still compiles. `Ok` and `Err` stay as they are for now, to revisit after real Hoard code.
 ```fennec
 sorted(scores)       # error: the result is ignored
 _ = sorted(scores)   # fine
@@ -423,7 +423,7 @@ if result is Err(NotFound):
 This replaces the earlier rules that errors are inferred and `fails` is optional.
 *Why:* A reader sees at a glance how a function can fail and every line where it can leave. Swallowed errors are how reliable-looking programs go wrong.
 
-**An error carries notes, a `list[str]`, as Python's exceptions have since PEP 678.** Every `error Name:` type has `failure.add_note(text)`, which needs a `mut` place, and `failure.notes() -> list[str]`. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure is added to the block's as a note, in its printed form, so neither is lost. A failure that reaches `main` prints each note under it as `note: ...`. Notes are left out of `==`, hashing, printing and saving, and a failure with none costs one empty word. Built in the checker and the interpreter: `notes()`, `add_note(text)`, and a failed cleanup's failure as a note. Native code for notes isn't built yet, so a program that uses them runs in the interpreter, which says so.
+**An error carries notes, a `list[str]`, as Python's exceptions have since PEP 678.** Every `error Name:` type has `failure.add_note(text)`, which needs a `mut` place, and `failure.notes() -> list[str]`. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure is added to the block's as a note, in its printed form, so neither is lost. A failure that reaches `main` prints each note under it as `note: ...`. Notes are left out of `==`, hashing, printing and saving, and a failure with none costs one empty word. Built natively and in the checker and the interpreter: `notes()`, `add_note(text)`, and a failed cleanup's failure as a note.
 *Why:* When cleanup fails after a failure, the first failure is usually the cause and the second is the clue, so both have to reach the reader. Notes as text need no new kind of type.
 
 **There's no `exit()`.** `fail` out of `main` prints the failure to stderr and exits with code 1, and `main` may return an `int` as the exit code. Nothing else can end the process. Built.
@@ -448,6 +448,15 @@ unit = units.get(unit_id) else fail ApiError.NotFound
 - Without `else`, it's a compile error whose fix adds one or a check.
 
 *Why:* Each spelling says what the writer meant. `?` means this line can leave the function. `else` means missing or failed is fine here, so use this instead, or leave, which the line says. `[]` means it must be there, so a missing value is a bug that stops with an error naming the step and the key.
+
+**`else as name:` binds the failure in that block,** as Python's `except E as e` does. It leaves as any `else:` block must. Chris decided this on 2026-11-08. Not built yet: today it's a syntax error, and a block that needs the failure uses `match`.
+```fennec
+# Planned: `else as` doesn't parse yet
+score = load_score(path) else as failure:
+    stdout.print(failure)
+    return
+```
+*Why:* A block that handles a failure usually wants to say which one, and `match` is a lot to write for that.
 
 **`where` rules run on every write to a guarded field,** and on defaults at compile time: `health = 100 where health >= 0`. A rule looks only at its own field. An invariant across several fields goes in a named constructor or a method. A broken rule stops the program in code, and a load that breaks one fails cleanly. Both are built, writes after construction included.
 *Why:* A rule that only holds at construction promises something it doesn't deliver. Checking one field keeps each write's cost obvious.
@@ -1045,7 +1054,7 @@ A big program that wants walls between its own parts splits into local kits in o
 **There's no top-level shared state.** A `shared` value is made in a function, usually `main`, and passed to whoever needs it, like a capability.
 *Why:* A function's signature then says what shared state it can touch, so nobody has to read its body to find out.
 
-**A `shared` value is reached only inside `lock`.** `lock x as s:` reads, and many tasks can read at once. `lock x as ref s:` changes it, one task at a time. Any way out of the block releases it. `fail` and `return` keep the changes made so far, and only a crash undoes them. There's no upgrading a read to a write. This replaces `with x as ref y:` for locking. Built, apart from a `lock` inside another, which is refused for now: take them together in one.
+**A `shared` value is reached only inside `lock`.** `lock x as s:` reads, and many tasks can read at once. `lock x as ref s:` changes it, one task at a time. Any way out of the block releases it. `return`, `break` and `continue` keep the changes made so far, and a crash undoes them, as a `fail` or `?` will, below. There's no upgrading a read to a write. This replaces `with x as ref y:` for locking. Built, apart from a `lock` inside another, which is refused for now: take them together in one.
 ```fennec
 def record(scores: shared Scores, name: str, points: int):
     lock scores as ref current:
@@ -1081,9 +1090,18 @@ with launch((inbox) => audio(inbox, speakers), stop_after=5s)? as sounds:
 **A task's failure comes out where its `with launch` ends, and a crash comes out as `Crashed`.** A crash ends only its own task, and the HTTP server answers that request with a 500.
 *Why:* A parent, like a pool's keeper, has to see a child die to replace it, and one bad request shouldn't stop a server.
 
-**A crash inside `lock x as ref s:` rolls back the block's writes.** The compiler saves the old value before each write, and on a crash the runtime puts them back in reverse order, then releases the lock. Only crashes roll back, so `fail` and `return` keep their changes. The compiler skips the saves where it proves the block can't crash, and values taken out are freed when the block ends. There's no new syntax, no new failure type and no poisoned lock. This replaces the rule that a crash while holding a `ref` lock stops the program. Built.
+**A crash inside `lock x as ref s:` rolls back the block's writes.** The compiler saves the old value before each write, and on a crash the runtime puts them back in reverse order, then releases the lock. Today only crashes roll back. A `fail` or `?` will too, below. The compiler skips the saves where it proves the block can't crash, and values taken out are freed when the block ends. There's no new syntax, no new failure type and no poisoned lock. This replaces the rule that a crash while holding a `ref` lock stops the program. Built.
 *Why:* Nobody ever sees a half-change, and one crashing task no longer takes everything else down with it.
 The build lanes make this one general piece that undoes the writes in a block. Other uses wait until a real program asks for them, like a failing function leaving its `ref` arguments unchanged, or undo in a game.
+
+**A `fail` or `?` leaving `lock ... as ref` rolls back the block's changes, as a crash does,** so a write lock either finishes or has no effect, as a database transaction does. `return`, `break` and `continue` keep the changes.
+- Rollback covers one `lock` statement, including all the values locked together in it. An inner lock that already finished stays committed, so values that must change together are locked in one statement.
+- Local variables and output aren't rolled back.
+- To keep a change and still fail, decide inside the lock and `fail` after it.
+- A lint may warn when a `fail` follows a write in the same block.
+- Chris decided this on 2026-11-08. Not built yet: today a `fail` or `?` keeps the changes made so far, and only a crash undoes them. This replaces the rule that only crashes roll back.
+
+*Why:* A failure halfway through a write would otherwise leave a half-change for the next reader, and finishing or having no effect is the rule people already know from database transactions.
 
 **Channels are bounded.** `send` waits when one is full, and both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. Sending to a closed channel fails at once. A channel you set up yourself opens with a plain function in `std.concurrent`, `with channel[Job](size=64) as jobs:`, as Python's `open()` is, not by calling the type. Chris decided this on 2026-11-08. Built natively today as `with Channel[Job].open(size=64) as jobs:`, written in Fennec over channel intrinsics. Not built yet: `channel[Job](size=64)`.
 *Why:* A bounded buffer pushes back instead of growing without limit, and saying why a receive stopped lets the task decide what to do.

@@ -612,7 +612,7 @@ def write[T, W: Writer](x: T, ref out: W):
 ```
 - `fields(T)` gives a struct's fields, each with its name, type, value and annotations. `cases(T)` gives an enum's cases. `*Cs` is a list of types, as in `world.query(Position, Velocity)`. `if T is int:` is decided at compile time. Not built yet: today `fields` doesn't exist, and formats get their fields from the compiler.
 - Each set of types gets its own specialized copy, whatever the build.
-- There are no macros, no `derive` and no generating code from text. There's no I/O at compile time beyond `embed`, which reads a file that's part of the build, and no new types can be invented.
+- There are no macros, no `derive` and no generating code from text. There's no I/O at compile time beyond `embed_file` and `embed_folder`, which read files that are part of the build, and no new types can be invented.
 - New declarations, like a client struct from an API schema, come from separate programs that write `.fen` files.
 
 *Why:* It covers serialization, SQL rows, CLI parsing, ECS queries and test helpers, and the checker sees ordinary code. With no I/O, builds stay deterministic and cacheable, and a kit can't run anything on your machine while it compiles, which closes a real supply-chain hole.
@@ -1104,7 +1104,7 @@ The build lanes make this one general piece that undoes the writes in a block. O
 
 *Why:* A failure halfway through a write would otherwise leave a half-change for the next reader, and finishing or having no effect is the rule people already know from database transactions.
 
-**Channels are bounded.** `send` waits when one is full, and both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. Sending to a closed channel fails at once. A channel you set up yourself opens with a plain function in `std.concurrent`, `with channel[Job](size=64) as jobs:`, as Python's `open()` is, not by calling the type. Chris decided this on 2026-11-08. Built natively today as `with Channel[Job].open(size=64) as jobs:`, written in Fennec over channel intrinsics. Not built yet: `channel[Job](size=64)`.
+**Channels are bounded.** `send` waits when one is full, and both ends are plain values, so there can be many senders and receivers. `send` and `receive` take `timeout=`, and `receive` fails with `Closed` or `Timeout`. Sending to a closed channel fails at once. A channel you set up yourself opens with a plain function in `std.concurrent`, `with channel[Job](size=64) as jobs:`, as Python's `open()` is, not by calling the type. Chris decided this on 2026-11-08. Built natively, written in Fennec over channel intrinsics. `Channel`'s constructor is private, so `channel()` is the only way to make one.
 *Why:* A bounded buffer pushes back instead of growing without limit, and saying why a receive stopped lets the task decide what to do.
 
 **Dev builds stop with a report when tasks are waiting only on each other.**
@@ -1223,15 +1223,20 @@ SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]    # one full turn
 
 *Why:* Purity is already known from capabilities, so the compiler can tell what to evaluate without the programmer marking anything. It covers what other systems languages need `const fn` or macros for, and Fennec has no macros.
 
-**`embed("path")` gives a file's bytes, baked in at build time.**
+**`embed_file("path")` gives a file's bytes, and `embed_folder("path")` a folder's, baked in at build time.**
 ```fennec
-MAP = embed("assets/level1.bin")
+# Planned: today the first is `embed("assets/level1.bin")`, and the second doesn't exist
+MAP = embed_file("assets/level1.bin")
+SHADERS = embed_folder("assets/shaders")
 ```
-- The path is relative to the source file, and a missing file is a compile error.
-- No `Fs` capability is needed, since the file is an input to the build, not something the program reads when it runs.
-- A Den package may embed only files inside its own folder.
+- `embed_file` renames today's `embed`, and gives `bytes`. `embed_folder` gives a read-only map from relative path, always written with `/`, to `bytes`, in sorted path order.
+- Both are views into the program's read-only data: no copy, nothing loaded at startup, and readable whole or in chunks, since the OS pages it in on demand.
+- The path is relative to the source file. A missing path, or anything outside the kit, symlinks included, is a compile error.
+- `embed_folder` leaves out hidden files, and nothing is compressed.
+- No `Fs` capability is needed, since the files are inputs to the build, tracked by their content. It's the same in development and release builds.
+- Chris locked this on 2026-11-08. Not built yet: `embed_file` and `embed_folder` don't exist. Today's `embed("path")` gives a file's bytes, and refuses a missing path and, in a kit, anything outside it, a symlink included. This replaces `embed("path")`.
 
-*Why:* Games ship levels, shaders and fonts inside the binary. This is what other systems languages use an `include_bytes!` macro for, and here it's one function.
+*Why:* Games ship levels, shaders and fonts inside the binary. This is what other systems languages use an `include_bytes!` macro for. There are two names because a single `embed` would have a type that depends on what's on disk.
 
 **Durations have literals:** `30s`, `1.5s`, `200ms`, `16ms`, `5min`, `2h`. The units are exactly `ns`, `us`, `ms`, `s`, `min` and `h`. Minutes are `min`, never `m`, so a duration can't be read as meters. Durations are the only unit literals: there's no `kb`, `px` or `deg`.
 ```fennec

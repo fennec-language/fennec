@@ -5,8 +5,8 @@
 //! Nothing else runs while a test waits, so a read that would wait forever stops the test and
 //! says why, and a server with no connection waiting is done.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
@@ -59,7 +59,44 @@ struct Stream {
 enum Reading {
     Plain(BufReader<TcpStream>),
     #[cfg(not(target_arch = "wasm32"))]
-    Tls(Box<BufReader<http::tls::Secured>>),
+    Tls(Box<dyn SecureStream>),
+}
+
+/// A connection with TLS over it, read and written as a plain one is. Only the TLS module makes
+/// one, so a program that never asks for TLS links none of it.
+#[cfg_attr(target_arch = "wasm32", expect(dead_code, reason = "the playground has no network"))]
+pub(crate) trait SecureStream: BufRead + Write + Send {}
+
+impl<T: BufRead + Write + Send> SecureStream for T {}
+
+/// What a TLS session reads from and writes to: a socket that doesn't block.
+#[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only a served connection uses it, which needs threads"))]
+pub(crate) trait Transport: Read + Write {}
+
+impl<T: Read + Write> Transport for T {}
+
+/// One connection's TLS on a server, over a socket that doesn't block: anything that has to wait
+/// says `WouldBlock`, for the task to park and try again.
+#[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only a served connection uses it, which needs threads"))]
+pub(crate) trait ServerSession: Send {
+    /// Does as much of the handshake as it can, and says when it's done.
+    fn handshake(&mut self, socket: &mut dyn Transport) -> std::io::Result<bool>;
+    /// Up to `count` bytes of what the other side sent, onto `into`: 0 at the end.
+    fn read_onto(&mut self, socket: &mut dyn Transport, into: &mut Vec<u8>, count: usize) -> std::io::Result<usize>;
+    /// Takes as much of `data` as it can, saying how much, and sends what it can of what it holds.
+    fn write_some(&mut self, socket: &mut dyn Transport, data: &[u8]) -> std::io::Result<usize>;
+    /// Whether it has something to send before anything else can happen.
+    fn wants_write(&self) -> bool;
+}
+
+/// A server's TLS, what `net.listen(port, tls=...)` proves itself with.
+pub(crate) trait TlsServer: Send + Sync {
+    /// A session for a connection a task serves.
+    #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only a served connection uses it, which needs threads"))]
+    fn session(&self) -> Result<Box<dyn ServerSession>, Failure>;
+    /// TLS over a connection `server.accept()` took, its handshake done in at most `timeout`.
+    #[cfg_attr(target_arch = "wasm32", expect(dead_code, reason = "the playground has no network"))]
+    fn accepted(&self, tcp: TcpStream, timeout: Duration) -> Result<Box<dyn SecureStream>, Failure>;
 }
 
 /// A real UDP socket. Only one thread reads at a time, as how long a read waits is the socket's.
@@ -68,10 +105,16 @@ struct Udp {
     receiving: Mutex<()>,
 }
 
+/// A port listened on, with the TLS each connection it takes starts with, if it has any.
+struct Listening {
+    listener: TcpListener,
+    tls: Option<Arc<dyn TlsServer>>,
+}
+
 #[derive(Clone)]
 enum Socket {
     Stream(Arc<Stream>),
-    Listener(Arc<TcpListener>),
+    Listener(Arc<Listening>),
     Udp(Arc<Udp>),
 }
 
@@ -99,6 +142,9 @@ pub(crate) struct Fake {
     last: i64,
     /// Each server's port, and the connections waiting for it to accept them.
     servers: BTreeMap<i64, (i64, VecDeque<(i64, String)>)>,
+    /// The servers listening with a certificate. No real TLS runs in a test: a connection has only to agree with
+    /// its server about using it.
+    secure: BTreeSet<i64>,
     streams: BTreeMap<i64, FakeStream>,
     /// Each UDP socket's port, and the data and sender of what's been sent to it.
     udp: BTreeMap<i64, (i64, VecDeque<FakePacket>)>,
@@ -136,8 +182,14 @@ impl Fake {
             ("requests", []) => {
                 return Ok(Value::list(self.requests.iter().map(|sent| Value::str(sent)).collect()));
             }
-            ("connect", [Value::Str(host), Value::Int(port)]) => self.connect(host, port_of(*port, span)?),
-            ("listen", [Value::Int(port)]) => self.listen(port_of(*port, span)?),
+            ("connect", [Value::Str(host), Value::Int(port)]) => self.connect(host, port_of(*port, span)?, false),
+            ("connect", [Value::Str(host), Value::Int(port), Value::Bool(tls)]) => {
+                self.connect(host, port_of(*port, span)?, *tls)
+            }
+            ("listen", [Value::Int(port)]) => self.listen(port_of(*port, span)?, false),
+            ("listen", [Value::Int(port), certificate]) => {
+                self.listen(port_of(*port, span)?, has_certificate(certificate, span)?)
+            }
             ("udp", []) => self.udp(0),
             ("udp", [Value::Int(port)]) => self.udp(port_of(*port, span)?),
             ("connect" | "listen" | "udp" | "script" | "requests", _) => return Err(wrong(method, span)),
@@ -195,7 +247,7 @@ impl Fake {
         }
     }
 
-    pub(crate) fn listen(&mut self, port: u16) -> Result<Made, Failure> {
+    pub(crate) fn listen(&mut self, port: u16, tls: bool) -> Result<Made, Failure> {
         let fake = self;
         let port = i64::from(port);
         if fake.servers.values().any(|(taken, _)| *taken == port) {
@@ -205,10 +257,13 @@ impl Fake {
         let port = if port == 0 { 49152 + i64::try_from(fake.servers.len()).unwrap_or(0) } else { port };
         let handle = fake.handle();
         fake.servers.insert(handle, (port, VecDeque::new()));
+        if tls {
+            fake.secure.insert(handle);
+        }
         Ok(("Server", vec![("_handle", Value::Int(handle)), ("port", Value::Int(port))]))
     }
 
-    pub(crate) fn connect(&mut self, host: &str, port: u16) -> Result<Made, Failure> {
+    pub(crate) fn connect(&mut self, host: &str, port: u16, tls: bool) -> Result<Made, Failure> {
         let fake = self;
         let port = i64::from(port);
         if !FAKE_HOSTS.contains(&host) {
@@ -219,6 +274,10 @@ impl Fake {
         let Some(server) = fake.servers.iter().find(|(_, (taken, _))| *taken == port).map(|(server, _)| *server) else {
             return Err(Failure::Refused(host.to_owned(), port));
         };
+        if tls != fake.secure.contains(&server) {
+            let (client, listening) = if tls { ("with", "without") } else { ("without", "with") };
+            return Err(Failure::Tls(format!("a connection {client} TLS reached a server on port {port} {listening} it")));
+        }
         let (client, other_end) = (fake.handle(), fake.handle());
         let stream = |peer| FakeStream { inbox: VecDeque::new(), peer, peer_closed: false };
         fake.streams.insert(client, stream(other_end));
@@ -444,6 +503,7 @@ fn with_timeout(args: Vec<CallArg>, method: &str, span: Span) -> Result<(Vec<Val
         match arg.name.as_deref() {
             None => plain.push(arg.value),
             Some("port") if method == "udp" => plain.push(arg.value),
+            Some("tls") if matches!(method, "connect" | "listen") => plain.push(arg.value),
             Some("timeout") => timeout = Some(duration_of(&arg.value, span)?),
             Some(other) => {
                 return Err(Diagnostic::new(format!("`{method}` has no parameter called `{other}`"), arg.span));
@@ -528,11 +588,20 @@ impl Interp<'_> {
         let found = match (method, args.as_slice()) {
             ("connect", [Value::Str(host), Value::Int(port)]) => {
                 let port = port_of(*port, span)?;
-                self.on_fake(|fake| fake.connect(host, port))
+                self.on_fake(|fake| fake.connect(host, port, false))
+            }
+            ("connect", [Value::Str(host), Value::Int(port), Value::Bool(tls)]) => {
+                let port = port_of(*port, span)?;
+                self.on_fake(|fake| fake.connect(host, port, *tls))
             }
             ("listen", [Value::Int(port)]) => {
                 let port = port_of(*port, span)?;
-                self.on_fake(|fake| fake.listen(port))
+                self.on_fake(|fake| fake.listen(port, false))
+            }
+            ("listen", [Value::Int(port), certificate]) => {
+                let port = port_of(*port, span)?;
+                let tls = has_certificate(certificate, span)?;
+                self.on_fake(|fake| fake.listen(port, tls))
             }
             ("udp", []) => self.on_fake(|fake| fake.udp(0)),
             ("udp", [Value::Int(port)]) => {
@@ -683,14 +752,56 @@ pub(crate) fn real_net(method: &str, args: &[Value], timeout: Option<Duration>, 
         ("connect.tls" | "connect", [Value::Str(host), Value::Int(port), Value::Bool(tls)]) => {
             connect(host, port_of(*port, span)?, timeout.unwrap_or(CONNECT_TIMEOUT), *tls)
         }
-        ("listen", [Value::Int(port)]) => listen(port_of(*port, span)?),
+        ("listen", [Value::Int(port)]) => listen(port_of(*port, span)?, None),
+        // `tls=Certificate(...)`, or `None`, which native code keeps on the method's name.
+        ("listen.tls" | "listen", [Value::Int(port), certificate]) => {
+            match tls_server(certificate, span)? {
+                Ok(tls) => listen(port_of(*port, span)?, tls),
+                Err(failure) => Err(failure),
+            }
+        }
         ("udp", []) => udp(0),
         // Native code keeps a named argument on the method's name.
         ("udp" | "udp.port", [Value::Int(port)]) => udp(port_of(*port, span)?),
-        ("connect" | "connect.tls" | "listen" | "udp" | "udp.port", _) => return Err(wrong(method, span)),
+        ("connect" | "connect.tls" | "listen" | "listen.tls" | "udp" | "udp.port", _) => {
+            return Err(wrong(method, span));
+        }
         _ => return Err(no_method(&Value::Capability(Capability::Net), method, span)),
     };
     Ok(made_or_failed(found))
+}
+
+/// Whether `tls=` on a test's `net.listen` gives a certificate. A value that isn't one is the program's mistake.
+fn has_certificate(certificate: &Value, span: Span) -> Result<bool, Diagnostic> {
+    match certificate {
+        Value::None => Ok(false),
+        Value::Instance(instance) if &*instance.type_name == "Certificate" => Ok(true),
+        _ => Err(Diagnostic::new("`tls=` takes a `Certificate`", span)),
+    }
+}
+
+/// The TLS a `Certificate` makes, or `None` for `tls=None`. A `Certificate` that isn't one is the
+/// program's mistake, and a chain or key that can't be read is its failure.
+fn tls_server(
+    certificate: &Value,
+    span: Span,
+) -> Result<Result<Option<Arc<dyn TlsServer>>, Failure>, Diagnostic> {
+    let instance = match certificate {
+        Value::None => return Ok(Ok(None)),
+        Value::Instance(instance) if &*instance.type_name == "Certificate" => instance,
+        _ => return Err(Diagnostic::new("`tls=` takes a `Certificate`", span)),
+    };
+    let Some(Value::Str(chain)) = instance.field("chain") else {
+        return Err(Diagnostic::new("this `Certificate` has no `chain`", span));
+    };
+    let key = match instance.field("key") {
+        Some(Value::Instance(secret)) => secret.field("_value"),
+        _ => None,
+    };
+    let Some(Value::Str(key)) = key else {
+        return Err(Diagnostic::new("this `Certificate` has no `key`", span));
+    };
+    Ok(http::server_tls(chain, key).map(Some))
 }
 
 /// A method of a real connection, by its handle.
@@ -848,7 +959,8 @@ fn in_order<'a>(name: &'a str, args: &[Value]) -> (&'a str, Vec<Value>) {
     let mut ordered = plain.to_vec();
     let params: &[&str] = match method {
         "connect" => &["host", "port", "tls"],
-        "listen" | "udp" => &["port"],
+        "listen" => &["port", "tls"],
+        "udp" => &["port"],
         _ => &[],
     };
     for param in params.iter().skip(plain.len()) {
@@ -947,9 +1059,9 @@ fn connect(host: &str, port: u16, timeout: Duration, tls: bool) -> Result<Made, 
 
 /// TLS over a connection just made, its certificate checked against what the system trusts.
 #[cfg(not(target_arch = "wasm32"))]
-fn secured(stream: &TcpStream, host: &str, timeout: Duration) -> Result<Box<BufReader<http::tls::Secured>>, Failure> {
+fn secured(stream: &TcpStream, host: &str, timeout: Duration) -> Result<Box<dyn SecureStream>, Failure> {
     let tcp = stream.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
-    Ok(Box::new(BufReader::new(http::raw_secured(tcp, host, timeout)?)))
+    http::raw_secured(tcp, host, timeout)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1000,11 +1112,11 @@ fn keep_stream(socket: TcpStream, peer: String, secured: Option<Secured>) -> Res
 
 /// TLS over a connection, as `secured` makes it.
 #[cfg(not(target_arch = "wasm32"))]
-type Secured = Box<BufReader<http::tls::Secured>>;
+type Secured = Box<dyn SecureStream>;
 #[cfg(target_arch = "wasm32")]
 type Secured = std::convert::Infallible;
 
-fn listen(port: u16) -> Result<Made, Failure> {
+fn listen(port: u16, tls: Option<Arc<dyn TlsServer>>) -> Result<Made, Failure> {
     let listener = TcpListener::bind(("0.0.0.0", port)).map_err(|error| match error.kind() {
         ErrorKind::AddrInUse => Failure::Other(format!("port {port} is already in use")),
         _ => Failure::Other(error.to_string()),
@@ -1012,7 +1124,7 @@ fn listen(port: u16) -> Result<Made, Failure> {
     let port = listener.local_addr().map_or(port, |address| address.port());
     let handle = open(|open| {
         let handle = fresh_handle(open);
-        open.insert(handle, Socket::Listener(Arc::new(listener)));
+        open.insert(handle, Socket::Listener(Arc::new(Listening { listener, tls })));
         handle
     });
     Ok(("Server", vec![("_handle", Value::Int(handle)), ("port", Value::Int(i64::from(port)))]))
@@ -1061,7 +1173,6 @@ fn write(handle: i64, mut data: &[u8]) -> Result<(), Failure> {
     let _writing = stream.writing.lock().unwrap_or_else(PoisonError::into_inner);
     #[cfg(not(target_arch = "wasm32"))]
     if let Reading::Tls(secured) = &mut *stream.reader.lock().unwrap_or_else(PoisonError::into_inner) {
-        let secured = secured.get_mut();
         return secured.write_all(data).and_then(|()| secured.flush()).map_err(|error| Failure::of(&error, None));
     }
     let mut socket = &stream.socket;
@@ -1141,7 +1252,7 @@ fn reading<T>(
 }
 
 /// `reading`, on one kind of reader.
-fn read_on<R: BufRead, T>(
+fn read_on<R: BufRead + ?Sized, T>(
     socket: &TcpStream,
     reader: &mut R,
     timeout: Option<Duration>,
@@ -1157,7 +1268,7 @@ fn read_on<R: BufRead, T>(
 /// Runs a read that may have to wait, in a task that parks rather than block: with the socket not
 /// blocking, `read` is tried, and each time it would block, the task parks until the socket's
 /// readable or `timeout` passes. The socket blocks again after.
-fn parked<R, T>(
+fn parked<R: ?Sized, T>(
     socket: &TcpStream,
     reader: &mut R,
     timeout: Option<Duration>,
@@ -1214,9 +1325,10 @@ fn wait_to_write(socket: &TcpStream) {
 }
 
 fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failure> {
-    let Some(Socket::Listener(listener)) = open(|open| open.get(&handle).cloned()) else {
+    let Some(Socket::Listener(listening)) = open(|open| open.get(&handle).cloned()) else {
         return Err(Failure::Closed);
     };
+    let listener = &listening.listener;
     let accepted = match timeout {
         None => listener.accept().map_err(|error| Failure::of(&error, None))?,
         Some(limit) => {
@@ -1240,7 +1352,32 @@ fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failu
     let (stream, peer) = accepted;
     stream.set_nonblocking(false).map_err(|error| Failure::Other(error.to_string()))?;
     let peer = peer.to_string();
-    Ok((keep_stream(stream, peer.clone(), None)?, peer))
+    let secured = match &listening.tls {
+        Some(tls) => Some(accepted_securely(tls, &stream)?),
+        None => None,
+    };
+    Ok((keep_stream(stream, peer.clone(), secured)?, peer))
+}
+
+/// How long a connection a server took has to finish its handshake.
+#[cfg_attr(target_arch = "wasm32", expect(dead_code, reason = "the playground has no network"))]
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The server's half of a handshake over a connection just taken, on a thread that may block when
+/// this is a task.
+#[cfg(not(target_arch = "wasm32"))]
+fn accepted_securely(tls: &Arc<dyn TlsServer>, stream: &TcpStream) -> Result<Secured, Failure> {
+    let tcp = stream.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
+    if task_parks() {
+        let tls = Arc::clone(tls);
+        return off_thread(move || tls.accepted(tcp, HANDSHAKE_TIMEOUT));
+    }
+    tls.accepted(tcp, HANDSHAKE_TIMEOUT)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn accepted_securely(_tls: &Arc<dyn TlsServer>, _stream: &TcpStream) -> Result<Secured, Failure> {
+    Err(Failure::Tls("the playground has no network".to_owned()))
 }
 
 /// The next connection a server takes, by its handle, for a server taking them one at a time.
@@ -1325,10 +1462,11 @@ fn close(handle: i64) {
 /// Takes a real server's listener out of the open sockets, for `parallel(server)` to serve from.
 /// One already closed has none.
 #[cfg(any(test, feature = "threads"))]
-pub(crate) fn take_listener(handle: i64) -> Option<TcpListener> {
+pub(crate) fn take_listener(handle: i64) -> Option<(TcpListener, Option<Arc<dyn TlsServer>>)> {
     open(|open| match open.remove(&handle) {
-        Some(Socket::Listener(listener)) => {
-            Arc::try_unwrap(listener).or_else(|listener| listener.try_clone()).ok()
+        Some(Socket::Listener(listening)) => {
+            let tls = listening.tls.clone();
+            Some((listening.listener.try_clone().ok()?, tls))
         }
         Some(other) => {
             open.insert(handle, other);
@@ -1356,8 +1494,45 @@ fn trim_line(line: &[u8]) -> &[u8] {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::{Failure, Made, close, receive, udp};
+    use fennec_syntax::Span;
+
+    use super::{Failure, Fake, Made, close, receive, udp};
     use crate::value::Value;
+
+    /// Native code keeps `tls=` on the method's name.
+    #[test]
+    fn a_tests_connection_and_server_have_to_agree_about_tls() {
+        let span = Span::default();
+        let certificate = Value::made("Certificate", vec![]);
+        let port = |made: &Value| {
+            let Value::Ok(made) = made else { panic!("it failed: {made:?}") };
+            let Value::Instance(instance) = made.as_ref() else { panic!("not an instance") };
+            instance.field("port").cloned().unwrap()
+        };
+        let host = || Value::str("localhost");
+        let mut fake = Fake::default();
+
+        let secure = fake.net_method("listen.tls", &[Value::Int(0), certificate], span).unwrap();
+        let plain = fake.net_method("listen", &[Value::Int(0)], span).unwrap();
+        let (secure, plain) = (port(&secure), port(&plain));
+        let tls = Value::Bool(true);
+
+        let both = fake.net_method("connect.tls", &[host(), secure.clone(), tls.clone()], span).unwrap();
+        assert!(matches!(both, Value::Ok(_)), "{both:?}");
+        for (name, args) in
+            [("connect", vec![host(), secure]), ("connect.tls", vec![host(), plain, tls])]
+        {
+            let refused = fake.net_method(name, &args, span).unwrap();
+            let Value::Err(error) = refused else { panic!("{name} connected") };
+            assert!(format!("{error:?}").contains("Tls"), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn a_tests_listen_takes_only_a_certificate() {
+        let mut fake = Fake::default();
+        assert!(fake.net_method("listen.tls", &[Value::Int(0), Value::Int(1)], Span::default()).is_err());
+    }
 
     fn handle_of_made((_, fields): &Made) -> i64 {
         match fields.first() {
@@ -1389,6 +1564,7 @@ pub(crate) mod tests {
     pub(crate) mod tls {
         use std::io::{BufRead as _, BufReader, Write as _};
         use std::net::{TcpListener, TcpStream};
+        use std::rc::Rc;
         use std::sync::Arc;
         use std::time::Duration;
 
@@ -1396,8 +1572,11 @@ pub(crate) mod tests {
         use rustls::pki_types::{CertificateDer, PrivateKeyDer};
         use rustls::{ClientConfig, RootCertStore, ServerConfig, ServerConnection, StreamOwned};
 
+        use fennec_syntax::Span;
+
         use super::super::http::tls::handshake;
-        use super::super::{Failure, close, keep_stream, read_line, write};
+        use super::super::{Failure, close, http, keep_stream, read_line, real_connection, real_net, real_server, write};
+        use crate::value::Value;
 
         const CA: &[u8] = include_bytes!("testdata/tls-test-ca.pem");
         const CHAIN: &[u8] = include_bytes!("testdata/tls-test-chain.pem");
@@ -1485,9 +1664,68 @@ pub(crate) mod tests {
             let Ok(secured) = handshake(tcp.try_clone().unwrap(), "localhost", Duration::from_secs(10), client_config()) else {
                 panic!("the handshake failed");
             };
-            let handle = keep_stream(tcp, "server".to_owned(), Some(Box::new(BufReader::new(secured)))).ok().unwrap();
+            let handle = keep_stream(tcp, "server".to_owned(), Some(secured)).ok().unwrap();
             assert!(write(handle, b"x").is_ok());
             handle
+        }
+
+        /// A `Certificate`, as a program makes one.
+        fn certificate() -> Value {
+            let text = |bytes: &[u8]| Value::str(std::str::from_utf8(bytes).unwrap());
+            let key = Value::made("Secret", vec![("_value", text(KEY))]);
+            Value::made("Certificate", vec![("chain", text(CHAIN)), ("key", key)])
+        }
+
+        fn field(made: &Value, name: &str) -> i64 {
+            let Value::Ok(made) = made else { panic!("it failed: {made:?}") };
+            let Value::Instance(instance) = made.as_ref() else { panic!("not an instance: {made:?}") };
+            let Some(Value::Int(number)) = instance.field(name) else { panic!("no {name}") };
+            *number
+        }
+
+        /// `net.listen(port, tls=...)` and `server.accept()`: the connection it gives reads and
+        /// writes through TLS.
+        #[test]
+        fn a_server_listening_with_a_certificate_accepts_over_tls() {
+            http::use_tls();
+            let span = Span::default();
+            let listened = real_net("listen.tls", &[Value::Int(0), certificate()], None, span).unwrap();
+            let (server, port) = (field(&listened, "_handle"), field(&listened, "port"));
+            let serving = std::thread::spawn(move || {
+                let span = Span::default();
+                let taken = real_server(server, "accept", &[], Some(Duration::from_secs(10)), span).unwrap();
+                let conn = field(&taken, "_handle");
+                let line = real_connection(conn, "read_line", &[], Some(Duration::from_secs(10)), span).unwrap();
+                let wrote = real_connection(conn, "write", &[Value::str("pong\n")], None, span).unwrap();
+                close(conn);
+                (line == Value::Ok(Rc::new(Value::str("ping"))), matches!(wrote, Value::Ok(_)))
+            });
+            let tcp = connected_to(u16::try_from(port).unwrap());
+            let Ok(mut secured) = handshake(tcp, "localhost", Duration::from_secs(10), client_config()) else {
+                panic!("the handshake failed");
+            };
+            secured.write_all(b"ping\n").unwrap();
+            secured.flush().unwrap();
+            let mut back = String::new();
+            secured.read_line(&mut back).unwrap();
+            assert_eq!(back, "pong\n");
+            assert_eq!(serving.join().unwrap(), (true, true));
+            close(server);
+        }
+
+        /// `tls=` takes a `Certificate`, and one that can't be read is the program's failure.
+        #[test]
+        fn a_certificate_that_cant_be_read_fails_as_tls() {
+            http::use_tls();
+            let span = Span::default();
+            let bad = Value::made(
+                "Certificate",
+                vec![("chain", Value::str("nope")), ("key", Value::made("Secret", vec![("_value", Value::str("nope"))]))],
+            );
+            let listened = real_net("listen.tls", &[Value::Int(0), bad], None, span).unwrap();
+            let Value::Err(error) = listened else { panic!("it listened") };
+            assert!(format!("{error:?}").contains("Tls"), "{error:?}");
+            assert!(real_net("listen.tls", &[Value::Int(0), Value::Int(1)], None, span).is_err());
         }
 
         /// A connection with TLS over it reads and writes as a plain one does.
@@ -1497,7 +1735,7 @@ pub(crate) mod tests {
             let tcp = connected_to(port);
             let secured = handshake(tcp.try_clone().unwrap(), "localhost", Duration::from_secs(10), client_config());
             let Ok(secured) = secured else { panic!("the handshake failed") };
-            let handle = keep_stream(tcp, "server".to_owned(), Some(Box::new(BufReader::new(secured)))).ok().unwrap();
+            let handle = keep_stream(tcp, "server".to_owned(), Some(secured)).ok().unwrap();
             assert!(write(handle, b"ping\n").is_ok());
             let back = read_line(handle, Some(Duration::from_secs(10)));
             assert_eq!(back.ok().flatten().as_deref(), Some(&b"pong\n"[..]));

@@ -23,6 +23,8 @@ impl Emit<'_, '_, '_> {
                 self.declare("declare i64 @fennec_channel_new(i64) nounwind");
                 let made = self.temp();
                 self.line(&format!("{made} = call i64 @fennec_channel_new(i64 {size})"));
+                // A size below 1 fails.
+                self.leave_if_failed();
                 self.assign(dest.ok_or("a channel no one keeps")?, &made)
             }
             ("intrinsics.channel_close" | "intrinsics.channel_free", [channel]) => {
@@ -95,13 +97,13 @@ impl Emit<'_, '_, '_> {
         let (value, kind) = self.operand(message)?;
         let nothing: Box<dyn FnOnce(&mut Self)> = Box::new(|_| {});
         Ok(match kind {
-            Kind::Int => (value, "0", nothing),
+            Kind::Int | Kind::U64 => (value, "0", nothing),
             Kind::Bool => {
                 let word = self.temp();
                 self.line(&format!("{word} = zext i1 {value} to i64"));
                 (word, "0", nothing)
             }
-            Kind::Float => {
+            Kind::Float | Kind::F32 => {
                 let word = self.temp();
                 self.line(&format!("{word} = bitcast double {value} to i64"));
                 (word, "0", nothing)
@@ -138,13 +140,13 @@ impl Emit<'_, '_, '_> {
     fn message_from_word(&mut self, dest: LocalId, word: &str) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();
         match kind {
-            Kind::Int => self.assign(dest, word),
+            Kind::Int | Kind::U64 => self.assign(dest, word),
             Kind::Bool => {
                 let flag = self.temp();
                 self.line(&format!("{flag} = trunc i64 {word} to i1"));
                 self.assign(dest, &flag)
             }
-            Kind::Float => {
+            Kind::Float | Kind::F32 => {
                 let number = self.temp();
                 self.line(&format!("{number} = bitcast i64 {word} to double"));
                 self.assign(dest, &number)

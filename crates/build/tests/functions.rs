@@ -1,6 +1,6 @@
 //! Compiled functions in the cache: their keys, their stored form, and looking them up.
 
-use fennec_build::{Cache, CompiledFunction, FunctionKey, Relocation, VERSION};
+use fennec_build::{Cache, CompiledFunction, FOLDER, FunctionKey, Relocation};
 
 fn function() -> CompiledFunction {
     CompiledFunction {
@@ -74,7 +74,7 @@ fn packs_hold_a_programs_functions_by_key() {
     assert_eq!((pack.get(&first), pack.get(&second)), (Some(&function()), Some(&empty)));
     assert!(cache.pack("/another kit").is_empty(), "each program has its own pack");
 
-    let packs = home.join("cache").join(VERSION).join("packs");
+    let packs = home.join("cache").join(FOLDER).join("packs");
     let file = std::fs::read_dir(&packs).unwrap().next().unwrap().unwrap().path();
     let bytes = std::fs::read(&file).unwrap();
     for cut in [3, 8, 12, 20, bytes.len() - 1] {

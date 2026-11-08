@@ -232,6 +232,11 @@ jobs:
             diff --strip-trailing-cr "${kit%/}.out" "$printed"
             fennec test "${all[@]}" "$kit" > /dev/null
           done
+      # The cache is one build's, so a change to the compiler can't be hidden by what an older
+      # one compiled: see docs/store.md.
+      - name: A changed compiler runs nothing an older one compiled
+        if: matrix.part == 'main' && matrix.os == 'ubuntu-latest'
+        run: .github/scripts/test-stale-cache.sh
       - name: Save test results
         if: matrix.part == 'main' && github.event_name != 'merge_group'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

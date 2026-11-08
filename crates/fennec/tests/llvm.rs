@@ -2431,6 +2431,10 @@ fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
             "error: it doesn't fit in u64, which holds 0 to 18446744073709551615: -1".to_owned(),
         ),
         (
+            "h: u64 = 9223372036854775807\n    stdout.print(i8(h))",
+            "error: it doesn't fit in i8, which holds -128 to 127: 9223372036854775807".to_owned(),
+        ),
+        (
             "h: u64 = 9223372036854775807\n    stdout.print(int(h + 1))",
             "error: it doesn't fit in int, which holds -9223372036854775808 to 9223372036854775807: \
              9223372036854775808"
@@ -2485,6 +2489,45 @@ fn sized_integers_from_outside_fail_cleanly() -> std::io::Result<()> {
          failed: -1 doesn't fit in u8, which holds 0 to 255\n\
          failed: \"seven\" isn't an int\n\
          255 -1\n"
+    );
+    Ok(())
+}
+
+/// A `u64` from outside: `u64.from(x)?` and `u64.parse(text)?`, which reads what's past the
+/// largest `int` a digit at a time, failing cleanly past the top. And `u64`'s `wrapping_` and
+/// `saturating_` methods, worked out on its 64 bits without going past them.
+#[test]
+fn a_u64_from_outside_and_its_wrapping_and_saturating_methods() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "u64_from_outside",
+        "def main(stdout: Stdout):
+    top = u64.parse(\"18446744073709551615\") else u64(0)
+    half = u64.parse(\"9223372036854775808\") else u64(0)
+    stdout.print(top, half, u64.parse(\"42\"), u64.from(7), u64.from(-1), u64.parse(\"18446744073709551616\"), u64.parse(\"-3\"), u64.parse(\"seven\"))
+    stdout.print(top.wrapping_add(2), u64(1).wrapping_sub(3), top.wrapping_mul(top), half.wrapping_mul(2), u64(3037000500).wrapping_mul(3037000500))
+    stdout.print(top.saturating_add(1), u64(1).saturating_sub(2), half.saturating_mul(2), u64(6).saturating_mul(7), top.saturating_mul(0))
+    stdout.print(i8(u64(100)), u32(half >> 33))
+",
+    )?;
+    let too_big = |text: &str| {
+        format!(
+            "Err(InvalidValue(message=\"{text} doesn't fit in u64, which holds 0 to 18446744073709551615\"))"
+        )
+    };
+    assert_eq!(
+        printed,
+        format!(
+            "18446744073709551615 9223372036854775808 Ok(42) Ok(7) {} {} {} Err(InvalidValue(message=\"\\\"seven\\\" isn't an int\"))\n\
+             1 18446744073709551614 1 0 9223372037000250000\n\
+             18446744073709551615 0 18446744073709551615 42 0\n\
+             100 1073741824\n",
+            too_big("-1"),
+            too_big("18446744073709551616"),
+            too_big("-3")
+        )
     );
     Ok(())
 }

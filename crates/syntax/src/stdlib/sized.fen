@@ -282,7 +282,9 @@ extend u64:
     ## with `int(x)` first.
     def from(x: int) -> u64 fails InvalidValue:
         if x < 0:
-            fail InvalidValue(message=f"{x} doesn't fit in u64, which holds 0 to 18446744073709551615")
+            fail InvalidValue(
+                message=f"{x} doesn't fit in u64, which holds 0 to 18446744073709551615",
+            )
         u64(x)
 
     ## The u64 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
@@ -299,7 +301,9 @@ extend u64:
                     digit = u64(c.code() - 48)
                     # Checked before it's multiplied, so it never goes past the top.
                     if value > (top - digit) // 10:
-                        fail InvalidValue(message=f"{text} doesn't fit in u64, which holds 0 to 18446744073709551615")
+                        fail InvalidValue(
+                            message=f"{text} doesn't fit in u64, which holds 0 to 18446744073709551615",
+                        )
                     value = value * 10 + digit
                 value
 

@@ -4112,6 +4112,67 @@ def main(stdout: Stdout):
     )
 }
 
+/// Closures kept where the runtime reads them, as a list's items and in a generator's block, come
+/// out as the interpreter gives them: appended, read in a loop and by index, shared by a copy of
+/// the list, popped, replaced, and captured by a generator that calls one. Natively a list of
+/// closures and a generator keeping one were left to the JIT, as the runtime couldn't hold them.
+#[test]
+fn closures_kept_in_lists_and_generators_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "closures_kept",
+        r#"def add(x: int) -> int:
+    x + 1
+
+def mul(x: int) -> int:
+    x * 2
+
+def made(k: int) -> (int) -> int:
+    def plus(x: int) -> int:
+        x + k
+    plus
+
+def counted(word: str) -> Iterator[int]:
+    def size(x: int) -> int:
+        x + word.len()
+    for n in range(3):
+        yield size(n)
+
+def apply_each(change: (int) -> int, limit: int) -> Iterator[int]:
+    for n in range(limit):
+        yield change(n)
+
+def main(stdout: Stdout):
+    mut fs: list[(int) -> int] = []
+    fs.append(add)
+    fs.append(mul)
+    name = "a string long enough to live in a block"
+    def named(x: int) -> int:
+        x + name.len()
+    fs.append(named)
+    for k in range(3):
+        fs.append(made(k))
+    for f in fs:
+        stdout.print(f(3))
+    stdout.print(fs[2](0), fs.len())
+    copied = fs
+    fs.append(add)
+    stdout.print(copied.len(), fs.len())
+    last = fs.pop()
+    if last is not None:
+        stdout.print(last(10))
+    fs[0] = mul
+    stdout.print(fs[0](5), copied[0](5))
+    stdout.print(list(counted("xy")))
+    held = apply_each(named, limit=3)
+    stdout.print("made")
+    stdout.print(list(held))
+"#,
+    )
+}
+
 #[test]
 fn generators_that_fail_match_the_jit() -> std::io::Result<()> {
     if !ready() {

@@ -94,13 +94,21 @@ impl Runtime {
     /// The runtime a lowered program needs: the threads one when it runs `parallel` and that
     /// runtime is there, so its loops run on every core and a server's connections each get a
     /// task. `FENNEC_THREADS_RUNTIME=0` asks for the plain one anyway, which runs them in order,
-    /// and `=1` for the threads one, which fails if it isn't there.
-    fn for_program(lowered: &fennec_ir::Program, statically: bool) -> Self {
+    /// and `=1` for the threads one, which fails if it isn't there. A threads runtime from another
+    /// build is refused as a stale plain one is, never passed over for the plain one, which would
+    /// quietly run a server's connections one at a time.
+    fn for_program(lowered: &fennec_ir::Program, statically: bool) -> Result<Self, String> {
+        if !fennec_llvm::uses_parallel(lowered) {
+            return Ok(Self::Plain);
+        }
         let set = |name: &str| std::env::var_os(name).filter(|on| !on.is_empty()).map(|on| on == "1");
-        let threads = fennec_llvm::uses_parallel(lowered)
-            && set("FENNEC_THREADS_RUNTIME")
-                .unwrap_or_else(|| runtime_library(Self::Threads, statically).is_ok());
-        if threads { Self::Threads } else { Self::Plain }
+        match set("FENNEC_THREADS_RUNTIME") {
+            Some(true) => Ok(Self::Threads),
+            None if runtime_folder(statically)?.join(Self::Threads.library()).is_file() => {
+                runtime_library(Self::Threads, statically).map(|_| Self::Threads)
+            }
+            Some(false) | None => Ok(Self::Plain),
+        }
     }
 }
 
@@ -489,7 +497,7 @@ fn compile_emitted(
     let bytes = image_of(&mut image);
     let entry = entry_of(lowered, shared, &image, &bytes)?;
     let statically = release && links_statically();
-    let runtime = Runtime::for_program(lowered, statically);
+    let runtime = Runtime::for_program(lowered, statically)?;
     let home = fennec_build::fennec_home();
     let cache = home
         .as_deref()

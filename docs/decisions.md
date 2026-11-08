@@ -266,6 +266,12 @@ This replaces IEEE comparison operators, and the rule that a struct with a float
 **Parallel reductions combine in a fixed order.** `sum(... for e in parallel(xs))` combines its parts in a tree whose leaves are ranges of at most 1,024 positions, set by the length alone, never by element size or thread count. So the interpreter and native code give identical bits for a float sum.
 *Why:* Float results don't drift between runs or machines.
 
+**Float reductions add in one fixed pattern on every platform.** `sum()` over floats, `dot()`, and `std.math`'s vector and matrix reductions keep 8 running totals, item `i` going to total `i % 8`, and then combine the totals pairwise. The pattern is the same on every machine and in every build, so the bits are too. It replaces anything fast-math offered for reductions. Chris decided this on 2026-11-07. Not built yet: today they add left to right.
+*Why:* Eight totals fill a vector unit and hide the latency of each add, so a sum runs at the speed fast-math would give, without letting the compiler reorder anything. Pairwise combining is also more accurate than one long left-to-right chain.
+
+**`math.fma(a, b, c)` is an explicit fused multiply-add,** `a * b + c` rounded once. It's exactly rounded, so it gives the same bits everywhere, and on a chip without the instruction it's only slower, never different. It's the one way a scalar fused operation happens, as `.fma` is for `Simd`. Chris decided this on 2026-11-07. Planned, not built yet.
+*Why:* Some numeric code needs the extra precision of one rounding, and writing it out keeps every other `a * b + c` the same bits on every machine.
+
 **`Clock` is a capability,** passed to `main` like `Stdout` and `Fs`. `clock.now()` reads a monotonic clock, for measuring. `clock.time()` reads the wall clock as a `Time`, a moment in UTC, for saving and showing. Tests get a fixed clock by default, as under Tooling.
 *Why:* Code that reads the time says so in its parameters, and can be handed a fixed clock instead.
 

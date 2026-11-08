@@ -94,6 +94,40 @@ fn ints_and_floats_do_not_mix() {
     assert_eq!(in_main(program), ["can't mix int and float in `+` @ half + 1"]);
 }
 
+/// Each sized number type is a type of its own: `i64` is `int` and `f64` is `float`, and sizes
+/// never mix, with each other or with `int` and `float`, until one side is converted.
+#[test]
+fn sized_numbers_mix_only_with_their_own_size() {
+    let program = "
+        def same(stdout: Stdout, small: i32, other: i32, single: f32, wide: i64, count: int, double: f64, real: float) -> i32:
+            whole = small + other * small // other % small - small ** other
+            bits = small & other | small << other
+            half = single / single - single
+            both = wide + count
+            reals = double * real
+            stdout.print(bits, half, both, reals, small < other, -small, -single)
+            whole
+
+        def mixed(stdout: Stdout, small: i32, wide: i64, byte: u8, single: f32, double: float, count: int):
+            stdout.print(small + wide, byte - small, single * double, count + small)
+            stdout.print(small < wide, small & wide, small / small, -byte, small == count)
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "can't mix i32 and int in `+` @ small + wide",
+            "can't mix u8 and i32 in `-` @ byte - small",
+            "can't mix f32 and float in `*` @ single * double",
+            "can't mix int and i32 in `+` @ count + small",
+            "can't mix i32 and int in `<` @ small < wide",
+            "can't mix i32 and int in `&` @ small & wide",
+            "`/` on an i32 isn't settled yet @ small / small",
+            "can't negate a u8, which is never below 0 @ -byte",
+            "`==` compares an i32 with an int, which are never equal @ small == count",
+        ]
+    );
+}
+
 #[test]
 fn operators_work_on_the_types_they_are_defined_for() {
     let program = "

@@ -496,9 +496,19 @@ impl Program {
 
 pub(crate) use fennec_syntax::visit::BUILT_IN_INTERFACES;
 
-pub(crate) const BUILT_IN_TYPES: [&str; 29] = [
+pub(crate) const BUILT_IN_TYPES: [&str; 39] = [
     "int",
     "float",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "u8",
+    "u16",
+    "u32",
+    "u64",
+    "f32",
+    "f64",
     "bool",
     "str",
     "LiteralStr",
@@ -564,8 +574,8 @@ fn wrong_type_args(written: &TypeExpr, wanted: usize) -> Diagnostic {
 pub(crate) fn unknown_type(name: &str, span: Span) -> Diagnostic {
     let diagnostic = Diagnostic::new(format!("`{name}` isn't a type"), span);
     match name {
-        "f32" | "f64" | "double" => diagnostic.with_help("write `float`"),
-        "i32" | "i64" | "usize" | "long" => diagnostic.with_help("write `int`"),
+        "double" | "f16" => diagnostic.with_help("write `float`, or `f32` for 32 bits"),
+        "usize" | "isize" | "long" => diagnostic.with_help("write `int`"),
         "string" | "String" => diagnostic.with_help("write `str`"),
         "boolean" | "Bool" => diagnostic.with_help("write `bool`"),
         "List" | "Dict" | "Set" => diagnostic.with_help(format!("write `{}`", name.to_lowercase())),

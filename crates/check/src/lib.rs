@@ -60,7 +60,7 @@ use fennec_syntax::{Diagnostic, Expr, ExprKind, Module, Span};
 pub use messages::missing_method;
 pub use named::add_pattern_fixes;
 pub use privacy::add_rename_fixes;
-pub use types::Type;
+pub use types::{Num, Type};
 
 /// Checks a parsed module. Returns the signature of every function and method, or every
 /// problem found, in source order.

@@ -1,11 +1,15 @@
-//! The `llvm` target: a generated program built by `fennec build --llvm` must print what the
-//! interpreter prints, and fail the same way. Half the inputs build with `--release`, which
-//! optimizes the whole program as one. Structs and enums are printed through what they give, since
-//! the backend can't print them whole yet, and a program it doesn't take yet is passed over.
+//! Targets built natively. The `llvm` target: a generated program built by `fennec build --llvm`
+//! must print the same and fail the same way built as a dev build and with `--release`, which
+//! optimizes the whole program as one, and must print what's pinned for its input, where there's an
+//! output pinned. Structs and enums are printed through what they give, and a program the backend
+//! doesn't take yet is passed over.
 //!
-//! This needs the `fennec` command beside this one (or where `FENNEC` says), the runtime library
-//! beside that, and LLVM's tools, so it runs only when named. `fennec-fuzz run llvm` stops if one
-//! is missing, and replaying a kept input without them passes.
+//! The `json`, `toml` and `utf8` targets run their input through a small program built once,
+//! which reads it with the standard library's code, where failing is fine and only breaking isn't.
+//!
+//! These need the `fennec` command beside this one (or where `FENNEC` says), the runtime library
+//! beside that, and LLVM's tools. `fennec-fuzz run llvm` stops if one is missing, and the others,
+//! like replaying a kept input, pass without them.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -33,7 +37,7 @@ pub(crate) fn ready() -> Result<(), String> {
         .get_or_init(|| {
             let source = "def main(stdout: Stdout):\n    stdout.print(\"ready\")\n";
             match build(source, &work(), false)? {
-                Some(executable) if ran(&executable, &work())?.0 == b"ready\n" => Ok(()),
+                Some(executable) if ran(&executable, &[], &work())?.0 == b"ready\n" => Ok(()),
                 _ => Err(format!("`{}` couldn't build and run a program with LLVM", fennec().display())),
             }
         })
@@ -73,10 +77,11 @@ fn build(source: &str, work: &Path, release: bool) -> Result<Option<PathBuf>, St
 
 /// What an executable printed, what it said on standard error, and whether it succeeded. One
 /// that crashes, gets stuck or holds too much memory is stopped and said so.
-fn ran(executable: &Path, work: &Path) -> Result<(Vec<u8>, String, bool), String> {
+fn ran(executable: &Path, args: &[&std::ffi::OsStr], work: &Path) -> Result<(Vec<u8>, String, bool), String> {
     let (out, err) = (work.join("stdout"), work.join("stderr"));
     let file = |path: &Path| File::create(path).map_err(|err| format!("{}: {err}", path.display()));
     let mut child = Command::new(executable)
+        .args(args)
         .stdout(file(&out)?)
         .stderr(file(&err)?)
         .spawn()
@@ -91,6 +96,45 @@ fn ran(executable: &Path, work: &Path) -> Result<(Vec<u8>, String, bool), String
     }
 }
 
+/// What a run did: what it printed, the first line it said on standard error, and whether it
+/// succeeded.
+type Outcome = (Vec<u8>, String, bool);
+
+/// What a build of `source` did when run, or None when the backend doesn't take it yet.
+fn outcome(source: &str, work: &Path, release: bool) -> Result<Option<Outcome>, String> {
+    let Some(executable) = build(source, work, release)? else { return Ok(None) };
+    let (printed, said, succeeded) = ran(&executable, &[], work)?;
+    Ok(Some((printed, said.lines().next().unwrap_or_default().to_owned(), succeeded)))
+}
+
+/// The folders of inputs the `llvm` target has outputs pinned for, beside each input: what it
+/// printed in `<input>.out`, and when it failed, the first line it said in `<input>.fails`. They
+/// were written while the interpreter could say what each program does.
+const PINNED: [&str; 2] = ["seeds/jit", "found/llvm"];
+
+/// Whether a file is a pinned output rather than an input.
+pub(crate) fn is_pinned_output(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| extension == "out" || extension == "fails")
+}
+
+/// The outcome pinned for an input, if it's one of those with an output pinned.
+fn pinned(input: &[u8]) -> Option<Outcome> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let entries = PINNED.iter().flat_map(|folder| std::fs::read_dir(root.join(folder)).into_iter().flatten());
+    let path = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| !is_pinned_output(path) && std::fs::read(path).is_ok_and(|bytes| bytes == input))?;
+    let printed = std::fs::read(path.with_extension("out")).ok()?;
+    let fails = std::fs::read_to_string(path.with_extension("fails")).ok();
+    let said = fails.as_deref().map(str::trim_end).unwrap_or_default().to_owned();
+    Some((printed, said, fails.is_none()))
+}
+
+fn shown((printed, said, _): &Outcome) -> String {
+    format!("{}{said}", String::from_utf8_lossy(printed))
+}
+
 pub(crate) fn llvm(input: &[u8]) -> Result<(), String> {
     if ready().is_err() {
         return Ok(());
@@ -100,28 +144,84 @@ pub(crate) fn llvm(input: &[u8]) -> Result<(), String> {
         fennec_syntax::parse(&source).map_err(|err| format!("it wrote bad code: {err:?}\n{source}"))?;
     fennec_check::check_and_resolve(&mut module)
         .map_err(|err| format!("it wrote bad code: {err:?}\n{source}"))?;
-    let mut expected = Vec::new();
-    let failure = fennec_interp::run(&module, &mut expected).err().map(|failure| failure.message);
     let work = work();
-    let release = input.len() % 2 == 1;
-    let built = build(&source, &work, release).map_err(|wrong| format!("{wrong}\n--- program\n{source}"))?;
-    let Some(executable) = built else { return Ok(()) };
-    let (printed, said, succeeded) =
-        ran(&executable, &work).map_err(|wrong| format!("{wrong}\n--- program\n{source}"))?;
-    let first_line = said.lines().next().unwrap_or_default();
-    let same_failure = match &failure {
-        None => succeeded,
-        Some(message) => {
-            !succeeded && first_line == format!("error: {}", message.lines().next().unwrap_or_default())
-        }
+    let with_program = |wrong: String| format!("{wrong}\n--- program\n{source}");
+    let Some(dev) = outcome(&source, &work, false).map_err(with_program)? else { return Ok(()) };
+    let Some(release) = outcome(&source, &work, true).map_err(with_program)? else {
+        return Err(with_program("it builds as a dev build but not with --release".to_owned()));
     };
-    if printed != expected || !same_failure {
-        return Err(format!(
-            "LLVM disagrees with the interpreter{}:\n--- interpreter\n{}{failure:?}\n--- LLVM\n{}{said}\n--- program\n{source}",
-            if release { " with --release" } else { "" },
-            String::from_utf8_lossy(&expected),
-            String::from_utf8_lossy(&printed),
-        ));
+    if dev != release {
+        return Err(with_program(format!(
+            "the dev build and the --release build disagree:\n--- dev\n{}\n--- release\n{}",
+            shown(&dev),
+            shown(&release)
+        )));
+    }
+    if let Some(expected) = pinned(input)
+        && expected != dev
+    {
+        return Err(with_program(format!(
+            "LLVM disagrees with the output pinned for this input:\n--- pinned\n{}\n--- LLVM\n{}",
+            shown(&expected),
+            shown(&dev)
+        )));
     }
     Ok(())
+}
+
+/// The programs the targets that read an input natively run it through, each reading the file
+/// it's given. A program here may fail, but never crash or get stuck.
+const READERS: [(&str, &str); 3] = [
+    (
+        "json",
+        "from std import json\n\ndef main(fs: Fs, args: Args, stdout: Stdout) fails IoError:\n    \
+         text = fs.read_text(args[0])?\n    stdout.print(json.loads[list[int]](text))\n    \
+         stdout.print(json.loads[dict[str, str]](text))\n    stdout.print(json.loads[dict[str, list[float]]](text))\n    \
+         stdout.print(json.loads[list[str?]](text))\n    stdout.print(json.loads[float](text))\n    \
+         stdout.print(json.loads[bool](text))\n",
+    ),
+    (
+        "toml",
+        "from std import toml\n\ndef main(fs: Fs, args: Args, stdout: Stdout) fails IoError:\n    \
+         text = fs.read_text(args[0])?\n    stdout.print(toml.loads[dict[str, str]](text))\n    \
+         stdout.print(toml.loads[dict[str, int]](text))\n    stdout.print(toml.loads[dict[str, dict[str, str]]](text))\n    \
+         stdout.print(toml.loads[dict[str, list[float]]](text))\n",
+    ),
+    (
+        "utf8",
+        "def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:\n    \
+         stdout.print(fs.read_bytes(args[0])?.decode())\n",
+    ),
+];
+
+/// The readers built so far in this process, by target.
+type Built = std::sync::Mutex<Vec<(String, PathBuf)>>;
+
+/// The reader built for `name`, built the first time it's asked for in this process.
+fn reader(name: &str) -> Result<PathBuf, String> {
+    static BUILT: OnceLock<Built> = OnceLock::new();
+    let built = BUILT.get_or_init(Built::default);
+    let mut built = built.lock().map_err(|_| "a reader's build failed before".to_owned())?;
+    if let Some((_, executable)) = built.iter().find(|(made, _)| made == name) {
+        return Ok(executable.clone());
+    }
+    let source = READERS.iter().find(|(named, _)| *named == name).map(|(_, source)| *source);
+    let source = source.ok_or_else(|| format!("there's no reader for `{name}`"))?;
+    let executable = build(source, &work().join(name), false)?
+        .ok_or_else(|| format!("LLVM doesn't take the `{name}` reader"))?;
+    built.push((name.to_owned(), executable.clone()));
+    Ok(executable)
+}
+
+/// Runs `input` through the reader for `name`, giving what it printed, or None where nothing can
+/// be built here. It may fail, but must not crash or get stuck.
+pub(crate) fn read_natively(name: &str, input: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    if ready().is_err() {
+        return Ok(None);
+    }
+    let executable = reader(name)?;
+    let work = work().join(name);
+    let file = work.join("input");
+    std::fs::write(&file, input).map_err(|err| format!("{}: {err}", file.display()))?;
+    ran(&executable, &[file.as_os_str()], &work).map(|(printed, _, _)| Some(printed))
 }

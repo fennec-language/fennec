@@ -1,55 +1,10 @@
-//! Targets that run code: the JIT against the interpreter, and the runtime on its own.
+//! The runtime on its own, called as native code calls it.
 
 use fennec_interp::embed;
 use fennec_interp::packed::Element;
 use fennec_syntax::Module;
 
-use crate::generate::program;
 use crate::mutate::Rng;
-
-/// What a run printed, and the message it failed with, if it did.
-type Ran = (Vec<u8>, Option<String>);
-
-/// Whichever of two runs of a program did first, they must do the same: print the same and
-/// fail the same way.
-pub(crate) fn jit(input: &[u8]) -> Result<(), String> {
-    let source = program(input);
-    let mut module =
-        fennec_syntax::parse(&source).map_err(|err| format!("it wrote bad code: {err:?}\n{source}"))?;
-    fennec_check::check_and_resolve(&mut module)
-        .map_err(|err| format!("it wrote bad code: {err:?}\n{source}"))?;
-    let interpreted = interpreted(&module);
-    let Some(native) = native(&module) else { return Ok(()) };
-    if interpreted != native {
-        return Err(format!(
-            "the engines disagree:\n--- interpreter\n{}\n--- JIT\n{}\n--- program\n{source}",
-            shown(&interpreted),
-            shown(&native)
-        ));
-    }
-    Ok(())
-}
-
-fn shown((output, failure): &Ran) -> String {
-    format!("{}{failure:?}", String::from_utf8_lossy(output))
-}
-
-fn interpreted(module: &Module) -> Ran {
-    let mut output = Vec::new();
-    let failure = fennec_interp::run(module, &mut output).err().map(|failure| failure.message);
-    (output, failure)
-}
-
-/// A run as native code, or None for a program the JIT can't compile yet.
-fn native(module: &Module) -> Option<Ran> {
-    let mut output = Vec::new();
-    let failure = match fennec_jit::run(module, &mut output) {
-        Ok(()) => None,
-        Err(fennec_jit::JitError::Failed(failure)) => Some(failure.message),
-        Err(fennec_jit::JitError::Unsupported(_)) => return None,
-    };
-    Some((output, failure))
-}
 
 /// Values worth passing to the runtime when it isn't one it gave out.
 const STRANGE: [i64; 9] = [0, 1, 2, 3, -1, 8, 4096, i64::MAX, i64::MIN];
@@ -152,12 +107,7 @@ pub(crate) fn runtime(input: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{jit, runtime};
-
-    #[test]
-    fn an_empty_program_runs_the_same_on_both() {
-        assert_eq!(jit(b""), Ok(()));
-    }
+    use super::runtime;
 
     #[test]
     fn the_runtime_takes_any_calls() {

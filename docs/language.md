@@ -175,6 +175,8 @@ units[unit_id].health -= 1                         # sure: stops loudly if wrong
 
 Tables are for large, flat data. An `Id` is an index, a generation and a tag for its table, so it finds the right thing or nothing.
 
+An `Id` is local to its process's `Table`. To name something across servers, send a key of your own, like a player's name, and let each server find its own `Id` from it. Built: an `Id` from another `Table` finds nothing.
+
 ## Sharing, resources and tasks
 
 Built so far: `shared T`, `shared name = value` and `lock`, on every engine, with a crash inside `lock x as ref` rolled back; `with` sources a program writes, with `lend`; and server rounds for `parallel(server)`. A `lock` inside another `lock` is refused for now: take them together in one. Not built yet: `launch`, `Inbox`, `TaskGroup`, `Channel` in the language, and pools, as the lines below say. Today's `shared Name:` declarations, `with x as ref y:` and `def del` still compile, and `fennec fix` rewrites them.
@@ -230,12 +232,13 @@ with fs.open("save.dat")? as file, net.connect(host)? as conn:
 # both are closed here, however the block ends
 ```
 
-The end of a `with` block is where what it lent finishes: a file closes and a transaction commits. A failure while finishing is the `with` statement's failure, covered by the `?` on its line, so `with fs.create(path)? as file:` covers both opening and finishing. Built, for sources a program writes, as in `examples/sources.fen`, and for files, as in `examples/files.fen`: a file written goes in beside its path, synced, and takes the path's place when the block ends, and a block that fails leaves the old file. `fs.create(path, durable=False)` skips the sync. In a task, a file's disk waits pause only that task. Transactions move to it next.
+The end of a `with` block is where what it lent finishes: a file closes and a transaction commits. A failure while finishing is the `with` statement's failure, covered by the `?` on its line, so `with fs.create(path)? as file:` covers both opening and finishing. Built, for sources a program writes, as in `examples/sources.fen`, and for files, as in `examples/files.fen`: a file written goes in beside its path, synced, and takes the path's place when the block ends, and a block that fails leaves the old file. `fs.create(path, durable=False)` skips the sync. In a task, a file's disk waits pause only that task. Built for SQLite's transactions too, in `std.sqlite`: `with db.transaction()? as tx:` commits at the block's end and rolls back if it fails.
 
 - `with` lends you something for the length of a block, then takes it back. It's the only way to open files, sockets, servers and transactions. Built for sources a program writes, below, and for files; sockets move to them next.
 - What it lends can't escape the block: it can't be returned, stored outside it or put in a `shared`. A second name for it inside the block is fine.
 - A struct holding something borrowed is borrowed too, so a wrapper like `LineProtocol(conn=conn)` works inside the block and can't leak out.
-- `with conn.split() as reader, writer:` gives a connection's read and write sides, for one task reading while another writes.
+- Several handles in one `with` open left to right and finish innermost first, as one `with` inside another. If one fails to open, the ones already open run their `else:`. Built.
+- `with conn.split() as reader, writer:` gives a connection's read and write sides, for one task reading while another writes. Several names split what a source lends as a tuple, `-> with (Reader, Writer)`. Built for sources; connections move to them with sockets.
 - `with` never locks.
 
 Writing your own takes `-> with T` and one `lend`, outside any loop. Setup goes above it and cleanup below. Built:
@@ -263,7 +266,7 @@ with fs.create("save.dat")? as file:
 `fs.create` syncs the file to disk before putting it in place, and `file.sync()?` syncs at any other point. Not built yet.
 
 - Code after `lend` runs when the caller's block succeeds, and it may fail. That failure becomes the `with` statement's failure. `return`, `break` and `continue` in the caller count as success, so an early `return` still runs the cleanup, and a failing cleanup makes the function fail. Built.
-- `lend x else:` runs when the caller's block fails or crashes, and the block's own failure is the one that passes up. If the cleanup in `else:` fails too, its failure is attached to the block's as a note. With several handles, every one runs its cleanup, innermost first. Running `else:` for a failed block is built. Running it on a crash, the note, and several handles in one `with` aren't built yet: today a failing `else:` replaces the block's failure.
+- `lend x else:` runs when the caller's block fails or crashes, and the block's own failure is the one that passes up. If the cleanup in `else:` fails too, its failure is attached to the block's as a note. With several handles, every one runs its cleanup, innermost first. Running `else:` for a failed block is built, and so are several handles. Running it on a crash, and the note, aren't built yet: today a failing `else:` replaces the block's failure.
 - There's nothing for the caller to finish by hand, like a `commit()` or a `close()`, and nothing to forget.
 - A source can't `lend` while it holds a lock it took. Opening a file inside a lock is fine.
 - A generator can `lend` each item, closed when that round of the loop ends: `def clients(server: Server) -> Iterator[with Connection]:`. That's how `for conn in parallel(server):` works, with each connection lent to its own round's task. It's a plain loop, not `for ref`, and a connection's methods take `self`.
@@ -384,6 +387,7 @@ remaining = deadline - now
 - Types must match exactly, with no conversions, so there's never a best match to choose. `now + now` is a compile error that lists the `+` that `Time` has.
 - It's for operators only. A named function still has one meaning, so `load(path)` is always the same `load`.
 - A user type gets this exactly as `std`'s types do.
+- Units of measure use it, with no new syntax: `Meters` is a struct holding a `float`, and its operators say that `Meters / Seconds` gives `Speed` and `Meters / float` gives `Meters`. A unit with one operator of each kind is built today, and the second waits for the rule above.
 
 ## Failures
 
@@ -408,6 +412,7 @@ stream = fs.open(filename) else:
 - `?` means the same everywhere, `parallel` included: a failure in one round passes up out of the loop once the other rounds stop. Built. To let one piece fail alone, handle it in the body, with `match` or `else: continue`. `break` stops new rounds from starting and lets the running ones finish, and a failure passing up cuts them short, like a failed `launch`. Each connection a server lends closes when its round ends, however it ends. Built. `server.serve(handler)` turns a handler's failure into a 500, in plain Fennec. Not built yet: today's handler can't fail.
 - `?` is only for failures, `else` ends a chain and can leave, and ignoring a returned value is an error, with `_ = call()` to discard one. Built.
 - `.Case` is required when the type is known, in values and in `case` patterns; `fennec fix` writes it. Built.
+- An error carries notes, a `list[str]`, as Python's exceptions do: `failure.add_note(text)` adds one, and `failure.notes()` reads them. When a block fails and its `lend x else:` cleanup fails too, the cleanup's failure becomes a note on the block's, so neither is lost, and `main` prints each note under its failure. Not built yet: today a failing `else:` replaces the block's failure.
 - `fails A | B` combines failures from different places: `?` passes any of them up as it is, and a function type can say it too, as in `(str) -> int fails ParseError | RangeError`. Built.
 - An `else:` block must leave: it ends with `return`, `fail`, `continue` or `break`. Built.
 - Taking from an empty collection gives `None`: `list.pop()` returns `T?`, as a queue's `pop` does, so draining one reads `next = todo.pop() else break`. `pop(at)` fails on a position that isn't there, like `items[at]`. A dict's `pop(key)` fails on a key that isn't there, like `ages[key]`, and `remove(key)` gives `V?` instead: the value, or `None`, so `if ages.remove(name) is None:` asks whether it was there. `items.get(at)` gives `T?` for a position that may not be there, counting from the end when it's negative as `items[at]` does. Built.
@@ -443,13 +448,15 @@ back = json.loads[World](text)?
 - JSON, TOML and `std.pack` save any type whose fields can all be saved, through one `serialize` and `deserialize`. Built.
 - A `Table` saves as a list of its items in order, and an `Id` as where its item is in that list. Loading makes a new `Table`, and every `Id` loaded with it finds its item there. An `Id` has to be in a `Table` saved with it. Built.
 - A union saves tagged with its member's type name, as in `{"Circle": {"radius": 1.0}}`. Built.
+- `@skip` and `@serialize(name="uid")` on a field say how it's saved. Built. A kit may define annotations of its own for fields, which generic code reads through `fields(T)`, and neither is built yet. A function takes only `@hot`, so routes are registered in plain code, as in `router.get("/todos/{id}", show_todo)`.
+- A `Secret[str]`, from `std.crypto`, can't be saved, printed or logged, and its text comes out only through a method whose name says so. Not built yet.
 
 Loading is safe on untrusted input:
 
 - A load always makes fresh values, never a link to anything already in the program. Built.
 - Every `Id` resolves within its own document, and each `Table` carries a tag that's never reused, so an `Id` from one `Table` finds nothing in another of the same type. Built.
 - `where` rules run again on load, so a value that breaks one fails the load. Built.
-- Unknown fields are refused unless `extra=` says otherwise: `json.loads[Settings](text, extra=.ignore)`. Built for JSON. TOML always refuses them, and doesn't take `extra=` yet. `std.pack` saves no field names, and refuses data packed from a different type.
+- Unknown fields are refused unless `extra=` says otherwise: `json.loads[Settings](text, extra=.ignore)`. Built for JSON. TOML always refuses them, and doesn't take `extra=` yet. `std.pack` saves no field names, and refuses data packed from a different type. Loading data from an earlier version of a program, with fields matched by name and new fields taking their defaults, is decided and not built yet.
 - Untrusted input has depth and size limits. `std.pack` limits nesting, each string's length and the total it reads, before allocating anything. Built. JSON and TOML limit nesting to 500 deep, and don't limit size, string length or collection length yet.
 
 ## Templates
@@ -461,6 +468,7 @@ page = html.render(t"<p>Hello, {visitor.name}</p>")
 result = process.run(t"git log --author={author}")?
 ```
 
+- `std.sqlite` takes them: `db.execute(t"...")` and `db.query[T](t"...")`, with each value bound as a parameter and each row read into a `T` by its columns' names. Built, natively.
 - `t"..."` makes a `std` `Template`, as Python 3.14's t-strings do. It holds the literal pieces and the values separately, and the values' type comes from where it goes, as in `Template[SqlValue]`. A `Template[T]` has `strings`, one more than its `values`, plus each value's `expressions` as written and its `format_specs`, and `interpolations()` gives each value with both.
 - A `str` is never a `Template`, so `db.query`, `html.render` and `process.run` can't be handed text built by joining strings, and SQL, HTML and shell injection can't be written. There are no per-library string prefixes.
 - `LiteralStr` is a string that came from the source code, as Python's `typing.LiteralString` is. Only a string literal, or literals joined with `+`, makes one. It goes anywhere a `str` goes, but a `str` is never a `LiteralStr`. A `Template`'s text pieces are `LiteralStr`, so building one from text read while the program runs is a compile error, and any function may ask for one. It's for strings only.

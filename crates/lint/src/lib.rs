@@ -21,7 +21,7 @@ mod paths;
 mod rewrites;
 mod sizes;
 
-use fennec_syntax::{Diagnostic, Module, Sources};
+use fennec_syntax::{Diagnostic, Item, Module, Sources};
 
 /// How much a finding matters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,20 +69,92 @@ pub fn positional_arguments(module: &Module, sources: &Sources) -> Vec<Lint> {
 
 /// Everything the lints find in a loaded program, in the order it's written.
 pub fn lint(module: &Module, sources: &Sources) -> Vec<Lint> {
+    let mut found = in_each_file(module, sources, &Facts::of(module, sources));
+    found.extend(across_files(module, sources));
+    found.sort_by_key(|lint| (lint.diagnostic.span.start, lint.rule));
+    found
+}
+
+/// What the lints that look at one file at a time find in the files `wanted` takes, by the path
+/// they're shown by, in the order they're written: all `lint` finds, and in a kit all
+/// `kit_lints` finds, but for what `across_files` finds. In a file, these depend only on its own
+/// text and on what the whole program defines, never on another file's bodies, so an edit that
+/// changes only bodies changes what they find in the files it edited and nowhere else, as long as
+/// `Facts` stay the same.
+pub fn within_files(
+    module: &Module,
+    sources: &Sources,
+    kit: bool,
+    wanted: &dyn Fn(&str) -> bool,
+) -> Vec<Lint> {
+    let facts = Facts::of(module, sources);
+    let taken = |item: &&Item| sources.file_at(item_span(item)).is_some_and(|(path, ..)| wanted(path));
+    let part = Module { items: module.items.iter().filter(taken).cloned().collect() };
+    let mut found = in_each_file(&part, &sources.only(wanted), &facts);
+    if kit {
+        found.extend(asserts::in_kit(&part, facts.declares_expect));
+    }
+    found.sort_by_key(|lint| (lint.diagnostic.span.start, lint.rule));
+    found
+}
+
+/// What the lints that look across a program's files find: `unused-param`, which looks at every
+/// call, and `unused-item`, which looks at every name written.
+#[must_use]
+pub fn across_files(module: &Module, sources: &Sources) -> Vec<Lint> {
+    let mut found = params::of(module, sources);
+    found.extend(items::of(module, sources));
+    found
+}
+
+/// What the lints of one file at a time take from all of a program: which files extend a type,
+/// whose imports are used for that, and whether it declares an `expect` of its own, which
+/// `expect-in-kit` then leaves alone. A nested function can be named `expect`, so an edit to a
+/// body can change these, and then every file's lints have to be found again.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Facts {
+    pub extending: Vec<String>,
+    pub declares_expect: bool,
+}
+
+impl Facts {
+    #[must_use]
+    pub fn of(module: &Module, sources: &Sources) -> Facts {
+        let mut extending: Vec<String> =
+            dead::extending(module, sources).into_iter().map(str::to_owned).collect();
+        extending.sort();
+        extending.dedup();
+        Facts { extending, declares_expect: asserts::declares_expect(module) }
+    }
+}
+
+fn in_each_file(module: &Module, sources: &Sources, facts: &Facts) -> Vec<Lint> {
+    let extending: Vec<&str> = facts.extending.iter().map(String::as_str).collect();
     let mut found = sizes::of(module, sources);
     found.extend(rewrites::of(module, sources));
     found.extend(flow::of(module, sources));
-    found.extend(dead::of(module, sources));
+    found.extend(dead::of(module, sources, &extending));
     found.extend(loops::of(module, sources));
     found.extend(names::of(module, sources));
     found.extend(chains::of(module, sources));
     found.extend(paths::of(sources));
     found.extend(asserts::of(module));
-    found.extend(params::of(module, sources));
-    found.extend(items::of(module, sources));
     found.extend(docs::of(module, sources));
-    found.sort_by_key(|lint| (lint.diagnostic.span.start, lint.rule));
     found
+}
+
+/// Where an item is written.
+fn item_span(item: &Item) -> fennec_syntax::Span {
+    match item {
+        Item::Function(def) => def.span,
+        Item::Struct(def) | Item::Enum(def) | Item::Error(def) => def.span,
+        Item::Interface(interface) => interface.span,
+        Item::Extend(extension) => extension.span,
+        Item::TypeAlias { span, .. } | Item::Const { span, .. } => *span,
+        Item::Import(import) => import.span,
+        Item::Test(test) => test.span,
+        Item::Stmt(stmt) => stmt.span,
+    }
 }
 
 /// What only a kit is held to, beyond `lint`: its code outside `main` and its tests doesn't
@@ -90,7 +162,7 @@ pub fn lint(module: &Module, sources: &Sources) -> Vec<Lint> {
 /// program is a kit is up to whoever loaded it.
 #[must_use]
 pub fn kit_lints(module: &Module) -> Vec<Lint> {
-    asserts::in_kit(module)
+    asserts::in_kit(module, asserts::declares_expect(module))
 }
 
 /// Every explicit `copy` that changes nothing, in a module that checks. Finding them checks the

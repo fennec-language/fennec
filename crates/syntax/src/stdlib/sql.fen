@@ -1,0 +1,46 @@
+## `std.sql`: what every database gives, so code written against it works with any of them. A
+## query is a template string, `t"..."`, and each `{}` in it is a `SqlValue`, which the database
+## is given apart from the query's text, as a parameter. So a value is never part of the text, and
+## SQL injection can't be written. Rows come back as any type that loads, a struct's fields
+## matched to the columns by name, as `json.loads[T]` matches keys:
+##
+## ```fennec
+## struct Entry:
+##     path: str
+##     size: int
+##
+## rows = db.query[Entry](t"select path, size from entries where size > {least}")?
+## ```
+##
+## `std.sqlite` is the first database under it.
+
+## What can go into a query, as a parameter. A `bool` goes in as 1 or 0.
+export type SqlValue = int | float | str | bytes | bool
+
+## How a database failed. `message()` says it in words.
+export error SqlError:
+    ## A rule of the table's refused a change: a `unique` or `primary key` already taken, a
+    ## `not null`, a `check` or a foreign key.
+    Constraint(reason: str)
+    ## Another writer held the database for longer than the wait.
+    Busy(reason: str)
+    ## A row's column doesn't fit the field it's read into, or a field has no column.
+    Column(name: str, reason: str)
+    ## Anything else: a query the database refused, or a file it couldn't open or read.
+    Failed(reason: str)
+
+    ## What went wrong, in words.
+    def message(self) -> str:
+        match self:
+            case .Column(name, reason):
+                f"column `{name}`: {reason}"
+            case Constraint(reason) | Busy(reason) | Failed(reason):
+                reason
+
+## A database, or a transaction in one: what runs queries.
+export interface Sql:
+    ## Runs a query that changes something, like an `insert`, and gives how many rows it changed.
+    def execute(self, query: Template[SqlValue]) -> int fails SqlError
+
+    ## Runs a query and gives each row it found as a `T`.
+    def query[T: Deserializable](self, query: Template[SqlValue]) -> list[T] fails SqlError

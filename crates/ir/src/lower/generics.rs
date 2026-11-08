@@ -187,6 +187,9 @@ impl Context<'_> {
             }
             (Type::List(first), Type::List(second))
             | (Type::Set(first), Type::Set(second))
+            | (Type::Iterator(first), Type::Iterator(second))
+            | (Type::Buffer(first), Type::Buffer(second))
+            | (Type::Array(first, _), Type::Array(second, _))
             | (Type::Optional(first), Type::Optional(second))
             | (Type::Table(first), Type::Table(second))
             | (Type::Id(first), Type::Id(second)) => self.unify(first, second, subst),

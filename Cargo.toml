@@ -73,6 +73,12 @@ mio = { version = "=1.2.4", default-features = false, features = ["net", "os-ext
 # lockstep multiplayer need them the same. It's the library Rust itself uses where there's no C
 # library, as on WebAssembly. Without `arch`, nothing in it is chosen by the CPU. Under MIT.
 libm = { version = "=0.2.16", default-features = false }
+# `std.sqlite`: SQLite itself, compiled from its C source into every build that uses it, so there's
+# no system library to find or match. SQLite is the most tested database there is, and writing
+# one again isn't the point; rusqlite is the safe API over it, and every `unsafe` stays inside it
+# and libsqlite3-sys. Without default features, there's no statement cache to pull in a second
+# hashbrown. Not on WebAssembly, where there's no disk. Under MIT, with SQLite in the public domain.
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
 cranelift-codegen = "=0.137.0"
 cranelift-frontend = "=0.137.0"
 cranelift-jit = "=0.137.0"

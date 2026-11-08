@@ -586,7 +586,7 @@ impl Finder<'_> {
     /// Declares the names a `match` case's pattern binds, written somewhere in `arm`.
     fn pattern(&mut self, pattern: &Pattern, arm: Span) {
         match pattern {
-            Pattern::Bind(name) => self.declare(name, arm),
+            Pattern::Bind(name) | Pattern::RefBind(name) => self.declare(name, arm),
             Pattern::Variant { name, args, .. } => {
                 self.names(arm, name, || Target::Case(name.clone()));
                 for arg in args {
@@ -630,7 +630,7 @@ impl Finder<'_> {
                     self.case_names(arg, arm);
                 }
             }
-            Pattern::Bind(_) | Pattern::Wildcard | Pattern::Literal(_) => {}
+            Pattern::Bind(_) | Pattern::RefBind(_) | Pattern::Wildcard | Pattern::Literal(_) => {}
         }
     }
 
@@ -643,7 +643,7 @@ impl Finder<'_> {
                     self.literals(arg);
                 }
             }
-            Pattern::Bind(_) | Pattern::Wildcard => {}
+            Pattern::Bind(_) | Pattern::RefBind(_) | Pattern::Wildcard => {}
         }
     }
 }

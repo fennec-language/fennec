@@ -431,7 +431,7 @@ impl Uses {
             }
             Pattern::Tuple(items) | Pattern::Or(items) => items.iter().for_each(|item| self.pattern(item)),
             Pattern::Literal(expr) => self.expr(expr),
-            Pattern::Bind(_) | Pattern::Wildcard => {}
+            Pattern::Bind(_) | Pattern::RefBind(_) | Pattern::Wildcard => {}
         }
     }
 }

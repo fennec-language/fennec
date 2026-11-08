@@ -200,7 +200,7 @@ fn bound_target<S: std::hash::BuildHasher>(target: &Expr, bound: &mut HashSet<St
 
 fn bound_pattern<S: std::hash::BuildHasher>(pattern: &Pattern, bound: &mut HashSet<String, S>) {
     match pattern {
-        Pattern::Bind(name) => {
+        Pattern::Bind(name) | Pattern::RefBind(name) => {
             bound.insert(name.clone());
         }
         Pattern::Variant { args: patterns, .. } | Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
@@ -492,6 +492,6 @@ fn pattern(pattern: &mut Pattern, change: &mut dyn FnMut(&mut Expr)) {
                 self::pattern(arg, change);
             }
         }
-        Pattern::Wildcard | Pattern::Bind(_) => {}
+        Pattern::Wildcard | Pattern::Bind(_) | Pattern::RefBind(_) => {}
     }
 }

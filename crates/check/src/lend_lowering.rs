@@ -35,8 +35,9 @@ pub(crate) fn lower(
     module: &mut Module,
     sources: &BTreeMap<(u32, u32), Source>,
     launches: &BTreeMap<(u32, u32), crate::launch::Launch>,
+    ref_matches: &BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>,
 ) -> bool {
-    if sources.is_empty() && launches.is_empty() {
+    if sources.is_empty() && launches.is_empty() && ref_matches.is_empty() {
         return false;
     }
     NEXT.with(|next| next.set(Span::PRELUDE - 1));
@@ -47,7 +48,7 @@ pub(crate) fn lower(
         }
     });
     COPIES.with(|copies| copies.set(lowest));
-    let mut lowering = Lowering { sources, launches, made: 0, returns: Vec::new() };
+    let mut lowering = Lowering { sources, launches, ref_matches, made: 0, returns: Vec::new() };
     for item in &mut module.items {
         match item {
             Item::Function(def) => lowering.function(def),
@@ -153,6 +154,8 @@ struct Lowering<'s> {
     sources: &'s BTreeMap<(u32, u32), Source>,
     /// Each `with launch(...)`, which is written in as a source made for it.
     launches: &'s BTreeMap<(u32, u32), crate::launch::Launch>,
+    /// Each `match` with a `ref` case, with the fields each such case puts back.
+    ref_matches: &'s BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>,
     /// How many have been written in, which makes each one's hidden names its own.
     made: usize,
     /// The return type written for each function being walked, innermost last.
@@ -269,6 +272,11 @@ impl Lowering<'_> {
                         (None, None) => None,
                     }
                 }
+                StmtKind::Expr(value)
+                    if self.ref_matches.contains_key(&(value.span.start, value.span.end)) =>
+                {
+                    self.ref_match(value, stmt.span)
+                }
                 _ => None,
             };
             match written {
@@ -306,6 +314,93 @@ impl Lowering<'_> {
             }
             _ => {}
         }
+    }
+
+    /// A `match` with `ref` cases, each written as a case that binds the field as a plain name
+    /// and puts the case back, with that name's value, wherever its body ends: when it finishes,
+    /// leaves by `return`, `break` or `continue`, or fails.
+    fn ref_match(&mut self, value: &Expr, at: Span) -> Option<Vec<Stmt>> {
+        let ExprKind::Match { subject, arms } = &value.kind else { return None };
+        let cases = self.ref_matches.get(&(value.span.start, value.span.end))?;
+        let mut written = arms.clone();
+        for (arm, fields) in written.iter_mut().zip(cases) {
+            let Some(fields) = fields else { continue };
+            self.ref_case(arm, subject, fields, at)?;
+        }
+        let kind = ExprKind::Match { subject: subject.clone(), arms: written };
+        Some(vec![stmt(StmtKind::Expr(Expr { kind, span: value.span }), at)])
+    }
+
+    /// One `ref` case, written in: its `ref`s and `_`s bound to hidden names, the `ref`s copied
+    /// to mut names of their own for the body, and the case put back, made from them, on every
+    /// way out.
+    fn ref_case(&mut self, arm: &mut MatchArm, subject: &Expr, fields: &[String], at: Span) -> Option<()> {
+        let Pattern::Variant { name: case, args, .. } = &mut arm.pattern else { return None };
+        if args.len() != fields.len() {
+            return None;
+        }
+        self.made += 1;
+        let made = self.made;
+        let mut copies = Vec::new();
+        let mut parts = Vec::new();
+        for (at_field, (arg, field)) in args.iter_mut().zip(fields).enumerate() {
+            let value = match arg {
+                Pattern::RefBind(held) => {
+                    let bound = format!("{held}__ref{made}");
+                    copies.push(assign(held, name(&bound, at), true, None));
+                    let value = name(held, at);
+                    *arg = Pattern::Bind(bound);
+                    value
+                }
+                Pattern::Bind(held) => name(held, at),
+                Pattern::Wildcard => {
+                    let bound = format!("field{at_field}__ref{made}");
+                    *arg = Pattern::Bind(bound.clone());
+                    name(&bound, at)
+                }
+                Pattern::Literal(literal) => literal.clone(),
+                _ => return None,
+            };
+            parts.push(fennec_syntax::Arg { name: Some(field.clone()), is_mut: false, value });
+        }
+        let variant = Expr { kind: ExprKind::Variant(case.clone()), span: here(at) };
+        let rebuilt =
+            Expr { kind: ExprKind::Call { callee: Box::new(variant), args: parts }, span: here(at) };
+        let put_back = stmt(
+            StmtKind::Assign {
+                target: subject.clone(),
+                op: None,
+                value: rebuilt,
+                declare_mut: false,
+                ty: None,
+            },
+            at,
+        );
+        let mut block = std::mem::take(&mut arm.body);
+        fail_through(&mut block, std::slice::from_ref(&put_back));
+        let (exit, returned) = (format!("exit__ref{made}"), format!("returned__ref{made}"));
+        let mut caller = Caller { exit: &exit, returned: &returned, ways: Ways::default(), span: at };
+        exits(&mut block, &mut caller, false);
+        let ways = caller.ways;
+        let mut body = copies;
+        if ways.any() {
+            body.push(assign(&exit, int(0, at), true, None));
+            if ways.returned == Some(true) {
+                let mut optional = self.returns.last().cloned().flatten()?;
+                optional.optional = true;
+                let none = Expr { kind: ExprKind::None, span: here(at) };
+                body.push(assign(&returned, none, true, Some(optional)));
+            }
+            block.push(stmt(StmtKind::Break, at));
+            let always = Expr { kind: ExprKind::Bool(true), span: here(at) };
+            body.push(stmt(StmtKind::While { cond: always, body: block }, at));
+        } else {
+            body.extend(block);
+        }
+        body.push(put_back);
+        body.extend(taken_again(ways, &exit, &returned, at));
+        arm.body = body;
+        Some(())
     }
 
     /// `with call as name: block` written in as the source's body, or nothing if it can't be.

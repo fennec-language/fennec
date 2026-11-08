@@ -69,6 +69,9 @@ impl FnCx<'_> {
     fn stmt(&mut self, stmt: &Stmt, used: bool) -> Flow {
         match &stmt.kind {
             StmtKind::Expr(expr) => {
+                if matches!(expr.kind, ExprKind::Match { .. }) {
+                    self.statement_matches.push((expr.span.start, expr.span.end));
+                }
                 let ty = self.expr(expr);
                 if always_leaves(expr) { Flow::exit() } else { Flow { ty, exits: false } }
             }

@@ -23,7 +23,9 @@ impl Interp<'_> {
         };
         match pattern {
             Pattern::Wildcard => Ok(Some(Vec::new())),
-            Pattern::Bind(name) => Ok((!value.is_failure()).then(|| vec![(name.clone(), success.clone())])),
+            Pattern::Bind(name) | Pattern::RefBind(name) => {
+                Ok((!value.is_failure()).then(|| vec![(name.clone(), success.clone())]))
+            }
             Pattern::Literal(expr) => Ok((literal(&expr.kind) == *success).then(Vec::new)),
             Pattern::Or(alternatives) => {
                 for alternative in alternatives {

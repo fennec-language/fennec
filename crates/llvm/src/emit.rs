@@ -1458,8 +1458,12 @@ impl Emit<'_, '_, '_> {
             let found = self.dict_contains(op, lhs, rhs)?;
             return self.assign(dest, &found);
         }
-        let (a, kind) = self.operand(lhs)?;
+        let (a, mut kind) = self.operand(lhs)?;
         let (mut b, mut b_kind) = self.operand(rhs)?;
+        // A number written out takes the size of what's beside it, so the arithmetic is that size's.
+        if matches!(lhs, Operand::Int(_) | Operand::Float(_)) && matches!(b_kind, Kind::U64 | Kind::F32) {
+            kind = b_kind.clone();
+        }
         // `None` beside an optional string is that string's `None`: a header all zero.
         if *rhs == Operand::None && kind == Kind::MaybeText {
             (b, b_kind) = ("zeroinitializer".to_owned(), Kind::MaybeText);

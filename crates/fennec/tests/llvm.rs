@@ -2617,6 +2617,33 @@ fn a_divisor_written_again_is_still_checked() -> std::io::Result<()> {
         );
     }
     Ok(())
+/// A number written on the left of a `u64` or an `f32` is that size, so what's worked out is too:
+/// unsigned on all 64 bits, and rounded to 32.
+#[test]
+fn a_number_on_the_left_takes_the_size_on_the_right() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = "literal_left_of_a_size";
+    let source = "def big() -> u64:
+    half: u64 = 9223372036854775807
+    half + half
+
+def large() -> f32:
+    f: f32 = 16777216.0
+    f
+
+def main(stdout: Stdout):
+    b = big()
+    stdout.print(100 // b, 100 % b, 100 / b, 100 < b, 100 == b)
+    f = large()
+    stdout.print(1.0 + f, 0.1 * f, 1.0 < f, 2.0 / f)
+";
+    prints_in_both_builds(
+        dir,
+        source,
+        "0 100 5.421010862427522e-18 True False\n16777216.0 1677721.6 True 1.1920929e-07\n",
+    )
 }
 
 /// What doesn't fit a size stops the program, saying which size and what it holds: arithmetic
@@ -2644,6 +2671,11 @@ fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
             "error: it doesn't fit in u32, which holds 0 to 4294967295: -1".to_owned(),
         ),
         ("z: u64 = 0\n    stdout.print(z - 1)", overflow("a u64", "0 to 18446744073709551615")),
+        ("stdout.print(5 - u64(6))", overflow("a u64", "0 to 18446744073709551615")),
+        (
+            "h: u64 = 9223372036854775807\n    stdout.print(4 * h)",
+            overflow("a u64", "0 to 18446744073709551615"),
+        ),
         (
             "h: u64 = 9223372036854775807\n    stdout.print(h * 3)",
             overflow("a u64", "0 to 18446744073709551615"),

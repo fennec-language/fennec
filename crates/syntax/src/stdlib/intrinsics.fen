@@ -158,6 +158,12 @@ export def bytes_set(ref data: bytes, at: int, byte: int)
 @intrinsic
 export def shape_hash[T]() -> int
 
+## What a type's values save as, with every struct's field names and every enum's case names, as
+## text `std.pack` writes beside the data, so bytes from an earlier version of the type load by
+## name. Only native code has types as it runs.
+@intrinsic
+export def layout[T]() -> str
+
 ## A number that's the same for equal `Id`s and differs for others, to look one up by.
 @intrinsic
 export def id_key[T](id: Id[T]) -> int

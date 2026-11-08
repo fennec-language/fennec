@@ -461,7 +461,7 @@ Loading is safe on untrusted input:
 - A load always makes fresh values, never a link to anything already in the program. Built.
 - Every `Id` resolves within its own document, and each `Table` carries a tag that's never reused, so an `Id` from one `Table` finds nothing in another of the same type. Built.
 - `where` rules run again on load, so a value that breaks one fails the load. Built.
-- Unknown fields are refused unless `extra=` says otherwise: `json.loads[Settings](text, extra=.ignore)`. Built for JSON. TOML always refuses them, and doesn't take `extra=` yet. `std.pack` saves no field names, and refuses data packed from a different type. Loading data from an earlier version of a program, with fields matched by name and new fields taking their defaults, is decided and not built yet.
+- Unknown fields are refused unless `extra=` says otherwise: `json.loads[Settings](text, extra=.ignore)`. Built for JSON. TOML always refuses them, and doesn't take `extra=` yet. `std.pack` loads data from an earlier version of a type by its fields' names: a field the data has and the type doesn't is passed over, a field the type has and the data doesn't takes its default, and one with no default fails the load, naming it. Cases and union members are found by name too, and an `int` field that's a `float` now reads as one. Built. Each value carries its type's layout, its field and case names, which a lock file of past layouts will let it leave out.
 - Untrusted input has depth and size limits. `std.pack` limits nesting, each string's length and the total it reads, before allocating anything. Built. JSON and TOML limit nesting to 500 deep, and don't limit size, string length or collection length yet.
 
 ## Templates

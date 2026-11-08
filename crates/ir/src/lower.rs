@@ -12,6 +12,7 @@ mod failure;
 mod generators;
 mod generics;
 mod imports;
+mod layouts;
 mod lists;
 mod matching;
 mod operators;
@@ -113,6 +114,7 @@ fn lower_from(
         mut_forms: those_where(&every, |def| def.name == "[]mut"),
         intrinsics: every.iter().filter(|(_, def)| is_intrinsic(def)).map(|(key, _)| key.clone()).collect(),
         options,
+        saves_itself: saves_itself(&functions),
     };
     let mut program = Program::default();
     for (key, def) in &functions {
@@ -155,6 +157,16 @@ fn lower_from(
 }
 
 /// The functions in `every` that `keep` picks.
+/// The program's types whose `def serialize` it writes itself: one the checker generated is in
+/// the prelude's spans.
+fn saves_itself(functions: &[(String, &FnDef)]) -> HashSet<String> {
+    functions
+        .iter()
+        .filter(|(key, def)| key.ends_with(".serialize") && !def.span.in_prelude())
+        .filter_map(|(key, _)| key.strip_suffix(".serialize").map(str::to_owned))
+        .collect()
+}
+
 fn those_where<'a>(
     every: &HashMap<String, &'a FnDef>,
     keep: impl Fn(&FnDef) -> bool,
@@ -289,6 +301,8 @@ struct Context<'a> {
     intrinsics: HashSet<String>,
     /// How the backend wants the program lowered.
     options: Options,
+    /// The program's types that write their own `def serialize`, which a layout can't see into.
+    saves_itself: HashSet<String>,
 }
 
 impl Context<'_> {

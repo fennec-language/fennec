@@ -405,6 +405,14 @@ impl FnCx<'_> {
         if let Some(type_name) = self.as_type_name(object) {
             return self.static_call(type_name, method, args, span);
         }
+        // `u8.from(x)`: a function on a sized number type, from the standard library.
+        if let ExprKind::Name(size) = &object.kind
+            && self.lookup(size).is_none()
+            && crate::types::Num::named(size).is_some()
+        {
+            let size = size.clone();
+            return self.static_call(&size, method, args, span);
+        }
         if let ExprKind::Name(param) = &object.kind
             && self.lookup(param).is_none()
             && self.generics.iter().any(|generic| generic.name == *param)

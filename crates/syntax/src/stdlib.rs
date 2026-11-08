@@ -62,13 +62,14 @@ modules! {
 /// What's available everywhere without an import: the errors standard operations fail
 /// with, the `Template` a template string builds, and the built-in types' methods written in
 /// Fennec.
-const CORE: [(&str, &str); 7] = [
+const CORE: [(&str, &str); 8] = [
     ("errors", include_str!("stdlib/errors.fen")),
     ("template", include_str!("stdlib/template.fen")),
     ("str", include_str!("stdlib/str.fen")),
     ("list", include_str!("stdlib/list.fen")),
     ("dict", include_str!("stdlib/dict.fen")),
     ("set", include_str!("stdlib/set.fen")),
+    ("sized", include_str!("stdlib/sized.fen")),
     ("serialize", include_str!("stdlib/serialize.fen")),
 ];
 

@@ -2352,6 +2352,39 @@ fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
     Ok(())
 }
 
+/// What comes from outside becomes a sized integer through `u8.from(x)?` and `u8.parse(text)?`,
+/// which fail cleanly with an `InvalidValue` when it doesn't fit or isn't a whole number, where
+/// `u8(x)` would stop the program.
+#[test]
+fn sized_integers_from_outside_fail_cleanly() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "sized_from_outside",
+        "def main(stdout: Stdout):
+    stdout.print(u8.from(200), u8.parse(\"17\"), i8.from(-5), u32.parse(\"4294967295\"))
+    for text in [\"300\", \"-1\", \"seven\"]:
+        match u8.parse(text):
+            case Ok(n):
+                stdout.print(\"fit\", n)
+            case Err(problem):
+                stdout.print(\"failed:\", problem.message)
+    small = u8.parse(\"250\") else u8(0)
+    stdout.print(small + 5, i16.from(40000) else i16(-1))
+",
+    )?;
+    assert_eq!(
+        printed,
+        "Ok(200) Ok(17) Ok(-5) Ok(4294967295)\n\
+         failed: 300 doesn't fit in u8, which holds 0 to 255\n\
+         failed: -1 doesn't fit in u8, which holds 0 to 255\n\
+         failed: \"seven\" isn't an int\n\
+         255 -1\n"
+    );
+    Ok(())
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {

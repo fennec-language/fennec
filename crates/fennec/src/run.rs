@@ -87,6 +87,7 @@ fn built_and_run(
             manifest: None,
             embedded: Vec::new(),
             kit_src: None,
+            dependency_files: std::collections::HashSet::new(),
         };
         &whole
     } else {

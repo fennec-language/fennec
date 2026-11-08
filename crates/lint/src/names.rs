@@ -127,8 +127,7 @@ fn block_names<'m>(stmts: &'m [Stmt], found: &mut Vec<Named<'m>>) {
 
 /// The names expressions bind: comprehensions', arrow functions' and `match` arms'.
 fn expression_names(def: &FnDef, found: &mut Vec<(String, Span)>) {
-    let mut walked = def.clone();
-    fennec_syntax::visit::in_function(&mut walked, &mut |expr| match &expr.kind {
+    fennec_syntax::read::in_function(def, &mut |expr| match &expr.kind {
         ExprKind::Comprehension { names, .. } | ExprKind::Lambda { params: names, .. } => {
             found.extend(names.iter().map(|name| (name.clone(), expr.span)));
         }

@@ -289,10 +289,13 @@ mod launcher {
         let (pair, public) = key();
         release(&dir.join("dist"), "0.4.2", &pair);
         let launcher = launcher(&dir, &public);
-        assert!(launcher.toolchain_for(&dir).unwrap_err().contains("no default toolchain"));
-        assert!(launcher.set_default("0.4.2").unwrap_err().contains("isn't installed"));
-        launcher.ensure("0.4.2", None).unwrap();
+        let none = launcher.toolchain_for(&dir).unwrap_err();
+        assert!(none.contains("`fennec default 0.4.2` sets one"), "{none}");
+        let offline = Launcher { offline: true, ..self::launcher(&dir, &public) };
+        assert!(offline.set_default("0.4.2").unwrap_err().contains("isn't installed"));
+        // Setting one fetches it if it has to.
         launcher.set_default("0.4.2").unwrap();
+        assert_eq!(launcher.default_version().as_deref(), Some("0.4.2"));
         assert_eq!(ran(&launcher.toolchain_for(&dir).unwrap(), "x").0, "fennec 0.4.2: x\n");
         launcher.remove("0.4.2").unwrap();
         assert_eq!(launcher.installed(), Vec::<String>::new());
@@ -358,6 +361,90 @@ mod launcher {
         assert_eq!(ran.status.code(), Some(3));
         let listed = fennec(&["toolchain", "list"]);
         assert_eq!(String::from_utf8_lossy(&listed.stdout), "0.4.2\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A toolchain as if installed, whose `fennec` says what it was asked.
+    fn installed(home: &Path, version: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let folder = home.join("toolchains").join(version);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("manifest"), format!("fennec toolchain {version}\n")).unwrap();
+        std::fs::write(folder.join("fennec"), script(version)).unwrap();
+        std::fs::set_permissions(folder.join("fennec"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// The launcher's output and exit code, run in `at` with `home` as Fennec's folder.
+    fn run_in(at: &Path, home: &Path, args: &[&str]) -> (String, String, Option<i32>) {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_fennec-launcher"))
+            .args(args)
+            .current_dir(at)
+            .env("FENNEC_HOME", home)
+            .env("FENNEC_DIST", home.join("no releases here"))
+            .env_remove("FENNEC_OFFLINE")
+            .output()
+            .unwrap();
+        (
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+            output.status.code(),
+        )
+    }
+
+    /// `+0.4.2` runs that version anywhere, and leaves what a kit pins alone.
+    #[test]
+    fn a_plus_runs_that_version_this_once_and_changes_no_pin() {
+        let dir = scratch("plus");
+        let home = dir.join("home");
+        installed(&home, "0.4.2");
+        installed(&home, "0.4.3");
+        let kit = kit(&dir, "0.4.2");
+        let (said, _, _) = run_in(&kit, &home, &["+0.4.3", "build", "--offline"]);
+        assert_eq!(said, "fennec 0.4.3: build --offline\n");
+        assert!(!kit.join("kit.lock").exists());
+        let (said, _, _) = run_in(&dir, &home, &["--offline", "+0.4.2", "run"]);
+        assert_eq!(said, "fennec 0.4.2: run\n");
+        let (_, why, code) = run_in(&dir, &home, &["+0.9.9", "--offline", "run"]);
+        assert_eq!(code, Some(1));
+        assert!(why.contains("0.9.9 isn't installed") || why.contains("no releases here"), "{why}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `--version` chooses for a script outside a kit, and a kit's `kit.toml` is what chooses in one.
+    #[test]
+    fn a_version_flag_works_only_outside_a_kit() {
+        let dir = scratch("version-flag");
+        let home = dir.join("home");
+        installed(&home, "0.4.2");
+        let loose = dir.join("scripts");
+        std::fs::create_dir_all(&loose).unwrap();
+        let (said, _, _) = run_in(&loose, &home, &["--version", "0.4.2", "run", "x.fen", "--version", "1"]);
+        assert_eq!(said, "fennec 0.4.2: run x.fen --version 1\n");
+        let kit = kit(&dir, "0.4.2");
+        let inside = kit.join("src");
+        let (_, why, code) = run_in(&inside, &home, &["--version", "0.4.2", "run"]);
+        assert_eq!(code, Some(1));
+        assert!(why.contains("`--version` is for scripts outside a kit"), "{why}");
+        assert!(why.contains("+0.4.2"), "{why}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The version for scripts outside a kit, set once; with none set, it says how.
+    #[test]
+    fn fennec_default_sets_the_version_for_scripts() {
+        let dir = scratch("default-command");
+        let home = dir.join("home");
+        installed(&home, "0.4.2");
+        let loose = dir.join("scripts");
+        std::fs::create_dir_all(&loose).unwrap();
+        let (_, why, code) = run_in(&loose, &home, &["run", "x.fen"]);
+        assert_eq!(code, Some(1));
+        assert!(why.contains("`fennec default 0.4.2` sets one"), "{why}");
+        let (_, why, code) = run_in(&loose, &home, &["default"]);
+        assert_eq!(code, Some(1), "{why}");
+        assert_eq!(run_in(&loose, &home, &["default", "0.4.2"]).2, Some(0));
+        assert_eq!(run_in(&loose, &home, &["default"]).0, "0.4.2\n");
+        assert_eq!(run_in(&loose, &home, &["run", "x.fen"]).0, "fennec 0.4.2: run x.fen\n");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

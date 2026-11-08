@@ -14,6 +14,7 @@
 
 from std import json
 from std.crypto import Secret
+from std.intrinsics import text_byte, text_size
 from std.url import decode_query, unquote
 
 ## A failure of the network, with a case for each way it fails. `message()` says it in words.
@@ -183,12 +184,17 @@ def answer_all(
     while True:
         match read_request(connection, timeout)?:
             case .Got(request, keep):
-                write_response(connection, respond(request), keep)?
+                write_response(connection, respond(request), keep, request.method == "HEAD")?
                 if not keep:
                     connection.close()
                     return
             case .Bad(status, reason):
-                write_response(connection, Response(status=status, body=reason.encode()), False)?
+                write_response(
+                    connection,
+                    Response(status=status, body=reason.encode()),
+                    False,
+                    False,
+                )?
                 connection.close()
                 return
             case .Done:
@@ -200,7 +206,9 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
     first = connection.read_line(timeout=timeout)? else return .Done
     if first == "": return .Done
     parts = first.split(" ")
-    if parts.len() != 3 or not parts[2].startswith("HTTP/1."):
+    if parts.len() != 3 or (parts[2] != "HTTP/1.1" and parts[2] != "HTTP/1.0"):
+        return .Bad(status=400, reason="that isn't an HTTP/1.1 request line")
+    if not is_token(parts[0]) or parts[1] == "" or has_control(parts[1], False):
         return .Bad(status=400, reason="that isn't an HTTP/1.1 request line")
     mut headers: dict[str, str] = {}
     mut size = first.len()
@@ -215,17 +223,31 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
         lines += 1
         if lines > MOST_HEADERS or size > MOST_HEADER_BYTES:
             return .Bad(status=431, reason="the headers are too big")
+        # A line that starts with a space would continue the last header, which some read as a
+        # new one, and a control character is read differently by different servers.
+        if text_byte(line, 0) == 32 or text_byte(line, 0) == 9 or has_control(line, True):
+            return .Bad(status=400, reason="a header has a character it can't have")
         colon = line.find(":") else return .Bad(status=400, reason="a header has no `:`")
-        headers[line[:colon].strip().lower()] = line[colon + 1:].strip()
+        if not is_token(line[:colon]): return .Bad(status=400, reason="a header's name isn't one")
+        name = line[:colon].lower()
+        # Two of these would let two servers read two different requests from the same bytes.
+        if (
+            name in headers
+            and (name == "content-length" or name == "transfer-encoding" or name == "host")
+        ):
+            return .Bad(status=400, reason=f"there's more than one `{name}` header")
+        headers[name] = line[colon + 1:].strip()
     if "transfer-encoding" in headers:
         return .Bad(status=501, reason="chunked bodies aren't taken yet")
     mut body = bytes([])
     if "content-length" in headers:
-        length = int(headers["content-length"]) else return .Bad(
+        written = headers["content-length"]
+        if not only_digits(written):
+            return .Bad(status=400, reason="the content length isn't a number")
+        length = int(written) else return .Bad(
             status=400,
             reason="the content length isn't a number",
         )
-        if length < 0: return .Bad(status=400, reason="the content length is negative")
         if length > MOST_BODY: return .Bad(status=413, reason="the body is too big")
         while body.len() < length:
             more = connection.read(length - body.len(), timeout=timeout)?
@@ -252,10 +274,67 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
         keep=keep,
     )
 
-## Writes a response, saying the connection closes after it when it does.
-def write_response(connection: Connection, response: Response, keep: bool) fails NetError:
+## Whether `text` is what HTTP calls a token, as a method or a header's name has to be.
+def is_token(text: str) -> bool:
+    size = text_size(text)
+    if size == 0: return False
+    for at in range(size):
+        b = text_byte(text, at)
+        letter = (b >= 97 and b <= 122) or (b >= 65 and b <= 90) or (b >= 48 and b <= 57)
+        if (
+            not letter
+            and not (
+                b == 45
+                or b == 95
+                or b == 46
+                or b == 33
+                or b == 35
+                or b == 36
+                or b == 37
+                or b == 38
+                or b == 39
+                or b == 42
+                or b == 43
+                or b == 94
+                or b == 96
+                or b == 124
+                or b == 126
+            )
+        ):
+            return False
+    True
+
+## Whether `text` has a control character in it, which a tab isn't if `tab` says so.
+def has_control(text: str, tab: bool) -> bool:
+    for at in range(text_size(text)):
+        b = text_byte(text, at)
+        if (b < 32 and not (tab and b == 9)) or b == 127: return True
+    False
+
+## Whether `text` is one or more digits and nothing else.
+def only_digits(text: str) -> bool:
+    size = text_size(text)
+    if size == 0: return False
+    for at in range(size):
+        b = text_byte(text, at)
+        if b < 48 or b > 57: return False
+    True
+
+## Writes a response, saying the connection closes after it when it does. The answer to a `HEAD`
+## says how long its body is and doesn't send it. A header that can't be written, as a value from
+## outside with a line break would start a header of its own, makes it a 500 instead.
+def write_response(
+    connection: Connection,
+    response: Response,
+    keep: bool,
+    head_only: bool,
+) fails NetError:
     mut head = f"HTTP/1.1 {response.status} {reason_phrase(response.status)}\r\n"
     for name, value in response.headers.items():
+        if not is_token(name) or has_control(value, True):
+            refused = Response(status=500, body="a response header can't be written".encode())
+            write_response(connection, refused, keep, head_only)?
+            return
         lower = name.lower()
         if lower != "content-length" and lower != "connection":
             head += f"{name}: {value}\r\n"
@@ -264,7 +343,7 @@ def write_response(connection: Connection, response: Response, keep: bool) fails
         head += "connection: close\r\n"
     head += "\r\n"
     connection.write(head)?
-    if response.body.len() > 0:
+    if response.body.len() > 0 and not head_only:
         connection.write(response.body)?
 
 ## The words that go with a status.

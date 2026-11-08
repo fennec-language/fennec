@@ -46,7 +46,7 @@ impl Manifest {
 const KEYS: &str = "`name`, `version` and `fennec`";
 
 /// Reads `kit.toml`'s text, whose spans start at `base`.
-pub(crate) fn parse(text: &str, base: u32) -> Result<Manifest, Vec<Diagnostic>> {
+pub fn parse(text: &str, base: u32) -> Result<Manifest, Vec<Diagnostic>> {
     let mut reader = Reader {
         base,
         errors: Vec::new(),

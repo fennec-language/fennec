@@ -1,0 +1,14 @@
+from std.net import NetError
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    words = [f"word number long enough to sit in a block of its own {n}" for n in range(5000)]
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            conn.write("bye\n")?
+            break
+    joined = [w + "!" for w in parallel(words)]
+    stdout.print(joined[3])
+    mut more = words
+    more.append("x")
+    stdout.print(more.len(), more[5000])

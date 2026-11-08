@@ -1,0 +1,21 @@
+from std.net import NetError
+from std.concurrent import Channel, Closed, Timeout, channel
+
+error Boom:
+    why: str
+
+def serving(ch: Channel[int], net: Net, stdout: Stdout) fails NetError | Boom | Closed | Timeout:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else "none"
+            if line == "wait":
+                conn.write("waiting\n")?
+                got = ch.receive()?
+                conn.write(f"{got}\n")?
+            else:
+                fail Boom(why="a round failed")
+
+def main(net: Net, stdout: Stdout) fails NetError | Boom | Closed | Timeout:
+    with channel[int](size=1) as ch:
+        serving(ch, net, stdout)?

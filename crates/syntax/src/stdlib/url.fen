@@ -19,6 +19,10 @@ export struct Url:
     ## keeps its last value.
     query = dict[str, str]()
     fragment = ""
+    ## Whether it was written with `//`, which `mailto:a@b` wasn't, and its path as it was written:
+    ## decoding one loses whether a `/` was a `%2F`.
+    _authority = False
+    _raw_path = ""
 
     ## `host`, then `:port` when a port was given: what the URL says to connect to.
     def address(self) -> str:
@@ -28,12 +32,16 @@ export struct Url:
     def str(self, ref out: StrWriter):
         if self.scheme != "":
             out.write(self.scheme + ":")
-        if self.host != "" or self.scheme != "":
+        if self.host != "" or self._authority:
             out.write("//")
             if self.user != "":
                 out.write(self.user + "@")
             out.write(self.address())
-        out.write(quoted(self.path, keep="/:@!$&'()*+,;="))
+        # As it was written, unless the path has been changed since.
+        if self._raw_path != "" and unquote(self._raw_path) == self.path:
+            out.write(self._raw_path)
+        else:
+            out.write(quoted(self.path, keep="/:@!$&'()*+,;="))
         if self.query.len() > 0:
             out.write("?" + encode_query(self.query))
         if self.fragment != "":
@@ -74,8 +82,8 @@ export def parse(text: str) -> Url fails InvalidValue:
             found = copy(found, user=authority[:at_sign])
             authority = authority[at_sign + 1:]
         host, port = host_and_port(authority, text)?
-        found = copy(found, host=host, port=port)
-    copy(found, path=unquote(rest))
+        found = copy(found, host=host, port=port, _authority=True)
+    copy(found, path=unquote(rest), _raw_path=rest)
 
 ## Whether text can be a URL's scheme: a letter, then letters, digits, `+`, `-` or `.`.
 def is_scheme(text: str) -> bool:
@@ -109,7 +117,10 @@ def host_and_port(authority: str, text: str) -> (str, int) fails InvalidValue:
         if colon is not None:
             host = authority[:colon]
             port_text = authority[colon + 1:]
-        host = unquote(host).lower()
+        # Anything else here would make it another host to whatever reads it next.
+        if host.find("@") is not None or host.find("%") is not None or host.find("\\") is not None:
+            fail InvalidValue(message=f"`{text}` isn't a URL: its host can't hold `@`, `%` or `\\`")
+        host = host.lower()
     if port_text == "": return (host, 0)
     port = int(port_text) else 0
     if not port_text.isdigit() or port < 1 or port > 65_535:

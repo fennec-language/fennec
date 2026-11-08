@@ -410,3 +410,73 @@ fn a_lent_value_takes_ref_self_calls() {
         def main(stdout: Stdout):\n    with sink() as out:\n        out.write(\"a\")\n    with sink() as ref out:\n        out.write(\"b\")\n";
     assert_eq!(problems(program), empty);
 }
+
+/// Nothing waits inside a lock, however many calls down: a task that pauses holding one stops
+/// every task that wants it. Traced across the whole program, through plain functions, methods
+/// and interfaces, while what doesn't wait, like printing or a plain function, is fine.
+#[test]
+fn nothing_waits_inside_a_lock() {
+    let found = |body: &str| -> Vec<String> {
+        problems(&format!(
+            "from std.concurrent import Channel, Closed, Timeout\n\n\
+             struct Scores:\n    total = 0\n\n\
+             interface Napper:\n    def nap(self, clock: Clock)\n\n\
+             struct Quick:\n    held = 0\n\n    def nap(self, clock: Clock):\n        pass\n\n\
+             struct Slow:\n    held = 0\n\n    def nap(self, clock: Clock):\n        clock.sleep(1s)\n\n\
+             def rest(clock: Clock):\n    clock.sleep(1s)\n\n\
+             def deeper(clock: Clock):\n    rest(clock)\n\n\
+             def bump(ref scores: Scores):\n    scores.total += 1\n\n\
+             def ask(jobs: Channel[int]) -> int fails Closed | Timeout:\n    jobs.receive()?\n\n\
+             def through[T: Napper](napper: T, clock: Clock, shared_scores: shared Scores):\n    \
+             lock shared_scores as held:\n        napper.nap(clock)\n        _ = held\n\n\
+             def main(stdout: Stdout, clock: Clock, jobs: Channel[int]) fails Closed | Timeout:\n    \
+             shared scores = Scores()\n    lock scores as ref held:\n{body}"
+        ))
+        .into_iter()
+        .map(|problem| problem.split(" @ ").next().unwrap_or_default().to_owned())
+        .filter(|problem| !problem.contains("`nap` waits"))
+        .collect()
+    };
+    let empty: [&str; 0] = [];
+    assert_eq!(found("        bump(ref held)\n        stdout.print(held.total)\n"), empty);
+    assert_eq!(found("        clock.sleep(1s)\n"), ["`Clock.sleep` waits while `held` is locked"]);
+    assert_eq!(found("        deeper(clock)\n"), ["`deeper` waits on `Clock.sleep` while `held` is locked"]);
+    assert_eq!(
+        found("        got = ask(jobs)?\n        held.total += got\n"),
+        ["`ask` waits on a channel's `receive` while `held` is locked"]
+    );
+    assert_eq!(
+        found("        got = jobs.receive()?\n        held.total += got\n"),
+        ["`receive` waits on a channel's `receive` while `held` is locked"]
+    );
+    assert_eq!(
+        found("        for n in parallel([1, 2]):\n            stdout.print(n)\n"),
+        ["`parallel` waits while `held` is locked"]
+    );
+}
+
+/// A method of an interface could be any type's, so one that waits on any type counts.
+#[test]
+fn an_interface_method_inside_a_lock_counts_if_any_type_s_waits() {
+    let program = "struct Scores:\n    total = 0\n\n\
+        interface Napper:\n    def nap(self, clock: Clock)\n\n\
+        struct Slow:\n    held = 0\n\n    def nap(self, clock: Clock):\n        clock.sleep(1s)\n\n\
+        def through[T: Napper](napper: T, clock: Clock, scores: shared Scores):\n    \
+        lock scores as held:\n        napper.nap(clock)\n        _ = held\n";
+    let found = problems(program);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].starts_with("`nap` waits on `Clock.sleep` while `held` is locked"), "{found:?}");
+}
+
+/// A source can't lend while it holds a lock it took: the block lent to runs inside the lock.
+#[test]
+fn a_source_cant_lend_inside_a_lock() {
+    let found = problems(
+        "struct Scores:\n    total = 0\n\ndef held(scores: shared Scores) -> with int:\n    lock scores as current:\n        lend current.total\n",
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].starts_with("a `lend` runs its caller's block, which can wait, while `current` is locked"),
+        "{found:?}"
+    );
+}

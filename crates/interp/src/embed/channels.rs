@@ -125,6 +125,8 @@ fn deadline(timeout_ns: i64) -> Option<Instant> {
 /// or as long as it takes for -1. Gives back 0 when it's sent, 1 when the channel's closed, and 2
 /// when it timed out. A stop cuts the wait short, failing it.
 pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_ns: i64) -> i64 {
+    // What this task printed comes before anything whoever takes this goes on to print.
+    super::write_kept_output();
     let Some(channel) = find(channel) else { return CLOSED };
     // In a replay, it waits its turn, and a send that didn't go through doesn't wait again.
     let timeout_ns = match replayed(&channel, "send") {
@@ -358,10 +360,16 @@ fn wait(channel: &Channel, queue: MutexGuard<'_, Queue>, deadline: Option<Instan
         }
         drop(queue);
         return match super::serve::park_on(token, deadline) {
-            // Stopped, it's failing. Cancelled otherwise, as by a server that's stopping, it looks again.
-            super::serve::Parked::Cancelled if super::failed() => Waited::Stopped,
+            // Stopped, it's failing. Cancelled, as by a server that's stopping, it can't wait any more
+            // and ends here: it'd never be parked again, and nothing would ever change what it saw.
+            super::serve::Parked::Cancelled => {
+                if !super::failed() {
+                    super::serve::fail_as_stopped();
+                }
+                Waited::Stopped
+            }
             super::serve::Parked::TimedOut => Waited::TimedOut,
-            super::serve::Parked::Cancelled | super::serve::Parked::Ready => Waited::Again,
+            super::serve::Parked::Ready => Waited::Again,
         };
     }
     let _ = side;

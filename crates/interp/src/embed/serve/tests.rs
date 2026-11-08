@@ -16,7 +16,7 @@ fn listener() -> (TcpListener, SocketAddr) {
 /// Sends back each line it's sent until the other side is done; a line saying "fail" fails
 /// its connection.
 fn echo() -> Handler {
-    Arc::new(|mut conn: Conn| {
+    Arc::new(|conn: Conn| {
         loop {
             match conn.read_line(None) {
                 Ok(Some(line)) if line == b"fail" => return 1,
@@ -151,15 +151,14 @@ fn a_failing_connection_ends_only_its_own_task() {
 
 #[test]
 fn a_wait_with_a_timeout_gives_up_while_others_go_on() {
-    let timing_out: Handler =
-        Arc::new(|mut conn: Conn| match conn.read_line(Some(Duration::from_millis(50))) {
-            Err(Failure::TimedOut(after)) if after == Duration::from_millis(50) => 7,
-            Ok(Some(line)) => {
-                let _ = conn.write(&[line, b"\n".to_vec()].concat());
-                0
-            }
-            _ => 1,
-        });
+    let timing_out: Handler = Arc::new(|conn: Conn| match conn.read_line(Some(Duration::from_millis(50))) {
+        Err(Failure::TimedOut(after)) if after == Duration::from_millis(50) => 7,
+        Ok(Some(line)) => {
+            let _ = conn.write(&[line, b"\n".to_vec()].concat());
+            0
+        }
+        _ => 1,
+    });
     let finished = Finished::default();
     let waited = Arc::clone(&finished);
     let served = run(1, &noting(timing_out, &finished), move |address| {
@@ -181,7 +180,7 @@ fn a_wait_with_a_timeout_gives_up_while_others_go_on() {
 fn a_connection_that_sends_nothing_times_out_however_often_its_task_is_woken() {
     // Woken at every poll, as a socket that keeps saying it's writable wakes its task, a read
     // that's never answered still gives up when its time's up, not later each time.
-    let quiet: Handler = Arc::new(|mut conn: Conn| {
+    let quiet: Handler = Arc::new(|conn: Conn| {
         super::WAKE_ALL.set(true);
         let read = conn.read_line(Some(Duration::from_millis(100)));
         super::WAKE_ALL.set(false);
@@ -203,7 +202,7 @@ fn a_connection_that_sends_nothing_times_out_however_often_its_task_is_woken() {
 
 #[test]
 fn stopping_a_server_cancels_its_parked_connections() {
-    let cancelled: Handler = Arc::new(|mut conn: Conn| match conn.read_line(None) {
+    let cancelled: Handler = Arc::new(|conn: Conn| match conn.read_line(None) {
         Err(Failure::Cancelled) => 0,
         _ => 1,
     });
@@ -236,7 +235,7 @@ fn a_wait_that_cant_park_blocks_its_thread_and_is_counted() {
     };
     let before = super::blocked_waits();
     // Not on an I/O worker, so not a task: the read blocks this thread.
-    let mut conn = Conn::new(accepted);
+    let conn = Conn::new(accepted);
     assert_eq!(conn.read_line(Some(Duration::from_secs(10))), Ok(Some(b"late".to_vec())));
     assert!(super::blocked_waits() > before);
     client.join().unwrap();
@@ -278,7 +277,7 @@ fn measure_memory_per_parked_connection() {
     let count: usize = std::env::var("FENNEC_CONNECTIONS").ok().and_then(|n| n.parse().ok()).unwrap_or(1_000);
     let parked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = Arc::clone(&parked);
-    let waiting: Handler = Arc::new(move |mut conn: Conn| {
+    let waiting: Handler = Arc::new(move |conn: Conn| {
         counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match conn.read_line(None) {
             Err(Failure::Cancelled) => 0,
@@ -391,7 +390,7 @@ fn wait_for_written(line: &str) {
 /// Prints the first line a connection sends, waits for a second, and prints that: so its first
 /// print has to come out while it's parked.
 fn printing() -> Handler {
-    Arc::new(|mut conn: Conn| {
+    Arc::new(|conn: Conn| {
         while let Ok(Some(line)) = conn.read_line(None) {
             super::super::with(|state| {
                 let _ = super::super::io::write(state, &format!("{}\n", String::from_utf8_lossy(&line)));
@@ -448,7 +447,7 @@ fn what_a_parked_task_printed_comes_out_while_another_task_runs() {
 /// Answers each request with its line, except every tenth, which crashes on purpose.
 fn crashes_every_tenth() -> Handler {
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    Arc::new(move |mut conn: Conn| {
+    Arc::new(move |conn: Conn| {
         let n = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let Ok(Some(mut line)) = conn.read_line(None) else { return 1 };
         if n.is_multiple_of(10) {
@@ -526,7 +525,7 @@ fn run_until_it_ends(handler: &Handler, clients: impl FnOnce(SocketAddr) + Send 
 /// Echoes the line it's sent, ending its round with what the line asks: "break", "fail" or
 /// nothing.
 fn ends_as_asked() -> Handler {
-    Arc::new(|mut conn: Conn| {
+    Arc::new(|conn: Conn| {
         let Ok(Some(mut line)) = conn.read_line(None) else { return 1 };
         let how = match line.as_slice() {
             b"break" => super::ROUND_BROKE,
@@ -577,7 +576,7 @@ static STOP_SPIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 /// A round that's sent "spin" computes, ticking every few thousand turns as native code does,
 /// until it's told to stop; any other line is answered "pong" at once.
 fn spins_or_pongs() -> Handler {
-    Arc::new(|mut conn: Conn| {
+    Arc::new(|conn: Conn| {
         let line = conn.read_line(None).ok().flatten().unwrap_or_default();
         if line == b"spin" {
             let started = std::time::Instant::now();
@@ -660,7 +659,7 @@ mod tls {
 
     /// Answers each line it's sent with the same line.
     fn echo() -> Handler {
-        Arc::new(|mut conn: Conn| {
+        Arc::new(|conn: Conn| {
             ROUNDS.fetch_add(1, Ordering::SeqCst);
             while let Ok(Some(mut line)) = conn.read_line(Some(Duration::from_secs(10))) {
                 line.push(b'\n');
@@ -719,4 +718,17 @@ mod tls {
         assert!(server("not pem", KEY).is_err());
         assert!(server(CHAIN, "not pem").is_err());
     }
+}
+
+/// Running out of file descriptors leaves connections waiting that the poll won't announce again,
+/// and a connection that gave up before it was accepted leaves the rest waiting too.
+#[test]
+fn a_failure_to_accept_doesnt_strand_what_waits_behind_it() {
+    use std::io::{Error, ErrorKind};
+
+    use super::{AfterAccept, accept_failed};
+    assert_eq!(accept_failed(&Error::from(ErrorKind::ConnectionAborted)), AfterAccept::Next);
+    assert_eq!(accept_failed(&Error::from(ErrorKind::Interrupted)), AfterAccept::Next);
+    assert_eq!(accept_failed(&Error::from_raw_os_error(24)), AfterAccept::Later);
+    assert_eq!(accept_failed(&Error::from(ErrorKind::WouldBlock)), AfterAccept::Stop);
 }

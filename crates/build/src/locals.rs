@@ -177,6 +177,11 @@ fn statements_binding(body: &mut [Stmt], each: &mut dyn FnMut(&mut String)) {
                 }
                 statements_binding(body, each);
             }
+            StmtKind::OnFailure { name, cleanup, body } => {
+                each(name);
+                statements_binding(cleanup, each);
+                statements_binding(body, each);
+            }
             StmtKind::If { branches, otherwise } => {
                 for (_, body) in branches {
                     statements_binding(body, each);

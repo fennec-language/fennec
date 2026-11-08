@@ -63,7 +63,43 @@ pub(crate) fn saving_handles(function: &Function) -> Vec<usize> {
     found
 }
 
+/// The handles a function locks to read, which a crash gives back, in the order they're first
+/// locked, beside the handles that save their changes.
+pub(crate) fn given_back_on_crash(function: &Function) -> Vec<usize> {
+    let saving = saving_handles(function);
+    let mut found = Vec::new();
+    let mut add = |handle: &Operand, write: bool| {
+        if let Operand::Local(local) = handle
+            && (!write || saving.contains(&local.0))
+            && !found.contains(&local.0)
+        {
+            found.push(local.0);
+        }
+    };
+    for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+        match &inst.kind {
+            InstKind::Lock { handle, write } => add(handle, *write),
+            InstKind::LockAll { handles } => handles.iter().for_each(|(handle, write)| add(handle, *write)),
+            _ => {}
+        }
+    }
+    found
+}
+
 impl Emit<'_, '_, '_> {
+    /// Whether a crash gives back `handle`'s lock with nothing to put back: it's a read lock.
+    pub(crate) fn read_lock_given_back(&self, handle: &Operand) -> bool {
+        !self.saves_changes(handle)
+            && matches!(handle, Operand::Local(local) if self.on_crash.contains(&local.0))
+    }
+
+    /// Notes whether `handle`'s read lock is held, for a crash to give it back.
+    pub(crate) fn note_read_lock(&mut self, handle: &Operand, held: bool) {
+        if let Some(flag) = self.held_flag(handle) {
+            self.line(&format!("store i1 {held}, ptr {flag}"));
+        }
+    }
+
     /// Whether `handle` is the value of a `lock ... as ref` block, whose changes are saved.
     pub(crate) fn saves_changes(&self, handle: &Operand) -> bool {
         matches!(handle, Operand::Local(local) if self.saving.contains(&local.0))
@@ -102,12 +138,13 @@ impl Emit<'_, '_, '_> {
 
     /// Where a crash leaves the function: each `lock ... as ref` block still held, the last taken
     /// first, has what it changed put back, then its lock given back, before the failure goes on.
+    /// A read lock still held is only given back.
     /// The runtime puts back the words of blocks in its tables, and native code the words of the
     /// lock's own cell, which it's told one at a time.
     pub(crate) fn roll_back_on_crash(&mut self) -> Result<(), String> {
         self.declare("declare void @fennec_lock_undo() nounwind");
         self.declare("declare i64 @fennec_lock_undo_word(i64, i64, i64) nounwind");
-        for local in self.saving.clone().into_iter().rev() {
+        for local in self.on_crash.clone().into_iter().rev() {
             let handle = Operand::Local(LocalId(local));
             let Some(flag) = self.held_flag(&handle) else { continue };
             let (held, undo, next) = (self.temp(), self.label("crash_undo"), self.label("crash_next"));
@@ -115,12 +152,14 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("br i1 {held}, label %{undo}, label %{next}"));
             self.start_block(&undo);
             self.line(&format!("store i1 false, ptr {flag}"));
-            self.line("call void @fennec_lock_undo()");
-            let (cell, kind) = self.operand(&handle)?;
-            let mut words = Vec::new();
-            self.cell_words(&kind, &mut words)?;
-            for (offset, word) in words {
-                self.undo_word(&cell, offset, word);
+            if self.saves_changes(&handle) {
+                self.line("call void @fennec_lock_undo()");
+                let (cell, kind) = self.operand(&handle)?;
+                let mut words = Vec::new();
+                self.cell_words(&kind, &mut words)?;
+                for (offset, word) in words {
+                    self.undo_word(&cell, offset, word);
+                }
             }
             self.give_back_on_crash(&handle)?;
             self.line(&format!("br label %{next}"));

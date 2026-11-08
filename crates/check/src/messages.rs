@@ -105,6 +105,11 @@ pub(crate) fn unhandled_result(span: Span) -> Diagnostic {
         .with_help("get the value out with `?`, `else`, or `match` first")
 }
 
+pub(crate) fn dropped_failure(span: Span) -> Diagnostic {
+    Diagnostic::new("`_ =` would drop this failure", span)
+        .with_help("pass the error up with `?`, give a default with `else`, or handle it with `match`")
+}
+
 pub(crate) fn unhandled(span: Span) -> Diagnostic {
     Diagnostic::new("this can fail, but nothing handles it", span)
         .with_help("pass the error up with `?`, give a default with `else`, or handle it with `match`")

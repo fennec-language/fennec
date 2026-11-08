@@ -196,7 +196,8 @@ fn ignored_results_are_mistakes() {
             risky(3)
         for n in [1]:
             risky(n)
-        ignore(risky(3), 'best effort')
+        _ = risky(3)
+        _ = risky(3)?
         stdout.print('done')
     ";
     assert_eq!(
@@ -205,6 +206,7 @@ fn ignored_results_are_mistakes() {
             "this can fail, but nothing handles it @ risky(3)",
             "this can fail, but nothing handles it @ risky(3)",
             "this can fail, but nothing handles it @ risky(n)",
+            "`_ =` would drop this failure @ risky(3)",
         ]
     );
     let help = helps(&format!("{RISKY}\ndef f():\n    risky(3)\n    1\n"));

@@ -21,14 +21,13 @@ const WORDS: [&str; 18] = [
 ];
 
 /// The builtins a local could hide.
-const BUILTINS: [&str; 21] = [
+const BUILTINS: [&str; 20] = [
     "all",
     "any",
     "bytes",
     "copy",
     "enumerate",
     "float",
-    "ignore",
     "int",
     "list",
     "max",

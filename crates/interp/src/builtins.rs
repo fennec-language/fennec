@@ -13,7 +13,7 @@ use crate::value::Value;
 use crate::{format, ops, stdlib};
 
 /// The builtins. Standard library functions, like `json.loads`, are in `stdlib`.
-const NAMES: [&str; 22] = [
+const NAMES: [&str; 21] = [
     "Err",
     "Ok",
     "all",
@@ -21,7 +21,6 @@ const NAMES: [&str; 22] = [
     "bytes",
     "enumerate",
     "float",
-    "ignore",
     "int",
     "list",
     "max",
@@ -112,9 +111,6 @@ impl Interp<'_> {
             ("bytes", [items]) => self.bytes(items.clone(), span),
             ("Ok", []) => Ok(Value::Ok(Rc::new(Value::Unit))),
             ("Err", [value]) => Ok(Value::Err(Rc::new(value.clone()))),
-            ("ignore", [_, Value::Str(reason)]) if !reason.trim().is_empty() => Ok(Value::Unit),
-            ("ignore", _) => Err(Diagnostic::new("`ignore` needs a reason the result doesn't matter", span)
-                .with_help("like `ignore(save(fs, game), \"autosave is best effort\")`")),
             ("range", _) => range(&values, span),
             ("str", [value]) => Ok(Value::str(&self.shown(value, span)?)),
             ("int" | "float", [Value::Str(text)]) => self.parse_number(name, text, span),

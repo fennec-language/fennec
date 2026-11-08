@@ -9722,7 +9722,7 @@ def main(stdout: Stdout):
     _ = cleared.add("again")
     cleared.clear()
     stdout.print(cleared.len(), names.len(), cleared.values())
-    ignore(numbers.remove(gone), "it's fine if it's gone")
+    _ = numbers.remove(gone)
     stdout.print(numbers.len())
 "#,
     )

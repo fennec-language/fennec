@@ -7826,6 +7826,37 @@ fn a_channel_of_no_size_fails_where_its_made() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Each `with launch` in a function has its own `stop_after`, whatever another one was given.
+#[test]
+fn the_second_launch_in_a_function_keeps_its_stop_after() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("second_stop_after")?;
+    let program = dir.join("stops.fen");
+    std::fs::write(
+        &program,
+        "from std.concurrent import Crashed\n\ndef sleeper(clock: Clock, stdout: Stdout):\n    start = clock.time()\n    clock.sleep(3s)\n    stdout.print((clock.time() - start).nanos < 2_000_000_000)\n\ndef other(clock: Clock):\n    clock.sleep(10ms)\n\ndef main(clock: Clock, stdout: Stdout) fails Crashed:\n    with launch(() => other(clock))?:\n        with launch(() => sleeper(clock, stdout), stop_after=20ms)?:\n            pass\n    stdout.print(\"done\")\n",
+    )?;
+    let executable = dir.join("stops");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "True\ndone\n",
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    Ok(())
+}
+
 /// A channel's messages cross it as the runtime holds them, of each kind: a number, a string long
 /// enough for a block, a struct held in place, and a list. A receive or a send that waits past its
 /// timeout fails as `Timeout`.

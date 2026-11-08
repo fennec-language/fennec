@@ -226,7 +226,7 @@ impl Emit<'_, '_, '_> {
                 dest.and_then(|dest| self.across_lock(dest, value, crate::locks::Way::Out(*held)))
             }
             ("shared.drop", [Operand::Local(local)], _) => self.drop_local(*local),
-            ("task.failed", [error], _) => self.failed_with("this connection's task failed: ", error, span),
+            ("task.failed", [error], _) => self.hand_over_failure(error),
             ("set", [], []) => dest.and_then(|dest| self.empty_set(dest)),
             // A set of a set's items is the set, shared until one changes.
             ("set", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| self.copy(dest, set)),

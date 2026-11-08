@@ -1,24 +1,112 @@
-//! Closures, which live outside the runtime's heap: the address of an owner count, the code to
-//! call, the code that lets go of it, then the values it captured. The code takes that address
-//! first, then the arguments, and hands failure back in the usual register whether or not the
-//! function underneath can fail, so that any closure can be called the same way.
+//! Closures: the address of an owner count, a word for the runtime's shape, the code to call, the
+//! code that lets go of it, then the values it captured. The code takes that address first, then
+//! the arguments, and hands failure back in the usual register whether or not the function
+//! underneath can fail, so that any closure can be called the same way.
+//!
+//! A program that only ever holds closures in locals keeps them outside the runtime's heap, made
+//! and freed by generated code. One that keeps a closure anywhere the runtime reads, as a list's
+//! item, a field, or in a generator, has every closure in the runtime's table instead, laid out
+//! as a block whose shape names what it captured, so the runtime can copy and free it like any
+//! other. See [`runtime_holds_closures`].
 
 use std::fmt::Write as _;
 
-use fennec_ir::{LocalId, Operand};
+use fennec_check::Type;
+use fennec_ir::{InstKind, LocalId, Operand, Program};
+use fennec_layout::{Layouts, Written, closure_definition};
 use fennec_syntax::Span;
 
 use crate::emit::{Emit, symbol};
 use crate::kinds::Kind;
 
 /// Where a closure's code and captured values are.
-pub(crate) const CODE: u32 = 8;
-const LET_GO: u32 = 16;
-const CAPTURES: u32 = 24;
+pub(crate) const CODE: u32 = 16;
+const LET_GO: u32 = 24;
+const CAPTURES: u32 = 32;
+
+/// Whether a program keeps a closure anywhere the runtime reads: inside a collection, an
+/// optional, a tuple or another value, in a field, or in a generator's block. A closure only ever
+/// held by a local, given as an argument or returned stays with generated code.
+pub(crate) fn runtime_holds_closures(program: &Program) -> bool {
+    let functions = program.functions.iter().chain(&program.constants);
+    let locals = functions.clone().flat_map(|function| function.locals.iter().map(|local| &local.ty));
+    let returns = functions.map(|function| &function.returns);
+    if locals.chain(returns).any(holds_one) {
+        return true;
+    }
+    let structs = program.structs.iter().chain(&program.errors).flat_map(|def| &def.fields);
+    let cases = program.enums.iter().flat_map(|def| &def.cases).flat_map(|case| &case.fields);
+    if structs.chain(cases).any(|(_, ty)| has_one(ty)) {
+        return true;
+    }
+    program.generators.iter().any(|def| has_one(&def.item) || def.slots.iter().any(has_one))
+}
+
+/// Whether a value of this type holds a closure inside it, rather than being one.
+fn holds_one(ty: &Type) -> bool {
+    match ty {
+        Type::Arrow(params, returns) => params.iter().any(holds_one) || holds_one(returns),
+        other => inside(other).iter().any(|inner| has_one(inner)),
+    }
+}
+
+/// Whether this type is a closure or holds one.
+fn has_one(ty: &Type) -> bool {
+    matches!(ty, Type::Arrow(..) | Type::Function(_)) || inside(ty).iter().any(|inner| has_one(inner))
+}
+
+/// The types directly inside a type.
+fn inside(ty: &Type) -> Vec<&Type> {
+    match ty {
+        Type::List(inner)
+        | Type::Buffer(inner)
+        | Type::Array(inner, _)
+        | Type::Set(inner)
+        | Type::Iterator(inner)
+        | Type::Optional(inner)
+        | Type::Id(inner)
+        | Type::Table(inner) => vec![inner],
+        Type::Dict(key, value) | Type::Result(key, value) => vec![key, value],
+        Type::Tuple(items) | Type::Generic(_, items) | Type::Union(items) => items.iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The name of the layout of a closure's block, when the runtime holds closures: one for each
+/// function and how many values it captures.
+pub(crate) fn layout_name(function: &str, captured: usize) -> String {
+    format!("closure.{function}.{captured}")
+}
+
+/// The layouts of every closure a program makes, by what it captures, for when the runtime holds
+/// closures.
+pub(crate) fn closure_layouts(program: &Program, blocks: Option<&Layouts>) -> Vec<(String, Written)> {
+    let functions: std::collections::HashMap<&str, &fennec_ir::Function> =
+        program.functions.iter().map(|function| (function.name.as_str(), function)).collect();
+    let mut made = std::collections::BTreeMap::new();
+    let insts = program.functions.iter().flat_map(|function| &function.blocks).flat_map(|block| &block.insts);
+    for inst in insts {
+        let InstKind::MakeClosure { function, captures, .. } = &inst.kind else { continue };
+        let Some(callee) = functions.get(function.as_str()) else { continue };
+        let held: Vec<Type> = callee
+            .locals
+            .iter()
+            .take(captures.len().min(callee.params))
+            .map(|local| crate::kinds::canon_in(blocks, &local.ty))
+            .collect();
+        made.entry(layout_name(function, captures.len())).or_insert_with(|| closure_definition(&held));
+    }
+    made.into_iter().collect()
+}
 
 impl Emit<'_, '_, '_> {
     /// One owner fewer for a closure, freeing it when that was the last.
     pub(crate) fn release_closure(&mut self, closure: &str) {
+        // A block in the runtime's table goes as any other does, with what it captured.
+        if self.module.whole.runtime_closures {
+            self.release(closure);
+            return;
+        }
         let (none, held, last, done) =
             (self.temp(), self.label("held"), self.label("last"), self.label("done"));
         self.line(&format!("{none} = icmp eq ptr {closure}, null"));
@@ -55,14 +143,20 @@ impl Emit<'_, '_, '_> {
         let (code, let_go, kinds) = self.closure_code(function, captures.len())?;
         let layouts = self.module.layouts;
         let size = u64::from(CAPTURES) + kinds.iter().map(|kind| u64::from(kind.size(layouts))).sum::<u64>();
-        self.declare("declare noalias ptr @malloc(i64) nounwind");
-        let (closure, code_at, let_go_at) = (self.temp(), self.temp(), self.temp());
-        self.line(&format!("{closure} = call ptr @malloc(i64 {size})"));
-        if self.module.shared.tracing_costs {
-            self.declare("declare void @fennec_trace_allocated(i64) nounwind");
-            self.line(&format!("call void @fennec_trace_allocated(i64 {size})"));
-        }
-        self.line(&format!("store i64 1, ptr {closure}"));
+        let closure = if self.module.whole.runtime_closures {
+            self.table_closure(function, kinds.get(..captures.len()).ok_or("a closure captures too much")?)?
+        } else {
+            self.declare("declare noalias ptr @malloc(i64) nounwind");
+            let closure = self.temp();
+            self.line(&format!("{closure} = call ptr @malloc(i64 {size})"));
+            if self.module.shared.tracing_costs {
+                self.declare("declare void @fennec_trace_allocated(i64) nounwind");
+                self.line(&format!("call void @fennec_trace_allocated(i64 {size})"));
+            }
+            self.line(&format!("store i64 1, ptr {closure}"));
+            closure
+        };
+        let (code_at, let_go_at) = (self.temp(), self.temp());
         self.line(&format!("{code_at} = getelementptr inbounds i8, ptr {closure}, i64 {CODE}"));
         self.line(&format!("store ptr {code}, ptr {code_at}"));
         self.line(&format!("{let_go_at} = getelementptr inbounds i8, ptr {closure}, i64 {LET_GO}"));
@@ -75,6 +169,25 @@ impl Emit<'_, '_, '_> {
             offset += kind.size(layouts);
         }
         self.assign(dest, &closure)
+    }
+
+    /// A new closure's block in the runtime's table, owned once, whose layout puts its captured
+    /// values where its code reads them.
+    fn table_closure(&mut self, function: &str, kinds: &[Kind]) -> Result<String, String> {
+        use fennec_interp::embed::layout::FIELDS;
+        let layouts = self.module.layouts;
+        let id = layouts.id(&layout_name(function, kinds.len())).ok_or("a closure with no layout")?;
+        let layout = layouts.get(id).ok_or("a closure with no layout")?;
+        let start = FIELDS.unsigned_abs();
+        let mut offset = CAPTURES;
+        for (at, kind) in kinds.iter().enumerate() {
+            let field = layout.fields.iter().find(|field| field.name == format!("\0capture{at}"));
+            if field.is_none_or(|field| field.offset + start != offset) {
+                return Err("a closure's block has its captured values somewhere else".to_owned());
+            }
+            offset += kind.size(layouts);
+        }
+        self.new_block(id)
     }
 
     /// The code for a closure of a function, written once a module: its captured values come

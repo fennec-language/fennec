@@ -160,6 +160,11 @@ impl Emit<'_, '_, '_> {
         rest: &[Operand],
         span: Span,
     ) -> Result<(), String> {
+        if crate::parallel::is_request(name) {
+            // This call is all that links TLS into a program.
+            self.declare("declare void @fennec_use_tls() nounwind");
+            self.line("call void @fennec_use_tls()");
+        }
         self.crossing(dest, ("fennec_net_call", "i64", handle), name, rest, span)
     }
 

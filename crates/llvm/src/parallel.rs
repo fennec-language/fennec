@@ -34,9 +34,10 @@ use crate::emit::{Emit, HEADER_ACCESS, ITEM_ACCESS};
 use crate::kinds::{Kind, element_symbol};
 use crate::lists::list_item;
 
-/// Whether a builtin needs TLS: an HTTP request, or a raw socket asked for it with `tls=True`.
+/// Whether a builtin needs TLS: an HTTP request, a raw socket asked for it with `tls=True`, or a
+/// plain connection upgraded to it.
 pub(crate) fn is_request(name: &str) -> bool {
-    ["Net.get", "Net.post", "Net.request", "Net.connect.tls", "Net.listen.tls"]
+    ["Net.get", "Net.post", "Net.request", "Net.connect.tls", "Net.listen.tls", "Connection.start_tls"]
         .iter()
         .any(|request| name.starts_with(request))
 }

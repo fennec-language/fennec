@@ -266,6 +266,11 @@ pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end
     let Some((name, given)) = called else { return 0 };
     // A `File` is a handle in the same table in a test as anywhere, its fake files with the rest,
     // so it never goes to the fake network.
+    // A database's handle, like a file's, is in a table of its own, a test's with the rest.
+    if let Some(method) = name.strip_prefix("Database.").or_else(|| name.strip_prefix("Transaction.")) {
+        let done = crate::stdlib::sqlite::call(handle, method, &given, at);
+        return attempt(|state: &mut State| done.map(|value| state.push(value)));
+    }
     if let Some(method) = name.strip_prefix("File.") {
         let done = crate::stdlib::fs::real_file(handle, method, &given, at);
         return attempt(|state: &mut State| done.map(|value| state.push(value)));

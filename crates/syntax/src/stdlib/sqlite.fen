@@ -1,0 +1,300 @@
+## `std.sqlite`: a SQLite database in a file, through the `Fs` it's in, with `std.sql`'s queries.
+##
+## ```fennec
+## from std import sqlite
+##
+## with sqlite.open(fs, ".hoard/index.db")? as db:
+##     db.execute(t"create table if not exists entries (path text primary key, hash text)")?
+##     with db.transaction()? as tx:
+##         tx.execute(t"insert into entries values ({path}, {hash})")?
+##     rows = db.query[Entry](t"select path, hash from entries where path = {path}")?
+## ```
+##
+## A database is opened in WAL mode, so reads go on while something writes, and every commit is
+## on the disk before it's done, as `fs.create`'s files are. Tasks in a `parallel` loop may share
+## one: each query runs whole, one at a time, and each transaction has a connection of its own.
+## In a task, the database's waits pause only that task.
+##
+## A transaction takes the database's one writer when it starts, so two never undo each other's
+## work, and another writer waits up to 5 seconds for it before failing with `Busy`.
+##
+## In a test, each path is a database in memory, fresh for each test, and `--real` uses files.
+
+from std.sql import SqlError, SqlValue
+from std.intrinsics import new_tag
+
+## The database at `path`, made if it isn't there, lent for a `with` block:
+## `with sqlite.open(fs, "index.db")? as db:`. It's closed when the block ends.
+export def open(fs: Fs, path: str) -> with Database fails SqlError:
+    db = opened(fs, path)?
+    lend db else:
+        db._close()
+    db._close()
+
+def opened(fs: Fs, path: str) -> Database fails SqlError:
+    match fs._sqlite_open(path):
+        case Ok(db):
+            db
+        case Err(err):
+            fail .Failed(reason=err.reason)
+
+## A SQLite database, lent by `sqlite.open`. Its methods written in Rust, each private to it, run
+## what the methods below give them.
+export struct Database:
+    _handle: int
+
+    ## Runs a query that changes something, like an `insert`, and gives how many rows it changed.
+    def execute(self, query: Template[SqlValue]) -> int fails SqlError:
+        sent = statement(query)
+        self._execute(sent.text, sent.kinds, sent.ints, sent.floats, sent.texts, sent.blobs)?
+
+    ## Runs a query and gives each row it found as a `T`: a struct's fields by the columns' names,
+    ## or one column's value as an `int`, `str` or the like.
+    def query[T: Deserializable](self, query: Template[SqlValue]) -> list[T] fails SqlError:
+        sent = statement(query)
+        rows = self._query(sent.text, sent.kinds, sent.ints, sent.floats, sent.texts, sent.blobs)?
+        rows_as[T](rows)?
+
+    ## A transaction, lent for a `with` block: `with db.transaction()? as tx:`. What it changes is
+    ## kept when the block ends, and none of it if the block fails.
+    def transaction(self) -> with Transaction fails SqlError:
+        tx = self._begin()?
+        lend tx else:
+            tx._rollback()
+        tx._commit()?
+
+## A transaction, lent by `db.transaction()`. Its queries see what it's changed so far, and the
+## rest of the program sees none of it until it's kept.
+export struct Transaction:
+    _handle: int
+
+    ## Runs a query that changes something, like an `insert`, and gives how many rows it changed.
+    def execute(self, query: Template[SqlValue]) -> int fails SqlError:
+        sent = statement(query)
+        self._execute(sent.text, sent.kinds, sent.ints, sent.floats, sent.texts, sent.blobs)?
+
+    ## Runs a query and gives each row it found as a `T`, as `Database.query` does.
+    def query[T: Deserializable](self, query: Template[SqlValue]) -> list[T] fails SqlError:
+        sent = statement(query)
+        rows = self._query(sent.text, sent.kinds, sent.ints, sent.floats, sent.texts, sent.blobs)?
+        rows_as[T](rows)?
+
+## A query as SQLite takes it: the template's text with a `?` for each value, and the values
+## apart, each in the list of its kind, with `kinds` saying which: 0 for an `int`, 1 a `float`, 2
+## a `str` and 3 `bytes`.
+struct SqliteStatement:
+    text: str
+    kinds: list[int]
+    ints: list[int]
+    floats: list[float]
+    texts: list[str]
+    blobs: list[bytes]
+
+def statement(query: Template[SqlValue]) -> SqliteStatement:
+    mut text = ""
+    for at, part in enumerate(query.strings):
+        text += part
+        if at < query.values.len():
+            text += "?"
+    mut sent = SqliteStatement(text=text, kinds=[], ints=[], floats=[], texts=[], blobs=[])
+    # Each `is` on its own, with no `else`, so each narrows the value to one type.
+    for value in query.values:
+        if value is int:
+            sent.kinds.append(0)
+            sent.ints.append(value)
+        if value is bool:
+            sent.kinds.append(0)
+            sent.ints.append(1 if value else 0)
+        if value is float:
+            sent.kinds.append(1)
+            sent.floats.append(value)
+        if value is str:
+            sent.kinds.append(2)
+            sent.texts.append(value)
+        if value is bytes:
+            sent.kinds.append(3)
+            sent.blobs.append(value)
+    sent
+
+## What a query found, as SQLite gives it: each row's cells in column order, one row after
+## another. `kinds` says what each cell holds: 0 for null, 1 an int, 2 a float, 3 text and 4
+## bytes, and `at` where it is in the list of its kind.
+struct SqliteRows:
+    columns: list[str]
+    kinds: list[int]
+    at: list[int]
+    ints: list[int]
+    floats: list[float]
+    texts: list[str]
+    blobs: list[bytes]
+
+## Each row as a `T`. A failure names the column it's about.
+def rows_as[T: Deserializable](rows: SqliteRows) -> list[T] fails SqlError:
+    width = rows.columns.len()
+    count = 0 if width == 0 else rows.kinds.len() // width
+    mut src = SqliteRowReader(_rows=rows, _width=width)
+    mut found = list[T]()
+    for row in range(count):
+        src._row = row
+        src._cell = 0
+        src._in_record = False
+        match T.deserialize(ref src):
+            case Ok(value):
+                found.append(value)
+            case Err(err):
+                # A field with no column says so with no line, and its name as the message.
+                if err.line < 0: fail .Column(name=err.message, reason="the query gives no column for this field")
+                fail .Column(name=src._column(), reason=err.message)
+    found
+
+## Reads a row into a value, through its `deserialize`: a struct's fields by the columns' names,
+## or a single column as a value of its own.
+struct SqliteRowReader:
+    _rows: SqliteRows
+    _width: int
+    _row = 0
+    ## The column being read, in the row.
+    _cell = 0
+    _in_record = False
+    _type = ""
+    _field = 0
+
+    def _column(self) -> str:
+        self._rows.columns[self._cell] if self._cell < self._width else ""
+
+    def _bad(self, message: str) -> ParseError:
+        ParseError(message=message, line=self._row + 1, column=self._cell + 1)
+
+    ## Where the cell being read is, in the lists of `SqliteRows`, after checking there's one.
+    def _here(self) -> int fails ParseError:
+        if not self._in_record and self._width != 1:
+            fail self._bad(f"a row of {self._width} columns can't be read as one value: read it into a struct")
+        self._row * self._width + self._cell
+
+    def _kind(self) -> int fails ParseError:
+        self._rows.kinds[self._here()?]
+
+    def _wrong(self, kind: int, wanted: str) -> ParseError:
+        held = ["null", "an int", "a float", "text", "bytes"][kind]
+        self._bad(f"it holds {held}, not {wanted}")
+
+    def int(ref self) -> int fails ParseError:
+        kind = self._kind()?
+        if kind != 1: fail self._wrong(kind, "an int")
+        self._rows.ints[self._rows.at[self._here()?]]
+
+    def float(ref self) -> float fails ParseError:
+        kind = self._kind()?
+        at = self._rows.at[self._here()?]
+        if kind == 1: return float(self._rows.ints[at])
+        if kind != 2: fail self._wrong(kind, "a float")
+        self._rows.floats[at]
+
+    def bool(ref self) -> bool fails ParseError:
+        kind = self._kind()?
+        if kind != 1: fail self._wrong(kind, "a bool")
+        n = self._rows.ints[self._rows.at[self._here()?]]
+        if n != 0 and n != 1: fail self._bad(f"it holds {n}, and a bool is 0 or 1")
+        n == 1
+
+    def text(ref self) -> str fails ParseError:
+        kind = self._kind()?
+        if kind != 3: fail self._wrong(kind, "text")
+        self._rows.texts[self._rows.at[self._here()?]]
+
+    def bytes(ref self) -> bytes fails ParseError:
+        kind = self._kind()?
+        at = self._rows.at[self._here()?]
+        if kind == 3: return self._rows.texts[at].encode()
+        if kind != 4: fail self._wrong(kind, "bytes")
+        self._rows.blobs[at]
+
+    def none(ref self) -> bool fails ParseError:
+        self._kind()? == 0
+
+    def value[T: Deserializable](ref self) -> T fails ParseError:
+        T.deserialize(ref self)?
+
+    def sequence[T: Deserializable](ref self) -> list[T] fails ParseError:
+        fail self._bad("a column holds one value, not a list")
+
+    def map[K: Deserializable, V: Deserializable](ref self) -> list[(K, V)] fails ParseError:
+        fail self._bad("a column holds one value, not a dict")
+
+    def record(ref self, name: str) fails ParseError:
+        if self._in_record: fail self._bad(f"a column holds one value, not a `{name}`")
+        self._in_record = True
+        self._type = name
+        self._cell = -1
+
+    def next_field(ref self, fields: list[(str, str)]) -> bool fails ParseError:
+        self._cell += 1
+        if self._cell >= self._width: return False
+        name = self._column()
+        for at, field in enumerate(fields):
+            if field[0] != "" and field[0] == name:
+                self._field = at
+                return True
+        fail self._bad(f"`{self._type}` has no field called `{name}`")
+
+    def field_at(self) -> int:
+        self._field
+
+    def missing(self, name: str) -> ParseError:
+        ParseError(message=name, line=-1, column=0)
+
+    def rule(self, message: str) -> ParseError:
+        self._bad(message)
+
+    def at_item(self, at: int, message: str) -> ParseError:
+        self._bad(f"item {at} {message}")
+
+    def here(self, message: str) -> ParseError:
+        self._bad(message)
+
+    def saw_id(ref self, kind: str, position: int):
+        pass
+
+    def saw_table(ref self, kind: str, count: int):
+        pass
+
+    def tag(ref self, kind: str) -> int:
+        new_tag()
+
+    ## A null in a field that isn't optional fails, saying so, rather than taking its default.
+    def none_next(ref self) -> bool:
+        False
+
+    def exact(self) -> bool:
+        False
+
+    def ordered(ref self, name: str) -> bool fails ParseError:
+        False
+
+    def end_ordered(ref self):
+        pass
+
+    def map_count(ref self) -> int fails ParseError:
+        -1
+
+    def end_map(ref self):
+        pass
+
+    ## A case with no data, by its name as text.
+    def case(ref self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+        held = self.text()?
+        for at, case in enumerate(cases):
+            if case[0] == held:
+                if case[1]: fail self._bad(f"`{name}.{held}` has data, which a column can't hold")
+                return at
+        fail self._bad(f"`{held}` isn't a case of `{name}`")
+
+    def end_case(ref self) fails ParseError:
+        pass
+
+    def member(ref self, names: list[str]) -> int fails ParseError:
+        union = " | ".join(names)
+        fail self._bad(f"a column can't hold a `{union}` yet")
+
+    def end_member(ref self) fails ParseError:
+        pass

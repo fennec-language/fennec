@@ -5189,6 +5189,266 @@ fn a_task_writing_a_file_lets_the_others_answer() -> std::io::Result<()> {
     Ok(())
 }
 
+/// What the next test runs: `std.sqlite` in a test, on the fake `Fs`.
+const SQLITE_TESTS: &str = r#"from std import sqlite
+from std.sql import SqlError
+
+enum Status:
+    Clean
+    Changed
+
+struct Entry:
+    path: str
+    size: int
+    status: Status
+    note: str? = None
+
+def made(fs: Fs, path: str) fails SqlError:
+    with sqlite.open(fs, path)? as db:
+        _ = db.execute(t"create table entries (path text primary key, size integer not null, status text not null, note text)")?
+
+def add(fs: Fs, path: str, entries: list[Entry]) fails SqlError:
+    with sqlite.open(fs, path)? as db:
+        with db.transaction()? as tx:
+            for entry in entries:
+                status = "Clean" if entry.status == .Clean else "Changed"
+                _ = tx.execute(t"insert into entries (path, size, status) values ({entry.path}, {entry.size}, {status})")?
+
+def all_entries(fs: Fs, path: str) -> list[Entry] fails SqlError:
+    mut found = list[Entry]()
+    with sqlite.open(fs, path)? as db:
+        found = db.query[Entry](t"select path, size, status, note from entries order by path")?
+    found
+
+test "rows come back as structs, their values bound"(fs: Fs):
+    made(fs, "index.db")?
+    sneaky = "a'; drop table entries; --"
+    add(fs, "index.db", [Entry(path=sneaky, size=3, status=.Clean), Entry(path="b", size=10, status=.Changed)])?
+    found = all_entries(fs, "index.db")?
+    assert found.len() == 2
+    assert found[0].path == sneaky and found[0].size == 3 and found[0].status == .Clean
+    assert found[1].path == "b" and found[1].status == .Changed and found[1].note is None
+
+test "each test has its own databases"(fs: Fs):
+    made(fs, "index.db")?
+    assert all_entries(fs, "index.db")?.len() == 0
+
+test "a transaction that fails keeps nothing"(fs: Fs):
+    made(fs, "index.db")?
+    add(fs, "index.db", [Entry(path="a", size=1, status=.Clean)])?
+    match add(fs, "index.db", [Entry(path="b", size=2, status=.Clean), Entry(path="a", size=9, status=.Clean)]):
+        case Err(Constraint(reason=reason)):
+            assert "UNIQUE" in reason
+        case _:
+            assert False
+    found = all_entries(fs, "index.db")?
+    assert found.len() == 1 and found[0].size == 1
+
+test "one column reads as one value"(fs: Fs):
+    made(fs, "index.db")?
+    add(fs, "index.db", [Entry(path="a", size=4, status=.Clean), Entry(path="b", size=5, status=.Clean)])?
+    with sqlite.open(fs, "index.db")? as db:
+        assert db.query[int](t"select sum(size) from entries")? == [9]
+        least = 5
+        assert db.query[str](t"select path from entries where size >= {least}")? == ["b"]
+        changed = db.execute(t"update entries set size = size + 1")?
+        assert changed == 2
+
+test "a column that doesn't fit fails with its name"(fs: Fs):
+    made(fs, "index.db")?
+    add(fs, "index.db", [Entry(path="a", size=4, status=.Clean)])?
+    with sqlite.open(fs, "index.db")? as db:
+        match db.query[Entry](t"select path, path as size, status from entries"):
+            case Err(Column(name=name, reason=reason)):
+                assert name == "size" and reason == "it holds text, not an int"
+            case _:
+                assert False
+        match db.query[Entry](t"select path, status from entries"):
+            case Err(Column(name=name)):
+                assert name == "size"
+            case _:
+                assert False
+        match db.query[Entry](t"select path, size, status, 1 as extra from entries"):
+            case Err(Column(name=name, reason=reason)):
+                assert name == "extra" and reason == "`Entry` has no field called `extra`"
+            case _:
+                assert False
+        match db.query[int](t"select size, path from entries"):
+            case Err(Column(reason=reason)):
+                assert "2 columns" in reason
+            case _:
+                assert False
+
+test "a query is one statement"(fs: Fs):
+    with sqlite.open(fs, "index.db")? as db:
+        match db.execute(t"create table a (x int); create table b (x int)"):
+            case Err(Failed(reason=reason)):
+                assert "one statement" in reason
+            case _:
+                assert False
+
+test "a narrowed Fs opens only what it reaches"(fs: Fs):
+    fs.make_dir("data")?
+    match made(fs.only("data"), "elsewhere.db"):
+        case Err(Failed(reason=reason)):
+            assert "outside what this Fs can reach" in reason
+        case _:
+            assert False
+    made(fs.only("data"), "data/index.db")?
+"#;
+
+/// `std.sqlite` in compiled tests, with a database in memory for each path: rows read into
+/// structs by their columns' names, values bound rather than pasted into the query, a fresh
+/// database for each test, a failed transaction keeping nothing, a column that doesn't fit
+/// failing with its name, and a narrowed `Fs` opening only what it reaches.
+#[test]
+fn sqlite_in_tests_reads_rows_into_structs_and_names_a_column_that_does_not_fit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("sqlite-tests")?;
+    let program = dir.join("store.fen");
+    std::fs::write(&program, SQLITE_TESTS)?;
+    let ran = fennec(&["test", "--all", "--verbose", &program.to_string_lossy()], &dir)?;
+    let (shown, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+    std::fs::remove_dir_all(&dir)?;
+    assert!(ran.status.success(), "{shown}{said}");
+    assert!(
+        said.contains("7 of 7 tests ran through LLVM") && shown.contains("7 passed, 0 failed"),
+        "{shown}{said}"
+    );
+    Ok(())
+}
+
+/// What the next test runs, against the fake `Fs` and then the real disk.
+const SQLITE_FAKE_AND_REAL: &str = r#"from std import sqlite
+from std.sql import SqlError
+
+test "a database is a file"(fs: Fs):
+    with sqlite.open(fs, "real.db")? as db:
+        _ = db.execute(t"create table if not exists notes (text text)")?
+        _ = db.execute(t"delete from notes")?
+        word = "fox"
+        _ = db.execute(t"insert into notes values ({word})")?
+    assert fs.exists("real.db")
+    with sqlite.open(fs, "real.db")? as db:
+        assert db.query[str](t"select text from notes")? == ["fox"]
+    fs.remove("real.db")?
+
+test "its file is there to see"(fs: Fs):
+    with sqlite.open(fs, "memory.db")? as db:
+        _ = db.execute(t"create table if not exists notes (text text)")?
+    assert fs.exists("memory.db")
+    fs.remove("memory.db")?
+
+def opened(fs: Fs, path: str) fails SqlError:
+    with sqlite.open(fs, path)? as db:
+        _ = db.execute(t"select 1")?
+
+test "a folder that isn't there fails it"(fs: Fs):
+    match opened(fs, "no/such/folder/a.db"):
+        case Ok(_):
+            assert False
+        case Err(Failed(reason=reason)):
+            assert reason != ""
+        case _:
+            assert False
+"#;
+
+/// The same tests pass on a test's fake `Fs` and, with `--real`, on files: a database written,
+/// closed and opened again, its file there to see, and a folder that isn't there failing it.
+#[test]
+fn sqlite_tests_pass_alike_on_a_fake_fs_and_on_files() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("sqlite-fake-and-real")?;
+    let program = dir.join("real.fen");
+    std::fs::write(&program, SQLITE_FAKE_AND_REAL)?;
+    for how in [&["test", "--all", "--verbose"][..], &["test", "--real", "--all", "--verbose"][..]] {
+        let mut args = how.to_vec();
+        let path = program.to_string_lossy().into_owned();
+        args.push(&path);
+        let ran = crate::executables::fennec_command()
+            .args(&args)
+            .env("FENNEC_HOME", &dir)
+            .current_dir(&dir)
+            .output_before(FENNEC_DEADLINE)?;
+        let (shown, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert!(ran.status.success() && shown.contains("3 passed, 0 failed"), "{how:?}: {shown}{said}");
+    }
+    // Nothing's left of the database on the disk.
+    assert!(!dir.join("real.db").exists() && !dir.join("memory.db").exists());
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// What the next test builds: 32 `parallel` rounds, each writing in a transaction of its own and
+/// reading the whole table, on a file.
+const SQLITE_ROUNDS: &str = r#"from std import sqlite
+from std.sql import SqlError
+
+def round(db: sqlite.Database, at: int) -> int fails SqlError:
+    with db.transaction()? as tx:
+        for item in range(20):
+            _ = tx.execute(t"insert into items (round, item) values ({at}, {item})")?
+        mine = tx.query[int](t"select count(*) from items where round = {at}")?
+        if mine != [20]: return -1
+    seen = db.query[int](t"select count(*) from items")?
+    seen[0]
+
+def rounds(fs: Fs, stdout: Stdout) fails SqlError:
+    with sqlite.open(fs, "rounds.db")? as db:
+        _ = db.execute(t"create table items (round integer, item integer)")?
+        counts = [round(db, at) else -2 for at in parallel(range(32))]
+        stdout.print(min(counts) >= 20, max(counts) == 640)
+        stdout.print(db.query[int](t"select count(*) from items")?, db.query[int](t"select count(distinct round) from items")?)
+
+def main(stdout: Stdout, fs: Fs):
+    match rounds(fs, stdout):
+        case Ok(_):
+            pass
+        case Err(err):
+            stdout.print("it failed:", err.message())
+"#;
+
+/// Rounds of `parallel` share one database: each transaction has a connection of its own and
+/// the database's one writer, so none of the 640 rows is lost, and each round sees its own 20
+/// before it commits. More rounds wait than there are blocking threads, so waiting for the
+/// writer holds none of them, on four threads and on one.
+#[test]
+fn sqlite_from_parallel_rounds_keeps_every_write() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("sqlite-rounds")?;
+    let program = dir.join("rounds.fen");
+    std::fs::write(&program, SQLITE_ROUNDS)?;
+    let executable = dir.join("rounds");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["4", "1"] {
+        for made in ["rounds.db", "rounds.db-wal", "rounds.db-shm"] {
+            let _ = std::fs::remove_file(dir.join(made));
+        }
+        let ran =
+            Command::new(&executable).current_dir(&dir).env("FENNEC_THREADS", threads).output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "True True\n[640] [32]\n",
+            "on {threads} threads: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// `process.run`'s options in compiled code: what the program reads, the folder it runs in and
 /// variables it gets, on their own and together, and a narrowed `Process` still running only
 /// what it may when given them.

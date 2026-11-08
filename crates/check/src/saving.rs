@@ -12,7 +12,7 @@ use crate::checker::Checker;
 use crate::types::Type;
 
 /// The modules that save through these methods.
-const SAVING_MODULES: [&str; 3] = ["json", "toml", "pack"];
+const SAVING_MODULES: [&str; 5] = ["json", "toml", "pack", "sql", "sqlite"];
 
 /// The names that show a program uses saving.
 const SAVING_NAMES: [&str; 4] = ["serialize", "deserialize", "Serializable", "Deserializable"];

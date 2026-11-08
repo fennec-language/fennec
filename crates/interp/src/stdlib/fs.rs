@@ -37,7 +37,7 @@ static NEXT: LazyLock<Mutex<i64>> = LazyLock::new(|| Mutex::new(1));
 /// `work`, which may wait on the disk, on one of the runtime's blocking threads when it's in a
 /// task, so a slow disk pauses only that task, as a network wait does. Outside a task it runs
 /// here, and so does all of it where there are no threads.
-fn blocking<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+pub(crate) fn blocking<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
     #[cfg(any(test, feature = "threads"))]
     {
         crate::embed::serve::off_thread(work)
@@ -335,6 +335,11 @@ impl Interp<'_> {
                         None => Ok(io_error("there's no fake file system here")),
                     };
                 }
+                ("_sqlite_open", [Value::Str(path)]) => {
+                    if let Some(world) = self.world.as_mut() {
+                        return Ok(world.open_database(path));
+                    }
+                }
                 ("_finish", [file]) => {
                     let mut written = Ok(());
                     let done = finish(file, &mut |target, data| {
@@ -429,13 +434,14 @@ pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value
         }
         ("_create", [Value::Str(path), Value::Bool(durable)]) => create(path, *durable),
         ("_open", [Value::Str(path)]) => open(path),
+        ("_sqlite_open", [Value::Str(path)]) => crate::stdlib::sqlite::open_file(path),
         ("_finish", [file]) => done(finish(file, &mut |_, _| Ok(())), |()| Value::Unit),
         ("_discard", [file]) => {
             discard(file);
             Value::Unit
         }
         ("exists" | "read_text" | "write_text" | "read_bytes" | "write_bytes" | "list_dir" | "walk" | "make_dir"
-        | "remove" | "metadata" | "_create" | "_open", _) => return wrong(),
+        | "remove" | "metadata" | "_create" | "_open" | "_sqlite_open", _) => return wrong(),
         _ => return Err(no_method(&Value::Capability(Capability::Fs), method, span)),
     })
 }

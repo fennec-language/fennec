@@ -272,6 +272,9 @@ impl Checker {
     ) -> Checked {
         let enums = self.enums();
         let locals = std::mem::take(&mut self.locals);
+        // A type asked about before what it holds was known, like the list in `pack.dumps(pairs)`
+        // before `pairs.append((1, "a"))`, is what it holds once the check is done.
+        let saved_types = std::mem::take(&mut self.saved_types).iter().map(|ty| self.settled(ty)).collect();
         let functions = self
             .states
             .into_iter()
@@ -303,7 +306,7 @@ impl Checker {
             opened_apart: self.opened_apart,
             native_formats: self.native_formats,
             native_json_bodies: self.native_json_bodies,
-            saved_types: self.saved_types,
+            saved_types,
         }
     }
 

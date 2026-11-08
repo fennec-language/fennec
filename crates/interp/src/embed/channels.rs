@@ -232,7 +232,11 @@ fn replayed(channel: &Channel, what: &str) -> Turn {
     match crate::replay::turn(channel.replay.as_deref(), what) {
         Ok(None) => Turn::Live,
         Ok(Some(DONE)) => Turn::Goes,
-        Ok(Some(code)) => Turn::Gives(code),
+        Ok(Some(code)) => {
+            // It changes nothing, so this is where its turn ends.
+            met(channel, what, code);
+            Turn::Gives(code)
+        }
         Err(why) => {
             super::fail_with(Diagnostic::new(why, Span::default()));
             Turn::Gives(CLOSED)
@@ -240,7 +244,8 @@ fn replayed(channel: &Channel, what: &str) -> Turn {
     }
 }
 
-/// Logs, in a recording, that the running task did `what` at `channel`, coming to `outcome`.
+/// Says the running task did `what` at `channel`, coming to `outcome`: logged in a recording, and
+/// in a replay, the end of its turn.
 fn met(channel: &Channel, what: &str, outcome: i64) {
     crate::replay::met(channel.replay.as_deref(), what, outcome);
 }

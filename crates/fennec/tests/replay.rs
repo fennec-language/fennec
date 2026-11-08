@@ -273,6 +273,78 @@ fn a_recorded_server_replays_its_rounds_with_no_network() -> std::io::Result<()>
     Ok(())
 }
 
+/// Two tasks taking turns at one `shared` value, as they come.
+const TWO_TASKS_ONE_LOCK: &str = "from std.concurrent import Crashed
+
+struct Order:
+    seen = list[str]()
+
+def add(order: shared Order, text: str):
+    lock order as ref held:
+        held.seen.append(text)
+
+def takes(order: shared Order, name: str):
+    for at in range(600):
+        add(order, f\"{name}{at} \")
+
+def main(stdout: Stdout) fails Crashed:
+    shared order = Order()
+    with launch(() => takes(order, \"a\"))?:
+        with launch(() => takes(order, \"b\"))?:
+            pass
+    lock order as held:
+        stdout.print(held.seen.len(), \"\".join(held.seen))
+";
+
+/// Ranges of a `parallel` call taking turns at one `shared` value.
+const RANGES_ONE_LOCK: &str = "struct Order:
+    seen = list[int]()
+
+def visit(order: shared Order, at: int) -> int:
+    lock order as ref held:
+        held.seen.append(at)
+    at
+
+def main(stdout: Stdout):
+    shared order = Order()
+    done = [visit(order, at) for at in parallel(range(32))]
+    lock order as held:
+        stdout.print(done.len(), held.seen)
+";
+
+/// Tasks contending for one `shared` value take its lock in the order the recording did, however
+/// many threads the replay is given, so what they left in it reads the same.
+#[test]
+fn tasks_contending_for_a_lock_replay_the_order_they_took_it() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("lock-order")?;
+    for (name, source) in [("two_tasks", TWO_TASKS_ONE_LOCK), ("ranges", RANGES_ONE_LOCK)] {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let log = dir.join(format!("{name}.log"));
+        let mut record = fennec_command();
+        record.env("FENNEC_THREADS", "4").env("FENNEC_PARALLEL_STRESS", "1");
+        record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+        let recorded = outcome(&record.output_before(DEADLINE)?);
+        assert_eq!(recorded.2, Some(0), "{name}: {}", recorded.1);
+        for threads in ["1", "4", "1", "4", "7"] {
+            let replayed = outcome(
+                &fennec_command()
+                    .env("FENNEC_THREADS", threads)
+                    .env("FENNEC_PARALLEL_STRESS", "1")
+                    .args(["replay", &log.to_string_lossy()])
+                    .current_dir(&dir)
+                    .output_before(DEADLINE)?,
+            );
+            assert_eq!(replayed, recorded, "{name}, replayed with FENNEC_THREADS={threads}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Whether an example runs more than one task, whose order between them isn't recorded yet, or
 /// serves until it's stopped, so its run doesn't end by itself.
 fn several_tasks_or_serves(source: &str) -> bool {

@@ -112,6 +112,8 @@ fn kit_toml_reports_each_mistake() {
             .collect()
     };
     let valid = "name = \"arena\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n";
+    assert_eq!(fennec_kit::Manifest::parse(&valid.replace("0.0.1", "dev")).unwrap().fennec, "dev");
+    assert_eq!(messages(&valid.replace("0.1.0", "dev")), ["`dev` isn't a version"]);
     assert_eq!(messages(&valid.replace("arena", "Arena")), ["`Arena` can't name a kit"]);
     assert_eq!(messages(&valid.replace("arena", "star-fox")), ["`star-fox` can't name a kit"]);
     assert_eq!(messages(&valid.replace("arena", "9lives")), ["`9lives` can't name a kit"]);
@@ -195,6 +197,7 @@ fn kit_toml_says_what_is_wrong_with_a_dependency() {
     );
     assert_eq!(message("tools = { path = \"../tools\", git = \"x\" }"), "`tools` has both `git` and `path`");
     assert_eq!(message("tools = { place = \"../tools\" }"), "a dependency has no key called `place`");
+    assert_eq!(message("fennec = \"0.4.2\""), "the Fennec a kit builds with isn't a dependency");
     assert_eq!(message("tools = { path = \"../tools\" "), "`tools` should be a table in braces");
     assert_eq!(
         message("lasers = \"1.0.0\""),

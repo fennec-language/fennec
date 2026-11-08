@@ -178,8 +178,15 @@ pub fn test_ran(flag: i64) {
 #[cfg(not(feature = "lean"))]
 pub fn test_world(fakes: i64) {
     with(|state: &mut State| {
-        state.interp.world = (fakes != 0).then(|| TestWorld::new(TestCapabilities::Fakes));
+        state.interp.world = (fakes != 0 && !real_tests()).then(|| TestWorld::new(TestCapabilities::Fakes));
     });
+}
+
+/// Whether `fennec test --real` runs these tests, with the real capabilities rather than fakes:
+/// what they print then goes out as it is, and each test's line goes to standard error.
+fn real_tests() -> bool {
+    static REAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *REAL.get_or_init(|| std::env::var_os("FENNEC_TESTS_REAL").is_some())
 }
 
 /// Says what the test just run did, on standard output as soon as it's done, in a line `fennec
@@ -189,6 +196,13 @@ pub fn test_world(fakes: i64) {
 pub fn test_done(number: i64) {
     let ran: Vec<String> = RAN.take().iter().map(ToString::to_string).collect();
     let line = test_line(number, super::next_test().as_ref(), &ran);
+    if real_tests() {
+        // What the test printed comes first.
+        super::write_kept_output();
+        let mut said = std::io::stderr();
+        let _ = writeln!(said, "{line}").and_then(|()| said.flush());
+        return;
+    }
     let mut out = std::io::stdout();
     let _ = writeln!(out, "{line}").and_then(|()| out.flush());
 }

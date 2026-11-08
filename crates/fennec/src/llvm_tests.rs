@@ -357,6 +357,20 @@ fn test_failure(failure: Diagnostic) -> Diagnostic {
     }
 }
 
+/// Runs a test executable once, with real capabilities rather than fakes, for `fennec test --real`,
+/// giving back how each of its `tests` tests went. What the tests print goes straight out, in order,
+/// so the executable says how each went on its standard error.
+fn run_for_real(work: &std::path::Path, tests: usize) -> String {
+    let numbers = (0..tests).map(|number| number.to_string());
+    Command::new(work)
+        .args(numbers)
+        .env("FENNEC_TESTS_REAL", "1")
+        .stdout(std::process::Stdio::inherit())
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stderr).into_owned())
+        .unwrap_or_default()
+}
+
 /// Runs a test executable in worker processes, each with its share of `tests` tests, giving back
 /// what each wrote.
 fn run_workers(work: &std::path::Path, tests: usize) -> Vec<String> {
@@ -384,7 +398,12 @@ fn run_workers(work: &std::path::Path, tests: usize) -> Vec<String> {
 
 /// Runs the tests of a checked `module` named in `wanted` that LLVM can take. `defines` says
 /// whether the program defines a function by a name.
-pub(crate) fn run(module: &Module, wanted: &[String], defines: &dyn Fn(&str) -> bool) -> LlvmTests {
+pub(crate) fn run(
+    module: &Module,
+    wanted: &[String],
+    defines: &dyn Fn(&str) -> bool,
+    real: bool,
+) -> LlvmTests {
     let mut result = LlvmTests::default();
     let mut plain = Vec::new();
     let tests = module.items.iter().filter_map(|item| match item {
@@ -425,7 +444,7 @@ pub(crate) fn run(module: &Module, wanted: &[String], defines: &dyn Fn(&str) -> 
     };
     let fused = fusible(module);
     let prelude = prelude_functions();
-    let ran = run_workers(&work, taken.len());
+    let ran = if real { vec![run_for_real(&work, taken.len())] } else { run_workers(&work, taken.len()) };
     let _ = std::fs::remove_file(&work);
     let mut seen = vec![false; taken.len()];
     for (number, failure, set) in ran.iter().flat_map(|output| output.lines()).filter_map(read_line) {

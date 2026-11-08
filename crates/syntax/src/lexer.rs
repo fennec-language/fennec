@@ -385,10 +385,18 @@ impl Lexer<'_> {
                     self.pos += 2;
                 }
                 Some('{') => {
+                    let mut part = self.fstring_expr(start)?;
+                    // `{hp=}` shows what's written and then its value: `hp=100`.
+                    if let FPart::Expr { source, .. } = &mut part
+                        && let Some(shown) = shown_as_written(source)
+                    {
+                        text.push_str(source);
+                        *source = shown;
+                    }
                     if !text.is_empty() {
                         parts.push(FPart::Text(std::mem::take(&mut text)));
                     }
-                    parts.push(self.fstring_expr(start)?);
+                    parts.push(part);
                 }
                 Some('}') => {
                     return Err(Diagnostic::new("`}` without a matching `{`", self.span(self.offset()))
@@ -434,6 +442,17 @@ impl Lexer<'_> {
         let offset = Span::new(expr_start, expr_start).shifted(self.base).start;
         Ok(FPart::Expr { source, offset, spec })
     }
+}
+
+/// What an f-string's `{expression=}` shows: written out with its `=`, as in Python, the
+/// expression before the `=`, or `None` for a plain `{expression}`. A `=` that ends `==`, `!=`,
+/// `<=` or `>=` is the comparison's own.
+fn shown_as_written(source: &str) -> Option<String> {
+    let before = source.trim_end().strip_suffix('=')?;
+    if before.ends_with(['=', '!', '<', '>']) || before.trim().is_empty() {
+        return None;
+    }
+    Some(before.to_owned())
 }
 
 /// The units a duration literal can end in, with how many nanoseconds each is. Minutes are
@@ -524,5 +543,29 @@ mod tests {
         let tokens: Vec<Tok> =
             lex("if x:\n    if y:\n        z\n", 0).unwrap().into_iter().map(|t| t.tok).collect();
         assert!(tokens.ends_with(&[Tok::Dedent, Tok::Dedent, Tok::Eof]), "{tokens:?}");
+    }
+
+    /// `{hp=}` shows what's written, with its `=` and its spaces, and then the value, as in
+    /// Python. A `=` ending a comparison is the comparison's.
+    #[test]
+    fn an_fstring_shows_what_ends_in_equals_as_written() {
+        use crate::token::FPart;
+        let parts = |text: &str| -> Vec<FPart> {
+            let tokens = lex(text, 0).unwrap();
+            let Some(Tok::FStr(parts)) = tokens.into_iter().map(|token| token.tok).next() else {
+                panic!("not an f-string: {text}")
+            };
+            parts
+        };
+        let code = |source: &str, offset: u32, spec: Option<&str>| FPart::Expr {
+            source: source.to_owned(),
+            offset,
+            spec: spec.map(str::to_owned),
+        };
+        assert_eq!(parts("f\"{hp=}\""), [FPart::Text("hp=".to_owned()), code("hp", 3, None)]);
+        assert_eq!(parts("f\"at {hp=:,}\""), [FPart::Text("at hp=".to_owned()), code("hp", 6, Some(","))]);
+        assert_eq!(parts("f\"{ hp = }\""), [FPart::Text(" hp = ".to_owned()), code(" hp ", 3, None)]);
+        assert_eq!(parts("f\"{hp == 1}\""), [code("hp == 1", 3, None)]);
+        assert_eq!(parts("f\"{hp >= 1}\""), [code("hp >= 1", 3, None)]);
     }
 }

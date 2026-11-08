@@ -1,0 +1,47 @@
+error Missing:
+    path: str
+
+error Broken:
+    code: int
+    why: str
+
+def load(path: str) -> int fails Missing:
+    if path == "": fail Missing(path="(none)")
+    path.len()
+
+def parse(n: int) -> int fails Broken:
+    if n > 3: fail Broken(code=n, why="too long")
+    n
+
+def both(path: str) -> int fails Missing | Broken:
+    parse(load(path)?)?
+
+def noted(path: str) -> int fails Missing | Broken:
+    match both(path):
+        case Ok(n):
+            n
+        case Err(problem):
+            mut kept = problem
+            kept.add_note(f"while loading {path}")
+            kept.add_note("second line\nand a third")
+            fail kept
+
+def main(stdout: Stdout) fails Missing | Broken:
+    match load(""):
+        case Ok(_):
+            pass
+        case Err(missing):
+            mut m = missing
+            stdout.print(m.notes(), m)
+            m.add_note("first")
+            copy = m
+            m.add_note("second")
+            stdout.print(m.notes(), copy.notes(), m == copy, m)
+            stdout.print(f"{m}", str(m))
+    match noted("long name"):
+        case Ok(n):
+            stdout.print(n)
+        case Err(problem):
+            stdout.print(problem.notes(), problem)
+    stdout.print(noted("ab")?)
+    stdout.print(noted("a long one")?)

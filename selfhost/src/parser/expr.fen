@@ -10,7 +10,7 @@ from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, C
 from parser import Parser, is_field_word, is_name, describe
 
 extend Parser:
-    def expr(ref self) -> Expr:
+    def expr(ref self) -> Expr fails Diagnostic:
         if self.at_match():
             return self.match_expr()?
         lambda = self.lambda()?
@@ -43,7 +43,7 @@ extend Parser:
 
     ## `continue`, `break`, `return` or `fail` after `else`, as a `match` with one case that leaves, which
     ## every engine and analysis already follows out of the expression.
-    def leaving(ref self) -> Expr:
+    def leaving(ref self) -> Expr fails Diagnostic:
         start = self.span()
         word = self.peek()
         _ = self.advance()
@@ -61,7 +61,7 @@ extend Parser:
 
     ## An `else:` block, which says something and then leaves. It's the same `match` as
     ## `else return`, with more statements in its case.
-    def leaving_block(ref self) -> Expr:
+    def leaving_block(ref self) -> Expr fails Diagnostic:
         start = self.advance().span
         indented = self.at(.Newline)
         body = self.block()?
@@ -77,7 +77,7 @@ extend Parser:
         )
 
     ## `x => body` or `(a, b) => body`.
-    def lambda(ref self) -> Expr?:
+    def lambda(ref self) -> Expr? fails Diagnostic:
         start = self.span()
         mut params = []
         if is_name(self.peek()) and self.peek_at(1) == .Punct("=>"):
@@ -115,19 +115,19 @@ extend Parser:
             return None
         (params, at + 2)
 
-    def or_expr(ref self) -> Expr:
+    def or_expr(ref self) -> Expr fails Diagnostic:
         mut lhs = self.and_expr()?
         while self.eat_keyword("or"):
             lhs = binary(.Or, lhs=lhs, rhs=self.and_expr()?)
         lhs
 
-    def and_expr(ref self) -> Expr:
+    def and_expr(ref self) -> Expr fails Diagnostic:
         mut lhs = self.not_expr()?
         while self.eat_keyword("and"):
             lhs = binary(.And, lhs=lhs, rhs=self.not_expr()?)
         lhs
 
-    def not_expr(ref self) -> Expr:
+    def not_expr(ref self) -> Expr fails Diagnostic:
         start = self.span()
         if self.eat_keyword("not"):
             operand = self.not_expr()?
@@ -135,7 +135,7 @@ extend Parser:
         self.comparison()?
 
     ## Comparisons chain as in Python: `a < b <= c` means `a < b and b <= c`.
-    def comparison(ref self) -> Expr:
+    def comparison(ref self) -> Expr fails Diagnostic:
         mut lhs = self.bit_or()?
         mut chain = None
         while True:
@@ -152,39 +152,39 @@ extend Parser:
             lhs = rhs
         chain else lhs
 
-    def bit_or(ref self) -> Expr:
+    def bit_or(ref self) -> Expr fails Diagnostic:
         mut lhs = self.bit_xor()?
         while self.eat_punct("|"):
             lhs = binary(.BitOr, lhs=lhs, rhs=self.bit_xor()?)
         lhs
 
-    def bit_xor(ref self) -> Expr:
+    def bit_xor(ref self) -> Expr fails Diagnostic:
         mut lhs = self.bit_and()?
         while self.eat_punct("^"):
             lhs = binary(.BitXor, lhs=lhs, rhs=self.bit_and()?)
         lhs
 
-    def bit_and(ref self) -> Expr:
+    def bit_and(ref self) -> Expr fails Diagnostic:
         mut lhs = self.shift()?
         while self.eat_punct("&"):
             lhs = binary(.BitAnd, lhs=lhs, rhs=self.shift()?)
         lhs
 
-    def shift(ref self) -> Expr:
+    def shift(ref self) -> Expr fails Diagnostic:
         mut lhs = self.sum()?
         while self.at_punct("<<") or self.at_punct(">>"):
             op = BinOp.ShiftLeft if self.advance().tok == .Punct("<<") else BinOp.ShiftRight
             lhs = binary(op, lhs=lhs, rhs=self.sum()?)
         lhs
 
-    def sum(ref self) -> Expr:
+    def sum(ref self) -> Expr fails Diagnostic:
         mut lhs = self.term()?
         while self.at_punct("+") or self.at_punct("-"):
             op = BinOp.Add if self.advance().tok == .Punct("+") else BinOp.Sub
             lhs = binary(op, lhs=lhs, rhs=self.term()?)
         lhs
 
-    def term(ref self) -> Expr:
+    def term(ref self) -> Expr fails Diagnostic:
         mut lhs = self.unary()?
         while True:
             op = term_op(self.peek())
@@ -194,7 +194,7 @@ extend Parser:
             lhs = binary(op, lhs=lhs, rhs=self.unary()?)
         lhs
 
-    def unary(ref self) -> Expr:
+    def unary(ref self) -> Expr fails Diagnostic:
         start = self.span()
         if self.eat_punct("-"):
             operand = self.unary()?
@@ -207,7 +207,7 @@ extend Parser:
             return binary(.Pow, lhs=base, rhs=self.unary()?)
         base
 
-    def postfix(ref self) -> Expr:
+    def postfix(ref self) -> Expr fails Diagnostic:
         mut expr = self.atom()?
         while True:
             if self.eat_punct("("):
@@ -229,7 +229,7 @@ extend Parser:
         expr
 
     ## `object[index]` or a slice `object[start:end]`, after the `[`.
-    def index(ref self, object: Expr) -> Expr:
+    def index(ref self, object: Expr) -> Expr fails Diagnostic:
         mut start: Expr? = None
         if not self.at_punct(":"):
             first = self.expr()?
@@ -256,7 +256,7 @@ extend Parser:
 
     ## Arguments up to (not including) `)`. A single argument followed by `for` is a generator
     ## expression, as in `sum(x * x for x in xs)`.
-    def call_args(ref self) -> list[Arg]:
+    def call_args(ref self) -> list[Arg] fails Diagnostic:
         mut args = []
         while not self.at_punct(")"):
             is_mut = self.eat_ref("an argument")
@@ -273,7 +273,7 @@ extend Parser:
         args
 
     ## The `for names in iter if cond` part of a comprehension, after its element.
-    def comprehension(ref self, kind: CompKind, elem: Expr, value: Expr?) -> Expr:
+    def comprehension(ref self, kind: CompKind, elem: Expr, value: Expr?) -> Expr fails Diagnostic:
         _ = self.advance()
         names = self.loop_names()?
         iter = self.or_expr()?
@@ -283,7 +283,7 @@ extend Parser:
         span = elem.span.to(self.prev_span())
         Expr(kind=.Comprehension(kind, elem=elem, value=value, names=names, iter=iter, cond=cond), span=span)
 
-    def atom(ref self) -> Expr:
+    def atom(ref self) -> Expr fails Diagnostic:
         token = self.advance()
         span = token.span
         kind = match token.tok:
@@ -311,7 +311,7 @@ extend Parser:
         Expr(kind=kind, span=span.to(self.prev_span()))
 
     ## `True`, `False` or `None`, after the keyword. Any other keyword can't start a value.
-    def keyword_atom(ref self, word: str, span: Span) -> ExprKind:
+    def keyword_atom(ref self, word: str, span: Span) -> ExprKind fails Diagnostic:
         match word:
             case "True": .Bool(True)
             case "False": .Bool(False)
@@ -323,7 +323,7 @@ extend Parser:
                 fail Diagnostic(message=f"expected a value, found `{word}`", span=span)
 
     ## `(expr)`, or a tuple: `()`, `(a,)`, `(a, b)`.
-    def parenthesized(ref self, start: Span) -> Expr:
+    def parenthesized(ref self, start: Span) -> Expr fails Diagnostic:
         mut items = []
         mut trailing_comma = False
         while not self.at_punct(")"):
@@ -341,7 +341,7 @@ extend Parser:
             return items[0]
         Expr(kind=.Tuple(items), span=span)
 
-    def list(ref self, start: Span) -> Expr:
+    def list(ref self, start: Span) -> Expr fails Diagnostic:
         mut items = []
         while not self.at_punct("]"):
             item = self.expr()?
@@ -355,7 +355,7 @@ extend Parser:
         Expr(kind=.List(items), span=span)
 
     ## `{}` (an empty dict), `{k: v, ...}`, `{a, b}`, or a dict or set comprehension.
-    def braces(ref self, start: Span) -> Expr:
+    def braces(ref self, start: Span) -> Expr fails Diagnostic:
         if self.at_punct("}"):
             return Expr(kind=.Dict([]), span=start.to(self.advance().span))
         first = self.expr()?
@@ -405,7 +405,7 @@ def binary(op: BinOp, lhs: Expr, rhs: Expr) -> Expr:
     Expr(kind=.Binary(op, lhs=lhs, rhs=rhs), span=lhs.span.to(rhs.span))
 
 ## Parses each `{expression}` of an f-string, from the source the lexer kept.
-def fstring_parts(parts: list[FPart]) -> list[FStrPart]:
+def fstring_parts(parts: list[FPart]) -> list[FStrPart] fails Diagnostic:
     mut parsed = []
     for part in parts:
         match part:
@@ -415,7 +415,7 @@ def fstring_parts(parts: list[FPart]) -> list[FStrPart]:
     parsed
 
 ## The expression written in an f-string's or template's `{}`, from the source the lexer kept.
-def interpolated(source: str, offset: int, what: str) -> Expr:
+def interpolated(source: str, offset: int, what: str) -> Expr fails Diagnostic:
     if source.strip() == "":
         fail Diagnostic(
             message=f"this {what} has an empty `{{}}`",
@@ -435,7 +435,7 @@ def interpolated(source: str, offset: int, what: str) -> Expr:
 
 ## A template string's parts, written in as the `Template` call that builds it, holding the
 ## text between each `{}` and each value apart. Mirrors `crates/syntax/src/parser/template.rs`.
-def template(parts: list[FPart], span: Span) -> Expr:
+def template(parts: list[FPart], span: Span) -> Expr fails Diagnostic:
     mut strings = list[str]()
     mut values = list[Expr]()
     mut expressions = list[str]()

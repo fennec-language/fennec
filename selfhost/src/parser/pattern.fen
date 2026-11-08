@@ -15,7 +15,7 @@ extend Parser:
             return False
         next not in [.Punct("="), .Punct("("), .Punct("."), .Punct(","), .Punct(")"), .Punct(":")]
 
-    def match_expr(ref self) -> Expr:
+    def match_expr(ref self) -> Expr fails Diagnostic:
         start = self.advance().span
         subject = self.or_expr()?
         _ = self.expect_punct(":")?
@@ -34,13 +34,13 @@ extend Parser:
         Expr(kind=.Match(subject, arms), span=start.to(self.prev_span()))
 
     ## `if condition` after a `case`'s pattern, if there is one.
-    def guard(ref self) -> Expr?:
+    def guard(ref self) -> Expr? fails Diagnostic:
         if self.eat_keyword("if"):
             return self.expr()?
         None
 
     ## A pattern, or several separated by `|`, any of which matches.
-    def pattern(ref self) -> Pattern:
+    def pattern(ref self) -> Pattern fails Diagnostic:
         first = self.one_pattern()?
         if not self.at_punct("|"):
             return first
@@ -49,7 +49,7 @@ extend Parser:
             alternatives.append(self.one_pattern()?)
         .Or(alternatives)
 
-    def one_pattern(ref self) -> Pattern:
+    def one_pattern(ref self) -> Pattern fails Diagnostic:
         token = self.advance()
         match token.tok:
             case .Name(name):
@@ -82,7 +82,7 @@ extend Parser:
                 fail self.unexpected("a pattern")
 
     ## A pattern that starts with punctuation: `.Case(...)`, a negative number, or a tuple.
-    def punct_pattern(ref self, text: str, span: Span) -> Pattern:
+    def punct_pattern(ref self, text: str, span: Span) -> Pattern fails Diagnostic:
         if text == ".":
             name = self.name("an enum case")?
             args, fields = self.pattern_args()?
@@ -105,7 +105,7 @@ extend Parser:
 
     ## What a case's parentheses hold: patterns by position, as in `Point(a, b)`, or each
     ## after the name of the field it matches, as in `Point(x=a, y=_)`, but not both.
-    def pattern_args(ref self) -> (list[Pattern], list[str]):
+    def pattern_args(ref self) -> (list[Pattern], list[str]) fails Diagnostic:
         mut args = list[Pattern]()
         mut fields = list[str]()
         if self.eat_punct("("):

@@ -47,7 +47,7 @@ Print the private key, then destroy the file. Each `.pub` file's line goes in `R
 ## Signing a release
 
 1. Download `fennec-v0.4.2.manifest` from the prerelease.
-2. Once release builds are reproducible, which comes next, build it again from the tag and check that its hashes are the manifest's.
+2. Check that the release's `Built twice, the same` job passed. CI builds each archive twice, from checkouts in two places on two machines, and that job holds that both builds made the same bytes. Windows isn't checked yet. With the release workflow's flags, anyone can build an archive again from the tag and get the hash in the manifest.
 3. Sign it, touching the key when it blinks:
 
    ```bash

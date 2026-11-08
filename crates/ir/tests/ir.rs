@@ -626,7 +626,7 @@ const FILES: &str = "error Missing:
 error Denied:
     who: str
 
-def load(path: str) -> str:
+def load(path: str) -> str fails Denied | Missing:
     if path == \"\":
         fail Missing(path)
     if path == \"root\":
@@ -676,7 +676,9 @@ fn fail_and_success_are_written_out() {
 
 #[test]
 fn question_mark_leaves_with_the_error() {
-    let source = format!("{FILES}def twice(path: str) -> str:\n    text = load(path)?\n    text + text\n");
+    let source = format!(
+        "{FILES}def twice(path: str) -> str fails Denied | Missing:\n    text = load(path)?\n    text + text\n"
+    );
     assert_eq!(
         printed(&source, "twice").unwrap(),
         "fn twice(_0) -> result of str
@@ -1296,7 +1298,7 @@ fn falling_off_the_end_of_a_function_that_can_fail_succeeds() {
     let source = "error Bad:
     code: int
 
-def f(x: int):
+def f(x: int) fails Bad:
     if x < 0:
         fail Bad(x)
 ";
@@ -1602,7 +1604,7 @@ fn a_where_rule_gives_an_error_unless_the_values_are_written_out() {
     let source = "struct Score:
     value: int where value >= 0
 
-def f(n: int) -> Score:
+def f(n: int) -> Score fails InvalidValue:
     Score(n)?
 
 def g() -> Score:
@@ -1674,7 +1676,7 @@ fn std_module_calls_go_to_the_engines_by_their_full_name() {
 import std.math as geometry
 from std.toml import loads as toml_loads
 
-def f(text: str) -> list[int]:
+def f(text: str) -> list[int] fails ParseError:
     a = geometry.sqrt(16.0)
     b = data.dumps(a)
     t = toml_loads[dict[str, int]](text)?
@@ -2834,11 +2836,11 @@ const DIAL_ERROR: &str = "error DialError:
     Refused(host: str, port: int)
     Closed
 
-def connect(host: str, port: int) -> int:
+def connect(host: str, port: int) -> int fails DialError:
     if host == \"\":
-        fail DialError.NotFound(host)
+        fail .NotFound(host)
     if port == 0:
-        fail DialError.Closed
+        fail .Closed
     port
 
 def described(port: int) -> str:
@@ -2950,8 +2952,8 @@ fn a_type_with_its_own_str_prints_through_it() {
 fn a_result_passed_on_fails_every_way_its_function_can() {
     // `outer` fails with `Worse` itself and passes up `inner`'s failure, which is `Bad`, so it
     // gives back a result that can fail with either.
-    let source = "error Bad:\n    why: str\n\nerror Worse:\n    why: str\n\ndef inner(n: int) -> int:\n    \
-                  if n < 0:\n        fail Bad(why=\"neg\")\n    n\n\ndef outer(n: int) -> int:\n    if n > 9:\n        \
+    let source = "error Bad:\n    why: str\n\nerror Worse:\n    why: str\n\ndef inner(n: int) -> int fails Bad:\n    \
+                  if n < 0:\n        fail Bad(why=\"neg\")\n    n\n\ndef outer(n: int) -> int fails Bad | Worse:\n    if n > 9:\n        \
                   fail Worse(why=\"big\")\n    inner(n)?\n";
     let program = lowered(source).unwrap();
     assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);

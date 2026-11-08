@@ -242,10 +242,10 @@ struct Program:
         generics + entry.inherited + entry.function.generics
 
     ## The type a written type means, with these type parameters in scope.
-    def resolve_in(self, written: TypeExpr, generics: list[str]) -> Type:
+    def resolve_in(self, written: TypeExpr, generics: list[str]) -> Type fails Diagnostic:
         self.resolve_within(written, generics, alias_depth())?
 
-    def resolve_within(self, written: TypeExpr, generics: list[str], depth: int) -> Type:
+    def resolve_within(self, written: TypeExpr, generics: list[str], depth: int) -> Type fails Diagnostic:
         name = self.through_module(written.name)
         if self.is_interface(name): fail interface_as_type(name, written.span)
         # `fails ParseError | RangeError`: one of several errors.

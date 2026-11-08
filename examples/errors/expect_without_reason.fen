@@ -1,7 +1,7 @@
 error NotANumber:
     text: str
 
-def parse(text: str) -> int:
+def parse(text: str) -> int fails InvalidValue | NotANumber:
     if not text.isdigit(): fail NotANumber(text)
     int(text)?
 

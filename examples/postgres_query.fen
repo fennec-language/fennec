@@ -1,8 +1,8 @@
 # A query to Postgres goes as the extended protocol's messages: the template's text with `$1` for
 # each value, then the values apart, so no value can change what the text means. What comes back
 # is turned into rows by each column's type, ready to read into a struct.
-from std import sql
 from std.postgres import PgMessage, failure_of, query_messages, rows_of
+from std.sql import SqlRows
 
 def main(stdout: Stdout):
     path = "a.txt'; drop table entries; --"
@@ -28,7 +28,7 @@ def main(stdout: Stdout):
     ]
     match columns:
         case .Columns(names=names, types=types):
-            made = rows_of(names, types=types, rows=rows) else sql.SqlRows(
+            made = rows_of(names, types=types, rows=rows) else SqlRows(
                 columns=[],
                 kinds=[],
                 at=[],

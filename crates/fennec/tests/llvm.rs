@@ -3784,41 +3784,6 @@ def main(stdout: Stdout):
     Ok(())
 }
 
-const SHARED_LOCKS: &str = "struct Account:
-    owner: str
-    balance = 0
-
-struct Bank:
-    accounts: dict[str, shared Account]
-    audit: shared list[str]
-
-def transfer(bank: Bank, from_id: str, to_id: str, amount: int) -> bool:
-    source = bank.accounts[from_id]
-    target = bank.accounts[to_id]
-    lock source, target as ref payer, ref payee:
-        if payer.balance < amount:
-            return False
-        payer.balance -= amount
-        payee.balance += amount
-    lock bank.audit as ref log:
-        log.append(f\"{from_id} -> {to_id}: {amount}\")
-    True
-
-def balance(account: shared Account) -> int:
-    lock account as current:
-        current.balance
-
-def main(stdout: Stdout):
-    shared ana = Account(owner=\"ana\", balance=10)
-    shared bo = Account(owner=\"bo\")
-    shared log = list[str]()
-    bank = Bank(accounts={\"ana\": ana, \"bo\": bo}, audit=log)
-    stdout.print(transfer(bank, from_id=\"ana\", to_id=\"bo\", amount=4), transfer(bank, from_id=\"bo\", to_id=\"ana\", amount=9))
-    stdout.print(balance(ana), balance(bo))
-    lock log as lines:
-        stdout.print(lines)
-";
-
 /// A failure can leave a `with` block from inside what it calls: from a generator, whether it's
 /// read through a name, looped over or summed, or from a round of a `parallel` loop. Each runs the
 /// source's `else:` once, a `ref` case still puts back what it changed, and what a failing

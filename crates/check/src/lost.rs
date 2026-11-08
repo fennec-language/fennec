@@ -373,6 +373,13 @@ impl<'a> Lost<'a> {
         live
     }
 
+    /// What's live before a block with a cleanup, which can run at any point inside it.
+    fn on_failure(&mut self, cleanup: &'a [Stmt], body: &'a [Stmt], live: Live) -> Live {
+        let mut before = self.block(body, live);
+        reads_in(cleanup, &mut before);
+        before
+    }
+
     fn stmt(&mut self, stmt: &'a Stmt, mut live: Live) -> Live {
         match &stmt.kind {
             StmtKind::Assign { target, op, value, declare_mut, .. } => {
@@ -435,11 +442,7 @@ impl<'a> Lost<'a> {
                 reads(iter, &mut before);
                 before
             }
-            StmtKind::OnFailure { cleanup, body, .. } => {
-                let mut before = self.block(body, live);
-                reads_in(cleanup, &mut before);
-                before
-            }
+            StmtKind::OnFailure { cleanup, body, .. } => self.on_failure(cleanup, body, live),
             StmtKind::With { value, body, .. } => {
                 let mut before = self.block(body, live);
                 reads(value, &mut before);

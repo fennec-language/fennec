@@ -655,15 +655,14 @@ impl<'a> Lowering<'a> {
                 let lifted = self
                     .parallel_for((names, *is_mut), iter, body, stmt.span)
                     .or_else(|| self.parallel_serve(names, iter, body, stmt.span));
-                match lifted {
-                    Some(outlined) => outlined?,
-                    None => {
-                        let rounds = usize::from(parallel::parallel_items(iter).is_some());
-                        self.plain_rounds += rounds;
-                        let lowered = self.for_stmt((names, *is_mut), iter, body, stmt.span);
-                        self.plain_rounds -= rounds;
-                        lowered?;
-                    }
+                if let Some(outlined) = lifted {
+                    outlined?;
+                } else {
+                    let rounds = usize::from(parallel::parallel_items(iter).is_some());
+                    self.plain_rounds += rounds;
+                    let lowered = self.for_stmt((names, *is_mut), iter, body, stmt.span);
+                    self.plain_rounds -= rounds;
+                    lowered?;
                 }
             }
             StmtKind::OnFailure { name, cleanup, body } => {

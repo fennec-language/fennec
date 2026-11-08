@@ -82,7 +82,11 @@ impl Interp<'_> {
         span: Span,
     ) -> Result<Result<Value, Diagnostic>, Vec<CallArg>> {
         let is_process = match receiver {
-            Value::Capability(Capability::Net) => return Ok(self.net_method(method, args, span)),
+            Value::Capability(Capability::Net) => {
+                return Ok(crate::replay::value(format_args!("Net.{method}"), span, || {
+                    self.net_method(method, args, span)
+                }));
+            }
             Value::Capability(capability) => *capability == Capability::Process,
             Value::Limited(limited) => limited.capability == Capability::Process,
             _ => false,
@@ -92,6 +96,40 @@ impl Interp<'_> {
         }
         let (method, args) = crate::stdlib::process::options_on_name(method, args);
         Ok(self.read_method(receiver, &method, args, span))
+    }
+
+    /// A method of a capability, whole or narrowed with `only`. What it gives is an outside input,
+    /// recorded and replayed (see `crate::replay`), but for printing, which is the run's own output,
+    /// and `only`, which narrows what it's given.
+    fn outside_method(
+        &mut self,
+        receiver: &Value,
+        method: &str,
+        args: &[Value],
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        match receiver {
+            Value::Capability(Capability::Stdout) => {
+                self.capability_method(Capability::Stdout, method, args, span)
+            }
+            Value::Capability(capability) if method == "only" => {
+                self.capability_method(*capability, method, args, span)
+            }
+            Value::Capability(capability) => {
+                crate::replay::value(format_args!("{capability:?}.{method}"), span, || {
+                    self.capability_method(*capability, method, args, span)
+                })
+            }
+            Value::Limited(limited) if method == "only" => {
+                self.limited_method(&Rc::clone(limited), method, args, span)
+            }
+            Value::Limited(limited) => {
+                crate::replay::value(format_args!("{:?}.{method}", limited.capability), span, || {
+                    self.limited_method(&Rc::clone(limited), method, args, span)
+                })
+            }
+            other => Err(no_method(other, method, span)),
+        }
     }
 
     /// Methods that only read their receiver.
@@ -134,9 +172,9 @@ impl Interp<'_> {
         }
         match receiver {
             Value::Capability(capability) if *capability != Capability::Args => {
-                self.capability_method(*capability, method, &args, span)
+                self.outside_method(receiver, method, &args, span)
             }
-            Value::Limited(limited) => self.limited_method(&Rc::clone(limited), method, &args, span),
+            Value::Limited(_) => self.outside_method(receiver, method, &args, span),
             Value::Buffer(buffer) => crate::buffer::read(buffer, method, &args, span),
             // The bytes share the string's memory: nothing is copied.
             Value::Str(text) if method == "encode" && args.is_empty() => {

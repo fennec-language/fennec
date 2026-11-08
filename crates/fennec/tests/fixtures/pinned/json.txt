@@ -1,4 +1,4 @@
-source 95f41ed5247713bd1b106079f534f421442e69806f2cce5c18c76365060ead7b
+source 30066fc19116794d22b1522e15d2e104c44c3ae5acbeffdcf78defab67aa76d0
 code 0
 stdout 117
 {"items": [{"name": "a", "heals": 1}], "at": {"x": 1, "y": 2}, "count": 0} {"x": 1, "y": 2} [1, 2] "q" 3

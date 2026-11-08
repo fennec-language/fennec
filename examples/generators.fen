@@ -53,12 +53,12 @@ def leaves_early(out: Stdout):
     out.print("left the loop")
 
 # A failure comes out when the item that fails is asked for.
-def checked(limit: int) -> Iterator[int]:
+def checked(limit: int) -> Iterator[int] fails TooBig:
     for n in range(5):
         if n >= limit: fail TooBig(at=n)
         yield n
 
-def total_up_to(limit: int) -> int:
+def total_up_to(limit: int) -> int fails TooBig:
     total = sum(n for n in checked(limit)?)
     total
 

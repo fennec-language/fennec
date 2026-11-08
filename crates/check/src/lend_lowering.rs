@@ -737,6 +737,12 @@ fn replace_lend(body: &mut Vec<Stmt>, with_block: &mut LentAs<'_>) -> bool {
             StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
                 replace_lend(body, with_block)
             }
+            StmtKind::Expr(value) | StmtKind::Assign { value, .. } => match &mut value.kind {
+                ExprKind::Match { arms, .. } => {
+                    arms.iter_mut().any(|arm| replace_lend(&mut arm.body, with_block))
+                }
+                _ => false,
+            },
             _ => false,
         };
         if found {
@@ -1120,7 +1126,10 @@ fn outside_functions(value: &mut Expr, change: &mut dyn FnMut(&mut Expr)) {
 fn declared_in(body: &[Stmt], found: &mut Vec<String>) {
     for stmt in body {
         match &stmt.kind {
-            StmtKind::Assign { target, .. } => targets(target, found),
+            StmtKind::Assign { target, value, .. } => {
+                targets(target, found);
+                declared_in_match(value, found);
+            }
             StmtKind::For { names, body, .. } => {
                 found.extend(names.iter().cloned());
                 declared_in(body, found);
@@ -1139,7 +1148,18 @@ fn declared_in(body: &[Stmt], found: &mut Vec<String>) {
                 }
             }
             StmtKind::Lend { otherwise, .. } => declared_in(otherwise, found),
+            StmtKind::Expr(value) => declared_in_match(value, found),
             _ => {}
+        }
+    }
+}
+
+/// What a `match` written as a whole value declares: what its cases bind, and what they declare.
+fn declared_in_match(value: &Expr, found: &mut Vec<String>) {
+    if let ExprKind::Match { arms, .. } = &value.kind {
+        for arm in arms {
+            bound_by(&mut arm.pattern.clone(), &mut |held| found.push(held.clone()));
+            declared_in(&arm.body, found);
         }
     }
 }
@@ -1177,9 +1197,31 @@ fn rename(body: &mut [Stmt], renamed: &[(String, String)]) {
                 }
             }
         }
+        ExprKind::Match { arms, .. } => {
+            for arm in arms {
+                bound_by(&mut arm.pattern, &mut |held| {
+                    if let Some(to) = fresh(held) {
+                        *held = to;
+                    }
+                });
+            }
+        }
         _ => {}
     });
     rename_bound(body, &fresh);
+}
+
+/// Each name a pattern binds.
+fn bound_by(pattern: &mut Pattern, each: &mut dyn FnMut(&mut String)) {
+    match pattern {
+        Pattern::Bind(held) | Pattern::RefBind(held) => each(held),
+        Pattern::Variant { args: patterns, .. } | Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
+            for inner in patterns {
+                bound_by(inner, each);
+            }
+        }
+        Pattern::Wildcard | Pattern::Literal(_) => {}
+    }
 }
 
 fn rename_bound(body: &mut [Stmt], fresh: &dyn Fn(&str) -> Option<String>) {

@@ -3545,6 +3545,61 @@ def main(stdout: Stdout):
         stdout.print(line)
 ";
 
+/// A name a source's `match` binds is its own, wherever the source is written in: a `lend` inside
+/// a case, a name used after one, and a name that's bound in one place and assigned in another.
+#[test]
+fn a_with_source_can_lend_and_bind_names_in_its_match() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "lending_in_a_match",
+        "error Boom:
+    at: int
+
+def made() -> int fails Boom:
+    return 5
+
+def held_open(stdout: Stdout) -> with int fails Boom:
+    match made():
+        case Ok(conn):
+            lend conn
+            stdout.print(\"done\", conn)
+        case Err(problem):
+            fail problem
+
+def later(stdout: Stdout) -> with int fails Boom:
+    conn = 3
+    lend conn
+    match made():
+        case Ok(found):
+            stdout.print(found + conn)
+        case Err(problem):
+            fail problem
+
+def bound_then_assigned(stdout: Stdout) -> with int fails Boom:
+    lend 1
+    match made():
+        case Ok(conn):
+            stdout.print(\"conn\", conn)
+        case Err(problem):
+            fail problem
+    conn = 2
+    stdout.print(conn)
+
+def main(stdout: Stdout) fails Boom:
+    with held_open(stdout)? as held:
+        stdout.print(held)
+    with later(stdout)? as more:
+        stdout.print(more)
+    with bound_then_assigned(stdout)? as again:
+        stdout.print(again)
+",
+    )?;
+    assert_eq!(printed, "5\ndone 5\n3\n8\n1\nconn 5\n2\n");
+    Ok(())
+}
+
 /// Several handles in one `with` open in order and finish innermost first, natively as in the
 /// interpreter. One that fails to open runs the `else:` of each opened before it, a block that
 /// fails runs every one's, and a source that lends a tuple splits it into a name each.

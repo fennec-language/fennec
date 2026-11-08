@@ -332,7 +332,7 @@ impl Lowering<'_> {
 
     /// Has a function made for each type that writes its own text within a value of type `held`,
     /// for the runtime to call as it writes the value. `seen` are the types looked at already.
-    fn own_texts_within(&mut self, held: &Type, seen: &mut Vec<Type>, span: Span) -> Lowered<()> {
+    pub(super) fn own_texts_within(&mut self, held: &Type, seen: &mut Vec<Type>, span: Span) -> Lowered<()> {
         match held {
             Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::Table(item) => {
                 return self.own_texts_within(item, seen, span);
@@ -347,6 +347,8 @@ impl Lowering<'_> {
             Type::Named(_) | Type::Generic(..) => {}
             _ => return Ok(()),
         }
+        // An enum's field as it's declared is `Secret[str]`, not yet the copy the program uses.
+        let held = &self.concrete(held);
         if seen.contains(held) {
             return Ok(());
         }

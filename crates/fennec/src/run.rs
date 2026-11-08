@@ -236,9 +236,22 @@ fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures)
         program.sources.files().chain(embedded.iter().map(|(path, text)| (path.as_str(), text.as_str()))),
     );
     if cache.read("checked", &name).is_none_or(|passed| passed != text.as_bytes()) {
-        if let Err(diagnostics) = crate::copy_rule::check_rules(&mut program.module.clone(), &program.sources)
-        {
-            return Err(reject(&program, &diagnostics));
+        // An edit that only changed functions' bodies is checked on its own, which is all a
+        // change there can break, rather than checking all of a big kit again.
+        let quickly = files.as_deref().and_then(|files| crate::verdict::checked_quickly(path, &cache, files));
+        match quickly {
+            Some(Err((partial, diagnostics))) => return Err(reject(&partial, &diagnostics)),
+            Some(Ok(())) => {}
+            None => {
+                if let Err(diagnostics) =
+                    crate::copy_rule::check_rules(&mut program.module.clone(), &program.sources)
+                {
+                    return Err(reject(&program, &diagnostics));
+                }
+            }
+        }
+        if let Some(files) = &files {
+            crate::verdict::remember_checked(path, &cache, files, &program);
         }
         // A cache that can't be written only means checking all of it again next time.
         let _ = cache.write("checked", &name, text.as_bytes());

@@ -476,6 +476,33 @@ fn same_as_the_interpreter_in_both_builds(name: &str, source: &str) -> std::io::
     Ok(())
 }
 
+/// What a program prints, built in dev and `--release` both, is `wanted`.
+fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join(name));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            wanted,
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Each kind of local passed by `mut` and used again, with what could be remembered about it
 /// before the call: where an index points, a length, a read held across the change, a dict's
 /// entry, how far a string's been read, what a loop or a closure holds, a number known to fit.
@@ -2461,6 +2488,35 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A number written on the left of a `u64` or an `f32` is that size, so what's worked out is too:
+/// unsigned on all 64 bits, and rounded to 32.
+#[test]
+fn a_number_on_the_left_takes_the_size_on_the_right() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = "literal_left_of_a_size";
+    let source = "def big() -> u64:
+    half: u64 = 9223372036854775807
+    half + half
+
+def large() -> f32:
+    f: f32 = 16777216.0
+    f
+
+def main(stdout: Stdout):
+    b = big()
+    stdout.print(100 // b, 100 % b, 100 / b, 100 < b, 100 == b)
+    f = large()
+    stdout.print(1.0 + f, 0.1 * f, 1.0 < f, 2.0 / f)
+";
+    prints_in_both_builds(
+        dir,
+        source,
+        "0 100 5.421010862427522e-18 True False\n16777216.0 1677721.6 True 1.1920929e-07\n",
+    )
+}
+
 /// What doesn't fit a size stops the program, saying which size and what it holds: arithmetic
 /// past either end, a negation, the one division that grows, and a conversion that doesn't fit,
 /// a `u64` too big for an `int` among them.
@@ -2486,6 +2542,11 @@ fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
             "error: it doesn't fit in u32, which holds 0 to 4294967295: -1".to_owned(),
         ),
         ("z: u64 = 0\n    stdout.print(z - 1)", overflow("a u64", "0 to 18446744073709551615")),
+        ("stdout.print(5 - u64(6))", overflow("a u64", "0 to 18446744073709551615")),
+        (
+            "h: u64 = 9223372036854775807\n    stdout.print(4 * h)",
+            overflow("a u64", "0 to 18446744073709551615"),
+        ),
         (
             "h: u64 = 9223372036854775807\n    stdout.print(h * 3)",
             overflow("a u64", "0 to 18446744073709551615"),

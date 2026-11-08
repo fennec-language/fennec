@@ -482,6 +482,8 @@ struct Here {
 /// What a pool worker serves: its poll, its tasks, which task waits on which connection, and the
 /// servers it's part of. It's the worker's own, so its tasks and what they make stay on it.
 pub(in crate::embed) struct Io {
+    /// When to try accepting again, after running out of something: sockets, say.
+    accept_later: Option<Instant>,
     poll: Poll,
     events: Events,
     pool: &'static Pool,
@@ -514,6 +516,7 @@ impl Io {
             pool: workers,
             at,
             scheduler: Scheduler::new(STACK),
+            accept_later: None,
             waiting: HashMap::new(),
             ready: VecDeque::new(),
             owners: HashMap::new(),
@@ -826,9 +829,10 @@ impl Io {
         }
     }
 
-    /// How long until the soonest wait gives up.
+    /// How long until the soonest wait gives up, or it's time to try accepting again.
     pub(in crate::embed) fn timeout(&self) -> Option<Duration> {
-        let soonest = self.waiting.values().filter_map(|(_, _, deadline)| *deadline).min()?;
+        let soonest =
+            self.waiting.values().filter_map(|(_, _, deadline)| *deadline).chain(self.accept_later).min()?;
         Some(soonest.saturating_duration_since(Instant::now()))
     }
 
@@ -857,6 +861,15 @@ impl Io {
         for id in listening {
             self.accept(id);
         }
+        // What was left waiting when accepting ran out of something won't announce itself again.
+        if self.accept_later.is_some_and(|when| when <= Instant::now()) {
+            self.accept_later = None;
+            let every: Vec<u64> =
+                self.servers.iter().filter(|(_, here)| here.listener.is_some()).map(|(id, _)| *id).collect();
+            for id in every {
+                self.accept(id);
+            }
+        }
         self.wake();
     }
 
@@ -866,7 +879,18 @@ impl Io {
         let workers = self.pool.threads().max(1);
         loop {
             let Some(here) = self.servers.get(&id) else { return };
-            let Some(Ok((stream, _))) = here.listener.as_ref().map(TcpListener::accept) else { return };
+            let stream = match here.listener.as_ref().map(TcpListener::accept) {
+                Some(Ok((stream, _))) => stream,
+                Some(Err(error)) => match accept_failed(&error) {
+                    AfterAccept::Stop => return,
+                    AfterAccept::Next => continue,
+                    AfterAccept::Later => {
+                        self.accept_later = Some(Instant::now() + ACCEPT_AGAIN);
+                        return;
+                    }
+                },
+                None => return,
+            };
             let to = here.server.next.fetch_add(1, Ordering::Relaxed) % workers;
             if to == self.at {
                 self.take(stream, id);
@@ -910,6 +934,33 @@ impl Io {
                 self.ready.push_back((task, Wake::Ready(TIMED_OUT)));
             }
         }
+    }
+}
+
+/// How long to wait before accepting again, having run out of something.
+const ACCEPT_AGAIN: Duration = Duration::from_millis(100);
+
+/// What to do about a listener's failure to accept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfterAccept {
+    /// There's nothing more waiting, or it won't work: the poll says when there's more.
+    Stop,
+    /// That connection's gone, and those behind it are still there.
+    Next,
+    /// The process ran out of something. What's waiting stays waiting, and the poll won't announce
+    /// it again, so it's looked at again soon.
+    Later,
+}
+
+fn accept_failed(error: &std::io::Error) -> AfterAccept {
+    match error.kind() {
+        ErrorKind::Interrupted | ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset => {
+            AfterAccept::Next
+        }
+        ErrorKind::WouldBlock => AfterAccept::Stop,
+        _ if matches!(error.raw_os_error(), Some(23 | 24)) => AfterAccept::Later,
+        ErrorKind::OutOfMemory => AfterAccept::Later,
+        _ => AfterAccept::Stop,
     }
 }
 

@@ -34,7 +34,7 @@ def any_of_three(n: int) -> int:
     first + second
 
 def by_return(n: int) -> int:
-    if n > 5: return short(n)
+    if n > 5: return short(n)?
     coded(n)?
 
 def by_copy(n: int) -> str:
@@ -48,8 +48,8 @@ def by_copy(n: int) -> str:
 def in_a_loop(n: int) -> int:
     for step in range(3):
         value = short_or_coded(n + step)?
-        if value > 100: return held(value)
-    if n > 9: return coded(n)
+        if value > 100: return held(value)?
+    if n > 9: return coded(n)?
     n
 
 def check_short(n: int) fails Short:

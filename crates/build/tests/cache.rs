@@ -4,7 +4,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use fennec_build::{Cache, Cleanup, VERSION};
+use fennec_build::{Cache, Cleanup, FOLDER};
 
 /// A fresh Fennec folder for one test.
 fn home(name: &str) -> std::io::Result<PathBuf> {
@@ -35,7 +35,7 @@ fn entries_are_written_whole_and_reading_marks_them_used() {
     let cache = Cache::new(&home);
     cache.write("runs", "a.txt", b"hello").unwrap();
     let path = cache.path("runs", "a.txt");
-    assert_eq!(path, home.join("cache").join(VERSION).join("runs").join("a.txt"));
+    assert_eq!(path, home.join("cache").join(FOLDER).join("runs").join("a.txt"));
     entry(&path, 5, 3_600).unwrap();
     let before = modified(&path).unwrap();
     assert_eq!(cache.read("runs", "a.txt"), Some(vec![0; 5]));
@@ -57,6 +57,26 @@ fn a_cache_under_its_cap_is_left_alone() {
         "exactly at the cap"
     );
     assert!(cache.path("functions", "a").exists());
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+/// A build of Fennec reads nothing another wrote, even of the same version and under the same key:
+/// a key that leaves out something the compiler does would otherwise bring back what an older
+/// compiler made, and run it.
+#[test]
+fn an_entry_another_build_wrote_is_never_read() {
+    let home = home("other build").unwrap();
+    let cache = Cache::new(&home);
+    assert_eq!(FOLDER, format!("{}-{}", fennec_build::VERSION, env!("FENNEC_BUILD")));
+    let other = home.join("cache").join(format!("{}-{}", fennec_build::VERSION, "0".repeat(64)));
+    entry(&other.join("llvm").join("same key"), 10, 1).unwrap();
+    assert_eq!(cache.read("llvm", "same key"), None);
+    cache.write("llvm", "same key", b"this build's").unwrap();
+    assert_eq!(cache.read("llvm", "same key").as_deref(), Some(&b"this build's"[..]));
+    // And it's the first a cleanup removes, however recently it was used.
+    cache.cleanup(20).unwrap();
+    assert!(!other.exists());
+    assert_eq!(cache.read("llvm", "same key").as_deref(), Some(&b"this build's"[..]));
     std::fs::remove_dir_all(&home).unwrap();
 }
 
@@ -83,7 +103,7 @@ fn cleanup_drops_old_versions_then_the_least_recently_used() {
     // Emptying this version's folders leaves them, since a command may be writing into one.
     cache.cleanup(0).unwrap();
     assert!(!cache.path("functions", "newest").exists());
-    assert!(home.join("cache").join(VERSION).join("functions").is_dir());
+    assert!(home.join("cache").join(FOLDER).join("functions").is_dir());
     std::fs::remove_dir_all(&home).unwrap();
 }
 

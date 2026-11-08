@@ -577,4 +577,57 @@ mod tests {
         heap::free(block);
         finish();
     }
+
+    /// How much each part of the runtime's state holds: its live blocks, temporaries, inputs,
+    /// strings' texts and callers' frames.
+    fn sizes() -> (usize, usize, usize, usize, usize) {
+        with(|state| {
+            Some((
+                state.heap.live(),
+                state.temps.len(),
+                state.inputs.len(),
+                state.heap.texts.borrow().len(),
+                state.callers.len(),
+            ))
+        })
+        .unwrap()
+    }
+
+    /// A capability's method that can fail, called from native code over and over the way it calls
+    /// one, `fs.read_text(path)?`, leaves nothing behind in the runtime's state.
+    #[test]
+    fn a_capability_call_from_native_code_leaves_nothing_behind() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let dir = std::env::temp_dir().join(format!("fennec-capability-calls-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.txt");
+        std::fs::write(&path, "z".repeat(500)).unwrap();
+        let path = path.to_string_lossy().into_owned();
+        let round = || {
+            let mark = super::super::temps::mark();
+            let text = with(|state| heap::text_address(state, &path));
+            let value = heap::to_value(text);
+            super::super::eval::input(value);
+            let name = with(|state| heap::text_address(state, "read_text"));
+            let result = super::native_call(1, name, 1, 0, 0);
+            assert_eq!(super::super::temps::is_err(result), 0);
+            let read = super::super::temps::unwrap(result);
+            let block = super::super::strings::from_value(read, 0, 0);
+            heap::free(text);
+            heap::free(name);
+            heap::free(block);
+            super::super::temps::truncate(mark);
+        };
+        for _ in 0..100 {
+            round();
+        }
+        let before = sizes();
+        for _ in 0..1000 {
+            round();
+        }
+        assert_eq!(sizes(), before);
+        finish();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -146,7 +146,7 @@ fn snapshots_are_stored_and_read_back() {
     assert_eq!(Snapshot::from_text("file nothex game.fen\n"), None);
     assert_eq!(Snapshot::from_text("  0000 def stray\n"), None);
 
-    let runs = home.join("cache").join(fennec_build::VERSION).join("runs");
+    let runs = home.join("cache").join(fennec_build::FOLDER).join("runs");
     let stored = std::fs::read_dir(runs).unwrap().next().unwrap().unwrap().path();
     let text = std::fs::read_to_string(&stored).unwrap();
     std::fs::write(&stored, text.replacen("fennec snapshot", "fennec snapshot 9.9.9 was", 1)).unwrap();

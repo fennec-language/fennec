@@ -6846,6 +6846,98 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// A round that crashes lets go of everything its functions own on the way out, as a failure
+/// does: 10,000 crashing rounds, each holding a string, a list and a dict, leave the server's
+/// memory where it was. A crash once left them all behind, about 1.8 KB a round.
+#[test]
+fn rounds_that_crash_keep_nothing_of_theirs() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("crash-leaks")?;
+    let program = dir.join("leaks.fen");
+    std::fs::write(
+        &program,
+        "from std.net import NetError
+
+def overflowed(n: int) -> int:
+    big = 9223372036854775000
+    big + n * 1000
+
+def answer(line: str) -> str:
+    words = [f\"{line} {at}\" for at in range(8)]
+    seen = {word: word.len() for word in words}
+    said = f\"{words} {seen.len()}\"
+    f\"{overflowed(line.len())} {said}\"
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            conn.write(answer(line))?
+",
+    )?;
+    let executable = dir.join("leaks");
+    let mut command = crate::executables::fennec_command();
+    command.args([
+        "build",
+        "--llvm",
+        "--release",
+        &program.to_string_lossy(),
+        "-o",
+        &executable.to_string_lossy(),
+    ]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "2")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().unwrap_or(0);
+    // Four at a time, so 10,000 rounds take seconds.
+    let crash = |rounds: u32| -> std::io::Result<()> {
+        let each = || -> std::io::Result<()> {
+            for _ in 0..rounds / 4 {
+                let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+                stream.write_all(b"a line long enough to need a block of its own\n")?;
+                let mut back = String::new();
+                let read = std::io::BufReader::new(stream).read_line(&mut back).unwrap_or(0);
+                assert_eq!(read, 0, "a crashing round answered: {back}");
+            }
+            Ok(())
+        };
+        std::thread::scope(|scope| {
+            let clients: Vec<_> = (0..4).map(|_| scope.spawn(each)).collect();
+            clients.into_iter().try_for_each(|client| client.join().unwrap_or(Ok(())))
+        })
+    };
+    let resident = || -> std::io::Result<u64> {
+        let said = Command::new("ps").args(["-o", "rss=", "-p", &server.0.id().to_string()]).output()?;
+        Ok(String::from_utf8_lossy(&said.stdout).trim().parse().unwrap_or(0))
+    };
+    // What the first rounds make for good, like the runtime's pools, is there before the count.
+    crash(2_000)?;
+    let before = resident()?;
+    crash(10_000)?;
+    let after = resident()?;
+    std::fs::remove_dir_all(&dir)?;
+    // 10,000 leaked rounds would be about 18 MB.
+    assert!(after < before + 4_096, "the server grew from {before} KB to {after} KB");
+    Ok(())
+}
+
 /// A round that fails, by `fail` or `?`, stops the server, and its failure passes up out of the
 /// loop to the function serving, which handles it. The rounds before it were answered. Natively a
 /// round's failure once only ended that round, as a crash does.
@@ -7025,6 +7117,74 @@ def main(stdout: Stdout):
         String::from_utf8_lossy(&ran.stdout),
         "[{\"x\": 1, \"tags\": [\"a\"]}] [Spot(x=1, tags=[\"a\"])]\nSpot(x=2, tags=[])\n\
          {\"cells\": [[1, 2]], \"scores\": {\"a\": 1, \"b\": 2}, \"seen\": [1, 3], \"queue\": [\"go\"]} True\n"
+    );
+    Ok(())
+}
+
+/// A tuple saves as an array of its items, as in Python's `json.dumps`, and loads back, through
+/// std's readers and writers in Fennec, with no interpreter linked: in a list, in a field, inside
+/// another tuple, in an enum's case, as a dict's and a `SortedMap`'s keys, with an item that's
+/// always `None`, and through TOML and `std.pack` too. An array of the wrong length doesn't load.
+#[test]
+fn tuples_save_and_load_natively() -> std::io::Result<()> {
+    if !ready() || !crate::executables::lean_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("tuples-lean")?;
+    let program = dir.join("tuples.fen");
+    std::fs::write(
+        &program,
+        "\
+from std import json, pack, toml
+from std.collections import SortedMap
+
+enum Order:
+    Hold
+    Move(to: (int, int))
+
+struct Path:
+    steps: list[(int, str)]
+    at: (int, (int, int))
+
+def main(stdout: Stdout):
+    path = Path(steps=[(1, \"a\"), (2, \"b\")], at=(3, (4, 5)))
+    text = json.dumps(path)
+    stdout.print(text)
+    stdout.print(json.loads[Path](text) else Path(steps=[], at=(0, (0, 0))))
+    orders = [Order.Hold, Order.Move(to=(2, 3))]
+    stdout.print(json.dumps(orders), (json.loads[list[Order]](json.dumps(orders)) else []) == orders)
+    corners = {(0, 0): \"start\", (3, 4): \"end\"}
+    stdout.print(json.dumps(corners), (json.loads[dict[(int, int), str]](json.dumps(corners)) else {}) == corners)
+    mut by_side = SortedMap[(int, int), str]()
+    by_side[(2, 0)] = \"b\"
+    by_side[(1, 0)] = \"a\"
+    stdout.print(json.dumps(by_side))
+    stdout.print(json.dumps((1, None, \"x\")))
+    stdout.print(json.loads[list[(int, int)]](\"[[1, 2, 3]]\") else [(0, 0)])
+    stdout.print((toml.loads[Path](toml.dumps(path)) else path) == path)
+    stdout.print((pack.loads[Path](pack.dumps(path)) else Path(steps=[], at=(0, (0, 0)))) == path)
+",
+    )?;
+    let executable = dir.join("tuples");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_LEAN_RUNTIME", "1")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "{\"steps\": [[1, \"a\"], [2, \"b\"]], \"at\": [3, [4, 5]]}\n\
+         Path(steps=[(1, \"a\"), (2, \"b\")], at=(3, (4, 5)))\n\
+         [\"Hold\", {\"Move\": {\"to\": [2, 3]}}] True\n\
+         [[[0, 0], \"start\"], [[3, 4], \"end\"]] True\n\
+         [[[1, 0], \"a\"], [[2, 0], \"b\"]]\n\
+         [1, null, \"x\"]\n\
+         [(0, 0)]\n\
+         True\n\
+         True\n"
     );
     Ok(())
 }
@@ -7837,7 +7997,7 @@ fn an_unchanged_build_takes_its_program_from_the_store() -> std::io::Result<()> 
     let ran = Command::new(dir.join("built")).output()?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "stored\n");
     let stored: Vec<String> =
-        std::fs::read_dir(home.join("cache").join(env!("CARGO_PKG_VERSION")).join("programs"))?
+        std::fs::read_dir(home.join("cache").join(fennec_build::FOLDER).join("programs"))?
             .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
             .collect::<Result<_, _>>()?;
     assert_eq!(stored.len(), 2, "the program and its functions' hashes: {stored:?}");
@@ -9414,6 +9574,59 @@ def main(stdout: Stdout):
     us = [U(1.5), U(2.0), U(-0.25)]
     stdout.print(sum(u.h for u in us), sum(u.h for u in us if u.h > 0.0))
     stdout.print(sum((u.h for u in us), start=1.0), sum(1 if u.h > 0.0 else 0 for u in us))
+",
+    )
+}
+
+/// A list taken 8 items a turn into 8 totals, as a fixed-order float sum is, whose reads its
+/// `while at + 8 <= n` guard keeps in range without checks: the same totals, at every length
+/// round a multiple of 8, and a read past the end still stops the program.
+#[test]
+fn a_list_taken_eight_items_a_turn_matches_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "eight_a_turn",
+        r"def eights(items: list[float]) -> float:
+    n = items.len()
+    mut a0 = 0.0
+    mut a1 = 0.0
+    mut a2 = 0.0
+    mut a3 = 0.0
+    mut a4 = 0.0
+    mut a5 = 0.0
+    mut a6 = 0.0
+    mut a7 = 0.0
+    mut at = 0
+    while at + 8 <= n:
+        a0 += items[at]
+        a1 += items[at + 1]
+        a2 += items[at + 2]
+        a3 += items[at + 3]
+        a4 += items[at + 4]
+        a5 += items[at + 5]
+        a6 += items[at + 6]
+        a7 += items[at + 7]
+        at += 8
+    while at < n:
+        a0 += items[at]
+        at += 1
+    ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7))
+
+def past(items: list[float]) -> float:
+    mut at = 0
+    mut total = 0.0
+    while at + 2 <= items.len():
+        total += items[at] + items[at + 2]
+        at += 2
+    total
+
+def main(stdout: Stdout):
+    for length in [0, 1, 7, 8, 9, 15, 16, 17, 1000]:
+        xs = [float(i) * 0.1 + 1.0 / float(i + 3) for i in range(length)]
+        stdout.print(length, eights(xs))
+    stdout.print(past([1.0, 2.0, 3.0, 4.0]))
 ",
     )
 }
@@ -11336,6 +11549,15 @@ struct Words:
         -1
 
     def end_map(ref self):
+        pass
+
+    def items(ref self, name: str, count: int) fails ParseError:
+        pass
+
+    def item[T: Deserializable](ref self) -> T fails ParseError:
+        T.deserialize(ref self)?
+
+    def end_items(ref self) fails ParseError:
         pass
 
     def none(ref self) -> bool fails ParseError:

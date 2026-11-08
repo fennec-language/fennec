@@ -23,12 +23,33 @@ step() {
   echo "$((SECONDS - started))s  $name"
 }
 
+# A runtime library built a little at a time has come out without parts of what it uses, which a
+# program then fails to link with, as if the program were at fault. So each one is checked, and one
+# missing parts is built again from nothing, which makes it whole; if it still isn't, the gate stops.
+#
+#   whole_runtime <library> <target folder> <what cargo builds it with>...
+whole_runtime() {
+  local library=$1 folder=$2 manifest
+  shift 2
+  .github/scripts/whole-archive.sh "$library" && return 0
+  echo "gate: $library was missing parts, so it's built again from nothing" >&2
+  local crates=()
+  for manifest in crates/*/Cargo.toml; do
+    crates+=(-p "$(sed -n 's/^name = "\(.*\)"$/\1/p' "$manifest" | sed -n 1p)")
+  done
+  cargo clean --target-dir "$folder" "${crates[@]}" || return 1
+  cargo build --locked --target-dir "$folder" "$@" || return 1
+  .github/scripts/whole-archive.sh "$library"
+}
+
 runtime() {
   cargo build --locked -p fennec -p fennec-runtime || return 1
+  whole_runtime target/debug/libfennec_runtime.a target -p fennec -p fennec-runtime || return 1
   # Every variant `fennec build` may take, fresh, so none is left over from another commit.
   for features in threads lean lean,threads; do
     dir="target/$(echo "$features" | tr , -)"
     cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir" || return 1
+    whole_runtime "$dir/debug/libfennec_runtime.a" "$dir" -p fennec-runtime --features "$features" || return 1
     cp "$dir/debug/libfennec_runtime.a" "target/debug/libfennec_runtime_$(echo "$features" | tr , _).a"
   done
 }

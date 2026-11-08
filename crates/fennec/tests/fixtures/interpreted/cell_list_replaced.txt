@@ -1,0 +1,5 @@
+source 0a40ee7075b5eb9cde017f3fb4d1d035e04ebb9bd0e8d04aade79040508d3135
+code 0
+stdout 10
+[3, 5, 7]
+stderr 0

@@ -1,0 +1,11 @@
+source cf75d87b55e42a621ec122b656388f6ed42b85611691be02dcbd731c82509ada
+code 1
+stdout 4
+1
+2
+stderr 151
+error: index 2 is out of range for length 1
+ --> <dir>/given_mut_fails_1.fen:7:22
+  |
+7 |         stdout.print(xs[at])
+  |                      ^^^^^^

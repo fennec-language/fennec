@@ -1,0 +1,19 @@
+source 608dae3b49b2149b50e36d5fb9ba0ec9f4174f16184bce512f145ed6fb403ff1
+code 1
+stdout 141
+bytes([0, 255, 10, 65]) 4 255
+x
+0
+0
+ping True
+bytes([1, 2, 3]) 1
+gave up after 0.02s
+there's no host called `no-such-host.invalid`
+last
+done
+stderr 158
+error: 99999 isn't a port: ports go from 0 to 65535
+  --> <dir>/network_bytes.fen:44:9
+   |
+44 |     _ = net.udp(port=99999)
+   |         ^^^^^^^^^^^^^^^^^^^

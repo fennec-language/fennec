@@ -442,6 +442,7 @@ struct Tree:
         match pattern:
             case .Wildcard: self.line("pattern _")
             case .Bind(name): self.line(f"pattern bind {name}")
+            case .RefBind(name): self.line(f"pattern bind ref {name}")
             case .Literal(expr): self.labelled("pattern literal", expr)
             case .Variant(name, dotted, args, fields):
                 by = "" if fields.len() == 0 else " by " + ", ".join(fields)

@@ -359,7 +359,7 @@ healed = copy(unit, health=100)
 names = list(unit.name for unit in units)
 ```
 
-**`case .Button(ref clicks):` changes a field inside an enum.** Not built yet.
+**`case .Button(ref clicks):` changes a field inside an enum.** The `match` is a statement over a place in a mut name, and the case is put back, with the changed field, wherever its body ends: when it finishes, leaves by `return`, `break` or `continue`, or fails. Its other fields are matched by name, `_` or a literal. Built.
 ```fennec
 match ui[widget_id].kind:
     case .Button(ref clicks):

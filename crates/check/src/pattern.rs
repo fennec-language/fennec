@@ -43,10 +43,92 @@ impl FnCx<'_> {
         self.tail = outer;
         self.merge(&paths);
         self.check_cases(&ty, arms, subject.span);
+        let refs = arms.iter().any(|arm| holds_ref(&arm.pattern));
+        if refs {
+            self.ref_cases(subject, arms, &ty, span);
+        }
         if values.is_empty() {
             return Type::Unit;
         }
-        self.join_or_report(&values, span, "the cases of this `match` give")
+        let value = self.join_or_report(&values, span, "the cases of this `match` give");
+        let statement = self.statement_matches.contains(&(span.start, span.end));
+        if refs && statement && !matches!(self.checker.settled(&value), Type::Unit | Type::Unknown) {
+            self.error(
+                Diagnostic::new("a `match` with a `ref` case gives back nothing", span)
+                    .with_help("it changes what it's over: give back a value after it, on a line of its own"),
+            );
+        }
+        value
+    }
+
+    /// A `match` with a `ref` case changes what it's over: it's a statement of its own, over a
+    /// place held in a mut name, and each `ref` is a field of the case it's in, beside names,
+    /// `_`s and literals, so the case can be put back whole where it ends.
+    fn ref_cases(&mut self, subject: &Expr, arms: &[MatchArm], ty: &Type, span: Span) {
+        if !self.statement_matches.contains(&(span.start, span.end)) {
+            self.error(
+                Diagnostic::new("a `match` with a `ref` case is a statement of its own", span)
+                    .with_help("it changes what it's over and gives back nothing: write it on its own line"),
+            );
+        }
+        if plain_place(subject) {
+            self.mut_place(
+                subject,
+                "a `ref` case changes what the `match` is over, so it has to be held in a mut name",
+            );
+        } else {
+            self.error(
+                Diagnostic::new(
+                    "a `ref` case changes what the `match` is over, which has to be a place",
+                    subject.span,
+                )
+                .with_help(
+                    "match a name, a field or an item at a name's position, like `match ui[widget_id].kind:`",
+                ),
+            );
+        }
+        let owner = self.checker.settled(ty).type_name().map(str::to_owned);
+        let mut cases = Vec::new();
+        for arm in arms {
+            let Pattern::Variant { name, args, .. } = &arm.pattern else {
+                if holds_ref(&arm.pattern) {
+                    self.error(
+                        Diagnostic::new("`ref` names a field of the case it's in", arm.span).with_help(
+                            "write it inside a case's parentheses, like `case .Button(ref clicks):`",
+                        ),
+                    );
+                }
+                cases.push(None);
+                continue;
+            };
+            if !args.iter().any(|arg| matches!(arg, Pattern::RefBind(_))) {
+                if holds_ref(&arm.pattern) {
+                    self.error(
+                        Diagnostic::new("`ref` names a field of the case it's in", arm.span).with_help(
+                            "write it right inside the case's parentheses, like `case .Button(ref clicks):`",
+                        ),
+                    );
+                }
+                cases.push(None);
+                continue;
+            }
+            if args.iter().any(|arg| {
+                !matches!(
+                    arg,
+                    Pattern::RefBind(_) | Pattern::Bind(_) | Pattern::Wildcard | Pattern::Literal(_)
+                )
+            }) {
+                self.error(
+                    Diagnostic::new(
+                        "a case with a `ref` matches its other fields by name, `_` or a literal",
+                        arm.span,
+                    )
+                    .with_help("match what's inside the field after, in the case's body"),
+                );
+            }
+            cases.push(owner.as_ref().map(|owner| self.field_names(owner, Some(name))));
+        }
+        self.checker.ref_matches.insert((span.start, span.end), cases);
     }
 
     /// Notes a `case` that names a case of the enum or error being matched without its dot. On a
@@ -88,6 +170,9 @@ impl FnCx<'_> {
                 }
             }
             Pattern::Bind(name) => self.declare(name, value, false, span),
+            // A name for the field itself, which the case's body may change: the `match` is over
+            // a place it changes, checked where the `match` is.
+            Pattern::RefBind(name) => self.declare(name, value, true, span),
             Pattern::Or(alternatives) => self.bind_alternatives(alternatives, subject, span),
             Pattern::Tuple(patterns) => {
                 let items = match value {
@@ -524,7 +609,7 @@ impl FnCx<'_> {
 /// Whether a pattern matches anything, so a case using it covers every value of that case.
 fn always_matches(pattern: &Pattern) -> bool {
     match pattern {
-        Pattern::Wildcard | Pattern::Bind(_) => true,
+        Pattern::Wildcard | Pattern::Bind(_) | Pattern::RefBind(_) => true,
         Pattern::Tuple(patterns) => patterns.iter().all(always_matches),
         Pattern::Or(patterns) => patterns.iter().any(always_matches),
         Pattern::Literal(_) | Pattern::Variant { .. } => false,
@@ -547,4 +632,28 @@ fn mut_arg(expr: &Expr) -> Option<Span> {
         return Some(arg.value.span);
     }
     crate::effects::children(expr).into_iter().find_map(mut_arg)
+}
+
+/// Whether a pattern has a `ref` in it anywhere.
+fn holds_ref(pattern: &Pattern) -> bool {
+    match pattern {
+        Pattern::RefBind(_) => true,
+        Pattern::Variant { args: patterns, .. } | Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
+            patterns.iter().any(holds_ref)
+        }
+        Pattern::Wildcard | Pattern::Bind(_) | Pattern::Literal(_) => false,
+    }
+}
+
+/// Whether an expression is a place that reads the same each time: a name, a field of one, or an
+/// item at a position written as a name or a number, as the case is put back there where it ends.
+fn plain_place(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Name(_) => true,
+        ExprKind::Attr { object, optional: false, .. } => plain_place(object),
+        ExprKind::Index { object, index } => {
+            plain_place(object) && matches!(index.kind, ExprKind::Name(_) | ExprKind::Int(_))
+        }
+        _ => false,
+    }
 }

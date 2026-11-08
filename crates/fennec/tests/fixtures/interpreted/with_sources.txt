@@ -1,0 +1,22 @@
+source e67d90446116b8f634474b22b5d5b959798420e094f42288227fd342d502b719
+code 0
+stdout 195
+0
+-9
+14
+poked
+big
+open main for ana
+enter main:ana
+leave main:ana
+close ana
+open main for ana
+enter main:ana
+failed ana
+open main for bo
+close bo
+open main for bo
+close bo
+poked 1
+probe 9 failed
+stderr 0

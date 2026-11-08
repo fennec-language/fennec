@@ -1,0 +1,7 @@
+source 2e9c42a5e7982be5b574b904a96b5526d7f75b87bfb39903e0c27d01eecd53f0
+code 0
+stdout 28
+2010000
+1 [1] [1]
+2 [2] [2]
+stderr 0

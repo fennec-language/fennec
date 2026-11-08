@@ -243,6 +243,8 @@ struct MatchArm:
 enum Pattern:
     Wildcard
     Bind(name: str)
+    ## `ref clicks` in `case .Button(ref clicks):`: a name for the field itself.
+    RefBind(name: str)
     Literal(expr: Expr)
     ## `.Circle(radius)` (`dotted`), or `NotFound(path)`, `Ok(value)`, `Err(error)`. Written
     ## by name, as `IoError(reason=r)`, `fields` names each of `args`.

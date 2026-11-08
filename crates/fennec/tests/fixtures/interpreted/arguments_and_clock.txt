@@ -1,0 +1,14 @@
+source 27b9d7fb76eaee531eb8df41db7ebc4c9157b462c3f01d1065d7d3bc9924b445
+code 1
+stdout 28
+2 True
+one
+two
+one two
+True
+stderr 140
+error: index 5 is out of range for length 2
+  --> <dir>/program.fen:11:18
+   |
+11 |     stdout.print(args[5])
+   |                  ^^^^^^^

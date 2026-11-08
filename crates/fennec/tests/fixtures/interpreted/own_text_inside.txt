@@ -1,0 +1,13 @@
+source 3622eb227c0eadbaca70f37f0c88e19e3d238691242c657bd60e9bf3612ecb2d
+code 0
+stdout 177
+[<a>, <bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb>]
+[1/0, 0/2]
+[light, light]
+[(<t>, 1)]
+[0/0, None]
+[Holder(tag=<h>, pair=9/0, count=1)]
+before [5/0] after
+<top> 0/3
+[[7/0], []]
+stderr 0

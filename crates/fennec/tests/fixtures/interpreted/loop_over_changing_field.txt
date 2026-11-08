@@ -1,0 +1,12 @@
+source f8fdf7ef76239b98de03d3dd4b0d947c3ccffc6d770623d9f3ef241cbb1d3a0d
+code 0
+stdout 101
+[0, 1, 2, 3, 4] [7, 8] other
+1 1 40
+2 1 40
+3 1 40
+1 [1, 2]
+2 [1, 2]
+[1, 2, 2, 30]
+bag4-45-5 [100, 5]
+stderr 0

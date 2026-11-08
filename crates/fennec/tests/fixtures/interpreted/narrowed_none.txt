@@ -1,0 +1,8 @@
+source 1f9c44ede1dcbabc45ca7f3a017ba05fced99b65a00ba820d073da6e7ce5d24e
+code 0
+stdout 34
+5
+None
+[None] None True
+None None
+stderr 0

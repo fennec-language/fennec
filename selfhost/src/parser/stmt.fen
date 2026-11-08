@@ -172,10 +172,26 @@ extend Parser:
         cond, body = self.condition_and_block()?
         Stmt(kind=.While(cond, body), span=start.to(self.prev_span()))
 
+    ## `for x in xs:`, `for ref x in xs:`, `for at, x in enumerate(xs):`, or with `ref` before
+    ## the second name, `for at, ref x in enumerate(xs):`, which changes each item where it is.
     def for_stmt(ref self) -> Stmt:
         start = self.advance().span
-        is_mut = self.eat_ref("a loop's name")
-        names = self.loop_names()?
+        ref_first = self.eat_ref("a loop's name")
+        mut names = [self.name("a loop variable")?]
+        mut ref_second = False
+        while self.eat_punct(","):
+            if ref_first:
+                fail Diagnostic(
+                    message="`ref` goes before the name whose item changes",
+                    span=start,
+                    help="write it before the second name, like `for at, ref item in enumerate(items):`",
+                )
+            if names.len() == 1 and self.eat_ref("a loop's name"):
+                ref_second = True
+            names.append(self.name("a loop variable")?)
+        if not self.eat_keyword("in"):
+            fail self.unexpected("`in`")
+        is_mut = ref_first or ref_second
         iter, body = self.condition_and_block()?
         Stmt(kind=.For(names, is_mut, iter, body), span=start.to(self.prev_span()))
 

@@ -5611,7 +5611,8 @@ fn a_parallel_comprehension_whose_items_fail_passes_up_the_first() -> std::io::R
 
 /// What the next test runs: `std.sqlite` in a test, on the fake `Fs`.
 const SQLITE_TESTS: &str = r#"from std import sqlite
-from std.sql import SqlError
+from std import sql
+from std.sql import SqlError, SqlRows
 
 enum Status:
     Clean
@@ -5715,6 +5716,20 @@ test "a narrowed Fs opens only what it reaches"(fs: Fs):
         case _:
             assert False
     made(fs.only("data"), "data/index.db")?
+
+test "a driver's rows read through std.sql as SQLite's do":
+    rows = SqlRows(
+        columns=["path", "size", "status", "note"],
+        kinds=[3, 1, 3, 0, 3, 1, 3, 3],
+        at=[0, 0, 1, 0, 2, 1, 3, 4],
+        ints=[3, 10],
+        floats=[],
+        texts=["a", "Clean", "b", "Changed", "hi"],
+        blobs=[],
+    )
+    found = sql.rows_as[Entry](rows)?
+    assert found.len() == 2 and found[0].note is None and found[1].note == "hi"
+    assert found[1].status == .Changed and found[1].size == 10
 "#;
 
 /// `std.sqlite` in compiled tests, with a database in memory for each path: rows read into
@@ -5734,7 +5749,7 @@ fn sqlite_in_tests_reads_rows_into_structs_and_names_a_column_that_does_not_fit(
     std::fs::remove_dir_all(&dir)?;
     assert!(ran.status.success(), "{shown}{said}");
     assert!(
-        said.contains("7 of 7 tests ran through LLVM") && shown.contains("7 passed, 0 failed"),
+        said.contains("8 of 8 tests ran through LLVM") && shown.contains("8 passed, 0 failed"),
         "{shown}{said}"
     );
     Ok(())

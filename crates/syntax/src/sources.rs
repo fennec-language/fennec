@@ -92,6 +92,13 @@ impl Sources {
         self.file(span).map(|file| (file.path.as_str(), file.text.as_str(), file.base))
     }
 
+    /// Just the files `keep` says, by path, each at the offsets it has here, so spans into them
+    /// still point where they did.
+    #[must_use]
+    pub fn only(&self, keep: &dyn Fn(&str) -> bool) -> Sources {
+        Sources { files: self.files.iter().filter(|file| keep(&file.path)).cloned().collect() }
+    }
+
     /// A file's text and the offset its spans start at, by its path.
     pub fn by_path(&self, path: &str) -> Option<(&str, u32)> {
         self.files.iter().find(|file| file.path == path).map(|file| (file.text.as_str(), file.base))

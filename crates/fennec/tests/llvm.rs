@@ -5351,6 +5351,62 @@ fn a_task_writing_a_file_lets_the_others_answer() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A `parallel` comprehension whose items can fail runs on every thread, and the failure that
+/// passes up is the first in the list's order, as it is when the items are made in order: here
+/// 70007, though 71007 and others fail too. Natively it was once made in order, on one thread.
+const FAILING_ITEMS: &str = "\
+error TooBig:
+    at: int
+    why: str
+
+def checked(x: int) -> int fails TooBig:
+    if x > 70_000 and x % 1000 == 7:
+        fail TooBig(at=x, why=\"a reason long enough to live in a block of its own\")
+    x * 2
+
+def all_of(xs: list[int]) -> list[int] fails TooBig:
+    [checked(x)? for x in parallel(xs)]
+
+def main(stdout: Stdout):
+    small = [i for i in range(50_000)]
+    big = [i for i in range(100_000)]
+    match all_of(small):
+        case Ok(made):
+            stdout.print(made.len(), made[49_999])
+        case Err(error):
+            stdout.print(\"failed\", error.at)
+    match all_of(big):
+        case Ok(made):
+            stdout.print(made.len())
+        case Err(error):
+            stdout.print(\"failed\", error.at, error.why)
+";
+
+#[test]
+fn a_parallel_comprehension_whose_items_fail_passes_up_the_first() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("failing-items")?;
+    let program = dir.join("failing.fen");
+    std::fs::write(&program, FAILING_ITEMS)?;
+    let executable = dir.join("failing");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let wanted = "50000 99998\nfailed 70007 a reason long enough to live in a block of its own\n";
+    for _ in 0..5 {
+        let ran = Command::new(&executable).current_dir(&dir).env("FENNEC_THREADS", "4").output_within()?;
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{}", String::from_utf8_lossy(&ran.stderr));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// `process.run`'s options in compiled code: what the program reads, the folder it runs in and
 /// variables it gets, on their own and together, and a narrowed `Process` still running only
 /// what it may when given them.

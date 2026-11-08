@@ -188,6 +188,9 @@ enum Shape {
     Each,
     /// `(from, to, out) -> ()`: a comprehension's range, putting items into `out`.
     Into,
+    /// `(from, to, out) -> int`: a comprehension's range whose items can fail, giving back 0, or
+    /// 2 when it handed a failure over.
+    IntoFailing,
     /// `(from, to) -> int` or `-> float`: a sum's range, giving back its partial.
     Partial { float: bool },
     /// `(conn) -> ()`: a server's task for a connection, on a stack of its own.
@@ -199,6 +202,7 @@ impl Shape {
         match self {
             Shape::Each => "@fen_parallel_range",
             Shape::Into => "@fen_parallel_range_into",
+            Shape::IntoFailing => "@fen_parallel_range_into_failing",
             Shape::Partial { float: false } => "@fen_parallel_partial_int",
             Shape::Partial { float: true } => "@fen_parallel_partial_float",
             Shape::Task => "@fen_parallel_task",
@@ -214,6 +218,7 @@ impl Shape {
         let (extra, args, call, keep) = match self {
             Shape::Each | Shape::Task => ("", "", "call swiftcc void", String::new()),
             Shape::Into => (", i64 %out", ", ptr %into", "call swiftcc void", String::new()),
+            Shape::IntoFailing => (", i64 %out", ", ptr %into", "%ended = call swiftcc i64", String::new()),
             Shape::Partial { float: false } => (
                 ", ptr %partial",
                 "",
@@ -227,7 +232,17 @@ impl Shape {
                 "  %bits = bitcast double %got to i64\n  store i64 %bits, ptr %partial\n".to_owned(),
             ),
         };
-        let into = if matches!(self, Shape::Into) { "  %into = inttoptr i64 %out to ptr\n" } else { "" };
+        let into = if matches!(self, Shape::Into | Shape::IntoFailing) {
+            "  %into = inttoptr i64 %out to ptr\n"
+        } else {
+            ""
+        };
+        // A crash is 1, with the failure flag set; otherwise what the range gave back, if it says.
+        let result = if matches!(self, Shape::IntoFailing) {
+            "%result = select i1 %bad, i64 1, i64 %ended"
+        } else {
+            "%result = zext i1 %bad to i64"
+        };
         let params = format!("i64 %env, i64 %from, i64 %to, i64 %thread{extra}");
         let running = format!("@\"{}.run\"", name.trim_start_matches('@'));
         format!(
@@ -235,7 +250,7 @@ impl Shape {
              %closure = inttoptr i64 %env to ptr\n{into}  %code_at = getelementptr inbounds i8, ptr %closure, i64 {CODE}\n  \
              %code = load ptr, ptr %code_at\n  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n  \
              {call} %code(ptr %closure, i64 %from, i64 %to{args}, ptr swifterror %failed)\n{keep}  \
-             %held = load ptr, ptr %failed\n  %bad = icmp ne ptr %held, null\n  %result = zext i1 %bad to i64\n  \
+             %held = load ptr, ptr %failed\n  %bad = icmp ne ptr %held, null\n  {result}\n  \
              ret i64 %result\n}}\n\n\
              define internal i64 {name}({params}) #0 {{\n{READY}  \
              %result = call i64 {running}(i64 %env, i64 %from, i64 %to, i64 %thread{extra})\n  ret i64 %result\n}}\n\n"
@@ -362,6 +377,20 @@ impl Emit<'_, '_, '_> {
             }
             ("parallel.for", [list, range]) => self.parallel_for(list, range),
             ("parallel.serve", [server, task]) => self.parallel_serve(dest, server, task),
+            // A comprehension whose items can fail made no list when one failed with a value.
+            ("parallel.map_failed", [list]) => {
+                let (list, _) = self.operand(list)?;
+                let none = self.temp();
+                self.line(&format!("{none} = icmp eq ptr {list}, null"));
+                self.assign(dest.ok_or("a test no one keeps")?, &none)
+            }
+            ("parallel.failure", []) => {
+                self.declare("declare i64 @fennec_parallel_failure() nounwind");
+                let (number, block) = (self.temp(), self.temp());
+                self.line(&format!("{number} = call i64 @fennec_parallel_failure()"));
+                self.line(&format!("{block} = inttoptr i64 {number} to ptr"));
+                self.take_handed_failure(dest.ok_or("a failure no one keeps")?, &block)
+            }
             ("parallel.serve_failure", []) => {
                 self.declare("declare i64 @fennec_net_serve_failure() nounwind");
                 let (number, block) = (self.temp(), self.temp());
@@ -542,7 +571,10 @@ impl Emit<'_, '_, '_> {
         let symbol = element_symbol(self.module.layouts, item);
         self.module.shared.elements.insert(symbol.clone(), item);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
-        let shim = self.shim(Shape::Into);
+        // A range whose items can fail gives back how it ended.
+        let (_, kind) = self.operand(range)?;
+        let fails = matches!(kind, Kind::Closure(_, returns) if *returns == Kind::Int);
+        let shim = self.shim(if fails { Shape::IntoFailing } else { Shape::Into });
         self.declare(&format!("declare ptr @{call}(ptr, ptr, i64, i64) nounwind"));
         let (element, made) = (self.temp(), self.temp());
         self.line(&format!("{element} = load i64, ptr @\"{symbol}\", !invariant.load !1"));

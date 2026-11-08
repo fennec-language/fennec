@@ -497,3 +497,47 @@ fn a_parallel_loop_can_change_a_shared_value_outside_it() {
                   held.total += hp\n        hp += 1\n    stdout.print(counter.total, hps)\n";
     assert_eq!(problems(source), Vec::<String>::new());
 }
+
+/// `case .Button(ref clicks):` names the field itself: the `match` is a statement over a place
+/// in a mut name, giving back nothing, and the `ref` is right inside a case's parentheses, beside
+/// names, `_`s and literals.
+#[test]
+fn a_ref_case_changes_a_field_of_a_place() {
+    let program = |body: &str| {
+        problems(&format!(
+            "enum Kind:\n    Button(clicks: int, label: str)\n    Empty\n\n\
+             struct Pair:\n    first: Kind\n    second: Kind\n\n\
+             def make() -> Kind:\n    .Empty\n\n\
+             def main(stdout: Stdout):\n    mut kind = Kind.Button(clicks=0, label='a')\n    plain = Kind.Empty\n{body}"
+        ))
+    };
+    let empty: [&str; 0] = [];
+    assert_eq!(
+        program(
+            "    match kind:\n        case .Button(ref clicks, _):\n            clicks += 1\n        case _:\n            pass\n"
+        ),
+        empty
+    );
+    assert_eq!(
+        program(
+            "    match plain:\n        case .Button(ref clicks, _):\n            clicks += 1\n        case _:\n            pass\n"
+        ),
+        ["`plain` isn't mut @ plain"]
+    );
+    assert_eq!(
+        program(
+            "    match make():\n        case .Button(ref clicks, _):\n            clicks += 1\n        case _:\n            pass\n"
+        ),
+        ["a `ref` case changes what the `match` is over, which has to be a place @ make()"]
+    );
+    let found = program(
+        "    count = match kind:\n        case .Button(ref clicks, _): clicks\n        case _: 0\n    stdout.print(count)\n",
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].starts_with("a `match` with a `ref` case is a statement of its own"), "{found:?}");
+    let found = program(
+        "    stdout.print(lasts(ref kind))\n\ndef lasts(ref kind: Kind) -> int:\n    match kind:\n        case .Button(ref clicks, _): clicks\n        case _: 0\n",
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].starts_with("a `match` with a `ref` case gives back nothing"), "{found:?}");
+}

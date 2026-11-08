@@ -448,6 +448,7 @@ impl Tree {
         match pattern {
             Pattern::Wildcard => self.line("pattern _"),
             Pattern::Bind(name) => self.line(&format!("pattern bind {name}")),
+            Pattern::RefBind(name) => self.line(&format!("pattern bind ref {name}")),
             Pattern::Literal(expr) => self.node("pattern literal", None, |tree| tree.expr(expr)),
             Pattern::Variant { name, dotted, args, fields } => {
                 let by = if fields.is_empty() { String::new() } else { format!(" by {}", fields.join(", ")) };

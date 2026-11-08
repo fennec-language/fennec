@@ -293,7 +293,7 @@ fn enum_case(
         out.push(')');
     } else {
         let _ = write!(out, "{}.{case}", shown_type_name(type_name(name)));
-        if !fields.is_empty() {
+        if fields.iter().any(|(field, _)| !crate::packed::hidden(field)) {
             named_fields(state, fields, words, out);
         }
     }
@@ -302,11 +302,17 @@ fn enum_case(
 /// `(x=1, y=2)`.
 fn named_fields(state: &State, fields: &Fields, words: &mut dyn Iterator<Item = &u64>, out: &mut Written) {
     out.push('(');
-    let shown = fields.iter().filter(|(field, _)| field.as_ref() != crate::packed::LOCK);
-    for (at, (field, element)) in shown.enumerate() {
-        if at > 0 {
+    let mut first = true;
+    for (field, element) in fields {
+        // A field the layout keeps for itself, like an error's notes, is passed over unseen.
+        if crate::packed::hidden(field) {
+            (&mut *words).take(element.words()).for_each(drop);
+            continue;
+        }
+        if !first {
             out.push_str(", ");
         }
+        first = false;
         let _ = write!(out, "{field}=");
         item(state, element, words, out);
     }

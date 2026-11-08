@@ -40,6 +40,8 @@ pub(crate) struct TestWorld {
     pub(crate) variables: BTreeMap<String, String>,
     /// The test's network, in memory.
     pub(crate) net: crate::stdlib::net::Fake,
+    /// The test's SQLite databases, by path, each in a file of the test's own.
+    pub(crate) databases: crate::stdlib::sqlite::Fakes,
 }
 
 impl TestWorld {
@@ -54,6 +56,7 @@ impl TestWorld {
             entropy_drawn: 0,
             variables: BTreeMap::new(),
             net: crate::stdlib::net::Fake::default(),
+            databases: crate::stdlib::sqlite::Fakes::default(),
         }
     }
 
@@ -90,6 +93,18 @@ impl TestWorld {
             None if key(path).is_empty() => Err(format!("{path} is a folder")),
             None => Err(format!("{path} doesn't exist")),
         }
+    }
+
+    /// `fs._sqlite_open(path)` in a test: the test's database in memory for `path`. Its file is
+    /// there to see, empty, as a real one would be, and a folder that isn't there fails it.
+    pub(crate) fn open_database(&mut self, path: &str) -> Value {
+        let key = key(path);
+        if !matches!(self.nodes.get(&key), Some(Node::File(_)))
+            && let Err(reason) = self.write(path, &[])
+        {
+            return crate::stdlib::fs::io_error(&reason);
+        }
+        crate::stdlib::sqlite::open_fake(&mut self.databases, &key)
     }
 
     fn write(&mut self, path: &str, data: &[u8]) -> Result<(), String> {

@@ -120,6 +120,7 @@ impl Interp<'_> {
             fields: values.iter().map(|(name, value)| (Rc::from(name.as_str()), value.clone())).collect(),
             is_error: shape.is_error,
             cause: None,
+            notes: None,
         }));
         // A `shared` value is a handle to one cell.
         let instance = if self.type_info(shape.type_name).is_some_and(|info| info.def.shared) {

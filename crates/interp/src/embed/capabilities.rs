@@ -277,6 +277,11 @@ pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end
     let Some((name, given)) = called else { return 0 };
     // A `File` is a handle in the same table in a test as anywhere, its fake files with the rest,
     // so it never goes to the fake network.
+    // A database's handle, like a file's, is in a table of its own, a test's with the rest.
+    if let Some(method) = name.strip_prefix("Database.").or_else(|| name.strip_prefix("Transaction.")) {
+        let done = crate::stdlib::sqlite::call(handle, method, &given, at);
+        return attempt(|state: &mut State| done.map(|value| state.push(value)));
+    }
     if let Some(method) = name.strip_prefix("File.") {
         let done = crate::replay::value(format_args!("{name}"), at, || {
             crate::stdlib::fs::real_file(handle, method, &given, at)
@@ -398,9 +403,18 @@ pub extern "C" fn clock_time() -> i64 {
 }
 
 /// `clock.sleep(duration)`, by the nanoseconds of a `Duration`. What's been printed comes out
-/// first, as it does before anything else that waits.
+/// first, as it does before anything else that waits. It's recorded like the clock's readings,
+/// so a replay doesn't wait it out, and a replay that sleeps where its recording didn't stops.
 pub extern "C" fn clock_sleep(nanos: i64) {
     super::write_kept_output();
+    recorded_word("Clock.sleep", || {
+        wait(nanos);
+        0
+    });
+}
+
+/// Waits a sleep out: by parking, for a task, so its thread runs others meanwhile.
+fn wait(nanos: i64) {
     let length = std::time::Duration::from_nanos(u64::try_from(nanos).unwrap_or(0));
     #[cfg(any(test, feature = "threads"))]
     if super::serve::can_park() {

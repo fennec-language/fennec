@@ -131,6 +131,9 @@ pub(crate) struct Whole<'p> {
     pub(crate) on_workers: HashSet<&'p str>,
     /// Whether the program has any `shared` type.
     pub(crate) cells: bool,
+    /// Whether its closures are blocks in the runtime's table, since it keeps one where the
+    /// runtime reads (see `closures`).
+    pub(crate) runtime_closures: bool,
 }
 
 /// What a function calls by name, a constant being a call of a function of no arguments, and a
@@ -2731,11 +2734,14 @@ fn find_last_copies(function: &Function, known: &mut Analysis) {
 /// Whether anything a function does itself can fail. Calling something counts, since a call is
 /// where the stack is checked.
 pub(crate) fn is_socket_method(name: &str) -> bool {
-    // A `File` lent by `fs.create` or `fs.open` is a handle into the runtime, as a socket is.
+    // A `File` lent by `fs.create` or `fs.open` is a handle into the runtime, as a socket is, and
+    // so are SQLite's `Database` and `Transaction`.
     name.starts_with("Connection.")
         || name.starts_with("Server.")
         || name.starts_with("UdpSocket.")
         || name.starts_with("File.")
+        || name.starts_with("Database.")
+        || name.starts_with("Transaction.")
 }
 
 /// Whether a builtin can fail where it runs: in the runtime, or by a check of its own.
@@ -2983,6 +2989,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         constants,
         on_workers,
         cells: crate::parallel::has_cells(program),
+        runtime_closures: crate::closures::runtime_holds_closures(program),
     }
 }
 

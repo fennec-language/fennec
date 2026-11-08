@@ -239,6 +239,10 @@ pub fn test_done(number: i64) {
         None => failure,
     });
     FAILED_FOR.take();
+    // The test's fakes go now rather than with the next test's, so the last test's go too, and
+    // what they hold outside the program, like a test's databases, is cleaned up.
+    let world = with(|state: &mut State| state.interp.world.take());
+    drop(world);
     let line = test_line(number, failure.as_ref(), &ran);
     if real_tests() {
         // What the test printed comes first.

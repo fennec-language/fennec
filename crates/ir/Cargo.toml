@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 fennec-check.workspace = true
 fennec-syntax.workspace = true
+libm.workspace = true
 
 [dev-dependencies]
 fennec-kit.workspace = true

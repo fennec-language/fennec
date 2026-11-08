@@ -135,10 +135,6 @@ fn main() -> ExitCode {
         ["check", path] => on_big_stack(lint::check, path),
         ["fix"] => fix::fix("."),
         ["fix", path] => fix::fix(path),
-        ["dev", "bench", path, name, rest @ ..] if rest.is_empty() || *rest == ["--start-only"] => {
-            let (path, name, execute) = ((*path).to_owned(), (*name).to_owned(), rest.is_empty());
-            big_stack(move || bench::one(&path, &name, execute))
-        }
         ["dev", "startup", path] => {
             let path = (*path).to_owned();
             big_stack(move || run::startup(&path))

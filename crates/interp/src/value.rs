@@ -94,6 +94,10 @@ pub(crate) struct Instance {
     pub(crate) is_error: bool,
     /// The error this one was raised `from`, if any.
     pub(crate) cause: Option<Value>,
+    /// An error's notes, last added last, which print under it when it reaches `main`. Kept
+    /// apart from its fields, so `==`, printing, `match` and saving never see them. `None`
+    /// until a note is added.
+    pub(crate) notes: Option<Rc<Vec<Rc<str>>>>,
 }
 
 impl Instance {
@@ -104,6 +108,7 @@ impl Instance {
             fields: fields.into_iter().map(|(name, value)| (Rc::from(name), value)).collect(),
             is_error,
             cause: None,
+            notes: None,
         }
     }
 }

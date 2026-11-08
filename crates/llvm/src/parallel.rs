@@ -343,7 +343,9 @@ impl Emit<'_, '_, '_> {
 
     /// One more owner for a closure.
     pub(crate) fn retain_closure(&mut self, closure: &str) {
-        if self.module.threads {
+        if self.module.whole.runtime_closures {
+            self.retain(closure);
+        } else if self.module.threads {
             self.closure_helpers();
             self.line(&format!("call void @fen_closure_retain(ptr {closure})"));
         } else {

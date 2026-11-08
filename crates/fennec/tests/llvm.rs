@@ -3168,6 +3168,59 @@ def main(stdout: Stdout):
         stdout.print(line)
 ";
 
+/// Several handles in one `with` open in order and finish innermost first, natively as in the
+/// interpreter. One that fails to open runs the `else:` of each opened before it, a block that
+/// fails runs every one's, and a source that lends a tuple splits it into a name each.
+#[test]
+fn several_handles_in_one_with_finish_innermost_first_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("with_handles", WITH_HANDLES)
+}
+
+const WITH_HANDLES: &str = r#"error Refused:
+    who: str
+
+struct Log:
+    lines = list[str]()
+
+def opened(name: str, ref log: Log) -> with str fails Refused:
+    if name == "bad":
+        fail Refused(who=name)
+    log.lines.append(f"open {name}")
+    lend name else:
+        log.lines.append(f"undo {name}")
+    log.lines.append(f"close {name}")
+
+def pair(ref log: Log) -> with (int, str):
+    log.lines.append("split")
+    lend (7, "w")
+    log.lines.append("joined")
+
+def both(first: str, second: str, ref log: Log) -> int fails Refused:
+    with opened(first, ref log)? as left, opened(second, ref log)? as right:
+        log.lines.append(f"use {left} {right}")
+        if right == "c":
+            fail Refused(who="late")
+    1
+
+def main(stdout: Stdout):
+    mut log = Log()
+    stdout.print(both("a", "b", ref log) else -1)
+    stdout.print(log.lines)
+    log.lines.clear()
+    stdout.print(both("a", "bad", ref log) else -1)
+    stdout.print(log.lines)
+    log.lines.clear()
+    stdout.print(both("a", "c", ref log) else -1)
+    stdout.print(log.lines)
+    log.lines.clear()
+    with pair(ref log) as reader, writer:
+        log.lines.append(f"{reader} {writer}")
+    stdout.print(log.lines)
+"#;
+
 /// What a `with` source lends is the block's to use, `ref self` methods included, with or without
 /// `as ref`: lent by name, the block's changes are what the source's cleanup sees. A `shared`
 /// handle lent the same way takes its methods with no `mut`.
@@ -4009,6 +4062,37 @@ def main(stdout: Stdout):
     )
 }
 
+/// A generator copied into the loop over it holds each argument as its parameter's type: a `str`
+/// given for a `str?` is an optional in the copy. The copy once held it as the argument's type,
+/// so the build left `main` to the JIT, as it read `str` as `str?`.
+#[test]
+fn a_copied_generator_holds_its_arguments_as_its_parameters_types() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "copied_parameter_types",
+        r#"def or_else(word: str?) -> Iterator[str]:
+    yield word else "nothing"
+
+def when_given(word: str?) -> Iterator[str]:
+    if word is not None:
+        yield f"{word}!"
+
+def main(stdout: Stdout):
+    for word in or_else("hi"):
+        stdout.print(word)
+    for word in or_else(None):
+        stdout.print(word)
+    maybe: str? = "kept"
+    for word in when_given(maybe):
+        stdout.print(word)
+    held = or_else("later")
+    stdout.print(list(held), list(when_given("x")))
+"#,
+    )
+}
+
 /// What closures and generators capture, of each kind, comes out as the interpreter gives it:
 /// a closure giving back what it captured as it is, generator expressions yielding a captured
 /// string, struct, list, bool, int or float, nested generators and generators with `while`,
@@ -4108,6 +4192,67 @@ def main(stdout: Stdout):
     for k in range(3):
         total += sum(k for _ in range(2))
     stdout.print(total)
+"#,
+    )
+}
+
+/// Closures kept where the runtime reads them, as a list's items and in a generator's block, come
+/// out as the interpreter gives them: appended, read in a loop and by index, shared by a copy of
+/// the list, popped, replaced, and captured by a generator that calls one. Natively a list of
+/// closures and a generator keeping one were left to the JIT, as the runtime couldn't hold them.
+#[test]
+fn closures_kept_in_lists_and_generators_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "closures_kept",
+        r#"def add(x: int) -> int:
+    x + 1
+
+def mul(x: int) -> int:
+    x * 2
+
+def made(k: int) -> (int) -> int:
+    def plus(x: int) -> int:
+        x + k
+    plus
+
+def counted(word: str) -> Iterator[int]:
+    def size(x: int) -> int:
+        x + word.len()
+    for n in range(3):
+        yield size(n)
+
+def apply_each(change: (int) -> int, limit: int) -> Iterator[int]:
+    for n in range(limit):
+        yield change(n)
+
+def main(stdout: Stdout):
+    mut fs: list[(int) -> int] = []
+    fs.append(add)
+    fs.append(mul)
+    name = "a string long enough to live in a block"
+    def named(x: int) -> int:
+        x + name.len()
+    fs.append(named)
+    for k in range(3):
+        fs.append(made(k))
+    for f in fs:
+        stdout.print(f(3))
+    stdout.print(fs[2](0), fs.len())
+    copied = fs
+    fs.append(add)
+    stdout.print(copied.len(), fs.len())
+    last = fs.pop()
+    if last is not None:
+        stdout.print(last(10))
+    fs[0] = mul
+    stdout.print(fs[0](5), copied[0](5))
+    stdout.print(list(counted("xy")))
+    held = apply_each(named, limit=3)
+    stdout.print("made")
+    stdout.print(list(held))
 "#,
     )
 }
@@ -5402,6 +5547,283 @@ fn a_parallel_comprehension_whose_items_fail_passes_up_the_first() -> std::io::R
     for _ in 0..5 {
         let ran = Command::new(&executable).current_dir(&dir).env("FENNEC_THREADS", "4").output_within()?;
         assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{}", String::from_utf8_lossy(&ran.stderr));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// What the next test runs: `std.sqlite` in a test, on the fake `Fs`.
+const SQLITE_TESTS: &str = r#"from std import sqlite
+from std.sql import SqlError
+
+enum Status:
+    Clean
+    Changed
+
+struct Entry:
+    path: str
+    size: int
+    status: Status
+    note: str? = None
+
+def made(fs: Fs, path: str) fails SqlError:
+    with sqlite.open(fs, path)? as db:
+        _ = db.execute(t"create table entries (path text primary key, size integer not null, status text not null, note text)")?
+
+def add(fs: Fs, path: str, entries: list[Entry]) fails SqlError:
+    with sqlite.open(fs, path)? as db:
+        with db.transaction()? as tx:
+            for entry in entries:
+                status = "Clean" if entry.status == .Clean else "Changed"
+                _ = tx.execute(t"insert into entries (path, size, status) values ({entry.path}, {entry.size}, {status})")?
+
+def all_entries(fs: Fs, path: str) -> list[Entry] fails SqlError:
+    mut found = list[Entry]()
+    with sqlite.open(fs, path)? as db:
+        found = db.query[Entry](t"select path, size, status, note from entries order by path")?
+    found
+
+test "rows come back as structs, their values bound"(fs: Fs):
+    made(fs, "index.db")?
+    sneaky = "a'; drop table entries; --"
+    add(fs, "index.db", [Entry(path=sneaky, size=3, status=.Clean), Entry(path="b", size=10, status=.Changed)])?
+    found = all_entries(fs, "index.db")?
+    assert found.len() == 2
+    assert found[0].path == sneaky and found[0].size == 3 and found[0].status == .Clean
+    assert found[1].path == "b" and found[1].status == .Changed and found[1].note is None
+
+test "each test has its own databases"(fs: Fs):
+    made(fs, "index.db")?
+    assert all_entries(fs, "index.db")?.len() == 0
+
+test "a transaction that fails keeps nothing"(fs: Fs):
+    made(fs, "index.db")?
+    add(fs, "index.db", [Entry(path="a", size=1, status=.Clean)])?
+    match add(fs, "index.db", [Entry(path="b", size=2, status=.Clean), Entry(path="a", size=9, status=.Clean)]):
+        case Err(Constraint(reason=reason)):
+            assert "UNIQUE" in reason
+        case _:
+            assert False
+    found = all_entries(fs, "index.db")?
+    assert found.len() == 1 and found[0].size == 1
+
+test "one column reads as one value"(fs: Fs):
+    made(fs, "index.db")?
+    add(fs, "index.db", [Entry(path="a", size=4, status=.Clean), Entry(path="b", size=5, status=.Clean)])?
+    with sqlite.open(fs, "index.db")? as db:
+        assert db.query[int](t"select sum(size) from entries")? == [9]
+        least = 5
+        assert db.query[str](t"select path from entries where size >= {least}")? == ["b"]
+        changed = db.execute(t"update entries set size = size + 1")?
+        assert changed == 2
+
+test "a column that doesn't fit fails with its name"(fs: Fs):
+    made(fs, "index.db")?
+    add(fs, "index.db", [Entry(path="a", size=4, status=.Clean)])?
+    with sqlite.open(fs, "index.db")? as db:
+        match db.query[Entry](t"select path, path as size, status from entries"):
+            case Err(Column(name=name, reason=reason)):
+                assert name == "size" and reason == "it holds text, not an int"
+            case _:
+                assert False
+        match db.query[Entry](t"select path, status from entries"):
+            case Err(Column(name=name)):
+                assert name == "size"
+            case _:
+                assert False
+        match db.query[Entry](t"select path, size, status, 1 as extra from entries"):
+            case Err(Column(name=name, reason=reason)):
+                assert name == "extra" and reason == "`Entry` has no field called `extra`"
+            case _:
+                assert False
+        match db.query[int](t"select size, path from entries"):
+            case Err(Column(reason=reason)):
+                assert "2 columns" in reason
+            case _:
+                assert False
+
+test "a query is one statement"(fs: Fs):
+    with sqlite.open(fs, "index.db")? as db:
+        match db.execute(t"create table a (x int); create table b (x int)"):
+            case Err(Failed(reason=reason)):
+                assert "one statement" in reason
+            case _:
+                assert False
+
+test "a narrowed Fs opens only what it reaches"(fs: Fs):
+    fs.make_dir("data")?
+    match made(fs.only("data"), "elsewhere.db"):
+        case Err(Failed(reason=reason)):
+            assert "outside what this Fs can reach" in reason
+        case _:
+            assert False
+    made(fs.only("data"), "data/index.db")?
+"#;
+
+/// `std.sqlite` in compiled tests, with a database in memory for each path: rows read into
+/// structs by their columns' names, values bound rather than pasted into the query, a fresh
+/// database for each test, a failed transaction keeping nothing, a column that doesn't fit
+/// failing with its name, and a narrowed `Fs` opening only what it reaches.
+#[test]
+fn sqlite_in_tests_reads_rows_into_structs_and_names_a_column_that_does_not_fit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("sqlite-tests")?;
+    let program = dir.join("store.fen");
+    std::fs::write(&program, SQLITE_TESTS)?;
+    let ran = fennec(&["test", "--all", "--verbose", &program.to_string_lossy()], &dir)?;
+    let (shown, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+    std::fs::remove_dir_all(&dir)?;
+    assert!(ran.status.success(), "{shown}{said}");
+    assert!(
+        said.contains("7 of 7 tests ran through LLVM") && shown.contains("7 passed, 0 failed"),
+        "{shown}{said}"
+    );
+    Ok(())
+}
+
+/// What the next test runs, against the fake `Fs` and then the real disk.
+const SQLITE_FAKE_AND_REAL: &str = r#"from std import sqlite
+from std.sql import SqlError
+
+test "a database is a file"(fs: Fs):
+    with sqlite.open(fs, "real.db")? as db:
+        _ = db.execute(t"create table if not exists notes (text text)")?
+        _ = db.execute(t"delete from notes")?
+        word = "fox"
+        _ = db.execute(t"insert into notes values ({word})")?
+    assert fs.exists("real.db")
+    with sqlite.open(fs, "real.db")? as db:
+        assert db.query[str](t"select text from notes")? == ["fox"]
+    fs.remove("real.db")?
+
+test "its file is there to see"(fs: Fs):
+    with sqlite.open(fs, "memory.db")? as db:
+        _ = db.execute(t"create table if not exists notes (text text)")?
+    assert fs.exists("memory.db")
+    fs.remove("memory.db")?
+
+def opened(fs: Fs, path: str) fails SqlError:
+    with sqlite.open(fs, path)? as db:
+        _ = db.execute(t"select 1")?
+
+test "a folder that isn't there fails it"(fs: Fs):
+    match opened(fs, "no/such/folder/a.db"):
+        case Ok(_):
+            assert False
+        case Err(Failed(reason=reason)):
+            assert reason != ""
+        case _:
+            assert False
+
+test "outside a transaction, a query reads what was there before it"(fs: Fs):
+    with sqlite.open(fs, "snapshot.db")? as db:
+        _ = db.execute(t"create table if not exists notes (text text)")?
+        _ = db.execute(t"delete from notes")?
+        old = "old"
+        _ = db.execute(t"insert into notes values ({old})")?
+        with db.transaction()? as tx:
+            new = "new"
+            _ = tx.execute(t"insert into notes values ({new})")?
+            assert db.query[str](t"select text from notes")? == ["old"]
+            assert tx.query[str](t"select text from notes order by text")? == ["new", "old"]
+        assert db.query[str](t"select text from notes order by text")? == ["new", "old"]
+    fs.remove("snapshot.db")?
+"#;
+
+/// The same tests pass on a test's fake `Fs` and, with `--real`, on files: a database written,
+/// closed and opened again, its file there to see, a folder that isn't there failing it, and a
+/// query outside a transaction reading what was there before it while it's still going.
+#[test]
+fn sqlite_tests_pass_alike_on_a_fake_fs_and_on_files() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("sqlite-fake-and-real")?;
+    let program = dir.join("real.fen");
+    std::fs::write(&program, SQLITE_FAKE_AND_REAL)?;
+    for how in [&["test", "--all", "--verbose"][..], &["test", "--real", "--all", "--verbose"][..]] {
+        let mut args = how.to_vec();
+        let path = program.to_string_lossy().into_owned();
+        args.push(&path);
+        let ran = crate::executables::fennec_command()
+            .args(&args)
+            .env("FENNEC_HOME", &dir)
+            .current_dir(&dir)
+            .output_before(FENNEC_DEADLINE)?;
+        let (shown, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert!(ran.status.success() && shown.contains("4 passed, 0 failed"), "{how:?}: {shown}{said}");
+    }
+    // Nothing's left of the database on the disk.
+    for left in ["real.db", "memory.db", "snapshot.db", "snapshot.db-wal"] {
+        assert!(!dir.join(left).exists(), "{left} is left");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// What the next test builds: 32 `parallel` rounds, each writing in a transaction of its own and
+/// reading the whole table, on a file.
+const SQLITE_ROUNDS: &str = r#"from std import sqlite
+from std.sql import SqlError
+
+def round(db: sqlite.Database, at: int) -> int fails SqlError:
+    with db.transaction()? as tx:
+        for item in range(20):
+            _ = tx.execute(t"insert into items (round, item) values ({at}, {item})")?
+        mine = tx.query[int](t"select count(*) from items where round = {at}")?
+        if mine != [20]: return -1
+    seen = db.query[int](t"select count(*) from items")?
+    seen[0]
+
+def rounds(fs: Fs, stdout: Stdout) fails SqlError:
+    with sqlite.open(fs, "rounds.db")? as db:
+        _ = db.execute(t"create table items (round integer, item integer)")?
+        counts = [round(db, at) else -2 for at in parallel(range(32))]
+        stdout.print(min(counts) >= 20, max(counts) == 640)
+        stdout.print(db.query[int](t"select count(*) from items")?, db.query[int](t"select count(distinct round) from items")?)
+
+def main(stdout: Stdout, fs: Fs):
+    match rounds(fs, stdout):
+        case Ok(_):
+            pass
+        case Err(err):
+            stdout.print("it failed:", err.message())
+"#;
+
+/// Rounds of `parallel` share one database: each transaction has a connection of its own and
+/// the database's one writer, so none of the 640 rows is lost, and each round sees its own 20
+/// before it commits. More rounds wait than there are blocking threads, so waiting for the
+/// writer holds none of them, on four threads and on one.
+#[test]
+fn sqlite_from_parallel_rounds_keeps_every_write() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("sqlite-rounds")?;
+    let program = dir.join("rounds.fen");
+    std::fs::write(&program, SQLITE_ROUNDS)?;
+    let executable = dir.join("rounds");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["4", "1"] {
+        for made in ["rounds.db", "rounds.db-wal", "rounds.db-shm"] {
+            let _ = std::fs::remove_file(dir.join(made));
+        }
+        let ran =
+            Command::new(&executable).current_dir(&dir).env("FENNEC_THREADS", threads).output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "True True\n[640] [32]\n",
+            "on {threads} threads: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -9456,6 +9878,34 @@ fn generic_types_built_where_one_is_expected_match_the_interpreter() -> std::io:
     same_as_the_interpreter_in_both_builds("generics_expected", GENERICS_EXPECTED)
 }
 
+/// A generic function whose type parameter is only in an `Iterator[T]` it's given works out
+/// what `T` is from the iterator. It once couldn't, so the build left the caller to the JIT.
+#[test]
+fn a_generic_over_an_iterator_takes_its_type_from_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "generic_iterator",
+        r#"def count[T](items: Iterator[T]) -> int:
+    mut n = 0
+    for _ in items:
+        n += 1
+    n
+
+def last_of[T](items: Iterator[T], otherwise: T) -> T:
+    mut last = otherwise
+    for item in items:
+        last = item
+    last
+
+def main(stdout: Stdout):
+    stdout.print(count(x * 2 for x in range(10)), count(s for s in ["a", "b"]))
+    stdout.print(count(f for f in [1.5, 2.5, 3.5]), last_of((w for w in ["p", "q"]), otherwise="none"))
+"#,
+    )
+}
+
 const GENERICS_EXPECTED: &str = r#"struct Box[T]:
     value: T
 
@@ -11305,6 +11755,48 @@ test \"this one goes too far\" for value: int:
     assert!(said.contains("it failed for value = 500"), "{said}");
     assert!(!said.contains("through LLVM and passes"), "{said}");
     std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A failing property test shrinks a float, a struct and an input whose body passes a failure up
+/// through LLVM, as the interpreter does, rather than running again another way.
+#[test]
+fn every_failing_property_test_shrinks_through_llvm() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("test_shrinking_all")?;
+    let program = dir.join("shrinking.fen");
+    std::fs::write(
+        &program,
+        "\
+struct Point:
+    x: int
+    y: int
+
+def parsed(text: str) -> int fails InvalidValue:
+    int(text)?
+
+test \"floats stay small\" for x: float:
+    assert x < 3.5
+
+test \"points stay near\" for p: Point:
+    assert p.x < 50
+
+test \"texts are numbers\" for text: str:
+    n = parsed(text)?
+    assert n >= 0
+",
+    )?;
+    let path = program.to_string_lossy().into_owned();
+    let ran = fennec(&["test", "--all", "--verbose", &path], &dir)?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!ran.status.success(), "{said}");
+    assert!(said.contains("3 of 3 tests ran through LLVM"), "{said}");
+    assert!(said.contains("it failed for x = 9.0;"), "{said}");
+    assert!(said.contains("it failed for p = Point(x="), "{said}");
+    assert!(said.contains("it failed for text = \"\""), "{said}");
     Ok(())
 }
 

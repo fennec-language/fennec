@@ -153,6 +153,9 @@ pub struct Expansion {
     pub stmts: Vec<Stmt>,
     /// The yield function copied in, whose types are under its own name.
     pub copied: Option<String>,
+    /// The hidden names its parameters are bound to, with the parameter each is: they hold what
+    /// they're given as the parameter's type, which can be wider than the argument's.
+    pub params: Vec<(String, String)>,
 }
 
 /// What [`expand`] needs to know about where the loop is.
@@ -172,7 +175,7 @@ pub fn expand(names: &[String], iter: &Expr, body: &[Stmt], around: &Surrounding
             kind: CompKind::Generator, elem, names: inner, iter: source, cond, ..
         } => {
             let stmts = fused_expression(names, (elem, inner, source, cond.as_deref()), body, iter.span)?;
-            Some(Expansion { stmts, copied: None })
+            Some(Expansion { stmts, copied: None, params: Vec::new() })
         }
         ExprKind::Try { value, context: None } => called(names, value, body, around),
         ExprKind::Call { .. } => {
@@ -217,7 +220,11 @@ fn enumerated(names: &[String], iter: &Expr, body: &[Stmt], around: &Surrounding
     looped.push(binding(item, name_at(&each, span), true));
     looped.extend_from_slice(body);
     let kind = StmtKind::For { names: vec![each], is_mut: false, iter: stage.clone(), body: looped };
-    Some(Expansion { stmts: vec![binding(&count, zero, true), Stmt { kind, span }], copied: None })
+    Some(Expansion {
+        stmts: vec![binding(&count, zero, true), Stmt { kind, span }],
+        copied: None,
+        params: Vec::new(),
+    })
 }
 
 /// Makes `names` hold an item, then runs what the loop runs for it.
@@ -339,6 +346,11 @@ fn copied_in(
     }
     let generators = |name: &str| (around.generator)(name).is_some();
     let (mut stmts, renamed) = bind_params(&def, args, span, &locals, &generators)?;
+    let params = renamed
+        .iter()
+        .filter(|(from, _)| def.params.iter().any(|param| param.name == *from))
+        .map(|(from, fresh)| (fresh.clone(), from.clone()))
+        .collect();
     let staged: Vec<String> = def
         .params
         .iter()
@@ -372,7 +384,7 @@ fn copied_in(
     } else {
         stmts.extend(copy);
     }
-    Some(Expansion { stmts, copied: Some(key.to_owned()) })
+    Some(Expansion { stmts, copied: Some(key.to_owned()), params })
 }
 
 /// A loop's body that can leave early, as a loop that runs once. `continue` ends the body,

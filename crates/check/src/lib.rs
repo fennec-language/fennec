@@ -442,8 +442,9 @@ pub fn not_built_yet(signatures: &Signatures) -> Option<Diagnostic> {
 /// checker takes so far: a program using one checks, but nothing runs it yet, rather than run it
 /// as an `int` that never overflows where it should.
 fn sized_value(signatures: &Signatures) -> Option<Diagnostic> {
+    // The integers up to 32 bits run; `u64` and `f32` don't yet.
     fn holds(ty: &Type) -> bool {
-        matches!(ty, Type::Sized(_)) || ty.children().into_iter().any(holds)
+        matches!(ty, Type::Sized(Num::U64 | Num::F32)) || ty.children().into_iter().any(holds)
     }
     let found = signatures.types.functions.values().flat_map(|body| &body.exprs);
     let ((start, end), ty) =

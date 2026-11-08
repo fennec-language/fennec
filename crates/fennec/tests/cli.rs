@@ -2417,7 +2417,7 @@ fn a_build_refuses_sized_numbers_until_they_run() -> std::io::Result<()> {
     let dir = std::env::temp_dir().join(format!("fennec_build_sized_{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let program = dir.join("sized.fen");
-    std::fs::write(&program, "def main(stdout: Stdout):\n    x: u8 = 1\n    stdout.print(x)\n")?;
+    std::fs::write(&program, "def main(stdout: Stdout):\n    x: u64 = 1\n    stdout.print(x)\n")?;
     let program = program.to_string_lossy().into_owned();
     let executable = dir.join("sized").to_string_lossy().into_owned();
     for command in [vec!["build", &program, "-o", &executable], vec!["run", &program]] {
@@ -2425,7 +2425,7 @@ fn a_build_refuses_sized_numbers_until_they_run() -> std::io::Result<()> {
         assert!(!refused.status.success(), "{command:?}");
         let said = text(&refused.stderr);
         assert!(
-            said.starts_with("error: sized numbers like u8 aren't built yet past the checker"),
+            said.starts_with("error: sized numbers like u64 aren't built yet past the checker"),
             "{command:?}: {said}"
         );
     }

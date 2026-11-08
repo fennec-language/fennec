@@ -94,17 +94,35 @@ fn ints_and_floats_do_not_mix() {
     assert_eq!(in_main(program), ["can't mix int and float in `+` @ half + 1"]);
 }
 
-/// A program using a sized number checks, but isn't run or built yet: nothing past the checker
-/// takes sized numbers, and running one as an `int` would miss where it overflows.
+/// `u8(x)` makes an integer of another size this one, and `int(x)` and `float(x)` take any integer
+/// size; text goes through `.parse`, so `u8(text)` says so.
+#[test]
+fn sized_integers_convert_when_written_out() {
+    let program = "
+        def sizes(stdout: Stdout, small: i32, byte: u8, text: str):
+            stdout.print(u8(small), i16(byte), int(byte) + 1, float(small) * 0.5, u8(300))
+            stdout.print(u8(text), u8(1.5))
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "`u8(...)` converts an integer, not a str @ text",
+            "`u8(...)` converts an integer, not a float @ 1.5",
+        ]
+    );
+}
+
+/// A program using an `f32` or a `u64` checks, but isn't run or built yet: nothing past the
+/// checker takes them, and running one as a `float` or an `int` would give other answers.
 #[test]
 fn sized_numbers_are_refused_past_the_checker() {
     let source =
-        "def main(stdout: Stdout):\n    mut pixel: u8 = 255\n    pixel += 1\n    stdout.print(pixel)\n";
+        "def main(stdout: Stdout):\n    mut speed: f32 = 1.5\n    speed += 1.0\n    stdout.print(speed)\n";
     let mut module = fennec_syntax::parse(source).expect("it parses");
     assert!(fennec_check::check(&module).is_ok());
     let refused = fennec_check::check_to_run(&mut module).err().unwrap_or_default();
     let said: Vec<String> = refused.iter().map(|problem| problem.message.clone()).collect();
-    assert_eq!(said, ["sized numbers like u8 aren't built yet past the checker"]);
+    assert_eq!(said, ["sized numbers like f32 aren't built yet past the checker"]);
 }
 
 /// A number literal takes the size it goes into, checked to fit: a name's declared type, a

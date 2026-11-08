@@ -1,0 +1,70 @@
+## The sized integers' functions written in Fennec: making one from a number or text that came from
+## outside, which fails cleanly when it doesn't fit, where `u8(x)` stops the program.
+
+extend i8:
+    ## `x` as an i8, or an `InvalidValue` when it doesn't fit.
+    def from(x: int) -> i8 fails InvalidValue:
+        if x < -128 or x > 127:
+            fail InvalidValue(message=f"{x} doesn't fit in i8, which holds -128 to 127")
+        i8(x)
+
+    ## The i8 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
+    def parse(text: str) -> i8 fails InvalidValue:
+        i8.from(int(text)?)?
+
+extend i16:
+    ## `x` as an i16, or an `InvalidValue` when it doesn't fit.
+    def from(x: int) -> i16 fails InvalidValue:
+        if x < -32768 or x > 32767:
+            fail InvalidValue(message=f"{x} doesn't fit in i16, which holds -32768 to 32767")
+        i16(x)
+
+    ## The i16 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
+    def parse(text: str) -> i16 fails InvalidValue:
+        i16.from(int(text)?)?
+
+extend i32:
+    ## `x` as an i32, or an `InvalidValue` when it doesn't fit.
+    def from(x: int) -> i32 fails InvalidValue:
+        if x < -2147483648 or x > 2147483647:
+            fail InvalidValue(
+                message=f"{x} doesn't fit in i32, which holds -2147483648 to 2147483647",
+            )
+        i32(x)
+
+    ## The i32 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
+    def parse(text: str) -> i32 fails InvalidValue:
+        i32.from(int(text)?)?
+
+extend u8:
+    ## `x` as a u8, or an `InvalidValue` when it doesn't fit.
+    def from(x: int) -> u8 fails InvalidValue:
+        if x < 0 or x > 255:
+            fail InvalidValue(message=f"{x} doesn't fit in u8, which holds 0 to 255")
+        u8(x)
+
+    ## The u8 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
+    def parse(text: str) -> u8 fails InvalidValue:
+        u8.from(int(text)?)?
+
+extend u16:
+    ## `x` as a u16, or an `InvalidValue` when it doesn't fit.
+    def from(x: int) -> u16 fails InvalidValue:
+        if x < 0 or x > 65535:
+            fail InvalidValue(message=f"{x} doesn't fit in u16, which holds 0 to 65535")
+        u16(x)
+
+    ## The u16 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
+    def parse(text: str) -> u16 fails InvalidValue:
+        u16.from(int(text)?)?
+
+extend u32:
+    ## `x` as a u32, or an `InvalidValue` when it doesn't fit.
+    def from(x: int) -> u32 fails InvalidValue:
+        if x < 0 or x > 4294967295:
+            fail InvalidValue(message=f"{x} doesn't fit in u32, which holds 0 to 4294967295")
+        u32(x)
+
+    ## The u32 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
+    def parse(text: str) -> u32 fails InvalidValue:
+        u32.from(int(text)?)?

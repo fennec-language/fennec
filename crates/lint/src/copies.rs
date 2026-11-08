@@ -64,7 +64,7 @@ pub(crate) fn places(module: &Module) -> HashSet<(u32, u32)> {
         for stmt in stmts {
             let named = match &stmt.kind {
                 StmtKind::Assign { value, declare_mut: true, .. } => Some(value),
-                StmtKind::For { is_mut: true, iter, .. } => Some(iter),
+                StmtKind::For { is_mut: true, iter, .. } => Some(crate::dead::parallel_items(iter)),
                 _ => None,
             };
             if let Some(value) = named {
@@ -184,9 +184,6 @@ fn fix(sources: &Sources, call: Span, value: &Expr) -> Option<Diagnostic> {
 /// Every needless `copy` in a module that checks. Each one found costs a check of the whole
 /// program, and programs write few, so it runs only where the whole program is checked anyway.
 pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
-    if redefined(module, "copy") {
-        return Vec::new();
-    }
     let mut calls = Vec::new();
     let mut walked = module.clone();
     fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
@@ -196,6 +193,10 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
             calls.push((call, value.clone()));
         }
     });
+    // Most programs have no `copy` at all, so what takes longer to find out waits until there's one.
+    if calls.is_empty() || redefined(module, "copy") {
+        return Vec::new();
+    }
     let places = places(module);
     calls.retain(|(call, _)| !places.contains(&(call.start, call.end)));
     if calls.is_empty() {

@@ -104,7 +104,7 @@ fn a_with_block_locks_only_handles_and_names_each_one() {
     );
     assert_eq!(
         problems(&with("    with a, 5 as x, y:\n")),
-        ["a `with` holds several values only to lock `shared` handles, but this is an int @ 5"]
+        ["this `with` locks `shared` handles, so it can't open an int too @ 5"]
     );
     assert_eq!(
         problems(&with("    with a as ref x:\n        x = b\n")),
@@ -367,6 +367,36 @@ fn a_with_source_lends_once_to_a_with_block() {
             "def one() -> with int:\n    lend 1\n\ndef f(b: bool) -> int fails Oops:\n    with one() as n:\n        return n if b else risky()?\n"
         ),
         ["this `?` might not run, and in a source's block that isn't built yet"]
+    );
+}
+
+/// One `with` opens several handles, each with its name, and a source that lends a tuple
+/// splits it into a name each: `with conn.split() as reader, writer:`.
+#[test]
+fn a_with_opens_several_handles_and_splits_a_lent_tuple() {
+    let empty: [&str; 0] = [];
+    let sources = "error Oops:\n    why: str\n\n\
+        def opened(name: str) -> with str fails Oops:\n    lend name\n\n\
+        def pair() -> with (int, str):\n    lend (1, \"a\")\n\n";
+    let several = format!(
+        "{sources}def main(stdout: Stdout) fails Oops:\n    with opened(\"a\")? as a, opened(\"b\")? as b, pair() as both:\n        stdout.print(a + b, both)\n"
+    );
+    assert_eq!(problems(&several), empty);
+    let split = format!(
+        "{sources}def main(stdout: Stdout):\n    with pair() as number, text:\n        stdout.print(number + 1, text + \"!\")\n"
+    );
+    assert_eq!(problems(&split), empty);
+    let wrong = format!(
+        "{sources}def main(stdout: Stdout) fails Oops:\n    with opened(\"a\")? as x, y:\n        pass\n"
+    );
+    assert_eq!(
+        problems(&wrong),
+        ["this `with` names 2 values, but what it takes lends a str @ opened(\"a\")?"]
+    );
+    let counted = format!("{sources}def main(stdout: Stdout):\n    with pair() as x, y, z:\n        pass\n");
+    assert_eq!(
+        problems(&counted),
+        ["this `with` names 3 values, but what it takes lends a (int, str) @ pair()"]
     );
 }
 

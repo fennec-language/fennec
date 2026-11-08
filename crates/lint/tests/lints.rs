@@ -1,12 +1,51 @@
 //! What each lint flags, and what `fennec fix` makes of it.
 
-use fennec_lint::{Lint, lint, positional_arguments};
-use fennec_syntax::{Sources, apply_fixes, parse_at};
+use fennec_lint::{Lint, across_files, lint, positional_arguments, within_files};
+use fennec_syntax::{Module, Sources, apply_fixes, parse_at};
+
+/// A file to put beside each test's, with lints and definitions of its own, an `extend` among them.
+const BESIDE: &str = "from std.math import sqrt\n\ndef helper(value: int) -> int:\n    return value + 1\n\n\
+extend Point:\n    def norm(self) -> float:\n        x = 1\n        return sqrt(2.0)\n\n\
+def f(x: int) -> int:\n    if x == True:\n        return 1\n    return 2\n";
+
+/// What a lint says and where, to compare lints found two ways.
+fn said(lints: &[Lint]) -> Vec<(u32, u32, &'static str, String)> {
+    let mut said: Vec<_> = lints
+        .iter()
+        .map(|lint| {
+            (lint.diagnostic.span.start, lint.diagnostic.span.end, lint.rule, lint.diagnostic.message.clone())
+        })
+        .collect();
+    said.sort();
+    said
+}
+
+/// Holds that the lints of one file at a time find in each of two files, linted on its own, what
+/// linting both together finds there, with the source first and then second.
+fn alone_as_together(source: &str) {
+    for files in
+        [[("game.fen", source), ("beside.fen", BESIDE)], [("beside.fen", BESIDE), ("game.fen", source)]]
+    {
+        let mut sources = Sources::new();
+        let mut module = Module { items: Vec::new() };
+        for (path, text) in files {
+            let base = sources.add(path, text);
+            let Ok(parsed) = parse_at(text, base) else { return };
+            module.items.extend(parsed.items);
+        }
+        let mut parts = across_files(&module, &sources);
+        for (path, _) in files {
+            parts.extend(within_files(&module, &sources, false, &|wanted| wanted == path));
+        }
+        assert_eq!(said(&parts), said(&lint(&module, &sources)), "linting {source:?} beside another file");
+    }
+}
 
 fn found(source: &str) -> Result<Vec<Lint>, String> {
     let mut sources = Sources::new();
     let base = sources.add("game.fen", source);
     let module = parse_at(source, base).map_err(|problem| problem.message)?;
+    alone_as_together(source);
     // Positional arguments are a compile error now, kept with the lints they began as.
     let mut found = lint(&module, &sources);
     found.extend(positional_arguments(&module, &sources));
@@ -1049,4 +1088,15 @@ fn a_copy_that_saves_a_change_from_showing_or_names_no_place_stays() {
     ] {
         assert_eq!(needless_copies(kept).0, 0, "{kept}");
     }
+}
+
+#[test]
+fn the_file_put_beside_each_tests_parses_and_has_lints_of_its_own() {
+    let mut sources = Sources::new();
+    let base = sources.add("beside.fen", BESIDE);
+    let module = parse_at(BESIDE, base).map_err(|problem| problem.message);
+    let rules: Vec<&str> = module
+        .map(|module| lint(&module, &sources).iter().map(|lint| lint.rule).collect())
+        .unwrap_or_default();
+    assert!(rules.contains(&"unused-name") && rules.contains(&"needless-return"), "{rules:?}");
 }

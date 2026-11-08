@@ -180,10 +180,29 @@ impl Parser {
         Ok(Stmt { kind: StmtKind::While { cond, body }, span: start.to(self.prev_span()) })
     }
 
+    /// `for x in xs:`, `for ref x in xs:`, `for at, x in enumerate(xs):`, or with `ref` before
+    /// the second name, `for at, ref x in enumerate(xs):`, which changes each item where it is.
     fn for_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.advance().span;
-        let is_mut = self.eat_ref("a loop's name");
-        let names = self.loop_names()?;
+        let ref_first = self.eat_ref("a loop's name");
+        let mut names = vec![self.name("a loop variable")?];
+        let mut ref_second = false;
+        while self.eat_p(Punct::Comma) {
+            if ref_first {
+                return Err(Diagnostic::new("`ref` goes before the name whose item changes", start)
+                    .with_help(
+                        "write it before the second name, like `for at, ref item in enumerate(items):`",
+                    ));
+            }
+            if names.len() == 1 && self.eat_ref("a loop's name") {
+                ref_second = true;
+            }
+            names.push(self.name("a loop variable")?);
+        }
+        if !self.eat_kw(Kw::In) {
+            return Err(self.unexpected("`in`"));
+        }
+        let is_mut = ref_first || ref_second;
         let (iter, body) = self.condition_and_block()?;
         Ok(Stmt { kind: StmtKind::For { names, is_mut, iter, body }, span: start.to(self.prev_span()) })
     }
@@ -201,7 +220,7 @@ impl Parser {
     }
 
     /// `with game as ref current:`, or several at once: `with a as ref x, b as ref y:`, or
-    /// `with a, b as x, y:`.
+    /// `with a, b as x, y:`, or one source's tuple split: `with conn.split() as reader, writer:`.
     /// `with a as x:`, or, for `lock`, `lock a as ref x:`, which takes `shared` values.
     fn with_stmt(&mut self, lock: bool) -> Result<Stmt, Diagnostic> {
         let start = self.advance().span;
@@ -236,7 +255,8 @@ impl Parser {
             let span = items.iter().fold(first, |span, item| span.to(item.span));
             Expr { kind: ExprKind::Tuple(items), span }
         };
-        if !names.is_empty() && names.len() != held {
+        // One value with several names splits what a source lends: `with conn.split() as r, w:`.
+        if !names.is_empty() && names.len() != held && (held != 1 || lock) {
             let span = names.iter().fold(value.span, |span, name| span.to(name.span));
             return Err(Diagnostic::new(
                 format!("this `with` holds {held} values but names {}", names.len()),

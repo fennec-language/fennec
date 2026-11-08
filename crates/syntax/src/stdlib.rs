@@ -48,6 +48,8 @@ modules! {
     process,
     random,
     re,
+    sql,
+    sqlite,
     string,
     time,
     toml,

@@ -315,19 +315,25 @@ fn needless_mut(stmts: &[Stmt], changed: &HashSet<String>, sources: &Sources, fo
     }
 }
 
-pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
-    let mut found = Vec::new();
-    let extending: Vec<&str> = module
+/// The files of a program that extend a type, which are imported for that with nothing to name.
+pub(crate) fn extending<'s>(module: &Module, sources: &'s Sources) -> Vec<&'s str> {
+    module
         .items
         .iter()
         .filter_map(|item| match item {
             Item::Extend(extension) => sources.file_at(extension.span).map(|(file, ..)| file),
             _ => None,
         })
-        .collect();
+        .collect()
+}
+
+/// `extending` is which files of the whole program extend a type, which may be more than
+/// `module` and `sources` hold.
+pub(crate) fn of(module: &Module, sources: &Sources, extending: &[&str]) -> Vec<Lint> {
+    let mut found = Vec::new();
     for (path, text) in sources.files() {
         if let Some((_, base)) = sources.by_path(path) {
-            unused_imports(text, base, &extending, &mut found);
+            unused_imports(text, base, extending, &mut found);
         }
     }
     let tests = module
@@ -341,10 +347,10 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     found
 }
 
-/// What `for ref` changes when it loops over `parallel(xs)`: `xs`.
-fn parallel_items(iter: &Expr) -> &Expr {
+/// What `for ref` changes when it loops over `parallel(xs)` or `enumerate(xs)`: `xs`.
+pub(crate) fn parallel_items(iter: &Expr) -> &Expr {
     match &iter.kind {
-        ExprKind::Call { callee, args } if matches!(&callee.kind, ExprKind::Name(name) if name == "parallel") => {
+        ExprKind::Call { callee, args } if matches!(&callee.kind, ExprKind::Name(name) if name == "parallel" || name == "enumerate") => {
             args.first().map_or(iter, |first| &first.value)
         }
         _ => iter,

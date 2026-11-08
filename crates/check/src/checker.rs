@@ -79,6 +79,9 @@ pub(crate) struct Checker {
     pub(crate) shared_values: BTreeMap<(u32, u32), Type>,
     /// The source each call that lends is to, by the call's span.
     pub(crate) sources: BTreeMap<(u32, u32), crate::lend_lowering::Source>,
+    /// The `with`s that open several handles, by their values' span, which lowering nests one
+    /// inside another, innermost last.
+    pub(crate) opened_apart: BTreeSet<(u32, u32)>,
     /// The calls to `json` and `toml`'s `dumps` and `loads` whose type has its own `def serialize`
     /// or `def deserialize`, each with the function in std that does the same in Fennec.
     pub(crate) native_formats: BTreeMap<(u32, u32), String>,
@@ -166,6 +169,7 @@ impl Checker {
             named_patterns: BTreeMap::new(),
             shared_values: BTreeMap::new(),
             sources: BTreeMap::new(),
+            opened_apart: BTreeSet::new(),
             native_formats: BTreeMap::new(),
             native_json_bodies: BTreeSet::new(),
             const_types: BTreeMap::new(),
@@ -270,6 +274,7 @@ impl Checker {
             named_patterns: self.named_patterns,
             shared_values: self.shared_values,
             sources: self.sources,
+            opened_apart: self.opened_apart,
             native_formats: self.native_formats,
             native_json_bodies: self.native_json_bodies,
         }

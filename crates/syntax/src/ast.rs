@@ -492,6 +492,20 @@ pub enum Pattern {
     Or(Vec<Pattern>),
 }
 
+impl Pattern {
+    /// Whether the pattern has a `ref` in it anywhere.
+    #[must_use]
+    pub fn holds_ref(&self) -> bool {
+        match self {
+            Pattern::RefBind(_) => true,
+            Pattern::Variant { args: patterns, .. } | Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
+                patterns.iter().any(Pattern::holds_ref)
+            }
+            Pattern::Wildcard | Pattern::Bind(_) | Pattern::Literal(_) => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum FStrPart {
     Text(String),

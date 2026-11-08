@@ -58,7 +58,10 @@ def main(stdout: Stdout):
     stdout.print(sha256("fennec"))
     stdout.print(blake3("fennec") == blake3("fennec"), blake3("fennec") == blake3("Fennec"))
     # In chunks, it's the same hash, while only a chunk at a time is held.
-    stdout.print(blake3(pieces("fennec", 4)) == blake3("fennec"), sha256(["fen", "nec"]) == sha256("fennec"))
+    stdout.print(
+        blake3(pieces("fennec", 4)) == blake3("fennec"),
+        sha256(["fen", "nec"]) == sha256("fennec"),
+    )
 
     # A key derived from a secret, for one purpose only.
     key = derive_key("fennec example 2026-10-30 save files", "the player's secret")

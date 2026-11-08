@@ -3109,6 +3109,59 @@ def main(stdout: Stdout):
         stdout.print(line)
 ";
 
+/// Several handles in one `with` open in order and finish innermost first, natively as in the
+/// interpreter. One that fails to open runs the `else:` of each opened before it, a block that
+/// fails runs every one's, and a source that lends a tuple splits it into a name each.
+#[test]
+fn several_handles_in_one_with_finish_innermost_first_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds("with_handles", WITH_HANDLES)
+}
+
+const WITH_HANDLES: &str = r#"error Refused:
+    who: str
+
+struct Log:
+    lines = list[str]()
+
+def opened(name: str, ref log: Log) -> with str fails Refused:
+    if name == "bad":
+        fail Refused(who=name)
+    log.lines.append(f"open {name}")
+    lend name else:
+        log.lines.append(f"undo {name}")
+    log.lines.append(f"close {name}")
+
+def pair(ref log: Log) -> with (int, str):
+    log.lines.append("split")
+    lend (7, "w")
+    log.lines.append("joined")
+
+def both(first: str, second: str, ref log: Log) -> int fails Refused:
+    with opened(first, ref log)? as left, opened(second, ref log)? as right:
+        log.lines.append(f"use {left} {right}")
+        if right == "c":
+            fail Refused(who="late")
+    1
+
+def main(stdout: Stdout):
+    mut log = Log()
+    stdout.print(both("a", "b", ref log) else -1)
+    stdout.print(log.lines)
+    log.lines.clear()
+    stdout.print(both("a", "bad", ref log) else -1)
+    stdout.print(log.lines)
+    log.lines.clear()
+    stdout.print(both("a", "c", ref log) else -1)
+    stdout.print(log.lines)
+    log.lines.clear()
+    with pair(ref log) as reader, writer:
+        log.lines.append(f"{reader} {writer}")
+    stdout.print(log.lines)
+"#;
+
 /// What a `with` source lends is the block's to use, `ref self` methods included, with or without
 /// `as ref`: lent by name, the block's changes are what the source's cleanup sees. A `shared`
 /// handle lent the same way takes its methods with no `mut`.

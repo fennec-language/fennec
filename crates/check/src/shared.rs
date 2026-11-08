@@ -230,18 +230,9 @@ impl FnCx<'_> {
             }
             (_, ty) => (vec![value], vec![ty]),
         };
+        self.several_held(value, &items, &types);
         for (item, ty) in items.iter().zip(&types) {
             let shared = self.checker.program.takes_lock(ty);
-            if items.len() > 1 && !self.checker.program.is_shared(ty) && *ty != Type::Unknown {
-                let message = format!(
-                    "a `with` holds several values only to lock `shared` handles, but this is {}",
-                    a(ty)
-                );
-                self.error(
-                    Diagnostic::new(message, item.span)
-                        .with_help("nest one `with` inside another, one value each"),
-                );
-            }
             if shared && names.is_empty() {
                 let written = fennec_syntax::dotted(item).unwrap_or_else(|| "it".to_owned());
                 self.error(
@@ -289,6 +280,14 @@ impl FnCx<'_> {
             self.lock.replace(format!("while {names} {verb} locked"))
         };
         self.push(false);
+        if let ([value], [_, _, ..]) = (items.as_slice(), names) {
+            self.split_lent(value, types.first().unwrap_or(&Type::Unknown), names, body);
+            let flow = self.stmts(body, used);
+            self.pop();
+            self.lock = outer;
+            self.locked_types = outer_types;
+            return flow;
+        }
         for (held, ty) in names.iter().zip(types) {
             let origin = if self.checker.program.takes_lock(&ty) { Origin::Locked } else { Origin::Local };
             // What a source lends is the block's to use, `ref self` methods included: it only
@@ -302,6 +301,53 @@ impl FnCx<'_> {
         self.lock = outer;
         self.locked_types = outer_types;
         flow
+    }
+
+    /// Several values in one `with`: handles opened in order and finished innermost first, as
+    /// one `with` inside another, which lowering writes them as, or `shared` handles locked
+    /// together, which don't mix with them.
+    fn several_held(&mut self, value: &Expr, items: &[&Expr], types: &[Type]) {
+        if items.len() < 2 {
+            return;
+        }
+        if !types.iter().any(|ty| self.checker.program.is_shared(ty)) {
+            self.checker.opened_apart.insert((value.span.start, value.span.end));
+            return;
+        }
+        for (item, ty) in items.iter().zip(types) {
+            if !self.checker.program.is_shared(ty) && *ty != Type::Unknown {
+                let message = format!("this `with` locks `shared` handles, so it can't open {} too", a(ty));
+                self.error(
+                    Diagnostic::new(message, item.span).with_help(
+                        "open it in a `with` of its own, and lock the handles with `lock` inside it",
+                    ),
+                );
+            }
+        }
+    }
+
+    /// `with conn.split() as reader, writer:`: a source that lends a tuple, each item named.
+    fn split_lent(&mut self, value: &Expr, ty: &Type, names: &[WithName], body: &[Stmt]) {
+        let lent = crate::lend::lent(ty).cloned();
+        let items = match self.lent_to(ty.clone(), body) {
+            Type::Tuple(items) if lent.is_some() && items.len() == names.len() => items,
+            Type::Unknown => vec![Type::Unknown; names.len()],
+            other => {
+                let what =
+                    if lent.is_some() { format!("lends {}", a(&other)) } else { format!("is {}", a(&other)) };
+                self.error(
+                    Diagnostic::new(
+                        format!("this `with` names {} values, but what it takes {what}", names.len()),
+                        value.span,
+                    )
+                    .with_help("several names split what a source lends as a tuple of that many: `-> with (Reader, Writer)`"),
+                );
+                vec![Type::Unknown; names.len()]
+            }
+        };
+        for (held, ty) in names.iter().zip(items) {
+            self.declare_as(&held.name, ty, true, Origin::Local, held.span);
+        }
     }
 
     /// Whether every lock held is on a `shared` type that holds one of type `ty`, so its lock

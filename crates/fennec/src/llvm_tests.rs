@@ -478,12 +478,19 @@ fn test_failure(failure: Diagnostic) -> Diagnostic {
     }
 }
 
+/// A test executable to run, hashing dict keys with a fixed seed so a test runs the same every time.
+fn test_command(work: &std::path::Path) -> Command {
+    let mut command = Command::new(work);
+    command.env("FENNEC_HASH_SEED", "0");
+    command
+}
+
 /// Runs a test executable once, with real capabilities rather than fakes, for `fennec test --real`,
 /// giving back how each of its `tests` tests went. What the tests print goes straight out, in order,
 /// so the executable says how each went on its standard error.
 fn run_for_real(work: &std::path::Path, tests: usize) -> String {
     let numbers = (0..tests).map(|number| number.to_string());
-    Command::new(work)
+    test_command(work)
         .args(numbers)
         .env("FENNEC_TESTS_REAL", "1")
         .stdout(std::process::Stdio::inherit())
@@ -506,7 +513,7 @@ fn run_workers(work: &std::path::Path, tests: usize) -> Vec<String> {
             .iter()
             .map(|share| {
                 scope.spawn(move || {
-                    Command::new(work)
+                    test_command(work)
                         .args(share)
                         .output()
                         .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
@@ -623,7 +630,7 @@ fn rerun_crashed(work: &std::path::Path, taken: &[&TestDef], seen: &[bool], resu
 /// Runs test `number` of a tests executable alone, giving what it wrote, and how it ended, in words,
 /// with the first thing it said on standard error.
 fn run_alone(work: &std::path::Path, number: usize) -> (String, String) {
-    match Command::new(work).arg(number.to_string()).output() {
+    match test_command(work).arg(number.to_string()).output() {
         Ok(output) => {
             let said = String::from_utf8_lossy(&output.stderr);
             let first = said.lines().next().unwrap_or_default();

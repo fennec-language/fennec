@@ -4248,6 +4248,200 @@ def main(stdout: Stdout):
     )
 }
 
+/// Int keys made so a dict's fast hash, under seed 0, puts them all in the first slot: its top bits
+/// differ and the low 22 are zero, undoing the hash's last two steps.
+fn keys_that_all_collide(count: u64) -> String {
+    const INVERSE_OF_MIX: u64 = 0xF1DE_83E1_9937_733D;
+    let mut keys = String::new();
+    for number in 1..=count {
+        let folded = number << 22;
+        let mixed = folded ^ (folded >> 29) ^ (folded >> 58);
+        let key = mixed.wrapping_mul(INVERSE_OF_MIX).cast_signed();
+        keys.push_str(&key.to_string());
+        keys.push('\n');
+    }
+    keys
+}
+
+/// Keys chosen to collide stop being slow once a dict sees it: the first long probe makes it hash
+/// them another way. Quadratic, these keys take minutes; the deadline is far from either time.
+#[test]
+fn keys_made_to_collide_dont_slow_a_dict_down() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("colliding_keys")?;
+    let program = dir.join("colliding.fen");
+    std::fs::write(
+        &program,
+        r#"def key_in(seen: dict[int, int], key: int) -> bool:
+    key in seen
+
+def main(stdout: Stdout, stdin: Stdin):
+    mut seen: dict[int, int] = {}
+    mut order = 0
+    keys = [int(line).expect("a number") for line in stdin.lines()]
+    for key in keys:
+        seen[key] = order
+        order += 1
+    total = sum(seen[key] for key in keys)
+    stdout.print(seen.len(), total, key_in(seen, keys[0]), key_in(seen, 1))
+"#,
+    )?;
+    let run = crate::executables::fennec_command()
+        .arg("run")
+        .arg(&program)
+        .env("FENNEC_HASH_SEED", "0")
+        .output_given(keys_that_all_collide(300_000).as_bytes(), std::time::Duration::from_secs(50))?;
+    assert_eq!(String::from_utf8_lossy(&run.stderr), "");
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "300000 44999850000 True False\n");
+    Ok(())
+}
+
+/// `count` values of `next` whose hash, by `hash`, is zero in its low 11 bits, so a dict with 2048
+/// slots or fewer gives them all one first slot.
+fn colliding<T>(count: usize, hash: impl Fn(&T) -> u64, next: impl Fn(u64) -> T) -> Vec<T> {
+    (0..).map(next).filter(|value| hash(value).trailing_zeros() >= 11).take(count).collect()
+}
+
+/// The fast hash of words, under seed 0, as the runtime and compiled code work it out.
+fn fast_hash(count: u64, words: &[u64]) -> u64 {
+    const MIX: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mixed = words
+        .iter()
+        .fold(count.wrapping_mul(MIX), |hash, word| (hash.rotate_left(23) ^ word).wrapping_mul(MIX));
+    (mixed ^ (mixed >> 29)) >> 1
+}
+
+fn fast_text_hash(text: &str) -> u64 {
+    let words: Vec<u64> = text
+        .as_bytes()
+        .chunks(8)
+        .map(|chunk| {
+            let mut word = [0; 8];
+            for (to, from) in word.iter_mut().zip(chunk) {
+                *to = *from;
+            }
+            u64::from_le_bytes(word)
+        })
+        .collect();
+    fast_hash(u64::try_from(text.len()).unwrap_or(0), &words)
+}
+
+/// A dict that has changed to its strong hash still finds every kind of key that compiled code looks
+/// up itself, and keeps working when it's copied and when keys come out. If compiled code and the
+/// runtime hashed a key differently for it, these lookups would miss.
+#[test]
+fn a_dict_that_changed_its_hash_finds_every_kind_of_key() -> std::io::Result<()> {
+    const COUNT: usize = 1100;
+    if !ready() {
+        return Ok(());
+    }
+    let short = colliding(COUNT, |text: &String| fast_text_hash(text), |at| format!("{at:08x}"));
+    let long = colliding(
+        COUNT,
+        |text: &String| fast_text_hash(text),
+        |at| format!("a key too long to be held inline {at:08x}"),
+    );
+    let pairs = colliding(COUNT, |b: &u64| fast_hash(2, &[1, *b]), |at| at);
+    let mut input = String::new();
+    for key in short.iter().chain(&long) {
+        input.push('T');
+        input.push_str(key);
+        input.push('\n');
+    }
+    for b in &pairs {
+        input.push('P');
+        input.push_str(&b.to_string());
+        input.push('\n');
+    }
+    let dir = folder("strong_dict")?;
+    let program = dir.join("strong.fen");
+    std::fs::write(
+        &program,
+        r#"struct Pair:
+    first: int
+    second: int
+
+def main(stdout: Stdout, stdin: Stdin):
+    lines = stdin.lines()
+    mut texts: dict[str, int] = {}
+    mut pairs: dict[Pair, int] = {}
+    for line in lines:
+        if line.startswith("T"):
+            key = line[1:]
+            texts[key] = key.len()
+        else:
+            pairs[Pair(first=1, second=int(line[1:]).expect("a number"))] = 1
+    mut whole = 0
+    mut sliced = 0
+    mut paired = 0
+    for line in lines:
+        if line.startswith("T"):
+            key = line[1:]
+            whole += texts[key]
+            sliced += texts.get(line[1:]) else 0
+        else:
+            paired += pairs[Pair(first=1, second=int(line[1:]).expect("a number"))]
+    missing = "not one of them" in texts
+    mut copied = texts
+    copied["added to the copy"] = 1
+    copied["and another"] = 2
+    _ = copied.pop("added to the copy") else 0
+    stdout.print(texts.len(), copied.len(), whole, sliced, paired, missing, pairs.len())
+"#,
+    )?;
+    let run = crate::executables::fennec_command()
+        .arg("run")
+        .arg(&program)
+        .env("FENNEC_HASH_SEED", "0")
+        .output_given(input.as_bytes(), std::time::Duration::from_secs(50))?;
+    assert_eq!(String::from_utf8_lossy(&run.stderr), "");
+    let total: usize = short.iter().chain(&long).map(String::len).sum();
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        format!("{} {} {total} {total} {COUNT} False {COUNT}\n", 2 * COUNT, 2 * COUNT + 1)
+    );
+    Ok(())
+}
+
+/// The seed changes nothing a program can see: a dict and a set go in the order keys were added.
+#[test]
+fn a_dicts_order_is_the_same_for_every_seed() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("seeds")?;
+    let program = dir.join("seeds.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):
+    mut counts: dict[str, int] = {}
+    mut seen: set[int] = set()
+    for number in range(200):
+        counts[str(number * 7919 % 1009)] = number
+        seen.add(number * 104729 % 7907)
+    stdout.print(counts)
+    stdout.print(seen)
+",
+    )?;
+    let with_seed = |seed: Option<&str>| {
+        let mut command = crate::executables::fennec_command();
+        command.arg("run").arg(&program);
+        if let Some(seed) = seed {
+            command.env("FENNEC_HASH_SEED", seed);
+        }
+        command
+            .output_within()
+            .map(|run| (String::from_utf8_lossy(&run.stdout).into_owned(), run.status.success()))
+    };
+    let first = with_seed(Some("1"))?;
+    assert!(first.1 && first.0.len() > 100, "{first:?}");
+    assert_eq!(first, with_seed(Some("987654321"))?);
+    assert_eq!(first, with_seed(None)?);
+    Ok(())
+}
+
 /// Dicts whose values are plain structs and enums, or `Id`s, with what's done to them.
 #[test]
 fn dicts_of_plain_values_match_the_jit() -> std::io::Result<()> {

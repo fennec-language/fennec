@@ -407,6 +407,8 @@ impl Reader<'_> {
                     fields: fields?,
                     is_error,
                     cause: raised_from,
+                    // What a capability gives back never has notes: a program adds them after.
+                    notes: None,
                 }))
             }
             tag::OK => Value::Ok(Rc::new(self.value()?)),

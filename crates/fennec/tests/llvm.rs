@@ -2372,6 +2372,36 @@ def main(stdout: Stdout):
     )
 }
 
+/// `sorted` of a type with its own `<` sorts by it as the JIT does: stable, so items `<` says are
+/// neither before nor after keep their order, and the standard library's `Uuid` too.
+#[test]
+fn sorting_by_a_types_own_order_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "sorting_by_own_order",
+        r#"from std.uuid import Uuid
+
+struct Score:
+    points: int
+    name: str
+
+    def <(self, other: Score) -> bool:
+        self.points > other.points
+
+def main(stdout: Stdout):
+    scores = [Score(points=3, name="ash"), Score(points=7, name="vex"), Score(points=3, name="kit"), Score(points=9, name="bo")]
+    stdout.print([score.name for score in sorted(scores)])
+    empty: list[Score] = []
+    stdout.print(sorted(empty).len(), [score.name for score in sorted([Score(points=1, name="one")])])
+    later = Uuid.parse("018f2a6e-0000-7000-8000-000000000002") else Uuid()
+    first = Uuid.parse("018f2a6e-0000-7000-8000-000000000001") else Uuid()
+    stdout.print(sorted([later, first]) == [first, later])
+"#,
+    )
+}
+
 /// Shifts, `~`, sorting a list where it is, a `match` on a bool and `random_choice`.
 #[test]
 fn bits_sorts_and_choices_match_the_jit() -> std::io::Result<()> {

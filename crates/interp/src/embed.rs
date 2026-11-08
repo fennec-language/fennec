@@ -254,6 +254,33 @@ thread_local! {
 /// kept to save writing it line by line, so this is called before anything that can wait, and
 /// before anything else on another thread is to come after it. A failure to write stays for the
 /// next print to report, as there's nothing here to pass it to.
+/// A parked task's own temporaries and inputs, kept apart from the thread's while it's parked.
+#[cfg(any(test, feature = "threads"))]
+#[derive(Default)]
+pub(in crate::embed) struct Temporaries {
+    temps: Vec<Value>,
+    inputs: Vec<Value>,
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl Temporaries {
+    pub(in crate::embed) fn is_empty(&self) -> bool {
+        self.temps.is_empty() && self.inputs.is_empty()
+    }
+}
+
+/// Swaps the runtime's temporaries and inputs on this thread with `own`: once as a task is resumed,
+/// and again as it parks or ends.
+#[cfg(any(test, feature = "threads"))]
+pub(in crate::embed) fn swap_temporaries(own: &mut Temporaries) {
+    STATE.with_borrow_mut(|state| {
+        if let Some(state) = state.as_mut() {
+            std::mem::swap(&mut state.temps, &mut own.temps);
+            std::mem::swap(&mut state.inputs, &mut own.inputs);
+        }
+    });
+}
+
 pub(crate) fn write_kept_output() {
     OUTPUT.with_borrow_mut(|output| {
         if let Some(output) = output {

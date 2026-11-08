@@ -5025,6 +5025,63 @@ fn a_gigabyte_written_a_chunk_at_a_time_holds_little_memory() -> std::io::Result
     writes_in_little_memory("gigabyte-file", 1024, 200 * 1024 * 1024)
 }
 
+/// Writes 64 MB, then hashes it as it's read, a megabyte at a time, with `blake3` and `sha256`
+/// of the file's chunks. The hashes are those of the whole text, and the program never holds
+/// more than a few chunks.
+const HASH_BIG_FILE: &str = "\
+from std.crypto import blake3, sha256
+
+def hashes(fs: Fs) -> list[str] fails IoError:
+    chunk = \"fennec \" * 142857 + \"fox\"
+    with fs.create(\"big.txt\")? as file:
+        for _ in range(64):
+            file.write_text(chunk)?
+    mut found = list[str]()
+    with fs.open(\"big.txt\")? as file:
+        found.append(blake3(file.chunks(1000000)))
+    with fs.open(\"big.txt\")? as file:
+        found.append(sha256(file.chunks(1000000)))
+    found
+
+def main(stdout: Stdout, fs: Fs):
+    for found in hashes(fs) else []:
+        stdout.print(found)
+";
+
+/// The BLAKE3 and SHA-256 of `HASH_BIG_FILE`'s text, as the whole text hashed elsewhere gives
+/// them.
+const BIG_FILE_HASHES: &str = "\
+b90b9707076bbeb116e530ba67192a831f21a039eaba115c14e0f3cac0b23586
+e37d10b0cfad1de842e395ddc89deef2c86d9abe99d363ad67bd21b919128e69
+";
+
+/// 64 MB hashed as it's read holds next to nothing, as writing it does.
+#[test]
+fn a_big_file_hashed_a_chunk_at_a_time_holds_little_memory() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("hash-big-file")?;
+    let program = dir.join("hash.fen");
+    std::fs::write(&program, HASH_BIG_FILE)?;
+    let executable = dir.join("hash");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (ran, peak) = with_peak_memory(&executable, &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        BIG_FILE_HASHES,
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    if let Some(peak) = peak {
+        assert!(peak < 32 * 1024 * 1024, "hashing 64 MB held {} MB", peak / (1024 * 1024));
+    }
+    Ok(())
+}
+
 /// What a program printed, and the most memory it held, where `/usr/bin/time` can say.
 fn with_peak_memory(executable: &Path, dir: &Path) -> std::io::Result<(Output, Option<u64>)> {
     let time = Path::new("/usr/bin/time");

@@ -343,6 +343,7 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
         || !checked.array_zeros.is_empty()
         || !checked.optional_steps.is_empty()
         || !checked.std_names.is_empty()
+        || !checked.std_calls.is_empty()
         || !checked.field_args.is_empty()
     {
         fennec_syntax::visit::exprs_mut(module, &mut |expr| {
@@ -358,6 +359,11 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
             }
             if let Some(function) = checked.std_names.get(&span) {
                 expr.kind = ExprKind::Name(function.clone());
+            }
+            if let Some(function) = checked.std_calls.get(&span)
+                && let ExprKind::Call { callee, .. } = &mut expr.kind
+            {
+                callee.kind = ExprKind::Name(function.clone());
             }
             if let ExprKind::Call { args, .. } = &mut expr.kind {
                 for arg in args.iter_mut().filter(|arg| arg.name.is_none()) {
@@ -430,6 +436,8 @@ pub struct Checked {
     generator_types: BTreeMap<(u32, u32), String>,
     /// What each name for a standard library function written in Fennec means.
     std_names: BTreeMap<(u32, u32), String>,
+    /// The calls a standard library function written in Fennec makes instead.
+    std_calls: BTreeMap<(u32, u32), String>,
     /// The field each value given by position goes to, where that isn't the one at its place.
     field_args: BTreeMap<(u32, u32), String>,
     /// The fields, in order, of each pattern written with them by name.

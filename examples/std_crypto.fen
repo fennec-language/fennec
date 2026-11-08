@@ -1,5 +1,6 @@
 # `std.crypto` hashes text or bytes, signs them with HMAC, and compares secrets in time that
-# doesn't depend on where they differ. Every result is written as lowercase hex.
+# doesn't depend on where they differ. Every result is written as lowercase hex. A hash takes its
+# data whole or in chunks, from a list or from an iterator, like a file's chunks as it's read.
 from std.crypto import blake3, derive_key, equal, hmac_sha256, keyed_blake3, sha256
 
 ## A save file with a tag that shows it wasn't edited by hand.
@@ -9,6 +10,13 @@ struct Save:
 
 def sign(key: str, level: int) -> Save:
     Save(level=level, tag=keyed_blake3(key, f"level {level}"))
+
+## Text in pieces of `size` characters, one at a time, as a file's chunks come.
+def pieces(text: str, size: int) -> Iterator[str]:
+    mut at = 0
+    while at < text.len():
+        yield text[at:at + size]
+        at = at + size
 
 def untouched(key: str, save: Save) -> bool:
     # Comparing the tags in constant time doesn't tell a forger how close a guess was.
@@ -34,6 +42,11 @@ test "HMAC-SHA256 matches RFC 4231":
 test "BLAKE3 matches its reference":
     assert blake3("") == "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
 
+test "a hash of chunks is the hash of them joined" for text: str:
+    assert blake3(pieces(text, 3)) == blake3(text) and sha256(pieces(text, 5)) == sha256(text)
+    assert blake3([text.encode(), text.encode()]) == blake3(text + text)
+    assert sha256(list[bytes]()) == sha256("") and blake3(pieces("", 4)) == blake3("")
+
 test "equal compares every byte":
     assert equal("secret", "secret") and not equal("secret", "secreT")
     assert not equal("secret", "secrets") and equal("", "")
@@ -44,6 +57,8 @@ def main(stdout: Stdout):
     stdout.print(blake3("fennec"))
     stdout.print(sha256("fennec"))
     stdout.print(blake3("fennec") == blake3("fennec"), blake3("fennec") == blake3("Fennec"))
+    # In chunks, it's the same hash, while only a chunk at a time is held.
+    stdout.print(blake3(pieces("fennec", 4)) == blake3("fennec"), sha256(["fen", "nec"]) == sha256("fennec"))
 
     # A key derived from a secret, for one purpose only.
     key = derive_key("fennec example 2026-10-30 save files", "the player's secret")

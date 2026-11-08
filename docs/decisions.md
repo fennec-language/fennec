@@ -839,7 +839,7 @@ def play(ref conn: Connection, ref world: World) fails NetError:
 
 **`std.process`, `std.crypto`, `std.log`, `std.cli` and `std.csv` are in `std` too.**
 
-**`std.crypto` holds hashing, including BLAKE3, so there's no separate `std.hash`.** `blake3` and the other hashes take any iterable of bytes, so a file or a stream hashes without being read into one block first. Not built yet: today they take text or `bytes`.
+**`std.crypto` holds hashing, including BLAKE3, so there's no separate `std.hash`.** `blake3` and the other hashes take any iterable of bytes, so a file or a stream hashes without being read into one block first. Built: `blake3` and `sha256` take text, `bytes`, or a list or iterator of either, so `blake3(file.chunks(1_000_000))` hashes a file a megabyte at a time. The keyed hashes and HMAC still take text or `bytes`.
 
 **First-party kits, not `std`:** `fennec/ml`, database drivers, windowing and input for games, and image formats.
 

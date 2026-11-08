@@ -57,12 +57,8 @@ jobs:
       fail-fast: false
       matrix:
         # Each platform is built twice, the second time from a checkout somewhere else, on
-        # another machine, and `reproducible` holds that both made the same archive. Windows
-        # isn't yet: its paths aren't taken out of what it builds.
+        # another machine, and `reproducible` holds that both made the same archive.
         copy: [release, rebuild]
-        exclude:
-          - copy: rebuild
-            platform: { os: windows-latest, target: x86_64-pc-windows-gnullvm }
         platform:
           # Linux's are built and tried on AlmaLinux 8, so they run with glibc 2.28 and later: RHEL
           # 8 and later, Debian 10 and later, Ubuntu 20.04 and later. Built on the runner's own
@@ -112,7 +108,12 @@ jobs:
           [ -n "$epoch" ] || { echo "::error::couldn't tell when the commit was made"; exit 1; }
           echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
           if [ "$RUNNER_OS" = Windows ]; then
-            echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
+            # The compiler sees Windows' own paths, like `D:\a\fennec\fennec`.
+            here="$(cygpath -w "$PWD")"
+            cargo_home="$(cygpath -w "${CARGO_HOME:-$USERPROFILE/.cargo}")"
+            rustup_home="$(cygpath -w "${RUSTUP_HOME:-$USERPROFILE/.rustup}")"
+            # And the linker writes no time into the program's header.
+            echo "RUSTFLAGS=-C target-feature=+crt-static -C link-arg=-Wl,--no-insert-timestamp --remap-path-prefix=$here=/fennec --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup" >> "$GITHUB_ENV"
           else
             cargo_home="${CARGO_HOME:-$HOME/.cargo}"
             flags="--remap-path-prefix=$PWD=/fennec --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup"
@@ -331,8 +332,13 @@ jobs:
             differ=1
             echo "::error::$archive isn't the same built twice"
             mkdir -p "unpacked/first" "unpacked/second"
-            tar xzf "first/$archive" -C unpacked/first
-            tar xzf "$again" -C unpacked/second
+            if [ "${archive%.zip}" != "$archive" ]; then
+              unzip -q "first/$archive" -d unpacked/first
+              unzip -q "$again" -d unpacked/second
+            else
+              tar xzf "first/$archive" -C unpacked/first
+              tar xzf "$again" -C unpacked/second
+            fi
             diff -rq unpacked/first unpacked/second || true
             rm -rf unpacked
           done

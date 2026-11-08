@@ -6288,6 +6288,164 @@ fn sqlite_from_parallel_rounds_keeps_every_write() -> std::io::Result<()> {
     Ok(())
 }
 
+/// What the next test builds: everything `std.postgres` does, against the server
+/// `FENNEC_TEST_POSTGRES` names, or, with none, against a port nothing listens on.
+const POSTGRES_SERVER: &str = r#"from std import postgres
+from std.crypto import Secret
+from std.sql import SqlError
+
+struct Entry:
+    path: str
+    size: int
+    weight: float
+    blob: bytes
+    seen: bool
+
+struct Count:
+    total: int
+
+struct PathOnly:
+    missing: str
+
+## What a query's failure was, by its case and whether it says what's wrong.
+def said(failure: SqlError) -> str:
+    match failure:
+        case .Constraint(reason=reason):
+            return f"constraint {reason.len() > 0}"
+        case .Column(name=name, reason=reason):
+            return f"column {name}: {reason}"
+        case .Busy():
+            return "busy"
+        case .Failed(reason=reason):
+            return f"failed {reason.len() > 0}"
+
+def rows_in(db: postgres.PgDatabase) -> int fails SqlError:
+    db.query[Count](t"select count(*) as total from fennec_entries")?[0].total
+
+## Adds a row in a transaction, then fails, so it's rolled back.
+def adds_then_fails(db: postgres.PgDatabase) fails SqlError:
+    with db.transaction()? as tx:
+        path = "rolled back"
+        none = bytes([])
+        _ = tx.execute(t"insert into fennec_entries values ({path}, {1}, {1.0}, {none}, {True})")?
+        fail .Failed(reason="stop")
+
+## Where a server is, as `postgres://user:password@host:port/database` says.
+struct Server:
+    host: str
+    port: int
+    user: str
+    database: str
+    secret: Secret[str]
+
+def run(server: Server, stdout: Stdout, net: Net, entropy: Entropy) fails SqlError:
+    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=server.secret, port=server.port)? as db:
+        # A temporary table is this connection's own, so runs at once can't meet.
+        _ = db.execute(t"create temp table fennec_entries (path text primary key, size bigint, weight double precision, blob bytea, seen boolean)")?
+        for at in range(3):
+            path = f"p{at}"
+            size = at * 10
+            weight = float(at) * 0.5
+            blob = bytes([at, 255])
+            seen = at % 2 == 0
+            stdout.print(db.execute(t"insert into fennec_entries values ({path}, {size}, {weight}, {blob}, {seen})")?)
+        least = 10
+        for entry in db.query[Entry](t"select path, size, weight, blob, seen from fennec_entries where size >= {least} order by path")?:
+            stdout.print(entry.path, entry.size, entry.weight, entry.blob.len(), entry.blob[1], entry.seen)
+        # A value can't change what the query means, whatever it says.
+        evil = "x'); drop table fennec_entries; --"
+        none = bytes([])
+        _ = db.execute(t"insert into fennec_entries values ({evil}, {0}, {0.0}, {none}, {False})")?
+        stdout.print(rows_in(db)?)
+        # Failures say what they are, and the connection goes on.
+        path = "p0"
+        match db.execute(t"insert into fennec_entries values ({path}, {0}, {0.0}, {none}, {False})"):
+            case Ok(_):
+                stdout.print("inserted twice")
+            case Err(error):
+                stdout.print(said(error))
+        match db.execute(t"select from no_such_table"):
+            case Ok(_):
+                stdout.print("no error")
+            case Err(error):
+                stdout.print(said(error))
+        match db.query[PathOnly](t"select path from fennec_entries"):
+            case Ok(_):
+                stdout.print("read a column that isn't there")
+            case Err(error):
+                stdout.print(said(error))
+        # A transaction that fails changes nothing; one that ends is kept.
+        match adds_then_fails(db):
+            case Ok(_):
+                stdout.print("no failure")
+            case Err(error):
+                stdout.print(said(error), rows_in(db)?)
+        kept = "kept"
+        with db.transaction()? as tx:
+            stdout.print(tx.execute(t"update fennec_entries set path = {kept} where path = {path}")?)
+        stdout.print(rows_in(db)?, db.query[Count](t"select count(*) as total from fennec_entries where path = {kept}")?[0].total)
+
+## Signs in with `secret`, and says how it went.
+def signing_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy) -> str:
+    match signed_in(server, secret=secret, net=net, entropy=entropy):
+        case Ok(_):
+            return "signed in"
+        case Err(error):
+            return error.message()
+
+def signed_in(server: Server, secret: Secret[str]?, net: Net, entropy: Entropy) fails SqlError:
+    with postgres.connect(net, entropy, host=server.host, user=server.user, database=server.database, password=secret, port=server.port)? as db:
+        _ = db.execute(t"select 1")?
+
+def main(stdout: Stdout, net: Net, entropy: Entropy, env: Env):
+    # With no server to use, it's a port nothing listens on, and only connecting is tried.
+    address = (env.get("FENNEC_TEST_POSTGRES") else "postgres://nobody:nothing@127.0.0.1:1/none").split("//")[1]
+    who = address.split("@")[0]
+    place = address.split("@")[1]
+    rest = place.split(":")[1]
+    server = Server(
+        host=place.split(":")[0],
+        port=int(rest.split("/")[0]) else 5432,
+        user=who.split(":")[0],
+        database=rest.split("/")[1],
+        secret=Secret.of(who.split(":")[1]),
+    )
+    match run(server, stdout=stdout, net=net, entropy=entropy):
+        case Ok(_):
+            pass
+        case Err(error):
+            stdout.print(error.message().startswith(f"couldn't connect to {server.host}:{server.port}"))
+            return
+    stdout.print("28P01" in signing_in(server, secret=Secret.of("not the password"), net=net, entropy=entropy))
+    stdout.print(signing_in(server, secret=None, net=net, entropy=entropy))
+"#;
+
+/// `std.postgres` signs in to a real server with SCRAM, runs queries with their values as
+/// parameters, reads rows into structs, says what failed, and keeps or rolls back a transaction.
+/// It needs `FENNEC_TEST_POSTGRES`, like `postgres://user:password@127.0.0.1:5432/database`. With
+/// none set it says so, and only checks the driver builds and a refused connection is reported.
+#[test]
+fn postgres_works_against_a_real_server() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("postgres_server", POSTGRES_SERVER)?;
+    if std::env::var_os("FENNEC_TEST_POSTGRES").is_none() {
+        eprintln!(
+            "skipped the real server: set FENNEC_TEST_POSTGRES to postgres://user:password@host:port/database"
+        );
+        assert_eq!(printed, "True\n");
+        return Ok(());
+    }
+    assert_eq!(
+        printed,
+        "1\n1\n1\np1 10 0.5 2 255 False\np2 20 1.0 2 255 True\n4\nconstraint True\nfailed True\n\
+         column path: `PathOnly` has no field called `path`\nfailed True 4\n1\n4 1\nTrue\n\
+         the server asks for a password, and `connect` wasn't given one\n"
+    );
+    Ok(())
+}
+
 /// `process.run`'s options in compiled code: what the program reads, the folder it runs in and
 /// variables it gets, on their own and together, and a narrowed `Process` still running only
 /// what it may when given them.

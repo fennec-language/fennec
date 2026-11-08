@@ -372,7 +372,20 @@ struct Server {
     /// What each worker served, added in as it leaves, and the count of those still serving.
     total: Mutex<Served>,
     left: Latch,
+    /// In a recording or a replay, the call serving, which names each round by its connection.
+    replay: Option<Arc<str>>,
+    /// How many connections it's taken, to number the next round's name.
+    accepted: AtomicU64,
+    /// In a replay: what a recorded round runs, given the handle of its connection, which is
+    /// never a real one, and how many rounds are still to end.
+    replayed: Option<(Replayed, AtomicU64)>,
 }
+
+/// A recorded round, replayed: what it runs with the handle of its connection.
+pub type Replayed = Arc<dyn Fn(i64) -> i64 + Send + Sync>;
+
+/// Where a replayed round's connection handles start, above any real one's.
+const REPLAYED_HANDLES: i64 = 1 << 40;
 
 impl Server {
     /// Its listener's token: counting down from below the waker's, which connections' never reach.
@@ -549,6 +562,30 @@ impl Io {
             here.served.connections += 1;
             here.tasks.insert(task);
             self.owners.insert(task, id);
+            // In a recording, the round is named by the order its connection was taken in.
+            if let Some(call) = &here.server.replay {
+                let n = here.server.accepted.fetch_add(1, Ordering::Relaxed);
+                crate::replay::log_at(call, "accept", n);
+                let named = crate::replay::task_named(&format!("{call}.{n}"));
+                self.temporaries.insert(task, super::Temporaries::of_task(named));
+            }
+            self.ready.push_back((task, Wake::Ready(READY)));
+        }
+    }
+
+    /// Starts the `n`th of a replayed server's recorded rounds, as `take` starts a connection's,
+    /// with a connection that's only a handle: what it read and wrote comes from the recording.
+    fn take_recorded(&mut self, id: u64, n: u64) {
+        let Some(here) = self.servers.get_mut(&id) else { return };
+        let (Some(call), Some((replayed, _))) = (&here.server.replay, &here.server.replayed) else { return };
+        let replayed = Arc::clone(replayed);
+        let handle = REPLAYED_HANDLES + i64::try_from(n).unwrap_or(0);
+        let named = crate::replay::task_named(&format!("{call}.{n}"));
+        if let Ok(task) = self.scheduler.spawn(move || replayed(handle)) {
+            here.served.connections += 1;
+            here.tasks.insert(task);
+            self.owners.insert(task, id);
+            self.temporaries.insert(task, super::Temporaries::of_task(named));
             self.ready.push_back((task, Wake::Ready(READY)));
         }
     }
@@ -667,6 +704,12 @@ impl Io {
         let here = self.servers.get_mut(&id)?;
         here.tasks.remove(&task);
         here.served.failed += u64::from(failed);
+        // A replayed server stops once its last recorded round has ended.
+        if let Some((_, left)) = &here.server.replayed
+            && left.fetch_sub(1, Ordering::AcqRel) == 1
+        {
+            Stopper { server: Arc::clone(&here.server), pool: self.pool }.stop();
+        }
         if here.draining && here.tasks.is_empty() {
             self.leave(id);
         }
@@ -1020,7 +1063,7 @@ pub(super) fn serve(
     pool: &'static Pool,
     lent: Option<&Arc<super::table::Table>>,
     handler: &Handler,
-    started: impl FnOnce(Stopper),
+    (started, replay): (impl FnOnce(Stopper), Option<&crate::replay::Task>),
 ) -> Served {
     let workers = pool.threads();
     let server = Arc::new(Server {
@@ -1030,6 +1073,9 @@ pub(super) fn serve(
         next: AtomicUsize::new(0),
         total: Mutex::new(Served::default()),
         left: Latch::of(workers),
+        replay: replay.map(crate::replay::Task::name),
+        accepted: AtomicU64::new(0),
+        replayed: None,
     });
     // The worker that accepts joins last, so every other worker has joined before it hands one
     // a connection: each worker takes what it's given in turn.
@@ -1039,6 +1085,44 @@ pub(super) fn serve(
         pool.run_on(at, Box::new(move |io: &mut Io| io.join(joining, given)));
     }
     started(Stopper { server: Arc::clone(&server), pool });
+    server.left.wait();
+    std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
+}
+
+/// Replays a recorded server: its `rounds` recorded rounds run on `pool`'s workers as `serve` runs
+/// connections, each with `replayed` and a connection that's only a handle, and when the last has
+/// ended the server stops. Its call is `call`, which named its rounds.
+pub(super) fn serve_replayed(
+    rounds: u64,
+    pool: &'static Pool,
+    lent: Option<&Arc<super::table::Table>>,
+    (replayed, call): (Replayed, &crate::replay::Task),
+) -> Served {
+    let workers = pool.threads();
+    let unused: Handler = Arc::new(|_: Conn| 0);
+    let server = Arc::new(Server {
+        id: NEXT_SERVER.fetch_add(1, Ordering::Relaxed),
+        handler: unused,
+        lent: lent.cloned(),
+        next: AtomicUsize::new(0),
+        total: Mutex::new(Served::default()),
+        left: Latch::of(workers),
+        replay: Some(call.name()),
+        accepted: AtomicU64::new(0),
+        replayed: Some((replayed, AtomicU64::new(rounds))),
+    });
+    for at in 0..workers {
+        let joining = Arc::clone(&server);
+        pool.run_on(at, Box::new(move |io: &mut Io| io.join(joining, None)));
+    }
+    if rounds == 0 {
+        Stopper { server: Arc::clone(&server), pool }.stop();
+    }
+    for n in 0..rounds {
+        let id = server.id;
+        let to = usize::try_from(n).unwrap_or(0) % workers.max(1);
+        pool.run_on(to, Box::new(move |io: &mut Io| io.take_recorded(id, n)));
+    }
     server.left.wait();
     std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
 }

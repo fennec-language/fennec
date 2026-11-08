@@ -573,7 +573,7 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
     let nested = lend_lowering::nest(module, &checked.opened_apart);
     let sources_written = lend_lowering::lower(module, &checked.sources);
     let counted = enumerate_lowering::lower(module);
-    let tuples = tuple_lowering::lower(module, &checked.types);
+    let tuples = tuple_lowering::lower(module, &checked.saved_types);
     if (lock_lowering::lower(module, &checked.shared_values)
         || sources_written
         || counted
@@ -633,6 +633,8 @@ pub struct Checked {
     native_formats: BTreeMap<(u32, u32), String>,
     /// The `json=` values of HTTP calls native code writes in Fennec, by the value's span.
     native_json_bodies: BTreeSet<(u32, u32)>,
+    /// Every type asked whether it saves or loads.
+    saved_types: BTreeSet<Type>,
     /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
     not_equals: BTreeSet<(u32, u32)>,
     /// The fields and method calls on a value that might be missing, in a chain an `else`

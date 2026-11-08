@@ -436,7 +436,7 @@ fn collections_and_tuples_match_their_types_item_by_item() {
             "`pair` should be a (int, str), but this is a (int, int) @ (1, 2)",
             "`maybe` should be a str?, but this is an int? @ [1].index(1)",
             "`table` should be a dict[str, int], but this is a dict[str, str] @ {\"a\": \"b\"}",
-            "`pair` should be a (int, str), but this is a (int) @ (1,)",
+            "`pair` should be a (int, str), but this is a (int,) @ (1,)",
         ]
     );
 }

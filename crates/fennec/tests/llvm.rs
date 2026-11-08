@@ -7293,6 +7293,69 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A tuple of a kit module's type, written with its module's name, and of an optional item, saves
+/// and loads natively: the checker and lowering name its functions from the same type.
+#[test]
+fn tuples_of_a_kit_s_types_save_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("tuples-kit")?;
+    std::fs::create_dir_all(dir.join("src"))?;
+    std::fs::write(dir.join("kit.toml"), "name = \"marks\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")?;
+    std::fs::write(
+        dir.join("src/shapes.fen"),
+        "\
+export struct Spot:
+    x: int
+
+export struct Held:
+    pair: (Spot, (int?, str))
+",
+    )?;
+    std::fs::write(
+        dir.join("src/main.fen"),
+        "\
+import shapes
+from shapes import Spot
+from std import json, pack
+
+# Each optional comes from here: a list of `(Spot, int)` widened to `(Spot, int?)` isn't lowered
+# yet.
+def counted(n: int) -> int?:
+    if n > 0:
+        return n
+    None
+
+def main(stdout: Stdout):
+    marks: list[(Spot, int?)] = [(Spot(x=1), counted(2)), (Spot(x=3), counted(0))]
+    text = json.dumps(marks)
+    stdout.print(text)
+    stdout.print((json.loads[list[(Spot, int?)]](text) else []) == marks)
+    held = shapes.Held(pair=(Spot(x=5), (counted(0), \"a\")))
+    saved = json.dumps(held)
+    stdout.print(saved, (json.loads[shapes.Held](saved) else held) == held)
+    stdout.print((pack.loads[shapes.Held](pack.dumps(held)) else shapes.Held(pair=(Spot(x=0), (counted(1), \"\")))) == held)
+",
+    )?;
+    let executable = dir.join("marks");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &dir.to_string_lossy(), "-o", &executable.to_string_lossy()])
+        .env("FENNEC_HOME", dir.join("home"))
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "[[{\"x\": 1}, 2], [{\"x\": 3}, null]]\n\
+         True\n\
+         {\"pair\": [{\"x\": 5}, [null, \"a\"]]} True\n\
+         True\n"
+    );
+    Ok(())
+}
+
 /// Native JSON and TOML write and read what the JIT does, and fail with the same messages: a
 /// field left out, a value of the wrong type, a key no field has, inside and outside, and text
 /// that isn't JSON.

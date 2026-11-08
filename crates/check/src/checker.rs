@@ -88,6 +88,9 @@ pub(crate) struct Checker {
     /// The values given as `json=` to an HTTP call whose type has its own `def serialize`, which
     /// native code writes through `json.native_dumps` before sending.
     pub(crate) native_json_bodies: BTreeSet<(u32, u32)>,
+    /// Every type asked whether it's `Serializable` or `Deserializable`: where the tuples a
+    /// program saves are found (see `tuple_lowering`).
+    pub(crate) saved_types: BTreeSet<Type>,
     /// Each constant's type, once worked out. `None` while its value is being checked.
     pub(crate) const_types: BTreeMap<String, Option<Type>>,
     /// The functions being checked, innermost last.
@@ -172,6 +175,7 @@ impl Checker {
             opened_apart: BTreeSet::new(),
             native_formats: BTreeMap::new(),
             native_json_bodies: BTreeSet::new(),
+            saved_types: BTreeSet::new(),
             const_types: BTreeMap::new(),
             checking: Vec::new(),
             revisit: BTreeSet::new(),
@@ -299,6 +303,7 @@ impl Checker {
             opened_apart: self.opened_apart,
             native_formats: self.native_formats,
             native_json_bodies: self.native_json_bodies,
+            saved_types: self.saved_types,
         }
     }
 

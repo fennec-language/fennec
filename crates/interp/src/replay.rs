@@ -146,6 +146,34 @@ pub(crate) fn turn(place: Option<&str>, what: &str) -> Result<Option<i64>, Strin
     turn_in(player, (place, what), TURN_PATIENCE, crate::embed::make_way).map(Some)
 }
 
+/// As [`turn`], for what has to happen before the turn is over, like taking a lock: it waits
+/// for the running task's turn but keeps it, so no other task's turn starts until [`took_turn`]
+/// says it's done.
+pub(crate) fn wait_turn(place: Option<&str>, what: &str) -> Result<(), String> {
+    let (Some(place), Mode::Replay(player)) = (place, mode()) else { return Ok(()) };
+    waited_in(player, (place, what), TURN_PATIENCE, crate::embed::make_way, false).map(|_| ())
+}
+
+/// Ends the turn [`wait_turn`] waited for, once what it was for has happened: in a recording, logs
+/// it, as [`met`] does, and in a replay, lets the next task's turn start.
+pub(crate) fn took_turn(place: Option<&str>, what: &str) {
+    match (place, mode()) {
+        (Some(place), Mode::Record(file)) => {
+            log(file, place, &format!("{} {what}", running()), &0_i64.to_le_bytes())
+        }
+        (Some(place), Mode::Replay(player)) => {
+            let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
+            let asked = format!("{} {what}", running());
+            if let Some(stream) = player.streams.get_mut(place)
+                && stream.front().is_some_and(|(next, _)| *next == asked)
+            {
+                stream.pop_front();
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Waits up to `patience` for the running task's turn to do `what` at `place` in `player`'s log,
 /// calling `make_way` between looks, and gives back what it came to.
 fn turn_in(
@@ -153,6 +181,18 @@ fn turn_in(
     (place, what): (&str, &str),
     patience: std::time::Duration,
     make_way: fn(),
+) -> Result<i64, String> {
+    waited_in(player, (place, what), patience, make_way, true)
+}
+
+/// As [`turn_in`], taking the turn's entry off the log when `take` is true, and leaving it there
+/// for [`took_turn`] otherwise.
+fn waited_in(
+    player: &Mutex<Player>,
+    (place, what): (&str, &str),
+    patience: std::time::Duration,
+    make_way: fn(),
+    take: bool,
 ) -> Result<i64, String> {
     let asked = format!("{} {what}", running());
     let started = std::time::Instant::now();
@@ -169,7 +209,11 @@ fn turn_in(
                     ));
                 }
                 Some(next) if next == asked => {
-                    let (_, payload) = stream.and_then(VecDeque::pop_front).unwrap_or_default();
+                    let (_, payload) = if take {
+                        stream.and_then(VecDeque::pop_front).unwrap_or_default()
+                    } else {
+                        stream.and_then(|stream| stream.front().cloned()).unwrap_or_default()
+                    };
                     let bytes: [u8; 8] =
                         payload.try_into().map_err(|_| format!("this replay's {place} is damaged"))?;
                     return Ok(i64::from_le_bytes(bytes));

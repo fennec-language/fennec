@@ -685,11 +685,8 @@ impl Emit<'_, '_, '_> {
                 self.retain_inline(kind, &format!("%l{at}"));
             } else if text != "void" {
                 if self.owns(local) {
-                    if matches!(kind, Kind::Closure(..)) {
-                        self.retain_closure(&format!("%p{at}"));
-                    } else {
-                        self.retain(&format!("%p{at}"));
-                    }
+                    // A string's header, a closure or an optional each counts its own way.
+                    self.retain_value(&format!("%p{at}"), kind);
                 }
                 self.line(&format!("store {text} %p{at}, ptr %l{at}"));
             }

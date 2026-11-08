@@ -55,7 +55,7 @@ mod types;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use fennec_syntax::{Diagnostic, Expr, ExprKind, Module, Span};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, Item, Module, Span};
 
 pub use messages::missing_method;
 pub use named::add_pattern_fixes;
@@ -123,20 +123,18 @@ fn own_type_names(module: &Module) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn declared_type(item: &fennec_syntax::Item) -> Option<&str> {
+fn declared_type(item: &Item) -> Option<&str> {
     match item {
-        fennec_syntax::Item::Struct(def)
-        | fennec_syntax::Item::Enum(def)
-        | fennec_syntax::Item::Error(def) => Some(def.name.as_str()),
+        Item::Struct(def) | Item::Enum(def) | Item::Error(def) => Some(def.name.as_str()),
         _ => None,
     }
 }
 
 /// The name an item gives a type or an interface, which share one set of names.
-fn declared_name(item: &fennec_syntax::Item) -> Option<&str> {
+fn declared_name(item: &Item) -> Option<&str> {
     match item {
-        fennec_syntax::Item::Interface(interface) => Some(interface.name.as_str()),
-        fennec_syntax::Item::TypeAlias { name, .. } => Some(name.as_str()),
+        Item::Interface(interface) => Some(interface.name.as_str()),
+        Item::TypeAlias { name, .. } => Some(name.as_str()),
         item => declared_type(item),
     }
 }
@@ -186,7 +184,7 @@ fn hide_interface_params(module: &mut Module) {
     // A program's own type with an interface's name is that type.
     for item in &module.items {
         match item {
-            fennec_syntax::Item::TypeAlias { name, .. } => {
+            Item::TypeAlias { name, .. } => {
                 interfaces.remove(name);
             }
             item => {
@@ -398,7 +396,7 @@ pub fn route_sorts_natively(module: &mut Module) -> bool {
 
 fn imports_a_format(module: &Module) -> bool {
     module.items.iter().any(|item| match item {
-        fennec_syntax::Item::Import(import) => match import.module.as_slice() {
+        Item::Import(import) => match import.module.as_slice() {
             [std, name, ..] if std == "std" => matches!(name.as_str(), "json" | "toml"),
             [std] if std == "std" => import.bound().any(|(name, _)| matches!(name, "json" | "toml")),
             _ => false,
@@ -454,6 +452,35 @@ fn sized_value(signatures: &Signatures) -> Option<Diagnostic> {
         Diagnostic::new(format!("sized numbers like {ty} aren't built yet past the checker"), span)
             .with_help("use `int` or `float` for now: the checker takes the sized types, but running them isn't built"),
     )
+}
+
+/// A call the checker sent to a standard library function, like `sum` of a list of floats to
+/// `math.fixed_sum`, needs that function's module where it runs, though the program may never have
+/// imported it: it's imported under a name of its own, which nothing written can reach or clash
+/// with.
+fn imports_for_std_calls<'a>(module: &mut Module, functions: impl Iterator<Item = &'a String>) {
+    let mut wanted: Vec<&str> =
+        functions.filter_map(|function| function.split_once('.')).map(|(from, _)| from).collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+    for from in wanted {
+        let imported = module.items.iter().any(|item| {
+            matches!(item, Item::Import(import) if matches!(import.module.as_slice(), [std, name] if std == "std" && name == from))
+        });
+        if imported {
+            continue;
+        }
+        module.items.insert(
+            0,
+            Item::Import(fennec_syntax::Import {
+                module: vec!["std".to_owned(), from.to_owned()],
+                names: Vec::new(),
+                aliases: Vec::new(),
+                alias: Some(format!("\0{from}")),
+                span: Span::default(),
+            }),
+        );
+    }
 }
 
 fn resolved(module: &mut Module, checked: Checked) -> Signatures {
@@ -519,6 +546,7 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
             }
         });
     }
+    imports_for_std_calls(module, checked.std_calls.values());
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
     // again, so the signatures and types given back are those of what runs.
     let nested = lend_lowering::nest(module, &checked.opened_apart);

@@ -178,6 +178,9 @@ impl Lowering<'_> {
             || Expr { kind: if ty == Type::Float { ExprKind::Float(0.0) } else { ExprKind::Int(0) }, span },
             |start| start.value.clone(),
         );
+        if ty == Type::Float {
+            return self.summing_floats(&total, first, parts, expr.span).map(Some);
+        }
         let target = name_at(&total, expr.span);
         let add = StmtKind::Assign {
             target,
@@ -188,6 +191,88 @@ impl Lowering<'_> {
         };
         let body = with_condition(parts.cond, vec![stmt(add, expr.span)], expr.span);
         self.looping_for_value(&total, first, parts, body, expr.span).map(Some)
+    }
+
+    /// A sum of floats, in the fixed order `fennec_syntax::fixed_sum` writes, so it's the same
+    /// whatever the items are and wherever it runs.
+    fn summing_floats(
+        &mut self,
+        total: &str,
+        start: Expr,
+        parts: &Written<'_>,
+        at: Span,
+    ) -> Lowered<Operand> {
+        // What's written compares only ints, at a place of its own: the end of the call.
+        let compared = Span { start: at.end, end: at.end };
+        if let Some(unrolled) = self.summing_unrolled(total, &start, parts, at) {
+            return unrolled;
+        }
+        let point = Span { start: at.start, end: at.start };
+        let places = fennec_syntax::fixed_sum::Places { at: point, compared, counted: point, item: point };
+        let written = fennec_syntax::fixed_sum::fixed_sum(total, start, parts.elem, places);
+        let body = with_condition(parts.cond, written.each, at);
+        let looped =
+            StmtKind::For { names: parts.names.to_vec(), is_mut: false, iter: parts.iter.clone(), body };
+        let mut all = written.setup;
+        all.push(stmt(looped, at));
+        all.extend(written.finish);
+        self.retyped.push((compared, Type::Bool));
+        let done = self.stmts(&all, Tail::Drop);
+        self.retyped.pop();
+        done?;
+        let local = self.lookup(total).ok_or("a sum lost its value")?;
+        Ok(Operand::Local(local))
+    }
+
+    /// A float sum with no `if`, over a `range` counting up by one or over a list, written out
+    /// eight items a round, so each of the eight totals adds without waiting on the others.
+    fn summing_unrolled(
+        &mut self,
+        total: &str,
+        start: &Expr,
+        parts: &Written<'_>,
+        at: Span,
+    ) -> Option<Lowered<Operand>> {
+        use fennec_syntax::fixed_sum::{Over, Places, unrolled};
+        let ([name], None) = (parts.names, parts.cond) else { return None };
+        let list_item = match self.type_at(parts.iter.span) {
+            Some(Type::List(item)) => Some(*item),
+            _ => None,
+        };
+        let over = if self.is_range(parts.iter) {
+            match super::lists::range_args(parts.iter)? {
+                (bounds, false) => match bounds.as_slice() {
+                    [limit] => Over::Range { first: None, limit: (*limit).clone() },
+                    [first, limit] => Over::Range { first: Some((*first).clone()), limit: (*limit).clone() },
+                    _ => return None,
+                },
+                (_, true) => return None,
+            }
+        } else if list_item.is_some() {
+            Over::List(parts.iter.clone())
+        } else {
+            return None;
+        };
+        // Each place what's written is typed from has a span of its own, inside `sum` itself.
+        let place = |by: u32| Span { start: at.start + by, end: at.start + by };
+        let places = Places {
+            at: place(0),
+            compared: Span { start: at.end, end: at.end },
+            counted: place(1),
+            item: place(2),
+        };
+        let written = unrolled(total, start.clone(), (name, parts.elem), &over, places);
+        let before = self.retyped.len();
+        self.retyped.push((places.compared, Type::Bool));
+        self.retyped.push((places.counted, Type::Int));
+        if let Some(item) = list_item {
+            self.retyped.push((places.item, item));
+        }
+        let done = self.stmts(&written, Tail::Drop);
+        self.retyped.truncate(before);
+        Some(done.and_then(|()| {
+            self.lookup(total).map(Operand::Local).ok_or_else(|| "a sum lost its value".to_owned())
+        }))
     }
 
     fn deciding(&mut self, any: bool, parts: &Written<'_>, at: Span) -> Lowered<Operand> {

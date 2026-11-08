@@ -70,7 +70,7 @@ description: What Fennec does today, what's being built next, and the design que
 
 ## Next: speed and builds
 
-- Everything on LLVM, so the JIT and the interpreter can go. What didn't build natively is at zero, the test fake network is in the runtime, constants have a small evaluator in the compiler, fuzzing checks against pinned outputs and native builds, and the commit before removal has a tag. The JIT is gone, and native programs carry no interpreter. Next, the interpreter goes from `fennec` itself, and the playground compiles to WebAssembly on a server.
+- Everything on LLVM, so the JIT and the interpreter can go. What didn't build natively is at zero, the test fake network is in the runtime, constants have a small evaluator in the compiler, fuzzing checks against pinned outputs and native builds, and the commit before removal has a tag. The JIT is gone, and native programs carry no interpreter. Next, the interpreter goes from `fennec` itself. The website's playground is removed for now, and returns once the self-hosted compiler can compile in the browser.
 - Every kernel at 110% of its hand-written twin. The [benchmarks](/benchmarks/) show where each one stands.
 - A shared cache that only trusted builds can write to, checked by a clean rebuild in CI.
 - `math.fma(a, b, c)`, rounded once. Float sums and `math.dot` already add in one fixed pattern.

@@ -1152,7 +1152,7 @@ with net.listen(8080) as server:
 - Each iteration can change only its own element. It can read anything around it, but can't change outer `mut` names.
 - A body may use capabilities and `shared` values. Results are deterministic when it uses neither. This replaces the earlier rule that a body can't use capabilities.
 - Work over data runs on a work-stealing thread pool, and reading outer values changes no reference counts.
-- The interpreter runs the loop in order, which is a correct implementation of a deterministic body, and the playground needs no threads.
+- The interpreter runs the loop in order, which is a correct implementation of a deterministic body.
 
 *Why:* One word covers data across cores and connections from a server, and everything in it ends when its loop ends.
 
@@ -1568,9 +1568,9 @@ tools = { path = "../tools" }
 - **The test fake network** moves into the runtime.
 - **Constants at compile time** are worked out by a small evaluator inside the compiler.
 - **The fuzzing reference** becomes pinned outputs and the native twins.
-- **The website playground** is compiled on a server with a cache that returns WebAssembly, the first small piece of the Den's builder.
+- **The website playground** is removed for now, and returns once the self-hosted compiler can compile in the browser. Until then the site shows examples with the output they really print. Chris decided this on 2026-11-08. Built: the playground page, its links and its build are gone. This replaces compiling the playground on a server with a cache that returns WebAssembly.
 
-The commit before removal gets a tag, so the old engines can still be found. Built so far: the JIT is removed, after the tag `before-jit-interpreter-removal`; native programs carry no interpreter; the test fakes, the network's included, are the runtime's; constants are worked out by the compiler's own evaluator; and fuzzing's reference is pinned outputs and native builds. Not built yet: the playground on a server, and taking the interpreter out of `fennec` itself, where it still stands in for `fennec run` and runs `fennec test`. This replaces the rule that the interpreter keeps constants, fuzzing and the playground for now.
+The commit before removal gets a tag, so the old engines can still be found. Built so far: the JIT is removed, after the tag `before-jit-interpreter-removal`; native programs carry no interpreter; the test fakes, the network's included, are the runtime's; constants are worked out by the compiler's own evaluator; and fuzzing's reference is pinned outputs and native builds. Not built yet: taking the interpreter out of `fennec` itself, where it still stands in for `fennec run` and runs `fennec test`. This replaces the rule that the interpreter keeps constants, fuzzing and the playground for now.
 *Why:* One engine is what ships and what's tested, so the interpreter's double work and its differences from native code go away.
 
 **Until then, every example that builds natively must give the same output as the interpreter.** An example that's refused goes on a tracked list, which must reach zero.
@@ -1702,7 +1702,7 @@ def main(stdout: Stdout, gpu: Gpu):
 - **A port is benchmarked against the original:** CI fails if it's more than 3% slower.
 - **Only permissively licensed code is ported:** MIT, BSD, Apache, zlib or public domain. Anything under the GPL or LGPL is written from scratch without reading the original.
 
-*Why:* Ported code is memory-safe, bound by capabilities, and runs in wasm and the playground. A C binding is none of those.
+*Why:* Ported code is memory-safe, bound by capabilities, and runs in wasm. A C binding is none of those.
 
 **A C callback reaches Fennec through an `Id`.** C never holds a closure or a place.
 *Why:* C can call back at any time, so anything it keeps has to be safe to keep, and a stale `Id` finds nothing.
@@ -1724,7 +1724,7 @@ This replaces the earlier plan for C in Fennec code: `extern "C":` blocks, `unsa
 **Capabilities are the sandbox's policy in every engine.** Sandboxed code can do only what the capabilities passed to its `main` allow, and it can't call C. A tool can show what a snippet asks for before running it: "this snippet wants `Net` and read access to `data/`".
 *Why:* That makes Fennec a good language for AI agents to write tool code in: typed, with every power declared up front.
 
-**Until it's removed, the interpreter runs untrusted code for those tools, with limits.** After that, the playground, Den tests and agents' snippets are all compiled to WebAssembly by the server build and run in Wasmtime, with fuel and memory limits and no files or network unless granted. Not built yet. It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs the playground and AI-written snippets, where starting instantly and being easy to sandbox matter more than speed. In the browser it runs as wasm, so the browser sandboxes it again.
+**Until it's removed, the interpreter runs untrusted code for those tools, with limits.** After that, Den tests and agents' snippets are compiled to WebAssembly by the server build and run in Wasmtime, with fuel and memory limits and no files or network unless granted. Not built yet. It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs AI-written snippets, where starting instantly and being easy to sandbox matter more than speed.
 
 **Untrusted code that needs native speed is compiled to WebAssembly and run in Wasmtime.** The development and release backends can both target wasm. Wasmtime already provides fuel, interruption and memory limits.
 *Why:* Wasmtime's sandbox is heavily hardened. Making our own JIT a security boundary would mean any compiler bug is an escape.

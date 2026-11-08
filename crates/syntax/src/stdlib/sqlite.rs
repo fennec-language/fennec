@@ -5,7 +5,7 @@ use super::Module;
 
 pub(crate) const MODULE: Module = Module {
     name: "sqlite",
-    names: &["open", "Database", "Transaction", "SqliteStatement", "SqliteRows", "SqliteRowReader"],
+    names: &["open", "Database", "Transaction", "SqliteStatement"],
     source: include_str!("sqlite.fen"),
     gives: &[],
 };

@@ -1,74 +1,23 @@
-//! `std.json`, by the runtime's own `json.dumps` and `json.loads`. What's written crosses as a
-//! temporary and what's read comes back as one, so a value held in place, like a plain struct,
-//! goes by way of a block of its layout's shape made for the crossing.
+//! `std.json` and `std.toml`, which native code reads and writes through std's own code in Fennec:
+//! what can't be is refused here. And results made from what the runtime gives back.
 
-use fennec_check::Type;
-use fennec_ir::{LocalId, Operand};
+use fennec_ir::LocalId;
 use fennec_syntax::Span;
 
 use crate::emit::Emit;
 use crate::kinds::{Kind, element_symbol};
 use crate::lists::FIELDS_OFFSET;
 
-impl Emit<'_, '_, '_> {
-    pub(crate) fn json_builtin(
-        &mut self,
-        dest: Option<LocalId>,
-        name: &str,
-        args: &[Operand],
-        span: Span,
-    ) -> Result<(), String> {
-        let dest = dest.ok_or("no result")?;
-        let first = args.first().ok_or("no argument")?;
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
-        self.declare("declare i64 @fennec_mark() nounwind");
-        self.declare("declare void @fennec_truncate(i64) nounwind");
-        let mark = self.temp();
-        self.line(&format!("{mark} = call i64 @fennec_mark()"));
-        match name {
-            "json.dumps" | "toml.dumps" => {
-                let function = if name == "json.dumps" { "fennec_json_dumps" } else { "fennec_toml_dumps" };
-                let (value, kind) = self.operand(first)?;
-                let (handle, crossed) = self.value_handle(&value, &kind)?;
-                self.declare(&format!("declare ptr @{function}(i64, i64, i64) nounwind"));
-                let text = self.temp();
-                self.line(&format!("{text} = call ptr @{function}(i64 {handle}, i64 {from}, i64 {to})"));
-                self.leave_if_failed();
-                if let Some(block) = crossed {
-                    self.release(&block);
-                }
-                self.line(&format!("call void @fennec_truncate(i64 {mark})"));
-                let text = self.text_value(&text);
-                self.assign(dest, &text)
-            }
-            "json.loads" | "toml.loads" => {
-                let function = if name == "json.loads" { "fennec_json_loads" } else { "fennec_toml_loads" };
-                let (text, _) = self.operand(first)?;
-                // The type to read is the one the program wrote, here as a string.
-                let local = self.function.locals.get(dest.0).ok_or("no such local")?;
-                let Type::Result(wanted, _) = &local.ty else {
-                    return Err(format!("`{name}` giving something other than a result"));
-                };
-                let written = self.literal(&wanted.to_string());
-                self.declare(&format!("declare i64 @{function}(ptr, ptr, i64, i64) nounwind"));
-                let handle = self.temp();
-                self.on_blocks([&text], |emit, [block]| {
-                    emit.line(&format!(
-                        "{handle} = call i64 @{function}(ptr {block}, ptr {written}, i64 {from}, i64 {to})"
-                    ));
-                });
-                self.leave_if_failed();
-                let block = self.result_from(dest, &handle, span)?;
-                self.line(&format!("call void @fennec_truncate(i64 {mark})"));
-                if let Some(block) = block {
-                    self.assign(dest, &block)?;
-                }
-                Ok(())
-            }
-            other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
-        }
-    }
+/// Why `json.dumps`, `json.loads`, `toml.dumps` or `toml.loads`, `name`, of what has no `def
+/// serialize` or `def deserialize`, isn't built: std's readers and writers in Fennec can't take
+/// it, and native code has no other way to write or read it. `name` may have named arguments on
+/// its end, as in `json.dumps.indent`.
+pub(crate) fn not_saved_natively(name: &str) -> String {
+    let function = name.split('.').take(2).collect::<Vec<_>>().join(".");
+    format!("its `{function}` is of a type that can't be saved natively yet")
+}
 
+impl Emit<'_, '_, '_> {
     /// A result made here from a temporary holding `Ok` or `Err`, written into `dest`'s slot, or
     /// into a block given back for `dest` to take once the temporaries are let go of.
     pub(crate) fn result_from(

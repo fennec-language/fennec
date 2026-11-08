@@ -725,9 +725,9 @@ mod tests {
 
     fn begin() {
         super::set_worker_setup(Box::new(|| {
-            let _ = start(&fennec_syntax::Module { items: Vec::new() }, tables(), crate::Inputs::default());
+            start(tables(), crate::Inputs::default());
         }));
-        start(&fennec_syntax::Module { items: Vec::new() }, tables(), crate::Inputs::default()).unwrap();
+        start(tables(), crate::Inputs::default());
     }
 
     /// Enough items to run on the pool.
@@ -1121,7 +1121,7 @@ mod tests {
         crate::embed::write_kept_output_on_panic();
         let panicked = std::thread::spawn(|| {
             let inputs = crate::Inputs { live: true, ..crate::Inputs::default() };
-            start(&fennec_syntax::Module { items: Vec::new() }, Tables::default(), inputs).unwrap();
+            start(Tables::default(), inputs);
             with(|state| {
                 let _ = crate::embed::io::write(state, "printed just before panicking\n");
             });

@@ -327,9 +327,8 @@ extern "C" fn echo_body(_env: i64, conn: i64, _thread: i64) -> i64 {
 }
 
 #[test]
-fn native_code_serves_a_server_the_interpreter_opened() {
-    use super::super::{Tables, finish, start, with};
-    use crate::call::CallArg;
+fn native_code_serves_a_server_the_runtime_opened() {
+    use super::super::{Tables, finish, start};
     use crate::value::Value;
     // The workers' setup is the process's, set by whichever test gets there first, and this
     // server runs on the pool the `parallel` tests share. So it sets workers up as theirs do: with
@@ -340,14 +339,12 @@ fn native_code_serves_a_server_the_interpreter_opened() {
             elements: vec![std::rc::Rc::new(crate::packed::Element::Int)],
             ..Tables::default()
         };
-        let _ = start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default());
+        start(tables, crate::Inputs::default());
     }));
-    let module = fennec_syntax::parse("from std.net import Connection, NetError, Server\n").unwrap();
-    start(&module, Tables::default(), crate::Inputs::default()).unwrap();
+    start(Tables::default(), crate::Inputs::default());
     let span = fennec_syntax::Span::default();
-    let (server, port) = with(|state| {
-        let listened =
-            state.interp.net_method("listen", vec![CallArg::plain(Value::Int(0), span)], span).ok()?;
+    let (server, port) = (|| {
+        let listened = crate::stdlib::net::real_net("listen", &[Value::Int(0)], None, span).ok()?;
         let Value::Ok(server) = listened else { return None };
         let Value::Instance(instance) = server.as_ref() else { return None };
         let (Some(Value::Int(port)), Some(Value::Int(handle))) =
@@ -356,7 +353,7 @@ fn native_code_serves_a_server_the_interpreter_opened() {
             return None;
         };
         Some((*handle, *port))
-    })
+    })()
     .unwrap();
     let client = std::thread::spawn(move || {
         let address: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
@@ -410,7 +407,7 @@ fn what_a_parked_task_printed_comes_out_while_another_task_runs() {
     let setup: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
         let inputs = crate::Inputs { live: true, ..crate::Inputs::default() };
         let tables = super::super::Tables::default();
-        super::super::start(&fennec_syntax::Module { items: Vec::new() }, tables, inputs).unwrap();
+        super::super::start(tables, inputs);
     });
     // This thread is one of the workers, and runs no setup of its own.
     setup();

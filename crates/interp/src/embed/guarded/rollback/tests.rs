@@ -35,7 +35,7 @@ fn tables() -> Tables {
 }
 
 fn begin_run() {
-    start(&fennec_syntax::Module { items: Vec::new() }, tables(), crate::Inputs::default()).unwrap();
+    start(tables(), crate::Inputs::default());
 }
 
 fn word(block: i64, at: usize) -> i64 {

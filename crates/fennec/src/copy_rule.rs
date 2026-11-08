@@ -150,9 +150,6 @@ pub(crate) fn check_all_rules(
     sources: &Sources,
 ) -> Result<fennec_check::Signatures, Vec<Diagnostic>> {
     let signatures = fennec_check::check_and_resolve(module)?;
-    if let Some(unbuilt) = fennec_check::not_built_yet(&signatures) {
-        return Err(vec![unbuilt]);
-    }
     let copies = implicit_copies(module, &signatures, sources);
     if copies.is_empty() { Ok(signatures) } else { Err(copies) }
 }

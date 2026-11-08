@@ -605,7 +605,16 @@ impl FnCx<'_> {
         match name {
             "copy" => first,
             "Ok" => Type::result(first, self.checker.fresh(span, Hole::OkError)),
-            "Err" => Type::result(self.checker.fresh(span, Hole::ErrValue), first),
+            "Err" => {
+                if !self.checker.program.can_fail_with(&self.checker.settled(&first)) {
+                    self.error(crate::program::not_an_error(
+                        "`Err` holds an error, as `fail` does",
+                        &first,
+                        at,
+                    ));
+                }
+                Type::result(self.checker.fresh(span, Hole::ErrValue), first)
+            }
             "range" => {
                 if !types.iter().all(|ty| self.checker.fits(&Type::Int, ty)) {
                     self.error(Diagnostic::new("`range` takes one to three ints", span));

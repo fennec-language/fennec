@@ -9435,16 +9435,19 @@ fn results_print_like_the_jit() -> std::io::Result<()> {
     }
     same_as_the_jit(
         "results_print",
-        r#"def check(n: int) -> Result[int, str]:
+        r"error NotPositive:
+    n: int
+
+def check(n: int) -> Result[int, NotPositive]:
     if n > 0:
         return Ok(n)
-    Err("not positive")
+    Err(NotPositive(n))
 
 def main(stdout: Stdout):
     stdout.print(check(3), check(-1))
     results = [check(1), check(0)]
     stdout.print(results)
-"#,
+",
     )
 }
 
@@ -9800,7 +9803,7 @@ def main(stdout: Stdout):
     stdout.print(who)
 "#;
 
-/// The same enums read and written as JSON, and as what a result holds.
+/// The same enums read and written as JSON, and an error with cases as what a result holds.
 const ENUMS_IN_JSON_AND_RESULTS: &str = r#"from std import json
 
 
@@ -9809,7 +9812,7 @@ enum Token:
     Word(text: str)
     Num(value: int)
 
-enum Failure:
+error Failure:
     Plain
     Why(reason: str)
 

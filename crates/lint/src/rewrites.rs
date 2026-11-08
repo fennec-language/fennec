@@ -118,7 +118,7 @@ fn rebound(def: &FnDef) -> HashSet<String> {
 /// The names a pattern binds.
 fn bound_by(pattern: &Pattern, found: &mut HashSet<String>) {
     match pattern {
-        Pattern::Bind(name) => {
+        Pattern::Bind(name) | Pattern::RefBind(name) => {
             found.insert(name.clone());
         }
         Pattern::Variant { args: items, .. } | Pattern::Tuple(items) | Pattern::Or(items) => {

@@ -1,0 +1,24 @@
+source e22ca69389739f9126d0fa6636be11792e7c1710210bd1115ba93bfbd56ec267
+code 0
+stdout 218
+False
+one
+two
+ True
+8 True
+[Path(text="native-capabilities/a.txt")]
+one
+two
+
+False
+False
+True
+0 hello
+ True
+no-such-program-at-all
+again
+
+this Process can run only `echo`, so it can't run `ls`
+["first", "second"]
+True
+stderr 0

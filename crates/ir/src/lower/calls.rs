@@ -477,7 +477,8 @@ impl Lowering<'_> {
     }
 
     /// The standard library's `type_name[T]()`, the name of the type this copy has for `T`, and
-    /// `shape_hash[T]()`, a number for its shape that a format saving no names writes and checks.
+    /// `shape_hash[T]()`, a number for its shape that a format saving no names writes and checks,
+    /// and `layout[T]()`, what its values save as, with every field's name.
     fn type_called(&self, callee: &Expr) -> Option<Operand> {
         let ExprKind::Index { object, index } = &callee.kind else { return None };
         let (ExprKind::Name(name), ExprKind::Name(param)) = (&object.kind, &index.kind) else { return None };
@@ -485,6 +486,7 @@ impl Lowering<'_> {
         match name.as_str() {
             "intrinsics.type_name" => ty.source().map(Operand::Str),
             "intrinsics.shape_hash" => Some(Operand::Int(shape_hash(&self.context.signatures.shape(ty)))),
+            "intrinsics.layout" => Some(Operand::Str(self.context.layout(ty))),
             _ => None,
         }
     }

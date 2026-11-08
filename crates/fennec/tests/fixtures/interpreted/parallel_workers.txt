@@ -1,0 +1,5 @@
+source 19c7befa840e38bc5626140f8fe7a2e5e4e7c661102c79ae985c5d64b81d184b
+code 0
+stdout 9
+474500.0
+stderr 0

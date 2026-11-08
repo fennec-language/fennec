@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use fennec_syntax::{Blob, Diagnostic, Module, Sources};
 
 pub use init::{GUIDANCE, Guidance, Initialized, init};
-pub use manifest::{Manifest, valid_name};
+pub use manifest::{Dependency, Manifest, Source, valid_name};
 pub use starter::create;
 
 /// A program ready to check and run: every file merged into one module.

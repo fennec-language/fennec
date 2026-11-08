@@ -43,7 +43,7 @@ When a model reaches for something Fennec doesn't have, the compiler recognizes 
 | Tangled shared state | Data is plain values in tables. `shared` is rare, and every change to one takes its lock. |
 | Expecting a copy to change the original | A name always holds its own value, so changing a copy that nothing reads is a compile error whose fix writes to the original. Planned: a copy that can go stale is a compile error too. |
 | Changing a list while looping over it | A compile error naming the loop, saying to use `for ref` or loop over indexes. |
-| Ignoring an error | A call that can fail needs `?`, `else` or `match`. Discarding an error on purpose needs `ignore(result, "why")`. |
+| Ignoring an error | A call that can fail needs `?`, `else` or `match`. Planned: `_ = f()` on a call that can fail is a compile error too, and `ignore` goes. |
 | Assuming something can't fail | Asserting success needs `expect("reason")`, and an empty reason is rejected. |
 | Leaving a stub behind | Unused functions and types are lint errors. Planned: `todo()`, which compiles in development builds and is an error in release builds. |
 | Forgetting the last step | Planned: a type can require that it's finished, so a `Transaction` that's never committed doesn't compile. |

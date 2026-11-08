@@ -1,0 +1,9 @@
+source 4ab18eaefb35b952729f6412d92ef39b12395a0e290feef6a54062c9edf6be67
+code 0
+stdout 552
+156 187 32
+2928 76
+10 141
+[Points(xs=[1, 2, 65], label="a name long enough to be held in a block of its own, not in place"), Points(xs=[3, 1], label="p")]
+[Tree.Many(items=[Tree.Leaf(value=1), Tree.Named(name="a name long enough to be held in a block of its own, not in place", value=2), Tree.Many(items=[Tree.Named(name="short", value=3)])]), Tree.Leaf(value=4), Tree.Many(items=[Tree.Leaf(value=1), Tree.Named(name="a name long enough to be held in a block of its own, not in place", value=2), Tree.Many(items=[Tree.Named(name="short", value=3)])])]
+stderr 0

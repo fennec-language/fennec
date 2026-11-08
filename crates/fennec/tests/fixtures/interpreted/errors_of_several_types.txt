@@ -1,0 +1,36 @@
+source 4606e8a4b00f6c1e5962dd9a14643f4b5d1b7884de2d831e785861bbf995d0fd
+code 0
+stdout 467
+0
+-1 -1
+Held(items=[2, 2], table={"k": 2})
+0 0
+Coded(code=2)
+1 Coded(code=2)
+Short(why="too big")
+-1 Short(why="too big")
+1
+coded 2
+short too big
+Ok(-5)
+-5
+Ok(-4)
+-4
+Err(Coded(code=2))
+Coded(code=2)
+Coded(code=2)
+[Coded(code=2)]
+Coded(code=2)
+Err(Coded(code=2))
+Coded(code=2)
+Coded(code=2)
+[Coded(code=2)]
+Coded(code=2)
+Err(Short(why="too big"))
+Short(why="too big")
+Short(why="too big")
+[Short(why="too big")]
+Short(why="too big")
+Coded(code=2)
+Short(why="too big")
+stderr 0

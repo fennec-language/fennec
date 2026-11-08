@@ -1,0 +1,10 @@
+source ff1f962ce8d03f3d5dcf19712ba1450756ca8312c030f00f66c36ccb1693b1fb
+code 0
+stdout 95
+True True False False True
+True False
+True False False True 1
+True False
+True False
+True False
+stderr 0

@@ -306,7 +306,7 @@ fn file_method(
         return Err(no_method(&Value::str("File"), method, span));
     };
     let args: Vec<Value> = args.into_iter().map(|arg| arg.value).collect();
-    real_file(*handle, method, &args, span)
+    crate::replay::value(format_args!("File.{method}"), span, || real_file(*handle, method, &args, span))
 }
 
 impl Interp<'_> {

@@ -12,6 +12,7 @@ mod lsp;
 mod parallel;
 mod projects;
 mod reached_runs;
+mod replay;
 mod selfhost;
 mod syntax_errors;
 mod unchanged_tests;

@@ -242,8 +242,7 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
         needless_elses(&def.body, sources, &mut found);
         found.extend(return_bool(&def.body, sources));
     }
-    let mut walked = module.clone();
-    fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
+    fennec_syntax::read::exprs(module, &mut |expr| {
         found.extend(chained_compare(expr, sources));
         found.extend(manual_default(expr, sources));
     });

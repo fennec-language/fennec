@@ -1,0 +1,18 @@
+from std.net import NetError, Connection
+from std.concurrent import Crashed
+
+def beside(conn: Connection, clock: Clock, stdout: Stdout) fails NetError:
+    clock.sleep(50ms)
+    conn.write("from the launched task\n")?
+    stdout.print("launched wrote")
+
+def main(net: Net, clock: Clock, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            with launch(() => beside(conn, clock, stdout))?:
+                line = conn.read_line()? else "ended"
+                stdout.print("round read", line)
+                conn.write("from the round\n")?
+            break
+    stdout.print("after server")

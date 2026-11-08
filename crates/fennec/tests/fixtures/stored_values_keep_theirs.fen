@@ -1,0 +1,56 @@
+struct Box:
+    item: list[int]
+
+def main(stdout: Stdout):
+    mut a = [1, 2]
+    t = (a, 1)
+    a[0] = 9
+    stdout.print(t, a)
+
+    mut b = [1, 2]
+    d = {"k": b}
+    b[0] = 9
+    stdout.print(d, b)
+
+    mut c = [1, 2]
+    mut outer: list[list[int]] = [[0]]
+    outer.insert(0, c)
+    c[0] = 9
+    stdout.print(outer, c)
+
+    mut e = [1, 2]
+    f = () => e[0] + e.len()
+    e[0] = 9
+    stdout.print(f(), e)
+
+    mut g = [1, 2]
+    mut held: dict[str, list[int]] = {}
+    held["k"] = g
+    g[0] = 9
+    stdout.print(held, g)
+
+    mut h = [1, 2]
+    u = Box(item=h)
+    h[0] = 9
+    stdout.print(u, h)
+
+    mut i = [1, 2]
+    o: list[int]? = i
+    i[0] = 9
+    stdout.print(o, i)
+
+    mut j = [1, 2]
+    mut q: dict[str, list[int]] = {}
+    w = q.setdefault("k", j)
+    j[0] = 9
+    stdout.print(q, w, j)
+
+    mut k = "text that is long enough to live in a block"
+    p = (k, 2)
+    k += "!"
+    stdout.print(p, k.len())
+
+    mut l = [1, 2]
+    z = [x for x in [l, l]]
+    l[0] = 9
+    stdout.print(z, l)

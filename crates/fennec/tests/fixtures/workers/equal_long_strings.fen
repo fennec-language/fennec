@@ -1,0 +1,11 @@
+def main(stdout: Stdout):
+    base = "a string long enough to need its own block of text "
+    target = f"{base}7"
+    table = {target: 5}
+    numbers = [n for n in range(20000)]
+    equals = [f"{base}{n}" == target for n in parallel(numbers)]
+    found = [table.get(f"{base}{n}") else 0 for n in parallel(numbers)]
+    equal_count = sum(1 for yes in equals if yes)
+    total = sum(found)
+    stdout.print("equal", equal_count)
+    stdout.print("found", total)

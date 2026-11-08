@@ -230,6 +230,8 @@ pub(crate) struct Accounts {
     cleaning: usize,
     /// Which task it is, in a recording or a replay, for naming its entries.
     replay: Option<crate::replay::Task>,
+    /// The mark in the blocks it makes, so that when it ends it takes only its own.
+    task: u64,
 }
 
 #[cfg(any(test, feature = "threads"))]
@@ -238,6 +240,11 @@ impl Accounts {
     /// stopping when `stop` is set.
     pub(in crate::embed) fn for_task(lent: Option<Arc<Table>>, stop: Arc<AtomicU8>) -> Accounts {
         Accounts { lent, stop: Some(stop), replay: crate::replay::child(), ..Accounts::default() }
+    }
+
+    /// Marks what it makes from now on as the blocks of the task numbered `task` on this thread.
+    pub(in crate::embed) fn set_task(&mut self, task: u64) {
+        self.task = super::heap::task_mark(task);
     }
 
     /// Which task it is, in a recording or a replay, for something else to say from here on.
@@ -257,7 +264,7 @@ impl Accounts {
 #[cfg(any(test, feature = "threads"))]
 pub(crate) fn swap_accounts(accounts: &mut Accounts) {
     super::with(|state| {
-        state.heap.swap_made(&mut accounts.made);
+        state.heap.swap_made(&mut accounts.made, &mut accounts.task);
         let same = match (&state.heap.lent, &accounts.lent) {
             (Some(here), Some(there)) => Arc::ptr_eq(here, there),
             (None, None) => true,

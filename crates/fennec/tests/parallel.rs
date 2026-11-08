@@ -318,7 +318,10 @@ fn prints_wanted() -> String {
     let mut wanted = String::from("before\n");
     for n in 0..50_000 {
         let word = format!("text long enough to be held in a block of its own, {n}");
-        wanted.push_str(&format!("first {word} {}\nsecond {word} {}\n", word.len(), word.len()));
+        let length = word.len().to_string();
+        for first_or_second in ["first ", "second "] {
+            wanted.extend([first_or_second, &word, " ", &length, "\n"]);
+        }
     }
     wanted + "after\n"
 }

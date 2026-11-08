@@ -13,15 +13,15 @@
 
 mod git;
 mod lock;
+pub mod manifest;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 
 use fennec_blake3::Hash;
-use fennec_kit::{Dependency, Manifest, Source};
-
 pub use lock::{Pin, pins, with_pins};
+pub use manifest::{Dependency, Manifest, Source, valid_name};
 
 /// A kit's files, by their path from its folder, like `kit.toml` and `src/shapes.fen`.
 pub type Files = BTreeMap<String, Vec<u8>>;
@@ -48,6 +48,8 @@ pub struct Found {
     pub folder: PathBuf,
     /// What `kit.lock` pins it to, when it's from git.
     pub pin: Option<Pin>,
+    /// The kits it names in its own `kit.toml`, which are the only ones it can import.
+    pub uses: Vec<String>,
 }
 
 /// The kits in the store, and whether fetching any that are missing is allowed.
@@ -77,6 +79,13 @@ impl Kits {
     /// than fetched.
     pub fn new(home: &Path, offline: bool) -> Self {
         Kits { home: home.to_path_buf(), offline }
+    }
+
+    /// The store in this machine's Fennec folder, which fetches nothing with `FENNEC_OFFLINE` set
+    /// (as the launcher sets it for `--offline`). None with no home folder to keep it in.
+    pub fn of_this_machine() -> Option<Self> {
+        let home = fennec_build::fennec_home()?;
+        Some(Kits::new(&home, std::env::var_os("FENNEC_OFFLINE").is_some()))
     }
 
     /// Where a kit with these files' hash is kept.
@@ -304,7 +313,8 @@ fn walk(root: &Path, resolve: Resolve<'_>) -> Result<Vec<Found>, String> {
         let manifest = manifest_of(&folder)?;
         let by = format!("`{name}`");
         follow(&Named { folder: folder.clone(), by, from_git: pin.is_some() }, &manifest, &mut queue);
-        found.push((Found { name: name.to_owned(), folder, pin }, place));
+        let uses = manifest.dependencies.iter().map(|used| used.name.clone()).collect();
+        found.push((Found { name: name.to_owned(), folder, pin, uses }, place));
     }
     Ok(found.into_iter().map(|(found, _)| found).collect())
 }

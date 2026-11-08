@@ -70,7 +70,8 @@ impl FnCx<'_> {
             return;
         }
         if let Some(entry) = self.checker.program.functions.get(key) {
-            let source = crate::lend_lowering::Source { def: entry.def.clone(), method };
+            let source =
+                crate::lend_lowering::Source { def: entry.def.clone(), method, gives: gives.clone() };
             self.checker.sources.insert((span.start, span.end), source);
         }
     }

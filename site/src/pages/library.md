@@ -8,7 +8,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 
 <p class="lede">Fennec comes with batteries included, like Python. Where Python has a module for something, Fennec's usually has the same name.</p>
 
-> **Partly built.** `math`, `layout`, `path`, `fs`, `json`, `toml`, `pack`, `csv`, `base64`, `compress`, `collections`, `random`, `time`, `string`, `re`, `unicode`, `log`, `cli`, `net`, `url`, `process`, `crypto` and `uuid` work today, along with the `Stdout`, `Stdin`, `Args`, `Fs`, `Clock`, `Env`, `Entropy`, `Process` and `Net` capabilities. Anything marked planned below isn't built yet. See the [roadmap](/roadmap/).
+> **Partly built.** `math`, `layout`, `path`, `fs`, `json`, `toml`, `pack`, `csv`, `base64`, `compress`, `collections`, `random`, `time`, `string`, `re`, `unicode`, `log`, `cli`, `net`, `url`, `process`, `crypto`, `uuid`, `concurrent`, `sql`, `sqlite` and `postgres` work today, along with the `Stdout`, `Stdin`, `Args`, `Fs`, `Clock`, `Env`, `Entropy`, `Process` and `Net` capabilities. Anything marked planned below isn't built yet. See the [roadmap](/roadmap/).
 
 ## What's in it
 
@@ -19,10 +19,11 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | Files and the OS | `fs`, with files opened by `with`, `path`, `process`, `cli`, and environment variables through `Env` |
 | Data formats | `json`, `toml`, `pack`, `csv`, `base64`, `compress` |
 | Networking | `net`: TCP, UDP, an HTTP client with TLS, and an HTTP server. `url`. Planned: WebSocket |
-| Security | `crypto`: BLAKE3 and SHA-256 hashes, HMAC and comparing secrets; `uuid`; `Template`, which every t-string makes. Secure random bytes come from the `Entropy` capability |
+| Security | `crypto`: BLAKE3 and SHA-256 hashes, HMAC, comparing secrets, and `Secret`, which can't be printed, logged or saved; `uuid`; `Template`, which every t-string makes. Secure random bytes come from the `Entropy` capability |
 | Diagnostics | `log` |
 | Games | `math`: `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4`, checked bit for bit against a widely used native math library. `layout` for lists stored a field at a time. Planned: `Simd`, and `audio` and `gpu` as kits |
-| Storage | Planned: `sqlite`, which takes t-strings so SQL injection can't be written |
+| Tasks | `concurrent`: `Channel`, its ends `Inbox` and `Sender`, and the errors `Closed`, `Timeout` and `Crashed`, for `with launch`. Planned: `TaskGroup` and pools |
+| Storage | `sql`, one interface for databases. `sqlite`, SQLite compiled in, which takes only t-strings, so SQL injection can't be written. `postgres`, Postgres's protocol in Fennec: messages, sign-in and queries so far, with connecting next |
 
 ## Importing what you use
 

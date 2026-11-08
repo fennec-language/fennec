@@ -37,8 +37,12 @@ description: What Fennec does today, what's being built next, and the design que
 - t-strings, `t"..."`, which keep the text apart from the values, and `LiteralStr`, text written in the source.
 - `parallel` over collections, streams and a server's connections, on every core, with reductions that combine in a fixed order. Each server round closes its connection when it ends, a failure passing up stops the server, and a crash ends only its own round.
 - `shared T` and `lock`, with a crash inside `lock x as ref` rolled back so nobody sees a half-change.
+- `with launch(...)`, a task beside you until its block ends, and bounded channels, `Channel`, `Inbox` and `Sender`, natively.
+- Sized numbers from `i8` to `u32`, each operation checked against its size, with literals taking the size they go into and `u8.from(x)?` and `u8.parse(text)?` for numbers from outside.
+- A function that can fail says `fails` in its signature, a failure passes up only with `?`, and a `match` over what can fail handles both sides. `fennec fix` writes the first two.
 - `with` and `lend`, for sources of your own and for files: `fs.create` puts a file in place only when its block ends, synced to the disk, and `fs.open` reads in lines or chunks.
 - Capabilities: `Stdout`, `Stdin`, `Args`, `Fs`, `Clock`, `Env`, `Entropy`, `Process` and `Net`.
+- Float sums and `math.dot` that add in one fixed pattern, the same bits everywhere. `xs.swap(i, j)`.
 
 **The standard library**
 
@@ -46,6 +50,8 @@ description: What Fennec does today, what's being built next, and the design que
 - `json`, `toml` and `pack`, which save any type whose fields can be saved. `csv`, `base64` and `compress`.
 - `net`: TCP, UDP, an HTTP client with TLS, and an HTTP server.
 - `math`, with `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` for games. `layout`, `path`, `fs`, `random`, `time`, `string`, `re`, `unicode`, `log`, `cli`, `url`, `process`, `crypto` and `uuid`.
+- `crypto`'s `Secret`, which can't be printed, logged or saved, and hashes over a file a chunk at a time.
+- `concurrent`, for tasks and channels. `sql` and `sqlite`, which take only t-strings, with a test's database a real file of its own. `postgres`, so far its messages, sign-in and queries, with no network of its own.
 
 [The guide](https://github.com/fennec-language/fennec/blob/main/docs/guide.md) walks through building a real program with all of this. Every example in the repository's `examples/` folder is a test, including its error messages, and the [language reference](/reference/) is generated from them.
 
@@ -55,20 +61,19 @@ description: What Fennec does today, what's being built next, and the design que
 - **Wrapped C libraries for games.** Windows, input, audio and graphics, wrapped by the Fennec project behind safe APIs. Your own code never needs `unsafe`, because there isn't any.
 - **Hot reload,** so a running game picks up a change.
 - **Debug info and stack traces,** so a failure shows the calls that led to it.
-- **Sized number types,** like `i32`, `u8` and `f32`.
+- **The rest of the sized numbers:** `u64` and `f32` running, and `wrapping_` and `saturating_` methods.
 - **Kit dependencies and [the Den](/den/),** Fennec's registry for kits.
 - **Cross-compiling and WebAssembly.**
-- **The rest of the concurrency design:** `launch` and channels, keeper pools, lock order checked across the whole program, and no waiting inside a lock. The [tour](/tour/#sharing-resources-and-tasks) describes it.
-- **`std.sqlite`,** which takes t-strings, so SQL injection can't be written.
-- **Hashing a file in chunks,** with `blake3(file.chunks(n))`.
+- **The rest of the concurrency design:** `TaskGroup`, keeper pools, lock order checked across the whole program, and no waiting inside a lock. The [tour](/tour/#sharing-resources-and-tasks) describes it.
+- **`std.postgres` connecting through `std.net`,** on the protocol parts already built.
 
 ## Next: speed and builds
 
-- Everything on LLVM, so the JIT and the interpreter can go. What didn't build natively is at zero, the test fake network is in the runtime, constants have a small evaluator in the compiler, fuzzing checks against pinned outputs and native builds, and the commit before removal has a tag. The JIT is gone. Next, native programs carry no interpreter, and the playground compiles to WebAssembly on a server.
+- Everything on LLVM, so the JIT and the interpreter can go. What didn't build natively is at zero, the test fake network is in the runtime, constants have a small evaluator in the compiler, fuzzing checks against pinned outputs and native builds, and the commit before removal has a tag. The JIT is gone, and native programs carry no interpreter. Next, the interpreter goes from `fennec` itself, and the playground compiles to WebAssembly on a server.
 - Every kernel at 110% of its hand-written twin. The [benchmarks](/benchmarks/) show where each one stands.
 - A shared cache that only trusted builds can write to, checked by a clean rebuild in CI.
-- Float sums, `dot()` and `std.math`'s reductions adding in one fixed pattern of 8 running totals, so they're fast and the same bits everywhere, and `math.fma(a, b, c)`, rounded once.
-- A tiny launcher that fetches the compiler a kit asks for. Pinned compilers never change by themselves.
+- `math.fma(a, b, c)`, rounded once. Float sums and `math.dot` already add in one fixed pattern.
+- Release keys, so the launcher's checks verify a real release. The launcher itself is built, running the compiler a kit pins, and release archives are the same bytes however often they're built.
 
 ## Next: the rest of the language
 
@@ -80,8 +85,7 @@ Each of these is decided and not built.
 - `{x=}` in f-strings.
 - `x.approx(y, within=...)`.
 - Units of measure, as structs whose operators are chosen by their right-hand type, with no new syntax.
-- Notes on errors, so a cleanup that fails after a failure doesn't hide either one.
-- `Secret[str]` in `std.crypto`, which can't be printed, logged or saved.
+- Notes on errors in native code. They work in the checker and the interpreter today.
 - `std.pack` data from an earlier version of a program loading into the new one, with fields matched by name and new fields taking their defaults.
 - Annotations a kit defines for fields, read by generic code.
 

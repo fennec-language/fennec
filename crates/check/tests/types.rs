@@ -94,6 +94,19 @@ fn ints_and_floats_do_not_mix() {
     assert_eq!(in_main(program), ["can't mix int and float in `+` @ half + 1"]);
 }
 
+/// A program using a sized number checks, but isn't run or built yet: nothing past the checker
+/// takes sized numbers, and running one as an `int` would miss where it overflows.
+#[test]
+fn sized_numbers_are_refused_past_the_checker() {
+    let source =
+        "def main(stdout: Stdout):\n    mut pixel: u8 = 255\n    pixel += 1\n    stdout.print(pixel)\n";
+    let mut module = fennec_syntax::parse(source).expect("it parses");
+    assert!(fennec_check::check(&module).is_ok());
+    let refused = fennec_check::check_to_run(&mut module).err().unwrap_or_default();
+    let said: Vec<String> = refused.iter().map(|problem| problem.message.clone()).collect();
+    assert_eq!(said, ["sized numbers like u8 aren't built yet past the checker"]);
+}
+
 /// A number literal takes the size it goes into, checked to fit: a name's declared type, a
 /// parameter, a return, the other side of an operator, and what `+=` changes. With nothing to go
 /// by, it's an `int` or a `float` as before.
@@ -152,6 +165,7 @@ fn sized_numbers_mix_only_with_their_own_size() {
         def mixed(stdout: Stdout, small: i32, wide: i64, byte: u8, single: f32, double: float, count: int):
             stdout.print(small + wide, byte - small, single * double, count + small)
             stdout.print(small < wide, small & wide, small / small + 0.5, -byte, small == count)
+            stdout.print(byte << count, small >> byte, 1 == double, byte << single)
     ";
     assert_eq!(
         problems(program),
@@ -164,6 +178,8 @@ fn sized_numbers_mix_only_with_their_own_size() {
             "can't mix i32 and int in `&` @ small & wide",
             "can't negate a u8, which is never below 0 @ -byte",
             "`==` compares an i32 with an int, which are never equal @ small == count",
+            "`==` compares an int with a float, which are never equal @ 1 == double",
+            "can't mix u8 and f32 in `<<` @ byte << single",
         ]
     );
 }

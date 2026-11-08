@@ -231,9 +231,15 @@ impl FnCx<'_> {
     /// The two sides of `==` or `!=`. A leading-dot case on one side takes its enum from
     /// the other side.
     pub(crate) fn compared(&mut self, lhs: &Expr, rhs: &Expr) -> (Type, Type) {
-        if (leading_dot(lhs) && !leading_dot(rhs)) || (number_literal(lhs) && !number_literal(rhs)) {
+        if leading_dot(lhs) && !leading_dot(rhs) {
             let right = self.expr(rhs);
             (self.expr_as(lhs, &right), right)
+        } else if number_literal(lhs) && !number_literal(rhs) {
+            // `0 == pixel`: a number literal takes a sized number's size, and nothing else's.
+            let right = self.expr(rhs);
+            let left =
+                if matches!(right, Type::Sized(_)) { self.expr_as(lhs, &right) } else { self.expr(lhs) };
+            (left, right)
         } else {
             let left = self.expr(lhs);
             let right = self.expr_as(rhs, &left);

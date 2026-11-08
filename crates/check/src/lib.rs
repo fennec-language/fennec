@@ -420,7 +420,28 @@ fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, 
     let names = own_types_apart(module);
     let checked =
         checker::Checker::new(module).run(scope).map_err(|problems| as_written(problems, &names))?;
-    Ok(resolved(module, checked))
+    let signatures = resolved(module, checked);
+    match sized_value(&signatures) {
+        Some(diagnostic) => Err(vec![diagnostic]),
+        None => Ok(signatures),
+    }
+}
+
+/// The first value of a sized number type in a program about to run or be built, which only the
+/// checker takes so far: a program using one checks, but nothing runs it yet, rather than run it
+/// as an `int` that never overflows where it should.
+fn sized_value(signatures: &Signatures) -> Option<Diagnostic> {
+    fn holds(ty: &Type) -> bool {
+        matches!(ty, Type::Sized(_)) || ty.children().into_iter().any(holds)
+    }
+    let found = signatures.types.functions.values().flat_map(|body| &body.exprs);
+    let ((start, end), ty) =
+        found.filter(|(_, ty)| holds(ty)).min_by_key(|((start, end), _)| (*start, *end))?;
+    let span = Span { start: *start, end: *end };
+    Some(
+        Diagnostic::new(format!("sized numbers like {ty} aren't built yet past the checker"), span)
+            .with_help("use `int` or `float` for now: the checker takes the sized types, but running them isn't built"),
+    )
 }
 
 fn resolved(module: &mut Module, checked: Checked) -> Signatures {

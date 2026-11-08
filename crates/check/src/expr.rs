@@ -582,7 +582,11 @@ impl FnCx<'_> {
         if let Type::Sized(num) = left
             && !num.is_float()
         {
-            if left == right || *right == Type::Unknown {
+            // A shift's amount can be an integer of any size: what's shifted keeps its own.
+            let shift = matches!(op, BinOp::ShiftLeft | BinOp::ShiftRight)
+                && matches!(right, Type::Int | Type::Sized(_))
+                && !matches!(right, Type::Sized(by) if by.is_float());
+            if left == right || *right == Type::Unknown || shift {
                 return left.clone();
             }
             self.error(mixed_sizes(op, left, right, span));

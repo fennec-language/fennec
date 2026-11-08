@@ -3,13 +3,6 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-/// The store of fetched kits, which fetches nothing with `FENNEC_OFFLINE` set (as the launcher sets
-/// it for `--offline`).
-pub(crate) fn kits() -> Option<fennec_deps::Kits> {
-    let home = fennec_build::fennec_home()?;
-    Some(fennec_deps::Kits::new(&home, std::env::var_os("FENNEC_OFFLINE").is_some()))
-}
-
 /// `fennec update`, in the kit around `path`.
 pub(crate) fn update(path: &str) -> ExitCode {
     let Some(root) = Path::new(path)
@@ -22,7 +15,7 @@ pub(crate) fn update(path: &str) -> ExitCode {
         );
         return ExitCode::FAILURE;
     };
-    let Some(kits) = kits() else {
+    let Some(kits) = fennec_deps::Kits::of_this_machine() else {
         eprintln!("error: there's no home folder to keep fetched kits in; set FENNEC_HOME");
         return ExitCode::FAILURE;
     };

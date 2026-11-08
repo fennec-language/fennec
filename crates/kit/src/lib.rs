@@ -9,17 +9,16 @@
 mod embed;
 mod init;
 mod load;
-mod manifest;
 mod scope;
 mod starter;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use fennec_syntax::{Blob, Diagnostic, Module, Sources};
 
+pub use fennec_deps::{Dependency, Manifest, Source, valid_name};
 pub use init::{GUIDANCE, Guidance, Initialized, init};
-pub use manifest::{Dependency, Manifest, Source, valid_name};
 pub use starter::create;
 
 /// A program ready to check and run: every file merged into one module.
@@ -34,6 +33,8 @@ pub struct Program {
     pub embedded: Vec<Embedded>,
     /// Where a kit's modules are, and how messages show that, for looking in the ones not loaded.
     pub kit_src: Option<(PathBuf, String)>,
+    /// The files loaded from other kits, as messages show them.
+    pub dependency_files: HashSet<String>,
 }
 
 /// A file `embed` read, and what it held then.
@@ -44,6 +45,13 @@ pub struct Embedded {
 }
 
 impl Program {
+    /// Whether something at `span` is in this kit's own files, rather than a dependency's, whose
+    /// lints aren't for this kit to act on.
+    #[must_use]
+    pub fn is_own(&self, span: fennec_syntax::Span) -> bool {
+        self.sources.file_at(span).is_none_or(|(file, ..)| !self.dependency_files.contains(file))
+    }
+
     /// The file of the kit that gives a type this method with `extend`, which this program didn't
     /// load, as messages show it, with its module's name. `who` is how a message names the type.
     #[must_use]

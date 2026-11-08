@@ -8528,6 +8528,36 @@ fn the_second_launch_in_a_function_keeps_its_stop_after() -> std::io::Result<()>
     Ok(())
 }
 
+/// A channel to `.Every` gives every listener every message. One that falls behind fails loudly
+/// unless it asked for `.DropOldest`, when it goes on from the oldest message kept.
+#[test]
+fn a_channel_to_every_listener() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("channel_every")?;
+    let program = dir.join("every.fen");
+    std::fs::write(&program, include_str!("fixtures/channel_every.fen"))?;
+    let executable = dir.join("every");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "[5050, 5050]\n297\nfailed: Crashed(why=\"the task crashed\")\n",
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    assert!(String::from_utf8_lossy(&ran.stderr).contains("when_behind=.DropOldest"));
+    Ok(())
+}
+
 /// A channel's messages cross it as the runtime holds them, of each kind: a number, a string long
 /// enough for a block, a struct held in place, and a list. A receive or a send that waits past its
 /// timeout fails as `Timeout`.

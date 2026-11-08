@@ -255,6 +255,13 @@ impl Lowering<'_> {
         }
         self.finish(Terminator::Jump(join));
         self.current = present;
+        // `None else default`, as a `with` source's parameter is when its default is written in,
+        // never gets here: it's always the default.
+        if held == Type::None {
+            self.finish(Terminator::Jump(join));
+            self.current = join;
+            return Ok(Operand::Local(dest));
+        }
         let inside = match held {
             Type::Optional(inner) => {
                 let inside = self.temporary(*inner);
@@ -266,7 +273,6 @@ impl Lowering<'_> {
                 self.emit(InstKind::GetOk { dest: inside, value }, span);
                 Operand::Local(inside)
             }
-            Type::None => Operand::None,
             _ => return Err("it uses `else` on a result of nothing".to_owned()),
         };
         let inside = self.coerce(inside, &ty, span)?;

@@ -1121,7 +1121,7 @@ The build lanes make this one general piece that undoes the writes in a block. O
 **Not in the language: `del`, destructors, moves, lifetimes, `unsafe` and global state.** Left for when real programs need them: `select`, handles that move between tasks, and results returned from tasks.
 *Why:* Each would bring back a hidden moment or a hidden owner that the rules above keep visible.
 
-**One `Channel[T]` serves one receiver or every listener.** By default it delivers each message to one receiver, as a work queue. `to=.Every` gives every listener every message, and receiving reads the same either way, `for msg in ch`. With `.Every`, `send` never waits, and a listener that falls behind fails loudly, unless it asked for `when_behind=.DropOldest`. There's no separate events type. Not built yet. This replaces the plan for separate event channels.
+**One `Channel[T]` serves one receiver or every listener.** By default it delivers each message to one receiver, as a work queue. `to=.Every` gives every listener every message, and receiving reads the same either way, `for msg in ch`. With `.Every`, `send` never waits, and a listener that falls behind fails loudly, unless it asked for `when_behind=.DropOldest`. There's no separate events type. This replaces the plan for separate event channels.
 *Why:* One type with one way to receive is less to learn, `send` never stalling keeps a slow listener from holding up the rest, and nothing is lost silently.
 
 **A long-running loop should never wait on another.** It takes what's waiting, does its work and publishes. Waiting belongs to simple consumers at the end of a one-way chain.

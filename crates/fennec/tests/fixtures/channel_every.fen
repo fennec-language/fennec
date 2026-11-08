@@ -1,0 +1,79 @@
+from std.concurrent import Behind, Channel, Closed, Crashed, Sender, Timeout, channel
+from std.time import Duration
+
+# Adds up what it hears until a 0. It answers the first -1, which says it's listening.
+def adds(hits: Channel[int], replies: Sender[int]) fails Closed | Timeout:
+    mut heard = False
+    mut total = 0
+    for hit in hits:
+        if hit == 0: break
+        if hit < 0:
+            if not heard:
+                replies.send(-1)?
+                heard = True
+        else:
+            total += hit
+    replies.send(total)?
+
+# As `adds`, but once it's listening it waits for `gate`, falling behind meanwhile.
+def lags(hits: Channel[int], replies: Sender[int], gate: Channel[int], when_behind: Behind) fails Closed | Timeout:
+    mut heard = False
+    mut total = 0
+    for hit in hits.listen(when_behind=when_behind):
+        if hit == 0: break
+        if hit < 0:
+            if not heard:
+                replies.send(-1)?
+                heard = True
+                _ = gate.receive()?
+        else:
+            total += hit
+    replies.send(total)?
+
+# Pings until `listeners` have answered.
+def until_heard(hits: Channel[int], replies: Channel[int], listeners: int) fails Closed | Timeout:
+    mut answered = 0
+    while answered < listeners:
+        hits.send(-1)?
+        match replies.receive(timeout=Duration(nanos=1_000_000)):
+            case Ok(_):
+                answered += 1
+            case Err(_):
+                pass
+
+def fan_out(stdout: Stdout) fails Closed | Crashed | Timeout:
+    with channel[int](size=1024, to=.Every) as hits:
+        with channel[int](size=8) as replies:
+            # Made outside the arrows, which take what they call as written.
+            back = replies.sender()
+            with launch(() => adds(hits, back))?:
+                with launch(() => adds(hits, back))?:
+                    until_heard(hits, replies=replies, listeners=2)?
+                    for k in range(1, 101):
+                        hits.send(k)?
+                    hits.send(0)?
+            stdout.print(sorted([replies.receive()?, replies.receive()?]))
+
+def behind(when_behind: Behind) -> int fails Closed | Crashed | Timeout:
+    mut total = 0
+    with channel[int](size=4, to=.Every) as hits:
+        with channel[int](size=8) as replies:
+            with channel[int](size=1) as gate:
+                back = replies.sender()
+                with launch(() => lags(hits, back, gate, when_behind))?:
+                    until_heard(hits, replies=replies, listeners=1)?
+                    for k in range(1, 101):
+                        hits.send(k)?
+                    hits.send(0)?
+                    gate.send(1)?
+            total = replies.receive()?
+    total
+
+def main(stdout: Stdout) fails Closed | Crashed | Timeout:
+    fan_out(stdout)?
+    stdout.print(behind(.DropOldest)?)
+    match behind(.Fail):
+        case Ok(total):
+            stdout.print("kept up", total)
+        case Err(problem):
+            stdout.print("failed:", problem)

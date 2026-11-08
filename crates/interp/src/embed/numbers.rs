@@ -22,6 +22,17 @@ pub extern "C" fn parse_int(text: i64, bits: &mut i64) -> i64 {
     })
 }
 
+/// `u64.parse(text)`, as [`parse_int`] reads an int: 0 to 2^64 − 1, its bits written to `bits`.
+pub extern "C" fn parse_u64(text: i64, bits: &mut i64) -> i64 {
+    with(|state| match text_of(state, text).trim().parse::<u64>() {
+        Ok(number) => {
+            *bits = number.cast_signed();
+            1
+        }
+        Err(_) => 0,
+    })
+}
+
 /// `float(text)`, as [`parse_int`] reads an int, with the float's bits written to `bits`.
 pub extern "C" fn parse_float(text: i64, bits: &mut i64) -> i64 {
     with(|state| match text_of(state, text).trim().parse::<f64>() {

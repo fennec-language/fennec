@@ -605,6 +605,40 @@ pub extern "C" fn shown_text(address: i64) -> i64 {
     with(|state| text_address(state, &shown))
 }
 
+/// `str(x)` for a `u64`: a new string of its digits, unsigned.
+pub extern "C" fn u64_text(n: i64) -> i64 {
+    with(|state| text_address(state, &n.cast_unsigned().to_string()))
+}
+
+/// `str(x)` for an `f32`: a new string of the shortest text that reads back as it.
+pub extern "C" fn f32_text(x: f64) -> i64 {
+    with(|state| text_address(state, &crate::format::float32(x)))
+}
+
+/// A new string with a `u64`'s text in a format, like `{n:,}`.
+pub extern "C" fn u64_spec_text(n: i64, spec: i64, start: i64, end: i64) -> i64 {
+    spec_text_with(spec, (start, end), |spec| crate::format::with_spec_u64(n.cast_unsigned(), spec))
+}
+
+/// A new string with an `f32`'s text in a format, like `{x:.2f}`.
+pub extern "C" fn f32_spec_text(x: f64, spec: i64, start: i64, end: i64) -> i64 {
+    spec_text_with(spec, (start, end), |spec| crate::format::with_spec_f32(x, spec))
+}
+
+/// A new string with what `format` makes of the spec in the string block `spec`, failing as the
+/// format does.
+fn spec_text_with(
+    spec: i64,
+    (start, end): (i64, i64),
+    format: impl FnOnce(&str) -> Result<String, String>,
+) -> i64 {
+    attempt(|state: &mut State| {
+        let spec = text(state, spec).unwrap_or_default();
+        let piece = format(&spec).map_err(|message| Diagnostic::new(message, span(start, end)))?;
+        Ok(text_address(state, &piece))
+    })
+}
+
 /// A new string with a float's text in a format, like `{x:.9f}`, with no temporary.
 pub extern "C" fn float_spec_text(x: f64, spec: i64, start: i64, end: i64) -> i64 {
     number_spec_text(&Value::Float(x), spec, (start, end))
@@ -936,6 +970,98 @@ mod place_tests {
         with(|state| assert_eq!(super::text(state, tail).as_deref(), Some("own")));
         let empty = slice(text, 5, 2, 0, 0);
         with(|state| assert_eq!(super::text(state, empty).as_deref(), Some("")));
+        finish();
+    }
+}
+
+#[cfg(test)]
+mod sized_tests {
+    use std::rc::Rc;
+
+    use super::super::text::{f32_header, inline_bytes, u64_header};
+    use super::super::{Tables, finish, heap, lists, numbers, start, with};
+    use super::{f32_spec_text, f32_text, u64_spec_text, u64_text};
+    use crate::packed::Element;
+
+    fn begin() {
+        let tables = Tables {
+            shapes: vec![Rc::new(Element::Str)],
+            elements: vec![Rc::new(Element::U64), Rc::new(Element::F32)],
+            ..Tables::default()
+        };
+        start(tables, crate::Inputs::default());
+    }
+
+    fn text(address: i64) -> String {
+        with(|state| super::text(state, address)).unwrap_or_default()
+    }
+
+    fn string(text: &str) -> i64 {
+        with(|state| heap::text_address(state, text))
+    }
+
+    /// The `f64` that's exactly the `f32` nearest `x`, as native code holds an `f32`.
+    #[expect(clippy::cast_possible_truncation, reason = "rounding to an f32 is the point")]
+    fn f32_of(x: f64) -> f64 {
+        f64::from(x as f32)
+    }
+
+    /// A `u64` shows unsigned however big, and an `f32` as the shortest text that reads back as it,
+    /// in `str`, a header, and an f-string's spec.
+    #[test]
+    fn a_u64_shows_unsigned_and_an_f32_shortest() {
+        begin();
+        let most = u64::MAX.cast_signed();
+        assert_eq!(text(u64_text(most)), "18446744073709551615");
+        assert_eq!(text(u64_text(7)), "7");
+        assert_eq!(text(f32_text(f32_of(0.1))), "0.1");
+        assert_eq!(text(f32_text(f32_of(1.0))), "1.0");
+        assert_eq!(text(f32_text(f32_of(1e20))), "1e+20");
+        assert_eq!(text(f32_text(f32_of(-2.5e-7))), "-2.5e-07");
+        assert_eq!(inline_bytes(&u64_header(most).words), Some(b"18446744073709551615".to_vec()));
+        assert_eq!(inline_bytes(&f32_header(f32_of(0.1)).words), Some(b"0.1".to_vec()));
+        assert_eq!(text(u64_spec_text(most, string(","), 0, 0)), "18,446,744,073,709,551,615");
+        assert_eq!(text(u64_spec_text(1234, string(",d"), 0, 0)), "1,234");
+        assert_eq!(text(f32_spec_text(f32_of(0.1), string(""), 0, 0)), "0.1");
+        assert_eq!(text(f32_spec_text(f32_of(0.1), string(".3f"), 0, 0)), "0.100");
+        assert_eq!(u64_spec_text(most, string(".2f"), 0, 0), 0);
+        let (_, failure, _) = finish();
+        assert!(failure.is_some_and(|failure| failure.message.contains("isn't built yet for a `u64`")));
+    }
+
+    /// `u64.parse` takes 0 to 2^64 − 1 and nothing else.
+    #[test]
+    fn a_u64_parses_from_zero_to_its_most() {
+        begin();
+        let mut bits = 0;
+        assert_eq!(numbers::parse_u64(string("18446744073709551615"), &mut bits), 1);
+        assert_eq!(bits.cast_unsigned(), u64::MAX);
+        assert_eq!(numbers::parse_u64(string(" 42 "), &mut bits), 1);
+        assert_eq!(bits, 42);
+        for wrong in ["-1", "18446744073709551616", "1.5", ""] {
+            assert_eq!(numbers::parse_u64(string(wrong), &mut bits), 0, "{wrong:?}");
+        }
+        finish();
+    }
+
+    /// Inside a list, the runtime shows each kind as it shows one alone.
+    #[test]
+    fn lists_of_u64_and_f32_show_as_their_items_do() {
+        begin();
+        let unsigned = lists::new(0, 2);
+        let floats = lists::new(1, 2);
+        with(|state| {
+            let words = state.heap.block_mut(u64::try_from(unsigned).unwrap()).unwrap();
+            words[lists::LIST_HEADER_WORDS] = u64::MAX;
+            words[lists::LIST_HEADER_WORDS + 1] = 3;
+            let words = state.heap.block_mut(u64::try_from(floats).unwrap()).unwrap();
+            words[lists::LIST_HEADER_WORDS] = f32_of(0.1).to_bits();
+            words[lists::LIST_HEADER_WORDS + 1] = f32_of(2.0).to_bits();
+        });
+        assert_eq!(heap::shown::shown(u64::try_from(unsigned).unwrap()), "[18446744073709551615, 3]");
+        assert_eq!(heap::shown::shown(u64::try_from(floats).unwrap()), "[0.1, 2.0]");
+        heap::free(unsigned);
+        heap::free(floats);
         finish();
     }
 }

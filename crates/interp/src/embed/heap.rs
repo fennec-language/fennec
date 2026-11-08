@@ -832,7 +832,7 @@ fn boxed_words(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec
             }
             *at = start + size;
         }
-        Element::Int | Element::Float | Element::Bool => *at += 1,
+        Element::Int | Element::Float | Element::Bool | Element::U64 | Element::F32 => *at += 1,
     }
 }
 
@@ -911,14 +911,14 @@ fn boxed_addresses(element: &Element, words: &[u64], at: &mut usize, found: &mut
             }
             *at = start + size;
         }
-        Element::Int | Element::Float | Element::Bool => *at += 1,
+        Element::Int | Element::Float | Element::Bool | Element::U64 | Element::F32 => *at += 1,
     }
 }
 
 /// Whether values of a kind, laid out in place, hold blocks.
 pub(super) fn holds_floats(element: &Element) -> bool {
     match element {
-        Element::Float => true,
+        Element::Float | Element::F32 => true,
         Element::Struct { fields, .. } => fields.iter().any(|(_, field)| holds_floats(field)),
         Element::Enum { cases, .. } => {
             cases.iter().any(|(_, fields)| fields.iter().any(|(_, field)| holds_floats(field)))
@@ -950,7 +950,7 @@ pub(super) fn holds_blocks(element: &Element) -> bool {
         Element::Enum { cases, .. } => {
             cases.iter().any(|(_, fields)| fields.iter().any(|(_, field)| holds_blocks(field)))
         }
-        Element::Int | Element::Float | Element::Bool => false,
+        Element::Int | Element::Float | Element::Bool | Element::U64 | Element::F32 => false,
     }
 }
 
@@ -1221,8 +1221,10 @@ pub(super) fn read_word(state: &State, element: &Element, word: u64) -> Value {
 fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'w u64>) -> Value {
     let word = |words: &mut dyn Iterator<Item = &'w u64>| words.next().copied().unwrap_or(0);
     match element {
-        Element::Int => Value::Int(i64::from_ne_bytes(word(words).to_ne_bytes())),
-        Element::Float => Value::Float(f64::from_bits(word(words))),
+        // The interpreter has no `u64`: it holds one as an `int` of the same bits, so it goes back
+        // unchanged, though a value of 2^63 or more reads there as negative.
+        Element::Int | Element::U64 => Value::Int(i64::from_ne_bytes(word(words).to_ne_bytes())),
+        Element::Float | Element::F32 => Value::Float(f64::from_bits(word(words))),
         Element::Bool => Value::Bool(word(words) != 0),
         Element::Boxed(_) | Element::Str | Element::Object => read_block(state, word(words)),
         Element::Text => {
@@ -1372,9 +1374,10 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
         named::Written::NotNamed => {}
     }
     match (element, value) {
-        (Element::Int, Value::Int(n)) => words.push(u64::from_ne_bytes(n.to_ne_bytes())),
+        (Element::Int | Element::U64, Value::Int(n)) => words.push(u64::from_ne_bytes(n.to_ne_bytes())),
         (Element::Float, Value::Float(x)) => words.push(x.to_bits()),
         (Element::Bool, Value::Bool(b)) => words.push(u64::from(*b)),
+        (Element::F32, Value::Float(x)) => words.push(crate::packed::as_f32(*x).to_bits()),
         (Element::Boxed(shape), value) => {
             let address = write_block(state, *shape, value)?;
             words.push(u64::try_from(address).ok()?);

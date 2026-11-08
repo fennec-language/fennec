@@ -48,6 +48,8 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_dict_missing_header",
     "fennec_err",
     "fennec_float_spec_text",
+    "fennec_f32_spec_text",
+    "fennec_u64_spec_text",
     "fennec_int_power",
     "fennec_int_spec_text",
     "fennec_list_from_value",
@@ -85,8 +87,10 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_str_slice",
     "fennec_str_part",
     "fennec_int_header",
+    "fennec_u64_header",
     "fennec_code_header",
     "fennec_float_header",
+    "fennec_f32_header",
     "fennec_str_split",
     "fennec_stream_next",
     "fennec_to_bool",
@@ -173,6 +177,8 @@ export! {
     fennec_lock_undo_word(a0: i64, a1: i64, a2: i64) -> i64 => rollback::undo_word(a0, a1, a2);
     fennec_print_int(a0: i64) => io::print_int(a0);
     fennec_print_float(a0: f64) => io::print_float(a0);
+    fennec_print_u64(a0: i64) => io::print_u64(a0);
+    fennec_print_f32(a0: f64) => io::print_f32(a0);
     fennec_print_bool(a0: i8) => io::print_bool(a0);
     fennec_print_str(a0: i64) => io::print_str(a0);
     fennec_print_block(a0: i64) => io::print_block(a0);
@@ -206,9 +212,14 @@ export! {
     fennec_pop_empty(a0: i64, a1: i64) => lists::pop_empty(a0, a1);
     fennec_buffer_pop_empty(a0: i64, a1: i64) => lists::pop_empty_buffer(a0, a1);
     fennec_parse_int(a0: i64, a1: &mut i64) -> i64 => numbers::parse_int(a0, a1);
+    fennec_parse_u64(a0: i64, a1: &mut i64) -> i64 => numbers::parse_u64(a0, a1);
     fennec_parse_float(a0: i64, a1: &mut i64) -> i64 => numbers::parse_float(a0, a1);
     fennec_not_a_number(a0: i64, a1: i64) -> i64 => numbers::not_a_number(a0, a1);
     fennec_int_text(a0: i64) -> i64 => strings::int_text(a0);
+    fennec_u64_text(a0: i64) -> i64 => strings::u64_text(a0);
+    fennec_f32_text(a0: f64) -> i64 => strings::f32_text(a0);
+    fennec_u64_spec_text(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::u64_spec_text(a0, a1, a2, a3);
+    fennec_f32_spec_text(a0: f64, a1: i64, a2: i64, a3: i64) -> i64 => strings::f32_spec_text(a0, a1, a2, a3);
     fennec_str_repr(a0: i64) -> i64 => strings::str_repr(a0);
     fennec_str_codes(a0: i64, a1: i64) -> i64 => strings::codes(a0, a1);
     fennec_str_from_code(a0: i64) -> i64 => strings::from_code(a0);
@@ -321,6 +332,8 @@ export! {
     fennec_int_header(a0: i64) -> text::Text => text::int_header(a0);
     fennec_code_header(a0: i64) -> text::Text => text::code_header(a0);
     fennec_float_header(a0: f64) -> text::Text => text::float_header(a0);
+    fennec_u64_header(a0: i64) -> text::Text => text::u64_header(a0);
+    fennec_f32_header(a0: f64) -> text::Text => text::f32_header(a0);
     fennec_str_char_at(a0: i64, a1: i64) -> i64 => strings::char_at(a0, a1);
     fennec_dict_new(a0: i64, a1: i64) -> i64 => dicts::new(a0, a1);
     fennec_dict_set(a0: i64, a1: i64, a2: i64) -> i64 => dicts::set(a0, a1, a2);

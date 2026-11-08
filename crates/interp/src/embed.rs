@@ -894,6 +894,16 @@ pub mod io {
         attempt(|state: &mut State| write(state, &format::float(x)));
     }
 
+    /// `print` of a `u64`, its bits in `n`: unsigned.
+    pub extern "C" fn print_u64(n: i64) {
+        attempt(|state: &mut State| write(state, &n.cast_unsigned().to_string()));
+    }
+
+    /// `print` of an `f32`, held as the `f64` that's exactly it.
+    pub extern "C" fn print_f32(x: f64) {
+        attempt(|state: &mut State| write(state, &format::float32(x)));
+    }
+
     pub extern "C" fn print_bool(b: i8) {
         attempt(|state: &mut State| write(state, if b != 0 { "True" } else { "False" }));
     }

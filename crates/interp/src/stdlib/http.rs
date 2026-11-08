@@ -585,10 +585,14 @@ pub(crate) mod tls {
     struct Server(Arc<ServerConfig>);
 
     /// One connection's TLS on a server, driven over a socket that doesn't block.
+    #[cfg_attr(
+        not(any(test, feature = "threads")),
+        expect(dead_code, reason = "only a served connection uses it, which needs threads")
+    )]
     struct Session(ServerConnection);
 
     /// A server's TLS from its certificate chain and private key, as PEM text.
-    pub(super) fn server(chain: &str, key: &str) -> Result<Arc<dyn TlsServer>, Failure> {
+    pub(crate) fn server(chain: &str, key: &str) -> Result<Arc<dyn TlsServer>, Failure> {
         let unreadable = |what: &str| Failure::Tls(format!("the {what} isn't PEM that can be read"));
         let certificates = CertificateDer::pem_slice_iter(chain.as_bytes())
             .collect::<Result<Vec<_>, _>>()

@@ -8,6 +8,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -60,6 +61,11 @@ fn fail(message: String) -> i64 {
 /// `parallel` call's ranges. Gives back 0, 1 when the server couldn't be served, and 2 when a round
 /// failed, its failure's value then given by `fennec_net_serve_failure`.
 pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
+    // In a recording or a replay, the call serving is a task, whose children are its rounds.
+    let call = crate::replay::child();
+    if let Some(rounds) = call.as_ref().and_then(|call| crate::replay::taken_at(&call.name(), "accept")) {
+        return replayed(rounds, body, env, call.as_ref());
+    }
     let Some((listener, tls)) = crate::stdlib::net::take_listener(server) else {
         return fail("this server isn't open to serve".to_owned());
     };
@@ -87,7 +93,7 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     let started = |stopper| STOPPERS.lock().unwrap_or_else(PoisonError::into_inner).push(stopper);
     super::super::write_kept_output();
     let lent = threads::lend();
-    let finished = super::serve(listener, pool, Some(&lent), &handler, started);
+    let finished = super::serve(listener, pool, Some(&lent), &handler, (started, call.as_ref(), tls));
     threads::take_back(lent);
     threads::settle(finished.owners);
     let failure = passed.lock().unwrap_or_else(PoisonError::into_inner).take();
@@ -100,6 +106,36 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
 /// How many connections this worker is serving now.
 pub(in crate::embed) fn connections() -> usize {
     CONNS.with_borrow(HashMap::len)
+}
+
+/// `net_serve` in a replay: the recorded rounds run again with no socket, each reading and writing
+/// what its recording has, and the server stops once they've all ended, as if stopped there.
+fn replayed(rounds: u64, body: ConnBody, env: i64, call: Option<&crate::replay::Task>) -> i64 {
+    let Some(call) = call else { return 0 };
+    let passed: Passed = Arc::new(Mutex::new(None));
+    let passing = Arc::clone(&passed);
+    let replayed: super::Replayed = Arc::new(move |handle: i64| {
+        let result = body(env, handle, i64::from(threads::index()));
+        if result == super::ROUND_FAILED {
+            pass_up(&passing);
+        }
+        result
+    });
+    let Some(pool) = super::super::parallel::for_server() else {
+        return fail("couldn't serve: this program has no workers to serve on".to_owned());
+    };
+    super::super::write_kept_output();
+    let lent = threads::lend();
+    let finished = super::serve_replayed(rounds, pool, Some(&lent), (replayed, call));
+    threads::take_back(lent);
+    threads::settle(finished.owners);
+    super::super::write_kept_output();
+    let _ = writeln!(std::io::stderr(), "replay: the recording ends here, so the server is stopped");
+    let failure = passed.lock().unwrap_or_else(PoisonError::into_inner).take();
+    let Some((failure, table)) = failure else { return 0 };
+    super::super::with(|state| state.heap.adopt_made(table.into_blocks()));
+    PASSED_UP.set(i64::try_from(failure).unwrap_or(0));
+    super::ROUND_FAILED
 }
 
 /// `fennec_net_serve_failure()`: the value of the failure the last `fennec_net_serve` on this thread

@@ -33,6 +33,7 @@ use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Registry, Token};
 
 use super::parallel::{Latch, Pool};
+use crate::stdlib::net::{ServerSession, TlsServer};
 
 /// A connection task's stack. Only the pages a task touches take memory.
 const STACK: usize = 1024 * 1024;
@@ -165,7 +166,12 @@ pub struct Conn {
     ahead: Vec<u8>,
     /// Whether it's registered with this thread's poll.
     registered: bool,
+    /// Its TLS, when its server has some.
+    tls: Option<Box<dyn ServerSession>>,
 }
+
+/// How long a connection has to finish its TLS handshake.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl Conn {
     /// Takes a connection, registering it with this thread's poll when this is an I/O worker.
@@ -177,7 +183,44 @@ impl Conn {
                 registry.register(&mut stream, token, Interest::READABLE | Interest::WRITABLE).is_ok()
             })
         });
-        Conn { stream, token, ahead: Vec::new(), registered }
+        Conn { stream, token, ahead: Vec::new(), registered, tls: None }
+    }
+
+    /// Does the server's half of a TLS handshake, parking while it waits.
+    fn secure(&mut self, tls: &Arc<dyn TlsServer>) -> Result<(), Failure> {
+        let mut session = tls.session().map_err(|_| Failure::Closed)?;
+        let until = Until::after(Some(HANDSHAKE_TIMEOUT));
+        loop {
+            match session.handshake(&mut self.stream) {
+                Ok(_) => break,
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    let interest =
+                        if session.wants_write() { Interest::WRITABLE } else { Interest::READABLE };
+                    self.wait(interest, until, "read")?;
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                Err(error) => return Err(Failure::of(&error)),
+            }
+        }
+        self.tls = Some(session);
+        Ok(())
+    }
+
+    /// Up to `count` more bytes onto `bytes`, through TLS if it has any.
+    fn fill(&mut self, bytes: &mut Vec<u8>, count: usize) -> std::io::Result<usize> {
+        match &mut self.tls {
+            Some(session) => session.read_onto(&mut self.stream, bytes, count),
+            None => read_onto(&mut self.stream, bytes, count),
+        }
+    }
+
+    /// What a read that would block is waiting for: TLS may have something to send first.
+    fn read_interest(&self) -> Interest {
+        if self.tls.as_ref().is_some_and(|session| session.wants_write()) {
+            Interest::WRITABLE
+        } else {
+            Interest::READABLE
+        }
     }
 
     /// Up to `count` bytes, empty at the end.
@@ -189,10 +232,10 @@ impl Conn {
         }
         loop {
             let mut bytes = Vec::new();
-            match read_onto(&mut self.stream, &mut bytes, count) {
+            match self.fill(&mut bytes, count) {
                 Ok(_) => return Ok(bytes),
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    self.wait(Interest::READABLE, until, "read")?;
+                    self.wait(self.read_interest(), until, "read")?;
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) => return Err(Failure::of(&error)),
@@ -212,12 +255,15 @@ impl Conn {
                 }
                 return Ok(Some(line));
             }
-            match read_onto(&mut self.stream, &mut self.ahead, READ_BYTES) {
+            let mut ahead = std::mem::take(&mut self.ahead);
+            let filled = self.fill(&mut ahead, READ_BYTES);
+            self.ahead = ahead;
+            match filled {
                 Ok(0) if self.ahead.is_empty() => return Ok(None),
                 Ok(0) => return Ok(Some(std::mem::take(&mut self.ahead))),
                 Ok(_) => {}
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    self.wait(Interest::READABLE, until, "read_line")?;
+                    self.wait(self.read_interest(), until, "read_line")?;
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) => return Err(Failure::of(&error)),
@@ -232,6 +278,9 @@ impl Conn {
 
     /// Writes all of `data`.
     pub fn write(&mut self, mut data: &[u8]) -> Result<(), Failure> {
+        if self.tls.is_some() {
+            return self.write_securely(data);
+        }
         while !data.is_empty() {
             match self.stream.write(data) {
                 Ok(0) => return Err(Failure::Closed),
@@ -244,6 +293,28 @@ impl Conn {
             }
         }
         Ok(())
+    }
+
+    /// Writes all of `data` through TLS, waiting whenever what it holds can't go yet.
+    fn write_securely(&mut self, mut data: &[u8]) -> Result<(), Failure> {
+        loop {
+            let Some(session) = &mut self.tls else { return Err(Failure::Closed) };
+            match session.write_some(&mut self.stream, data) {
+                Ok(taken) => {
+                    data = data.get(taken..).unwrap_or_default();
+                    if session.wants_write() {
+                        self.wait(Interest::WRITABLE, Until::after(None), "write")?;
+                    } else if data.is_empty() {
+                        return Ok(());
+                    }
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    self.wait(Interest::WRITABLE, Until::after(None), "write")?;
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                Err(error) => return Err(Failure::of(&error)),
+            }
+        }
     }
 
     /// Waits until the socket may be ready for `interest`: parked, when this is a task on an
@@ -372,7 +443,22 @@ struct Server {
     /// What each worker served, added in as it leaves, and the count of those still serving.
     total: Mutex<Served>,
     left: Latch,
+    /// In a recording or a replay, the call serving, which names each round by its connection.
+    replay: Option<Arc<str>>,
+    /// How many connections it's taken, to number the next round's name.
+    accepted: AtomicU64,
+    /// In a replay: what a recorded round runs, given the handle of its connection, which is
+    /// never a real one, and how many rounds are still to end.
+    replayed: Option<(Replayed, AtomicU64)>,
+    /// The TLS each connection starts with, if it has any.
+    tls: Option<Arc<dyn TlsServer>>,
 }
+
+/// A recorded round, replayed: what it runs with the handle of its connection.
+pub type Replayed = Arc<dyn Fn(i64) -> i64 + Send + Sync>;
+
+/// Where a replayed round's connection handles start, above any real one's.
+const REPLAYED_HANDLES: i64 = 1 << 40;
 
 impl Server {
     /// Its listener's token: counting down from below the waker's, which connections' never reach.
@@ -544,11 +630,45 @@ impl Io {
     fn take(&mut self, stream: TcpStream, id: u64) {
         let Some(here) = self.servers.get_mut(&id) else { return };
         let handler = Arc::clone(&here.server.handler);
-        let made = self.scheduler.spawn(move || handler(Conn::new(stream)));
+        let tls = here.server.tls.clone();
+        let made = self.scheduler.spawn(move || {
+            let mut conn = Conn::new(stream);
+            // A connection that fails its handshake closes, and its round never runs.
+            if let Some(tls) = &tls
+                && conn.secure(tls).is_err()
+            {
+                return 0;
+            }
+            handler(conn)
+        });
         if let Ok(task) = made {
             here.served.connections += 1;
             here.tasks.insert(task);
             self.owners.insert(task, id);
+            // In a recording, the round is named by the order its connection was taken in.
+            if let Some(call) = &here.server.replay {
+                let n = here.server.accepted.fetch_add(1, Ordering::Relaxed);
+                crate::replay::log_at(call, "accept", n);
+                let named = crate::replay::task_named(&format!("{call}.{n}"));
+                self.temporaries.insert(task, super::Temporaries::of_task(named));
+            }
+            self.ready.push_back((task, Wake::Ready(READY)));
+        }
+    }
+
+    /// Starts the `n`th of a replayed server's recorded rounds, as `take` starts a connection's,
+    /// with a connection that's only a handle: what it read and wrote comes from the recording.
+    fn take_recorded(&mut self, id: u64, n: u64) {
+        let Some(here) = self.servers.get_mut(&id) else { return };
+        let (Some(call), Some((replayed, _))) = (&here.server.replay, &here.server.replayed) else { return };
+        let replayed = Arc::clone(replayed);
+        let handle = REPLAYED_HANDLES + i64::try_from(n).unwrap_or(0);
+        let named = crate::replay::task_named(&format!("{call}.{n}"));
+        if let Ok(task) = self.scheduler.spawn(move || replayed(handle)) {
+            here.served.connections += 1;
+            here.tasks.insert(task);
+            self.owners.insert(task, id);
+            self.temporaries.insert(task, super::Temporaries::of_task(named));
             self.ready.push_back((task, Wake::Ready(READY)));
         }
     }
@@ -667,6 +787,12 @@ impl Io {
         let here = self.servers.get_mut(&id)?;
         here.tasks.remove(&task);
         here.served.failed += u64::from(failed);
+        // A replayed server stops once its last recorded round has ended.
+        if let Some((_, left)) = &here.server.replayed
+            && left.fetch_sub(1, Ordering::AcqRel) == 1
+        {
+            Stopper { server: Arc::clone(&here.server), pool: self.pool }.stop();
+        }
         if here.draining && here.tasks.is_empty() {
             self.leave(id);
         }
@@ -1020,7 +1146,7 @@ pub(super) fn serve(
     pool: &'static Pool,
     lent: Option<&Arc<super::table::Table>>,
     handler: &Handler,
-    started: impl FnOnce(Stopper),
+    (started, replay, tls): (impl FnOnce(Stopper), Option<&crate::replay::Task>, Option<Arc<dyn TlsServer>>),
 ) -> Served {
     let workers = pool.threads();
     let server = Arc::new(Server {
@@ -1030,6 +1156,10 @@ pub(super) fn serve(
         next: AtomicUsize::new(0),
         total: Mutex::new(Served::default()),
         left: Latch::of(workers),
+        replay: replay.map(crate::replay::Task::name),
+        accepted: AtomicU64::new(0),
+        replayed: None,
+        tls,
     });
     // The worker that accepts joins last, so every other worker has joined before it hands one
     // a connection: each worker takes what it's given in turn.
@@ -1039,6 +1169,45 @@ pub(super) fn serve(
         pool.run_on(at, Box::new(move |io: &mut Io| io.join(joining, given)));
     }
     started(Stopper { server: Arc::clone(&server), pool });
+    server.left.wait();
+    std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
+}
+
+/// Replays a recorded server: its `rounds` recorded rounds run on `pool`'s workers as `serve` runs
+/// connections, each with `replayed` and a connection that's only a handle, and when the last has
+/// ended the server stops. Its call is `call`, which named its rounds.
+pub(super) fn serve_replayed(
+    rounds: u64,
+    pool: &'static Pool,
+    lent: Option<&Arc<super::table::Table>>,
+    (replayed, call): (Replayed, &crate::replay::Task),
+) -> Served {
+    let workers = pool.threads();
+    let unused: Handler = Arc::new(|_: Conn| 0);
+    let server = Arc::new(Server {
+        id: NEXT_SERVER.fetch_add(1, Ordering::Relaxed),
+        handler: unused,
+        lent: lent.cloned(),
+        next: AtomicUsize::new(0),
+        total: Mutex::new(Served::default()),
+        left: Latch::of(workers),
+        replay: Some(call.name()),
+        accepted: AtomicU64::new(0),
+        replayed: Some((replayed, AtomicU64::new(rounds))),
+        tls: None,
+    });
+    for at in 0..workers {
+        let joining = Arc::clone(&server);
+        pool.run_on(at, Box::new(move |io: &mut Io| io.join(joining, None)));
+    }
+    if rounds == 0 {
+        Stopper { server: Arc::clone(&server), pool }.stop();
+    }
+    for n in 0..rounds {
+        let id = server.id;
+        let to = usize::try_from(n).unwrap_or(0) % workers.max(1);
+        pool.run_on(to, Box::new(move |io: &mut Io| io.take_recorded(id, n)));
+    }
     server.left.wait();
     std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
 }

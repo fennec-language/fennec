@@ -69,12 +69,14 @@ pub(crate) trait SecureStream: BufRead + Write + Send {}
 impl<T: BufRead + Write + Send> SecureStream for T {}
 
 /// What a TLS session reads from and writes to: a socket that doesn't block.
+#[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only a served connection uses it, which needs threads"))]
 pub(crate) trait Transport: Read + Write {}
 
 impl<T: Read + Write> Transport for T {}
 
 /// One connection's TLS on a server, over a socket that doesn't block: anything that has to wait
 /// says `WouldBlock`, for the task to park and try again.
+#[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only a served connection uses it, which needs threads"))]
 pub(crate) trait ServerSession: Send {
     /// Does as much of the handshake as it can, and says when it's done.
     fn handshake(&mut self, socket: &mut dyn Transport) -> std::io::Result<bool>;
@@ -89,6 +91,7 @@ pub(crate) trait ServerSession: Send {
 /// A server's TLS, what `net.listen(port, tls=...)` proves itself with.
 pub(crate) trait TlsServer: Send + Sync {
     /// A session for a connection a task serves.
+    #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only a served connection uses it, which needs threads"))]
     fn session(&self) -> Result<Box<dyn ServerSession>, Failure>;
     /// TLS over a connection `server.accept()` took, its handshake done in at most `timeout`.
     fn accepted(&self, tcp: TcpStream, timeout: Duration) -> Result<Box<dyn SecureStream>, Failure>;
@@ -751,16 +754,15 @@ fn tls_server(
         Value::Instance(instance) if &*instance.type_name == "Certificate" => instance,
         _ => return Err(Diagnostic::new("`tls=` takes a `Certificate`", span)),
     };
-    let chain = match instance.field("chain") {
-        Some(Value::Str(chain)) => chain,
-        _ => return Err(Diagnostic::new("this `Certificate` has no `chain`", span)),
+    let Some(Value::Str(chain)) = instance.field("chain") else {
+        return Err(Diagnostic::new("this `Certificate` has no `chain`", span));
     };
     let key = match instance.field("key") {
-        Some(Value::Instance(secret)) => match secret.field("_value") {
-            Some(Value::Str(key)) => key,
-            _ => return Err(Diagnostic::new("this `Certificate` has no `key`", span)),
-        },
-        _ => return Err(Diagnostic::new("this `Certificate` has no `key`", span)),
+        Some(Value::Instance(secret)) => secret.field("_value"),
+        _ => None,
+    };
+    let Some(Value::Str(key)) = key else {
+        return Err(Diagnostic::new("this `Certificate` has no `key`", span));
     };
     Ok(http::server_tls(chain, key).map(Some))
 }
@@ -1486,6 +1488,7 @@ pub(crate) mod tests {
     pub(crate) mod tls {
         use std::io::{BufRead as _, BufReader, Write as _};
         use std::net::{TcpListener, TcpStream};
+        use std::rc::Rc;
         use std::sync::Arc;
         use std::time::Duration;
 
@@ -1493,8 +1496,11 @@ pub(crate) mod tests {
         use rustls::pki_types::{CertificateDer, PrivateKeyDer};
         use rustls::{ClientConfig, RootCertStore, ServerConfig, ServerConnection, StreamOwned};
 
+        use fennec_syntax::Span;
+
         use super::super::http::tls::handshake;
-        use super::super::{Failure, close, keep_stream, read_line, write};
+        use super::super::{Failure, close, http, keep_stream, read_line, real_connection, real_net, real_server, write};
+        use crate::value::Value;
 
         const CA: &[u8] = include_bytes!("testdata/tls-test-ca.pem");
         const CHAIN: &[u8] = include_bytes!("testdata/tls-test-chain.pem");
@@ -1585,6 +1591,65 @@ pub(crate) mod tests {
             let handle = keep_stream(tcp, "server".to_owned(), Some(secured)).ok().unwrap();
             assert!(write(handle, b"x").is_ok());
             handle
+        }
+
+        /// A `Certificate`, as a program makes one.
+        fn certificate() -> Value {
+            let text = |bytes: &[u8]| Value::str(std::str::from_utf8(bytes).unwrap());
+            let key = Value::made("Secret", vec![("_value", text(KEY))]);
+            Value::made("Certificate", vec![("chain", text(CHAIN)), ("key", key)])
+        }
+
+        fn field(made: &Value, name: &str) -> i64 {
+            let Value::Ok(made) = made else { panic!("it failed: {made:?}") };
+            let Value::Instance(instance) = made.as_ref() else { panic!("not an instance: {made:?}") };
+            let Some(Value::Int(number)) = instance.field(name) else { panic!("no {name}") };
+            *number
+        }
+
+        /// `net.listen(port, tls=...)` and `server.accept()`: the connection it gives reads and
+        /// writes through TLS.
+        #[test]
+        fn a_server_listening_with_a_certificate_accepts_over_tls() {
+            http::use_tls();
+            let span = Span::default();
+            let listened = real_net("listen.tls", &[Value::Int(0), certificate()], None, span).unwrap();
+            let (server, port) = (field(&listened, "_handle"), field(&listened, "port"));
+            let serving = std::thread::spawn(move || {
+                let span = Span::default();
+                let taken = real_server(server, "accept", &[], Some(Duration::from_secs(10)), span).unwrap();
+                let conn = field(&taken, "_handle");
+                let line = real_connection(conn, "read_line", &[], Some(Duration::from_secs(10)), span).unwrap();
+                let wrote = real_connection(conn, "write", &[Value::str("pong\n")], None, span).unwrap();
+                close(conn);
+                (line == Value::Ok(Rc::new(Value::str("ping"))), matches!(wrote, Value::Ok(_)))
+            });
+            let tcp = connected_to(u16::try_from(port).unwrap());
+            let Ok(mut secured) = handshake(tcp, "localhost", Duration::from_secs(10), client_config()) else {
+                panic!("the handshake failed");
+            };
+            secured.write_all(b"ping\n").unwrap();
+            secured.flush().unwrap();
+            let mut back = String::new();
+            secured.read_line(&mut back).unwrap();
+            assert_eq!(back, "pong\n");
+            assert_eq!(serving.join().unwrap(), (true, true));
+            close(server);
+        }
+
+        /// `tls=` takes a `Certificate`, and one that can't be read is the program's failure.
+        #[test]
+        fn a_certificate_that_cant_be_read_fails_as_tls() {
+            http::use_tls();
+            let span = Span::default();
+            let bad = Value::made(
+                "Certificate",
+                vec![("chain", Value::str("nope")), ("key", Value::made("Secret", vec![("_value", Value::str("nope"))]))],
+            );
+            let listened = real_net("listen.tls", &[Value::Int(0), bad], None, span).unwrap();
+            let Value::Err(error) = listened else { panic!("it listened") };
+            assert!(format!("{error:?}").contains("Tls"), "{error:?}");
+            assert!(real_net("listen.tls", &[Value::Int(0), Value::Int(1)], None, span).is_err());
         }
 
         /// A connection with TLS over it reads and writes as a plain one does.

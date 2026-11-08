@@ -194,6 +194,85 @@ fn a_parallel_call_whose_ranges_take_inputs_replays_identically() -> std::io::Re
     Ok(())
 }
 
+const SERVER: &str = "from std.net import NetError
+
+shared Total:
+    bytes = 0
+
+    def add(ref self, count: int):
+        self.bytes += count
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    total = Total()
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            if line == \"stop\":
+                break
+            total.add(line.len())
+            conn.write(f\"{line.len()}\\n\")?
+    stdout.print(total.bytes)
+";
+
+/// A native server's rounds are each a task named by its connection, and a replay runs them again
+/// with no socket, each reading what its connection sent, until the recording runs out.
+#[test]
+fn a_recorded_server_replays_its_rounds_with_no_network() -> std::io::Result<()> {
+    if !runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("server")?;
+    let program = dir.join("server.fen");
+    std::fs::write(&program, SERVER)?;
+    let log = dir.join("server.log");
+    let mut record = fennec_command()
+        .args(["run", "--record", &log.to_string_lossy()])
+        .arg(&program)
+        .env("FENNEC_THREADS", "4")
+        .current_dir(&dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let mut out =
+        std::io::BufReader::new(record.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
+    let mut port = String::new();
+    std::io::BufRead::read_line(&mut out, &mut port)?;
+    let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+    for n in 0..20 {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        std::io::Write::write_all(&mut stream, format!("hello {}\n", "x".repeat(n)).as_bytes())?;
+        let mut back = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut back)?;
+        assert_eq!(back.trim(), (6 + n).to_string());
+    }
+    let mut stopping = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    std::io::Write::write_all(&mut stopping, b"stop\n")?;
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut out, &mut rest)?;
+    let status = record.wait()?;
+    assert!(status.success(), "the recorded server failed");
+    let recorded = format!("{port}\n{rest}");
+    assert_eq!(rest.trim(), (0..20).map(|n| 6 + n).sum::<usize>().to_string());
+    for threads in ["4", "1"] {
+        let replayed = fennec_command()
+            .env("FENNEC_THREADS", threads)
+            .args(["replay", &log.to_string_lossy()])
+            .current_dir(&dir)
+            .output_within()?;
+        let printed = String::from_utf8_lossy(&replayed.stdout);
+        assert_eq!(
+            printed,
+            recorded,
+            "replayed with FENNEC_THREADS={threads}: {}",
+            String::from_utf8_lossy(&replayed.stderr)
+        );
+        assert!(replayed.status.success(), "{}", String::from_utf8_lossy(&replayed.stderr));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Whether an example runs more than one task, whose order between them isn't recorded yet, or
 /// serves until it's stopped, so its run doesn't end by itself.
 fn several_tasks_or_serves(source: &str) -> bool {

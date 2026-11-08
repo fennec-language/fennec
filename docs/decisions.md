@@ -1355,8 +1355,10 @@ match tok:
 **A tiny, stable launcher is what you install, and it needs no Homebrew.** It reads the version a kit asks for, `fennec = "0.4.2"` in `kit.toml`, with no separate version file. If that version isn't there, it fetches its binary into `~/.fennec/toolchains/0.4.2/` on first use, verifies its checksum and signature, records its hash in `kit.lock`, and hands off to it.
 - Only the launcher updates itself, and an update needs 2 of the 3 release keys, as below.
 - A pinned compiler never changes by itself, and nothing fetches "latest" without being asked.
-- `fennec toolchain list`, `install`, `remove` and `default` manage toolchains.
-- Single-file scripts outside a kit use the default toolchain.
+- `fennec toolchain list`, `install` and `remove` manage toolchains.
+- A kit's version is `fennec = "0.4.2"` at the top of its `kit.toml`, found by walking up from the current folder.
+- A script outside a kit runs with `--version 0.4.2`, or else the version `fennec default 0.4.2` set. With neither, the command stops and says how to set one. In a kit, `--version` is an error, since `kit.toml` says.
+- `fennec +0.4.2 build` runs that version anywhere, this once, and changes no pin.
 - `fennec doctor` reports how much disk the toolchains and the store use, and offers to remove versions no kit uses anymore.
 - A release's archives are the same bytes however often and wherever they're built, so anyone can build one again from its tag and check it against the signed manifest, and CI builds each platform twice and compares them.
 - Built, as `fennec-launcher` for now: running a kit's pinned toolchain, `kit.lock` holding its signed manifest's hash, fetching only what's missing, `--offline`, `fennec update`, and `fennec toolchain`. Releases built the same twice is built too, on macOS, Linux and Windows. Not built yet: the release keys, which Chris makes (`docs/releases.md`), so nothing verifies today; the launcher updating itself; and `fennec doctor`.

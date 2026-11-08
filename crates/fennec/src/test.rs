@@ -130,6 +130,12 @@ fn whole_program(path: &str, results: &Results) -> Result<Plan, ExitCode> {
     };
     // The standard library as a run checks it: just what the tests reach.
     match crate::copy_rule::check_to_run(&mut program.module, &program.sources) {
+        // A test may run in the interpreter, which would get sized numbers wrong, so a program
+        // using them isn't tested yet.
+        Ok(signatures) if let Some(refused) = fennec_check::interpreter_refuses(&signatures) => {
+            eprint!("{}", program.sources.render_all(&[refused]));
+            return Err(ExitCode::FAILURE);
+        }
         Ok(_) => {}
         Err(diagnostics) => {
             eprint!("{}", program.sources.render_all(&diagnostics));

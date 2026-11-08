@@ -904,6 +904,22 @@ fn a_union_saves_when_its_members_are_named_types() {
     );
 }
 
+/// A tuple saves when each of its items does, but not one of a single item yet.
+#[test]
+fn a_tuple_saves_when_its_items_do() {
+    let types = "struct Holder:\n    run: () -> int\n\ndef loaded[T: Deserializable]() -> int:\n    1\n\ndef saved[T: Serializable](held: T) -> int:\n    1\n";
+    let empty: [&str; 0] = [];
+    assert_eq!(crate::in_main_after(types, "stdout.print(loaded[(int, str?),]())\n"), empty);
+    let found = crate::in_main_after(types, "stdout.print(loaded[(int, Holder),]())\n");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("`Holder` is one of its items"), "{found:?}");
+    let found = crate::in_main_after(types, "stdout.print(saved((1,)))\n");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("is a tuple of one item, which can't be saved yet"), "{found:?}");
+    let helped = helps(&format!("{types}\ndef main(stdout: Stdout):\n    stdout.print(saved((1,)))\n"));
+    assert_eq!(helped, ["save the item itself"]);
+}
+
 #[test]
 fn a_type_writes_both_or_neither() {
     let one =

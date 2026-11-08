@@ -160,21 +160,32 @@ impl Lowering<'_> {
 
     /// Whether the engines provide an operator on these values.
     pub(super) fn check_operands(&self, op: BinOp, lhs: &Operand, rhs: &Operand) -> Lowered<()> {
-        let (left, right) = (type_in(&self.locals, lhs), type_in(&self.locals, rhs));
-        let fits = left.as_ref().zip(right.as_ref()).is_some_and(|(left, right)| fits(left, right))
+        let (mut left, mut right) = (type_in(&self.locals, lhs), type_in(&self.locals, rhs));
+        // A number written out beside a sized one is of its size, as the checker found.
+        if matches!(lhs, Operand::Int(_)) && matches!(right, Some(Type::Sized(_))) {
+            left.clone_from(&right);
+        }
+        if matches!(rhs, Operand::Int(_)) && matches!(left, Some(Type::Sized(_))) {
+            right.clone_from(&left);
+        }
+        // A shift's amount can be an integer of any size.
+        let shift = matches!(op, BinOp::ShiftLeft | BinOp::ShiftRight)
+            && matches!(right, Some(Type::Int | Type::Sized(_)));
+        let fits = left.as_ref().zip(right.as_ref()).is_some_and(|(left, right)| shift || fits(left, right))
             && match op {
                 BinOp::Eq | BinOp::NotEq => true,
                 BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
                     left.as_ref().is_some_and(plainly_ordered)
                 }
-                BinOp::Add => {
-                    matches!(left, Some(Type::Int | Type::Float | Type::Str | Type::Bytes | Type::List(_)))
-                }
+                BinOp::Add => matches!(
+                    left,
+                    Some(Type::Int | Type::Float | Type::Sized(_) | Type::Str | Type::Bytes | Type::List(_))
+                ),
                 BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => {
-                    matches!(left, Some(Type::Int | Type::Float))
+                    matches!(left, Some(Type::Int | Type::Float | Type::Sized(_)))
                 }
                 BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::ShiftLeft | BinOp::ShiftRight => {
-                    left == Some(Type::Int)
+                    matches!(left, Some(Type::Int | Type::Sized(_)))
                 }
                 BinOp::And | BinOp::Or | BinOp::In | BinOp::NotIn | BinOp::Is | BinOp::IsNot => false,
             };

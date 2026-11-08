@@ -4,7 +4,7 @@ error Missing:
 struct Player:
     name: str
 
-def find(name: str) -> Player:
+def find(name: str) -> Player fails Missing:
     if name == "": fail Missing(name)
     Player(name=name)
 

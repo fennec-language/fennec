@@ -30,7 +30,7 @@ def byte_offsets(chars: list[str]) -> list[int]:
 ## Source text to tokens. Indentation becomes `Indent` and `Dedent` tokens, as in Python,
 ## and line breaks inside brackets are ignored. `base` is added to every span, for code
 ## lexed out of an f-string.
-def lex(source: str, base: int) -> list[Token]:
+def lex(source: str, base: int) -> list[Token] fails Diagnostic:
     chars = list(source)
     mut lexer = Lexer(chars=chars, offsets=byte_offsets(chars), base=base)
     lexer.run()?
@@ -47,7 +47,7 @@ struct Lexer:
     depth = 0
     at_line_start = True
 
-    def run(ref self):
+    def run(ref self) fails Diagnostic:
         while True:
             if self.at_line_start and self.depth == 0 and not self.indentation()?:
                 break
@@ -117,7 +117,7 @@ struct Lexer:
 
     ## Measures the indentation at the start of a line and emits `Indent` or `Dedent` tokens.
     ## Blank and comment-only lines are skipped. Returns false at the end of the file.
-    def indentation(ref self) -> bool:
+    def indentation(ref self) -> bool fails Diagnostic:
         while True:
             line_start = self.pos
             mut width = 0
@@ -139,7 +139,7 @@ struct Lexer:
                 return True
         False
 
-    def set_indent(ref self, width: int, line_start: int):
+    def set_indent(ref self, width: int, line_start: int) fails Diagnostic:
         if width > self.indents[-1]:
             self.indents.append(width)
             self.push(.Indent, line_start)
@@ -171,7 +171,7 @@ struct Lexer:
         else:
             self.push(.Name(word), start)
 
-    def number(ref self, start: int):
+    def number(ref self, start: int) fails Diagnostic:
         self.digits()
         mut is_float = False
         if self.peek(0) == "." and is_digit(self.peek(1)):
@@ -228,7 +228,7 @@ struct Lexer:
         while is_digit(self.peek(0)) or self.peek(0) == "_":
             self.pos += 1
 
-    def punct(ref self, start: int):
+    def punct(ref self, start: int) fails Diagnostic:
         c = self.peek(0)
         pair = c + self.peek(1)
         triple = pair + self.peek(2)
@@ -250,7 +250,7 @@ struct Lexer:
         self.pos += 1
         self.push(.Punct(c), start)
 
-    def string(ref self, start: int):
+    def string(ref self, start: int) fails Diagnostic:
         self.pos += 1
         mut text = ""
         while self.peek(0) != "\"":
@@ -266,7 +266,7 @@ struct Lexer:
         self.push(.Str(text), start)
 
     ## `r"..."`: backslashes are kept as written, for patterns like `r"\d+"`.
-    def raw_string(ref self, start: int):
+    def raw_string(ref self, start: int) fails Diagnostic:
         self.pos += 2
         mut text = ""
         while self.peek(0) != "\"":
@@ -286,7 +286,7 @@ struct Lexer:
         )
 
     ## Reads a backslash escape and returns the character it stands for.
-    def escape(ref self, start: int) -> str:
+    def escape(ref self, start: int) -> str fails Diagnostic:
         at = self.pos
         self.pos += 1
         c = self.peek(0)
@@ -314,7 +314,7 @@ struct Lexer:
 
     ## `\x41`, `\u00e9` or `\U0001f98a`: a character written as its code in hex, with two,
     ## four or eight digits. `at` is where the backslash is.
-    def code_escape(ref self, letter: str, at: int) -> str:
+    def code_escape(ref self, letter: str, at: int) -> str fails Diagnostic:
         digits = 2 if letter == "x" else (4 if letter == "u" else 8)
         self.pos += 1
         mut code = 0
@@ -343,7 +343,7 @@ struct Lexer:
 
     ## An f-string, or a template string when `template`: the same text and `{}`s, built as a
     ## `Template` instead of joined.
-    def fstring(ref self, start: int, template: bool):
+    def fstring(ref self, start: int, template: bool) fails Diagnostic:
         self.pos += 2
         mut parts = []
         mut text = ""
@@ -376,7 +376,7 @@ struct Lexer:
         self.push(.TStr(parts) if template else .FStr(parts), start)
 
     ## Reads `{expression}` or `{expression:spec}` inside an f-string.
-    def fstring_code(ref self, start: int) -> FPart:
+    def fstring_code(ref self, start: int) -> FPart fails Diagnostic:
         self.pos += 1
         code_start = self.pos
         mut nesting = 0
@@ -412,7 +412,7 @@ def unit_nanos(unit: str) -> int:
 
 ## The nanoseconds a duration literal stands for, from its parts: each a number and a unit,
 ## the largest unit first, worked out from the digits as written.
-def duration(written: str, numbers: list[str], units: list[str], span: Span) -> int:
+def duration(written: str, numbers: list[str], units: list[str], span: Span) -> int fails Diagnostic:
     help = "a duration ends in `ns`, `us`, `ms`, `s`, `min` or `h`, like `30s`, `1.5s`, `200ms` or `1h30min`"
     mut total = 0
     mut previous = 0
@@ -437,7 +437,7 @@ def duration(written: str, numbers: list[str], units: list[str], span: Span) -> 
     total
 
 ## The nanoseconds in `number` of a unit `per` nanoseconds long.
-def part_nanos(written: str, number: str, per: int, span: Span) -> int:
+def part_nanos(written: str, number: str, per: int, span: Span) -> int fails Diagnostic:
     mut digits = 0
     mut places = 0
     mut exponent = ""

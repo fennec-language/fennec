@@ -7,14 +7,14 @@ error SettingsUnreadable:
 struct Score:
     value: int where value >= 0
 
-def parse_score(text: str) -> Score:
+def parse_score(text: str) -> Score fails ConfigError | InvalidValue:
     if not text.isdigit(): fail ConfigError(f"\"{text}\" isn't a number")
     Score(value=int(text)?)?
 
-def load_scores(lines: list[str]) -> list[Score]:
+def load_scores(lines: list[str]) -> list[Score] fails ConfigError | InvalidValue:
     [parse_score(line)? for line in lines]
 
-def read_settings(fs: Fs, path: str) -> str:
+def read_settings(fs: Fs, path: str) -> str fails SettingsUnreadable:
     text = fs.read_text(path)? from SettingsUnreadable(path)
     text.strip()
 

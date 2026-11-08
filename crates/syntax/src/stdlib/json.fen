@@ -134,6 +134,15 @@ struct JsonKey:
     def renamed[T: Serializable](ref self, name: str, x: T):
         pass
 
+    def items(ref self, name: str, count: int):
+        pass
+
+    def item[T: Serializable](ref self, x: T):
+        pass
+
+    def end_items(ref self):
+        pass
+
     def end(ref self):
         pass
 
@@ -350,6 +359,16 @@ struct JsonWriter:
         self._text += ": "
         x.serialize(ref self)
 
+    def items(ref self, name: str, count: int):
+        self._open("[")
+
+    def item[T: Serializable](ref self, x: T):
+        self._entry()
+        x.serialize(ref self)
+
+    def end_items(ref self):
+        self._close("]")
+
     def end(ref self):
         self._close("}")
 
@@ -564,6 +583,15 @@ struct TableFinder:
     def renamed[T: Serializable](ref self, name: str, x: T):
         self.field(name, x)
 
+    def items(ref self, name: str, count: int):
+        pass
+
+    def item[T: Serializable](ref self, x: T):
+        x.serialize(ref self)
+
+    def end_items(ref self):
+        pass
+
     def end(ref self):
         pass
 
@@ -670,6 +698,11 @@ struct JsonReader:
     _hints = list[int]()
     _ids = IdsSeen()
     _tags = dict[str, int]()
+    ## For each tuple being read, inside one another: its type, where its array starts, how many
+    ## items it has, and how many have been read.
+    _tuples = list[(str, int, int, int)]()
+    ## The case whose data is read next, as `Type.Case`, for what a failure in it says.
+    _case_owner = ""
 
     def _space(ref self) -> int:
         mut at = self._at
@@ -1096,7 +1129,8 @@ struct JsonReader:
         self._depth += 1
         if self._depth > JSON_MOST_DEEP: fail no_reason()
         if self._explain:
-            self._owner = name
+            self._owner = self._case_owner if self._case_owner != "" else name
+            self._case_owner = ""
         self._hints.append(self._hint)
         self._hint = 0
 
@@ -1289,6 +1323,40 @@ struct JsonReader:
     def end_map(ref self):
         pass
 
+    def items(ref self, name: str, count: int) fails ParseError:
+        if self._space() != 91: fail self._misfit(name)
+        self._tuples.append((name, self._at, count, 0))
+        self._at += 1
+        self._depth += 1
+        if self._depth > JSON_MOST_DEEP: fail no_reason()
+
+    def item[T: Deserializable](ref self) -> T fails ParseError:
+        top = self._tuples.pop() else fail no_reason()
+        name, start, count, read = top
+        b = self._space()
+        if read == count or b == 93 or (read > 0 and b != 44): fail self._tuple_misfit(name, start)
+        if read > 0:
+            self._at += 1
+        self._tuples.append((name, start, count, read + 1))
+        if self._explain:
+            self._path.append(f"[{read}]")
+        found = T.deserialize(ref self)?
+        if self._explain:
+            _ = self._path.pop()
+        found
+
+    def end_items(ref self) fails ParseError:
+        top = self._tuples.pop() else fail no_reason()
+        name, start, _, _ = top
+        if self._space() != 93: fail self._tuple_misfit(name, start)
+        self._at += 1
+        self._depth -= 1
+
+    ## A tuple's array of the wrong length, said of the whole array, as for any other misfit.
+    def _tuple_misfit(ref self, name: str, start: int) -> ParseError:
+        self._at = start
+        self._misfit(name)
+
     def at_item(self, at: int, message: str) -> ParseError:
         if not self._explain: return no_reason()
         ParseError(message=f"`{self._joined()}[{at}]` {message}", line=0, column=0)
@@ -1323,6 +1391,8 @@ struct JsonReader:
             if self._space() != 125: fail self._no_field(f"{name}.{case}")
             self._at += 1
             self.end_case()?
+        elif self._explain:
+            self._case_owner = f"{name}.{case}"
         at
 
     ## The error for a case with no data that the text gives a field.

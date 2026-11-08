@@ -6,7 +6,7 @@
 from std.process import Output, ProcessError
 
 ## The commits since `tag`, one a line, newest first.
-def changes(process: Process, tag: str) -> list[str]:
+def changes(process: Process, tag: str) -> list[str] fails ProcessError:
     found = process.run("git", ["log", "--format=%s", f"{tag}..HEAD"])?
     if not found.ok(): return []
     [line for line in found.stdout.split("\n") if line != ""]

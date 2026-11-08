@@ -967,7 +967,7 @@ pub extern "C" fn task_tick() -> i64 {
 }
 
 /// Lets the other tasks on this thread run, if this is a task, and gives back whether it did.
-fn yield_task_always() -> bool {
+pub(in crate::embed) fn yield_task_always() -> bool {
     fennec_parked::stack_low().is_some() && fennec_parked::park(YIELD).is_some()
 }
 

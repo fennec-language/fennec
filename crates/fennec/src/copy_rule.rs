@@ -164,7 +164,7 @@ type Check = fn(&mut Module) -> Result<fennec_check::Signatures, Vec<Diagnostic>
 fn baked(module: &mut Module, check: Check) -> Result<fennec_check::Signatures, Vec<Diagnostic>> {
     let mut resolved = module.clone();
     let signatures = check(&mut resolved)?;
-    if bake_resolved(module, &resolved)? {
+    if bake_resolved(module, &resolved, &signatures)? {
         return check(module);
     }
     *module = resolved;
@@ -175,25 +175,109 @@ fn baked(module: &mut Module, check: Check) -> Result<fennec_check::Signatures, 
 /// becomes the literal of its value, in the module as written, which is still to be checked.
 pub(crate) fn bake(module: &mut Module) -> Result<(), Vec<Diagnostic>> {
     let mut resolved = module.clone();
-    fennec_check::check_to_run(&mut resolved)?;
-    bake_resolved(module, &resolved).map(|_| ())
+    let signatures = fennec_check::check_to_run(&mut resolved)?;
+    bake_resolved(module, &resolved, &signatures).map(|_| ())
+}
+
+/// What working out one constant while compiling gave.
+enum Baked {
+    Literal(fennec_syntax::Expr),
+    TooLong,
+    /// It's worked out when the program starts: its value has no literal, like a `Regex`'s, or
+    /// it reaches what the compiler's evaluator doesn't do.
+    AtStart,
+    Failed(Diagnostic),
+}
+
+/// Whether a constant's value is a literal already: a number, string, bool or `None`.
+fn is_literal(value: &fennec_syntax::Expr) -> bool {
+    use fennec_syntax::ExprKind;
+    match &value.kind {
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Duration(_)
+        | ExprKind::Str(_)
+        | ExprKind::Bytes(_)
+        | ExprKind::Bool(_)
+        | ExprKind::None => true,
+        ExprKind::Unary { op: fennec_syntax::UnaryOp::Neg, expr } => {
+            matches!(expr.kind, ExprKind::Int(_) | ExprKind::Float(_))
+        }
+        _ => false,
+    }
+}
+
+/// Works out each of a module's own constants that isn't a literal already, through the IR, as
+/// `resolved`, its checked copy, has them.
+fn worked_out(resolved: &Module, signatures: &fennec_check::Signatures) -> Vec<(String, Baked)> {
+    let own: Vec<&str> = resolved
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            fennec_syntax::Item::Const { name, value, .. } if !is_literal(value) => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    if own.is_empty() {
+        return Vec::new();
+    }
+    // Lowering from the constants leaves out the module's functions they call, so those are
+    // added until nothing they reach is left out.
+    let mut wanted: Vec<String> = own.iter().map(|name| (*name).to_owned()).collect();
+    let program = loop {
+        let program =
+            fennec_ir::lower_some(resolved, signatures, &|name| wanted.iter().any(|want| want == name));
+        let more: Vec<String> =
+            program.external.iter().filter(|name| !wanted.contains(name)).cloned().collect();
+        if more.is_empty() {
+            break program;
+        }
+        wanted.extend(more);
+    };
+    let types: Vec<&str> = resolved
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            fennec_syntax::Item::Struct(def) | fennec_syntax::Item::Enum(def) => Some(def.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut written = fennec_ir::eval::Written::new(&program, &types);
+    let mut baked = Vec::new();
+    for (name, worked) in fennec_ir::eval::work_out(&program, CONSTANT_STEPS) {
+        if !own.contains(&name.as_str()) {
+            continue;
+        }
+        let outcome = match worked {
+            fennec_ir::eval::Worked::Value(value) => {
+                fennec_ir::eval::literal(&value, &mut written).map_or(Baked::AtStart, Baked::Literal)
+            }
+            fennec_ir::eval::Worked::TooLong => Baked::TooLong,
+            fennec_ir::eval::Worked::NotHere(_) => Baked::AtStart,
+            fennec_ir::eval::Worked::Failed(problem) => Baked::Failed(problem),
+        };
+        baked.push((name, outcome));
+    }
+    baked
 }
 
 /// Writes into `module` the literal of each constant `resolved`, its checked copy, works out
 /// within the budget, and says whether it wrote any. One that fails to work out is a compile
 /// error, since it would fail every time the program started.
-fn bake_resolved(module: &mut Module, resolved: &Module) -> Result<bool, Vec<Diagnostic>> {
-    let worked_out =
-        fennec_interp::bake_constants(resolved, CONSTANT_STEPS).map_err(|problem| vec![problem])?;
+fn bake_resolved(
+    module: &mut Module,
+    resolved: &Module,
+    signatures: &fennec_check::Signatures,
+) -> Result<bool, Vec<Diagnostic>> {
     let mut literals = Vec::new();
-    for (name, baked) in worked_out {
+    for (name, baked) in worked_out(resolved, signatures) {
         match baked {
-            fennec_interp::Baked::Literal(value) => literals.push((name, value)),
-            fennec_interp::Baked::TooLong => eprintln!(
+            Baked::Literal(value) => literals.push((name, value)),
+            Baked::TooLong => eprintln!(
                 "hint: `{name}` takes more than {CONSTANT_STEPS} steps to work out while compiling, so it's worked out when the program starts"
             ),
-            fennec_interp::Baked::Unwritable => {}
-            fennec_interp::Baked::Failed(problem) => return Err(vec![problem]),
+            Baked::AtStart => {}
+            Baked::Failed(problem) => return Err(vec![problem]),
         }
     }
     for item in &mut module.items {

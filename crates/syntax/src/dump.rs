@@ -101,8 +101,10 @@ pub(crate) fn quoted(text: &str) -> String {
 /// A float the way Fennec prints one, as `fennec_interp::format::float` does: with a decimal
 /// point when it's whole, and with an exponent when it's very large or very small.
 #[expect(clippy::float_cmp, reason = "checking for a whole number is an exact comparison")]
-pub(crate) fn float(x: f64) -> String {
-    if x.is_infinite() {
+pub fn float(x: f64) -> String {
+    if x.is_nan() {
+        "nan".to_owned()
+    } else if x.is_infinite() {
         if x.is_sign_positive() { "inf".to_owned() } else { "-inf".to_owned() }
     } else if x != 0.0 && !(1e-4..1e16).contains(&x.abs()) {
         let text = format!("{x:e}");

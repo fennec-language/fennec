@@ -420,6 +420,11 @@ fn count_uses(
                         if let Some(Operand::Local(list)) = args.get(at) {
                             grown.insert(list.0);
                             known.given_mut.insert(list.0);
+                            // The call writes it, however many times it's written here, so what's
+                            // proved of a local written once isn't proved of this one.
+                            if let Some(count) = known.writes.get_mut(list.0) {
+                                *count += 2;
+                            }
                         }
                     }
                     // Only what the callee might keep comes to have another owner.
@@ -643,10 +648,17 @@ fn guarded_after(
     function: &Function,
     known: &mut std::collections::BTreeSet<Guard>,
     inst: &InstKind,
-    (range, stepped): (&dyn Fn(usize) -> Range, &HashSet<usize>),
+    (range, stepped, given_mut): (&dyn Fn(usize) -> Range, &HashSet<usize>, &HashSet<usize>),
 ) {
     let mut written = Vec::new();
     visit(inst, |_| {}, |local| written.push(local.0));
+    // A call can write what it's given by `ref`, which nothing here shows.
+    if let InstKind::Call { args, .. } = inst {
+        written.extend(args.iter().filter_map(|arg| match arg {
+            Operand::Local(local) if given_mut.contains(&local.0) => Some(local.0),
+            _ => None,
+        }));
+    }
     let before = known.clone();
     let mut kept = Vec::new();
     for guard in known.iter() {
@@ -775,7 +787,8 @@ fn find_guarded_reads(
             continue;
         };
         if *step <= 0
-            || (range_of(facts, multi, &Operand::Local(*at), then.0).0 < 0 && !never_negative(function, *at))
+            || (range_of(facts, multi, &Operand::Local(*at), then.0).0 < 0
+                && !never_negative(function, *at, &known.given_mut))
         {
             continue;
         }
@@ -811,8 +824,8 @@ fn find_guarded_reads(
 
 /// Whether a local is never below 0: each write gives it a number from 0 up, or adds one to what
 /// it holds, which can't wrap round, as an add that overflows stops the program.
-fn never_negative(function: &Function, local: LocalId) -> bool {
-    if local.0 < function.params {
+fn never_negative(function: &Function, local: LocalId, given_mut: &HashSet<usize>) -> bool {
+    if local.0 < function.params || given_mut.contains(&local.0) {
         return false;
     }
     let insts: Vec<&InstKind> =
@@ -900,7 +913,7 @@ fn find_guarded_steps(
             }
             let range = |local: usize| range_of(facts, multi, &Operand::Local(LocalId(local)), at);
             for inst in &block.insts {
-                guarded_after(function, &mut state, &inst.kind, (&range, &stepped));
+                guarded_after(function, &mut state, &inst.kind, (&range, &stepped, &known.given_mut));
             }
             let outs: Vec<(usize, BTreeSet<Guard>)> = match &block.end {
                 Terminator::Branch { cond: Operand::Local(flag), then, otherwise } => {
@@ -988,7 +1001,7 @@ fn find_guarded_steps(
                 let all = proved.entry(dest.0).or_insert(true);
                 *all &= holds;
             }
-            guarded_after(function, &mut state, &inst.kind, (&range, &stepped));
+            guarded_after(function, &mut state, &inst.kind, (&range, &stepped, &known.given_mut));
         }
     }
     known.safe.extend(proved.into_iter().filter(|(_, all)| *all).map(|(dest, _)| dest));

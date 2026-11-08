@@ -318,7 +318,8 @@ fn note(
         InstKind::Copy { dest, value } => {
             facts.note_write(*dest, range_of(facts, multi, value, block));
             if let Operand::Local(from) = value {
-                if known.nonzero.contains(&from.0) {
+                // Only a local written once stays what it was given: any other can become 0 after.
+                if known.nonzero.contains(&from.0) && facts.holds_one_value(*dest) {
                     known.nonzero.insert(dest.0);
                 }
                 if facts.holds_one_value(*dest) {
@@ -365,7 +366,7 @@ fn note(
         InstKind::Builtin { dest: Some(dest), name, args, .. } => match name.as_str() {
             "float" => {
                 let (low, high) = args.first().map_or(FULL, |arg| range_of(facts, multi, arg, block));
-                if low > 0 || high < 0 {
+                if (low > 0 || high < 0) && facts.holds_one_value(*dest) {
                     known.nonzero.insert(dest.0);
                 }
             }

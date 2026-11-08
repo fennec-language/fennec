@@ -3,7 +3,8 @@
 //! That's a bare `True` or `False`, an argument beside a parameter of the same type, which is easy
 //! to swap unnoticed, and any argument past the first when there are three or more, unless every
 //! two neighbors have types that can't hold each other's values, so a swap wouldn't compile. The
-//! first argument and `self` are exempt. A call this can't be sure of the target of isn't flagged:
+//! first argument and `self` are exempt, and so are parameters named `a`, `b`, `c` and `d`, which
+//! say only which comes first, as in `dot(a, b)`: naming them at the call would say nothing more. A call this can't be sure of the target of isn't flagged:
 //! a name a function binds itself might be anything, and so might a method or case with the same
 //! name but different parameters on two types, since which type isn't known here.
 
@@ -174,6 +175,14 @@ fn same_type(a: Option<&TypeExpr>, b: Option<&TypeExpr>) -> bool {
     a.zip(b).is_some_and(|(a, b)| same(a, b))
 }
 
+/// Parameter names that say only where a parameter comes, which the position says already, as in
+/// `dot(a, b)` or `max(a, b)`: an argument isn't asked to be named for one of these.
+const PLACEHOLDERS: [&str; 4] = ["a", "b", "c", "d"];
+
+fn placeholder(taken: Option<&Taken<'_>>) -> bool {
+    taken.is_some_and(|taken| PLACEHOLDERS.contains(&taken.name))
+}
+
 /// Why the positional argument at `at`, not the first, has to be named, if it does, where `many`
 /// says there are three or more that a swap could go unnoticed among.
 fn needs_name(args: &[&Arg], takes: &Takes<'_>, at: usize, many: bool) -> Option<String> {
@@ -184,7 +193,7 @@ fn needs_name(args: &[&Arg], takes: &Takes<'_>, at: usize, many: bool) -> Option
         return Some(format!("a bare `{written}` doesn't say what it's for"));
     }
     for other in [at - 1, at + 1] {
-        if same_type(ty(at), ty(other)) {
+        if same_type(ty(at), ty(other)) && !(placeholder(param(at)) && placeholder(param(other))) {
             let (one, two) = (param(at.min(other))?.name, param(at.max(other))?.name);
             let shown = ty(at).map_or_else(String::new, type_text);
             return Some(format!(
@@ -243,6 +252,7 @@ fn call(callees: &Callees<'_>, args: &[Arg], takes: &Takes<'_>, sources: &Source
     }
     let passed = takes.get(..positional.len())?;
     let many = positional.len() >= 3
+        && !passed.iter().all(|taken| placeholder(Some(taken)))
         && !passed.windows(2).all(|pair| matches!(pair, [a, b] if callees.distinct(a, b)));
     let (first, why) =
         (1..positional.len()).find_map(|at| needs_name(&positional, takes, at, many).map(|why| (at, why)))?;

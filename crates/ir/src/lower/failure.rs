@@ -175,6 +175,27 @@ impl Lowering<'_> {
         Ok((Operand::Local(dest), value))
     }
 
+    /// `value else default` for what it does, where `value` gives nothing back when it doesn't
+    /// fail: the default runs only when it fails.
+    pub(super) fn else_effect(&mut self, value: &Expr, default: &Expr, span: Span) -> Lowered<()> {
+        let value = self.expr(value)?;
+        let failed = self.temporary(Type::Bool);
+        self.emit(InstKind::IsErr { dest: failed, value }, span);
+        let (fallback, join) = (self.new_block(), self.new_block());
+        self.finish(Terminator::Branch { cond: Operand::Local(failed), then: fallback, otherwise: join });
+        self.current = fallback;
+        if default.leaves() {
+            self.tail_expr(default, Tail::Drop)?;
+        } else {
+            self.effect(default)?;
+        }
+        if self.is_open() {
+            self.finish(Terminator::Jump(join));
+        }
+        self.current = join;
+        Ok(())
+    }
+
     /// `value else default`: the default only runs when the value is `None` or an error.
     pub(super) fn else_value(&mut self, expr: &Expr, value: &Expr, default: &Expr) -> Lowered<Operand> {
         let span = expr.span;

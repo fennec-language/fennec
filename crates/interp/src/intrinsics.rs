@@ -19,6 +19,11 @@ pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagn
         return done;
     }
     match (name, args) {
+        // Channels run between tasks, which only native code has.
+        ("channel_new" | "channel_send" | "channel_receive" | "channel_close" | "channel_free", _) => {
+            Err(Diagnostic::new("the interpreter can't run channels", span)
+                .with_help("build it natively: `fennec run` without `--interp`"))
+        }
         ("int_add" | "float_add", _) => binary(BinOp::Add),
         ("int_sub" | "float_sub", _) => binary(BinOp::Sub),
         ("int_mul" | "float_mul", _) => binary(BinOp::Mul),

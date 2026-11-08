@@ -157,6 +157,48 @@ fn a_native_sleep_is_recorded_and_a_replay_without_it_stops() -> std::io::Result
     Ok(())
 }
 
+const DRAWN: &str = "def main(stdout: Stdout, clock: Clock, entropy: Entropy):
+    drawn = [entropy.seed() % 1000 + item for item in parallel(range(64))]
+    stdout.print(drawn)
+    read = [clock.time() for item in parallel(range(16))]
+    stdout.print(read)
+";
+
+/// A `parallel` call's ranges each take inputs of their own, in whatever order the threads run
+/// them: each range replays its own, so the output is the recording's every time, on as many
+/// workers as it was recorded with, whatever the replay is told.
+#[test]
+fn a_parallel_call_whose_ranges_take_inputs_replays_identically() -> std::io::Result<()> {
+    let dir = folder("drawn")?;
+    let program = dir.join("drawn.fen");
+    std::fs::write(&program, DRAWN)?;
+    let engines: &[Option<&str>] =
+        if runtime_built() { &[Some("--interp"), None] } else { &[Some("--interp")] };
+    for engine in engines {
+        let log = dir.join("drawn.log");
+        let mut record = fennec_command();
+        // Every item a range of its own, on the pool, so the ranges take turns on the threads.
+        record.env("FENNEC_THREADS", "4").env("FENNEC_PARALLEL_STRESS", "1");
+        record.args(["run", "--record", &log.to_string_lossy()]);
+        record.args(*engine).arg(&program).current_dir(&dir);
+        let recorded = outcome(&record.output_within()?);
+        assert_eq!(recorded.2, Some(0), "{engine:?}: {}", recorded.1);
+        for threads in ["4", "1", "7", "4", "2"] {
+            let replayed = outcome(
+                &fennec_command()
+                    .env("FENNEC_THREADS", threads)
+                    .env("FENNEC_PARALLEL_STRESS", "1")
+                    .args(["replay", &log.to_string_lossy()])
+                    .current_dir(&dir)
+                    .output_within()?,
+            );
+            assert_eq!(replayed, recorded, "{engine:?}, replayed with FENNEC_THREADS={threads}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Whether an example runs more than one task, whose order between them isn't recorded yet, or
 /// serves until it's stopped, so its run doesn't end by itself.
 fn several_tasks_or_serves(source: &str) -> bool {

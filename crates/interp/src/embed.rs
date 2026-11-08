@@ -33,6 +33,7 @@ pub mod notes;
 pub mod numbers;
 pub mod objects;
 pub mod parallel;
+pub(crate) use parallel::workers_wanted;
 mod plans;
 pub mod regex;
 #[cfg(any(test, feature = "threads"))]

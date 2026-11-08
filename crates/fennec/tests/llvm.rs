@@ -2715,6 +2715,20 @@ fn a_float_remainder_is_exact() -> std::io::Result<()> {
     )
 }
 
+/// `<<` drops the bits shifted past a size's top, as on `int` and `u64`: what's left is that size,
+/// unsigned or with the sign of its top bit.
+#[test]
+fn a_shift_drops_bits_past_a_sizes_top() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "sized_shifts_drop_bits",
+        "def main(stdout: Stdout):\n    a: u8 = 200\n    b: i8 = 100\n    c: u16 = 65535\n    d: i32 = 1\n    e: u32 = 3\n    stdout.print(a << 1, b << 1, c << 4, d << 31, e << 31, a << 7)\n",
+        "144 -56 65520 -2147483648 2147483648 0\n",
+    )
+}
+
 /// What doesn't fit a size stops the program, saying which size and what it holds: arithmetic
 /// past either end, a negation, the one division that grows, and a conversion that doesn't fit,
 /// a `u64` too big for an `int` among them.

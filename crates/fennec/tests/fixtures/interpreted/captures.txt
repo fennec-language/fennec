@@ -1,0 +1,13 @@
+source 1faf994c9f63fbfdfdbeaed9e7b154ceee8f6d9aaa3f2bb0e3985cc842d01514
+code 0
+stdout 217
+ab 39 7
+kit [1, 2]
+[Pair(name="kit", count=2), Pair(name="kit", count=2)] [[1, 2], [1, 2]] [True, True]
+[7, 7] [1.5, 1.5] kitkit
+xyxyxyxy ababab
+abab abab
+[["ab", "z"], ["ab", "z"]] ["", "ab", "abab"]
+ab 21
+abab abab
+stderr 0

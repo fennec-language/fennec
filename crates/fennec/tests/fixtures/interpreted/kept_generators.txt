@@ -1,0 +1,8 @@
+source 72fe852bba2ec578c6d5bf34cd56dab17e5bfad48ed76601e7e3725c9c0a3a62
+code 0
+stdout 40
+before
+ababab hey!hey!
+["pp", "qqqq"]
+6
+stderr 0

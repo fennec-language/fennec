@@ -1,0 +1,10 @@
+source 769f5034e5a45bcbc7ba70ff0cabf0838c8c6f839be18d72f476279abbe93c48
+code 1
+stdout 10
+before 21
+stderr 178
+error: this `with` takes the same `shared` value twice
+  --> <dir>/held.fen:17:10
+   |
+17 |     with Holder(box=one).box, one as ref x, y:
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^

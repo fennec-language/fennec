@@ -1,0 +1,10 @@
+source 1c58689cc735ce8edd1e10d31e07f0e9bfc4a3cc8e9c6acc46527e521305e437
+code 1
+stdout 2
+1
+stderr 141
+error: `main` failed: Short(why="the end")
+  --> <dir>/undeclared.fen:26:1
+   |
+26 | def main(stdout: Stdout):
+   | ^^^^^^^^^^^^^^^^^^^^^^^^

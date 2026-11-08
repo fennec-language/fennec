@@ -1,0 +1,6 @@
+source 064d89553427ab20e86c9b7cdeeeae8c2d6bfe1b364a2a2cf5171fb3dfc5ce41
+code 0
+stdout 21
+True 6 24
+False 6 24
+stderr 0

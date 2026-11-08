@@ -1,0 +1,10 @@
+source 605bcddbb0894cbb263f446ca333fa584fcb7bf3cf4b34515dc390bea1c69b60
+code 0
+stdout 48
+0 3 2
+7
+True False True
+1 {1: 2}
+2
+3 True False
+stderr 0

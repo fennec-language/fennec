@@ -1,0 +1,10 @@
+source 8b5fce8e25c2d49568f5370f2def1500779a84d06210f2f6e78366d23f32a300
+code 1
+stdout 10
+before 21
+stderr 151
+error: this `with` takes the same `shared` value twice
+  --> <dir>/named.fen:18:10
+   |
+18 |     with one, other as ref x, y:
+   |          ^^^^^^^^^^

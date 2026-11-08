@@ -1,0 +1,11 @@
+source 805878f0fc12abc3f3ad7f540b80b41c1a0af41b20ecc0183807e29f1e1c86e2
+code 0
+stdout 162
+1
+["open a", "open b", "use a b", "close b", "close a"]
+-1
+["open a", "undo a"]
+-1
+["open a", "open c", "use a c", "undo c", "undo a"]
+["split", "7 w", "joined"]
+stderr 0

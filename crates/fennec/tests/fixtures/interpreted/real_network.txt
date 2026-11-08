@@ -1,0 +1,19 @@
+source 32dba7827b732e75920e0e4e9c4ac696e93f88eba1101fb40bd288fe5f7b86ab
+code 0
+stdout 211
+True
+True
+hello
+from a client
+gave up after 0.02s
+gave up after 0.02s
+
+6
+None
+the other side closed the connection
+the other side closed the connection
+it worked
+looped
+the other side closed the connection
+True
+stderr 0

@@ -269,6 +269,8 @@ export! {
     fennec_set_remove_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i8, a5: i64, a6: i64) -> i64 => dicts::set_remove_header(a0, a1, a2, a3, a4, a5, a6);
     fennec_set_clear(a0: i64) -> i64 => dicts::set_clear(a0);
     fennec_shared_new(a0: i64) -> i64 => guarded::shared_new(a0);
+    fennec_replay_lock(a0: i64, a1: i64) => guarded::replay_lock(a0, a1);
+    fennec_replay_locked(a0: i64, a1: i64) => guarded::replay_locked(a0, a1);
     fennec_shared_enter(a0: i64, a1: i64) -> i64 => guarded::shared_enter(a0, a1);
     fennec_shared_leave(a0: i64, a1: i64) -> i64 => guarded::shared_leave(a0, a1);
     fennec_shared_in(a0: i64) -> i64 => guarded::shared_in(a0);

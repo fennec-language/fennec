@@ -7470,6 +7470,14 @@ def numbers(stdout: Stdout) fails Closed | Timeout:
         ch.send(8)?
         stdout.print(ch.receive()?, ch.receive()?)
 
+def signs(stdout: Stdout) fails Closed | Timeout:
+    with Channel[int].open(size=2) as ints:
+        ints.send(-7)?
+        stdout.print(ints.receive()?)
+    with Channel[float].open(size=2) as floats:
+        floats.send(-1.5)?
+        stdout.print(floats.receive()?)
+
 def words(stdout: Stdout) fails Closed | Timeout:
     with Channel[str].open(size=4) as ch:
         ch.send(\"hi\")?
@@ -7503,6 +7511,7 @@ def waits(stdout: Stdout) fails Closed | Timeout:
 
 def main(stdout: Stdout) fails Closed | Timeout:
     numbers(stdout)?
+    signs(stdout)?
     words(stdout)?
     jobs(stdout)?
     lists(stdout)?
@@ -7511,7 +7520,7 @@ def main(stdout: Stdout) fails Closed | Timeout:
     )?;
     assert_eq!(
         printed,
-        "7 8\nhi 50\nfirst 3\n[1.5, 2.5]\nempty: Timeout(waited=Duration(nanos=2000000))\nfull: Timeout(waited=Duration(nanos=2000000))\n"
+        "7 8\n-7\n-1.5\nhi 50\nfirst 3\n[1.5, 2.5]\nempty: Timeout(waited=Duration(nanos=2000000))\nfull: Timeout(waited=Duration(nanos=2000000))\n"
     );
     Ok(())
 }

@@ -121,7 +121,8 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
         Turn::Goes => -1,
         Turn::Gives(code) => return code,
     };
-    let address = u64::try_from(value).unwrap_or(0);
+    // A word's bits go across as they are: a negative number or float is as good as any.
+    let address = u64::from_ne_bytes(value.to_ne_bytes());
     let message = if is_block != 0 && address != 0 {
         let copied = attempt(|state: &mut State| guarded::copied_for_task(state, address).map(Some));
         let Some((copy, table)) = copied else { return DONE };
@@ -198,7 +199,7 @@ pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64
             drop(queue);
             wake(waiting);
             channel.changed.notify_all();
-            *value = i64::try_from(taken(message)).unwrap_or(0);
+            *value = i64::from_ne_bytes(taken(message).to_ne_bytes());
             return DONE;
         }
         if queue.closed {

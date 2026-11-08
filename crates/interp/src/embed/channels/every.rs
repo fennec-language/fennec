@@ -155,7 +155,7 @@ pub(super) fn receive(channel: &Channel, listener: i64, timeout_ns: i64, value: 
             };
             super::met(channel, "receive", DONE);
             drop(queue);
-            *value = i64::try_from(super::taken(message)).unwrap_or(0);
+            *value = i64::from_ne_bytes(super::taken(message).to_ne_bytes());
             return DONE;
         }
         if queue.closed {

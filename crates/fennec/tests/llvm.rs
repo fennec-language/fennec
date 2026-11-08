@@ -7252,6 +7252,21 @@ def main(net: Net, stdout: Stdout) fails NetError:
         .stderr(std::process::Stdio::piped())
         .spawn()?;
     let mut printed = std::io::BufReader::new(server.stdout.take().expect("its output"));
+    // A crash's connection closes before its message is written, so the test reads the messages as
+    // they come, and the third says it can stop the server.
+    let errors = std::io::BufReader::new(server.stderr.take().expect("its errors"));
+    let (all_said, said) = std::sync::mpsc::channel();
+    let reading = std::thread::spawn(move || {
+        let mut text = String::new();
+        for line in errors.lines().map_while(Result::ok) {
+            text.push_str(&line);
+            text.push('\n');
+            if text.matches("error:").count() == 3 {
+                let _ = all_said.send(());
+            }
+        }
+        text
+    });
     let mut port = String::new();
     printed.read_line(&mut port)?;
     let port: u16 = port.trim().parse().unwrap_or(0);
@@ -7270,9 +7285,10 @@ def main(net: Net, stdout: Stdout) fails NetError:
             answered += 1;
         }
     }
+    let _ = said.recv_timeout(std::time::Duration::from_secs(60));
     server.kill()?;
-    let ended = server.wait_with_output()?;
-    let errors = String::from_utf8_lossy(&ended.stderr);
+    server.wait()?;
+    let errors = reading.join().unwrap_or_default();
     assert_eq!((answered, closed), (27, 3), "{errors}");
     assert_eq!(errors.matches("error:").count(), 3, "each crash says why: {errors}");
     std::fs::remove_dir_all(&dir)?;

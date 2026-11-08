@@ -492,3 +492,40 @@ fn tasks_taking_turns_on_a_thread_keep_their_own_temporaries() {
     assert_eq!(LEFT_FOR_NEXT.load(Ordering::SeqCst), 0, "an ended task's temporaries stayed behind");
     finish();
 }
+
+static ENV_WORKER: std::sync::OnceLock<&'static Pool> = std::sync::OnceLock::new();
+static SPARE_ON_WORKER: AtomicI64 = AtomicI64::new(-1);
+
+/// Ends at once, with the copy of its environment let go of as it ends.
+extern "C" fn ends_with_its_environment(_env: i64, _thread: i64) -> i64 {
+    ENDED
+}
+
+/// What its worker's runtime keeps of freed blocks for reuse.
+extern "C" fn reports_what_its_worker_keeps(_env: i64, _thread: i64) -> i64 {
+    let kept = with(|state| Some(i64::try_from(state.heap.spare_words()).unwrap_or(-1)));
+    SPARE_ON_WORKER.store(kept.unwrap_or(-1), Ordering::SeqCst);
+    ENDED
+}
+
+/// A launched task's environment was made on the thread that launched it, so when the task ends its
+/// worker gives it back to the allocator rather than keeping it for reuse. Kept, every launch would
+/// add to what the worker holds and never reuses, and hold memory from the launching thread.
+#[test]
+fn a_launched_task_s_environment_goes_back_to_the_allocator_when_it_ends() {
+    begin();
+    let worker = one_worker(&ENV_WORKER);
+    let env =
+        with(|state| heap::text_address(state, "an environment long enough to take a block of its own"));
+    let mut failure = 0;
+    for _ in 0..500 {
+        let task = launch_on(worker, ends_with_its_environment, env);
+        assert_eq!(launch_end(task, -1, 0, &mut failure), ENDED);
+    }
+    let task = launch_on(worker, reports_what_its_worker_keeps, 0);
+    assert_eq!(launch_end(task, -1, 0, &mut failure), ENDED);
+    let kept = SPARE_ON_WORKER.load(Ordering::SeqCst);
+    assert!((0..200).contains(&kept), "the worker kept {kept} words of what 500 launches were given");
+    heap::free(env);
+    finish();
+}

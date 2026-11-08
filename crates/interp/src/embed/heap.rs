@@ -130,6 +130,18 @@ pub(crate) struct Heap {
     pub(super) lent_owners: HashMap<u64, i64, BuildHasherDefault<AddressHasher>>,
     /// Words copied out of one block on the way to another, kept to save making them anew.
     pub(super) scratch: Vec<u64>,
+    /// Where blocks freed now go (see `give_back`).
+    freed: Freed,
+}
+
+/// Where a heap puts the blocks it frees.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Freed {
+    /// Into `spare`, for the next blocks it makes.
+    #[default]
+    Kept,
+    /// Back to the allocator.
+    GivenBack,
 }
 
 /// Whether heaps made from now on count what they allocate, for a caller that reads `Counts`
@@ -364,11 +376,23 @@ impl Heap {
         }
     }
 
+    /// Says where blocks freed from now on go, giving back where they went before. They should go
+    /// back to the allocator while letting go of blocks another thread made, which this one won't
+    /// make more of: kept here, they'd never be reused, and would hold that thread's memory from
+    /// it. Given back, the thread that made them takes their memory back when it next makes some.
+    #[cfg_attr(
+        not(any(test, feature = "threads")),
+        expect(dead_code, reason = "only a launched task frees what another thread made")
+    )]
+    pub(super) fn freeing(&mut self, freed: Freed) -> Freed {
+        std::mem::replace(&mut self.freed, freed)
+    }
+
     /// Keeps a freed block for reuse, when it's small: big ones, like a long list's, are
     /// rare enough to give back.
     pub(super) fn recycle(&mut self, block: Box<[u64]>) {
         // Under AddressSanitizer every freed block is given back, for it to watch.
-        if cfg!(feature = "sanitize") {
+        if cfg!(feature = "sanitize") || self.freed == Freed::GivenBack {
             return;
         }
         if self.spare_words + block.len() > SPARE_TOTAL_WORDS {
@@ -492,6 +516,12 @@ impl Heap {
     /// Takes over blocks, as this thread's own and as made since it last handed any over: what a
     /// launched task was given to start with, or left when it ended, for whoever runs next to hand
     /// over in turn.
+    /// How many words of freed blocks it's keeping for reuse.
+    #[cfg(test)]
+    pub(crate) fn spare_words(&self) -> usize {
+        self.spare_words
+    }
+
     pub(crate) fn adopt_made(&mut self, blocks: impl IntoIterator<Item = Box<[u64]>>) {
         let counts = self.counts;
         for mut block in blocks {

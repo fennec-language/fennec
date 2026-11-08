@@ -191,15 +191,15 @@ fn runtime_variant_built(features: &str, folder: &str, name: &str) -> bool {
     let Some(beside) = Path::new(env!("CARGO_BIN_EXE_fennec")).parent() else { return false };
     let Some(own) = beside.parent().map(|target| target.join(folder)) else { return false };
     let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
-    let mut build = Command::new(env!("CARGO"));
-    build
+    let mut cargo = Command::new(env!("CARGO"));
+    cargo
         .args(["build", "--quiet", "-p", "fennec-runtime", "--features", features, "--target-dir"])
         .arg(&own)
         .args((profile == "release").then_some("--release"));
     if under_coverage() {
-        build.env_remove("RUSTC_WRAPPER");
+        cargo.env_remove("RUSTC_WRAPPER");
     }
-    let built = build.status().is_ok_and(|status| status.success());
+    let built = cargo.status().is_ok_and(|status| status.success());
     let library = own.join(profile).join(runtime_file());
     let file = format!("lib{name}.a");
     // Copied under another name and then renamed, so a build linking it at that moment, in this

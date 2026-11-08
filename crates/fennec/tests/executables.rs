@@ -1,6 +1,6 @@
 //! `fennec build`: every example that fails while running fails the same way as a native
-//! program, with the interpreter's message. That every example builds and prints exactly its
-//! `.out` file is `llvm.rs`'s `the_examples_it_takes_print_what_they_should`.
+//! program, with the interpreter's message, as its `.err` keeps it. That every example builds and
+//! prints exactly its `.out` file is `llvm.rs`'s `the_examples_it_takes_print_what_they_should`.
 
 use std::fs;
 use std::io::Read;
@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 /// hanging the run for hours.
 pub(crate) const PROGRAM_DEADLINE: Duration = Duration::from_secs(60);
 
-/// How long `fennec` itself gets: a build, or a run in the interpreter, which is slower.
+/// How long `fennec` itself gets: a build and maybe a run.
 pub(crate) const FENNEC_DEADLINE: Duration = Duration::from_secs(180);
 
 /// Running a command with a deadline, as every program a test starts runs.
@@ -138,20 +138,30 @@ pub(crate) fn fennec_command() -> Command {
 }
 
 /// The runtime library executables link against, which `fennec build` expects next to
-/// itself. `cargo test` doesn't build it, so this does, once a run: an old one would be
-/// missing what the interpreter has learned since. Only once, because even when it's
+/// itself. `cargo test` doesn't build it, so this does, once a run: `fennec` refuses one from
+/// other source. Only once, because even when it's
 /// current Cargo puts the library in place again, removing it first, so a test linking
 /// while another builds it could find it missing. `llvm.rs` uses this too.
 pub(crate) fn runtime_built() -> bool {
     static BUILT: OnceLock<bool> = OnceLock::new();
     *BUILT.get_or_init(|| {
         let profile = if cfg!(debug_assertions) { None } else { Some("--release") };
-        Command::new(env!("CARGO"))
-            .args(["build", "--quiet", "-p", "fennec-runtime"])
-            .args(profile)
-            .status()
-            .is_ok_and(|status| status.success())
+        let mut build = Command::new(env!("CARGO"));
+        build.args(["build", "--quiet", "-p", "fennec-runtime"]).args(profile);
+        // Coverage builds `fennec` in a target folder of its own, so the library goes there too.
+        if under_coverage()
+            && let Some(target) = Path::new(env!("CARGO_BIN_EXE_fennec")).parent().and_then(Path::parent)
+        {
+            build.arg("--target-dir").arg(target).env_remove("RUSTC_WRAPPER");
+        }
+        build.status().is_ok_and(|status| status.success())
     })
+}
+
+/// Whether coverage is being measured. What it adds to the code it builds isn't for a runtime
+/// library, which programs link with nothing to write the counts.
+fn under_coverage() -> bool {
+    std::env::var_os("CARGO_LLVM_COV").is_some()
 }
 
 /// The runtime library's file name, as Cargo names a static library on every platform Fennec
@@ -181,12 +191,15 @@ fn runtime_variant_built(features: &str, folder: &str, name: &str) -> bool {
     let Some(beside) = Path::new(env!("CARGO_BIN_EXE_fennec")).parent() else { return false };
     let Some(own) = beside.parent().map(|target| target.join(folder)) else { return false };
     let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
-    let built = Command::new(env!("CARGO"))
+    let mut cargo = Command::new(env!("CARGO"));
+    cargo
         .args(["build", "--quiet", "-p", "fennec-runtime", "--features", features, "--target-dir"])
         .arg(&own)
-        .args((profile == "release").then_some("--release"))
-        .status()
-        .is_ok_and(|status| status.success());
+        .args((profile == "release").then_some("--release"));
+    if under_coverage() {
+        cargo.env_remove("RUSTC_WRAPPER");
+    }
+    let built = cargo.status().is_ok_and(|status| status.success());
     let library = own.join(profile).join(runtime_file());
     let file = format!("lib{name}.a");
     // Copied under another name and then renamed, so a build linking it at that moment, in this
@@ -313,18 +326,15 @@ fn failing_examples_fail_the_same_way_as_executables() {
         // Most error examples are mistakes the checker catches, which don't build.
         let Ok(executable) = build(path, &work)? else { return Ok(None) };
         let ran = run(&executable)?;
-        // `fennec run` runs an executable itself where LLVM builds the program, so the
-        // interpreter is what an executable's failure is held to.
-        let interpreted =
-            fennec_command().args(["run", "--interp"]).arg(path).output_before(FENNEC_DEADLINE)?;
-        let (ours, theirs) =
-            (String::from_utf8_lossy(&ran.stderr), String::from_utf8_lossy(&interpreted.stderr));
+        // An executable's failure is held to the interpreter's, as its `.err` keeps it, with the
+        // path it was built from.
+        let theirs = fs::read_to_string(path.with_extension("err"))?
+            .replace(&format!("examples/errors/{name}"), &path.display().to_string());
+        let ours = String::from_utf8_lossy(&ran.stderr);
         let differs = if ran.status.success() {
             Some(format!("{name} should fail"))
         } else if ours != theirs {
             Some(format!("{name} failed differently:\n{ours}\nwhere the interpreter said\n{theirs}"))
-        } else if ran.stdout != interpreted.stdout {
-            Some(format!("{name} printed something different before failing"))
         } else {
             None
         };

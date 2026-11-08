@@ -108,7 +108,9 @@ fn main() -> ExitCode {
         ["run", "--interp", path, arguments @ ..] => run(run::Engine::Interpreter, path, arguments),
         ["run", "--jit"] => run(run::Engine::NativeNoted, ".", &[]),
         ["run", "--jit", path, arguments @ ..] => run(run::Engine::NativeNoted, path, arguments),
+        ["run", "--record", log, rest @ ..] => record(log, rest),
         ["run", path, arguments @ ..] => run(run::Engine::Native, path, arguments),
+        ["replay", log] => replay(log),
         ["build", "--release"] => aot::build(".", None, true),
         ["build", "--release", "-o", output] => aot::build(".", Some(output), true),
         ["build", "--release", path] => aot::build(path, None, true),
@@ -205,6 +207,58 @@ fn run(engine: run::Engine, path: &str, arguments: &[&str]) -> ExitCode {
     let path = path.to_owned();
     let arguments: Vec<String> = arguments.iter().map(|arg| (*arg).to_owned()).collect();
     big_stack(move || run::run(&path, engine, &arguments))
+}
+
+/// `fennec run --record log ...`: runs the program as `fennec run ...` does, logging every outside
+/// input it takes into `log`, with what it was run with, for `fennec replay` (see
+/// `fennec_interp::replay`).
+fn record(log: &str, rest: &[&str]) -> ExitCode {
+    let (engine, words) = match rest {
+        ["--interp", rest @ ..] => (run::Engine::Interpreter, rest),
+        ["--jit", rest @ ..] => (run::Engine::NativeNoted, rest),
+        rest => (run::Engine::Native, rest),
+    };
+    let (path, arguments) = match words {
+        [path, arguments @ ..] => {
+            ((*path).to_owned(), arguments.iter().map(|arg| (*arg).to_owned()).collect())
+        }
+        [] => (".".to_owned(), Vec::new()),
+    };
+    let named = match engine {
+        run::Engine::Interpreter => "interp",
+        run::Engine::NativeNoted => "jit",
+        _ => "native",
+    };
+    let header =
+        [named.to_owned(), path.clone()].into_iter().chain(arguments.iter().cloned()).collect::<Vec<_>>();
+    let log = std::path::PathBuf::from(log);
+    if let Err(err) = fennec_interp::replay::start_log(&log, header.join("\0").as_bytes()) {
+        eprintln!("error: couldn't start the recording at {}: {err}", log.display());
+        return ExitCode::FAILURE;
+    }
+    big_stack(move || run::run_logged(&path, engine, &arguments, Some(&run::Logged::Recording(log))))
+}
+
+/// `fennec replay log`: runs the program `fennec run --record` recorded into `log` again, with what
+/// it was run with, giving it the logged inputs in place of the outside world's.
+fn replay(log: &str) -> ExitCode {
+    let log = std::path::PathBuf::from(log);
+    let header = match fennec_interp::replay::header_of(&log) {
+        Ok(header) => String::from_utf8_lossy(&header).into_owned(),
+        Err(err) => {
+            eprintln!("error: couldn't read the recording at {}: {err}", log.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut parts = header.split('\0').map(str::to_owned);
+    let engine = match parts.next().as_deref() {
+        Some("interp") => run::Engine::Interpreter,
+        Some("jit") => run::Engine::NativeNoted,
+        _ => run::Engine::Native,
+    };
+    let path = parts.next().unwrap_or_else(|| ".".to_owned());
+    let arguments: Vec<String> = parts.collect();
+    big_stack(move || run::run_logged(&path, engine, &arguments, Some(&run::Logged::Replaying(log))))
 }
 
 fn big_stack(command: impl FnOnce() -> ExitCode + Send + 'static) -> ExitCode {

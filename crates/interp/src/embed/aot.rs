@@ -231,6 +231,11 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     let limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
     entry(i64::try_from(limit).unwrap_or(0));
     let (output, failure, leftovers) = super::finish_for_exit();
+    // A replay that ended with its recording not all read isn't the run that was recorded.
+    let failure = failure.or_else(|| {
+        crate::replay::unfinished()
+            .map(|why| fennec_syntax::Diagnostic::new(why, fennec_syntax::Span::default()))
+    });
     report_counts(&leftovers.counts);
     (output, failure.map(|failure| sources.render(&failure)).unwrap_or_default())
 }

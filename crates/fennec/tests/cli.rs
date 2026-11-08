@@ -344,6 +344,41 @@ fn tests_get_fakes_unless_asked_for_the_real_thing() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// `--real` runs tests through LLVM too, with the real capabilities: what they print comes out in
+/// order, around a real file written and read, and a failure says the same as on the JIT.
+#[test]
+fn real_tests_run_through_llvm_as_on_the_jit() {
+    if !llvm_ready_for_run() {
+        return;
+    }
+    let dir = scratch("real-through-llvm").unwrap();
+    let written = dir.join("written.txt");
+    let source = format!(
+        "test \"prints\"(stdout: Stdout):\n    stdout.print(\"hello from a test\")\n\n\
+         test \"a real file\"(fs: Fs, stdout: Stdout):\n    _ = fs.write_text({written:?}, \"kept\")\n    assert fs.read_text({written:?})? == \"kept\"\n    stdout.print(\"read it back\")\n\n\
+         test \"fails\"(stdout: Stdout):\n    stdout.print(\"before the failure\")\n    assert 1 + 1 == 3\n"
+    );
+    let path = dir.join("real.fen");
+    std::fs::write(&path, source).unwrap();
+    let path = path.to_str().unwrap();
+    let jit = fennec(&["test", "--real", "--verbose", "--jit", path], "").unwrap();
+    std::fs::remove_file(&written).unwrap();
+    let llvm = fennec(&["test", "--real", "--verbose", path], "").unwrap();
+    let said = text(&llvm.stderr);
+    assert!(said.contains("note: 3 of 3 tests ran through LLVM"), "{said}");
+    assert_eq!(text(&llvm.stdout), text(&jit.stdout));
+    assert!(
+        text(&llvm.stdout).starts_with("hello from a test\nread it back\nbefore the failure\n"),
+        "{}",
+        text(&llvm.stdout)
+    );
+    let shown: String = said.split_inclusive('\n').filter(|line| !line.starts_with("note: ")).collect();
+    assert_eq!(shown, text(&jit.stderr));
+    assert_eq!(std::fs::read_to_string(&written).unwrap(), "kept");
+    assert!(!llvm.status.success());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A standard library type's default, like `Response`'s `headers = dict[str, str]()`, works in a
 /// test that doesn't run through LLVM: here the file's other test reaches what LLVM can't build
 /// yet, so both go another way, and with `--jit` and `--real` too.

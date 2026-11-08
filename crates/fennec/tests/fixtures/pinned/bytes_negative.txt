@@ -1,0 +1,10 @@
+source 0514001b12a2d268e7837190f8905cfbb56b490ca4a61b9bb8725c8d3e8e3b15
+code 1
+stdout 2
+1
+stderr 152
+error: a byte is an int from 0 to 255, not -1
+ --> <dir>/bytes_negative.fen:3:18
+  |
+3 |     stdout.print(bytes([-1]))
+  |                  ^^^^^^^^^^^

@@ -1,0 +1,10 @@
+source 7ce1fdecb9c361cea34320f1b8243ee697d218fc1af2e32eede4550b5d991bcb
+code 1
+stdout 7
+before
+stderr 105
+error: index -3 is out of range for length 2
+ --> <dir>/before.fen:3:5
+  |
+3 |     a[n] = 3
+  |     ^^^^

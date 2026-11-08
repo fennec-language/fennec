@@ -1,0 +1,8 @@
+source af56b8e4a3972149448c674d44f3d660e77debb4eeff6112e8ad457847c97cb4
+code 0
+stdout 283
+21 [7, 2, 9]
+short 1 Bag(label="a label long enough to be held in a block", count=5)
+37 [7, 2, 9, 9] [7, 2, 9]
+a label long enough to be held in a block 5 Bag(label="a label long enough to be held in a block", count=5) Bag(label="a label long enough to be held in a block", count=5)
+stderr 0

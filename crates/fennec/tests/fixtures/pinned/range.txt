@@ -1,0 +1,14 @@
+source 2dfeee9a7e3bd1a2a23c26286c1619ec4fb57e9328d1a6920300623b89b58916
+code 1
+stdout 12
+3 3
+2
+3
+7
+6
+stderr 150
+error: index 2 is out of range for length 2
+  --> <dir>/range.fen:27:18
+   |
+27 |     stdout.print(bag.items[at])
+   |                  ^^^^^^^^^^^^^

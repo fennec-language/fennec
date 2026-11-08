@@ -1,0 +1,10 @@
+source dd9dc44db7e0927588cfe7c673043d8fb88ff0888b788063d241ccc3ef2e0b0e
+code 1
+stdout 2
+0
+stderr 159
+error: can't turn a float into an int
+ --> <dir>/alone_floor.fen:6:18
+  |
+6 |     stdout.print(floor(1e300 * 1e300))
+  |                  ^^^^^^^^^^^^^^^^^^^^

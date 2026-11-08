@@ -1,0 +1,12 @@
+source 1ab8224d0aa03dd75581f63ae99d5663fc9948b7f0316e216b2741b85f7aa999
+code 1
+stdout 2
+1
+stderr 261
+error: a BLAKE3 key is 64 hex digits
+ --> <dir>/crypto_bad_key.fen:5:18
+  |
+5 |     stdout.print(crypto.keyed_blake3("not hex", "message"))
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: make one with `derive_key(context, secret)`

@@ -68,7 +68,7 @@ Until then, install it from a checkout of this repository. This builds `fennec` 
 .github/scripts/install.sh
 ```
 
-Or run it from the checkout with Cargo. Fennec runs most of the language on the website: structs, enums, unions, `match`, errors with `fail` and `?`, optional values, tables and Ids, comprehensions, generators, `parallel` loops, tests and property tests, and a standard library with JSON, HTTP and more. `fennec run` and `fennec test` type-check a program first and report every mistake they find. `fennec run` builds a program through LLVM a function at a time, and hands what LLVM can't build yet to a JIT, or to the interpreter for the little neither can.
+Or run it from the checkout with Cargo. Fennec runs most of the language on the website: structs, enums, unions, `match`, errors with `fail` and `?`, optional values, tables and Ids, comprehensions, generators, `parallel` loops, tests and property tests, and a standard library with JSON, HTTP and more. `fennec run` and `fennec test` type-check a program first and report every mistake they find. `fennec run` builds a program through LLVM a function at a time, and hands what LLVM can't build yet to the interpreter, which no example needs.
 
 ```bash
 cargo run -q -p fennec -- run examples/game.fen
@@ -96,8 +96,7 @@ Every program in [`examples/`](examples) is a test: it must print exactly its `.
 - `crates/check`: the type checker, which also infers every function's signature.
 - `crates/ir`: the typed intermediate representation the backends compile.
 - `crates/llvm`: the LLVM backend, behind `fennec run` and `fennec build`.
-- `crates/jit`: a JIT, for what LLVM can't build yet.
-- `crates/interp`: the interpreter, for the little that neither can build yet.
+- `crates/interp`: the interpreter, for what LLVM can't build yet, and for the website's playground.
 - `crates/runtime` and `crates/layout`: the runtime library compiled programs link against, and how values are laid out in memory.
 - `crates/build`: content hashes, so a run rebuilds and retests only what changed.
 - `crates/kit`: kits: `kit.toml`, and loading a kit's files as one program.

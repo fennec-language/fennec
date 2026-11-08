@@ -1,0 +1,22 @@
+source e2ac4ec10ab62ee815e48df43a90a55c39f256fe631a34a2c766d35687609ca8
+code 0
+stdout 139
+ fox jumps o 1
+a 3
+ab 3
+abc 2
+abcabcabd 1
+abd 11
+b 3
+bc 2
+bca 2
+bd 2
+brown fox ju 1
+c 2
+ca 2
+cab 2
+d 2
+the quick br 1
+uick brown f 1
+éa 1
+stderr 0

@@ -1,0 +1,9 @@
+source 3278168252e57dc61114739f5ccd8963f98e0dbb060380e5bc2e43d92ebd1375
+code 0
+stdout 180
+True
+Enemy(name="a long name that sits in its own block", health=25, tags=["x", "hit"]) Enemy(name="a long name that sits in its own block", health=50, tags=["x"])
+False 1
+1
+9 2 1
+stderr 0

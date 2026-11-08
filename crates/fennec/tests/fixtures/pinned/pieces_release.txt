@@ -1,0 +1,10 @@
+source 9a867547fca1c9e34feb96e44cedb2df6f7ba4569dfe36b3fc3e23d5a3a702f7
+code 0
+stdout 83
+start <3:<2:<1:1>2>3>
+0
+3 c a-b-c abc
+x xy
+w0, w1, w2, w3, w4
+["x", ".", ".", "o"]
+stderr 0

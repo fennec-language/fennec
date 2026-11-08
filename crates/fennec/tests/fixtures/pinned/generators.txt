@@ -1,0 +1,12 @@
+source 16d4430bd5063b60418b1df647b18052e8538137cef93690b128d3c1c68efecb
+code 0
+stdout 78
+19720
+w0 2
+w1 2
+w2 2
+81 0
+w0w1w2w3
+half is 5 7 is odd 5
+[1, 2] and ["a", "b"]
+stderr 0

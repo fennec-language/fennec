@@ -133,7 +133,7 @@ fn the_interpreter_and_the_benchmarks_flag_dont_run_tests() {
     let dir = scratch("flags").unwrap();
     let (home, game) = (dir.join("home"), dir.join("game.fen"));
     std::fs::write(&game, TESTED.replace("x * 2", "x * 3")).unwrap();
-    for flag in ["--interp", "--jit"] {
+    for flag in ["--interp", "--no-test"] {
         let ran = crate::executables::fennec_command()
             .args(["run", flag])
             .arg(&game)

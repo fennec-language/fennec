@@ -1,0 +1,7 @@
+source 84bd17ed5ccb1384b72def4b4b99ed7b2dd5f7815cd9c78336aa164615aa9441
+code 0
+stdout 50
+True False True True True True True
+True True
+1 a
+stderr 0

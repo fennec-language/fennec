@@ -1,0 +1,11 @@
+source 9f442e98f011e226ed0a66a651538d62c7a62b3b79c180201d90d83ac75fb669
+code 1
+stdout 0
+stderr 196
+error: this Id is from another Table
+ --> <dir>/other_table_stop.fen:8:18
+  |
+8 |     stdout.print(ours[kit])
+  |                  ^^^^^^^^^
+  |
+  = help: use `.get(id)`, which gives None instead

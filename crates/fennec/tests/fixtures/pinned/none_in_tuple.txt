@@ -1,0 +1,6 @@
+source 2d05e72578a26dd9be6bce11f6d910b442b957e0b9895f457b19e2ac8d415651
+code 0
+stdout 63
+(1, None) (None, "a") (None, None)
+True [(1, None), (2, None)]
+stderr 0

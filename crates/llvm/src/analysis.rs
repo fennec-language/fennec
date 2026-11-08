@@ -292,6 +292,20 @@ pub(crate) fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: 
     }
 }
 
+/// Whether a builtin keeps what it's given after its receiver, so the given value has another owner.
+fn keeps_an_argument(name: &str) -> bool {
+    matches!(
+        name,
+        "list.append"
+            | "list.insert"
+            | "set.add"
+            | "Buffer.push"
+            | "Buffer.insert"
+            | "Table.add"
+            | "dict.setdefault"
+    )
+}
+
 /// What the facts leave to say about one instruction.
 fn note(
     function: &Function,
@@ -468,20 +482,42 @@ fn analyze(
             }
             InstKind::Make { fields: items, .. }
             | InstKind::MakeCase { fields: items, .. }
-            | InstKind::MakeList { items, .. } => {
+            | InstKind::MakeList { items, .. }
+            | InstKind::MakeTuple { items, .. }
+            | InstKind::MakeSet { items, .. }
+            | InstKind::MakeClosure { captures: items, .. } => {
                 for item in items {
                     if let Operand::Local(local) = item {
                         known.shared.insert(local.0);
                     }
                 }
             }
+            InstKind::MakeDict { pairs, .. } => {
+                for item in pairs.iter().flat_map(|(key, value)| [key, value]) {
+                    if let Operand::Local(local) = item {
+                        known.shared.insert(local.0);
+                    }
+                }
+            }
+            InstKind::MakeGenerator { args, .. } => {
+                for (_, value) in args {
+                    if let Operand::Local(local) = value {
+                        known.shared.insert(local.0);
+                    }
+                }
+            }
             InstKind::SetField { value: Operand::Local(local), .. }
-            | InstKind::SetIndex { value: Operand::Local(local), .. } => {
+            | InstKind::SetIndex { value: Operand::Local(local), .. }
+            | InstKind::SetSlot { value: Operand::Local(local), .. }
+            | InstKind::MakeOk { value: Some(Operand::Local(local)), .. }
+            | InstKind::MakeErr { error: Operand::Local(local), .. } => {
                 known.shared.insert(local.0);
             }
-            InstKind::Builtin { name, args, .. } if name == "list.append" => {
-                if let Some(Operand::Local(local)) = args.get(1) {
-                    known.shared.insert(local.0);
+            InstKind::Builtin { name, args, .. } if keeps_an_argument(name) => {
+                for arg in args.iter().skip(1) {
+                    if let Operand::Local(local) = arg {
+                        known.shared.insert(local.0);
+                    }
                 }
             }
             _ => {}
